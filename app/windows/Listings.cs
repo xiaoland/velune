@@ -94,7 +94,7 @@ sealed class Listings(Core core)
             var changes = feed.Written;
             try
             {
-                var (list, activity) = await core.Call(device, "List", application =>
+                var (list, activity) = await core.Call(device, NativeOperation.ConfigurationRead, application =>
                 {
                     return (application.List(), application.ConversationActivity(feed.Cursor));
                 });
@@ -139,7 +139,7 @@ sealed class Listings(Core core)
 
     // Change runs one change of the device's list and shows the list it
     // returns; a failure goes to 问题 under source.
-    public async void Change(Device device, string source, Func<VeluneApplication, BindingConfigurationSnapshot> work)
+    public async void Change(Device device, string source, NativeOperation operation, Func<VeluneApplication, BindingConfigurationSnapshot> work)
     {
         if (!feeds.TryGetValue(device, out var feed))
         {
@@ -148,7 +148,7 @@ sealed class Listings(Core core)
         feed.Writing++;
         try
         {
-            var list = await core.Call(device, "Configuration", work);
+            var list = await core.Call(device, operation, work);
             feed.Listing = Listing.From(list, [.. feed.Listing.Active.Values]);
         }
         catch (Exception failure)
@@ -162,7 +162,7 @@ sealed class Listings(Core core)
 
     // Write runs a change whose result the next read shows, such as the
     // list's preferences or a conversation's title.
-    public async void Write(Device device, string source, Action<VeluneApplication> work)
+    public async void Write(Device device, string source, NativeOperation operation, Action<VeluneApplication> work)
     {
         if (!feeds.TryGetValue(device, out var feed))
         {
@@ -171,7 +171,7 @@ sealed class Listings(Core core)
         feed.Writing++;
         try
         {
-            await core.Call(device, "Configuration", work);
+            await core.Call(device, operation, work);
         }
         catch (Exception failure)
         {
@@ -192,7 +192,7 @@ sealed class Listings(Core core)
         var reference = new BindingConversationReference(listed.Conversation.RuntimeId, id);
         try
         {
-            await core.Call(device, "Read", application => application.OrganizeConversations([reference], new BindingConversationOrganizationChange.MarkRead()));
+            await core.Call(device, NativeOperation.ConversationWrite, application => application.OrganizeConversations([reference], new BindingConversationOrganizationChange.MarkRead()));
             var conversations = feed.Listing.Conversations;
             if (conversations.FindIndex(shown => shown.Conversation.Id == id) is var at and >= 0)
             {

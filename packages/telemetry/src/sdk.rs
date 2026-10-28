@@ -58,20 +58,29 @@ fn approved(metadata: &tracing::Metadata<'_>) -> bool {
         && metadata.fields().iter().all(|field| {
             matches!(
                 field.name(),
-                "operation"
-                    | "operation_id"
-                    | "outcome"
-                    | "event"
-                    | "elapsed_ms"
-                    | "request_id"
-                    | "correlation_gap"
-                    | "failure_kind"
+                "velune.operation"
+                    | "velune.operation.id"
+                    | "velune.outcome"
+                    | "velune.request.id"
+                    | "velune.operation.duration"
+                    | "velune.correlation.gap"
+                    | "error.type"
+                    | "http.response.status_code"
+                    | "velune.gateway.transport"
+                    | "otel.name"
+                    | "otel.kind"
             )
         })
         && if metadata.is_span() {
             metadata.name() == "client.operation"
         } else {
-            metadata.fields().field("event").is_some()
+            matches!(
+                metadata.name(),
+                "velune.operation.completed"
+                    | "velune.execution.turn.started"
+                    | "velune.execution.turn.finished"
+                    | "velune.execution.turn.not_started"
+            )
         }
 }
 
@@ -241,11 +250,15 @@ impl Generation {
             Box::new(
                 tracing_opentelemetry::layer()
                     .with_tracer(traces.tracer("velune.client.rust"))
-                    .with_filter(tracing_subscriber::filter::filter_fn(approved)),
+                    .with_filter(tracing_subscriber::filter::filter_fn(|m| {
+                        m.is_span() && approved(m)
+                    })),
             ),
             Box::new(
                 opentelemetry_appender_tracing::layer::OpenTelemetryTracingBridge::new(&logs)
-                    .with_filter(tracing_subscriber::filter::filter_fn(approved)),
+                    .with_filter(tracing_subscriber::filter::filter_fn(|m| {
+                        m.is_event() && approved(m)
+                    })),
             ),
         ];
         let mut layers = layers;
@@ -292,6 +305,7 @@ impl Generation {
 impl ResourceIdentity {
     fn attributes(&self) -> Vec<KeyValue> {
         let mut attributes = vec![
+            KeyValue::new("velune.telemetry.schema.version", "2"),
             KeyValue::new("service.name", self.service_name.clone()),
             KeyValue::new("service.version", self.version.clone()),
             KeyValue::new("service.instance.id", self.instance_id.clone()),

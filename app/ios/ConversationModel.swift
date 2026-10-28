@@ -107,7 +107,7 @@ final class ConversationModel: ObservableObject {
         defer { if runtimeID == runtime && !Task.isCancelled { loadingModels = false } }
         let needsDefault = isNew && choices[runtime] == nil
         do {
-            let result = try await client.application(peer) {
+            let result = try await client.application(peer, operation: .configurationRead) {
                 (try $0.runtimeModels(runtimeId: runtime), needsDefault ? try $0.composerChoices() : nil)
             }
             guard runtimeID == runtime, !Task.isCancelled else { return }
@@ -142,7 +142,7 @@ final class ConversationModel: ObservableObject {
         markingRead = true
         defer { markingRead = false }
         do {
-            let marked = try await client.application(peer) { app -> Bool in
+            let marked = try await client.application(peer, operation: .conversationWrite) { app -> Bool in
                 guard !Task.isCancelled else { return false }
                 _ = try app.list()
                 guard let row = try app.findConversation(conversationId: shown.conversation.id),
@@ -159,7 +159,7 @@ final class ConversationModel: ObservableObject {
     func open() async {
         do {
             if let id = target.conversation {
-                apply(try await client.application(peer) { try $0.readConversation(runtimeId: self.target.runtime, conversationId: id) })
+                apply(try await client.application(peer, operation: .conversationRead) { try $0.readConversation(runtimeId: self.target.runtime, conversationId: id) })
             }
             failure = nil
         } catch { report(error, source: "读取会话") }
@@ -173,13 +173,13 @@ final class ConversationModel: ObservableObject {
             return
         }
         do {
-            let update = try await client.application(peer) {
+            let update = try await client.application(peer, operation: .conversationRead) {
                 try $0.snapshotUpdate(runtimeId: current.contextRuntimeId, conversationId: current.conversation.id, since: current.cursor)
             }
             switch update {
             case .changed(let next): merge(next)
             case .absent:
-                apply(try await client.application(peer) { try $0.readConversation(runtimeId: current.contextRuntimeId, conversationId: current.conversation.id) })
+                apply(try await client.application(peer, operation: .conversationRead) { try $0.readConversation(runtimeId: current.contextRuntimeId, conversationId: current.conversation.id) })
             case .unchanged: break
             }
             failure = nil
@@ -212,13 +212,13 @@ final class ConversationModel: ObservableObject {
             defer { self.sending = nil }
             if self.snapshot == nil {
                 guard self.target.conversation == nil else { throw MobileError.missingConversation }
-                self.apply(try await self.client.application(self.peer) {
+                self.apply(try await self.client.application(self.peer, operation: .conversationWrite) {
                     try $0.createConversationWithSelection(runtimeId: runtime, cwd: cwd, selection: selection)
                 })
             }
             guard let current = self.snapshot else { throw MobileError.missingConversation }
             let turn = BindingComposedTurn(text: text, effort: nil, permissionMode: nil, attachments: [])
-            self.apply(try await self.client.application(self.peer, operation: "send") {
+            self.apply(try await self.client.application(self.peer, operation: .send) {
                 try $0.sendTurnWithSelection(sourceRuntimeId: current.contextRuntimeId, conversationId: current.conversation.id,
                     targetRuntimeId: runtime, selection: selection, turn: turn)
             })
@@ -229,19 +229,19 @@ final class ConversationModel: ObservableObject {
     func compact() { act("压缩上下文") {
         guard let current = self.snapshot, current.followUp.canCompact else { return }
         let selection = self.selection
-        self.apply(try await self.client.application(self.peer, operation: "compact") {
+        self.apply(try await self.client.application(self.peer, operation: .compact) {
             try $0.compactConversation(runtimeId: current.contextRuntimeId, conversationId: current.conversation.id, selection: selection)
         })
     } }
 
     func stop() { act("停止生成") {
         guard let current = self.snapshot else { return }
-        self.apply(try await self.client.application(self.peer, operation: "cancel") { try $0.cancel(runtimeId: current.contextRuntimeId, conversationId: current.conversation.id) })
+        self.apply(try await self.client.application(self.peer, operation: .cancel) { try $0.cancel(runtimeId: current.contextRuntimeId, conversationId: current.conversation.id) })
     } }
 
     func reply(_ id: String, _ reply: BindingRuntimeInteractionReply) { act("回复运行时请求") {
         guard let current = self.snapshot else { return }
-        self.apply(try await self.client.application(self.peer) {
+        self.apply(try await self.client.application(self.peer, operation: .reply) {
             try $0.replyRuntimeInteraction(runtimeId: current.contextRuntimeId, conversationId: current.conversation.id, interactionId: id, reply: reply)
         })
     } }
@@ -249,7 +249,7 @@ final class ConversationModel: ObservableObject {
     func loadPayload(_ id: String) async {
         guard let current = snapshot else { return }
         do {
-            let loaded = try await client.application(peer) {
+            let loaded = try await client.application(peer, operation: .conversationRead) {
                 try $0.messagePayloads(runtimeId: current.contextRuntimeId, conversationId: current.conversation.id, messageIds: [id])
             }
             for message in loaded where messages[message.id]?.stamp == message.stamp { payloads[message.id] = message }

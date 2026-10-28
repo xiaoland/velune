@@ -23,7 +23,7 @@ enum Synthetic: Error { case expected }
     static func require(_ condition: Bool, _ message: String) throws {
         if !condition { throw NSError(domain: "TelemetryAcceptance", code: 1, userInfo: [NSLocalizedDescriptionKey: message]) }
     }
-    static func invoke(_ owner: ClientTelemetry, _ app: VeluneApplication, _ name: String, bad: Bool = false) throws -> String {
+    static func invoke(_ owner: ClientTelemetry, _ app: VeluneApplication, _ name: NativeOperation, bad: Bool = false) throws -> String {
         var parent = ""
         do {
             try owner.operation(name) { carrier in
@@ -53,29 +53,29 @@ enum Synthetic: Error { case expected }
         let initial = try owner.binding.snapshot()
         try require(initial.rustActiveRevision == nil && initial.nativeActiveRevision == nil, "default must be inert")
         let app = try VeluneApplication.openWithTelemetry(options: BindingOptions(homeDirectory: home.path, resourcesDirectory: args[2]), telemetry: owner.binding)
-        _ = try invoke(owner, app, "list")
+        _ = try invoke(owner, app, .configurationRead)
         try await Task.sleep(nanoseconds: 300_000_000)
         let first = BindingTelemetryProfile(endpoint: args[3], headers: ["x-synthetic-authorization": "first"], sampleRatio: 1)
         let second = BindingTelemetryProfile(endpoint: args[4], headers: ["x-synthetic-authorization": "second"], sampleRatio: 1)
         try owner.save(revision: initial.revision, preference: .on, profile: first)
         let active = try owner.binding.snapshot()
         try require(active.applied && active.rustActiveRevision == active.nativeActiveRevision, "SDK revisions diverged")
-        async let a = Task.detached { try invoke(owner, app, "send") }.value
-        async let b = Task.detached { try invoke(owner, app, "send", bad: true) }.value
+        async let a = Task.detached { try invoke(owner, app, .send) }.value
+        async let b = Task.detached { try invoke(owner, app, .send, bad: true) }.value
         let parents = try await [a, b]
         try require(parents[0] != parents[1] && !parents[0].isEmpty, "concurrent calls share their parent")
         _ = owner.binding.flush()
         try await Task.sleep(nanoseconds: 11_000_000_000)
-        let discarded = try invoke(owner, app, "send")
+        let discarded = try invoke(owner, app, .send)
         let revision = try owner.binding.snapshot().revision
         try owner.save(revision: revision, preference: .on, profile: second)
-        let after = try invoke(owner, app, "send", bad: true)
+        let after = try invoke(owner, app, .send, bad: true)
         _ = owner.binding.flush()
         try await Task.sleep(nanoseconds: 11_000_000_000)
         let current = try owner.binding.snapshot()
         try require(current.nativeExport.completedBatches > 0 && current.rustExport.completedBatches > 0, "missing transport feedback")
         try owner.save(revision: current.revision, preference: .off, profile: second)
-        try require(try invoke(owner, app, "send").isEmpty, "off SDK still creates a native context")
+        try require(try invoke(owner, app, .send).isEmpty, "off SDK still creates a native context")
         try require(try owner.binding.snapshot().applied, "off is not acknowledged")
         // Dropping a view must not close the session; explicit shutdown must close every view.
         do { _ = try app.withTraceContext(carrier: nil).list() }
@@ -90,7 +90,7 @@ enum Synthetic: Error { case expected }
         var unsampled = second; unsampled.sampleRatio = 0
         try zero.save(revision: 0, preference: .on, profile: unsampled)
         let zeroApp = try VeluneApplication.openWithTelemetry(options: BindingOptions(homeDirectory: zeroHome.path, resourcesDirectory: args[2]), telemetry: zero.binding)
-        try? zero.operation("send") { carrier in _ = try zeroApp.withTraceContext(carrier: carrier).snapshot(runtimeId: "CANARY-zero", conversationId: "CANARY-zero") }
+        try? zero.operation(.send) { carrier in _ = try zeroApp.withTraceContext(carrier: carrier).snapshot(runtimeId: "CANARY-zero", conversationId: "CANARY-zero") }
         _ = zero.binding.flush()
         try await Task.sleep(nanoseconds: 11_000_000_000)
         try zeroApp.shutdown(); try zero.shutdown()
@@ -99,7 +99,7 @@ enum Synthetic: Error { case expected }
         let tlsProfile = BindingTelemetryProfile(endpoint: ProcessInfo.processInfo.environment["VELUNE_TEST_UNTRUSTED_TLS_ENDPOINT"]!, headers: [:], sampleRatio: 1)
         try tls.save(revision: 0, preference: .on, profile: tlsProfile)
         let tlsApp = try VeluneApplication.openWithTelemetry(options: BindingOptions(homeDirectory: home.appendingPathComponent("untrusted-tls").path, resourcesDirectory: args[2]), telemetry: tls.binding)
-        _ = try invoke(tls, tlsApp, "send")
+        _ = try invoke(tls, tlsApp, .send)
         _ = tls.binding.flush()
         try await Task.sleep(nanoseconds: 6_000_000_000)
         let tlsState = try tls.binding.snapshot()
@@ -272,9 +272,9 @@ def main():
             distributed = result["distributed"]
             host, controller = distributed["hostInstance"], distributed["controllerInstance"]
             rejected = trace_records(0, host, distributed["preparationRejectedParent"], "Logs")
-            assert not any(attributes(record).get("event") in ("execution.turn.started", "execution.turn.finished") for record in rejected)
+            assert not any(record.get("eventName") in ("velune.execution.turn.started", "velune.execution.turn.finished") for record in rejected)
             failed_preparation = trace_records(0, host, distributed["preparationFailedParent"])
-            assert any(attributes(span).get("operation") == "harness.start" and attributes(span).get("outcome") == "failure" for span in failed_preparation), "real harness preparation failure was not observed"
+            assert any(attributes(span).get("velune.operation") == "harness.start" and attributes(span).get("velune.outcome") == "failure" for span in failed_preparation), "real harness preparation failure was not observed"
             for parent in distributed["parents"]:
                 combined = trace_records(0, host, parent) + trace_records(0, controller, parent)
                 by_id = {hexadecimal(span["spanId"]): span for span in combined}
@@ -286,52 +286,52 @@ def main():
                         seen.add(child)
                         child = hexadecimal(by_id.get(child, {}).get("parentSpanId", ""))
                     return False
-                operations = {name: [span for span in combined if attributes(span).get("operation") == name] for name in ("remote.request", "remote.execute", "execution.turn")}
+                operations = {name: [span for span in combined if attributes(span).get("velune.operation") == name] for name in ("remote.request", "remote.execute", "execution.turn")}
                 assert all(len(group) == 1 for group in operations.values()), {name: len(group) for name, group in operations.items()}
                 request, execute, turn = [operations[name][0] for name in operations]
                 assert descends(hexadecimal(request["spanId"]), parent.split("-")[2]), "native caller lost request ancestry"
                 assert descends(hexadecimal(execute["spanId"]), hexadecimal(request["spanId"])), "QUIC execute lost request ancestry"
                 assert descends(hexadecimal(turn["spanId"]), hexadecimal(execute["spanId"])), "actual turn lost accepted-command ancestry"
             for parent, outcome in zip(distributed["switchedParents"], ("success", "cancelled")):
-                starts = [record for record in trace_records(0, host, parent, "Logs") if attributes(record).get("event") == "execution.turn.started"]
-                finishes = [record for record in trace_records(1, host, parent, "Logs") if attributes(record).get("event") == "execution.turn.finished"]
+                starts = [record for record in trace_records(0, host, parent, "Logs") if record.get("eventName") == "velune.execution.turn.started"]
+                finishes = [record for record in trace_records(1, host, parent, "Logs") if record.get("eventName") == "velune.execution.turn.finished"]
                 assert len(starts) == len(finishes) == 1, "switched turn lost or duplicated lifecycle"
                 before, after = attributes(starts[0]), attributes(finishes[0])
-                assert before["operation_id"] == after["operation_id"] and after["outcome"] == outcome
-                assert after.get("correlation_gap") == "retired_generation", "retired result hid the missing old span"
+                assert before["velune.operation.id"] == after["velune.operation.id"] and after["velune.outcome"] == outcome
+                assert after.get("velune.correlation.gap") == "retired_generation", "retired result hid the missing old span"
             broken = trace_records(1, host, distributed["brokenCancelParent"], "Logs")
-            terminal = [attributes(record) for record in broken if attributes(record).get("event") == "execution.turn.finished"]
-            assert len(terminal) == 1 and terminal[0]["outcome"] == "failure", "broken cancel fabricated cancellation or lost its terminal event"
+            terminal = [attributes(record) for record in broken if record.get("eventName") == "velune.execution.turn.finished"]
+            assert len(terminal) == 1 and terminal[0]["velune.outcome"] == "failure", "broken cancel fabricated cancellation or lost its terminal event"
             gauges = [int(point["asInt"]) for metric in instances.get((1, host, "Metrics"), []) if metric["name"] == "velune.execution.active_turns" for point in metric.get("gauge", {}).get("dataPoints", [])]
             changes = [value for index, value in enumerate(gauges) if index == 0 or gauges[index - 1] != value]
             assert changes[:3] == [2, 1, 0], ("new generation lost live business state", changes)
-            unknown = [point for metric in instances.get((0, controller, "Metrics"), []) if metric["name"] == "velune.ui.operations" for point in metric.get("sum", {}).get("dataPoints", []) if attributes(point).get("outcome") == "unknown"]
+            unknown = [point for metric in instances.get((0, controller, "Metrics"), []) if metric["name"] == "velune.ui.operations" for point in metric.get("sum", {}).get("dataPoints", []) if attributes(point).get("velune.outcome") == "unknown"]
             assert unknown and max(int(point["asInt"]) for point in unknown) >= 1, "native timeout was counted as business failure"
             sampled = trace_records(1, host, distributed["sampledIntoZero"])
-            assert any(attributes(span).get("operation") == "execution.turn" for span in sampled), "root ratio zero discarded a sampled remote parent"
+            assert any(attributes(span).get("velune.operation") == "execution.turn" for span in sampled), "root ratio zero discarded a sampled remote parent"
             unsampled = distributed["unsampledIntoOne"].split("-")[1]
             assert not any(hexadecimal(span["traceId"]) == unsampled for group in spans for span in group), "root ratio one re-sampled an unsampled parent"
             inherited_logs = trace_records(1, host, distributed["unsampledIntoOne"], "Logs")
-            assert any(attributes(record).get("event") == "execution.turn.finished" for record in inherited_logs), "sampled=0 context was lost before the actual remote turn"
+            assert any(record.get("eventName") == "velune.execution.turn.finished" for record in inherited_logs), "sampled=0 context was lost before the actual remote turn"
         if "gateway" in result:
             gateway = result["gateway"]
             instance = gateway["instanceId"]
-            startups = [span for span in instances.get((0, instance, "Spans"), []) if attributes(span).get("operation") == "harness.start"]
+            startups = [span for span in instances.get((0, instance, "Spans"), []) if attributes(span).get("velune.operation") == "harness.start"]
             assert len(startups) == 1, "a live runtime reader retained or lost its completed startup span"
-            assert not any(attributes(span).get("operation") == "harness.start" for span in instances.get((1, instance, "Spans"), [])), "closing an old reader exported or duplicated startup in the new generation"
+            assert not any(attributes(span).get("velune.operation") == "harness.start" for span in instances.get((1, instance, "Spans"), [])), "closing an old reader exported or duplicated startup in the new generation"
             retry = trace_records(0, instance, gateway["parents"]["retry"])
-            requests = [span for span in retry if attributes(span).get("operation") == "gateway.request"]
-            attempts = [span for span in retry if attributes(span).get("operation") == "gateway.attempt"]
+            requests = [span for span in retry if attributes(span).get("velune.operation") == "gateway.request"]
+            attempts = [span for span in retry if attributes(span).get("velune.operation") == "gateway.attempt"]
             assert len(requests) == 1 and len(attempts) == 2
-            assert sorted(attributes(span)["outcome"] for span in attempts) == ["failure", "success"]
-            assert next(attributes(span)["operation_id"] for span in attempts if attributes(span)["outcome"] == "failure") == gateway["failedAttemptOperationId"], "OTLP failure could not locate the local upstream diagnostic"
+            assert sorted(attributes(span)["velune.outcome"] for span in attempts) == ["failure", "success"]
+            assert next(attributes(span)["velune.operation.id"] for span in attempts if attributes(span)["velune.outcome"] == "failure") == gateway["failedAttemptOperationId"], "OTLP failure could not locate the local upstream diagnostic"
             assert all(span["parentSpanId"] == requests[0]["spanId"] for span in attempts), "retry attempt escaped its immutable request parent"
             for name in ("one", "two"):
                 records = trace_records(1, instance, gateway["parents"][name])
-                results = [span for span in records if attributes(span).get("operation") in ("gateway.request.result", "gateway.attempt.result")]
-                assert len(results) == 2 and all(attributes(span).get("correlation_gap") == "retired_generation" for span in results), "held request changed parent or lost its retired result"
-                assert all(attributes(span).get("outcome") == "success" for span in results)
-            missing = [span for span in instances.get((1, instance, "Spans"), []) if attributes(span).get("operation") == "gateway.request" and attributes(span).get("correlation_gap") == "missing_parent"]
+                results = [span for span in records if span.get("name") in ("gateway.request.result", "gateway.attempt.result")]
+                assert len(results) == 2 and all(attributes(span).get("velune.correlation.gap") == "retired_generation" for span in results), "held request changed parent or lost its retired result"
+                assert all(attributes(span).get("velune.outcome") == "success" for span in results)
+            missing = [span for span in instances.get((1, instance, "Spans"), []) if attributes(span).get("velune.operation") == "gateway.request" and attributes(span).get("velune.correlation.gap") == "missing_parent"]
             assert len(missing) == 1, "unprovable gateway ownership was hidden"
         if "queue" in result:
             queue = result["queue"]
@@ -339,7 +339,7 @@ def main():
             waits = [point for metric in current if metric["name"] == "velune.ui.queue.wait" for point in metric.get("histogram", {}).get("dataPoints", [])]
             assert waits and max(point["sum"] for point in waits) >= .5, "actual Store queue wait was invisible"
             assert queue["fastTransportSeconds"] < .3, "the synthetic quick call itself was slow"
-            reads = [point for metric in current if metric["name"] == "velune.ui.operations" for point in metric.get("sum", {}).get("dataPoints", []) if attributes(point).get("operation") == "ui.configuration.read"]
+            reads = [point for metric in current if metric["name"] == "velune.ui.operations" for point in metric.get("sum", {}).get("dataPoints", []) if attributes(point).get("velune.operation") == "ui.configuration.read"]
             assert reads and max(int(point["asInt"]) for point in reads) == 1, "queue timing duplicated the business operation count"
             old = instances.get((0, queue["instanceId"], "Metrics"), [])
             assert not any(metric["name"] == "velune.ui.queue.wait" and any(point["sum"] >= .5 for point in metric.get("histogram", {}).get("dataPoints", [])) for metric in old), "wait was exported to the enqueue generation"

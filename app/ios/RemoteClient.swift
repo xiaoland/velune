@@ -129,7 +129,7 @@ final class RemoteClient: @unchecked Sendable {
     init(viewID: String = "ios-\(UUID().uuidString)") { self.viewID = viewID }
     func start(name: String) async throws { try await RemoteService.shared.start(name: name) }
     func service<T>(_ body: (VeluneRemoteEndpoint) throws -> T) async throws -> T { try await RemoteService.shared.service(body) }
-    func application<T>(_ peer: String, operation: String = "read", _ body: (VeluneApplication) throws -> T) async throws -> T {
+    func application<T>(_ peer: String, operation: NativeOperation, _ body: (VeluneApplication) throws -> T) async throws -> T {
         let telemetry = try RemoteService.shared.resources.telemetry()
         return try await telemetry.operation(operation) { carrier in
             try await RemoteService.shared.application(peer, viewID: viewID, carrier: carrier, body)

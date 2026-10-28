@@ -124,7 +124,7 @@ class DeviceHub(private val context: Context) {
     suspend fun application(peer: String): VeluneApplication = withContext(Dispatchers.IO) {
         applications[peer] ?: opened().connect(peer, view).also { applications[peer] = it }
     }
-    suspend fun <T> call(peer: String, operation: String = "read", body: (VeluneApplication) -> T): T = telemetry().operation(operation) { carrier ->
+    suspend fun <T> call(peer: String, operation: NativeOperation, body: (VeluneApplication) -> T): T = telemetry().operation(operation) { carrier ->
         val application = application(peer)
         withContext(Dispatchers.IO) { body(application.withTraceContext(carrier)) }
     }

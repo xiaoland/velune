@@ -33,3 +33,5 @@
 2026-10-27：主动上下文压缩已接入共享核心与 Windows 输入区按钮、更多菜单及可配置快捷键命令，支持 Codex、Claude Code 和 Pi 的原生入口，压缩状态独立展示。Mac 另提供会话菜单、命令面板与 `/compact`。本轮构建与运行证据见[上下文压缩任务](../../tasks/context-compaction/packet.md)。
 
 2026-10-27：额度借鉴 quotio（[任务](../../tasks/quotio-reference/packet.md)）。核心的智能排序考虑重置节奏，Windows 的智能策略说明已同步；金额以文字显示，`openrouter:keyLimit` 有显示名。额度历史、提醒通知、节奏提示与账户额度开关尚未接入。
+
+遥测调用使用显式 NativeOperation 类别，与 Apple／Android 的同类操作一致；标准事件名、v2 字段、结果含义及迁移归[遥测契约](../../docs/design/telemetry.md)。分类不再依赖 CallerMemberName，写操作不会默认归为读取。

@@ -96,7 +96,7 @@ sealed partial class Conversation
     }
 
     // Call runs a blocking call on the thread pool against the device.
-    Task<T> Call<T>(Func<VeluneApplication, T> work, [System.Runtime.CompilerServices.CallerMemberName] string operation = "read") => core.Call(Device, operation, work);
+    Task<T> Call<T>(NativeOperation operation, Func<VeluneApplication, T> work) => core.Call(Device, operation, work);
 
     public string Title => Snapshot?.Conversation.Title ?? (Target.Unsent ? "新会话" : Target.Title);
 
@@ -132,7 +132,7 @@ sealed partial class Conversation
         var target = Target;
         try
         {
-            var read = await Call(application => application.ReadConversation(target.RuntimeID, target.ConversationID));
+            var read = await Call(NativeOperation.ConversationRead, application => application.ReadConversation(target.RuntimeID, target.ConversationID));
             Apply(read.Snapshot);
             Problems.Recovered(ReadKey);
         }
@@ -156,7 +156,7 @@ sealed partial class Conversation
             }
             try
             {
-                var update = await Call(application => Update(application, snapshot));
+                var update = await Call(NativeOperation.ConversationRead, application => Update(application, snapshot));
                 if (update != null && !closed)
                 {
                     Merge(update);
@@ -226,7 +226,7 @@ sealed partial class Conversation
     }
 
     // Act runs one write at a time; a failure goes to 问题 under source.
-    async void Act(string source, Func<VeluneApplication, string, string, BindingSnapshotResult> work)
+    async void Act(string source, NativeOperation operation, Func<VeluneApplication, string, string, BindingSnapshotResult> work)
     {
         if (Busy || Snapshot is not { } snapshot)
         {
@@ -237,7 +237,7 @@ sealed partial class Conversation
         var (runtimeID, id) = (snapshot.ContextRuntimeId, snapshot.Conversation.Id);
         try
         {
-            Apply((await Call(application => work(application, runtimeID, id))).Snapshot);
+            Apply((await Call(operation, application => work(application, runtimeID, id))).Snapshot);
         }
         catch (Exception failure)
         {
@@ -280,7 +280,7 @@ sealed partial class Conversation
         BindingConversationSnapshot? created = null;
         try
         {
-            var sent = await Call(application =>
+            var sent = await Call(NativeOperation.Send, application =>
             {
                 if (existing == null)
                 {
@@ -328,7 +328,7 @@ sealed partial class Conversation
         if (!CanCancel || Busy || Snapshot is not { } snapshot) return;
         stopRequested = true;
         Notify();
-        if (!await Change("停止", application => application.Cancel(snapshot.ContextRuntimeId, snapshot.Conversation.Id)))
+        if (!await Change("停止", NativeOperation.Cancel, application => application.Cancel(snapshot.ContextRuntimeId, snapshot.Conversation.Id)))
         {
             stopRequested = false;
             Notify();
@@ -336,7 +336,7 @@ sealed partial class Conversation
     }
 
     public void Reply(string interaction, BindingRuntimeInteractionReply reply) =>
-        Act("回复运行时的请求", (application, runtimeID, id) => application.ReplyRuntimeInteraction(runtimeID, id, interaction, reply));
+        Act("回复运行时的请求", NativeOperation.Reply, (application, runtimeID, id) => application.ReplyRuntimeInteraction(runtimeID, id, interaction, reply));
 
     // LoadPayload reads a message's whole content: large reasoning and tool
     // output arrive by size only.
@@ -348,7 +348,7 @@ sealed partial class Conversation
         }
         try
         {
-            var messages = await Call(application => application.MessagePayloads(snapshot.ContextRuntimeId, snapshot.Conversation.Id, [messageID]));
+            var messages = await Call(NativeOperation.ConversationRead, application => application.MessagePayloads(snapshot.ContextRuntimeId, snapshot.Conversation.Id, [messageID]));
             foreach (var message in messages)
             {
                 Payloads[message.Id] = message;
@@ -368,7 +368,7 @@ sealed partial class Conversation
         if (!attachments.TryGetValue(key, out var reading) || reading.IsFaulted)
         {
             var (runtimeID, id) = (Snapshot!.ContextRuntimeId, Snapshot.Conversation.Id);
-            reading = Call(application => application.ReadAttachment(runtimeID, id, messageID, (uint)block));
+            reading = Call(NativeOperation.ConversationRead, application => application.ReadAttachment(runtimeID, id, messageID, (uint)block));
             attachments[key] = reading;
         }
         return reading;
@@ -558,7 +558,7 @@ sealed partial class Conversation
             : new BindingRuntimeComposerChoices(Next, new BindingTurnChoice(null, null, null), new BindingNewConversationChoice.LastChosen());
         choices = choices with { LastChosen = update(choices.LastChosen) };
         runtimeChoices[Next] = choices;
-        Write("保存运行时的选择", application => application.SetRuntimeComposerChoices(choices));
+        Write("保存运行时的选择", NativeOperation.ConfigurationWrite, application => application.SetRuntimeComposerChoices(choices));
         Notify();
     }
 
@@ -586,7 +586,7 @@ sealed partial class Conversation
         }
         var saved = new BindingNextTurnIntent(Target.ConversationID, intentRuntime,
             [.. intent.OrderBy(entry => entry.Key, StringComparer.Ordinal).Select(entry => new BindingRuntimeTurnChoice(entry.Key, entry.Value))]);
-        Write("保存下一轮的选择", application => application.SetNextTurnIntent(saved));
+        Write("保存下一轮的选择", NativeOperation.ConfigurationWrite, application => application.SetNextTurnIntent(saved));
     }
 
     // LoadChoices reads what the device keeps of the composer's choices.
@@ -594,7 +594,7 @@ sealed partial class Conversation
     {
         try
         {
-            var choices = await Call(application => application.ComposerChoices());
+            var choices = await Call(NativeOperation.ConfigurationRead, application => application.ComposerChoices());
             foreach (var runtime in choices.Runtimes)
             {
                 runtimeChoices[runtime.RuntimeId] = runtime;
@@ -626,7 +626,7 @@ sealed partial class Conversation
         Notify();
         try
         {
-            catalogs[runtimeID] = new Catalog(await Call(application => application.RuntimeModels(runtimeID)), false, "");
+            catalogs[runtimeID] = new Catalog(await Call(NativeOperation.ConfigurationRead, application => application.RuntimeModels(runtimeID)), false, "");
         }
         catch (Exception failure)
         {
@@ -638,11 +638,11 @@ sealed partial class Conversation
     }
 
     // Write saves a choice on the device; a failure goes to 问题 under source.
-    async void Write(string source, Action<VeluneApplication> work)
+    async void Write(string source, NativeOperation operation, Action<VeluneApplication> work)
     {
         try
         {
-            await Call(application =>
+            await Call(operation, application =>
             {
                 work(application);
                 return true;

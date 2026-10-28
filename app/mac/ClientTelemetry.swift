@@ -68,7 +68,7 @@ final class ClientTelemetry: @unchecked Sendable {
             let next = prepared.map { NativeTelemetryGeneration(transport: $0, candidate: candidate, binding: binding) }
             lock.withLock { generation = next }
             try binding.confirmNative(revision: revision, active: true)
-            operation("telemetryActivated") { _ in }
+            operation(.activation) { _ in }
         } catch {
             let failed = lock.withLock { let failed = generation; generation = nil; return failed }
             failed?.revoke(); failed?.shutdown()
@@ -79,22 +79,25 @@ final class ClientTelemetry: @unchecked Sendable {
     }
 
     /// Only fixed operation classes and outcomes are exported; errors and arguments stay local.
-    private func begin(_ name: String) -> NativeObservation? {
+    private func begin(_ operation: NativeOperation) -> NativeObservation? {
         guard let current = lock.withLock({ generation }) else { return nil }
-        let operation = NativeOperation(name)
         let builder = current.traces.get(instrumentationName: "velune.client.native").spanBuilder(spanName: operation.rawValue)
         if let parent = Self.parent { builder.setParent(parent) } else { builder.setNoParent() }
-        return NativeObservation(generation: current, operation: operation, span: builder.startSpan())
+        let id = UUID().uuidString.lowercased()
+        let span = builder.startSpan()
+        span.setAttribute(key: "velune.operation", value: operation.rawValue)
+        span.setAttribute(key: "velune.operation.id", value: id)
+        return NativeObservation(generation: current, operation: operation, span: span, id: id)
     }
-    func operation<T>(_ name: String, _ body: (BindingTraceCarrier?) throws -> T) rethrows -> T {
-        guard let observation = begin(name) else { return try body(nil) }
+    func operation<T>(_ operation: NativeOperation, _ body: (BindingTraceCarrier?) throws -> T) rethrows -> T {
+        guard let observation = begin(operation) else { return try body(nil) }
         do {
             let result = try Self.$parent.withValue(observation.span.context) { try body(observation.carrier) }
             observation.complete(outcome: "success"); return result
         } catch { observation.complete(outcome: Self.outcome(error)); throw error }
     }
-    func operation<T>(_ name: String, _ body: (BindingTraceCarrier?) async throws -> T) async rethrows -> T {
-        guard let observation = begin(name) else { return try await body(nil) }
+    func operation<T>(_ operation: NativeOperation, _ body: (BindingTraceCarrier?) async throws -> T) async rethrows -> T {
+        guard let observation = begin(operation) else { return try await body(nil) }
         do {
             let result = try await Self.$parent.withValue(observation.span.context) { try await body(observation.carrier) }
             observation.complete(outcome: "success"); return result
@@ -136,6 +139,7 @@ private struct NativeObservation {
     let generation: NativeTelemetryGeneration
     let operation: NativeOperation
     let span: any Span
+    let id: String
     let started = ProcessInfo.processInfo.systemUptime
     var carrier: BindingTraceCarrier? {
         guard span.context.isValid else { return nil }
@@ -143,25 +147,19 @@ private struct NativeObservation {
         W3CTraceContextPropagator().inject(spanContext: span.context, carrier: &fields, setter: CarrierSetter())
         return BindingTraceCarrier(traceparent: fields["traceparent"] ?? "", tracestate: fields["tracestate"] ?? "")
     }
-    func complete(outcome: String) { generation.complete(operation, span: span, elapsed: ProcessInfo.processInfo.systemUptime - started, outcome: outcome) }
+    func complete(outcome: String) { generation.complete(operation, id: id, span: span, elapsed: ProcessInfo.processInfo.systemUptime - started, outcome: outcome) }
 }
 
 private struct CarrierSetter: Setter {
     func set(carrier: inout [String: String], key: String, value: String) { carrier[key] = value }
 }
-private enum NativeOperation: String {
-    case activation = "telemetry.activated", read = "ui.application.read", list = "ui.configuration.read", conversation = "ui.conversation.read", send = "ui.turn.send", cancel = "ui.turn.cancel", write = "ui.action"
-    init(_ name: String) {
-        switch name {
-        case "telemetryActivated": self = .activation
-        case "read": self = .read
-        case "list", "listWithRevision": self = .list
-        case "openConversation", "snapshot", "conversationActivity": self = .conversation
-        case "send", "sendConversation", "sendMessage", "submitRequest": self = .send
-        case "cancel", "cancelConversation": self = .cancel
-        default: self = .write
-        }
-    }
+enum NativeOperation: String {
+    case activation = "telemetry.activated"
+    case read = "ui.application.read", write = "ui.application.write"
+    case configurationRead = "ui.configuration.read", configurationWrite = "ui.configuration.write"
+    case conversationRead = "ui.conversation.read", conversationWrite = "ui.conversation.write"
+    case send = "ui.turn.send", cancel = "ui.turn.cancel", compact = "ui.turn.compact", reply = "ui.interaction.reply"
+    var quiet: Bool { self == .read || self == .conversationRead }
 }
 
 private final class NativeTelemetryTransport {
@@ -204,7 +202,7 @@ private final class NativeTelemetryGeneration {
         self.transport = transport
         sdkDiagnostics = NativeDropDiagnostics(binding: binding, revision: candidate.revision)
         let identity = candidate.identity
-        var attributes: [String: AttributeValue] = ["service.name": .string(identity.serviceName), "service.version": .string(identity.version),
+        var attributes: [String: AttributeValue] = ["velune.telemetry.schema.version": .string("2"), "service.name": .string(identity.serviceName), "service.version": .string(identity.version),
             "service.instance.id": .string(identity.instanceId), "velune.platform": .string(identity.platform), "deployment.environment.name": .string(identity.environment)]
         if let runID = identity.runId { attributes["velune.run.id"] = .string(runID) }
         let resource = Resource(attributes: attributes)
@@ -226,16 +224,19 @@ private final class NativeTelemetryGeneration {
     func recordQueueWait(_ elapsed: TimeInterval) {
         lock.withLock { if !stopped { queueWait.record(value: elapsed, attributes: [:]) } }
     }
-    func complete(_ operation: NativeOperation, span: any Span, elapsed: Double, outcome: String) {
+    func complete(_ operation: NativeOperation, id: String, span: any Span, elapsed: Double, outcome: String) {
         defer { span.end() }
-        span.setAttribute(key: "outcome", value: outcome)
-        if outcome == "failure" { span.status = .error(description: "operation_failed") }
+        span.setAttribute(key: "velune.outcome", value: outcome)
+        if outcome == "failure" { span.status = .error(description: ""); span.setAttribute(key: "error.type", value: "other") }
         lock.withLock {
             guard !stopped else { return }
-            let attributes: [String: AttributeValue] = ["operation": .string(operation.rawValue), "outcome": .string(outcome)]
+            var attributes: [String: AttributeValue] = ["velune.operation": .string(operation.rawValue), "velune.outcome": .string(outcome)]
+            if outcome == "failure" { attributes["error.type"] = .string("other") }
             counter.add(value: 1, attributes: attributes); duration.record(value: elapsed, attributes: attributes)
-            if outcome != "success" || (operation != .conversation && operation != .read) {
-                logs.get(instrumentationScopeName: "velune.client.native").logRecordBuilder().setBody(.string("operation_completed"))
+            if outcome != "success" || !operation.quiet {
+                attributes["velune.operation.id"] = .string(id)
+                attributes["velune.operation.duration"] = .double(elapsed)
+                logs.get(instrumentationScopeName: "velune.client.native").logRecordBuilder().setEventName("velune.operation.completed").setBody(.string("Operation completed"))
                     .setSpanContext(span.context).setAttributes(attributes).setSeverity(outcome == "failure" ? .error : .info).emit()
             }
         }

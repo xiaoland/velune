@@ -141,7 +141,7 @@ impl Server {
             .flat_map(|rs| &rs.scope_spans)
             .flat_map(|ss| &ss.spans)
             .flat_map(|span| &span.attributes)
-            .filter(|a| a.key == "operation")
+            .filter(|a| a.key == "velune.operation")
             .filter_map(|a| a.value.as_ref())
             .filter_map(|v| match &v.value {
                 Some(opentelemetry_proto::tonic::common::v1::any_value::Value::StringValue(v)) => {
@@ -275,7 +275,21 @@ fn unsampled_failures_still_export_logs_and_metrics() {
     owner.shutdown().unwrap();
     let received = server.receiver.received.lock().unwrap();
     assert!(received.traces.is_empty());
-    assert!(!received.logs.is_empty());
+    let records = received
+        .logs
+        .iter()
+        .flat_map(|r| &r.resource_logs)
+        .flat_map(|r| &r.scope_logs)
+        .flat_map(|s| &s.log_records)
+        .collect::<Vec<_>>();
+    assert!(!records.is_empty());
+    assert!(
+        records
+            .iter()
+            .all(|r| r.event_name == "velune.operation.completed"
+                && r.trace_id.len() == 16
+                && r.span_id.len() == 8)
+    );
     assert!(!received.metrics.is_empty());
 }
 
@@ -367,4 +381,53 @@ fn execution_gauge_keeps_the_authoritative_count_across_sdk_generations() {
         Some(&0)
     );
     owner.shutdown().unwrap();
+}
+
+#[test]
+fn semantic_names_kinds_and_single_correlated_terminal_survive_export() {
+    let server = Server::open(false);
+    let home = tempfile::tempdir().unwrap();
+    let owner = client(home.path());
+    activate(&owner, &server);
+    let mut admission = owner.operation_with_kind("remote.submit", SpanKind::Server, None, true);
+    let mut turn = owner.operation("execution.turn", admission.carrier().as_ref(), false);
+    turn.execution_started();
+    let _retained_diagnostic_span = turn.run(tracing::Span::current);
+    admission.complete(Outcome::Success);
+    turn.execution_finished(Outcome::Failure);
+    turn.complete(Outcome::Failure);
+    // Completed owners are intentionally still alive: completion must close the span.
+    assert!(owner.flush());
+    let received = server.receiver.received.lock().unwrap();
+    let spans = received
+        .traces
+        .iter()
+        .flat_map(|r| &r.resource_spans)
+        .flat_map(|r| &r.scope_spans)
+        .flat_map(|s| &s.spans)
+        .collect::<Vec<_>>();
+    let admission = spans.iter().find(|s| s.name == "remote.submit").unwrap();
+    let turn = spans.iter().find(|s| s.name == "execution.turn").unwrap();
+    assert_eq!(admission.kind, 2); // OTLP SERVER
+    assert_eq!(turn.kind, 1); // OTLP INTERNAL
+    assert_eq!(turn.parent_span_id, admission.span_id);
+    assert!(spans.iter().all(|s| s.events.is_empty()));
+    let logs = received
+        .logs
+        .iter()
+        .flat_map(|r| &r.resource_logs)
+        .flat_map(|r| &r.scope_logs)
+        .flat_map(|s| &s.log_records)
+        .filter(|r| r.span_id == turn.span_id)
+        .collect::<Vec<_>>();
+    assert_eq!(logs.len(), 2);
+    assert!(
+        logs.iter()
+            .any(|r| r.event_name == "velune.execution.turn.started")
+    );
+    assert!(
+        logs.iter().any(
+            |r| r.event_name == "velune.execution.turn.finished" && r.trace_id == turn.trace_id
+        )
+    );
 }

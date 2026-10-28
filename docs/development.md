@@ -528,6 +528,11 @@ python3 scripts/dev-telemetry.py query /absolute/path/run.json metrics
 
 状态 45 秒未刷新或 run ID 不匹配时视为过期；停止进程后不要把旧文件当作当前生效状态。状态文件缺失、容器路径不可读或内容无效时返回 `state_unavailable`，不能解释为关闭。SDK 的 `rpc_completed` 不证明三信号已经存入后台，必须分别查询并检查时间范围、实例、采样和结果限制。精确实时丢弃计数没有统一公开接口，未知值不能视为零；已知 SDK 丢弃汇总留在同目录 `sdk-diagnostics.json`，包含原修订并最多保留 64 条。Swift SDK 没有日志丢弃 hook。正常退出与移动端强制结束的证据边界不同。
 
+查询默认选择 `velune.telemetry.schema.version="2"`。历史数据使用 `python3 scripts/dev-telemetry.py query <manifest> traces --schema-version legacy`，混合版本用 `--schema-version all`；logs 和 metrics 支持同一选项。旧属性 operation／operation_id／outcome 与 v2 的 velune.operation／velune.operation.id／velune.outcome 分开解释，不能把新查询无结果理解为旧记录消失。trace 可能跨版本，查看详细记录时按各自 resource 判断。legacy trace 的缺属性条件使用 Tempo 的 `= nil`，接收端需支持该语法。
+
+语义与扩展范例归[遥测契约](design/telemetry.md#扩展埋点与读取范例)。先限定 run、实例、时间和版本，再沿 trace、operation ID、RequestId 检查受理与执行。Loki 中点号属性会按其映射显示为下划线名称；查询应使用接收端实际字段，不解析日志 body。指标按操作层分别统计，不能将 UI、bindings 与 RPC 次数相加。Gateway 本地诊断的 transport_completed 仍表示传输结束，OTLP 的 outcome 则同时考虑 HTTP 结果；返回完整 503 在 OTLP 中是 failure。
+
+
 Apple coordinator／真实 UniFFI／gRPC 隔离验收使用 `scripts/manual-telemetry.py`，需安装官方 Python `grpcio` 与 `opentelemetry-proto`，以及匹配的 SwiftPM 构建产物。它使用临时 HOME、合成字段和本地接收器，验证三信号、环境隔离、零采样、并发父节点、旧队列撤销与共享关闭。可加 `--distributed --gateway --queue`，验证真实 QUIC／Core 的并行轮次、断连续跑、原 RequestId 恢复、SDK 切换、HTTP Gateway failover 和实际 AppStore 队列等待；不证明实际移动证书、前后台或四平台分享矩阵。当前平台结果与尚缺证据统一记录在[任务包](../tasks/otlp-observability/packet.md)，不能用构建通过替代产品验收。
 
 ## 主动上下文压缩

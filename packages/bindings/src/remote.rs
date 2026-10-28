@@ -782,7 +782,7 @@ impl VeluneRemoteEndpoint {
         view_id: String,
     ) -> Result<Arc<VeluneApplication>, BindingError> {
         crate::diagnostics::Diagnostics::with_telemetry(self.owner.telemetry.clone()).run(
-            "remote.connect",
+            "bindings.remote.connect",
             || {
                 let controller = self.owner.service.controller(&peer_id)?;
                 self.owner.runtime.block_on(controller.connect())?;
@@ -1170,8 +1170,10 @@ impl VeluneApplication {
 impl VeluneApplication {
     /// A form must retain the revision of the same configuration it displays.
     pub fn list_with_revision(&self) -> Result<BindingVersionedConfiguration, BindingError> {
-        self.diagnostics
-            .run_context("list_with_revision", self.trace_carrier.as_ref(), || {
+        self.diagnostics.run_context(
+            "bindings.list_with_revision",
+            self.trace_carrier.as_ref(),
+            || {
                 let reply = self.remote_backend()?.request_reply(Command::List, None)?;
                 let Response::List(configuration) = reply.response else {
                     return Err(BindingError::Contract {
@@ -1182,7 +1184,8 @@ impl VeluneApplication {
                     configuration: convert(configuration)?,
                     revision: reply.revision.0,
                 })
-            })
+            },
+        )
     }
     /// This observation does not automatically replace an editor's write base.
     pub fn observed_revision(&self) -> Result<Option<u64>, BindingError> {
@@ -1221,7 +1224,7 @@ impl VeluneApplication {
     /// Reconnect only to the saved pin and locator; the authenticated Hello supplies the incarnation.
     pub fn reconnect(&self) -> Result<(), BindingError> {
         self.diagnostics
-            .run_context("reconnect", self.trace_carrier.as_ref(), || {
+            .run_context("bindings.reconnect", self.trace_carrier.as_ref(), || {
                 let remote = self.remote_backend()?;
                 remote.owner.runtime.block_on(remote.controller.connect())?;
                 remote.context()?;
@@ -1254,8 +1257,10 @@ impl VeluneApplication {
         request_id: BindingRemoteRequestId,
         command: BindingApplicationCommand,
     ) -> Result<BindingRemoteRequestStatus, BindingError> {
-        self.diagnostics
-            .run_context("submit_request", self.trace_carrier.as_ref(), || {
+        self.diagnostics.run_context(
+            "bindings.submit_request",
+            self.trace_carrier.as_ref(),
+            || {
                 let remote = self.remote_backend()?;
                 let context = remote.context()?;
                 let scoped = self.remote_operation.clone();
@@ -1285,15 +1290,18 @@ impl VeluneApplication {
                     remote.observe(&context, reply.revision, false)?;
                 }
                 status.try_into()
-            })
+            },
+        )
     }
     /// Querying an existing request never resubmits it and does not wait on another business call.
     pub fn query_request(
         &self,
         request_id: BindingRemoteRequestId,
     ) -> Result<BindingRemoteRequestStatus, BindingError> {
-        self.diagnostics
-            .run_context("query_request", self.trace_carrier.as_ref(), || {
+        self.diagnostics.run_context(
+            "bindings.query_request",
+            self.trace_carrier.as_ref(),
+            || {
                 let remote = self.remote_backend()?;
                 let context = remote.context()?;
                 let status = remote
@@ -1304,6 +1312,7 @@ impl VeluneApplication {
                     remote.observe(&context, reply.revision, false)?;
                 }
                 status.try_into()
-            })
+            },
+        )
     }
 }

@@ -147,9 +147,13 @@ struct TelemetryContext {
     parent_revision: Option<u64>,
 }
 impl TelemetryContext {
-    fn operation(&self, name: &'static str) -> Option<velune_telemetry::Operation> {
+    fn operation(
+        &self,
+        name: &'static str,
+        kind: velune_telemetry::SpanKind,
+    ) -> Option<velune_telemetry::Operation> {
         let owner = self.owner.as_ref()?;
-        let mut operation = owner.operation(name, self.parent.as_ref(), false);
+        let mut operation = owner.operation_with_kind(name, kind, self.parent.as_ref(), false);
         if self.parent.is_none() {
             operation.correlation_gap(velune_telemetry::CorrelationGap::MissingParent);
         } else if self.parent_revision != operation.revision() {
@@ -597,7 +601,7 @@ async fn ingress(
         .read()
         .unwrap_or_else(|e| e.into_inner())
         .clone();
-    let operation = telemetry.operation("gateway.request");
+    let operation = telemetry.operation("gateway.request", velune_telemetry::SpanKind::Server);
     let dispatcher = operation
         .as_ref()
         .map(|op| op.dispatch())
@@ -815,12 +819,14 @@ async fn ingress_observed(
     });
     let mut guard = DispatchGuard { task, observation };
     let Some(WireEvent::Headers(meta)) = receiver.recv().await else {
+        guard.observation.http_response(502);
         guard.observation.finish("upstream_unavailable");
         return error_response(
             StatusCode::BAD_GATEWAY,
             "upstream ended before response headers",
         );
     };
+    guard.observation.http_response(meta.status);
     tracing::info!(event = "gateway_response_ready", http_status = meta.status);
     let body_stream = stream::unfold((receiver, guard), |(mut receiver, mut guard)| async move {
         let Some(next) = receiver.recv().await else {
@@ -905,6 +911,7 @@ fn response(meta: ResponseMeta, body: Body) -> Response<Body> {
     response
 }
 fn rejected(mut observation: Observation, status: StatusCode, message: &str) -> Response<Body> {
+    observation.http_response(status.as_u16());
     observation.finish("rejected");
     tracing::warn!(
         event = "gateway_request_rejected",
@@ -1350,7 +1357,7 @@ async fn attempts(
             }
         };
         let attempt = index + 1;
-        let operation = telemetry.operation("gateway.attempt");
+        let operation = telemetry.operation("gateway.attempt", velune_telemetry::SpanKind::Client);
         let dispatcher = operation
             .as_ref()
             .map(|op| op.dispatch())
@@ -1516,6 +1523,13 @@ async fn dispatch_observed(
     sender: mpsc::Sender<WireEvent>,
     observation: &mut Observation,
 ) -> AttemptEnd {
+    observation.transport(
+        if matches!(target.execution_backend, ExecutionBackend::ClaudeCli { .. }) {
+            "cli"
+        } else {
+            "http"
+        },
+    );
     tracing::info!(event = "gateway_attempt_started");
     // The gateway alone resolves ingress aliases to the exact provider identifier.
     body["model"] = Value::String(target.model.as_str().to_owned());
@@ -1767,6 +1781,14 @@ async fn dispatch_credential(
                         Err(_) => AnalyticsOutcome::Failed,
                     });
             }
+            let response_status = match &completion.result {
+                Ok(ChatCompletionsOutput::Json(body)) => Some(body.meta.status),
+                Ok(ChatCompletionsOutput::Stream(meta)) => Some(meta.status),
+                Err(error) => error.response.as_ref().map(|meta| meta.status),
+            };
+            if let Some(status) = response_status {
+                observation.http_response(status);
+            }
             observation.finish(match &completion.result {
                 Ok(_) => "transport_completed",
                 Err(error) if matches!(error.kind, ChatCompletionsErrorKind::Cancelled) => {
@@ -1965,6 +1987,14 @@ async fn dispatch_credential(
                         }
                         Err(_) => AnalyticsOutcome::Failed,
                     });
+            }
+            let response_status = match &completion.result {
+                Ok(ResponsesOutput::Json(body, _)) => Some(body.meta.status),
+                Ok(ResponsesOutput::Stream(meta, _)) => Some(meta.status),
+                Err(error) => error.status,
+            };
+            if let Some(status) = response_status {
+                observation.http_response(status);
             }
             observation.finish(match &completion.result {
                 Ok(_) => "transport_completed",
@@ -2196,6 +2226,14 @@ async fn dispatch_credential(
                         }
                         Err(_) => AnalyticsOutcome::Failed,
                     });
+            }
+            let response_status = match &completion.result {
+                Ok(MessagesOutput::Json(body)) => Some(body.meta.status),
+                Ok(MessagesOutput::Stream(meta)) => Some(meta.status),
+                Err(error) => error.response.as_ref().map(|meta| meta.status),
+            };
+            if let Some(status) = response_status {
+                observation.http_response(status);
             }
             observation.finish(match &completion.result {
                 Ok(_) => "transport_completed",

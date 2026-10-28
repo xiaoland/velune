@@ -51,7 +51,7 @@ fun AgentUriScreen(hub: DeviceHub, address: String, peer: String?, back: () -> U
         result = null
         failure = null
         try {
-            val found = hub.call(target) { it.resolveAgentUri(address, null) }
+            val found = hub.call(target, NativeOperation.CONVERSATION_READ) { it.resolveAgentUri(address, null) }
             result = found
             if (found.conversations.size == 1 && found.failures.isEmpty()) {
                 val conversation = found.conversations.single().conversation

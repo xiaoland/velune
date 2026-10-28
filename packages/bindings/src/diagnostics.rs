@@ -42,7 +42,7 @@ impl Diagnostics {
         body: impl FnOnce() -> Result<T, BindingError>,
     ) -> Result<T, BindingError> {
         let mut observation = self.telemetry.operation(operation, parent, false);
-        if operation == "remote.connect" && parent.is_none() {
+        if operation == "bindings.remote.connect" && parent.is_none() {
             observation.correlation_gap(velune_telemetry::CorrelationGap::MissingParent);
         }
         let operation_id = observation.operation_id.clone();

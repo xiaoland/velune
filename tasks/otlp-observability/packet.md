@@ -8,6 +8,8 @@
 
 ## 当前结论
 
+2026-10-27 后续语义评审已完成：service 身份与当前 scope 可以保留，但 span 命名、原生操作分类和 kind 尚不适合作为新增埋点的范例。具体观察及建议见文末。用户随后要求进一步调查可维护性；[资料与应用判断](maintainability-research.md) 已整理事件、错误、因果、成本、演进和验证规则，并确认现有事件名依赖源码行号、原生与 Rust 事件字段不同，以及双路事件输出。本轮仅研究和检查既有数据，没有修改产品源码；以下建议尚未进入实现。已有初步接入验收结论保持原范围。
+
 初步接入已经实现；本轮完成可用设备的关键补验并接入 SVC dev。Windows↔Android 的实际配置复制、撤销后明确拒绝与目的端原配置保持通过。Mac 和 Android 的新开发入口查到三信号，普通重启后临时配置不再生效；Windows 新入口也查到三信号，正常退出及普通重启后的双 SDK 关闭已观察。Android 的后台／强制结束／普通重启通过。已修复实际表单在本次失败时仍显示上次成功的问题，覆盖既有安装后真机复验通过。
 
 原有真实双 SDK、FFI／QUIC／Core／Gateway、采样、代际撤销、请求结果未知、业务活跃数、三个独立 agent 诊断案例、Mac 表单保存及 Mac→iPhone Simulator 分享证据继续适用。Android 与 iPad 的真机系统证书拒绝已有证据。本轮不为未修改的 Rust 核心重复全量构建。
@@ -42,3 +44,25 @@ Android 本次 UI 修复从 `1b342eb` 的原生快照加一行修复构建，复
 实现与验收基线已提交：`1d4f512` 保存验收与部署材料，`08aa284` 为 Rust OTLP 基础，`1c77962` 为 FFI／远控／执行／网关关联，`4288414` 为四端原生接入和开发入口。`1b342eb` 收敛了已安装应用验收。本地配对 CLI／重新配对修复留在原任务工作树；compaction 已由原任务提交 `ba47054`。
 
 本轮已提交 `a97d461`，接入 SVC dev 并补完当时可用设备；晚间 iPad 恢复后的最终证据见 `ipad-mac-final-share-evidence.json`、`ipad-status-fix-final-evidence.json` 与 `apple-status-fix-mac-evidence.json`，均位于 Git 忽略的 `target/telemetry-native-ui/`。
+
+## 后续埋点语义评审
+
+本轮的判断标准是：后来者只看一段现有埋点和导出的链路，能否正确判断谁在运行、谁产生了观察、正在做什么、等待哪一方，以及何时算完成。三种概念分别是 resource/service、instrumentation scope 和 span；它们不是固定三层调用栈。一条 trace 可以跨越多个 service 和 scope。
+
+当前 `ResourceIdentity` 使用 `velune.{platform}` 和进程随机 instance ID，原生与 Rust 共用，见 [身份实现](../../packages/telemetry/src/lib.rs)。这符合当前平台客户端的部署边界；remote、Core 和嵌入式 gateway 不应仅因属于不同模块就变成不同 service。两台同平台设备以 instance 区分，不把用户设备名或安装身份编码进 service 名称。
+
+当前 trace/metric scope 为 `velune.client.native` 和 `velune.client.rust`，Rust 日志 bridge scope 为 `velune_telemetry`。它们可以表示统一埋点实现的来源，但不能声称已按组件区分 scope。[旧方案](technical-design.md#一份本地配置两套-sdk) 曾描述 native／remote／application／gateway scope，与当前实现不同。建议暂不增加 scope 路由，先用稳定操作名表达职责；若组件将来自行维护 instruments、独立发布埋点版本或确有按组件配置的需求，再细分 scope，仍然共用 provider。advisor 独立审阅支持这一判断；scope 并非必须跟 SDK 或语言一一对应。
+
+有三项需要在推广为范例前修正：
+
+1. **Rust 导出名称没有区分操作。** [operation 入口](../../packages/telemetry/src/lib.rs) 把所有 span 命名为 `client.operation`，[SDK 白名单](../../packages/telemetry/src/sdk.rs) 也只接受这个静态 span。实际动作虽然保留在 `operation` 属性里，默认瀑布图和操作选择仍会重复显示同名项。建议用受控的实际操作名作为导出名称，并给裸 FFI 操作加明确前缀，例如 `bindings.list`；不把 ID、路径或错误正文拼进名称。当前依赖已有 `otel.name`／`otel.kind` 支持，不需要另写 exporter 或增加 provider。
+2. **原生默认分类会误报读取。** [Android 分类](../../app/android/app/src/main/kotlin/app/velune/android/ClientTelemetry.kt) 未识别名称一律落到 `ui.application.read`；当前 `ConversationModel.compact()` 传入 `compact`，因此写操作会被标成读取。[Windows 分类](../../app/windows/ClientTelemetry.cs) 也一样，`Listings.Change/Write` 的 `Configuration` 就是具体例子。Apple 默认 `ui.action` 不会误称读取，但分类粒度与其他平台不同。建议由调用处明确给出稳定语义，四端对相同动作使用同名；不要依赖方法名猜测，也不要把未知操作默认为读取。
+3. **跨设备与内部操作没有 kind 区别。** `target/telemetry-delivery-acceptance.wire.json` 中的 332 条实际 span 全部为 INTERNAL，其中 311 条 Rust span 同名为 `client.operation`，21 条 native span 有具体名称。父子关系确实包括 remote.request→remote.execute 和 gateway.request→gateway.attempt，但 kind 无法表达这些边界。该样本来自合成验收，不能据此估计生产流量占比。现有验收主要检查 operation 属性及因果关联，没有覆盖这些名称／kind 的可读性问题。
+
+kind 修正需要尊重生命周期。[remote 客户端](../../packages/remote/src/client.rs) 的 Submit／Query 请求等待响应，可以标 CLIENT；同步 query 处理可以标 SERVER，但 [service](../../packages/remote/src/service.rs) 目前在 `ledger.status` 之前就记录 success，结束应移到结果确定之后。Submit 先受理并派生后台任务，再返回状态；`remote.execute` 应按延后执行理解，CONSUMER 比 SERVER 合适，不能把后台耗时算作受理 RPC 耗时，也不必为配齐类型机械增加 PRODUCER。
+
+[Gateway](../../packages/gateway/src/runtime.rs) 接收 HTTP 请求，request 观察保留至响应流结束或断开，可以采用 SERVER。attempt 既覆盖 HTTP 也覆盖 Claude CLI，并包含适配准备；不能统一解释成 HTTP CLIENT。后续设计应让通用 attempt 保留重试／适配含义，并在实际外部调用边界采用合适的 CLIENT；是否复用现有 attempt 需要按所覆盖边界决定。UI、FFI、执行轮次和 SDK 换代后的 result 补记保持内部语义。当前执行轮次由实际 owner 保存至终态、控制断开不提前结束、每次 gateway 尝试单独观察的设计应保留。
+
+建议把新增埋点规则收敛到现有[遥测装配文档](../../docs/design/telemetry.md)：span 记录能独立解释耗时或失败的操作，event 记录其间状态变化，metric 记录可聚合数量和分布；不为每个函数创建 span。不同层的操作计数不能相加冒充业务轮次数。例子应包含同机 FFI、跨设备异步执行和一次 gateway 重试，并直接展示真实导出名称、kind、父子关系及结束时间。用这几个代表性场景验证即可，无需为本次评审重跑设备安装流程。
+
+依据为 [OTel service 定义](https://opentelemetry.io/docs/specs/semconv/resource/service/)、[scope 定义](https://opentelemetry.io/docs/concepts/instrumentation-scope/)、[SpanKind 定义](https://opentelemetry.io/docs/specs/otel/trace/api/#spankind)、[tracing-opentelemetry 0.33 特殊字段](https://docs.rs/tracing-opentelemetry/0.33.0/tracing_opentelemetry/#special-fields) 和 [Tempo service graph 配对规则](https://grafana.com/docs/tempo/latest/metrics-from-traces/service_graphs/)。本轮没有验证 Grafana 网页服务图或运行新的设备测试；也没有把语义评审扩展成所有埋点的完整覆盖审计。

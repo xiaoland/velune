@@ -159,15 +159,19 @@ def query(args):
     start = manifest["startedUnixMs"] // 1000
     end = int(time.time())
     run_id = manifest["runId"]
+    schema = args.schema_version
+    trace_filter = ' && resource.velune.telemetry.schema.version = "2"' if schema == "2" else (' && resource.velune.telemetry.schema.version = nil' if schema == "legacy" else "")
+    log_filter = ' | velune_telemetry_schema_version="2"' if schema == "2" else (' | velune_telemetry_schema_version=""' if schema == "legacy" else "")
+    metric_filter = ',velune_telemetry_schema_version="2"' if schema == "2" else (',velune_telemetry_schema_version=""' if schema == "legacy" else "")
     requests = {
-        "traces": ("tempo/api/search", {"q": '{ resource.velune.run.id = "' + run_id + '" }', "start": start, "end": end, "limit": 100}),
-        "logs": ("loki/loki/api/v1/query_range", {"query": '{service_name=~"velune[.].*"} | velune_run_id="' + run_id + '"', "start": str(start * 10**9), "end": str(end * 10**9), "limit": 100}),
-        "metrics": ("prometheus/api/v1/query", {"query": '{__name__=~"velune_.*"} and on(job,instance) target_info{velune_run_id="' + run_id + '"}', "time": end}),
+        "traces": ("tempo/api/search", {"q": '{ resource.velune.run.id = "' + run_id + '"' + trace_filter + ' }', "start": start, "end": end, "limit": 100}),
+        "logs": ("loki/loki/api/v1/query_range", {"query": '{service_name=~"velune[.].*"} | velune_run_id="' + run_id + '"' + log_filter, "start": str(start * 10**9), "end": str(end * 10**9), "limit": 100}),
+        "metrics": ("prometheus/api/v1/query", {"query": '{__name__=~"velune_.*"} and on(job,instance) target_info{velune_run_id="' + run_id + '"' + metric_filter + '}', "time": end}),
     }
     path, parameters = requests[args.signal]
     data = backend_json("/api/datasources/proxy/uid/" + path + "?" + urllib.parse.urlencode(parameters), token)
     print(json.dumps({"start": start, "end": end, "limit": 100 if args.signal != "metrics" else None,
-                      "runId": run_id, "data": data}, ensure_ascii=False))
+                      "runId": run_id, "schemaVersion": schema, "data": data}, ensure_ascii=False))
 
 
 def main():
@@ -185,6 +189,7 @@ def main():
     query_parser = commands.add_parser("query")
     query_parser.add_argument("manifest", type=Path)
     query_parser.add_argument("signal", choices=("traces", "logs", "metrics"))
+    query_parser.add_argument("--schema-version", choices=("2", "legacy", "all"), default="2", help="遥测契约版本；legacy 为无版本标记的旧数据，all 保留混合原始结果")
     args = parser.parse_args()
     if args.command == "launch":
         if args.platform in ("macos", "windows") and not args.app:

@@ -520,7 +520,7 @@ public sealed partial class WorkspaceWindow : Window
         BindingListedConversation? found;
         try
         {
-            found = await Shell.Core.Call(target, "Read", application => application.FindConversation(conversationID));
+            found = await Shell.Core.Call(target, NativeOperation.ConversationRead, application => application.FindConversation(conversationID));
         }
         catch (Exception failure)
         {
@@ -604,7 +604,7 @@ public sealed partial class WorkspaceWindow : Window
             conversations[at] = listed with { Conversation = listed.Conversation with { Title = title } };
         }
         Shell.Listings.Notify(Device);
-        Shell.Listings.Write(Device, "重命名会话", application => application.RenameConversation(listed.Conversation.RuntimeId, listed.Conversation.Id, title));
+        Shell.Listings.Write(Device, "重命名会话", NativeOperation.ConversationWrite, application => application.RenameConversation(listed.Conversation.RuntimeId, listed.Conversation.Id, title));
     }
 
     // Reread reads the list and the open conversations again.

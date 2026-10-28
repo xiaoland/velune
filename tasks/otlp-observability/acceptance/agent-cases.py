@@ -22,18 +22,20 @@ def main():
         for batch in batches:
             for resources in batch["payload"].values():
                 for resource in resources:
-                    instance = attributes(resource.get("resource", {})).get("service.instance.id")
+                    identity = attributes(resource.get("resource", {}))
+                    instance = identity.get("service.instance.id")
+                    schema = identity.get("velune.telemetry.schema.version", "legacy")
                     for scope in resource.get("scopeSpans", []):
                         for span in scope.get("spans", []):
-                            records.append({"type": "span", "instance": instance, "scope": scope["scope"]["name"],
+                            records.append({"type": "span", "instance": instance, "schemaVersion": schema, "scope": scope["scope"]["name"],
                                             "traceId": base64.b64decode(span["traceId"]).hex(), "spanId": base64.b64decode(span["spanId"]).hex(),
                                             "parentSpanId": base64.b64decode(span.get("parentSpanId", "")).hex(), "startUnixNs": int(span["startTimeUnixNano"]),
-                                            "endUnixNs": int(span["endTimeUnixNano"]), "attributes": attributes(span)})
+                                            "endUnixNs": int(span["endTimeUnixNano"]), "name": span["name"], "kind": span.get("kind"), "attributes": attributes(span)})
                     for scope in resource.get("scopeLogs", []):
                         for log in scope.get("logRecords", []):
-                            records.append({"type": "log", "instance": instance, "scope": scope["scope"]["name"],
+                            records.append({"type": "log", "instance": instance, "schemaVersion": schema, "scope": scope["scope"]["name"],
                                             "traceId": base64.b64decode(log.get("traceId", "")).hex(), "timeUnixNs": int(log.get("timeUnixNano") or log["observedTimeUnixNano"]),
-                                            "attributes": attributes(log), "body": log.get("body")})
+                                            "attributes": attributes(log), "body": log.get("body"), "eventName": log.get("eventName")})
     distributed = boundaries["distributed"]
     cases = [("A", [distributed["preparationFailedParent"]]), ("B", distributed["parents"]), ("C", [boundaries["gateway"]["parents"]["retry"]])]
     output.mkdir(parents=True, exist_ok=True)

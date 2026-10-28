@@ -15,7 +15,8 @@ use config::Stored;
 pub use config::{Preference, Profile};
 pub use context::TraceCarrier;
 pub use health::ExportHealth;
-use opentelemetry::KeyValue;
+pub use opentelemetry::trace::SpanKind;
+use opentelemetry::{KeyValue, trace::TraceContextExt};
 pub use probe::TestResult;
 use sdk::{Generation, LocalWriter};
 use serde::{Deserialize, Serialize};
@@ -591,6 +592,24 @@ impl ClientTelemetry {
         parent: Option<&TraceCarrier>,
         remote: bool,
     ) -> Operation {
+        self.operation_with_kind(operation, SpanKind::Internal, parent, remote)
+    }
+    /// Kind describes this operation; `remote_parent` describes only the carrier's origin.
+    pub fn operation_with_kind(
+        &self,
+        operation: &'static str,
+        kind: SpanKind,
+        parent: Option<&TraceCarrier>,
+        remote_parent: bool,
+    ) -> Operation {
+        let remote = remote_parent;
+        let kind = match kind {
+            SpanKind::Client => "client",
+            SpanKind::Server => "server",
+            SpanKind::Producer => "producer",
+            SpanKind::Consumer => "consumer",
+            SpanKind::Internal => "internal",
+        };
         let generation = self.current.lock().ok().and_then(|current| current.clone());
         let dispatch = generation
             .as_ref()
@@ -600,7 +619,13 @@ impl ClientTelemetry {
         let span = tracing::dispatcher::with_default(
             &dispatch,
             // Registry parents cannot outlive their ambient dispatcher across SDK replacement.
-            || tracing::info_span!(target: "velune_telemetry", parent: None, "client.operation", operation, operation_id, outcome = tracing::field::Empty, request_id = tracing::field::Empty, correlation_gap = tracing::field::Empty, failure_kind = tracing::field::Empty),
+            || {
+                tracing::info_span!(target: "velune_telemetry", parent: None, "client.operation", otel.name = operation, otel.kind = kind,
+                velune.operation = operation, velune.operation.id = operation_id,
+                velune.outcome = tracing::field::Empty, velune.request.id = tracing::field::Empty,
+                velune.correlation.gap = tracing::field::Empty, error.type = tracing::field::Empty,
+                http.response.status_code = tracing::field::Empty, velune.gateway.transport = tracing::field::Empty)
+            },
         );
         if let Some(parent) = parent.filter(|p| p.validate().is_ok()) {
             let _ = span.set_parent(parent.extract(remote));
@@ -615,6 +640,10 @@ impl ClientTelemetry {
             operation_id,
             started: Instant::now(),
             completed: false,
+            measured: true,
+            request_id: None,
+            http_status: None,
+            transport: None,
             failure_kind: None,
             started_event: false,
             gap: None,
@@ -695,7 +724,11 @@ pub struct Operation {
     pub operation_id: String,
     started: Instant,
     completed: bool,
-    failure_kind: Option<&'static str>,
+    measured: bool,
+    request_id: Option<String>,
+    http_status: Option<u16>,
+    transport: Option<&'static str>,
+    failure_kind: Option<String>,
     started_event: bool,
     gap: Option<CorrelationGap>,
     carrier: Option<TraceCarrier>,
@@ -710,60 +743,92 @@ impl Operation {
     pub fn revision(&self) -> Option<u64> {
         self.generation.as_ref().map(|g| g.revision)
     }
-    pub fn span(&self) -> tracing::Span {
-        self.span.clone()
-    }
     pub fn dispatch(&self) -> tracing::Dispatch {
         self.dispatch.clone()
     }
     pub fn correlation_gap(&mut self, gap: CorrelationGap) {
         self.gap = Some(gap);
-        self.span.record("correlation_gap", gap.as_str());
+        self.span.record("velune.correlation.gap", gap.as_str());
     }
     /// Only the bounded diagnostic taxonomy crosses the telemetry boundary.
-    pub fn failure(&mut self, kind: &'static str) {
+    pub fn failure(&mut self, kind: &str) {
         let kind = match kind {
             "invalid" | "unsupported" | "io" | "contract" | "closed" | "unavailable"
             | "provider_import" | "history" | "runtime_management" | "conflict"
-            | "unauthorized" | "connection" | "outcome_unknown" => kind,
+            | "unauthorized" | "connection" | "timeout" => kind,
+            code if code
+                .parse::<u16>()
+                .is_ok_and(|value| (400..=599).contains(&value)) =>
+            {
+                code
+            }
             _ => "other",
         };
-        self.failure_kind = Some(kind);
-        self.span.record("failure_kind", kind);
+        self.failure_kind = Some(match kind.parse::<u16>() {
+            Ok(status) => status.to_string(),
+            Err(_) => kind.to_owned(),
+        });
     }
+    pub fn http_response(&mut self, status: u16) {
+        if (100..=599).contains(&status) {
+            self.http_status = Some(status);
+            self.span
+                .record("http.response.status_code", i64::from(status));
+        }
+    }
+    pub fn gateway_transport(&mut self, transport: &'static str) {
+        assert!(matches!(transport, "http" | "cli"));
+        self.transport = Some(transport);
+        self.span.record("velune.gateway.transport", transport);
+    }
+    /// A result report preserves work identity and duration, without counting new work.
     pub fn retain_identity_from(&mut self, original: &Self) {
+        self.operation = original.operation;
         self.operation_id = original.operation_id.clone();
         self.started = original.started;
         self.started_event = original.started_event;
-        self.span.record("operation_id", &self.operation_id);
+        self.request_id = original.request_id.clone();
+        self.failure_kind = original.failure_kind.clone();
+        self.measured = false;
+        self.span.record("velune.operation", self.operation);
+        self.span.record("velune.operation.id", &self.operation_id);
+        if let Some(id) = &self.request_id {
+            self.span.record("velune.request.id", id);
+        }
+        if let Some(status) = original.http_status {
+            self.http_response(status);
+        }
+        if let Some(transport) = original.transport {
+            self.gateway_transport(transport);
+        }
     }
     /// Emitted only after the operation's actual work is accepted, before the first drain.
     pub fn execution_started(&mut self) {
-        if self.started_event {
+        if self.started_event || self.completed {
             return;
         }
         self.started_event = true;
-        self.run(|| tracing::info!(target: "velune_telemetry", event = "execution.turn.started", operation = self.operation, operation_id = self.operation_id, outcome = "running"));
+        self.run(|| {
+            tracing::event!(name: "velune.execution.turn.started", target: "velune_telemetry", tracing::Level::INFO,
+            velune.operation = self.operation, velune.operation.id = self.operation_id,
+            velune.request.id = self.request_id.as_deref())
+        });
     }
     pub fn execution_has_started(&self) -> bool {
         self.started_event
     }
-    pub fn execution_finished(&self, outcome: Outcome) {
-        let event = if self.started_event {
-            "execution.turn.finished"
-        } else {
-            "execution.turn.not_started"
-        };
-        self.run(|| tracing::info!(target: "velune_telemetry", event, operation = self.operation, operation_id = self.operation_id, outcome = outcome.as_str(), elapsed_ms = self.started.elapsed().as_secs_f64() * 1000.0, correlation_gap = self.gap.map(|gap| gap.as_str())));
+    pub fn execution_finished(&mut self, outcome: Outcome) {
+        self.finish(outcome, true);
     }
-    pub fn request_identity(&self, incarnation: &str, client: &str, sequence: u64) {
+    pub fn request_identity(&mut self, incarnation: &str, client: &str, sequence: u64) {
         if [incarnation, client]
             .iter()
             .all(|id| id.len() == 32 && id.bytes().all(|b| b.is_ascii_hexdigit()))
             && sequence > 0
         {
-            self.span
-                .record("request_id", format!("{incarnation}/{client}/{sequence}"));
+            let id = format!("{incarnation}/{client}/{sequence}");
+            self.span.record("velune.request.id", &id);
+            self.request_id = Some(id);
         }
     }
     pub fn instrument<F: std::future::Future>(
@@ -776,33 +841,85 @@ impl Operation {
             .with_subscriber(self.dispatch.clone())
     }
     pub fn complete(&mut self, outcome: Outcome) {
+        self.finish(outcome, false);
+    }
+    fn finish(&mut self, outcome: Outcome, execution: bool) {
         if self.completed {
             return;
         }
         self.completed = true;
-        self.span.record("outcome", outcome.as_str());
+        self.span.record("velune.outcome", outcome.as_str());
         if matches!(outcome, Outcome::Failure) {
+            if self.failure_kind.is_none() {
+                self.failure("other");
+            }
+            self.span.record("error.type", self.failure_kind.as_deref());
             self.span
-                .set_status(opentelemetry::trace::Status::error("operation_failed"));
+                .set_status(opentelemetry::trace::Status::error(""));
+        } else {
+            self.failure_kind = None;
         }
         let elapsed = self.started.elapsed().as_secs_f64();
-        if !matches!(self.operation, "snapshot" | "authentication_poll")
-            || !matches!(outcome, Outcome::Success)
-        {
-            if matches!(outcome, Outcome::Failure) {
-                self.run(|| tracing::error!(target: "velune_telemetry", event = "operation_completed", operation = self.operation, operation_id = self.operation_id, outcome = outcome.as_str(), failure_kind = self.failure_kind, correlation_gap = self.gap.map(|gap| gap.as_str()), elapsed_ms = elapsed * 1000.0));
-            } else {
-                self.run(|| tracing::info!(target: "velune_telemetry", event = "operation_completed", operation = self.operation, operation_id = self.operation_id, outcome = outcome.as_str(), failure_kind = self.failure_kind, correlation_gap = self.gap.map(|gap| gap.as_str()), elapsed_ms = elapsed * 1000.0));
+        let quiet = matches!(
+            self.operation,
+            "bindings.snapshot"
+                | "bindings.snapshot_update"
+                | "bindings.authentication_poll"
+                | "remote.query"
+                | "remote.query_request"
+        );
+        if execution || !quiet || !matches!(outcome, Outcome::Success) {
+            macro_rules! emit {
+                ($name:literal, $level:expr) => {
+                    tracing::event!(name: $name, target: "velune_telemetry", $level,
+                        velune.operation = self.operation, velune.operation.id = self.operation_id,
+                        velune.outcome = outcome.as_str(), error.type = self.failure_kind.as_deref(),
+                        velune.correlation.gap = self.gap.map(|gap| gap.as_str()),
+                        velune.request.id = self.request_id.as_deref(), velune.operation.duration = elapsed,
+                        http.response.status_code = self.http_status.map(i64::from),
+                        velune.gateway.transport = self.transport)
+                };
             }
+            self.run(|| {
+                match (
+                    execution,
+                    self.started_event,
+                    matches!(outcome, Outcome::Failure),
+                ) {
+                    (true, true, true) => {
+                        emit!("velune.execution.turn.finished", tracing::Level::ERROR)
+                    }
+                    (true, true, false) => {
+                        emit!("velune.execution.turn.finished", tracing::Level::INFO)
+                    }
+                    (true, false, true) => {
+                        emit!("velune.execution.turn.not_started", tracing::Level::ERROR)
+                    }
+                    (true, false, false) => {
+                        emit!("velune.execution.turn.not_started", tracing::Level::INFO)
+                    }
+                    (false, _, true) => emit!("velune.operation.completed", tracing::Level::ERROR),
+                    (false, _, false) => emit!("velune.operation.completed", tracing::Level::INFO),
+                }
+            });
         }
-        if let Some(generation) = &self.generation {
-            let labels = [
-                KeyValue::new("operation", self.operation),
-                KeyValue::new("outcome", outcome.as_str()),
+        if self.measured
+            && let Some(generation) = &self.generation
+        {
+            let mut labels = vec![
+                KeyValue::new("velune.operation", self.operation),
+                KeyValue::new("velune.outcome", outcome.as_str()),
             ];
+            if let Some(kind) = &self.failure_kind {
+                labels.push(KeyValue::new("error.type", kind.clone()));
+            }
             generation.operations.add(1, &labels);
             generation.duration.record(elapsed, &labels);
         }
+        // Local diagnostic readers may retain tracing handles. End the SDK span now,
+        // independently of the registry's last-reference lifetime; SDK end is idempotent.
+        self.span.context().span().end();
+        self.span = tracing::Span::none();
     }
 }
 impl Drop for Operation {

@@ -141,13 +141,13 @@ sealed class Core
             return connection;
         }
     }
-    public Task<T> Call<T>(Device device, string operation, Func<VeluneApplication, T> body) => Telemetry.Operation(operation, carrier => Task.Run(() =>
+    public Task<T> Call<T>(Device device, NativeOperation operation, Func<VeluneApplication, T> body) => Telemetry.Operation(operation, carrier => Task.Run(() =>
     {
         using var view = Application(device).WithTraceContext(carrier);
         return body(view);
     }));
 
-    public Task Call(Device device, string operation, Action<VeluneApplication> body) => Call(device, operation, application => { body(application); return true; });
+    public Task Call(Device device, NativeOperation operation, Action<VeluneApplication> body) => Call(device, operation, application => { body(application); return true; });
 
     // ForgetConnection drops a removed device's connection; the remote service
     // closes it with the device.

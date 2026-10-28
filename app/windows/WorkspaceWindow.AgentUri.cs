@@ -21,7 +21,7 @@ public sealed partial class WorkspaceWindow
         }
         try
         {
-            var result = await Shell.Core.Call(device, "Read", application => application.ResolveAgentUri(uri, null));
+            var result = await Shell.Core.Call(device, NativeOperation.ConversationRead, application => application.ResolveAgentUri(uri, null));
             if (closed) { return; }
             foreach (var problem in result.Failures) { Problems.Report("打开会话 · " + problem.RuntimeId, problem.Detail, device); }
             BindingConversationSummary? chosen = null;

@@ -153,7 +153,12 @@ impl RemoteClient {
                 id, trace_context, ..
             }
             | Request::Query { id, trace_context } => telemetry.as_ref().map(|owner| {
-                let operation = owner.operation(operation_name, trace_context.as_ref(), false);
+                let mut operation = owner.operation_with_kind(
+                    operation_name,
+                    velune_telemetry::SpanKind::Client,
+                    trace_context.as_ref(),
+                    false,
+                );
                 operation.request_identity(&id.incarnation, &id.client, id.sequence);
                 *trace_context = operation.carrier();
                 operation
@@ -186,13 +191,20 @@ impl RemoteClient {
             future.await
         };
         if let Some(operation) = &mut observation {
-            operation.complete(match &result {
+            let outcome = match &result {
                 Ok(_) => velune_telemetry::Outcome::Success,
-                Err(RemoteError::Timeout | RemoteError::Closed | RemoteError::Unavailable) => {
-                    velune_telemetry::Outcome::Unknown
+                Err(error) => {
+                    operation.failure(match error {
+                        RemoteError::Timeout => "timeout",
+                        RemoteError::Closed => "closed",
+                        RemoteError::Unavailable => "unavailable",
+                        RemoteError::Unauthorized => "unauthorized",
+                        _ => "other",
+                    });
+                    velune_telemetry::Outcome::Failure
                 }
-                Err(_) => velune_telemetry::Outcome::Failure,
-            });
+            };
+            operation.complete(outcome);
         }
         result
     }

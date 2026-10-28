@@ -37,7 +37,7 @@ sealed partial class Conversation
         var id = Target.ConversationID;
         try
         {
-            var drafts = await Call(application => application.ComposerDrafts());
+            var drafts = await Call(NativeOperation.ConversationRead, application => application.ComposerDrafts());
             return drafts.FirstOrDefault(draft => draft.ConversationId == id)?.Text ?? "";
         }
         catch (Exception failure)
@@ -52,7 +52,7 @@ sealed partial class Conversation
         if (!Target.Unsent)
         {
             var id = Target.ConversationID;
-            Write("保存草稿", application => application.SetComposerDraft(id, text));
+            Write("保存草稿", NativeOperation.ConversationWrite, application => application.SetComposerDraft(id, text));
         }
     }
 
@@ -63,7 +63,7 @@ sealed partial class Conversation
         Notify();
         try
         {
-            var uploaded = await Call(application => application.UploadAttachment(name, bytes));
+            var uploaded = await Call(NativeOperation.ConversationWrite, application => application.UploadAttachment(name, bytes));
             Attached.Add(new Attachment(uploaded.Reference, uploaded.Name, imageExtensions.Contains(Path.GetExtension(name).ToLowerInvariant())));
         }
         catch (Exception failure)
@@ -89,7 +89,7 @@ sealed partial class Conversation
             return false;
         }
         var operation = new BindingSendQueueOperation.Add(snapshot.ContextRuntimeId, Next, NextModel(), Turn(text));
-        if (!await Change("更改发送队列", application => application.SendQueue(snapshot.ContextRuntimeId, snapshot.Conversation.Id, operation)))
+        if (!await Change("更改发送队列", NativeOperation.ConversationWrite, application => application.SendQueue(snapshot.ContextRuntimeId, snapshot.Conversation.Id, operation)))
         {
             return false;
         }
@@ -98,24 +98,24 @@ sealed partial class Conversation
         return true;
     }
 
-    public void EditQueued(string id, string text) => Act("编辑排队的消息", (application, runtimeID, conversation) =>
+    public void EditQueued(string id, string text) => Act("编辑排队的消息", NativeOperation.ConversationWrite, (application, runtimeID, conversation) =>
         application.SendQueue(runtimeID, conversation, new BindingSendQueueOperation.Edit(id, text)));
 
-    public void RemoveQueued(string id) => Act("移除排队的消息", (application, runtimeID, conversation) =>
+    public void RemoveQueued(string id) => Act("移除排队的消息", NativeOperation.ConversationWrite, (application, runtimeID, conversation) =>
         application.SendQueue(runtimeID, conversation, new BindingSendQueueOperation.Remove(id)));
 
     // MoveQueued moves a message to index in the queue as it is without it.
-    public void MoveQueued(string id, int index) => Act("调整发送队列的顺序", (application, runtimeID, conversation) =>
+    public void MoveQueued(string id, int index) => Act("调整发送队列的顺序", NativeOperation.ConversationWrite, (application, runtimeID, conversation) =>
         application.SendQueue(runtimeID, conversation, new BindingSendQueueOperation.Move(id, (uint)Math.Max(index, 0))));
 
-    public void SteerQueued(string id) => Act("插入本轮", (application, runtimeID, conversation) =>
+    public void SteerQueued(string id) => Act("插入本轮", NativeOperation.ConversationWrite, (application, runtimeID, conversation) =>
         application.SendQueue(runtimeID, conversation, new BindingSendQueueOperation.Steer(id)));
 
     // ResumeQueue sends the queue again after it paused.
-    public void ResumeQueue() => Act("继续发送队列", (application, runtimeID, conversation) =>
+    public void ResumeQueue() => Act("继续发送队列", NativeOperation.ConversationWrite, (application, runtimeID, conversation) =>
         application.SendQueue(runtimeID, conversation, new BindingSendQueueOperation.Resume()));
 
-    public void StopSubAgents() => Act("停止子 Agent", (application, runtimeID, conversation) => application.StopSubAgents(runtimeID, conversation));
+    public void StopSubAgents() => Act("停止子 Agent", NativeOperation.Cancel, (application, runtimeID, conversation) => application.StopSubAgents(runtimeID, conversation));
 
     // Steer delivers the message into the running turn through the
     // runtime's own channel; false keeps it in the composer.
@@ -127,7 +127,7 @@ sealed partial class Conversation
             return false;
         }
         var turn = Turn(text);
-        if (!await Change("插入本轮", application => application.SteerTurn(snapshot.ContextRuntimeId, snapshot.Conversation.Id, turn)))
+        if (!await Change("插入本轮", NativeOperation.Send, application => application.SteerTurn(snapshot.ContextRuntimeId, snapshot.Conversation.Id, turn)))
         {
             return false;
         }
@@ -183,7 +183,7 @@ sealed partial class Conversation
     {
         if (!CanCompact || Snapshot is not { } snapshot) return;
         var selection = NextModel();
-        await Change("压缩上下文", application => application.CompactConversation(snapshot.ContextRuntimeId, snapshot.Conversation.Id, selection));
+        await Change("压缩上下文", NativeOperation.Compact, application => application.CompactConversation(snapshot.ContextRuntimeId, snapshot.Conversation.Id, selection));
     }
 
     public async Task<bool> Continue()
@@ -195,7 +195,7 @@ sealed partial class Conversation
         composerRequest = ComposerSubmission.Phase.Resuming;
         try
         {
-            return await Change("继续", application => application.ResumeTurn(snapshot.ContextRuntimeId, snapshot.Conversation.Id, selection, effort, mode));
+            return await Change("继续", NativeOperation.Send, application => application.ResumeTurn(snapshot.ContextRuntimeId, snapshot.Conversation.Id, selection, effort, mode));
         }
         finally
         {
@@ -216,7 +216,7 @@ sealed partial class Conversation
         var turn = new BindingComposedTurn(Text: text.Trim(), Effort: Effort(), Attachments: [], PermissionMode: PermissionMode(Choice().PermissionMode)?.Id);
         var selection = NextModel();
         BindingConversationSnapshot? result = null;
-        var done = await Change("编辑消息", application =>
+        var done = await Change("编辑消息", NativeOperation.ConversationWrite, application =>
         {
             var edited = application.EditMessage(snapshot.ContextRuntimeId, snapshot.Conversation.Id, messageID, placement, selection, turn);
             result = edited.Snapshot;
@@ -229,13 +229,13 @@ sealed partial class Conversation
     // WorkingChanges reads the conversation's working directory as git sees
     // it, blocking; for the status line's branch.
     public Task<BindingWorkingChanges> WorkingChanges(string runtimeID, string conversationID) =>
-        core.Call(Device, "Read", application => application.WorkingChanges(runtimeID, conversationID));
+        core.Call(Device, NativeOperation.ConversationRead, application => application.WorkingChanges(runtimeID, conversationID));
 
     // Editable tells whether a user message may be edited now, and whether in place.
     public BindingEditableMessage? Editable(string messageID) => FollowUp?.Editable.FirstOrDefault(editable => editable.MessageId == messageID);
 
     // Change runs one write and takes the snapshot it returns; false shows its failure.
-    async Task<bool> Change(string source, Func<VeluneApplication, BindingSnapshotResult> work)
+    async Task<bool> Change(string source, NativeOperation operation, Func<VeluneApplication, BindingSnapshotResult> work)
     {
         if (Busy)
         {
@@ -245,7 +245,7 @@ sealed partial class Conversation
         Notify();
         try
         {
-            Apply((await Call(work)).Snapshot);
+            Apply((await Call(operation, work)).Snapshot);
             return true;
         }
         catch (Exception failure)
@@ -270,7 +270,7 @@ sealed partial class Conversation
         }
         try
         {
-            SessionOptions = await Call(application => application.AcpSessionConfig(snapshot.ContextRuntimeId, snapshot.Conversation.Id));
+            SessionOptions = await Call(NativeOperation.ConfigurationRead, application => application.AcpSessionConfig(snapshot.ContextRuntimeId, snapshot.Conversation.Id));
         }
         catch (Exception failure)
         {
@@ -288,7 +288,7 @@ sealed partial class Conversation
         }
         try
         {
-            SessionOptions = await Call(application => application.SetAcpSessionConfig(snapshot.ContextRuntimeId, snapshot.Conversation.Id, id, value));
+            SessionOptions = await Call(NativeOperation.ConfigurationWrite, application => application.SetAcpSessionConfig(snapshot.ContextRuntimeId, snapshot.Conversation.Id, id, value));
         }
         catch (Exception failure)
         {

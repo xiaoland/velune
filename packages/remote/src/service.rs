@@ -113,12 +113,24 @@ impl ServiceState {
                     .lock()
                     .map_err(|_| RemoteError::Unavailable)?
                     .as_ref()
-                    .map(|owner| owner.operation("remote.query", trace_context.as_ref(), true));
+                    .map(|owner| {
+                        owner.operation_with_kind(
+                            "remote.query",
+                            velune_telemetry::SpanKind::Server,
+                            trace_context.as_ref(),
+                            true,
+                        )
+                    });
+                let result = access.ledger.status(&peer, &id).map(Reply::Status);
                 if let Some(observation) = &mut observation {
                     observation.request_identity(&id.incarnation, &id.client, id.sequence);
-                    observation.complete(velune_telemetry::Outcome::Success);
+                    observation.complete(if result.is_ok() {
+                        velune_telemetry::Outcome::Success
+                    } else {
+                        velune_telemetry::Outcome::Failure
+                    });
                 }
-                Ok(Reply::Status(access.ledger.status(&peer, &id)?))
+                result
             }
             Request::Submit {
                 id,
@@ -131,74 +143,110 @@ impl ServiceState {
                 if let Some(context) = &trace_context {
                     context.validate().map_err(|_| RemoteError::Configuration)?;
                 }
-                if view.0.is_empty() || view.0.len() > 128 || view.0.chars().any(char::is_control) {
-                    return Err(RemoteError::Configuration);
+                let telemetry = self
+                    .telemetry
+                    .lock()
+                    .map_err(|_| RemoteError::Unavailable)?
+                    .clone();
+                let mut admission = telemetry.as_ref().map(|owner| {
+                    owner.operation_with_kind(
+                        "remote.submit",
+                        velune_telemetry::SpanKind::Server,
+                        trace_context.as_ref(),
+                        true,
+                    )
+                });
+                if let Some(observation) = &mut admission {
+                    observation.request_identity(&id.incarnation, &id.client, id.sequence);
                 }
-                let handler = self.handler.clone().ok_or(RemoteError::NoHandler)?;
-                let fingerprint: [u8; 32] = Sha256::digest(
-                    serde_json::to_vec(&(&view, &execution, &command))
-                        .map_err(|_| RemoteError::Protocol)?,
-                )
-                .into();
-                if access.ledger.accept(&peer, &id, fingerprint)? {
-                    let telemetry = self
-                        .telemetry
-                        .lock()
-                        .map_err(|_| RemoteError::Unavailable)?
-                        .clone();
-                    let service = self.clone();
-                    let task_peer = peer.clone();
-                    let task_id = id.clone();
-                    let observed_id = id.clone();
-                    let ledger_peer = peer.clone();
-                    let task = tokio::spawn(async move {
-                        let execution = tokio::spawn(async move {
-                            let mut observation = telemetry.as_ref().map(|owner| {
-                                owner.operation("remote.execute", trace_context.as_ref(), true)
-                            });
-                            if let Some(observation) = &observation {
-                                observation.request_identity(
-                                    &observed_id.incarnation,
-                                    &observed_id.client,
-                                    observed_id.sequence,
-                                );
-                            }
-                            let future = handler.execute(
-                                RequestContext {
-                                    peer_id: task_peer.clone(),
-                                    view,
-                                    execution,
-                                },
-                                *command,
-                            );
-                            let result = if let Some(observation) = &observation {
-                                observation.instrument(future).await
-                            } else {
-                                future.await
-                            };
-                            if let Some(observation) = &mut observation {
-                                observation.complete(if result.is_ok() {
-                                    velune_telemetry::Outcome::Success
-                                } else {
-                                    velune_telemetry::Outcome::Failure
+                let execution_parent = admission
+                    .as_ref()
+                    .and_then(|observation| observation.carrier());
+                let result = (|| {
+                    if view.0.is_empty()
+                        || view.0.len() > 128
+                        || view.0.chars().any(char::is_control)
+                    {
+                        return Err(RemoteError::Configuration);
+                    }
+                    let handler = self.handler.clone().ok_or(RemoteError::NoHandler)?;
+                    let fingerprint: [u8; 32] = Sha256::digest(
+                        serde_json::to_vec(&(&view, &execution, &command))
+                            .map_err(|_| RemoteError::Protocol)?,
+                    )
+                    .into();
+                    if access.ledger.accept(&peer, &id, fingerprint)? {
+                        let telemetry = self
+                            .telemetry
+                            .lock()
+                            .map_err(|_| RemoteError::Unavailable)?
+                            .clone();
+                        let service = self.clone();
+                        let task_peer = peer.clone();
+                        let task_id = id.clone();
+                        let observed_id = id.clone();
+                        let ledger_peer = peer.clone();
+                        let task = tokio::spawn(async move {
+                            let execution = tokio::spawn(async move {
+                                let mut observation = telemetry.as_ref().map(|owner| {
+                                    owner.operation(
+                                        "remote.execute",
+                                        execution_parent.as_ref(),
+                                        false,
+                                    )
                                 });
+                                if let Some(observation) = &mut observation {
+                                    observation.request_identity(
+                                        &observed_id.incarnation,
+                                        &observed_id.client,
+                                        observed_id.sequence,
+                                    );
+                                }
+                                let future = handler.execute(
+                                    RequestContext {
+                                        peer_id: task_peer.clone(),
+                                        view,
+                                        execution,
+                                    },
+                                    *command,
+                                );
+                                let result = if let Some(observation) = &observation {
+                                    observation.instrument(future).await
+                                } else {
+                                    future.await
+                                };
+                                if let Some(observation) = &mut observation {
+                                    observation.complete(if result.is_ok() {
+                                        velune_telemetry::Outcome::Success
+                                    } else {
+                                        velune_telemetry::Outcome::Failure
+                                    });
+                                }
+                                result
+                            });
+                            let status = match execution.await {
+                                Ok(result) => RequestStatus::Completed(result.map(Box::new)),
+                                Err(_) => RequestStatus::Failed(RemoteError::Unavailable),
+                            };
+                            if let Ok(mut access) = service.access.lock() {
+                                access.ledger.complete(ledger_peer, task_id, status);
                             }
-                            result
+                            // The service (and a host-provided runtime lease in Handler) outlives completion bookkeeping.
                         });
-                        let status = match execution.await {
-                            Ok(result) => RequestStatus::Completed(result.map(Box::new)),
-                            Err(_) => RequestStatus::Failed(RemoteError::Unavailable),
-                        };
-                        if let Ok(mut access) = service.access.lock() {
-                            access.ledger.complete(ledger_peer, task_id, status);
-                        }
-                        // The service (and a host-provided runtime lease in Handler) outlives completion bookkeeping.
+                        let mut tasks = self.tasks.lock().map_err(|_| RemoteError::Unavailable)?;
+                        tasks.retain(|task| !task.is_finished());
+                        tasks.push(task);
+                    }
+                    Ok(Reply::Status(access.ledger.status(&peer, &id)?))
+                })();
+                if let Some(observation) = &mut admission {
+                    observation.complete(if result.is_ok() {
+                        velune_telemetry::Outcome::Success
+                    } else {
+                        velune_telemetry::Outcome::Failure
                     });
-                    let mut tasks = self.tasks.lock().map_err(|_| RemoteError::Unavailable)?;
-                    tasks.retain(|task| !task.is_finished());
-                    tasks.push(task);
                 }
-                Ok(Reply::Status(access.ledger.status(&peer, &id)?))
+                result
             }
             Request::PairBegin { .. }
             | Request::PairReady { .. }

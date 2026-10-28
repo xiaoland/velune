@@ -13,7 +13,7 @@ extension Acceptance {
     }
     static func send(_ telemetry: ClientTelemetry, _ app: VeluneApplication, _ runtime: String, _ conversation: String, text: String = "GATE CANARY-private-body") throws -> String {
         var parent = ""
-        _ = try telemetry.operation("send") { carrier in
+        _ = try telemetry.operation(.send) { carrier in
             parent = carrier?.traceparent ?? ""
             return try app.withTraceContext(carrier: carrier).sendTurnWithSelection(sourceRuntimeId: runtime, conversationId: conversation, targetRuntimeId: runtime,
                 selection: nil, turn: BindingComposedTurn(text: text, effort: nil, attachments: []))
@@ -63,7 +63,7 @@ extension Acceptance {
         var preparationRejectedParent = ""
         var preparationRejected = false
         do {
-            _ = try controlOwner.operation("send") { carrier in
+            _ = try controlOwner.operation(.send) { carrier in
                 preparationRejectedParent = carrier?.traceparent ?? ""
                 return try remote.withTraceContext(carrier: carrier).sendTurnWithSelection(sourceRuntimeId: "one", conversationId: one, targetRuntimeId: "one", selection: nil,
                     turn: BindingComposedTurn(text: "CANARY-private-body", effort: "CANARY-unsupported-effort", attachments: []))
@@ -76,7 +76,7 @@ extension Acceptance {
         var preparationFailedParent = ""
         var preparationFailed = false
         do {
-            _ = try controlOwner.operation("send") { carrier in
+            _ = try controlOwner.operation(.send) { carrier in
                 preparationFailedParent = carrier?.traceparent ?? ""
                 return try remote.withTraceContext(carrier: carrier).createConversationWithSelection(runtimeId: "unavailable", cwd: root.path, selection: nil)
             }
@@ -119,7 +119,7 @@ extension Acceptance {
         try files.removeItem(at: oneGate)
         try await until({ try hostOwner.binding.snapshot().execution?.activeTurns == 1 }, "successful turn did not decrement count")
         _ = hostOwner.binding.flush()
-        _ = try controlOwner.operation("cancel") { carrier in try remote.withTraceContext(carrier: carrier).cancel(runtimeId: "two", conversationId: two) }
+        _ = try controlOwner.operation(.cancel) { carrier in try remote.withTraceContext(carrier: carrier).cancel(runtimeId: "two", conversationId: two) }
         try await until({ try hostOwner.binding.snapshot().execution?.activeTurns == 0 }, "cancelled turn did not finish")
         _ = hostOwner.binding.flush()
         try files.removeItem(at: twoGate)
@@ -128,7 +128,7 @@ extension Acceptance {
         let brokenCancel = try send(controlOwner, remote, "one", one, text: "BREAK_CANCEL CANARY-private-body")
         try await until({ files.fileExists(atPath: root.appendingPathComponent("fixture-one/cancel-ready").path) }, "fixture did not close its command pipe")
         var cancelFailed = false
-        do { _ = try controlOwner.operation("cancel") { carrier in try remote.withTraceContext(carrier: carrier).cancel(runtimeId: "one", conversationId: one) } }
+        do { _ = try controlOwner.operation(.cancel) { carrier in try remote.withTraceContext(carrier: carrier).cancel(runtimeId: "one", conversationId: one) } }
         catch is BindingError { cancelFailed = true }
         try require(cancelFailed, "broken cancel unexpectedly succeeded")
         try await until({ try hostOwner.binding.snapshot().execution?.activeTurns == 0 }, "failed cancellation left active work")
@@ -146,7 +146,7 @@ extension Acceptance {
         stage("slow configured")
         let uncertain = Task.detached { () throws -> BindingRemoteRequestId in
             do {
-                _ = try controlOwner.operation("send") { carrier in try remote.withTraceContext(carrier: carrier).createConversationWithSelection(runtimeId: "slow", cwd: root.path, selection: nil) }
+                _ = try controlOwner.operation(.send) { carrier in try remote.withTraceContext(carrier: carrier).createConversationWithSelection(runtimeId: "slow", cwd: root.path, selection: nil) }
                 throw Synthetic.expected
             } catch BindingError.RemoteRequest(let kind, _, _, let id) {
                 try require(kind == .outcomeUnknown && id != nil, "timeout lost unknown result identity")

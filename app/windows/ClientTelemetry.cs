@@ -13,6 +13,8 @@ using Velune.Bindings;
 
 namespace Velune;
 
+enum NativeOperation { Activation, Read, Write, ConfigurationRead, ConfigurationWrite, ConversationRead, ConversationWrite, Send, Cancel, Compact, Reply }
+
 sealed class ClientTelemetry
 {
     public VeluneTelemetry Binding { get; }
@@ -57,7 +59,7 @@ sealed class ClientTelemetry
             var next = prepared == null ? null : new Generation(prepared, candidate, Binding);
             Volatile.Write(ref current, next);
             Binding.ConfirmNative(revision, true);
-            Operation("telemetryActivated", _ => Task.FromResult(true)).GetAwaiter().GetResult();
+            Operation(NativeOperation.Activation, _ => Task.FromResult(true)).GetAwaiter().GetResult();
         }
         catch
         {
@@ -66,19 +68,23 @@ sealed class ClientTelemetry
             throw;
         }
     }
-    public async Task<T> Operation<T>(string name, Func<BindingTraceCarrier?, Task<T>> body)
+    public async Task<T> Operation<T>(NativeOperation category, Func<BindingTraceCarrier?, Task<T>> body)
     {
         var generation = Volatile.Read(ref current);
         if (generation == null || generation.Transport.Closed) return await body(null);
-        var operation = name switch
+        var operation = category switch
         {
-            "telemetryActivated" => "telemetry.activated",
-            "Send" or "SendTurn" => "ui.turn.send",
-            "Stop" or "Cancel" => "ui.turn.cancel",
-            "List" => "ui.configuration.read",
-            _ => "ui.application.read",
+            NativeOperation.Activation => "telemetry.activated",
+            NativeOperation.Read => "ui.application.read", NativeOperation.Write => "ui.application.write",
+            NativeOperation.ConfigurationRead => "ui.configuration.read", NativeOperation.ConfigurationWrite => "ui.configuration.write",
+            NativeOperation.ConversationRead => "ui.conversation.read", NativeOperation.ConversationWrite => "ui.conversation.write",
+            NativeOperation.Send => "ui.turn.send", NativeOperation.Cancel => "ui.turn.cancel",
+            NativeOperation.Compact => "ui.turn.compact", NativeOperation.Reply => "ui.interaction.reply",
+            _ => throw new ArgumentOutOfRangeException(nameof(category)),
         };
-        using var span = generation.Source.StartActivity(operation);
+        var id = Guid.NewGuid().ToString("N");
+        using var span = generation.Source.StartActivity(operation, ActivityKind.Internal);
+        span?.SetTag("velune.operation", operation); span?.SetTag("velune.operation.id", id);
         BindingTraceCarrier? carrier = null;
         // The .NET SDK skips local children of unsampled activities; propagate their existing context.
         var context = span?.Context ?? Activity.Current?.Context;
@@ -97,13 +103,23 @@ sealed class ClientTelemetry
         catch { outcome = "failure"; span?.SetStatus(ActivityStatusCode.Error); throw; }
         finally
         {
-            span?.SetTag("outcome", outcome);
+            span?.SetTag("velune.outcome", outcome);
+            if (outcome == "failure") span?.SetTag("error.type", "other");
             if (!generation.Transport.Closed)
             {
-                var tags = new TagList { { "operation", operation }, { "outcome", outcome } };
+                var tags = new TagList { { "velune.operation", operation }, { "velune.outcome", outcome } };
+                if (outcome == "failure") tags.Add("error.type", "other");
                 generation.Counter.Add(1, tags); generation.Duration.Record(Stopwatch.GetElapsedTime(started).TotalSeconds, tags);
-                if (outcome != "success" || operation is "ui.turn.send" or "ui.turn.cancel" or "telemetry.activated")
-                    generation.Logger.Log(outcome == "failure" ? LogLevel.Error : LogLevel.Information, "operation_completed {operation} {outcome}", operation, outcome);
+                if (outcome != "success" || category is not (NativeOperation.Read or NativeOperation.ConversationRead))
+                {
+                    var fields = new List<KeyValuePair<string, object?>> {
+                        new("velune.operation", operation), new("velune.outcome", outcome),
+                        new("velune.operation.id", id), new("velune.operation.duration", Stopwatch.GetElapsedTime(started).TotalSeconds),
+                        new("{OriginalFormat}", "Operation completed") };
+                    if (outcome == "failure") fields.Add(new("error.type", "other"));
+                    generation.Logger.Log(outcome == "failure" ? LogLevel.Error : LogLevel.Information,
+                        new EventId(1, "velune.operation.completed"), fields, null, static (_, _) => "Operation completed");
+                }
             }
         }
     }
@@ -185,7 +201,7 @@ sealed class ClientTelemetry
                 catch (ObjectDisposedException) { }
             };
             var identity = candidate.Identity;
-            var attributes = new Dictionary<string, object> { ["service.name"] = identity.ServiceName, ["service.version"] = identity.Version,
+            var attributes = new Dictionary<string, object> { ["velune.telemetry.schema.version"] = "2", ["service.name"] = identity.ServiceName, ["service.version"] = identity.Version,
                 ["service.instance.id"] = identity.InstanceId, ["velune.platform"] = identity.Platform, ["deployment.environment.name"] = identity.Environment };
             if (identity.RunId != null) attributes["velune.run.id"] = identity.RunId;
             var resource = ResourceBuilder.CreateEmpty().AddAttributes(attributes);

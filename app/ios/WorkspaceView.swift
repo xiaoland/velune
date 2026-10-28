@@ -56,7 +56,7 @@ struct WorkspaceView: View {
                             }
                             if group.loaded < group.total && query.isEmpty {
                                 Button("加载更多") { Task {
-                                    do { listing = try await devices.client.application(peer) { try $0.loadMoreConversations(group: group.key) } }
+                                    do { listing = try await devices.client.application(peer, operation: .conversationRead) { try $0.loadMoreConversations(group: group.key) } }
                                     catch { report(error, "加载会话") }
                                 } }
                             }
@@ -154,7 +154,7 @@ struct WorkspaceView: View {
             guard let url = pendingURL else { return }
             pendingURL = nil
             do {
-                let result = try await devices.client.application(peer) { try $0.resolveAgentUri(uri: url.absoluteString, runtimeId: nil) }
+                let result = try await devices.client.application(peer, operation: .conversationRead) { try $0.resolveAgentUri(uri: url.absoluteString, runtimeId: nil) }
                 if result.conversations.count == 1, result.failures.isEmpty { devices.select(ConversationTarget(result.conversations[0])) }
                 else {
                     matches = result.conversations
@@ -179,7 +179,7 @@ struct WorkspaceView: View {
         let title = devices.currentModel?.snapshot?.subAgents.first { $0.conversationId == id }?.title
         Task {
             do {
-                guard let listed = try await devices.client.application(peer, { try $0.findConversation(conversationId: id) }) else { throw MobileError.missingConversation }
+                guard let listed = try await devices.client.application(peer, operation: .conversationRead, { try $0.findConversation(conversationId: id) }) else { throw MobileError.missingConversation }
                 var target = ConversationTarget(listed)
                 if let title, !title.isEmpty { target.title = title }
                 if newWindow { openWindow(id: "workspace", value: WindowRoute(peer: peer, target: target)) }
@@ -196,7 +196,7 @@ struct WorkspaceView: View {
         if change == .markUnread, devices.selected?.conversation == row.conversation.id { devices.currentModel?.holdUnread() }
         Task {
             do {
-                listing = try await devices.client.application(peer) {
+                listing = try await devices.client.application(peer, operation: .conversationWrite) {
                     try $0.organizeConversations(conversations: [.init(runtimeId: row.conversation.runtimeId, conversationId: row.conversation.id)], change: change)
                 }
                 await search()
@@ -209,13 +209,13 @@ struct WorkspaceView: View {
         else { preferences.collapsed.append(group.key) }
         let next = preferences
         Task {
-            do { listing = try await devices.client.application(peer) { try $0.setConversationBrowserPreferences(preferences: next) } }
+            do { listing = try await devices.client.application(peer, operation: .configurationWrite) { try $0.setConversationBrowserPreferences(preferences: next) } }
             catch { report(error, "折叠会话分组") }
         }
     }
     private func refresh() async {
         do {
-            let result = try await devices.client.application(peer) { (try $0.list(), try $0.conversationActivity(since: 0)) }
+            let result = try await devices.client.application(peer, operation: .configurationRead) { (try $0.list(), try $0.conversationActivity(since: 0)) }
             guard !Task.isCancelled else { return }
             listing = result.0; active = result.1.active; listFailed = false
             for failure in result.0.historyFailures {
@@ -228,7 +228,7 @@ struct WorkspaceView: View {
         let requested = query
         guard !requested.isEmpty else { searchResult = nil; return }
         do {
-            let result = try await devices.client.application(peer) { try $0.searchConversations(text: requested) }
+            let result = try await devices.client.application(peer, operation: .conversationRead) { try $0.searchConversations(text: requested) }
             guard !Task.isCancelled, query == requested else { return }
             searchResult = result
         } catch { report(error, "搜索会话") }

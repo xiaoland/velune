@@ -47,13 +47,13 @@ uniffi::setup_scaffolding!();
 
 macro_rules! request {
     ($owner:ident, $name:literal, $variant:ident $( { $($field:ident),* } )?) => {
-        match $owner.request($name, Command::$variant $( { $($field),* } )?)? {
+        match $owner.request(concat!("bindings.", $name), Command::$variant $( { $($field),* } )?)? {
             Response::$variant(value) => convert(value),
             _ => Err(BindingError::Contract { detail: "应用返回了不匹配的具名结果".into() }),
         }
     };
     ($owner:ident, $name:literal, $variant:ident $( { $($field:ident),* } )?; unit) => {
-        match $owner.request($name, Command::$variant $( { $($field),* } )?)? {
+        match $owner.request(concat!("bindings.", $name), Command::$variant $( { $($field),* } )?)? {
             Response::$variant => Ok(()),
             _ => Err(BindingError::Contract { detail: "应用返回了不匹配的具名结果".into() }),
         }
@@ -227,7 +227,7 @@ impl VeluneApplication {
     }
 
     fn close(&self, _stop_work: bool) -> Result<(), BindingError> {
-        self.diagnostics.run("shutdown", || {
+        self.diagnostics.run("bindings.shutdown", || {
             let mut state = self.lock()?;
             if let Some(backend) = state.as_mut() {
                 match backend {
@@ -287,7 +287,7 @@ impl VeluneApplication {
         options: BindingOptions,
         diagnostics: diagnostics::Diagnostics,
     ) -> Result<Arc<Self>, BindingError> {
-        let application = diagnostics.run("open", || {
+        let application = diagnostics.run("bindings.open", || {
             ApplicationService::open_with_telemetry(
                 Options {
                     home_directory: options.home_directory.into(),

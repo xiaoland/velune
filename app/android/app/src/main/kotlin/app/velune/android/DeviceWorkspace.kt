@@ -60,7 +60,7 @@ class DeviceWorkspace(private val hub: DeviceHub, val peer: String, private val 
 
     suspend fun refresh() {
         try {
-            val (list, activity) = hub.call(peer, "list") { application ->
+            val (list, activity) = hub.call(peer, NativeOperation.CONFIGURATION_READ) { application ->
                 application.list() to application.conversationActivity(activityCursor)
             }
             val application = hub.application(peer)

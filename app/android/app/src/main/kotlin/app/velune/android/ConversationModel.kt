@@ -71,13 +71,13 @@ class ConversationModel(
 
     init {
         scope.launch {
-            val models = runCatching { io { it.runtimeModels(target.runtimeId) } }.getOrDefault(emptyList())
+            val models = runCatching { io(NativeOperation.CONFIGURATION_READ) { it.runtimeModels(target.runtimeId) } }.getOrDefault(emptyList())
             _state.update { it.copy(models = models) }
         }
         val opening = initial as? ConversationTarget.Existing
         if (opening != null) scope.launch {
             try {
-                apply(io { it.readConversation(opening.runtimeId, opening.conversationId) })
+                apply(io(NativeOperation.CONVERSATION_READ) { it.readConversation(opening.runtimeId, opening.conversationId) })
             } catch (error: CancellationException) {
                 throw error
             } catch (error: Exception) {
@@ -88,7 +88,7 @@ class ConversationModel(
         }
     }
 
-    private suspend fun <T> io(operation: String = "read", body: (VeluneApplication) -> T): T = hub.call(peer, operation, body)
+    private suspend fun <T> io(operation: NativeOperation, body: (VeluneApplication) -> T): T = hub.call(peer, operation, body)
 
     fun resume() {
         if (polling?.isActive == true) return
@@ -110,11 +110,11 @@ class ConversationModel(
         val runtime = current.contextRuntimeId
         val id = current.conversation.id
         try {
-            when (val update = io { it.snapshotUpdate(runtime, id, current.cursor) }) {
+            when (val update = io(NativeOperation.CONVERSATION_READ) { it.snapshotUpdate(runtime, id, current.cursor) }) {
                 is BindingSnapshotUpdate.Changed -> merge(update.snapshot)
                 BindingSnapshotUpdate.Unchanged -> {}
                 // The device let the conversation go (it restarted, for one); read it again.
-                BindingSnapshotUpdate.Absent -> apply(io { it.readConversation(runtime, id) })
+                BindingSnapshotUpdate.Absent -> apply(io(NativeOperation.CONVERSATION_READ) { it.readConversation(runtime, id) })
             }
             _state.update { it.copy(failure = null) }
         } catch (error: CancellationException) {
@@ -162,12 +162,12 @@ class ConversationModel(
         val selection = _state.value.selection
         val existing = snapshot
         val result = if (existing == null) {
-            val created = io { it.createConversationWithSelection(target.runtimeId, (target as? ConversationTarget.New)?.cwd, selection) }
+            val created = io(NativeOperation.CONVERSATION_WRITE) { it.createConversationWithSelection(target.runtimeId, (target as? ConversationTarget.New)?.cwd, selection) }
             apply(created)
             val snapshot = created.snapshot ?: error("设备没有返回新会话")
-            io("send") { it.sendTurnWithSelection(snapshot.contextRuntimeId, snapshot.conversation.id, snapshot.contextRuntimeId, selection, turn) }
+            io(NativeOperation.SEND) { it.sendTurnWithSelection(snapshot.contextRuntimeId, snapshot.conversation.id, snapshot.contextRuntimeId, selection, turn) }
         } else {
-            io("send") { it.sendTurnWithSelection(existing.contextRuntimeId, existing.conversation.id, existing.contextRuntimeId, selection, turn) }
+            io(NativeOperation.SEND) { it.sendTurnWithSelection(existing.contextRuntimeId, existing.conversation.id, existing.contextRuntimeId, selection, turn) }
         }
         apply(result)
         onSent()
@@ -177,24 +177,24 @@ class ConversationModel(
         val current = snapshot ?: return@act
         if (!current.followUp.canCompact) return@act
         val selection = state.value.selection
-        apply(io("compact") { it.compactConversation(current.contextRuntimeId, current.conversation.id, selection) })
+        apply(io(NativeOperation.COMPACT) { it.compactConversation(current.contextRuntimeId, current.conversation.id, selection) })
     }
 
     fun stop() = act {
         val current = snapshot ?: return@act
-        apply(io("cancel") { it.cancel(current.contextRuntimeId, current.conversation.id) })
+        apply(io(NativeOperation.CANCEL) { it.cancel(current.contextRuntimeId, current.conversation.id) })
     }
 
     fun reply(interactionId: String, reply: BindingRuntimeInteractionReply) = act {
         val current = snapshot ?: return@act
-        apply(io { it.replyRuntimeInteraction(current.contextRuntimeId, current.conversation.id, interactionId, reply) })
+        apply(io(NativeOperation.REPLY) { it.replyRuntimeInteraction(current.contextRuntimeId, current.conversation.id, interactionId, reply) })
     }
 
     /** Large reasoning and tool output arrive by size; this reads one message's whole content. */
     fun loadPayload(messageId: String) = scope.launch {
         val current = snapshot ?: return@launch
         try {
-            val loaded = io { it.messagePayloads(current.contextRuntimeId, current.conversation.id, listOf(messageId)) }
+            val loaded = io(NativeOperation.CONVERSATION_READ) { it.messagePayloads(current.contextRuntimeId, current.conversation.id, listOf(messageId)) }
             payloads = payloads + loaded.associateBy { it.id }
             snapshot?.let { shown -> _state.update { it.copy(entries = entries(shown)) } }
         } catch (error: CancellationException) {

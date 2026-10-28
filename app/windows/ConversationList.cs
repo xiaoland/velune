@@ -326,7 +326,7 @@ sealed partial class ConversationList : UserControl
         listing.Preferences = preferences;
         listing.Groups = [.. listing.Groups.Select(shown => shown == group ? shown with { Collapsed = collapsed } : shown)];
         Listings.Notify(Device);
-        Listings.Write(Device, "折叠分组", application => application.SetConversationBrowserPreferences(preferences));
+        Listings.Write(Device, "折叠分组", NativeOperation.ConfigurationWrite, application => application.SetConversationBrowserPreferences(preferences));
     }
 
     async void LoadMore(BindingConversationGroupKey key)
@@ -334,7 +334,7 @@ sealed partial class ConversationList : UserControl
         var target = Device;
         try
         {
-            await window.Shell.Core.Call(target, "Read", application => application.LoadMoreConversations(key));
+            await window.Shell.Core.Call(target, NativeOperation.ConversationRead, application => application.LoadMoreConversations(key));
             Listings.Reread(target);
         }
         catch (Exception failure)

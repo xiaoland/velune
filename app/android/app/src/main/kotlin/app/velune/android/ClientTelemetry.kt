@@ -38,6 +38,14 @@ import java.time.Duration
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
 
+enum class NativeOperation(val wireName: String) {
+    READ("ui.application.read"), WRITE("ui.application.write"),
+    CONFIGURATION_READ("ui.configuration.read"), CONFIGURATION_WRITE("ui.configuration.write"),
+    CONVERSATION_READ("ui.conversation.read"), CONVERSATION_WRITE("ui.conversation.write"),
+    SEND("ui.turn.send"), CANCEL("ui.turn.cancel"), COMPACT("ui.turn.compact"), REPLY("ui.interaction.reply");
+    val quiet: Boolean get() = this == READ || this == CONVERSATION_READ
+}
+
 /** One current-client owner. No global OTel SDK or automatic resource detector is installed. */
 class ClientTelemetry(home: File, developmentProfile: String? = null, runId: String? = null) {
     val binding: VeluneTelemetry = VeluneTelemetry.open(BindingTelemetryOptions(
@@ -77,11 +85,13 @@ class ClientTelemetry(home: File, developmentProfile: String? = null, runId: Str
             throw error
         }
     }
-    suspend fun <T> operation(name: String, body: suspend (BindingTraceCarrier?) -> T): T {
+    suspend fun <T> operation(category: NativeOperation, body: suspend (BindingTraceCarrier?) -> T): T {
         val generation = current.get() ?: return body(null)
         if (generation.transport.closed) return body(null)
-        val operation = when (name) { "send" -> "ui.turn.send"; "cancel" -> "ui.turn.cancel"; "list" -> "ui.configuration.read"; else -> "ui.application.read" }
+        val operation = category.wireName
+        val id = java.util.UUID.randomUUID().toString()
         val span = generation.traces.get("velune.client.native").spanBuilder(operation).startSpan()
+        span.setAttribute("velune.operation", operation).setAttribute("velune.operation.id", id)
         val context = Context.current().with(span)
         val fields = mutableMapOf<String, String>()
         W3CTraceContextPropagator.getInstance().inject(context, fields) { carrier, key, value -> carrier?.put(key, value) }
@@ -100,12 +110,15 @@ class ClientTelemetry(home: File, developmentProfile: String? = null, runId: Str
             throw error
         }
         finally {
-            val attributes = Attributes.builder().put("operation", operation).put("outcome", outcome).build()
-            span.setAttribute("outcome", outcome)
+            val elapsed = (System.nanoTime() - started) / 1e9
+            val attributes = Attributes.builder().put("velune.operation", operation).put("velune.outcome", outcome)
+                .also { if (outcome == "failure") it.put("error.type", "other") }.build()
+            span.setAttribute("velune.outcome", outcome)
+            if (outcome == "failure") span.setAttribute("error.type", "other")
             if (!generation.transport.closed) {
-                generation.counter.add(1, attributes); generation.duration.record((System.nanoTime() - started) / 1e9, attributes)
-                if (outcome != "success" || name == "send" || name == "cancel") generation.logs.get("velune.client.native").logRecordBuilder()
-                    .setBody("operation_completed").setContext(context).setAllAttributes(attributes).setSeverity(if (outcome == "failure") Severity.ERROR else Severity.INFO).emit()
+                generation.counter.add(1, attributes); generation.duration.record(elapsed, attributes)
+                if (outcome != "success" || !category.quiet) generation.logs.get("velune.client.native").logRecordBuilder()
+                    .setEventName("velune.operation.completed").setBody("Operation completed").setContext(context).setAllAttributes(attributes.toBuilder().put("velune.operation.id", id).put("velune.operation.duration", elapsed).build()).setSeverity(if (outcome == "failure") Severity.ERROR else Severity.INFO).emit()
             }
             span.end()
         }
@@ -161,7 +174,7 @@ class ClientTelemetry(home: File, developmentProfile: String? = null, runId: Str
         private val metricExporter = object : MetricExporter by transport.metrics {
             override fun export(metrics: Collection<MetricData>): CompletableResultCode = feedback.observe(transport.export { transport.metrics.export(metrics) })
         }
-        private val attributes = Attributes.builder().put("service.name", candidate.identity.serviceName).put("service.version", candidate.identity.version)
+        private val attributes = Attributes.builder().put("velune.telemetry.schema.version", "2").put("service.name", candidate.identity.serviceName).put("service.version", candidate.identity.version)
             .put("service.instance.id", candidate.identity.instanceId).put("velune.platform", "android").put("deployment.environment.name", candidate.identity.environment)
             .also { builder -> candidate.identity.runId?.let { builder.put("velune.run.id", it) } }.build()
         private val resource = Resource.create(attributes)
@@ -175,9 +188,11 @@ class ClientTelemetry(home: File, developmentProfile: String? = null, runId: Str
         fun activated() {
             val started = System.nanoTime()
             val span = traces.get("velune.client.native").spanBuilder("telemetry.activated").startSpan()
-            val attributes = Attributes.builder().put("operation", "telemetry.activated").put("outcome", "success").build()
+            val id = java.util.UUID.randomUUID().toString()
+            span.setAttribute("velune.operation", "telemetry.activated").setAttribute("velune.operation.id", id).setAttribute("velune.outcome", "success")
+            val attributes = Attributes.builder().put("velune.operation", "telemetry.activated").put("velune.outcome", "success").build()
             counter.add(1, attributes); duration.record((System.nanoTime() - started) / 1e9, attributes)
-            logs.get("velune.client.native").logRecordBuilder().setBody("operation_completed").setContext(Context.current().with(span)).setAllAttributes(attributes).setSeverity(Severity.INFO).emit()
+            logs.get("velune.client.native").logRecordBuilder().setEventName("velune.operation.completed").setBody("Operation completed").setContext(Context.current().with(span)).setAllAttributes(attributes.toBuilder().put("velune.operation.id", id).put("velune.operation.duration", (System.nanoTime() - started) / 1e9).build()).setSeverity(Severity.INFO).emit()
             span.end()
         }
         fun flush() { CompletableResultCode.ofAll(listOf(traces.forceFlush(), logs.forceFlush(), metrics.forceFlush())).join(3, TimeUnit.SECONDS) }

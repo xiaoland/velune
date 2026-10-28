@@ -15,6 +15,8 @@ pub(crate) struct Observation {
     stopping: Arc<AtomicBool>,
     started: Instant,
     outcome: Option<&'static str>,
+    http_status: Option<u16>,
+    transport: Option<&'static str>,
     telemetry: Option<velune_telemetry::Operation>,
     telemetry_owner: Option<Arc<velune_telemetry::ClientTelemetry>>,
 }
@@ -30,8 +32,26 @@ impl Observation {
             stopping,
             started: Instant::now(),
             outcome: None,
+            http_status: None,
+            transport: None,
             telemetry: None,
             telemetry_owner: None,
+        }
+    }
+    pub(crate) fn transport(&mut self, transport: &'static str) {
+        self.transport = Some(transport);
+        if let Some(operation) = &mut self.telemetry {
+            operation.gateway_transport(transport);
+        }
+    }
+    pub(crate) fn http_response(&mut self, status: u16) {
+        // CLI adapters also return protocol-shaped metadata, not an actual HTTP response.
+        if self.transport == Some("cli") {
+            return;
+        }
+        self.http_status = Some(status);
+        if let Some(operation) = &mut self.telemetry {
+            operation.http_response(status);
         }
     }
     pub(crate) fn finish(&mut self, outcome: &'static str) {
@@ -60,13 +80,36 @@ impl Drop for Observation {
             }
         });
         if let Some(operation) = &mut self.telemetry {
+            let http_failed = self.http_status.is_some_and(|status| {
+                status
+                    >= if self.event == "gateway_request_finished" {
+                        500
+                    } else {
+                        400
+                    }
+            });
             let result = match outcome {
+                "transport_completed" | "completed" if http_failed => {
+                    velune_telemetry::Outcome::Failure
+                }
                 "transport_completed" | "completed" => velune_telemetry::Outcome::Success,
+                "rejected"
+                    if self
+                        .http_status
+                        .is_some_and(|status| (400..500).contains(&status)) =>
+                {
+                    velune_telemetry::Outcome::Success
+                }
                 "downstream_closed" | "cancelled" | "gateway_stopped" => {
                     velune_telemetry::Outcome::Cancelled
                 }
                 _ => velune_telemetry::Outcome::Failure,
             };
+            if matches!(result, velune_telemetry::Outcome::Failure) {
+                if let Some(status) = self.http_status.filter(|status| *status >= 400) {
+                    operation.failure(&status.to_string());
+                }
+            }
             if let Some(owner) = &self.telemetry_owner
                 && owner.active_revision() != operation.revision()
             {
