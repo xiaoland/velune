@@ -57,3 +57,33 @@
 最终 `manual-native-quota.py` 全部通过，日志 `/tmp/velune-native-quota-final-acceptance.log`。观察包含真实配置映射、Store 的生产观察循环、typed transport、核心缓存与合成 CLI，最终读取 composer 的来源及窗口模型。无提供商时原生与默认选择读取 A；有提供商时 managed B 与原生 B 均读取 B，A／B 使用同一模型名但不同额度。核心额外验证默认目录不设置 CLAUDE_CONFIG_DIR、来源变更后拒绝旧结果、删除与取消、失败状态、不同 HOME／SSH 明确不支持且不读取本机账户。所有合成用量命令先关闭 stdout 再延迟退出，覆盖此次 EOF 竞态。该证据没有包含真实账户数据或 popover 点击。
 
 最终 bundle 已通过安装器替换至 `/Applications/Velune.app`，正常退出后安装并在后台重新启动。安装后的程序、核心库和 manifest 均与验证产物 SHA-256 一致，深度严格签名验证通过，安装路径的 Velune 进程已确认。核心库 SHA-256 为 `5746847ee91852f2dddec568797a6de5337c6dec844d65e665ecd399abe05e68`。安装未读取真实账户或会话正文，真实 popover 体验仍留给用户反馈。当前任务源码、文档和验证文件使用私有 index 提交，未包含并行遥测改动。
+
+## 模块边界重新复核（2026-10-28）
+
+用户质疑 CC 专用区块及耦合，当前结果转为技术边界复核。源码检查与独立顾问复核已完成，结论见 [边界复核](boundary-review.md)。界面复用了通用额度组件，但 Mac 自行解析下一轮的来源并选择查询，通用 RuntimeQuota 又混入 CC 适配细节。建议先由 application 统一来源解析和展示投影，分离 CC 配置捕获与观测生命周期；保留提供商策略、原生只读观测和历史记录的不同含义，暂不合并账户缓存。另记录了跨原生运行时展示历史限额的代码推演风险，尚未运行复现。
+
+本轮只更新复核记录，尚未实施该重构，也未构建、提交或重新安装；先前安装结果仍是 bb3f86b 的额度修复。重构的边界、迁移顺序与验收条件已经形成可审阅方案。
+
+## 边界重构实施
+
+用户已明确授权按复核方案重构。核心新增 composer_quota 用例，以显式下一轮意图解析全部路由成员、来源及窗口范围；Mac 删除来源解析及 provider/runtime 两套观察分支，只展示核心条目。CC 来源捕获和采集分派移入 native_quota_source，缓存接收捕获结果，不读取运行时字段；提供商策略和原生只读缓存保持分离。公开观测值类型去除 Provider 前缀，历史窗口的未知时间以 None 表达。
+
+Rust 构建、原生／默认及完整路由的 API 回归、历史归属单元检查和 Mac 后台贯通验证均已通过。此前错误的 Mac 来源断言已移除，来源选择现在由核心 API 验证。验证细节和平台范围见下方交付证据。界面验证不创建可见测试 App。
+
+### 重构交付证据
+
+隔离 Release 构建通过，日志 `/tmp/velune-quota-refactor-release.log`；复用上次依赖缓存，application 沿用已验证的 opt-level=1 设置。为避免重复编译，调试 check 已取消，以完整 Release 构建验证最终源码。四项核心单元检查全部通过：提供商窗口范围与路由范围并集、跨原生运行时的历史归属、managed 记录不能充当原生观测、取最近交付的会话上下文；日志 `/tmp/velune-quota-refactor-tests.log`。
+
+新的 typed API 回归通过：无提供商的 native／default 查询、完整路由成员与来源去重、同名模型的账户隔离、来源变更／删除／取消、失败及不同 HOME／SSH 的 Unsupported 状态。Mac 使用新绑定编译和链接通过；临时源码目录没有 Git 元数据，最初的 manifest 步骤因此退出，随后显式指定源码基线和私有 index 完成记录及签名，未跳过编译。日志为 `/tmp/velune-quota-refactor-core.log`、`/tmp/velune-quota-refactor-mac.log`、`/tmp/velune-quota-refactor-package.log`。
+
+最终 bundle 的无窗口 Store → transport → 核心查询 → CLI → 展示条目贯通通过，覆盖无提供商、原生／默认、提供商与运行时切换；日志 `/tmp/velune-quota-refactor-acceptance.log`。Mac 呈现检查通过，日志 `/tmp/velune-quota-refactor-presentation.log`，检查使用正常错误返回码报告失败。开发验证未读取真实账户或会话，也未验证实际 popover 点击。
+
+Windows 在独立临时目录通过完整 build-windows.ps1：Rust Release、固定版本 C# 绑定生成器、dotnet publish 和资源打包均通过。初次包装脚本把 Cargo stderr 进度当作 NativeCommandError，调整为操作系统输出重定向后通过；日志 `/tmp/velune-quota-refactor-windows-retry.log`。本次 Windows 仅适配 DTO 名称和可选有效期，未改变布局，也未做浅色／深色交互验收；composer 消费统一查询仍是既有平台差异。远端隔离位置为 `C:\Users\yyh\Temp\velune-quota-refactor-cff4c533`。
+
+Mac 的正常退出请求超时后，按 development.md 中已有的直接退出授权，终止了核实过的已安装 Velune 进程，再通过安装器替换。安装后的可执行文件、核心库及 manifest 与验证 bundle 的 SHA-256 一致，严格签名验证通过，安装路径进程已重新启动。
+
+本轮实现与可行验证已完成，按已有授权提交当前任务，保留独立构建脚本改动。源码快照树 `71aa7960093b5824d2f8791bcecf0bcdd803dba0` 由 manifest 记录，保留实际提交前构建的基线与 dirty 状态。用户体验仍待反馈。
+
+安装核心库 SHA-256：`befc25bfd600b7731af687b47dd6a346997b2497a3dbd9aeb4ce0e6d84049a6a`。
+
+Windows 的脚本已写出 Built 结束标记；另核验新生成的 composer 额度类型、发布可执行文件、许可证及核心 DLL 哈希，见 `/tmp/velune-quota-refactor-windows-proof.log`。外层 Start-Process -Wait 还在等待编译服务器后代，核实实际构建进程已退出后仅清理了本任务的等待包装进程。

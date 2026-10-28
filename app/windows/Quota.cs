@@ -28,7 +28,7 @@ static class Quota
 
     // Detail is a window's use as the usage display shows it, its limit when
     // one is set, when it resets, and whether the observation is old.
-    public static string Detail(BindingProviderQuotaWindow window, BindingQuotaFreshness freshness, BindingUsageDisplay usage, BindingQuotaLimit? limit = null)
+    public static string Detail(BindingQuotaWindowObservation window, BindingQuotaFreshness freshness, BindingUsageDisplay usage, BindingQuotaLimit? limit = null)
     {
         var used = Math.Clamp(window.UsedPercent, 0, 100);
         var remaining = usage == BindingUsageDisplay.Remaining;
@@ -45,7 +45,7 @@ static class Quota
         {
             parts.Add("适用于 " + string.Join("、", scoped));
         }
-        if (freshness == BindingQuotaFreshness.Stale || window.ExpiresAtMs < DateTimeOffset.UtcNow.ToUnixTimeMilliseconds())
+        if (freshness == BindingQuotaFreshness.Stale || (window.ExpiresAtMs is long expiry && expiry < DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()))
         {
             parts.Add("观测已过期");
         }
@@ -67,6 +67,6 @@ static class Quota
 
     // Applies tells whether a window counts for a model ID: a window scoped
     // to models names it, the others cover every model.
-    public static bool Applies(BindingProviderQuotaWindow window, string modelID) =>
+    public static bool Applies(BindingQuotaWindowObservation window, string modelID) =>
         window.ModelIds is not { Length: > 0 } scoped || scoped.Contains(modelID);
 }

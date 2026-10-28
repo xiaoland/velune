@@ -1899,15 +1899,15 @@ pub enum BindingQuotaFreshness {
 }
 #[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
-pub struct BindingProviderQuotaWindow {
+pub struct BindingQuotaWindowObservation {
     pub id: String,
     pub model_ids: Option<Vec<String>>,
     pub used_percent: f64,
     pub reset_at_ms: Option<i64>,
     pub window_ms: Option<i64>,
-    pub observed_at_ms: i64,
-    pub expires_at_ms: i64,
-    pub pace: Option<BindingProviderQuotaPace>,
+    pub observed_at_ms: Option<i64>,
+    pub expires_at_ms: Option<i64>,
+    pub pace: Option<BindingQuotaPaceObservation>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, uniffi::Enum)]
 #[serde(rename_all = "camelCase")]
@@ -1919,7 +1919,7 @@ pub enum BindingQuotaPaceStatus {
 /// Use against an even spend over the period; the rate is the average so far.
 #[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
-pub struct BindingProviderQuotaPace {
+pub struct BindingQuotaPaceObservation {
     pub expected_used_percent: f64,
     pub runs_out_at_ms: Option<i64>,
     pub status: BindingQuotaPaceStatus,
@@ -1927,7 +1927,7 @@ pub struct BindingProviderQuotaPace {
 /// An account amount such as a prepaid balance; `unit` is an ISO 4217 code.
 #[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
-pub struct BindingProviderQuotaBalance {
+pub struct BindingQuotaBalanceObservation {
     pub id: String,
     pub amount: f64,
     pub unit: String,
@@ -1996,8 +1996,8 @@ pub struct BindingProviderQuotaStatus {
     pub gateway_id: String,
     pub provider_id: String,
     pub freshness: BindingQuotaFreshness,
-    pub windows: Vec<BindingProviderQuotaWindow>,
-    pub balances: Vec<BindingProviderQuotaBalance>,
+    pub windows: Vec<BindingQuotaWindowObservation>,
+    pub balances: Vec<BindingQuotaBalanceObservation>,
     pub available: Option<bool>,
     pub refreshing: bool,
     pub problem: Option<String>,
@@ -2008,7 +2008,7 @@ pub struct BindingProviderQuotaStatus {
 pub struct BindingRuntimeQuotaStatus {
     pub runtime_id: String,
     pub freshness: BindingQuotaFreshness,
-    pub windows: Vec<BindingProviderQuotaWindow>,
+    pub windows: Vec<BindingQuotaWindowObservation>,
     pub refreshing: bool,
     pub problem: Option<String>,
 }
@@ -2063,4 +2063,38 @@ impl std::fmt::Debug for BindingQuotaAuthenticationEdit {
 pub struct BindingAgentUriResolution {
     pub conversations: Vec<BindingListedConversation>,
     pub failures: Vec<BindingHistoryFailure>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[serde(rename_all = "camelCase")]
+pub struct BindingComposerQuotaContext {
+    pub runtime_id: String,
+    pub selection: Option<BindingModelSelection>,
+    pub conversation_id: Option<String>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Enum)]
+#[serde(rename_all = "camelCase")]
+pub enum BindingQuotaOrigin {
+    Provider,
+    RuntimeLogin,
+    ConversationRecord,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[serde(rename_all = "camelCase")]
+pub struct BindingQuotaObservation {
+    pub freshness: BindingQuotaFreshness,
+    pub windows: Vec<BindingQuotaWindowObservation>,
+    pub balances: Vec<BindingQuotaBalanceObservation>,
+    pub available: Option<bool>,
+    pub refreshing: bool,
+    pub problem: Option<String>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[serde(rename_all = "camelCase")]
+pub struct BindingComposerQuotaEntry {
+    pub id: String,
+    pub name: String,
+    pub origin: BindingQuotaOrigin,
+    pub observation: BindingQuotaObservation,
+    pub limits: Vec<BindingQuotaLimit>,
 }

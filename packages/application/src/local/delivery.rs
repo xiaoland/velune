@@ -62,6 +62,14 @@ impl TranscriptDelivery {
         }
     }
 
+    /// Latest delivered header; quota reads do not launch a runtime or scan history.
+    pub(super) fn quota_record(&self, conversation_id: &str) -> Option<&ConversationSnapshot> {
+        self.views
+            .iter()
+            .find(|view| view.conversation_id == conversation_id)
+            .map(|view| &view.header)
+    }
+
     /// Complete payloads of messages as last delivered in a view. Unknown
     /// identifiers are omitted; a newer delivery carries a newer stamp.
     pub(super) fn payloads(
@@ -279,4 +287,31 @@ pub(super) fn collaboration_conversation(output: &str) -> Option<String> {
         .as_str()
         .filter(|id| !id.is_empty())
         .map(str::to_owned)
+}
+
+#[cfg(test)]
+mod quota_tests {
+    use super::*;
+    fn header(runtime: &str) -> ConversationSnapshot {
+        serde_json::from_value(serde_json::json!({
+            "revision":1,"conversation":{"id":"conversation","title":{"source":"untitled"},"runtimeId":"origin"},
+            "contextRuntimeId":runtime,"resourceId":null,"modelRecordKey":null,"runState":"idle",
+            "messages":[],"transcriptTurns":[],"transcriptItems":[],"transcriptOutline":[],"transcriptMessageIdentities":[],
+            "actions":{"canSend":true,"canCancel":false,"canSwitch":true}
+        })).unwrap()
+    }
+    #[test]
+    fn quota_uses_the_latest_delivered_context_of_a_logical_conversation() {
+        let mut delivery = TranscriptDelivery::new();
+        delivery.snapshot(header("codex"));
+        delivery.snapshot(header("pi"));
+        assert_eq!(
+            delivery
+                .quota_record("conversation")
+                .unwrap()
+                .context_runtime_id,
+            "pi"
+        );
+        assert!(delivery.quota_record("missing").is_none());
+    }
 }

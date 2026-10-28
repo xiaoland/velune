@@ -88,14 +88,11 @@ final class AppStore: ObservableObject {
         var accepted = false
     }
     private var pendingSend: PendingSend?
-    @Published private(set) var gateway = GatewayConfig() { didSet { if oldValue != gateway { invalidateModelCatalogs() } } }
+    @Published private(set) var gateway = GatewayConfig() { didSet { if oldValue != gateway { quotaConfigurationRevision &+= 1; invalidateModelCatalogs() } } }
     @Published private(set) var runtimeInstances: [RuntimeInstance] = [] {
         didSet {
             if oldValue != runtimeInstances {
-                runtimeQuotas = runtimeQuotas.filter { id, _ in
-                    guard let current = runtimeInstances.first(where: { $0.id == id }) else { return false }
-                    return oldValue.contains(current)
-                }
+                quotaConfigurationRevision &+= 1
                 invalidateModelCatalogs(); refreshRuntimeLocations()
             }
         }
@@ -114,9 +111,11 @@ final class AppStore: ObservableObject {
     @Published var showsAuthentication = false
     /// The core's quota observations by provider ID, as last read.
     @Published private(set) var providerQuotas: [String: AccountQuota] = [:]
-    @Published private(set) var runtimeQuotas: [String: AccountQuota] = [:]
+    private var quotaConfigurationRevision: UInt64 = 0
+    @Published private var composerQuotaResult: [ComposerAccountQuota] = []
+    private var composerQuotaResultRequest: ComposerQuotaRequest?
+    @Published private var composerQuotaFailure: String?
     private var quotaReadsPending: Set<String> = []
-    private var runtimeQuotaReadsPending: Set<String> = []
     /// What a new provider starts from; a static catalog in the core.
     private(set) lazy var providerTemplates: [ProviderTemplate] = (try? VeluneBindings.providerTemplates().map(BindingMapping.providerTemplate)) ?? []
     @Published private(set) var isLoading = false
@@ -437,46 +436,31 @@ final class AppStore: ObservableObject {
             outputTokens: total(\.outputTokens), reasoningTokens: total(\.reasoningTokens),
             unrecordedTurns: turns.filter { !$0.isRunning && $0.usage == nil }.count,
             directory: isDraft ? nil : snapshot?.conversation.cwd,
-            rateLimits: turns.last { $0.usage?.rateLimits.isEmpty == false }?.usage?.rateLimits ?? [],
             costMicroUSD: turns.last { $0.usage?.sessionCostMicroUSD != nil }?.usage?.sessionCostMicroUSD)
     }
+    var composerQuotaRequest: ComposerQuotaRequest {
+        ComposerQuotaRequest(runtimeID: nextTurnRuntimeID ?? "", selection: nextTurnModel,
+            conversationID: isDraft ? nil : snapshot?.conversation.id,
+            conversationRevision: snapshot?.revision, configurationRevision: quotaConfigurationRevision)
+    }
     var composerAccountQuotas: [ComposerAccountQuota] {
-        if let runtime = nativeQuotaRuntime {
-            return [ComposerAccountQuota(source: .runtimeLogin(runtime), quota: runtimeQuotas[runtime.id])]
-        }
-        return ComposerAccountQuota.providerAccounts(for: nextTurnModel, gateway: gateway, quotas: providerQuotas)
+        composerQuotaResultRequest == composerQuotaRequest ? composerQuotaResult : []
     }
-    var nativeQuotaRuntime: RuntimeInstance? {
-        if case .managed = nextTurnModel { return nil }
-        guard let runtime = runtimeInstances.first(where: { $0.id == nextTurnRuntimeID && $0.enabled }),
-              runtimeTypes.first(where: { $0.id == runtime.typeID })?.nativeAccountQuota == true else { return nil }
-        return runtime
-    }
-    func observeRuntimeQuota(_ runtimeID: String) async {
-        var lastRead = Date.distantPast
-        while !Task.isCancelled {
-            let quota = runtimeQuotas[runtimeID]
-            let waiting = quota == nil || quota?.refreshing == true || (quota?.freshness == .unknown && quota?.problem == nil)
-            if waiting || Date().timeIntervalSince(lastRead) >= 30 { readRuntimeQuota(runtimeID); lastRead = Date() }
-            try? await Task.sleep(for: .seconds(2))
-        }
-    }
-    func readRuntimeQuota(_ runtimeID: String, refresh: Bool = false) {
-        guard !isPreview, !isShuttingDown, let transport,
-              let runtime = runtimeInstances.first(where: { $0.id == runtimeID }),
-              !runtimeQuotaReadsPending.contains(runtimeID) else { return }
-        runtimeQuotaReadsPending.insert(runtimeID)
-        performOnQueue { [weak self] in
-            let result = Result { try transport.runtimeQuota(runtimeID: runtimeID, refresh: refresh) }
-            DispatchQueue.main.async {
-                guard let self else { return }
-                self.runtimeQuotaReadsPending.remove(runtimeID)
-                guard self.runtimeInstances.first(where: { $0.id == runtimeID }) == runtime else { return }
-                switch result {
-                case .success(let quota): self.runtimeQuotas[runtimeID] = quota
-                case .failure(let error): self.runtimeQuotas[runtimeID] = AccountQuota(freshness: .unknown, windows: [], refreshing: false, problem: error.localizedDescription)
-                }
+    var composerQuotaError: String? { composerQuotaResultRequest == composerQuotaRequest ? composerQuotaFailure : nil }
+    func observeComposerQuota(_ request: ComposerQuotaRequest) async {
+        guard !isPreview, !isShuttingDown, !request.runtimeID.isEmpty, let transport else { return }
+        while !Task.isCancelled && composerQuotaRequest == request {
+            let result: Result<[ComposerAccountQuota], Error> = await withCheckedContinuation { continuation in
+                performOnQueue { continuation.resume(returning: Result { try transport.composerQuota(request) }) }
             }
+            guard !Task.isCancelled, !isShuttingDown, composerQuotaRequest == request else { return }
+            switch result {
+            case .success(let entries): composerQuotaResult = entries; composerQuotaFailure = nil
+            case .failure(let error): composerQuotaResult = []; composerQuotaFailure = error.localizedDescription
+            }
+            composerQuotaResultRequest = request
+            let waiting = composerQuotaResult.contains { $0.quota.refreshing || ($0.quota.freshness == .unknown && $0.quota.problem == nil) }
+            try? await Task.sleep(for: .seconds(waiting ? 2 : 30))
         }
     }
     func describe(_ turn: TranscriptTurn) -> TurnSettingsSummary? {

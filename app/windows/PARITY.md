@@ -35,3 +35,5 @@
 2026-10-27：额度借鉴 quotio（[任务](../../tasks/quotio-reference/packet.md)）。核心的智能排序考虑重置节奏，Windows 的智能策略说明已同步；金额以文字显示，`openrouter:keyLimit` 有显示名。额度历史、提醒通知、节奏提示与账户额度开关尚未接入。
 
 遥测调用使用显式 NativeOperation 类别，与 Apple／Android 的同类操作一致；标准事件名、v2 字段、结果含义及迁移归[遥测契约](../../docs/design/telemetry.md)。分类不再依赖 CallerMemberName，写操作不会默认归为读取。
+
+2026-10-28 额度边界重构：共享绑定新增 composer 额度投影，窗口／余额／节奏值类型改为中性命名，窗口观测时间与有效期允许缺失。Windows 额度组件同步类型与可选有效期访问；composer 尚未消费统一查询，仍需后续平台对齐。

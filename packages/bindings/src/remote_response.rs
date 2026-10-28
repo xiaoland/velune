@@ -106,6 +106,9 @@ pub enum BindingApplicationResponse {
     RuntimeModelList {
         value: Vec<BindingRuntimeModel>,
     },
+    ComposerQuota {
+        value: Vec<BindingComposerQuotaEntry>,
+    },
     RuntimeQuota {
         value: BindingRuntimeQuotaStatus,
     },
@@ -315,6 +318,9 @@ impl TryFrom<Response> for BindingApplicationResponse {
                     value: convert(value)?,
                 }
             }
+            Response::ComposerQuota(value) => Self::ComposerQuota {
+                value: convert(value)?,
+            },
             Response::RuntimeQuota(value) => Self::RuntimeQuota {
                 value: convert(value)?,
             },

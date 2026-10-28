@@ -320,6 +320,9 @@ impl Application {
             } => Response::CreateConversationWithSelection(
                 application.create_conversation_with_selection(runtime_id, cwd, selection)?,
             ),
+            Command::ComposerQuota { context, refresh } => {
+                Response::ComposerQuota(application.composer_quota(context, refresh)?)
+            }
             Command::RuntimeQuota {
                 runtime_id,
                 refresh,

@@ -202,20 +202,28 @@ enum BindingMapping {
         result.available = value.available
         return result
     }
+    static func composerQuota(_ value: BindingComposerQuotaEntry) -> ComposerAccountQuota {
+        let observation = value.observation
+        var result = quota(freshness: observation.freshness, windows: observation.windows, refreshing: observation.refreshing, problem: observation.problem)
+        result.balances = observation.balances.map { QuotaBalance(id: $0.id, amount: $0.amount, unit: $0.unit, observedAt: Date(timeIntervalSince1970: Double($0.observedAtMs) / 1000)) }
+        result.available = observation.available
+        return ComposerAccountQuota(id: value.id, name: value.name, origin: value.origin, quota: result,
+                                    limits: value.limits.map { QuotaLimit(windowID: $0.windowId, maxUsedPercent: $0.maxUsedPercent) })
+    }
     static func quota(_ value: BindingRuntimeQuotaStatus) -> AccountQuota {
         quota(freshness: value.freshness, windows: value.windows, refreshing: value.refreshing, problem: value.problem)
     }
-    private static func quota(freshness sourceFreshness: BindingQuotaFreshness, windows: [BindingProviderQuotaWindow], refreshing: Bool, problem: String?) -> AccountQuota {
+    private static func quota(freshness sourceFreshness: BindingQuotaFreshness, windows: [BindingQuotaWindowObservation], refreshing: Bool, problem: String?) -> AccountQuota {
         let freshness: QuotaFreshness
         switch sourceFreshness { case .fresh: freshness = .fresh; case .stale: freshness = .stale; case .unknown: freshness = .unknown; case .unsupported: freshness = .unsupported }
         func date(_ ms: Int64) -> Date { Date(timeIntervalSince1970: Double(ms) / 1000) }
-        func pace(_ value: BindingProviderQuotaPace) -> QuotaPace {
+        func pace(_ value: BindingQuotaPaceObservation) -> QuotaPace {
             let status: QuotaPace.Status
             switch value.status { case .onPace: status = .onPace; case .runsOutBeforeReset: status = .runsOutBeforeReset; case .exhausted: status = .exhausted }
             return QuotaPace(expectedUsedPercent: value.expectedUsedPercent, runsOutAt: value.runsOutAtMs.map(date), status: status)
         }
         return AccountQuota(freshness: freshness,
-                             windows: windows.map { QuotaWindow(id: $0.id, modelIDs: $0.modelIds, usedPercent: $0.usedPercent, resetsAt: $0.resetAtMs.map(date), period: $0.windowMs.map { Double($0) / 1000 }, observedAt: date($0.observedAtMs), pace: $0.pace.map(pace)) },
+                             windows: windows.map { QuotaWindow(id: $0.id, modelIDs: $0.modelIds, usedPercent: $0.usedPercent, resetsAt: $0.resetAtMs.map(date), period: $0.windowMs.map { Double($0) / 1000 }, observedAt: $0.observedAtMs.map(date), pace: $0.pace.map(pace)) },
                              refreshing: refreshing, problem: problem)
     }
     static func quotaObservation(_ value: BindingQuotaHistoryPoint) -> QuotaObservation {

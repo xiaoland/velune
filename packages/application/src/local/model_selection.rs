@@ -373,9 +373,11 @@ impl CoreRuntime {
             .as_bool()
             .ok_or_else(|| RuntimeError::invalid("quota refresh"))?;
         let runtime = self.runtime_instance(id)?;
-        Ok(serde_json::to_value(
-            self.runtime_quota.query(runtime, refresh)?,
-        )?)
+        Ok(serde_json::to_value(self.runtime_quota.query(
+            &runtime.id,
+            crate::native_quota_source::Capture::from_runtime(runtime),
+            refresh,
+        )?)?)
     }
 
     pub(super) fn runtime_models_action(&mut self, request: &Value) -> Result<Value, RuntimeError> {

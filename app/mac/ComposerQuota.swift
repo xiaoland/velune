@@ -1,55 +1,32 @@
 import Foundation
 import VeluneBindings
 
-/// Quota belongs to the selected provider accounts, not to a conversation's
-/// historical runtime. Route members sharing an account show it once.
+/// A presentation value projected by application; no provider or runtime configuration.
 struct ComposerAccountQuota: Identifiable {
-    enum Source {
-        case provider(AIProvider, modelIDs: [String])
-        case runtimeLogin(RuntimeInstance)
-    }
-    var source: Source
-    let quota: AccountQuota?
-    var id: String {
-        switch source {
-        case .provider(let provider, _): "provider:\(provider.id)"
-        case .runtimeLogin(let runtime): "runtime:\(runtime.id)"
-        }
-    }
-    var providerID: String? { if case .provider(let provider, _) = source { provider.id } else { nil } }
+    let id: String
+    let name: String
+    let origin: BindingQuotaOrigin
+    let quota: AccountQuota
+    let limits: [QuotaLimit]
     var title: String {
-        switch source {
-        case .provider(let provider, _): provider.name
-        case .runtimeLogin(let runtime): "\(runtime.name) · 登录额度"
+        switch origin {
+        case .provider: name
+        case .runtimeLogin: "\(name) · 登录额度"
+        case .conversationRecord: "\(name) · 会话记录中的限额"
         }
     }
-    func limit(for windowID: String) -> UInt8? {
-        guard case .provider(let provider, _) = source else { return nil }
-        return provider.quotaLimits.first { $0.windowID == windowID }?.maxUsedPercent
-    }
-    var windows: [QuotaWindow] {
-        guard case .provider(_, let modelIDs) = source else { return quota?.windows ?? [] }
-        return (quota?.windows ?? []).filter { window in modelIDs.contains(where: window.applies) }
-    }
+    var windows: [QuotaWindow] { quota.windows }
+    var isRecorded: Bool { if case .conversationRecord = origin { true } else { false } }
+    func limit(for windowID: String) -> UInt8? { limits.first { $0.windowID == windowID }?.maxUsedPercent }
+}
 
-    static func providerAccounts(for selection: ModelSelection?, gateway: GatewayConfig, quotas: [String: AccountQuota]) -> [Self] {
-        guard case .managed(let key) = selection else { return [] }
-        let keys = gateway.routes.first { $0.recordKey == key }?.members ?? [key]
-        var accounts: [Self] = []
-        for key in keys {
-            guard let provider = gateway.providers.first(where: { $0.models.contains { $0.recordKey == key } }),
-                  provider.composition.quotaSource != .none, !provider.authentication.awaitsSignIn,
-                  let model = provider.models.first(where: { $0.recordKey == key }) else { continue }
-            if let index = accounts.firstIndex(where: { $0.providerID == provider.id }),
-               case .provider(_, var modelIDs) = accounts[index].source {
-                if !modelIDs.contains(model.providerModelID) { modelIDs.append(model.providerModelID) }
-                accounts[index].source = .provider(provider, modelIDs: modelIDs)
-            } else {
-                accounts.append(Self(source: .provider(provider, modelIDs: [model.providerModelID]), quota: quotas[provider.id]))
-            }
-        }
-        return accounts
-    }
+/// Captures intent and view revisions so late replies cannot replace a newer selection.
+struct ComposerQuotaRequest: Equatable {
+    let runtimeID: String
+    let selection: ModelSelection?
+    let conversationID: String?
+    let conversationRevision: UInt64?
+    let configurationRevision: UInt64
 }
 
 /// Absolute local time remains precise even for resets several days away.

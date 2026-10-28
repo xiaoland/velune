@@ -1,8 +1,8 @@
 //! The application owns subscription observations; gateways only read this shared view.
 use crate::{
-    ProviderQuotaBalance, ProviderQuotaHistory, ProviderQuotaPace, ProviderQuotaStatus,
-    ProviderQuotaWindow, QuotaAlert, QuotaAlertKind, QuotaAlerts, QuotaFreshness,
-    QuotaHistoryBalance, QuotaHistoryPoint, QuotaHistoryWindow, QuotaPaceStatus,
+    ProviderQuotaHistory, ProviderQuotaStatus, QuotaAlert, QuotaAlertKind, QuotaAlerts,
+    QuotaBalanceObservation, QuotaFreshness, QuotaHistoryBalance, QuotaHistoryPoint,
+    QuotaHistoryWindow, QuotaPaceObservation, QuotaPaceStatus, QuotaWindowObservation,
 };
 use crate::{config::GatewayConfig, provider_authentication::AuthenticationMaterial};
 use serde_json::Value;
@@ -17,7 +17,7 @@ use velune_gateway::{QuotaSnapshot, QuotaSource, QuotaWindow};
 type Key = (String, String);
 struct Observation {
     windows: Vec<QuotaWindow>,
-    balances: Vec<ProviderQuotaBalance>,
+    balances: Vec<QuotaBalanceObservation>,
     available: Option<bool>,
     observed_at_ms: i64,
     expires_at_ms: i64,
@@ -74,7 +74,7 @@ struct Entry {
     reservation: Option<crate::kimi_quota::Owner>,
     identity_rejected: bool,
     windows: Vec<QuotaWindow>,
-    balances: Vec<ProviderQuotaBalance>,
+    balances: Vec<QuotaBalanceObservation>,
     available: Option<bool>,
     observed_at_ms: i64,
     expires_at_ms: i64,
@@ -666,14 +666,14 @@ impl SubscriptionQuota {
             windows: entry
                 .windows
                 .iter()
-                .map(|w| ProviderQuotaWindow {
+                .map(|w| QuotaWindowObservation {
                     id: w.id.clone(),
                     model_ids: w.model_ids.clone(),
                     used_percent: w.used_percent,
                     reset_at_ms: w.reset_at_ms,
                     window_ms: w.window_ms,
-                    observed_at_ms: w.observed_at_ms,
-                    expires_at_ms: w.expires_at_ms,
+                    observed_at_ms: Some(w.observed_at_ms),
+                    expires_at_ms: Some(w.expires_at_ms),
                     pace: pace(w),
                 })
                 .collect(),
@@ -749,8 +749,8 @@ impl QuotaSource for GatewayView {
                 used_percent: w.used_percent,
                 reset_at_ms: w.reset_at_ms,
                 window_ms: w.window_ms,
-                observed_at_ms: w.observed_at_ms,
-                expires_at_ms: w.expires_at_ms,
+                observed_at_ms: w.observed_at_ms.expect("provider observation timestamp"),
+                expires_at_ms: w.expires_at_ms.expect("provider observation expiry"),
             })
             .collect();
         match status.freshness {
@@ -769,14 +769,14 @@ impl QuotaSource for GatewayView {
 }
 /// The observed use against an even spend over the window's period, at the
 /// time of the observation. The rate is the average since the period began.
-fn pace(window: &QuotaWindow) -> Option<ProviderQuotaPace> {
+fn pace(window: &QuotaWindow) -> Option<QuotaPaceObservation> {
     let observed = window.observed_at_ms;
     let ahead = window.remaining_period(observed)?;
     let (reset, period) = (window.reset_at_ms?, window.window_ms? as f64);
     let used = window.used_percent.clamp(0.0, 100.0);
     let expected = 100.0 * (1.0 - ahead);
     if used >= 100.0 {
-        return Some(ProviderQuotaPace {
+        return Some(QuotaPaceObservation {
             expected_used_percent: expected,
             runs_out_at_ms: None,
             status: QuotaPaceStatus::Exhausted,
@@ -793,7 +793,7 @@ fn pace(window: &QuotaWindow) -> Option<ProviderQuotaPace> {
     } else {
         QuotaPaceStatus::OnPace
     };
-    Some(ProviderQuotaPace {
+    Some(QuotaPaceObservation {
         expected_used_percent: expected,
         runs_out_at_ms,
         status,

@@ -9,6 +9,7 @@ struct QuotaWindowRow: View {
     let fresh: Bool
     let display: BindingUsageDisplay
     var showsModels = false
+    var title: String? = nil
     private var reached: Bool { fresh && limit.map { window.usedPercent >= Double($0) } ?? false }
     /// At the average rate so far, the window empties before it resets.
     private var runsShort: Bool { fresh && window.pace?.status == .runsOutBeforeReset }
@@ -18,7 +19,7 @@ struct QuotaWindowRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
             HStack(spacing: 8) {
-                Text(QuotaWindow.title(window.id)).frame(minWidth: 70, alignment: .leading)
+                Text(title ?? QuotaWindow.title(window.id)).frame(minWidth: 70, alignment: .leading)
                 ProgressView(value: shown, total: 100).tint(reached ? Color.orange : nil)
                 Text(UsageFormat.label(Int(shown.rounded()), display)).monospacedDigit().foregroundStyle(fresh ? .primary : .secondary).frame(width: 64, alignment: .trailing)
             }
@@ -99,12 +100,6 @@ struct SubscriptionDisclosureNote: View {
 }
 
 extension View {
-    func readsRuntimeQuota(of runtimeID: String?, from store: AppStore) -> some View {
-        task(id: runtimeID) {
-            guard let runtimeID else { return }
-            await store.observeRuntimeQuota(runtimeID)
-        }
-    }
     /// Explanatory text under a form section, read from its leading edge.
     func formFooterStyle() -> some View {
         font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.leading).fixedSize(horizontal: false, vertical: true).frame(maxWidth: .infinity, alignment: .leading)

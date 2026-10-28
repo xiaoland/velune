@@ -142,9 +142,10 @@ final class Transport: @unchecked Sendable {
     func deleteProvider(gatewayID: String, providerID: String) throws -> BindingGatewayUpdate { try withApplication("deleteProvider", .changesConfiguration, .configurationWrite) { try $0.deleteProvider(gatewayId: gatewayID, providerId: providerID) } }
     func saveModelRoute(gatewayID: String, route: ModelRoute) throws -> BindingGatewayUpdate { try withApplication("saveModelRoute", .changesConfiguration, .configurationWrite) { try $0.saveModelRoute(gatewayId: gatewayID, route: BindingMapping.bindingRoute(route)) } }
     func deleteModelRoute(gatewayID: String, recordKey: String) throws -> BindingGatewayUpdate { try withApplication("deleteModelRoute", .changesConfiguration, .configurationWrite) { try $0.deleteModelRoute(gatewayId: gatewayID, routeRecordKey: recordKey) } }
-    func runtimeQuota(runtimeID: String, refresh: Bool) throws -> AccountQuota {
-        try withApplication("runtimeQuota", .reads, .read) { application in
-            BindingMapping.quota(try application.runtimeQuota(runtimeId: runtimeID, refresh: refresh))
+    func composerQuota(_ request: ComposerQuotaRequest) throws -> [ComposerAccountQuota] {
+        try withApplication("composerQuota", .reads, .read) { application in
+            try application.composerQuota(context: BindingComposerQuotaContext(runtimeId: request.runtimeID,
+                selection: request.selection.map(BindingMapping.bindingSelection), conversationId: request.conversationID), refresh: false).map(BindingMapping.composerQuota)
         }
     }
     func providerQuota(gatewayID: String, providerID: String, refresh: Bool) throws -> AccountQuota {

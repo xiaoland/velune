@@ -109,7 +109,7 @@ Swift 生成模块名为 `VeluneBindings`，FFI 模块名为 `VeluneBindingsFFI`
 
 `provider_quota(gateway_id, provider_id)` 和 `refresh_provider_quota` 返回 `BindingProviderQuotaStatus`，都是立即返回的有界入口；后者请求一次异步采样，重复请求合并；全服务 4 个槽位已满时本次不启动、不排队，返回 `refreshing=false`，调用方需后续 query／refresh 重试，不能把它当成已经获得新额度。平台轮询 `refreshing` 与 `freshness`（Fresh／Stale／Unknown／Unsupported），显示窗口百分比、观测／过期／重置 Unix 毫秒、可选模型范围及 `available`。Stale 仅供展示，不表示仍可用于阈值准入；`available=false` 独立于窗口百分比，可表示供应商明确暂停。首次有阈值但额度仍未知时请求会暂停，前端应允许先刷新并等 Fresh，不能自行把 Unknown 当作零使用量。查询和模型使用才触发到期刷新，应用不为闲置账户持续轮询；关闭或换绑取消采样。认证、额度和调度均由 Rust 协调，前端不调用 usage HTTP、推导刷新结果或保存第二份可写额度缓存。Mac 设置的“模型路由”页与提供商编辑器是当前消费者，见 [Mac README](../../app/mac/README.md)。
 
-`runtime_quota(runtime_id, refresh)` 返回 `BindingRuntimeQuotaStatus`，携带实例标识、窗口、鲜度、刷新状态和问题。它读取原生 CLI 登录的额度，独立于提供商注册；平台先读取 `BindingRuntimeTypeDescriptor.native_account_quota` 再请求。当前支持本机继承 HOME 的 Claude Code，其他执行位置明确返回 Unsupported 与原因，不能用本机默认账户作替代。该命令同样经过本地与远程控制的类型接口；窗口格式复用 `BindingProviderQuotaWindow`，来源仍是运行时，不填写虚构的 gateway／provider 标识。
+`runtime_quota(runtime_id, refresh)` 返回 `BindingRuntimeQuotaStatus`，携带实例标识、窗口、鲜度、刷新状态和问题。它读取原生 CLI 登录的额度，独立于提供商注册；该接口供需要指定运行时的调用方使用；composer 统一使用 composer_quota，由核心选择来源。当前支持本机继承 HOME 的 Claude Code，其他执行位置明确返回 Unsupported 与原因，不能用本机默认账户作替代。该命令同样经过本地与远程控制的类型接口；窗口格式复用 `BindingQuotaWindowObservation`，来源仍是运行时，不填写虚构的 gateway／provider 标识。
 
 额度状态的窗口另有可选 `window_ms` 与 `pace`（`BindingProviderQuotaPace { expected_used_percent, runs_out_at_ms, status }`，`status` 为 OnPace／RunsOutBeforeReset／Exhausted），状态另有 `balances`（`BindingProviderQuotaBalance { id, amount, unit, observed_at_ms }`）。`provider_quota_history(gateway_id, provider_id, since_ms)` 返回保留的成功观测（窗口已用比例与金额），`clear_provider_quota_history` 清除该提供商的记录；`quota_alerts(since)` 返回序号大于 `since` 的提醒（使用上限、用尽、不可用）与新的游标，平台以游标轮询，首次传 0。`api_account_service_name(endpoint)` 给出该地址对应的官方账户额度服务名，不是官方地址时为 None；`BindingProviderQuotaSource::ApiAccount` 只适用于这些地址。远控以同名命令转发这三项。
 
@@ -127,3 +127,5 @@ ARK 查询认证通过 save_provider 的可选参数 quota_authentication_edit�
 
 
 `BindingFollowUp.can_resume` 声明当前原生上下文可无新用户消息继续；`resume_turn(runtime_id, conversation_id, selection, effort, permission_mode)` 对应 typed `ResumeTurn` 命令，本地与远控使用同一接口，runtime 参数是快照的 `context_runtime_id`。它不接受正文或附件，失败不会自动改发文本，也不解除队列暂停。`can_continue` 与 `can_resume` 同义，均受即时执行资格约束；运行中、停止中或异地运行不能恢复。桌面端还须校验下一轮运行时为当前上下文、正文与附件为空，并阻止输入法组词或请求在途的重复提交。
+
+`composer_quota(BindingComposerQuotaContext, refresh)` 是状态栏额度的统一入口：上下文传明确的运行时、模型选择和会话引用，结果为 `BindingComposerQuotaEntry` 列表。平台不展开模型路由、不按运行时能力切换额度服务，也不从历史 rateLimits 猜测当前账户。`BindingQuotaOrigin` 保留 Provider／RuntimeLogin／ConversationRecord 的语义；中性窗口、节奏与余额类型使用 `BindingQuotaWindowObservation`、`BindingQuotaPaceObservation`、`BindingQuotaBalanceObservation`。窗口观测时间和有效期允许缺失，以表达没有时间戳的历史记录。提供商调度仍只消费其已验证的观测，不接收历史或原生登录展示结果。

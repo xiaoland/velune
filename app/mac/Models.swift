@@ -467,7 +467,7 @@ struct QuotaWindow: Sendable, Equatable {
     var resetsAt: Date?
     /// How long one period lasts, when the provider states it.
     var period: TimeInterval?
-    var observedAt: Date
+    var observedAt: Date?
     /// Use against an even spend over the period, when both its reset and length are known.
     var pace: QuotaPace?
     func applies(to providerModelID: String) -> Bool { modelIDs?.contains(providerModelID) ?? true }
@@ -528,7 +528,7 @@ struct AccountQuota: Sendable, Equatable {
     var available: Bool?
     var refreshing: Bool
     var problem: String?
-    var observedAt: Date? { (windows.map(\.observedAt) + balances.map(\.observedAt)).max() }
+    var observedAt: Date? { (windows.compactMap(\.observedAt) + balances.map(\.observedAt)).max() }
 }
 
 enum FailoverMode: String, Codable, Sendable { case disabled }

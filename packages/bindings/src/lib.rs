@@ -1270,6 +1270,15 @@ impl VeluneApplication {
         )
     }
 
+    pub fn composer_quota(
+        &self,
+        context: BindingComposerQuotaContext,
+        refresh: bool,
+    ) -> Result<Vec<BindingComposerQuotaEntry>, BindingError> {
+        let context = convert(context)?;
+        request!(self, "composer_quota", ComposerQuota { context, refresh })
+    }
+
     pub fn runtime_quota(
         &self,
         runtime_id: String,

@@ -15,7 +15,6 @@ struct ConversationStatus: Equatable {
     var reasoningTokens: UInt64?
     var unrecordedTurns: Int
     var directory: String?
-    var rateLimits: [RateLimit]
     var costMicroUSD: UInt64?
 
     var contextFraction: Double? {
@@ -31,7 +30,7 @@ struct ConversationStatus: Equatable {
         case .contextUsage: contextTokens != nil
         case .sessionTokens: sessionTokens != nil
         case .workingDirectory: directory != nil
-        case .rateLimits: !rateLimits.isEmpty
+        case .rateLimits: false
         case .sessionCost: costMicroUSD != nil
         }
     }
@@ -44,20 +43,14 @@ struct ComposerStatusLine: View {
     @State private var branch: String?
     @State private var showsDetails = false
 
-    private var status: ConversationStatus {
-        var value = store.conversationStatus
-        // Historical native limits can belong to another account or runtime.
-        if case .managed = store.nextTurnModel { value.rateLimits = [] }
-        if store.nativeQuotaRuntime != nil { value.rateLimits = [] }
-        return value
-    }
+    private var status: ConversationStatus { store.conversationStatus }
     private var accounts: [ComposerAccountQuota] { store.composerAccountQuotas }
 
     var body: some View {
         let status = self.status
-        let items = store.statusLine.filter { $0 == .rateLimits ? !accounts.isEmpty || status.has($0) : status.has($0) }
-        Group {
-            if !items.isEmpty || !accounts.isEmpty {
+        let items = store.statusLine.filter { $0 == .rateLimits ? !accounts.isEmpty || store.composerQuotaError != nil : status.has($0) }
+        HStack(spacing: 0) {
+            if !items.isEmpty || !accounts.isEmpty || store.composerQuotaError != nil {
                 Button { showsDetails.toggle() } label: {
                     HStack(spacing: 10) {
                         if items.isEmpty { Text("状态") }
@@ -71,12 +64,13 @@ struct ComposerStatusLine: View {
                 .accessibilityLabel("会话状态")
                 .accessibilityValue(summary(items, status))
                 .popover(isPresented: $showsDetails, arrowEdge: .top) {
-                    StatusDetails(status: status, accounts: accounts, branch: branch, display: store.contextUsageDisplay, quotaDisplay: store.usageDisplay)
+                    StatusDetails(status: status, accounts: accounts, branch: branch, display: store.contextUsageDisplay, quotaDisplay: store.usageDisplay, quotaProblem: store.composerQuotaError)
                 }
             }
         }
-        .readsQuota(of: accounts.compactMap(\.providerID), from: store)
-        .readsRuntimeQuota(of: store.nativeQuotaRuntime?.id, from: store)
+        .task(id: store.composerQuotaRequest) {
+            await store.observeComposerQuota(store.composerQuotaRequest)
+        }
         // The branch can change with any turn; reading it is one git call.
         .task(id: "\(status.conversationID ?? "")|\(status.directory ?? "")|\(status.endedTurns)") {
             guard status.directory != nil else { branch = nil; return }
@@ -102,9 +96,7 @@ struct ComposerStatusLine: View {
                 }.truncationMode(.middle)
             }
         case .rateLimits:
-            let text = accounts.isEmpty
-                ? status.rateLimits.map { "\(StatusFormat.window($0.windowMinutes, short: true)) \(StatusFormat.limit($0.usedPercent, store.usageDisplay, short: true))" }.joined(separator: " · ")
-                : accountSummary(short: true)
+            let text = store.composerQuotaError.map { _ in "额度读取失败" } ?? accountSummary(short: true)
             Label(text, systemImage: "gauge.with.dots.needle.33percent")
         case .sessionCost:
             if let cost = status.costMicroUSD { Text(StatusFormat.cost(cost)) }
@@ -122,10 +114,7 @@ struct ComposerStatusLine: View {
             case .sessionTokens: return status.sessionTokens.map { "本会话累计：\(TokenCount.format($0)) tokens" }
             case .workingDirectory: return status.directory.map { "工作目录：\($0)" + (branch.map { "（\($0)）" } ?? "") }
             case .rateLimits:
-                if !accounts.isEmpty { return accountSummary(short: false) }
-                return "账户限额：" + status.rateLimits.map {
-                    StatusFormat.window($0.windowMinutes, short: false) + "：" + StatusFormat.limitDetail($0, store.usageDisplay)
-                }.joined(separator: "；")
+                return store.composerQuotaError ?? accountSummary(short: false)
             case .sessionCost: return status.costMicroUSD.map { "费用估算：\(StatusFormat.cost($0))" }
             }
         }
@@ -137,11 +126,11 @@ struct ComposerStatusLine: View {
             let windows = account.windows.map { window in
                 let used = min(max(window.usedPercent, 0), 100)
                 let label = UsageFormat.label(Int((store.usageDisplay == .remaining ? 100 - used : used).rounded()), store.usageDisplay)
-                return QuotaWindow.name(window.id) + " " + label + (short ? "" : "，" + QuotaResetFormat.text(window.resetsAt))
+                return (account.isRecorded && window.period == nil ? "限额" : QuotaWindow.name(window.id)) + " " + label + (short ? "" : "，" + QuotaResetFormat.text(window.resetsAt))
             }
-            let balances = (account.quota?.balances ?? []).map { $0.title + " " + $0.formatted }
+            let balances = (account.quota.balances).map { $0.title + " " + $0.formatted }
             let values = windows + balances
-            let state = account.quota?.freshness == .stale ? "（额度已过期）" : ""
+            let state = !account.isRecorded && account.quota.freshness == .stale ? "（额度已过期）" : ""
             return account.title + state + "：" + (values.isEmpty ? QuotaStatusText.summary(account.quota) : values.joined(separator: " · "))
         }.joined(separator: short ? " · " : "\n")
     }
@@ -173,6 +162,7 @@ struct StatusDetails: View {
     let branch: String?
     let display: BindingUsageDisplay
     let quotaDisplay: BindingUsageDisplay
+    var quotaProblem: String? = nil
     var body: some View {
         ViewThatFits(in: .vertical) {
             details
@@ -214,30 +204,26 @@ struct StatusDetails: View {
                     row("路径", (directory as NSString).abbreviatingWithTildeInPath)
                     if let branch { row("分支", branch) }
                 }
-                if !status.rateLimits.isEmpty {
-                    heading("账户限额")
-                    ForEach(Array(status.rateLimits.enumerated()), id: \.offset) { _, limit in
-                        row(StatusFormat.window(limit.windowMinutes, short: false),
-                            StatusFormat.limitDetail(limit, quotaDisplay))
-                    }
-                }
                 if let cost = status.costMicroUSD {
                     heading("费用")
                     row("估算", StatusFormat.cost(cost))
                 }
             }
+            if let quotaProblem { Divider(); Text(quotaProblem).foregroundStyle(.secondary) }
             ForEach(accounts) { account in
                 Divider()
                 Text(account.title).font(.subheadline.weight(.semibold))
-                if account.quota?.available == false { Text("账户当前不可用").font(.caption).foregroundStyle(.orange) }
+                if account.quota.available == false { Text("账户当前不可用").font(.caption).foregroundStyle(.orange) }
                 ForEach(Array(account.windows.enumerated()), id: \.offset) { _, window in
                     QuotaWindowRow(window: window, limit: account.limit(for: window.id),
-                                   fresh: account.quota?.freshness == .fresh, display: quotaDisplay, showsModels: true)
+                                   fresh: account.quota.freshness == .fresh, display: quotaDisplay, showsModels: true, title: account.isRecorded && window.period == nil ? "限额" : nil)
                 }
-                ForEach(Array((account.quota?.balances ?? []).enumerated()), id: \.offset) { _, balance in
-                    QuotaBalanceRow(balance: balance, fresh: account.quota?.freshness == .fresh)
+                ForEach(Array((account.quota.balances).enumerated()), id: \.offset) { _, balance in
+                    QuotaBalanceRow(balance: balance, fresh: account.quota.freshness == .fresh)
                 }
-                QuotaStatusText(quota: account.quota)
+                if account.isRecorded {
+                    Text("会话记录，非实时账户查询").font(.caption).foregroundStyle(.secondary)
+                } else { QuotaStatusText(quota: account.quota) }
             }
             Text("会话用量取自运行时记录；累计为已记录各轮之和，输入含缓存，输出含推理；费用为运行时估算，不代表实际账单。")
                 .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)

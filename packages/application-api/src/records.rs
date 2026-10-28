@@ -640,17 +640,17 @@ pub enum QuotaFreshness {
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ProviderQuotaWindow {
+pub struct QuotaWindowObservation {
     pub id: String,
     pub model_ids: Option<Vec<String>>,
     pub used_percent: f64,
     pub reset_at_ms: Option<i64>,
     /// How long one period lasts, when the source states it.
     pub window_ms: Option<i64>,
-    pub observed_at_ms: i64,
-    pub expires_at_ms: i64,
+    pub observed_at_ms: Option<i64>,
+    pub expires_at_ms: Option<i64>,
     /// Present when the source states both the reset and the period.
-    pub pace: Option<ProviderQuotaPace>,
+    pub pace: Option<QuotaPaceObservation>,
 }
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -665,7 +665,7 @@ pub enum QuotaPaceStatus {
 /// rate is the average since the period began, not a forecast.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ProviderQuotaPace {
+pub struct QuotaPaceObservation {
     /// The used share an even spend would have reached when observed.
     pub expected_used_percent: f64,
     /// When the window empties at that rate, only if before its reset.
@@ -676,7 +676,7 @@ pub struct ProviderQuotaPace {
 /// It has no period and is never converted to a percentage.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
-pub struct ProviderQuotaBalance {
+pub struct QuotaBalanceObservation {
     pub id: String,
     pub amount: f64,
     /// An ISO 4217 currency code.
@@ -689,8 +689,8 @@ pub struct ProviderQuotaStatus {
     pub gateway_id: String,
     pub provider_id: String,
     pub freshness: QuotaFreshness,
-    pub windows: Vec<ProviderQuotaWindow>,
-    pub balances: Vec<ProviderQuotaBalance>,
+    pub windows: Vec<QuotaWindowObservation>,
+    pub balances: Vec<QuotaBalanceObservation>,
     pub available: Option<bool>,
     pub refreshing: bool,
     pub problem: Option<String>,
@@ -703,7 +703,7 @@ pub struct ProviderQuotaStatus {
 pub struct RuntimeQuotaStatus {
     pub runtime_id: String,
     pub freshness: QuotaFreshness,
-    pub windows: Vec<ProviderQuotaWindow>,
+    pub windows: Vec<QuotaWindowObservation>,
     pub refreshing: bool,
     pub problem: Option<String>,
 }
@@ -780,4 +780,41 @@ pub struct QuotaAlerts {
 pub struct AgentUriResolution {
     pub conversations: Vec<ListedConversation>,
     pub failures: Vec<HistoryFailure>,
+}
+
+/// Explicit next-turn intent; no inference from a prepared session's model.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ComposerQuotaContext {
+    pub runtime_id: String,
+    pub selection: Option<crate::ModelSelection>,
+    pub conversation_id: Option<String>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum QuotaOrigin {
+    Provider,
+    RuntimeLogin,
+    ConversationRecord,
+}
+/// An observation independent of routing, authentication configuration and display policy.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QuotaObservation {
+    pub freshness: QuotaFreshness,
+    pub windows: Vec<QuotaWindowObservation>,
+    pub balances: Vec<QuotaBalanceObservation>,
+    pub available: Option<bool>,
+    pub refreshing: bool,
+    pub problem: Option<String>,
+}
+/// Resolved source and applicable observation for one composer entry.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ComposerQuotaEntry {
+    pub id: String,
+    pub name: String,
+    pub origin: QuotaOrigin,
+    pub observation: QuotaObservation,
+    pub limits: Vec<crate::config::QuotaLimit>,
 }

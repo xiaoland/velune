@@ -1,6 +1,6 @@
 //! An API service's own account metadata, read with the provider's key from
 //! the official host its model requests already reach; never another host.
-use crate::ProviderQuotaBalance;
+use crate::QuotaBalanceObservation;
 use chrono::{Datelike, Duration as Days, TimeZone, Utc};
 use serde_json::Value;
 use std::time::Duration;
@@ -20,7 +20,7 @@ fn url(service: Service) -> String {
 
 pub(crate) struct Observation {
     pub windows: Vec<QuotaWindow>,
-    pub balances: Vec<ProviderQuotaBalance>,
+    pub balances: Vec<QuotaBalanceObservation>,
     pub available: Option<bool>,
 }
 #[derive(Clone, PartialEq, Eq)]
@@ -89,7 +89,7 @@ pub(crate) fn parse(
     if now <= 0 {
         return Err(());
     }
-    let balance = |id: &str, amount: f64, unit: &str| ProviderQuotaBalance {
+    let balance = |id: &str, amount: f64, unit: &str| QuotaBalanceObservation {
         id: id.into(),
         amount,
         unit: unit.into(),
@@ -107,7 +107,7 @@ pub(crate) fn parse(
                     .ok_or(())?;
                 if balances
                     .iter()
-                    .any(|b: &ProviderQuotaBalance| b.unit == currency)
+                    .any(|b: &QuotaBalanceObservation| b.unit == currency)
                 {
                     return Err(());
                 }

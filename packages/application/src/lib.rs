@@ -23,6 +23,8 @@ mod claude_quota;
 mod credential_helper;
 #[cfg(feature = "local-runtime")]
 mod kimi_quota;
+#[cfg(feature = "local-runtime")]
+mod native_quota_source;
 mod provider_authentication;
 #[cfg(feature = "local-runtime")]
 mod provider_login;

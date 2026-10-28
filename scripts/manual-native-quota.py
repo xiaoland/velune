@@ -48,6 +48,7 @@ def main():
     parser.add_argument('--bindings', type=Path, required=True, help='matching Python bindings directory')
     parser.add_argument('--swift-build', type=Path, required=True, help='SwiftPM dependency build directory')
     parser.add_argument('--sources', type=Path, help='optional frozen app/mac source directory')
+    parser.add_argument('--core-only', action='store_true', help='run core behavior checks without compiling Mac presentation')
     args = parser.parse_args()
     repository = Path(__file__).resolve().parent.parent
     library = args.bundle/'Contents/Frameworks/libvelune_bindings.dylib'
@@ -118,8 +119,17 @@ def main():
                 app.upsert_runtime_with_execution(a,execution)
                 result=app.runtime_quota('unsupported',True)
                 assert result.freshness == b.BindingQuotaFreshness.UNSUPPORTED and result.problem and not result.windows
+                projected=app.composer_quota(b.BindingComposerQuotaContext(runtime_id='unsupported',selection=None,conversation_id=None),False)
+                assert len(projected)==1 and projected[0].origin==b.BindingQuotaOrigin.RUNTIME_LOGIN
+                assert projected[0].observation.freshness==b.BindingQuotaFreshness.UNSUPPORTED and projected[0].observation.problem
                 assert sum(c['args'][:2]==['-p','/usage'] for c in calls()) == before, 'Unsupported execution read the local login'
-            print('PASS native source/default directory/change/cancellation/deletion/failure/HOME/SSH')
+            for selection in [None, b.BindingModelSelection.NATIVE(provider_id=None,model_id='sonnet')]:
+                context=b.BindingComposerQuotaContext(runtime_id='B',selection=selection,conversation_id=None)
+                wait_for(lambda:bool(app.composer_quota(context,False)) and app.composer_quota(context,False)[0].observation.freshness==b.BindingQuotaFreshness.FRESH,'Composer native/default never refreshed')
+                entry=app.composer_quota(context,False)[0]
+                assert entry.origin==b.BindingQuotaOrigin.RUNTIME_LOGIN and [w.used_percent for w in entry.observation.windows]==[22,65]
+                assert not entry.limits
+            print('PASS core composer query: native/default without providers; source/default directory/change/cancellation/deletion/failure/HOME/SSH')
         finally: app.shutdown()
 
         for profile in ['without-provider','with-provider']:
@@ -128,8 +138,30 @@ def main():
                 runtime(app,'A',home/'.claude'); runtime(app,'B',root/'B')
                 if profile=='with-provider':
                     draft=b.BindingProviderDraft(id='',name='提供商 B',protocol=b.BindingGatewayProtocol.MESSAGES_V1,endpoint='',execution_backend=b.BindingExecutionBackend.CLAUDE_CLI(binary=str(binary)),request_profile=b.BindingRequestProfile.NATIVE,authentication_source=b.BindingProviderAuthenticationSource.CLAUDE_CLI,quota_source=b.BindingProviderQuotaSource.CLAUDE_CLI_USAGE,models=[b.BindingProviderModel(record_key='',provider_model_id='sonnet',nickname='',icon=None,context_window=None,max_output_tokens=None,reasoning_levels=None)],quota_limits=[])
+                    draft.models.append(b.BindingProviderModel(record_key='',provider_model_id='opus',nickname='',icon=None,context_window=None,max_output_tokens=None,reasoning_levels=None))
                     app.save_provider('default',draft,b.BindingAuthenticationEdit.USE_CLAUDE_CODE_LOGIN(login=b.BindingLinkedClaudeLogin.RUNTIME(instance_id='B')))
+                    draft.name='提供商 A'
+                    draft.models=[b.BindingProviderModel(record_key='',provider_model_id='sonnet',nickname='',icon=None,context_window=None,max_output_tokens=None,reasoning_levels=None)]
+                    app.save_provider('default',draft,b.BindingAuthenticationEdit.USE_CLAUDE_CODE_LOGIN(login=b.BindingLinkedClaudeLogin.RUNTIME(instance_id='A')))
+                    providers=app.list().gateways[0].providers
+                    pb=next(p for p in providers if p.name=='提供商 B');pa=next(p for p in providers if p.name=='提供商 A')
+                    # A route must use every member, preserving first-source order and deduplicating B.
+                    members=[pb.models[1].record_key,pa.models[0].record_key,pb.models[0].record_key]
+                    app.save_model_route('default',b.BindingModelRoute(record_key='',name='额度路由',members=members,strategy=b.BindingRoutingStrategy.ORDER,weights={},sticky=False))
+                    route=app.list().gateways[0].routes[0]
+                    context=b.BindingComposerQuotaContext(runtime_id='A',selection=b.BindingModelSelection.MANAGED(model_record_key=route.record_key),conversation_id=None)
+                    def route_ready():
+                        values=app.composer_quota(context,False)
+                        return len(values)==2 and all(v.observation.freshness==b.BindingQuotaFreshness.FRESH for v in values)
+                    wait_for(route_ready,'Full route never refreshed')
+                    values=app.composer_quota(context,False)
+                    assert [v.name for v in values]==['提供商 B','提供商 A']
+                    assert [[w.used_percent for w in v.observation.windows] for v in values]==[[22,65],[54,25]]
+                    assert all(v.origin==b.BindingQuotaOrigin.PROVIDER for v in values)
+                    print('PASS core composer route: all members, source deduplication, same-model account separation')
             finally: app.shutdown()
+
+        if args.core_only: return
 
         # A fresh binding object avoids linking an old cached ABI into the background check.
         modules=root/'Modules'; modules.mkdir()

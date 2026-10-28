@@ -525,7 +525,17 @@ impl CoreRuntime {
         }) {
             self.next_turn_runtime_id = None;
         }
-        self.runtime_quota.retain(&self.runtime_instances);
+        self.runtime_quota.retain(
+            &self
+                .runtime_instances
+                .iter()
+                .filter_map(|runtime| {
+                    crate::native_quota_source::Capture::from_runtime(runtime)
+                        .ok()
+                        .map(|capture| (runtime.id.clone(), capture))
+                })
+                .collect(),
+        );
         Ok(
             json!({"runtimeInstances":self.runtime_instances,"runtimeTypes":runtime_types(),"executionInvalidated":execution_invalidated}),
         )

@@ -45,6 +45,18 @@ impl From<&GatewayConfig> for GatewaySummary {
     }
 }
 impl Application {
+    pub fn composer_quota(
+        &mut self,
+        context: ComposerQuotaContext,
+        refresh: bool,
+    ) -> Result<Vec<ComposerQuotaEntry>, Error> {
+        self.execute(
+            "composerQuota",
+            json!({"context":context,"refresh":refresh}),
+            None,
+        )
+    }
+
     /// Observe the runtime's own CLI login quota; this never creates a provider.
     pub fn runtime_quota(
         &mut self,

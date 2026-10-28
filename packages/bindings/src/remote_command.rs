@@ -204,6 +204,10 @@ pub enum BindingApplicationCommand {
     RuntimeModels {
         runtime_id: String,
     },
+    ComposerQuota {
+        context: BindingComposerQuotaContext,
+        refresh: bool,
+    },
     RuntimeQuota {
         runtime_id: String,
         refresh: bool,
@@ -717,6 +721,10 @@ impl TryFrom<BindingApplicationCommand> for Command {
                 runtime_id,
                 cwd,
                 selection: convert(selection)?,
+            },
+            BindingApplicationCommand::ComposerQuota { context, refresh } => Self::ComposerQuota {
+                context: convert(context)?,
+                refresh,
             },
             BindingApplicationCommand::RuntimeQuota {
                 runtime_id,

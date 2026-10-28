@@ -36,26 +36,26 @@ struct AcceptanceError: Error, CustomStringConvertible {
                 try require(store.runtimeTypes.first { $0.id == "claude-code-2.1" }?.nativeAccountQuota == true, "Core capability did not reach the Store")
                 if profile == "without-provider" { try require(store.providers.isEmpty, "Fixture must have no providers") }
                 store.quotaAcceptanceSelection(runtimeID: "A", model: .native(providerID: nil, modelID: "sonnet"))
-                try require(store.composerAccountQuotas.count == 1 && store.composerAccountQuotas[0].quota == nil, "Loading source must exist before the first read")
-                observer = Task { await store.observeRuntimeQuota("A") }
-                try await waitFor { store.runtimeQuotas["A"]?.freshness == .fresh }
+                observer = Task { await store.observeComposerQuota(store.composerQuotaRequest) }
+                try await waitFor { store.composerAccountQuotas.first?.quota.freshness == .fresh }
                 try require(store.composerAccountQuotas.first?.windows.map(\.usedPercent) == [54, 25], "Native A read another account")
                 try require(store.composerAccountQuotas.first?.title.contains("登录额度") == true, "Display must identify login quota")
+                observer?.cancel()
                 store.quotaAcceptanceSelection(runtimeID: "A", model: nil)
+                observer = Task { await store.observeComposerQuota(store.composerQuotaRequest) }
+                try await waitFor { store.composerAccountQuotas.first?.quota.freshness == .fresh }
                 try require(store.composerAccountQuotas.first?.windows.map(\.usedPercent) == [54, 25], "Runtime default lost its login quota")
                 observer?.cancel()
                 if profile == "with-provider" {
                     guard let provider = store.providers.first(where: { $0.name == "提供商 B" }), let model = provider.models.first else { throw AcceptanceError(description: "Missing provider fixture") }
                     store.quotaAcceptanceSelection(runtimeID: "A", model: .managed(recordKey: model.recordKey))
-                    let deadline = Date().addingTimeInterval(20)
-                    while store.providerQuotas[provider.id]?.freshness != .fresh && Date() < deadline {
-                        store.readProviderQuotas([provider.id])
-                        try await Task.sleep(for: .milliseconds(100))
-                    }
+                    observer = Task { await store.observeComposerQuota(store.composerQuotaRequest) }
+                    try await waitFor { store.composerAccountQuotas.first?.quota.freshness == .fresh }
                     try require(store.composerAccountQuotas.first?.windows.map(\.usedPercent) == [22, 65], "Managed B retained native A")
+                    observer?.cancel()
                     store.quotaAcceptanceSelection(runtimeID: "B", model: .native(providerID: nil, modelID: "sonnet"))
-                    observer = Task { await store.observeRuntimeQuota("B") }
-                    try await waitFor { store.runtimeQuotas["B"]?.freshness == .fresh }
+                    observer = Task { await store.observeComposerQuota(store.composerQuotaRequest) }
+                    try await waitFor { store.composerAccountQuotas.first?.quota.freshness == .fresh }
                     try require(store.composerAccountQuotas.first?.windows.map(\.usedPercent) == [22, 65], "Switching runtime retained A")
                     try require(store.composerAccountQuotas.first?.title == "B · 登录额度", "Display source is ambiguous")
                 }
