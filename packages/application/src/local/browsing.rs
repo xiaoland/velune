@@ -165,7 +165,7 @@ impl CoreRuntime {
                     state: EntryState::Unread,
                 })
                 .collect(),
-            _ => read(
+            RuntimeKind::DeepSeek => read(
                 history::list(&self.history_config(runtime)?, &runtime.id)
                     .map_err(|error| self.history_failure(runtime, error))?,
             ),
@@ -653,22 +653,13 @@ impl CoreRuntime {
                 Some(key),
                 Some(&physical),
             )?;
+            let session = self.session.pi()?;
             if is_new {
-                self.session
-                    .pi
-                    .client
-                    .as_mut()
-                    .expect("started Pi")
-                    .request(json!({"type":"new_session"}))
+                session
+                    .new_session()
                     .map_err(|error| RuntimeError::context("conversation create", error))?;
-            }
-            if !is_new {
-                self.session
-                    .pi
-                    .projection
-                    .as_mut()
-                    .expect("started Pi")
-                    .set_conversation(snapshot.conversation.clone());
+            } else {
+                session.set_conversation(snapshot.conversation.clone());
             }
             self.session.model_record_key = Some(key.into());
             self.bind_gateway_model()?;

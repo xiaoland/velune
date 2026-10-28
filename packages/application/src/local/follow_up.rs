@@ -228,14 +228,8 @@ impl CoreRuntime {
             ActiveState::Native(session) => session
                 .steer(&input)
                 .map_err(|error| RuntimeError::context("message steer", error)),
-            ActiveState::Pi => self
-                .session
-                .pi
-                .client
-                .as_mut()
-                .ok_or_else(|| RuntimeError::invalid("会话执行尚未准备"))?
+            ActiveState::Pi(session) => session
                 .steer(&input)
-                .map(drop)
                 .map_err(|error| RuntimeError::context("message steer", error)),
             ActiveState::Acp(_) | ActiveState::History(_) | ActiveState::Empty => {
                 Err(RuntimeError::invalid("此运行时当前不能插入消息"))
@@ -250,7 +244,7 @@ impl CoreRuntime {
         }
         match &self.session.active_state {
             ActiveState::Native(session) => session.can_steer(),
-            ActiveState::Pi => self.session.pi.busy && !self.session.cancel_requested,
+            ActiveState::Pi(session) => session.turn_running() && !self.session.cancel_requested,
             ActiveState::Acp(_) | ActiveState::History(_) | ActiveState::Empty => false,
         }
     }

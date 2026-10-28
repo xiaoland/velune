@@ -45,6 +45,8 @@ pub enum Error {
     CommandFailed(String),
     #[error("Pi SDK 接入失败: {0}")]
     Sdk(String),
+    #[error("会话执行尚未准备")]
+    NotStarted,
     #[error(transparent)]
     Execution(#[from] crate::execution::Error),
     #[error(transparent)]

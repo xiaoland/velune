@@ -512,7 +512,7 @@ impl CoreRuntime {
         let listed = listed_summary.is_some();
         if !listed
             && runtime.type_id == RuntimeKind::Pi
-            && matches!(self.session.active_state, ActiveState::Pi)
+            && matches!(self.session.active_state, ActiveState::Pi(_))
             && self.session.execution_runtime_id.as_deref() == Some(runtime_id)
             && self
                 .native_snapshot()
@@ -521,12 +521,7 @@ impl CoreRuntime {
             // A newly created Pi SessionManager reserves its native file path but
             // persists only after the first user/assistant record. Verify fresh
             // native metadata before granting this exact active draft exception.
-            self.session
-                .pi
-                .projection
-                .as_mut()
-                .expect("active Pi projection")
-                .invalidate_history();
+            self.session.pi()?.invalidate_history();
             self.sync_projection()?;
             if self
                 .native_snapshot()
@@ -543,22 +538,11 @@ impl CoreRuntime {
                     self.session.model_record_key = None;
                 } else {
                     self.session
-                        .pi
-                        .client
-                        .as_mut()
-                        .expect("active Pi client")
-                        .request(
-                            json!({"type":"set_session_name","name":title.expect("rename title")}),
-                        )
+                        .pi()?
+                        .set_name(title.expect("rename title"))
                         .map_err(|error| {
                             RuntimeError::context("Pi 原生草稿重命名失败，请重试", error)
                         })?;
-                    self.session
-                        .pi
-                        .projection
-                        .as_mut()
-                        .expect("active Pi projection")
-                        .invalidate_history();
                     self.sync_projection()?;
                     if !self.native_snapshot().is_some_and(|snapshot| {
                         snapshot.conversation.id == id
@@ -772,48 +756,19 @@ impl CoreRuntime {
         }
         self.drain_runtime()?;
         self.session.unsubmitted_draft = None;
-        let response = self
-            .session
-            .pi
-            .client
-            .as_mut()
-            .ok_or_else(|| RuntimeError::invalid("会话执行尚未准备"))?
-            .prompt(&input)
-            .map_err(|error| RuntimeError::context("message send", error));
-        if response.is_err() && self.session.gateway_runner.is_some() {
+        let sent = self.session.pi().and_then(|session| {
+            session
+                .send(&input)
+                .map_err(|error| RuntimeError::context("message send", error))
+        });
+        if sent.is_err() && self.session.gateway_runner.is_some() {
             self.finish_managed_turn()?;
         }
-        let response = response?;
+        sent?;
         self.session.cancel_requested = false;
         self.follow_started_turn();
-        self.session.pi.busy = response["data"]["disposition"] != "handled";
-        if self.session.pi.busy {
+        if self.turn_running() {
             self.started_turn_observation();
-            self.session
-                .pi
-                .projection
-                .as_mut()
-                .expect("accepted Pi prompt")
-                .begin_turn();
-        } else {
-            self.session
-                .pi
-                .projection
-                .as_mut()
-                .expect("accepted Pi prompt")
-                .invalidate_history();
-        }
-        if self.turn_running()
-            && let Some(snapshot) = self
-                .session
-                .pi
-                .projection
-                .as_mut()
-                .and_then(|item| item.snapshot.as_mut())
-        {
-            snapshot.run_state = RunState::Running;
-            snapshot.actions.can_send = false;
-            snapshot.actions.can_cancel = true;
         }
         self.sync_projection()?;
         if self.session.gateway_runner.is_some() && !self.session.executing() {
@@ -824,13 +779,9 @@ impl CoreRuntime {
 
     pub(super) fn bind_gateway_model(&mut self) -> Result<(), RuntimeError> {
         self.session
-            .pi
-            .client
-            .as_mut()
-            .ok_or_else(|| RuntimeError::invalid("会话执行尚未准备"))?
-            .request(json!({"type":"set_model","provider":"velune","modelId":"auto"}))
-            .map_err(|error| RuntimeError::context("gateway model binding", error))?;
-        Ok(())
+            .pi()?
+            .set_model(Some("velune"), "auto")
+            .map_err(|error| RuntimeError::context("gateway model binding", error))
     }
 
     pub(super) fn backend_session_identity(
@@ -875,10 +826,7 @@ impl CoreRuntime {
             return self.snapshot_result();
         }
         self.session
-            .pi
-            .client
-            .as_mut()
-            .ok_or_else(|| RuntimeError::invalid("会话执行尚未准备"))?
+            .pi()?
             .cancel()
             .map_err(|error| RuntimeError::context("message cancel", error))?;
         self.session.cancel_requested = true;
@@ -915,90 +863,21 @@ impl CoreRuntime {
 
     pub(super) fn sync_projection(&mut self) -> Result<(), RuntimeError> {
         self.drain_runtime()?;
-        if matches!(
-            self.session.active_state,
-            ActiveState::Native(_) | ActiveState::Acp(_)
-        ) || self.session.pi.busy
-            || self
-                .session
-                .pi
-                .projection
-                .as_ref()
-                .is_some_and(|projection| {
-                    projection.history_synchronized() || !projection.can_sync_history()
-                })
+        let runtime_id = self.session.execution_runtime_id.clone();
+        let model_record_key = self.session.model_record_key.clone();
+        if let ActiveState::Pi(session) = &mut self.session.active_state
+            && session
+                .sync_history(
+                    runtime_id
+                        .as_deref()
+                        .expect("a Pi session has an active runtime instance"),
+                    model_record_key,
+                )
+                .map_err(|error| RuntimeError::context("runtime state", error))?
         {
-            return Ok(());
+            self.drain_runtime()?;
         }
-        if let (Some(client), Some(projection)) = (
-            self.session.pi.client.as_mut(),
-            self.session.pi.projection.as_mut(),
-        ) {
-            let (state, messages) = client
-                .state()
-                .map_err(|error| RuntimeError::context("runtime state", error))?;
-            // Events received before get_messages' response are covered by that
-            // authoritative context. Do not replay them after replacing history.
-            for event in client.take_buffered_events() {
-                projection.apply_event(&event);
-            }
-            if let Some(path) = state["data"]["sessionFile"].as_str() {
-                let runtime_id = self
-                    .session
-                    .execution_runtime_id
-                    .as_deref()
-                    .expect("a Pi client has an active runtime instance");
-                projection.set_conversation(ConversationSummary {
-                    can_rename: false,
-                    can_delete: false,
-                    id: format!("{runtime_id}:{path}"),
-                    title: velune_conversation::conversation_title(
-                        state["data"]["sessionName"].as_str(),
-                        None,
-                    ),
-                    created_at_unix_ms: projection
-                        .snapshot
-                        .as_ref()
-                        .and_then(|s| s.conversation.created_at_unix_ms),
-                    updated_at_unix_ms: projection
-                        .snapshot
-                        .as_ref()
-                        .and_then(|s| s.conversation.updated_at_unix_ms),
-                    runtime_id: runtime_id.into(),
-                    cwd: projection
-                        .snapshot
-                        .as_ref()
-                        .and_then(|s| s.conversation.cwd.clone()),
-                    parent_conversation_id: None,
-                });
-            }
-            projection.replace_history(&messages);
-            if let Some(snapshot) = projection.snapshot.as_mut() {
-                snapshot.model_record_key = self.session.model_record_key.clone();
-                snapshot.actions.can_send &= !self.session.pi.busy;
-                snapshot.actions.can_cancel &= self.session.pi.busy;
-            }
-        }
-        self.drain_runtime()?;
         Ok(())
-    }
-
-    pub(super) fn drain_pi(&mut self) {
-        let events = self
-            .session
-            .pi
-            .client
-            .as_mut()
-            .map(|client| client.poll())
-            .unwrap_or_default();
-        for event in events {
-            if let Some(projection) = self.session.pi.projection.as_mut() {
-                projection.apply_event(&event);
-                if projection.turn_ended() {
-                    self.session.pi.busy = false;
-                }
-            }
-        }
     }
 }
 

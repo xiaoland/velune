@@ -33,7 +33,9 @@ fn inventory(runtime: &RuntimeInstance) -> Result<Inventory, Error> {
     match runtime.type_id {
         RuntimeKind::Codex => provider_inventory::codex(directory),
         RuntimeKind::ClaudeCode => provider_inventory::claude_code(directory),
-        _ => return Err(Error::invalid("所选 Agent 运行时不支持提供商导入")),
+        RuntimeKind::Pi | RuntimeKind::DeepSeek | RuntimeKind::Acp => {
+            return Err(Error::invalid("所选 Agent 运行时不支持提供商导入"));
+        }
     }
     .map_err(|error| Error::Invalid(error.0))
 }
@@ -76,7 +78,9 @@ fn protocol(value: Protocol) -> GatewayProtocol {
 pub(crate) fn family(runtime: &RuntimeInstance) -> &'static str {
     match runtime.type_id {
         RuntimeKind::Codex => "codex",
-        _ => "claude-code",
+        RuntimeKind::ClaudeCode | RuntimeKind::Pi | RuntimeKind::DeepSeek | RuntimeKind::Acp => {
+            "claude-code"
+        }
     }
 }
 fn cli_binary(runtime: &RuntimeInstance) -> Option<&str> {

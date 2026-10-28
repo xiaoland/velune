@@ -13,6 +13,8 @@ mod projection;
 
 pub use client::*;
 pub use projection::PiProjection;
+mod pi_session;
+pub use pi_session::PiSession;
 
 pub mod acp;
 pub mod activity;

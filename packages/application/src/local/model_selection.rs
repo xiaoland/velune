@@ -51,7 +51,7 @@ impl CoreRuntime {
                 .into_iter()
                 .filter(|level| pi::PI_THINKING_LEVELS.contains(&level.as_str()))
                 .collect(),
-            _ => Vec::new(),
+            RuntimeKind::DeepSeek | RuntimeKind::Acp => Vec::new(),
         })
     }
 
@@ -144,7 +144,7 @@ impl CoreRuntime {
                 }
                 RuntimeKind::ClaudeCode => CLAUDE_EFFORT_LEVELS.contains(&effort),
                 RuntimeKind::Pi => pi::PI_THINKING_LEVELS.contains(&effort),
-                _ => false,
+                RuntimeKind::DeepSeek | RuntimeKind::Acp => false,
             },
         };
         if !accepted {
@@ -284,8 +284,7 @@ impl CoreRuntime {
             config.model = native.as_ref().map(|(_, model)| (*model).to_owned());
             config.rpc_entry = Some(context.resources.join("pi_rpc.mjs"));
             config.extension = Some(context.resources.join("pi_virtual_model.mjs"));
-            self.session.pi.config = Some(config);
-            self.session.active_state = ActiveState::Pi;
+            self.session.active_state = ActiveState::Pi(Box::new(pi::PiSession::new(config)));
             let native_id = (!is_new)
                 .then(|| {
                     snapshot
@@ -296,24 +295,18 @@ impl CoreRuntime {
                 })
                 .transpose()?;
             self.start_pi_for_session(cwd, native_id.map(Path::new), None, None)?;
+            let session = self.session.pi()?;
             if is_new {
-                self.session
-                    .pi
-                    .client
-                    .as_mut()
-                    .expect("started Pi")
-                    .request(json!({"type":"new_session"}))
+                session
+                    .new_session()
                     .map_err(|error| RuntimeError::context("会话创建", error))?;
             } else {
-                self.session
-                    .pi
-                    .projection
-                    .as_mut()
-                    .expect("started Pi")
-                    .set_conversation(snapshot.conversation.clone());
+                session.set_conversation(snapshot.conversation.clone());
             }
             if let Some((_, model_id)) = native {
-                self.session.pi.client.as_mut().expect("started Pi").request(json!({"type":"set_model","provider":self.session.pi.config.as_ref().and_then(|config| config.provider.as_ref()),"modelId":model_id}))
+                let provider = session.config().provider.clone();
+                session
+                    .set_model(provider.as_deref(), model_id)
                     .map_err(|error| RuntimeError::context("原生模型选择", error))?;
             }
             self.sync_projection()?;
@@ -354,12 +347,8 @@ impl CoreRuntime {
         gateway: Option<GatewayInjection>,
     ) -> Result<NativeConfig, RuntimeError> {
         let context = self.prepare_execution_context(runtime)?;
-        let kind = match runtime.type_id {
-            RuntimeKind::Codex => NativeKind::Codex,
-            RuntimeKind::DeepSeek => NativeKind::DeepSeek,
-            RuntimeKind::ClaudeCode => NativeKind::ClaudeCode,
-            _ => return Err(RuntimeError::invalid("native runtime type")),
-        };
+        let kind = NativeKind::of(runtime.type_id)
+            .ok_or_else(|| RuntimeError::invalid("native runtime type"))?;
         Ok(NativeConfig {
             kind,
             binary: setting_path(runtime, "binary")?,

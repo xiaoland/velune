@@ -22,7 +22,6 @@ pub(super) struct Session {
     pub(super) logical_projection: Option<continuation::LogicalProjection>,
     pub(super) transcript_projection: velune_agent_runtime::transcript::TranscriptProjection,
     pub(super) transcript_conversation_id: Option<String>,
-    pub(super) pi: PiState,
     pub(super) active_state: ActiveState,
     pub(super) gateway_runner: Option<Runner>,
     pub(super) execution_runtime_id: Option<String>,
@@ -51,8 +50,16 @@ impl Session {
         match &self.active_state {
             ActiveState::Native(session) => session.turn_running(),
             ActiveState::Acp(session) => session.turn_running(),
-            ActiveState::Pi => self.pi.busy,
+            ActiveState::Pi(session) => session.turn_running(),
             ActiveState::Empty | ActiveState::History(_) => false,
+        }
+    }
+
+    /// The Pi conversation this session runs.
+    pub(super) fn pi(&mut self) -> Result<&mut pi::PiSession, RuntimeError> {
+        match &mut self.active_state {
+            ActiveState::Pi(session) => Ok(session),
+            _ => Err(RuntimeError::invalid("会话执行尚未准备")),
         }
     }
 
@@ -86,11 +93,7 @@ impl Session {
         match &self.active_state {
             ActiveState::Native(session) => session.snapshot(),
             ActiveState::Acp(session) => session.snapshot(),
-            ActiveState::Pi => self
-                .pi
-                .projection
-                .as_ref()
-                .and_then(|p| p.snapshot.as_ref()),
+            ActiveState::Pi(session) => session.snapshot(),
             ActiveState::History(snapshot) => Some(snapshot.as_ref()),
             ActiveState::Empty => None,
         }
@@ -319,13 +322,7 @@ impl CoreRuntime {
         let view = self.session.projected()?;
         let outcome = if failed
             || view.run_state == RunState::Failed
-            || matches!(self.session.active_state, ActiveState::Pi)
-                && self
-                    .session
-                    .pi
-                    .projection
-                    .as_ref()
-                    .is_some_and(PiProjection::turn_failed)
+            || matches!(&self.session.active_state, ActiveState::Pi(session) if session.turn_failed())
         {
             crate::TurnOutcome::Failed
         } else if self.session.cancel_requested {

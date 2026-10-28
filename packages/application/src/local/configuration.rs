@@ -245,7 +245,7 @@ impl CoreRuntime {
         for session in std::iter::once(&self.session).chain(&self.parked) {
             if matches!(
                 session.active_state,
-                ActiveState::Pi | ActiveState::Native(_) | ActiveState::Acp(_)
+                ActiveState::Pi(_) | ActiveState::Native(_) | ActiveState::Acp(_)
             ) && let Some(view) = session.projected()
                 && !conversations
                     .iter()

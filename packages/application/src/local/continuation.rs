@@ -431,22 +431,12 @@ impl CoreRuntime {
         target.conversation.runtime_id = runtime_id.into();
         let prepared = (|| {
             self.prepare_with_selection(target, selection, true)?;
-            if matches!(self.session.active_state, ActiveState::Pi)
+            if let ActiveState::Pi(session) = &mut self.session.active_state
                 && let Some(title) = native_title
             {
-                self.session
-                    .pi
-                    .client
-                    .as_mut()
-                    .expect("created Pi draft")
-                    .request(json!({"type":"set_session_name","name":title}))
+                session
+                    .set_name(&title)
                     .map_err(|error| RuntimeError::context("Pi 草稿名称转交", error))?;
-                self.session
-                    .pi
-                    .projection
-                    .as_mut()
-                    .expect("created Pi draft")
-                    .invalidate_history();
                 self.sync_projection()?;
             }
             Ok(())

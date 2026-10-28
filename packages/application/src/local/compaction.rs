@@ -30,7 +30,7 @@ impl CoreRuntime {
                     .begin_user_turn(&gateway_id, &session)
                     .map_err(|error| RuntimeError::context("上下文压缩准备", error))?;
             }
-            if matches!(self.session.active_state, ActiveState::Pi)
+            if matches!(self.session.active_state, ActiveState::Pi(_))
                 && matches!(
                     self.session.model_selection,
                     Some(Some(crate::ModelSelection::Managed { .. }))
@@ -42,23 +42,9 @@ impl CoreRuntime {
                 ActiveState::Native(session) => session
                     .compact()
                     .map_err(|error| RuntimeError::context("上下文压缩", error))?,
-                ActiveState::Pi => {
-                    let id = self
-                        .session
-                        .pi
-                        .client
-                        .as_mut()
-                        .expect("prepared Pi")
-                        .compact()
-                        .map_err(|error| RuntimeError::context("上下文压缩", error))?;
-                    self.session
-                        .pi
-                        .projection
-                        .as_mut()
-                        .expect("prepared Pi")
-                        .begin_compaction(id);
-                    self.session.pi.busy = true;
-                }
+                ActiveState::Pi(session) => session
+                    .compact()
+                    .map_err(|error| RuntimeError::context("上下文压缩", error))?,
                 _ => return Err(RuntimeError::invalid("此运行时不支持主动压缩上下文")),
             }
             Ok::<_, RuntimeError>(())

@@ -88,19 +88,11 @@ pub(crate) enum Login {
 }
 
 #[derive(Default)]
-struct PiState {
-    client: Option<pi::Client>,
-    config: Option<PiConfig>,
-    projection: Option<PiProjection>,
-    busy: bool,
-    physical_model_id: Option<String>,
-}
-#[derive(Default)]
 enum ActiveState {
     #[default]
     Empty,
     History(Box<crate::conversation::ConversationSnapshot>),
-    Pi,
+    Pi(Box<pi::PiSession>),
     Native(Box<NativeSession>),
     Acp(Box<velune_agent_runtime::acp::Client>),
 }
@@ -484,8 +476,8 @@ impl CoreRuntime {
             ActiveState::Native(session) => session
                 .poll()
                 .map_err(|error| RuntimeError::context("运行时事件读取失败", error)),
-            ActiveState::Pi => {
-                self.drain_pi();
+            ActiveState::Pi(session) => {
+                session.poll();
                 Ok(())
             }
             ActiveState::Empty | ActiveState::History(_) => Ok(()),
@@ -527,12 +519,12 @@ impl CoreRuntime {
                 .finish_user_turn(&gateway_id, &session);
         }
         // Pi confirms durable message identities only during the settled RPC resync.
-        let synchronized =
-            if matches!(self.session.active_state, ActiveState::Pi) && !self.session.pi.busy {
-                self.sync_projection()
-            } else {
-                Ok(())
-            };
+        let synchronized = if matches!(&self.session.active_state, ActiveState::Pi(session) if !session.turn_running())
+        {
+            self.sync_projection()
+        } else {
+            Ok(())
+        };
         if let ActiveState::Native(session) = &mut self.session.active_state
             && let Err(error) = session.release_override()
         {

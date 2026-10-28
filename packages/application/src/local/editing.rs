@@ -201,23 +201,12 @@ impl CoreRuntime {
                         .branch(&id, placement)
                         .map_err(|error| RuntimeError::context("消息编辑", error))
                 }
-                ActiveState::Pi => {
+                ActiveState::Pi(session) => {
                     let entry = pi_entry(&original.id)
                         .ok_or_else(|| RuntimeError::invalid("这条消息没有 Pi 条目身份"))?;
-                    let client = self
-                        .session
-                        .pi
-                        .client
-                        .as_mut()
-                        .ok_or_else(|| RuntimeError::invalid("会话执行尚未准备"))?;
-                    match placement {
-                        EditPlacement::InPlace => client.rewind(entry),
-                        EditPlacement::Fork => client.fork(entry),
-                    }
-                    .map_err(|error| RuntimeError::context("消息编辑", error))?;
-                    if let Some(projection) = self.session.pi.projection.as_mut() {
-                        projection.invalidate_history();
-                    }
+                    session
+                        .branch(entry, placement)
+                        .map_err(|error| RuntimeError::context("消息编辑", error))?;
                     self.sync_projection()
                 }
                 _ => Err(RuntimeError::invalid("此运行时不提供消息编辑")),

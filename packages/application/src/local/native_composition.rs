@@ -144,7 +144,7 @@ impl CoreRuntime {
     pub(super) fn active_instance(&self) -> Result<&RuntimeInstance, RuntimeError> {
         let id = match &self.session.active_state {
             ActiveState::History(snapshot) => &snapshot.conversation.runtime_id,
-            ActiveState::Native(_) | ActiveState::Acp(_) | ActiveState::Pi => self
+            ActiveState::Native(_) | ActiveState::Acp(_) | ActiveState::Pi(_) => self
                 .session
                 .execution_runtime_id
                 .as_ref()
@@ -164,7 +164,9 @@ impl CoreRuntime {
             RuntimeKind::Codex => "codex",
             RuntimeKind::DeepSeek => "deepseek",
             RuntimeKind::ClaudeCode => "claude-code",
-            _ => return Err(RuntimeError::invalid("native history type")),
+            RuntimeKind::Pi | RuntimeKind::Acp => {
+                return Err(RuntimeError::invalid("native history type"));
+            }
         };
         let context = self.prepare_execution_context(runtime)?;
         let home = context.agent_dir;

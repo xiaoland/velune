@@ -105,8 +105,8 @@ pub(super) fn resolve(config: &Config, kind: ResourceKind, scope: ResourceScope)
                     "CLAUDE.md",
                     "CLAUDE.MD",
                 ],
-                _ if user => vec!["AGENTS.md"],
-                _ => vec![
+                RuntimeKind::DeepSeek | RuntimeKind::Acp if user => vec!["AGENTS.md"],
+                RuntimeKind::DeepSeek | RuntimeKind::Acp => vec![
                     "AGENTS.md",
                     "CLAUDE.md",
                     "AGENTS.local.md",
@@ -123,7 +123,7 @@ pub(super) fn resolve(config: &Config, kind: ResourceKind, scope: ResourceScope)
                     RuntimeKind::Codex => ".agents/skills",
                     RuntimeKind::ClaudeCode => ".claude/skills",
                     RuntimeKind::Pi => ".pi/skills",
-                    _ => ".dsh/skills",
+                    RuntimeKind::DeepSeek | RuntimeKind::Acp => ".dsh/skills",
                 }
             };
             (
@@ -155,8 +155,10 @@ pub(super) fn resolve(config: &Config, kind: ResourceKind, scope: ResourceScope)
                 (RuntimeKind::Codex, false) => ".codex/config.toml",
                 (RuntimeKind::ClaudeCode, true) => ".claude.json",
                 (RuntimeKind::ClaudeCode, false) => ".mcp.json",
-                (_, true) => "mcp.json",
-                _ => ".pi/mcp.json",
+                (RuntimeKind::Pi | RuntimeKind::DeepSeek | RuntimeKind::Acp, true) => "mcp.json",
+                (RuntimeKind::Pi | RuntimeKind::DeepSeek | RuntimeKind::Acp, false) => {
+                    ".pi/mcp.json"
+                }
             };
             (
                 path,
