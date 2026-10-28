@@ -67,7 +67,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     /** After pairing, the device opens in place of the pairing screen. */
     fun showPaired(peer: String) {
-        if (hub?.state?.value?.outgoingPairings?.firstOrNull { it.peerId == peer }?.permission == app.velune.bindings.BindingPairingPermission.TELEMETRY_PROFILE_READ) {
+        if (hub?.state?.value?.outgoingPairings?.firstOrNull { it.peerId == peer }?.permission == app.velune.bindings.remote.PairingPermission.TELEMETRY_PROFILE_READ) {
             stack = listOf(Screen.Devices, Screen.Telemetry); selectShownDevice(); return
         }
         val address = stack.filterIsInstance<Screen.AgentUri>().lastOrNull()?.address

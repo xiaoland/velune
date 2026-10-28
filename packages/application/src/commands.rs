@@ -223,7 +223,7 @@ impl Application {
                     |core| core.discover_runtimes(probes),
                 )?)
             }
-            Command::List => Response::List(application.runtime.serve(
+            Command::ReadConfiguration => Response::ReadConfiguration(application.runtime.serve(
                 Focus::None,
                 Login::Allows,
                 |core| core.list(),

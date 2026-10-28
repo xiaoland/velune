@@ -778,7 +778,7 @@ impl VeluneRemoteEndpoint {
                 closed: false,
             }),
         });
-        let initial = remote.request_reply(Command::List)?;
+        let initial = remote.request_reply(Command::ReadConfiguration)?;
         remote.state()?.expected = Some(initial.revision);
         Ok(remote_proxy(remote))
     }
@@ -948,8 +948,10 @@ impl VeluneApplication {
             "bindings.list_with_revision",
             self.trace_carrier.as_ref(),
             || {
-                let reply = self.remote_backend()?.request_reply(Command::List)?;
-                let Response::List(configuration) = reply.response else {
+                let reply = self
+                    .remote_backend()?
+                    .request_reply(Command::ReadConfiguration)?;
+                let Response::ReadConfiguration(configuration) = reply.response else {
                     return Err(BindingError::Contract {
                         detail: "应用返回了不匹配的配置结果".into(),
                     });

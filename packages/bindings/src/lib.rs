@@ -322,7 +322,7 @@ impl VeluneApplication {
     }
 
     pub fn list(&self) -> Result<ConfigurationSnapshot, BindingError> {
-        request!(self, "list", List)
+        request!(self, "list", ReadConfiguration)
     }
     pub fn runtime_resource_catalog(
         &self,

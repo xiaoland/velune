@@ -52,10 +52,10 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
-import app.velune.bindings.BindingContactConfirmation
+import app.velune.bindings.remote.ContactConfirmation
 import app.velune.bindings.BindingPairingOfferInfo
-import app.velune.bindings.BindingPairingPhase
-import app.velune.bindings.BindingPairingPermission
+import app.velune.bindings.remote.PairingPhase
+import app.velune.bindings.remote.PairingPermission
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 
@@ -90,7 +90,7 @@ fun AddDeviceScreen(hub: DeviceHub, back: () -> Unit, paired: (String) -> Unit) 
     }
 
     val pairing = peer?.let { id -> state?.outgoingPairings?.firstOrNull { it.peerId == id } }
-    val confirmed = pairing?.phase == BindingPairingPhase.GRANTED && peer?.let { id -> state?.contacts?.firstOrNull { it.peerId == id }?.confirmation is BindingContactConfirmation.Confirmed } == true
+    val confirmed = pairing?.phase == PairingPhase.GRANTED && peer?.let { id -> state?.contacts?.firstOrNull { it.peerId == id }?.confirmation is ContactConfirmation.Confirmed } == true
     LaunchedEffect(confirmed) { if (confirmed) paired(peer!!) }
 
     Scaffold(topBar = {
@@ -146,7 +146,7 @@ fun AddDeviceScreen(hub: DeviceHub, back: () -> Unit, paired: (String) -> Unit) 
                 Text("“${current.name}”", style = MaterialTheme.typography.headlineSmall)
                 when {
                     pairing == null -> {
-                        Text(if (current.permission == BindingPairingPermission.TELEMETRY_PROFILE_READ) "读取遥测配置（含认证）；连接后核对两端数字。" else "连接后，两台设备会显示同一组核对码。", style = MaterialTheme.typography.bodyMedium)
+                        Text(if (current.permission == PairingPermission.TELEMETRY_PROFILE_READ) "读取遥测配置（含认证）；连接后核对两端数字。" else "连接后，两台设备会显示同一组核对码。", style = MaterialTheme.typography.bodyMedium)
                         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                             Button(enabled = !busy, onClick = {
                                 busy = true
@@ -168,10 +168,10 @@ fun AddDeviceScreen(hub: DeviceHub, back: () -> Unit, paired: (String) -> Unit) 
                         }
                         if (busy) CircularProgressIndicator()
                     }
-                    pairing.phase == BindingPairingPhase.AWAITING_READY || pairing.phase == BindingPairingPhase.AWAITING_APPROVAL || pairing.phase == BindingPairingPhase.GRANTED -> {
+                    pairing.phase == PairingPhase.AWAITING_READY || pairing.phase == PairingPhase.AWAITING_APPROVAL || pairing.phase == PairingPhase.GRANTED -> {
                         Text("核对码", style = MaterialTheme.typography.labelLarge)
                         VerificationCode(pairing.verificationCode.orEmpty())
-                        Text(if (pairing.permission == BindingPairingPermission.TELEMETRY_PROFILE_READ) "核对两端数字，在来源设备上允许读取遥测配置（含认证）。" else "确认“${current.name}”上显示的核对码与此相同，然后在那台设备上选择“允许”。", style = MaterialTheme.typography.bodyMedium)
+                        Text(if (pairing.permission == PairingPermission.TELEMETRY_PROFILE_READ) "核对两端数字，在来源设备上允许读取遥测配置（含认证）。" else "确认“${current.name}”上显示的核对码与此相同，然后在那台设备上选择“允许”。", style = MaterialTheme.typography.bodyMedium)
                         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                             CircularProgressIndicator(Modifier.padding(4.dp))
                             Text("等待对方允许…")
@@ -181,8 +181,8 @@ fun AddDeviceScreen(hub: DeviceHub, back: () -> Unit, paired: (String) -> Unit) 
                     else -> {
                         Text(
                             when (pairing.phase) {
-                                BindingPairingPhase.REJECTED -> "对方拒绝了这台手机。"
-                                BindingPairingPhase.EXPIRED -> "邀请已过期，请在那台设备上重新生成。"
+                                PairingPhase.REJECTED -> "对方拒绝了这台手机。"
+                                PairingPhase.EXPIRED -> "邀请已过期，请在那台设备上重新生成。"
                                 else -> "配对时连接中断，请重试。"
                             },
                         )

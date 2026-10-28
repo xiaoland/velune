@@ -65,11 +65,11 @@ import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import app.velune.bindings.BindingMessage
-import app.velune.bindings.BindingMessageBlock
-import app.velune.bindings.BindingMessagePayload
-import app.velune.bindings.BindingMessageRole
-import app.velune.bindings.BindingToolState
+import app.velune.bindings.application.DeliveredMessage
+import app.velune.bindings.application.DeliveredBlock
+import app.velune.bindings.application.MessagePayload
+import app.velune.bindings.conversation.MessageRole
+import app.velune.bindings.conversation.ToolState
 import kotlinx.coroutines.launch
 
 /**
@@ -95,7 +95,7 @@ fun Transcript(state: ConversationState, load: (String) -> Unit, modifier: Modif
             verticalArrangement = Arrangement.spacedBy(14.dp, Alignment.Bottom),
         ) {
             if (working) item(key = "working") { Working() }
-            state.sending?.let { text -> item(key = "sending") { UserBubble(listOf(BindingMessageBlock.Text(text)), bubbleWidth, pending = true) } }
+            state.sending?.let { text -> item(key = "sending") { UserBubble(listOf(DeliveredBlock.Text(text)), bubbleWidth, pending = true) } }
             items(state.entries.asReversed(), key = { it.key }) { entry ->
                 when (entry) {
                     is TranscriptEntry.Message -> MessageView(entry.message, bubbleWidth, expanded, load)
@@ -117,17 +117,17 @@ fun Transcript(state: ConversationState, load: (String) -> Unit, modifier: Modif
 
 /** The user's messages on the right, the model's on the left, the system's and the Harness's in the middle. */
 @Composable
-private fun MessageView(message: BindingMessage, bubbleWidth: androidx.compose.ui.unit.Dp, expanded: MutableMap<String, Boolean>, load: (String) -> Unit) {
+private fun MessageView(message: DeliveredMessage, bubbleWidth: androidx.compose.ui.unit.Dp, expanded: MutableMap<String, Boolean>, load: (String) -> Unit) {
     when (message.role) {
-        BindingMessageRole.USER -> UserBubble(message.blocks, bubbleWidth)
-        BindingMessageRole.ASSISTANT, BindingMessageRole.TOOL, BindingMessageRole.SYSTEM -> Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            message.blocks.forEachIndexed { index, block -> WorkBlock(message.id, index, block, expanded, load, reply = message.role == BindingMessageRole.ASSISTANT) }
+        MessageRole.USER -> UserBubble(message.blocks, bubbleWidth)
+        MessageRole.ASSISTANT, MessageRole.TOOL, MessageRole.SYSTEM -> Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            message.blocks.forEachIndexed { index, block -> WorkBlock(message.id, index, block, expanded, load, reply = message.role == MessageRole.ASSISTANT) }
         }
     }
 }
 
 @Composable
-private fun UserBubble(blocks: List<BindingMessageBlock>, maxWidth: androidx.compose.ui.unit.Dp, pending: Boolean = false) {
+private fun UserBubble(blocks: List<DeliveredBlock>, maxWidth: androidx.compose.ui.unit.Dp, pending: Boolean = false) {
     Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.End) {
         Surface(
             color = MaterialTheme.colorScheme.secondaryContainer, contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
@@ -137,9 +137,9 @@ private fun UserBubble(blocks: List<BindingMessageBlock>, maxWidth: androidx.com
             Column(Modifier.padding(horizontal = 14.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 blocks.forEach { block ->
                     when (block) {
-                        is BindingMessageBlock.Text -> SelectionContainer { Text(block.text, style = MaterialTheme.typography.bodyLarge) }
-                        is BindingMessageBlock.Image -> Attachment(Icons.Outlined.Image, "图片")
-                        is BindingMessageBlock.File -> Attachment(Icons.AutoMirrored.Outlined.InsertDriveFile, lastPathComponent(block.path))
+                        is DeliveredBlock.Text -> SelectionContainer { Text(block.text, style = MaterialTheme.typography.bodyLarge) }
+                        is DeliveredBlock.Image -> Attachment(Icons.Outlined.Image, "图片")
+                        is DeliveredBlock.File -> Attachment(Icons.AutoMirrored.Outlined.InsertDriveFile, lastPathComponent(block.path))
                         else -> {}
                     }
                 }
@@ -157,7 +157,7 @@ private fun UserBubble(blocks: List<BindingMessageBlock>, maxWidth: androidx.com
 @Composable
 private fun WorkGroup(work: TranscriptEntry.Work, expanded: MutableMap<String, Boolean>, load: (String) -> Unit) {
     val open = expanded[work.key] == true
-    val latest = remember(work) { work.members.flatMap { it.blocks }.lastOrNull { it is BindingMessageBlock.Tool } as? BindingMessageBlock.Tool }
+    val latest = remember(work) { work.members.flatMap { it.blocks }.lastOrNull { it is DeliveredBlock.Tool } as? DeliveredBlock.Tool }
     Column(Modifier.fillMaxWidth().animateContentSize()) {
         Row(
             Modifier.clip(RoundedCornerShape(8.dp)).clickable { expanded[work.key] = !open }.padding(vertical = 6.dp, horizontal = 2.dp),
@@ -188,38 +188,38 @@ private fun WorkGroup(work: TranscriptEntry.Work, expanded: MutableMap<String, B
 }
 
 @Composable
-private fun WorkBlock(messageId: String, index: Int, block: BindingMessageBlock, expanded: MutableMap<String, Boolean>, load: (String) -> Unit, reply: Boolean) {
+private fun WorkBlock(messageId: String, index: Int, block: DeliveredBlock, expanded: MutableMap<String, Boolean>, load: (String) -> Unit, reply: Boolean) {
     val key = "$messageId/$index"
     when (block) {
-        is BindingMessageBlock.Text -> SelectionContainer {
+        is DeliveredBlock.Text -> SelectionContainer {
             Markdown(block.text, style = if (reply) MaterialTheme.typography.bodyLarge else MaterialTheme.typography.bodyMedium)
         }
-        is BindingMessageBlock.Reasoning -> Reasoning(block, expanded[key] == true, toggle = {
+        is DeliveredBlock.Reasoning -> Reasoning(block, expanded[key] == true, toggle = {
             expanded[key] = expanded[key] != true
-            if (block.text is BindingMessagePayload.Deferred) load(messageId)
+            if (block.text is MessagePayload.Deferred) load(messageId)
         })
-        is BindingMessageBlock.Tool -> ToolCard(block, expanded[key] == true, toggle = {
+        is DeliveredBlock.Tool -> ToolCard(block, expanded[key] == true, toggle = {
             expanded[key] = expanded[key] != true
-            if (block.output is BindingMessagePayload.Deferred) load(messageId)
+            if (block.output is MessagePayload.Deferred) load(messageId)
         })
-        is BindingMessageBlock.Notice -> Text(
+        is DeliveredBlock.Notice -> Text(
             block.text, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
             textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp),
         )
-        is BindingMessageBlock.ContextCompaction -> Text(
+        is DeliveredBlock.ContextCompaction -> Text(
             block.text, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
             textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp),
         )
-        is BindingMessageBlock.Image -> Attachment(Icons.Outlined.Image, "图片")
-        is BindingMessageBlock.File -> Attachment(Icons.AutoMirrored.Outlined.InsertDriveFile, lastPathComponent(block.path))
-        is BindingMessageBlock.AgentSender -> Text(
+        is DeliveredBlock.Image -> Attachment(Icons.Outlined.Image, "图片")
+        is DeliveredBlock.File -> Attachment(Icons.AutoMirrored.Outlined.InsertDriveFile, lastPathComponent(block.path))
+        is DeliveredBlock.AgentSender -> Text(
             "来自 ${block.runtimeName} · ${block.title}", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
     }
 }
 
 @Composable
-private fun Reasoning(block: BindingMessageBlock.Reasoning, open: Boolean, toggle: () -> Unit) {
+private fun Reasoning(block: DeliveredBlock.Reasoning, open: Boolean, toggle: () -> Unit) {
     Column(Modifier.fillMaxWidth()) {
         Row(Modifier.clip(RoundedCornerShape(8.dp)).clickable(onClick = toggle).padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
             Icon(Icons.Outlined.Lightbulb, contentDescription = null, modifier = Modifier.size(16.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -234,7 +234,7 @@ private fun Reasoning(block: BindingMessageBlock.Reasoning, open: Boolean, toggl
 
 /** One tool call: its state and title; the output unfolds below, read on request when large. */
 @Composable
-private fun ToolCard(block: BindingMessageBlock.Tool, open: Boolean, toggle: () -> Unit) {
+private fun ToolCard(block: DeliveredBlock.Tool, open: Boolean, toggle: () -> Unit) {
     Surface(color = MaterialTheme.colorScheme.surfaceContainerLow, shape = RoundedCornerShape(12.dp), modifier = Modifier.fillMaxWidth()) {
         Column(Modifier.animateContentSize()) {
             Row(
@@ -242,10 +242,10 @@ private fun ToolCard(block: BindingMessageBlock.Tool, open: Boolean, toggle: () 
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 when (block.state) {
-                    BindingToolState.PENDING -> Icon(Icons.Outlined.Schedule, contentDescription = "等待", modifier = Modifier.size(18.dp), tint = Tone.Attention.color())
-                    BindingToolState.RUNNING -> CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 1.5.dp)
-                    BindingToolState.COMPLETED -> Icon(Icons.Outlined.CheckCircle, contentDescription = "完成", modifier = Modifier.size(18.dp), tint = Tone.Positive.color())
-                    BindingToolState.FAILED -> Icon(Icons.Outlined.ErrorOutline, contentDescription = "失败", modifier = Modifier.size(18.dp), tint = Tone.Negative.color())
+                    ToolState.PENDING -> Icon(Icons.Outlined.Schedule, contentDescription = "等待", modifier = Modifier.size(18.dp), tint = Tone.Attention.color())
+                    ToolState.RUNNING -> CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 1.5.dp)
+                    ToolState.COMPLETED -> Icon(Icons.Outlined.CheckCircle, contentDescription = "完成", modifier = Modifier.size(18.dp), tint = Tone.Positive.color())
+                    ToolState.FAILED -> Icon(Icons.Outlined.ErrorOutline, contentDescription = "失败", modifier = Modifier.size(18.dp), tint = Tone.Negative.color())
                 }
                 Text(
                     block.title, style = MaterialTheme.typography.bodyMedium, fontFamily = FontFamily.Monospace,
@@ -262,12 +262,12 @@ private fun ToolCard(block: BindingMessageBlock.Tool, open: Boolean, toggle: () 
 }
 
 @Composable
-private fun Payload(payload: BindingMessagePayload, italic: Boolean) {
+private fun Payload(payload: MessagePayload, italic: Boolean) {
     when (payload) {
-        is BindingMessagePayload.Inline -> if (italic) SelectionContainer {
+        is MessagePayload.Inline -> if (italic) SelectionContainer {
             Text(payload.text, style = MaterialTheme.typography.bodySmall, fontStyle = FontStyle.Italic, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(start = 22.dp, top = 2.dp))
         } else Output(payload.text)
-        is BindingMessagePayload.Deferred -> Row(Modifier.padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
+        is MessagePayload.Deferred -> Row(Modifier.padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
             CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 1.5.dp)
             Text("正在读取 ${bytes(payload.bytes)}…", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(start = 8.dp))
         }

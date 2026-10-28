@@ -69,8 +69,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import app.velune.bindings.BindingListedConversation
-import app.velune.bindings.BindingRunState
+import app.velune.bindings.application.ListedConversation
+import app.velune.bindings.conversation.RunState
 import kotlinx.coroutines.launch
 
 class ConversationListActions(
@@ -151,7 +151,7 @@ fun ConversationListContent(device: DeviceSummary, devices: List<DeviceSummary>,
                             ConversationRow(
                                 listed, listing.runtimeLabels[listed.conversation.runtimeId], listing.active[listed.conversation.id],
                                 showProject = section.path == null, projectNames = listing.projectNames,
-                            ) { actions.open(ConversationTarget.Existing(listed.conversation.runtimeId, listed.conversation.id, listed.conversation.title)) }
+                            ) { actions.open(ConversationTarget.Existing(listed.conversation.runtimeId, listed.conversation.id, listed.conversation.title.displayText())) }
                         }
                     }
                 }
@@ -228,9 +228,9 @@ private fun SectionHeader(section: ConversationSection, folded: Boolean, toggle:
  */
 @Composable
 private fun ConversationRow(
-    listed: BindingListedConversation,
+    listed: ListedConversation,
     runtime: RuntimeLabel?,
-    active: app.velune.bindings.BindingActiveConversation?,
+    active: app.velune.bindings.application.ActiveConversation?,
     showProject: Boolean,
     projectNames: Map<String, String>,
     open: () -> Unit,
@@ -241,7 +241,7 @@ private fun ConversationRow(
         Row(verticalAlignment = Alignment.CenterVertically) {
             RuntimeBadge(runtime)
             Text(
-                conversation.title, style = MaterialTheme.typography.bodyLarge, fontWeight = if (listed.unread) FontWeight.SemiBold else null,
+                conversation.title.displayText(), style = MaterialTheme.typography.bodyLarge, fontWeight = if (listed.unread) FontWeight.SemiBold else null,
                 maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(start = 10.dp).weight(1f),
             )
             conversation.updatedAtUnixMs?.let {
@@ -253,7 +253,7 @@ private fun ConversationRow(
             Text(meta, style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
             when {
                 active != null && active.pendingInteractions > 0u -> Pill("等待回应", colors.tertiaryContainer, colors.onTertiaryContainer)
-                active?.runState == BindingRunState.RUNNING -> Row(verticalAlignment = Alignment.CenterVertically) {
+                active?.runState == RunState.RUNNING -> Row(verticalAlignment = Alignment.CenterVertically) {
                     CircularProgressIndicator(Modifier.size(12.dp), strokeWidth = 1.5.dp, color = Tone.Positive.color())
                     Text("运行中", style = MaterialTheme.typography.labelSmall, color = Tone.Positive.color(), modifier = Modifier.padding(start = 4.dp))
                 }

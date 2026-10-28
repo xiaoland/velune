@@ -1,16 +1,16 @@
 package app.velune.android
 
-import app.velune.bindings.BindingComposedTurn
-import app.velune.bindings.BindingConversationSnapshot
-import app.velune.bindings.BindingConversationSummary
-import app.velune.bindings.BindingMessage
-import app.velune.bindings.BindingModelSelection
-import app.velune.bindings.BindingRunState
-import app.velune.bindings.BindingRuntimeInteraction
-import app.velune.bindings.BindingRuntimeInteractionReply
-import app.velune.bindings.BindingRuntimeModel
-import app.velune.bindings.BindingSnapshotResult
-import app.velune.bindings.BindingSnapshotUpdate
+import app.velune.bindings.application.ComposedTurn
+import app.velune.bindings.application.DeliveredSnapshot
+import app.velune.bindings.conversation.ConversationSummary
+import app.velune.bindings.application.DeliveredMessage
+import app.velune.bindings.conversation.ModelSelection
+import app.velune.bindings.conversation.RunState
+import app.velune.bindings.conversation.RuntimeInteraction
+import app.velune.bindings.conversation.RuntimeInteractionReply
+import app.velune.bindings.application.RuntimeModel
+import app.velune.bindings.application.SnapshotResult
+import app.velune.bindings.application.SnapshotUpdate
 import app.velune.bindings.VeluneApplication
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -33,23 +33,23 @@ sealed interface ConversationTarget {
 }
 
 data class ConversationState(
-    val conversation: BindingConversationSummary? = null,
-    val runState: BindingRunState = BindingRunState.IDLE,
+    val conversation: ConversationSummary? = null,
+    val runState: RunState = RunState.IDLE,
     val entries: List<TranscriptEntry> = emptyList(),
-    val interactions: List<BindingRuntimeInteraction> = emptyList(),
+    val interactions: List<RuntimeInteraction> = emptyList(),
     val canSend: Boolean = true,
     val canCancel: Boolean = false,
     val canCompact: Boolean = false,
-    val models: List<BindingRuntimeModel> = emptyList(),
+    val models: List<RuntimeModel> = emptyList(),
     /** None: the runtime's own default. */
-    val selection: BindingModelSelection? = null,
+    val selection: ModelSelection? = null,
     val busy: Boolean = false,
     val loading: Boolean = true,
     val failure: String? = null,
     /** The text just sent, shown until the device's copy of it arrives. */
     val sending: String? = null,
 ) {
-    val running: Boolean get() = runState == BindingRunState.RUNNING || runState == BindingRunState.STOPPING
+    val running: Boolean get() = runState == RunState.RUNNING || runState == RunState.STOPPING
 }
 
 /** One open conversation on a controlled device. */
@@ -64,10 +64,10 @@ class ConversationModel(
     private val _state = MutableStateFlow(ConversationState(loading = initial is ConversationTarget.Existing))
     val state: StateFlow<ConversationState> = _state.asStateFlow()
     private var polling: Job? = null
-    private var snapshot: BindingConversationSnapshot? = null
-    private var messages: Map<String, BindingMessage> = emptyMap()
+    private var snapshot: DeliveredSnapshot? = null
+    private var messages: Map<String, DeliveredMessage> = emptyMap()
     /** Deferred payloads read on request, by message ID. */
-    private var payloads: Map<String, BindingMessage> = emptyMap()
+    private var payloads: Map<String, DeliveredMessage> = emptyMap()
 
     init {
         scope.launch {
@@ -111,10 +111,10 @@ class ConversationModel(
         val id = current.conversation.id
         try {
             when (val update = io(NativeOperation.CONVERSATION_READ) { it.snapshotUpdate(runtime, id, current.cursor) }) {
-                is BindingSnapshotUpdate.Changed -> merge(update.snapshot)
-                BindingSnapshotUpdate.Unchanged -> {}
+                is SnapshotUpdate.Changed -> merge(update.snapshot)
+                SnapshotUpdate.Unchanged -> {}
                 // The device let the conversation go (it restarted, for one); read it again.
-                BindingSnapshotUpdate.Absent -> apply(io(NativeOperation.CONVERSATION_READ) { it.readConversation(runtime, id) })
+                SnapshotUpdate.Absent -> apply(io(NativeOperation.CONVERSATION_READ) { it.readConversation(runtime, id) })
             }
             _state.update { it.copy(failure = null) }
         } catch (error: CancellationException) {
@@ -124,12 +124,12 @@ class ConversationModel(
         }
     }
 
-    private fun apply(result: BindingSnapshotResult) {
+    private fun apply(result: SnapshotResult) {
         result.snapshot?.let(::merge)
     }
 
     /** A snapshot with a base holds only changed messages; `messageIds` gives the whole order. */
-    private fun merge(next: BindingConversationSnapshot) {
+    private fun merge(next: DeliveredSnapshot) {
         val fresh = next.messages.associateBy { it.id }
         val order = next.messageIds.toSet()
         messages = if (next.base == null) fresh else (messages + fresh).filterKeys { it in order }
@@ -145,29 +145,29 @@ class ConversationModel(
                 canSend = next.actions.canSend,
                 canCompact = next.followUp.canCompact,
                 canCancel = next.actions.canCancel,
-                selection = state.selection ?: next.modelRecordKey?.let { BindingModelSelection.Managed(it) },
+                selection = state.selection ?: next.modelRecordKey?.let { ModelSelection.Managed(it) },
             )
         }
         val conversation = next.conversation
-        target = ConversationTarget.Existing(next.contextRuntimeId, conversation.id, conversation.title)
+        target = ConversationTarget.Existing(next.contextRuntimeId, conversation.id, conversation.title.displayText())
     }
 
-    private fun entries(of: BindingConversationSnapshot) =
+    private fun entries(of: DeliveredSnapshot) =
         transcriptEntries(of.transcriptItems, of.transcriptTurns) { id -> payloads[id] ?: messages[id] }
 
-    fun select(selection: BindingModelSelection?) = _state.update { it.copy(selection = selection) }
+    fun select(selection: ModelSelection?) = _state.update { it.copy(selection = selection) }
 
     fun send(text: String, onSent: () -> Unit) = act(sending = text) {
-        val turn = BindingComposedTurn(text = text, effort = null, permissionMode = null, attachments = emptyList())
+        val turn = ComposedTurn(text = text, effort = null, permissionMode = null, attachments = emptyList())
         val selection = _state.value.selection
         val existing = snapshot
         val result = if (existing == null) {
-            val created = io(NativeOperation.CONVERSATION_WRITE) { it.createConversationWithSelection(target.runtimeId, (target as? ConversationTarget.New)?.cwd, selection) }
+            val created = io(NativeOperation.CONVERSATION_WRITE) { it.createConversation(target.runtimeId, (target as? ConversationTarget.New)?.cwd, selection) }
             apply(created)
             val snapshot = created.snapshot ?: error("设备没有返回新会话")
-            io(NativeOperation.SEND) { it.sendTurnWithSelection(snapshot.contextRuntimeId, snapshot.conversation.id, snapshot.contextRuntimeId, selection, turn) }
+            io(NativeOperation.SEND) { it.sendTurn(snapshot.contextRuntimeId, snapshot.conversation.id, snapshot.contextRuntimeId, selection, turn) }
         } else {
-            io(NativeOperation.SEND) { it.sendTurnWithSelection(existing.contextRuntimeId, existing.conversation.id, existing.contextRuntimeId, selection, turn) }
+            io(NativeOperation.SEND) { it.sendTurn(existing.contextRuntimeId, existing.conversation.id, existing.contextRuntimeId, selection, turn) }
         }
         apply(result)
         onSent()
@@ -185,7 +185,7 @@ class ConversationModel(
         apply(io(NativeOperation.CANCEL) { it.cancel(current.contextRuntimeId, current.conversation.id) })
     }
 
-    fun reply(interactionId: String, reply: BindingRuntimeInteractionReply) = act {
+    fun reply(interactionId: String, reply: RuntimeInteractionReply) = act {
         val current = snapshot ?: return@act
         apply(io(NativeOperation.REPLY) { it.replyRuntimeInteraction(current.contextRuntimeId, current.conversation.id, interactionId, reply) })
     }

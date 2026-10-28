@@ -1,10 +1,10 @@
 package app.velune.android
 
-import app.velune.bindings.BindingActiveConversation
-import app.velune.bindings.BindingConfigurationSnapshot
-import app.velune.bindings.BindingConnectionPathKind
-import app.velune.bindings.BindingListedConversation
-import app.velune.bindings.BindingRuntimeInstance
+import app.velune.bindings.application.ActiveConversation
+import app.velune.bindings.application.ConfigurationSnapshot
+import app.velune.bindings.remote.PathKind
+import app.velune.bindings.application.ListedConversation
+import app.velune.bindings.application.RuntimeInstance
 import app.velune.bindings.VeluneApplication
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -19,9 +19,9 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 data class DeviceListing(
-    val conversations: List<BindingListedConversation> = emptyList(),
+    val conversations: List<ListedConversation> = emptyList(),
     /** Enabled runtimes: the ones a new conversation can start on. */
-    val runtimes: List<BindingRuntimeInstance> = emptyList(),
+    val runtimes: List<RuntimeInstance> = emptyList(),
     /** Every runtime instance by ID, disabled ones included, as the list labels them. */
     val runtimeLabels: Map<String, RuntimeLabel> = emptyMap(),
     /** Display names of projects that have one, by path. */
@@ -29,7 +29,7 @@ data class DeviceListing(
     /** Working directories of the device's conversations, for starting another in one. */
     val projects: List<String> = emptyList(),
     /** Running or waiting conversations by ID. */
-    val active: Map<String, BindingActiveConversation> = emptyMap(),
+    val active: Map<String, ActiveConversation> = emptyMap(),
     val loaded: Boolean = false,
     val failure: String? = null,
     /** The path in use, such as “中继 320 ms”: a relayed connection explains a slow device. */
@@ -76,14 +76,14 @@ class DeviceWorkspace(private val hub: DeviceHub, val peer: String, private val 
     private fun path(application: VeluneApplication): String? {
         val path = runCatching { application.connectionStatus() }.getOrNull()?.paths?.firstOrNull { it.selected } ?: return null
         val kind = when (path.kind) {
-            BindingConnectionPathKind.DIRECT -> "直连"
-            BindingConnectionPathKind.RELAY -> "中继"
-            BindingConnectionPathKind.OTHER -> return null
+            PathKind.DIRECT -> "直连"
+            PathKind.RELAY -> "中继"
+            PathKind.OTHER -> return null
         }
         return "$kind ${path.rttMicroseconds / 1_000uL} ms"
     }
 
-    private fun listing(list: BindingConfigurationSnapshot, active: List<BindingActiveConversation>) = DeviceListing(
+    private fun listing(list: ConfigurationSnapshot, active: List<ActiveConversation>) = DeviceListing(
         conversations = list.conversations.filter { !it.archived && it.conversation.parentConversationId == null },
         runtimes = list.runtimeInstances.filter { it.enabled },
         runtimeLabels = list.runtimeTypes.associateBy { it.id }.let { types ->

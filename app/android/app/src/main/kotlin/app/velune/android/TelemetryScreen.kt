@@ -11,6 +11,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import app.velune.bindings.*
+import app.velune.bindings.application.*
+import app.velune.bindings.conversation.*
+import app.velune.bindings.remote.*
+import app.velune.bindings.telemetry.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.delay
@@ -26,8 +30,8 @@ private data class TelemetryHeader(val id: String = UUID.randomUUID().toString()
 fun TelemetryScreen(hub: DeviceHub, back: () -> Unit) {
     val remote by hub.state.collectAsState()
     val scope = rememberCoroutineScope()
-    var state by remember { mutableStateOf<BindingTelemetrySnapshot?>(null) }
-    var preference by remember { mutableStateOf(BindingTelemetryPreference.UNSET) }
+    var state by remember { mutableStateOf<TelemetrySnapshot?>(null) }
+    var preference by remember { mutableStateOf(TelemetryPreference.UNSET) }
     var endpoint by remember { mutableStateOf("") }
     var ratio by remember { mutableFloatStateOf(1f) }
     var headers by remember { mutableStateOf(emptyList<TelemetryHeader>()) }
@@ -36,14 +40,14 @@ fun TelemetryScreen(hub: DeviceHub, back: () -> Unit) {
     var status by remember { mutableStateOf<String?>(null) }
     var failure by remember { mutableStateOf<String?>(null) }
     var busy by remember { mutableStateOf(false) }
-    fun fill(profile: BindingTelemetryProfile?) {
+    fun fill(profile: TelemetryProfile?) {
         endpoint = profile?.endpoint ?: state?.endpoint.orEmpty(); ratio = (profile?.sampleRatio ?: state?.sampleRatio ?: 1.0).toFloat()
         headers = profile?.headers?.entries?.sortedBy { it.key }?.map { TelemetryHeader(name = it.key, value = it.value) }.orEmpty()
     }
-    fun profile(): BindingTelemetryProfile? {
+    fun profile(): TelemetryProfile? {
         if (endpoint.isBlank()) return null
         require(headers.map { it.name }.distinct().size == headers.size) { "认证字段名称不能重复" }
-        return BindingTelemetryProfile(endpoint.trim(), headers.associate { it.name to it.value }, ratio.toDouble())
+        return TelemetryProfile(endpoint.trim(), headers.associate { it.name to it.value }, ratio.toDouble())
     }
     fun perform(body: suspend () -> Unit) {
         scope.launch {
@@ -70,7 +74,7 @@ fun TelemetryScreen(hub: DeviceHub, back: () -> Unit) {
             item {
                 Text("本机遥测", style = MaterialTheme.typography.titleMedium)
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    for ((value, label) in listOf(BindingTelemetryPreference.UNSET to "未设置", BindingTelemetryPreference.OFF to "关闭", BindingTelemetryPreference.ON to "开启")) {
+                    for ((value, label) in listOf(TelemetryPreference.UNSET to "未设置", TelemetryPreference.OFF to "关闭", TelemetryPreference.ON to "开启")) {
                         FilterChip(selected = preference == value, onClick = { preference = value }, label = { Text(label) }, enabled = !busy)
                     }
                 }
@@ -106,7 +110,7 @@ fun TelemetryScreen(hub: DeviceHub, back: () -> Unit) {
             }
             item {
                 HorizontalDivider(); Text("从设备复制", style = MaterialTheme.typography.titleMedium)
-                remote?.contacts?.filter { it.confirmation is BindingContactConfirmation.Confirmed }?.forEach { contact ->
+                remote?.contacts?.filter { it.confirmation is ContactConfirmation.Confirmed }?.forEach { contact ->
                     FilterChip(selected = source == contact.peerId, onClick = { source = contact.peerId }, label = { Text(contact.name) })
                 }
                 Button(onClick = { perform {
@@ -121,7 +125,7 @@ fun TelemetryScreen(hub: DeviceHub, back: () -> Unit) {
             item {
                 HorizontalDivider(); Text("允许读取本机配置（含认证）", style = MaterialTheme.typography.titleMedium)
                 val names = buildMap {
-                    remote?.contacts?.filter { it.confirmation is BindingContactConfirmation.Confirmed }?.forEach { put(it.peerId, it.name) }
+                    remote?.contacts?.filter { it.confirmation is ContactConfirmation.Confirmed }?.forEach { put(it.peerId, it.name) }
                     remote?.incomingGrants?.forEach { put(it.peerId, it.name) }
                     remote?.telemetryProfileGrants?.forEach { put(it.peerId, it.name) }
                 }
@@ -135,7 +139,7 @@ fun TelemetryScreen(hub: DeviceHub, back: () -> Unit) {
                 OutlinedButton(onClick = { perform { invitation = hub.perform { it.createTelemetryInvitation(300uL).encoded } } }, enabled = !busy && remote != null) { Text("生成遥测分享邀请") }
                 invitation?.let { encoded -> androidx.compose.foundation.text.selection.SelectionContainer { Text(encoded, style = MaterialTheme.typography.bodySmall) } }
             }
-            items(remote?.incomingPairings?.filter { it.permission == BindingPairingPermission.TELEMETRY_PROFILE_READ && it.phase == BindingPairingPhase.AWAITING_APPROVAL }.orEmpty(), key = { it.attemptId }) { pairing ->
+            items(remote?.incomingPairings?.filter { it.permission == PairingPermission.TELEMETRY_PROFILE_READ && it.phase == PairingPhase.AWAITING_APPROVAL }.orEmpty(), key = { it.attemptId }) { pairing ->
                 LaunchedEffect(pairing.attemptId) { invitation = null }
                 Text("${pairing.name} · 遥测配置（含认证）")
                 Text(pairing.verificationCode.orEmpty(), style = MaterialTheme.typography.headlineMedium)
@@ -148,7 +152,7 @@ fun TelemetryScreen(hub: DeviceHub, back: () -> Unit) {
     }
 }
 
-private fun telemetryStatus(state: BindingTelemetrySnapshot): String = when {
+private fun telemetryStatus(state: TelemetrySnapshot): String = when {
     state.status == "development_configuration_unavailable" -> "开发启动配置不可用，遥测未接入"
     !state.configurationAvailable -> "配置无法读取，遥测未启用；原文件已保留"
     !state.applied -> "已保存，尚未应用"

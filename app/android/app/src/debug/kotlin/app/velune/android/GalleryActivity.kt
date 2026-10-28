@@ -7,23 +7,25 @@ import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.Surface
 import androidx.compose.ui.Modifier
-import app.velune.bindings.BindingActiveConversation
-import app.velune.bindings.BindingConversationSummary
-import app.velune.bindings.BindingInteractionKind
-import app.velune.bindings.BindingInteractionOption
-import app.velune.bindings.BindingListedConversation
-import app.velune.bindings.BindingMessage
-import app.velune.bindings.BindingMessageBlock
-import app.velune.bindings.BindingMessagePayload
-import app.velune.bindings.BindingMessageRole
-import app.velune.bindings.BindingModelSelection
-import app.velune.bindings.BindingRunState
-import app.velune.bindings.BindingRuntimeInstance
-import app.velune.bindings.BindingRuntimeInteraction
-import app.velune.bindings.BindingRuntimeModel
-import app.velune.bindings.BindingToolState
-import app.velune.bindings.BindingTranscriptItem
-import app.velune.bindings.BindingTranscriptTurn
+import app.velune.bindings.application.ActiveConversation
+import app.velune.bindings.conversation.ConversationSummary
+import app.velune.bindings.conversation.ConversationTitle
+import app.velune.bindings.conversation.RuntimeKind
+import app.velune.bindings.conversation.InteractionKind
+import app.velune.bindings.conversation.InteractionOption
+import app.velune.bindings.application.ListedConversation
+import app.velune.bindings.application.DeliveredMessage
+import app.velune.bindings.application.DeliveredBlock
+import app.velune.bindings.application.MessagePayload
+import app.velune.bindings.conversation.MessageRole
+import app.velune.bindings.conversation.ModelSelection
+import app.velune.bindings.conversation.RunState
+import app.velune.bindings.application.RuntimeInstance
+import app.velune.bindings.conversation.RuntimeInteraction
+import app.velune.bindings.application.RuntimeModel
+import app.velune.bindings.conversation.ToolState
+import app.velune.bindings.conversation.TranscriptItem
+import app.velune.bindings.conversation.TranscriptTurn
 
 /**
  * Debug builds only: each screen's content with made-up data, for looking at
@@ -67,14 +69,14 @@ private object Sample {
     )
 
     private val runtimes = listOf(
-        BindingRuntimeInstance(true, "claude", "Claude Code", "claude-code-2.1", "gateway", emptyMap()),
-        BindingRuntimeInstance(true, "codex", "Codex", "codex-0.159", "gateway", emptyMap()),
-        BindingRuntimeInstance(true, "pi", "Pi", "pi-1.0", "gateway", emptyMap()),
+        RuntimeInstance(true, "claude", "Claude Code", RuntimeKind.CLAUDE_CODE, "gateway", emptyMap()),
+        RuntimeInstance(true, "codex", "Codex", RuntimeKind.CODEX, "gateway", emptyMap()),
+        RuntimeInstance(true, "pi", "Pi", RuntimeKind.PI, "gateway", emptyMap()),
     )
 
     private fun listed(id: String, title: String, runtime: String, minutesAgo: Long, project: String?, pinned: Boolean = false, unread: Boolean = false, failed: Boolean = false) =
-        BindingListedConversation(
-            BindingConversationSummary(id, title, now - minutesAgo * MINUTE, now - minutesAgo * MINUTE, runtime, project, true, true, null),
+        ListedConversation(
+            ConversationSummary(id, ConversationTitle.Native(title), now - minutesAgo * MINUTE, now - minutesAgo * MINUTE, runtime, project, true, true, null),
             id, "agents://$runtime/11111111-1111-4111-8111-111111111111", pinned, unread, false, project, false, failed, null,
         )
 
@@ -96,24 +98,24 @@ private object Sample {
         projectNames = mapOf("/Users/me/Development/velune" to "velune"),
         projects = listOf("/Users/me/Development/velune", "/Users/me/Writing/blog"),
         active = mapOf(
-            "c2" to BindingActiveConversation("claude", "c2", BindingRunState.RUNNING, 0u, null),
-            "c1" to BindingActiveConversation("claude", "c1", BindingRunState.RUNNING, 1u, null),
+            "c2" to ActiveConversation("claude", "c2", RunState.RUNNING, 0u, null),
+            "c1" to ActiveConversation("claude", "c1", RunState.RUNNING, 1u, null),
         ),
         loaded = true,
         path = "直连 12 ms",
     )
 
     val models = listOf(
-        BindingRuntimeModel(BindingModelSelection.Native(null, "claude-opus-5-5"), "Claude Opus 5.5", emptyList()),
-        BindingRuntimeModel(BindingModelSelection.Native(null, "claude-sonnet-5-5"), "Claude Sonnet 5.5", emptyList()),
+        RuntimeModel(ModelSelection.Native(null, "claude-opus-5-5"), "Claude Opus 5.5", emptyList()),
+        RuntimeModel(ModelSelection.Native(null, "claude-sonnet-5-5"), "Claude Sonnet 5.5", emptyList()),
     )
 
     val header = ConversationHeader("修复 Android 会话列表的滚动抖动", RuntimeLabel("Claude Code", "claude-code"), "工作室 Mac mini", "/Users/me/Development/velune")
 
     val actions = ConversationActions({}, { _, _ -> }, {}, { _, _ -> }, {}, {})
 
-    private fun message(id: String, role: BindingMessageRole, vararg blocks: BindingMessageBlock) =
-        BindingMessage(1uL, true, id, role, now, blocks.toList())
+    private fun message(id: String, role: MessageRole, vararg blocks: DeliveredBlock) =
+        DeliveredMessage(1uL, true, id, role, now, blocks.toList())
 
     private val reply = """
         找到原因了：`LazyColumn` 每次轮询都换了 **key**，所以整页重新测量。
@@ -139,44 +141,44 @@ private object Sample {
     """.trimIndent()
 
     private val messages = listOf(
-        message("u1", BindingMessageRole.USER, BindingMessageBlock.Text("会话列表滚动时会抖一下，帮我看看为什么，顺便修掉。")),
+        message("u1", MessageRole.USER, DeliveredBlock.Text("会话列表滚动时会抖一下，帮我看看为什么，顺便修掉。")),
         message(
-            "a1", BindingMessageRole.ASSISTANT,
-            BindingMessageBlock.Reasoning("先看列表的 key 与轮询频率", BindingMessagePayload.Inline("列表每两秒轮询一次；如果 key 不稳定，Compose 会把每一行当作新行。")),
-            BindingMessageBlock.Tool("t1", "Read app/android/…/ConversationListScreen.kt", BindingToolState.COMPLETED, BindingMessagePayload.Inline("  1 package app.velune.android\n  2 \n  3 import androidx.compose.foundation.lazy.LazyColumn\n…"), null),
-            BindingMessageBlock.Tool("t2", "Bash ./gradlew :app:assembleDebug", BindingToolState.FAILED, BindingMessagePayload.Deferred(48_213uL), null),
-            BindingMessageBlock.Tool("t3", "Edit ConversationListScreen.kt", BindingToolState.COMPLETED, BindingMessagePayload.Inline("-    items(listing.conversations) { listed ->\n+    items(listing.conversations, key = { it.conversation.runtimeId + \"/\" + it.conversation.id }) { listed ->"), null),
-            BindingMessageBlock.Tool("t4", "Bash ./gradlew :app:assembleDebug", BindingToolState.COMPLETED, BindingMessagePayload.Inline("BUILD SUCCESSFUL in 41s"), null),
-            BindingMessageBlock.Text(reply),
+            "a1", MessageRole.ASSISTANT,
+            DeliveredBlock.Reasoning("先看列表的 key 与轮询频率", MessagePayload.Inline("列表每两秒轮询一次；如果 key 不稳定，Compose 会把每一行当作新行。")),
+            DeliveredBlock.Tool("t1", "Read app/android/…/ConversationListScreen.kt", ToolState.COMPLETED, MessagePayload.Inline("  1 package app.velune.android\n  2 \n  3 import androidx.compose.foundation.lazy.LazyColumn\n…"), null),
+            DeliveredBlock.Tool("t2", "Bash ./gradlew :app:assembleDebug", ToolState.FAILED, MessagePayload.Deferred(48_213uL), null),
+            DeliveredBlock.Tool("t3", "Edit ConversationListScreen.kt", ToolState.COMPLETED, MessagePayload.Inline("-    items(listing.conversations) { listed ->\n+    items(listing.conversations, key = { it.conversation.runtimeId + \"/\" + it.conversation.id }) { listed ->"), null),
+            DeliveredBlock.Tool("t4", "Bash ./gradlew :app:assembleDebug", ToolState.COMPLETED, MessagePayload.Inline("BUILD SUCCESSFUL in 41s"), null),
+            DeliveredBlock.Text(reply),
         ),
     )
 
-    private val turn = BindingTranscriptTurn("turn1", "u1", listOf("a1"), "a1", 5u, 83_000uL, false, null, null)
-    private val items = listOf(BindingTranscriptItem.Message("u1", "u1"), BindingTranscriptItem.Work("turn1"), BindingTranscriptItem.Message("reply:a1", "a1"))
+    private val turn = TranscriptTurn("turn1", "u1", listOf("a1"), "a1", 5u, 83_000uL, false, null, null)
+    private val items = listOf(TranscriptItem.Message("u1", "u1"), TranscriptItem.Work("turn1"), TranscriptItem.Message("reply:a1", "a1"))
     private val byId = messages.associateBy { it.id }
 
     val finished = ConversationState(
         conversation = null, entries = transcriptEntries(items, listOf(turn)) { byId[it] }, loading = false, models = models,
         selection = models[0].selection,
-    ).copy(conversation = BindingConversationSummary("c2", header.title, now, now, "claude", header.cwd, true, true, null))
+    ).copy(conversation = ConversationSummary("c2", ConversationTitle.Native(header.title), now, now, "claude", header.cwd, true, true, null))
 
-    private val runningMessages = messages + message("u2", BindingMessageRole.USER, BindingMessageBlock.Text("顺便跑一下全部检查。")) + message(
-        "a2", BindingMessageRole.ASSISTANT,
-        BindingMessageBlock.Tool("t5", "Bash scripts/build-android.sh --skip-native", BindingToolState.RUNNING, null, null),
+    private val runningMessages = messages + message("u2", MessageRole.USER, DeliveredBlock.Text("顺便跑一下全部检查。")) + message(
+        "a2", MessageRole.ASSISTANT,
+        DeliveredBlock.Tool("t5", "Bash scripts/build-android.sh --skip-native", ToolState.RUNNING, null, null),
     )
     private val runningById = runningMessages.associateBy { it.id }
-    private val runningTurns = listOf(turn, BindingTranscriptTurn("turn2", "u2", listOf("a2"), null, 0u, null, true, null, null))
-    private val runningItems = items + listOf(BindingTranscriptItem.Message("u2", "u2"), BindingTranscriptItem.Work("turn2"))
+    private val runningTurns = listOf(turn, TranscriptTurn("turn2", "u2", listOf("a2"), null, 0u, null, true, null, null))
+    private val runningItems = items + listOf(TranscriptItem.Message("u2", "u2"), TranscriptItem.Work("turn2"))
 
     val running = finished.copy(
         entries = transcriptEntries(runningItems, runningTurns) { runningById[it] },
-        runState = BindingRunState.RUNNING, canCancel = true,
+        runState = RunState.RUNNING, canCancel = true,
         interactions = listOf(
-            BindingRuntimeInteraction(
+            RuntimeInteraction(
                 "i1",
-                BindingInteractionKind.Approval(
+                InteractionKind.Approval(
                     "允许运行命令？", "scripts/build-android.sh --skip-native",
-                    listOf(BindingInteractionOption("allow", "允许"), BindingInteractionOption("always", "本会话都允许"), BindingInteractionOption("deny", "拒绝")),
+                    listOf(InteractionOption("allow", "允许"), InteractionOption("always", "本会话都允许"), InteractionOption("deny", "拒绝")),
                 ),
             ),
         ),

@@ -1,6 +1,10 @@
 package app.velune.android
 
 import app.velune.bindings.*
+import app.velune.bindings.application.*
+import app.velune.bindings.conversation.*
+import app.velune.bindings.remote.*
+import app.velune.bindings.telemetry.*
 import io.opentelemetry.api.common.Attributes
 import io.opentelemetry.api.common.AttributeKey
 import io.opentelemetry.sdk.common.InternalTelemetryVersion
@@ -58,17 +62,17 @@ class ClientTelemetry(home: File, developmentProfile: String? = null, runId: Str
     fun start() = synchronized(transition) {
         val state = binding.snapshot()
         if (state.configurationAvailable && state.status != "development_configuration_unavailable") {
-            if (state.preference == BindingTelemetryPreference.ON || (state.preference == BindingTelemetryPreference.UNSET && state.developmentOverride)) {
+            if (state.preference == TelemetryPreference.ON || (state.preference == TelemetryPreference.UNSET && state.developmentOverride)) {
                 try { apply(binding.prepareSaved()) }
                 catch (_: Exception) { binding.confirmNative(binding.snapshot().revision, false) }
             }
             else binding.confirmNative(state.revision, true)
         }
     }
-    fun save(revision: ULong, preference: BindingTelemetryPreference, profile: BindingTelemetryProfile?) = synchronized(transition) {
+    fun save(revision: ULong, preference: TelemetryPreference, profile: TelemetryProfile?) = synchronized(transition) {
         apply(binding.prepare(revision, preference, profile))
     }
-    private fun apply(candidate: BindingTelemetryPreparation) {
+    private fun apply(candidate: TelemetryPreparation) {
         val transport = try { candidate.profile?.let { Transport(it) } }
         catch (error: Exception) { binding.cancelPreparation(candidate.id); throw error }
         val revision = try { binding.commit(candidate.id) }
@@ -85,7 +89,7 @@ class ClientTelemetry(home: File, developmentProfile: String? = null, runId: Str
             throw error
         }
     }
-    suspend fun <T> operation(category: NativeOperation, body: suspend (BindingTraceCarrier?) -> T): T {
+    suspend fun <T> operation(category: NativeOperation, body: suspend (TraceCarrier?) -> T): T {
         val generation = current.get() ?: return body(null)
         if (generation.transport.closed) return body(null)
         val operation = category.wireName
@@ -95,7 +99,7 @@ class ClientTelemetry(home: File, developmentProfile: String? = null, runId: Str
         val context = Context.current().with(span)
         val fields = mutableMapOf<String, String>()
         W3CTraceContextPropagator.getInstance().inject(context, fields) { carrier, key, value -> carrier?.put(key, value) }
-        val carrier = fields["traceparent"]?.let { BindingTraceCarrier(it, fields["tracestate"].orEmpty()) }
+        val carrier = fields["traceparent"]?.let { TraceCarrier(it, fields["tracestate"].orEmpty()) }
         val started = System.nanoTime()
         var outcome = "success"
         try { return withContext(context.asContextElement()) { body(carrier) } }
@@ -127,7 +131,7 @@ class ClientTelemetry(home: File, developmentProfile: String? = null, runId: Str
         current.getAndSet(null)?.let { it.flush(); it.close() }; binding.shutdown()
     }
 
-    private class Transport(profile: BindingTelemetryProfile) {
+    private class Transport(profile: TelemetryProfile) {
         private val gate = Any()
         @Volatile var closed = false
             private set
@@ -152,14 +156,14 @@ class ClientTelemetry(home: File, developmentProfile: String? = null, runId: Str
             result.whenComplete {
                 val state = synchronized(this) {
                     if (result.isSuccess) completed++ else failed++
-                    BindingTelemetryExportHealth(completed, failed, System.currentTimeMillis().toULong(), if (result.isSuccess) "rpc_completed" else "transport_error", null)
+                    TelemetryExportHealth(completed, failed, System.currentTimeMillis().toULong(), if (result.isSuccess) "rpc_completed" else "transport_error", null)
                 }
                 runCatching { binding.reportNativeExport(revision, state) }
             }
             return result
         }
     }
-    private class Generation(val transport: Transport, candidate: BindingTelemetryPreparation, binding: VeluneTelemetry) {
+    private class Generation(val transport: Transport, candidate: TelemetryPreparation, binding: VeluneTelemetry) {
         private val feedback = Feedback(binding, candidate.revision)
         private val sdkReader = SdkMetricSnapshot()
         private val sdkMetrics = SdkMeterProvider.builder().registerMetricReader(sdkReader).build()

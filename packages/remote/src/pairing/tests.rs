@@ -124,7 +124,7 @@ fn mobile_profile_pairing_has_its_own_consent_ingress_and_revocation() {
                     id: raw.next_request_id().unwrap(),
                     view: velune_application_api::ClientViewId("test".into()),
                     execution: Default::default(),
-                    command: Box::new(velune_application_api::Command::List),
+                    command: Box::new(velune_application_api::Command::ReadConfiguration),
                     trace_context: None
                 })
                 .await,

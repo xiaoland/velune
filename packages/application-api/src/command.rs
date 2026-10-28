@@ -69,7 +69,7 @@ pub enum CommandKind {
     AnalyticsQuery,
     RuntimeDiscoveryHints,
     DiscoverRuntimes,
-    List,
+    ReadConfiguration,
     SetOutlinePresentation,
     SetLinkedConversationOpening,
     SetUsageDisplay,
@@ -240,7 +240,7 @@ pub enum Command {
     DiscoverRuntimes {
         probes: Vec<RuntimeDiscoveryProbe>,
     },
-    List,
+    ReadConfiguration,
     SetOutlinePresentation {
         presentation: OutlinePresentation,
     },
@@ -586,7 +586,7 @@ pub enum Response {
     AnalyticsQuery(AnalyticsReport),
     RuntimeDiscoveryHints(Vec<RuntimeDiscoveryHint>),
     DiscoverRuntimes(Vec<RuntimeDiscoveryCandidate>),
-    List(ConfigurationSnapshot),
+    ReadConfiguration(ConfigurationSnapshot),
     SetOutlinePresentation(OutlinePresentation),
     SetLinkedConversationOpening(LinkedConversationOpening),
     SetUsageDisplay(UsageDisplay),
@@ -686,7 +686,7 @@ impl Command {
             | Self::AnalyticsQuery { .. }
             | Self::RuntimeDiscoveryHints { .. }
             | Self::DiscoverRuntimes { .. }
-            | Self::List
+            | Self::ReadConfiguration
             | Self::ComposerDrafts
             | Self::ComposerChoices
             | Self::SearchConversations { .. }
@@ -800,7 +800,7 @@ impl Command {
             Self::AnalyticsQuery { .. } => CommandKind::AnalyticsQuery,
             Self::RuntimeDiscoveryHints { .. } => CommandKind::RuntimeDiscoveryHints,
             Self::DiscoverRuntimes { .. } => CommandKind::DiscoverRuntimes,
-            Self::List => CommandKind::List,
+            Self::ReadConfiguration => CommandKind::ReadConfiguration,
             Self::SetOutlinePresentation { .. } => CommandKind::SetOutlinePresentation,
             Self::SetLinkedConversationOpening { .. } => CommandKind::SetLinkedConversationOpening,
             Self::SetUsageDisplay { .. } => CommandKind::SetUsageDisplay,

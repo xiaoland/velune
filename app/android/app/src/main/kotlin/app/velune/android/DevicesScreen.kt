@@ -50,11 +50,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import app.velune.bindings.BindingContactConfirmation
-import app.velune.bindings.BindingControllerPhase
-import app.velune.bindings.BindingDeviceContact
-import app.velune.bindings.BindingPairingPhase
-import app.velune.bindings.BindingRemoteServiceSnapshot
+import app.velune.bindings.remote.ContactConfirmation
+import app.velune.bindings.remote.ControllerPhase
+import app.velune.bindings.remote.DeviceContact
+import app.velune.bindings.remote.PairingPhase
+import app.velune.bindings.remote.RemoteServiceSnapshot
 import kotlinx.coroutines.launch
 
 /** A paired device as the lists show it. */
@@ -168,28 +168,28 @@ private fun DeviceCard(device: DeviceSummary, actions: DevicesActions) {
     }
 }
 
-fun deviceSummary(state: BindingRemoteServiceSnapshot, contact: BindingDeviceContact, path: String? = null) = DeviceSummary(
-    contact.peerId, contact.name, deviceStatus(state, contact, path), contact.confirmation is BindingContactConfirmation.Confirmed,
+fun deviceSummary(state: RemoteServiceSnapshot, contact: DeviceContact, path: String? = null) = DeviceSummary(
+    contact.peerId, contact.name, deviceStatus(state, contact, path), contact.confirmation is ContactConfirmation.Confirmed,
 )
 
-fun deviceStatus(state: BindingRemoteServiceSnapshot, contact: BindingDeviceContact, path: String? = null): DeviceStatus {
-    state.outgoingPairings.firstOrNull { it.peerId == contact.peerId }?.takeIf { it.phase != BindingPairingPhase.GRANTED }?.let {
+fun deviceStatus(state: RemoteServiceSnapshot, contact: DeviceContact, path: String? = null): DeviceStatus {
+    state.outgoingPairings.firstOrNull { it.peerId == contact.peerId }?.takeIf { it.phase != PairingPhase.GRANTED }?.let {
         return when (it.phase) {
-            BindingPairingPhase.AWAITING_READY, BindingPairingPhase.AWAITING_APPROVAL -> DeviceStatus("等待对方允许 · 核对码 ${grouped(it.verificationCode.orEmpty())}", Tone.Attention)
-            BindingPairingPhase.REJECTED -> DeviceStatus("对方已拒绝", Tone.Negative)
-            BindingPairingPhase.EXPIRED -> DeviceStatus("邀请已过期", Tone.Negative)
-            BindingPairingPhase.DISCONNECTED -> DeviceStatus("配对时连接中断", Tone.Negative)
-            BindingPairingPhase.GRANTED -> DeviceStatus("", Tone.Neutral)
+            PairingPhase.AWAITING_READY, PairingPhase.AWAITING_APPROVAL -> DeviceStatus("等待对方允许 · 核对码 ${grouped(it.verificationCode.orEmpty())}", Tone.Attention)
+            PairingPhase.REJECTED -> DeviceStatus("对方已拒绝", Tone.Negative)
+            PairingPhase.EXPIRED -> DeviceStatus("邀请已过期", Tone.Negative)
+            PairingPhase.DISCONNECTED -> DeviceStatus("配对时连接中断", Tone.Negative)
+            PairingPhase.GRANTED -> DeviceStatus("", Tone.Neutral)
         }
     }
-    if (contact.confirmation is BindingContactConfirmation.Pending) return DeviceStatus("等待对方允许", Tone.Attention)
+    if (contact.confirmation is ContactConfirmation.Pending) return DeviceStatus("等待对方允许", Tone.Attention)
     val controller = state.controllers.firstOrNull { it.peerId == contact.peerId } ?: return DeviceStatus("未连接", Tone.Neutral)
     return when (controller.phase) {
-        BindingControllerPhase.CONNECTED -> DeviceStatus(listOfNotNull("已连接", path).joinToString(" · "), Tone.Positive)
-        BindingControllerPhase.CONNECTING, BindingControllerPhase.DISCOVERING -> DeviceStatus("正在连接", Tone.Attention)
-        BindingControllerPhase.RECOVERING -> DeviceStatus("正在重新连接", Tone.Attention)
-        BindingControllerPhase.SUSPENDED, BindingControllerPhase.DISCONNECTED -> DeviceStatus("未连接", Tone.Neutral)
-        BindingControllerPhase.BLOCKED -> DeviceStatus("无法连接" + (controller.errorCode?.let { "（$it）" } ?: ""), Tone.Negative)
+        ControllerPhase.CONNECTED -> DeviceStatus(listOfNotNull("已连接", path).joinToString(" · "), Tone.Positive)
+        ControllerPhase.CONNECTING, ControllerPhase.DISCOVERING -> DeviceStatus("正在连接", Tone.Attention)
+        ControllerPhase.RECOVERING -> DeviceStatus("正在重新连接", Tone.Attention)
+        ControllerPhase.SUSPENDED, ControllerPhase.DISCONNECTED -> DeviceStatus("未连接", Tone.Neutral)
+        ControllerPhase.BLOCKED -> DeviceStatus("无法连接" + (controller.errorCode?.let { "（$it）" } ?: ""), Tone.Negative)
     }
 }
 

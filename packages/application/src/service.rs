@@ -292,8 +292,8 @@ mod usage_tests {
         service: &ApplicationService,
         view: &str,
     ) -> (crate::config::UsageDisplay, crate::config::UsageDisplay) {
-        let Response::List(value) = service
-            .execute(ClientViewId(view.into()), Command::List)
+        let Response::ReadConfiguration(value) = service
+            .execute(ClientViewId(view.into()), Command::ReadConfiguration)
             .unwrap()
         else {
             panic!("list response")

@@ -29,7 +29,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
-import app.velune.bindings.BindingAgentUriResolution
+import app.velune.bindings.application.AgentUriResolution
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -42,7 +42,7 @@ fun AgentUriScreen(hub: DeviceHub, address: String, peer: String?, back: () -> U
     var selected by rememberSaveable { mutableStateOf(peer) }
     val target = selected ?: devices.singleOrNull()?.peerId
     var loading by remember { mutableStateOf(false) }
-    var result by remember { mutableStateOf<BindingAgentUriResolution?>(null) }
+    var result by remember { mutableStateOf<AgentUriResolution?>(null) }
     var failure by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(target) {
         if (target == null) return@LaunchedEffect
@@ -55,7 +55,7 @@ fun AgentUriScreen(hub: DeviceHub, address: String, peer: String?, back: () -> U
             result = found
             if (found.conversations.size == 1 && found.failures.isEmpty()) {
                 val conversation = found.conversations.single().conversation
-                open(target, ConversationTarget.Existing(conversation.runtimeId, conversation.id, conversation.title))
+                open(target, ConversationTarget.Existing(conversation.runtimeId, conversation.id, conversation.title.displayText()))
             } else if (found.conversations.isEmpty() && found.failures.isEmpty()) failure = "这台设备的已配置实例中找不到该会话。"
         } catch (error: CancellationException) { throw error }
         catch (error: Exception) { failure = error.describe() }
@@ -81,9 +81,9 @@ fun AgentUriScreen(hub: DeviceHub, address: String, peer: String?, back: () -> U
                 items(found.conversations, key = { it.conversation.runtimeId + "/" + it.conversation.id }) { item ->
                     val conversation = item.conversation
                     Column(Modifier.fillMaxWidth().clickable {
-                        target?.let { open(it, ConversationTarget.Existing(conversation.runtimeId, conversation.id, conversation.title)) }
+                        target?.let { open(it, ConversationTarget.Existing(conversation.runtimeId, conversation.id, conversation.title.displayText())) }
                     }.padding(vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Text(conversation.title, style = MaterialTheme.typography.titleMedium)
+                        Text(conversation.title.displayText(), style = MaterialTheme.typography.titleMedium)
                         Text(conversation.runtimeId, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         conversation.cwd?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
                     }

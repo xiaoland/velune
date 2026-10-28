@@ -74,12 +74,12 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import app.velune.bindings.BindingInteractionAnswer
-import app.velune.bindings.BindingInteractionKind
-import app.velune.bindings.BindingModelSelection
-import app.velune.bindings.BindingRunState
-import app.velune.bindings.BindingRuntimeInteraction
-import app.velune.bindings.BindingRuntimeInteractionReply
+import app.velune.bindings.conversation.InteractionAnswer
+import app.velune.bindings.conversation.InteractionKind
+import app.velune.bindings.conversation.ModelSelection
+import app.velune.bindings.conversation.RunState
+import app.velune.bindings.conversation.RuntimeInteraction
+import app.velune.bindings.conversation.RuntimeInteractionReply
 
 /** What the header says about the conversation besides its title. */
 data class ConversationHeader(val title: String, val runtime: RuntimeLabel?, val device: String?, val cwd: String?)
@@ -88,8 +88,8 @@ class ConversationActions(
     val back: () -> Unit,
     val send: (String, onSent: () -> Unit) -> Unit,
     val stop: () -> Unit,
-    val reply: (interactionId: String, BindingRuntimeInteractionReply) -> Unit,
-    val select: (BindingModelSelection?) -> Unit,
+    val reply: (interactionId: String, RuntimeInteractionReply) -> Unit,
+    val select: (ModelSelection?) -> Unit,
     val load: (messageId: String) -> Unit,
     val compact: () -> Unit = {},
 )
@@ -101,7 +101,7 @@ fun ConversationScreen(hub: DeviceHub, peer: String, runtime: RuntimeLabel?, mod
     WhileVisible(model, resume = model::resume, pause = model::pause)
     val target = model.target
     val header = ConversationHeader(
-        title = state.conversation?.title ?: (target as? ConversationTarget.Existing)?.title ?: "新会话",
+        title = state.conversation?.title?.displayText() ?: (target as? ConversationTarget.Existing)?.title ?: "新会话",
         runtime = runtime,
         device = remote?.contacts?.firstOrNull { it.peerId == peer }?.name,
         cwd = state.conversation?.cwd ?: (target as? ConversationTarget.New)?.cwd,
@@ -170,7 +170,7 @@ private fun Failure(text: String) {
 /** An approval or a question from the runtime, above the input like a pinned message. */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun InteractionCard(interaction: BindingRuntimeInteraction, enabled: Boolean, reply: (BindingRuntimeInteractionReply) -> Unit) {
+private fun InteractionCard(interaction: RuntimeInteraction, enabled: Boolean, reply: (RuntimeInteractionReply) -> Unit) {
     Surface(
         color = MaterialTheme.colorScheme.surfaceContainerHigh, shape = RoundedCornerShape(16.dp),
         border = BorderStroke(1.dp, Tone.Attention.color().copy(alpha = 0.5f)),
@@ -178,7 +178,7 @@ private fun InteractionCard(interaction: BindingRuntimeInteraction, enabled: Boo
     ) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             when (val kind = interaction.kind) {
-                is BindingInteractionKind.Approval -> {
+                is InteractionKind.Approval -> {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Icon(Icons.Outlined.Shield, contentDescription = null, modifier = Modifier.size(20.dp), tint = Tone.Attention.color())
                         Text(kind.title, style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(start = 8.dp))
@@ -193,11 +193,11 @@ private fun InteractionCard(interaction: BindingRuntimeInteraction, enabled: Boo
                     }
                     FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         kind.options.forEach { option ->
-                            FilledTonalButton(enabled = enabled, onClick = { reply(BindingRuntimeInteractionReply.Decision(option.id)) }) { Text(option.label) }
+                            FilledTonalButton(enabled = enabled, onClick = { reply(RuntimeInteractionReply.Decision(option.id)) }) { Text(option.label) }
                         }
                     }
                 }
-                is BindingInteractionKind.UserInput -> {
+                is InteractionKind.UserInput -> {
                     val answers = remember(interaction.id) { mutableStateMapOf<String, String>() }
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Icon(Icons.AutoMirrored.Outlined.HelpOutline, contentDescription = null, modifier = Modifier.size(20.dp), tint = Tone.Attention.color())
@@ -218,9 +218,9 @@ private fun InteractionCard(interaction: BindingRuntimeInteraction, enabled: Boo
                     }
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         Button(enabled = enabled && kind.questions.all { !answers[it.id].isNullOrBlank() }, onClick = {
-                            reply(BindingRuntimeInteractionReply.Answers(kind.questions.map { BindingInteractionAnswer(it.id, listOf(answers[it.id].orEmpty())) }))
+                            reply(RuntimeInteractionReply.Answers(kind.questions.map { InteractionAnswer(it.id, listOf(answers[it.id].orEmpty())) }))
                         }) { Text("提交") }
-                        TextButton(enabled = enabled, onClick = { reply(BindingRuntimeInteractionReply.Cancel) }) { Text("取消") }
+                        TextButton(enabled = enabled, onClick = { reply(RuntimeInteractionReply.Cancel) }) { Text("取消") }
                     }
                 }
             }
@@ -299,13 +299,13 @@ private fun ModelOption(name: String, selected: Boolean, choose: () -> Unit) {
 
 /** A line above the input while the conversation is not simply idle. */
 @Composable
-private fun RunStatus(runState: BindingRunState) {
+private fun RunStatus(runState: RunState) {
     val (tone, text) = when (runState) {
-        BindingRunState.IDLE -> return
-        BindingRunState.RUNNING -> Tone.Active to "运行中"
-        BindingRunState.STOPPING -> Tone.Attention to "正在停止"
-        BindingRunState.FAILED -> Tone.Negative to "上一轮失败"
-        BindingRunState.ELSEWHERE -> Tone.Attention to "正在其他地方运行"
+        RunState.IDLE -> return
+        RunState.RUNNING -> Tone.Active to "运行中"
+        RunState.STOPPING -> Tone.Attention to "正在停止"
+        RunState.FAILED -> Tone.Negative to "上一轮失败"
+        RunState.ELSEWHERE -> Tone.Attention to "正在其他地方运行"
     }
     Row(Modifier.padding(start = 12.dp, bottom = 6.dp), verticalAlignment = Alignment.CenterVertically) {
         StatusDot(tone)

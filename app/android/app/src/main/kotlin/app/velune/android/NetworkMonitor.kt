@@ -9,16 +9,16 @@ import android.net.NetworkRequest
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
-import app.velune.bindings.BindingNetworkChangeReason
-import app.velune.bindings.BindingPlatformNetwork
-import app.velune.bindings.BindingPlatformNetworkSnapshot
+import app.velune.bindings.remote.NetworkChangeReason
+import app.velune.bindings.remote.PlatformNetwork
+import app.velune.bindings.remote.PlatformNetworkSnapshot
 import java.net.InetAddress
 
 /** Reports platform facts; observing a network does not establish a usable transport path. */
 class NetworkMonitor(
     context: Context,
-    private val report: (BindingPlatformNetworkSnapshot) -> Unit,
-    private val observed: ((BindingPlatformNetworkSnapshot) -> Unit)? = null,
+    private val report: (PlatformNetworkSnapshot) -> Unit,
+    private val observed: ((PlatformNetworkSnapshot) -> Unit)? = null,
 ) : AutoCloseable {
     private val manager = context.getSystemService(ConnectivityManager::class.java)
     private val handler = Handler(Looper.getMainLooper())
@@ -26,7 +26,7 @@ class NetworkMonitor(
     private var defaultNetwork: Network? = null
     private var started = false
     private var sequence = 0uL
-    private var pending: BindingPlatformNetworkSnapshot? = null
+    private var pending: PlatformNetworkSnapshot? = null
     private var flushScheduled = false
     private val flush = Runnable {
         val snapshot = pending
@@ -72,7 +72,7 @@ class NetworkMonitor(
 
     fun foreground() {
         requireMainThread()
-        if (started) changed(BindingNetworkChangeReason.FOREGROUND)
+        if (started) changed(NetworkChangeReason.FOREGROUND)
     }
 
     private fun callback(default: Boolean) = object : ConnectivityManager.NetworkCallback() {
@@ -91,7 +91,7 @@ class NetworkMonitor(
             } else {
                 facts.lanObserved = true
             }
-            changed(BindingNetworkChangeReason.AVAILABLE)
+            changed(NetworkChangeReason.AVAILABLE)
         }
 
         override fun onLost(network: Network) {
@@ -105,7 +105,7 @@ class NetworkMonitor(
                 }
                 if (!facts.defaultObserved && !facts.lanObserved) networks.remove(network)
             }
-            changed(BindingNetworkChangeReason.LOST)
+            changed(NetworkChangeReason.LOST)
         }
 
         override fun onCapabilitiesChanged(network: Network, capabilities: NetworkCapabilities) {
@@ -117,7 +117,7 @@ class NetworkMonitor(
             facts.vpn = capabilities.hasTransport(NetworkCapabilities.TRANSPORT_VPN)
             facts.internet = capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
             facts.validated = capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
-            changed(BindingNetworkChangeReason.CAPABILITIES)
+            changed(NetworkChangeReason.CAPABILITIES)
         }
 
         override fun onLinkPropertiesChanged(network: Network, properties: LinkProperties) {
@@ -128,19 +128,19 @@ class NetworkMonitor(
                 "${address.address.observedIp()}/${address.prefixLength}"
             }.sorted()
             facts.dnsServers = properties.dnsServers.map { it.observedIp() }.sorted()
-            changed(BindingNetworkChangeReason.LINK_PROPERTIES)
+            changed(NetworkChangeReason.LINK_PROPERTIES)
         }
     }
 
-    private fun changed(reason: BindingNetworkChangeReason) {
+    private fun changed(reason: NetworkChangeReason) {
         sequence += 1uL
-        val snapshot = BindingPlatformNetworkSnapshot(
+        val snapshot = PlatformNetworkSnapshot(
             sequence = sequence,
             elapsedRealtimeMs = SystemClock.elapsedRealtime().toULong(),
             reason = reason,
             defaultNetworkId = defaultNetwork?.identifier(),
             networks = networks.entries.sortedBy { it.key.identifier() }.map { (network, facts) ->
-                BindingPlatformNetwork(
+                PlatformNetwork(
                     id = network.identifier(),
                     wifi = facts.wifi,
                     cellular = facts.cellular,

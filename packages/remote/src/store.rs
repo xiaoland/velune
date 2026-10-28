@@ -635,7 +635,7 @@ mod migration_tests {
             serde_json::json!({"peer_id":peer,"name":"synthetic","attempt_id":attempt});
         old["pending"] = serde_json::json!([{"peer_id":peer,"request_id":{"incarnation":random_id().unwrap(),"client":random_id().unwrap(),"sequence":1},"view":"synthetic","execution":{"expected_revision":null},"kind":"List","runtime_id":null,"conversation_id":null,"status":"unknown"}]);
         // Use the authoritative enum encoding instead of hand-maintaining its wire representation.
-        old["pending"][0]["kind"] = serde_json::to_value(CommandKind::List).unwrap();
+        old["pending"][0]["kind"] = serde_json::to_value(CommandKind::ReadConfiguration).unwrap();
         old["reset_notice"] = serde_json::json!({"id":random_id().unwrap()});
         atomic_write(&path, &serde_json::to_vec(&old).unwrap()).unwrap();
         let store = DeviceStore::open(&path).unwrap();

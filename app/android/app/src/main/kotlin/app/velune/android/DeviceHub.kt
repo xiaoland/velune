@@ -4,14 +4,14 @@ import android.content.Context
 import android.content.pm.ApplicationInfo
 import android.os.Build
 import android.provider.Settings
-import app.velune.bindings.BindingDiscoveryConfig
+import app.velune.bindings.remote.DiscoveryConfig
 import app.velune.bindings.BindingException
 import app.velune.bindings.BindingPairingOfferInfo
-import app.velune.bindings.BindingPairingStatus
-import app.velune.bindings.BindingRelayConfig
+import app.velune.bindings.remote.PairingStatus
+import app.velune.bindings.remote.RelayConfig
 import app.velune.bindings.BindingRemoteOptions
-import app.velune.bindings.BindingRemotePathPolicy
-import app.velune.bindings.BindingRemoteServiceSnapshot
+import app.velune.bindings.remote.PathPolicy
+import app.velune.bindings.remote.RemoteServiceSnapshot
 import app.velune.bindings.VeluneApplication
 import app.velune.bindings.VeluneRemoteEndpoint
 import app.velune.bindings.decodeRemoteOffer
@@ -37,8 +37,8 @@ class DeviceHub(private val context: Context) {
     @Volatile private var telemetryOwner: ClientTelemetry? = null
     fun telemetry(): ClientTelemetry = checkNotNull(telemetryOwner) { "遥测设置尚未就绪" }
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    private val _state = MutableStateFlow<BindingRemoteServiceSnapshot?>(null)
-    val state: StateFlow<BindingRemoteServiceSnapshot?> = _state.asStateFlow()
+    private val _state = MutableStateFlow<RemoteServiceSnapshot?>(null)
+    val state: StateFlow<RemoteServiceSnapshot?> = _state.asStateFlow()
     private val _failure = MutableStateFlow<String?>(null)
     val failure: StateFlow<String?> = _failure.asStateFlow()
     @Volatile private var endpoint: VeluneRemoteEndpoint? = null
@@ -62,9 +62,9 @@ class DeviceHub(private val context: Context) {
                         identityFile = File(directory, "device-identity").absolutePath,
                         stateFile = File(directory, "remote-state.json").absolutePath,
                         deviceName = deviceName(),
-                        relay = BindingRelayConfig.DevelopmentPublic,
-                        discovery = BindingDiscoveryConfig.DevelopmentPublic,
-                        pathPolicy = BindingRemotePathPolicy.AUTOMATIC,
+                        relay = RelayConfig.DevelopmentPublic,
+                        discovery = DiscoveryConfig.DevelopmentPublic,
+                        pathPolicy = PathPolicy.AUTOMATIC,
                         bindAddresses = emptyList(),
                         requestTimeoutMs = 30_000uL,
                     ),
@@ -111,7 +111,7 @@ class DeviceHub(private val context: Context) {
 
     fun decode(encoded: String): BindingPairingOfferInfo = decodeRemoteOffer(encoded.trim())
 
-    suspend fun beginPairing(encoded: String): BindingPairingStatus = perform { it.beginPairing(encoded.trim()) }
+    suspend fun beginPairing(encoded: String): PairingStatus = perform { it.beginPairing(encoded.trim()) }
 
     suspend fun cancelPairing(peer: String) = perform { it.cancelPairing(peer) }
 
