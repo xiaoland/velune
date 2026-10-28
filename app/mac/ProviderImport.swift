@@ -1,7 +1,6 @@
 import SwiftUI
 import VeluneBindings
 
-
 struct ProviderImportResult: Sendable {
     var gateways: [GatewaySummary]
     var executionInvalidated: Bool

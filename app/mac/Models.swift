@@ -38,24 +38,6 @@ struct Conversation: Codable, Sendable, Identifiable, Equatable {
     }
 }
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 struct ConversationSnapshot: Codable, Sendable, Equatable {
     /// Nil for local drafts and previews, which the core has not delivered.
     var cursor: TranscriptCursor? = nil
@@ -81,8 +63,6 @@ struct ConversationSnapshot: Codable, Sendable, Equatable {
     enum CodingKeys: String, CodingKey { case revision, conversation, runState, messages, transcriptTurns, transcriptItems, transcriptOutline, transcriptMessageIdentities, messageIdentityConfirmations, pendingInteractions, actions; case modelRecordKey = "modelRecordKey", contextRuntimeID = "contextRuntimeId" }
 }
 
-
-
 /// The models a runtime instance offers, read from the core when first needed.
 enum RuntimeModelCatalog: Equatable, Sendable {
     case loading
@@ -90,8 +70,6 @@ enum RuntimeModelCatalog: Equatable, Sendable {
     /// The runtime's default when it has one, its own models, then managed models.
     case ready([RuntimeModel])
 }
-
-
 
 /// How core reaches the provider; template kind does not determine its authentication method.
 struct ProviderComposition: Sendable, Equatable {
@@ -124,27 +102,12 @@ struct ProviderComposition: Sendable, Equatable {
     }
 }
 
-
-
-
-
-
-
-
-
-
-
-
-
-
 struct PendingAuthenticationPrompt: Sendable, Identifiable, Equatable {
     var id: String
     var kind: String
     var text: String
     var options: [SettingOption]?
 }
-
-
 
 struct CatalogModel: Identifiable, Sendable {
     var sourceProviderID: String
