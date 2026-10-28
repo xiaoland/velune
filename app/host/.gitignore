@@ -1,3 +1,0 @@
-# Built outside the Cargo workspace.
-/target/
-*.sqlite*

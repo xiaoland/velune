@@ -1,11 +1,7 @@
 //! Application-owned provider configuration and private adapter integration metadata.
-#[cfg(feature = "local-runtime")]
-use velune_agent_runtime::model_projection::PiModelProjection;
-#[cfg(not(feature = "local-runtime"))]
-type PiModelProjection = serde_json::Value;
 use serde::{Deserialize, Serialize};
-#[cfg(feature = "local-runtime")]
 use sha2::{Digest, Sha256};
+use velune_agent_runtime::model_projection::PiModelProjection;
 pub use velune_application_api::config::*;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -67,14 +63,12 @@ impl<'a> ResolvedProviderModel<'a> {
 /// Association metadata only. Native sessions remain the authority for content.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-#[cfg(feature = "local-runtime")]
 pub(crate) struct ConversationLink {
     pub id: String,
     pub segments: Vec<ConversationSegmentReference>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-#[cfg(feature = "local-runtime")]
 pub(crate) struct ConversationSegmentReference {
     pub runtime_instance_id: String,
     pub runtime_type_id: String,
@@ -86,14 +80,12 @@ pub(crate) struct ConversationSegmentReference {
 }
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-#[cfg(feature = "local-runtime")]
 pub(crate) struct ConversationCutoff {
     pub message_count: u64,
     pub prefix_digest: String,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-#[cfg(feature = "local-runtime")]
 pub(crate) struct ConversationHandoff {
     pub marker: String,
     pub payload_digest: String,
@@ -129,14 +121,12 @@ impl GatewayConfig {
             .validate()
     }
 
-    #[cfg(feature = "local-runtime")]
     pub(crate) fn authentication_revision(&self, key: &str) -> u64 {
         self.resolve_dispatch(key)
             .map_or(0, |resolved| resolved.provider.authentication.generation)
     }
     /// The provider models a selection key dispatches to: a route's members,
     /// or the provider model itself.
-    #[cfg_attr(not(feature = "local-runtime"), allow(dead_code))]
     pub(crate) fn members(&self, key: &str) -> Vec<String> {
         self.route(key)
             .map_or_else(|| vec![key.to_owned()], |route| route.members.clone())
@@ -145,7 +135,6 @@ impl GatewayConfig {
         self.routes.iter().find(|route| route.record_key == key)
     }
     /// Every key a conversation can select: provider models, then routes.
-    #[cfg(feature = "local-runtime")]
     pub(crate) fn selectable_keys(&self) -> impl Iterator<Item = &str> {
         self.providers
             .iter()
@@ -187,7 +176,6 @@ impl GatewayConfig {
     /// the complete provider target without including bearer material or the
     /// Node executable path, so changing a provider target or account generation cannot
     /// reuse an incompatible Pi model entry.
-    #[cfg(feature = "local-runtime")]
     pub fn pi_binding_id(
         &self,
         model_record_key: &str,
@@ -245,7 +233,6 @@ impl GatewayConfig {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-#[cfg(feature = "local-runtime")]
 struct PiBindingIdentity<'a> {
     model_record_key: &'a str,
     provider_id: &'a str,
@@ -263,7 +250,6 @@ struct PiBindingIdentity<'a> {
 }
 
 /// The versioned runtime registry owns support; family IDs never grant capabilities.
-#[cfg(feature = "local-runtime")]
 pub(crate) fn runtime_protocols(type_id: &str) -> Option<Vec<GatewayProtocol>> {
     use velune_agent_runtime::version::{RuntimeProtocol, variant};
     Some(
@@ -279,7 +265,6 @@ pub(crate) fn runtime_protocols(type_id: &str) -> Option<Vec<GatewayProtocol>> {
     )
 }
 /// Select the wire protocol the runtime speaks, preferring native passthrough.
-#[cfg(feature = "local-runtime")]
 pub(crate) fn runtime_ingress(
     type_id: &str,
     upstream: &GatewayProtocol,
@@ -293,7 +278,6 @@ pub(crate) fn runtime_ingress(
 }
 
 /// All three provider protocols are reachable through the LLM gateway.
-#[cfg(feature = "local-runtime")]
 pub(crate) fn runtime_provider_protocols(type_id: &str) -> Option<Vec<GatewayProtocol>> {
     let native = runtime_protocols(type_id)?;
     if native.is_empty() {

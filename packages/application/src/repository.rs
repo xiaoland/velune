@@ -11,7 +11,6 @@ use std::{
 };
 pub(crate) const CURRENT_SCHEMA_VERSION: u32 = 10;
 /// 2: projects with folders replace per-folder names.
-#[cfg(feature = "local-runtime")]
 const ORGANIZATION_SCHEMA_VERSION: u64 = 2;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -207,7 +206,6 @@ impl Repository {
 
     /// Composer drafts live beside the configuration, not in it: they change
     /// while typing and survive an ordinary configuration reset.
-    #[cfg(feature = "local-runtime")]
     pub(crate) fn load_composer_drafts(
         &self,
     ) -> Result<std::collections::BTreeMap<String, String>, RuntimeError> {
@@ -236,7 +234,6 @@ impl Repository {
         Ok(result)
     }
 
-    #[cfg(feature = "local-runtime")]
     pub(crate) fn store_composer_drafts(
         &self,
         drafts: &std::collections::BTreeMap<String, String>,
@@ -257,7 +254,6 @@ impl Repository {
 
     /// Next-turn and new-conversation choices live beside the drafts, for the
     /// same reasons; a file of another schema starts afresh.
-    #[cfg(feature = "local-runtime")]
     pub(crate) fn load_composer_choices(
         &self,
     ) -> Result<crate::config::ComposerChoices, RuntimeError> {
@@ -268,7 +264,6 @@ impl Repository {
         Ok(serde_json::from_value(value["choices"].clone())?)
     }
 
-    #[cfg(feature = "local-runtime")]
     pub(crate) fn store_composer_choices(
         &self,
         choices: &crate::config::ComposerChoices,
@@ -281,7 +276,6 @@ impl Repository {
     }
 
     /// What Velune sent each turn with, by conversation; see `TurnKey`.
-    #[cfg(feature = "local-runtime")]
     pub(crate) fn load_turn_requests(&self) -> Result<crate::local::TurnRequests, RuntimeError> {
         let value = match self.read_versioned("turn-requests.json")? {
             Some(value) => value,
@@ -302,7 +296,6 @@ impl Repository {
             .collect())
     }
 
-    #[cfg(feature = "local-runtime")]
     pub(crate) fn store_turn_requests(
         &self,
         requests: &crate::local::TurnRequests,
@@ -328,7 +321,6 @@ impl Repository {
     }
 
     /// A schema 1 file's value; none when it is missing or of another schema.
-    #[cfg(feature = "local-runtime")]
     fn read_versioned(&self, name: &str) -> Result<Option<serde_json::Value>, RuntimeError> {
         let bytes = match fs::read(self.home.join(name)) {
             Ok(bytes) => bytes,
@@ -341,7 +333,6 @@ impl Repository {
 
     /// Reusable resource templates (with their secrets) and the managed bindings
     /// to runtimes are application files of their own, not part of the configuration.
-    #[cfg(feature = "local-runtime")]
     pub(crate) fn load_resource_library(
         &self,
     ) -> Result<(Vec<crate::ResourceTemplate>, Vec<crate::ResourceBinding>), RuntimeError> {
@@ -380,7 +371,6 @@ impl Repository {
         Ok((templates, bindings))
     }
 
-    #[cfg(feature = "local-runtime")]
     pub(crate) fn store_resource_templates(
         &self,
         templates: &[crate::ResourceTemplate],
@@ -394,7 +384,6 @@ impl Repository {
         )
     }
 
-    #[cfg(feature = "local-runtime")]
     pub(crate) fn store_resource_bindings(
         &self,
         bindings: &[crate::ResourceBinding],
@@ -408,7 +397,6 @@ impl Repository {
 
     /// Velune's list organization; a missing file, or one of an older
     /// schema, starts afresh with read state from now.
-    #[cfg(feature = "local-runtime")]
     pub(crate) fn load_conversation_organization(
         &self,
     ) -> Result<crate::config::ConversationOrganization, RuntimeError> {
@@ -458,7 +446,6 @@ impl Repository {
         Ok(organization)
     }
 
-    #[cfg(feature = "local-runtime")]
     pub(crate) fn store_conversation_organization(
         &self,
         organization: &crate::config::ConversationOrganization,
@@ -470,7 +457,6 @@ impl Repository {
         )
     }
 
-    #[cfg(feature = "local-runtime")]
     pub(crate) fn load_conversation_links(
         &self,
     ) -> Result<Vec<crate::config::ConversationLink>, RuntimeError> {
@@ -528,7 +514,6 @@ impl Repository {
         Ok(links)
     }
 
-    #[cfg(feature = "local-runtime")]
     pub(crate) fn store_conversation_links(
         &self,
         links: &[crate::config::ConversationLink],
@@ -565,7 +550,6 @@ pub(crate) fn commit(path: &Path, bytes: &[u8]) -> Result<(), RuntimeError> {
 }
 
 // The application-owned resource file keeps byte arrays; only presentation transport uses base64.
-#[cfg(feature = "local-runtime")]
 fn resource_bytes_to_api(templates: &mut serde_json::Value) -> Result<(), RuntimeError> {
     use base64::Engine;
     for template in templates
@@ -584,7 +568,6 @@ fn resource_bytes_to_api(templates: &mut serde_json::Value) -> Result<(), Runtim
     }
     Ok(())
 }
-#[cfg(feature = "local-runtime")]
 fn resource_bytes_to_storage(templates: &mut serde_json::Value) -> Result<(), RuntimeError> {
     use base64::Engine;
     for template in templates
@@ -608,7 +591,6 @@ fn resource_bytes_to_storage(templates: &mut serde_json::Value) -> Result<(), Ru
     Ok(())
 }
 
-#[cfg(feature = "local-runtime")]
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct StoredTurnRequests {
@@ -617,7 +599,6 @@ struct StoredTurnRequests {
     turns: Vec<StoredTurnRequest>,
 }
 
-#[cfg(feature = "local-runtime")]
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct StoredTurnRequest {

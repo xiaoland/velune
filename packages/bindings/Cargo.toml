@@ -9,7 +9,7 @@ crate-type = ["rlib", "cdylib"]
 
 [features]
 default = ["local-runtime", "remote"]
-local-runtime = ["dep:velune-application", "velune-application/local-runtime", "dep:tracing-subscriber", "dep:tracing-appender"]
+local-runtime = ["dep:velune-application", "dep:tracing-subscriber", "dep:tracing-appender"]
 remote = ["dep:velune-remote", "dep:tokio", "dep:jni", "dep:rustls-platform-verifier"]
 remote-diagnostics = ["remote", "velune-remote/diagnostics", "dep:tracing-subscriber"]
 cli = ["uniffi/cli"]
@@ -21,7 +21,7 @@ required-features = ["cli"]
 
 [dependencies]
 velune-telemetry = { path = "../telemetry" }
-velune-application = { path = "../application", default-features = false, optional = true }
+velune-application = { path = "../application", optional = true }
 velune-application-api = { path = "../application-api" }
 velune-remote = { path = "../remote", optional = true }
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "net", "io-util"], optional = true }

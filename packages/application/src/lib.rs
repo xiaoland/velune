@@ -9,33 +9,20 @@ mod commands;
 mod service;
 pub use service::ApplicationService;
 mod api;
-#[cfg(feature = "local-runtime")]
 mod api_account_quota;
-#[cfg(feature = "local-runtime")]
 mod ark_quota;
-#[cfg(feature = "local-runtime")]
 mod authentication_resolver;
-#[cfg(feature = "local-runtime")]
 mod claude_cli;
-#[cfg(feature = "local-runtime")]
 mod claude_quota;
-#[cfg(feature = "local-runtime")]
 mod credential_helper;
-#[cfg(feature = "local-runtime")]
 mod kimi_quota;
-#[cfg(feature = "local-runtime")]
 mod native_quota_source;
 mod provider_authentication;
-#[cfg(feature = "local-runtime")]
 mod provider_login;
 mod quota_authentication;
-#[cfg(feature = "local-runtime")]
 mod quota_history;
-#[cfg(feature = "local-runtime")]
 mod runtime_quota;
-#[cfg(feature = "local-runtime")]
 mod subscription_auth;
-#[cfg(feature = "local-runtime")]
 mod subscription_quota;
 pub use provider_authentication::{
     AuthenticationEdit, AuthenticationMethod, AuthenticationProvenance,
@@ -45,15 +32,10 @@ pub use provider_authentication::{
 };
 pub use velune_application_api::{ProviderTemplate, ProviderTemplateKind, provider_templates};
 pub mod config;
-#[cfg(feature = "local-runtime")]
 mod local;
 pub mod model_catalog;
-#[cfg(feature = "local-runtime")]
 mod native_provider_import;
-#[cfg(not(feature = "local-runtime"))]
-mod portable;
 mod provider_configuration;
-#[cfg(feature = "local-runtime")]
 mod provider_import;
 mod repository;
 mod runtime_execution;
@@ -72,9 +54,7 @@ pub use runtime_management::{
     RuntimeResourceKey, RuntimeResourceKind, RuntimeResourceNode, RuntimeResourceRevision,
     RuntimeResourceScope, RuntimeResourceState, RuntimeResourceSupport,
 };
-#[cfg(feature = "local-runtime")]
 pub use velune_agent_runtime::management::ErrorCode as RuntimeManagementErrorCode;
-#[cfg(feature = "local-runtime")]
 mod runtime_discovery;
 pub use api::*;
 pub use velune_application_api::{
@@ -82,10 +62,7 @@ pub use velune_application_api::{
     ExecutionContext, Failure, FailureKind, Response, Revision,
 };
 mod transcript_delivery;
-#[cfg(feature = "local-runtime")]
 use local as implementation;
-#[cfg(not(feature = "local-runtime"))]
-use portable as implementation;
 use serde::{Deserialize, Serialize};
 use std::{fs, path::PathBuf};
 pub use transcript_delivery::{
@@ -121,13 +98,10 @@ impl Options {
 pub enum Error {
     #[error("{0}")]
     Contract(#[from] velune_application_api::Failure),
-    #[cfg(feature = "local-runtime")]
     #[error("{0}")]
     ProviderImport(#[from] velune_agent_runtime::provider_source::SourceReadError),
-    #[cfg(feature = "local-runtime")]
     #[error("{0}")]
     History(#[from] velune_agent_runtime::history::HistoryError),
-    #[cfg(feature = "local-runtime")]
     #[error("{0}")]
     RuntimeManagement(#[from] velune_agent_runtime::management::Error),
     #[error("invalid application operation: {0}")]
@@ -146,7 +120,6 @@ pub enum Error {
 impl Error {
     /// Retain the actual boundary failure in local diagnostics rather than replacing
     /// it with the operation's summary.
-    #[cfg(feature = "local-runtime")]
     pub(crate) fn context(message: &str, cause: impl std::fmt::Display) -> Self {
         Self::Invalid(format!("{message}：{cause}"))
     }
@@ -217,21 +190,18 @@ impl From<Error> for Failure {
             ),
             Error::Io(error) => Failure::new(Kind::Io, error.to_string()),
             Error::Json(error) => Failure::new(Kind::Contract, error.to_string()),
-            #[cfg(feature = "local-runtime")]
             Error::History(error) => {
                 let mut f = Failure::new(Kind::History, error.full_message());
                 f.code = error.code().into();
                 f.phase = error.phase().into();
                 return f;
             }
-            #[cfg(feature = "local-runtime")]
             Error::ProviderImport(error) => {
                 let mut f = Failure::new(Kind::ProviderImport, error.to_string());
                 f.code = error.code().into();
                 f.phase = error.phase().into();
                 return f;
             }
-            #[cfg(feature = "local-runtime")]
             Error::RuntimeManagement(error) => {
                 let mut f = Failure::new(Kind::RuntimeManagement, error.to_string());
                 f.code = match error.code() {

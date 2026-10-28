@@ -358,17 +358,6 @@ V1 是基础检查点，**V2＋V3 才构成首个可用版本**。不能只接�
 
 Mac 当前落点与 C ABI 嵌入已按用户反馈确认，其他 Apple 平台、远程接入、官方 SDK 桥及分发安全边界仍需验证。官方集成资格、具体账户权益、真实路由／恢复效果不由原型成功证明；登录、付费和部署仍需相应授权。
 
-## 11. 历史模拟核心与原生壳接线
-
-本节描述 2026-10-02 模拟原型，已被当前 Pi／ABI 产品接入取代，不是产品的进程、存储或生命周期规范。
-
-实现入口：[simulation.rs](../../app/host/src/simulation.rs)、[schema.sql](../../app/host/src/schema.sql)、[adapter.rs](../../app/host/src/adapter.rs)、[routing.rs](../../app/host/src/routing.rs)。核心只覆盖固定深度委派、稳定 Session、单 Segment 绑定、每次重启的新 Run、独立 Attempt、事务 outbox 与合成结果验收；不是前述完整架构的实现。
-
-单宿主通过 SQLite exclusive connection 拒绝第二个 Host；不是跨设备 lease／native fencing。未知提交阻塞该 Segment 后续投递，无自动 handoff 或人工强制解锁接口。路由只允许明确获准的模拟资源，无 API／订阅 lane。MCP 工具服务、ACP transport、真实 gateways／SDK 桥、费用预留与完整安全隔离尚未实现。
-
-Mac mini 首个体验切片已获准使用 Swift＋AppKit 薄壳。已编写原生 UI 与独立 Rust Host 接线源码；UI 通过随包 `rpc` 子进程访问同用户 Unix socket v1，操作同一核心及 DB，显示模拟模式、任务、会话、attempt 与协作事件。UI 退出不终止 Host；显式停止取消待投递消息、保留不确定状态。无 TCP／LAN、系统常驻安装或 UI 自有任务模拟。Cloud 已验证核心与 IPC；Mac 编译／安装／用户体验待父会话设备验收。
-历史模拟壳交付约定见 [开发说明](../development.md#历史-mac-mini-模拟壳)；当前 Pi 与 Mac 切片以本文开头的网关与运行时边界为准。
-
 ## 架构参考的使用
 
 Mastra、HAPI、Lody 是用户提出的候选参考。研究围绕待决问题展开，例如运行时边界、事件投影、模型路由注入与生命周期；先核对具体版本的实现和产品前提，再说明对 Velune 的适用边界。列入参考不代表采用其功能、依赖或认证方案。关键取舍通过 advisor 推敲，涉及产品目标与范围时由用户决定。

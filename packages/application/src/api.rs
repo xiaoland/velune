@@ -356,15 +356,7 @@ impl Application {
         user_home: String,
         overrides: BTreeMap<String, String>,
     ) -> Result<Vec<RuntimeDiscoveryHint>, Error> {
-        #[cfg(feature = "local-runtime")]
-        {
-            crate::runtime_discovery::hints(&user_home, overrides)
-        }
-        #[cfg(not(feature = "local-runtime"))]
-        {
-            let _ = (user_home, overrides);
-            Err(Error::Unsupported("此平台不提供本地运行时发现".into()))
-        }
+        { crate::runtime_discovery::hints(&user_home, overrides) }
     }
     pub fn discover_runtimes(
         &mut self,
