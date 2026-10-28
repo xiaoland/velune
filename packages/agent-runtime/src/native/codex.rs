@@ -1,5 +1,19 @@
 //! Codex app-server 0.159.3 control and projection, independent of Pi.
 use super::*;
+
+/// What only a Codex app-server session tracks.
+#[derive(Default)]
+pub(super) struct State {
+    pub(super) cancel_pending: bool,
+    /// Last error of the active turn, if its completion omits details.
+    pub(super) turn_error: Option<Value>,
+    /// Threads of this app-server besides the conversation's own, by thread
+    /// id, while they work.
+    pub(super) threads: BTreeMap<String, CodexThread>,
+    /// Every thread besides the conversation's own that this app-server has run.
+    pub(super) ran_threads: std::collections::BTreeSet<String>,
+}
+
 impl NativeSession {
     pub(super) fn codex_initialize(&mut self) -> Result<()> {
         if self
@@ -297,7 +311,7 @@ impl NativeSession {
             .as_str()
             .ok_or_else(|| Error::new("Codex 未返回轮次身份"))?;
         self.turn_id = Some(turn_id.into());
-        self.codex_turn_error = None;
+        self.codex.turn_error = None;
         if let Some(snapshot) = &mut self.snapshot {
             snapshot.follow_up.can_resume = false;
         }
@@ -444,7 +458,7 @@ impl NativeSession {
         self.rpc
             .request("thread/compact/start", &json!({"threadId":thread}))?;
         self.turn_id = None;
-        self.codex_cancel_pending = false;
+        self.codex.cancel_pending = false;
         self.running();
         Ok(())
     }
@@ -456,7 +470,7 @@ impl NativeSession {
             .ok_or_else(|| Error::new("Codex 没有活动会话"))?;
         let turn = self.turn_id.as_deref();
         if turn.is_none() && self.compacting {
-            self.codex_cancel_pending = true;
+            self.codex.cancel_pending = true;
             if let Some(snapshot) = &mut self.snapshot {
                 snapshot.run_state = RunState::Stopping;
                 snapshot.revision += 1;
@@ -504,7 +518,7 @@ impl NativeSession {
                 .map(|snapshot| snapshot.conversation.runtime_id.clone())
                 .unwrap_or_default();
             self.codex_track_thread(thread, method, params);
-            let sub_agent = self.codex_threads.contains_key(thread)
+            let sub_agent = self.codex.threads.contains_key(thread)
                 || self.sub_agents.contains(&format!("{runtime_id}:{thread}"));
             match record.get("id") {
                 Some(_) if sub_agent && record.get("method").is_some() => {
@@ -538,8 +552,8 @@ impl NativeSession {
         match method {
             "turn/started" if self.compacting => {
                 self.turn_id = params["turn"]["id"].as_str().map(str::to_owned);
-                if self.codex_cancel_pending {
-                    self.codex_cancel_pending = false;
+                if self.codex.cancel_pending {
+                    self.codex.cancel_pending = false;
                     self.codex_cancel()?;
                 }
             }
@@ -610,7 +624,7 @@ impl NativeSession {
                     if status == Some("failed") {
                         let error = &params["turn"]["error"];
                         let error = if error.is_null() {
-                            self.codex_turn_error.as_ref().unwrap_or(error)
+                            self.codex.turn_error.as_ref().unwrap_or(error)
                         } else {
                             error
                         };
@@ -621,7 +635,7 @@ impl NativeSession {
                         let id = error_id(turn);
                         snapshot.messages.retain(|message| message.id != id);
                     }
-                    self.codex_turn_error = None;
+                    self.codex.turn_error = None;
                     self.finish_turn(if status == Some("failed") {
                         RunState::Failed
                     } else {
@@ -684,7 +698,7 @@ impl NativeSession {
                         .ok_or_else(|| Error::new("Codex 错误通知缺少重试状态"))?;
                     let error = project_error(turn, &params["error"], retrying, None)?;
                     self.codex_error_message(error);
-                    self.codex_turn_error = Some(params["error"].clone());
+                    self.codex.turn_error = Some(params["error"].clone());
                 }
             }
             _ => {}
@@ -714,19 +728,19 @@ impl NativeSession {
     /// active. Tracking every thread, not only those the spawning item
     /// names, does not depend on which of their events arrives first.
     fn codex_track_thread(&mut self, thread: &str, method: &str, params: &Value) {
-        if !self.codex_ran_threads.contains(thread) {
-            self.codex_ran_threads.insert(thread.into());
+        if !self.codex.ran_threads.contains(thread) {
+            self.codex.ran_threads.insert(thread.into());
         }
         match method {
             "thread/status/changed" => {
                 let status = &params["status"];
                 if status["type"] != "active" {
-                    self.codex_threads.remove(thread);
+                    self.codex.threads.remove(thread);
                     return;
                 }
                 let flags = status["activeFlags"].as_array();
                 let flagged = |flag: &str| flags.is_some_and(|f| f.iter().any(|v| v == flag));
-                let entry = self.codex_threads.entry(thread.into()).or_default();
+                let entry = self.codex.threads.entry(thread.into()).or_default();
                 if entry.state != BackgroundState::Stopping {
                     entry.state = if flagged("waitingOnApproval") {
                         BackgroundState::AwaitingApproval
@@ -738,11 +752,11 @@ impl NativeSession {
                 }
             }
             "turn/started" => {
-                self.codex_threads.entry(thread.into()).or_default().turn =
+                self.codex.threads.entry(thread.into()).or_default().turn =
                     params["turn"]["id"].as_str().map(str::to_owned);
             }
             "turn/completed" => {
-                if let Some(entry) = self.codex_threads.get_mut(thread) {
+                if let Some(entry) = self.codex.threads.get_mut(thread) {
                     entry.turn = None;
                 }
             }
@@ -780,7 +794,7 @@ impl NativeSession {
             .native_id
             .clone()
             .into_iter()
-            .chain(std::mem::take(&mut self.codex_ran_threads))
+            .chain(std::mem::take(&mut self.codex.ran_threads))
             .collect::<Vec<_>>();
         let provider = self
             .native_selection
@@ -810,7 +824,8 @@ impl NativeSession {
     /// status turns idle.
     pub(super) fn codex_stop_background(&mut self) -> Result<()> {
         let turns = self
-            .codex_threads
+            .codex
+            .threads
             .iter()
             .filter(|(_, entry)| entry.state != BackgroundState::Stopping)
             .filter_map(|(thread, entry)| Some((thread.clone(), entry.turn.clone()?)))
@@ -818,7 +833,7 @@ impl NativeSession {
         for (thread, turn) in turns {
             self.rpc
                 .request("turn/interrupt", &json!({"threadId":thread,"turnId":turn}))?;
-            if let Some(entry) = self.codex_threads.get_mut(&thread) {
+            if let Some(entry) = self.codex.threads.get_mut(&thread) {
                 entry.state = BackgroundState::Stopping;
             }
         }

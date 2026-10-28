@@ -38,6 +38,23 @@ fn claude_agents(agents: &[SessionAgent]) -> Value {
     )
 }
 
+/// What only a Claude Code session tracks.
+#[derive(Default)]
+pub(super) struct State {
+    /// The turn's result, whether it failed, and the last activity since.
+    pub(super) result: Option<(bool, std::time::Instant)>,
+    /// Background tasks the turn started.
+    pub(super) tasks: std::collections::BTreeSet<String>,
+    pub(super) requires_action: bool,
+    pub(super) stream_id: Option<String>,
+    /// The model, input tokens (including cache), and final output tokens
+    /// of the latest reply; streaming output usage can arrive after the reply.
+    pub(super) context: Option<(String, u64, u64)>,
+    pub(super) start: ClaudeStart,
+    /// Messages steered into turns, for their local identities.
+    pub(super) steer_sequence: u64,
+}
+
 /// How the next Claude Code turn child takes up the conversation's session.
 #[derive(Clone, Default)]
 pub(super) enum ClaudeStart {
@@ -267,7 +284,7 @@ impl NativeSession {
             .map(Path::to_path_buf)
             .unwrap_or_else(|| self.default_cwd.clone());
         self.replace_snapshot(&id, Some(&cwd), runtime_id, Vec::new());
-        self.claude_start = ClaudeStart::Fresh;
+        self.claude.start = ClaudeStart::Fresh;
         Ok(())
     }
     /// The next turn child resumes at the record before the message; a fork
@@ -281,7 +298,7 @@ impl NativeSession {
             .ok_or_else(|| Error::new("Claude Code 不能替换会话的第一条消息"))?;
         match placement {
             EditPlacement::InPlace => {
-                self.claude_start = ClaudeStart::ResumeAt { at };
+                self.claude.start = ClaudeStart::ResumeAt { at };
                 self.truncate_snapshot(index);
             }
             EditPlacement::Fork => {
@@ -294,7 +311,7 @@ impl NativeSession {
                 let runtime_id = snapshot.conversation.runtime_id.clone();
                 let history = snapshot.messages[..index].to_vec();
                 self.replace_snapshot(&id, cwd.as_deref(), &runtime_id, history);
-                self.claude_start = ClaudeStart::Fork { from, at };
+                self.claude.start = ClaudeStart::Fork { from, at };
             }
         }
         Ok(())
@@ -307,16 +324,16 @@ impl NativeSession {
         history: Vec<Message>,
     ) -> Result<()> {
         self.replace_snapshot(id, cwd, runtime_id, history);
-        self.claude_start = ClaudeStart::Resume;
+        self.claude.start = ClaudeStart::Resume;
         Ok(())
     }
     pub(super) fn claude_send(&mut self, input: &crate::TurnInput) -> Result<()> {
         self.compaction_message_id = None;
         let text = input.text.as_str();
-        self.claude_result = None;
-        self.claude_tasks.clear();
-        self.claude_requires_action = false;
-        self.claude_stream_id = None;
+        self.claude.result = None;
+        self.claude.tasks.clear();
+        self.claude.requires_action = false;
+        self.claude.stream_id = None;
         // Images go before the text, as Anthropic recommends.
         let content = input
             .images
@@ -352,7 +369,7 @@ impl NativeSession {
                     .collect(),
             });
         }
-        self.claude_start = ClaudeStart::Resume;
+        self.claude.start = ClaudeStart::Resume;
         self.running();
         Ok(())
     }
@@ -367,11 +384,11 @@ impl NativeSession {
             .chain((!text.is_empty()).then(|| json!({"type":"text","text":text})))
             .collect::<Vec<_>>();
         self.rpc.write(&json!({"type":"user","session_id":self.native_id,"parent_tool_use_id":null,"message":{"role":"user","content":content}}))?;
-        self.steer_sequence += 1;
+        self.claude.steer_sequence += 1;
         let id = format!(
             "{}:steer:{}",
             self.turn_id.as_deref().unwrap_or_default(),
-            self.steer_sequence
+            self.claude.steer_sequence
         );
         self.message(Message {
             turn_settings: None,
@@ -396,9 +413,9 @@ impl NativeSession {
         Ok(())
     }
     pub(super) fn claude_compact(&mut self) -> Result<()> {
-        self.claude_result = None;
+        self.claude.result = None;
         self.compaction_message_id = None;
-        self.claude_context = None;
+        self.claude.context = None;
         self.rpc.write(
             &json!({"type":"user","session_id":self.native_id,"parent_tool_use_id":null,
             "message":{"role":"user","content":[{"type":"text","text":"/compact"}]}}),
@@ -408,7 +425,7 @@ impl NativeSession {
             self.epoch,
             self.snapshot.as_ref().map_or(0, |s| s.revision)
         ));
-        self.claude_start = ClaudeStart::Resume;
+        self.claude.start = ClaudeStart::Resume;
         self.running();
         Ok(())
     }
@@ -602,10 +619,10 @@ impl NativeSession {
                     );
                 }
                 Some("session_state_changed") => {
-                    self.claude_requires_action = record["state"] == "requires_action";
+                    self.claude.requires_action = record["state"] == "requires_action";
                     if record["state"] == "idle"
                         && self.turn_running()
-                        && let Some((failed, _)) = self.claude_result.take()
+                        && let Some((failed, _)) = self.claude.result.take()
                     {
                         self.finish_turn(if failed {
                             RunState::Failed
@@ -621,7 +638,7 @@ impl NativeSession {
                     ) =>
                 {
                     if let Some(id) = record["task_id"].as_str() {
-                        self.claude_tasks.insert(id.into());
+                        self.claude.tasks.insert(id.into());
                         if record["task_type"] == "local_agent"
                             && let Some(conversation) = self.claude_agent_conversation(id)
                         {
@@ -631,7 +648,7 @@ impl NativeSession {
                 }
                 Some("task_notification") => {
                     if let Some(id) = record["task_id"].as_str() {
-                        self.claude_tasks.remove(id);
+                        self.claude.tasks.remove(id);
                         let conversation = self.claude_agent_conversation(id);
                         if let Some(conversation) =
                             conversation.filter(|c| self.sub_agents.contains(c))
@@ -666,13 +683,13 @@ impl NativeSession {
                     ) =>
                 {
                     if let Some(id) = record["task_id"].as_str() {
-                        self.claude_tasks.remove(id);
+                        self.claude.tasks.remove(id);
                     }
                 }
                 _ => {}
             },
             Some("assistant" | "user") => {
-                if let Some((_, last_activity)) = &mut self.claude_result {
+                if let Some((_, last_activity)) = &mut self.claude.result {
                     *last_activity = std::time::Instant::now();
                 }
                 // A sub-agent's own messages belong to its conversation, as
@@ -700,7 +717,7 @@ impl NativeSession {
                         (reply["model"].as_str(), claude_context(&reply["usage"]))
                     && !model.starts_with('<')
                 {
-                    self.claude_context = Some((model.to_owned(), input, output));
+                    self.claude.context = Some((model.to_owned(), input, output));
                 }
                 let role = if record["type"] == "assistant" {
                     MessageRole::Assistant
@@ -732,17 +749,17 @@ impl NativeSession {
                 if self.compacting {
                     return Ok(());
                 }
-                if let Some((_, last_activity)) = &mut self.claude_result {
+                if let Some((_, last_activity)) = &mut self.claude.result {
                     *last_activity = std::time::Instant::now();
                 }
                 let event = &record["event"];
                 if event["type"] == "message_start" {
-                    self.claude_stream_id = event["message"]["id"].as_str().map(str::to_owned);
+                    self.claude.stream_id = event["message"]["id"].as_str().map(str::to_owned);
                 }
                 if event["type"] == "message_delta"
                     && !record["parent_tool_use_id"].is_string()
                     && let Some(output) = event["usage"]["output_tokens"].as_u64()
-                    && let Some((_, _, tokens)) = &mut self.claude_context
+                    && let Some((_, _, tokens)) = &mut self.claude.context
                 {
                     *tokens = output;
                 }
@@ -754,7 +771,7 @@ impl NativeSession {
                         event["delta"]["text"].as_str()
                     };
                     if let Some(delta) = delta {
-                        let id = self.claude_stream_id.clone().unwrap_or_else(|| {
+                        let id = self.claude.stream_id.clone().unwrap_or_else(|| {
                             format!(
                                 "{}:stream:{}",
                                 self.turn_id.as_deref().unwrap_or_default(),
@@ -815,14 +832,14 @@ impl NativeSession {
                 if failed {
                     self.claude_error(claude_error_blocks(&record)?);
                 }
-                self.claude_result = Some((failed, std::time::Instant::now()));
+                self.claude.result = Some((failed, std::time::Instant::now()));
                 // The turn's usage over its requests, the context its last
                 // reply left with that model's window, and the session's cost
                 // while Claude Code knows every model's price.
                 if record["usage"].is_object() {
                     let mut usage = claude_usage(&record["usage"]);
                     let models = record["modelUsage"].as_object();
-                    if let Some((model, input, output)) = self.claude_context.take() {
+                    if let Some((model, input, output)) = self.claude.context.take() {
                         usage.context_tokens = Some(input + output);
                         usage.context_window = models
                             .and_then(|models| models.get(&model))
@@ -929,7 +946,8 @@ impl NativeSession {
     }
     /// The sub-agents whose tasks have not ended.
     pub(super) fn claude_running_sub_agents(&self) -> Vec<String> {
-        self.claude_tasks
+        self.claude
+            .tasks
             .iter()
             .filter_map(|task| self.claude_agent_conversation(task))
             .filter(|conversation| self.sub_agents.contains(conversation))
@@ -946,14 +964,15 @@ impl NativeSession {
     pub(super) fn claude_check_terminal_timeout(&mut self) {
         // Claude SDK 2.1.286 can keep observers alive after result; its between-turn ceiling is ten minutes.
         if self
-            .claude_result
+            .claude
+            .result
             .as_ref()
             .is_some_and(|(_, at)| at.elapsed() >= std::time::Duration::from_secs(600))
-            && self.claude_tasks.is_empty()
-            && !self.claude_requires_action
+            && self.claude.tasks.is_empty()
+            && !self.claude.requires_action
             && self.interactions.is_empty()
         {
-            self.claude_result = None;
+            self.claude.result = None;
             self.settle(RunState::Failed);
             self.notice("Claude Code 返回结果后未确认空闲；已结束本轮进程，请检查原生运行时状态。");
         }

@@ -151,9 +151,6 @@ pub struct NativeSession {
     native_id: Option<String>,
     turn_id: Option<String>,
     compacting: bool,
-    codex_cancel_pending: bool,
-    /// Last error of the active Codex turn, if its completion omits details.
-    codex_turn_error: Option<Value>,
     pending_rpc: BTreeMap<u64, String>,
     interactions: BTreeMap<String, PendingRequest>,
     available_models: Vec<Value>,
@@ -164,30 +161,18 @@ pub struct NativeSession {
     native_provider: Option<String>,
     /// Injected MCP services the Harness already has under the same name.
     shadowed_mcp_servers: std::collections::BTreeSet<String>,
-    claude_result: Option<(bool, std::time::Instant)>,
     compaction_message_id: Option<String>,
-    claude_tasks: std::collections::BTreeSet<String>,
     /// Conversations of the native sub-agents this conversation's tool
     /// calls started; their later events belong to this conversation.
     sub_agents: std::collections::BTreeSet<String>,
-    /// Codex threads of this app-server besides the conversation's own,
-    /// by thread id, while they work.
-    codex_threads: BTreeMap<String, codex::CodexThread>,
-    /// Every Codex thread besides the conversation's own that this
-    /// app-server has run.
-    codex_ran_threads: std::collections::BTreeSet<String>,
-    claude_requires_action: bool,
-    claude_stream_id: Option<String>,
-    /// The model, input tokens (including cache), and final output tokens
-    /// of the latest reply; streaming output usage can arrive after the reply.
-    claude_context: Option<(String, u64, u64)>,
     restart_required: bool,
     /// The runtime process was ended on purpose; there is nothing to read.
     process_ended: bool,
-    /// Messages steered into Claude Code turns, for their local identities.
-    steer_sequence: u64,
     gateway_turn: bool,
-    claude_start: claude::ClaudeStart,
+    /// What only a Codex app-server session tracks.
+    codex: codex::State,
+    /// What only a Claude Code session tracks.
+    claude: claude::State,
     tunnel: Option<crate::execution::LoopbackTunnel>,
     _mcp: crate::mcp::Prepared,
 }
@@ -262,7 +247,6 @@ impl NativeSession {
             snapshot: None,
             native_id: None,
             turn_id: None,
-            codex_turn_error: None,
             pending_rpc: BTreeMap::new(),
             interactions: BTreeMap::new(),
             available_models: Vec::new(),
@@ -271,22 +255,14 @@ impl NativeSession {
             native_selection: None,
             native_provider: None,
             shadowed_mcp_servers: std::collections::BTreeSet::new(),
-            claude_result: None,
             compaction_message_id: None,
             compacting: false,
-            codex_cancel_pending: false,
-            claude_tasks: std::collections::BTreeSet::new(),
             sub_agents: std::collections::BTreeSet::new(),
-            codex_threads: BTreeMap::new(),
-            codex_ran_threads: std::collections::BTreeSet::new(),
-            claude_requires_action: false,
-            claude_stream_id: None,
-            claude_context: None,
             restart_required: false,
             process_ended: false,
-            steer_sequence: 0,
             gateway_turn: tunnel.is_some(),
-            claude_start: Default::default(),
+            codex: Default::default(),
+            claude: Default::default(),
             tunnel,
             _mcp: mcp,
             epoch: format!("{:x}", u64::from_le_bytes(bytes)),
@@ -626,13 +602,13 @@ impl NativeSession {
             gateway.endpoint = tunnel.endpoint().to_owned();
             self.tunnel = Some(tunnel);
         }
-        self.codex_threads.clear();
-        self.codex_ran_threads.clear();
+        self.codex.threads.clear();
+        self.codex.ran_threads.clear();
         self.process_ended = false;
         self.rpc = Self::spawn_rpc(
             &active,
             self.native_selection.as_ref(),
-            Some((&id, cwd.as_deref(), &self.claude_start)),
+            Some((&id, cwd.as_deref(), &self.claude.start)),
             effort,
             permission_mode,
         )?;
@@ -709,7 +685,7 @@ impl NativeSession {
         });
         self.rpc.shutdown();
         self.process_ended = true;
-        self.codex_threads.clear();
+        self.codex.threads.clear();
         self.interactions.clear();
         self.failed = true;
         self.settle(RunState::Failed);
@@ -749,7 +725,8 @@ impl NativeSession {
                 else {
                     return Vec::new();
                 };
-                self.codex_threads
+                self.codex
+                    .threads
                     .iter()
                     .map(|(thread, entry)| BackgroundTask {
                         conversation_id: format!("{runtime_id}:{thread}"),
@@ -809,7 +786,7 @@ impl NativeSession {
     pub fn release_override(&mut self) -> Result<()> {
         self.rpc.shutdown();
         self.process_ended = true;
-        self.codex_threads.clear();
+        self.codex.threads.clear();
         if !std::mem::take(&mut self.gateway_turn) || self.config.kind != NativeKind::Codex {
             return Ok(());
         }
@@ -819,7 +796,7 @@ impl NativeSession {
     pub fn shutdown(&mut self) -> Result<()> {
         self.rpc.shutdown();
         self.process_ended = true;
-        self.codex_threads.clear();
+        self.codex.threads.clear();
         self.interactions.clear();
         self.pending_rpc.clear();
         self.settle(RunState::Idle);
@@ -852,7 +829,7 @@ impl NativeSession {
     ) {
         self.native_id = Some(id.into());
         self.turn_id = None;
-        self.codex_turn_error = None;
+        self.codex.turn_error = None;
         self.interactions.clear();
         self.pending_rpc.clear();
         self.sub_agents = sub_agent_conversations(&history).collect();
@@ -963,7 +940,7 @@ impl NativeSession {
             snapshot.revision += 1;
         }
         self.compacting = false;
-        self.codex_cancel_pending = false;
+        self.codex.cancel_pending = false;
         self.end_spent_process();
     }
     /// A Claude Code turn's process serves only that turn: it ends once the
