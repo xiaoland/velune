@@ -538,10 +538,7 @@ impl CoreRuntime {
                 }
             }));
         };
-        let models: Vec<crate::RuntimeModel> = serde_json::from_value(
-            self.runtime_models_action(&json!({"payload":{"runtimeInstanceID":runtime_id}}))?,
-        )?;
-        models
+        self.runtime_models(runtime_id.to_owned())?
             .into_iter()
             .find(|model| {
                 model.name == named

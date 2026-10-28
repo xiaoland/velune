@@ -36,21 +36,22 @@ impl CoreRuntime {
         Ok(client)
     }
 
-    pub(super) fn acp_runtime_info_action(&self, request: &Value) -> Result<Value, RuntimeError> {
-        let runtime = self.runtime_instance(
-            request["payload"]["runtimeInstanceID"]
-                .as_str()
-                .ok_or_else(|| RuntimeError::invalid("runtime instance id"))?,
-        )?;
+    pub(crate) fn acp_launch(&self, runtime_id: String) -> Result<crate::AcpLaunch, RuntimeError> {
+        Ok(self.runtime_instance(&runtime_id)?.acp_launch()?)
+    }
+
+    pub(crate) fn acp_runtime_info(
+        &self,
+        runtime_id: String,
+    ) -> Result<crate::AcpRuntimeInfo, RuntimeError> {
+        let runtime = self.runtime_instance(&runtime_id)?;
         if self.session.execution_runtime_id.as_deref() == Some(&runtime.id)
             && let ActiveState::Acp(session) = &self.session.active_state
         {
-            return Ok(
-                json!({"capabilities":session.capabilities(),"agentInfo":session.agent_info(),"authMethods":session.auth_methods()}),
-            );
+            return Ok(acp_runtime_info(session));
         }
         let mut session = self.acp_client(runtime)?;
-        let info = json!({"capabilities":session.capabilities(),"agentInfo":session.agent_info(),"authMethods":session.auth_methods()});
+        let info = acp_runtime_info(&session);
         session
             .shutdown()
             .map_err(|error| RuntimeError::context("ACP 关闭", error))?;
@@ -298,5 +299,32 @@ impl CoreRuntime {
             self.session.unsubmitted_draft = None;
         }
         self.list_value()
+    }
+}
+
+fn acp_runtime_info(session: &velune_agent_runtime::acp::Client) -> crate::AcpRuntimeInfo {
+    let capabilities = session.capabilities();
+    crate::AcpRuntimeInfo {
+        capabilities: crate::AcpCapabilities {
+            load_session: capabilities.load_session,
+            list_sessions: capabilities.list_sessions,
+            resume_session: capabilities.resume_session,
+            close_session: capabilities.close_session,
+            delete_session: capabilities.delete_session,
+        },
+        agent_info: session.agent_info().map(|info| crate::AcpAgentInfo {
+            name: info.name.clone(),
+            title: info.title.clone(),
+            version: info.version.clone(),
+        }),
+        auth_methods: session
+            .auth_methods()
+            .iter()
+            .map(|method| crate::AcpAuthMethod {
+                id: method.id.clone(),
+                name: method.name.clone(),
+                description: method.description.clone(),
+            })
+            .collect(),
     }
 }

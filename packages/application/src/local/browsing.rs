@@ -72,20 +72,21 @@ impl CoreRuntime {
             .find(|r| r.id == id)
             .ok_or_else(|| RuntimeError::invalid("runtime instance id"))
     }
-    pub(super) fn select_runtime_action(&mut self, request: &Value) -> Result<Value, RuntimeError> {
+    pub(crate) fn select_runtime(
+        &mut self,
+        id: String,
+    ) -> Result<crate::ConfigurationSnapshot, RuntimeError> {
         if self.session.executing() {
             return Err(RuntimeError::invalid("runtime is busy"));
         }
-        let id = request["payload"]["runtimeInstanceID"]
-            .as_str()
-            .ok_or_else(|| RuntimeError::invalid("runtime instance id"))?;
+        let id = id.as_str();
         if !self.runtime_instance(id)?.enabled {
             return Err(RuntimeError::invalid("此运行时已停用，请先启用"));
         }
         if self.next_turn_runtime_id.as_deref() != Some(id) {
             self.next_turn_runtime_id = Some(id.into());
         }
-        self.list_value()
+        self.list()
     }
     pub(super) fn pi_history_config(
         &self,

@@ -45,31 +45,6 @@ impl From<&GatewayConfig> for GatewaySummary {
     }
 }
 impl Application {
-    pub fn composer_quota(
-        &mut self,
-        context: ComposerQuotaContext,
-        refresh: bool,
-    ) -> Result<Vec<ComposerQuotaEntry>, Error> {
-        self.execute(
-            "composerQuota",
-            json!({"context":context,"refresh":refresh}),
-            None,
-        )
-    }
-
-    /// Observe the runtime's own CLI login quota; this never creates a provider.
-    pub fn runtime_quota(
-        &mut self,
-        runtime_id: String,
-        refresh: bool,
-    ) -> Result<RuntimeQuotaStatus, Error> {
-        self.execute(
-            "runtimeQuota",
-            json!({"refresh":refresh}),
-            Some(&runtime_id),
-        )
-    }
-
     /// List native source resources without launching the Harness or creating resource roots.
     /// Project scope requires a cwd on the execution machine. Disabled instances remain manageable.
     pub fn runtime_resource_catalog(
@@ -351,19 +326,6 @@ impl Application {
             dropped_count: self.analytics.dropped(),
         })
     }
-    pub fn runtime_discovery_hints(
-        &self,
-        user_home: String,
-        overrides: BTreeMap<String, String>,
-    ) -> Result<Vec<RuntimeDiscoveryHint>, Error> {
-        crate::runtime_discovery::hints(&user_home, overrides)
-    }
-    pub fn discover_runtimes(
-        &mut self,
-        probes: Vec<RuntimeDiscoveryProbe>,
-    ) -> Result<Vec<RuntimeDiscoveryCandidate>, Error> {
-        self.execute("discoverRuntimes", json!({"probes":probes}), None)
-    }
     fn execute<T: DeserializeOwned>(
         &mut self,
         action: &str,
@@ -403,37 +365,6 @@ impl Application {
 
         serde_json::from_value(value).map_err(Error::from)
     }
-    pub fn upsert_runtime(&mut self, mut runtime: RuntimeInstance) -> Result<RuntimeUpdate, Error> {
-        self.runtime.retain_private_runtime_settings(&mut runtime);
-        self.execute(
-            "runtimeInstances",
-            json!({"operation":"upsert","runtimeInstance":serde_json::to_string(&runtime)?}),
-            None,
-        )
-    }
-    pub fn upsert_runtime_with_execution(
-        &mut self,
-        mut runtime: RuntimeInstance,
-        execution: crate::RuntimeExecution,
-    ) -> Result<RuntimeUpdate, Error> {
-        runtime.set_execution(execution)?;
-        self.upsert_runtime(runtime)
-    }
-    pub fn upsert_acp_runtime(
-        &mut self,
-        mut runtime: RuntimeInstance,
-        execution: crate::RuntimeExecution,
-        launch: crate::AcpLaunch,
-    ) -> Result<RuntimeUpdate, Error> {
-        runtime.set_acp_launch(launch)?;
-        self.upsert_runtime_with_execution(runtime, execution)
-    }
-    pub fn acp_launch(&mut self, runtime_id: String) -> Result<crate::AcpLaunch, Error> {
-        self.execute("acpLaunch", json!({}), Some(&runtime_id))
-    }
-    pub fn acp_runtime_info(&mut self, runtime_id: String) -> Result<crate::AcpRuntimeInfo, Error> {
-        self.execute("acpRuntimeInfo", json!({}), Some(&runtime_id))
-    }
     /// Load a known native ACP reference even when the Agent cannot list sessions.
     pub fn open_acp_conversation(
         &mut self,
@@ -471,38 +402,6 @@ impl Application {
             Some(&runtime_id),
         )
     }
-    pub fn delete_runtime(&mut self, id: String) -> Result<RuntimeUpdate, Error> {
-        self.execute(
-            "runtimeInstances",
-            json!({"operation":"delete","runtimeInstanceID":id}),
-            None,
-        )
-    }
-    pub fn select_runtime(&mut self, id: String) -> Result<ConfigurationSnapshot, Error> {
-        self.execute("selectRuntime", json!({"runtimeInstanceID":id}), None)
-    }
-    pub fn runtime_execution(
-        &mut self,
-        runtime_id: String,
-    ) -> Result<crate::RuntimeExecution, Error> {
-        self.execute("runtimeExecution", json!({}), Some(&runtime_id))
-    }
-    /// The HOME a runtime is launched with on its execution machine; `None`
-    /// when it inherits the user's. A managed HOME is not created by asking.
-    pub fn runtime_home_directory(&mut self, runtime_id: String) -> Result<Option<String>, Error> {
-        self.execute("runtimeHomeDirectory", json!({}), Some(&runtime_id))
-    }
-    pub fn configure_runtime_execution(
-        &mut self,
-        runtime_id: String,
-        execution: crate::RuntimeExecution,
-    ) -> Result<RuntimeUpdate, Error> {
-        self.execute(
-            "configureRuntimeExecution",
-            json!({"execution":execution}),
-            Some(&runtime_id),
-        )
-    }
     pub fn create_conversation(
         &mut self,
         runtime_id: String,
@@ -526,9 +425,6 @@ impl Application {
             json!({"cwd":cwd,"modelSelection":selection}),
             Some(&runtime_id),
         )
-    }
-    pub fn runtime_models(&mut self, runtime_id: String) -> Result<Vec<RuntimeModel>, Error> {
-        self.execute("runtimeModels", json!({}), Some(&runtime_id))
     }
     pub fn open_conversation(
         &mut self,
@@ -682,19 +578,6 @@ impl Application {
         )
     }
 
-    /// Reasoning levels a turn may request for a managed model on a runtime,
-    /// in the runtime's own vocabulary; empty when it offers no choice.
-    pub fn reasoning_efforts(
-        &mut self,
-        runtime_id: String,
-        model_record_key: String,
-    ) -> Result<Vec<String>, Error> {
-        self.execute(
-            "reasoningEfforts",
-            json!({"modelRecordKey":model_record_key}),
-            Some(&runtime_id),
-        )
-    }
     /// Change the conversation's send queue. A queue that is added to or
     /// resumed while no turn runs sends its first message at once.
     pub fn send_queue(

@@ -1,9 +1,10 @@
 use super::*;
 use crate::{RuntimeDiscoveryCandidate, RuntimeDiscoveryProbe};
 impl CoreRuntime {
-    pub(super) fn discover_runtimes(&self, request: &Value) -> Result<Value, RuntimeError> {
-        let probes: Vec<RuntimeDiscoveryProbe> =
-            serde_json::from_value(request["payload"]["probes"].clone())?;
+    pub(crate) fn discover_runtimes(
+        &self,
+        probes: Vec<RuntimeDiscoveryProbe>,
+    ) -> Result<Vec<RuntimeDiscoveryCandidate>, RuntimeError> {
         if probes.len() > 32 {
             return Err(RuntimeError::Invalid("运行时发现候选过多".into()));
         }
@@ -84,6 +85,6 @@ impl CoreRuntime {
                 },
             });
         }
-        Ok(serde_json::to_value(results)?)
+        Ok(results)
     }
 }

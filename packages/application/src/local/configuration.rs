@@ -1,5 +1,11 @@
 //! Local application configuration use cases.
 use super::*;
+use crate::RuntimeExecution;
+enum RuntimeChange {
+    Upsert(RuntimeInstance),
+    Delete(String),
+}
+
 impl CoreRuntime {
     pub(crate) fn set_conversation_browser_preferences(
         &mut self,
@@ -415,19 +421,52 @@ impl CoreRuntime {
         }
     }
 
-    pub(super) fn runtime_action(&mut self, request: &Value) -> Result<Value, RuntimeError> {
+    pub(crate) fn upsert_runtime(
+        &mut self,
+        mut runtime: RuntimeInstance,
+    ) -> Result<crate::RuntimeUpdate, RuntimeError> {
+        self.retain_private_runtime_settings(&mut runtime);
+        self.change_runtimes(RuntimeChange::Upsert(runtime))
+    }
+
+    pub(crate) fn upsert_runtime_with_execution(
+        &mut self,
+        mut runtime: RuntimeInstance,
+        execution: RuntimeExecution,
+    ) -> Result<crate::RuntimeUpdate, RuntimeError> {
+        runtime.set_execution(execution)?;
+        self.upsert_runtime(runtime)
+    }
+
+    pub(crate) fn upsert_acp_runtime(
+        &mut self,
+        mut runtime: RuntimeInstance,
+        execution: RuntimeExecution,
+        launch: crate::AcpLaunch,
+    ) -> Result<crate::RuntimeUpdate, RuntimeError> {
+        runtime.set_acp_launch(launch)?;
+        self.upsert_runtime_with_execution(runtime, execution)
+    }
+
+    pub(crate) fn delete_runtime(
+        &mut self,
+        id: String,
+    ) -> Result<crate::RuntimeUpdate, RuntimeError> {
+        self.change_runtimes(RuntimeChange::Delete(id))
+    }
+
+    fn change_runtimes(
+        &mut self,
+        change: RuntimeChange,
+    ) -> Result<crate::RuntimeUpdate, RuntimeError> {
         if self.execution_active() {
             return Err(RuntimeError::invalid("runtime is busy"));
         }
         self.acp_capability_cache.borrow_mut().clear();
         let previous = self.runtime_instances.clone();
         let previous_gateways = self.gateways.clone();
-        match request["payload"]["operation"].as_str().unwrap_or("list") {
-            "upsert" => {
-                let raw = request["payload"]["runtimeInstance"]
-                    .as_str()
-                    .ok_or_else(|| RuntimeError::invalid("runtime instance"))?;
-                let runtime: RuntimeInstance = serde_json::from_str(raw)?;
+        match change {
+            RuntimeChange::Upsert(runtime) => {
                 if runtime.id.is_empty()
                     || runtime.name.is_empty()
                     || !matches!(
@@ -465,21 +504,16 @@ impl CoreRuntime {
                     return Err(error);
                 }
             }
-            "delete" => {
-                let id = request["payload"]["runtimeInstanceID"]
-                    .as_str()
-                    .ok_or_else(|| RuntimeError::invalid("runtime instance id"))?;
+            RuntimeChange::Delete(id) => {
                 self.runtime_instances.retain(|item| item.id != id);
                 if let Err(error) = self.persist() {
                     self.runtime_instances = previous.clone();
                     self.gateways = previous_gateways.clone();
                     return Err(error);
                 }
-                self.discard_runtime_bindings(id);
-                self.discard_runtime_choices(id);
+                self.discard_runtime_bindings(&id);
+                self.discard_runtime_choices(&id);
             }
-            "list" => {}
-            _ => return Err(RuntimeError::invalid("runtime operation")),
         }
         // Each open session checks whether the edit reaches its source or execution.
         let mut execution_invalidated = false;
@@ -560,9 +594,11 @@ impl CoreRuntime {
                 })
                 .collect(),
         );
-        Ok(
-            json!({"runtimeInstances":self.runtime_instances,"runtimeTypes":runtime_types(),"executionInvalidated":execution_invalidated}),
-        )
+        Ok(crate::RuntimeUpdate {
+            runtime_instances: self.public_runtime_instances(),
+            runtime_types: runtime_types(),
+            execution_invalidated,
+        })
     }
 
     pub(super) fn persist(&self) -> Result<(), RuntimeError> {

@@ -25,6 +25,14 @@ impl CoreRuntime {
     /// Reasoning levels a turn may request for a managed model on this
     /// runtime: those the model declares, in the vocabulary the harness's own
     /// channel accepts. Empty when the harness has no such channel.
+    pub(crate) fn runtime_reasoning_efforts(
+        &self,
+        runtime_id: String,
+        model_record_key: String,
+    ) -> Result<Vec<String>, RuntimeError> {
+        self.reasoning_efforts(self.runtime_instance(&runtime_id)?, &model_record_key)
+    }
+
     pub(super) fn reasoning_efforts(
         &self,
         runtime: &RuntimeInstance,
@@ -375,26 +383,25 @@ impl CoreRuntime {
         })
     }
 
-    pub(super) fn runtime_quota_action(&self, request: &Value) -> Result<Value, RuntimeError> {
-        let id = request["payload"]["runtimeInstanceID"]
-            .as_str()
-            .ok_or_else(|| RuntimeError::invalid("runtime instance id"))?;
-        let refresh = request["payload"]["refresh"]
-            .as_bool()
-            .ok_or_else(|| RuntimeError::invalid("quota refresh"))?;
-        let runtime = self.runtime_instance(id)?;
-        Ok(serde_json::to_value(self.runtime_quota.query(
+    /// Observe the runtime's own CLI login quota; this never creates a provider.
+    pub(crate) fn runtime_quota(
+        &self,
+        runtime_id: String,
+        refresh: bool,
+    ) -> Result<crate::RuntimeQuotaStatus, RuntimeError> {
+        let runtime = self.runtime_instance(&runtime_id)?;
+        self.runtime_quota.query(
             &runtime.id,
             crate::native_quota_source::Capture::from_runtime(runtime),
             refresh,
-        )?)?)
+        )
     }
 
-    pub(super) fn runtime_models_action(&mut self, request: &Value) -> Result<Value, RuntimeError> {
-        let id = request["payload"]["runtimeInstanceID"]
-            .as_str()
-            .ok_or_else(|| RuntimeError::invalid("runtime instance id"))?;
-        let runtime = self.runtime_instance(id)?.clone();
+    pub(crate) fn runtime_models(
+        &mut self,
+        runtime_id: String,
+    ) -> Result<Vec<RuntimeModel>, RuntimeError> {
+        let runtime = self.runtime_instance(&runtime_id)?.clone();
         if !runtime.enabled {
             return Err(RuntimeError::invalid("此运行时已停用"));
         }
@@ -418,7 +425,7 @@ impl CoreRuntime {
                     reasoning_efforts: option.reasoning_efforts,
                 }));
             }
-            return Ok(json!(models));
+            return Ok(models);
         }
         let mut models = Vec::new();
         if runtime.type_id == "pi-1.0" {
@@ -490,7 +497,7 @@ impl CoreRuntime {
                 });
             }
         }
-        Ok(serde_json::to_value(models)?)
+        Ok(models)
     }
 
     /// How a turn names the model it was sent with: the managed model as the

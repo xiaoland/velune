@@ -164,22 +164,34 @@ impl CoreRuntime {
         Ok(context)
     }
 
-    pub(super) fn runtime_execution_action(
+    pub(crate) fn runtime_execution(
+        &self,
+        runtime_id: String,
+    ) -> Result<RuntimeExecution, RuntimeError> {
+        Ok(self.runtime_instance(&runtime_id)?.execution()?)
+    }
+
+    pub(crate) fn configure_runtime_execution(
         &mut self,
-        request: &Value,
-        update: bool,
-    ) -> Result<Value, RuntimeError> {
-        let runtime_id = request["payload"]["runtimeInstanceID"]
-            .as_str()
-            .ok_or_else(|| RuntimeError::invalid("runtime instance id"))?;
-        let mut runtime = self.runtime_instance(runtime_id)?.clone();
-        if !update {
-            return Ok(serde_json::to_value(runtime.execution()?)?);
-        }
-        let execution: RuntimeExecution =
-            serde_json::from_value(request["payload"]["execution"].clone())?;
+        runtime_id: String,
+        execution: RuntimeExecution,
+    ) -> Result<crate::RuntimeUpdate, RuntimeError> {
+        let mut runtime = self.runtime_instance(&runtime_id)?.clone();
         runtime.set_execution(execution)?;
-        self.runtime_action(&json!({"payload":{"operation":"upsert","runtimeInstance":serde_json::to_string(&runtime)?}}))
+        self.upsert_runtime(runtime)
+    }
+
+    /// The HOME a runtime is launched with on its execution machine; `None`
+    /// when it inherits the user's. A managed HOME is not created by asking.
+    pub(crate) fn runtime_home_directory(
+        &self,
+        runtime_id: String,
+    ) -> Result<Option<String>, RuntimeError> {
+        let runtime = self.runtime_instance(&runtime_id)?;
+        Ok(self
+            .runtime_location(runtime)?
+            .1
+            .map(|home| home.to_string_lossy().into_owned()))
     }
 
     pub(super) fn validate_runtime_cwd(

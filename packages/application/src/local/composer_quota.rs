@@ -7,15 +7,14 @@ use crate::{
 };
 
 impl CoreRuntime {
-    pub(super) fn composer_quota_action(&self, request: &Value) -> Result<Value, RuntimeError> {
-        let context: ComposerQuotaContext =
-            serde_json::from_value(request["payload"]["context"].clone())?;
-        let refresh = request["payload"]["refresh"]
-            .as_bool()
-            .ok_or_else(|| RuntimeError::invalid("quota refresh"))?;
+    pub(crate) fn composer_quota(
+        &self,
+        context: ComposerQuotaContext,
+        refresh: bool,
+    ) -> Result<Vec<ComposerQuotaEntry>, RuntimeError> {
         let runtime = self.runtime_instance(&context.runtime_id)?;
         if !runtime.enabled {
-            return Ok(json!([]));
+            return Ok(Vec::new());
         }
         let entries = match &context.selection {
             Some(ModelSelection::Managed { model_record_key }) => {
@@ -102,7 +101,7 @@ impl CoreRuntime {
                 .into_iter()
                 .collect(),
         };
-        Ok(serde_json::to_value(entries)?)
+        Ok(entries)
     }
 }
 
