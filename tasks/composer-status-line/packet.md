@@ -36,7 +36,7 @@
 ## 验证（2026-10-14）
 
 - 静态：cargo fmt --check、cargo check --locked、clippy -D warnings、no-default-features check、`scripts/build-macos.sh --build-only` 通过。
-- [轮次配置脚本](../../scripts/manual-turn-settings.py)（实际 Codex 0.159.3、Claude Code 2.1.286、Pi 1.0.2，回环合成上游）：7 项 PASS，含实时与重启后的上下文 token／窗口、分支、状态栏配置默认、去重排序与重启保留，以及 Claude 历史推理强度。
+- 轮次配置脚本（实际 Codex 0.159.3、Claude Code 2.1.286、Pi 1.0.2，回环合成上游）：7 项 PASS，含实时与重启后的上下文 token／窗口、分支、状态栏配置默认、去重排序与重启保留，以及 Claude 历史推理强度。
 - 推理强度、权限模式脚本与 9 项回归脚本（acp、selection、codex-history、continuation、subagents、live、attach、collab、parallel）通过。
 - 隔离开发版（临时 VELUNE_HOME，后台启动，未置前）截图核对 Claude 与 Codex 会话的状态栏及 popover，修正了极小比例显示 0%、路径截断与缺少单位。
 - 未验证：费用与账户额度需要真实价目或真实账户——合成模型价格未知，Claude 不给费用；网关不转发 Codex 额度头，合成会话没有额度。两者的字段形状来自上面的观察，界面仅以代码路径实现。设置页开关未截图（打开设置会把应用置前）。

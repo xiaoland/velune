@@ -31,8 +31,8 @@ Mac owner 还通过了新生成 UniFFI 模块、全部 Mac 源文件及 Keychain
 | 入口 | 实际结果 |
 | --- | --- |
 | 集中认证脚本（历史入口 `manual-authentication-management.py`，已随提供商配置重构删除） | 分别加载无 local-runtime 库和已安装库，确认迁移、重开持久配置、未知资源／目标拒绝、使用中删除拒绝、generation 冲突、owned 清理与共享引用保护；非法迁移保留原文件；秘密 helper 调用与原来源读取均为 0。 |
-| [原生 HTTP 脚本](../../scripts/manual-gateway-native.py) | 合成异步 resolver 下，9 个 Chat／Responses JSON、SSE、错误及业务终态边界通过；未知字段、历史、状态和安全 headers 保留；断开前／流中取消通过，Runner drop 为 0 ms。 |
-| [安装包 Pi 脚本](../../scripts/manual-pi-native-loop.py) | 已配置运行时→选中提供商导入→路由→连接→创建会话→工具调用→续写→下一轮，共 3 个合成上游请求；实际固定 Pi 来源认证 adapter、推理历史与工具关联通过。原来源文件不变；跳过导入保留连接、替换断开旧连接、认证替换使旧预览失效。 |
+| 原生 HTTP 脚本 | 合成异步 resolver 下，9 个 Chat／Responses JSON、SSE、错误及业务终态边界通过；未知字段、历史、状态和安全 headers 保留；断开前／流中取消通过，Runner drop 为 0 ms。 |
+| 安装包 Pi 脚本 | 已配置运行时→选中提供商导入→路由→连接→创建会话→工具调用→续写→下一轮，共 3 个合成上游请求；实际固定 Pi 来源认证 adapter、推理历史与工具关联通过。原来源文件不变；跳过导入保留连接、替换断开旧连接、认证替换使旧预览失效。 |
 | 同一安装包脚本的 helper 阶段 | 经 application 登记 API key 资源启动合成挂起 helper；客户端断开、约 30 秒解析期限及 application 关闭均终止其 Node 子进程；关闭不超过 3 秒。 |
 
 首次 helper 验证把受管模型目录里的 `$VELUNE_GATEWAY_TOKEN` 占位符误作本地 token，未进入解析器。只修正了验收脚本：由临时 Node launcher 捕获本 fixture 注入的短期本地 token，未读取任何真实进程、密钥或配置。随后完整入口退出 0；安装产品未因此修改。原生 HTTP 脚本也改由 Cargo 输出选择匹配的依赖产物，避免不同 feature 构建的 rlib 混用。

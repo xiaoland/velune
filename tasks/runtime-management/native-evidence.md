@@ -28,7 +28,7 @@ Claude User 与 Project MCP 另用 JSON、JSONC、JSON5 三份隔离输入判别
 
 MCP 手工用例在 Codex 共享 `config.toml` 中放入合成 provider 和两个服务：选中服务的 read 不含 provider section，unknown native 字段保持；修改保留非目标注释和 sibling 服务。新增其它服务后旧 revision 失效；删除只影响目标条目。坏 TOML 产生 Invalid 目录诊断，后续 Missing 写入不覆盖它；Debug 与错误不含合成秘密正文。JSON 修改保留其它键的语义，但不承诺排版保真。
 
-Claude／Pi 的可复现实际加载入口为 [manual-runtime-management.py](../../scripts/manual-runtime-management.py)；application／UniFFI 的独立 API 边界入口为 [manual-runtime-management-api.py](../../scripts/manual-runtime-management-api.py)。后者覆盖配置和生命周期，不能替代原生 loader 证据。它们是手动入口，不接入测试或 CI。
+Claude／Pi 的可复现实际加载入口为 manual-runtime-management.py；application／UniFFI 的独立 API 边界入口为 manual-runtime-management-api.py。后者覆盖配置和生命周期，不能替代原生 loader 证据。它们是手动入口，不接入测试或 CI。
 
 最终 Claude 2.1.286 验收通过 UniFFI 写入唯一名称的 User instruction、skill、Agent 定义和 MCP 服务。`stream-json initialize` 的 `agents` 列表出现所写 Agent 名称；`mcp list` 发现所写服务。随后用 `/velune-resource-skill` 启动一轮指向 loopback Messages 替身的请求，请求内同时包含 API 写入的 `CLAUDE.md` 标记和 skill 正文标记，CLI 接收替身的 `RESOURCE_ACK` 终态。没有同名项目资源遮蔽，也没有在 API 写入后用脚本覆写 fixture。Claude 初始化会更改共享配置中的其它字段；删除合成 MCP 服务前须重读 revision，旧 revision 会正确报冲突。
 
@@ -44,7 +44,7 @@ python3 scripts/manual-runtime-management.py --library "$LIBRARY" --bindings "$B
 
 ## 资源库写入的加载
 
-2026-10-11，[manual-resource-library-native.py](../../scripts/manual-resource-library-native.py) 以同样的 sandbox 约束（拒绝读取 `/Users`、Managed Preferences 与 ConfigurationProfiles，只放行 Node 可执行文件；仅 loopback 网络；临时 HOME 与 agentDir）通过 UniFFI 保存资源并启用到停用的 Claude Code 2.1.286、Codex 0.159.3 与 Pi 1.0.2 实例：指令、技能、stdio MCP（工作目录 `/tmp`、超时 30 秒）、HTTP MCP（请求头）与子 Agent（Claude、Codex）。写入后：
+2026-10-11，manual-resource-library-native.py 以同样的 sandbox 约束（拒绝读取 `/Users`、Managed Preferences 与 ConfigurationProfiles，只放行 Node 可执行文件；仅 loopback 网络；临时 HOME 与 agentDir）通过 UniFFI 保存资源并启用到停用的 Claude Code 2.1.286、Codex 0.159.3 与 Pi 1.0.2 实例：指令、技能、stdio MCP（工作目录 `/tmp`、超时 30 秒）、HTTP MCP（请求头）与子 Agent（Claude、Codex）。写入后：
 
 - Claude：`mcp list` 列出两个服务，`mcp get` 读出 stdio 命令（严格 JSON 解析通过，写入 `timeout` 30000、无 `cwd`）；stream-json `initialize` 的 `agents` 含所写子 Agent，`commands` 含所写技能。
 - Codex：`mcp list --json` 读出 stdio 的 `cwd`、`tool_timeout_sec = 30` 与 HTTP 的 `url`；`app-server` 的 `skills/list` 返回所写技能。子 Agent TOML 与上文已由原生 loader 发现的格式相同（`name`／`description`／`developer_instructions`），本轮未另做发现实验。

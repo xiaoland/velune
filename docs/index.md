@@ -18,6 +18,8 @@
 
 ## 当前工作
 
+- [架构重构、测试清理与文档更新](../tasks/architecture-refactor/packet.md)：功能冻结期间的全项目重构，分阶段计划与状态
+
 - [Rust 远控库](../tasks/android-minimal/packet.md)：稳定服务、方向配对、统一寻址、恢复与 remote-only UniFFI；平台 App 接入另行实施
 
 - [远程控制](../tasks/remote-control/packet.md)：同一用户多设备、公网免 VPN、完整 Velune 业务能力；GUI／headless 共用核心，需求与架构收敛后实现 Rust packages

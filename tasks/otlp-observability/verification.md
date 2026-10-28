@@ -42,12 +42,12 @@ Mac 查询最后返回 100 traces（达到查询上限）、49 log streams、189
 | 边界 | 已观察结果 | 可重放入口／证据 |
 | --- | --- | --- |
 | 默认关闭、私有持久化与修订 | 无配置不激活；明确 Off 优先；原子保存失败、冲突、未来格式不破坏原文件；关闭 owner 后延迟工作不能重新激活 | `cargo test -p velune-telemetry -p velune-remote --lib`；17 项 telemetry、7 项 remote 通过（包含显式测试的 run ID／scope、旧代 context 和传输撤销） |
-| 实际 Apple coordinator／FFI／业务对象 | native 与 Rust 三信号、并发不可变 parent、环境隔离、零采样保留错误日志／指标；同一业务对象更换 SDK；旧队列不迁往新出口；调用视图共享关闭 | [manual-telemetry.py](../../scripts/manual-telemetry.py)；`target/telemetry-delivery-acceptance.json` 与对应 wire／boundaries JSON |
+| 实际 Apple coordinator／FFI／业务对象 | native 与 Rust 三信号、并发不可变 parent、环境隔离、零采样保留错误日志／指标；同一业务对象更换 SDK；旧队列不迁往新出口；调用视图共享关闭 | manual-telemetry.py；`target/telemetry-delivery-acceptance.json` 与对应 wire／boundaries JSON |
 | 实际 QUIC／Core 轮次 | 两个独立父链；选中和停放会话共 2 个活跃轮次；控制断开后继续；换代后仍为 2，成功／取消降至 1／0；旧代结果保留 operation ID 与缺口；取消写失败只产生一次 failure 终态 | 同一脚本加 `--distributed`；完整接收数据按 trace、parent、日志、gauge 和 outcome 断言 |
 | 结果未知与恢复 | 接纳的命令超过控制端等待期限，返回原 RequestId 与 unknown；重连查询相同 ID 获得完成结果，没有重发 | `--distributed` 的受控 ACP 初始化门闩 |
 | 实际 HTTP Gateway | 首次 503 后下一成员返回 200，每次尝试单独可见；两个并行请求保持各自接纳时的父节点；同一 Runner 换代后产生带缺口的结果；不能确定归属时明确 missing_parent | 同一脚本加 `--gateway`；[HTTP 夹具](acceptance/gateway.py) |
 | 实际 Mac 请求队列 | 合成工作阻塞 Store 串行队列，后续快调用的 Transport 耗时约 1–4 ms，等待 histogram 至少 0.5 s；等待期间换代，长样本只出现在出队时的出口，业务调用次数仍为 1 | 同一脚本加 `--queue`；使用实际 Store 源码和私有调度边界，见[夹具](acceptance/queue.swift) |
-| 原生取消明确拒绝 | Codex 合成 interrupt 返回 JSON-RPC error 后自然完成，业务终态为 completed；正常取消和断管失败分别保留各自语义 | [manual-runtime-interactions.py](../../scripts/manual-runtime-interactions.py)；`target/telemetry-native-interactions.log` |
+| 原生取消明确拒绝 | Codex 合成 interrupt 返回 JSON-RPC error 后自然完成，业务终态为 completed；正常取消和断管失败分别保留各自语义 | manual-runtime-interactions.py；`target/telemetry-native-interactions.log` |
 | 丢弃与隐私 | 真实 SDK 队列溢出汇总保留旧 revision；完整接收三信号中无合成正文、路径、环境认证 canary；实时完整丢弃数仍为未知 | Rust wire tests、完整接收断言；SDK 公开接口边界见[装配契约](../../docs/design/telemetry.md) |
 
 端到端测试曾触发实际 panic：tracing-subscriber 在析构旧 registry 子 span 时，通过当前 dispatcher 释放父引用。修复是受控操作不保留隐式 registry 父引用，改用显式 W3C 关联；并在创建时保存 context，避免旧 SDK 关闭后才生成上下文。原场景已重放通过。Pi stdio reader 另以独立根 span 存活，避免 localLogs=true 时把启动操作留到进程结束；实际适配器与合成 Node 进程验证了 reader 仍存活时 startup 已导出、换代后关闭不重复导出。没有用“缺少 span”替代业务终态或活跃状态。

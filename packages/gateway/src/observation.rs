@@ -105,10 +105,10 @@ impl Drop for Observation {
                 }
                 _ => velune_telemetry::Outcome::Failure,
             };
-            if matches!(result, velune_telemetry::Outcome::Failure) {
-                if let Some(status) = self.http_status.filter(|status| *status >= 400) {
-                    operation.failure(&status.to_string());
-                }
+            if matches!(result, velune_telemetry::Outcome::Failure)
+                && let Some(status) = self.http_status.filter(|status| *status >= 400)
+            {
+                operation.failure(&status.to_string());
             }
             if let Some(owner) = &self.telemetry_owner
                 && owner.active_revision() != operation.revision()

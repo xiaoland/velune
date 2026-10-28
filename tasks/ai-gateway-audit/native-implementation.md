@@ -16,9 +16,9 @@ Pi adapter 保留固定 SDK 1.0.2 从原 provider／URL 推断的有效兼容设
 
 静态检查通过 `cargo fmt --all --check`、`cargo check --locked`、`cargo clippy --locked --workspace --all-targets --all-features -- -D warnings`，以及 bindings 的 `--no-default-features` 检查。JavaScript 和构建脚本语法检查通过。Mac release、UniFFI Swift 生成／编译、原生 app 与 helper 构建、bundle 严格签名验证通过。不新增或运行自动化测试。
 
-[原生边界脚本](../../scripts/manual-gateway-native.py)以当前源码构建的 debug 库启动真实本机入口，9 个合成 HTTP 案例全部通过：Chat／Responses JSON、SSE、错误正文、chunked 请求，以及 Responses incomplete JSON／failed SSE。多个 system／developer 指令、推理历史、未知字段和省略输出上限均保留；正文逐字节核对，201／429、Retry-After、请求 ID 与自定义非敏感响应头保留，Cookie／Set-Cookie 不转发。响应前与流中断连均在 3 秒内确认上游关闭。挂住的 shell→Node helper 分别经过下游断连、30 秒超时和 Runner Drop，Node PID 均消失；idle 与挂住 helper 的 Drop 实测为 0 毫秒。完整人工脚本退出 0，临时目录清理。
+原生边界脚本以当前源码构建的 debug 库启动真实本机入口，9 个合成 HTTP 案例全部通过：Chat／Responses JSON、SSE、错误正文、chunked 请求，以及 Responses incomplete JSON／failed SSE。多个 system／developer 指令、推理历史、未知字段和省略输出上限均保留；正文逐字节核对，201／429、Retry-After、请求 ID 与自定义非敏感响应头保留，Cookie／Set-Cookie 不转发。响应前与流中断连均在 3 秒内确认上游关闭。挂住的 shell→Node helper 分别经过下游断连、30 秒超时和 Runner Drop，Node PID 均消失；idle 与挂住 helper 的 Drop 实测为 0 毫秒。完整人工脚本退出 0，临时目录清理。
 
-[正常 Pi 循环脚本](../../scripts/manual-pi-native-loop.py)加载已安装 bundle 的 dylib 与同版生成 Python 绑定，通过具名应用用例完成：配置运行时 → 预览与导入 → 配置模型路由 → 连接 → 创建会话 → 发送 → 本地 read 工具 → SDK 自动续接 → 下一轮用户消息。共 3 次合成上游请求，全部通过 LLM Gateway。预览同时允许 reasoning 和 plain 模型的原生兼容设置；仅所选提供商被保存。tool call 关联和 reasoning_content 历史保留，最终回复进入会话 projection。重复导入跳过后连接保留；增加同一提供商模型并替换后返回 requiresReconnect 且旧活动连接清除。三份原来源文件字节不变。脚本退出 0，应用 shutdown 完成，临时目录删除。
+正常 Pi 循环脚本加载已安装 bundle 的 dylib 与同版生成 Python 绑定，通过具名应用用例完成：配置运行时 → 预览与导入 → 配置模型路由 → 连接 → 创建会话 → 发送 → 本地 read 工具 → SDK 自动续接 → 下一轮用户消息。共 3 次合成上游请求，全部通过 LLM Gateway。预览同时允许 reasoning 和 plain 模型的原生兼容设置；仅所选提供商被保存。tool call 关联和 reasoning_content 历史保留，最终回复进入会话 projection。重复导入跳过后连接保留；增加同一提供商模型并替换后返回 requiresReconnect 且旧活动连接清除。三份原来源文件字节不变。脚本退出 0，应用 shutdown 完成，临时目录删除。
 
 人工运行入口如下，路径由执行者显式选择，不读取用户已有配置：
 

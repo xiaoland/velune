@@ -8,7 +8,7 @@
 
 父发送后，脚本在观察到父 provider 请求含子结果之前不调用任何 application 轮询 API。该断言证明子 worker 和 MCP 工具在前台不轮询时仍可完成委派。之后读取最终状态，确认一个 Idle 子任务、准确的结果文本、父最终正文及 Idle 状态。`child_snapshot` 在最终动态库上成功解码，消息 stamp 非零，连续读取不变消息时 stamp 稳定。早期产物发现的 `missing field stamp` 已修复并通过此断言，未作为待办遗留。
 
-手动入口为 [manual-harness-interoperation.py](../../scripts/manual-harness-interoperation.py)，完整运行退出码为 0。脚本每次把指定动态库和绑定复制到新临时目录，避免旁边的旧动态库影响结果。它清空继承环境，为应用和两个 runtime 分配独立 HOME、XDG 与项目目录；macOS sandbox 限制出入站网络为 loopback，阻止读取用户目录、OpenCode 系统配置与 MDM 配置，仅为显式 Node 安装目录放行必要文件读取。DSH 的临时 Cordis patch 显式选择合成 Anthropic provider，OpenCode 只启用合成 provider；所有临时文件随验收清理。
+手动入口为 manual-harness-interoperation.py，完整运行退出码为 0。脚本每次把指定动态库和绑定复制到新临时目录，避免旁边的旧动态库影响结果。它清空继承环境，为应用和两个 runtime 分配独立 HOME、XDG 与项目目录；macOS sandbox 限制出入站网络为 loopback，阻止读取用户目录、OpenCode 系统配置与 MDM 配置，仅为显式 Node 安装目录放行必要文件读取。DSH 的临时 Cordis patch 显式选择合成 Anthropic provider，OpenCode 只启用合成 provider；所有临时文件随验收清理。
 
 ## 复现与适用边界
 

@@ -14,7 +14,7 @@ Mac 提供会话菜单、命令面板和 `/compact`；iOS 会话操作菜单、A
 
 ## 验证
 
-[隔离验收脚本](../../scripts/manual-context-compaction.py) 使用实际 Codex 0.159.3、Claude Code 2.1.292 和仓库 `target/pi-runtime` 中的 Pi 1.0.2，经本机合成回环上游运行。PATH 中 Pi 1.4.0 不在适配范围，未拿它替代。三种运行时各通过 5 组检查：进度与完成（包括同 runtime 多会话正确寻址、操作及时返回、可轮询、独立展示且不重新计时）；取消收尾；失败保留原回复／时长／实时恢复资格；重开无命令用户消息或过期进度；已有暂停队列保持暂停。日志在 `/tmp/velune-compaction-{codex,claude,pi}.log`。全部会话和认证均为隔离合成数据。
+隔离验收脚本 使用实际 Codex 0.159.3、Claude Code 2.1.292 和仓库 `target/pi-runtime` 中的 Pi 1.0.2，经本机合成回环上游运行。PATH 中 Pi 1.4.0 不在适配范围，未拿它替代。三种运行时各通过 5 组检查：进度与完成（包括同 runtime 多会话正确寻址、操作及时返回、可轮询、独立展示且不重新计时）；取消收尾；失败保留原回复／时长／实时恢复资格；重开无命令用户消息或过期进度；已有暂停队列保持暂停。日志在 `/tmp/velune-compaction-{codex,claude,pi}.log`。全部会话和认证均为隔离合成数据。
 
 - agent-runtime 的 16 个小型不变量测试通过，含压缩通知不隐藏回复、Pi 进行中跨刷新与取消、自动压缩后普通回答失败仍保留原生错误。
 - bindings／agent-runtime 的 all-targets 严格 clippy 通过；remote-only bindings 检查通过。

@@ -137,7 +137,7 @@ fixture 为 [review.json](../fixtures/review.json)，仅 `2 + 3 = 5`。Codex 会
 
 `bash scripts/install-xurl.sh` 从固定提交构建官方 CLI，保存许可证与 REVISION；Windows 使用 `scripts/install-xurl.ps1` 构建同一提交。两端构建复制 CLI、许可证和 REVISION，Mac 额外签名并在 manifest 中记录它。上游升级需同时复核 URI、配置根环境与读写行为，不能只替换版本号。若 Cargo registry 经符号链接放到其他卷，Askama 生成器可能计算出无效的模板相对路径；构建时将 `CARGO_HOME` 指向该缓存的真实目录可避免此工具链问题。
 
-[manual-xurl.py](../scripts/manual-xurl.py) 使用同源码 Python bindings、Mac bundle 的 Resources、实际官方 xurl 和已安装 Node／Pi CLI，参数为 `--bindings`、`--resources`、`--xurl`、`--node`、`--pi` 的绝对路径。脚本只使用临时 HOME 和合成 Harness，检查多实例歧义、Pi UUID、官方 CLI 读取三种历史、独立续聊调用、MCP 分页与 URI 发送、忙碌／审批／子会话限制；`--seed DIR` 保留 `DIR/velune` 供隔离 UI 检查。不接入 CI，不证明真实账户或外部会话已验收。
+manual-xurl.py 使用同源码 Python bindings、Mac bundle 的 Resources、实际官方 xurl 和已安装 Node／Pi CLI，参数为 `--bindings`、`--resources`、`--xurl`、`--node`、`--pi` 的绝对路径。脚本只使用临时 HOME 和合成 Harness，检查多实例歧义、Pi UUID、官方 CLI 读取三种历史、独立续聊调用、MCP 分页与 URI 发送、忙碌／审批／子会话限制；`--seed DIR` 保留 `DIR/velune` 供隔离 UI 检查。不接入 CI，不证明真实账户或外部会话已验收。
 
 ## 历史真实联调研究
 
@@ -177,7 +177,7 @@ Node 本体不随 Mac bundle，Pi／Codex／DSH 当前配置记录需要 Node 22
 
 Codex 历史使用短生命周期 app-server 的 thread/list、thread/read 与 thread/items/list，不准备模型或网关。列表显式包含该版本全部来源与全部提供商，分页详情采用升序原生 items，Codex 负责 legacy／paginated 和 revert 历史继承。thread ID 不等于 rollout 文件 ID；不能扫描文件后要求 thread ID 唯一，也不按路径或时间挑选。huihua 桥仅供 DSH，通过公开 package exports 读取显式 home／roots，返回原生 ID、cwd、列表摘要与消息投影，不输出未知 payload。历史浏览不能代替 Codex thread/resume 或 DSH session/resume。 安全日志的 history_native_resolution 记录固定运行时家族、legacy／paginated 分类与读取／投影条数；history_native_failed 记录固定阶段和错误分类，不记录会话 ID、路径或正文。
 
-Codex 历史人工验收入口为 [`manual-codex-history-identity.py`](../scripts/manual-codex-history-identity.py)。传入绝对路径 `--codex`、`--node`、`--bindings`、`--library` 与 `--resources`，加 `--exercise-revert --probe-items --probe-many-items`。脚本在临时 HOME／CODEX_HOME 中通过实际原生 fork、revert、exec 与 loopback Responses 验证列表身份、保留前缀、重启和多页顺序；不读取用户真实历史。可选 `--old-helper` 只用于显式旧版诊断对照，不能传当前 DSH-only helper。
+Codex 历史人工验收入口为 `manual-codex-history-identity.py`。传入绝对路径 `--codex`、`--node`、`--bindings`、`--library` 与 `--resources`，加 `--exercise-revert --probe-items --probe-many-items`。脚本在临时 HOME／CODEX_HOME 中通过实际原生 fork、revert、exec 与 loopback Responses 验证列表身份、保留前缀、重启和多页顺序；不读取用户真实历史。可选 `--old-helper` 只用于显式旧版诊断对照，不能传当前 DSH-only helper。
 
 原生历史只读浏览不建立网关或执行进程；Codex／DSH 缺少提供商身份的模型记录不自动匹配，继续前明确选择。DSH 切换模型先关闭会话，重启注入目录，再恢复同一原生 ID 并选择 upstream 公布的模型选项；不构造替代 opaque option。reasoningEfforts 需要实际 wire 映射，当前能力等级列表不足以证明映射，保持 SDK 默认，不推测支持。
 
@@ -224,7 +224,7 @@ live 入口 `minimax_manual live text|text-diagnostic|tool SOURCE_COMMIT` 仅供
 
 ## RelayKit 的真实提供商采集与重放
 
-[人工入口](../scripts/manual-relaykit-provider.py) 以真实 Pi CLI 的小型代码阅读任务经过 Rust gateway 和 RelayKit，核对工具调用、实际读取、匹配调用 ID 的结果续轮和正常终态。`collect` 会调用指定提供商，须有本轮真实调用授权；不沿用旧 MiniMax 示例的历史采集预算。`replay` 使用固定响应，不读取提供商凭据或发送外部模型请求。两者均非 CI 入口。
+人工入口 以真实 Pi CLI 的小型代码阅读任务经过 Rust gateway 和 RelayKit，核对工具调用、实际读取、匹配调用 ID 的结果续轮和正常终态。`collect` 会调用指定提供商，须有本轮真实调用授权；不沿用旧 MiniMax 示例的历史采集预算。`replay` 使用固定响应，不读取提供商凭据或发送外部模型请求。两者均非 CI 入口。
 
 执行时显式传入 Node、Pi JavaScript CLI、rustc 的路径，以及 `target/` 下尚不存在的输出目录。采集还需要私有环境文件、变量前缀、允许的 HTTPS 主机、实际提供商／模型和入口／上游协议；Python 未配置系统信任根时，可用 `--ca-file` 指定已有可信 CA 文件，不能关闭 TLS 验证。运行 `--help` 查看参数。脚本仅在 HTTPS 边界注入凭据，不跟随重定向，不保存认证头；每次任务最多三次上游请求，提供商失败后阻断进一步真实调用。输出只固定本次合成代码任务的脱敏协议材料，不读取既有会话。
 
@@ -243,15 +243,15 @@ python3 scripts/manual-relaykit-provider.py replay \
 
 ## UniFFI 的临时端到端验收
 
-先构建动态库，并按 [bindings unit](../packages/bindings/README.md) 生成与其匹配的 Python 绑定。提供商配置验收使用 [提供商与模板脚本](../scripts/manual-provider-configuration.py)，传入绝对路径 `--bundle` 和 `--bindings`，验证本机文件 API key 显式读取／编辑／重开、公开描述与日志不含 key、模型 ID／协议／地址编辑、模板快照和当前 schema 的 hard-cutoff。使用临时 HOME 与合成 key，不读取真实资料。[提供商来源脚本](../scripts/manual-provider-sources.py) 参数相同，以合成 Codex `config.toml`、Claude Code `settings.json` 和按账户文件回答 `auth status` 的假 `claude`，检查 Codex／Claude Code 运行时导入（字面 key 复制、预览不含 key、来源变化使预览失效）、沿用默认与运行时 Claude Code 登录、同账户拒绝、失效登录经检查转为未登录，以及删除时不执行 login／logout、不改来源文件、日志不含 key；不证明真实 CLI 行为。
+先构建动态库，并按 [bindings unit](../packages/bindings/README.md) 生成与其匹配的 Python 绑定。提供商配置验收使用 提供商与模板脚本，传入绝对路径 `--bundle` 和 `--bindings`，验证本机文件 API key 显式读取／编辑／重开、公开描述与日志不含 key、模型 ID／协议／地址编辑、模板快照和当前 schema 的 hard-cutoff。使用临时 HOME 与合成 key，不读取真实资料。提供商来源脚本 参数相同，以合成 Codex `config.toml`、Claude Code `settings.json` 和按账户文件回答 `auth status` 的假 `claude`，检查 Codex／Claude Code 运行时导入（字面 key 复制、预览不含 key、来源变化使预览失效）、沿用默认与运行时 Claude Code 登录、同账户拒绝、失效登录经检查转为未登录，以及删除时不执行 login／logout、不改来源文件、日志不含 key；不证明真实 CLI 行为。
 
-[安装包首循环脚本](../scripts/manual-pi-native-loop.py) 另传 `--node` 和外部 `--pi`，从配置运行时和导入开始，通过实际固定 Pi SDK 完成工具续写、下一轮消息、提供商 key／model ID／地址编辑后实际派发检查。上游为回环合成服务，不涉及真实 Keychain、模型服务或会话。原生 [HTTP 脚本](../scripts/manual-gateway-native.py) 检查 ChatCompletions／Responses JSON、SSE、状态及安全头的保真与取消。所有入口均为显式人工验收，不接入 CI 或自动化测试；实际 GUI／真实提供商由用户验收。
+安装包首循环脚本 另传 `--node` 和外部 `--pi`，从配置运行时和导入开始，通过实际固定 Pi SDK 完成工具续写、下一轮消息、提供商 key／model ID／地址编辑后实际派发检查。上游为回环合成服务，不涉及真实 Keychain、模型服务或会话。原生 HTTP 脚本 检查 ChatCompletions／Responses JSON、SSE、状态及安全头的保真与取消。所有入口均为显式人工验收，不接入 CI 或自动化测试；实际 GUI／真实提供商由用户验收。
 
-[多运行时脚本](../scripts/manual-multi-runtime.py) 使用实际 Codex app-server／DeepSeek ACP 与回环合成上游，检查创建、发送、原生历史投影、恢复、同 API ID 跨提供商选择及版本拒绝保留活动连接。除 `--bundle`／`--bindings` 外，传入绝对路径 `--node`、`--codex`、`--dsh`（DSH 包的 `lib/bin.js`）。所有 HOME、运行时目录与工作目录均为临时目录。
+多运行时脚本 使用实际 Codex app-server／DeepSeek ACP 与回环合成上游，检查创建、发送、原生历史投影、恢复、同 API ID 跨提供商选择及版本拒绝保留活动连接。除 `--bundle`／`--bindings` 外，传入绝对路径 `--node`、`--codex`、`--dsh`（DSH 包的 `lib/bin.js`）。所有 HOME、运行时目录与工作目录均为临时目录。
 
-[交互脚本](../scripts/manual-runtime-interactions.py) 另传 `--node`，以合成 app-server 验证 UniFFI 到控制协议的审批、私密回答、拒绝非法／陈旧回复、取消与意外 EOF。它不替代 Mac GUI 验收，也不连接真实上游。
+交互脚本 另传 `--node`，以合成 app-server 验证 UniFFI 到控制协议的审批、私密回答、拒绝非法／陈旧回复、取消与意外 EOF。它不替代 Mac GUI 验收，也不连接真实上游。
 
-[并行会话脚本](../scripts/manual-parallel-sessions.py) 与 [实时会话脚本](../scripts/manual-live-sessions.py) 传入 `--library`、`--bindings`、`--bundle`、`--node` 与外部 Pi 1.0.2 的 `--pi`（包内 `dist/bundle/cli.js`），以临时 HOME、合成 Pi 会话和回环上游分别检查多会话同时执行与 turn 结果，以及实际 Pi CLI 作为另一客户端运行 turn 时的实时重读、运行识别、进程中途被杀后不再运行和自身执行的排除。[实际 Harness 实时脚本](../scripts/manual-live-native.py) 另传 `--codex` 与 `--claude`，在临时 managed HOME 中由实际 Codex 0.159.3／Claude Code 2.1.286 CLI 对回环合成上游执行外部 turn，检查按其存活记录（写入锁、会话登记）的运行识别、打开会话的实时重读与进程被杀后不再运行。[Codex 分段脚本](../scripts/manual-codex-segments.py)（`--bundle`、`--bindings`、`--node`、`--codex`）在临时 CODEX_HOME 写入合成的分段 rollout，并由子进程持有写入锁，检查线程按最后一段判断为在别处运行，旧段未结束而最后一段已结束的线程不算运行中。[变更审阅脚本](../scripts/manual-working-changes.py) 使用同样参数，在临时 git 仓库中检查变更列表、差异行与路径拒绝。[推理强度脚本](../scripts/manual-reasoning-effort.py) 传入 `--library`、`--bindings`、`--bundle`、`--node`、`--codex`、`--claude` 与 `--pi`，在临时 managed HOME 中由实际三种 Harness 经网关与回环上游执行，检查可选强度、各运行时模型目录（原生模型带 Harness 自身强度、managed 模型随后且带提供商名；Pi 在临时 agentDir 写入合成 `models.json`）、范围外强度未发送即拒绝、上游实际收到的推理字段，以及之后不选强度的 turn 沿用会话当前的强度，以及 Pi 原生模型经其自身提供商带所选强度派发。[权限模式脚本](../scripts/manual-permission-modes.py) 传入 `--library`、`--bindings`、`--bundle`、`--node`、`--codex` 与 `--claude`，在临时 managed HOME 中由实际 Codex 0.159.3／Claude Code 2.1.286 经网关与回环上游执行，检查各类型声明的模式（通用 ACP 与 Pi 为空）、范围外模式未发送即拒绝，以及 Harness 实际采用的模式：Codex 告诉模型的 sandbox 与审批策略，Claude Code 请求中自报的模式；不选模式的轮次沿用会话当前的模式，明确选择则替换。[轮次配置脚本](../scripts/manual-turn-settings.py) 另传 `--pi`，检查 Velune 发送的轮次显示所请求的运行时、模型名称、推理强度与模式，不串到上一轮，不选强度与模式的轮次沿用上一轮的；每轮的 token 用量与回环上游报告的一致（Codex、Pi 含推理 token，Claude Code 推理留空），实时与重启后读历史都检查；Velune 的发送记录与 composer 选择跨重启保留（各轮仍显示所请求的模型，下一轮选择、上次选择与新会话设定原样读回，全空不记录，未知运行时拒绝，删除会话时一并删除）；去掉发送记录后重启读历史时，显示 Codex rollout、Claude Code 会话记录（含推理强度）与 Pi 回复记录中的配置（Pi 的网关 alias 显示为 managed 模型名）；每轮结束时的上下文 token 是最后一次请求的输入（含缓存）加输出，窗口为 managed 模型配置的值（实时与重启后都检查）；并检查工作目录的 git 分支，以及状态栏项默认只有上下文用量、保存时去重排序且重启后保留。[附件脚本](../scripts/manual-attachments.py) 参数相同，检查图片经三种 Harness 自身图片输入原样到达上游、非图片文件以绝对路径列入正文、仅图片的 turn、已发送消息在实时快照与原生记录中显示为正文＋图片＋文件，以及缺失、相对路径、目录与内容不符的图片在发送前整条拒绝。
+并行会话脚本 与 实时会话脚本 传入 `--library`、`--bindings`、`--bundle`、`--node` 与外部 Pi 1.0.2 的 `--pi`（包内 `dist/bundle/cli.js`），以临时 HOME、合成 Pi 会话和回环上游分别检查多会话同时执行与 turn 结果，以及实际 Pi CLI 作为另一客户端运行 turn 时的实时重读、运行识别、进程中途被杀后不再运行和自身执行的排除。实际 Harness 实时脚本 另传 `--codex` 与 `--claude`，在临时 managed HOME 中由实际 Codex 0.159.3／Claude Code 2.1.286 CLI 对回环合成上游执行外部 turn，检查按其存活记录（写入锁、会话登记）的运行识别、打开会话的实时重读与进程被杀后不再运行。Codex 分段脚本（`--bundle`、`--bindings`、`--node`、`--codex`）在临时 CODEX_HOME 写入合成的分段 rollout，并由子进程持有写入锁，检查线程按最后一段判断为在别处运行，旧段未结束而最后一段已结束的线程不算运行中。变更审阅脚本 使用同样参数，在临时 git 仓库中检查变更列表、差异行与路径拒绝。推理强度脚本 传入 `--library`、`--bindings`、`--bundle`、`--node`、`--codex`、`--claude` 与 `--pi`，在临时 managed HOME 中由实际三种 Harness 经网关与回环上游执行，检查可选强度、各运行时模型目录（原生模型带 Harness 自身强度、managed 模型随后且带提供商名；Pi 在临时 agentDir 写入合成 `models.json`）、范围外强度未发送即拒绝、上游实际收到的推理字段，以及之后不选强度的 turn 沿用会话当前的强度，以及 Pi 原生模型经其自身提供商带所选强度派发。权限模式脚本 传入 `--library`、`--bindings`、`--bundle`、`--node`、`--codex` 与 `--claude`，在临时 managed HOME 中由实际 Codex 0.159.3／Claude Code 2.1.286 经网关与回环上游执行，检查各类型声明的模式（通用 ACP 与 Pi 为空）、范围外模式未发送即拒绝，以及 Harness 实际采用的模式：Codex 告诉模型的 sandbox 与审批策略，Claude Code 请求中自报的模式；不选模式的轮次沿用会话当前的模式，明确选择则替换。轮次配置脚本 另传 `--pi`，检查 Velune 发送的轮次显示所请求的运行时、模型名称、推理强度与模式，不串到上一轮，不选强度与模式的轮次沿用上一轮的；每轮的 token 用量与回环上游报告的一致（Codex、Pi 含推理 token，Claude Code 推理留空），实时与重启后读历史都检查；Velune 的发送记录与 composer 选择跨重启保留（各轮仍显示所请求的模型，下一轮选择、上次选择与新会话设定原样读回，全空不记录，未知运行时拒绝，删除会话时一并删除）；去掉发送记录后重启读历史时，显示 Codex rollout、Claude Code 会话记录（含推理强度）与 Pi 回复记录中的配置（Pi 的网关 alias 显示为 managed 模型名）；每轮结束时的上下文 token 是最后一次请求的输入（含缓存）加输出，窗口为 managed 模型配置的值（实时与重启后都检查）；并检查工作目录的 git 分支，以及状态栏项默认只有上下文用量、保存时去重排序且重启后保留。附件脚本 参数相同，检查图片经三种 Harness 自身图片输入原样到达上游、非图片文件以绝对路径列入正文、仅图片的 turn、已发送消息在实时快照与原生记录中显示为正文＋图片＋文件，以及缺失、相对路径、目录与内容不符的图片在发送前整条拒绝。
 
 ## 工作区 units 与绑定构建
 
@@ -270,11 +270,11 @@ cargo tree --locked -p velune-bindings --no-default-features --features remote
 
 `bindings --no-default-features --features remote` 是纯控制端，依赖树不含 application、agent-runtime、gateway 或 ai-provider；完全禁用 feature 时没有本地或远程构造入口。application 自身禁用 `local-runtime` 仅裁掉 Harness，配置校验仍链接 gateway，不是纯远端客户端的装配路径。Kotlin 生成物依赖 JNA 及 kotlinx-coroutines；生成成功之外还需编译检查。C# 工具为第三方，UniFFI 版本兼容性仍需后续 C# app 接入时验证。
 
-[远控人工脚本](../scripts/manual-remote-control.py) 接受绝对路径 `--library`、`--bindings` 和 `--resources`，动态库与 Python 绑定须来自同一次 v2 构建。脚本通过实际 iroh loopback、UniFFI 与合成 ACP 核对双方派生码，再由夹具显式调用执行端本地批准 API；随后使用一次 Effect 作用域和准确 ID 确认，验证多设备业务、方向授权撤销、断线续跑、请求查询、冲突及附件内容边界。脚本中的已收到后丢弃回执不作为丢 wire 回执或执行端网络替换的证据。动态库需包含默认的本地执行与 remote feature；资源目录可用构建后的 `target/runtime-support`。脚本只使用临时 HOME 与合成资料，不连接公共 relay 或真实模型。早期观察见 [远控验收](../tasks/remote-control/verification.md)，v2 与生命周期判别归 [远控库验证](../tasks/android-minimal/verification.md)。
+远控人工脚本 接受绝对路径 `--library`、`--bindings` 和 `--resources`，动态库与 Python 绑定须来自同一次 v2 构建。脚本通过实际 iroh loopback、UniFFI 与合成 ACP 核对双方派生码，再由夹具显式调用执行端本地批准 API；随后使用一次 Effect 作用域和准确 ID 确认，验证多设备业务、方向授权撤销、断线续跑、请求查询、冲突及附件内容边界。脚本中的已收到后丢弃回执不作为丢 wire 回执或执行端网络替换的证据。动态库需包含默认的本地执行与 remote feature；资源目录可用构建后的 `target/runtime-support`。脚本只使用临时 HOME 与合成资料，不连接公共 relay 或真实模型。早期观察见 [远控验收](../tasks/remote-control/verification.md)，v2 与生命周期判别归 [远控库验证](../tasks/android-minimal/verification.md)。
 
 ## 会话驱动准备的人工复验
 
-[历史浏览脚本](../scripts/manual-session-browser.py) 使用外部固定 Pi SDK 生成临时历史，传入绝对 `--bundle`、`--bindings`、`--node`、`--pi`。它核对没有提供商或工作目录已消失时仍能列出和阅读、选择模型不启动执行、准备失败保留内容与选择、外部路径拒绝和单实例读取失败隔离。脚本不读取真实会话，不请求真实模型，不加入 CI。
+历史浏览脚本 使用外部固定 Pi SDK 生成临时历史，传入绝对 `--bundle`、`--bindings`、`--node`、`--pi`。它核对没有提供商或工作目录已消失时仍能列出和阅读、选择模型不启动执行、准备失败保留内容与选择、外部路径拒绝和单实例读取失败隔离。脚本不读取真实会话，不请求真实模型，不加入 CI。
 
 模型选择属于当前会话：新建必须选择模型，历史只有 Pi 保存的明确内部引用可恢复；Codex／DSH 无法证明提供商时要求选择。只读历史视图中尚未执行的选择暂存在内存，视图关闭前不写回 Harness；发送准备后由原生适配器处理模型与持久化。修改配置只使执行装配失效，不清空历史或要求手动连接。
 
@@ -282,13 +282,13 @@ cargo tree --locked -p velune-bindings --no-default-features --features remote
 
 关联保存在 `VELUNE_HOME/conversation-links.json`（schema 1、Unix权限0600），独立于提供商配置；仅有有序原生引用、截止数量及内容摘要、交接定位，不存正文。逻辑会话沿用首段身份和原生标题，重启从各原生历史恢复。列表来源用于分组及打开，快照 `context_runtime_id` 用于当前查询／取消／回复；摘要管理能力由 application 结合所有关联原生段计算。旧段截止后外部追加不会进入逻辑历史，截止前改写明确报错。当前尾段不可读取时已校验来源仍可看，但不能继续发送或伪造恢复。
 
-[跨 Harness 手工脚本](../scripts/manual-cross-harness.py) 接收绝对 `--bundle`、`--bindings`、`--node`、`--pi`、`--codex`、`--dsh`，使用实际Pi→Codex→DSH→Pi、临时HOME和loopback验证多次接续、单逻辑行、重开消息身份、无重复交接包及截止校验。[失败边界脚本](../scripts/manual-continuation-boundaries.py) 接收绝对 `--bundle`、`--bindings`、`--node`、`--pi`，核对超长／不兼容拒绝、关联原子提交失败保来源、尾段不可读禁止发送、普通配置重置不删关联以及重启不自动重发。生成绑定必须对应该bundle的库；这些入口只用于显式人工验收，不接入CI、不读真实账户或会话、不调用真实服务。
+跨 Harness 手工脚本 接收绝对 `--bundle`、`--bindings`、`--node`、`--pi`、`--codex`、`--dsh`，使用实际Pi→Codex→DSH→Pi、临时HOME和loopback验证多次接续、单逻辑行、重开消息身份、无重复交接包及截止校验。失败边界脚本 接收绝对 `--bundle`、`--bindings`、`--node`、`--pi`，核对超长／不兼容拒绝、关联原子提交失败保来源、尾段不可读禁止发送、普通配置重置不删关联以及重启不自动重发。生成绑定必须对应该bundle的库；这些入口只用于显式人工验收，不接入CI、不读真实账户或会话、不调用真实服务。
 
 ## 公开模型模板目录
 
 在 AI 提供商的更多菜单打开“模型模板”，选择“从公开目录添加…”后显式读取 models.dev。候选保留来源提供商与实际模型 ID，选择后进入模板表单，保存为独立可编辑快照；拉取不会创建提供商、选择协议／端点或更新现有模型。仅来源明确声明的 effort values 可填写推理等级，不把 reasoning boolean 变成等级列表。
 
-目录获取归 application，由 Mac 工作队列调用具名 UniFFI API；只请求固定公开 HTTPS 地址，禁用重试与重定向，最长 30 秒，不额外限制目录总字节数。失败说明不包含响应正文或网络配置。拉取入口不使用提供商认证，领域 AI unit 与网关不依赖目录。缺失／零上下文和输出规格保持未知，用户应按实际提供商要求核对后编辑。目录来源声明和 MIT 许可随应用包保留，详情不伪称提供商官方能力保证。 人工复验使用 [公开目录脚本](../scripts/manual-public-model-catalog.py)，传入绝对 `--bundle`、`--bindings`；只有显式 `--public-get` 才访问公开地址。脚本使用临时 HOME 验证拉取不写配置、模板保存／编辑／重开和提供商数量不变，并以合成解析数据核对来源 ID、未知规格、effort null 和输入边界，不接入 CI。
+目录获取归 application，由 Mac 工作队列调用具名 UniFFI API；只请求固定公开 HTTPS 地址，禁用重试与重定向，最长 30 秒，不额外限制目录总字节数。失败说明不包含响应正文或网络配置。拉取入口不使用提供商认证，领域 AI unit 与网关不依赖目录。缺失／零上下文和输出规格保持未知，用户应按实际提供商要求核对后编辑。目录来源声明和 MIT 许可随应用包保留，详情不伪称提供商官方能力保证。 人工复验使用 公开目录脚本，传入绝对 `--bundle`、`--bindings`；只有显式 `--public-get` 才访问公开地址。脚本使用临时 HOME 验证拉取不写配置、模板保存／编辑／重开和提供商数量不变，并以合成解析数据核对来源 ID、未知规格、effort null 和输入边界，不接入 CI。
 
 ## 本地诊断
 
@@ -302,13 +302,13 @@ Pi RPC 子进程持续排空 stderr，最多保留1 MiB用于失败诊断，超�
 
 网关请求另有 `gateway_request` span 的 `request_id`，不沿用建立执行准备时的 application `operation_id`。`gateway_request_received`、`gateway_route_selected`、`gateway_response_ready` 和 `gateway_request_finished` 描述入口与转发；`gateway_attempt` span 的 started／upstream_headers／finished 描述单次派发，并以 request_id 关联本地入口；OTLP 操作另以显式 W3C context 建立父子关系。目标序号只定位当前运行配置快照，不是跨准备的身份。结束字段区分传输完成、上游失败、调用方断开和网关关闭；完整转发失败 HTTP 响应仍可以是 request 的传输完成。准备响应不证明 TCP 客户端已收到，传输完成也不证明 LLM 业务成功。
 
-[原生 HTTP 人工脚本](../scripts/manual-gateway-native.py) 使用临时 Rust probe 和合成回环服务，核对 JSON／SSE、HTTP 429、failed／incomplete 保真，以及头前取消、流中取消、在途关闭的关联与日志归因。它复用现有 tracing 依赖，不新增产品依赖或自动测试入口；[多运行时脚本](../scripts/manual-multi-runtime.py) 同时核对实际 bindings 日志的关联与秘密／配置排除。
+原生 HTTP 人工脚本 使用临时 Rust probe 和合成回环服务，核对 JSON／SSE、HTTP 429、failed／incomplete 保真，以及头前取消、流中取消、在途关闭的关联与日志归因。它复用现有 tracing 依赖，不新增产品依赖或自动测试入口；多运行时脚本 同时核对实际 bindings 日志的关联与秘密／配置排除。
 
 领域包只发事件，不创建 subscriber。跨线程显式传播 dispatcher 和 span；客户端遥测 owner 装配本地日志与 OTLP SDK，默认关闭，详情见[遥测装配](design/telemetry.md)。采用的库和契约见 [tracing dispatcher](https://docs.rs/tracing/latest/tracing/dispatcher/)、[tracing-appender 保留策略](https://docs.rs/tracing-appender/latest/tracing_appender/rolling/struct.Builder.html) 和 [Apple 日志指导](https://developer.apple.com/documentation/os/generating-log-messages-from-your-code)。
 
 Mac 的“问题”窗口集中显示操作失败与当前读取问题，主界面工具栏提供入口，编辑／导入 sheet 在标题行提供入口；设置窗口保留系统标签导航，通过菜单“问题…”与 ⌘⇧M 打开问题窗口。新错误更新数量，不弹窗抢焦点；选择一项可查看并复制已有诊断字段。手动操作记录在当前进程内保留，成功操作不清空，用户可清除；持续会话列表或轮询问题按来源合并，恢复后移除，清除后若仍失败会再次出现。问题记录不是持久日志，不主动读取日志文件；收到的错误详情完整保留。界面不再在会话列表、composer 或设置底部重复展示这些错误，字段校验和业务进度仍在相应位置。
 
-人工复验入口为 [`manual-problems.py`](../scripts/manual-problems.py)，传入绝对路径 `--bundle`、`--swift-build`、`--node`、`--pi`。它编译实际 Mac Store／Transport，使用临时 HOME 和真实 UniFFI，检查结构化失败的保留与消解；读取失败通过隔离 helper 控制，不读取用户原生会话。脚本不接入 CI，UI体验仍由用户验收。
+人工复验入口为 `manual-problems.py`，传入绝对路径 `--bundle`、`--swift-build`、`--node`、`--pi`。它编译实际 Mac Store／Transport，使用临时 HOME 和真实 UniFFI，检查结构化失败的保留与消解；读取失败通过隔离 helper 控制，不读取用户原生会话。脚本不接入 CI，UI体验仍由用户验收。
 
 ## 会话管理
 
@@ -426,7 +426,7 @@ managed 请求通过远端 loopback 反向转发访问本机网关，释放执�
 
 Pi 提供商导入／OAuth 来源操作仍限定默认本机 execution，SSH 或显式 HOME 配置返回不支持；原生 provider 的直接执行不受此限制。Codex 与 Claude Code 的 provider 导入同样只接受默认本机 execution；DSH 的 provider 导入没有因为增加运行控制而自动实现。
 
-人工验收可构建 Rust 动态库并生成相同版本 Python bindings，再运行 [选择与 HOME 脚本](../scripts/manual-runtime-selection.py)，传入 `--library`、`--bindings`、`--resources` 的绝对路径。该脚本只使用临时 HOME 和合成控制 peer，覆盖原生／managed 模型、终态／失败／取消清理、跨实例接续、原子执行配置和来源文件不变。实际 Claude CLI、真实 OpenSSH 本机隔离连接及旧运行时回归的适用条件归 [本轮 packet](../tasks/runtime-provider-ssh/packet.md)，不把合成 peer 当成真实外部 SSH 主机或真实提供商验收。
+人工验收可构建 Rust 动态库并生成相同版本 Python bindings，再运行 选择与 HOME 脚本，传入 `--library`、`--bindings`、`--resources` 的绝对路径。该脚本只使用临时 HOME 和合成控制 peer，覆盖原生／managed 模型、终态／失败／取消清理、跨实例接续、原子执行配置和来源文件不变。实际 Claude CLI、真实 OpenSSH 本机隔离连接及旧运行时回归的适用条件归 [本轮 packet](../tasks/runtime-provider-ssh/packet.md)，不把合成 peer 当成真实外部 SSH 主机或真实提供商验收。
 
 ## 通用 ACP Agent
 
@@ -448,11 +448,11 @@ Velune 执行的每个会话都获得 application 注入的 `velune` MCP 服务�
 
 参与方都是普通会话，出现在会话列表；对方的权限请求留在对方会话，由用户在那里处理，调用方没有批准工具。消息以“[Velune 协作消息] 来自 … 会话「…」（conversation_id: …）”包装提交，声明不是人类授权；对方忙碌、待审批或在 Velune 外运行时拒绝，不排队。没有父子关系、取消传播或联系限制。工具调用在下一次客户端请求推进会话时执行，因此需要客户端持续轮询（Mac 已按活动轮询；脚本需轮询 snapshot 或 `conversation_activity`）。SSH 运行时经会话持有的 loopback 反向转发访问服务；只支持 stdio MCP 的 ACP Agent 使用内嵌 Python helper，目标机器需可运行 Python 3，不可用时会话照常运行但没有协作工具。
 
-手动验收入口为 [manual-collaboration.py](../scripts/manual-collaboration.py)，传入本次构建的 `--library`、`--bindings` 与 `--resources` 绝对路径；`--seed DIR` 只写入含两个合成 ACP 运行时的 `DIR/velune`，供开发版 App 人工检查。2026-10-11 父子委派模型（`create_collaborative_conversation` 与子任务 API）已按 hard-cutoff 删除，其真实 OpenCode／DSH 证据仍见 [Harness 协作任务](../tasks/harness-interoperation/packet.md)，但不代表新路径的真实 Harness 验收。产品意图与实施状态见 [Agent 间协作任务](../tasks/agent-collaboration/packet.md)。
+手动验收入口为 manual-collaboration.py，传入本次构建的 `--library`、`--bindings` 与 `--resources` 绝对路径；`--seed DIR` 只写入含两个合成 ACP 运行时的 `DIR/velune`，供开发版 App 人工检查。2026-10-11 父子委派模型（`create_collaborative_conversation` 与子任务 API）已按 hard-cutoff 删除，其真实 OpenCode／DSH 证据仍见 [Harness 协作任务](../tasks/harness-interoperation/packet.md)，但不代表新路径的真实 Harness 验收。产品意图与实施状态见 [Agent 间协作任务](../tasks/agent-collaboration/packet.md)。
 
-资源库的子 Agent 定义由 [manual-subagent-definitions.py](../scripts/manual-subagent-definitions.py) 验收，参数同下文的原生 sub-agent 脚本：资源库为实际 Codex 0.159.3／Claude Code 2.1.286 的临时 managed HOME 提供技能与两个子 Agent：一个用原生 model ID（写入原生定义），一个用 Velune 模型（不写入，只在经网关的轮次中提供）。父轮次经网关与回环上游启动各子 Agent，检查子 Agent 自己的请求到达其模型所在的提供商（跨协议时经网关转换），带上其指令与推理强度，Claude Code 还带上技能正文；Velune 模型的子 Agent 始终没有写入运行时的定义目录。原生 sub-agent 不经上述工具：Harness 自己启动的子 Agent 会话在会话列表中带 `parent_conversation_id`（平台不在侧栏列出），父会话的对应工具块带 `linked_conversation_id`，打开后只读。手动验收入口为 [manual-native-subagents.py](../scripts/manual-native-subagents.py)，传入 `--library`、`--bindings`、`--bundle`、`--node`、`--codex` 与 `--claude` 绝对路径；它在临时 managed HOME 中由实际 Codex 0.159.3／Claude Code 2.1.286 经网关对回环合成上游执行一轮会启动子 Agent 的 turn（合成上游同时对 Claude Code auto 模式的分类请求答复放行），检查实时与历史两种读取下的链接、父会话不含子 Agent 消息、子会话的父标记、内容与拒绝发送。它还检查 Codex 子 Agent 需要审批的命令作为父会话的“子 Agent：”交互出现，批准后执行，并且所有工具块都以完成或失败结束（Claude Code 的 `Agent` 调用与结果合并为一行）。`--seed DIR` 保留 `DIR/velune` 供开发版 App 检查。
+资源库的子 Agent 定义由 manual-subagent-definitions.py 验收，参数同下文的原生 sub-agent 脚本：资源库为实际 Codex 0.159.3／Claude Code 2.1.286 的临时 managed HOME 提供技能与两个子 Agent：一个用原生 model ID（写入原生定义），一个用 Velune 模型（不写入，只在经网关的轮次中提供）。父轮次经网关与回环上游启动各子 Agent，检查子 Agent 自己的请求到达其模型所在的提供商（跨协议时经网关转换），带上其指令与推理强度，Claude Code 还带上技能正文；Velune 模型的子 Agent 始终没有写入运行时的定义目录。原生 sub-agent 不经上述工具：Harness 自己启动的子 Agent 会话在会话列表中带 `parent_conversation_id`（平台不在侧栏列出），父会话的对应工具块带 `linked_conversation_id`，打开后只读。手动验收入口为 manual-native-subagents.py，传入 `--library`、`--bindings`、`--bundle`、`--node`、`--codex` 与 `--claude` 绝对路径；它在临时 managed HOME 中由实际 Codex 0.159.3／Claude Code 2.1.286 经网关对回环合成上游执行一轮会启动子 Agent 的 turn（合成上游同时对 Claude Code auto 模式的分类请求答复放行），检查实时与历史两种读取下的链接、父会话不含子 Agent 消息、子会话的父标记、内容与拒绝发送。它还检查 Codex 子 Agent 需要审批的命令作为父会话的“子 Agent：”交互出现，批准后执行，并且所有工具块都以完成或失败结束（Claude Code 的 `Agent` 调用与结果合并为一行）。`--seed DIR` 保留 `DIR/velune` 供开发版 App 检查。
 
-会话快照的 `sub_agents` 列出该会话的原生子 Agent（转录链接与列表中父会话为它的子会话），失败取自列表时读取的子会话原生记录；是否运行属于会话活动：活动项带 `parent_conversation_id`，来自 agent-runtime 的轮次外工作（`NativeSession::work`：Codex 同一 app-server 中其他线程的 `thread/status/changed` 与轮次事件，Claude Code 的未结束任务）；Velune 之外运行的子线程仍按写入锁。子 Agent 仍在运行的会话不会被空闲会话回收关闭，也不会因轮次结束、跟随来源或需要重启的操作结束其进程。[manual-subagent-activity.py](../scripts/manual-subagent-activity.py)（`--library`、`--bindings`、`--bundle`、`--node`、`--codex`）在临时 managed HOME 中让实际 Codex 0.159.3 的父轮次启动子 Agent 后不等待即结束，上游扣住子 Agent 的请求直到父会话空闲：Codex 自身提供商的原生轮次下检查父会话的 `sub_agents`、活动中父会话下运行的子 Agent、子 Agent 审批到达空闲的父会话并在批准后执行；经网关的轮次检查子 Agent 在父轮次结束后继续运行、需要另起进程的下一轮进入发送队列等待（`FollowUp.waiting`）且不影响子 Agent、同模型的下一轮复用进程，子 Agent 结束后该轮的 app-server 随之结束、Harness 配置未改、子线程在 Codex 状态库中回到原生提供商、队列自动发出等待的原生轮次；另一会话中 `stop_sub_agents` 停止子 Agent 后，等待的消息随即发出。`--seed DIR` 同上。[manual-subagent-ssh.py](../scripts/manual-subagent-ssh.py)（`--library`、`--bindings`、`--bundle`、`--ssh-destination`、`--remote-root`、`--remote-codex`）在 SSH 主机上以 managed HOME 运行同一流程的经网关部分：子 Agent 经反向隧道在父轮次后继续、另一网关模型的轮次排队等待、同模型复用远端进程，子 Agent 结束后远端 app-server 结束、等待的轮次在新进程上发出、子线程回到原生提供商；`--remote-root` 须为远端已有的私有临时目录，Codex 由调用方放入。
+会话快照的 `sub_agents` 列出该会话的原生子 Agent（转录链接与列表中父会话为它的子会话），失败取自列表时读取的子会话原生记录；是否运行属于会话活动：活动项带 `parent_conversation_id`，来自 agent-runtime 的轮次外工作（`NativeSession::work`：Codex 同一 app-server 中其他线程的 `thread/status/changed` 与轮次事件，Claude Code 的未结束任务）；Velune 之外运行的子线程仍按写入锁。子 Agent 仍在运行的会话不会被空闲会话回收关闭，也不会因轮次结束、跟随来源或需要重启的操作结束其进程。manual-subagent-activity.py（`--library`、`--bindings`、`--bundle`、`--node`、`--codex`）在临时 managed HOME 中让实际 Codex 0.159.3 的父轮次启动子 Agent 后不等待即结束，上游扣住子 Agent 的请求直到父会话空闲：Codex 自身提供商的原生轮次下检查父会话的 `sub_agents`、活动中父会话下运行的子 Agent、子 Agent 审批到达空闲的父会话并在批准后执行；经网关的轮次检查子 Agent 在父轮次结束后继续运行、需要另起进程的下一轮进入发送队列等待（`FollowUp.waiting`）且不影响子 Agent、同模型的下一轮复用进程，子 Agent 结束后该轮的 app-server 随之结束、Harness 配置未改、子线程在 Codex 状态库中回到原生提供商、队列自动发出等待的原生轮次；另一会话中 `stop_sub_agents` 停止子 Agent 后，等待的消息随即发出。`--seed DIR` 同上。manual-subagent-ssh.py（`--library`、`--bindings`、`--bundle`、`--ssh-destination`、`--remote-root`、`--remote-codex`）在 SSH 主机上以 managed HOME 运行同一流程的经网关部分：子 Agent 经反向隧道在父轮次后继续、另一网关模型的轮次排队等待、同模型复用远端进程，子 Agent 结束后远端 app-server 结束、等待的轮次在新进程上发出、子线程回到原生提供商；`--remote-root` 须为远端已有的私有临时目录，Codex 由调用方放入。
 
 ## Agent runtime 原生资源管理
 
@@ -468,11 +468,11 @@ Velune 执行的每个会话都获得 application 注入的 `velune` MCP 服务�
 
 **待实现的 App 编译接入**：下次为 Mac 重新生成绑定时，须在 `app/mac/Transport.swift` 的 `kindName` 穷尽匹配中处理新增的 `BindingFailureKind.runtimeManagement`。当前非 UI 切片保留该 App 源码不变，不能直接把生成的新绑定替换进 App 后宣称构建通过。
 
-手动 API 验收入口为 [manual-runtime-management-api.py](../scripts/manual-runtime-management-api.py)，真实 Claude／Pi 加载入口为 [manual-runtime-management.py](../scripts/manual-runtime-management.py)。后者要求 macOS sandbox、匹配的 CLI 和隔离安装的 Pi，使用 loopback 合成模型响应；运行参数、Codex／DSH 加载与 WSL 文件边界证据见 [固定版本验收](../tasks/runtime-management/native-evidence.md)。
+手动 API 验收入口为 manual-runtime-management-api.py，真实 Claude／Pi 加载入口为 manual-runtime-management.py。后者要求 macOS sandbox、匹配的 CLI 和隔离安装的 Pi，使用 loopback 合成模型响应；运行参数、Codex／DSH 加载与 WSL 文件边界证据见 [固定版本验收](../tasks/runtime-management/native-evidence.md)。
 
 订阅组合人工验收入口为 `python3 scripts/manual-subscription-composition.py`，使用隔离配置目录、合成 Claude CLI 与回环 MCP/HTTP，不读取真实登录。默认场景覆盖 20 组组合、工具往返、跨 Runner 会话与取消/结束恢复；`--case auth-cleanup` 另外覆盖 2 组暂存认证清理。Claude Code 2.1.292 的真实登录、`/usage` 额度读取、文本完成及跨 Runner 工具往返已验证；固定 `/usage` 命令不重写为普通模型提示，无法解析的额度保持未知。
 
-真实 Claude 订阅验收入口为 [manual-claude-subscription-live.py](../scripts/manual-claude-subscription-live.py)，默认只冻结 `--source-ref`（缺省 HEAD）编译并执行本地解析自检。使用仓库外专用 `--home` 和官方 CLI 的 `--claude` 绝对路径，`--login` 通过 application 启动官方浏览器登录；成功后用 `--run --stage text|tool|quota` 分阶段验证。text 最多一次网关请求，tool 最多两次且工具只执行内存合成函数，quota 只采样一次；失败不自动重放。该目录是应用验收配置根，不能替换操作系统 HOME；CLI 保留系统身份以访问 macOS Keychain，订阅配置由独立 CLAUDE_CONFIG_DIR 隔离。日志仅包含固定阶段、退出码和计量，不输出凭据或响应正文。
+真实 Claude 订阅验收入口为 manual-claude-subscription-live.py，默认只冻结 `--source-ref`（缺省 HEAD）编译并执行本地解析自检。使用仓库外专用 `--home` 和官方 CLI 的 `--claude` 绝对路径，`--login` 通过 application 启动官方浏览器登录；成功后用 `--run --stage text|tool|quota` 分阶段验证。text 最多一次网关请求，tool 最多两次且工具只执行内存合成函数，quota 只采样一次；失败不自动重放。该目录是应用验收配置根，不能替换操作系统 HOME；CLI 保留系统身份以访问 macOS Keychain，订阅配置由独立 CLAUDE_CONFIG_DIR 隔离。日志仅包含固定阶段、退出码和计量，不输出凭据或响应正文。
 
 ## Android 控制端
 
@@ -543,4 +543,4 @@ Apple coordinator／真实 UniFFI／gRPC 隔离验收使用 `scripts/manual-tele
 
 会话空闲且核心公布 `can_compact` 时，可对同一原生上下文执行主动压缩。Codex、Claude Code 和 Pi 使用各自原生入口；进行中可停止，不新增普通用户消息，也不推进原有发送队列。Mac 入口为“会话 → 压缩上下文”、命令面板和 `/compact`，Windows 另有更多菜单与可配置快捷键命令，各平台也提供会话操作按钮。来源差异与跨重开限制见 [运行时说明](../packages/agent-runtime/README.md#主动上下文压缩)。
 
-[隔离验收脚本](../scripts/manual-context-compaction.py) 显式传入 `--runtime codex|claude|pi`、`--binary`、`--node`、匹配的 `--library`、生成 Python 绑定目录 `--bindings` 和运行时 helper 目录 `--resources`，所有路径均为绝对路径。它在临时 HOME 用实际受支持的 CLI 与本机合成上游验证进度、取消、失败、重开和暂停队列；POSIX 上加 `--disconnect` 验证运行时进程退出后原回复仍独立可见、压缩状态结束。`--keep` 只用于保留新建的合成工作区以检查原生记录或界面，不读取已有用户数据。脚本不接入 CI，真实供应商与设备体验需另行验收。
+隔离验收脚本 显式传入 `--runtime codex|claude|pi`、`--binary`、`--node`、匹配的 `--library`、生成 Python 绑定目录 `--bindings` 和运行时 helper 目录 `--resources`，所有路径均为绝对路径。它在临时 HOME 用实际受支持的 CLI 与本机合成上游验证进度、取消、失败、重开和暂停队列；POSIX 上加 `--disconnect` 验证运行时进程退出后原回复仍独立可见、压缩状态结束。`--keep` 只用于保留新建的合成工作区以检查原生记录或界面，不读取已有用户数据。脚本不接入 CI，真实供应商与设备体验需另行验收。

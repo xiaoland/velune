@@ -29,9 +29,9 @@
 
 `cargo fmt --all --check`、workspace all-targets all-features check／clippy（`-D warnings`）、bindings no-default-features check／严格 clippy，以及全部十个 Mac Swift 文件的 warnings-as-errors 类型检查均通过。发行 Rust／Swift 构建、Markdown 相对链接和 diff 检查通过。没有自动化测试、真实秘密读取或真实服务调用。
 
-[提供商配置手动脚本](../../scripts/manual-provider-configuration.py)在配置裁剪版和已安装完整库均通过：schema 5 hard-cutoff、0600、key 显式读／修改／重开、公开摘要和日志脱敏、协议／地址／ID 编辑、稳定内部引用、模板快照不传播、坏配置不覆盖及原来源文件保留。先保存运行时再导入可行，默认空网关在运行时保存内部初始化。
+提供商配置手动脚本在配置裁剪版和已安装完整库均通过：schema 5 hard-cutoff、0600、key 显式读／修改／重开、公开摘要和日志脱敏、协议／地址／ID 编辑、稳定内部引用、模板快照不传播、坏配置不覆盖及原来源文件保留。先保存运行时再导入可行，默认空网关在运行时保存内部初始化。
 
-[Pi 首循环手动脚本](../../scripts/manual-pi-native-loop.py)在已安装库用固定 Pi SDK 和临时 HOME 完成五次 loopback HTTP 请求：导入→工具续接→下一轮，随后修改 key、API ID 与地址并确认实际派发。旧预览拒绝覆盖新认证，重复跳过保持连接，替换断开旧网关；原来源文件未变。合成原生 HTTP 脚本另通过九个 JSON／SSE／状态与安全头边界、裸内部键拒绝及断连取消。真实订阅登录／刷新和 GUI 尚未验收。
+Pi 首循环手动脚本在已安装库用固定 Pi SDK 和临时 HOME 完成五次 loopback HTTP 请求：导入→工具续接→下一轮，随后修改 key、API ID 与地址并确认实际派发。旧预览拒绝覆盖新认证，重复跳过保持连接，替换断开旧网关；原来源文件未变。合成原生 HTTP 脚本另通过九个 JSON／SSE／状态与安全头边界、裸内部键拒绝及断连取消。真实订阅登录／刷新和 GUI 尚未验收。
 
 ## 当前责任与验收边界
 

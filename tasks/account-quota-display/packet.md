@@ -41,7 +41,7 @@
 - Rust application／bindings 的 check、Clippy（拒绝警告）、application 无默认特性检查，以及 Release 库构建均通过。日志分别为 `/tmp/velune-native-quota-check-final.log`、`/tmp/velune-native-quota-clippy.log`、`/tmp/velune-native-quota-portable.log`、`/tmp/velune-native-quota-release.log`。
 - Mac 使用新核心生成绑定，warnings-as-errors 编译与签名打包通过，日志 `/tmp/velune-native-quota-mac.log`。生成器复用方式与上次相同。
 - `bash scripts/check-account-quota.sh` 使用本次绑定通过。移除了“原生必须返回空”的错误断言，补上原生来源保留所有窗口且不继承提供商上限的约束。日志 `/tmp/velune-native-quota-pure.log`。
-- 后台贯通脚本为 [manual-native-quota.py](../../scripts/manual-native-quota.py)，入口使用实际 Store 的观察循环和核心配置，只有 CLI 与用户选择是合成输入。核心来源检查已通过，随后复跑发现 helper 的 EOF／退出竞态，已用修复后的核心通过完整链路检查；不打开窗口，不验证真实用户账户或 popover 点击。
+- 后台贯通脚本为 manual-native-quota.py，入口使用实际 Store 的观察循环和核心配置，只有 CLI 与用户选择是合成输入。核心来源检查已通过，随后复跑发现 helper 的 EOF／退出竞态，已用修复后的核心通过完整链路检查；不打开窗口，不验证真实用户账户或 popover 点击。
 - 修改文档的 83 个相对链接和锚点通过。全仓格式检查遇到并行遥测任务尚未格式化的文件，因此当前任务另行限定检查，不修改对方源码。
 
 后台贯通、重新安装与启动检查已完成；按已有授权提交当前任务。
