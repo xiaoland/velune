@@ -295,7 +295,7 @@ private enum AnalyticsFormatting {
     static func speed(_ value: Double?) -> String { guard let value, value.isFinite else { return "—" }; return TokenCount.rate(value) + " Token/s" }
     static func duration(_ value: UInt64?) -> String { value.map { Duration.milliseconds(Double($0)).formatted(.units(allowed: [.minutes, .seconds], width: .abbreviated, fractionalPart: .show(length: 2))) } ?? "—" }
     static func outcome(_ value: AnalyticsOutcome) -> String { switch value { case .completed: return "完成"; case .incomplete: return "未完成"; case .failed: return "失败"; case .cancelled: return "取消"; case .rejected: return "拒绝" } }
-    static func protocolName(_ value: AnalyticsProtocol) -> String { switch value { case .chatCompletions: return "OpenAI ChatCompletions"; case .responses: return "OpenAI Responses"; case .messages: return "Anthropic Messages" } }
+    static func protocolName(_ value: ApiProtocol) -> String { switch value { case .chatCompletions: return "OpenAI ChatCompletions"; case .responses: return "OpenAI Responses"; case .messages: return "Anthropic Messages" } }
 }
 private struct AnalyticsScope { var name: String; var providerID: String?; var modelRecordKey: String? }
 private struct AnalyticsBreakdownRow: Identifiable { let value: AnalyticsBreakdown; var id: String { value.key } }

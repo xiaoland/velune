@@ -71,6 +71,7 @@
 - 删除 `Command::SendTurn`／`CreateConversation` 旧变体，`…WithSelection` 改名为 `SendTurn`／`CreateConversation`（平台方法同名）。`SendQueue`／`SteerTurn` 的 `runtime_id` 实际供远控 pending 记录定位会话，保留。
 - 删除没有平台调用的预分配请求 ID 入口：`prepare_remote_operation`／`VeluneRemoteOperation`、`next_request_id`、`submit_request`，以及 remote 的 `RemoteOperation` 与 `OperationUsed`；服务级 `query_request`／`acknowledge_request` 保留，`BindingRemoteRequestStatus.Completed` 直接携带 `Response`。
 - 遥测与远控同样直接派生：`velune-telemetry`（Swift 模块 `VeluneTelemetry`）与 `velune-remote`（`VeluneRemote`，诊断探针类型随 `diagnostics` feature 导出）各自 `setup_scaffolding`；遥测类型统一改名为 `Telemetry*`（`TraceCarrier` 不变），`HeaderMap`、`SocketAddr`、`Ipv4Addr` 以自定义类型映射。删除 bindings 中遥测、远控与传输探针的全部镜像以及 `convert`（serde JSON 往返），bindings 不再有 JSON 转换；剩余 `Binding*` 只有错误、打开选项、邀请解析、网络设置提交与远控请求状态。`RequestId`、`Revision`、`ClientViewId` 以 newtype 直接导出。
+- 删除 `AnalyticsProtocol`，分析记录直接用 `Protocol`。`application-api` 的 `ExecutionBackend`、`RequestProfile`、`RoutingStrategy`、`QuotaLimit` 与 gateway／ai-provider 的同名配置有意保持两份：两侧唯一共同的轻量依赖是 `velune-ai`，它只承载 AI 协议契约；让契约依赖 gateway 会把 axum／reqwest 带进纯控制端构建。application 中的转换是穷尽 `match`，任一侧增减变体都会编译失败，不会静默漂移。
 - Mac 构建脚本生成合并 modulemap；Mac 代码按新类型名机械更新，`RuntimeInstance.typeID` 等改为 `RuntimeKind`。
 - 验证（2026-10-29，两步各一次）：workspace clippy／test、bindings remote-only 与 remote-diagnostics clippy 通过；12 个删除前回归脚本按新名机械改写（另以临时 Python shim 兼容字符串类型 ID 与标题比较）后全部通过；Mac 应用构建并在隔离 `VELUNE_HOME` 后台启动，无告警。
 - 无平台调用的其他导出（2026-10-29 统计）：`configure_runtime_execution`、`next_turn_model_selection`、`open_acp_conversation`、`runtime_quota`、运行时资源四个读写方法，以及远控 `acknowledge`、`acknowledge_reset`、`apply_network`、`controller_status`、`disconnect`、`expect_revision`、`list_with_revision`、`network_change`、`network_state`、`observe_paths`、`observed_revision`、`reconnect`、`record_legacy_state_reset`、`refresh_local_discovery`、`remote_descriptor`、`retry_network`、`update_contact_locator`。它们对应已设计的能力，阶段 3 末与平台追平一起决定删除或保留。
@@ -79,7 +80,6 @@
 
 - 运行时设置仍是 `BTreeMap<String, String>`（如 `acpLaunch`）；`AuthenticationEvent` 是松散结构；`ProviderImportSource` 可收窄；三个 “Source” 类型并存。
 - `repository.rs` 仍为旧配置补 `contextUsageDisplay`，配套测试在阶段 5 复核。
-- `application-api` 的 `ExecutionBackend`、`RequestProfile`、`RoutingStrategy`、`QuotaLimit` 与 gateway 配置各有一份，由 application 逐字段转换；`AnalyticsProtocol` 与 `Protocol` 只差序列化名。随阶段 3 FFI 表面一起收敛。
 - `service::usage_tests` 曾在一次 workspace 测试中于 `open().unwrap()` 失败、重跑通过，阶段 5 复核是否有共享状态。
 
 ## 待用户决定

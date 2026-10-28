@@ -375,13 +375,6 @@ pub struct AnalyticsQuery {
 }
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, uniffi::Enum)]
 #[serde(rename_all = "camelCase")]
-pub enum AnalyticsProtocol {
-    ChatCompletions,
-    Responses,
-    Messages,
-}
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, uniffi::Enum)]
-#[serde(rename_all = "camelCase")]
 pub enum AnalyticsOutcome {
     Completed,
     Incomplete,
@@ -436,7 +429,7 @@ pub struct AnalyticsRequest {
     pub provider_name: String,
     pub model_record_key: String,
     pub provider_model_id: String,
-    pub protocol: AnalyticsProtocol,
+    pub protocol: Protocol,
     pub started_at_ms: i64,
     pub terminal_at_ms: i64,
     pub elapsed_ms: u64,

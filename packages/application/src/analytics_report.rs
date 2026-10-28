@@ -1,7 +1,7 @@
 //! Usage and performance reports over the gateway's request metadata.
 use crate::{Application, Error};
 use std::collections::BTreeMap;
-use velune_application_api::records::*;
+use velune_application_api::{config::Protocol, records::*};
 
 impl Application {
     pub fn analytics_query(&self, query: AnalyticsQuery) -> Result<AnalyticsReport, Error> {
@@ -184,9 +184,9 @@ impl AnalyticsGroup {
 }
 fn analytics_request(row: crate::analytics::AnalyticsRow) -> Result<AnalyticsRequest, Error> {
     let protocol = match row.protocol.as_str() {
-        "chatCompletions" => AnalyticsProtocol::ChatCompletions,
-        "responses" => AnalyticsProtocol::Responses,
-        "messages" => AnalyticsProtocol::Messages,
+        "chatCompletions" => Protocol::ChatCompletions,
+        "responses" => Protocol::Responses,
+        "messages" => Protocol::Messages,
         _ => return Err(Error::invalid("分析记录包含未知协议")),
     };
     let outcome = match row.outcome.as_str() {
