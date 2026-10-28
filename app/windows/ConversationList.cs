@@ -3,7 +3,6 @@ using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
-using Velune.Bindings;
 using Windows.System;
 
 namespace Velune;
@@ -88,13 +87,13 @@ sealed partial class ConversationList : UserControl
             : listing.ReadFailed && listing.Conversations.Count == 0 ? "无法读取会话列表，详见“问题”。"
             : listing.Configuration.Runtimes.Count == 0 ? "这台设备还没有可用的 Agent 运行时。"
             : listing.ShowsArchived ? "没有已归档的会话。"
-            : listing.Preferences is { RuntimeId: not null } or { Project: not BindingConversationBrowserProject.All } ? "没有符合筛选的会话。"
+            : listing.Preferences is { RuntimeId: not null } or { Project: not ConversationBrowserProject.All } ? "没有符合筛选的会话。"
             : "这台设备上还没有会话。";
 
         var wanted = new List<object>();
         var shown = new HashSet<string>();
         // Without grouping the list is one group, whose title it does not show.
-        var titled = groups.Count > 1 || groups.Any(group => group.Key is not BindingConversationGroupKey.All);
+        var titled = groups.Count > 1 || groups.Any(group => group.Key is not ConversationGroupKey.All);
         foreach (var group in groups)
         {
             var id = "group:" + Listing.GroupID(group.Key);
@@ -145,7 +144,7 @@ sealed partial class ConversationList : UserControl
 
     static Visibility Visible(bool visible) => visible ? Visibility.Visible : Visibility.Collapsed;
 
-    ListViewItem GroupRow(BindingConversationGroup group, string id)
+    ListViewItem GroupRow(ConversationGroup group, string id)
     {
         if (!rows.TryGetValue(id, out var row))
         {
@@ -170,7 +169,7 @@ sealed partial class ConversationList : UserControl
 
     // ConversationRow is one conversation: a dot while unread, its title,
     // and whether it failed, waits for the user or runs.
-    ListViewItem ConversationRow(BindingListedConversation listed, bool indented)
+    ListViewItem ConversationRow(ListedConversation listed, bool indented)
     {
         var id = listed.Conversation.Id;
         if (!rows.TryGetValue(id, out var row))
@@ -199,8 +198,8 @@ sealed partial class ConversationList : UserControl
             rows[id] = row;
         }
         row.Padding = new Thickness(indented ? 28 : 12, 0, 12, 0);
-        ToolTipService.SetToolTip(row, listed.Conversation.Title);
-        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(row, listed.Conversation.Title);
+        ToolTipService.SetToolTip(row, listed.Conversation.Title.DisplayText());
+        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(row, listed.Conversation.Title.DisplayText());
         if (renamingID == id)
         {
             return row;
@@ -208,12 +207,12 @@ sealed partial class ConversationList : UserControl
         Listing.Active.TryGetValue(id, out var active);
         // A parent shows its native sub-agents still running or waiting.
         var children = Listing.Active.Values.Where(child => child.ParentConversationId == id).ToList();
-        var running = active?.RunState == BindingRunState.Running || children.Any(child => child.RunState == BindingRunState.Running);
+        var running = active?.RunState == RunState.Running || children.Any(child => child.RunState == RunState.Running);
         var unread = listed.Unread && !running;
         var line = new Grid { ColumnSpacing = 8 };
         line.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         line.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        line.Children.Add(new TextBlock { Text = listed.Conversation.Title, TextTrimming = TextTrimming.CharacterEllipsis, VerticalAlignment = VerticalAlignment.Center });
+        line.Children.Add(new TextBlock { Text = listed.Conversation.Title.DisplayText(), TextTrimming = TextTrimming.CharacterEllipsis, VerticalAlignment = VerticalAlignment.Center });
         FrameworkElement? state = null;
         if (active is { PendingInteractions: > 0 } || children.Any(child => child.PendingInteractions > 0))
         {
@@ -250,17 +249,17 @@ sealed partial class ConversationList : UserControl
         return icon;
     }
 
-    static Target Target(BindingListedConversation listed) =>
-        new(listed.Conversation.RuntimeId, listed.Conversation.Id, listed.Conversation.Title);
+    static Target Target(ListedConversation listed) =>
+        new(listed.Conversation.RuntimeId, listed.Conversation.Id, listed.Conversation.Title.DisplayText());
 
-    BindingListedConversation? Listed(string id) =>
+    ListedConversation? Listed(string id) =>
         Listing.Conversations.FirstOrDefault(listed => listed.Conversation.Id == id)
         ?? (Searching ? search!.Conversations.FirstOrDefault(listed => listed.Conversation.Id == id) : null);
 
     // Chosen are the selected conversations, in the list's order.
-    List<BindingListedConversation> Chosen() =>
+    List<ListedConversation> Chosen() =>
         [.. list.SelectedItems.OfType<ListViewItem>().Select(row => row.Tag as string).OfType<string>()
-            .Select(Listed).OfType<BindingListedConversation>()];
+            .Select(Listed).OfType<ListedConversation>()];
 
     void SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
@@ -353,7 +352,7 @@ sealed partial class ConversationList : UserControl
         Listings.Write(Device, "折叠分组", NativeOperation.ConfigurationWrite, application => application.SetConversationBrowserPreferences(preferences));
     }
 
-    async void LoadMore(BindingConversationGroupKey key)
+    async void LoadMore(ConversationGroupKey key)
     {
         var target = Device;
         try
@@ -368,14 +367,14 @@ sealed partial class ConversationList : UserControl
     }
 
     // Rename edits the conversation's real title in place.
-    public void Rename(BindingListedConversation listed)
+    public void Rename(ListedConversation listed)
     {
         if (!listed.Conversation.CanRename || !rows.TryGetValue(listed.Conversation.Id, out var row))
         {
             return;
         }
         renamingID = listed.Conversation.Id;
-        var input = new TextBox { Text = listed.Conversation.Title, MinWidth = 0 };
+        var input = new TextBox { Text = listed.Conversation.Title.DisplayText(), MinWidth = 0 };
         var done = false;
         void Finish(bool keep)
         {
@@ -386,7 +385,7 @@ sealed partial class ConversationList : UserControl
             done = true;
             renamingID = null;
             var title = input.Text.Trim();
-            if (keep && title.Length > 0 && title != listed.Conversation.Title)
+            if (keep && title.Length > 0 && title != listed.Conversation.Title.DisplayText())
             {
                 window.SaveTitle(listed, title);
             }
@@ -418,14 +417,14 @@ sealed partial class ConversationList : UserControl
         var ids = e.Items.OfType<ListViewItem>().Select(row => row.Tag as string).OfType<string>().ToList();
         if (ids is [var only] && Listed(only) == null && only.StartsWith("group:", StringComparison.Ordinal))
         {
-            if (Searching || only == "group:pinned" || Listing.Preferences is not { Grouping: not BindingConversationBrowserGrouping.None })
+            if (Searching || only == "group:pinned" || Listing.Preferences is not { Grouping: not ConversationBrowserGrouping.None })
             {
                 e.Cancel = true;
                 return;
             }
             DragSource.Group = (this, only);
         }
-        else if (ids.Select(Listed).OfType<BindingListedConversation>().FirstOrDefault() is { } listed)
+        else if (ids.Select(Listed).OfType<ListedConversation>().FirstOrDefault() is { } listed)
         {
             DragSource.Conversation = (Device, Target(listed));
         }
@@ -453,7 +452,7 @@ sealed partial class ConversationList : UserControl
 
     // GroupAt is the group of the row under a drag: a title's, or the group
     // a conversation is in.
-    BindingConversationGroupKey? GroupAt(DragEventArgs e)
+    ConversationGroupKey? GroupAt(DragEventArgs e)
     {
         var point = e.GetPosition(list);
         foreach (var row in list.Items.OfType<ListViewItem>())
@@ -478,7 +477,7 @@ sealed partial class ConversationList : UserControl
 
     void GroupDragOver(object sender, DragEventArgs e)
     {
-        if (DragSource.Group is not var (source, _) || source != this || GroupAt(e) is null or BindingConversationGroupKey.Pinned)
+        if (DragSource.Group is not var (source, _) || source != this || GroupAt(e) is null or ConversationGroupKey.Pinned)
         {
             return;
         }
@@ -492,7 +491,7 @@ sealed partial class ConversationList : UserControl
     // orders the groups by hand from now on.
     void GroupDrop(object sender, DragEventArgs e)
     {
-        if (DragSource.Group is not var (source, groupID) || source != this || GroupAt(e) is not { } target || target is BindingConversationGroupKey.Pinned)
+        if (DragSource.Group is not var (source, groupID) || source != this || GroupAt(e) is not { } target || target is ConversationGroupKey.Pinned)
         {
             return;
         }

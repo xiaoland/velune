@@ -84,8 +84,8 @@ public sealed partial class WorkspaceWindow
                         : listed.Unread ? listed.Failed ? "失败" : "未读" : null;
                     var where = listed.Project ?? summary.Cwd;
                     var detail = string.Join(" · ", new[] { where is { Length: > 0 } ? Listing.LastPart(where) : null, state }.OfType<string>());
-                    var target = new Target(summary.RuntimeId, summary.Id, summary.Title);
-                    return new PaletteItem("conversation:" + summary.Id, summary.Title, newTab =>
+                    var target = new Target(summary.RuntimeId, summary.Id, summary.Title.DisplayText());
+                    return new PaletteItem("conversation:" + summary.Id, summary.Title.DisplayText(), newTab =>
                     {
                         Open(target, newTab ? Opening.NewTab : Opening.CurrentTab);
                         FocusComposer();
@@ -110,7 +110,7 @@ public sealed partial class WorkspaceWindow
         var shown = ShownID;
         var waiting = listing.Active.Values.Where(active => active.PendingInteractions > 0 && active.ConversationId != shown).ToList();
         var candidates = listing.Conversations.Where(listed => listed.Conversation.Id != shown && listed.Conversation.ParentConversationId == null).ToList();
-        static long Updated(Bindings.BindingListedConversation conversation) => conversation.Conversation.UpdatedAtUnixMs ?? 0;
+        static long Updated(ListedConversation conversation) => conversation.Conversation.UpdatedAtUnixMs ?? 0;
         Target? next = null;
         var asks = false;
         if (waiting.Count > 0)
@@ -118,14 +118,14 @@ public sealed partial class WorkspaceWindow
             var ids = waiting.Select(active => active.ConversationId).ToHashSet();
             var shownWaiting = candidates.Where(candidate => ids.Contains(candidate.Conversation.Id)).OrderByDescending(Updated).FirstOrDefault();
             next = shownWaiting != null
-                ? new Target(shownWaiting.Conversation.RuntimeId, shownWaiting.Conversation.Id, shownWaiting.Conversation.Title)
+                ? new Target(shownWaiting.Conversation.RuntimeId, shownWaiting.Conversation.Id, shownWaiting.Conversation.Title.DisplayText())
                 : new Target(waiting[0].ContextRuntimeId, waiting[0].ConversationId, "");
             asks = true;
         }
         else if ((candidates.Where(listed => listed.Unread && !listed.Failed).OrderByDescending(Updated).FirstOrDefault()
             ?? candidates.Where(listed => listed.Unread && listed.Failed).OrderByDescending(Updated).FirstOrDefault()) is { } ended)
         {
-            next = new Target(ended.Conversation.RuntimeId, ended.Conversation.Id, ended.Conversation.Title);
+            next = new Target(ended.Conversation.RuntimeId, ended.Conversation.Id, ended.Conversation.Title.DisplayText());
         }
         if (next == null)
         {

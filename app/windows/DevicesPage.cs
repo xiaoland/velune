@@ -2,7 +2,6 @@ using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media.Imaging;
 using QRCoder;
-using Velune.Bindings;
 using Windows.ApplicationModel.DataTransfer;
 
 namespace Velune;
@@ -58,7 +57,7 @@ sealed class DevicesPage : UserControl
     // HubChanged retires a shown invitation once someone used it, or it expired.
     internal void HubChanged()
     {
-        if (invitation != null && hub.State?.IncomingPairings.Any(pairing => pairing.Phase == BindingPairingPhase.AwaitingApproval) == true)
+        if (invitation != null && hub.State?.IncomingPairings.Any(pairing => pairing.Phase == PairingPhase.AwaitingApproval) == true)
         {
             invitation = null;
         }
@@ -177,7 +176,7 @@ sealed class DevicesPage : UserControl
         }
     }
 
-    void ThisPC(BindingRemoteServiceSnapshot? state)
+    void ThisPC(RemoteServiceSnapshot? state)
     {
         panel.Children.Add(Ui.Heading("这台电脑"));
         var ingress = new ToggleSwitch { IsOn = state?.ControlIngress ?? false, IsEnabled = state != null && !busy, OnContent = "开", OffContent = "关" };
@@ -250,12 +249,12 @@ sealed class DevicesPage : UserControl
         return Ui.Card(row);
     }
 
-    void Others(BindingRemoteServiceSnapshot? state)
+    void Others(RemoteServiceSnapshot? state)
     {
         panel.Children.Add(Ui.Heading("其他设备"));
         foreach (var contact in state?.Contacts ?? [])
         {
-            var confirmed = contact.Confirmation is BindingContactConfirmation.Confirmed;
+            var confirmed = contact.Confirmation is ContactConfirmation.Confirmed;
             Button action;
             if (confirmed)
             {
@@ -291,29 +290,29 @@ sealed class DevicesPage : UserControl
 
     // ContactStatus is where pairing with a device stands, or its connection
     // once paired, in Mac's words.
-    static string ContactStatus(BindingRemoteServiceSnapshot state, string peer)
+    static string ContactStatus(RemoteServiceSnapshot state, string peer)
     {
-        foreach (var pairing in state.OutgoingPairings.Where(pairing => pairing.PeerId == peer && pairing.Phase != BindingPairingPhase.Granted))
+        foreach (var pairing in state.OutgoingPairings.Where(pairing => pairing.PeerId == peer && pairing.Phase != PairingPhase.Granted))
         {
             return pairing.Phase switch
             {
-                BindingPairingPhase.Rejected => "对方已拒绝",
-                BindingPairingPhase.Expired => "邀请已过期",
-                BindingPairingPhase.Disconnected => "配对时连接中断",
-                _ => (pairing.Permission == BindingPairingPermission.TelemetryProfileRead ? "遥测配置（含认证） · " : "") + "等待对方允许 · 核对码 " + Hub.FormatCode(pairing.VerificationCode),
+                PairingPhase.Rejected => "对方已拒绝",
+                PairingPhase.Expired => "邀请已过期",
+                PairingPhase.Disconnected => "配对时连接中断",
+                _ => (pairing.Permission == PairingPermission.TelemetryProfileRead ? "遥测配置（含认证） · " : "") + "等待对方允许 · 核对码 " + Hub.FormatCode(pairing.VerificationCode),
             };
         }
         foreach (var controller in state.Controllers.Where(controller => controller.PeerId == peer))
         {
             switch (controller.Phase)
             {
-                case BindingControllerPhase.Connected:
+                case ControllerPhase.Connected:
                     return "已连接";
-                case BindingControllerPhase.Connecting or BindingControllerPhase.Discovering:
+                case ControllerPhase.Connecting or ControllerPhase.Discovering:
                     return "正在连接";
-                case BindingControllerPhase.Recovering:
+                case ControllerPhase.Recovering:
                     return "正在重新连接";
-                case BindingControllerPhase.Blocked:
+                case ControllerPhase.Blocked:
                     return controller.ErrorCode is { } error ? $"无法连接（{error}）" : "无法连接";
             }
         }

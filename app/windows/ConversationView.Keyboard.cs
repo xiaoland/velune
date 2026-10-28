@@ -7,7 +7,6 @@ using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
-using Velune.Bindings;
 using Windows.ApplicationModel.DataTransfer;
 using Windows.System;
 using Windows.UI.Core;
@@ -35,7 +34,7 @@ public sealed partial class ConversationView
     Control? firstAnswer;
     DateTime? interactionFocusRequested;
     // The message each transcript row shows.
-    readonly Dictionary<UIElement, BindingMessage> rowMessages = [];
+    readonly Dictionary<UIElement, DeliveredMessage> rowMessages = [];
 
     void AttachKeyboard()
     {
@@ -154,7 +153,7 @@ public sealed partial class ConversationView
         return true;
     }
 
-    async void TakeBack(BindingQueuedMessage message)
+    async void TakeBack(QueuedMessage message)
     {
         if (await Model.TakeQueued(message) && Input.Text.Length == 0)
         {
@@ -345,7 +344,7 @@ public sealed partial class ConversationView
             case PaletteMode.Runtime:
                 foreach (var runtime in Model.Configuration.Runtimes)
                 {
-                    Add(runtime.Id, runtime.Name, runtime.Id == Model.Next, () => Model.ChooseRuntime(runtime.Id), aliases: [runtime.TypeId]);
+                    Add(runtime.Id, runtime.Name, runtime.Id == Model.Next, () => Model.ChooseRuntime(runtime.Id), aliases: [runtime.TypeId.ToDisplayString()]);
                 }
                 break;
             case PaletteMode.Model:
@@ -357,7 +356,7 @@ public sealed partial class ConversationView
                 {
                     Add(index++ + ":" + model.Name, model.Name, Equals(model.Selection, chosenModel),
                         () => Model.Choose(true, choice => choice with { Model = model.Selection }), model.Managed ? "Velune 提供商" : null,
-                        model.Selection is BindingModelSelection.Native native ? [native.ModelId] : null);
+                        model.Selection is ModelSelection.Native native ? [native.ModelId] : null);
                 }
                 break;
             case PaletteMode.Effort:
@@ -396,24 +395,24 @@ public sealed partial class ConversationView
         if (e.Key == VirtualKey.Back && control && !others && FocusManager.GetFocusedElement(XamlRoot) is not (TextBox or PasswordBox))
         {
             e.Handled = true;
-            Answer(interaction.Id, new BindingRuntimeInteractionReply.Cancel());
+            Answer(interaction.Id, new RuntimeInteractionReply.Cancel());
         }
         else if (e.Key == VirtualKey.Escape && !control && !others)
         {
             e.Handled = true;
             FocusInput();
         }
-        else if (interaction.Kind is BindingInteractionKind.Approval approval && !control && !others
+        else if (interaction.Kind is InteractionKind.Approval approval && !control && !others
             && Digit(e.Key) is { } digit && digit <= Math.Min(approval.Options.Length, 9))
         {
             e.Handled = true;
-            Answer(interaction.Id, new BindingRuntimeInteractionReply.Decision(approval.Options[digit - 1].Id));
+            Answer(interaction.Id, new RuntimeInteractionReply.Decision(approval.Options[digit - 1].Id));
         }
     }
 
     // Answer replies to the request; the keyboard goes back to the composer
     // rather than nowhere.
-    void Answer(string interactionID, BindingRuntimeInteractionReply reply)
+    void Answer(string interactionID, RuntimeInteractionReply reply)
     {
         var inCard = FocusWithin(InteractionCard);
         Model.Reply(interactionID, reply);
@@ -524,7 +523,7 @@ public sealed partial class ConversationView
                 var step = e.Key == VirtualKey.Up ? -1 : 1;
                 for (var i = index + step; i >= 0 && i < items.Count; i += step)
                 {
-                    if (rowMessages.TryGetValue(items[i], out var other) && other.Role == BindingMessageRole.User)
+                    if (rowMessages.TryGetValue(items[i], out var other) && other.Role == MessageRole.User)
                     {
                         FocusRow(i);
                         break;
@@ -547,7 +546,7 @@ public sealed partial class ConversationView
                 data.SetText(text);
                 Clipboard.SetContent(data);
                 break;
-            case VirtualKey.E when plain && message is { Role: BindingMessageRole.User } && Model.Editable(message.Id) != null && !Model.Busy && !Model.Running:
+            case VirtualKey.E when plain && message is { Role: MessageRole.User } && Model.Editable(message.Id) != null && !Model.Busy && !Model.Running:
                 e.Handled = true;
                 EditMessage(message);
                 break;

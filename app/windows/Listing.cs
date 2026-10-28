@@ -1,27 +1,25 @@
-using Velune.Bindings;
-
 namespace Velune;
 
 // What a device's composer chooses among, from its latest listing.
 sealed record Configuration(
     // The enabled runtime instances.
-    IReadOnlyList<BindingRuntimeInstance> Runtimes,
-    IReadOnlyList<BindingRuntimeTypeDescriptor> Types,
+    IReadOnlyList<RuntimeInstance> Runtimes,
+    IReadOnlyList<RuntimeTypeDescriptor> Types,
     // The working directories of the latest conversations, newest first.
     IReadOnlyList<string> Projects)
 {
     public static readonly Configuration Empty = new([], [], []);
 
     // How the device's settings say conversations show.
-    public BindingOutlinePresentation Outline { get; init; } = BindingOutlinePresentation.Popover;
-    public BindingLinkedConversationOpening LinkedOpening { get; init; } = BindingLinkedConversationOpening.CurrentTab;
-    public BindingUsageDisplay Usage { get; init; } = BindingUsageDisplay.Used;
-    public BindingUsageDisplay ContextUsage { get; init; } = BindingUsageDisplay.Used;
-    public IReadOnlyList<BindingStatusLineItem> StatusLine { get; init; } = [BindingStatusLineItem.ContextUsage];
+    public OutlinePresentation Outline { get; init; } = OutlinePresentation.Popover;
+    public LinkedConversationOpening LinkedOpening { get; init; } = LinkedConversationOpening.CurrentTab;
+    public UsageDisplay Usage { get; init; } = UsageDisplay.Used;
+    public UsageDisplay ContextUsage { get; init; } = UsageDisplay.Used;
+    public IReadOnlyList<StatusLineItem> StatusLine { get; init; } = [StatusLineItem.ContextUsage];
 
-    public BindingRuntimeInstance? Runtime(string id) => Runtimes.FirstOrDefault(runtime => runtime.Id == id);
+    public RuntimeInstance? Runtime(string id) => Runtimes.FirstOrDefault(runtime => runtime.Id == id);
 
-    public BindingRuntimeTypeDescriptor? RuntimeType(string runtimeId) =>
+    public RuntimeTypeDescriptor? RuntimeType(string runtimeId) =>
         Runtime(runtimeId) is { } runtime ? Types.FirstOrDefault(type => type.Id == runtime.TypeId) : null;
 }
 
@@ -31,22 +29,22 @@ sealed class Listing
     public static readonly Listing Loading = new() { Loaded = false };
 
     // The shown conversations: not archived and not a sub-agent's.
-    public List<BindingListedConversation> Conversations { get; private init; } = [];
+    public List<ListedConversation> Conversations { get; private init; } = [];
     // The list's groups in order, and how the device's list is browsed.
-    public BindingConversationGroup[] Groups { get; set; } = [];
-    public BindingConversationBrowserPreferences? Preferences { get; set; }
+    public ConversationGroup[] Groups { get; set; } = [];
+    public ConversationBrowserPreferences? Preferences { get; set; }
     // Every project of the listed conversations, for moving and editing.
-    public BindingConversationProject[] Projects { get; private init; } = [];
+    public ConversationProject[] Projects { get; private init; } = [];
     // The list shows archived conversations instead of the others.
     public bool ShowsArchived { get; private init; }
     public Configuration Configuration { get; private init; } = Configuration.Empty;
     // The running or waiting conversations by ID.
-    public Dictionary<string, BindingActiveConversation> Active { get; private init; } = [];
+    public Dictionary<string, ActiveConversation> Active { get; private init; } = [];
     public bool Loaded { get; private init; } = true;
     // ReadFailed tells the list could not be read; 问题 tells why.
     public bool ReadFailed { get; private init; }
 
-    public static Listing From(BindingConfigurationSnapshot list, BindingActiveConversation[] active)
+    public static Listing From(ConfigurationSnapshot list, ActiveConversation[] active)
     {
         var projects = new List<string>();
         foreach (var listed in list.Conversations.OrderByDescending(listed => listed.Conversation.UpdatedAtUnixMs ?? 0))
@@ -89,21 +87,21 @@ sealed class Listing
     };
 
     // GroupID names a group of the list, as the key of its section.
-    public static string GroupID(BindingConversationGroupKey? key) => key switch
+    public static string GroupID(ConversationGroupKey? key) => key switch
     {
-        BindingConversationGroupKey.Pinned => "pinned",
-        BindingConversationGroupKey.Runtime runtime => "runtime:" + runtime.RuntimeId,
-        BindingConversationGroupKey.Project project => "project:" + project.Path,
+        ConversationGroupKey.Pinned => "pinned",
+        ConversationGroupKey.Runtime runtime => "runtime:" + runtime.RuntimeId,
+        ConversationGroupKey.Project project => "project:" + project.Path,
         _ => "all",
     };
 
-    public string GroupTitle(BindingConversationGroup group) => group.Key switch
+    public string GroupTitle(ConversationGroup group) => group.Key switch
     {
-        BindingConversationGroupKey.Pinned => "置顶",
-        BindingConversationGroupKey.Runtime runtime => Configuration.Runtime(runtime.RuntimeId)?.Name ?? "Agent 运行时",
-        BindingConversationGroupKey.Project when group.Name != null => group.Name,
-        BindingConversationGroupKey.Project { Path: { } path } => LastPart(path),
-        BindingConversationGroupKey.Project => "无项目",
+        ConversationGroupKey.Pinned => "置顶",
+        ConversationGroupKey.Runtime runtime => Configuration.Runtime(runtime.RuntimeId)?.Name ?? "Agent 运行时",
+        ConversationGroupKey.Project when group.Name != null => group.Name,
+        ConversationGroupKey.Project { Path: { } path } => LastPart(path),
+        ConversationGroupKey.Project => "无项目",
         _ => "会话",
     };
 

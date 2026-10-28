@@ -2,7 +2,6 @@ using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Shapes;
-using Velune.Bindings;
 
 namespace Velune;
 
@@ -33,8 +32,8 @@ sealed class QuotaHistory
     }
 
     readonly Core core;
-    readonly BindingProviderDefinition provider;
-    readonly BindingProviderQuotaStatus? status;
+    readonly ProviderSummary provider;
+    readonly QuotaObservation? status;
     readonly bool remaining;
     readonly ComboBox metricBox = new() { MinWidth = 240 };
     readonly ComboBox rangeBox = new() { MinWidth = 120 };
@@ -43,16 +42,16 @@ sealed class QuotaHistory
     readonly TextBlock summary = Ui.Text("");
     readonly ContentDialog dialog;
     List<Metric> metrics = [];
-    BindingQuotaHistoryPoint[] points = [];
+    QuotaHistoryPoint[] points = [];
     // Set while the metric list refills, whose selection changes mean nothing.
     bool open = true, clearing, filling;
 
-    QuotaHistory(Core core, BindingProviderDefinition provider, BindingProviderQuotaStatus? status, BindingUsageDisplay usage)
+    QuotaHistory(Core core, ProviderSummary provider, QuotaObservation? status, UsageDisplay usage)
     {
         this.core = core;
         this.provider = provider;
         this.status = status;
-        remaining = usage == BindingUsageDisplay.Remaining;
+        remaining = usage == UsageDisplay.Remaining;
         foreach (var (label, _) in Ranges)
         {
             rangeBox.Items.Add(label);
@@ -107,7 +106,7 @@ sealed class QuotaHistory
         dialog.Closed += (_, _) => open = false;
     }
 
-    public static async Task Show(SettingsWindow window, Core core, BindingProviderDefinition provider, BindingProviderQuotaStatus? status, BindingUsageDisplay usage)
+    public static async Task Show(SettingsWindow window, Core core, ProviderSummary provider, QuotaObservation? status, UsageDisplay usage)
     {
         var history = new QuotaHistory(core, provider, status, usage);
         history.Load();
@@ -210,7 +209,7 @@ sealed class QuotaHistory
         Render();
     }
 
-    double? Value(BindingQuotaHistoryPoint point, Metric metric)
+    double? Value(QuotaHistoryPoint point, Metric metric)
     {
         if (metric.Window)
         {
@@ -245,7 +244,7 @@ sealed class QuotaHistory
         if (metricBox.SelectedIndex < 0 || metricBox.SelectedIndex >= metrics.Count)
         {
             scale.Text = "";
-            Note(status?.Freshness == BindingQuotaFreshness.Unsupported ? "这个提供商不报告额度。" : "还没有记录到额度。");
+            Note(status?.Freshness == QuotaFreshness.Unsupported ? "这个提供商不报告额度。" : "还没有记录到额度。");
             return;
         }
         var metric = metrics[metricBox.SelectedIndex];

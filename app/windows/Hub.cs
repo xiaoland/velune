@@ -1,5 +1,5 @@
+using System.Threading;
 using Microsoft.UI.Dispatching;
-using Velune.Bindings;
 
 namespace Velune;
 
@@ -8,7 +8,7 @@ namespace Velune;
 sealed class Hub(Core core, DispatcherQueue dispatcher)
 {
     public Core Core { get; } = core;
-    public BindingRemoteServiceSnapshot? State { get; private set; }
+    public RemoteServiceSnapshot? State { get; private set; }
     public string Failure { get; private set; } = "";
     // Changed runs on the UI thread after each new state.
     public event Action? Changed;
@@ -59,7 +59,7 @@ sealed class Hub(Core core, DispatcherQueue dispatcher)
         }
     }
 
-    void Apply(BindingRemoteServiceSnapshot state) => dispatcher.TryEnqueue(() =>
+    void Apply(RemoteServiceSnapshot state) => dispatcher.TryEnqueue(() =>
     {
         State = state;
         Changed?.Invoke();
@@ -67,8 +67,8 @@ sealed class Hub(Core core, DispatcherQueue dispatcher)
 
     // Devices are the paired devices this PC can open: those the issuing
     // device has confirmed.
-    public IEnumerable<BindingDeviceContact> Devices() =>
-        State?.Contacts.Where(contact => contact.ControlAuthorized && contact.Confirmation is BindingContactConfirmation.Confirmed) ?? [];
+    public IEnumerable<DeviceContact> Devices() =>
+        State?.Contacts.Where(contact => contact.ControlAuthorized && contact.Confirmation is ContactConfirmation.Confirmed) ?? [];
 
     public string DeviceName(Device device)
     {

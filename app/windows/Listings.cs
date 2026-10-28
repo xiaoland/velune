@@ -1,5 +1,3 @@
-using Velune.Bindings;
-
 namespace Velune;
 
 // The conversation list of each device a window shows, read once for all of
@@ -29,7 +27,7 @@ sealed class Listings(Core core)
 
     // Polled tells each new list of a device with the turns that ended since
     // the last, and whether it is the device's first list.
-    public event Action<Device, Listing, BindingFinishedTurn[], bool>? Polled;
+    public event Action<Device, Listing, FinishedTurn[], bool>? Polled;
 
     public Listing Of(Device device) => feeds.TryGetValue(device, out var feed) ? feed.Listing : Listing.Loading;
 
@@ -89,7 +87,7 @@ sealed class Listings(Core core)
         var current = ++feed.Round;
         while (feed.Round == current)
         {
-            (BindingFinishedTurn[] Turns, bool First)? ended = null;
+            (FinishedTurn[] Turns, bool First)? ended = null;
             var delay = 5_000;
             var changes = feed.Written;
             try
@@ -139,7 +137,7 @@ sealed class Listings(Core core)
 
     // Change runs one change of the device's list and shows the list it
     // returns; a failure goes to 问题 under source.
-    public async void Change(Device device, string source, NativeOperation operation, Func<VeluneApplication, BindingConfigurationSnapshot> work)
+    public async void Change(Device device, string source, NativeOperation operation, Func<VeluneApplication, ConfigurationSnapshot> work)
     {
         if (!feeds.TryGetValue(device, out var feed))
         {
@@ -182,17 +180,17 @@ sealed class Listings(Core core)
     }
 
     // MarkRead marks a conversation read once a window shows it in front.
-    public async void MarkRead(Device device, BindingListedConversation listed)
+    public async void MarkRead(Device device, ListedConversation listed)
     {
         var id = listed.Conversation.Id;
         if (!feeds.TryGetValue(device, out var feed) || !feed.MarkingRead.Add(id))
         {
             return;
         }
-        var reference = new BindingConversationReference(listed.Conversation.RuntimeId, id);
+        var reference = new ConversationReference(listed.Conversation.RuntimeId, id);
         try
         {
-            await core.Call(device, NativeOperation.ConversationWrite, application => application.OrganizeConversations([reference], new BindingConversationOrganizationChange.MarkRead()));
+            await core.Call(device, NativeOperation.ConversationWrite, application => application.OrganizeConversations([reference], new ConversationOrganizationChange.MarkRead()));
             var conversations = feed.Listing.Conversations;
             if (conversations.FindIndex(shown => shown.Conversation.Id == id) is var at and >= 0)
             {

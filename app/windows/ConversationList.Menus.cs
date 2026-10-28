@@ -1,6 +1,5 @@
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
-using Velune.Bindings;
 using Windows.ApplicationModel.DataTransfer;
 
 namespace Velune;
@@ -13,7 +12,7 @@ sealed partial class ConversationList
 {
     readonly DispatcherTimer searchTimer = new() { Interval = TimeSpan.FromMilliseconds(300) };
     // The latest search's result, while the search box has text.
-    BindingConversationSearch? search;
+    ConversationSearch? search;
 
     void AttachBrowser()
     {
@@ -42,7 +41,7 @@ sealed partial class ConversationList
     bool Searching => search != null && searchBox.Text.Trim().Length > 0;
 
     // Shown is what the list shows: the search's result while searching.
-    (IReadOnlyList<BindingConversationGroup> Groups, IReadOnlyList<BindingListedConversation> Conversations) Shown() =>
+    (IReadOnlyList<ConversationGroup> Groups, IReadOnlyList<ListedConversation> Conversations) Shown() =>
         Searching
             ? (search!.Groups, search.Conversations.Where(listed => listed.Conversation.ParentConversationId == null).ToList())
             : (Listing.Groups, Listing.Conversations);
@@ -89,17 +88,17 @@ sealed partial class ConversationList
         search = null;
     }
 
-    void Change(string source, NativeOperation operation, Func<VeluneApplication, BindingConfigurationSnapshot> work) => Listings.Change(Device, source, operation, work);
+    void Change(string source, NativeOperation operation, Func<VeluneApplication, ConfigurationSnapshot> work) => Listings.Change(Device, source, operation, work);
 
-    void SavePreferences(BindingConversationBrowserPreferences preferences)
+    void SavePreferences(ConversationBrowserPreferences preferences)
     {
         Listing.Preferences = preferences;
         Change("更改会话列表的显示", NativeOperation.ConfigurationWrite, application => application.SetConversationBrowserPreferences(preferences));
     }
 
-    void Organize(List<BindingListedConversation> chosen, BindingConversationOrganizationChange change)
+    void Organize(List<ListedConversation> chosen, ConversationOrganizationChange change)
     {
-        var references = chosen.Select(listed => new BindingConversationReference(listed.Conversation.RuntimeId, listed.Conversation.Id)).ToArray();
+        var references = chosen.Select(listed => new ConversationReference(listed.Conversation.RuntimeId, listed.Conversation.Id)).ToArray();
         Change("整理会话", NativeOperation.ConversationWrite, application => application.OrganizeConversations(references, change));
     }
 
@@ -135,27 +134,27 @@ sealed partial class ConversationList
         displayMenu.Items.Add(window.Tools.PlaceMenu(Tool.List, "布局"));
     }
 
-    void FillBrowsing(BindingConversationBrowserPreferences preferences)
+    void FillBrowsing(ConversationBrowserPreferences preferences)
     {
         displayMenu.Items.Add(MenuHeading("分组"));
-        foreach (var (grouping, name) in new[] { (BindingConversationBrowserGrouping.None, "不分组"), (BindingConversationBrowserGrouping.Runtime, "按 Agent 运行时"), (BindingConversationBrowserGrouping.Project, "按项目") })
+        foreach (var (grouping, name) in new[] { (ConversationBrowserGrouping.None, "不分组"), (ConversationBrowserGrouping.Runtime, "按 Agent 运行时"), (ConversationBrowserGrouping.Project, "按项目") })
         {
             displayMenu.Items.Add(Radio("grouping", name, preferences.Grouping == grouping, () => SavePreferences(preferences with { Grouping = grouping })));
         }
-        if (preferences.Grouping != BindingConversationBrowserGrouping.None)
+        if (preferences.Grouping != ConversationBrowserGrouping.None)
         {
             displayMenu.Items.Add(new MenuFlyoutSeparator());
             displayMenu.Items.Add(MenuHeading("组排序"));
-            displayMenu.Items.Add(Radio("groupSort", "最近活动", preferences.GroupSort == BindingConversationGroupSort.Activity,
-                () => SavePreferences(preferences with { GroupSort = BindingConversationGroupSort.Activity })));
+            displayMenu.Items.Add(Radio("groupSort", "最近活动", preferences.GroupSort == ConversationGroupSort.Activity,
+                () => SavePreferences(preferences with { GroupSort = ConversationGroupSort.Activity })));
             // Turning manual fixes the order the list shows now.
-            displayMenu.Items.Add(Radio("groupSort", "手动", preferences.GroupSort == BindingConversationGroupSort.Manual,
+            displayMenu.Items.Add(Radio("groupSort", "手动", preferences.GroupSort == ConversationGroupSort.Manual,
                 () => SetManualOrder(GroupOrder())));
         }
         displayMenu.Items.Add(new MenuFlyoutSeparator());
         displayMenu.Items.Add(MenuHeading("会话排序"));
-        displayMenu.Items.Add(Radio("sort", "更新时间", preferences.Sort == BindingConversationBrowserSort.Updated, () => SavePreferences(preferences with { Sort = BindingConversationBrowserSort.Updated })));
-        displayMenu.Items.Add(Radio("sort", "创建时间", preferences.Sort == BindingConversationBrowserSort.Created, () => SavePreferences(preferences with { Sort = BindingConversationBrowserSort.Created })));
+        displayMenu.Items.Add(Radio("sort", "更新时间", preferences.Sort == ConversationBrowserSort.Updated, () => SavePreferences(preferences with { Sort = ConversationBrowserSort.Updated })));
+        displayMenu.Items.Add(Radio("sort", "创建时间", preferences.Sort == ConversationBrowserSort.Created, () => SavePreferences(preferences with { Sort = ConversationBrowserSort.Created })));
         displayMenu.Items.Add(Radio("direction", "最新在前", !preferences.OldestFirst, () => SavePreferences(preferences with { OldestFirst = false })));
         displayMenu.Items.Add(Radio("direction", "最早在前", preferences.OldestFirst, () => SavePreferences(preferences with { OldestFirst = true })));
 
@@ -169,20 +168,20 @@ sealed partial class ConversationList
         displayMenu.Items.Add(runtimes);
         var shownProject = preferences.Project switch
         {
-            BindingConversationBrowserProject.Unspecified => "无项目",
-            BindingConversationBrowserProject.Path { PathValue: var path } => ProjectName(path),
+            ConversationBrowserProject.Unspecified => "无项目",
+            ConversationBrowserProject.Path { PathValue: var path } => ProjectName(path),
             _ => "全部",
         };
         var projects = new MenuFlyoutSubItem { Text = "项目：" + shownProject };
-        projects.Items.Add(Radio("projectFilter", "全部", preferences.Project is BindingConversationBrowserProject.All,
-            () => SavePreferences(preferences with { Project = new BindingConversationBrowserProject.All() })));
-        projects.Items.Add(Radio("projectFilter", "无项目", preferences.Project is BindingConversationBrowserProject.Unspecified,
-            () => SavePreferences(preferences with { Project = new BindingConversationBrowserProject.Unspecified() })));
+        projects.Items.Add(Radio("projectFilter", "全部", preferences.Project is ConversationBrowserProject.All,
+            () => SavePreferences(preferences with { Project = new ConversationBrowserProject.All() })));
+        projects.Items.Add(Radio("projectFilter", "无项目", preferences.Project is ConversationBrowserProject.Unspecified,
+            () => SavePreferences(preferences with { Project = new ConversationBrowserProject.Unspecified() })));
         foreach (var project in Listing.Projects)
         {
             var path = project.Path;
-            projects.Items.Add(Radio("projectFilter", ProjectName(path), preferences.Project is BindingConversationBrowserProject.Path { } chosen && chosen.PathValue == path,
-                () => SavePreferences(preferences with { Project = new BindingConversationBrowserProject.Path(path) })));
+            projects.Items.Add(Radio("projectFilter", ProjectName(path), preferences.Project is ConversationBrowserProject.Path { } chosen && chosen.PathValue == path,
+                () => SavePreferences(preferences with { Project = new ConversationBrowserProject.Path(path) })));
         }
         displayMenu.Items.Add(projects);
         if (Listing.Projects.Length > 0)
@@ -208,25 +207,25 @@ sealed partial class ConversationList
         Listing.Projects.FirstOrDefault(project => project.Path == path)?.Name is { Length: > 0 } name ? name : Listing.LastPart(path);
 
     // GroupOrder is the order the list shows its groups in now, pinned aside.
-    List<BindingConversationGroupKey> GroupOrder() =>
-        [.. Listing.Groups.Select(group => group.Key).Where(key => key is not BindingConversationGroupKey.Pinned)];
+    List<ConversationGroupKey> GroupOrder() =>
+        [.. Listing.Groups.Select(group => group.Key).Where(key => key is not ConversationGroupKey.Pinned)];
 
     // SetManualOrder keeps groups in the given order, which only the user
     // changes; the other grouping keeps its own order.
-    void SetManualOrder(List<BindingConversationGroupKey> order)
+    void SetManualOrder(List<ConversationGroupKey> order)
     {
         if (Listing.Preferences is not { } preferences)
         {
             return;
         }
         var grouping = preferences.Grouping;
-        var others = preferences.GroupOrder.Where(key => grouping == BindingConversationBrowserGrouping.Runtime
-            ? key is not BindingConversationGroupKey.Runtime
-            : key is not BindingConversationGroupKey.Project);
-        SavePreferences(preferences with { GroupSort = BindingConversationGroupSort.Manual, GroupOrder = [.. others, .. order] });
+        var others = preferences.GroupOrder.Where(key => grouping == ConversationBrowserGrouping.Runtime
+            ? key is not ConversationGroupKey.Runtime
+            : key is not ConversationGroupKey.Project);
+        SavePreferences(preferences with { GroupSort = ConversationGroupSort.Manual, GroupOrder = [.. others, .. order] });
     }
 
-    void MoveGroup(BindingConversationGroupKey key, int to)
+    void MoveGroup(ConversationGroupKey key, int to)
     {
         var order = GroupOrder();
         var at = order.FindIndex(shown => Listing.GroupID(shown) == Listing.GroupID(key));
@@ -248,11 +247,11 @@ sealed partial class ConversationList
         {
             return;
         }
-        if (group.Key is BindingConversationGroupKey.Project { Path: { } path })
+        if (group.Key is ConversationGroupKey.Project { Path: { } path })
         {
             menu.Items.Add(MenuItem("编辑项目…", () => EditProject(path)));
         }
-        if (group.Key is not BindingConversationGroupKey.Pinned && !Searching && Listing.Preferences is { Grouping: not BindingConversationBrowserGrouping.None })
+        if (group.Key is not ConversationGroupKey.Pinned && !Searching && Listing.Preferences is { Grouping: not ConversationBrowserGrouping.None })
         {
             var order = GroupOrder();
             var at = order.FindIndex(shown => Listing.GroupID(shown) == Listing.GroupID(group.Key));
@@ -267,7 +266,7 @@ sealed partial class ConversationList
         }
         if (menu.Items.Count == 0)
         {
-            menu.Items.Add(MenuHeading(group.Key is BindingConversationGroupKey.Pinned ? "置顶的会话总在最前" : "不分组时没有组排序"));
+            menu.Items.Add(MenuHeading(group.Key is ConversationGroupKey.Pinned ? "置顶的会话总在最前" : "不分组时没有组排序"));
         }
     }
 
@@ -304,24 +303,24 @@ sealed partial class ConversationList
         }
         var pinned = chosen.All(listed => listed.Pinned);
         menu.Items.Add(MenuItem(pinned ? "取消置顶" : "置顶", () => Organize(chosen, pinned
-            ? new BindingConversationOrganizationChange.Unpin()
-            : new BindingConversationOrganizationChange.Pin())));
+            ? new ConversationOrganizationChange.Unpin()
+            : new ConversationOrganizationChange.Pin())));
         var unread = chosen.Any(listed => listed.Unread);
         menu.Items.Add(MenuItem(unread ? "标为已读" : "标为未读", () => Organize(chosen, unread
-            ? new BindingConversationOrganizationChange.MarkRead()
-            : new BindingConversationOrganizationChange.MarkUnread())));
+            ? new ConversationOrganizationChange.MarkRead()
+            : new ConversationOrganizationChange.MarkUnread())));
         // Moving changes only where the list shows it, not where it runs.
         var move = new MenuFlyoutSubItem { Text = "移到项目" };
         foreach (var project in Listing.Projects)
         {
             var path = project.Path;
             move.Items.Add(Radio("move:" + id, ProjectName(path), chosen.All(listed => listed.Project == path),
-                () => Organize(chosen, new BindingConversationOrganizationChange.MoveToProject(path))));
+                () => Organize(chosen, new ConversationOrganizationChange.MoveToProject(path))));
         }
         if (chosen.Any(listed => listed.Moved))
         {
             move.Items.Add(new MenuFlyoutSeparator());
-            move.Items.Add(MenuItem("回到工作目录所在的项目", () => Organize(chosen, new BindingConversationOrganizationChange.MoveToProject(null))));
+            move.Items.Add(MenuItem("回到工作目录所在的项目", () => Organize(chosen, new ConversationOrganizationChange.MoveToProject(null))));
         }
         if (move.Items.Count == 0)
         {
@@ -330,8 +329,8 @@ sealed partial class ConversationList
         menu.Items.Add(move);
         var archived = chosen.All(listed => listed.Archived);
         menu.Items.Add(MenuItem(archived ? "取消归档" : "归档", () => Organize(chosen, archived
-            ? new BindingConversationOrganizationChange.Unarchive()
-            : new BindingConversationOrganizationChange.Archive())));
+            ? new ConversationOrganizationChange.Unarchive()
+            : new ConversationOrganizationChange.Archive())));
         if (chosen is [var single])
         {
             menu.Items.Add(new MenuFlyoutSeparator());
@@ -360,12 +359,12 @@ sealed partial class ConversationList
 
     // Delete deletes the conversations in their runtimes, after asking, and
     // closes the tabs that show them.
-    async void Delete(List<BindingListedConversation> chosen)
+    async void Delete(List<ListedConversation> chosen)
     {
         var dialog = new ContentDialog
         {
             Title = chosen.Count == 1 ? "删除会话？" : $"删除 {chosen.Count} 个会话？",
-            Content = Ui.Text((chosen.Count == 1 ? "「" + chosen[0].Conversation.Title + "」" : "所选会话") + "将从它的 Agent 运行时中删除，无法撤销。"),
+            Content = Ui.Text((chosen.Count == 1 ? "「" + chosen[0].Conversation.Title.DisplayText() + "」" : "所选会话") + "将从它的 Agent 运行时中删除，无法撤销。"),
             PrimaryButtonText = "删除",
             CloseButtonText = "取消",
             DefaultButton = ContentDialogButton.Close,

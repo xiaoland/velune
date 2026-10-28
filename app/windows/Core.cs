@@ -1,6 +1,5 @@
 using System.Security.Cryptography;
 using Microsoft.UI.Xaml.Media.Imaging;
-using Velune.Bindings;
 
 namespace Velune;
 
@@ -97,9 +96,9 @@ sealed class Core
                 IdentityFile: Path.Combine(directory, "device-identity"),
                 StateFile: Path.Combine(directory, "remote-state.json"),
                 DeviceName: DeviceName(),
-                Relay: new BindingRelayConfig.DevelopmentPublic(),
-                Discovery: new BindingDiscoveryConfig.DevelopmentPublic(),
-                PathPolicy: BindingRemotePathPolicy.Automatic,
+                Relay: new RelayConfig.DevelopmentPublic(),
+                Discovery: new DiscoveryConfig.DevelopmentPublic(),
+                PathPolicy: PathPolicy.Automatic,
                 BindAddresses: [],
                 RequestTimeoutMs: 30_000), Local, Telemetry.Binding);
             return endpoint;

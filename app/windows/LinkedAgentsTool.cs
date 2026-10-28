@@ -1,6 +1,5 @@
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
-using Velune.Bindings;
 
 namespace Velune;
 
@@ -61,12 +60,12 @@ sealed class LinkedAgentsTool : UserControl
         var active = window.Listing.Active;
         string State(string id, bool failed) =>
             active.TryGetValue(id, out var running) && running.PendingInteractions > 0 ? "等待处理"
-            : running?.RunState == BindingRunState.Running ? "运行中"
+            : running?.RunState == RunState.Running ? "运行中"
             : failed ? "失败"
             : "已结束";
         if (model.ParentID is { } parent)
         {
-            var title = window.Listing.Conversations.FirstOrDefault(listed => listed.Conversation.Id == parent)?.Conversation.Title ?? "父会话";
+            var title = window.Listing.Conversations.FirstOrDefault(listed => listed.Conversation.Id == parent)?.Conversation.Title.DisplayText() ?? "父会话";
             found.Add(("父会话", [new Linked(parent, title, "")]));
         }
         if (model.Snapshot is { SubAgents.Length: > 0 } withSubAgents)
@@ -116,10 +115,10 @@ sealed class LinkedAgentsTool : UserControl
                 var menu = new MenuFlyout();
                 foreach (var (opening, name) in new[]
                 {
-                    (BindingLinkedConversationOpening.CurrentTab, "在当前标签页中打开"),
-                    (BindingLinkedConversationOpening.NewTab, "在新标签页中打开"),
-                    (BindingLinkedConversationOpening.Sheet, "在浮层中打开"),
-                    (BindingLinkedConversationOpening.NewWindow, "在新窗口中打开"),
+                    (LinkedConversationOpening.CurrentTab, "在当前标签页中打开"),
+                    (LinkedConversationOpening.NewTab, "在新标签页中打开"),
+                    (LinkedConversationOpening.Sheet, "在浮层中打开"),
+                    (LinkedConversationOpening.NewWindow, "在新窗口中打开"),
                 })
                 {
                     menu.Items.Add(Ui.MenuItem(name, () => window.OpenLinked(id, opening)));

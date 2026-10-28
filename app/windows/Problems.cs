@@ -1,5 +1,4 @@
 using Microsoft.UI.Dispatching;
-using Velune.Bindings;
 
 namespace Velune;
 

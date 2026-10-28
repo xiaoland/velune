@@ -1,7 +1,6 @@
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media;
-using Velune.Bindings;
 
 namespace Velune;
 
@@ -27,7 +26,7 @@ sealed partial class LibraryWindow
         {
             notice.IsOpen = false;
         }
-        if (chosen is BindingUnmanagedRuntimeResource entry)
+        if (chosen is UnmanagedRuntimeResource entry)
         {
             ShowOther(entry, shown);
             return;
@@ -97,7 +96,7 @@ sealed partial class LibraryWindow
             draft.Name = name.Text;
             Touched();
         };
-        panel.Children.Add(Ui.Field(name, draft.Kind == BindingRuntimeResourceKind.UserInstructions
+        panel.Children.Add(Ui.Field(name, draft.Kind == RuntimeResourceKind.UserInstructions
             ? "只在资源库中区分各份指令。"
             : "用作原生文件名或服务器名：只能含字母、数字、-、_、.，不超过 64 个字符。"));
         panel.Children.Add(Editor(draft, Touched, readOnly: false));
@@ -151,7 +150,7 @@ sealed partial class LibraryWindow
         {
             return;
         }
-        BindingResourceTemplate template;
+        ResourceTemplate template;
         try
         {
             template = draft.Template();
@@ -162,7 +161,7 @@ sealed partial class LibraryWindow
             return;
         }
         Ui.Show(formError, "");
-        BindingResourceSaveResult? result;
+        ResourceSaveResult? result;
         busy = true;
         ShowActions();
         ShowSaveState(draft);
@@ -207,7 +206,7 @@ sealed partial class LibraryWindow
 
     // Report sums up what writing did on each runtime: what it could not
     // write goes to 问题 as well.
-    void Report(string lead, string failedLead, IEnumerable<BindingTemplateApplyReport> reports)
+    void Report(string lead, string failedLead, IEnumerable<TemplateApplyReport> reports)
     {
         var lines = new List<string>();
         var failed = false;
@@ -216,15 +215,15 @@ sealed partial class LibraryWindow
             var runtime = RuntimeName(report.RuntimeId);
             var outcome = report.Outcome switch
             {
-                BindingTemplateApplyOutcome.Create => "已写入",
-                BindingTemplateApplyOutcome.Update => "已更新",
-                BindingTemplateApplyOutcome.Unchanged => "无变化",
-                BindingTemplateApplyOutcome.Conflict => "有同名的原生内容，未写入",
-                BindingTemplateApplyOutcome.Skipped skipped => "跳过：" + skipped.Reason,
-                BindingTemplateApplyOutcome.Failed failure => "失败：" + failure.Reason,
+                TemplateApplyOutcome.Create => "已写入",
+                TemplateApplyOutcome.Update => "已更新",
+                TemplateApplyOutcome.Unchanged => "无变化",
+                TemplateApplyOutcome.Conflict => "有同名的原生内容，未写入",
+                TemplateApplyOutcome.Skipped skipped => "跳过：" + skipped.Reason,
+                TemplateApplyOutcome.Failed failure => "失败：" + failure.Reason,
                 _ => "",
             };
-            if (report.Outcome is BindingTemplateApplyOutcome.Failed or BindingTemplateApplyOutcome.Skipped)
+            if (report.Outcome is TemplateApplyOutcome.Failed or TemplateApplyOutcome.Skipped)
             {
                 failed = true;
                 Problems.Report("同步到“" + runtime + "”", outcome);
@@ -264,8 +263,8 @@ sealed partial class LibraryWindow
             var check = new CheckBox
             {
                 Content = runtime.Name + (runtime.Enabled ? "" : "（已停用）"),
-                IsChecked = state is not (BindingResourceSyncState.NotEnabled or BindingResourceSyncState.Unsupported),
-                IsEnabled = !busy && state is not BindingResourceSyncState.Unsupported,
+                IsChecked = state is not (ResourceSyncState.NotEnabled or ResourceSyncState.Unsupported),
+                IsEnabled = !busy && state is not ResourceSyncState.Unsupported,
             };
             check.Click += (_, _) =>
             {
@@ -285,7 +284,7 @@ sealed partial class LibraryWindow
             {
                 var status = Ui.Muted(text);
                 status.Margin = new Thickness(28, 0, 0, 0);
-                if (state is BindingResourceSyncState.Drifted or BindingResourceSyncState.Missing)
+                if (state is ResourceSyncState.Drifted or ResourceSyncState.Missing)
                 {
                     status.Style = Ui.Style("ErrorTextStyle");
                 }
@@ -301,7 +300,7 @@ sealed partial class LibraryWindow
         }
     }
 
-    (string Text, FrameworkElement? Actions) StateParts(Draft draft, BindingRuntimeInstance runtime, BindingResourceSyncState state)
+    (string Text, FrameworkElement? Actions) StateParts(Draft draft, RuntimeInstance runtime, ResourceSyncState state)
     {
         Button Action(string text, Action act)
         {
@@ -320,17 +319,17 @@ sealed partial class LibraryWindow
         }
         return state switch
         {
-            BindingResourceSyncState.Unsupported unsupported => (unsupported.Reason, null),
-            BindingResourceSyncState.Synced => ("已同步", null),
-            BindingResourceSyncState.Pending => ("待同步：运行时空闲后自动写入", Action("立即同步", () => Enable(draft, [runtime]))),
-            BindingResourceSyncState.Drifted drifted => ("原生内容已被修改：" + string.Join("、", drifted.Paths), Menu("处理",
+            ResourceSyncState.Unsupported unsupported => (unsupported.Reason, null),
+            ResourceSyncState.Synced => ("已同步", null),
+            ResourceSyncState.Pending => ("待同步：运行时空闲后自动写入", Action("立即同步", () => Enable(draft, [runtime]))),
+            ResourceSyncState.Drifted drifted => ("原生内容已被修改：" + string.Join("、", drifted.Paths), Menu("处理",
                 Ui.MenuItem("比较…", () => Compare(draft, runtime)),
-                Ui.MenuItem("用资源库的内容覆盖", () => Resolve(draft, runtime, BindingResolution.Overwrite)),
+                Ui.MenuItem("用资源库的内容覆盖", () => Resolve(draft, runtime, ResourceBindingResolution.Overwrite)),
                 Ui.MenuItem("用原生内容更新资源库…", () => TakeNative(draft, runtime)),
-                Ui.MenuItem("不再同步，保留原生内容", () => Resolve(draft, runtime, BindingResolution.Unmanage)))),
-            BindingResourceSyncState.Missing missing => ("原生内容已被删除：" + string.Join("、", missing.Paths), Menu("处理",
-                Ui.MenuItem("用资源库的内容重新写入", () => Resolve(draft, runtime, BindingResolution.Overwrite)),
-                Ui.MenuItem("不再同步", () => Resolve(draft, runtime, BindingResolution.Unmanage)))),
+                Ui.MenuItem("不再同步，保留原生内容", () => Resolve(draft, runtime, ResourceBindingResolution.Unmanage)))),
+            ResourceSyncState.Missing missing => ("原生内容已被删除：" + string.Join("、", missing.Paths), Menu("处理",
+                Ui.MenuItem("用资源库的内容重新写入", () => Resolve(draft, runtime, ResourceBindingResolution.Overwrite)),
+                Ui.MenuItem("不再同步", () => Resolve(draft, runtime, ResourceBindingResolution.Unmanage)))),
             _ => ("", null),
         };
     }
@@ -341,7 +340,7 @@ sealed partial class LibraryWindow
         {
             return;
         }
-        var targets = runtimes.Where(runtime => State(draft.Id, runtime.Id) is BindingResourceSyncState.NotEnabled or BindingResourceSyncState.Pending).ToList();
+        var targets = runtimes.Where(runtime => State(draft.Id, runtime.Id) is ResourceSyncState.NotEnabled or ResourceSyncState.Pending).ToList();
         if (targets.Count == 0)
         {
             Inform("已启用于所有可用的运行时。");
@@ -350,27 +349,27 @@ sealed partial class LibraryWindow
         await EnableOn(draft, targets);
     }
 
-    async void Enable(Draft draft, BindingRuntimeInstance[] targets) => await EnableOn(draft, targets);
+    async void Enable(Draft draft, RuntimeInstance[] targets) => await EnableOn(draft, targets);
 
     // EnableOn writes the saved resource to runtimes; where a native entry
     // of the same name, or another instruction, is in the way, it asks
     // before replacing it.
-    async Task EnableOn(Draft draft, IReadOnlyList<BindingRuntimeInstance> targets)
+    async Task EnableOn(Draft draft, IReadOnlyList<RuntimeInstance> targets)
     {
         var reports = await Write("启用“" + draft.Name + "”", application =>
-            application.ApplyResourceTemplate(draft.Id, [.. targets.Select(runtime => new BindingTemplateApplyTarget(runtime.Id, false))]));
+            application.ApplyResourceTemplate(draft.Id, [.. targets.Select(runtime => new TemplateApplyTarget(runtime.Id, false))]));
         if (reports == null)
         {
             Reload(keepDetail: true);
             return;
         }
         var shown = reports.ToList();
-        foreach (var report in reports.Where(report => report.Outcome is BindingTemplateApplyOutcome.Conflict))
+        foreach (var report in reports.Where(report => report.Outcome is TemplateApplyOutcome.Conflict))
         {
-            var conflict = (BindingTemplateApplyOutcome.Conflict)report.Outcome;
+            var conflict = (TemplateApplyOutcome.Conflict)report.Outcome;
             var runtime = RuntimeName(report.RuntimeId);
             var paths = string.Join("、", conflict.Unmanaged.Concat(conflict.Drifted));
-            var message = draft.Kind == BindingRuntimeResourceKind.UserInstructions
+            var message = draft.Kind == RuntimeResourceKind.UserInstructions
                 ? $"{runtime} 已有指令文件或已启用另一份指令（{paths}）。每个运行时只能启用一份指令，继续将替换它。"
                 : $"{runtime} 中已有同名的原生内容（{paths}），启用后将被资源库的内容替换。";
             if (await Ask("覆盖已有的原生内容？", message, "覆盖") != ContentDialogResult.Primary)
@@ -378,7 +377,7 @@ sealed partial class LibraryWindow
                 continue;
             }
             if (await Write("覆盖“" + runtime + "”中的内容", application =>
-                application.ApplyResourceTemplate(draft.Id, [new BindingTemplateApplyTarget(report.RuntimeId, true)])) is { } again)
+                application.ApplyResourceTemplate(draft.Id, [new TemplateApplyTarget(report.RuntimeId, true)])) is { } again)
             {
                 shown.Remove(report);
                 shown.AddRange(again);
@@ -390,7 +389,7 @@ sealed partial class LibraryWindow
 
     // Disable stops syncing to a runtime, deleting what Velune wrote there
     // or leaving it as the runtime's own.
-    async void Disable(Draft draft, BindingRuntimeInstance runtime)
+    async void Disable(Draft draft, RuntimeInstance runtime)
     {
         var answer = await Ask($"停用于“{runtime.Name}”", "删除原生内容：从该运行时移除 Velune 写入的内容。\n保留原生内容：原生内容留在该运行时，但不再由 Velune 同步。", "删除原生内容", "保留原生内容");
         if (answer == ContentDialogResult.None)
@@ -398,28 +397,28 @@ sealed partial class LibraryWindow
             ShowEnabled();
             return;
         }
-        Resolve(draft, runtime, answer == ContentDialogResult.Primary ? BindingResolution.Remove : BindingResolution.Unmanage);
+        Resolve(draft, runtime, answer == ContentDialogResult.Primary ? ResourceBindingResolution.Remove : ResourceBindingResolution.Unmanage);
     }
 
-    async void Resolve(Draft draft, BindingRuntimeInstance runtime, BindingResolution resolution)
+    async void Resolve(Draft draft, RuntimeInstance runtime, ResourceBindingResolution resolution)
     {
         var what = resolution switch
         {
-            BindingResolution.Overwrite => "用资源库的内容覆盖“" + runtime.Name + "”",
-            BindingResolution.Remove => "从“" + runtime.Name + "”删除",
-            BindingResolution.Unmanage => "停止同步到“" + runtime.Name + "”",
+            ResourceBindingResolution.Overwrite => "用资源库的内容覆盖“" + runtime.Name + "”",
+            ResourceBindingResolution.Remove => "从“" + runtime.Name + "”删除",
+            ResourceBindingResolution.Unmanage => "停止同步到“" + runtime.Name + "”",
             _ => "用“" + runtime.Name + "”的内容更新资源库",
         };
         if (await Write(what, application => application.ResolveResourceBinding(runtime.Id, draft.Id, resolution)))
         {
-            Inform(what + "：已完成。" + (resolution == BindingResolution.Overwrite ? "\n" + EffectNote : ""));
+            Inform(what + "：已完成。" + (resolution == ResourceBindingResolution.Overwrite ? "\n" + EffectNote : ""));
         }
         Reload(keepDetail: true);
     }
 
     // TakeNative replaces the resource with the runtime's changed content,
     // after listing what the library cannot hold of it.
-    async void TakeNative(Draft draft, BindingRuntimeInstance runtime)
+    async void TakeNative(Draft draft, RuntimeInstance runtime)
     {
         if (await Write("读取“" + runtime.Name + "”中的内容", application => application.ResourceNativeImport(runtime.Id, draft.Id)) is not { } preview)
         {
@@ -438,7 +437,7 @@ sealed partial class LibraryWindow
         {
             return;
         }
-        if (await Write("用“" + runtime.Name + "”的内容更新资源库", application => application.ResolveResourceBinding(runtime.Id, draft.Id, BindingResolution.TakeNative)))
+        if (await Write("用“" + runtime.Name + "”的内容更新资源库", application => application.ResolveResourceBinding(runtime.Id, draft.Id, ResourceBindingResolution.TakeNative)))
         {
             draft.Dirty = false;
             Inform($"已用 {runtime.Name} 中的内容更新“{draft.Name}”。");
@@ -448,7 +447,7 @@ sealed partial class LibraryWindow
 
     // Compare shows, file by file, the runtime's changed content beside
     // what overwriting would write.
-    async void Compare(Draft draft, BindingRuntimeInstance runtime)
+    async void Compare(Draft draft, RuntimeInstance runtime)
     {
         if (await Write("比较“" + runtime.Name + "”中的内容", application => application.ResourceDrift(runtime.Id, draft.Id)) is not { } files)
         {
@@ -489,7 +488,7 @@ sealed partial class LibraryWindow
         switch (await Show(dialog))
         {
             case ContentDialogResult.Primary:
-                Resolve(draft, runtime, BindingResolution.Overwrite);
+                Resolve(draft, runtime, ResourceBindingResolution.Overwrite);
                 break;
             case ContentDialogResult.Secondary:
                 TakeNative(draft, runtime);
@@ -516,7 +515,7 @@ sealed partial class LibraryWindow
 
     // ShowOther shows a runtime's entry outside the library as the library
     // would hold it, with what it would leave out, to add it.
-    async void ShowOther(BindingUnmanagedRuntimeResource entry, int shown)
+    async void ShowOther(UnmanagedRuntimeResource entry, int shown)
     {
         var runtime = RuntimeName(entry.RuntimeId);
         var panel = new StackPanel { Spacing = 16, Padding = new Thickness(24, 16, 24, 24), MaxWidth = 760, HorizontalAlignment = HorizontalAlignment.Left };
@@ -525,7 +524,7 @@ sealed partial class LibraryWindow
         var adopt = new Button { Content = "加入资源库…", Style = Ui.Style("AccentButtonStyle"), IsEnabled = false };
         panel.Children.Add(adopt);
         detail.Content = panel;
-        BindingResourceTemplateImport preview;
+        ResourceTemplateImport preview;
         try
         {
             preview = await Task.Run(() => App.ImportRuntimeResource(entry.RuntimeId, entry.Kind, entry.Path));
@@ -597,12 +596,12 @@ sealed partial class LibraryWindow
         }
         switch (draft.Kind)
         {
-            case BindingRuntimeResourceKind.UserInstructions:
+            case RuntimeResourceKind.UserInstructions:
                 var body = Text("内容", draft.Body, value => draft.Body = value, lines: true);
                 body.MinHeight = 280;
                 panel.Children.Add(Ui.Field(body, "启用后整体写入运行时的用户指令文件；每个运行时只能启用一份指令。"));
                 break;
-            case BindingRuntimeResourceKind.Skills:
+            case RuntimeResourceKind.Skills:
                 var entry = Text("SKILL.md", draft.Body, value => draft.Body = value, lines: true);
                 entry.FontFamily = new FontFamily("Cascadia Mono, Consolas");
                 entry.MinHeight = 280;
@@ -612,7 +611,7 @@ sealed partial class LibraryWindow
                     panel.Children.Add(Ui.Muted("其他文件随资源保留，在此不编辑：" + string.Join("、", draft.Files.Select(file => file.Path))));
                 }
                 break;
-            case BindingRuntimeResourceKind.McpServers:
+            case RuntimeResourceKind.McpServers:
                 panel.Children.Add(McpEditor(draft, touched, readOnly));
                 break;
             default:
@@ -713,7 +712,7 @@ sealed partial class LibraryWindow
     {
         var field = new StackPanel { Spacing = 4 };
         field.Children.Add(new TextBlock { Text = "技能" });
-        var names = templates.Where(template => template.Kind == BindingRuntimeResourceKind.Skills).Select(template => template.Name)
+        var names = templates.Where(template => template.Kind == RuntimeResourceKind.Skills).Select(template => template.Name)
             .Union(draft.Skills).OrderBy(name => name, StringComparer.CurrentCulture).ToList();
         if (names.Count == 0)
         {

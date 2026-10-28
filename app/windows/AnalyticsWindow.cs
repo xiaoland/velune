@@ -3,7 +3,6 @@ using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Shapes;
-using Velune.Bindings;
 
 namespace Velune;
 
@@ -55,8 +54,8 @@ sealed class AnalyticsWindow : Window
     Scope scope = new("全部提供商", null, null);
     uint requestLimit = RequestStep;
     // The report on show, the query and scope it answered, and when.
-    BindingAnalyticsReport? report;
-    BindingAnalyticsQuery? loaded;
+    AnalyticsReport? report;
+    AnalyticsQuery? loaded;
     Scope loadedScope = new("全部提供商", null, null);
     DateTimeOffset loadedAt;
     bool loading;
@@ -150,7 +149,7 @@ sealed class AnalyticsWindow : Window
     async void Load()
     {
         var boundaries = Boundaries((int)((ComboBoxItem)period.SelectedItem).Tag);
-        var query = new BindingAnalyticsQuery(boundaries[0], boundaries[^1], boundaries, scope.ProviderId, scope.ModelRecordKey, requestLimit);
+        var query = new AnalyticsQuery(boundaries[0], boundaries[^1], boundaries, scope.ProviderId, scope.ModelRecordKey, requestLimit);
         var wanted = scope;
         var ask = ++asked;
         loading = true;
@@ -323,7 +322,7 @@ sealed class AnalyticsWindow : Window
 
     // Trend draws each day's reported input and output, or its output rate.
     // Unreported days stay empty rather than zero.
-    StackPanel Trend(BindingAnalyticsReport shown)
+    StackPanel Trend(AnalyticsReport shown)
     {
         var speed = (bool)trendMetric.SelectedItem.Tag;
         var trend = new StackPanel { Spacing = 10 };
@@ -446,7 +445,7 @@ sealed class AnalyticsWindow : Window
         Ui.Row(breakdown, breakdownList, new GridLength(1, GridUnitType.Star));
     }
 
-    BindingAnalyticsBreakdown? ChosenSource() => (breakdownList.SelectedItem as ListViewItem)?.Tag as BindingAnalyticsBreakdown;
+    AnalyticsBreakdown? ChosenSource() => (breakdownList.SelectedItem as ListViewItem)?.Tag as AnalyticsBreakdown;
 
     void ShowBreakdown()
     {
@@ -481,7 +480,7 @@ sealed class AnalyticsWindow : Window
                 breakdownList.Header = Ui.Muted("这段时间没有经 Velune 网关的请求。");
                 ((FrameworkElement)breakdownList.Header).Margin = new Thickness(20, 12, 20, 12);
             }
-        }, item => ((item as ListViewItem)?.Tag as BindingAnalyticsBreakdown)?.Key);
+        }, item => ((item as ListViewItem)?.Tag as AnalyticsBreakdown)?.Key);
         showRequests.IsEnabled = ChosenSource() != null;
     }
 
@@ -491,7 +490,7 @@ sealed class AnalyticsWindow : Window
     ];
 
     // ShowRequestsOf narrows 请求 to a source and goes there.
-    void ShowRequestsOf(BindingAnalyticsBreakdown? source)
+    void ShowRequestsOf(AnalyticsBreakdown? source)
     {
         if (source == null)
         {
@@ -551,7 +550,7 @@ sealed class AnalyticsWindow : Window
         Ui.Row(requests, footer, GridLength.Auto);
     }
 
-    BindingAnalyticsRequest? ChosenRequest() => (requestList.SelectedItem as ListViewItem)?.Tag as BindingAnalyticsRequest;
+    AnalyticsRequest? ChosenRequest() => (requestList.SelectedItem as ListViewItem)?.Tag as AnalyticsRequest;
 
     static readonly GridLength[] RequestWidths = [new(130), new(1, GridUnitType.Star), new(80), new(110)];
 
@@ -584,7 +583,7 @@ sealed class AnalyticsWindow : Window
                 requestList.Header = Ui.Muted("这段时间没有经 Velune 网关的请求。");
                 ((FrameworkElement)requestList.Header).Margin = new Thickness(20, 12, 20, 12);
             }
-        }, item => ((item as ListViewItem)?.Tag as BindingAnalyticsRequest)?.RequestId);
+        }, item => ((item as ListViewItem)?.Tag as AnalyticsRequest)?.RequestId);
         showDetail.IsEnabled = ChosenRequest() != null;
         var total = shown.Overview.RequestCount;
         requestCount.Text = $"最近 {shown.Requests.Length} / {total} 条请求记录";
@@ -595,7 +594,7 @@ sealed class AnalyticsWindow : Window
 
     // Detail shows one request read-only: what it was and how it went, its
     // reasoning and cache usage, and its identifiers.
-    async void Detail(BindingAnalyticsRequest? request)
+    async void Detail(AnalyticsRequest? request)
     {
         if (request == null || Content.XamlRoot == null)
         {
@@ -606,7 +605,7 @@ sealed class AnalyticsWindow : Window
             ("结果", Outcome(request.Outcome)),
             ("提供商", request.ProviderName),
             ("模型 ID", request.ProviderModelId),
-            ("协议", Protocol(request.Protocol)),
+            ("协议", ProtocolName(request.Protocol)),
             ("开始", Local(request.StartedAtMs).ToString("yyyy-MM-dd HH:mm:ss")),
             ("输入 Token", Tokens(request.InputTokens)),
             ("输出 Token", Tokens(request.OutputTokens)),
@@ -726,7 +725,7 @@ sealed class AnalyticsWindow : Window
         return figure;
     }
 
-    static string Ended(BindingAnalyticsTotals totals)
+    static string Ended(AnalyticsTotals totals)
     {
         var parts = new List<string> { $"{totals.CompletedCount} 次完成" };
         foreach (var (count, name) in new[] { (totals.FailedCount, "失败"), (totals.CancelledCount, "取消"), (totals.IncompleteCount, "未完成"), (totals.RejectedCount, "拒绝") })
@@ -748,21 +747,21 @@ sealed class AnalyticsWindow : Window
         ? value >= 60_000 ? $"{value / 60_000} 分 {value % 60_000 / 1000.0:0.00} 秒" : $"{value / 1000.0:0.00} 秒"
         : "—";
 
-    static string Outcome(BindingAnalyticsOutcome outcome) => outcome switch
+    static string Outcome(AnalyticsOutcome outcome) => outcome switch
     {
-        BindingAnalyticsOutcome.Completed => "完成",
-        BindingAnalyticsOutcome.Incomplete => "未完成",
-        BindingAnalyticsOutcome.Failed => "失败",
-        BindingAnalyticsOutcome.Cancelled => "取消",
-        BindingAnalyticsOutcome.Rejected => "拒绝",
+        AnalyticsOutcome.Completed => "完成",
+        AnalyticsOutcome.Incomplete => "未完成",
+        AnalyticsOutcome.Failed => "失败",
+        AnalyticsOutcome.Cancelled => "取消",
+        AnalyticsOutcome.Rejected => "拒绝",
         _ => outcome.ToString(),
     };
 
-    static string Protocol(BindingAnalyticsProtocol protocol) => protocol switch
+    static string ProtocolName(Protocol protocol) => protocol switch
     {
-        BindingAnalyticsProtocol.ChatCompletions => "OpenAI ChatCompletions",
-        BindingAnalyticsProtocol.Responses => "OpenAI Responses",
-        BindingAnalyticsProtocol.Messages => "Anthropic Messages",
+        Protocol.ChatCompletions => "OpenAI ChatCompletions",
+        Protocol.Responses => "OpenAI Responses",
+        Protocol.Messages => "Anthropic Messages",
         _ => protocol.ToString(),
     };
 }

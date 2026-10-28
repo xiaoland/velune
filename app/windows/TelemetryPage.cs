@@ -1,7 +1,6 @@
 using System.Text.Json;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
-using Velune.Bindings;
 using Windows.ApplicationModel.DataTransfer;
 
 namespace Velune;
@@ -42,7 +41,7 @@ sealed class TelemetryPage : UserControl
         {
             Button("保存", () => Run(async () =>
             {
-                var profile = Profile(); var expected = revision; var choice = (BindingTelemetryPreference)preference.SelectedIndex;
+                var profile = Profile(); var expected = revision; var choice = (TelemetryPreference)preference.SelectedIndex;
                 var state = await Task.Run(() => { core.Telemetry.Save(expected, choice, profile); return core.Telemetry.Binding.Snapshot(); });
                 if (visible) { revision = state.Revision; Show(state); }
             })),
@@ -106,13 +105,13 @@ sealed class TelemetryPage : UserControl
         row.Children.Add(Button("移除", () => { metadata.Remove((key, secret)); headers.Children.Remove(row); }));
         metadata.Add((key, secret)); headers.Children.Add(row);
     }
-    BindingTelemetryProfile? Profile()
+    TelemetryProfile? Profile()
     {
         if (endpoint.Text.Trim().Length == 0) return null;
         var values = new Dictionary<string, string>(StringComparer.Ordinal);
         foreach (var (key, secret) in metadata)
             if (!values.TryAdd(key.Text, secret.Password)) throw new InvalidOperationException("认证字段名称不能重复");
-        return new BindingTelemetryProfile(endpoint.Text.Trim(), values, ratio.Value / 100);
+        return new TelemetryProfile(endpoint.Text.Trim(), values, ratio.Value / 100);
     }
     void Load() => Run(async () =>
     {
@@ -120,7 +119,7 @@ sealed class TelemetryPage : UserControl
         if (visible) Fill(result.Item1, result.Item2);
         RenderSharing();
     });
-    void Fill(BindingTelemetrySnapshot state, BindingTelemetryProfile? profile)
+    void Fill(TelemetrySnapshot state, TelemetryProfile? profile)
     {
         revision = state.Revision; preference.SelectedIndex = (int)state.Preference;
         endpoint.Text = profile?.Endpoint ?? state.Endpoint ?? ""; ratio.Value = (profile?.SampleRatio ?? state.SampleRatio) * 100;
@@ -148,7 +147,7 @@ sealed class TelemetryPage : UserControl
         }
         catch (Exception problem) { if (visible && ticket == display) Ui.Show(failure, Core.Describe(problem)); }
     }
-    void Show(BindingTelemetrySnapshot state)
+    void Show(TelemetrySnapshot state)
     {
         status.Text = state.Status == "development_configuration_unavailable" ? "开发启动配置不可用，遥测未接入"
             : !state.ConfigurationAvailable ? "配置无法读取，遥测未启用；原文件已保留"
@@ -156,7 +155,7 @@ sealed class TelemetryPage : UserControl
             : state.RustActiveRevision == null ? "已关闭"
             : $"{(state.DevelopmentOverride ? "开发启动配置 · " : "")}已应用 · 修订 {state.Revision} · Rust：{Health(state.RustExport)} · Windows：{Health(state.NativeExport)}";
     }
-    static string Health(BindingTelemetryExportHealth health) => health.LastTransportResult switch { "rpc_completed" => "最近 RPC 完成", null => "尚无回执", _ => "最近导出失败" };
+    static string Health(TelemetryExportHealth health) => health.LastTransportResult switch { "rpc_completed" => "最近 RPC 完成", null => "尚无回执", _ => "最近导出失败" };
     static string TestText(string result) => result switch { "accepted" => "接收端已接受", "partially_rejected" => "部分拒绝", "unauthenticated" or "permission_denied" => "认证被拒绝", "timeout" => "超时", "unavailable" => "无法连接", _ => "被拒绝" };
     void RenderSharing()
     {
@@ -165,9 +164,9 @@ sealed class TelemetryPage : UserControl
         if (sharingKey == key) return;
         sharingKey = key;
         var selected = source.SelectedValue;
-        source.ItemsSource = state.Contacts.Where(contact => contact.Confirmation is BindingContactConfirmation.Confirmed).ToArray();
+        source.ItemsSource = state.Contacts.Where(contact => contact.Confirmation is ContactConfirmation.Confirmed).ToArray();
         source.SelectedValue = selected;
-        var names = state.Contacts.Where(contact => contact.Confirmation is BindingContactConfirmation.Confirmed).ToDictionary(contact => contact.PeerId, contact => contact.Name);
+        var names = state.Contacts.Where(contact => contact.Confirmation is ContactConfirmation.Confirmed).ToDictionary(contact => contact.PeerId, contact => contact.Name);
         foreach (var grant in state.IncomingGrants.Concat(state.TelemetryProfileGrants)) names[grant.PeerId] = grant.Name;
         var allowed = state.TelemetryProfileGrants.Select(grant => grant.PeerId).ToHashSet();
         sharing.Children.Clear();
@@ -179,7 +178,7 @@ sealed class TelemetryPage : UserControl
                 await Task.Run(() => { if (granted) core.Remote().RevokeTelemetryProfile(peer); else core.Remote().AllowTelemetryProfile(peer); });
             }))));
         }
-        foreach (var pairing in state.IncomingPairings.Where(pairing => pairing.Permission == BindingPairingPermission.TelemetryProfileRead && pairing.Phase == BindingPairingPhase.AwaitingApproval))
+        foreach (var pairing in state.IncomingPairings.Where(pairing => pairing.Permission == PairingPermission.TelemetryProfileRead && pairing.Phase == PairingPhase.AwaitingApproval))
         {
             invitation.Text = "";
             sharing.Children.Add(Ui.Card(Ui.TwoLines(pairing.Name + " · 遥测配置（含认证）", Hub.FormatCode(pairing.VerificationCode)),

@@ -1,6 +1,5 @@
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
-using Velune.Bindings;
 
 namespace Velune;
 
@@ -12,13 +11,13 @@ sealed partial class ProviderEditor : UserControl
 {
     readonly ProvidersPage page;
     // The saved provider; null until a new one is first saved.
-    BindingProviderDefinition? existing;
-    readonly BindingProviderTemplate? template;
-    readonly BindingGatewayProtocol protocolID;
-    readonly BindingRequestProfile profile;
-    readonly BindingProviderAuthenticationSource authenticationSource;
+    ProviderSummary? existing;
+    readonly ProviderTemplate? template;
+    readonly Protocol protocolID;
+    readonly RequestProfile profile;
+    readonly ProviderAuthenticationSource authenticationSource;
     // The account quota source follows its switch; the others, the template.
-    BindingProviderQuotaSource quotaSource;
+    ProviderQuotaSource quotaSource;
     readonly bool subscription;
 
     readonly StackPanel body = new() { Spacing = 4, MaxWidth = 760, HorizontalAlignment = HorizontalAlignment.Stretch };
@@ -34,16 +33,16 @@ sealed partial class ProviderEditor : UserControl
     bool building = true;
     bool dirty;
 
-    internal ProviderEditor(ProvidersPage page, BindingProviderDefinition? existing, BindingProviderTemplate? template)
+    internal ProviderEditor(ProvidersPage page, ProviderSummary? existing, ProviderTemplate? template)
     {
         this.page = page;
         this.existing = existing;
         this.template = template;
-        protocolID = existing?.Protocol ?? template?.Protocol ?? BindingGatewayProtocol.ChatCompletionsV1;
-        profile = existing?.RequestProfile ?? template?.RequestProfile ?? BindingRequestProfile.Native;
-        authenticationSource = existing?.AuthenticationSource ?? template?.AuthenticationSource ?? BindingProviderAuthenticationSource.ApiKey;
-        quotaSource = existing?.QuotaSource ?? template?.QuotaSource ?? BindingProviderQuotaSource.None;
-        subscription = template?.Kind == BindingProviderTemplateKind.Subscription || page.IsSubscription(profile, authenticationSource, quotaSource);
+        protocolID = existing?.Protocol ?? template?.Protocol ?? Protocol.ChatCompletions;
+        profile = existing?.RequestProfile ?? template?.RequestProfile ?? RequestProfile.Native;
+        authenticationSource = existing?.AuthenticationSource ?? template?.AuthenticationSource ?? ProviderAuthenticationSource.ApiKey;
+        quotaSource = existing?.QuotaSource ?? template?.QuotaSource ?? ProviderQuotaSource.None;
+        subscription = template?.Kind == ProviderTemplateKind.Subscription || page.IsSubscription(profile, authenticationSource, quotaSource);
 
         trail.ItemClicked += (_, e) =>
         {
@@ -136,7 +135,7 @@ sealed partial class ProviderEditor : UserControl
         protocol.SelectionChanged += (_, _) => Changed();
         endpoint.Text = existing?.Endpoint ?? template?.Endpoint ?? "";
         endpoint.TextChanged += (_, _) => Changed();
-        var cli = (existing?.ExecutionBackend ?? template?.ExecutionBackend) is BindingExecutionBackend.ClaudeCli;
+        var cli = (existing?.ExecutionBackend ?? template?.ExecutionBackend) is ExecutionBackend.ClaudeCli;
         if (subscription)
         {
             // A subscription connects as its template does.
@@ -161,7 +160,7 @@ sealed partial class ProviderEditor : UserControl
     // provider's requests in place of a service address.
     void BuildBinary()
     {
-        binary.Text = (existing?.ExecutionBackend ?? template?.ExecutionBackend) is BindingExecutionBackend.ClaudeCli { Binary: var saved } ? saved : "";
+        binary.Text = (existing?.ExecutionBackend ?? template?.ExecutionBackend) is ExecutionBackend.ClaudeCli { Binary: var saved } ? saved : "";
         var found = Discovery.Installed("claude-code", template?.ExecutableCommand ?? "claude");
         if (binary.Text.Length == 0 && found.Count > 0)
         {
@@ -194,25 +193,25 @@ sealed partial class ProviderEditor : UserControl
     }
 
     // Draft is the provider the fields describe.
-    BindingProviderDraft Draft() => new(
+    ProviderDraft Draft() => new(
         Id: existing?.Id ?? "",
         Name: name.Text.Trim(),
         Protocol: subscription || protocol.SelectedIndex < 0 ? protocolID : page.Protocols[protocol.SelectedIndex].Id,
         Endpoint: endpoint.Text.Trim(),
-        ExecutionBackend: (existing?.ExecutionBackend ?? template?.ExecutionBackend) is BindingExecutionBackend.ClaudeCli
-            ? new BindingExecutionBackend.ClaudeCli(binary.Text.Trim())
-            : new BindingExecutionBackend.Http(),
+        ExecutionBackend: (existing?.ExecutionBackend ?? template?.ExecutionBackend) is ExecutionBackend.ClaudeCli
+            ? new ExecutionBackend.ClaudeCli(binary.Text.Trim())
+            : new ExecutionBackend.Http(),
         RequestProfile: profile,
         AuthenticationSource: authenticationSource,
         // The account source reads only from an official address; another keeps none.
-        QuotaSource: quotaSource == BindingProviderQuotaSource.ApiAccount && AccountService() == null ? BindingProviderQuotaSource.None : quotaSource,
+        QuotaSource: quotaSource == ProviderQuotaSource.ApiAccount && AccountService() == null ? ProviderQuotaSource.None : quotaSource,
         Models: [.. models.Select(model => model.Value())],
         QuotaLimits: Limits());
 
     // Check shows what is missing; false keeps the editor as it is.
-    bool Check(BindingProviderDraft draft)
+    bool Check(ProviderDraft draft)
     {
-        var cli = draft.ExecutionBackend is BindingExecutionBackend.ClaudeCli;
+        var cli = draft.ExecutionBackend is ExecutionBackend.ClaudeCli;
         Ui.Show(nameError, draft.Name.Length == 0 ? "请填写名称" : "");
         var endpointMissing = !cli && draft.Endpoint.Length == 0;
         var binaryMissing = cli && !Path.IsPathFullyQualified(binary.Text.Trim());
@@ -221,7 +220,7 @@ sealed partial class ProviderEditor : UserControl
         var missingID = models.Any(model => model.ID.Length == 0);
         var invalidTokens = models.Any(model => !model.ValidTokens);
         Ui.Show(modelsError, draft.Models.Length == 0 ? "请添加至少一个模型" : missingID ? "每个模型都需要模型 ID" : invalidTokens ? TokenCount.InputError : "");
-        var keyMissing = authenticationSource == BindingProviderAuthenticationSource.ApiKey && key.Password.Trim().Length == 0 && !(existing?.Authentication.Configured ?? false);
+        var keyMissing = authenticationSource == ProviderAuthenticationSource.ApiKey && key.Password.Trim().Length == 0 && !(existing?.Authentication.Configured ?? false);
         Ui.Show(keyError, keyMissing ? "请填写 API key" : "");
         var incomplete = QuotaIncomplete();
         return draft.Name.Length > 0 && !endpointMissing && !binaryMissing && draft.Models.Length > 0 && !missingID && !invalidTokens && !keyMissing && !incomplete;
@@ -237,7 +236,7 @@ sealed partial class ProviderEditor : UserControl
             return false;
         }
         var authentication = AuthenticationEdit();
-        var quotaEdit = quotaSource == BindingProviderQuotaSource.ArkCodingUsage ? QuotaEdit() : null;
+        var quotaEdit = quotaSource == ProviderQuotaSource.ArkCodingUsage ? QuotaEdit() : null;
         page.Busy = true;
         save.IsEnabled = false;
         try
@@ -287,7 +286,7 @@ sealed partial class ProviderEditor : UserControl
     }
 
     // Saved replaces the provider the editor shows with what the core keeps now.
-    void Saved(BindingGatewayConfig[] gateways)
+    void Saved(GatewaySummary[] gateways)
     {
         var saved = page.SetGateway(gateways);
         if (existing != null)

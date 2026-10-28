@@ -2,7 +2,6 @@ using Microsoft.UI.Input;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
-using Velune.Bindings;
 using Windows.System;
 using Windows.UI.Core;
 
@@ -13,13 +12,13 @@ namespace Velune;
 // shortcuts, which are this app's own. Each change saves at once.
 sealed class GeneralPage : UserControl
 {
-    static readonly (BindingStatusLineItem Item, string Name)[] statusItems =
+    static readonly (StatusLineItem Item, string Name)[] statusItems =
     [
-        (BindingStatusLineItem.ContextUsage, "上下文用量"),
-        (BindingStatusLineItem.SessionTokens, "本会话累计 token"),
-        (BindingStatusLineItem.WorkingDirectory, "工作目录与分支"),
-        (BindingStatusLineItem.RateLimits, "账户额度"),
-        (BindingStatusLineItem.SessionCost, "费用估算"),
+        (StatusLineItem.ContextUsage, "上下文用量"),
+        (StatusLineItem.SessionTokens, "本会话累计 token"),
+        (StatusLineItem.WorkingDirectory, "工作目录与分支"),
+        (StatusLineItem.RateLimits, "账户额度"),
+        (StatusLineItem.SessionCost, "费用估算"),
     ];
 
     readonly Core core;
@@ -28,18 +27,18 @@ sealed class GeneralPage : UserControl
     readonly NumberBox page = new() { Minimum = 1, Maximum = 500, SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Compact, MinWidth = 120 };
     readonly NumberBox total = new() { Minimum = 1, Maximum = 5000, SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Compact, MinWidth = 120 };
     readonly ComboBox outline = new() { Items = { "弹出面板", "就地折叠" }, MinWidth = 120 };
-    static readonly (BindingLinkedConversationOpening Opening, string Name)[] openings =
+    static readonly (LinkedConversationOpening Opening, string Name)[] openings =
     [
-        (BindingLinkedConversationOpening.CurrentTab, "当前标签页"),
-        (BindingLinkedConversationOpening.NewTab, "新标签页"),
-        (BindingLinkedConversationOpening.Sheet, "浮层"),
-        (BindingLinkedConversationOpening.NewWindow, "新窗口"),
+        (LinkedConversationOpening.CurrentTab, "当前标签页"),
+        (LinkedConversationOpening.NewTab, "新标签页"),
+        (LinkedConversationOpening.Sheet, "浮层"),
+        (LinkedConversationOpening.NewWindow, "新窗口"),
     ];
     readonly ComboBox linked = new() { MinWidth = 120 };
     readonly Commands commands;
     // The command whose shortcut is being recorded, with its row's parts.
     (Command Command, Button Button, TextBlock Error, Action Show)? recording;
-    readonly List<(BindingStatusLineItem Item, CheckBox Box)> status = [];
+    readonly List<(StatusLineItem Item, CheckBox Box)> status = [];
     // Set while the page shows what the device keeps, which is no change.
     bool showing;
 
@@ -86,9 +85,9 @@ sealed class GeneralPage : UserControl
         panel.Children.Add(Shortcuts());
 
         Content = new ScrollViewer { Content = panel };
-        usage.SelectionChanged += (_, _) => Save(application => application.SetUsageDisplay(usage.SelectedIndex == 1 ? BindingUsageDisplay.Remaining : BindingUsageDisplay.Used));
-        contextUsage.SelectionChanged += (_, _) => Save(application => application.SetContextUsageDisplay(contextUsage.SelectedIndex == 1 ? BindingUsageDisplay.Remaining : BindingUsageDisplay.Used));
-        outline.SelectionChanged += (_, _) => Save(application => application.SetOutlinePresentation(outline.SelectedIndex == 1 ? BindingOutlinePresentation.InPlace : BindingOutlinePresentation.Popover));
+        usage.SelectionChanged += (_, _) => Save(application => application.SetUsageDisplay(usage.SelectedIndex == 1 ? UsageDisplay.Remaining : UsageDisplay.Used));
+        contextUsage.SelectionChanged += (_, _) => Save(application => application.SetContextUsageDisplay(contextUsage.SelectedIndex == 1 ? UsageDisplay.Remaining : UsageDisplay.Used));
+        outline.SelectionChanged += (_, _) => Save(application => application.SetOutlinePresentation(outline.SelectedIndex == 1 ? OutlinePresentation.InPlace : OutlinePresentation.Popover));
         linked.SelectionChanged += (_, _) =>
         {
             if (linked.SelectedIndex >= 0)
@@ -108,9 +107,9 @@ sealed class GeneralPage : UserControl
         {
             var snapshot = await Task.Run(() => core.Local.List());
             showing = true;
-            usage.SelectedIndex = snapshot.UsageDisplay == BindingUsageDisplay.Remaining ? 1 : 0;
-            contextUsage.SelectedIndex = snapshot.ContextUsageDisplay == BindingUsageDisplay.Remaining ? 1 : 0;
-            outline.SelectedIndex = snapshot.OutlinePresentation == BindingOutlinePresentation.InPlace ? 1 : 0;
+            usage.SelectedIndex = snapshot.UsageDisplay == UsageDisplay.Remaining ? 1 : 0;
+            contextUsage.SelectedIndex = snapshot.ContextUsageDisplay == UsageDisplay.Remaining ? 1 : 0;
+            outline.SelectedIndex = snapshot.OutlinePresentation == OutlinePresentation.InPlace ? 1 : 0;
             linked.SelectedIndex = Array.FindIndex(openings, entry => entry.Opening == snapshot.LinkedConversationOpening);
             page.Value = snapshot.ConversationBrowserLimits.Page;
             total.Value = snapshot.ConversationBrowserLimits.Total;
@@ -267,7 +266,7 @@ sealed class GeneralPage : UserControl
         {
             return;
         }
-        var limits = new BindingConversationBrowserLimits((uint)page.Value, (uint)total.Value);
+        var limits = new ConversationBrowserLimits((uint)page.Value, (uint)total.Value);
         Save(application => application.SetConversationBrowserLimits(limits));
     }
 

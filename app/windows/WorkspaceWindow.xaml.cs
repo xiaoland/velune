@@ -1,9 +1,9 @@
+using System.Threading;
 using Microsoft.UI.Composition.SystemBackdrops;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media;
-using Velune.Bindings;
 using Windows.Graphics;
 
 namespace Velune;
@@ -514,10 +514,10 @@ public sealed partial class WorkspaceWindow : Window
         flyout.ShowAt(pane.LinkedButton);
     }
 
-    internal async void OpenLinked(string conversationID, BindingLinkedConversationOpening? how = null)
+    internal async void OpenLinked(string conversationID, LinkedConversationOpening? how = null)
     {
         var target = Device;
-        BindingListedConversation? found;
+        ListedConversation? found;
         try
         {
             found = await Shell.Core.Call(target, NativeOperation.ConversationRead, application => application.FindConversation(conversationID));
@@ -536,16 +536,16 @@ public sealed partial class WorkspaceWindow : Window
             Problems.Report("打开关联会话", "这台设备上找不到该会话。", target);
             return;
         }
-        var linked = new Target(found.Conversation.RuntimeId, found.Conversation.Id, found.Conversation.Title);
+        var linked = new Target(found.Conversation.RuntimeId, found.Conversation.Id, found.Conversation.Title.DisplayText());
         switch (how ?? Listing.Configuration.LinkedOpening)
         {
-            case BindingLinkedConversationOpening.CurrentTab:
+            case LinkedConversationOpening.CurrentTab:
                 Open(linked, Opening.CurrentTab);
                 break;
-            case BindingLinkedConversationOpening.NewWindow when Editor.Find(linked.ConversationID) == null:
+            case LinkedConversationOpening.NewWindow when Editor.Find(linked.ConversationID) == null:
                 Shell.OpenConversationWindow(Device, null, linked, null);
                 break;
-            case BindingLinkedConversationOpening.Sheet when Editor.Find(linked.ConversationID) == null:
+            case LinkedConversationOpening.Sheet when Editor.Find(linked.ConversationID) == null:
                 ShowSheet(linked);
                 break;
             default:
@@ -596,12 +596,12 @@ public sealed partial class WorkspaceWindow : Window
     }
 
     // SaveTitle renames a conversation in its runtime, showing the title at once.
-    internal void SaveTitle(BindingListedConversation listed, string title)
+    internal void SaveTitle(ListedConversation listed, string title)
     {
         var conversations = Listing.Conversations;
         if (conversations.IndexOf(listed) is var at and >= 0)
         {
-            conversations[at] = listed with { Conversation = listed.Conversation with { Title = title } };
+            conversations[at] = listed with { Conversation = listed.Conversation with { Title = new ConversationTitle.Native(title) } };
         }
         Shell.Listings.Notify(Device);
         Shell.Listings.Write(Device, "重命名会话", NativeOperation.ConversationWrite, application => application.RenameConversation(listed.Conversation.RuntimeId, listed.Conversation.Id, title));
@@ -710,9 +710,9 @@ public sealed partial class WorkspaceWindow : Window
     }
 
     // RenameTab asks for a conversation's new title.
-    async void RenameTab(BindingListedConversation listed)
+    async void RenameTab(ListedConversation listed)
     {
-        var input = new TextBox { Text = listed.Conversation.Title };
+        var input = new TextBox { Text = listed.Conversation.Title.DisplayText() };
         var dialog = new ContentDialog
         {
             Title = "重命名会话",
@@ -722,7 +722,7 @@ public sealed partial class WorkspaceWindow : Window
             DefaultButton = ContentDialogButton.Primary,
         };
         input.Loaded += (_, _) => input.SelectAll();
-        if (await ShowDialog(dialog) == ContentDialogResult.Primary && input.Text.Trim() is { Length: > 0 } title && title != listed.Conversation.Title)
+        if (await ShowDialog(dialog) == ContentDialogResult.Primary && input.Text.Trim() is { Length: > 0 } title && title != listed.Conversation.Title.DisplayText())
         {
             SaveTitle(listed, title);
         }

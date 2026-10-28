@@ -1,6 +1,5 @@
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
-using Velune.Bindings;
 
 namespace Velune;
 
@@ -24,7 +23,7 @@ public sealed partial class WorkspaceWindow
             var result = await Shell.Core.Call(device, NativeOperation.ConversationRead, application => application.ResolveAgentUri(uri, null));
             if (closed) { return; }
             foreach (var problem in result.Failures) { Problems.Report("打开会话 · " + problem.RuntimeId, problem.Detail, device); }
-            BindingConversationSummary? chosen = null;
+            ConversationSummary? chosen = null;
             if (result.Conversations.Length == 1 && result.Failures.Length == 0)
             {
                 chosen = result.Conversations[0].Conversation;
@@ -39,10 +38,10 @@ public sealed partial class WorkspaceWindow
                 {
                     var summary = item.Conversation;
                     var name = Shell.Listings.Of(device).Configuration.Runtime(summary.RuntimeId)?.Name ?? summary.RuntimeId;
-                    var content = new StackPanel { Spacing = 2, Children = { Ui.Text(summary.Title), Ui.Muted(name) } };
+                    var content = new StackPanel { Spacing = 2, Children = { Ui.Text(summary.Title.DisplayText()), Ui.Muted(name) } };
                     if (summary.Cwd is { } cwd) { content.Children.Add(Ui.Muted(cwd)); }
                     var row = new ListViewItem { Content = content, Tag = summary };
-                    Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(row, summary.Title + " · " + name);
+                    Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(row, summary.Title.DisplayText() + " · " + name);
                     matches.Items.Add(row);
                 }
                 var dialog = new ContentDialog
@@ -54,13 +53,13 @@ public sealed partial class WorkspaceWindow
                 matches.SelectionChanged += (_, _) => dialog.IsPrimaryButtonEnabled = matches.SelectedItem != null;
                 if (await ShowDialog(dialog) == ContentDialogResult.Primary)
                 {
-                    chosen = (matches.SelectedItem as ListViewItem)?.Tag as BindingConversationSummary;
+                    chosen = (matches.SelectedItem as ListViewItem)?.Tag as ConversationSummary;
                 }
             }
             if (!closed && chosen is { } conversation)
             {
                 SwitchTo(device);
-                Open(new Target(conversation.RuntimeId, conversation.Id, conversation.Title), Opening.CurrentTab);
+                Open(new Target(conversation.RuntimeId, conversation.Id, conversation.Title.DisplayText()), Opening.CurrentTab);
             }
         }
         catch (Exception error)

@@ -1,6 +1,5 @@
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
-using Velune.Bindings;
 
 namespace Velune;
 
@@ -24,14 +23,14 @@ sealed class ProvidersPage : UserControl
     readonly Button remove = Ui.IconButton("\uE738", "删除 AI 提供商");
     readonly Button edit = new() { Content = "编辑…" };
     ProviderEditor? editor;
-    BindingProviderDefinition[] providers = [];
-    internal BindingProtocolDescriptor[] Protocols { get; private set; } = [];
-    internal BindingProviderTemplate[] Templates { get; private set; } = [];
-    internal BindingModelTemplate[] ModelTemplates { get; private set; } = [];
-    internal BindingRuntimeInstance[] Runtimes { get; private set; } = [];
-    internal BindingRuntimeTypeDescriptor[] RuntimeTypes { get; private set; } = [];
-    internal BindingRuntimeTypeDescriptor[] ImportTypes { get; private set; } = [];
-    internal BindingUsageDisplay Usage { get; private set; } = BindingUsageDisplay.Used;
+    ProviderSummary[] providers = [];
+    internal ProtocolDescriptor[] Protocols { get; private set; } = [];
+    internal ProviderTemplate[] Templates { get; private set; } = [];
+    internal ModelTemplate[] ModelTemplates { get; private set; } = [];
+    internal RuntimeInstance[] Runtimes { get; private set; } = [];
+    internal RuntimeTypeDescriptor[] RuntimeTypes { get; private set; } = [];
+    internal RuntimeTypeDescriptor[] ImportTypes { get; private set; } = [];
+    internal UsageDisplay Usage { get; private set; } = UsageDisplay.Used;
     internal bool Busy { get; set; }
 
     internal ProvidersPage(Core core, SettingsWindow window)
@@ -78,7 +77,7 @@ sealed class ProvidersPage : UserControl
         shown.Content = tabs.SelectedItem == tabs.Items[1] ? templateList : providerList;
     }
 
-    BindingProviderDefinition? Chosen() => list.SelectedIndex is var index and >= 0 && index < providers.Length ? providers[index] : null;
+    ProviderSummary? Chosen() => list.SelectedIndex is var index and >= 0 && index < providers.Length ? providers[index] : null;
 
     void ShowActions()
     {
@@ -109,7 +108,7 @@ sealed class ProvidersPage : UserControl
     }
 
     // SetGateway shows the providers saved now; it returns them.
-    internal BindingProviderDefinition[] SetGateway(BindingGatewayConfig[] gateways)
+    internal ProviderSummary[] SetGateway(GatewaySummary[] gateways)
     {
         var selected = Chosen()?.Id;
         providers = gateways.FirstOrDefault(gateway => gateway.Id == DefaultGateway)?.Providers ?? [];
@@ -138,10 +137,10 @@ sealed class ProvidersPage : UserControl
 
     // Summary is a provider's row detail: its models, where it connects, and
     // whether its sign-in is done.
-    static string Summary(BindingProviderDefinition provider)
+    static string Summary(ProviderSummary provider)
     {
         var parts = new List<string> { $"{provider.Models.Length} 个模型" };
-        if (provider.ExecutionBackend is BindingExecutionBackend.ClaudeCli)
+        if (provider.ExecutionBackend is ExecutionBackend.ClaudeCli)
         {
             parts.Add("Claude Code CLI");
         }
@@ -149,20 +148,20 @@ sealed class ProvidersPage : UserControl
         {
             parts.Add(provider.Endpoint);
         }
-        if (provider.AuthenticationSource != BindingProviderAuthenticationSource.None && !provider.Authentication.Configured)
+        if (provider.AuthenticationSource != ProviderAuthenticationSource.None && !provider.Authentication.Configured)
         {
-            parts.Add(provider.Authentication.Method == BindingAuthenticationMethod.OAuth ? "未登录" : "未配置认证");
+            parts.Add(provider.Authentication.Method == AuthenticationMethod.OAuth ? "未登录" : "未配置认证");
         }
         return string.Join(" · ", parts);
     }
 
-    internal string ProtocolName(BindingGatewayProtocol protocol) =>
+    internal string ProtocolName(Protocol protocol) =>
         Protocols.FirstOrDefault(descriptor => descriptor.Id == protocol)?.Name ?? $"协议 {protocol}";
 
     // IsSubscription tells whether a provider's connection is fixed by a
     // subscription template, so its protocol and address are not edited.
-    internal bool IsSubscription(BindingRequestProfile profile, BindingProviderAuthenticationSource authentication, BindingProviderQuotaSource quota) =>
-        Templates.Any(template => template.Kind == BindingProviderTemplateKind.Subscription
+    internal bool IsSubscription(RequestProfile profile, ProviderAuthenticationSource authentication, ProviderQuotaSource quota) =>
+        Templates.Any(template => template.Kind == ProviderTemplateKind.Subscription
             && template.RequestProfile == profile && template.AuthenticationSource == authentication && template.QuotaSource == quota);
 
     async void Add()
@@ -204,7 +203,7 @@ sealed class ProvidersPage : UserControl
         }
     }
 
-    void Edit(BindingProviderDefinition? existing)
+    void Edit(ProviderSummary? existing)
     {
         if (existing != null)
         {
@@ -255,7 +254,7 @@ sealed class ProvidersPage : UserControl
 
     internal void ShowNotice(string message) => Ui.Show(notice, message);
 
-    internal void SetModelTemplates(BindingModelTemplate[] saved)
+    internal void SetModelTemplates(ModelTemplate[] saved)
     {
         ModelTemplates = saved;
         templateList.Show(saved);

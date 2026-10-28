@@ -1,7 +1,6 @@
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
-using Velune.Bindings;
 
 namespace Velune;
 
@@ -23,13 +22,13 @@ sealed class Draft
 
     // The resource's ID; empty until it is saved.
     public string Id = "";
-    public BindingRuntimeResourceKind Kind;
+    public RuntimeResourceKind Kind;
     public string Name = "";
     public bool Dirty;
     // 指令: the whole file. 技能: its SKILL.md.
     public string Body = "";
     // A skill's other files, kept as they are.
-    public BindingTemplateSkillFile[] Files = [];
+    public TemplateSkillFile[] Files = [];
     public bool EntryExecutable;
     // MCP 服务器.
     public bool Http;
@@ -50,37 +49,37 @@ sealed class Draft
     public string Tools = "";
     public List<string> Skills = [];
 
-    public static Draft New(BindingRuntimeResourceKind kind) => new()
+    public static Draft New(RuntimeResourceKind kind) => new()
     {
         Kind = kind,
         Dirty = true,
-        Name = kind == BindingRuntimeResourceKind.UserInstructions ? "指令" : "",
-        Body = kind == BindingRuntimeResourceKind.Skills ? "---\nname: \ndescription: \n---\n\n" : "",
+        Name = kind == RuntimeResourceKind.UserInstructions ? "指令" : "",
+        Body = kind == RuntimeResourceKind.Skills ? "---\nname: \ndescription: \n---\n\n" : "",
     };
 
-    public static Draft From(BindingResourceTemplate template)
+    public static Draft From(ResourceTemplate template)
     {
         var draft = new Draft { Id = template.Id, Name = template.Name };
         switch (template.Content)
         {
-            case BindingResourceTemplateContent.Instructions instructions:
-                draft.Kind = BindingRuntimeResourceKind.UserInstructions;
+            case ResourceTemplateContent.Instructions instructions:
+                draft.Kind = RuntimeResourceKind.UserInstructions;
                 draft.Body = instructions.Body;
                 break;
-            case BindingResourceTemplateContent.Skill skill:
-                draft.Kind = BindingRuntimeResourceKind.Skills;
+            case ResourceTemplateContent.Skill skill:
+                draft.Kind = RuntimeResourceKind.Skills;
                 var entry = skill.Files.FirstOrDefault(file => file.Path == SkillEntry);
                 draft.Body = entry != null ? Encoding.UTF8.GetString(entry.Bytes) : "";
                 draft.EntryExecutable = entry?.Executable ?? false;
                 draft.Files = [.. skill.Files.Where(file => file.Path != SkillEntry)];
                 break;
-            case BindingResourceTemplateContent.Mcp mcp:
-                draft.Kind = BindingRuntimeResourceKind.McpServers;
+            case ResourceTemplateContent.Mcp mcp:
+                draft.Kind = RuntimeResourceKind.McpServers;
                 draft.SetTransport(mcp.Transport);
                 draft.Timeout = mcp.TimeoutSeconds?.ToString() ?? "";
                 break;
-            case BindingResourceTemplateContent.Subagent agent:
-                draft.Kind = BindingRuntimeResourceKind.NativeAgentDefinitions;
+            case ResourceTemplateContent.Subagent agent:
+                draft.Kind = RuntimeResourceKind.NativeAgentDefinitions;
                 draft.Description = agent.Description;
                 draft.Instructions = agent.InstructionsValue;
                 draft.Model = agent.VeluneModel != null ? SubagentModel.Velune : agent.Model != null ? SubagentModel.Native : SubagentModel.Parent;
@@ -94,18 +93,18 @@ sealed class Draft
         return draft;
     }
 
-    void SetTransport(BindingTemplateMcpTransport transport)
+    void SetTransport(TemplateMcpTransport transport)
     {
         switch (transport)
         {
-            case BindingTemplateMcpTransport.Stdio stdio:
+            case TemplateMcpTransport.Stdio stdio:
                 Http = false;
                 Command = stdio.Command;
                 Args = string.Join("\n", stdio.Args);
                 Cwd = stdio.Cwd ?? "";
                 Env = [.. stdio.Env.OrderBy(entry => entry.Key).Select(entry => new Pair { Key = entry.Key, Value = entry.Value })];
                 break;
-            case BindingTemplateMcpTransport.Http http:
+            case TemplateMcpTransport.Http http:
                 Http = true;
                 Url = http.Url;
                 Headers = [.. http.Headers.OrderBy(entry => entry.Key).Select(entry => new Pair { Key = entry.Key, Value = entry.Value })];
@@ -119,7 +118,7 @@ sealed class Draft
         var copy = (Draft)MemberwiseClone();
         copy.Id = "";
         copy.Dirty = true;
-        copy.Name = Kind == BindingRuntimeResourceKind.UserInstructions ? Name + " 副本" : Name + "-copy";
+        copy.Name = Kind == RuntimeResourceKind.UserInstructions ? Name + " 副本" : Name + "-copy";
         copy.Env = [.. Env.Select(pair => new Pair { Key = pair.Key, Value = pair.Value })];
         copy.Headers = [.. Headers.Select(pair => new Pair { Key = pair.Key, Value = pair.Value })];
         copy.Skills = [.. Skills];
@@ -128,13 +127,13 @@ sealed class Draft
 
     // Template is the resource to save; a field that does not read throws
     // FormatException with what is wrong.
-    public BindingResourceTemplate Template() => new(Id, Name.Trim(), Kind switch
+    public ResourceTemplate Template() => new(Id, Name.Trim(), Kind switch
     {
-        BindingRuntimeResourceKind.UserInstructions => new BindingResourceTemplateContent.Instructions(Body),
-        BindingRuntimeResourceKind.Skills => new BindingResourceTemplateContent.Skill(
-            [new BindingTemplateSkillFile(SkillEntry, Encoding.UTF8.GetBytes(Body), EntryExecutable), .. Files]),
-        BindingRuntimeResourceKind.McpServers => new BindingResourceTemplateContent.Mcp(Transport(), TimeoutSeconds()),
-        _ => new BindingResourceTemplateContent.Subagent(
+        RuntimeResourceKind.UserInstructions => new ResourceTemplateContent.Instructions(Body),
+        RuntimeResourceKind.Skills => new ResourceTemplateContent.Skill(
+            [new TemplateSkillFile(SkillEntry, Encoding.UTF8.GetBytes(Body), EntryExecutable), .. Files]),
+        RuntimeResourceKind.McpServers => new ResourceTemplateContent.Mcp(Transport(), TimeoutSeconds()),
+        _ => new ResourceTemplateContent.Subagent(
             Description,
             Instructions,
             Model == SubagentModel.Native ? Required(NativeModel, "原生模型 ID") : null,
@@ -147,9 +146,9 @@ sealed class Draft
     static string Required(string value, string what) =>
         value.Trim() is { Length: > 0 } given ? given : throw new FormatException($"请填写{what}。");
 
-    BindingTemplateMcpTransport Transport() => Http
-        ? new BindingTemplateMcpTransport.Http(Required(Url, "URL"), Map(Headers, "请求头"))
-        : new BindingTemplateMcpTransport.Stdio(
+    TemplateMcpTransport Transport() => Http
+        ? new TemplateMcpTransport.Http(Required(Url, "URL"), Map(Headers, "请求头"))
+        : new TemplateMcpTransport.Stdio(
             Required(Command, "命令"),
             [.. Args.Split('\n').Select(arg => arg.TrimEnd('\r')).Where(arg => arg.Length > 0)],
             Map(Env, "环境变量"),

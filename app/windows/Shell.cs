@@ -4,7 +4,6 @@ using Microsoft.UI.Xaml.Controls;
 using Microsoft.Windows.AppLifecycle;
 using Microsoft.Windows.AppNotifications;
 using Windows.ApplicationModel.Activation;
-using Velune.Bindings;
 
 namespace Velune;
 
@@ -402,7 +401,7 @@ sealed class Shell
     async void NextApproval()
     {
         var pairing = Hub.State?.IncomingPairings.FirstOrDefault(pairing =>
-            pairing.Phase == BindingPairingPhase.AwaitingApproval && !prompted.Contains(pairing.AttemptId));
+            pairing.Phase == PairingPhase.AwaitingApproval && !prompted.Contains(pairing.AttemptId));
         if (pairing == null || latest is not { } window)
         {
             return;
@@ -437,7 +436,7 @@ sealed class Shell
     // AskApproval asks whether a device may control this PC. Both devices show
     // the same code; only the user here can let the other one in. Neither
     // answer is the default, so a stray Enter or Esc grants nothing.
-    async Task<bool> AskApproval(WorkspaceWindow window, BindingPairingStatus pairing)
+    async Task<bool> AskApproval(WorkspaceWindow window, PairingStatus pairing)
     {
         var code = new TextBlock
         {
@@ -449,13 +448,13 @@ sealed class Shell
         };
         var dialog = new ContentDialog
         {
-            Title = pairing.Permission == BindingPairingPermission.TelemetryProfileRead ? $"“{pairing.Name}”请求读取遥测配置" : $"“{pairing.Name}”请求控制这台电脑",
+            Title = pairing.Permission == PairingPermission.TelemetryProfileRead ? $"“{pairing.Name}”请求读取遥测配置" : $"“{pairing.Name}”请求控制这台电脑",
             Content = new StackPanel
             {
                 Spacing = 16,
                 Children =
                 {
-                    new TextBlock { Text = pairing.Permission == BindingPairingPermission.TelemetryProfileRead ? "确认两台设备显示相同的核对码。允许后，对方可以读取本机保存的遥测连接、认证和采样配置。" : "确认两台设备显示相同的核对码。允许后，对方可以查看和操作这台电脑上的会话。", TextWrapping = TextWrapping.Wrap },
+                    new TextBlock { Text = pairing.Permission == PairingPermission.TelemetryProfileRead ? "确认两台设备显示相同的核对码。允许后，对方可以读取本机保存的遥测连接、认证和采样配置。" : "确认两台设备显示相同的核对码。允许后，对方可以查看和操作这台电脑上的会话。", TextWrapping = TextWrapping.Wrap },
                     code,
                 },
             },

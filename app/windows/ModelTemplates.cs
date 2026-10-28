@@ -1,6 +1,5 @@
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
-using Velune.Bindings;
 
 namespace Velune;
 
@@ -12,13 +11,13 @@ sealed class ModelTemplatesList : UserControl
     readonly ListView list = new() { SelectionMode = ListViewSelectionMode.Single, IsDoubleTapEnabled = true };
     readonly Button remove = Ui.IconButton("\uE738", "删除模型模板");
     readonly Button edit = new() { Content = "编辑…" };
-    BindingModelTemplate[] templates = [];
+    ModelTemplate[] templates = [];
 
     internal ModelTemplatesList(ProvidersPage page)
     {
         this.page = page;
         var add = Ui.IconButton("\uE710", "添加模型模板");
-        add.Click += async (_, _) => await Edit(page, new BindingModelTemplate("", "", "", "", null, null, null, null), true);
+        add.Click += async (_, _) => await Edit(page, new ModelTemplate("", "", "", "", null, null, null, null), true);
         remove.Click += (_, _) => Delete();
         edit.Click += (_, _) => EditChosen();
         list.SelectionChanged += (_, _) => ShowActions();
@@ -35,7 +34,7 @@ sealed class ModelTemplatesList : UserControl
         ShowActions();
     }
 
-    BindingModelTemplate? Chosen() => list.SelectedIndex is var index and >= 0 && index < templates.Length ? templates[index] : null;
+    ModelTemplate? Chosen() => list.SelectedIndex is var index and >= 0 && index < templates.Length ? templates[index] : null;
 
     void ShowActions()
     {
@@ -51,7 +50,7 @@ sealed class ModelTemplatesList : UserControl
         }
     }
 
-    internal void Show(BindingModelTemplate[] shown)
+    internal void Show(ModelTemplate[] shown)
     {
         var selected = Chosen()?.Id;
         templates = [.. shown.OrderBy(template => template.Name, StringComparer.CurrentCultureIgnoreCase)];
@@ -103,7 +102,7 @@ sealed class ModelTemplatesList : UserControl
 
     // Edit edits a template in a dialog, adding it when isNew; the dialog
     // stays open until it saves or the user cancels.
-    internal static async Task Edit(ProvidersPage page, BindingModelTemplate template, bool isNew)
+    internal static async Task Edit(ProvidersPage page, ModelTemplate template, bool isNew)
     {
         var name = new TextBox { Header = "模板名称", Text = template.Name };
         var id = new TextBox { Header = "建议的模型 ID", Text = template.SuggestedProviderModelId, PlaceholderText = "填入提供商模型时可再修改" };

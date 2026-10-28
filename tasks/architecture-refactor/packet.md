@@ -38,7 +38,7 @@
 | 0 | 修复基线 clippy；删除 `manual-*.py`；建立本任务包 | 不变 | 完成 |
 | 1 | 删除核心内部 JSON 协议：`Command` 直接分派到类型化用例 | 不变 | 完成 |
 | 2 | Harness 适配器接口；拆分 `gateway/runtime.rs` 等超大模块 | 不变 | 完成 |
-| 3 | FFI 表面：删除 `Binding*` 镜像与 JSON 转换、合并远控转换层；四端机械更新，删除 Mac 映射层 | 变化 | 进行中 |
+| 3 | FFI 表面：删除 `Binding*` 镜像与 JSON 转换、合并远控转换层；四端机械更新，删除 Mac 映射层 | 变化 | 完成 |
 | 4 | 平台 app 结构：拆分 Mac `AppStore` 与 Windows 对应部分；把平台自行计算的产品规则移回核心 | 不变 | 待开始 |
 | 5 | 测试：复核现有 Rust 测试，只为真实不变量重建少量分层检查 | 不变 | 待开始 |
 | 6 | 文档：重写 development、architecture 等为当前事实；归档已完成任务包 | 不变 | 待开始 |
@@ -77,6 +77,8 @@
 - 契约随之收紧：平台构造的记录在 Rust 上声明 UniFFI 缺省值（`TurnChoice`、`TurnSettings`、`ProviderModel`、`ModelTemplate` 的可选字段，`RuntimeInstance.enabled`，`SettingField.executable_discovery`）；`ProviderQuotaStatus`／`RuntimeQuotaStatus` 改为携带 `QuotaObservation`，不再三处重复观测字段；`ImportProviderCandidate.protocol` 改为 `Option<Protocol>`（原 Mac 以 `rawValue` 比较带 `V1` 后缀的来源协议名，从未匹配）。
 - 平台追平：iOS 原生脚本为各 crate 头文件写合并 modulemap，Xcode 工程引用全部生成文件；Android 的 Kotlin 按 crate 分包（`app.velune.bindings.conversation`／`.application`／`.telemetry`／`.remote`）。`Command::List`／`Response::List` 在 Kotlin 中成为密封类内的嵌套类 `List`，遮蔽 `kotlin.collections.List`，生成代码无法编译；改名为 `ReadConfiguration`（`CommandKind` 同步），远控 wire 标签随之变化，旧端得到未知变体错误。iOS 以模拟器 `--preview`（含 Debug 断言）、Android 以只读模拟器上的 `GalleryActivity` 检查渲染。
 - 验证（2026-10-29，每步一次）：workspace clippy／test、bindings remote-only 与 remote-diagnostics clippy 通过；12 个删除前回归脚本按新名机械改写（另以临时 Python shim 兼容字符串类型 ID 与标题比较）后全部通过；Mac 应用构建并在隔离 `VELUNE_HOME` 后台启动，无告警；删除映射层后另以 `--preview` 样例数据检查转录与模型选择渲染。
+- Windows 追平：应用直接使用各 crate 的生成类型（`BindingConversationSnapshot` → `DeliveredSnapshot` 等），csproj 编入 `target\bindings\cs` 下全部生成文件。生成的 C# 有四类名称冲突，均在契约或配置侧解决而不改生成物：命名空间改为 `VeluneFfi.<crate>`（在 `Velune` 下时应用的 `ToolState` 遮蔽契约类型，`VeluneTelemetry` 这类与导出对象同名的命名空间被类型遮蔽）；`Command`／`Response`／`CommandKind` 中名词形式的变体一律改为动词短语（`Snapshot` → `ReadSnapshot`、`SendQueue` → `EditSendQueue`、`AuthenticationStart` → `StartAuthentication` 等 36 个；变体是嵌套类，与类型同名会遮蔽兄弟变体字段的类型），bindings 方法名不变；远控 `PendingOperation.view` 改为字符串（生成器不为别的 crate 的自定义类型生成别名，JSON 编码不变）；应用移除隐式 `System.Threading` using（与契约 `ExecutionContext` 歧义）。原先字符串化的字段现在是类型：标题经 `DisplayText()` 显示（两处字符串拼接原本会静默输出记录的 `ToString()`），`RuntimeKind` 经 `ToDisplayString()`，导入候选的协议按协议描述显示名称。
+- 验证（2026-10-29）：Mac 上以 .NET 8 SDK 单独编译生成的 C#（附 `Velune.ToolState`／`Command` 桩类型）复现并确认上述冲突已解决；win-ws worktree 中 `build-windows.ps1` 发布无警告；隔离 `VELUNE_HOME` 在交互会话中启动，仅对 Velune 窗口 PrintWindow 截图并读取 UIA 名称：主窗口、设置各页与“添加 Agent 运行时”对话框（类型与设置字段）渲染正常，核心操作日志全部成功。Mac、iOS、Android 随重新生成的绑定构建通过，Mac 隔离启动无告警；workspace clippy／test、bindings 两组 feature clippy 与 12 个回归脚本通过。
 - 无平台调用的其他导出（2026-10-29 统计）：`configure_runtime_execution`、`next_turn_model_selection`、`open_acp_conversation`、`runtime_quota`、运行时资源四个读写方法，以及远控 `acknowledge`、`acknowledge_reset`、`apply_network`、`controller_status`、`disconnect`、`expect_revision`、`list_with_revision`、`network_change`、`network_state`、`observe_paths`、`observed_revision`、`reconnect`、`record_legacy_state_reset`、`refresh_local_discovery`、`remote_descriptor`、`retry_network`、`update_contact_locator`。它们对应已设计的能力，阶段 3 末与平台追平一起决定删除或保留。
 
 ## 留待后续阶段
@@ -84,7 +86,9 @@
 - 运行时设置仍是 `BTreeMap<String, String>`（如 `acpLaunch`）；`AuthenticationEvent` 是松散结构；`ProviderImportSource` 可收窄；三个 “Source” 类型并存。
 - `repository.rs` 仍为旧配置补 `contextUsageDisplay`，配套测试在阶段 5 复核。
 - `service::usage_tests` 曾在一次 workspace 测试中于 `open().unwrap()` 失败、重跑通过，阶段 5 复核是否有共享状态。
+- 远控 `store.rs` 仍接受 v3 状态文件并迁移（测试 `v3_preserves_contacts_grants_pending_and_notice_without_sharing_consent`），与“持久化数据硬切、不做迁移”的决定不符，阶段 5 删除。
 
 ## 待用户决定
 
 - 阶段 6 已完成任务包的处理：删除（git 保留）或合并为简短结论。
+- 上列无平台调用的导出：建议保留（均对应已设计的远控与运行时管理能力，删除后再接入要重新设计契约），待确认。

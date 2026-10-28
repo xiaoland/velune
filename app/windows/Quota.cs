@@ -1,5 +1,3 @@
-using Velune.Bindings;
-
 namespace Velune;
 
 // How quota windows read, wherever the core's observation is shown.
@@ -28,10 +26,10 @@ static class Quota
 
     // Detail is a window's use as the usage display shows it, its limit when
     // one is set, when it resets, and whether the observation is old.
-    public static string Detail(BindingQuotaWindowObservation window, BindingQuotaFreshness freshness, BindingUsageDisplay usage, BindingQuotaLimit? limit = null)
+    public static string Detail(QuotaWindowObservation window, QuotaFreshness freshness, UsageDisplay usage, QuotaLimit? limit = null)
     {
         var used = Math.Clamp(window.UsedPercent, 0, 100);
-        var remaining = usage == BindingUsageDisplay.Remaining;
+        var remaining = usage == UsageDisplay.Remaining;
         var parts = new List<string> { remaining ? $"剩余 {100 - used:0.#}%" : $"已用 {used:0.#}%" };
         if (limit != null)
         {
@@ -49,7 +47,7 @@ static class Quota
         {
             parts.Add("适用于 " + string.Join("、", scoped));
         }
-        if (freshness == BindingQuotaFreshness.Stale || (window.ExpiresAtMs is long expiry && expiry < DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()))
+        if (freshness == QuotaFreshness.Stale || (window.ExpiresAtMs is long expiry && expiry < DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()))
         {
             parts.Add("观测已过期");
         }
@@ -58,8 +56,8 @@ static class Quota
 
     // Short tells that, at the average rate so far, a freshly observed
     // window runs out before it resets.
-    public static bool Short(BindingQuotaWindowObservation window, BindingQuotaFreshness freshness) =>
-        freshness == BindingQuotaFreshness.Fresh && window.Pace?.Status == BindingQuotaPaceStatus.RunsOutBeforeReset;
+    public static bool Short(QuotaWindowObservation window, QuotaFreshness freshness) =>
+        freshness == QuotaFreshness.Fresh && window.Pace?.Status == QuotaPaceStatus.RunsOutBeforeReset;
 
     public static string Time(long ms) => DateTimeOffset.FromUnixTimeMilliseconds(ms).ToLocalTime().ToString("M月d日 HH:mm");
 
@@ -70,20 +68,20 @@ static class Quota
 
     // Ceiling is a used-percent limit as the usage display reads it; reached,
     // it says new requests pause.
-    public static string Ceiling(byte limit, BindingUsageDisplay usage, bool reached) => (usage, reached) switch
+    public static string Ceiling(byte limit, UsageDisplay usage, bool reached) => (usage, reached) switch
     {
-        (BindingUsageDisplay.Remaining, false) => $"保留 {100 - limit}%",
-        (BindingUsageDisplay.Remaining, true) => $"剩余已不足保留的 {100 - limit}%，暂停新请求",
+        (UsageDisplay.Remaining, false) => $"保留 {100 - limit}%",
+        (UsageDisplay.Remaining, true) => $"剩余已不足保留的 {100 - limit}%，暂停新请求",
         (_, false) => $"上限 {limit}%",
         _ => $"已达上限 {limit}%，暂停新请求",
     };
 
     // Balances lists the amounts the account reports, such as its prepaid
     // balance; an account that reports neither windows nor amounts says so.
-    public static string Balances(BindingProviderQuotaStatus status)
+    public static string Balances(QuotaObservation status)
     {
         var amounts = status.Balances.Select(balance => BalanceName(balance.Id) + "：" + Amount(balance.Amount, balance.Unit)).ToList();
-        if (amounts.Count == 0 && !status.Windows.Any() && status.Freshness == BindingQuotaFreshness.Fresh)
+        if (amounts.Count == 0 && !status.Windows.Any() && status.Freshness == QuotaFreshness.Fresh)
         {
             return "提供商未报告额度上限或余额。";
         }
@@ -92,6 +90,6 @@ static class Quota
 
     // Applies tells whether a window counts for a model ID: a window scoped
     // to models names it, the others cover every model.
-    public static bool Applies(BindingQuotaWindowObservation window, string modelID) =>
+    public static bool Applies(QuotaWindowObservation window, string modelID) =>
         window.ModelIds is not { Length: > 0 } scoped || scoped.Contains(modelID);
 }

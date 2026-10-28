@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Diagnostics.Tracing;
 using System.Diagnostics.Metrics;
+using System.Threading;
 using Microsoft.Extensions.Logging;
 using OpenTelemetry;
 using OpenTelemetry.Context.Propagation;
@@ -9,7 +10,6 @@ using OpenTelemetry.Logs;
 using OpenTelemetry.Metrics;
 using OpenTelemetry.Resources;
 using OpenTelemetry.Trace;
-using Velune.Bindings;
 
 namespace Velune;
 
@@ -34,17 +34,17 @@ sealed class ClientTelemetry
             if (!state.ConfigurationAvailable || state.Status == "development_configuration_unavailable") return;
             try
             {
-                if (state.Preference == BindingTelemetryPreference.On || state.Preference == BindingTelemetryPreference.Unset && state.DevelopmentOverride) Apply(Binding.PrepareSaved());
+                if (state.Preference == TelemetryPreference.On || state.Preference == TelemetryPreference.Unset && state.DevelopmentOverride) Apply(Binding.PrepareSaved());
                 else Binding.ConfirmNative(state.Revision, true);
             }
             catch { Binding.ConfirmNative(Binding.Snapshot().Revision, false); }
         }
     }
-    public void Save(ulong revision, BindingTelemetryPreference preference, BindingTelemetryProfile? profile)
+    public void Save(ulong revision, TelemetryPreference preference, TelemetryProfile? profile)
     {
         lock (transition) Apply(Binding.Prepare(revision, preference, profile));
     }
-    void Apply(BindingTelemetryPreparation candidate)
+    void Apply(TelemetryPreparation candidate)
     {
         Transport? prepared;
         try { prepared = candidate.Profile is { } profile ? new Transport(profile) : null; }
@@ -68,7 +68,7 @@ sealed class ClientTelemetry
             throw;
         }
     }
-    public async Task<T> Operation<T>(NativeOperation category, Func<BindingTraceCarrier?, Task<T>> body)
+    public async Task<T> Operation<T>(NativeOperation category, Func<TraceCarrier?, Task<T>> body)
     {
         var generation = Volatile.Read(ref current);
         if (generation == null || generation.Transport.Closed) return await body(null);
@@ -85,14 +85,14 @@ sealed class ClientTelemetry
         var id = Guid.NewGuid().ToString("N");
         using var span = generation.Source.StartActivity(operation, ActivityKind.Internal);
         span?.SetTag("velune.operation", operation); span?.SetTag("velune.operation.id", id);
-        BindingTraceCarrier? carrier = null;
+        TraceCarrier? carrier = null;
         // The .NET SDK skips local children of unsampled activities; propagate their existing context.
         var context = span?.Context ?? Activity.Current?.Context;
         if (context is { } propagationContext)
         {
             var fields = new Dictionary<string, string>();
             new TraceContextPropagator().Inject(new PropagationContext(propagationContext, default), fields, static (map, key, value) => map[key] = value);
-            if (fields.TryGetValue("traceparent", out var parent)) carrier = new BindingTraceCarrier(parent, fields.GetValueOrDefault("tracestate", ""));
+            if (fields.TryGetValue("traceparent", out var parent)) carrier = new TraceCarrier(parent, fields.GetValueOrDefault("tracestate", ""));
         }
         var started = Stopwatch.GetTimestamp();
         var outcome = "success";
@@ -140,7 +140,7 @@ sealed class ClientTelemetry
         public bool Closed => closed;
         readonly string endpoint;
         public Action<bool>? Feedback { get; set; }
-        public Transport(BindingTelemetryProfile profile)
+        public Transport(TelemetryProfile profile)
         {
             endpoint = profile.Endpoint;
             Client = new HttpClient(new FeedbackHandler(this, new SocketsHttpHandler { AllowAutoRedirect = false, UseCookies = false })) { Timeout = TimeSpan.FromSeconds(3) };
@@ -190,13 +190,13 @@ sealed class ClientTelemetry
         readonly ulong revision;
         long completed;
         long failed;
-        public Generation(Transport transport, BindingTelemetryPreparation candidate, VeluneTelemetry binding)
+        public Generation(Transport transport, TelemetryPreparation candidate, VeluneTelemetry binding)
         {
             Transport = transport; owner = binding; revision = candidate.Revision;
             transport.Feedback = success =>
             {
                 if (success) Interlocked.Increment(ref completed); else Interlocked.Increment(ref failed);
-                try { binding.ReportNativeExport(candidate.Revision, new BindingTelemetryExportHealth((ulong)Interlocked.Read(ref completed), (ulong)Interlocked.Read(ref failed), (ulong)DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), success ? "rpc_completed" : "transport_error", null)); }
+                try { binding.ReportNativeExport(candidate.Revision, new TelemetryExportHealth((ulong)Interlocked.Read(ref completed), (ulong)Interlocked.Read(ref failed), (ulong)DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), success ? "rpc_completed" : "transport_error", null)); }
                 catch (BindingException) { }
                 catch (ObjectDisposedException) { }
             };

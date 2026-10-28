@@ -24,8 +24,11 @@ cargo install uniffi-bindgen-cs --locked --quiet --root $generator `
 if ($LASTEXITCODE -ne 0) { throw 'installing uniffi-bindgen-cs failed' }
 # The generator runs `cargo metadata`; outside cargo it finds cargo only by CARGO.
 $env:CARGO = (Get-Command cargo).Source
+# Each contract crate's own uniffi.toml sets its namespace; a --config here
+# would override them all and merge the files' internal helpers.
+Remove-Item -Recurse -Force target\bindings\cs -ErrorAction SilentlyContinue
 & "$generator\bin\uniffi-bindgen-cs.exe" --library target\release\velune_bindings.dll `
-    --config packages\bindings\uniffi.toml --out-dir target\bindings\cs --no-format
+    --out-dir target\bindings\cs --no-format
 if ($LASTEXITCODE -ne 0) { throw 'uniffi-bindgen-cs failed' }
 
 $app = 'target\windows\Velune'

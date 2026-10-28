@@ -5,7 +5,6 @@ using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Controls.Primitives;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media.Imaging;
-using Velune.Bindings;
 using Windows.ApplicationModel.DataTransfer;
 
 namespace Velune;
@@ -121,10 +120,10 @@ public sealed partial class ConversationView
             {
                 switch (item)
                 {
-                    case BindingTranscriptItem.Message entry when messages.TryGetValue(entry.MessageId, out var message):
+                    case TranscriptItem.Message entry when messages.TryGetValue(entry.MessageId, out var message):
                         // A reply sharing its message with work starts at the reply's first block.
                         var from = entry.Id.StartsWith("reply:", StringComparison.Ordinal) && replies.TryGetValue(message.Id, out var start) ? start : 0;
-                        var user = message.Role == BindingMessageRole.User;
+                        var user = message.Role == MessageRole.User;
                         // The copy button goes under the user's messages and a turn's closing reply, not under its work.
                         var copies = user || from > 0 || whole.Contains(message.Id);
                         Add(entry.Id, Version(message, from) + "/" + copies, () => Row(message, from, entry.Id, copies), !outlineFolded || user);
@@ -136,7 +135,7 @@ public sealed partial class ConversationView
                             Add("turn:" + turn.Id, TurnVersion(turn), () => TurnRow(turn), !outlineFolded);
                         }
                         break;
-                    case BindingTranscriptItem.Work work when turns.TryGetValue(work.TurnId, out var worked):
+                    case TranscriptItem.Work work when turns.TryGetValue(work.TurnId, out var worked):
                         shown.Add("work:" + worked.Id);
                         if (!workRows.TryGetValue(worked.Id, out var workRow))
                         {
@@ -157,7 +156,7 @@ public sealed partial class ConversationView
             Add("sending", (Model.Accepted ? "1" : "0") + sending, () => SendingRow(sending, Model.Accepted));
         }
         var showingCompaction = Model.Messages.Any(message => !message.Completed
-            && message.Blocks.Any(block => block is BindingMessageBlock.ContextCompaction));
+            && message.Blocks.Any(block => block is DeliveredBlock.ContextCompaction));
         if (Model.Working && !outlineFolded && !showingCompaction)
         {
             var status = Status();
@@ -188,9 +187,9 @@ public sealed partial class ConversationView
     }
 
     // Messages are the transcript's messages by ID, with any content read in full.
-    Dictionary<string, BindingMessage> Messages()
+    Dictionary<string, DeliveredMessage> Messages()
     {
-        var messages = new Dictionary<string, BindingMessage>(Model.Messages.Count);
+        var messages = new Dictionary<string, DeliveredMessage>(Model.Messages.Count);
         foreach (var message in Model.Messages)
         {
             messages[message.Id] = Model.Payloads.TryGetValue(message.Id, out var loaded) ? loaded : message;
@@ -198,16 +197,16 @@ public sealed partial class ConversationView
         return messages;
     }
 
-    string Version(BindingMessage message, int from) =>
+    string Version(DeliveredMessage message, int from) =>
         $"{message.Stamp}/{Model.Payloads.ContainsKey(message.Id)}/{from}";
 
-    static string TurnVersion(BindingTranscriptTurn turn) =>
+    static string TurnVersion(TranscriptTurn turn) =>
         $"{turn.DurationMs}/{turn.IsRunning}/{turn.Settings}/{turn.Usage}";
 
-    UIElement Row(BindingMessage message, int from, string id, bool copies)
+    UIElement Row(DeliveredMessage message, int from, string id, bool copies)
     {
         var element = Message(message, from, message.Blocks.Length);
-        if (message.Role == BindingMessageRole.User)
+        if (message.Role == MessageRole.User)
         {
             // In the folded outline, a message unfolds the list at itself.
             element.Tapped += (_, _) =>
@@ -218,16 +217,16 @@ public sealed partial class ConversationView
                 }
             };
         }
-        return copies ? WithCopy(element, CopiedText(message, from), message.Role == BindingMessageRole.User) : element;
+        return copies ? WithCopy(element, CopiedText(message, from), message.Role == MessageRole.User) : element;
     }
 
     // CopiedText is what a row's copy button copies: the text and notices
     // it shows, a blank line apart.
-    static string CopiedText(BindingMessage message, int from) =>
+    static string CopiedText(DeliveredMessage message, int from) =>
         string.Join("\n\n", message.Blocks.Skip(from).Select(block => block switch
         {
-            BindingMessageBlock.Text text => text.TextValue,
-            BindingMessageBlock.Notice notice => notice.TextValue,
+            DeliveredBlock.Text text => text.TextValue,
+            DeliveredBlock.Notice notice => notice.TextValue,
             _ => null,
         }).OfType<string>()).Trim();
 
@@ -285,13 +284,13 @@ public sealed partial class ConversationView
     // Message lays out the user's messages on the right, the model's on the
     // left, and the system's and the Harness's in the middle, from block
     // `from` up to `to`.
-    UIElement Message(BindingMessage message, int from, int to)
+    UIElement Message(DeliveredMessage message, int from, int to)
     {
-        if (message.Role == BindingMessageRole.User)
+        if (message.Role == MessageRole.User)
         {
             return UserMessage(message);
         }
-        var blocks = new StackPanel { Spacing = message.Role == BindingMessageRole.Assistant ? 8 : 4 };
+        var blocks = new StackPanel { Spacing = message.Role == MessageRole.Assistant ? 8 : 4 };
         for (var position = from; position < to; position++)
         {
             if (Block(message, position, message.Blocks[position]) is { } block)
@@ -299,7 +298,7 @@ public sealed partial class ConversationView
                 blocks.Children.Add(block);
             }
         }
-        if (message.Role == BindingMessageRole.System)
+        if (message.Role == MessageRole.System)
         {
             // The system's and the Harness's states sit in the middle of the list.
             blocks.HorizontalAlignment = HorizontalAlignment.Stretch;
@@ -321,7 +320,7 @@ public sealed partial class ConversationView
 
     // UserMessage is a bubble on the right, its attachments above it:
     // images first, then files.
-    UIElement UserMessage(BindingMessage message)
+    UIElement UserMessage(DeliveredMessage message)
     {
         var panel = new StackPanel { Spacing = 6, HorizontalAlignment = HorizontalAlignment.Right, MaxWidth = 560 };
         var attached = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6, HorizontalAlignment = HorizontalAlignment.Right };
@@ -331,21 +330,21 @@ public sealed partial class ConversationView
         {
             switch (message.Blocks[position])
             {
-                case BindingMessageBlock.Image:
+                case DeliveredBlock.Image:
                     attached.Children.Add(Thumbnail(message.Id, position));
                     break;
-                case BindingMessageBlock.File file:
+                case DeliveredBlock.File file:
                     files.Add(FileChip(file.Path));
                     break;
-                case BindingMessageBlock.AgentSender sender:
+                case DeliveredBlock.AgentSender sender:
                     var source = new HyperlinkButton { Content = $"来自 {sender.RuntimeName} 会话「{sender.Title}」", Padding = new Thickness(0), FontSize = 12 };
                     source.Click += (_, _) => window.OpenLinked(sender.ConversationId);
                     bubble.Children.Insert(0, source);
                     break;
-                case BindingMessageBlock.Text text:
+                case DeliveredBlock.Text text:
                     bubble.Children.Add(new TextBlock { Text = text.TextValue, IsTextSelectionEnabled = true, TextWrapping = TextWrapping.Wrap });
                     break;
-                case BindingMessageBlock.Notice notice:
+                case DeliveredBlock.Notice notice:
                     bubble.Children.Add(Muted(notice.TextValue));
                     break;
             }
@@ -378,37 +377,37 @@ public sealed partial class ConversationView
     }
 
     // Block draws one block; reasoning without a summary has nothing to show.
-    UIElement? Block(BindingMessage message, int position, BindingMessageBlock block)
+    UIElement? Block(DeliveredMessage message, int position, DeliveredBlock block)
     {
         var key = $"{message.Id}/{position}";
         switch (block)
         {
-            case BindingMessageBlock.Text text:
+            case DeliveredBlock.Text text:
                 return Markdown.View(text.TextValue, OpenLink);
-            case BindingMessageBlock.Notice notice:
+            case DeliveredBlock.Notice notice:
                 var centered = Muted(notice.TextValue);
                 centered.HorizontalAlignment = HorizontalAlignment.Center;
                 centered.TextAlignment = TextAlignment.Center;
                 return centered;
-            case BindingMessageBlock.ContextCompaction compaction:
+            case DeliveredBlock.ContextCompaction compaction:
                 var status = Muted(compaction.TextValue);
                 status.HorizontalAlignment = HorizontalAlignment.Center;
                 status.TextAlignment = TextAlignment.Center;
                 return status;
-            case BindingMessageBlock.Reasoning reasoning:
+            case DeliveredBlock.Reasoning reasoning:
                 var summary = reasoning.Summary.Trim();
                 if (summary.Length == 0)
                 {
                     return null;
                 }
-                var empty = reasoning.TextValue is BindingMessagePayload.Inline { Text: var thought } && thought.Trim().Length == 0;
+                var empty = reasoning.TextValue is MessagePayload.Inline { Text: var thought } && thought.Trim().Length == 0;
                 return empty ? Muted(summary) : Disclosure(message.Id, key, summary, reasoning.TextValue);
-            case BindingMessageBlock.Tool tool:
+            case DeliveredBlock.Tool tool:
                 var suffix = tool.State switch
                 {
-                    BindingToolState.Pending => " · 等待",
-                    BindingToolState.Running => " · 运行中",
-                    BindingToolState.Failed => " · 失败",
+                    VeluneFfi.Conversation.ToolState.Pending => " · 等待",
+                    VeluneFfi.Conversation.ToolState.Running => " · 运行中",
+                    VeluneFfi.Conversation.ToolState.Failed => " · 失败",
                     _ => "",
                 };
                 var disclosure = Disclosure(message.Id, key, tool.Title + suffix, tool.Output);
@@ -420,11 +419,11 @@ public sealed partial class ConversationView
                 var open = new HyperlinkButton { Content = "打开会话", Padding = new Thickness(0), FontSize = 13 };
                 open.Click += (_, _) => window.OpenLinked(linked);
                 return new StackPanel { Spacing = 2, Children = { disclosure, open } };
-            case BindingMessageBlock.Image:
+            case DeliveredBlock.Image:
                 return Thumbnail(message.Id, position);
-            case BindingMessageBlock.File file:
+            case DeliveredBlock.File file:
                 return FileChip(file.Path);
-            case BindingMessageBlock.AgentSender sender:
+            case DeliveredBlock.AgentSender sender:
                 return Muted($"来自 {sender.RuntimeName} 会话「{sender.Title}」");
             default:
                 return null;
@@ -442,7 +441,7 @@ public sealed partial class ConversationView
 
     // Disclosure keeps reasoning and tool output folded; large ones are read
     // when unfolded.
-    UIElement Disclosure(string messageID, string key, string title, BindingMessagePayload? payload)
+    UIElement Disclosure(string messageID, string key, string title, MessagePayload? payload)
     {
         if (payload == null)
         {
@@ -456,14 +455,14 @@ public sealed partial class ConversationView
             IsExpanded = expanded.Contains(key),
             Content = payload switch
             {
-                BindingMessagePayload.Inline inline => Markdown.Code(inline.Text, 12),
+                MessagePayload.Inline inline => Markdown.Code(inline.Text, 12),
                 _ => new ProgressRing { IsActive = true, Width = 20, Height = 20 },
             },
         };
         expander.Expanding += (_, _) =>
         {
             expanded.Add(key);
-            if (payload is BindingMessagePayload.Deferred)
+            if (payload is MessagePayload.Deferred)
             {
                 Model.LoadPayload(messageID);
             }
@@ -486,7 +485,7 @@ public sealed partial class ConversationView
         };
         ToolTipService.SetToolTip(frame, "图片");
         Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(frame, "图片");
-        BindingAttachmentContent? content = null;
+        AttachmentContent? content = null;
         frame.Loaded += async (_, _) =>
         {
             if (content != null)
@@ -675,11 +674,11 @@ public sealed partial class ConversationView
             {
                 switch (block)
                 {
-                    case BindingMessageBlock.Tool { State: BindingToolState.Running or BindingToolState.Pending } tool:
+                    case DeliveredBlock.Tool { State: VeluneFfi.Conversation.ToolState.Running or VeluneFfi.Conversation.ToolState.Pending } tool:
                         return tool.Title;
-                    case BindingMessageBlock.Reasoning { Summary: var summary } when summary.Trim().Length > 0:
+                    case DeliveredBlock.Reasoning { Summary: var summary } when summary.Trim().Length > 0:
                         return summary.Trim();
-                    case BindingMessageBlock.Text:
+                    case DeliveredBlock.Text:
                         return "正在回复";
                 }
             }
@@ -700,7 +699,7 @@ public sealed partial class ConversationView
 
     // TurnRow is the row of a turn without work: what it ran with, and its
     // time when observed.
-    UIElement TurnRow(BindingTranscriptTurn turn)
+    UIElement TurnRow(TranscriptTurn turn)
     {
         var info = new TurnInfo(this, turn);
         var row = new Grid { MinHeight = 32 };
@@ -737,8 +736,8 @@ public sealed partial class ConversationView
         readonly StackPanel members = new() { Spacing = 8 };
         readonly Dictionary<string, (string Version, UIElement Element)> rendered = [];
         readonly TurnInfo info;
-        BindingTranscriptTurn turn = null!;
-        Dictionary<string, BindingMessage> messages = [];
+        TranscriptTurn turn = null!;
+        Dictionary<string, DeliveredMessage> messages = [];
         // Set while the row itself folds or unfolds, which is not the user's choice.
         bool applying;
 
@@ -782,7 +781,7 @@ public sealed partial class ConversationView
         // Toggle folds or unfolds the work, as a click on its header does.
         public void Toggle() => expander.IsExpanded = !expander.IsExpanded;
 
-        public void Update(BindingTranscriptTurn turn, Dictionary<string, BindingMessage> messages)
+        public void Update(TranscriptTurn turn, Dictionary<string, DeliveredMessage> messages)
         {
             this.turn = turn;
             this.messages = messages;
@@ -841,11 +840,11 @@ public sealed partial class ConversationView
         readonly ConversationView view;
         readonly TextBlock summary = new() { VerticalAlignment = VerticalAlignment.Center, Visibility = Visibility.Collapsed };
         readonly Button button;
-        BindingTranscriptTurn? turn;
+        TranscriptTurn? turn;
 
         public StackPanel Panel { get; }
 
-        public TurnInfo(ConversationView view, BindingTranscriptTurn? turn)
+        public TurnInfo(ConversationView view, TranscriptTurn? turn)
         {
             this.view = view;
             summary.Style = Ui.Style("SecondaryTextStyle");
@@ -869,7 +868,7 @@ public sealed partial class ConversationView
             }
         }
 
-        public void Update(BindingTranscriptTurn turn)
+        public void Update(TranscriptTurn turn)
         {
             this.turn = turn;
             var settings = turn.Settings;
@@ -890,7 +889,7 @@ public sealed partial class ConversationView
 
     // TurnDetails lists what a turn ran with and used, as recorded; what no
     // record says is left out, and token counts not recorded are marked so.
-    UIElement TurnDetails(BindingTranscriptTurn turn)
+    UIElement TurnDetails(TranscriptTurn turn)
     {
         var grid = new Grid { ColumnSpacing = 16, RowSpacing = 6, MinWidth = 260 };
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
@@ -955,7 +954,7 @@ public sealed partial class ConversationView
     // the setting: fold the list in place, or list the messages at it.
     internal void OutlineClicked(FrameworkElement button)
     {
-        if (Model.Configuration.Outline == BindingOutlinePresentation.InPlace)
+        if (Model.Configuration.Outline == OutlinePresentation.InPlace)
         {
             SetOutlineFolded(!outlineFolded, null);
             return;
@@ -1093,15 +1092,15 @@ public sealed partial class ConversationView
         }
     }
 
-    static string FirstLine(BindingMessage message)
+    static string FirstLine(DeliveredMessage message)
     {
         foreach (var block in message.Blocks)
         {
-            if (block is BindingMessageBlock.Text text && text.TextValue.Trim().Length > 0)
+            if (block is DeliveredBlock.Text text && text.TextValue.Trim().Length > 0)
             {
                 return text.TextValue.Trim().Split('\n')[0].Trim();
             }
         }
-        return message.Blocks.Any(block => block is BindingMessageBlock.Image) ? "［图片］" : "［附件］";
+        return message.Blocks.Any(block => block is DeliveredBlock.Image) ? "［图片］" : "［附件］";
     }
 }

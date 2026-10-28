@@ -1,6 +1,5 @@
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
-using Velune.Bindings;
 
 namespace Velune;
 
@@ -19,9 +18,9 @@ sealed class RoutesPage : UserControl
     readonly Button remove = Ui.IconButton("\uE738", "删除模型路由");
     readonly Button edit = new() { Content = "编辑…" };
     RouteEditor? editor;
-    BindingModelRoute[] routes = [];
-    internal BindingProviderDefinition[] Providers { get; private set; } = [];
-    internal BindingUsageDisplay Usage { get; private set; } = BindingUsageDisplay.Used;
+    ModelRoute[] routes = [];
+    internal ProviderSummary[] Providers { get; private set; } = [];
+    internal UsageDisplay Usage { get; private set; } = UsageDisplay.Used;
 
     internal RoutesPage(Core core, SettingsWindow window, Action<string> editProvider)
     {
@@ -48,7 +47,7 @@ sealed class RoutesPage : UserControl
         Reload();
     }
 
-    BindingModelRoute? Chosen() => list.SelectedIndex is var index and >= 0 && index < routes.Length ? routes[index] : null;
+    ModelRoute? Chosen() => list.SelectedIndex is var index and >= 0 && index < routes.Length ? routes[index] : null;
 
     void ShowActions()
     {
@@ -72,7 +71,7 @@ sealed class RoutesPage : UserControl
         }
     }
 
-    internal void SetGateway(BindingGatewayConfig[] gateways)
+    internal void SetGateway(GatewaySummary[] gateways)
     {
         var gateway = gateways.FirstOrDefault(candidate => candidate.Id == ProvidersPage.DefaultGateway);
         Providers = gateway?.Providers ?? [];
@@ -101,20 +100,20 @@ sealed class RoutesPage : UserControl
         editor?.ProvidersChanged();
     }
 
-    static string Summary(BindingModelRoute route) =>
+    static string Summary(ModelRoute route) =>
         string.Join(" · ", new[] { StrategyName(route.Strategy), $"{route.Members.Length} 个成员", route.Sticky ? "会话保持" : "" }.Where(part => part.Length > 0));
 
-    internal static string StrategyName(BindingRoutingStrategy strategy) => strategy switch
+    internal static string StrategyName(RoutingStrategy strategy) => strategy switch
     {
-        BindingRoutingStrategy.Smart => "智能",
-        BindingRoutingStrategy.Order => "顺序",
-        BindingRoutingStrategy.Rotate => "轮询",
+        RoutingStrategy.Smart => "智能",
+        RoutingStrategy.Order => "顺序",
+        RoutingStrategy.Rotate => "轮询",
         _ => "权重",
     };
 
     // Member is the provider and model a route member's record names; null
     // when the model is gone.
-    internal (BindingProviderDefinition Provider, BindingProviderModel Model)? Member(string key)
+    internal (ProviderSummary Provider, ProviderModel Model)? Member(string key)
     {
         foreach (var provider in Providers)
         {
@@ -126,7 +125,7 @@ sealed class RoutesPage : UserControl
         return null;
     }
 
-    void Open(BindingModelRoute? route)
+    void Open(ModelRoute? route)
     {
         if (editor != null)
         {

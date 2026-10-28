@@ -4,7 +4,6 @@ using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml;
 using Microsoft.Windows.AppNotifications;
 using Microsoft.Windows.AppNotifications.Builder;
-using Velune.Bindings;
 
 namespace Velune;
 
@@ -73,7 +72,7 @@ sealed class Notifier(Shell shell, DispatcherQueue dispatcher)
 
     // Polled takes a device's latest list: what waits and what ended since
     // the last read. The first read of a device only sets where to start.
-    public void Polled(Device device, Listing listing, BindingFinishedTurn[] ended, bool first)
+    public void Polled(Device device, Listing listing, FinishedTurn[] ended, bool first)
     {
         var waiting = new HashSet<string>();
         foreach (var active in listing.Active.Values)
@@ -100,8 +99,8 @@ sealed class Notifier(Shell shell, DispatcherQueue dispatcher)
             {
                 var state = turn.Outcome switch
                 {
-                    BindingTurnOutcome.Completed => "已完成",
-                    BindingTurnOutcome.Failed => "失败",
+                    TurnOutcome.Completed => "已完成",
+                    TurnOutcome.Failed => "失败",
                     _ => null,
                 };
                 if (state == null)
@@ -131,7 +130,7 @@ sealed class Notifier(Shell shell, DispatcherQueue dispatcher)
         {
             return;
         }
-        var title = listing.Conversations.FirstOrDefault(listed => listed.Conversation.Id == conversationID)?.Conversation.Title is { Length: > 0 } named ? named : "会话";
+        var title = listing.Conversations.FirstOrDefault(listed => listed.Conversation.Id == conversationID)?.Conversation.Title.DisplayText() is { Length: > 0 } named ? named : "会话";
         var where = device.IsLocal ? "" : "（" + shell.Hub.DeviceName(device) + "）";
         var notification = new AppNotificationBuilder()
             .AddArgument("device", device.PeerId)
@@ -189,7 +188,7 @@ sealed class Notifier(Shell shell, DispatcherQueue dispatcher)
         readingQuota = false;
     }
 
-    void NotifyQuota(BindingQuotaAlert alert, BindingConfigurationSnapshot snapshot)
+    void NotifyQuota(QuotaAlert alert, ConfigurationSnapshot snapshot)
     {
         var provider = snapshot.Gateways.FirstOrDefault(gateway => gateway.Id == alert.GatewayId)?.Providers.FirstOrDefault(provider => provider.Id == alert.ProviderId);
         if (provider == null)
@@ -199,8 +198,8 @@ sealed class Notifier(Shell shell, DispatcherQueue dispatcher)
         var window = alert.WindowId is { } id ? Quota.Name(id) : "";
         var detail = alert.Kind switch
         {
-            BindingQuotaAlertKind.CapReached => window + Quota.Ceiling(alert.MaxUsedPercent ?? 100, snapshot.UsageDisplay, true) + "，直到额度回到上限以内。",
-            BindingQuotaAlertKind.Exhausted => window + "已用尽，重置前暂停向它发送新请求。",
+            QuotaAlertKind.CapReached => window + Quota.Ceiling(alert.MaxUsedPercent ?? 100, snapshot.UsageDisplay, true) + "，直到额度回到上限以内。",
+            QuotaAlertKind.Exhausted => window + "已用尽，重置前暂停向它发送新请求。",
             _ => "提供商表示此账户当前不可用（例如余额不足），暂停新请求。",
         };
         var notification = new AppNotificationBuilder()

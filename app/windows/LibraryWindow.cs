@@ -1,6 +1,6 @@
+using System.Threading;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
-using Velune.Bindings;
 
 namespace Velune;
 
@@ -14,12 +14,12 @@ sealed partial class LibraryWindow : Window
     const string ReadKey = "library";
     const string EffectNote = "写入后，运行时通常在新会话中加载这些内容；正在进行的会话何时使用新内容由运行时决定，Velune 不会重启会话。";
 
-    static readonly (BindingRuntimeResourceKind Kind, string Name, string Glyph)[] Kinds =
+    static readonly (RuntimeResourceKind Kind, string Name, string Glyph)[] Kinds =
     [
-        (BindingRuntimeResourceKind.UserInstructions, "指令", "\uE8A5"),
-        (BindingRuntimeResourceKind.Skills, "技能", "\uE945"),
-        (BindingRuntimeResourceKind.McpServers, "MCP 服务器", "\uE968"),
-        (BindingRuntimeResourceKind.NativeAgentDefinitions, "子 Agent", "\uE716"),
+        (RuntimeResourceKind.UserInstructions, "指令", "\uE8A5"),
+        (RuntimeResourceKind.Skills, "技能", "\uE945"),
+        (RuntimeResourceKind.McpServers, "MCP 服务器", "\uE968"),
+        (RuntimeResourceKind.NativeAgentDefinitions, "子 Agent", "\uE716"),
     ];
 
     readonly Core core;
@@ -40,12 +40,12 @@ sealed partial class LibraryWindow : Window
     readonly ScrollViewer detail = new() { HorizontalScrollMode = ScrollMode.Disabled };
     readonly InfoBar notice = new() { IsClosable = true, Margin = new Thickness(12, 0, 12, 8) };
 
-    BindingRuntimeResourceKind kind = BindingRuntimeResourceKind.UserInstructions;
-    BindingResourceTemplateSummary[] templates = [];
-    BindingResourceSyncStatus[] statuses = [];
-    BindingUnmanagedRuntimeResource[] unmanaged = [];
-    BindingRuntimeInstance[] runtimes = [];
-    BindingGatewayConfig[] gateways = [];
+    RuntimeResourceKind kind = RuntimeResourceKind.UserInstructions;
+    ResourceTemplateSummary[] templates = [];
+    ResourceSyncStatus[] statuses = [];
+    UnmanagedRuntimeResource[] unmanaged = [];
+    RuntimeInstance[] runtimes = [];
+    GatewaySummary[] gateways = [];
     // The chosen row: a draft's key, or a runtime's entry outside the library.
     object? chosen;
     // The row the notice is about.
@@ -65,7 +65,7 @@ sealed partial class LibraryWindow : Window
         nav.SelectedItem = nav.MenuItems[0];
         nav.SelectionChanged += (_, e) =>
         {
-            if (e.SelectedItemContainer?.Tag is BindingRuntimeResourceKind picked && picked != kind)
+            if (e.SelectedItemContainer?.Tag is RuntimeResourceKind picked && picked != kind)
             {
                 kind = picked;
                 chosen = null;
@@ -141,16 +141,16 @@ sealed partial class LibraryWindow : Window
 
     VeluneApplication App => core.Local;
 
-    string KindName(BindingRuntimeResourceKind shown) => Kinds.First(entry => entry.Kind == shown).Name;
+    string KindName(RuntimeResourceKind shown) => Kinds.First(entry => entry.Kind == shown).Name;
 
     // Chosen is the chosen resource's draft, when a resource is chosen.
     Draft? Chosen => chosen is string key && Library.Drafts.TryGetValue(key, out var draft) ? draft : null;
 
     string RuntimeName(string id) => runtimes.FirstOrDefault(runtime => runtime.Id == id)?.Name ?? "已移除的运行时";
 
-    BindingResourceSyncState State(string templateId, string runtimeId) =>
+    ResourceSyncState State(string templateId, string runtimeId) =>
         statuses.FirstOrDefault(status => status.TemplateId == templateId && status.RuntimeId == runtimeId)?.State
-        ?? new BindingResourceSyncState.NotEnabled();
+        ?? new ResourceSyncState.NotEnabled();
 
     // Reload reads the library, its states and the runtimes' other entries
     // of the category; keepDetail leaves an editor being typed into alone.
@@ -251,13 +251,13 @@ sealed partial class LibraryWindow : Window
     string Summary(string templateId)
     {
         var mine = statuses.Where(status => status.TemplateId == templateId).Select(status => status.State).ToList();
-        var enabled = mine.Count(state => state is not (BindingResourceSyncState.NotEnabled or BindingResourceSyncState.Unsupported));
+        var enabled = mine.Count(state => state is not (ResourceSyncState.NotEnabled or ResourceSyncState.Unsupported));
         var parts = new List<string> { enabled > 0 ? $"已启用于 {enabled} 个运行时" : "未启用" };
-        if (mine.Count(state => state is BindingResourceSyncState.Pending) is var pending and > 0)
+        if (mine.Count(state => state is ResourceSyncState.Pending) is var pending and > 0)
         {
             parts.Add($"{pending} 个待同步");
         }
-        if (mine.Any(state => state is BindingResourceSyncState.Drifted or BindingResourceSyncState.Missing))
+        if (mine.Any(state => state is ResourceSyncState.Drifted or ResourceSyncState.Missing))
         {
             parts.Add("原生内容有变化");
         }
@@ -366,7 +366,7 @@ sealed partial class LibraryWindow : Window
         }
         var candidates = new ListView { SelectionMode = ListViewSelectionMode.Multiple, MaxHeight = 320, MinWidth = 420 };
         var state = Ui.Muted("");
-        var found = new Dictionary<BindingRuntimeResourceKind, BindingUnmanagedRuntimeResource[]>();
+        var found = new Dictionary<RuntimeResourceKind, UnmanagedRuntimeResource[]>();
         var panel = new StackPanel { Spacing = 12 };
         panel.Children.Add(source);
         panel.Children.Add(Ui.Muted("选中的内容将加入资源库，并继续启用于该运行时；原生文件改写为资源库的形式。"));
@@ -426,7 +426,7 @@ sealed partial class LibraryWindow : Window
         {
             return;
         }
-        var chosenEntries = candidates.SelectedItems.OfType<ListViewItem>().Select(item => (BindingUnmanagedRuntimeResource)item.Tag).ToList();
+        var chosenEntries = candidates.SelectedItems.OfType<ListViewItem>().Select(item => (UnmanagedRuntimeResource)item.Tag).ToList();
         // What the library cannot hold is listed first; it is dropped.
         var notes = new List<string>();
         foreach (var entry in chosenEntries)

@@ -1,6 +1,5 @@
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
-using Velune.Bindings;
 
 namespace Velune;
 
@@ -13,7 +12,7 @@ public sealed partial class ConversationView
     (string Directory, string? Branch, int Turns)? branch;
     bool readingBranch;
 
-    sealed record StatusItem(BindingStatusLineItem Item, string Label, string Shown, string Detail);
+    sealed record StatusItem(StatusLineItem Item, string Label, string Shown, string Detail);
 
     // StatusItems are the items the conversation has records for, in the
     // status line's order.
@@ -24,33 +23,33 @@ public sealed partial class ConversationView
         {
             return items;
         }
-        var remaining = Model.Configuration.Usage == BindingUsageDisplay.Remaining;
-        var contextRemaining = Model.Configuration.ContextUsage == BindingUsageDisplay.Remaining;
+        var remaining = Model.Configuration.Usage == UsageDisplay.Remaining;
+        var contextRemaining = Model.Configuration.ContextUsage == UsageDisplay.Remaining;
         var usage = snapshot.TranscriptTurns.Select(turn => turn.Usage).LastOrDefault(usage => usage != null);
         if (usage?.ContextTokens is { } context)
         {
             if (usage.ContextWindow is { } window and > 0)
             {
                 var used = Math.Clamp(100.0 * context / window, 0, 100);
-                items.Add(new(BindingStatusLineItem.ContextUsage, "上下文",
+                items.Add(new(StatusLineItem.ContextUsage, "上下文",
                     contextRemaining ? $"上下文剩余 {100 - used:0}%" : $"上下文 {used:0}%",
                     contextRemaining ? $"上下文剩余 {Count(window > context ? window - context : 0)} / {Count(window)} token。" : $"上下文占用 {Count(context)} / {Count(window)} token。"));
             }
             else
             {
-                items.Add(new(BindingStatusLineItem.ContextUsage, "上下文", $"上下文 {Count(context)}", "模型的上下文窗口未知，只显示最近一次请求的 token 数。"));
+                items.Add(new(StatusLineItem.ContextUsage, "上下文", $"上下文 {Count(context)}", "模型的上下文窗口未知，只显示最近一次请求的 token 数。"));
             }
         }
         var tokens = snapshot.TranscriptTurns.Select(turn => turn.Usage).Where(turnUsage => turnUsage != null)
             .Select(turnUsage => (turnUsage!.InputTokens ?? 0) + (turnUsage.OutputTokens ?? 0)).Sum(count => (decimal)count);
         if (tokens > 0)
         {
-            items.Add(new(BindingStatusLineItem.SessionTokens, "本会话 token", $"{Count((ulong)tokens)} token", "本会话各轮记录的输入与输出 token 之和。"));
+            items.Add(new(StatusLineItem.SessionTokens, "本会话 token", $"{Count((ulong)tokens)} token", "本会话各轮记录的输入与输出 token 之和。"));
         }
         if (snapshot.Conversation.Cwd is { Length: > 0 } cwd)
         {
             var shownBranch = branch is { } known && known.Directory == cwd ? known.Branch : null;
-            items.Add(new(BindingStatusLineItem.WorkingDirectory, "工作目录",
+            items.Add(new(StatusLineItem.WorkingDirectory, "工作目录",
                 Listing.LastPart(cwd) + (shownBranch != null ? " · " + shownBranch : ""),
                 cwd + (shownBranch != null ? "，分支 " + shownBranch : "")));
             ReadBranch(cwd, snapshot.TranscriptTurns.Length);
@@ -59,11 +58,11 @@ public sealed partial class ConversationView
         {
             var limits = usage.RateLimits.Select(limit =>
                 (limit.WindowMinutes is { } minutes ? Period(minutes) + " " : "") + (remaining ? $"剩余 {100 - Math.Min(limit.UsedPercent, 100)}%" : $"{limit.UsedPercent}%"));
-            items.Add(new(BindingStatusLineItem.RateLimits, "账户额度", string.Join(" · ", limits), "运行时最近报告的账户用量限额。"));
+            items.Add(new(StatusLineItem.RateLimits, "账户额度", string.Join(" · ", limits), "运行时最近报告的账户用量限额。"));
         }
         if (usage?.SessionCostMicroUsd is { } cost)
         {
-            items.Add(new(BindingStatusLineItem.SessionCost, "费用估算", $"${cost / 1_000_000.0:0.00}", "运行时按其价格表估算的本会话费用；经网关或订阅时不代表实际计费。"));
+            items.Add(new(StatusLineItem.SessionCost, "费用估算", $"${cost / 1_000_000.0:0.00}", "运行时按其价格表估算的本会话费用；经网关或订阅时不代表实际计费。"));
         }
         return items;
     }

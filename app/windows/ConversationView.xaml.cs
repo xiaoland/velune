@@ -3,7 +3,6 @@ using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
-using Velune.Bindings;
 using Windows.System;
 using Windows.UI.Core;
 
@@ -110,7 +109,7 @@ public sealed partial class ConversationView : UserControl
     void Render()
     {
         // A change of the setting meanwhile turns the folded outline back.
-        if (outlineFolded && Model.Configuration.Outline != BindingOutlinePresentation.InPlace)
+        if (outlineFolded && Model.Configuration.Outline != OutlinePresentation.InPlace)
         {
             outlineFolded = false;
         }
@@ -164,15 +163,15 @@ public sealed partial class ConversationView : UserControl
         firstAnswer = null;
         InteractionCard.Child = interaction.Kind switch
         {
-            BindingInteractionKind.Approval approval => Approval(interaction.Id, approval),
-            BindingInteractionKind.UserInput input => Questions(interaction.Id, input.Questions),
+            InteractionKind.Approval approval => Approval(interaction.Id, approval),
+            InteractionKind.UserInput input => Questions(interaction.Id, input.Questions),
             _ => null,
         };
         InteractionCard.Visibility = Visibility.Visible;
         TakeInteractionFocusRequest();
     }
 
-    UIElement Approval(string interactionID, BindingInteractionKind.Approval approval)
+    UIElement Approval(string interactionID, InteractionKind.Approval approval)
     {
         var panel = new StackPanel { Spacing = 12 };
         panel.Children.Add(new TextBlock { Text = approval.Title, Style = (Style)Application.Current.Resources["BodyStrongTextBlockStyle"], TextWrapping = TextWrapping.Wrap });
@@ -186,27 +185,27 @@ public sealed partial class ConversationView : UserControl
         {
             var button = new Button { Content = index < 9 ? $"{index + 1}  {option.Label}" : option.Label, IsEnabled = !Model.Busy };
             Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(button, option.Label);
-            button.Click += (_, _) => Answer(interactionID, new BindingRuntimeInteractionReply.Decision(option.Id));
+            button.Click += (_, _) => Answer(interactionID, new RuntimeInteractionReply.Decision(option.Id));
             options.Children.Add(button);
             firstAnswer ??= button;
         }
         var cancel = new Button { Content = "取消请求", IsEnabled = !Model.Busy };
         ToolTipService.SetToolTip(cancel, "Ctrl+Backspace");
-        cancel.Click += (_, _) => Answer(interactionID, new BindingRuntimeInteractionReply.Cancel());
+        cancel.Click += (_, _) => Answer(interactionID, new RuntimeInteractionReply.Cancel());
         options.Children.Add(cancel);
         panel.Children.Add(options);
         return panel;
     }
 
-    UIElement Questions(string interactionID, BindingInteractionQuestion[] questions)
+    UIElement Questions(string interactionID, InteractionQuestion[] questions)
     {
         var panel = new StackPanel { Spacing = 12 };
         var submit = new Button { Content = "提交", Style = (Style)Application.Current.Resources["AccentButtonStyle"] };
         ToolTipService.SetToolTip(submit, "回答完毕后按 Enter");
         void Check() => submit.IsEnabled = !Model.Busy && questions.All(question =>
             question.Options.Length == 0 ? answers.GetValueOrDefault(question.Id, "").Trim().Length > 0 : chosen.ContainsKey(question.Id));
-        void Submit() => Answer(interactionID, new BindingRuntimeInteractionReply.Answers(
-            [.. questions.Select(question => new BindingInteractionAnswer(question.Id,
+        void Submit() => Answer(interactionID, new RuntimeInteractionReply.Answers(
+            [.. questions.Select(question => new InteractionAnswer(question.Id,
                 [chosen.TryGetValue(question.Id, out var value) ? value : answers.GetValueOrDefault(question.Id, "")]))]));
         // Enter in an answer submits once all are answered, else goes on to the next field.
         void Entered(KeyRoutedEventArgs e)
@@ -282,7 +281,7 @@ public sealed partial class ConversationView : UserControl
         submit.Click += (_, _) => Submit();
         var cancel = new Button { Content = "取消", IsEnabled = !Model.Busy };
         ToolTipService.SetToolTip(cancel, "Ctrl+Backspace");
-        cancel.Click += (_, _) => Answer(interactionID, new BindingRuntimeInteractionReply.Cancel());
+        cancel.Click += (_, _) => Answer(interactionID, new RuntimeInteractionReply.Cancel());
         panel.Children.Add(new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, Children = { submit, cancel } });
         Check();
         return panel;

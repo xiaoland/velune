@@ -1,5 +1,3 @@
-using Velune.Bindings;
-
 namespace Velune;
 
 // Where a conversation view points: an existing conversation, or, with no
@@ -10,15 +8,15 @@ sealed record Target(string RuntimeID, string ConversationID, string Title)
 }
 
 // A runtime's models as read for the composer.
-sealed record Catalog(BindingRuntimeModel[] Models, bool Loading, string Failure)
+sealed record Catalog(RuntimeModel[] Models, bool Loading, string Failure)
 {
     public static readonly Catalog Reading = new([], true, "");
 }
 
 // A model the composer offers.
-sealed record ModelChoice(BindingModelSelection Selection, string Name, string[] Efforts)
+sealed record ModelChoice(ModelSelection Selection, string Name, string[] Efforts)
 {
-    public bool Managed => Selection is BindingModelSelection.Managed;
+    public bool Managed => Selection is ModelSelection.Managed;
 }
 
 // One open conversation on a device: its transcript, pending interaction and
@@ -32,10 +30,10 @@ sealed partial class Conversation
     // The device's, kept current by the main window.
     public Configuration Configuration { get; set; }
 
-    public BindingConversationSnapshot? Snapshot { get; private set; }
-    public List<BindingMessage> Messages { get; private set; } = [];
+    public DeliveredSnapshot? Snapshot { get; private set; }
+    public List<DeliveredMessage> Messages { get; private set; } = [];
     // Deferred contents read on request, by message ID.
-    public Dictionary<string, BindingMessage> Payloads { get; } = [];
+    public Dictionary<string, DeliveredMessage> Payloads { get; } = [];
 
     // Next is the runtime the next turn runs on, which may differ from the
     // conversation's; it follows the conversation's current one until the
@@ -44,8 +42,8 @@ sealed partial class Conversation
     public string Next { get; private set; }
     bool nextChosen;
     string? intentRuntime;
-    readonly Dictionary<string, BindingTurnChoice> intent = [];
-    readonly Dictionary<string, BindingRuntimeComposerChoices> runtimeChoices = [];
+    readonly Dictionary<string, TurnChoice> intent = [];
+    readonly Dictionary<string, RuntimeComposerChoices> runtimeChoices = [];
     readonly Dictionary<string, Catalog> catalogs = [];
     // Where an unsent conversation will work; empty is the runtime's default.
     public string Cwd { get; set; } = "";
@@ -57,7 +55,7 @@ sealed partial class Conversation
     public bool Accepted { get; private set; }
     int usersBeforeSending;
     // Attached images read for showing, by message and block.
-    readonly Dictionary<string, Task<BindingAttachmentContent>> attachments = [];
+    readonly Dictionary<string, Task<AttachmentContent>> attachments = [];
     public bool Loading { get; private set; }
     // ReadKey names this conversation's read among the problems.
     string ReadKey => Problems.Key("conversation", Device, Target.ConversationID);
@@ -98,9 +96,9 @@ sealed partial class Conversation
     // Call runs a blocking call on the thread pool against the device.
     Task<T> Call<T>(NativeOperation operation, Func<VeluneApplication, T> work) => core.Call(Device, operation, work);
 
-    public string Title => Snapshot?.Conversation.Title ?? (Target.Unsent ? "新会话" : Target.Title);
+    public string Title => Snapshot?.Conversation.Title.DisplayText() ?? (Target.Unsent ? "新会话" : Target.Title);
 
-    public bool Running => Snapshot is { RunState: BindingRunState.Running or BindingRunState.Stopping };
+    public bool Running => Snapshot is { RunState: RunState.Running or RunState.Stopping };
 
     // SessionOpen tells the device holds this conversation's runtime session:
     // it runs or waits, or this view sent to it. Reading a conversation
@@ -109,18 +107,18 @@ sealed partial class Conversation
     public bool SessionOpen => sent || Running || Interaction != null;
     bool sent;
 
-    public bool CanCancel => !stopRequested && Snapshot is { RunState: BindingRunState.Running, Actions.CanCancel: true };
+    public bool CanCancel => !stopRequested && Snapshot is { RunState: RunState.Running, Actions.CanCancel: true };
 
     // Working includes a turn the runtime runs for another client: running is
     // what matters, not where it started.
-    public bool Working => Running || Snapshot is { RunState: BindingRunState.Elsewhere };
+    public bool Working => Running || Snapshot is { RunState: RunState.Elsewhere };
 
     // A native sub-agent's conversation continues from the one that started it.
     public string? ParentID => Snapshot?.Conversation.ParentConversationId;
 
-    int UserMessages() => Messages.Count(message => message.Role == BindingMessageRole.User);
+    int UserMessages() => Messages.Count(message => message.Role == MessageRole.User);
 
-    public BindingRuntimeInteraction? Interaction => Snapshot?.PendingInteractions.FirstOrDefault();
+    public RuntimeInteraction? Interaction => Snapshot?.PendingInteractions.FirstOrDefault();
 
     // Load reads the conversation; reading the list again reads it again too.
     public async void Load()
@@ -171,16 +169,16 @@ sealed partial class Conversation
         }
     }
 
-    static BindingConversationSnapshot? Update(VeluneApplication application, BindingConversationSnapshot snapshot) =>
+    static DeliveredSnapshot? Update(VeluneApplication application, DeliveredSnapshot snapshot) =>
         application.SnapshotUpdate(snapshot.ContextRuntimeId, snapshot.Conversation.Id, snapshot.Cursor) switch
         {
-            BindingSnapshotUpdate.Changed changed => changed.Snapshot,
+            SnapshotUpdate.Changed changed => changed.Snapshot,
             // The device let the conversation go (it restarted, for one); read it again.
-            BindingSnapshotUpdate.Absent => application.ReadConversation(snapshot.ContextRuntimeId, snapshot.Conversation.Id).Snapshot,
+            SnapshotUpdate.Absent => application.ReadConversation(snapshot.ContextRuntimeId, snapshot.Conversation.Id).Snapshot,
             _ => null,
         };
 
-    void Apply(BindingConversationSnapshot? snapshot)
+    void Apply(DeliveredSnapshot? snapshot)
     {
         if (snapshot != null)
         {
@@ -190,7 +188,7 @@ sealed partial class Conversation
 
     // Merge takes a snapshot in: one with a base holds only changed messages,
     // and its message IDs give the whole order.
-    public void Merge(BindingConversationSnapshot snapshot)
+    public void Merge(DeliveredSnapshot snapshot)
     {
         var messages = snapshot.Messages.ToList();
         if (snapshot.Base != null)
@@ -211,9 +209,9 @@ sealed partial class Conversation
             }
         }
         Messages = messages;
-        Target = new Target(snapshot.ContextRuntimeId, snapshot.Conversation.Id, snapshot.Conversation.Title);
+        Target = new Target(snapshot.ContextRuntimeId, snapshot.Conversation.Id, snapshot.Conversation.Title.DisplayText());
         Snapshot = snapshot;
-        if (snapshot.RunState is not (BindingRunState.Running or BindingRunState.Stopping)) stopRequested = false;
+        if (snapshot.RunState is not (RunState.Running or RunState.Stopping)) stopRequested = false;
         // The sent message shows until the transcript has it, or its turn ends without it.
         if (Sending != null && Accepted && (UserMessages() > usersBeforeSending || !Working))
         {
@@ -226,7 +224,7 @@ sealed partial class Conversation
     }
 
     // Act runs one write at a time; a failure goes to 问题 under source.
-    async void Act(string source, NativeOperation operation, Func<VeluneApplication, string, string, BindingSnapshotResult> work)
+    async void Act(string source, NativeOperation operation, Func<VeluneApplication, string, string, SnapshotResult> work)
     {
         if (Busy || Snapshot is not { } snapshot)
         {
@@ -252,7 +250,7 @@ sealed partial class Conversation
     public async Task<bool> Send(string text)
     {
         text = text.Trim();
-        if (Busy || composing || stopRequested || Snapshot?.RunState == BindingRunState.Stopping || Loading || Uploading > 0 || (text.Length == 0 && Attached.Count == 0) || Next.Length == 0)
+        if (Busy || composing || stopRequested || Snapshot?.RunState == RunState.Stopping || Loading || Uploading > 0 || (text.Length == 0 && Attached.Count == 0) || Next.Length == 0)
         {
             return false;
         }
@@ -277,19 +275,19 @@ sealed partial class Conversation
         Accepted = false;
         usersBeforeSending = UserMessages();
         Notify();
-        BindingConversationSnapshot? created = null;
+        DeliveredSnapshot? created = null;
         try
         {
             var sent = await Call(NativeOperation.Send, application =>
             {
                 if (existing == null)
                 {
-                    created = application.CreateConversationWithSelection(runtimeID, cwd, selection).Snapshot
+                    created = application.CreateConversation(runtimeID, cwd, selection).Snapshot
                         ?? throw new InvalidOperationException("设备没有返回新会话");
                     existing = (created.ContextRuntimeId, created.Conversation.Id);
                 }
                 var (source, id) = existing.Value;
-                return application.SendTurnWithSelection(source, id, runtimeID, selection, turn);
+                return application.SendTurn(source, id, runtimeID, selection, turn);
             });
             if (created != null)
             {
@@ -335,7 +333,7 @@ sealed partial class Conversation
         }
     }
 
-    public void Reply(string interaction, BindingRuntimeInteractionReply reply) =>
+    public void Reply(string interaction, RuntimeInteractionReply reply) =>
         Act("回复运行时的请求", NativeOperation.Reply, (application, runtimeID, id) => application.ReplyRuntimeInteraction(runtimeID, id, interaction, reply));
 
     // LoadPayload reads a message's whole content: large reasoning and tool
@@ -362,7 +360,7 @@ sealed partial class Conversation
     }
 
     // ReadAttachment reads an attached image of a message, once.
-    public Task<BindingAttachmentContent> ReadAttachment(string messageID, int block)
+    public Task<AttachmentContent> ReadAttachment(string messageID, int block)
     {
         var key = $"{messageID}/{block}";
         if (!attachments.TryGetValue(key, out var reading) || reading.IsFaulted)
@@ -397,13 +395,13 @@ sealed partial class Conversation
 
     // CurrentSettings are the settings of the conversation's last turn when
     // it ran on the next turn's runtime.
-    public BindingTurnSettings? CurrentSettings() =>
+    public TurnSettings? CurrentSettings() =>
         Snapshot?.TranscriptTurns.LastOrDefault()?.Settings is { } settings && settings.RuntimeId == Next ? settings : null;
 
     // Choice is what this conversation chose for the next turn's runtime. A
     // runtime it has not run on and chose nothing for starts from what the
     // runtime's new conversations start with.
-    public BindingTurnChoice Choice()
+    public TurnChoice Choice()
     {
         if (intent.TryGetValue(Next, out var choice))
         {
@@ -411,9 +409,9 @@ sealed partial class Conversation
         }
         if (HasTurns(Next) || !runtimeChoices.TryGetValue(Next, out var choices))
         {
-            return new BindingTurnChoice(null, null, null);
+            return new TurnChoice(null, null, null);
         }
-        return choices.NewConversation is BindingNewConversationChoice.Chosen chosen ? chosen.Choice : choices.LastChosen;
+        return choices.NewConversation is NewConversationChoice.Chosen chosen ? chosen.Choice : choices.LastChosen;
     }
 
     public Catalog? NextCatalog => catalogs.GetValueOrDefault(Next);
@@ -430,7 +428,7 @@ sealed partial class Conversation
     {
         var choices = CatalogChoices();
         var current = LatestTurnModel(Next);
-        if (current is not BindingModelSelection.Native native || !CatalogReady || choices.Any(choice => Equals(choice.Selection, current)))
+        if (current is not ModelSelection.Native native || !CatalogReady || choices.Any(choice => Equals(choice.Selection, current)))
         {
             return choices;
         }
@@ -440,7 +438,7 @@ sealed partial class Conversation
     // LatestTurnModel is the model of the conversation's latest turn on a
     // runtime: the one Velune sent it with, else the catalog entry its
     // record names, else the runtime's own model by the recorded ID.
-    BindingModelSelection? LatestTurnModel(string runtimeID)
+    ModelSelection? LatestTurnModel(string runtimeID)
     {
         var settings = Snapshot?.TranscriptTurns
             .Select(turn => turn.Settings)
@@ -459,26 +457,26 @@ sealed partial class Conversation
         {
             return named.Selection;
         }
-        if (choices.FirstOrDefault(choice => choice.Selection is BindingModelSelection.Native { } n && n.ModelId == model) is { } identified)
+        if (choices.FirstOrDefault(choice => choice.Selection is ModelSelection.Native { } n && n.ModelId == model) is { } identified)
         {
             return identified.Selection;
         }
-        var natives = choices.Select(choice => choice.Selection).OfType<BindingModelSelection.Native>().ToList();
+        var natives = choices.Select(choice => choice.Selection).OfType<ModelSelection.Native>().ToList();
         if (natives.Any(native => native.ProviderId != null) || !CatalogReady || natives.Count == 0)
         {
             return null;
         }
-        return new BindingModelSelection.Native(null, model);
+        return new ModelSelection.Native(null, model);
     }
 
     // NextModel is the model the next turn goes with: the one chosen, else
     // the conversation's current one on the runtime, else the one it
     // recorded; none is the runtime's default. A read catalog drops those it
     // no longer offers.
-    public BindingModelSelection? NextModel()
+    public ModelSelection? NextModel()
     {
-        BindingModelSelection? recorded = Snapshot is { } snapshot && snapshot.Conversation.RuntimeId == Next && snapshot.ModelRecordKey is { } key
-            ? new BindingModelSelection.Managed(key)
+        ModelSelection? recorded = Snapshot is { } snapshot && snapshot.Conversation.RuntimeId == Next && snapshot.ModelRecordKey is { } key
+            ? new ModelSelection.Managed(key)
             : null;
         var choices = ModelChoices();
         foreach (var candidate in new[] { Choice().Model, LatestTurnModel(Next), recorded })
@@ -502,7 +500,7 @@ sealed partial class Conversation
         {
             return choice.Name;
         }
-        return model is BindingModelSelection.Native native ? native.ModelId : "选择模型";
+        return model is ModelSelection.Native native ? native.ModelId : "选择模型";
     }
 
     // DefaultEfforts are the levels of the runtime's own default model, which
@@ -536,15 +534,15 @@ sealed partial class Conversation
     public string? CurrentEffort() =>
         CurrentSettings()?.Effort is { } effort && EffortOptions().Contains(effort) ? effort : null;
 
-    public BindingPermissionMode[] PermissionModes() => Configuration.RuntimeType(Next)?.PermissionModes ?? [];
+    public PermissionMode[] PermissionModes() => Configuration.RuntimeType(Next)?.PermissionModes ?? [];
 
-    public BindingPermissionMode? PermissionMode(string? id) =>
+    public PermissionMode? PermissionMode(string? id) =>
         id == null ? null : PermissionModes().FirstOrDefault(mode => mode.Id == id);
 
     // Choose changes a part of this conversation's choice for the next turn's
     // runtime. A part chosen, or left to a new conversation's runtime
     // default, is also what the runtime offers first next time.
-    public void Choose(bool chosen, Func<BindingTurnChoice, BindingTurnChoice> update)
+    public void Choose(bool chosen, Func<TurnChoice, TurnChoice> update)
     {
         intent[Next] = update(Choice());
         SaveIntent();
@@ -555,7 +553,7 @@ sealed partial class Conversation
         }
         var choices = runtimeChoices.TryGetValue(Next, out var known)
             ? known
-            : new BindingRuntimeComposerChoices(Next, new BindingTurnChoice(null, null, null), new BindingNewConversationChoice.LastChosen());
+            : new RuntimeComposerChoices(Next, new TurnChoice(null, null, null), new NewConversationChoice.LastChosen());
         choices = choices with { LastChosen = update(choices.LastChosen) };
         runtimeChoices[Next] = choices;
         Write("保存运行时的选择", NativeOperation.ConfigurationWrite, application => application.SetRuntimeComposerChoices(choices));
@@ -584,8 +582,8 @@ sealed partial class Conversation
         {
             return;
         }
-        var saved = new BindingNextTurnIntent(Target.ConversationID, intentRuntime,
-            [.. intent.OrderBy(entry => entry.Key, StringComparer.Ordinal).Select(entry => new BindingRuntimeTurnChoice(entry.Key, entry.Value))]);
+        var saved = new NextTurnIntent(Target.ConversationID, intentRuntime,
+            [.. intent.OrderBy(entry => entry.Key, StringComparer.Ordinal).Select(entry => new RuntimeTurnChoice(entry.Key, entry.Value))]);
         Write("保存下一轮的选择", NativeOperation.ConfigurationWrite, application => application.SetNextTurnIntent(saved));
     }
 

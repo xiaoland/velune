@@ -29,7 +29,7 @@
     <!-- The generated bindings are not ours to tidy. -->
     <NoWarn>$(NoWarn);CS8618;CS8625;CS8600;CS8601;CS8602;CS8603;CS8604;CS0108;CS0114;CS1591;CS0169;CS0649;CS0219</NoWarn>
     <Repository>$([System.IO.Path]::GetFullPath('$(MSBuildProjectDirectory)\..\..'))</Repository>
-    <Bindings>$(Repository)\target\bindings\cs\velune_bindings.cs</Bindings>
+    <Bindings>$(Repository)\target\bindings\cs</Bindings>
     <AppIcon>$(BaseIntermediateOutputPath)Velune.ico</AppIcon>
     <ApplicationIcon>$(AppIcon)</ApplicationIcon>
   </PropertyGroup>
@@ -47,7 +47,19 @@
   </ItemGroup>
 
   <ItemGroup>
-    <Compile Include="$(Bindings)" Link="Bindings\velune_bindings.cs" />
+    <!-- One generated file and namespace per crate. The namespaces stay outside
+         Velune, under a root that declares no types: a generated file resolves
+         another crate's types after its enclosing namespaces, where Velune's own
+         types (ToolState, Command) would otherwise shadow them. -->
+    <Compile Include="$(Bindings)\*.cs" Link="Bindings\%(Filename)%(Extension)" />
+    <Using Include="VeluneFfi.Bindings" />
+    <Using Include="VeluneFfi.ApplicationApi" />
+    <Using Include="VeluneFfi.Conversation" />
+    <Using Include="VeluneFfi.Remote" />
+    <Using Include="VeluneFfi.Telemetry" />
+    <!-- Generated files see these global usings; System.Threading.ExecutionContext
+         would make the contract's ExecutionContext ambiguous. -->
+    <Using Remove="System.Threading" />
     <!-- Velune's mark, in the colorways for light and dark backgrounds. -->
     <Content Include="$(Repository)\assets\brand\*.svg" Link="Assets\Brand\%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="$(AppIcon)" Link="Assets\Velune.ico" CopyToOutputDirectory="PreserveNewest" />

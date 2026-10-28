@@ -1,5 +1,3 @@
-using Velune.Bindings;
-
 namespace Velune;
 
 // An attachment uploaded for the next message: the device's reference to it,
@@ -17,13 +15,13 @@ sealed partial class Conversation
     public List<Attachment> Attached { get; } = [];
     public int Uploading { get; private set; }
     // The ACP Agent's options for this conversation; empty when it has none.
-    public BindingAcpConfigOption[] SessionOptions { get; private set; } = [];
+    public AcpConfigOption[] SessionOptions { get; private set; } = [];
 
-    public BindingFollowUp? FollowUp => Snapshot?.FollowUp;
+    public FollowUp? FollowUp => Snapshot?.FollowUp;
 
     // Turn is a next turn of text and the attachments. Without a level or
     // mode the core keeps the conversation's current one.
-    BindingComposedTurn Turn(string text) =>
+    ComposedTurn Turn(string text) =>
         new(Text: text, Effort: Effort(), Attachments: [.. Attached.Select(attachment => attachment.Reference)], PermissionMode: PermissionMode(Choice().PermissionMode)?.Id);
 
     // Draft is the text the device keeps for this conversation's composer;
@@ -88,7 +86,7 @@ sealed partial class Conversation
         {
             return false;
         }
-        var operation = new BindingSendQueueOperation.Add(snapshot.ContextRuntimeId, Next, NextModel(), Turn(text));
+        var operation = new SendQueueOperation.Add(snapshot.ContextRuntimeId, Next, NextModel(), Turn(text));
         if (!await Change("更改发送队列", NativeOperation.ConversationWrite, application => application.SendQueue(snapshot.ContextRuntimeId, snapshot.Conversation.Id, operation)))
         {
             return false;
@@ -99,33 +97,33 @@ sealed partial class Conversation
     }
 
     public void EditQueued(string id, string text) => Act("编辑排队的消息", NativeOperation.ConversationWrite, (application, runtimeID, conversation) =>
-        application.SendQueue(runtimeID, conversation, new BindingSendQueueOperation.Edit(id, text)));
+        application.SendQueue(runtimeID, conversation, new SendQueueOperation.Edit(id, text)));
 
     public void RemoveQueued(string id) => Act("移除排队的消息", NativeOperation.ConversationWrite, (application, runtimeID, conversation) =>
-        application.SendQueue(runtimeID, conversation, new BindingSendQueueOperation.Remove(id)));
+        application.SendQueue(runtimeID, conversation, new SendQueueOperation.Remove(id)));
 
     // MoveQueued moves a message to index in the queue as it is without it.
     public void MoveQueued(string id, int index) => Act("调整发送队列的顺序", NativeOperation.ConversationWrite, (application, runtimeID, conversation) =>
-        application.SendQueue(runtimeID, conversation, new BindingSendQueueOperation.Move(id, (uint)Math.Max(index, 0))));
+        application.SendQueue(runtimeID, conversation, new SendQueueOperation.Move(id, (uint)Math.Max(index, 0))));
 
     public void SteerQueued(string id) => Act("插入本轮", NativeOperation.ConversationWrite, (application, runtimeID, conversation) =>
-        application.SendQueue(runtimeID, conversation, new BindingSendQueueOperation.Steer(id)));
+        application.SendQueue(runtimeID, conversation, new SendQueueOperation.Steer(id)));
 
     // ResumeQueue sends the queue again after it paused.
     public void ResumeQueue() => Act("继续发送队列", NativeOperation.ConversationWrite, (application, runtimeID, conversation) =>
-        application.SendQueue(runtimeID, conversation, new BindingSendQueueOperation.Resume()));
+        application.SendQueue(runtimeID, conversation, new SendQueueOperation.Resume()));
 
     public void StopSubAgents() => Act("停止子 Agent", NativeOperation.Cancel, (application, runtimeID, conversation) => application.StopSubAgents(runtimeID, conversation));
 
     // TakeQueued takes a queued message out of the queue to send it again:
     // its attachments go back to the composer, the text to the caller.
-    public async Task<bool> TakeQueued(BindingQueuedMessage message)
+    public async Task<bool> TakeQueued(QueuedMessage message)
     {
         if (Snapshot is not { } snapshot)
         {
             return false;
         }
-        var operation = new BindingSendQueueOperation.Remove(message.Id);
+        var operation = new SendQueueOperation.Remove(message.Id);
         if (!await Change("取回排队的消息", NativeOperation.ConversationWrite, application => application.SendQueue(snapshot.ContextRuntimeId, snapshot.Conversation.Id, operation)))
         {
             return false;
@@ -164,9 +162,9 @@ sealed partial class Conversation
     ComposerSubmission.Phase? composerRequest;
 
     // The activity feed may observe a running turn before this view's snapshot.
-    public void ObserveActivity(BindingActiveConversation? activity)
+    public void ObserveActivity(ActiveConversation? activity)
     {
-        var running = activity?.RunState is BindingRunState.Running or BindingRunState.Stopping or BindingRunState.Elsewhere;
+        var running = activity?.RunState is RunState.Running or RunState.Stopping or RunState.Elsewhere;
         if (activityRunning == running) return;
         activityRunning = running;
         Notify();
@@ -180,13 +178,13 @@ sealed partial class Conversation
         Notify();
     }
 
-    public bool CanSteer => !Busy && !stopRequested && !composing && Snapshot?.RunState == BindingRunState.Running && FollowUp is { CanSteer: true };
+    public bool CanSteer => !Busy && !stopRequested && !composing && Snapshot?.RunState == RunState.Running && FollowUp is { CanSteer: true };
 
     public ComposerSubmission Submission
     {
         get
         {
-            var phase = stopRequested || Snapshot?.RunState == BindingRunState.Stopping ? ComposerSubmission.Phase.Stopping
+            var phase = stopRequested || Snapshot?.RunState == RunState.Stopping ? ComposerSubmission.Phase.Stopping
                 : composerRequest ?? (Running ? ComposerSubmission.Phase.Running
                 : Working || activityRunning || Loading || Busy || ParentID != null ? ComposerSubmission.Phase.Blocked : ComposerSubmission.Phase.Idle);
             var ready = !Busy && !Loading && Next.Length > 0 && Uploading == 0;
@@ -228,35 +226,35 @@ sealed partial class Conversation
     // Edit replaces a sent user message: in place, dropping it and all after
     // it, or in a new conversation from what precedes it. It returns the
     // conversation that continues, or null when it did not.
-    public async Task<string?> Edit(string messageID, BindingEditPlacement placement, string text)
+    public async Task<string?> Edit(string messageID, EditPlacement placement, string text)
     {
         if (Snapshot is not { } snapshot)
         {
             return null;
         }
-        var turn = new BindingComposedTurn(Text: text.Trim(), Effort: Effort(), Attachments: [], PermissionMode: PermissionMode(Choice().PermissionMode)?.Id);
+        var turn = new ComposedTurn(Text: text.Trim(), Effort: Effort(), Attachments: [], PermissionMode: PermissionMode(Choice().PermissionMode)?.Id);
         var selection = NextModel();
-        BindingConversationSnapshot? result = null;
+        DeliveredSnapshot? result = null;
         var done = await Change("编辑消息", NativeOperation.ConversationWrite, application =>
         {
             var edited = application.EditMessage(snapshot.ContextRuntimeId, snapshot.Conversation.Id, messageID, placement, selection, turn);
             result = edited.Snapshot;
             // A fork's snapshot is the new conversation's, which this one does not take.
-            return placement == BindingEditPlacement.Fork ? new BindingSnapshotResult(null) : edited;
+            return placement == EditPlacement.Fork ? new SnapshotResult(null) : edited;
         });
-        return !done ? null : placement == BindingEditPlacement.Fork ? result?.Conversation.Id : snapshot.Conversation.Id;
+        return !done ? null : placement == EditPlacement.Fork ? result?.Conversation.Id : snapshot.Conversation.Id;
     }
 
     // WorkingChanges reads the conversation's working directory as git sees
     // it, blocking; for the status line's branch.
-    public Task<BindingWorkingChanges> WorkingChanges(string runtimeID, string conversationID) =>
+    public Task<WorkingChanges> WorkingChanges(string runtimeID, string conversationID) =>
         core.Call(Device, NativeOperation.ConversationRead, application => application.WorkingChanges(runtimeID, conversationID));
 
     // Editable tells whether a user message may be edited now, and whether in place.
-    public BindingEditableMessage? Editable(string messageID) => FollowUp?.Editable.FirstOrDefault(editable => editable.MessageId == messageID);
+    public EditableMessage? Editable(string messageID) => FollowUp?.Editable.FirstOrDefault(editable => editable.MessageId == messageID);
 
     // Change runs one write and takes the snapshot it returns; false shows its failure.
-    async Task<bool> Change(string source, NativeOperation operation, Func<VeluneApplication, BindingSnapshotResult> work)
+    async Task<bool> Change(string source, NativeOperation operation, Func<VeluneApplication, SnapshotResult> work)
     {
         if (Busy)
         {
@@ -301,7 +299,7 @@ sealed partial class Conversation
         Notify();
     }
 
-    public async void SetSessionOption(string id, BindingAcpConfigValue value)
+    public async void SetSessionOption(string id, AcpConfigValue value)
     {
         if (Snapshot is not { } snapshot)
         {

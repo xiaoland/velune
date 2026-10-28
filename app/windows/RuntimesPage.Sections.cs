@@ -1,6 +1,5 @@
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
-using Velune.Bindings;
 
 namespace Velune;
 
@@ -13,15 +12,15 @@ sealed partial class RuntimesPage
     const string RuntimeDirectoryKey = "agentDir";
 
     // What an instance's editor reads before it opens.
-    sealed record Extras(BindingRuntimeExecution Execution, BindingAcpLaunch? Launch, BindingRuntimeComposerChoices? Choices, string? ManagedHome);
+    sealed record Extras(RuntimeExecution Execution, AcpLaunch? Launch, RuntimeComposerChoices? Choices, string? ManagedHome);
 
-    static readonly BindingRuntimeExecution LocalInherit = new(new BindingRuntimeTransport.Local(), new BindingRuntimeHome.Inherit(), null);
+    static readonly RuntimeExecution LocalInherit = new(new RuntimeTransport.Local(), new RuntimeHome.Inherit(), null);
 
-    async Task<Extras?> ReadExtras(BindingRuntimeInstance? existing, BindingRuntimeTypeDescriptor kind)
+    async Task<Extras?> ReadExtras(RuntimeInstance? existing, RuntimeTypeDescriptor kind)
     {
         if (existing == null)
         {
-            return new Extras(LocalInherit, new BindingAcpLaunch([], []), null, null);
+            return new Extras(LocalInherit, new AcpLaunch([], []), null, null);
         }
         try
         {
@@ -31,7 +30,7 @@ sealed partial class RuntimesPage
                 var execution = application.RuntimeExecution(existing.Id);
                 var launch = kind.LaunchOptions ? application.AcpLaunch(existing.Id) : null;
                 var choices = application.ComposerChoices().Runtimes.FirstOrDefault(choices => choices.RuntimeId == existing.Id);
-                var home = execution.Home is BindingRuntimeHome.Managed ? application.RuntimeHomeDirectory(existing.Id) : null;
+                var home = execution.Home is RuntimeHome.Managed ? application.RuntimeHomeDirectory(existing.Id) : null;
                 return new Extras(execution, launch, choices, home);
             });
         }
@@ -56,7 +55,7 @@ sealed partial class RuntimesPage
     sealed class HomeSection
     {
         static readonly string[] names = ["继承当前用户的 HOME", "指定目录", "由 Velune 管理"];
-        readonly BindingRuntimeExecution saved;
+        readonly RuntimeExecution saved;
         readonly ComboBox choice = new() { Header = "HOME", HorizontalAlignment = HorizontalAlignment.Stretch };
         readonly TextBox path = new() { Header = "HOME 目录", PlaceholderText = "绝对路径" };
         readonly Grid pathRow = new() { ColumnSpacing = 8 };
@@ -65,9 +64,9 @@ sealed partial class RuntimesPage
         public Expander Element { get; }
         public event Action? Changed;
         public bool Managed => choice.SelectedIndex == 2;
-        bool Remote => saved.Transport is BindingRuntimeTransport.Ssh;
+        bool Remote => saved.Transport is RuntimeTransport.Ssh;
 
-        public HomeSection(Window window, BindingRuntimeExecution saved, string? managedHome)
+        public HomeSection(Window window, RuntimeExecution saved, string? managedHome)
         {
             this.saved = saved;
             foreach (var name in names)
@@ -76,11 +75,11 @@ sealed partial class RuntimesPage
             }
             choice.SelectedIndex = saved.Home switch
             {
-                BindingRuntimeHome.Existing => 1,
-                BindingRuntimeHome.Managed => 2,
+                RuntimeHome.Existing => 1,
+                RuntimeHome.Managed => 2,
                 _ => 0,
             };
-            path.Text = saved.Home is BindingRuntimeHome.Existing existing ? existing.Path : "";
+            path.Text = saved.Home is RuntimeHome.Existing existing ? existing.Path : "";
             pathRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
             pathRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
             var browse = new Button { Content = "浏览…", VerticalAlignment = VerticalAlignment.Bottom };
@@ -104,7 +103,7 @@ sealed partial class RuntimesPage
             panel.Children.Add(Ui.Field(choice, "Velune 管理时为此实例单独准备 HOME，不复制你原有的凭据或会话；这不是安全隔离。"));
             panel.Children.Add(pathRow);
             panel.Children.Add(error);
-            if (managedHome != null && saved.Home is BindingRuntimeHome.Managed)
+            if (managedHome != null && saved.Home is RuntimeHome.Managed)
             {
                 var shown = Directory.Exists(managedHome);
                 var reveal = new HyperlinkButton { Content = "在资源管理器中显示", IsEnabled = shown };
@@ -128,7 +127,7 @@ sealed partial class RuntimesPage
         }
 
         // Read is the execution to save, or null after saying what is wrong.
-        public BindingRuntimeExecution? Read()
+        public RuntimeExecution? Read()
         {
             if (Remote)
             {
@@ -141,11 +140,11 @@ sealed partial class RuntimesPage
                 Element.IsExpanded = true;
                 return null;
             }
-            BindingRuntimeHome home = choice.SelectedIndex switch
+            RuntimeHome home = choice.SelectedIndex switch
             {
-                1 => new BindingRuntimeHome.Existing(chosen),
-                2 => new BindingRuntimeHome.Managed(null),
-                _ => new BindingRuntimeHome.Inherit(),
+                1 => new RuntimeHome.Existing(chosen),
+                2 => new RuntimeHome.Managed(null),
+                _ => new RuntimeHome.Inherit(),
             };
             return saved with { Home = home };
         }
@@ -160,7 +159,7 @@ sealed partial class RuntimesPage
 
         public Expander Element { get; }
 
-        public LaunchSection(BindingAcpLaunch? launch)
+        public LaunchSection(AcpLaunch? launch)
         {
             arguments.Text = string.Join("\r", launch?.Args ?? []);
             environment.Text = string.Join("\r", (launch?.Environment ?? []).OrderBy(entry => entry.Key, StringComparer.Ordinal).Select(entry => entry.Key + "=" + entry.Value));
@@ -174,7 +173,7 @@ sealed partial class RuntimesPage
         static IEnumerable<string> Lines(TextBox box) => box.Text.Split('\r', '\n').Where(line => line.Trim().Length > 0);
 
         // Read is the launch to save, or null after saying what is wrong.
-        public BindingAcpLaunch? Read()
+        public AcpLaunch? Read()
         {
             var variables = new Dictionary<string, string>();
             foreach (var line in Lines(environment))
@@ -190,12 +189,12 @@ sealed partial class RuntimesPage
                 variables[name] = line[(at + 1)..];
             }
             Ui.Show(error, "");
-            return new BindingAcpLaunch([.. Lines(arguments)], variables);
+            return new AcpLaunch([.. Lines(arguments)], variables);
         }
     }
 
     // AgentInfo reads, when asked, what a saved ACP Agent says of itself.
-    Expander AgentInfo(BindingRuntimeInstance runtime)
+    Expander AgentInfo(RuntimeInstance runtime)
     {
         var shown = new TextBlock { TextWrapping = TextWrapping.Wrap, IsTextSelectionEnabled = true };
         var read = new Button { Content = "读取 Agent 信息" };
@@ -238,9 +237,9 @@ sealed partial class RuntimesPage
     {
         static readonly string[] names = ["上次的选择", "运行时默认", "指定"];
         readonly Core core;
-        readonly BindingRuntimeInstance? runtime;
-        readonly BindingPermissionMode[] modes;
-        readonly BindingNewConversationChoice? saved;
+        readonly RuntimeInstance? runtime;
+        readonly PermissionMode[] modes;
+        readonly NewConversationChoice? saved;
         readonly ComboBox choice = new() { Header = "新会话开始时", HorizontalAlignment = HorizontalAlignment.Stretch };
         readonly ComboBox model = new() { Header = "模型", HorizontalAlignment = HorizontalAlignment.Stretch };
         readonly ComboBox effort = new() { Header = "推理强度", HorizontalAlignment = HorizontalAlignment.Stretch };
@@ -248,12 +247,12 @@ sealed partial class RuntimesPage
         readonly TextBlock state = new() { Style = Ui.Style("SecondaryTextStyle"), TextWrapping = TextWrapping.Wrap };
         readonly StackPanel chosenParts = new() { Spacing = 8 };
         // The models offered, first none: the runtime's default.
-        List<(BindingModelSelection? Selection, string Name, string[] Efforts)> models = [(null, "运行时默认", [])];
+        List<(ModelSelection? Selection, string Name, string[] Efforts)> models = [(null, "运行时默认", [])];
         bool read;
 
         public Expander Element { get; }
 
-        public StartsSection(Core core, BindingRuntimeInstance? runtime, BindingRuntimeTypeDescriptor kind, BindingRuntimeComposerChoices? choices)
+        public StartsSection(Core core, RuntimeInstance? runtime, RuntimeTypeDescriptor kind, RuntimeComposerChoices? choices)
         {
             this.core = core;
             this.runtime = runtime;
@@ -263,7 +262,7 @@ sealed partial class RuntimesPage
             {
                 choice.Items.Add(name);
             }
-            var set = saved as BindingNewConversationChoice.Chosen;
+            var set = saved as NewConversationChoice.Chosen;
             choice.SelectedIndex = set == null ? 0 : set.Choice is { Model: null, Effort: null, PermissionMode: null } ? 1 : 2;
             permission.Items.Add("运行时默认");
             foreach (var mode in modes)
@@ -291,10 +290,10 @@ sealed partial class RuntimesPage
             Show();
         }
 
-        static string Named(BindingModelSelection selection) => selection switch
+        static string Named(ModelSelection selection) => selection switch
         {
-            BindingModelSelection.Native native => native.ModelId,
-            BindingModelSelection.Managed managed => managed.ModelRecordKey,
+            ModelSelection.Native native => native.ModelId,
+            ModelSelection.Managed managed => managed.ModelRecordKey,
             _ => "模型",
         };
 
@@ -328,7 +327,7 @@ sealed partial class RuntimesPage
                 var catalog = await Task.Run(() => core.Local.RuntimeModels(runtimeID));
                 var keep = Selected();
                 var keptEffort = effort.SelectedIndex > 0 ? effort.SelectedItem as string : null;
-                models = [(null, "运行时默认", []), .. catalog.Select(entry => ((BindingModelSelection?)entry.Selection, entry.Name, entry.ReasoningEfforts))];
+                models = [(null, "运行时默认", []), .. catalog.Select(entry => ((ModelSelection?)entry.Selection, entry.Name, entry.ReasoningEfforts))];
                 if (keep is { } selection && !models.Any(entry => Equals(entry.Selection, selection)))
                 {
                     models.Add((selection, Named(selection) + "（目录中没有）", []));
@@ -343,9 +342,9 @@ sealed partial class RuntimesPage
             model.IsEnabled = true;
         }
 
-        BindingModelSelection? Selected() => model.SelectedIndex > 0 ? models[model.SelectedIndex].Selection : null;
+        ModelSelection? Selected() => model.SelectedIndex > 0 ? models[model.SelectedIndex].Selection : null;
 
-        void ShowModels(BindingModelSelection? selected, string? chosenEffort)
+        void ShowModels(ModelSelection? selected, string? chosenEffort)
         {
             model.Items.Clear();
             foreach (var entry in models)
@@ -375,21 +374,21 @@ sealed partial class RuntimesPage
         }
 
         // Read is what to save, or null when nothing changed.
-        public BindingNewConversationChoice? Read()
+        public NewConversationChoice? Read()
         {
-            BindingNewConversationChoice chosen = choice.SelectedIndex switch
+            NewConversationChoice chosen = choice.SelectedIndex switch
             {
-                1 => new BindingNewConversationChoice.Chosen(new BindingTurnChoice(null, null, null)),
-                2 => new BindingNewConversationChoice.Chosen(new BindingTurnChoice(
+                1 => new NewConversationChoice.Chosen(new TurnChoice(null, null, null)),
+                2 => new NewConversationChoice.Chosen(new TurnChoice(
                     Selected(),
                     effort.SelectedIndex > 0 ? effort.SelectedItem as string : null,
                     permission.SelectedIndex > 0 ? modes[permission.SelectedIndex - 1].Id : null)),
-                _ => new BindingNewConversationChoice.LastChosen(),
+                _ => new NewConversationChoice.LastChosen(),
             };
-            var unchanged = (saved ?? new BindingNewConversationChoice.LastChosen()) switch
+            var unchanged = (saved ?? new NewConversationChoice.LastChosen()) switch
             {
-                BindingNewConversationChoice.LastChosen => chosen is BindingNewConversationChoice.LastChosen,
-                BindingNewConversationChoice.Chosen before => chosen is BindingNewConversationChoice.Chosen after && before.Choice == after.Choice,
+                NewConversationChoice.LastChosen => chosen is NewConversationChoice.LastChosen,
+                NewConversationChoice.Chosen before => chosen is NewConversationChoice.Chosen after && before.Choice == after.Choice,
                 _ => false,
             };
             return unchanged ? null : chosen;

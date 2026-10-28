@@ -1,6 +1,5 @@
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
-using Velune.Bindings;
 
 namespace Velune;
 
@@ -18,7 +17,7 @@ sealed partial class ProviderEditor
     readonly ComboBox accountSource = new() { MinWidth = 280 };
     // The Claude Code logins accountSource offers after a new account: the
     // user's own, then each Claude Code runtime's.
-    readonly List<BindingLinkedClaudeLogin> logins = [];
+    readonly List<LinkedClaudeLogin> logins = [];
     readonly StackPanel quotaAuthentication = new() { Spacing = 4 };
     readonly TextBox quotaID = new() { MinWidth = 280 };
     readonly PasswordBox quotaSecret = new() { MinWidth = 280 };
@@ -31,7 +30,7 @@ sealed partial class ProviderEditor
     {
         switch (authenticationSource)
         {
-            case BindingProviderAuthenticationSource.ApiKey:
+            case ProviderAuthenticationSource.ApiKey:
                 Section("认证");
                 var keyRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
                 keyRow.Children.Add(key);
@@ -40,26 +39,26 @@ sealed partial class ProviderEditor
                 reveal.Click += (_, _) => RevealKey();
                 body.Children.Add(Ui.Card(Ui.Field(Ui.TwoLines("API key", "保存在这台电脑的应用私有配置中。", true), "", keyError), keyRow));
                 break;
-            case BindingProviderAuthenticationSource.CodexOAuth:
-            case BindingProviderAuthenticationSource.ClaudeCli:
-            case BindingProviderAuthenticationSource.RuntimeProvider:
+            case ProviderAuthenticationSource.CodexOAuth:
+            case ProviderAuthenticationSource.ClaudeCli:
+            case ProviderAuthenticationSource.RuntimeProvider:
                 Section("认证");
-                if (authenticationSource == BindingProviderAuthenticationSource.ClaudeCli)
+                if (authenticationSource == ProviderAuthenticationSource.ClaudeCli)
                 {
                     BuildAccountSource();
                 }
                 var status = new StackPanel { Spacing = 2 };
                 status.Children.Add(Ui.Text(authenticationSource switch
                 {
-                    BindingProviderAuthenticationSource.CodexOAuth => "ChatGPT 账户",
-                    BindingProviderAuthenticationSource.ClaudeCli => "Claude 账户",
+                    ProviderAuthenticationSource.CodexOAuth => "ChatGPT 账户",
+                    ProviderAuthenticationSource.ClaudeCli => "Claude 账户",
                     _ => "认证来源",
                 }));
                 status.Children.Add(signedIn);
                 body.Children.Add(Ui.Card(status, signInActions));
                 break;
         }
-        if (quotaSource == BindingProviderQuotaSource.ArkCodingUsage)
+        if (quotaSource == ProviderQuotaSource.ArkCodingUsage)
         {
             BuildQuotaAuthentication();
         }
@@ -73,13 +72,13 @@ sealed partial class ProviderEditor
     {
         accountSource.Items.Add("在 Velune 中登录新账户");
         accountSource.Items.Add("本机 Claude Code 登录");
-        logins.Add(new BindingLinkedClaudeLogin.UserDefault());
+        logins.Add(new LinkedClaudeLogin.UserDefault());
         foreach (var runtime in page.Runtimes)
         {
             if (page.RuntimeTypes.FirstOrDefault(type => type.Id == runtime.TypeId)?.FamilyId == "claude-code")
             {
                 accountSource.Items.Add("Claude Code 运行时「" + runtime.Name + "」的登录");
-                logins.Add(new BindingLinkedClaudeLogin.Runtime(runtime.Id));
+                logins.Add(new LinkedClaudeLogin.Runtime(runtime.Id));
             }
         }
         accountSource.SelectedIndex = SavedSource();
@@ -94,19 +93,19 @@ sealed partial class ProviderEditor
     // SavedSource is accountSource's entry for the saved login.
     int SavedSource() => existing?.Authentication.LinkedLogin is { } linked && logins.IndexOf(linked) is var index and >= 0 ? index + 1 : 0;
 
-    bool SourceChanged => authenticationSource == BindingProviderAuthenticationSource.ClaudeCli && accountSource.SelectedIndex != SavedSource();
+    bool SourceChanged => authenticationSource == ProviderAuthenticationSource.ClaudeCli && accountSource.SelectedIndex != SavedSource();
 
     // Linked tells whether the provider uses, or will use, an existing Claude Code login.
-    bool Linked => authenticationSource == BindingProviderAuthenticationSource.ClaudeCli && accountSource.SelectedIndex > 0;
+    bool Linked => authenticationSource == ProviderAuthenticationSource.ClaudeCli && accountSource.SelectedIndex > 0;
 
     // NeedsLogin tells whether saving a new provider should go on to sign in.
-    bool NeedsLogin => authenticationSource == BindingProviderAuthenticationSource.CodexOAuth
-        || (authenticationSource == BindingProviderAuthenticationSource.ClaudeCli && !Linked);
+    bool NeedsLogin => authenticationSource == ProviderAuthenticationSource.CodexOAuth
+        || (authenticationSource == ProviderAuthenticationSource.ClaudeCli && !Linked);
 
     void ShowAuthentication()
     {
         var authentication = existing?.Authentication;
-        if (authenticationSource == BindingProviderAuthenticationSource.ApiKey)
+        if (authenticationSource == ProviderAuthenticationSource.ApiKey)
         {
             var saved = authentication?.Configured ?? false;
             key.PlaceholderText = saved ? "已保存；留空保持不变" : "";
@@ -126,8 +125,8 @@ sealed partial class ProviderEditor
         var label = authentication!.AccountLabel is { Length: > 0 } account ? "：" + account : "";
         var from = authentication.Provenance?.DisplayName is { Length: > 0 } provenance ? provenance + " · " : "";
         signedIn.Text = from + (authentication.Configured
-            ? (authentication.Method == BindingAuthenticationMethod.OAuth ? "已登录" : "已配置") + label
-            : authentication.Method == BindingAuthenticationMethod.OAuth ? "未登录" : "未配置");
+            ? (authentication.Method == AuthenticationMethod.OAuth ? "已登录" : "已配置") + label
+            : authentication.Method == AuthenticationMethod.OAuth ? "未登录" : "未配置");
         foreach (var action in authentication.Actions)
         {
             // Only a signed-in account signs out.
@@ -157,19 +156,19 @@ sealed partial class ProviderEditor
         return button;
     }
 
-    BindingAuthenticationEdit AuthenticationEdit()
+    AuthenticationEdit AuthenticationEdit()
     {
-        if (authenticationSource == BindingProviderAuthenticationSource.ApiKey && key.Password.Trim() is { Length: > 0 } value)
+        if (authenticationSource == ProviderAuthenticationSource.ApiKey && key.Password.Trim() is { Length: > 0 } value)
         {
-            return new BindingAuthenticationEdit.SetApiKey(value);
+            return new AuthenticationEdit.SetApiKey(value);
         }
         if (SourceChanged)
         {
             return accountSource.SelectedIndex > 0
-                ? new BindingAuthenticationEdit.UseClaudeCodeLogin(logins[accountSource.SelectedIndex - 1])
-                : new BindingAuthenticationEdit.Clear();
+                ? new AuthenticationEdit.UseClaudeCodeLogin(logins[accountSource.SelectedIndex - 1])
+                : new AuthenticationEdit.Clear();
         }
-        return new BindingAuthenticationEdit.Keep();
+        return new AuthenticationEdit.Keep();
     }
 
     // RevealKey reads the saved key into the field to show and edit it.
@@ -283,11 +282,11 @@ sealed partial class ProviderEditor
 
     void ShowQuotaAuthentication()
     {
-        if (quotaSource != BindingProviderQuotaSource.ArkCodingUsage)
+        if (quotaSource != ProviderQuotaSource.ArkCodingUsage)
         {
             return;
         }
-        var described = existing?.QuotaAuthentication ?? new BindingQuotaAuthenticationDescription(false, false);
+        var described = existing?.QuotaAuthentication ?? new QuotaAuthenticationDescription(false, false);
         quotaStatus.Text = clearingQuota ? "保存后清除"
             : described is { Configured: true, BindingConfirmed: true } ? "已由用户确认关联"
             : described.Configured ? "需要重新确认关联"
@@ -297,26 +296,26 @@ sealed partial class ProviderEditor
 
     bool QuotaIncomplete()
     {
-        var incomplete = quotaSource == BindingProviderQuotaSource.ArkCodingUsage
+        var incomplete = quotaSource == ProviderQuotaSource.ArkCodingUsage
             && (quotaID.Text.Trim().Length == 0) != (quotaSecret.Password.Trim().Length == 0);
         Ui.Show(quotaError, incomplete ? "额度查询需要完整 AK/SK" : "");
         return incomplete;
     }
 
     // QuotaEdit is what saving does to the usage query credentials; null keeps them.
-    BindingQuotaAuthenticationEdit? QuotaEdit()
+    QuotaAuthenticationEdit? QuotaEdit()
     {
         var (id, secret) = (quotaID.Text.Trim(), quotaSecret.Password.Trim());
         var confirmed = quotaConfirmed.IsChecked == true;
         if (clearingQuota)
         {
             clearingQuota = false;
-            return new BindingQuotaAuthenticationEdit.Clear();
+            return new QuotaAuthenticationEdit.Clear();
         }
         if (id.Length > 0 && secret.Length > 0)
         {
-            return new BindingQuotaAuthenticationEdit.SetAccessKey(id, secret, confirmed);
+            return new QuotaAuthenticationEdit.SetAccessKey(id, secret, confirmed);
         }
-        return confirmed ? new BindingQuotaAuthenticationEdit.ConfirmBinding() : null;
+        return confirmed ? new QuotaAuthenticationEdit.ConfirmBinding() : null;
     }
 }

@@ -2,7 +2,6 @@ using Microsoft.UI.Input;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
-using Velune.Bindings;
 using Windows.ApplicationModel.DataTransfer;
 using Windows.Storage;
 using Windows.System;
@@ -289,7 +288,7 @@ public sealed partial class ConversationView
         QueuePanel.Visibility = Visible(queue.Length > 0);
     }
 
-    Border Queued(BindingQueuedMessage message, int index, int count, bool steer)
+    Border Queued(QueuedMessage message, int index, int count, bool steer)
     {
         var text = new TextBlock { Text = message.Text, TextWrapping = TextWrapping.Wrap, MaxLines = 2, TextTrimming = TextTrimming.CharacterEllipsis };
         var lines = new StackPanel { Spacing = 2, VerticalAlignment = VerticalAlignment.Center };
@@ -378,16 +377,16 @@ public sealed partial class ConversationView
         {
             switch (option.Value)
             {
-                case BindingAcpConfigValue.Boolean { V1: var on }:
+                case AcpConfigValue.Boolean { V1: var on }:
                     var toggle = new ToggleMenuFlyoutItem { Text = option.Name, IsChecked = on };
-                    toggle.Click += (_, _) => Model.SetSessionOption(option.Id, new BindingAcpConfigValue.Boolean(!on));
+                    toggle.Click += (_, _) => Model.SetSessionOption(option.Id, new AcpConfigValue.Boolean(!on));
                     if (option.Description is { Length: > 0 } about)
                     {
                         ToolTipService.SetToolTip(toggle, about);
                     }
                     PermissionMenu.Items.Add(toggle);
                     break;
-                case BindingAcpConfigValue.Select { V1: var current }:
+                case AcpConfigValue.Select { V1: var current }:
                     var shown = option.Choices.FirstOrDefault(choice => choice.Value == current)?.Name ?? current;
                     var menu = new MenuFlyoutSubItem { Text = option.Name + "：" + shown };
                     string? group = null;
@@ -405,7 +404,7 @@ public sealed partial class ConversationView
                             ToolTipService.SetToolTip(item, detail);
                         }
                         var value = choice.Value;
-                        item.Click += (_, _) => Model.SetSessionOption(option.Id, new BindingAcpConfigValue.Select(value));
+                        item.Click += (_, _) => Model.SetSessionOption(option.Id, new AcpConfigValue.Select(value));
                         menu.Items.Add(item);
                     }
                     PermissionMenu.Items.Add(menu);
@@ -414,7 +413,7 @@ public sealed partial class ConversationView
         }
     }
 
-    void FillMessageMenu(MenuFlyout menu, BindingMessage message)
+    void FillMessageMenu(MenuFlyout menu, DeliveredMessage message)
     {
         menu.Items.Clear();
         var text = MessageText(message);
@@ -428,19 +427,19 @@ public sealed partial class ConversationView
         menu.Items.Add(Item("编辑…", () => EditMessage(message), editable != null && !Model.Busy && !Model.Running));
     }
 
-    static string MessageText(BindingMessage message) =>
-        string.Join("\n\n", message.Blocks.OfType<BindingMessageBlock.Text>().Select(block => block.TextValue));
+    static string MessageText(DeliveredMessage message) =>
+        string.Join("\n\n", message.Blocks.OfType<DeliveredBlock.Text>().Select(block => block.TextValue));
 
     // EditMessage edits a sent user message. The last one continues in
     // place; an earlier one continues in a new conversation from it, or in
     // place, which drops it and everything after it.
-    async void EditMessage(BindingMessage message)
+    async void EditMessage(DeliveredMessage message)
     {
         if (Model.Editable(message.Id) is not { } editable)
         {
             return;
         }
-        var last = Model.Messages.LastOrDefault(shown => shown.Role == BindingMessageRole.User)?.Id == message.Id;
+        var last = Model.Messages.LastOrDefault(shown => shown.Role == MessageRole.User)?.Id == message.Id;
         var box = new TextBox { Text = MessageText(message), AcceptsReturn = true, TextWrapping = TextWrapping.Wrap, MinHeight = 120, MaxHeight = 320 };
         var about = last && editable.InPlace
             ? "编辑后作为新的一轮在原处继续，取代这条消息。"
@@ -458,20 +457,20 @@ public sealed partial class ConversationView
             CloseButtonText = "取消",
             DefaultButton = ContentDialogButton.Primary,
         };
-        BindingEditPlacement? primary, secondary = null;
+        EditPlacement? primary, secondary = null;
         if (last && editable.InPlace)
         {
             dialog.PrimaryButtonText = "发送";
-            primary = BindingEditPlacement.InPlace;
+            primary = EditPlacement.InPlace;
         }
         else
         {
             dialog.PrimaryButtonText = "在新会话中继续";
-            primary = BindingEditPlacement.Fork;
+            primary = EditPlacement.Fork;
             if (editable.InPlace)
             {
                 dialog.SecondaryButtonText = "原地继续";
-                secondary = BindingEditPlacement.InPlace;
+                secondary = EditPlacement.InPlace;
             }
         }
         var placement = await dialog.ShowAsync() switch
@@ -485,7 +484,7 @@ public sealed partial class ConversationView
             return;
         }
         ScrollToEnd();
-        if (await Model.Edit(message.Id, chosen, box.Text) is { } continued && chosen == BindingEditPlacement.Fork)
+        if (await Model.Edit(message.Id, chosen, box.Text) is { } continued && chosen == EditPlacement.Fork)
         {
             window.OpenLinked(continued);
         }
@@ -495,7 +494,7 @@ public sealed partial class ConversationView
     readonly Button stopSubAgents = new() { Content = "停止子 Agent" };
 
     // ShowQueueBar says why the queue waits for the user, or for sub-agents.
-    void ShowQueueBar(BindingFollowUp? followUp)
+    void ShowQueueBar(FollowUp? followUp)
     {
         if (resumeQueue.Tag == null)
         {
@@ -506,10 +505,10 @@ public sealed partial class ConversationView
         var waiting = followUp is { Queue.Length: > 0 } ? followUp : null;
         (string Message, Button? Action)? shown = waiting switch
         {
-            { Paused: BindingQueuePause.TurnStopped } => ("本轮已停止，发送队列暂停。", resumeQueue),
-            { Paused: BindingQueuePause.TurnFailed } => ("本轮失败，发送队列暂停。", resumeQueue),
-            { Paused: BindingQueuePause.SendFailed } => ("队列中的第一条没有被接受，仍在队首。", resumeQueue),
-            { Waiting: BindingQueueWait.SubAgents } => ("下一条需要新的运行时进程，会结束仍在运行的子 Agent；队列等待它们结束。", waiting.CanStopSubAgents ? stopSubAgents : null),
+            { Paused: QueuePause.TurnStopped } => ("本轮已停止，发送队列暂停。", resumeQueue),
+            { Paused: QueuePause.TurnFailed } => ("本轮失败，发送队列暂停。", resumeQueue),
+            { Paused: QueuePause.SendFailed } => ("队列中的第一条没有被接受，仍在队首。", resumeQueue),
+            { Waiting: QueueWait.SubAgents } => ("下一条需要新的运行时进程，会结束仍在运行的子 Agent；队列等待它们结束。", waiting.CanStopSubAgents ? stopSubAgents : null),
             _ => null,
         };
         QueueBar.IsOpen = shown != null;

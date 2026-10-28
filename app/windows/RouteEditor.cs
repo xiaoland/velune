@@ -1,6 +1,5 @@
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
-using Velune.Bindings;
 
 namespace Velune;
 
@@ -10,7 +9,7 @@ namespace Velune;
 // route will not use it.
 sealed class RouteEditor : UserControl
 {
-    static readonly BindingRoutingStrategy[] strategies = [BindingRoutingStrategy.Smart, BindingRoutingStrategy.Order, BindingRoutingStrategy.Rotate, BindingRoutingStrategy.Weight];
+    static readonly RoutingStrategy[] strategies = [RoutingStrategy.Smart, RoutingStrategy.Order, RoutingStrategy.Rotate, RoutingStrategy.Weight];
 
     readonly RoutesPage page;
     readonly string recordKey;
@@ -27,13 +26,13 @@ sealed class RouteEditor : UserControl
     readonly Button save = new() { Content = "保存", Style = Ui.Style("AccentButtonStyle") };
     readonly List<string> members;
     readonly Dictionary<string, uint> weights;
-    readonly Dictionary<string, BindingProviderQuotaStatus> quotas = [];
+    readonly Dictionary<string, QuotaObservation> quotas = [];
     readonly List<MemberCard> cards = [];
     readonly DispatcherTimer timer = new();
     bool reading;
     bool dirty;
 
-    internal RouteEditor(RoutesPage page, BindingModelRoute? route)
+    internal RouteEditor(RoutesPage page, ModelRoute? route)
     {
         this.page = page;
         recordKey = route?.RecordKey ?? "";
@@ -63,7 +62,7 @@ sealed class RouteEditor : UserControl
             strategy.Items.Add(RoutesPage.StrategyName(option));
         }
         // A new route picks smartly and keeps conversations on their member.
-        strategy.SelectedIndex = Array.IndexOf(strategies, route?.Strategy ?? BindingRoutingStrategy.Smart);
+        strategy.SelectedIndex = Array.IndexOf(strategies, route?.Strategy ?? RoutingStrategy.Smart);
         strategy.SelectionChanged += (_, _) =>
         {
             dirty = true;
@@ -122,13 +121,13 @@ sealed class RouteEditor : UserControl
         trail.ItemsSource = new[] { "模型路由", shown.Length > 0 ? shown : recordKey.Length == 0 ? "新路由" : "路由" };
     }
 
-    BindingRoutingStrategy Strategy => strategy.SelectedIndex >= 0 ? strategies[strategy.SelectedIndex] : BindingRoutingStrategy.Smart;
+    RoutingStrategy Strategy => strategy.SelectedIndex >= 0 ? strategies[strategy.SelectedIndex] : RoutingStrategy.Smart;
 
     void ShowStrategy() => strategyDetail.Text = Strategy switch
     {
-        BindingRoutingStrategy.Smart => "需要重新选择时，优先使用重置前更可能用不完的额度：比较各成员最紧额度窗口的剩余比例与均匀消耗时此刻应剩的比例；未报告重置周期的窗口只比较剩余比例。",
-        BindingRoutingStrategy.Order => "总是先用排在前面的可用成员。",
-        BindingRoutingStrategy.Rotate => "新会话依次轮流分配到各成员。",
+        RoutingStrategy.Smart => "需要重新选择时，优先使用重置前更可能用不完的额度：比较各成员最紧额度窗口的剩余比例与均匀消耗时此刻应剩的比例；未报告重置周期的窗口只比较剩余比例。",
+        RoutingStrategy.Order => "总是先用排在前面的可用成员。",
+        RoutingStrategy.Rotate => "新会话依次轮流分配到各成员。",
         _ => "按权重比例分配新会话。",
     };
 
@@ -168,7 +167,7 @@ sealed class RouteEditor : UserControl
     }
 
     // Protocol is the protocol members share, which the first one sets.
-    BindingGatewayProtocol? Protocol => members.Select(page.Member).FirstOrDefault(member => member != null)?.Provider.Protocol;
+    Protocol? Protocol => members.Select(page.Member).FirstOrDefault(member => member != null)?.Provider.Protocol;
 
     void FillAddMenu(MenuFlyout menu)
     {
@@ -254,16 +253,16 @@ sealed class RouteEditor : UserControl
         timer.Stop();
         var soon = false;
         var providers = members.Select(page.Member).Where(member => member != null).Select(member => member!.Value.Provider)
-            .Where(provider => provider.QuotaSource != BindingProviderQuotaSource.None && provider.Authentication.Configured)
+            .Where(provider => provider.QuotaSource != ProviderQuotaSource.None && provider.Authentication.Configured)
             .DistinctBy(provider => provider.Id).ToList();
         foreach (var provider in providers)
         {
             try
             {
-                var status = await Task.Run(() => page.Core.Local.ProviderQuota(ProvidersPage.DefaultGateway, provider.Id));
+                var status = await Task.Run(() => page.Core.Local.ProviderQuota(ProvidersPage.DefaultGateway, provider.Id).Observation);
                 quotas[provider.Id] = status;
                 Problems.Recovered(Problems.Key("quota", Device.Local, provider.Id));
-                soon |= status.Refreshing || status.Windows.Length == 0 && status.Freshness == BindingQuotaFreshness.Unknown;
+                soon |= status.Refreshing || status.Windows.Length == 0 && status.Freshness == QuotaFreshness.Unknown;
             }
             catch (Exception problem)
             {
@@ -283,7 +282,7 @@ sealed class RouteEditor : UserControl
         }
     }
 
-    async void Login(BindingProviderDefinition provider)
+    async void Login(ProviderSummary provider)
     {
         try
         {
@@ -315,10 +314,10 @@ sealed class RouteEditor : UserControl
             return;
         }
         // Weights belong to weighted routes, one for every member.
-        var shownWeights = Strategy == BindingRoutingStrategy.Weight
+        var shownWeights = Strategy == RoutingStrategy.Weight
             ? members.ToDictionary(key => key, Weight)
             : [];
-        var route = new BindingModelRoute(recordKey, shownName, [.. members], Strategy, shownWeights, sticky.IsOn);
+        var route = new ModelRoute(recordKey, shownName, [.. members], Strategy, shownWeights, sticky.IsOn);
         save.IsEnabled = false;
         try
         {
@@ -359,7 +358,7 @@ sealed class RouteEditor : UserControl
             lines.Children.Add(status);
 
             var trailing = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4, VerticalAlignment = VerticalAlignment.Top };
-            if (editor.Strategy == BindingRoutingStrategy.Weight)
+            if (editor.Strategy == RoutingStrategy.Weight)
             {
                 var weight = new NumberBox { Minimum = 1, Maximum = 1000, Value = editor.Weight(key), SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Compact, MinWidth = 96 };
                 Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(weight, "权重");
@@ -427,13 +426,13 @@ sealed class RouteEditor : UserControl
             var (provider, model) = member;
             var authentication = provider.Authentication;
             var reasons = new List<string>();
-            if (provider.AuthenticationSource != BindingProviderAuthenticationSource.None)
+            if (provider.AuthenticationSource != ProviderAuthenticationSource.None)
             {
                 var account = authentication.AccountLabel is { Length: > 0 } label ? "：" + label : "";
                 var line = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
                 line.Children.Add(Ui.Muted(authentication.Configured
-                    ? (authentication.Method == BindingAuthenticationMethod.OAuth ? "已登录" : "已配置认证") + account
-                    : authentication.Method == BindingAuthenticationMethod.OAuth ? "未登录" : "未配置认证"));
+                    ? (authentication.Method == AuthenticationMethod.OAuth ? "已登录" : "已配置认证") + account
+                    : authentication.Method == AuthenticationMethod.OAuth ? "未登录" : "未配置认证"));
                 if (!authentication.Configured && authentication.Actions.Any(action => action.Id == "login"))
                 {
                     var login = new HyperlinkButton { Content = "登录…", Padding = new Thickness(0) };
@@ -443,7 +442,7 @@ sealed class RouteEditor : UserControl
                 status.Children.Add(line);
                 if (!authentication.Configured)
                 {
-                    reasons.Add(authentication.Method == BindingAuthenticationMethod.OAuth ? "登录前路由不会使用它。" : "配置认证前路由不会使用它。");
+                    reasons.Add(authentication.Method == AuthenticationMethod.OAuth ? "登录前路由不会使用它。" : "配置认证前路由不会使用它。");
                 }
             }
             var limited = provider.QuotaLimits.Length > 0;
@@ -463,7 +462,7 @@ sealed class RouteEditor : UserControl
                 {
                     reasons.Add("已达到使用上限、余额不足或暂停，路由暂不使用它。");
                 }
-                else if (limited && quota.Freshness != BindingQuotaFreshness.Fresh)
+                else if (limited && quota.Freshness != QuotaFreshness.Fresh)
                 {
                     reasons.Add("设有使用上限而缺少最新额度，路由暂不使用它。");
                 }
@@ -472,7 +471,7 @@ sealed class RouteEditor : UserControl
             {
                 reasons.Add("设有使用上限而尚无额度观测，路由暂不使用它。");
             }
-            if (limited && provider.QuotaSource == BindingProviderQuotaSource.ArkCodingUsage
+            if (limited && provider.QuotaSource == ProviderQuotaSource.ArkCodingUsage
                 && provider.QuotaAuthentication is not { Configured: true, BindingConfirmed: true })
             {
                 reasons.Add("额度查询认证未确认关联，设有上限时暂停派发。");

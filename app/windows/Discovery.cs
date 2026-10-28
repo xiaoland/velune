@@ -1,5 +1,3 @@
-using Velune.Bindings;
-
 namespace Velune;
 
 // Finds installed commands the way `where` would, without running any launcher.
@@ -10,7 +8,7 @@ namespace Velune;
 // their binary directly, so they use a native `.exe`, else the `.cmd` launcher.
 static class Discovery
 {
-    public static BindingRuntimeDiscoveryCandidate[] Discover(VeluneApplication application)
+    public static RuntimeDiscoveryCandidate[] Discover(VeluneApplication application)
     {
         var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
         if (string.IsNullOrEmpty(home))
@@ -27,13 +25,13 @@ static class Discovery
                 overrides[key] = value;
             }
         }
-        var probes = new List<BindingRuntimeDiscoveryProbe>();
+        var probes = new List<RuntimeDiscoveryProbe>();
         foreach (var hint in application.RuntimeDiscoveryHints(home, overrides))
         {
             // PATH first, then where the vendor's own installer, app or editor extension put it.
             var binaries = CommandCandidates(hint.FamilyId, hint.Command);
             binaries.AddRange(hint.BundledBinaries.Where(bundled => !binaries.Contains(bundled)));
-            probes.AddRange(binaries.Select(binary => new BindingRuntimeDiscoveryProbe(hint.FamilyId, binary, node, hint.AgentDirectory)));
+            probes.AddRange(binaries.Select(binary => new RuntimeDiscoveryProbe(hint.FamilyId, binary, node, hint.AgentDirectory)));
         }
         return application.DiscoverRuntimes([.. probes]);
     }

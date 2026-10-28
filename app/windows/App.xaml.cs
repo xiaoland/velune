@@ -2,7 +2,6 @@ using Microsoft.UI.Xaml;
 using Microsoft.Windows.AppLifecycle;
 using System.Security.Cryptography;
 using System.Text;
-using Velune.Bindings;
 
 namespace Velune;
 

@@ -1,6 +1,5 @@
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
-using Velune.Bindings;
 
 namespace Velune;
 
@@ -20,9 +19,9 @@ sealed partial class RuntimesPage : UserControl
     readonly Button edit = new() { Content = "编辑…" };
     // Offers the library's resources to a runtime just added.
     readonly InfoBar offer = new() { Severity = InfoBarSeverity.Informational, IsClosable = true };
-    BindingRuntimeInstance[] instances = [];
+    RuntimeInstance[] instances = [];
     bool listed;
-    BindingRuntimeTypeDescriptor[] kinds = [];
+    RuntimeTypeDescriptor[] kinds = [];
     bool busy;
 
     internal RuntimesPage(Core core, SettingsWindow window, Action openLibrary)
@@ -54,7 +53,7 @@ sealed partial class RuntimesPage : UserControl
         Reload();
     }
 
-    BindingRuntimeInstance? Chosen() => list.SelectedIndex is var index and >= 0 && index < instances.Length ? instances[index] : null;
+    RuntimeInstance? Chosen() => list.SelectedIndex is var index and >= 0 && index < instances.Length ? instances[index] : null;
 
     void ShowActions()
     {
@@ -78,7 +77,7 @@ sealed partial class RuntimesPage : UserControl
         }
     }
 
-    void SetInstances(BindingRuntimeInstance[] shown)
+    void SetInstances(RuntimeInstance[] shown)
     {
         var selected = Chosen()?.Id;
         var added = listed ? shown.Where(runtime => !instances.Any(known => known.Id == runtime.Id)).ToList() : [];
@@ -111,9 +110,9 @@ sealed partial class RuntimesPage : UserControl
         ShowActions();
     }
 
-    string Summary(BindingRuntimeInstance runtime)
+    string Summary(RuntimeInstance runtime)
     {
-        var parts = new List<string> { Kind(runtime.TypeId)?.Name ?? runtime.TypeId };
+        var parts = new List<string> { Kind(runtime.TypeId)?.Name ?? runtime.TypeId.ToDisplayString() };
         if (!runtime.Enabled)
         {
             parts.Add("已停用");
@@ -123,7 +122,7 @@ sealed partial class RuntimesPage : UserControl
 
     // Offer tells, after runtimes are added, that the library's resources
     // can be enabled on them.
-    async void Offer(List<BindingRuntimeInstance> added)
+    async void Offer(List<RuntimeInstance> added)
     {
         try
         {
@@ -140,14 +139,14 @@ sealed partial class RuntimesPage : UserControl
         }
     }
 
-    BindingRuntimeTypeDescriptor? Kind(string id) => kinds.FirstOrDefault(kind => kind.Id == id);
+    RuntimeTypeDescriptor? Kind(RuntimeKind id) => kinds.FirstOrDefault(kind => kind.Id == id);
 
     // Addable are the types an instance can be added of.
-    IEnumerable<BindingRuntimeTypeDescriptor> Addable() => kinds;
+    IEnumerable<RuntimeTypeDescriptor> Addable() => kinds;
 
     // Write runs one change against this PC's core, then shows the runtimes
     // it reports; false keeps a dialog open with what failed.
-    async Task<bool> Write(string source, Func<VeluneApplication, BindingRuntimeUpdate> work, TextBlock? shownIn = null)
+    async Task<bool> Write(string source, Func<VeluneApplication, RuntimeUpdate> work, TextBlock? shownIn = null)
     {
         if (busy)
         {
@@ -179,7 +178,7 @@ sealed partial class RuntimesPage : UserControl
         }
     }
 
-    async void Upsert(BindingRuntimeInstance runtime) => await Write("保存运行时「" + runtime.Name + "」", application => application.UpsertRuntime(runtime));
+    async void Upsert(RuntimeInstance runtime) => await Write("保存运行时「" + runtime.Name + "」", application => application.UpsertRuntime(runtime));
 
     async void Delete()
     {
@@ -197,7 +196,7 @@ sealed partial class RuntimesPage : UserControl
     // template's type and settings when given, or edits one: its name,
     // whether it runs, its type and the type's settings, its HOME, an ACP
     // Agent's launch, and what its new conversations start with.
-    async void Edit(BindingRuntimeInstance? existing, BindingRuntimeInstance? template = null)
+    async void Edit(RuntimeInstance? existing, RuntimeInstance? template = null)
     {
         var addable = Addable().ToList();
         var kind = existing != null ? Kind(existing.TypeId)
@@ -229,7 +228,7 @@ sealed partial class RuntimesPage : UserControl
                 directory.Visibility = home.Managed ? Visibility.Collapsed : Visibility.Visible;
             }
         }
-        void ShowFields(BindingRuntimeTypeDescriptor shown)
+        void ShowFields(RuntimeTypeDescriptor shown)
         {
             kind = shown;
             fields.Children.Clear();
@@ -323,7 +322,7 @@ sealed partial class RuntimesPage : UserControl
                 return;
             }
             var started = starts.Read();
-            var lastChosen = extras.Choices?.LastChosen ?? new BindingTurnChoice(null, null, null);
+            var lastChosen = extras.Choices?.LastChosen ?? new TurnChoice(null, null, null);
             // An edited instance's other settings stay as they are.
             var settings = new Dictionary<string, string>(existing?.Settings ?? []);
             foreach (var field in kind.Fields)
@@ -340,7 +339,7 @@ sealed partial class RuntimesPage : UserControl
             }
             var shownName = name.Text.Trim();
             var runtime = existing == null
-                ? new BindingRuntimeInstance(enabled.IsOn, Guid.NewGuid().ToString(), shownName.Length > 0 ? shownName : kind.Name, kind.Id, DefaultGateway, settings)
+                ? new RuntimeInstance(Guid.NewGuid().ToString(), shownName.Length > 0 ? shownName : kind.Name, kind.Id, DefaultGateway, settings, enabled.IsOn)
                 : existing with { Enabled = enabled.IsOn, Name = shownName.Length > 0 ? shownName : kind.Name, Settings = settings };
             e.Cancel = !await Write("保存运行时「" + runtime.Name + "」", application =>
             {
@@ -349,7 +348,7 @@ sealed partial class RuntimesPage : UserControl
                     : application.UpsertRuntimeWithExecution(runtime, execution);
                 if (started != null)
                 {
-                    application.SetRuntimeComposerChoices(new BindingRuntimeComposerChoices(runtime.Id, lastChosen, started));
+                    application.SetRuntimeComposerChoices(new RuntimeComposerChoices(runtime.Id, lastChosen, started));
                 }
                 return update;
             }, formError);
@@ -359,9 +358,9 @@ sealed partial class RuntimesPage : UserControl
     }
 
     // FieldControl is a setting's control; values reads what it holds.
-    FrameworkElement FieldControl(BindingSettingField field, string value, Dictionary<string, Func<string>> values)
+    FrameworkElement FieldControl(SettingField field, string value, Dictionary<string, Func<string>> values)
     {
-        if (field.Kind == BindingSettingKind.Choice)
+        if (field.Kind == SettingKind.Choice)
         {
             var choice = new ComboBox { Header = field.Label, HorizontalAlignment = HorizontalAlignment.Stretch, PlaceholderText = "选择" };
             foreach (var option in field.Options)
@@ -374,7 +373,7 @@ sealed partial class RuntimesPage : UserControl
         }
         var input = new TextBox { Header = field.Label, Text = value };
         values[field.Key] = () => input.Text;
-        if (field.Kind == BindingSettingKind.Text)
+        if (field.Kind == SettingKind.Text)
         {
             return input;
         }
@@ -384,7 +383,7 @@ sealed partial class RuntimesPage : UserControl
         var browse = new Button { Content = "浏览…", VerticalAlignment = VerticalAlignment.Bottom };
         browse.Click += async (_, _) =>
         {
-            var path = field.Kind == BindingSettingKind.DirectoryPath ? await Native.PickFolder(window) : await Native.PickFile(window);
+            var path = field.Kind == SettingKind.DirectoryPath ? await Native.PickFolder(window) : await Native.PickFile(window);
             if (path != null)
             {
                 input.Text = path;
@@ -443,7 +442,7 @@ sealed partial class RuntimesPage : UserControl
         await window.ShowDialog(dialog);
     }
 
-    Border CandidateRow(BindingRuntimeDiscoveryCandidate candidate, ContentDialog importing)
+    Border CandidateRow(RuntimeDiscoveryCandidate candidate, ContentDialog importing)
     {
         var lines = Ui.TwoLines(candidate.Runtime.Name + (candidate.Version is { } version ? " " + version : ""), candidate.Runtime.Settings.GetValueOrDefault("binary", ""));
         if (!candidate.Supported)

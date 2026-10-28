@@ -1,6 +1,5 @@
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
-using Velune.Bindings;
 
 namespace Velune;
 
@@ -46,7 +45,7 @@ sealed partial class ProviderEditor
         }
     }
 
-    void AddModel(BindingProviderModel? model, bool expanded)
+    void AddModel(ProviderModel? model, bool expanded)
     {
         var row = new ModelRow(this, model);
         row.Element.IsExpanded = expanded;
@@ -78,7 +77,7 @@ sealed partial class ProviderEditor
         readonly TextBox output = Count("最大输出（token）");
         readonly TextBox levels = new() { Header = "支持的推理强度", PlaceholderText = "例如 low, medium, high；留空表示不声明" };
 
-        public ModelRow(ProviderEditor editor, BindingProviderModel? model)
+        public ModelRow(ProviderEditor editor, ProviderModel? model)
         {
             this.editor = editor;
             recordKey = model?.RecordKey ?? "";
@@ -183,7 +182,7 @@ sealed partial class ProviderEditor
             return declared.Length > 0 ? declared : null;
         }
 
-        public BindingProviderModel Value() => new(
+        public ProviderModel Value() => new(
             RecordKey: recordKey,
             ProviderModelId: ID,
             Nickname: nickname.Text.Trim() is { Length: > 0 } shown ? shown : ID,
@@ -193,7 +192,7 @@ sealed partial class ProviderEditor
             ReasoningLevels: Levels());
 
         // Keep takes the record a save gave a new model.
-        public void Keep(BindingProviderModel[] saved)
+        public void Keep(ProviderModel[] saved)
         {
             if (recordKey.Length == 0 && saved.FirstOrDefault(model => model.ProviderModelId == ID) is { } kept)
             {
@@ -204,9 +203,9 @@ sealed partial class ProviderEditor
 
     internal static string Tokens(uint count) => TokenCount.Format(count);
 
-    async void SaveAsTemplate(BindingProviderModel model)
+    async void SaveAsTemplate(ProviderModel model)
     {
-        var template = new BindingModelTemplate("", model.Nickname, model.ProviderModelId, model.Nickname, model.Icon, model.ContextWindow, model.MaxOutputTokens, model.ReasoningLevels);
+        var template = new ModelTemplate("", model.Nickname, model.ProviderModelId, model.Nickname, model.Icon, model.ContextWindow, model.MaxOutputTokens, model.ReasoningLevels);
         await ModelTemplatesList.Edit(page, template, true);
     }
 }

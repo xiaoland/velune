@@ -1,6 +1,5 @@
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
-using Velune.Bindings;
 
 namespace Velune;
 
@@ -10,7 +9,7 @@ static class ProviderFlows
 {
     internal abstract record Choice
     {
-        internal sealed record Template(BindingProviderTemplate Chosen) : Choice;
+        internal sealed record Template(ProviderTemplate Chosen) : Choice;
         internal sealed record Import : Choice;
     }
 
@@ -40,9 +39,9 @@ static class ProviderFlows
                 choices.Add(choice);
             }
         }
-        Group("订阅", page.Templates.Where(template => template.Kind == BindingProviderTemplateKind.Subscription)
+        Group("订阅", page.Templates.Where(template => template.Kind == ProviderTemplateKind.Subscription)
             .Select(template => ((Choice)new Choice.Template(template), template.Name, template.Summary)));
-        Group("API", page.Templates.Where(template => template.Kind == BindingProviderTemplateKind.Api)
+        Group("API", page.Templates.Where(template => template.Kind == ProviderTemplateKind.Api)
             .Select(template => ((Choice)new Choice.Template(template), template.Name, template.Summary)));
         Group("导入", [(new Choice.Import(), "从 Agent 运行时导入…", "读取 Codex 或 Claude Code 运行时已配置的提供商、模型与认证来源，逐项选择导入。")]);
 
@@ -93,7 +92,7 @@ static class ProviderFlows
     // sign-in page, shows a device code, or asks what the flow asks. It
     // returns the gateways as the core keeps them afterwards; a failure to
     // cancel or read them is thrown to the caller.
-    public static async Task<BindingGatewayConfig[]> Login(Core core, SettingsWindow window, string providerID, string name)
+    public static async Task<GatewaySummary[]> Login(Core core, SettingsWindow window, string providerID, string name)
     {
         var application = core.Local;
         var status = Ui.Text("正在开始登录…");
@@ -117,7 +116,7 @@ static class ProviderFlows
         };
         dialog.Resources["ContentDialogMaxWidth"] = 520.0;
 
-        BindingGatewayConfig[]? saved = null;
+        GatewaySummary[]? saved = null;
         var running = true;
         var timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(500) };
         var polling = false;
@@ -140,7 +139,7 @@ static class ProviderFlows
             dialog.CloseButtonText = "关闭";
         }
 
-        void Show(BindingAuthenticationProgress shown)
+        void Show(AuthenticationProgress shown)
         {
             if (shown.Gateways is { } gateways)
             {
@@ -167,7 +166,7 @@ static class ProviderFlows
             }
         }
 
-        void Notice(BindingAuthenticationNotification notice)
+        void Notice(AuthenticationNotification notice)
         {
             if (notice.Url is { Length: > 0 } url)
             {
@@ -207,7 +206,7 @@ static class ProviderFlows
             }
         }
 
-        void Prompt(string id, BindingAuthenticationPrompt asked)
+        void Prompt(string id, AuthenticationPrompt asked)
         {
             prompts.Children.Clear();
             Func<string> value;
@@ -346,8 +345,8 @@ static class ProviderFlows
         panel.Children.Add(replace);
         panel.Children.Add(outcome);
 
-        BindingProviderImportPreview? preview = null;
-        BindingProviderImportSource? read = null;
+        ProviderImportPreview? preview = null;
+        ProviderImportSource? read = null;
         var chosen = new Dictionary<string, List<(string Key, CheckBox Box)>>();
         var imported = new HashSet<string>();
 
@@ -363,7 +362,7 @@ static class ProviderFlows
         async void Read()
         {
             var (runtime, type) = sources[source.SelectedIndex];
-            var asked = new BindingProviderImportSource("harness", type!.FamilyId, runtime.Id, null, []);
+            var asked = new ProviderImportSource("harness", type!.FamilyId, runtime.Id, null, []);
             read = asked;
             preview = null;
             chosen.Clear();
@@ -407,7 +406,7 @@ static class ProviderFlows
 
         // Candidate is one provider and its models, none ticked: reading does
         // not choose. Why an item cannot be imported is shown with it.
-        Border Candidate(BindingImportProviderCandidate provider)
+        Border Candidate(ImportProviderCandidate provider)
         {
             var models = new List<(string Key, CheckBox Box)>();
             chosen[provider.Id] = models;
@@ -418,7 +417,7 @@ static class ProviderFlows
             var all = new CheckBox { IsThreeState = false, IsEnabled = provider.CanImport && provider.Models.Any(model => model.CanImport) };
             var heading = new StackPanel { Spacing = 2 };
             heading.Children.Add(Ui.Text(provider.Name + (provider.AlreadyImported ? "（已导入）" : ""), "BodyStrongTextBlockStyle"));
-            var detail = new List<string> { provider.Protocol };
+            var detail = new List<string> { page.Protocols.FirstOrDefault(descriptor => descriptor.Id == provider.Protocol)?.Name ?? "不支持的协议" };
             if (provider.Endpoint is { Length: > 0 } address)
             {
                 detail.Add(address);
@@ -504,7 +503,7 @@ static class ProviderFlows
         {
             var deferral = e.GetDeferral();
             var selections = chosen
-                .Select(entry => new BindingImportSelection(entry.Key, [.. entry.Value.Where(model => model.Box.IsChecked == true).Select(model => model.Key)]))
+                .Select(entry => new ImportSelection(entry.Key, [.. entry.Value.Where(model => model.Box.IsChecked == true).Select(model => model.Key)]))
                 .Where(selection => selection.CandidateKeys.Length > 0)
                 .ToArray();
             if (preview is not { } shown || read is not { } asked || selections.Length == 0)
@@ -535,11 +534,11 @@ static class ProviderFlows
 
     // PickModels lets the user tick model templates, and entries of the
     // public catalog once read, as editable copies for a provider's models.
-    public static async Task<List<BindingProviderModel>> PickModels(ProvidersPage page)
+    public static async Task<List<ProviderModel>> PickModels(ProvidersPage page)
     {
         var entries = page.ModelTemplates
             .Select(template => (Name: template.Name, Detail: Parameters(template.SuggestedProviderModelId, template.ContextWindow, template.MaxOutputTokens, template.ReasoningLevels),
-                Model: new BindingProviderModel("", template.SuggestedProviderModelId, template.Nickname, template.Icon, template.ContextWindow, template.MaxOutputTokens, template.ReasoningLevels)))
+                Model: new ProviderModel("", template.SuggestedProviderModelId, template.Nickname, template.Icon, template.ContextWindow, template.MaxOutputTokens, template.ReasoningLevels)))
             .ToList();
         var search = new AutoSuggestBox { PlaceholderText = "搜索", QueryIcon = new SymbolIcon(Symbol.Find) };
         var list = new ListView { SelectionMode = ListViewSelectionMode.Multiple, Height = 320 };
@@ -585,7 +584,7 @@ static class ProviderFlows
                 var fetched = await Task.Run(page.Core.Local.FetchPublicModelCatalog);
                 entries.AddRange(fetched.Select(entry => (Name: entry.Name.Length > 0 ? entry.Name : entry.ModelId,
                     Detail: "目录 · " + entry.SourceProviderName + " · " + Parameters(entry.ModelId, entry.ContextWindow, entry.MaxOutputTokens, entry.ReasoningLevels),
-                    Model: new BindingProviderModel("", entry.ModelId, entry.Name.Length > 0 ? entry.Name : entry.ModelId, null, entry.ContextWindow, entry.MaxOutputTokens, entry.ReasoningLevels))));
+                    Model: new ProviderModel("", entry.ModelId, entry.Name.Length > 0 ? entry.Name : entry.ModelId, null, entry.ContextWindow, entry.MaxOutputTokens, entry.ReasoningLevels))));
                 status.Text = $"已读取 {fetched.Length} 个目录条目。条目只作参数起点，不说明此提供商支持该模型。";
                 catalog.Visibility = Visibility.Collapsed;
                 Show();
