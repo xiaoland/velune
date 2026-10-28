@@ -4832,6 +4832,7 @@ dependencies = [
  "time",
  "toml_edit",
  "tracing",
+ "velune-ai",
  "velune-conversation",
  "windows-sys 0.61.2",
 ]
@@ -4840,6 +4841,7 @@ dependencies = [
 name = "velune-ai"
 version = "0.1.0"
 dependencies = [
+ "serde",
  "serde_json",
 ]
 
@@ -4895,6 +4897,7 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.21",
+ "velune-ai",
  "velune-conversation",
 ]
 

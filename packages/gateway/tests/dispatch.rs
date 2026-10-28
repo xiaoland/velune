@@ -13,9 +13,9 @@ use std::{
 };
 use velune_gateway::{
     CredentialMaterial, CredentialRecovery, CredentialResolutionError, CredentialResolver,
-    CredentialTarget, ExecutionBackend, GatewayConfig, GatewayProtocol, HttpAuthorization,
-    ModelRoute, ProviderDefinition, ProviderModel, RequestCapabilities, RequestProfile,
-    ResolvedCredential, RoutingStrategy, Runner,
+    CredentialTarget, ExecutionBackend, GatewayConfig, HttpAuthorization, ModelRoute,
+    ProviderDefinition, ProviderModel, RequestCapabilities, RequestProfile, ResolvedCredential,
+    RoutingStrategy, Runner,
 };
 
 #[derive(Clone)]
@@ -103,18 +103,18 @@ impl CredentialResolver for Keys {
 }
 
 #[derive(Clone, Copy)]
-enum Protocol {
+enum Api {
     Chat,
     Responses,
     Messages,
 }
-impl Protocol {
+impl Api {
     const ALL: [Self; 3] = [Self::Chat, Self::Responses, Self::Messages];
-    fn gateway(self) -> GatewayProtocol {
+    fn gateway(self) -> velune_gateway::Protocol {
         match self {
-            Self::Chat => GatewayProtocol::ChatCompletionsV1,
-            Self::Responses => GatewayProtocol::ResponsesV1,
-            Self::Messages => GatewayProtocol::MessagesV1,
+            Self::Chat => velune_gateway::Protocol::ChatCompletions,
+            Self::Responses => velune_gateway::Protocol::Responses,
+            Self::Messages => velune_gateway::Protocol::Messages,
         }
     }
     /// The provider endpoint below the upstream's provider segment.
@@ -149,7 +149,7 @@ impl Protocol {
     }
 }
 
-fn provider(id: &str, protocol: Protocol, upstream: &str) -> ProviderDefinition {
+fn provider(id: &str, protocol: Api, upstream: &str) -> ProviderDefinition {
     ProviderDefinition {
         id: id.into(),
         name: id.into(),
@@ -172,7 +172,7 @@ fn provider(id: &str, protocol: Protocol, upstream: &str) -> ProviderDefinition 
 }
 
 /// A gateway with providers `a` and `b` and a route trying `a` first.
-fn gateway(protocol: Protocol, upstream: &str) -> Runner {
+fn gateway(protocol: Api, upstream: &str) -> Runner {
     Runner::start(
         gateway_config(protocol, upstream),
         Arc::new(Keys),
@@ -187,7 +187,7 @@ struct Answer {
     body: String,
 }
 
-async fn send(runner: &Runner, protocol: Protocol, model: &str, stream: bool) -> Answer {
+async fn send(runner: &Runner, protocol: Api, model: &str, stream: bool) -> Answer {
     let response = reqwest::Client::new()
         .post(format!("{}{}", runner.endpoint(), protocol.path()))
         .bearer_auth(runner.token())
@@ -205,7 +205,7 @@ async fn send(runner: &Runner, protocol: Protocol, model: &str, stream: bool) ->
 
 #[tokio::test]
 async fn delivers_upstream_json_and_streams_unchanged() {
-    for protocol in Protocol::ALL {
+    for protocol in Api::ALL {
         let (upstream, address) = Upstream::start().await;
         let runner = gateway(protocol, &address);
         upstream.reply("a", Reply::json(200, protocol.success()));
@@ -229,7 +229,7 @@ async fn delivers_upstream_json_and_streams_unchanged() {
 
 #[tokio::test]
 async fn retryable_failures_move_to_the_next_member() {
-    for protocol in Protocol::ALL {
+    for protocol in Api::ALL {
         for failure in [
             Reply::json(429, json!({"error": {"message": "slow down"}})).header("retry-after", "7"),
             Reply::json(500, json!({"error": {"message": "broken"}})),
@@ -252,7 +252,7 @@ async fn retryable_failures_move_to_the_next_member() {
 
 #[tokio::test]
 async fn refused_requests_stop_with_the_upstream_answer() {
-    for protocol in Protocol::ALL {
+    for protocol in Api::ALL {
         for status in [400, 401, 403, 404] {
             let (upstream, address) = Upstream::start().await;
             let runner = gateway(protocol, &address);
@@ -269,7 +269,7 @@ async fn refused_requests_stop_with_the_upstream_answer() {
 
 #[tokio::test]
 async fn unreachable_member_moves_to_the_next() {
-    for protocol in Protocol::ALL {
+    for protocol in Api::ALL {
         let (upstream, address) = Upstream::start().await;
         let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let unreachable = format!("http://{}", closed.local_addr().unwrap());
@@ -286,7 +286,7 @@ async fn unreachable_member_moves_to_the_next() {
 
 #[tokio::test]
 async fn exhausted_route_reports_the_last_failure() {
-    for protocol in Protocol::ALL {
+    for protocol in Api::ALL {
         let (upstream, address) = Upstream::start().await;
         let runner = gateway(protocol, &address);
         upstream.reply("a", Reply::json(503, json!({"error": {"message": "a"}})));
@@ -304,7 +304,7 @@ async fn exhausted_route_reports_the_last_failure() {
 
 #[tokio::test]
 async fn quota_exhaustion_moves_to_the_next_member() {
-    let protocol = Protocol::Responses;
+    let protocol = Api::Responses;
     let (upstream, address) = Upstream::start().await;
     let runner = gateway(protocol, &address);
     upstream.reply(
@@ -317,7 +317,7 @@ async fn quota_exhaustion_moves_to_the_next_member() {
     assert_eq!(upstream.hits().len(), 2);
 }
 
-fn gateway_config(protocol: Protocol, upstream: &str) -> GatewayConfig {
+fn gateway_config(protocol: Api, upstream: &str) -> GatewayConfig {
     GatewayConfig {
         id: "gateway".into(),
         name: "Gateway".into(),

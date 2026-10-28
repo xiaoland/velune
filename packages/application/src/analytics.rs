@@ -10,7 +10,7 @@ use std::{
     thread::{self, JoinHandle},
     time::Duration,
 };
-use velune_gateway::{AnalyticsOutcome, AnalyticsProtocol, AnalyticsRecord, AnalyticsSink};
+use velune_gateway::{AnalyticsOutcome, AnalyticsRecord, AnalyticsSink, Protocol};
 const QUEUE: usize = 256;
 const WAIT: Duration = Duration::from_secs(3);
 enum QueueItem {
@@ -268,9 +268,9 @@ fn integer(value: Option<u64>) -> Result<Option<i64>, rusqlite::Error> {
 }
 fn insert(db: &Connection, r: &AnalyticsRecord) -> Result<(), rusqlite::Error> {
     let protocol = match r.protocol {
-        AnalyticsProtocol::ChatCompletions => "chatCompletions",
-        AnalyticsProtocol::Responses => "responses",
-        AnalyticsProtocol::Messages => "messages",
+        Protocol::ChatCompletions => "chatCompletions",
+        Protocol::Responses => "responses",
+        Protocol::Messages => "messages",
     };
     let outcome = match r.outcome {
         AnalyticsOutcome::Completed => "completed",

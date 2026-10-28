@@ -1,4 +1,4 @@
-use crate::config::GatewayProtocol;
+use crate::config::Protocol;
 use serde::{Deserialize, Serialize};
 /// The persisted coordinates of a runtime's own provider login.
 pub(crate) use velune_agent_runtime::authentication::Source as AuthenticationSource;
@@ -39,7 +39,7 @@ pub(crate) enum AuthenticationMaterial {
         source: AuthenticationSource,
         method: AuthenticationMethod,
         configured: bool,
-        protocol: GatewayProtocol,
+        protocol: Protocol,
         endpoint: String,
     },
 }
@@ -146,7 +146,7 @@ impl ProviderAuthentication {
                         .get("credentialLocation")
                         .map(String::as_str)
                         != Some("models")
-                    && protocol == &GatewayProtocol::ResponsesV1
+                    && protocol == &Protocol::Responses
                     && endpoint == "https://api.openai.com/v1";
                 (
                     method.clone(),
@@ -189,7 +189,7 @@ impl ProviderAuthentication {
     }
     pub(crate) fn validate_target(
         &self,
-        protocol: &GatewayProtocol,
+        protocol: &Protocol,
         endpoint: &str,
     ) -> Result<(), &'static str> {
         if matches!(

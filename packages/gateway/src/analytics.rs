@@ -6,13 +6,6 @@
 use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub enum AnalyticsProtocol {
-    ChatCompletions,
-    Responses,
-    Messages,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum AnalyticsOutcome {
     Completed,
     Incomplete,
@@ -30,7 +23,7 @@ pub struct AnalyticsRecord {
     pub provider_name: String,
     pub model_record_key: String,
     pub provider_model_id: String,
-    pub protocol: AnalyticsProtocol,
+    pub protocol: velune_ai::Protocol,
     pub started_at_ms: i64,
     pub terminal_at_ms: i64,
     pub elapsed_ms: u64,
@@ -59,7 +52,7 @@ use std::{
 use velune_ai_provider::metrics::{ModelTerminal, ResponseMetrics};
 
 pub(crate) struct Tracker {
-    protocol: velune_ai_provider::translation::LlmProtocol,
+    protocol: velune_ai::Protocol,
     metrics: ResponseMetrics,
     started: Option<Instant>,
     first_output_ms: Option<u64>,
@@ -68,7 +61,7 @@ pub(crate) struct Tracker {
     transport_outcome: Option<AnalyticsOutcome>,
 }
 impl Tracker {
-    pub(crate) fn new(protocol: velune_ai_provider::translation::LlmProtocol) -> SharedTracker {
+    pub(crate) fn new(protocol: velune_ai::Protocol) -> SharedTracker {
         Arc::new(Mutex::new(Self {
             protocol,
             metrics: ResponseMetrics::new(protocol),
@@ -144,18 +137,11 @@ impl RequestAnalytics {
         record: AnalyticsRecord,
         stopping: Arc<AtomicBool>,
     ) -> Self {
-        let protocol = match record.protocol {
-            AnalyticsProtocol::ChatCompletions => {
-                velune_ai_provider::translation::LlmProtocol::ChatCompletions
-            }
-            AnalyticsProtocol::Responses => velune_ai_provider::translation::LlmProtocol::Responses,
-            AnalyticsProtocol::Messages => velune_ai_provider::translation::LlmProtocol::Messages,
-        };
         Self {
+            tracker: Tracker::new(record.protocol),
             sink,
             record,
             stopping,
-            tracker: Tracker::new(protocol),
         }
     }
 }

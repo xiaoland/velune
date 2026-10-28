@@ -71,9 +71,9 @@ pub(super) fn materialize_models(
                 None => &model.nickname,
             };
             let api = match routed.provider().protocol {
-                GatewayProtocol::ChatCompletionsV1 => "openai-completions",
-                GatewayProtocol::ResponsesV1 => "openai-responses",
-                GatewayProtocol::MessagesV1 => "anthropic-messages",
+                Protocol::ChatCompletions => "openai-completions",
+                Protocol::Responses => "openai-responses",
+                Protocol::Messages => "anthropic-messages",
             };
             let binding = routed.model();
             let binding_projection = binding.pi_projection.as_ref();

@@ -2,9 +2,7 @@
 //! The JavaScript adapter owns SDK 1.0.2 parsing; Rust only validates the
 //! non-secret snapshot and projects supported models into gateway config.
 use crate::config::RuntimeKind;
-use crate::config::{
-    GatewayConfig, GatewayProtocol, ProviderDefinition, ProviderModel, RuntimeInstance,
-};
+use crate::config::{GatewayConfig, Protocol, ProviderDefinition, ProviderModel, RuntimeInstance};
 use crate::{
     Error as RuntimeError, ImportModelCandidate, ImportProviderCandidate, ImportSelection,
     Options as RuntimeOptions, ProviderImportPreview, ProviderImportSource,
@@ -202,19 +200,19 @@ fn source_identity(source: &Source, models_path: &str, auth_path: Option<&str>) 
             .unwrap_or(models_path)
     )
 }
-fn protocol(value: &str) -> Option<GatewayProtocol> {
+fn protocol(value: &str) -> Option<Protocol> {
     match value {
-        "chatCompletionsV1" => Some(GatewayProtocol::ChatCompletionsV1),
-        "responsesV1" => Some(GatewayProtocol::ResponsesV1),
-        "messagesV1" => Some(GatewayProtocol::MessagesV1),
+        "chatCompletionsV1" => Some(Protocol::ChatCompletions),
+        "responsesV1" => Some(Protocol::Responses),
+        "messagesV1" => Some(Protocol::Messages),
         _ => None,
     }
 }
-pub(crate) fn protocol_name(value: &GatewayProtocol) -> &'static str {
+pub(crate) fn protocol_name(value: &Protocol) -> &'static str {
     match value {
-        GatewayProtocol::ChatCompletionsV1 => "chatCompletionsV1",
-        GatewayProtocol::ResponsesV1 => "responsesV1",
-        GatewayProtocol::MessagesV1 => "messagesV1",
+        Protocol::ChatCompletions => "chatCompletionsV1",
+        Protocol::Responses => "responsesV1",
+        Protocol::Messages => "messagesV1",
     }
 }
 
@@ -621,7 +619,7 @@ pub(crate) fn apply(
                 source: credential_source,
                 method,
                 configured: provider.auth.ready,
-                protocol: protocol_kind.clone(),
+                protocol: protocol_kind,
                 endpoint: endpoint.clone(),
             },
         };

@@ -2,14 +2,8 @@
 use crate::native::{Error, Result};
 use regex::Regex;
 use std::path::{Path, PathBuf};
+pub use velune_ai::Protocol;
 pub use velune_conversation::RuntimeKind;
-/// Protocols this versioned adapter can carry through the injected LLM gateway.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum RuntimeProtocol {
-    ChatCompletionsV1,
-    ResponsesV1,
-    MessagesV1,
-}
 /// A permission mode a runtime version offers a turn: its own identifier and
 /// name, with what it allows.
 pub struct PermissionMode {
@@ -124,7 +118,7 @@ pub struct RuntimeVariant {
     /// Where under the user's home the runtime starts conversations given no
     /// project; they belong to no project.
     pub projectless_directories: &'static [&'static str],
-    pub supported_protocols: &'static [RuntimeProtocol],
+    pub supported_protocols: &'static [Protocol],
     /// Empty when the runtime offers no per-turn choice.
     pub permission_modes: &'static [PermissionMode],
     /// Starts a turn without a new user message after a stop or failure.
@@ -170,7 +164,7 @@ const VARIANTS: &[RuntimeVariant] = &[
         can_delete_conversations: false,
         can_archive_conversations: false,
         projectless_directories: &[],
-        supported_protocols: &[RuntimeProtocol::MessagesV1],
+        supported_protocols: &[Protocol::Messages],
         permission_modes: CLAUDE_PERMISSION_MODES,
         can_resume_turns: true,
         can_compact: true,
@@ -187,9 +181,9 @@ const VARIANTS: &[RuntimeVariant] = &[
         can_archive_conversations: false,
         projectless_directories: &[],
         supported_protocols: &[
-            RuntimeProtocol::ChatCompletionsV1,
-            RuntimeProtocol::ResponsesV1,
-            RuntimeProtocol::MessagesV1,
+            Protocol::ChatCompletions,
+            Protocol::Responses,
+            Protocol::Messages,
         ],
         permission_modes: &[],
         can_resume_turns: false,
@@ -210,7 +204,7 @@ const VARIANTS: &[RuntimeVariant] = &[
         can_archive_conversations: true,
         // The Codex app's default folder for chats without a project.
         projectless_directories: &["Documents/Codex"],
-        supported_protocols: &[RuntimeProtocol::ResponsesV1],
+        supported_protocols: &[Protocol::Responses],
         permission_modes: CODEX_PERMISSION_MODES,
         can_resume_turns: true,
         can_compact: true,
@@ -230,9 +224,9 @@ const VARIANTS: &[RuntimeVariant] = &[
         can_archive_conversations: false,
         projectless_directories: &[],
         supported_protocols: &[
-            RuntimeProtocol::ChatCompletionsV1,
-            RuntimeProtocol::ResponsesV1,
-            RuntimeProtocol::MessagesV1,
+            Protocol::ChatCompletions,
+            Protocol::Responses,
+            Protocol::Messages,
         ],
         permission_modes: &[],
         can_resume_turns: false,

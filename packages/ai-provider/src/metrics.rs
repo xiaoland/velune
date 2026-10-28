@@ -1,6 +1,5 @@
 //! Read-only facts from original protocol responses, before any translation.
 //! Missing numeric values remain unknown; this observer never changes delivery.
-use crate::translation::LlmProtocol;
 use eventsource_stream::EventStream;
 use futures_util::{FutureExt, Stream, StreamExt};
 use serde_json::Value;
@@ -11,6 +10,7 @@ use std::{
     sync::{Arc, Mutex},
     task::{Context, Poll},
 };
+use velune_ai::Protocol;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TokenUsage {
@@ -49,7 +49,7 @@ impl Stream for Input {
 /// Synchronously drains the standard SSE parser after each received chunk.
 /// The source is polled only here, so it does not need to schedule a waker.
 pub struct ResponseMetrics {
-    protocol: LlmProtocol,
+    protocol: Protocol,
     feed: Arc<Mutex<Feed>>,
     events: Pin<Box<EventStream<Input>>>,
     observed_bytes: usize,
@@ -62,7 +62,7 @@ pub struct ResponseMetrics {
     pub degraded: bool,
 }
 impl ResponseMetrics {
-    pub fn new(protocol: LlmProtocol) -> Self {
+    pub fn new(protocol: Protocol) -> Self {
         let feed = Arc::new(Mutex::new(Feed::default()));
         Self {
             protocol,
@@ -106,7 +106,7 @@ impl ResponseMetrics {
         loop {
             match self.events.next().now_or_never() {
                 Some(Some(Ok(event))) if event.data == "[DONE]" => {
-                    if self.protocol == LlmProtocol::ChatCompletions
+                    if self.protocol == Protocol::ChatCompletions
                         && !self.choices.is_empty()
                         && self.choices.values().all(|done| *done)
                     {
@@ -139,7 +139,7 @@ impl ResponseMetrics {
             self.terminal = Some(ModelTerminal::Failed);
         }
         match self.protocol {
-            LlmProtocol::ChatCompletions => {
+            Protocol::ChatCompletions => {
                 self.merge_usage(&value["usage"]);
                 if let Some(choices) = value["choices"].as_array() {
                     for choice in choices {
@@ -160,7 +160,7 @@ impl ResponseMetrics {
                     }
                 }
             }
-            LlmProtocol::Responses => {
+            Protocol::Responses => {
                 let response = if streaming { &value["response"] } else { value };
                 self.merge_usage(&response["usage"]);
                 let terminal = match (value["type"].as_str(), response["status"].as_str()) {
@@ -193,7 +193,7 @@ impl ResponseMetrics {
                     self.first_output |= nonempty(&value["delta"]);
                 }
             }
-            LlmProtocol::Messages => {
+            Protocol::Messages => {
                 self.merge_usage(&value["message"]["usage"]);
                 self.merge_usage(&value["usage"]);
                 if ((!streaming && nonempty(&value["stop_reason"]))
@@ -217,7 +217,7 @@ impl ResponseMetrics {
         let Some(usage) = value.as_object() else {
             return;
         };
-        let (input, output) = if self.protocol == LlmProtocol::ChatCompletions {
+        let (input, output) = if self.protocol == Protocol::ChatCompletions {
             ("prompt_tokens", "completion_tokens")
         } else {
             ("input_tokens", "output_tokens")
@@ -229,16 +229,16 @@ impl ResponseMetrics {
             self.usage.output = Some(b);
         }
         match self.protocol {
-            LlmProtocol::ChatCompletions | LlmProtocol::Responses => {
+            Protocol::ChatCompletions | Protocol::Responses => {
                 if a.is_some() {
                     self.usage.input = a;
                 }
-                let input_details = if self.protocol == LlmProtocol::Responses {
+                let input_details = if self.protocol == Protocol::Responses {
                     "input_tokens_details"
                 } else {
                     "prompt_tokens_details"
                 };
-                let output_details = if self.protocol == LlmProtocol::Responses {
+                let output_details = if self.protocol == Protocol::Responses {
                     "output_tokens_details"
                 } else {
                     "completion_tokens_details"
@@ -252,7 +252,7 @@ impl ResponseMetrics {
                     value[output_details]["reasoning_tokens"].as_u64(),
                 );
             }
-            LlmProtocol::Messages => {
+            Protocol::Messages => {
                 merge(&mut self.messages_input, a);
                 self.usage.uncached_input = self.messages_input;
                 merge(

@@ -1,16 +1,11 @@
-//! Authoritative AI service contracts. Sampling is the first operation, not a separate service.
-//! No storage, global configuration, provider SDK, transport, or tool execution lives here.
+//! AI service contracts: native LLM protocol operations, their envelopes and
+//! outcomes. No storage, global configuration, provider SDK, transport, or
+//! tool execution lives here.
 #![forbid(unsafe_code)]
 
-pub mod chat_completions;
-pub mod direct;
 pub mod http;
-pub mod ids;
-pub mod messages;
-pub mod observation;
-pub mod provider;
-pub mod responses;
-pub mod sampling;
+mod native;
+pub use native::*;
 
 use std::{fmt, future::Future, pin::Pin};
 
@@ -20,16 +15,6 @@ pub type OperationFuture<T> = Pin<Box<dyn Future<Output = T> + Send + 'static>>;
 pub enum DeliveryError {
     Closed,
     Cancelled,
-}
-
-/// Caller-facing contract. Capture the binding before returning the future.
-pub trait SamplingService: Send + Sync {
-    fn sampling(
-        &self,
-        request: sampling::SamplingRequest,
-        attempt: ids::AttemptId,
-        events: sampling::SamplingSink,
-    ) -> Result<OperationFuture<sampling::SamplingCompletion>, InvalidContract>;
 }
 
 /// Contains a static field/reason only; never includes rejected input or provider response bodies.

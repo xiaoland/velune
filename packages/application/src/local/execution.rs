@@ -165,9 +165,9 @@ impl CoreRuntime {
             .provider()
             .protocol
         {
-            GatewayProtocol::ChatCompletionsV1 => "openai-completions",
-            GatewayProtocol::ResponsesV1 => "openai-responses",
-            GatewayProtocol::MessagesV1 => "anthropic-messages",
+            Protocol::ChatCompletions => "openai-completions",
+            Protocol::Responses => "openai-responses",
+            Protocol::Messages => "anthropic-messages",
         };
         if let Err(error) = materialize_models(&config, &gateway, tunnel.endpoint(), protocol) {
             drop(runner);

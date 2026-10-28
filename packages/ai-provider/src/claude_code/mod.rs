@@ -18,9 +18,9 @@ use tokio::{
     sync::{Mutex as AsyncMutex, mpsc, oneshot},
 };
 use velune_ai::{
-    InvalidContract, OperationFuture, Payload,
+    InvalidContract, NativeCompletion, NativeErrorKind, NativeFailure, NativeOutput,
+    NativeProvider, NativeRequest, NativeSink, NativeSuccess, OperationFuture, Payload,
     http::{Header, ResponseBody, ResponseMeta},
-    messages::*,
 };
 
 const MAX_LINE: usize = 8 * 1024 * 1024;
@@ -390,15 +390,12 @@ impl Drop for Run {
         let _ = std::fs::remove_dir_all(&self.directory);
     }
 }
-fn fail(kind: MessagesErrorKind, submitted: bool) -> MessagesCompletion {
-    MessagesCompletion {
-        result: Err(MessagesFailure {
-            kind,
-            response: None,
-            body: None,
-            submitted,
-        }),
-    }
+fn fail(kind: NativeErrorKind, submitted: bool) -> NativeCompletion {
+    Err(if submitted {
+        NativeFailure::sent(kind, None)
+    } else {
+        NativeFailure::unsent(kind)
+    })
 }
 fn normalized(messages: &[Value]) -> Vec<Value> {
     messages
@@ -414,9 +411,9 @@ fn token() -> Result<String, ()> {
     getrandom::fill(&mut bytes).map_err(|_| ())?;
     Ok(bytes.iter().map(|v| format!("{v:02x}")).collect())
 }
-async fn launch(config: &ClaudeCodeConfig, body: &Value) -> Result<Run, MessagesErrorKind> {
-    let directory_nonce = token().map_err(|_| MessagesErrorKind::Transport)?;
-    let token = token().map_err(|_| MessagesErrorKind::Transport)?;
+async fn launch(config: &ClaudeCodeConfig, body: &Value) -> Result<Run, NativeErrorKind> {
+    let directory_nonce = token().map_err(|_| NativeErrorKind::Transport)?;
+    let token = token().map_err(|_| NativeErrorKind::Transport)?;
     // The directory is visible in argv; its nonce must not reveal the MCP capability.
     let directory = std::env::temp_dir().join(format!("velune-claude-{directory_nonce}"));
     #[cfg(unix)]
@@ -426,7 +423,7 @@ async fn launch(config: &ClaudeCodeConfig, body: &Value) -> Result<Run, Messages
     };
     #[cfg(not(unix))]
     let created = std::fs::DirBuilder::new().create(&directory);
-    created.map_err(|_| MessagesErrorKind::Transport)?;
+    created.map_err(|_| NativeErrorKind::Transport)?;
     let result = launch_in(config, body, directory.clone(), token).await;
     if result.is_err() {
         let _ = std::fs::remove_dir_all(directory);
@@ -438,13 +435,13 @@ async fn launch_in(
     body: &Value,
     directory: PathBuf,
     token: String,
-) -> Result<Run, MessagesErrorKind> {
+) -> Result<Run, NativeErrorKind> {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
-        .map_err(|_| MessagesErrorKind::Transport)?;
+        .map_err(|_| NativeErrorKind::Transport)?;
     let address = listener
         .local_addr()
-        .map_err(|_| MessagesErrorKind::Transport)?;
+        .map_err(|_| NativeErrorKind::Transport)?;
     let (sender, events) = mpsc::channel(64);
     let tools = if body["tool_choice"]["type"] == "none" {
         Vec::new()
@@ -476,7 +473,7 @@ async fn launch_in(
         }
     }));
     let config_path = directory.join("mcp.json");
-    std::fs::write(&config_path,serde_json::to_vec(&json!({"mcpServers":{"velune":{"type":"http","url":format!("http://{address}/{token}")}}})).unwrap()).map_err(|_|MessagesErrorKind::Transport)?;
+    std::fs::write(&config_path,serde_json::to_vec(&json!({"mcpServers":{"velune":{"type":"http","url":format!("http://{address}/{token}")}}})).unwrap()).map_err(|_|NativeErrorKind::Transport)?;
     let mut command = hidden_command(&config.executable);
     command
         .args([
@@ -507,7 +504,7 @@ async fn launch_in(
         .arg(
             body["model"]
                 .as_str()
-                .ok_or(MessagesErrorKind::InvalidInput)?,
+                .ok_or(NativeErrorKind::InvalidInput)?,
         )
         .arg("--mcp-config")
         .arg(config_path)
@@ -546,10 +543,10 @@ async fn launch_in(
                 .filter_map(|block| block["text"].as_str())
                 .collect::<Vec<_>>()
                 .join("\n"),
-            _ => return Err(MessagesErrorKind::InvalidInput),
+            _ => return Err(NativeErrorKind::InvalidInput),
         };
         let system_path = directory.join("system.txt");
-        std::fs::write(&system_path, system).map_err(|_| MessagesErrorKind::Transport)?;
+        std::fs::write(&system_path, system).map_err(|_| NativeErrorKind::Transport)?;
         command.arg("--append-system-prompt-file").arg(system_path);
     }
     if let Some(effort) = body["output_config"]["effort"].as_str() {
@@ -557,9 +554,9 @@ async fn launch_in(
     }
     let mut child = command.spawn().map_err(|e| {
         if e.kind() == std::io::ErrorKind::NotFound {
-            MessagesErrorKind::Unsupported
+            NativeErrorKind::Unsupported
         } else {
-            MessagesErrorKind::Transport
+            NativeErrorKind::Transport
         }
     })?;
     let input = child.stdin.take().unwrap();
@@ -621,27 +618,25 @@ fn token_id() -> String {
     })
 }
 
-fn request_messages(body: &Value) -> Result<Vec<Value>, MessagesErrorKind> {
+fn request_messages(body: &Value) -> Result<Vec<Value>, NativeErrorKind> {
     let messages = body["messages"]
         .as_array()
-        .ok_or(MessagesErrorKind::InvalidInput)?;
+        .ok_or(NativeErrorKind::InvalidInput)?;
     if messages.is_empty() {
-        return Err(MessagesErrorKind::InvalidInput);
+        return Err(NativeErrorKind::InvalidInput);
     }
     for message in messages {
         if !matches!(message["role"].as_str(), Some("user" | "assistant"))
             || !(message["content"].is_string() || message["content"].is_array())
         {
-            return Err(MessagesErrorKind::InvalidInput);
+            return Err(NativeErrorKind::InvalidInput);
         }
     }
     if let Some(tools) = body.get("tools") {
-        let tools = tools.as_array().ok_or(MessagesErrorKind::InvalidInput)?;
+        let tools = tools.as_array().ok_or(NativeErrorKind::InvalidInput)?;
         let mut names = std::collections::HashSet::new();
         for tool in tools {
-            let name = tool["name"]
-                .as_str()
-                .ok_or(MessagesErrorKind::InvalidInput)?;
+            let name = tool["name"].as_str().ok_or(NativeErrorKind::InvalidInput)?;
             if name.is_empty()
                 || name.len() > 64
                 || !name
@@ -650,7 +645,7 @@ fn request_messages(body: &Value) -> Result<Vec<Value>, MessagesErrorKind> {
                 || !tool["input_schema"].is_object()
                 || !names.insert(name)
             {
-                return Err(MessagesErrorKind::InvalidInput);
+                return Err(NativeErrorKind::InvalidInput);
             }
         }
     }
@@ -663,16 +658,16 @@ fn blocks(value: &Value) -> Vec<Value> {
         value.as_array().cloned().unwrap_or_default()
     }
 }
-fn tool_results(messages: &[Value]) -> Result<HashMap<String, Value>, MessagesErrorKind> {
+fn tool_results(messages: &[Value]) -> Result<HashMap<String, Value>, NativeErrorKind> {
     let mut results = HashMap::new();
     for message in messages {
         for block in blocks(&message["content"]) {
             if block["type"] == "tool_result" {
                 let id = block["tool_use_id"]
                     .as_str()
-                    .ok_or(MessagesErrorKind::InvalidInput)?;
+                    .ok_or(NativeErrorKind::InvalidInput)?;
                 let content = blocks(&block["content"]);
-                if results.insert(id.to_owned(),json!({"content":content,"isError":block["is_error"].as_bool().unwrap_or(false)})).is_some(){return Err(MessagesErrorKind::InvalidInput);}
+                if results.insert(id.to_owned(),json!({"content":content,"isError":block["is_error"].as_bool().unwrap_or(false)})).is_some(){return Err(NativeErrorKind::InvalidInput);}
             }
         }
     }
@@ -701,11 +696,11 @@ async fn deliver(
     output: Value,
     stream: bool,
     segment: &mut stream::Segment,
-    sink: &mut MessagesSink,
-) -> MessagesCompletion {
+    sink: &mut NativeSink,
+) -> NativeCompletion {
     if !stream {
-        return MessagesCompletion {
-            result: Ok(MessagesOutput::Json(ResponseBody {
+        return Ok(NativeSuccess {
+            output: NativeOutput::Json(ResponseBody {
                 meta: ResponseMeta {
                     status: 200,
                     headers: vec![Header {
@@ -714,29 +709,31 @@ async fn deliver(
                     }],
                 },
                 body: Payload::new(serde_json::to_vec(&output).unwrap()),
-            })),
-        };
+            }),
+            completed: false,
+        });
     }
     if segment.finish(sink, &output).await.is_err() {
-        return fail(MessagesErrorKind::Cancelled, true);
+        return fail(NativeErrorKind::Cancelled, true);
     }
-    MessagesCompletion {
-        result: Ok(MessagesOutput::Stream(meta())),
-    }
+    Ok(NativeSuccess {
+        output: NativeOutput::Stream(meta()),
+        completed: false,
+    })
 }
-impl MessagesProvider for ClaudeCode {
-    fn messages(
+impl NativeProvider for ClaudeCode {
+    fn send(
         &self,
-        request: MessagesRequest,
-        mut sink: MessagesSink,
-    ) -> OperationFuture<MessagesCompletion> {
+        request: NativeRequest,
+        mut sink: NativeSink,
+    ) -> OperationFuture<NativeCompletion> {
         let config = self.config.clone();
         let pool = self.pool.clone();
         let handle = pool.executor.handle.clone();
         let operation = async move {
             let body = request.body.into_inner();
             if body["model"].as_str() != Some(request.model.as_str()) {
-                return fail(MessagesErrorKind::InvalidInput, false);
+                return fail(NativeErrorKind::InvalidInput, false);
             }
             let history = match request_messages(&body) {
                 Ok(value) => value,
@@ -747,7 +744,7 @@ impl MessagesProvider for ClaudeCode {
                     .as_array()
                     .is_some_and(|tools| !tools.is_empty())
             {
-                return fail(MessagesErrorKind::Unsupported, false);
+                return fail(NativeErrorKind::Unsupported, false);
             }
             let latest_results = match tool_results(&history[history.len() - 1..]) {
                 Ok(value) => value,
@@ -761,26 +758,26 @@ impl MessagesProvider for ClaudeCode {
                     )
                     .is_err()
             {
-                return fail(MessagesErrorKind::InvalidInput, false);
+                return fail(NativeErrorKind::InvalidInput, false);
             }
             if config.session.is_none() && !latest_results.is_empty() {
-                return fail(MessagesErrorKind::InvalidInput, false);
+                return fail(NativeErrorKind::InvalidInput, false);
             }
             let slot = match pool.slot(&config) {
                 Ok(value) => value,
-                Err(()) => return fail(MessagesErrorKind::ProviderFailure, false),
+                Err(()) => return fail(NativeErrorKind::ProviderFailure, false),
             };
             let mut stop = slot.stop.subscribe();
             if *stop.borrow() {
-                return fail(MessagesErrorKind::Cancelled, false);
+                return fail(NativeErrorKind::Cancelled, false);
             }
             let mut guard = match slot.run.try_lock() {
                 Ok(guard) => guard,
-                Err(_) => return fail(MessagesErrorKind::InvalidInput, false),
+                Err(_) => return fail(NativeErrorKind::InvalidInput, false),
             };
             let mut initial = guard.is_none();
             if initial && !latest_results.is_empty() {
-                return fail(MessagesErrorKind::InvalidInput, false);
+                return fail(NativeErrorKind::InvalidInput, false);
             }
             let mut run = if let Some(run) = guard.take() {
                 run
@@ -800,12 +797,12 @@ impl MessagesProvider for ClaudeCode {
                 completed: false,
             };
             if *stop.borrow() {
-                return fail(MessagesErrorKind::Cancelled, true);
+                return fail(NativeErrorKind::Cancelled, true);
             }
             if !initial && (run.signature != signature(&body) || !history.starts_with(&run.history))
             {
                 if !run.pending.is_empty() {
-                    return fail(MessagesErrorKind::InvalidInput, true);
+                    return fail(NativeErrorKind::InvalidInput, true);
                 }
                 drop(run);
                 run = match launch(&config, &body).await {
@@ -820,7 +817,7 @@ impl MessagesProvider for ClaudeCode {
                 initial = true;
                 if *stop.borrow() {
                     slot.stop();
-                    return fail(MessagesErrorKind::Cancelled, true);
+                    return fail(NativeErrorKind::Cancelled, true);
                 }
             }
             let since = if initial {
@@ -839,37 +836,37 @@ impl MessagesProvider for ClaudeCode {
                             .iter()
                             .any(|block| block["type"] != "tool_result")
                 }) {
-                    return fail(MessagesErrorKind::Unsupported, true);
+                    return fail(NativeErrorKind::Unsupported, true);
                 }
                 if results.len() != run.pending.len()
                     || results.keys().any(|id| !run.pending.contains_key(id))
                 {
-                    return fail(MessagesErrorKind::InvalidInput, true);
+                    return fail(NativeErrorKind::InvalidInput, true);
                 }
                 // Validate every result before unblocking any real CLI operation.
                 for (id, result) in results {
                     if run.pending.remove(&id).unwrap().send(result).is_err() {
-                        return fail(MessagesErrorKind::ProviderFailure, true);
+                        return fail(NativeErrorKind::ProviderFailure, true);
                     }
                 }
             } else {
                 if !results.is_empty() || since.is_empty() {
-                    return fail(MessagesErrorKind::InvalidInput, true);
+                    return fail(NativeErrorKind::InvalidInput, true);
                 }
                 run.usage = usage::TurnUsage::default();
                 let input = json!({"type":"user","message":{"role":"user","content":prompt(since,initial)}});
                 let bytes = match serde_json::to_vec(&input) {
                     Ok(value) => value,
-                    Err(_) => return fail(MessagesErrorKind::InvalidInput, true),
+                    Err(_) => return fail(NativeErrorKind::InvalidInput, true),
                 };
                 let write = async {
                     run.input.write_all(&bytes).await?;
                     run.input.write_all(b"\n").await?;
                     run.input.flush().await
                 };
-                let written = tokio::select! {_=stop.changed()=>return fail(MessagesErrorKind::Cancelled,true),written=write=>written};
+                let written = tokio::select! {_=stop.changed()=>return fail(NativeErrorKind::Cancelled,true),written=write=>written};
                 if written.is_err() {
-                    return fail(MessagesErrorKind::Transport, true);
+                    return fail(NativeErrorKind::Transport, true);
                 }
             }
             let mut content = Vec::new();
@@ -879,16 +876,16 @@ impl MessagesProvider for ClaudeCode {
             let deadline = tokio::time::sleep(Duration::from_secs(1800));
             tokio::pin!(deadline);
             let mut outcome = loop {
-                let event = tokio::select! { _=stop.changed()=>return fail(MessagesErrorKind::Cancelled,true),_= &mut deadline=>return fail(MessagesErrorKind::Timeout,true),event=run.events.recv()=>event };
+                let event = tokio::select! { _=stop.changed()=>return fail(NativeErrorKind::Cancelled,true),_= &mut deadline=>return fail(NativeErrorKind::Timeout,true),event=run.events.recv()=>event };
                 if *stop.borrow() {
-                    return fail(MessagesErrorKind::Cancelled, true);
+                    return fail(NativeErrorKind::Cancelled, true);
                 }
                 match event {
                     Some(Event::Tool(call)) => {
                         {
                             let mut calls = slot.calls.lock().unwrap();
                             if slot.status.load(Ordering::Acquire) == 2 {
-                                return fail(MessagesErrorKind::Cancelled, true);
+                                return fail(NativeErrorKind::Cancelled, true);
                             }
                             calls.insert(call.id.clone());
                         }
@@ -898,7 +895,7 @@ impl MessagesProvider for ClaudeCode {
                             .await
                             .is_err()
                         {
-                            return fail(MessagesErrorKind::Cancelled, true);
+                            return fail(NativeErrorKind::Cancelled, true);
                         }
                         content.push(block);
                         run.pending.insert(call.id, call.reply);
@@ -934,7 +931,7 @@ impl MessagesProvider for ClaudeCode {
                                     ) {
                                         partial = true;
                                         let Some(index) = event["index"].as_u64() else {
-                                            return fail(MessagesErrorKind::ProviderFailure, true);
+                                            return fail(NativeErrorKind::ProviderFailure, true);
                                         };
                                         indexes.insert(index, content.len());
                                         if segment
@@ -942,7 +939,7 @@ impl MessagesProvider for ClaudeCode {
                                             .await
                                             .is_err()
                                         {
-                                            return fail(MessagesErrorKind::Cancelled, true);
+                                            return fail(NativeErrorKind::Cancelled, true);
                                         }
                                         content.push(block.clone());
                                     }
@@ -969,7 +966,7 @@ impl MessagesProvider for ClaudeCode {
                                             block[key] = json!(text);
                                         }
                                         if segment.delta(&mut sink, index, delta).await.is_err() {
-                                            return fail(MessagesErrorKind::Cancelled, true);
+                                            return fail(NativeErrorKind::Cancelled, true);
                                         }
                                     }
                                 }
@@ -979,11 +976,11 @@ impl MessagesProvider for ClaudeCode {
                                         .is_some_and(|index| indexes.contains_key(&index))
                                         && segment.close(&mut sink).await.is_err()
                                     {
-                                        return fail(MessagesErrorKind::Cancelled, true);
+                                        return fail(NativeErrorKind::Cancelled, true);
                                     }
                                 }
                                 Some("error") => {
-                                    return fail(MessagesErrorKind::ProviderFailure, true);
+                                    return fail(NativeErrorKind::ProviderFailure, true);
                                 }
                                 _ => {}
                             }
@@ -991,11 +988,11 @@ impl MessagesProvider for ClaudeCode {
                         Some("assistant") => {
                             if let Some(error) = value["error"].as_str() {
                                 let kind = match error {
-                                    "authentication_failed" => MessagesErrorKind::Authentication,
-                                    "rate_limit" => MessagesErrorKind::RateLimited,
-                                    "billing_error" => MessagesErrorKind::Permission,
-                                    "invalid_request" => MessagesErrorKind::InvalidInput,
-                                    _ => MessagesErrorKind::ProviderFailure,
+                                    "authentication_failed" => NativeErrorKind::Authentication,
+                                    "rate_limit" => NativeErrorKind::RateLimited,
+                                    "billing_error" => NativeErrorKind::Permission,
+                                    "invalid_request" => NativeErrorKind::InvalidInput,
+                                    _ => NativeErrorKind::ProviderFailure,
                                 };
                                 return fail(kind, true);
                             }
@@ -1014,7 +1011,7 @@ impl MessagesProvider for ClaudeCode {
                                             .await
                                             .is_err()
                                         {
-                                            return fail(MessagesErrorKind::Cancelled, true);
+                                            return fail(NativeErrorKind::Cancelled, true);
                                         }
                                         content.push(block.clone());
                                     }
@@ -1027,7 +1024,7 @@ impl MessagesProvider for ClaudeCode {
                             if value["subtype"].as_str() != Some("success")
                                 || value["is_error"].as_bool() == Some(true)
                             {
-                                return fail(MessagesErrorKind::ProviderFailure, true);
+                                return fail(NativeErrorKind::ProviderFailure, true);
                             }
                             let usage = run.usage.final_segment(&value["usage"]);
                             break message(&body, content, "end_turn", usage);
@@ -1035,7 +1032,7 @@ impl MessagesProvider for ClaudeCode {
                         _ => {}
                     },
                     Some(Event::End) | None => {
-                        return fail(MessagesErrorKind::ProviderFailure, true);
+                        return fail(NativeErrorKind::ProviderFailure, true);
                     }
                 }
             };
@@ -1046,9 +1043,9 @@ impl MessagesProvider for ClaudeCode {
             run.touched = Instant::now();
             let completion = deliver(outcome, request.stream, &mut segment, &mut sink).await;
             if *stop.borrow() {
-                return fail(MessagesErrorKind::Cancelled, true);
+                return fail(NativeErrorKind::Cancelled, true);
             }
-            if completion.result.is_ok() {
+            if completion.is_ok() {
                 slot.status.store(
                     if run.pending.is_empty() { 0 } else { 1 },
                     Ordering::Release,
@@ -1064,7 +1061,7 @@ impl MessagesProvider for ClaudeCode {
             let mut task = AbortOnDrop(handle.spawn(operation));
             (&mut task.0)
                 .await
-                .unwrap_or_else(|_| fail(MessagesErrorKind::ProviderFailure, true))
+                .unwrap_or_else(|_| fail(NativeErrorKind::ProviderFailure, true))
         })
     }
 }

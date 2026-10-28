@@ -14,7 +14,7 @@
 
 - [多 Harness 路由与协作架构](design/architecture.md)：已认可产品方向及 Rust／SQLite／原生 UI 基线；具体协作机制、宿主／桥接推荐与验证边界
 
-- [AI 服务与 AI 网关](design/ai-service.md)：已确认需求、操作／provider／网关职责、当前实现偏差及历史有界采样契约
+- [AI 服务与 AI 网关](design/ai-service.md)：已确认需求、操作／provider／网关职责、协议转换、路由与用量分析契约
 
 ## 当前工作
 

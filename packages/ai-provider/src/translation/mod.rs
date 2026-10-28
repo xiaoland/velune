@@ -3,20 +3,14 @@ mod bridge;
 use bridge::{Session, call};
 use serde_json::{Value, json};
 use std::fmt;
+use velune_ai::Protocol;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LlmProtocol {
-    ChatCompletions,
-    Responses,
-    Messages,
-}
-impl LlmProtocol {
-    fn wire(self) -> &'static str {
-        match self {
-            Self::ChatCompletions => "openai",
-            Self::Responses => "openai_responses",
-            Self::Messages => "claude",
-        }
+/// RelayKit's name for a protocol.
+fn wire(protocol: Protocol) -> &'static str {
+    match protocol {
+        Protocol::ChatCompletions => "openai",
+        Protocol::Responses => "openai_responses",
+        Protocol::Messages => "claude",
     }
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -98,8 +92,8 @@ impl PreparedTranslation {
 
 /// Native protocols bypass conversion. Messages uses the configured output limit only when absent.
 pub fn prepare(
-    from: LlmProtocol,
-    to: LlmProtocol,
+    from: Protocol,
+    to: Protocol,
     body: &Value,
     target_output_limit: Option<u32>,
 ) -> Result<PreparedTranslation, TranslationError> {
@@ -109,7 +103,7 @@ pub fn prepare(
     if !body.is_object() {
         return Err(invalid("request.object"));
     }
-    if to == LlmProtocol::Messages
+    if to == Protocol::Messages
         && target_output_limit.is_none()
         && ["max_tokens", "max_completion_tokens", "max_output_tokens"]
             .iter()
@@ -119,7 +113,7 @@ pub fn prepare(
     }
     let mut result = call(
         0,
-        json!({"op":"prepare", "from":from.wire(), "to":to.wire(), "body":body, "limit":target_output_limit.unwrap_or(0)}),
+        json!({"op":"prepare", "from":wire(from), "to":wire(to), "body":body, "limit":target_output_limit.unwrap_or(0)}),
     )?;
     let handle = result["handle"]
         .as_u64()

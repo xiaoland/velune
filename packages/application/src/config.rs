@@ -21,7 +21,7 @@ pub struct ProviderModel {
 pub struct ProviderDefinition {
     pub id: String,
     pub name: String,
-    pub protocol: GatewayProtocol,
+    pub protocol: Protocol,
     pub endpoint: String,
     pub execution_backend: ExecutionBackend,
     pub request_profile: RequestProfile,
@@ -188,9 +188,9 @@ impl GatewayConfig {
             model_record_key,
             provider_id: provider.id.as_str(),
             protocol: match provider.protocol {
-                GatewayProtocol::ChatCompletionsV1 => "chatCompletionsV1",
-                GatewayProtocol::ResponsesV1 => "responsesV1",
-                GatewayProtocol::MessagesV1 => "messagesV1",
+                Protocol::ChatCompletions => "chatCompletionsV1",
+                Protocol::Responses => "responsesV1",
+                Protocol::Messages => "messagesV1",
             },
             execution_backend: &provider.execution_backend,
             request_profile: provider.request_profile,
@@ -250,23 +250,13 @@ struct PiBindingIdentity<'a> {
 }
 
 /// The versioned runtime registry owns support; family IDs never grant capabilities.
-pub(crate) fn runtime_protocols(kind: RuntimeKind) -> Vec<GatewayProtocol> {
-    use velune_agent_runtime::version::{RuntimeProtocol, variant};
-    variant(kind)
+pub(crate) fn runtime_protocols(kind: RuntimeKind) -> Vec<Protocol> {
+    velune_agent_runtime::version::variant(kind)
         .supported_protocols
-        .iter()
-        .map(|protocol| match protocol {
-            RuntimeProtocol::ChatCompletionsV1 => GatewayProtocol::ChatCompletionsV1,
-            RuntimeProtocol::ResponsesV1 => GatewayProtocol::ResponsesV1,
-            RuntimeProtocol::MessagesV1 => GatewayProtocol::MessagesV1,
-        })
-        .collect()
+        .to_vec()
 }
 /// Select the wire protocol the runtime speaks, preferring native passthrough.
-pub(crate) fn runtime_ingress(
-    kind: RuntimeKind,
-    upstream: &GatewayProtocol,
-) -> Option<GatewayProtocol> {
+pub(crate) fn runtime_ingress(kind: RuntimeKind, upstream: &Protocol) -> Option<Protocol> {
     let protocols = runtime_protocols(kind);
     protocols
         .iter()
@@ -276,14 +266,14 @@ pub(crate) fn runtime_ingress(
 }
 
 /// All three provider protocols are reachable through the LLM gateway.
-pub(crate) fn runtime_provider_protocols(kind: RuntimeKind) -> Vec<GatewayProtocol> {
+pub(crate) fn runtime_provider_protocols(kind: RuntimeKind) -> Vec<Protocol> {
     if runtime_protocols(kind).is_empty() {
         return Vec::new();
     }
     vec![
-        GatewayProtocol::ChatCompletionsV1,
-        GatewayProtocol::ResponsesV1,
-        GatewayProtocol::MessagesV1,
+        Protocol::ChatCompletions,
+        Protocol::Responses,
+        Protocol::Messages,
     ]
 }
 
@@ -300,17 +290,7 @@ impl GatewayConfig {
                     Ok(velune_gateway::ProviderDefinition {
                         id: p.id.clone(),
                         name: p.name.clone(),
-                        protocol: match p.protocol {
-                            GatewayProtocol::ChatCompletionsV1 => {
-                                velune_gateway::GatewayProtocol::ChatCompletionsV1
-                            }
-                            GatewayProtocol::ResponsesV1 => {
-                                velune_gateway::GatewayProtocol::ResponsesV1
-                            }
-                            GatewayProtocol::MessagesV1 => {
-                                velune_gateway::GatewayProtocol::MessagesV1
-                            }
-                        },
+                        protocol: p.protocol,
                         endpoint: p.endpoint.clone(),
                         execution_backend: gateway_execution_backend(&p.execution_backend),
                         request_profile: gateway_request_profile(p.request_profile),
@@ -460,7 +440,7 @@ impl ProviderDefinition {
             || self.quota_source == ProviderQuotaSource::KimiUsage;
         if kimi
             && (self.execution_backend != ExecutionBackend::Http
-                || self.protocol != GatewayProtocol::MessagesV1
+                || self.protocol != Protocol::Messages
                 || source != Auth::ApiKey
                 || self.request_profile != RequestProfile::KimiCoding
                 || self.quota_source != ProviderQuotaSource::KimiUsage
@@ -513,7 +493,7 @@ impl ProviderDefinition {
                     return Err("Claude CLI 可执行文件必须是绝对路径");
                 }
                 if source != Auth::ClaudeCli
-                    || self.protocol != GatewayProtocol::MessagesV1
+                    || self.protocol != Protocol::Messages
                     || self.request_profile != RequestProfile::Native
                     || !self.endpoint.is_empty()
                 {
@@ -598,10 +578,10 @@ pub(crate) fn kimi_region(endpoint: &str) -> Option<&'static str> {
     }
 }
 
-pub(crate) fn ark_endpoint(endpoint: &str, protocol: &GatewayProtocol) -> bool {
+pub(crate) fn ark_endpoint(endpoint: &str, protocol: &Protocol) -> bool {
     endpoint.trim_end_matches('/')
         == match protocol {
-            GatewayProtocol::MessagesV1 => "https://ark.cn-beijing.volces.com/api/coding",
+            Protocol::Messages => "https://ark.cn-beijing.volces.com/api/coding",
             _ => "https://ark.cn-beijing.volces.com/api/coding/v3",
         }
 }

@@ -6,7 +6,7 @@
 
 use crate::{Error as RuntimeError, Options as RuntimeOptions};
 use crate::{
-    config::{GatewayConfig, GatewayProtocol, ProviderModel, RuntimeInstance, RuntimeKind},
+    config::{GatewayConfig, Protocol, ProviderModel, RuntimeInstance, RuntimeKind},
     conversation::{ConversationSummary, RunState},
     provider_import,
 };

@@ -39,13 +39,7 @@ pub struct ModelTemplate {
     pub reasoning_levels: Option<Vec<String>>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub enum GatewayProtocol {
-    ChatCompletionsV1,
-    ResponsesV1,
-    MessagesV1,
-}
+pub use velune_ai::Protocol;
 
 /// An ordered set of provider models chosen like a model; the gateway fails
 /// over between its members.
@@ -106,9 +100,9 @@ pub struct RuntimeTypeDescriptor {
     /// Running over SSH needs a helper resources directory on the remote
     /// machine (`RuntimeExecution::remote_resources_directory`).
     pub remote_resources: bool,
-    pub supported_protocols: Vec<GatewayProtocol>,
+    pub supported_protocols: Vec<Protocol>,
     /// Provider protocols reachable through native dispatch or gateway conversion.
-    pub supported_provider_protocols: Vec<GatewayProtocol>,
+    pub supported_provider_protocols: Vec<Protocol>,
     pub name: String,
     pub fields: Vec<crate::conversation::SettingField>,
     /// Modes a turn may request, in the runtime's own vocabulary; empty when

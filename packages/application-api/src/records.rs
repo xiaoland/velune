@@ -42,7 +42,7 @@ pub struct RuntimeDiscoveryCandidate {
 pub struct ProviderSummary {
     pub id: String,
     pub name: String,
-    pub protocol: GatewayProtocol,
+    pub protocol: Protocol,
     pub endpoint: String,
     pub execution_backend: ExecutionBackend,
     pub request_profile: RequestProfile,
@@ -66,7 +66,7 @@ pub struct GatewaySummary {
 pub struct ProviderDraft {
     pub id: String,
     pub name: String,
-    pub protocol: GatewayProtocol,
+    pub protocol: Protocol,
     pub endpoint: String,
     pub execution_backend: ExecutionBackend,
     pub request_profile: RequestProfile,
@@ -547,7 +547,7 @@ pub struct AuthenticationMetadata {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AuthenticationCapabilities {
-    pub protocol: GatewayProtocol,
+    pub protocol: Protocol,
     pub endpoint: String,
     pub explicit_output_cap: bool,
     pub temperature: bool,

@@ -1,5 +1,5 @@
 //! Provider-owned authentication edits and non-secret UI descriptions.
-use crate::config::GatewayProtocol;
+use crate::config::Protocol;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -31,7 +31,7 @@ pub struct SubscriptionDisclosure {
     pub detail: String,
 }
 /// The protocol and endpoint a provider with Codex subscription authentication must use.
-pub const CODEX_SUBSCRIPTION_PROTOCOL: GatewayProtocol = GatewayProtocol::ResponsesV1;
+pub const CODEX_SUBSCRIPTION_PROTOCOL: Protocol = Protocol::Responses;
 pub const CODEX_SUBSCRIPTION_ENDPOINT: &str = "https://chatgpt.com/backend-api/codex";
 impl SubscriptionDisclosure {
     /// What choosing Codex subscription authentication means, shown before and after choosing it.

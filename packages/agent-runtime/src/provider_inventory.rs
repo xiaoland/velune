@@ -19,11 +19,7 @@ impl std::fmt::Debug for Secret {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Protocol {
-    Responses,
-    Messages,
-}
+pub use velune_ai::Protocol;
 
 /// How the harness sends a literal key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -1,6 +1,6 @@
 # AI 网关
 
-`velune-gateway` 是本机 LLM 网关 unit，也是 AI 能力的一种应用模式。它接收 OpenAI ChatCompletions v1、Responses v1 或 Anthropic Messages 请求，通过显式模型路由派发给提供商。同协议路径使用原生 operation，保留消息历史、生成参数与响应事件；异协议路径调用 ai-provider 的请求计划转换 JSON 与增量 SSE，采用 best-effort 降级和静态诊断，不经过 sampling。模型路由与认证始终根据上游目标，运行时入口协议不限制提供商协议。HTTP 的 hop-by-hop 字段、本地认证和 cookie 不转发。
+`velune-gateway` 是本机 LLM 网关 unit，也是 AI 能力的一种应用模式。它接收 OpenAI ChatCompletions v1、Responses v1 或 Anthropic Messages 请求，通过显式模型路由派发给提供商。同协议路径使用原生 operation，保留消息历史、生成参数与响应事件；异协议路径调用 ai-provider 的请求计划转换 JSON 与增量 SSE，采用 best-effort 降级和静态诊断。模型路由与认证始终根据上游目标，运行时入口协议不限制提供商协议。HTTP 的 hop-by-hop 字段、本地认证和 cookie 不转发。
 
 调用方通过 `GatewayConfig` 提供具有模型条目的提供商、模型路由及策略，通过 `Runner::start` 提供入口模型别名。提供商配置在启动时形成不可变快照；直接调用方修改配置后须重建 Runner；application 会使执行失效并在下次发送时自动准备，用户不需要手动连接。运行时模型选择可显式替换入口 alias 到稳定模型记录的绑定，不修改在途派发已捕获的目标。此 unit 不理解 Harness 的模型目录、思考级别转换、配置实例或认证文件。模型元数据不成为原生请求参数的默认值。仅异协议转换到 Messages、原请求无输出上限时，使用所选模型的配置上限；两者都缺失时返回必要配置错误。旧 `chatCompletionsOutputLimitField` 已从新契约删除，不提供兼容入口。
 

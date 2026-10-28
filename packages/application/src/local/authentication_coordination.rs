@@ -533,7 +533,7 @@ fn capabilities(
     sampling: bool,
 ) -> crate::AuthenticationCapabilities {
     crate::AuthenticationCapabilities {
-        protocol: provider.protocol.clone(),
+        protocol: provider.protocol,
         endpoint: provider.endpoint.clone(),
         explicit_output_cap: sampling,
         temperature: sampling,

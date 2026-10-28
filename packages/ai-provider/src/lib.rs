@@ -1,14 +1,14 @@
-//! Provider-owned configuration and MiniMax adapter. Protocol/transport stay behind the
-//! service-owned SamplingProvider contract. No environment/file/configuration reads here.
+//! Provider execution: native protocol requests over HTTP, the Claude Code
+//! local backend, protocol translation and response metrics. Configuration and
+//! credentials arrive resolved; no environment, file or configuration reads here.
 #![deny(unsafe_code)]
 pub mod claude_code;
 pub mod config;
 mod http_client;
 pub use http_client::HttpClient;
-pub mod messages;
 pub mod metrics;
-pub mod minimax;
-pub mod openai;
-pub mod responses;
+mod native;
+pub use native::NativeHttp;
+mod responses;
 mod service_error;
 pub mod translation;

@@ -5,7 +5,7 @@
 use crate::Error;
 use crate::config::RuntimeKind;
 use crate::config::{
-    ExecutionBackend, GatewayConfig, GatewayProtocol, ProviderDefinition, ProviderModel,
+    ExecutionBackend, GatewayConfig, Protocol, ProviderDefinition, ProviderModel,
     ProviderQuotaSource, RequestProfile, RuntimeInstance,
 };
 use crate::provider_authentication::{
@@ -13,7 +13,7 @@ use crate::provider_authentication::{
 };
 
 use sha2::{Digest, Sha256};
-use velune_agent_runtime::provider_inventory::{self, Access, Inventory, KeySource, Protocol};
+use velune_agent_runtime::provider_inventory::{self, Access, Inventory, KeySource};
 
 /// Runtime types whose configuration the agent runtime can read for import.
 pub(crate) const TYPES: [RuntimeKind; 2] = [RuntimeKind::Codex, RuntimeKind::ClaudeCode];
@@ -69,12 +69,6 @@ fn token(source: &str, target: &str) -> String {
         Sha256::digest(format!("{source}|{target}").as_bytes())
     )
 }
-fn protocol(value: Protocol) -> GatewayProtocol {
-    match value {
-        Protocol::Responses => GatewayProtocol::ResponsesV1,
-        Protocol::Messages => GatewayProtocol::MessagesV1,
-    }
-}
 pub(crate) fn family(runtime: &RuntimeInstance) -> &'static str {
     match runtime.type_id {
         RuntimeKind::Codex => "codex",
@@ -109,7 +103,7 @@ pub(crate) fn preview(
                     endpoint,
                     key,
                 } => (
-                    crate::provider_import::protocol_name(&protocol(*kind)),
+                    crate::provider_import::protocol_name(kind),
                     Some(endpoint.clone()),
                     match key {
                         KeySource::Literal { .. } => "复制来源中的 API key",
@@ -123,7 +117,7 @@ pub(crate) fn preview(
                         issues.push("请先为该运行时配置 Claude Code 可执行文件的绝对路径。".into());
                     }
                     (
-                        crate::provider_import::protocol_name(&GatewayProtocol::MessagesV1),
+                        crate::provider_import::protocol_name(&Protocol::Messages),
                         None,
                         "沿用该运行时的 Claude Code 登录",
                     )
@@ -260,7 +254,7 @@ pub(crate) fn apply(
                 quota_authentication: Default::default(),
                 id: id.clone(),
                 name: source.name.clone(),
-                protocol: protocol(*kind),
+                protocol: *kind,
                 endpoint: endpoint.clone(),
                 execution_backend: ExecutionBackend::Http,
                 request_profile: RequestProfile::Native,
@@ -290,7 +284,7 @@ pub(crate) fn apply(
                     quota_authentication: Default::default(),
                     id: id.clone(),
                     name: format!("{} · {}", source.name, runtime.name),
-                    protocol: GatewayProtocol::MessagesV1,
+                    protocol: Protocol::Messages,
                     endpoint: String::new(),
                     execution_backend: ExecutionBackend::ClaudeCli {
                         binary: binary.to_owned(),

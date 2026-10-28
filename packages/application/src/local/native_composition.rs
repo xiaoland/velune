@@ -20,9 +20,9 @@ impl CoreRuntime {
         let ingress = crate::config::runtime_ingress(runtime.type_id, &provider.protocol)
             .ok_or_else(|| RuntimeError::invalid("不支持的运行时版本类型"))?;
         let protocol = match &ingress {
-            GatewayProtocol::ChatCompletionsV1 => "openai-completions",
-            GatewayProtocol::ResponsesV1 => "openai-responses",
-            GatewayProtocol::MessagesV1 => "anthropic-messages",
+            Protocol::ChatCompletions => "openai-completions",
+            Protocol::Responses => "openai-responses",
+            Protocol::Messages => "anthropic-messages",
         };
         let runner = self
             .session
@@ -35,7 +35,7 @@ impl CoreRuntime {
             .as_ref()
             .map_or(runner.endpoint(), |tunnel| tunnel.endpoint());
         Ok(GatewayInjection {
-            endpoint: if ingress == GatewayProtocol::MessagesV1 {
+            endpoint: if ingress == Protocol::Messages {
                 endpoint
                     .strip_suffix("/v1")
                     .expect("gateway base path")

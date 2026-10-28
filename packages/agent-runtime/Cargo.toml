@@ -5,6 +5,7 @@ edition = "2024"
 publish = false
 
 [dependencies]
+velune-ai = { path = "../ai" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"

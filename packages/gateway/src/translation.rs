@@ -1,39 +1,28 @@
 //! Cross-protocol delivery. Native transport remains in the provider adapters.
-use crate::{
-    config::GatewayProtocol,
-    runtime::{WireEvent, send_json},
-};
+use crate::runtime::{WireEvent, send_json};
 use eventsource_stream::Eventsource;
 use futures_util::{StreamExt, stream};
 use serde_json::json;
 use tokio::sync::mpsc;
 use velune_ai::{
-    Payload,
+    Payload, Protocol,
     http::{Header, ResponseBody, ResponseMeta},
 };
-use velune_ai_provider::translation::{LlmProtocol, PreparedTranslation};
+use velune_ai_provider::translation::PreparedTranslation;
 
-pub(super) fn protocol(value: &GatewayProtocol) -> LlmProtocol {
-    match value {
-        GatewayProtocol::ChatCompletionsV1 => LlmProtocol::ChatCompletions,
-        GatewayProtocol::ResponsesV1 => LlmProtocol::Responses,
-        GatewayProtocol::MessagesV1 => LlmProtocol::Messages,
-    }
-}
-
-pub(super) fn upstream_headers(mut headers: Vec<Header>, target: &GatewayProtocol) -> Vec<Header> {
+pub(super) fn upstream_headers(mut headers: Vec<Header>, target: Protocol) -> Vec<Header> {
     headers.retain(|header| {
         let name = header.name.to_ascii_lowercase();
         !matches!(
             name.as_str(),
             "content-type" | "accept" | "content-encoding"
-        ) && if *target == GatewayProtocol::MessagesV1 {
+        ) && if target == Protocol::Messages {
             !name.starts_with("openai-")
         } else {
             !name.starts_with("anthropic-")
         }
     });
-    if *target == GatewayProtocol::MessagesV1
+    if target == Protocol::Messages
         && !headers
             .iter()
             .any(|header| header.name.eq_ignore_ascii_case("anthropic-version"))

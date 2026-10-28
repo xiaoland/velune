@@ -54,17 +54,7 @@ impl CredentialResolver for ProviderResolver {
         let gateway_id = self.gateway_id.clone();
         Box::pin(async move {
             let resource = resource.ok_or(CredentialResolutionError::Unavailable)?;
-            let protocol = match target.protocol {
-                velune_gateway::GatewayProtocol::ChatCompletionsV1 => {
-                    crate::config::GatewayProtocol::ChatCompletionsV1
-                }
-                velune_gateway::GatewayProtocol::ResponsesV1 => {
-                    crate::config::GatewayProtocol::ResponsesV1
-                }
-                velune_gateway::GatewayProtocol::MessagesV1 => {
-                    crate::config::GatewayProtocol::MessagesV1
-                }
-            };
+            let protocol = target.protocol;
             if resource.protocol != protocol
                 || resource.endpoint != target.endpoint
                 || crate::config::gateway_execution_backend(&resource.execution_backend)
@@ -205,9 +195,9 @@ impl CredentialResolver for ProviderResolver {
             let value: serde_json::Value = serde_json::from_str(&output)
                 .map_err(|_| CredentialResolutionError::InvalidContract)?;
             let expected = match protocol {
-                crate::config::GatewayProtocol::ChatCompletionsV1 => "chatCompletionsV1",
-                crate::config::GatewayProtocol::ResponsesV1 => "responsesV1",
-                crate::config::GatewayProtocol::MessagesV1 => "messagesV1",
+                crate::config::Protocol::ChatCompletions => "chatCompletionsV1",
+                crate::config::Protocol::Responses => "responsesV1",
+                crate::config::Protocol::Messages => "messagesV1",
             };
             if value["contractVersion"] != 1
                 || value["capabilities"]["protocol"] != expected
@@ -258,10 +248,7 @@ impl CredentialResolver for ProviderResolver {
                 || crate::config::gateway_request_profile(resource.request_profile)
                     != target.request_profile
                 || resource.endpoint != target.endpoint
-                || !matches!(
-                    target.protocol,
-                    velune_gateway::GatewayProtocol::ResponsesV1
-                )
+                || target.protocol != velune_gateway::Protocol::Responses
             {
                 return Err(CredentialResolutionError::UnauthorizedTarget);
             }
@@ -290,10 +277,7 @@ impl CredentialResolver for ProviderResolver {
         Box::pin(async move {
             if let Some(resource) = resource
                 && resource.endpoint == target.endpoint
-                && matches!(
-                    target.protocol,
-                    velune_gateway::GatewayProtocol::ResponsesV1
-                )
+                && target.protocol == velune_gateway::Protocol::Responses
                 && let AuthenticationMaterial::CodexSubscription { credential_id, .. } =
                     resource.authentication.material
             {
@@ -326,17 +310,7 @@ pub(crate) fn read_api_key(
                 providers: vec![provider.clone()],
                 routes: Vec::new(),
             };
-            let protocol = match provider.protocol {
-                crate::config::GatewayProtocol::ChatCompletionsV1 => {
-                    velune_gateway::GatewayProtocol::ChatCompletionsV1
-                }
-                crate::config::GatewayProtocol::ResponsesV1 => {
-                    velune_gateway::GatewayProtocol::ResponsesV1
-                }
-                crate::config::GatewayProtocol::MessagesV1 => {
-                    velune_gateway::GatewayProtocol::MessagesV1
-                }
-            };
+            let protocol = provider.protocol;
             let runtime = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()?;
@@ -367,11 +341,11 @@ pub(crate) fn read_api_key(
 }
 
 fn http_authorization(
-    protocol: &crate::config::GatewayProtocol,
+    protocol: &crate::config::Protocol,
     value: String,
     bearer: bool,
 ) -> velune_gateway::HttpAuthorization {
-    if !bearer && *protocol == crate::config::GatewayProtocol::MessagesV1 {
+    if !bearer && *protocol == crate::config::Protocol::Messages {
         velune_gateway::HttpAuthorization::ApiKey(value)
     } else {
         velune_gateway::HttpAuthorization::Bearer(value)

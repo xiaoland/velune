@@ -1,150 +1,118 @@
-//! Native OpenAI Responses v1 provider adapter.
-//!
-//! Standard profile preserves native requests and response bytes. The explicit
-//! Codex subscription profile adapts the backend's stateless streaming contract.
-use crate::HttpClient;
-use crate::config::{
-    CredentialMaterial, HttpAuthorization, ProtocolConfig, ProviderConfig, RequestProfile,
-    ResolvedCredential, Transport,
-};
-use reqwest::{Response, header::HeaderValue};
+//! What only the OpenAI Responses protocol needs: its business terminal, its
+//! stream media type, and the Codex subscription profile's stateless backend.
+use crate::config::RequestProfile;
+use crate::native::transport_kind;
+use futures_util::StreamExt;
 use serde_json::Value;
-use std::sync::Arc;
-use velune_ai::http::{Header, ResponseBody, ResponseMeta};
-use velune_ai::{InvalidContract, OperationFuture, Payload, responses::*};
+use velune_ai::{
+    InvalidContract, NativeErrorKind, NativeFailure,
+    http::{Header, ResponseMeta},
+};
 
-async fn bounded_body(response: Response) -> Result<Vec<u8>, ()> {
-    let mut body = Vec::new();
-    let mut stream = response.bytes_stream();
-    use futures_util::StreamExt;
-    while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|_| ())?;
-        body.extend_from_slice(&chunk);
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Terminal {
+    Completed,
+    Incomplete,
+    Failed,
+    Cancelled,
+}
+
+fn terminal_from_status(status: &str) -> Option<Terminal> {
+    match status {
+        "completed" => Some(Terminal::Completed),
+        "incomplete" => Some(Terminal::Incomplete),
+        "failed" => Some(Terminal::Failed),
+        "cancelled" | "canceled" => Some(Terminal::Cancelled),
+        _ => None,
     }
-    Ok(body)
 }
 
-pub struct OpenAiResponses {
-    config: ProviderConfig,
-    client: HttpClient,
-    credential: Arc<ResolvedCredential>,
-}
-
-impl OpenAiResponses {
-    pub fn with_resolved_credential(
-        config: ProviderConfig,
-        client: HttpClient,
-        credential: ResolvedCredential,
-    ) -> Result<Self, InvalidContract> {
-        let ProtocolConfig::Responses(protocol) = config.protocol() else {
-            return Err(InvalidContract("provider requires OpenAI Responses v1"));
-        };
-        if !matches!(
-            protocol.endpoint.transport(),
-            Transport::Http | Transport::Https
-        ) {
-            return Err(InvalidContract("unsupported provider transport"));
-        }
-        let CredentialMaterial::Http {
-            authorization: HttpAuthorization::Bearer(token),
-            account_id,
-        } = &credential.material
-        else {
-            return Err(InvalidContract(
-                "Responses requires HTTP bearer authentication",
-            ));
-        };
-        if token.is_empty() {
-            return Err(InvalidContract("provider credential is empty"));
-        }
-        if config.request_profile() == RequestProfile::CodexResponses
-            && account_id
-                .as_ref()
-                .is_none_or(|value| value.is_empty() || HeaderValue::from_str(value).is_err())
-        {
-            return Err(InvalidContract(
-                "Codex request profile requires an account identity",
-            ));
-        }
-        Ok(Self {
-            config,
-            client,
-            credential: Arc::new(credential),
+fn terminal_from_event(event: Option<&str>, value: &Value) -> Option<Terminal> {
+    value
+        .get("status")
+        .and_then(Value::as_str)
+        .and_then(terminal_from_status)
+        .or_else(|| event.and_then(|name| terminal_from_status(name.strip_prefix("response.")?)))
+        .or_else(|| {
+            value["type"]
+                .as_str()
+                .and_then(|name| terminal_from_status(name.strip_prefix("response.")?))
         })
-    }
-
-    fn request_json(body: &Value, provider_model_id: &str) -> Result<Value, InvalidContract> {
-        if !body.is_object() || body["model"].as_str() != Some(provider_model_id) {
-            return Err(InvalidContract(
-                "Responses provider model does not match request body",
-            ));
-        }
-        let body = body.clone();
-        Ok(body)
-    }
-
-    fn failure(
-        kind: ResponsesErrorKind,
-        status: Option<u16>,
-        body: Option<Vec<u8>>,
-        submitted: bool,
-    ) -> ResponsesCompletion {
-        Self::terminal_failure(kind, status, body, submitted, None)
-    }
-
-    fn terminal_failure(
-        kind: ResponsesErrorKind,
-        status: Option<u16>,
-        body: Option<Vec<u8>>,
-        submitted: bool,
-        terminal: Option<ResponsesTerminal>,
-    ) -> ResponsesCompletion {
-        ResponsesCompletion {
-            result: Err(ResponsesFailure {
-                kind,
-                status,
-                headers: Vec::new(),
-                body: body.map(Payload::new),
-                submitted,
-                terminal,
-            }),
-        }
-    }
 }
 
-fn response_meta(response: &reqwest::Response) -> ResponseMeta {
-    let headers = response
-        .headers()
-        .iter()
-        .filter_map(|(name, value)| {
-            Some(Header {
-                name: name.as_str().to_owned(),
-                value: value.to_str().ok()?.to_owned(),
-            })
-        })
-        .collect();
-    ResponseMeta {
-        status: response.status().as_u16(),
-        headers,
-    }
+/// A JSON response's terminal, which it must state.
+pub(crate) fn body_terminal(body: &[u8]) -> Option<Terminal> {
+    let value: Value = serde_json::from_slice(body).ok()?;
+    value["status"].as_str().and_then(terminal_from_status)
 }
 
-fn failure_with_meta(
-    kind: ResponsesErrorKind,
-    meta: ResponseMeta,
-    body: Option<Vec<u8>>,
-    submitted: bool,
-) -> ResponsesCompletion {
-    ResponsesCompletion {
-        result: Err(ResponsesFailure {
-            kind,
-            status: Some(meta.status),
-            headers: meta.headers,
-            body: body.map(Payload::new),
-            submitted,
-            terminal: None,
-        }),
+/// Read an SSE stream to its end; whether its explicit terminal is completion.
+pub(crate) async fn stream_terminal<T: AsRef<[u8]>>(
+    chunks: impl futures_util::Stream<Item = reqwest::Result<T>>,
+) -> Result<bool, NativeErrorKind> {
+    use eventsource_stream::{EventStreamError, Eventsource};
+    let events = chunks.eventsource();
+    futures_util::pin_mut!(events);
+    let mut terminal = None;
+    while let Some(event) = events.next().await {
+        let event = event.map_err(|error| match error {
+            EventStreamError::Transport(error) => transport_kind(&error),
+            EventStreamError::Utf8(_) | EventStreamError::Parser(_) => {
+                NativeErrorKind::ProviderFailure
+            }
+        })?;
+        if event.data.is_empty() || event.data == "[DONE]" {
+            continue;
+        }
+        let value: Value =
+            serde_json::from_str(&event.data).map_err(|_| NativeErrorKind::ProviderFailure)?;
+        if let Some(value) = terminal_from_event(Some(&event.event), &value) {
+            terminal = Some(value);
+        }
     }
+    terminal
+        .map(|terminal| terminal == Terminal::Completed)
+        .ok_or(NativeErrorKind::ProviderFailure)
+}
+
+/// A successful stream must declare SSE. Codex alone may omit the media type,
+/// which it does on its native SSE endpoint; an explicit wrong type never passes.
+pub(crate) fn check_stream_type(
+    profile: RequestProfile,
+    response: &reqwest::Response,
+    meta: &mut ResponseMeta,
+) -> Result<(), NativeFailure> {
+    let header = |name| {
+        response
+            .headers()
+            .get(name)
+            .and_then(|value| value.to_str().ok())
+    };
+    let content_type = header("content-type");
+    let media_type = content_type
+        .and_then(|value| value.split(';').next())
+        .map(str::trim);
+    if media_type.is_some_and(|value| value.eq_ignore_ascii_case("text/event-stream")) {
+        return Ok(());
+    }
+    if profile == RequestProfile::CodexResponses && !response.headers().contains_key("content-type")
+    {
+        meta.headers.push(Header {
+            name: "content-type".into(),
+            value: "text/event-stream".into(),
+        });
+        return Ok(());
+    }
+    tracing::warn!(
+        event = "responses_stream_content_type_rejected",
+        upstream_status = meta.status,
+        mime = media_type_class(media_type),
+        encoding = encoding_class(header("content-encoding")),
+    );
+    Err(NativeFailure::sent(
+        NativeErrorKind::Unsupported,
+        Some(meta.clone()),
+    ))
 }
 
 // Diagnostic labels must remain finite: upstream header values can contain secrets.
@@ -170,19 +138,9 @@ fn encoding_class(value: Option<&str>) -> &'static str {
     }
 }
 
-fn terminal_from_status(status: &str) -> Option<ResponsesTerminal> {
-    match status {
-        "completed" => Some(ResponsesTerminal::Completed),
-        "incomplete" => Some(ResponsesTerminal::Incomplete),
-        "failed" => Some(ResponsesTerminal::Failed),
-        "cancelled" | "canceled" => Some(ResponsesTerminal::Cancelled),
-        _ => None,
-    }
-}
-
 // Codex keeps no upstream response state; retain the caller's complete input and
 // instructions, adapting only backend fields without inventing calls or results.
-fn codex_request(body: &mut Value) -> Result<(), InvalidContract> {
+pub(crate) fn codex_request(body: &mut Value) -> Result<(), InvalidContract> {
     let object = body
         .as_object_mut()
         .ok_or(InvalidContract("Responses body"))?;
@@ -246,388 +204,4 @@ fn codex_request(body: &mut Value) -> Result<(), InvalidContract> {
         }
     }
     Ok(())
-}
-
-fn unsupported_output_cap(body: &Value, credential: &ResolvedCredential) -> bool {
-    credential.request_capabilities.explicit_output_cap == Some(false)
-        && body.get("max_output_tokens").is_some()
-}
-
-fn terminal_from_event(event: Option<&str>, value: &Value) -> Option<ResponsesTerminal> {
-    value
-        .get("status")
-        .and_then(Value::as_str)
-        .and_then(terminal_from_status)
-        .or_else(|| event.and_then(|name| terminal_from_status(name.strip_prefix("response.")?)))
-        .or_else(|| {
-            value["type"]
-                .as_str()
-                .and_then(|name| terminal_from_status(name.strip_prefix("response.")?))
-        })
-}
-
-fn response_terminal(body: &[u8]) -> Result<ResponsesTerminal, ()> {
-    let value: Value = serde_json::from_slice(body).map_err(|_| ())?;
-    value["status"]
-        .as_str()
-        .and_then(terminal_from_status)
-        .ok_or(())
-}
-
-fn observe_event(
-    event: Option<&str>,
-    data: &str,
-    terminal: &mut Option<ResponsesTerminal>,
-) -> Result<(), ()> {
-    if data.is_empty() || data == "[DONE]" {
-        return Ok(());
-    }
-    let value: Value = serde_json::from_str(data).map_err(|_| ())?;
-    if let Some(value) = terminal_from_event(event, &value) {
-        *terminal = Some(value);
-    }
-    Ok(())
-}
-
-impl ResponsesProvider for OpenAiResponses {
-    fn responses(
-        &self,
-        request: ResponsesRequest,
-        mut events: ResponsesSink,
-    ) -> OperationFuture<ResponsesCompletion> {
-        let mut body = match Self::request_json(request.body.get(), request.model.as_str()) {
-            Ok(body) => body,
-            Err(_) => {
-                return Box::pin(async {
-                    Self::failure(ResponsesErrorKind::InvalidInput, None, None, false)
-                });
-            }
-        };
-        let Some(protocol) = (match self.config.protocol() {
-            ProtocolConfig::Responses(value) => Some(value),
-            _ => None,
-        }) else {
-            return Box::pin(async {
-                Self::failure(ResponsesErrorKind::Unsupported, None, None, false)
-            });
-        };
-        let endpoint = protocol.endpoint.url("/responses");
-        let request_profile = self.config.request_profile();
-        let client = self.client.inner.clone();
-        let credential = Arc::clone(&self.credential);
-        let profile = self.config.request_profile();
-        let headers = request.headers;
-        let stream = request.stream;
-        Box::pin(async move {
-            let codex = profile == RequestProfile::CodexResponses;
-            if codex {
-                if !stream || codex_request(&mut body).is_err() {
-                    return Self::failure(ResponsesErrorKind::Unsupported, Some(422), None, false);
-                }
-            } else if unsupported_output_cap(&body, &credential) {
-                return Self::failure(ResponsesErrorKind::Unsupported, Some(422), None, false);
-            }
-            let mut auth = match HeaderValue::from_str(&format!(
-                "Bearer {}",
-                credential.token().expect("validated HTTP credential")
-            )) {
-                Ok(value) => value,
-                Err(_) => {
-                    return Self::failure(ResponsesErrorKind::InvalidInput, None, None, false);
-                }
-            };
-            auth.set_sensitive(true);
-            let mut builder = client
-                .post(endpoint)
-                .header("authorization", auth)
-                .header(
-                    "accept",
-                    if stream {
-                        "text/event-stream"
-                    } else {
-                        "application/json"
-                    },
-                )
-                .header("connection", "close");
-            for header in &headers {
-                let name = header.name.to_ascii_lowercase();
-                if matches!(
-                    request_profile,
-                    crate::config::RequestProfile::KimiCoding
-                        | crate::config::RequestProfile::ArkCoding
-                ) && name == "user-agent"
-                {
-                    continue;
-                }
-                if matches!(
-                    name.as_str(),
-                    "authorization" | "host" | "content-length" | "connection"
-                ) || (codex
-                    && matches!(
-                        name.as_str(),
-                        "accept"
-                            | "cookie"
-                            | "x-api-key"
-                            | "chatgpt-account-id"
-                            | "originator"
-                            | "user-agent"
-                            | "openai-beta"
-                            | "version"
-                    ))
-                {
-                    continue;
-                }
-                let Ok(value) = HeaderValue::from_str(&header.value) else {
-                    continue;
-                };
-                builder = builder.header(&header.name, value);
-            }
-            if codex {
-                let CredentialMaterial::Http {
-                    account_id: Some(account_id),
-                    ..
-                } = &credential.material
-                else {
-                    unreachable!("validated Codex credential")
-                };
-                let mut account =
-                    HeaderValue::from_str(account_id).expect("validated account header");
-                account.set_sensitive(true);
-                builder = builder
-                    .header("chatgpt-account-id", account)
-                    .header("openai-beta", "responses=experimental")
-                    .header("originator", "codex_cli_rs")
-                    .header("version", "0.162.0")
-                    .header("user-agent", "codex_cli_rs/0.162.0 Velune/0.1");
-                if let Some(key) = body["prompt_cache_key"].as_str()
-                    && let Ok(value) = HeaderValue::from_str(key)
-                {
-                    builder = builder
-                        .header("session-id", value.clone())
-                        .header("thread-id", value);
-                }
-            }
-            if matches!(
-                request_profile,
-                crate::config::RequestProfile::KimiCoding
-                    | crate::config::RequestProfile::ArkCoding
-            ) {
-                // Set a single genuine client identity, never impersonate an allowed agent.
-                builder = builder.header("user-agent", crate::service_error::USER_AGENT);
-            }
-            let request = match builder.json(&body).build() {
-                Ok(request) => request,
-                Err(_) => {
-                    return Self::failure(ResponsesErrorKind::InvalidInput, None, None, false);
-                }
-            };
-            let response = match client.execute(request).await {
-                Ok(response) => response,
-                Err(error) => {
-                    return Self::failure(
-                        if error.is_timeout() {
-                            ResponsesErrorKind::Timeout
-                        } else {
-                            ResponsesErrorKind::Transport
-                        },
-                        None,
-                        None,
-                        true,
-                    );
-                }
-            };
-            let mut meta = response_meta(&response);
-            let status = meta.status;
-            let content_type_present = response.headers().contains_key("content-type");
-            let content_type = response
-                .headers()
-                .get("content-type")
-                .and_then(|value| value.to_str().ok())
-                .map(str::to_owned);
-            if !(200..300).contains(&status) {
-                let body = bounded_body(response).await.ok();
-                return failure_with_meta(
-                    match crate::service_error::classify(request_profile, status, body.as_deref()) {
-                        Some(crate::service_error::ServiceError::Authentication) => {
-                            ResponsesErrorKind::Authentication
-                        }
-                        Some(crate::service_error::ServiceError::Permission) => {
-                            ResponsesErrorKind::Permission
-                        }
-                        Some(crate::service_error::ServiceError::QuotaExhausted) => {
-                            ResponsesErrorKind::QuotaExhausted
-                        }
-                        Some(crate::service_error::ServiceError::RateLimited) => {
-                            ResponsesErrorKind::RateLimited
-                        }
-                        Some(crate::service_error::ServiceError::Overloaded) => {
-                            ResponsesErrorKind::Overloaded
-                        }
-                        None => match status {
-                            401 => ResponsesErrorKind::Authentication,
-                            403 => ResponsesErrorKind::Permission,
-                            429 => ResponsesErrorKind::RateLimited,
-                            _ => ResponsesErrorKind::ProviderFailure,
-                        },
-                    },
-                    meta,
-                    body,
-                    true,
-                );
-            }
-            if stream {
-                let media_type = content_type
-                    .as_deref()
-                    .and_then(|value| value.split(';').next())
-                    .map(str::trim);
-                let is_sse =
-                    media_type.is_some_and(|value| value.eq_ignore_ascii_case("text/event-stream"));
-                let codex_without_type = codex && !content_type_present;
-                if !is_sse && !codex_without_type {
-                    let encoding = encoding_class(
-                        response
-                            .headers()
-                            .get("content-encoding")
-                            .and_then(|value| value.to_str().ok()),
-                    );
-                    tracing::warn!(
-                        event = "responses_stream_content_type_rejected",
-                        upstream_status = status,
-                        mime = media_type_class(media_type),
-                        encoding
-                    );
-                    return Self::failure(
-                        ResponsesErrorKind::Unsupported,
-                        Some(status),
-                        None,
-                        true,
-                    );
-                }
-                if codex_without_type {
-                    // Codex can omit MIME on its native SSE endpoint. This is
-                    // limited to an absent header, not a contradictory one.
-                    meta.headers.push(Header {
-                        name: "content-type".into(),
-                        value: "text/event-stream".into(),
-                    });
-                }
-                if (events)(ResponsesEvent::Headers(meta.clone()))
-                    .await
-                    .is_err()
-                {
-                    return Self::failure(ResponsesErrorKind::Cancelled, Some(status), None, true);
-                }
-                let delivery_failed =
-                    std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-                let delivery_flag = std::sync::Arc::clone(&delivery_failed);
-                let raw = futures_util::stream::unfold(
-                    (response.bytes_stream(), events, delivery_flag),
-                    |(mut chunks, mut events, delivery_failed)| async move {
-                        use futures_util::StreamExt;
-                        match chunks.next().await {
-                            Some(Ok(chunk)) => {
-                                if !chunk.is_empty()
-                                    && (events)(ResponsesEvent::Body(Payload::new(chunk.to_vec())))
-                                        .await
-                                        .is_err()
-                                {
-                                    delivery_failed
-                                        .store(true, std::sync::atomic::Ordering::Release);
-                                    None
-                                } else {
-                                    Some((Ok(chunk), (chunks, events, delivery_failed)))
-                                }
-                            }
-                            Some(Err(error)) => {
-                                Some((Err(error), (chunks, events, delivery_failed)))
-                            }
-                            None => None,
-                        }
-                    },
-                );
-                use eventsource_stream::Eventsource;
-                let chunks = raw.eventsource();
-                futures_util::pin_mut!(chunks);
-                let mut terminal = None;
-                use futures_util::StreamExt;
-                while let Some(event) = chunks.next().await {
-                    let event = match event {
-                        Ok(event) => event,
-                        Err(error) => {
-                            if delivery_failed.load(std::sync::atomic::Ordering::Acquire) {
-                                return Self::failure(
-                                    ResponsesErrorKind::Cancelled,
-                                    Some(status),
-                                    None,
-                                    true,
-                                );
-                            }
-                            let kind = match error {
-                                eventsource_stream::EventStreamError::Transport(_) => {
-                                    ResponsesErrorKind::Transport
-                                }
-                                eventsource_stream::EventStreamError::Utf8(_)
-                                | eventsource_stream::EventStreamError::Parser(_) => {
-                                    ResponsesErrorKind::ProviderFailure
-                                }
-                            };
-                            return Self::failure(kind, Some(status), None, true);
-                        }
-                    };
-                    if observe_event(Some(&event.event), &event.data, &mut terminal).is_err() {
-                        return Self::failure(
-                            ResponsesErrorKind::ProviderFailure,
-                            Some(status),
-                            None,
-                            true,
-                        );
-                    }
-                }
-                if delivery_failed.load(std::sync::atomic::Ordering::Acquire) {
-                    return Self::failure(ResponsesErrorKind::Cancelled, Some(status), None, true);
-                }
-                match terminal {
-                    Some(ResponsesTerminal::Completed) => ResponsesCompletion {
-                        result: Ok(ResponsesOutput::Stream(meta, ResponsesTerminal::Completed)),
-                    },
-                    Some(terminal) => ResponsesCompletion {
-                        result: Ok(ResponsesOutput::Stream(meta, terminal)),
-                    },
-                    None => Self::failure(
-                        ResponsesErrorKind::ProviderFailure,
-                        Some(status),
-                        None,
-                        true,
-                    ),
-                }
-            } else {
-                let body = match bounded_body(response).await {
-                    Ok(body) => body,
-                    Err(_) => {
-                        return Self::failure(ResponsesErrorKind::Transport, None, None, true);
-                    }
-                };
-                let terminal = match response_terminal(&body) {
-                    Ok(terminal) => terminal,
-                    Err(_) => {
-                        return Self::failure(
-                            ResponsesErrorKind::ProviderFailure,
-                            Some(status),
-                            Some(body),
-                            true,
-                        );
-                    }
-                };
-                ResponsesCompletion {
-                    result: Ok(ResponsesOutput::Json(
-                        ResponseBody {
-                            meta,
-                            body: Payload::new(body),
-                        },
-                        terminal,
-                    )),
-                }
-            }
-        })
-    }
 }

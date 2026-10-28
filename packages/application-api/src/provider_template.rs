@@ -5,7 +5,7 @@ use crate::authentication::{
     CODEX_SUBSCRIPTION_ENDPOINT, CODEX_SUBSCRIPTION_PROTOCOL, ProviderAuthenticationSource,
     SubscriptionDisclosure,
 };
-use crate::config::{ExecutionBackend, GatewayProtocol, ProviderQuotaSource, RequestProfile};
+use crate::config::{ExecutionBackend, Protocol, ProviderQuotaSource, RequestProfile};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -25,7 +25,7 @@ pub struct ProviderTemplate {
     pub kind: ProviderTemplateKind,
     pub name: String,
     pub summary: String,
-    pub protocol: GatewayProtocol,
+    pub protocol: Protocol,
     pub endpoint: String,
     pub execution_backend: ExecutionBackend,
     pub request_profile: RequestProfile,
@@ -59,7 +59,7 @@ pub fn provider_templates() -> Vec<ProviderTemplate> {
             kind: ProviderTemplateKind::Subscription,
             name: "Claude Code 订阅".into(),
             summary: "由本机官方 Claude Code CLI 登录一个 Claude 账户并执行请求。".into(),
-            protocol: GatewayProtocol::MessagesV1,
+            protocol: Protocol::Messages,
             endpoint: String::new(),
             execution_backend: ExecutionBackend::ClaudeCli {
                 binary: String::new(),
@@ -74,7 +74,7 @@ pub fn provider_templates() -> Vec<ProviderTemplate> {
             id: "kimiCodingPlan".into(), kind: ProviderTemplateKind::Subscription,
             name: "Kimi Coding Plan".into(),
             summary: "使用 Kimi Coding API key，按账户验证订阅归属并读取实际额度窗口。".into(),
-            protocol: GatewayProtocol::MessagesV1, endpoint: "https://api.kimi.com/coding/".into(),
+            protocol: Protocol::Messages, endpoint: "https://api.kimi.com/coding/".into(),
             execution_backend: ExecutionBackend::Http, request_profile: RequestProfile::KimiCoding,
             authentication_source: ProviderAuthenticationSource::ApiKey, quota_source: ProviderQuotaSource::KimiUsage,
             executable_command: None,
@@ -83,7 +83,7 @@ pub fn provider_templates() -> Vec<ProviderTemplate> {
         ProviderTemplate {
             id: "arkCodingPlan".into(), kind: ProviderTemplateKind::Subscription,
             name: "ARK Coding Plan".into(), summary: "个人 Coding Plan，模型 API key 与额度查询认证分别配置。".into(),
-            protocol: GatewayProtocol::ResponsesV1, endpoint: "https://ark.cn-beijing.volces.com/api/coding/v3".into(),
+            protocol: Protocol::Responses, endpoint: "https://ark.cn-beijing.volces.com/api/coding/v3".into(),
             execution_backend: ExecutionBackend::Http, request_profile: RequestProfile::ArkCoding,
             authentication_source: ProviderAuthenticationSource::ApiKey, quota_source: ProviderQuotaSource::ArkCodingUsage,
             executable_command: None, disclosure: Some(SubscriptionDisclosure::ark_coding_plan()),
@@ -93,7 +93,7 @@ pub fn provider_templates() -> Vec<ProviderTemplate> {
             kind: ProviderTemplateKind::Api,
             name: "API 提供商".into(),
             summary: "以 API key 访问兼容 OpenAI Chat Completions、Responses 或 Anthropic Messages 协议的服务。".into(),
-            protocol: GatewayProtocol::ChatCompletionsV1,
+            protocol: Protocol::ChatCompletions,
             endpoint: String::new(),
             execution_backend: ExecutionBackend::Http,
             request_profile: RequestProfile::Native,
@@ -130,7 +130,7 @@ fn api_account_template(id: &str, name: &str, summary: &str, endpoint: &str) -> 
         kind: ProviderTemplateKind::Api,
         name: name.into(),
         summary: summary.into(),
-        protocol: GatewayProtocol::ChatCompletionsV1,
+        protocol: Protocol::ChatCompletions,
         endpoint: endpoint.into(),
         execution_backend: ExecutionBackend::Http,
         request_profile: RequestProfile::Native,

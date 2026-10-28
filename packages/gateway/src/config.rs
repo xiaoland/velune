@@ -5,6 +5,8 @@
 //! the platform composition root.
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
+pub use velune_ai::Protocol;
+use velune_ai_provider::config::HttpEndpoint;
 pub use velune_ai_provider::config::RequestProfile;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -21,14 +23,6 @@ pub struct ProviderModel {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub enum GatewayProtocol {
-    ChatCompletionsV1,
-    ResponsesV1,
-    MessagesV1,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub enum ExecutionBackend {
     Http,
     ClaudeCli { binary: String },
@@ -39,7 +33,7 @@ pub enum ExecutionBackend {
 pub struct ProviderDefinition {
     pub id: String,
     pub name: String,
-    pub protocol: GatewayProtocol,
+    pub protocol: Protocol,
     pub execution_backend: ExecutionBackend,
     pub request_profile: RequestProfile,
     pub endpoint: String,
@@ -115,7 +109,7 @@ impl GatewayConfig {
                     if binary.trim().is_empty()
                         || binary.chars().any(char::is_control)
                         || !provider.endpoint.is_empty()
-                        || provider.protocol != GatewayProtocol::MessagesV1
+                        || provider.protocol != Protocol::Messages
                         || provider.request_profile != RequestProfile::Native =>
                 {
                     return Err(
@@ -124,62 +118,12 @@ impl GatewayConfig {
                 }
                 _ => {}
             }
-            if provider.request_profile == RequestProfile::CodexResponses {
-                let endpoint = reqwest::Url::parse(&provider.endpoint)
-                    .map_err(|_| "invalid profile endpoint")?;
-                if provider.protocol != GatewayProtocol::ResponsesV1
-                    || endpoint.scheme() != "https"
-                    || endpoint.host_str() != Some("chatgpt.com")
-                    || endpoint.port_or_known_default() != Some(443)
-                    || endpoint.path().trim_end_matches('/') != "/backend-api/codex"
-                    || endpoint.query().is_some()
-                    || endpoint.fragment().is_some()
-                    || !endpoint.username().is_empty()
-                    || endpoint.password().is_some()
-                {
-                    return Err("Codex request profile requires its bound Responses endpoint");
-                }
-            }
-            if provider.request_profile == RequestProfile::ArkCoding {
-                let endpoint = reqwest::Url::parse(&provider.endpoint)
-                    .map_err(|_| "invalid ARK Coding endpoint")?;
-                let path = if provider.protocol == GatewayProtocol::MessagesV1 {
-                    "/api/coding"
-                } else {
-                    "/api/coding/v3"
-                };
-                if !matches!(provider.execution_backend, ExecutionBackend::Http)
-                    || endpoint.scheme() != "https"
-                    || endpoint.host_str() != Some("ark.cn-beijing.volces.com")
-                    || endpoint.port_or_known_default() != Some(443)
-                    || endpoint.path().trim_end_matches('/') != path
-                    || endpoint.query().is_some()
-                    || endpoint.fragment().is_some()
-                    || !endpoint.username().is_empty()
-                    || endpoint.password().is_some()
-                {
-                    return Err("ARK Coding requires its bound Coding endpoint");
-                }
-            }
-            if provider.request_profile == RequestProfile::KimiCoding {
-                let endpoint = reqwest::Url::parse(&provider.endpoint)
-                    .map_err(|_| "invalid Kimi Coding endpoint")?;
-                let path = match provider.protocol {
-                    GatewayProtocol::MessagesV1 => "/coding",
-                    _ => "/coding/v1",
-                };
-                if !matches!(provider.execution_backend, ExecutionBackend::Http)
-                    || endpoint.scheme() != "https"
-                    || !matches!(endpoint.host_str(), Some("api.kimi.com" | "api.kimi.ai"))
-                    || endpoint.port_or_known_default() != Some(443)
-                    || endpoint.path().trim_end_matches('/') != path
-                    || endpoint.query().is_some()
-                    || endpoint.fragment().is_some()
-                    || !endpoint.username().is_empty()
-                    || endpoint.password().is_some()
-                {
-                    return Err("Kimi Coding profile requires its bound HTTP endpoint");
-                }
+            if provider.request_profile != RequestProfile::Native {
+                let endpoint = HttpEndpoint::parse(&provider.endpoint).map_err(|error| error.0)?;
+                provider
+                    .request_profile
+                    .check_destination(provider.protocol, &endpoint)
+                    .map_err(|error| error.0)?;
             }
             let mut windows = BTreeSet::new();
             if provider.quota_limits.iter().any(|limit| {
@@ -241,8 +185,8 @@ impl GatewayConfig {
                 }
                 // Same protocol is necessary for the request to stay as sent.
                 if protocol
-                    .replace(&provider.protocol)
-                    .is_some_and(|p| p != &provider.protocol)
+                    .replace(provider.protocol)
+                    .is_some_and(|p| p != provider.protocol)
                 {
                     return Err("model route members must share a protocol");
                 }

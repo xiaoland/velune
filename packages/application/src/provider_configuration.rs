@@ -285,7 +285,7 @@ impl From<&GatewayConfig> for GatewaySummary {
                 .map(|p| ProviderSummary {
                     id: p.id.clone(),
                     name: p.name.clone(),
-                    protocol: p.protocol.clone(),
+                    protocol: p.protocol,
                     endpoint: p.endpoint.clone(),
                     execution_backend: p.execution_backend.clone(),
                     request_profile: p.request_profile,

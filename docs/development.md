@@ -167,28 +167,9 @@ Pi 的 managed 执行使用 `velune/auto`；native 执行直接选择原生 prov
 
 隔离验证使用临时目录、fake RPC／假上游与合成工具结果，不启动真实用户会话或调用模型。正式验收状态与具体证据见 [首循环任务](../tasks/pi-mac-first-loop/packet.md)。
 
-## 独立 AI service 的有界人工验收
-
-此切片不运行上文旧原型的测试／Host／UI。先阅读 [AI service 契约](design/ai-service.md) 与 [当前任务及预算](../tasks/ai-service-contracts/packet.md)。Rust 1.99.0，仓库根目录：
-
-```sh
-cargo fmt --all --check
-cargo check --locked --offline -p velune-ai -p velune-ai-provider --lib --example minimax_manual
-cargo clippy --locked --offline -p velune-ai -p velune-ai-provider --lib --example minimax_manual -- -D warnings
-cargo run --locked --offline -p velune-ai-provider --example minimax_manual -- replay text
-cargo run --locked --offline -p velune-ai-provider --example minimax_manual -- replay text-diagnostic
-cargo run --locked --offline -p velune-ai-provider --example minimax_manual -- replay tool
-```
-
-依赖尚未缓存时先允许 cargo 获取 Cargo.lock 固定包；`--offline` 只限制 cargo，不是操作系统网络隔离。replay 分支本身不构造网络 client 或读取凭据，输出 network_attempts=0。它比较独立审阅 expected，不执行模型或工具。重复运行同一命令核对相同事件／关联／分片／finish／usage。text 保留早期缺少终止证据的失败；text-diagnostic 按实际 clean EOF 记录与修正规则回放成功；tool 是修正后成功采集的真实工具调用。每个 expected 均独立审阅，未自动生成。
-
-live 入口 `minimax_manual live text|text-diagnostic|tool SOURCE_COMMIT` 仅供已授权的两例及唯一一次诊断采集，必须在固定仓库根目录、干净且已提交源码上人工运行。Cloud 通过 Networksecret 提供 MINIMAX_API_KEY 占位；无需也不得把值写到文件、命令行或聊天。已存在的 admission／fixture 禁止覆盖；不能删除 admission 来重复计费采集。live 不作为日常构建或 CI 步骤，不自动重试。新的采集范围另行授权。
-
-普通输出只列 case／attempts／typed usage／fixture 路径；正文与工具片段仅存获准的合成白名单 fixture。手动入口的本地 admission 文件不是防并发跨进程／跨目录绕过的全局产品预算服务，调用范围由本次授权和人工流程限定。
-
 ## RelayKit 的真实提供商采集与重放
 
-人工入口 以真实 Pi CLI 的小型代码阅读任务经过 Rust gateway 和 RelayKit，核对工具调用、实际读取、匹配调用 ID 的结果续轮和正常终态。`collect` 会调用指定提供商，须有本轮真实调用授权；不沿用旧 MiniMax 示例的历史采集预算。`replay` 使用固定响应，不读取提供商凭据或发送外部模型请求。两者均非 CI 入口。
+人工入口 以真实 Pi CLI 的小型代码阅读任务经过 Rust gateway 和 RelayKit，核对工具调用、实际读取、匹配调用 ID 的结果续轮和正常终态。`collect` 会调用指定提供商，须有本轮真实调用授权；`replay` 使用固定响应，不读取提供商凭据或发送外部模型请求。两者均非 CI 入口。
 
 执行时显式传入 Node、Pi JavaScript CLI、rustc 的路径，以及 `target/` 下尚不存在的输出目录。采集还需要私有环境文件、变量前缀、允许的 HTTPS 主机、实际提供商／模型和入口／上游协议；Python 未配置系统信任根时，可用 `--ca-file` 指定已有可信 CA 文件，不能关闭 TLS 验证。运行 `--help` 查看参数。脚本仅在 HTTPS 边界注入凭据，不跟随重定向，不保存认证头；每次任务最多三次上游请求，提供商失败后阻断进一步真实调用。输出只固定本次合成代码任务的脱敏协议材料，不读取既有会话。
 

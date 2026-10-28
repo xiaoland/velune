@@ -1,34 +1,6 @@
 use std::{fmt, net::IpAddr, num::NonZeroU16};
-use velune_ai::{
-    InvalidContract,
-    ids::{ConfigRevision, ProviderId},
-};
+use velune_ai::{InvalidContract, Protocol};
 
-/// Reference only, not a token/key or a resolver. Never fetched from the environment by this crate.
-#[derive(Clone, PartialEq, Eq)]
-pub struct CredentialRef(String);
-impl CredentialRef {
-    pub fn new(value: impl Into<String>) -> Result<Self, InvalidContract> {
-        let value = value.into();
-        if value.is_empty()
-            || value.len() > 256
-            || !value
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b"-_.:/".contains(&b))
-        {
-            return Err(InvalidContract("invalid credential reference"));
-        }
-        Ok(Self(value))
-    }
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-impl fmt::Debug for CredentialRef {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("CredentialRef([redacted])")
-    }
-}
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Transport {
     Https,
@@ -83,6 +55,29 @@ impl HttpEndpoint {
             base_path,
         })
     }
+    /// An `http` or `https` URL without credentials, query or fragment.
+    pub fn parse(value: &str) -> Result<Self, InvalidContract> {
+        let url = reqwest::Url::parse(value).map_err(|_| InvalidContract("provider endpoint"))?;
+        let transport = match url.scheme() {
+            "http" => Transport::Http,
+            "https" => Transport::Https,
+            _ => return Err(InvalidContract("provider endpoint scheme")),
+        };
+        if url.query().is_some()
+            || url.fragment().is_some()
+            || !url.username().is_empty()
+            || url.password().is_some()
+        {
+            return Err(InvalidContract("provider endpoint query"));
+        }
+        let host = url
+            .host_str()
+            .ok_or(InvalidContract("provider endpoint host"))?;
+        let port = url
+            .port_or_known_default()
+            .ok_or(InvalidContract("provider endpoint port"))?;
+        Self::new(transport, host, port, url.path())
+    }
     pub fn transport(&self) -> Transport {
         self.transport
     }
@@ -114,35 +109,13 @@ impl fmt::Debug for HttpEndpoint {
         f.write_str("HttpEndpoint([redacted])")
     }
 }
-/// Protocol-specific configuration is provider-owned, not part of the service's sampling input.
+/// Where one provider's HTTP requests go and how they are shaped. Private
+/// fields keep a running target from changing in place.
 #[derive(Debug, Clone)]
-pub struct ResponsesConfig {
-    pub endpoint: HttpEndpoint,
-}
-#[derive(Debug, Clone)]
-/// Native Messages SDK base URL: the adapter appends /v1/messages.
-/// This differs from an OpenAI base URL which commonly already ends in /v1.
-pub struct MessagesConfig {
-    pub endpoint: HttpEndpoint,
-}
-#[derive(Debug, Clone)]
-pub struct ChatCompletionsConfig {
-    pub endpoint: HttpEndpoint,
-}
-#[derive(Debug, Clone)]
-pub enum ProtocolConfig {
-    Responses(ResponsesConfig),
-    Messages(MessagesConfig),
-    ChatCompletions(ChatCompletionsConfig),
-}
-/// Unified config center owns persistence and deserialization; app main validates and assembles.
-/// Private fields prevent mutating an existing running configuration in place.
-#[derive(Debug, Clone)]
-pub struct ProviderConfig {
-    id: ProviderId,
-    revision: ConfigRevision,
-    protocol: ProtocolConfig,
-    credential: CredentialRef,
+pub struct HttpTarget {
+    protocol: Protocol,
+    /// Messages appends `/v1/messages`; OpenAI base URLs commonly already end in `/v1`.
+    endpoint: HttpEndpoint,
     request_profile: RequestProfile,
 }
 
@@ -203,82 +176,74 @@ impl ResolvedCredential {
     }
 }
 
-impl ProviderConfig {
+impl HttpTarget {
     pub fn new(
-        id: ProviderId,
-        revision: ConfigRevision,
-        protocol: ProtocolConfig,
-        credential: CredentialRef,
+        protocol: Protocol,
+        endpoint: HttpEndpoint,
         request_profile: RequestProfile,
     ) -> Result<Self, InvalidContract> {
-        if request_profile == RequestProfile::CodexResponses {
-            let ProtocolConfig::Responses(config) = &protocol else {
-                return Err(InvalidContract("Codex request profile requires Responses"));
-            };
-            if config.endpoint.transport() != Transport::Https
-                || config.endpoint.host() != "chatgpt.com"
-                || config.endpoint.port().get() != 443
-                || config.endpoint.base_path().trim_end_matches('/') != "/backend-api/codex"
-            {
-                return Err(InvalidContract("invalid Codex request profile destination"));
-            }
-        }
-        if request_profile == RequestProfile::ArkCoding {
-            let endpoint = match &protocol {
-                ProtocolConfig::ChatCompletions(p) => &p.endpoint,
-                ProtocolConfig::Responses(p) => &p.endpoint,
-                ProtocolConfig::Messages(p) => &p.endpoint,
-            };
-            let path = if matches!(protocol, ProtocolConfig::Messages(_)) {
-                "/api/coding"
-            } else {
-                "/api/coding/v3"
-            };
-            if endpoint.transport() != Transport::Https
-                || endpoint.host() != "ark.cn-beijing.volces.com"
-                || endpoint.port().get() != 443
-                || endpoint.base_path().trim_end_matches('/') != path
-            {
-                return Err(InvalidContract(
-                    "ARK Coding requires its official Coding endpoint",
-                ));
-            }
-        }
-        if request_profile == RequestProfile::KimiCoding {
-            let (endpoint, path) = match &protocol {
-                ProtocolConfig::Messages(config) => (&config.endpoint, "/coding"),
-                ProtocolConfig::ChatCompletions(config) => (&config.endpoint, "/coding/v1"),
-                ProtocolConfig::Responses(config) => (&config.endpoint, "/coding/v1"),
-            };
-            if endpoint.transport() != Transport::Https
-                || !matches!(endpoint.host(), "api.kimi.com" | "api.kimi.ai")
-                || endpoint.port().get() != 443
-                || endpoint.base_path().trim_end_matches('/') != path
-            {
-                return Err(InvalidContract("invalid Kimi Coding destination"));
-            }
-        }
+        request_profile.check_destination(protocol, &endpoint)?;
         Ok(Self {
-            id,
-            revision,
             protocol,
-            credential,
+            endpoint,
             request_profile,
         })
     }
-    pub fn id(&self) -> &ProviderId {
-        &self.id
+    pub fn protocol(&self) -> Protocol {
+        self.protocol
     }
-    pub fn revision(&self) -> ConfigRevision {
-        self.revision
-    }
-    pub fn protocol(&self) -> &ProtocolConfig {
-        &self.protocol
+    pub fn endpoint(&self) -> &HttpEndpoint {
+        &self.endpoint
     }
     pub fn request_profile(&self) -> RequestProfile {
         self.request_profile
     }
-    pub fn credential(&self) -> &CredentialRef {
-        &self.credential
+}
+
+impl RequestProfile {
+    /// A profile bound to one service accepts only that service's official
+    /// destination for the protocol; its credentials go nowhere else.
+    pub fn check_destination(
+        self,
+        protocol: Protocol,
+        endpoint: &HttpEndpoint,
+    ) -> Result<(), InvalidContract> {
+        let (hosts, path, error): (&[&str], _, _) = match self {
+            Self::Native => return Ok(()),
+            Self::CodexResponses if protocol != Protocol::Responses => {
+                return Err(InvalidContract("Codex request profile requires Responses"));
+            }
+            Self::CodexResponses => (
+                &["chatgpt.com"],
+                "/backend-api/codex",
+                "invalid Codex request profile destination",
+            ),
+            Self::ArkCoding => (
+                &["ark.cn-beijing.volces.com"],
+                if protocol == Protocol::Messages {
+                    "/api/coding"
+                } else {
+                    "/api/coding/v3"
+                },
+                "ARK Coding requires its official Coding endpoint",
+            ),
+            Self::KimiCoding => (
+                &["api.kimi.com", "api.kimi.ai"],
+                if protocol == Protocol::Messages {
+                    "/coding"
+                } else {
+                    "/coding/v1"
+                },
+                "invalid Kimi Coding destination",
+            ),
+        };
+        if endpoint.transport() != Transport::Https
+            || !hosts.contains(&endpoint.host())
+            || endpoint.port().get() != 443
+            || endpoint.base_path().trim_end_matches('/') != path
+        {
+            return Err(InvalidContract(error));
+        }
+        Ok(())
     }
 }

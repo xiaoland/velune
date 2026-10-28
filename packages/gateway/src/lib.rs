@@ -8,8 +8,7 @@ pub mod config;
 pub mod runtime;
 pub mod scheduling;
 pub use analytics::{
-    AnalyticsOutcome, AnalyticsProtocol, AnalyticsRecord, AnalyticsSink, SharedAnalyticsSink,
-    TokenUsage,
+    AnalyticsOutcome, AnalyticsRecord, AnalyticsSink, SharedAnalyticsSink, TokenUsage,
 };
 pub use config::*;
 pub use runtime::{
