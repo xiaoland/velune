@@ -1,7 +1,7 @@
 //! xURL addresses identify native conversations, never an execution instance.
 use super::organization::ListedSource;
 use super::*;
-use crate::api::{AgentUriResolution, HistoryFailure};
+use crate::{AgentUriResolution, HistoryFailure};
 
 #[derive(Debug, PartialEq, Eq)]
 pub(super) struct AgentUri {

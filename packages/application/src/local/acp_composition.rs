@@ -201,25 +201,21 @@ impl CoreRuntime {
         Ok(())
     }
 
-    pub(super) fn open_acp_conversation_action(
+    /// Load a known native ACP reference even when the Agent cannot list sessions.
+    pub(crate) fn open_acp_conversation(
         &mut self,
-        request: &Value,
-    ) -> Result<Value, RuntimeError> {
+        runtime_id: &str,
+        native_id: &str,
+        cwd: &str,
+    ) -> Result<crate::SnapshotResult, RuntimeError> {
         if self.turn_running() {
             return Err(RuntimeError::invalid("runtime is busy"));
         }
-        let runtime_id = request["payload"]["runtimeInstanceID"]
-            .as_str()
-            .ok_or_else(|| RuntimeError::invalid("runtime instance id"))?;
         let runtime = self.runtime_instance(runtime_id)?.clone();
-        let native_id = request["payload"]["nativeSessionID"]
-            .as_str()
-            .filter(|id| !id.is_empty())
-            .ok_or_else(|| RuntimeError::invalid("native session id"))?;
-        let cwd = request["payload"]["cwd"]
-            .as_str()
-            .map(Path::new)
-            .ok_or_else(|| RuntimeError::invalid("ACP 工作目录"))?;
+        if native_id.is_empty() {
+            return Err(RuntimeError::invalid("native session id"));
+        }
+        let cwd = Path::new(cwd);
         self.validate_runtime_cwd(&runtime, cwd)?;
         let mut session = self.acp_client(&runtime)?;
         if !session.capabilities().load_session {
@@ -239,15 +235,15 @@ impl CoreRuntime {
         self.snapshot_result()
     }
 
-    pub(super) fn acp_session_config_action(
+    /// The loaded ACP conversation's session configuration, after setting
+    /// `update` (a config id and its value) when given.
+    pub(crate) fn acp_session_config(
         &mut self,
-        request: &Value,
-        update: bool,
-    ) -> Result<Value, RuntimeError> {
-        self.ensure_active(request)?;
-        let id = request["payload"]["conversationID"]
-            .as_str()
-            .ok_or_else(|| RuntimeError::invalid("conversation id"))?;
+        runtime_id: &str,
+        id: &str,
+        update: Option<(&str, crate::AcpConfigValue)>,
+    ) -> Result<Vec<crate::AcpConfigOption>, RuntimeError> {
+        self.ensure_active(runtime_id)?;
         if self
             .current_snapshot()
             .is_none_or(|snapshot| snapshot.conversation.id != id)
@@ -257,24 +253,20 @@ impl CoreRuntime {
         let ActiveState::Acp(session) = &mut self.session.active_state else {
             return Err(RuntimeError::Unsupported("当前会话不是通用 ACP".into()));
         };
-        if update {
-            let config_id = request["payload"]["configID"]
-                .as_str()
-                .ok_or_else(|| RuntimeError::invalid("ACP config id"))?;
-            let value = serde_json::from_value(request["payload"]["value"].clone())?;
+        if let Some((config_id, value)) = update {
             session
                 .set_config_option(config_id, value)
                 .map_err(|error| RuntimeError::context("ACP 配置选择", error))?;
             self.session.model_selection = Some(None);
         }
-        Ok(serde_json::to_value(session.config_options())?)
+        Ok(session.config_options().to_vec())
     }
 
     pub(super) fn delete_acp_conversation(
         &mut self,
         runtime: &RuntimeInstance,
         id: &str,
-    ) -> Result<Value, RuntimeError> {
+    ) -> Result<crate::ConfigurationSnapshot, RuntimeError> {
         let native_id = id
             .strip_prefix(&format!("{}:", runtime.id))
             .filter(|id| !id.is_empty())
@@ -298,7 +290,7 @@ impl CoreRuntime {
             self.shutdown_active()?;
             self.session.unsubmitted_draft = None;
         }
-        self.list_value()
+        self.list()
     }
 }
 

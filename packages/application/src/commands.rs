@@ -1,5 +1,5 @@
 //! The complete public command surface dispatches to the same application use cases.
-use crate::local::{Focus, Login};
+use crate::local::{Focus, Login, TurnRequest};
 use crate::*;
 use base64::Engine;
 use std::io::Read;
@@ -23,7 +23,12 @@ impl Application {
         } = &command
         {
             let snapshot = self
-                .snapshot(runtime_id.clone(), conversation_id.clone())
+                .runtime
+                .serve(
+                    Focus::Conversation(conversation_id.clone()),
+                    Login::Allows,
+                    |core| core.snapshot(runtime_id, conversation_id),
+                )
                 .map_err(Failure::from)?;
             if !snapshot.snapshot.as_ref().is_some_and(|snapshot| {
                 snapshot
@@ -401,27 +406,34 @@ impl Application {
                 runtime_id,
                 native_session_id,
                 cwd,
-            } => Response::OpenAcpConversation(application.open_acp_conversation(
-                runtime_id,
-                native_session_id,
-                cwd,
+            } => Response::OpenAcpConversation(application.runtime.serve(
+                Focus::New,
+                Login::Blocks,
+                |core| core.open_acp_conversation(&runtime_id, &native_session_id, &cwd),
             )?),
             Command::AcpSessionConfig {
                 runtime_id,
                 conversation_id,
-            } => Response::AcpSessionConfig(
-                application.acp_session_config(runtime_id, conversation_id)?,
-            ),
+            } => Response::AcpSessionConfig(application.runtime.serve(
+                Focus::Conversation(conversation_id.clone()),
+                Login::Blocks,
+                |core| core.acp_session_config(&runtime_id, &conversation_id, None),
+            )?),
             Command::SetAcpSessionConfig {
                 runtime_id,
                 conversation_id,
                 config_id,
                 value,
-            } => Response::SetAcpSessionConfig(application.set_acp_session_config(
-                runtime_id,
-                conversation_id,
-                config_id,
-                value,
+            } => Response::SetAcpSessionConfig(application.runtime.serve(
+                Focus::Conversation(conversation_id.clone()),
+                Login::Blocks,
+                |core| {
+                    core.acp_session_config(
+                        &runtime_id,
+                        &conversation_id,
+                        Some((&config_id, value)),
+                    )
+                },
             )?),
             Command::DeleteRuntime { id } => Response::DeleteRuntime(application.runtime.serve(
                 Focus::None,
@@ -459,18 +471,26 @@ impl Application {
                 runtime_id,
                 cwd,
                 model_record_key,
-            } => Response::CreateConversation(application.create_conversation(
-                runtime_id,
-                cwd,
-                model_record_key,
+            } => Response::CreateConversation(application.runtime.serve(
+                Focus::New,
+                Login::Blocks,
+                |core| {
+                    core.create_conversation(
+                        &runtime_id,
+                        cwd,
+                        Some(ModelSelection::Managed { model_record_key }),
+                    )
+                },
             )?),
             Command::CreateConversationWithSelection {
                 runtime_id,
                 cwd,
                 selection,
-            } => Response::CreateConversationWithSelection(
-                application.create_conversation_with_selection(runtime_id, cwd, selection)?,
-            ),
+            } => Response::CreateConversationWithSelection(application.runtime.serve(
+                Focus::New,
+                Login::Blocks,
+                |core| core.create_conversation(&runtime_id, cwd, selection),
+            )?),
             Command::ComposerQuota { context, refresh } => {
                 Response::ComposerQuota(application.runtime.serve(
                     Focus::None,
@@ -503,51 +523,61 @@ impl Application {
             Command::OpenConversation {
                 runtime_id,
                 conversation_id,
-            } => Response::OpenConversation(
-                application.open_conversation(runtime_id, conversation_id)?,
-            ),
+            } => Response::OpenConversation(application.runtime.serve(
+                Focus::Conversation(conversation_id.clone()),
+                Login::Blocks,
+                |core| core.open_conversation(&runtime_id, &conversation_id),
+            )?),
             Command::ReadConversation {
                 runtime_id,
                 conversation_id,
-            } => Response::ReadConversation(
-                application.read_conversation(runtime_id, conversation_id)?,
-            ),
+            } => Response::ReadConversation(application.runtime.serve(
+                Focus::Existing(conversation_id.clone()),
+                Login::Blocks,
+                |core| core.read_conversation(&runtime_id, &conversation_id),
+            )?),
             Command::RenameConversation {
                 runtime_id,
                 conversation_id,
                 title,
-            } => Response::RenameConversation(application.rename_conversation(
-                runtime_id,
-                conversation_id,
-                title,
+            } => Response::RenameConversation(application.runtime.serve(
+                Focus::Conversation(conversation_id.clone()),
+                Login::Blocks,
+                |core| core.rename_conversation(&runtime_id, &conversation_id, &title),
             )?),
             Command::DeleteConversation {
                 runtime_id,
                 conversation_id,
-            } => Response::DeleteConversation(
-                application.delete_conversation(runtime_id, conversation_id)?,
-            ),
+            } => Response::DeleteConversation(application.runtime.serve(
+                Focus::Conversation(conversation_id.clone()),
+                Login::Blocks,
+                |core| core.delete_conversation(&runtime_id, &conversation_id),
+            )?),
             Command::Snapshot {
                 runtime_id,
                 conversation_id,
-            } => Response::Snapshot(application.snapshot(runtime_id, conversation_id)?),
+            } => Response::Snapshot(application.runtime.serve(
+                Focus::Conversation(conversation_id.clone()),
+                Login::Allows,
+                |core| core.snapshot(&runtime_id, &conversation_id),
+            )?),
             Command::SnapshotUpdate {
                 runtime_id,
                 conversation_id,
                 since,
-            } => Response::SnapshotUpdate(application.snapshot_update(
-                runtime_id,
-                conversation_id,
-                since,
+            } => Response::SnapshotUpdate(application.runtime.serve(
+                Focus::Conversation(conversation_id.clone()),
+                Login::Allows,
+                |core| core.snapshot_update(&runtime_id, &conversation_id, since),
             )?),
             Command::MessagePayloads {
                 runtime_id,
                 conversation_id,
                 message_ids,
-            } => Response::MessagePayloads(application.message_payloads(
-                runtime_id,
-                conversation_id,
-                message_ids,
+            } => Response::MessagePayloads(application.runtime.serve(
+                Focus::None,
+                Login::Allows,
+                |core| Ok(core.message_payloads(&runtime_id, &conversation_id, &message_ids)),
             )?),
             Command::SendTurn {
                 source_runtime_id,
@@ -555,12 +585,23 @@ impl Application {
                 target_runtime_id,
                 model_record_key,
                 text,
-            } => Response::SendTurn(application.send_turn(
-                source_runtime_id,
-                conversation_id,
-                target_runtime_id,
-                model_record_key,
-                text,
+            } => Response::SendTurn(application.runtime.serve(
+                Focus::Conversation(conversation_id.clone()),
+                Login::Blocks,
+                |core| {
+                    core.send_turn(TurnRequest {
+                        source_runtime_id,
+                        conversation_id,
+                        runtime_id: target_runtime_id,
+                        selection: Some(ModelSelection::Managed { model_record_key }),
+                        turn: ComposedTurn {
+                            text,
+                            effort: None,
+                            permission_mode: None,
+                            attachments: Vec::new(),
+                        },
+                    })
+                },
             )?),
             Command::SendTurnWithSelection {
                 source_runtime_id,
@@ -568,12 +609,18 @@ impl Application {
                 target_runtime_id,
                 selection,
                 turn,
-            } => Response::SendTurnWithSelection(application.send_turn_with_selection(
-                source_runtime_id,
-                conversation_id,
-                target_runtime_id,
-                selection,
-                turn,
+            } => Response::SendTurnWithSelection(application.runtime.serve(
+                Focus::Conversation(conversation_id.clone()),
+                Login::Blocks,
+                |core| {
+                    core.send_turn(TurnRequest {
+                        source_runtime_id,
+                        conversation_id,
+                        runtime_id: target_runtime_id,
+                        selection,
+                        turn,
+                    })
+                },
             )?),
             Command::ReasoningEfforts {
                 runtime_id,
@@ -584,27 +631,31 @@ impl Application {
                 |core| core.runtime_reasoning_efforts(runtime_id, model_record_key),
             )?),
             Command::SendQueue {
-                runtime_id,
+                runtime_id: _,
                 conversation_id,
                 operation,
-            } => Response::SendQueue(application.send_queue(
-                runtime_id,
-                conversation_id,
-                operation,
+            } => Response::SendQueue(application.runtime.serve(
+                Focus::Conversation(conversation_id.clone()),
+                Login::Blocks,
+                |core| core.send_queue(&conversation_id, operation),
             )?),
             Command::SteerTurn {
-                runtime_id,
+                runtime_id: _,
                 conversation_id,
                 turn,
-            } => Response::SteerTurn(application.steer_turn(runtime_id, conversation_id, turn)?),
+            } => Response::SteerTurn(application.runtime.serve(
+                Focus::Conversation(conversation_id.clone()),
+                Login::Blocks,
+                |core| core.steer_turn(&turn),
+            )?),
             Command::CompactConversation {
                 runtime_id,
                 conversation_id,
                 selection,
-            } => Response::CompactConversation(application.compact_conversation(
-                runtime_id,
-                conversation_id,
-                selection,
+            } => Response::CompactConversation(application.runtime.serve(
+                Focus::Conversation(conversation_id.clone()),
+                Login::Blocks,
+                |core| core.compact_conversation(&runtime_id, selection),
             )?),
             Command::ResumeTurn {
                 runtime_id,
@@ -612,12 +663,10 @@ impl Application {
                 selection,
                 effort,
                 permission_mode,
-            } => Response::ResumeTurn(application.resume_turn(
-                runtime_id,
-                conversation_id,
-                selection,
-                effort,
-                permission_mode,
+            } => Response::ResumeTurn(application.runtime.serve(
+                Focus::Conversation(conversation_id.clone()),
+                Login::Blocks,
+                |core| core.resume_turn(&runtime_id, selection, effort, permission_mode),
             )?),
             Command::EditMessage {
                 runtime_id,
@@ -626,40 +675,68 @@ impl Application {
                 placement,
                 selection,
                 turn,
-            } => Response::EditMessage(application.edit_message(
-                runtime_id,
-                conversation_id,
-                message_id,
-                placement,
-                selection,
-                turn,
+            } => Response::EditMessage(application.runtime.serve(
+                Focus::Conversation(conversation_id.clone()),
+                Login::Blocks,
+                |core| {
+                    core.edit_message(
+                        &runtime_id,
+                        &conversation_id,
+                        &message_id,
+                        placement,
+                        selection,
+                        turn,
+                    )
+                },
             )?),
             Command::Cancel {
                 runtime_id,
                 conversation_id,
-            } => Response::Cancel(application.cancel(runtime_id, conversation_id)?),
+            } => Response::Cancel(application.runtime.serve(
+                Focus::Conversation(conversation_id.clone()),
+                Login::Blocks,
+                |core| core.cancel(&runtime_id),
+            )?),
             Command::StopSubAgents {
                 runtime_id,
                 conversation_id,
-            } => Response::StopSubAgents(application.stop_sub_agents(runtime_id, conversation_id)?),
+            } => Response::StopSubAgents(application.runtime.serve(
+                Focus::Conversation(conversation_id.clone()),
+                Login::Blocks,
+                |core| core.stop_sub_agents(&runtime_id),
+            )?),
             Command::ConversationActivity { since } => {
-                Response::ConversationActivity(application.conversation_activity(since)?)
+                Response::ConversationActivity(application.runtime.serve(
+                    Focus::None,
+                    Login::Blocks,
+                    |core| Ok(core.conversation_activity(since)),
+                )?)
             }
             Command::WorkingChanges {
                 runtime_id,
                 conversation_id,
-            } => {
-                Response::WorkingChanges(application.working_changes(runtime_id, conversation_id)?)
-            }
+            } => Response::WorkingChanges(application.runtime.serve(
+                Focus::None,
+                Login::Blocks,
+                |core| core.working_changes(runtime_id, conversation_id),
+            )?),
             Command::WorkingBranch {
                 runtime_id,
                 conversation_id,
-            } => Response::WorkingBranch(application.working_branch(runtime_id, conversation_id)?),
+            } => Response::WorkingBranch(application.runtime.serve(
+                Focus::None,
+                Login::Blocks,
+                |core| core.working_branch(runtime_id, conversation_id),
+            )?),
             Command::FileDiff {
                 runtime_id,
                 conversation_id,
                 path,
-            } => Response::FileDiff(application.file_diff(runtime_id, conversation_id, path)?),
+            } => Response::FileDiff(application.runtime.serve(
+                Focus::None,
+                Login::Blocks,
+                |core| core.file_diff(runtime_id, conversation_id, path),
+            )?),
             Command::PreviewProviderImport { gateway_id, source } => {
                 Response::PreviewProviderImport(application.runtime.serve(
                     Focus::None,
@@ -791,11 +868,10 @@ impl Application {
                 conversation_id,
                 interaction_id,
                 reply,
-            } => Response::ReplyRuntimeInteraction(application.reply_runtime_interaction(
-                runtime_id,
-                conversation_id,
-                interaction_id,
-                reply,
+            } => Response::ReplyRuntimeInteraction(application.runtime.serve(
+                Focus::Conversation(conversation_id.clone()),
+                Login::Blocks,
+                |core| core.reply_runtime_interaction(&runtime_id, &interaction_id, reply),
             )?),
             Command::AuthenticationInspect {
                 gateway_id,
@@ -975,8 +1051,13 @@ impl Application {
                 "SSH 执行位置的附件内容尚不支持读取".into(),
             ));
         }
-        let messages =
-            self.message_payloads(runtime_id, conversation_id, vec![message_id.clone()])?;
+        let messages = self.runtime.serve(Focus::None, Login::Allows, |core| {
+            Ok(core.message_payloads(
+                &runtime_id,
+                &conversation_id,
+                std::slice::from_ref(&message_id),
+            ))
+        })?;
         let block = messages
             .iter()
             .find(|message| message.id == message_id)

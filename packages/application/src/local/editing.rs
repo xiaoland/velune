@@ -98,19 +98,17 @@ impl CoreRuntime {
             .collect()
     }
 
-    pub(super) fn edit_message_action(&mut self, request: &Value) -> Result<Value, RuntimeError> {
-        let payload = &request["payload"];
-        let runtime_id = payload["runtimeInstanceID"]
-            .as_str()
-            .ok_or_else(|| RuntimeError::invalid("runtime instance id"))?;
-        let conversation_id = payload["conversationID"]
-            .as_str()
-            .ok_or_else(|| RuntimeError::invalid("conversation id"))?;
-        let message_id = payload["messageID"]
-            .as_str()
-            .ok_or_else(|| RuntimeError::invalid("message id"))?;
-        let placement: EditPlacement = serde_json::from_value(payload["placement"].clone())?;
-        let selection = super::model_selection::requested_selection(request)?;
+    /// Send `turn` in place of the user message `message_id`, continuing as
+    /// `placement` says. A fork's result is the new conversation's snapshot.
+    pub(crate) fn edit_message(
+        &mut self,
+        runtime_id: &str,
+        conversation_id: &str,
+        message_id: &str,
+        placement: EditPlacement,
+        selection: Option<crate::ModelSelection>,
+        turn: crate::ComposedTurn,
+    ) -> Result<crate::SnapshotResult, RuntimeError> {
         let current = self
             .current_snapshot()
             .filter(|snapshot| {
@@ -132,19 +130,16 @@ impl CoreRuntime {
         let runtime = self.runtime_instance(runtime_id)?.clone();
         let branching = Branching::of(&runtime.type_id).expect("editable runtime");
         // Nothing changes before the replacement is known to be deliverable.
-        let attachments = self.turn_attachments(&runtime, request)?;
-        let text = super::attachments::compose_text(
-            payload["text"].as_str().unwrap_or_default(),
-            &attachments.files,
-        );
+        let attachments = self.turn_attachments(&runtime, &turn.attachments)?;
+        let text = super::attachments::compose_text(&turn.text, &attachments.files);
         if text.trim().is_empty() && attachments.images.is_empty() {
             return Err(RuntimeError::invalid("message text"));
         }
         self.validate_model_selection(&runtime, selection.as_ref())?;
-        if let Some(effort) = payload["effort"].as_str() {
+        if let Some(effort) = &turn.effort {
             self.validate_effort(&runtime, selection.as_ref(), effort)?;
         }
-        if let Some(mode) = payload["permissionMode"].as_str() {
+        if let Some(mode) = &turn.permission_mode {
             self.validate_permission_mode(&runtime, mode)?;
         }
         // The message as the native history has it now: what the view shows
@@ -173,8 +168,6 @@ impl CoreRuntime {
             .ok_or_else(|| RuntimeError::invalid("会话已在别处改变，请重新打开后再编辑"))?;
         let first = ordinal == 0;
 
-        let mut turn = json!({ "payload": payload });
-        turn["payload"]["sourceRuntimeID"] = json!(runtime_id);
         let origin = self.session.key;
         if placement == EditPlacement::Fork {
             self.focus_new();
@@ -183,11 +176,11 @@ impl CoreRuntime {
             if placement == EditPlacement::Fork && first && branching != Branching::Pi {
                 // Nothing precedes the first message: a new conversation in
                 // the same directory.
-                self.create_conversation(&json!({"payload": {
-                    "runtimeInstanceID": runtime_id,
-                    "cwd": fresh.conversation.cwd,
-                    "modelSelection": selection,
-                }}))?;
+                self.create_conversation(
+                    runtime_id,
+                    fresh.conversation.cwd.clone(),
+                    selection.clone(),
+                )?;
                 return Ok(());
             }
             if placement == EditPlacement::InPlace {
@@ -247,7 +240,12 @@ impl CoreRuntime {
             .conversation_id()
             .ok_or_else(|| RuntimeError::invalid("会话未打开"))?
             .to_owned();
-        turn["payload"]["conversationID"] = json!(conversation);
-        self.send_turn_action(&turn)
+        self.send_turn(super::conversations::TurnRequest {
+            source_runtime_id: runtime_id.into(),
+            conversation_id: conversation,
+            runtime_id: runtime_id.into(),
+            selection,
+            turn,
+        })
     }
 }

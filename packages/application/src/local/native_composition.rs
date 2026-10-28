@@ -240,15 +240,13 @@ impl CoreRuntime {
         self.session.model_record_key = Some(key.into());
         Ok(())
     }
-    pub(super) fn reply_runtime_interaction(
+    pub(crate) fn reply_runtime_interaction(
         &mut self,
-        request: &Value,
-    ) -> Result<Value, RuntimeError> {
-        self.ensure_active(request)?;
-        let id = request["payload"]["interactionID"]
-            .as_str()
-            .ok_or_else(|| RuntimeError::invalid("interaction id"))?;
-        let reply = serde_json::from_value(request["payload"]["reply"].clone())?;
+        runtime_id: &str,
+        id: &str,
+        reply: velune_conversation::RuntimeInteractionReply,
+    ) -> Result<crate::SnapshotResult, RuntimeError> {
+        self.ensure_active(runtime_id)?;
         match &mut self.session.active_state {
             ActiveState::Acp(session) => session
                 .reply(id, reply)

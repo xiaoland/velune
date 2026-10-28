@@ -408,9 +408,7 @@ impl CoreRuntime {
                 self.address_other(&caller, &id)?;
                 if self.session.turn_running() {
                     let runtime_id = self.addressed_runtime()?;
-                    let id = self.addressed_id();
-                    self.dispatch(&json!({"version":CONTRACT_VERSION,"action":"cancel","runtimeInstanceID":runtime_id,
-                        "payload":{"runtimeInstanceID":runtime_id,"conversationID":id}}))?;
+                    self.cancel(&runtime_id)?;
                 }
                 self.observed_status(&caller.ticket).map(Served::Now)
             }
@@ -513,10 +511,7 @@ impl CoreRuntime {
         };
         self.focus_new();
         let selection = self.collaboration_selection(&runtime.id, request.model.as_deref())?;
-        self.dispatch(
-            &json!({"version":CONTRACT_VERSION,"action":"create","runtimeInstanceID":runtime.id,
-            "payload":{"runtimeInstanceID":runtime.id,"cwd":cwd,"modelSelection":selection}}),
-        )?;
+        self.create_conversation(&runtime.id, cwd, selection.clone())?;
         self.deliver(caller, &request.message, Some(selection))?;
         self.observed_status(&caller.ticket)
     }
@@ -594,9 +589,18 @@ impl CoreRuntime {
             Some(selection) => selection,
             None => self.collaboration_selection(&target, None)?,
         };
-        self.dispatch(&json!({"version":CONTRACT_VERSION,"action":"sendTurn","runtimeInstanceID":target,
-            "payload":{"runtimeInstanceID":target,"sourceRuntimeID":source,"conversationID":id,"modelSelection":selection,
-                "text":envelope_text(caller, &runtime_name, message),"effort":null,"attachments":[]}}))?;
+        self.send_turn(super::conversations::TurnRequest {
+            source_runtime_id: source,
+            conversation_id: id,
+            runtime_id: target,
+            selection,
+            turn: crate::ComposedTurn {
+                text: envelope_text(caller, &runtime_name, message),
+                effort: None,
+                permission_mode: None,
+                attachments: Vec::new(),
+            },
+        })?;
         Ok(())
     }
 
@@ -623,8 +627,7 @@ impl CoreRuntime {
             .ok_or_else(|| RuntimeError::invalid("没有这个会话；用 list_conversations 查找"))?
             .conversation;
         self.focus_new();
-        self.dispatch(&json!({"version":CONTRACT_VERSION,"action":"open","runtimeInstanceID":summary.runtime_id,
-            "payload":{"runtimeInstanceID":summary.runtime_id,"conversationID":id}}))?;
+        self.open_conversation(&summary.runtime_id, id)?;
         Ok(())
     }
 

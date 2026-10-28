@@ -53,9 +53,12 @@ impl CoreRuntime {
 
     /// The branch checked out in the conversation's working directory; absent
     /// outside a repository or on a detached HEAD.
-    pub(super) fn working_branch(&self, request: &Value) -> Result<Option<String>, RuntimeError> {
-        let (runtime_id, id) = conversation_address(request)?;
-        let directory = self.conversation_directory(runtime_id, id)?;
+    pub(crate) fn working_branch(
+        &self,
+        runtime_id: String,
+        conversation_id: String,
+    ) -> Result<Option<String>, RuntimeError> {
+        let directory = self.conversation_directory(&runtime_id, &conversation_id)?;
         let output = git(&directory, &["symbolic-ref", "--short", "-q", "HEAD"])?;
         Ok(output
             .status
@@ -64,9 +67,12 @@ impl CoreRuntime {
             .filter(|branch| !branch.is_empty()))
     }
 
-    pub(super) fn working_changes(&self, request: &Value) -> Result<WorkingChanges, RuntimeError> {
-        let (runtime_id, id) = conversation_address(request)?;
-        let directory = self.conversation_directory(runtime_id, id)?;
+    pub(crate) fn working_changes(
+        &self,
+        runtime_id: String,
+        conversation_id: String,
+    ) -> Result<WorkingChanges, RuntimeError> {
+        let directory = self.conversation_directory(&runtime_id, &conversation_id)?;
         let probe = git(&directory, &["rev-parse", "--show-toplevel"])?;
         if !probe.status.success() {
             return Ok(WorkingChanges {
@@ -107,13 +113,17 @@ impl CoreRuntime {
         })
     }
 
-    pub(super) fn file_diff(&self, request: &Value) -> Result<FileDiff, RuntimeError> {
-        let (runtime_id, id) = conversation_address(request)?;
-        let path = request["payload"]["path"]
-            .as_str()
-            .filter(|path| !path.is_empty())
-            .ok_or_else(|| RuntimeError::invalid("file path"))?;
-        let directory = self.conversation_directory(runtime_id, id)?;
+    pub(crate) fn file_diff(
+        &self,
+        runtime_id: String,
+        conversation_id: String,
+        path: String,
+    ) -> Result<FileDiff, RuntimeError> {
+        if path.is_empty() {
+            return Err(RuntimeError::invalid("file path"));
+        }
+        let path = path.as_str();
+        let directory = self.conversation_directory(&runtime_id, &conversation_id)?;
         let root = PathBuf::from(git_text(&directory, &["rev-parse", "--show-toplevel"])?.trim());
         // Paths come from this repository's status; anything else is refused.
         let relative = Path::new(path);
@@ -166,17 +176,6 @@ impl CoreRuntime {
             truncated,
         })
     }
-}
-
-fn conversation_address(request: &Value) -> Result<(&str, &str), RuntimeError> {
-    Ok((
-        request["payload"]["runtimeInstanceID"]
-            .as_str()
-            .ok_or_else(|| RuntimeError::invalid("runtime instance id"))?,
-        request["payload"]["conversationID"]
-            .as_str()
-            .ok_or_else(|| RuntimeError::invalid("conversation id"))?,
-    ))
 }
 
 /// `git status --porcelain=v2 --branch -z` records.

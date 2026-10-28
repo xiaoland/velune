@@ -1,35 +1,9 @@
 use super::{Error, Result};
 use agent_client_protocol_schema::v1 as wire;
-use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct ConfigOption {
-    pub id: String,
-    pub name: String,
-    pub description: Option<String>,
-    /// Optional agent-owned UX category; config identity never depends on it.
-    pub category: Option<String>,
-    pub value: ConfigValue,
-    pub choices: Vec<ConfigChoice>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(tag = "type", content = "value", rename_all = "camelCase")]
-pub enum ConfigValue {
-    Select(String),
-    Boolean(bool),
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct ConfigChoice {
-    pub value: String,
-    pub name: String,
-    pub description: Option<String>,
-    pub group: Option<String>,
-    pub group_name: Option<String>,
-}
+pub use velune_conversation::acp_config::{
+    AcpConfigChoice as ConfigChoice, AcpConfigOption as ConfigOption, AcpConfigValue as ConfigValue,
+};
 
 pub(super) fn project(options: Vec<wire::SessionConfigOption>) -> Result<Vec<ConfigOption>> {
     let mut ids = std::collections::BTreeSet::new();

@@ -353,7 +353,7 @@ impl CoreRuntime {
         Some(outcome)
     }
 
-    pub(super) fn conversation_activity(&mut self, since: u64) -> crate::ConversationActivity {
+    pub(crate) fn conversation_activity(&mut self, since: u64) -> crate::ConversationActivity {
         crate::ConversationActivity {
             active: self.active_conversations(),
             finished: self

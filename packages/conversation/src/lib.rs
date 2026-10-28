@@ -1,6 +1,7 @@
 //! Runtime-neutral, replaceable conversation projection contracts.
 //! Harness adapters own native event parsing and durable sessions.
 
+pub mod acp_config;
 pub mod authentication;
 pub mod bytes;
 pub mod resources;

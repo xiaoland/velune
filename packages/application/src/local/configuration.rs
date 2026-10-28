@@ -157,8 +157,8 @@ impl CoreRuntime {
 
     pub(crate) fn set_conversation_browser_limits(
         &mut self,
-        limits: crate::api::ConversationBrowserLimits,
-    ) -> Result<crate::api::ConversationBrowserLimits, RuntimeError> {
+        limits: crate::ConversationBrowserLimits,
+    ) -> Result<crate::ConversationBrowserLimits, RuntimeError> {
         if limits.page == 0 || limits.total == 0 {
             return Err(RuntimeError::invalid("会话加载数量必须大于零"));
         }
@@ -177,13 +177,7 @@ impl CoreRuntime {
     pub(super) fn list_sources(
         &self,
         complete: bool,
-    ) -> Result<
-        (
-            Vec<organization::ListedSource>,
-            Vec<crate::api::HistoryFailure>,
-        ),
-        RuntimeError,
-    > {
+    ) -> Result<(Vec<organization::ListedSource>, Vec<crate::HistoryFailure>), RuntimeError> {
         let mut history_failures = Vec::new();
         for (slot, runtime) in self.runtime_instances.iter().enumerate() {
             if !runtime.enabled {
@@ -200,7 +194,7 @@ impl CoreRuntime {
                 // A runtime that cannot be read lists nothing, not its last index.
                 self.forget_index(runtime);
                 tracing::warn!(target:"velune_application",event="runtime_history_read_failed",phase="history_list",failure_kind="history_unavailable",runtime_slot=slot+1,runtime_id=%runtime.id,runtime_name=%runtime.name,runtime_type_id=%runtime.type_id,binary=?runtime.settings.get("binary"),node_binary=?runtime.settings.get("nodeBinary"),agent_dir=?runtime.settings.get("agentDir"),detail=%error);
-                history_failures.push(crate::api::HistoryFailure {
+                history_failures.push(crate::HistoryFailure {
                     runtime_id: runtime.id.clone(),
                     detail: format!(
                         "{}；会话历史无法读取：{error}",
@@ -321,11 +315,6 @@ impl CoreRuntime {
             ],
             selected_runtime_instance_id: self.next_turn_runtime_id.clone(),
         })
-    }
-
-    /// Transitional: `list` for use cases not yet typed.
-    pub(super) fn list_value(&self) -> Result<Value, RuntimeError> {
-        Ok(serde_json::to_value(self.list()?)?)
     }
 
     /// Runtime instances as clients see them: ACP launch arguments and

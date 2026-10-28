@@ -2,11 +2,14 @@
 use super::*;
 
 impl CoreRuntime {
-    pub(super) fn compact_conversation_action(
+    /// Compact only this conversation's native context, using the selected
+    /// model. Progress and completion arrive in snapshots.
+    pub(crate) fn compact_conversation(
         &mut self,
-        request: &Value,
-    ) -> Result<Value, RuntimeError> {
-        self.ensure_active(request)?;
+        runtime_id: &str,
+        selection: Option<crate::ModelSelection>,
+    ) -> Result<crate::SnapshotResult, RuntimeError> {
+        self.ensure_active(runtime_id)?;
         let snapshot = self
             .current_snapshot()
             .ok_or_else(|| RuntimeError::invalid("请选择会话"))?;
@@ -14,7 +17,6 @@ impl CoreRuntime {
             return Err(RuntimeError::invalid("当前会话不能压缩上下文"));
         }
         let runtime = self.runtime_instance(&snapshot.context_runtime_id)?.clone();
-        let selection = super::model_selection::requested_selection(request)?;
         self.validate_model_selection(&runtime, selection.as_ref())?;
         if matches!(self.session.active_state, ActiveState::History(_))
             || self.session.model_selection.as_ref() != Some(&selection)

@@ -15,9 +15,8 @@ impl CoreRuntime {
     pub(super) fn turn_attachments(
         &self,
         runtime: &RuntimeInstance,
-        request: &Value,
+        paths: &[String],
     ) -> Result<TurnAttachments, RuntimeError> {
-        let paths = payload_paths(request, "attachments")?;
         let mut attachments = TurnAttachments::default();
         if paths.is_empty() {
             return Ok(attachments);
@@ -25,7 +24,7 @@ impl CoreRuntime {
         if !matches!(runtime.execution()?.transport, RuntimeTransport::Local) {
             return Err(RuntimeError::invalid("远端运行时暂不支持附件"));
         }
-        for path in paths {
+        for path in paths.iter().map(PathBuf::from) {
             let name = path.file_name().map_or_else(
                 || path.display().to_string(),
                 |name| name.to_string_lossy().into_owned(),
@@ -67,29 +66,14 @@ pub(super) fn compose_text(text: &str, files: &[PathBuf]) -> String {
     velune_conversation::attachment_list::compose(text, paths.iter().map(|path| path.as_ref()))
 }
 
-/// The images a send payload names, read for delivery.
-pub(super) fn turn_images(request: &Value) -> Result<Vec<pi::TurnImage>, RuntimeError> {
-    payload_paths(request, "images")?
-        .into_iter()
+/// Images a turn carries, read for delivery.
+pub(super) fn turn_images(paths: &[PathBuf]) -> Result<Vec<pi::TurnImage>, RuntimeError> {
+    paths
+        .iter()
         .map(|path| {
-            let kind = pi::ImageType::from_path(&path)
+            let kind = pi::ImageType::from_path(path)
                 .ok_or_else(|| RuntimeError::invalid("附件不是支持的图片类型"))?;
-            pi::TurnImage::read(&path, kind).map_err(RuntimeError::Invalid)
+            pi::TurnImage::read(path, kind).map_err(RuntimeError::Invalid)
         })
         .collect()
-}
-
-fn payload_paths(request: &Value, key: &str) -> Result<Vec<PathBuf>, RuntimeError> {
-    match &request["payload"][key] {
-        Value::Null => Ok(Vec::new()),
-        Value::Array(items) => items
-            .iter()
-            .map(|item| {
-                item.as_str()
-                    .map(PathBuf::from)
-                    .ok_or_else(|| RuntimeError::invalid("attachment path"))
-            })
-            .collect(),
-        _ => Err(RuntimeError::invalid("attachment paths")),
-    }
 }

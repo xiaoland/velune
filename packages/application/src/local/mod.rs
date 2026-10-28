@@ -22,7 +22,6 @@ use velune_agent_runtime::native::{GatewayInjection, NativeConfig, NativeKind, N
 use velune_agent_runtime::{self as pi, Config as PiConfig, PiProjection};
 use velune_gateway::Runner;
 
-const CONTRACT_VERSION: u64 = 3;
 /// The runtime setting holding ACP launch arguments and environment.
 pub(crate) const ACP_LAUNCH_SETTING: &str = "acpLaunch";
 mod acp_composition;
@@ -131,7 +130,7 @@ pub struct CoreRuntime {
     gateways: Vec<GatewayConfig>,
     model_templates: Vec<crate::config::ModelTemplate>,
     conversation_links: Vec<crate::config::ConversationLink>,
-    conversation_browser_limits: crate::api::ConversationBrowserLimits,
+    conversation_browser_limits: crate::ConversationBrowserLimits,
     organization: crate::config::ConversationOrganization,
     browser_window: organization::BrowserWindow,
     /// The latest listing's conversations by public identity, for organizing
@@ -196,6 +195,7 @@ mod compaction;
 mod configuration;
 mod continuation;
 mod conversations;
+pub(crate) use conversations::TurnRequest;
 mod delivery;
 mod editing;
 mod execution;
@@ -250,7 +250,7 @@ impl CoreRuntime {
             gateways: persisted.gateways,
             model_templates: persisted.model_templates,
             conversation_links,
-            conversation_browser_limits: crate::api::ConversationBrowserLimits {
+            conversation_browser_limits: crate::ConversationBrowserLimits {
                 page: persisted.conversation_browser_group_limit,
                 total: persisted.conversation_browser_total_limit,
             },
@@ -403,22 +403,53 @@ impl CoreRuntime {
         snapshot.collaborators = self.collaborators(&snapshot);
         Some(snapshot)
     }
-    fn snapshot_result(&mut self) -> Result<Value, RuntimeError> {
+    fn snapshot_result(&mut self) -> Result<crate::SnapshotResult, RuntimeError> {
         let snapshot = self.current_snapshot();
-        Ok(json!({"snapshot": snapshot.map(|snapshot| self.delivery.snapshot(snapshot))}))
+        Ok(crate::SnapshotResult {
+            snapshot: snapshot.map(|snapshot| self.delivery.snapshot(snapshot)),
+        })
+    }
+    /// The loaded conversation in its runtime context. An enabled known
+    /// instance returns no snapshot when no conversation is loaded; a
+    /// different instance cannot query another instance's conversation.
+    pub(crate) fn snapshot(
+        &mut self,
+        runtime_id: &str,
+        conversation_id: &str,
+    ) -> Result<crate::SnapshotResult, RuntimeError> {
+        let snapshot = self.queried_snapshot(runtime_id, conversation_id)?;
+        Ok(crate::SnapshotResult {
+            snapshot: snapshot.map(|snapshot| self.delivery.snapshot(snapshot)),
+        })
+    }
+    /// Like `snapshot`, relative to a cursor from an earlier delivery of the
+    /// same view: unchanged content is not transferred again.
+    pub(crate) fn snapshot_update(
+        &mut self,
+        runtime_id: &str,
+        conversation_id: &str,
+        since: crate::TranscriptCursor,
+    ) -> Result<crate::SnapshotUpdate, RuntimeError> {
+        let snapshot = self.queried_snapshot(runtime_id, conversation_id)?;
+        Ok(self.delivery.update(snapshot, since))
+    }
+    /// Complete payloads of messages in a delivered view.
+    pub(crate) fn message_payloads(
+        &self,
+        runtime_id: &str,
+        conversation_id: &str,
+        message_ids: &[String],
+    ) -> Vec<crate::DeliveredMessage> {
+        self.delivery
+            .payloads(runtime_id, conversation_id, message_ids)
     }
     /// The projection a snapshot query names: only the loaded conversation, in
     /// its own runtime context. An enabled instance with nothing loaded has none.
     fn queried_snapshot(
         &mut self,
-        request: &Value,
+        runtime_id: &str,
+        conversation_id: &str,
     ) -> Result<Option<crate::conversation::ConversationSnapshot>, RuntimeError> {
-        let conversation_id = request["payload"]["conversationID"]
-            .as_str()
-            .ok_or_else(|| RuntimeError::invalid("conversation id"))?;
-        let runtime_id = request["payload"]["runtimeInstanceID"]
-            .as_str()
-            .ok_or_else(|| RuntimeError::invalid("runtime instance id"))?;
         if matches!(self.session.active_state, ActiveState::Empty) {
             if !self.runtime_instance(runtime_id)?.enabled {
                 return Err(RuntimeError::invalid("此运行时已停用"));
@@ -621,120 +652,6 @@ impl CoreRuntime {
                 .subscription_login
                 .as_ref()
                 .is_some_and(crate::provider_login::Login::is_running)
-    }
-
-    pub(crate) fn request_inner(&mut self, request: &Value) -> Result<Value, RuntimeError> {
-        let action = request["action"].as_str().unwrap_or_default();
-        let conversation_id = request["payload"]["conversationID"].as_str();
-        let focus = match (action, conversation_id) {
-            ("create" | "openAcpConversation", _) => Focus::New,
-            (
-                "open"
-                | "sendTurn"
-                | "resumeTurn"
-                | "compactConversation"
-                | "cancel"
-                | "stopSubAgents"
-                | "replyRuntimeInteraction"
-                | "renameConversation"
-                | "deleteConversation"
-                | "getSnapshot"
-                | "getSnapshotUpdate"
-                | "acpSessionConfig"
-                | "setAcpSessionConfig"
-                | "sendQueue"
-                | "steerTurn"
-                | "editMessage",
-                Some(id),
-            ) => Focus::Conversation(id.to_owned()),
-            ("readConversation", Some(id)) => Focus::Existing(id.to_owned()),
-            _ => Focus::None,
-        };
-        let login = if matches!(
-            action,
-            "authentication"
-                | "list"
-                | "searchConversations"
-                | "findConversation"
-                | "resolveAgentUri"
-                | "getSnapshot"
-                | "getSnapshotUpdate"
-                | "messagePayloads"
-                | "composerDrafts"
-        ) {
-            Login::Allows
-        } else {
-            Login::Blocks
-        };
-        self.serve(focus, login, |runtime| runtime.dispatch(request))
-    }
-
-    fn dispatch(&mut self, request: &Value) -> Result<Value, RuntimeError> {
-        if request["version"] != CONTRACT_VERSION {
-            return Err(RuntimeError::Unsupported(
-                "projection contract version".into(),
-            ));
-        }
-        let action = request["action"].as_str().unwrap_or_default();
-        match action {
-            "openAcpConversation" => self.open_acp_conversation_action(request),
-            "acpSessionConfig" => self.acp_session_config_action(request, false),
-            "setAcpSessionConfig" => self.acp_session_config_action(request, true),
-            "create" => self.create_conversation(request),
-            "open" => self.open_conversation(request),
-            "readConversation" => self.read_conversation(request),
-            "renameConversation" => self.manage_conversation(request, false),
-            "deleteConversation" => {
-                let result = self.manage_conversation(request, true)?;
-                if let Some(id) = request["payload"]["conversationID"].as_str() {
-                    self.discard_composer_draft(id);
-                    self.discard_conversation_choices(id);
-                }
-                Ok(result)
-            }
-            "workingChanges" => Ok(serde_json::to_value(self.working_changes(request)?)?),
-            "workingBranch" => Ok(serde_json::to_value(self.working_branch(request)?)?),
-            "fileDiff" => Ok(serde_json::to_value(self.file_diff(request)?)?),
-            "conversationActivity" => {
-                let since = request["payload"]["since"]
-                    .as_u64()
-                    .ok_or_else(|| RuntimeError::invalid("activity cursor"))?;
-                Ok(serde_json::to_value(self.conversation_activity(since))?)
-            }
-            "getSnapshot" => Ok(json!({"snapshot": self
-                .queried_snapshot(request)?
-                .map(|snapshot| self.delivery.snapshot(snapshot))})),
-            "getSnapshotUpdate" => {
-                let since = serde_json::from_value(request["payload"]["since"].clone())?;
-                let snapshot = self.queried_snapshot(request)?;
-                Ok(serde_json::to_value(self.delivery.update(snapshot, since))?)
-            }
-            "messagePayloads" => {
-                let ids: Vec<String> =
-                    serde_json::from_value(request["payload"]["messageIDs"].clone())?;
-                Ok(serde_json::to_value(
-                    self.delivery.payloads(
-                        request["payload"]["runtimeInstanceID"]
-                            .as_str()
-                            .ok_or_else(|| RuntimeError::invalid("runtime instance id"))?,
-                        request["payload"]["conversationID"]
-                            .as_str()
-                            .ok_or_else(|| RuntimeError::invalid("conversation id"))?,
-                        &ids,
-                    ),
-                )?)
-            }
-            "sendTurn" => self.send_turn_action(request),
-            "resumeTurn" => self.resume_turn_action(request),
-            "compactConversation" => self.compact_conversation_action(request),
-            "sendQueue" => self.send_queue_action(request),
-            "steerTurn" => self.steer_turn_action(request),
-            "editMessage" => self.edit_message_action(request),
-            "cancel" => self.cancel_action(request),
-            "stopSubAgents" => self.stop_sub_agents_action(request),
-            "replyRuntimeInteraction" => self.reply_runtime_interaction(request),
-            action => Err(RuntimeError::Unsupported(action.into())),
-        }
     }
 }
 

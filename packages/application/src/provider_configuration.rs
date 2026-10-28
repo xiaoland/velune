@@ -1,5 +1,7 @@
 //! Pure provider, route and template edits of the gateway configuration.
-use crate::{Error, api::ProviderDraft, config::*, provider_authentication::*};
+use crate::{
+    Error, GatewaySummary, ProviderDraft, ProviderSummary, config::*, provider_authentication::*,
+};
 
 /// One edit of a gateway's providers or routes.
 pub(crate) enum ProviderEdit {
@@ -268,9 +270,47 @@ pub(crate) fn validate_template(template: &ModelTemplate) -> Result<(), Error> {
     }
     Ok(())
 }
-pub(crate) fn summaries(gateways: &[GatewayConfig]) -> Vec<crate::api::GatewaySummary> {
-    gateways
-        .iter()
-        .map(crate::api::GatewaySummary::from)
-        .collect()
+pub(crate) fn summaries(gateways: &[GatewayConfig]) -> Vec<GatewaySummary> {
+    gateways.iter().map(GatewaySummary::from).collect()
+}
+
+impl From<&GatewayConfig> for GatewaySummary {
+    fn from(g: &GatewayConfig) -> Self {
+        Self {
+            id: g.id.clone(),
+            name: g.name.clone(),
+            providers: g
+                .providers
+                .iter()
+                .map(|p| ProviderSummary {
+                    id: p.id.clone(),
+                    name: p.name.clone(),
+                    protocol: p.protocol.clone(),
+                    endpoint: p.endpoint.clone(),
+                    execution_backend: p.execution_backend.clone(),
+                    request_profile: p.request_profile,
+                    authentication_source: p.authentication.source(),
+                    quota_source: p.quota_source,
+                    quota_authentication: p
+                        .quota_authentication
+                        .description(p.authentication.generation),
+                    authentication: {
+                        let mut description = p.authentication.description();
+                        if p.request_profile == crate::config::RequestProfile::KimiCoding {
+                            description.disclosure =
+                                Some(crate::SubscriptionDisclosure::kimi_coding_plan());
+                        }
+                        if p.request_profile == crate::config::RequestProfile::ArkCoding {
+                            description.disclosure =
+                                Some(crate::SubscriptionDisclosure::ark_coding_plan());
+                        }
+                        description
+                    },
+                    quota_limits: p.quota_limits.clone(),
+                    models: p.models.iter().map(Into::into).collect(),
+                })
+                .collect(),
+            routes: g.routes.clone(),
+        }
+    }
 }

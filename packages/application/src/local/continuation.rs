@@ -503,7 +503,7 @@ impl CoreRuntime {
         effort: Option<&str>,
         permission_mode: Option<&str>,
         images: &[PathBuf],
-    ) -> Result<Value, RuntimeError> {
+    ) -> Result<crate::SnapshotResult, RuntimeError> {
         self.validate_acp_handoff_target(self.runtime_instance(runtime_id)?)?;
         let raw = self
             .native_snapshot()
@@ -596,7 +596,13 @@ impl CoreRuntime {
         });
         tracing::info!(target:"velune_application", event="conversation_handoff_committed", phase="association_commit");
         // Persist ownership before sending. Never retry an ambiguous native send.
-        self.send_action(&json!({"payload":{"runtimeInstanceID":runtime_id,"text":payload,"effort":effort,"permissionMode":permission_mode,"images":images}})).inspect_err(|_| {
+        self.send_action(super::conversations::Prompt {
+            runtime_id,
+            message: Some((&payload, images)),
+            effort,
+            permission_mode,
+        })
+        .inspect_err(|_| {
             tracing::warn!(target:"velune_application", event="conversation_handoff_failed", phase="dispatch");
         })
     }
@@ -622,9 +628,9 @@ impl CoreRuntime {
     pub(super) fn manage_link(
         &mut self,
         link: ConversationLink,
-        request: &Value,
-        deleting: bool,
-    ) -> Result<Value, RuntimeError> {
+        change: super::conversations::ConversationChange,
+    ) -> Result<crate::ConfigurationSnapshot, RuntimeError> {
+        let deleting = matches!(change, super::conversations::ConversationChange::Delete);
         if deleting {
             for segment in link.segments.iter().filter(|segment| !segment.deleted) {
                 self.refresh_acp_capabilities(
@@ -656,7 +662,7 @@ impl CoreRuntime {
                 let mut links = self.conversation_links.clone();
                 links.retain(|existing| existing.id != link.id);
                 self.store_links(links)?;
-                return self.list_value();
+                return self.list();
             }
         }
         if deleting {
@@ -697,9 +703,6 @@ impl CoreRuntime {
             if segment.deleted || (!deleting && index != 0) {
                 continue;
             }
-            let mut native_request = request.clone();
-            native_request["payload"]["runtimeInstanceID"] = json!(segment.runtime_instance_id);
-            native_request["payload"]["conversationID"] = json!(segment.native_conversation_id);
             let already_absent = deleting
                 && self
                     .runtime_instance(&segment.runtime_instance_id)
@@ -712,7 +715,11 @@ impl CoreRuntime {
             if !already_absent
                 && (!self.segment_available(segment)
                     || self
-                        .manage_native_conversation(&native_request, deleting)
+                        .manage_native_conversation(
+                            &segment.runtime_instance_id,
+                            &segment.native_conversation_id,
+                            change,
+                        )
                         .is_err())
             {
                 failed = true;
@@ -746,6 +753,6 @@ impl CoreRuntime {
                 "原生来源标题修改失败；未建立本地标题覆盖。"
             }));
         }
-        self.list_value()
+        self.list()
     }
 }

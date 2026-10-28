@@ -30,17 +30,34 @@
 
 ## 阶段
 
-每个阶段结束时 workspace `cargo clippy --all-targets -D warnings`（含 remote-only 与 portable feature 组合）通过，Mac 应用可构建运行。
+每个阶段结束时 workspace `cargo clippy --all-targets -D warnings`（含 bindings remote-only feature 组合）与 `cargo test --workspace` 通过，Mac 应用可构建运行。
 
 | 阶段 | 内容 | FFI 表面 | 状态 |
 | --- | --- | --- | --- |
-| 0 | 修复基线 clippy；删除 `manual-*.py`；建立本任务包 | 不变 | 进行中 |
-| 1 | 删除核心内部 JSON 协议：`Command` 直接分派到类型化用例；`portable` 同路径；`CoreRuntime` 持有单份配置 | 不变 | 待开始 |
+| 0 | 修复基线 clippy；删除 `manual-*.py`；建立本任务包 | 不变 | 完成 |
+| 1 | 删除核心内部 JSON 协议：`Command` 直接分派到类型化用例 | 不变 | 完成 |
 | 2 | Harness 适配器接口；拆分 `gateway/runtime.rs` 等超大模块 | 不变 | 待开始 |
 | 3 | FFI 表面：删除 `Binding*` 镜像与 JSON 转换、合并远控转换层；四端机械更新，删除 Mac 映射层 | 变化 | 待开始 |
 | 4 | 平台 app 结构：拆分 Mac `AppStore` 与 Windows 对应部分；把平台自行计算的产品规则移回核心 | 不变 | 待开始 |
 | 5 | 测试：复核现有 Rust 测试，只为真实不变量重建少量分层检查 | 不变 | 待开始 |
 | 6 | 文档：重写 development、architecture 等为当前事实；归档已完成任务包 | 不变 | 待开始 |
+
+## 阶段 1 结果
+
+- `Command` 在 `commands.rs` 中经 `CoreRuntime::serve(Focus, Login, 用例)` 直接调用类型化用例：`serve` 先聚焦所需会话、推进全部会话与协作服务，再按 `Login` 决定认证进行中是否拒绝。聚焦与认证门槛由各 `Command` 分支写明，不再由字符串 action 列表推断。
+- 删除 `request_inner`、`dispatch`、`CONTRACT_VERSION`、`api.rs` 的 JSON `execute` 及其 59 个包装方法；`api.rs` 余下的分析报表移到 `analytics_report.rs`，`GatewaySummary` 转换移到 `provider_configuration.rs`。
+- 核心内部重入（协作服务、发送队列、消息编辑、跨运行时接续）直接调用用例；排队消息保存 `TurnRequest`，不再保存 JSON 载荷。
+- 删除从未发布的 `portable` 组合与 `app/host` 原型，以及 application 的 `local-runtime` feature。
+- `agent-runtime`、`application-api` 各自定义的运行时资源、认证事件与 ACP 会话配置类型合并到 `velune-conversation`，两侧以别名再导出；原 JSON 往返曾静默丢弃 ACP `mcp_http`。
+- 诊断 3 修正：`CoreRuntime` 的显示偏好字段是当前客户端视图的状态（`ClientState` 按视图换入换出，`persist` 以本机基线写回），网关、运行时与模板只有这一份内存副本，不存在重复配置。上帝对象问题留给阶段 2 按能力拆分。
+- 剩余 JSON 只在真实线协议处：Pi RPC、MCP、接续上下文正文与持久化文件。
+- 验证（2026-10-28）：workspace clippy／test 通过；FFI 表面未变，于是取出删除前的 `manual-*.py`（git `9339fd3^`）在临时 HOME 与回环合成上游下跑重构后的 UniFFI 库：send-queue、edit-message 与 steer（Codex 0.159.3／Claude Code 2.1.292／Pi 1.0.2）、collaboration、runtime-interactions、acp-adapter、resume-turn（Codex）、context-compaction（Pi）、session-browser、working-changes、pi-native-loop、runtime-selection 全部通过。acp-adapter 对 ACP 模型目录含“默认”项、pi-native-loop 对日志字段 `operation_id` 的断言在重构前已过时，按现行行为改写后通过。Mac 应用在隔离 `VELUNE_HOME` 后台启动，列表与活动轮询无告警。
+
+## 留待后续阶段
+
+- 运行时设置仍是 `BTreeMap<String, String>`（如 `acpLaunch`）；`AuthenticationEvent` 是松散结构；`ProviderImportSource` 可收窄；三个 “Source” 类型并存。
+- `Command::SendTurn`／`CreateConversation` 只是带 `model_record_key` 的 `…WithSelection` 旧变体，`SendQueue`／`SteerTurn` 的 `runtime_id` 未被使用；随阶段 3 FFI 表面一起删减。
+- `repository.rs` 仍为旧配置补 `contextUsageDisplay`，配套测试在阶段 5 复核。
 
 ## 待用户决定
 

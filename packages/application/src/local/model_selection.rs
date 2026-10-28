@@ -4,13 +4,6 @@ use crate::conversation::{ConversationSnapshot, TurnSettings};
 use crate::{ModelSelection, RuntimeModel};
 use velune_agent_runtime::native::CLAUDE_EFFORT_LEVELS;
 
-/// The request's model; none is the runtime's own default.
-pub(super) fn requested_selection(request: &Value) -> Result<Option<ModelSelection>, RuntimeError> {
-    Ok(serde_json::from_value(
-        request["payload"]["modelSelection"].clone(),
-    )?)
-}
-
 impl CoreRuntime {
     /// The loaded conversation's model choice for its next turn.
     pub(crate) fn next_turn_model_selection(
@@ -70,7 +63,7 @@ impl CoreRuntime {
     /// so the current level is sent again where Velune knows it.
     pub(super) fn requested_effort(
         &mut self,
-        request: &Value,
+        requested: Option<&str>,
     ) -> Result<Option<String>, RuntimeError> {
         let runtime = self.active_instance()?.clone();
         let selection = self
@@ -78,7 +71,7 @@ impl CoreRuntime {
             .model_selection
             .clone()
             .ok_or_else(|| RuntimeError::invalid("请选择此会话的模型"))?;
-        if let Some(effort) = request["payload"]["effort"].as_str() {
+        if let Some(effort) = requested {
             self.validate_effort(&runtime, selection.as_ref(), effort)?;
             return Ok(Some(effort.into()));
         }
@@ -105,10 +98,10 @@ impl CoreRuntime {
     /// policy), so the current mode is sent again where Velune knows it.
     pub(super) fn requested_permission_mode(
         &mut self,
-        request: &Value,
+        requested: Option<&str>,
     ) -> Result<Option<String>, RuntimeError> {
         let runtime = self.active_instance()?.clone();
-        if let Some(mode) = request["payload"]["permissionMode"].as_str() {
+        if let Some(mode) = requested {
             self.validate_permission_mode(&runtime, mode)?;
             return Ok(Some(mode.into()));
         }

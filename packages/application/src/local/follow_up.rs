@@ -3,23 +3,24 @@
 //!
 //! The queue belongs to the conversation's session, so every window showing
 //! the conversation shows the same one. It lives while the application runs.
+use super::conversations::{Prompt, TurnRequest};
 use super::*;
 use crate::conversation::{FollowUp, QueuePause, QueueWait, QueuedMessage};
+use crate::{ComposedTurn, ModelSelection, SnapshotResult};
 use std::collections::VecDeque;
 
 /// One message waiting for the running turn: the send request it becomes.
 struct QueuedTurn {
     id: String,
-    payload: Value,
+    request: TurnRequest,
 }
 
 impl QueuedTurn {
     fn public(&self) -> QueuedMessage {
         QueuedMessage {
             id: self.id.clone(),
-            text: self.payload["text"].as_str().unwrap_or_default().into(),
-            attachments: serde_json::from_value(self.payload["attachments"].clone())
-                .unwrap_or_default(),
+            text: self.request.turn.text.clone(),
+            attachments: self.request.turn.attachments.clone(),
         }
     }
 }
@@ -58,22 +59,26 @@ fn queued_id() -> String {
 impl CoreRuntime {
     /// Resume only the addressed native context; no cross-runtime handoff or
     /// text fallback can preserve the meaning of an input-free turn.
-    pub(super) fn resume_turn_action(&mut self, request: &Value) -> Result<Value, RuntimeError> {
-        self.ensure_active(request)?;
+    pub(crate) fn resume_turn(
+        &mut self,
+        runtime_id: &str,
+        selection: Option<ModelSelection>,
+        effort: Option<String>,
+        permission_mode: Option<String>,
+    ) -> Result<SnapshotResult, RuntimeError> {
+        self.ensure_active(runtime_id)?;
         let snapshot = self
             .current_snapshot()
             .ok_or_else(|| RuntimeError::invalid("conversation is not active"))?;
         if !snapshot.follow_up.can_resume {
             return Err(RuntimeError::invalid("当前会话不能无新消息恢复"));
         }
-        let runtime_id = snapshot.context_runtime_id;
-        let runtime = self.runtime_instance(&runtime_id)?.clone();
-        let selection = super::model_selection::requested_selection(request)?;
+        let runtime = self.runtime_instance(&snapshot.context_runtime_id)?.clone();
         self.validate_model_selection(&runtime, selection.as_ref())?;
-        if let Some(effort) = request["payload"]["effort"].as_str() {
+        if let Some(effort) = &effort {
             self.validate_effort(&runtime, selection.as_ref(), effort)?;
         }
-        if let Some(mode) = request["payload"]["permissionMode"].as_str() {
+        if let Some(mode) = &permission_mode {
             self.validate_permission_mode(&runtime, mode)?;
         }
         if matches!(self.session.active_state, ActiveState::History(_))
@@ -82,20 +87,24 @@ impl CoreRuntime {
             let native = self.native_snapshot().expect("resumable context");
             self.prepare_with_selection(native, selection.as_ref(), false)?;
         }
-        let result = self.send_action(request)?;
+        let result = self.send_action(Prompt {
+            runtime_id,
+            message: None,
+            effort: effort.as_deref(),
+            permission_mode: permission_mode.as_deref(),
+        })?;
         self.restore_archived(&snapshot.conversation.id);
         Ok(result)
     }
 
-    pub(super) fn send_queue_action(&mut self, request: &Value) -> Result<Value, RuntimeError> {
-        let conversation_id = request["payload"]["conversationID"]
-            .as_str()
-            .ok_or_else(|| RuntimeError::invalid("conversation id"))?;
+    pub(crate) fn send_queue(
+        &mut self,
+        conversation_id: &str,
+        operation: SendQueueOperation,
+    ) -> Result<SnapshotResult, RuntimeError> {
         if self.session.compacting {
             return Err(RuntimeError::invalid("上下文压缩期间不能修改发送队列"));
         }
-        let operation: SendQueueOperation =
-            serde_json::from_value(request["payload"]["operation"].clone())?;
         let snapshot = self.native_snapshot();
         if matches!(
             operation,
@@ -129,25 +138,22 @@ impl CoreRuntime {
                 }
                 queue.turns.push_back(QueuedTurn {
                     id: queued_id(),
-                    payload: json!({
-                        "sourceRuntimeID": source_runtime_id,
-                        "conversationID": conversation_id,
-                        "runtimeInstanceID": target_runtime_id,
-                        "modelSelection": selection,
-                        "text": turn.text,
-                        "effort": turn.effort,
-                        "permissionMode": turn.permission_mode,
-                        "attachments": turn.attachments,
-                    }),
+                    request: TurnRequest {
+                        source_runtime_id,
+                        conversation_id: conversation_id.to_owned(),
+                        runtime_id: target_runtime_id,
+                        selection,
+                        turn,
+                    },
                 });
             }
             SendQueueOperation::Edit { id, text } => {
                 let index = queue.position(&id)?;
                 let turn = &mut queue.turns[index];
-                if text.trim().is_empty() && turn.public().attachments.is_empty() {
+                if text.trim().is_empty() && turn.request.turn.attachments.is_empty() {
                     return Err(RuntimeError::invalid("message text"));
                 }
-                turn.payload["text"] = Value::String(text);
+                turn.request.turn.text = text;
             }
             SendQueueOperation::Remove { id } => {
                 let index = queue.position(&id)?;
@@ -167,7 +173,7 @@ impl CoreRuntime {
             SendQueueOperation::Steer { id } => {
                 let index = queue.position(&id)?;
                 let turn = queue.turns.remove(index).expect("queued turn");
-                if let Err(error) = self.steer(&turn.payload) {
+                if let Err(error) = self.steer(&turn.request.turn) {
                     let queue = &mut self.session.send_queue;
                     queue.turns.insert(index.min(queue.turns.len()), turn);
                     return Err(error);
@@ -190,12 +196,15 @@ impl CoreRuntime {
     /// Deliver a composed message into the running turn through the
     /// runtime's own channel. Its next-turn choices do not apply: the turn
     /// keeps its own.
-    pub(super) fn steer_turn_action(&mut self, request: &Value) -> Result<Value, RuntimeError> {
-        self.steer(&request["payload"])?;
+    pub(crate) fn steer_turn(
+        &mut self,
+        turn: &ComposedTurn,
+    ) -> Result<SnapshotResult, RuntimeError> {
+        self.steer(turn)?;
         self.snapshot_result()
     }
 
-    fn steer(&mut self, payload: &Value) -> Result<(), RuntimeError> {
+    fn steer(&mut self, turn: &ComposedTurn) -> Result<(), RuntimeError> {
         if !self.can_steer() {
             return Err(RuntimeError::invalid("此运行时当前不能插入消息"));
         }
@@ -203,12 +212,9 @@ impl CoreRuntime {
             .native_snapshot()
             .map(|snapshot| snapshot.conversation.runtime_id)
             .ok_or_else(|| RuntimeError::invalid("conversation is not active"))?;
-        let request = json!({ "payload": payload });
-        let attachments = self.turn_attachments(self.runtime_instance(&runtime_id)?, &request)?;
-        let text = super::attachments::compose_text(
-            payload["text"].as_str().unwrap_or_default(),
-            &attachments.files,
-        );
+        let attachments =
+            self.turn_attachments(self.runtime_instance(&runtime_id)?, &turn.attachments)?;
+        let text = super::attachments::compose_text(&turn.text, &attachments.files);
         if text.trim().is_empty() && attachments.images.is_empty() {
             return Err(RuntimeError::invalid("message text"));
         }
@@ -216,9 +222,7 @@ impl CoreRuntime {
             text,
             effort: None,
             permission_mode: None,
-            images: super::attachments::turn_images(
-                &json!({"payload": {"images": attachments.images}}),
-            )?,
+            images: super::attachments::turn_images(&attachments.images)?,
         };
         match &mut self.session.active_state {
             ActiveState::Native(session) => session
@@ -273,11 +277,11 @@ impl CoreRuntime {
 
     /// A send that needs another runtime process while sub-agents still run
     /// in the current one goes last in the queue, which waits for them.
-    pub(super) fn queue_after_work(&mut self, payload: Value) {
+    pub(super) fn queue_after_work(&mut self, request: TurnRequest) {
         let queue = &mut self.session.send_queue;
         queue.turns.push_back(QueuedTurn {
             id: queued_id(),
-            payload,
+            request,
         });
         queue.waiting = Some(QueueWait::SubAgents);
     }
@@ -302,9 +306,7 @@ impl CoreRuntime {
         let Some(turn) = self.session.send_queue.turns.pop_front() else {
             return;
         };
-        let request =
-            json!({"version": CONTRACT_VERSION, "action": "sendTurn", "payload": turn.payload});
-        match self.send_and_restore(&request) {
+        match self.send_and_restore(&turn.request) {
             Ok(_) => {}
             Err(RuntimeError::OutstandingWork) => {
                 let queue = &mut self.session.send_queue;

@@ -2,55 +2,86 @@
 use super::*;
 use crate::conversation::ConversationSnapshot;
 use crate::local::continuation::{LogicalProjection, display_segment};
+use crate::{ComposedTurn, ConfigurationSnapshot, ModelSelection, SnapshotResult};
+
+/// A turn the user sends in a conversation: where it comes from, the
+/// runtime and model it runs on, and what was composed.
+#[derive(Clone)]
+pub(crate) struct TurnRequest {
+    pub source_runtime_id: String,
+    pub conversation_id: String,
+    pub runtime_id: String,
+    pub selection: Option<ModelSelection>,
+    pub turn: ComposedTurn,
+}
+
+/// What one send gives the active runtime. Without a message it resumes
+/// the native turn.
+pub(super) struct Prompt<'a> {
+    pub runtime_id: &'a str,
+    /// The text and the image paths it carries.
+    pub message: Option<(&'a str, &'a [PathBuf])>,
+    pub effort: Option<&'a str>,
+    pub permission_mode: Option<&'a str>,
+}
+
+/// A change the user makes to a listed conversation.
+#[derive(Clone, Copy)]
+pub(super) enum ConversationChange<'a> {
+    Rename(&'a str),
+    Delete,
+}
+
 impl CoreRuntime {
     /// A turn that needs another runtime process while sub-agents still run
     /// in the current one is queued; the queue sends it once they have ended.
-    pub(super) fn send_turn_action(&mut self, request: &Value) -> Result<Value, RuntimeError> {
-        match self.send_and_restore(request) {
+    pub(crate) fn send_turn(
+        &mut self,
+        request: TurnRequest,
+    ) -> Result<SnapshotResult, RuntimeError> {
+        match self.send_and_restore(&request) {
             Err(RuntimeError::OutstandingWork) => {
-                self.queue_after_work(request["payload"].clone());
+                self.queue_after_work(request);
                 self.snapshot_result()
             }
             result => result,
         }
     }
 
-    pub(super) fn send_and_restore(&mut self, request: &Value) -> Result<Value, RuntimeError> {
-        let result = self.send_turn(request);
-        if result.is_ok()
-            && let Some(id) = request["payload"]["conversationID"].as_str()
-        {
-            self.restore_archived(id);
+    pub(super) fn send_and_restore(
+        &mut self,
+        request: &TurnRequest,
+    ) -> Result<SnapshotResult, RuntimeError> {
+        let result = self.send_requested_turn(request);
+        if result.is_ok() {
+            self.restore_archived(&request.conversation_id);
         }
         result
     }
 
-    fn send_turn(&mut self, request: &Value) -> Result<Value, RuntimeError> {
+    fn send_requested_turn(
+        &mut self,
+        request: &TurnRequest,
+    ) -> Result<SnapshotResult, RuntimeError> {
         if self.turn_running() {
             return Err(RuntimeError::invalid("runtime is busy"));
         }
-        let source_runtime_id = request["payload"]["sourceRuntimeID"]
-            .as_str()
-            .ok_or_else(|| RuntimeError::invalid("source runtime instance id"))?;
-        let runtime_id = request["payload"]["runtimeInstanceID"]
-            .as_str()
-            .ok_or_else(|| RuntimeError::invalid("runtime instance id"))?;
-        let conversation_id = request["payload"]["conversationID"]
-            .as_str()
-            .ok_or_else(|| RuntimeError::invalid("conversation id"))?;
-        let selection = super::model_selection::requested_selection(request)?;
-        let attachments = self.turn_attachments(self.runtime_instance(runtime_id)?, request)?;
-        let text = super::attachments::compose_text(
-            request["payload"]["text"].as_str().unwrap_or_default(),
-            &attachments.files,
-        );
+        let source_runtime_id = request.source_runtime_id.as_str();
+        let runtime_id = request.runtime_id.as_str();
+        let conversation_id = request.conversation_id.as_str();
+        let selection = request.selection.clone();
+        let attachments = self.turn_attachments(
+            self.runtime_instance(runtime_id)?,
+            &request.turn.attachments,
+        )?;
+        let text = super::attachments::compose_text(&request.turn.text, &attachments.files);
         if text.trim().is_empty() && attachments.images.is_empty() {
             return Err(RuntimeError::invalid("message text"));
         }
         let text = text.as_str();
         let images = &attachments.images;
-        let effort = request["payload"]["effort"].as_str();
-        let permission_mode = request["payload"]["permissionMode"].as_str();
+        let effort = request.turn.effort.as_deref();
+        let permission_mode = request.turn.permission_mode.as_deref();
         let active_snapshot = self.native_snapshot();
         let active_conversation_id = self
             .session
@@ -150,9 +181,12 @@ impl CoreRuntime {
             }
             self.commit_unsubmitted_alias()?;
             if needs_new_target {
-                return self.send_action(
-                    &json!({"payload":{"runtimeInstanceID":runtime_id,"text":text,"effort":effort,"permissionMode":permission_mode,"images":images}}),
-                );
+                return self.send_action(Prompt {
+                    runtime_id,
+                    message: Some((text, images)),
+                    effort,
+                    permission_mode,
+                });
             }
         }
         if snapshot.conversation.runtime_id != runtime_id {
@@ -170,24 +204,28 @@ impl CoreRuntime {
         {
             self.prepare_with_selection(snapshot, selection.as_ref(), false)?;
         }
-        self.send_action(
-            &json!({"payload":{"runtimeInstanceID":runtime_id,"text":text,"effort":effort,"permissionMode":permission_mode,"images":images}}),
-        )
+        self.send_action(Prompt {
+            runtime_id,
+            message: Some((text, images)),
+            effort,
+            permission_mode,
+        })
     }
 
-    pub(super) fn create_conversation(&mut self, request: &Value) -> Result<Value, RuntimeError> {
+    pub(crate) fn create_conversation(
+        &mut self,
+        runtime_id: &str,
+        cwd: Option<String>,
+        selection: Option<ModelSelection>,
+    ) -> Result<SnapshotResult, RuntimeError> {
         if self.turn_running() {
             return Err(RuntimeError::invalid("runtime is busy"));
         }
-        let runtime_id = request["payload"]["runtimeInstanceID"]
-            .as_str()
-            .ok_or_else(|| RuntimeError::invalid("runtime instance id"))?;
         let runtime = self.runtime_instance(runtime_id)?.clone();
         if !runtime.enabled {
             return Err(RuntimeError::invalid("此运行时已停用，请先启用"));
         }
-        let cwd = request["payload"]["cwd"].as_str().map(PathBuf::from);
-        let selection = super::model_selection::requested_selection(request)?;
+        let cwd = cwd.map(PathBuf::from);
         if let Some(cwd) = &cwd {
             self.validate_runtime_cwd(&runtime, cwd)?;
         }
@@ -219,18 +257,16 @@ impl CoreRuntime {
         });
         self.snapshot_result()
     }
-    pub(super) fn open_conversation(&mut self, request: &Value) -> Result<Value, RuntimeError> {
+    pub(crate) fn open_conversation(
+        &mut self,
+        runtime_id: &str,
+        id: &str,
+    ) -> Result<SnapshotResult, RuntimeError> {
         // Reopening a conversation whose turn or sub-agents run shows it as it
         // runs; its native history is read again once they have ended.
         if self.session.executing() {
             return self.snapshot_result();
         }
-        let runtime_id = request["payload"]["runtimeInstanceID"]
-            .as_str()
-            .ok_or_else(|| RuntimeError::invalid("runtime instance id"))?;
-        let id = request["payload"]["conversationID"]
-            .as_str()
-            .ok_or_else(|| RuntimeError::invalid("conversation id"))?;
         let (snapshot, projection) = self.read_conversation_source(runtime_id, id)?;
         self.invalidate_execution()?;
         self.present_history(snapshot, projection);
@@ -276,13 +312,13 @@ impl CoreRuntime {
         }
     }
 
-    pub(super) fn read_conversation(&mut self, request: &Value) -> Result<Value, RuntimeError> {
-        let runtime_id = request["payload"]["runtimeInstanceID"]
-            .as_str()
-            .ok_or_else(|| RuntimeError::invalid("runtime instance id"))?;
-        let id = request["payload"]["conversationID"]
-            .as_str()
-            .ok_or_else(|| RuntimeError::invalid("conversation id"))?;
+    /// Read one native conversation without changing the active execution or
+    /// transcript projection.
+    pub(crate) fn read_conversation(
+        &mut self,
+        runtime_id: &str,
+        id: &str,
+    ) -> Result<SnapshotResult, RuntimeError> {
         tracing::info!(target:"velune_application", event="conversation_read_requested", conversation_id=%id, runtime_id=%runtime_id);
         let active_snapshot = self.native_snapshot();
         let active_id = self
@@ -359,14 +395,38 @@ impl CoreRuntime {
         snapshot.transcript_message_identities = transcript.message_identities();
         snapshot.sub_agents = self.sub_agents(&snapshot);
         snapshot.collaborators = self.collaborators(&snapshot);
-        Ok(json!({"snapshot":self.delivery.snapshot(snapshot)}))
+        Ok(SnapshotResult {
+            snapshot: Some(self.delivery.snapshot(snapshot)),
+        })
     }
 
-    pub(super) fn manage_conversation(
+    pub(crate) fn rename_conversation(
         &mut self,
-        request: &Value,
-        deleting: bool,
-    ) -> Result<Value, RuntimeError> {
+        runtime_id: &str,
+        id: &str,
+        title: &str,
+    ) -> Result<ConfigurationSnapshot, RuntimeError> {
+        self.manage_conversation(runtime_id, id, ConversationChange::Rename(title))
+    }
+
+    pub(crate) fn delete_conversation(
+        &mut self,
+        runtime_id: &str,
+        id: &str,
+    ) -> Result<ConfigurationSnapshot, RuntimeError> {
+        let result = self.manage_conversation(runtime_id, id, ConversationChange::Delete)?;
+        self.discard_composer_draft(id);
+        self.discard_conversation_choices(id);
+        Ok(result)
+    }
+
+    fn manage_conversation(
+        &mut self,
+        runtime_id: &str,
+        id: &str,
+        change: ConversationChange,
+    ) -> Result<ConfigurationSnapshot, RuntimeError> {
+        let deleting = matches!(change, ConversationChange::Delete);
         if self.session.executing() {
             return Err(RuntimeError::invalid(
                 "请先停止正在执行的任务与子 Agent，再修改会话",
@@ -375,27 +435,24 @@ impl CoreRuntime {
         if let Some(link) = self
             .conversation_links
             .iter()
-            .find(|link| Some(link.id.as_str()) == request["payload"]["conversationID"].as_str())
+            .find(|link| link.id == id)
             .cloned()
         {
-            if link.segments.first().is_none_or(|s| {
-                Some(s.runtime_instance_id.as_str())
-                    != request["payload"]["runtimeInstanceID"].as_str()
-            }) {
+            if link
+                .segments
+                .first()
+                .is_none_or(|s| s.runtime_instance_id != runtime_id)
+            {
                 return Err(RuntimeError::invalid("会话来源运行时不匹配"));
             }
-            let id = link.id.clone();
-            let result = self.manage_link(link, request, deleting);
+            let result = self.manage_link(link, change);
             if deleting && result.is_ok() {
-                self.forget_conversation(&id);
+                self.forget_conversation(id);
             }
             return result;
         }
-        let result = self.manage_native_conversation(request, deleting);
-        if deleting
-            && result.is_ok()
-            && let Some(id) = request["payload"]["conversationID"].as_str()
-        {
+        let result = self.manage_native_conversation(runtime_id, id, change);
+        if deleting && result.is_ok() {
             self.forget_conversation(id);
         }
         result
@@ -403,20 +460,16 @@ impl CoreRuntime {
 
     pub(super) fn manage_native_conversation(
         &mut self,
-        request: &Value,
-        deleting: bool,
-    ) -> Result<Value, RuntimeError> {
+        runtime_id: &str,
+        id: &str,
+        change: ConversationChange,
+    ) -> Result<ConfigurationSnapshot, RuntimeError> {
         if self.session.executing() {
             return Err(RuntimeError::invalid(
                 "请先停止正在执行的任务与子 Agent，再修改会话",
             ));
         }
-        let runtime_id = request["payload"]["runtimeInstanceID"]
-            .as_str()
-            .ok_or_else(|| RuntimeError::invalid("runtime instance id"))?;
-        let id = request["payload"]["conversationID"]
-            .as_str()
-            .ok_or_else(|| RuntimeError::invalid("conversation id"))?;
+        let deleting = matches!(change, ConversationChange::Delete);
         let runtime = self.runtime_instance(runtime_id)?.clone();
         if !runtime.enabled {
             return Err(RuntimeError::invalid("此运行时已停用，请先启用"));
@@ -439,16 +492,13 @@ impl CoreRuntime {
                 "此运行时适配器尚未接入原生会话重命名与删除接口",
             ));
         }
-        let title = if deleting {
-            None
-        } else {
-            Some(
-                request["payload"]["title"]
-                    .as_str()
-                    .map(str::trim)
+        let title = match change {
+            ConversationChange::Delete => None,
+            ConversationChange::Rename(title) => Some(
+                Some(title.trim())
                     .filter(|name| !name.is_empty())
                     .ok_or_else(|| RuntimeError::invalid("会话名称不能为空"))?,
-            )
+            ),
         };
         let native_id = id
             .strip_prefix(&format!("{runtime_id}:"))
@@ -523,7 +573,7 @@ impl CoreRuntime {
                 if deleting {
                     self.session.unsubmitted_draft = None;
                 }
-                return self.list_value();
+                return self.list();
             }
         }
         if !listed {
@@ -606,17 +656,17 @@ impl CoreRuntime {
             }
         }
         self.session.unsubmitted_draft = None;
-        self.list_value()
+        self.list()
     }
 
     /// A turn that is not sent withdraws what it asked for from the transcript.
-    pub(super) fn send_action(&mut self, request: &Value) -> Result<Value, RuntimeError> {
+    pub(super) fn send_action(&mut self, prompt: Prompt) -> Result<SnapshotResult, RuntimeError> {
         let previous = self
             .session
             .turn_observation
             .as_ref()
             .map(|op| op.operation_id.clone());
-        let result = self.send_turn_input(request);
+        let result = self.send_prompt(prompt);
         if result.is_err() {
             self.session.transcript_projection.withdraw_request();
             if self
@@ -642,8 +692,8 @@ impl CoreRuntime {
         result
     }
 
-    fn send_turn_input(&mut self, request: &Value) -> Result<Value, RuntimeError> {
-        self.ensure_active(request)?;
+    fn send_prompt(&mut self, prompt: Prompt) -> Result<SnapshotResult, RuntimeError> {
+        self.ensure_active(prompt.runtime_id)?;
         if self.turn_running() {
             return Err(RuntimeError::invalid("runtime is busy"));
         }
@@ -652,9 +702,9 @@ impl CoreRuntime {
         {
             self.ensure_work_ended()?;
         }
-        let text = request["payload"]["text"].as_str().unwrap_or_default();
-        let images = super::attachments::turn_images(request)?;
-        let resuming = request["action"] == "resumeTurn";
+        let (text, images) = prompt.message.unwrap_or_default();
+        let images = super::attachments::turn_images(images)?;
+        let resuming = prompt.message.is_none();
         if !resuming && text.trim().is_empty() && images.is_empty() {
             return Err(RuntimeError::invalid("message text"));
         }
@@ -675,13 +725,13 @@ impl CoreRuntime {
         }
         let input = pi::TurnInput {
             text: text.into(),
-            effort: self.requested_effort(request)?,
-            permission_mode: self.requested_permission_mode(request)?,
+            effort: self.requested_effort(prompt.effort)?,
+            permission_mode: self.requested_permission_mode(prompt.permission_mode)?,
             images,
         };
         // Requests bind to the next user message; a native resume has none.
         if !resuming {
-            self.request_turn_settings(request, &input)?;
+            self.request_turn_settings(prompt.runtime_id, &input);
         }
         if let ActiveState::Acp(session) = &mut self.session.active_state {
             self.session.unsubmitted_draft = None;
@@ -800,8 +850,8 @@ impl CoreRuntime {
         ))
     }
 
-    pub(super) fn cancel_action(&mut self, request: &Value) -> Result<Value, RuntimeError> {
-        self.ensure_active(request)?;
+    pub(crate) fn cancel(&mut self, runtime_id: &str) -> Result<SnapshotResult, RuntimeError> {
+        self.ensure_active(runtime_id)?;
         if let Some((gateway_id, session)) = self.backend_session_identity() {
             self.execution_backends
                 .cancel_session(&gateway_id, &session);
@@ -840,11 +890,11 @@ impl CoreRuntime {
 
     /// Stop the native sub-agents the conversation started, which may run
     /// after its turn has ended.
-    pub(super) fn stop_sub_agents_action(
+    pub(crate) fn stop_sub_agents(
         &mut self,
-        request: &Value,
-    ) -> Result<Value, RuntimeError> {
-        self.ensure_active(request)?;
+        runtime_id: &str,
+    ) -> Result<SnapshotResult, RuntimeError> {
+        self.ensure_active(runtime_id)?;
         if let ActiveState::Native(session) = &mut self.session.active_state {
             session
                 .stop_background()
@@ -854,10 +904,7 @@ impl CoreRuntime {
         self.snapshot_result()
     }
 
-    pub(super) fn ensure_active(&self, request: &Value) -> Result<(), RuntimeError> {
-        let requested = request["payload"]["runtimeInstanceID"]
-            .as_str()
-            .ok_or_else(|| RuntimeError::invalid("runtime instance id"))?;
+    pub(super) fn ensure_active(&self, requested: &str) -> Result<(), RuntimeError> {
         let active_runtime = self
             .native_snapshot()
             .map(|snapshot| snapshot.conversation.runtime_id)
@@ -960,14 +1007,7 @@ impl CoreRuntime {
 impl CoreRuntime {
     /// Tells the transcript what this turn asks for, against the projection
     /// as it stands before the runtime shows the turn's user message.
-    fn request_turn_settings(
-        &mut self,
-        request: &Value,
-        input: &pi::TurnInput,
-    ) -> Result<(), RuntimeError> {
-        let runtime_id = request["payload"]["runtimeInstanceID"]
-            .as_str()
-            .ok_or_else(|| RuntimeError::invalid("runtime instance id"))?;
+    fn request_turn_settings(&mut self, runtime_id: &str, input: &pi::TurnInput) {
         let selection = self.session.model_selection.clone().flatten();
         let model = selection
             .as_ref()
@@ -981,6 +1021,5 @@ impl CoreRuntime {
         };
         let _ = self.current_snapshot();
         self.session.transcript_projection.request(settings);
-        Ok(())
     }
 }

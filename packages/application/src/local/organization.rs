@@ -3,13 +3,13 @@
 //! project names. None of it is written to the runtimes' sessions, except an
 //! archive the runtime keeps itself.
 use super::*;
-use crate::api::{
-    ConversationGroup, ConversationOrganizationChange, ConversationProject, ConversationReference,
-    ConversationSearch, ListedConversation,
-};
 use crate::config::{
     ConversationBrowserGrouping, ConversationBrowserProject, ConversationBrowserSort,
     ConversationGroupKey, ConversationGroupSort, ConversationMarks,
+};
+use crate::{
+    ConversationGroup, ConversationOrganizationChange, ConversationProject, ConversationReference,
+    ConversationSearch, ListedConversation,
 };
 use std::cmp::Ordering;
 use std::collections::{BTreeSet, HashMap};

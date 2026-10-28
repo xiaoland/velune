@@ -8,7 +8,7 @@ mod analytics;
 mod commands;
 mod service;
 pub use service::ApplicationService;
-mod api;
+mod analytics_report;
 mod api_account_quota;
 mod ark_quota;
 mod authentication_resolver;
@@ -56,7 +56,7 @@ pub use runtime_management::{
 };
 pub use velune_agent_runtime::management::ErrorCode as RuntimeManagementErrorCode;
 mod runtime_discovery;
-pub use api::*;
+pub use velune_application_api::records::*;
 pub use velune_application_api::{
     ApplicationReply, AttachmentContent, AttachmentReference, ClientViewId, Command,
     ExecutionContext, Failure, FailureKind, Response, Revision,

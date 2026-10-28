@@ -72,33 +72,7 @@ pub struct AcpRuntimeInfo {
     pub auth_methods: Vec<AcpAuthMethod>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", content = "value", rename_all = "camelCase")]
-pub enum AcpConfigValue {
-    Select(String),
-    Boolean(bool),
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AcpConfigChoice {
-    pub value: String,
-    pub name: String,
-    pub description: Option<String>,
-    pub group: Option<String>,
-    pub group_name: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AcpConfigOption {
-    pub id: String,
-    pub name: String,
-    pub description: Option<String>,
-    pub category: Option<String>,
-    pub value: AcpConfigValue,
-    pub choices: Vec<AcpConfigChoice>,
-}
+pub use velune_conversation::acp_config::{AcpConfigChoice, AcpConfigOption, AcpConfigValue};
 
 impl RuntimeInstance {
     pub fn acp_launch(&self) -> Result<AcpLaunch, Error> {
