@@ -19,7 +19,7 @@ struct PreviewConversation: View {
                     }
                 }
                 Section("Velune") {
-                    ForEach(PreviewData.rows.filter { query.isEmpty || $0.conversation.title.localizedCaseInsensitiveContains(query) }, id: \.conversation.id) { listed in
+                    ForEach(PreviewData.rows.filter { query.isEmpty || $0.conversation.title.displayText().localizedCaseInsensitiveContains(query) }, id: \.conversation.id) { listed in
                         NavigationLink(value: listed.conversation.id) {
                             ConversationListRow(listed: listed, runtimeName: "Codex")
                         }
@@ -71,18 +71,18 @@ struct PreviewConversation: View {
 
 @MainActor
 enum PreviewData {
-    static let runtimes: [BindingRuntimeInstance] = [
-        .init(enabled: true, id: "sample", name: "Codex", typeId: "codex", gatewayId: "", settings: [:]),
-        .init(enabled: true, id: "claude", name: "Claude Code", typeId: "claude", gatewayId: "", settings: [:])
+    static let runtimes: [RuntimeInstance] = [
+        .init(enabled: true, id: "sample", name: "Codex", typeId: .codex, gatewayId: "", settings: [:]),
+        .init(enabled: true, id: "claude", name: "Claude Code", typeId: .claudeCode, gatewayId: "", settings: [:])
     ]
-    static let projects: [BindingConversationProject] = [
+    static let projects: [ConversationProject] = [
         .init(path: "/sample/velune", primaryFolder: "/sample/velune", nativeRuntimeId: nil, name: "Velune", folders: [], worktrees: [], latestActivityUnixMs: nil),
         .init(path: "/sample/website", primaryFolder: "/sample/website", nativeRuntimeId: nil, name: "Website", folders: [], worktrees: [], latestActivityUnixMs: nil)
     ]
-    static let models: [BindingRuntimeModel] = [.init(selection: .managed(modelRecordKey: "preview-model"), name: "GPT-5", reasoningEfforts: [])]
-    static var rows: [BindingListedConversation] {
+    static let models: [RuntimeModel] = [.init(selection: .managed(modelRecordKey: "preview-model"), name: "GPT-5", reasoningEfforts: [])]
+    static var rows: [ListedConversation] {
         ["iPad 控制端", "改进会话搜索与项目导航，让历史任务更容易找回", "梳理多窗口下的草稿恢复", "检查 Markdown 表格与代码阅读", "Agent 协作：复核本轮改动"].enumerated().map { index, title in
-            .init(conversation: .init(id: index == 0 ? "sample" : "sample-\(index)", title: title,
+            .init(conversation: .init(id: index == 0 ? "sample" : "sample-\(index)", title: .native(title),
                 updatedAtUnixMs: Int64(Date().timeIntervalSince1970 * 1000) - Int64(index * 3600000), createdAtUnixMs: nil,
                 runtimeId: "sample", cwd: "/sample/velune", canRename: false, canDelete: false, parentConversationId: nil),
                 nativeId: "sample-\(index)", agentsUri: nil, pinned: index == 0, unread: index == 1 || index == 4,
@@ -96,17 +96,17 @@ enum PreviewData {
     }
     static func model() -> ConversationModel {
         let model = ConversationModel(client: RemoteClient(), peer: "synthetic", target: .init(runtime: "sample", cwd: nil))
-        let user = BindingMessage(stamp: 1, completed: true, id: "user", role: .user, timestampUnixMs: nil, blocks: [.text(text: "帮我检查 iPad 控制端的构建结果。")])
-        var assistant = BindingMessage(stamp: 2, completed: true, id: "assistant", role: .assistant, timestampUnixMs: nil, blocks: [
+        let user = DeliveredMessage(stamp: 1, completed: true, id: "user", role: .user, timestampUnixMs: nil, blocks: [.text(text: "帮我检查 iPad 控制端的构建结果。")])
+        var assistant = DeliveredMessage(stamp: 2, completed: true, id: "assistant", role: .assistant, timestampUnixMs: nil, blocks: [
             .tool(toolId: "build", title: "检查构建", state: .completed, output: .inline(text: "Build succeeded"), linkedConversationId: nil),
             .text(text: "构建完成。**iPad 和 iPhone 使用同一份应用。**\n\n| 项目 | 状态 |\n| --- | --- |\n| 原生界面 | 已接入 |\n| 远程会话 | 使用共享核心 |\n\n```swift\nNavigationSplitView {\n    ConversationList()\n} detail: {\n    ConversationView()\n}\n```\n\n可以继续检查设备配对与会话操作。")])
         if ProcessInfo.processInfo.arguments.contains("--long") {
             assistant.blocks.append(.text(text: (1...24).map { "### 检查项 \($0)\n\n这是用于验证阅读历史时不跳到底部的合成段落。" }.joined(separator: "\n\n") + "\n\n```swift\nlet unfinished = true"))
         }
-        let turn = BindingTranscriptTurn(id: "turn", userMessageId: user.id, workMessageIds: [assistant.id], lastMessageId: assistant.id, replyStartBlock: 1, durationMs: 2400, isRunning: false, settings: nil, usage: nil)
-        let snapshot = BindingConversationSnapshot(cursor: .init(generation: 1, sequence: 1), base: nil, messageIds: [user.id, assistant.id], revision: 1,
-            conversation: .init(id: "sample", title: "iPad 控制端", updatedAtUnixMs: nil, createdAtUnixMs: nil, runtimeId: "sample", cwd: "/sample/velune", canRename: false, canDelete: false, parentConversationId: nil),
-            contextRuntimeId: "sample", resourceId: nil, modelRecordKey: nil, runState: .idle, messages: [user, assistant], transcriptTurns: [turn],
+        let turn = TranscriptTurn(id: "turn", userMessageId: user.id, workMessageIds: [assistant.id], lastMessageId: assistant.id, replyStartBlock: 1, durationMs: 2400, isRunning: false, settings: nil, usage: nil)
+        let snapshot = DeliveredSnapshot(cursor: .init(generation: 1, sequence: 1), base: nil, messageIds: [user.id, assistant.id], messages: [user, assistant], revision: 1,
+            conversation: .init(id: "sample", title: .native("iPad 控制端"), updatedAtUnixMs: nil, createdAtUnixMs: nil, runtimeId: "sample", cwd: "/sample/velune", canRename: false, canDelete: false, parentConversationId: nil),
+            contextRuntimeId: "sample", resourceId: nil, modelRecordKey: nil, runState: .idle, transcriptTurns: [turn],
             transcriptItems: [.message(id: "user", messageId: user.id), .work(turnId: turn.id), .message(id: "reply:assistant", messageId: assistant.id)],
             transcriptOutline: [.init(id: "user", messageId: "user")], transcriptMessageIdentities: [], messageIdentityConfirmations: [], pendingInteractions: [],
             actions: .init(canSend: true, canCancel: false, canSwitch: false),

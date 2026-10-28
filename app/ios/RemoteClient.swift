@@ -57,7 +57,7 @@ actor RemoteService {
         return try body(endpoint)
     }
 
-    func application<T>(_ peer: String, viewID: String, carrier: BindingTraceCarrier?, _ body: (VeluneApplication) throws -> T) throws -> T {
+    func application<T>(_ peer: String, viewID: String, carrier: TraceCarrier?, _ body: (VeluneApplication) throws -> T) throws -> T {
         guard let endpoint else { throw MobileError.unavailable }
         let key = ViewKey(peer: peer, view: viewID)
         let application: VeluneApplication
@@ -95,12 +95,12 @@ actor RemoteService {
         var names = Set<String>()
         let interfaces = path.availableInterfaces.filter { names.insert($0.name).inserted }
         let networks = interfaces.map { interface in
-            BindingPlatformNetwork(id: interface.name, wifi: interface.type == .wifi,
+            PlatformNetwork(id: interface.name, wifi: interface.type == .wifi,
                 cellular: interface.type == .cellular, ethernet: interface.type == .wiredEthernet,
                 vpn: interface.type == .other, internet: path.status == .satisfied,
                 validated: path.status == .satisfied, interfaceName: interface.name, addresses: [], dnsServers: [])
         }
-        let snapshot = BindingPlatformNetworkSnapshot(sequence: networkSequence,
+        let snapshot = PlatformNetworkSnapshot(sequence: networkSequence,
             elapsedRealtimeMs: UInt64(ProcessInfo.processInfo.systemUptime * 1000),
             reason: path.status == .satisfied ? .available : .lost,
             defaultNetworkId: path.status == .satisfied ? interfaces.first(where: { path.usesInterfaceType($0.type) })?.name : nil, networks: networks)
@@ -148,7 +148,7 @@ final class RemoteClient: @unchecked Sendable {
 
 @MainActor
 final class DeviceDirectory: ObservableObject {
-    @Published var state: BindingRemoteServiceSnapshot?
+    @Published var state: RemoteServiceSnapshot?
     private var activeWindows = Set<String>()
     private var polling: Task<Void, Never>?
 

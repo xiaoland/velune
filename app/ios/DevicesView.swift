@@ -5,8 +5,8 @@ import AVFoundation
 struct DevicesView: View {
     @ObservedObject var devices: DeviceStore
     @State private var adding = false
-    @State private var forgetting: BindingDeviceContact?
-    private var controlling: [BindingDeviceContact] { devices.state?.contacts.filter(\.controlAuthorized) ?? [] }
+    @State private var forgetting: DeviceContact?
+    private var controlling: [DeviceContact] { devices.state?.contacts.filter(\.controlAuthorized) ?? [] }
     var body: some View {
         NavigationStack {
             List {
@@ -62,7 +62,7 @@ private struct AddDeviceView: View {
     @State private var failure: String?
     @State private var busy = false
     @State private var scanning = false
-    private var pairing: BindingPairingStatus? { devices.state?.outgoingPairings.first { $0.peerId == pairingPeer } }
+    private var pairing: PairingStatus? { devices.state?.outgoingPairings.first { $0.peerId == pairingPeer } }
     var body: some View {
         NavigationStack {
             Form {
@@ -136,7 +136,7 @@ private struct AddDeviceView: View {
             } catch { failure = mobileError(error) }
         }
     }
-    private func pairingStatus(_ phase: BindingPairingPhase) -> String {
+    private func pairingStatus(_ phase: PairingPhase) -> String {
         switch phase {
         case .awaitingReady: return "正在连接"
         case .awaitingApproval: return "等待来源设备允许"

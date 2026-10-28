@@ -7,7 +7,7 @@ enum ConversationPanel: String, CaseIterable {
 
 struct ConversationInspector: View {
     @ObservedObject var model: ConversationModel
-    let active: [BindingActiveConversation]
+    let active: [ActiveConversation]
     @Binding var panel: ConversationPanel
     let jump: (String) -> Void
     let open: (String, Bool) -> Void
@@ -86,7 +86,7 @@ struct ConversationInspector: View {
     }
 }
 
-extension BindingMessage {
+extension DeliveredMessage {
     var plainText: String {
         blocks.compactMap { if case .text(let text) = $0 { return text }; return nil }.joined(separator: "\n")
     }

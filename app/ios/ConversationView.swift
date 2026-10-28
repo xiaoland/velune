@@ -2,11 +2,11 @@ import SwiftUI
 
 struct ConversationView: View {
     @ObservedObject var model: ConversationModel
-    let active: [BindingActiveConversation]
+    let active: [ActiveConversation]
     let openLinked: (String, Bool) -> Void
     let readChanged: () -> Void
-    var runtimes: [BindingRuntimeInstance] = []
-    var projects: [BindingConversationProject] = []
+    var runtimes: [RuntimeInstance] = []
+    var projects: [ConversationProject] = []
     var deviceName = ""
     @Environment(\.scenePhase) private var phase
     var body: some View {
@@ -29,10 +29,10 @@ struct ConversationView: View {
 
 struct ConversationContent: View {
     @ObservedObject var model: ConversationModel
-    var active: [BindingActiveConversation] = []
+    var active: [ActiveConversation] = []
     var openLinked: (String, Bool) -> Void = { _, _ in }
-    let runtimes: [BindingRuntimeInstance]
-    let projects: [BindingConversationProject]
+    let runtimes: [RuntimeInstance]
+    let projects: [ConversationProject]
     let deviceName: String
     @State private var following: Bool
     @State private var restored = false
@@ -40,7 +40,7 @@ struct ConversationContent: View {
     @SceneStorage("conversationInspector") private var inspectorVisible = false
     @SceneStorage("conversationPanel") private var panelName = ConversationPanel.outline.rawValue
     private var panel: Binding<ConversationPanel> { Binding(get: { ConversationPanel(rawValue: panelName) ?? .outline }, set: { panelName = $0.rawValue }) }
-    init(model: ConversationModel, active: [BindingActiveConversation] = [], openLinked: @escaping (String, Bool) -> Void = { _, _ in }, runtimes: [BindingRuntimeInstance] = [], projects: [BindingConversationProject] = [], deviceName: String = "") {
+    init(model: ConversationModel, active: [ActiveConversation] = [], openLinked: @escaping (String, Bool) -> Void = { _, _ in }, runtimes: [RuntimeInstance] = [], projects: [ConversationProject] = [], deviceName: String = "") {
         self.model = model; self.active = active; self.openLinked = openLinked
         self.runtimes = runtimes; self.projects = projects; self.deviceName = deviceName
         _following = State(initialValue: model.following)
@@ -211,9 +211,9 @@ private struct TranscriptPosition: Equatable {
 }
 
 private struct InteractionView: View {
-    let interaction: BindingRuntimeInteraction
+    let interaction: RuntimeInteraction
     let busy: Bool
-    let reply: (BindingRuntimeInteractionReply) -> Void
+    let reply: (RuntimeInteractionReply) -> Void
     @State private var answers: [String: String] = [:]
     @State private var selected: [String: String] = [:]
     var body: some View {
@@ -257,7 +257,7 @@ private struct InteractionView: View {
     }
     private func value(_ id: String) -> String { selected[id] ?? answers[id] ?? "" }
     private func answer(_ id: String) -> Binding<String> { Binding(get: { answers[id] ?? "" }, set: { answers[id] = $0; selected[id] = nil }) }
-    private func approvalButtons(_ options: [BindingInteractionOption]) -> some View {
+    private func approvalButtons(_ options: [InteractionOption]) -> some View {
         ForEach(options, id: \.id) { option in Button(option.label) { reply(.decision(optionId: option.id)) }.buttonStyle(.bordered) }
     }
 }

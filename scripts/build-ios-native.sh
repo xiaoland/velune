@@ -13,11 +13,20 @@ if [[ "${CONFIGURATION:-Debug}" == Release ]]; then profile=release; cargo_profi
 cargo rustc --locked --target-dir target/ios-rust -p velune-bindings --lib \
   --target "$rust_target" --no-default-features --features remote "$cargo_profile" --crate-type staticlib
 output="$PWD/target/ios-generated"
+rm -rf "$output"
 mkdir -p "$output"
 cargo run --locked --target-dir target/ios-bindgen -p velune-bindings --no-default-features --features cli \
   --bin velune-bindgen -- generate --library "target/ios-rust/$rust_target/$profile/libvelune_bindings.a" \
   --language swift --out-dir "$output" --no-format
-cp "$output/VeluneBindingsFFI.modulemap" "$output/module.modulemap"
+# Each contract crate generates its own Swift file and header; one C module
+# holds every header so the generated files share VeluneBindingsFFI.
+{
+  echo 'module VeluneBindingsFFI {'
+  for header in "$output"/*.h; do echo "    header \"$(basename "$header")\""; done
+  echo '    export *'
+  echo '}'
+} > "$output/module.modulemap"
+rm -f "$output"/Velune*FFI.modulemap
 python3 -I scripts/android-licenses.py remote "$output/rust-licenses.txt" "$rust_target"
 cat app/ios/Licenses/MarkdownUI-LICENSE.txt app/ios/Licenses/NetworkImage-LICENSE.txt app/mac/Licenses/swift-cmark-COPYING.txt > "$output/swift-licenses.txt"
 cat app/mac/Licenses/SwiftPackages/*.txt >> "$output/swift-licenses.txt"

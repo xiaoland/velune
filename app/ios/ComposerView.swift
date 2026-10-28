@@ -2,8 +2,8 @@ import SwiftUI
 
 struct ComposerView: View {
     @ObservedObject var model: ConversationModel
-    let runtimes: [BindingRuntimeInstance]
-    let projects: [BindingConversationProject]
+    let runtimes: [RuntimeInstance]
+    let projects: [ConversationProject]
     var composing: FocusState<Bool>.Binding
     let sendFromKeyboard: () -> Void
 
@@ -12,7 +12,7 @@ struct ComposerView: View {
         guard let cwd = model.cwd else { return "默认目录" }
         return projects.first { $0.primaryFolder == cwd }?.name ?? URL(fileURLWithPath: cwd).lastPathComponent
     }
-    private var directoryProjects: [BindingConversationProject] {
+    private var directoryProjects: [ConversationProject] {
         var seen = Set<String>()
         return projects.filter { project in project.primaryFolder.map { seen.insert($0).inserted } ?? false }
     }
@@ -92,7 +92,7 @@ struct ComposerView: View {
                 Spacer(minLength: 0)
                 Menu {
                     Picker("模型", selection: $model.selection) {
-                        Text(model.isNew ? "运行时默认" : "沿用会话模型").tag(nil as BindingModelSelection?)
+                        Text(model.isNew ? "运行时默认" : "沿用会话模型").tag(nil as ModelSelection?)
                         ForEach(model.models, id: \.selection) { Text($0.name).tag(Optional($0.selection)) }
                     }
                 } label: {

@@ -34,7 +34,7 @@ struct MarkdownText: View {
 }
 
 /// Block boundaries come from the core's turn projection, including shared work/reply messages.
-func transcriptBlocks(_ message: BindingMessage, turn: BindingTranscriptTurn?, reply: Bool) -> [BindingMessageBlock] {
+func transcriptBlocks(_ message: DeliveredMessage, turn: TranscriptTurn?, reply: Bool) -> [DeliveredBlock] {
     guard let turn, turn.lastMessageId == message.id, turn.replyStartBlock > 0 else { return message.blocks }
     return reply ? Array(message.blocks.dropFirst(Int(turn.replyStartBlock))) : Array(message.blocks.prefix(Int(turn.replyStartBlock)))
 }
@@ -79,8 +79,8 @@ struct TranscriptView: View {
 }
 
 private struct MessageView: View {
-    let message: BindingMessage
-    let blocks: [BindingMessageBlock]
+    let message: DeliveredMessage
+    let blocks: [DeliveredBlock]
     @ObservedObject var model: ConversationModel
     var openLinked: (String, Bool) -> Void
     var body: some View {
@@ -130,7 +130,7 @@ private struct MessageView: View {
 }
 
 private struct PayloadView: View {
-    let payload: BindingMessagePayload
+    let payload: MessagePayload
     let messageID: String
     @ObservedObject var model: ConversationModel
     var body: some View {

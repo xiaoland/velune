@@ -8,16 +8,16 @@ struct WorkspaceView: View {
     @Environment(\.horizontalSizeClass) private var sizeClass
     @Environment(\.openWindow) private var openWindow
     @Environment(\.supportsMultipleWindows) private var supportsMultipleWindows
-    @State private var listing: BindingConfigurationSnapshot?
-    @State private var searchResult: BindingConversationSearch?
-    @State private var active: [BindingActiveConversation] = []
+    @State private var listing: ConfigurationSnapshot?
+    @State private var searchResult: ConversationSearch?
+    @State private var active: [ActiveConversation] = []
     @State private var compactColumn: NavigationSplitViewColumn = .sidebar
     @State private var query = ""
     @FocusState private var searchFocused: Bool
-    @State private var matches: [BindingListedConversation] = []
+    @State private var matches: [ListedConversation] = []
     @State private var showingMatches = false
     @State private var listFailed = false
-    private var groups: [BindingConversationGroup] { query.isEmpty ? listing?.conversationGroups ?? [] : searchResult?.groups ?? [] }
+    private var groups: [ConversationGroup] { query.isEmpty ? listing?.conversationGroups ?? [] : searchResult?.groups ?? [] }
 
     var body: some View {
         NavigationSplitView(preferredCompactColumn: $compactColumn) {
@@ -133,7 +133,7 @@ struct WorkspaceView: View {
         .sheet(isPresented: $showingMatches) {
             NavigationStack {
                 List(matches, id: \.conversation.id) { listed in
-                    Button(listed.conversation.title) { devices.select(ConversationTarget(listed)); showingMatches = false }
+                    Button(listed.conversation.title.displayText()) { devices.select(ConversationTarget(listed)); showingMatches = false }
                 }
                 .overlay { if matches.isEmpty { ContentUnavailableView("没有找到匹配会话", systemImage: "magnifyingglass") } }
                 .navigationTitle("链接中的会话").toolbar { Button("关闭") { showingMatches = false } }
@@ -192,7 +192,7 @@ struct WorkspaceView: View {
         compactColumn = .sidebar
         searchFocused = true
     }
-    private func organize(_ row: BindingListedConversation, _ change: BindingConversationOrganizationChange) {
+    private func organize(_ row: ListedConversation, _ change: ConversationOrganizationChange) {
         if change == .markUnread, devices.selected?.conversation == row.conversation.id { devices.currentModel?.holdUnread() }
         Task {
             do {
@@ -203,7 +203,7 @@ struct WorkspaceView: View {
             } catch { report(error, "标记会话") }
         }
     }
-    private func toggle(_ group: BindingConversationGroup) {
+    private func toggle(_ group: ConversationGroup) {
         guard var preferences = listing?.conversationBrowserPreferences else { return }
         if group.collapsed { preferences.collapsed.removeAll { $0 == group.key } }
         else { preferences.collapsed.append(group.key) }
@@ -233,11 +233,11 @@ struct WorkspaceView: View {
             searchResult = result
         } catch { report(error, "搜索会话") }
     }
-    private func conversations(_ key: BindingConversationGroupKey) -> [BindingListedConversation] {
+    private func conversations(_ key: ConversationGroupKey) -> [ListedConversation] {
         let rows = query.isEmpty ? listing?.conversations ?? [] : searchResult?.conversations ?? []
         return rows.filter { $0.group == key && !$0.archived && $0.conversation.parentConversationId == nil }
     }
-    private func groupTitle(_ group: BindingConversationGroup) -> String {
+    private func groupTitle(_ group: ConversationGroup) -> String {
         if let name = group.name { return name }
         switch group.key {
         case .all: return "会话"
@@ -263,10 +263,10 @@ struct NewWindowButton: View {
 }
 
 struct ConversationListRow: View {
-    let listed: BindingListedConversation
+    let listed: ListedConversation
     let runtimeName: String
-    var active: [BindingActiveConversation] = []
-    private var activity: [BindingActiveConversation] {
+    var active: [ActiveConversation] = []
+    private var activity: [ActiveConversation] {
         active.filter { $0.conversationId == listed.conversation.id || $0.parentConversationId == listed.conversation.id }
     }
     var body: some View {
@@ -282,7 +282,7 @@ struct ConversationListRow: View {
                 } else { Color.clear }
             }.frame(width: 12, height: 20)
             VStack(alignment: .leading, spacing: 5) {
-                Text(listed.conversation.title).lineLimit(2).fontWeight(listed.unread ? .semibold : .regular)
+                Text(listed.conversation.title.displayText()).lineLimit(2).fontWeight(listed.unread ? .semibold : .regular)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 HStack(spacing: 5) {
                     if listed.pinned { Image(systemName: "pin.fill").accessibilityLabel("已置顶") }

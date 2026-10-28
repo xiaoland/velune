@@ -10,13 +10,13 @@ struct ConversationTarget: Hashable, Codable {
     var cwd: String?
     // New drafts have their own identity even when created in the same project.
     var draftID = UUID()
-    init(_ listed: BindingListedConversation) {
+    init(_ listed: ListedConversation) {
         self.init(listed.conversation)
     }
-    init(_ summary: BindingConversationSummary) {
+    init(_ summary: ConversationSummary) {
         runtime = summary.runtimeId
         conversation = summary.id
-        title = summary.title
+        title = summary.title.displayText()
         cwd = summary.cwd
         draftID = UUID(uuidString: "00000000-0000-0000-0000-000000000000")!
     }
@@ -30,10 +30,10 @@ final class ConversationModel: ObservableObject {
     let client: RemoteClient
     let peer: String
     let target: ConversationTarget
-    @Published var snapshot: BindingConversationSnapshot?
-    @Published var messages: [String: BindingMessage] = [:]
-    @Published var models: [BindingRuntimeModel] = []
-    @Published var selection: BindingModelSelection? {
+    @Published var snapshot: DeliveredSnapshot?
+    @Published var messages: [String: DeliveredMessage] = [:]
+    @Published var models: [RuntimeModel] = []
+    @Published var selection: ModelSelection? {
         didSet {
             guard !restoringSelection else { return }
             choices[runtimeID] = .init(model: selection, effort: nil, permissionMode: nil)
@@ -42,7 +42,7 @@ final class ConversationModel: ObservableObject {
     }
     @Published private(set) var destination: DraftDestination
     @Published private(set) var loadingModels = false
-    private var choices: [String: BindingTurnChoice] = [:]
+    private var choices: [String: TurnChoice] = [:]
     private var restoringSelection = false
     @Published var busy = false
     @Published var loading = true
@@ -54,9 +54,9 @@ final class ConversationModel: ObservableObject {
     var problemContext = ""
     var following = true
     var readingOffset: CGFloat = 0
-    private var heldUnreadCursor: BindingTranscriptCursor?
+    private var heldUnreadCursor: TranscriptCursor?
     private var markingRead = false
-    private var payloads: [String: BindingMessage] = [:]
+    private var payloads: [String: DeliveredMessage] = [:]
 
     init(client: RemoteClient, peer: String, target: ConversationTarget) {
         self.client = client; self.peer = peer; self.target = target
@@ -66,7 +66,7 @@ final class ConversationModel: ObservableObject {
     var runtimeID: String { snapshot?.contextRuntimeId ?? destination.runtime }
     var title: String {
         if snapshot?.conversation.parentConversationId != nil { return target.title }
-        return snapshot?.conversation.title ?? target.title
+        return snapshot?.conversation.title.displayText() ?? target.title
     }
     var currentTarget: ConversationTarget {
         var result = snapshot.map { ConversationTarget($0.conversation) } ?? target
@@ -186,9 +186,9 @@ final class ConversationModel: ObservableObject {
         } catch { report(error, source: "更新会话") }
     }
 
-    private func apply(_ result: BindingSnapshotResult) { if let next = result.snapshot { merge(next) } }
+    private func apply(_ result: SnapshotResult) { if let next = result.snapshot { merge(next) } }
 
-    func merge(_ next: BindingConversationSnapshot) {
+    func merge(_ next: DeliveredSnapshot) {
         let fresh = Dictionary(uniqueKeysWithValues: next.messages.map { ($0.id, $0) })
         let ids = Set(next.messageIds)
         messages = next.base == nil ? fresh : messages.merging(fresh) { _, new in new }.filter { ids.contains($0.key) }
@@ -201,7 +201,7 @@ final class ConversationModel: ObservableObject {
         }
     }
 
-    func message(_ id: String) -> BindingMessage? { payloads[id] ?? messages[id] }
+    func message(_ id: String) -> DeliveredMessage? { payloads[id] ?? messages[id] }
 
     func send() {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -213,13 +213,13 @@ final class ConversationModel: ObservableObject {
             if self.snapshot == nil {
                 guard self.target.conversation == nil else { throw MobileError.missingConversation }
                 self.apply(try await self.client.application(self.peer, operation: .conversationWrite) {
-                    try $0.createConversationWithSelection(runtimeId: runtime, cwd: cwd, selection: selection)
+                    try $0.createConversation(runtimeId: runtime, cwd: cwd, selection: selection)
                 })
             }
             guard let current = self.snapshot else { throw MobileError.missingConversation }
-            let turn = BindingComposedTurn(text: text, effort: nil, permissionMode: nil, attachments: [])
+            let turn = ComposedTurn(text: text, effort: nil, permissionMode: nil, attachments: [])
             self.apply(try await self.client.application(self.peer, operation: .send) {
-                try $0.sendTurnWithSelection(sourceRuntimeId: current.contextRuntimeId, conversationId: current.conversation.id,
+                try $0.sendTurn(sourceRuntimeId: current.contextRuntimeId, conversationId: current.conversation.id,
                     targetRuntimeId: runtime, selection: selection, turn: turn)
             })
             if self.draft.trimmingCharacters(in: .whitespacesAndNewlines) == text { self.draft = "" }
@@ -239,7 +239,7 @@ final class ConversationModel: ObservableObject {
         self.apply(try await self.client.application(self.peer, operation: .cancel) { try $0.cancel(runtimeId: current.contextRuntimeId, conversationId: current.conversation.id) })
     } }
 
-    func reply(_ id: String, _ reply: BindingRuntimeInteractionReply) { act("回复运行时请求") {
+    func reply(_ id: String, _ reply: RuntimeInteractionReply) { act("回复运行时请求") {
         guard let current = self.snapshot else { return }
         self.apply(try await self.client.application(self.peer, operation: .reply) {
             try $0.replyRuntimeInteraction(runtimeId: current.contextRuntimeId, conversationId: current.conversation.id, interactionId: id, reply: reply)

@@ -9,11 +9,11 @@ struct WindowRoute: Hashable, Codable {
 
 struct ComposerState: Codable {
     var text = ""
-    var selection: BindingModelSelection?
+    var selection: ModelSelection?
     var following = true
     var offset: CGFloat = 0
     var destination: DraftDestination?
-    var choices: [String: BindingTurnChoice]?
+    var choices: [String: TurnChoice]?
 }
 
 struct DraftDestination: Codable {
@@ -56,7 +56,7 @@ final class DeviceStore: ObservableObject {
         history.removeAll { $0 == target }; persist()
     }
     private var observation: AnyCancellable?
-    var state: BindingRemoteServiceSnapshot? { directory.state }
+    var state: RemoteServiceSnapshot? { directory.state }
     var currentModel: ConversationModel? { selected.flatMap { models[key($0)] } }
     var deviceName: String { state?.contacts.first { $0.peerId == peer }?.name ?? "设备" }
 
