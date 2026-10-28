@@ -1,65 +1,103 @@
 //! Provider-owned configuration operations with one atomic commit.
 use super::*;
+use crate::provider_configuration::ProviderEdit;
 impl CoreRuntime {
-    pub(super) fn provider_action(&mut self, payload: &Value) -> Result<Value, RuntimeError> {
-        if matches!(
-            payload["operation"].as_str(),
-            Some("quota" | "refreshQuota")
-        ) {
-            let gateway_id = payload["gatewayID"]
-                .as_str()
-                .ok_or_else(|| RuntimeError::invalid("gateway id"))?;
-            let provider_id = payload["providerID"]
-                .as_str()
-                .ok_or_else(|| RuntimeError::invalid("provider id"))?;
-            return Ok(serde_json::to_value(self.subscription_quota.query(
-                gateway_id,
-                provider_id,
-                payload["operation"] == "refreshQuota",
-            )?)?);
-        }
-        if payload["operation"] == "quotaAlerts" {
-            let since = payload["since"]
-                .as_u64()
-                .ok_or_else(|| RuntimeError::invalid("since"))?;
-            return Ok(serde_json::to_value(self.subscription_quota.alerts(since))?);
-        }
-        if matches!(
-            payload["operation"].as_str(),
-            Some("quotaHistory" | "clearQuotaHistory")
-        ) {
-            let gateway_id = payload["gatewayID"]
-                .as_str()
-                .ok_or_else(|| RuntimeError::invalid("gateway id"))?;
-            let provider_id = payload["providerID"]
-                .as_str()
-                .ok_or_else(|| RuntimeError::invalid("provider id"))?;
-            let history = if payload["operation"] == "clearQuotaHistory" {
-                self.subscription_quota
-                    .clear_history(gateway_id, provider_id)?
-            } else {
-                let since = payload["sinceMs"]
-                    .as_i64()
-                    .ok_or_else(|| RuntimeError::invalid("since"))?;
-                self.subscription_quota
-                    .history(gateway_id, provider_id, since)?
-            };
-            return Ok(serde_json::to_value(history)?);
-        }
-        if payload["operation"] == "readApiKey" {
-            let gateway = self
-                .gateways
-                .iter()
-                .find(|g| g.id == payload["gatewayID"].as_str().unwrap_or(""))
-                .ok_or_else(|| RuntimeError::invalid("gateway id"))?;
-            let provider = gateway
-                .providers
-                .iter()
-                .find(|p| p.id == payload["providerID"].as_str().unwrap_or(""))
-                .ok_or_else(|| RuntimeError::invalid("provider id"))?;
-            return crate::authentication_resolver::read_api_key(provider, &self.options)
-                .map(Value::String);
-        }
+    pub(crate) fn provider_quota(
+        &self,
+        gateway_id: String,
+        provider_id: String,
+        refresh: bool,
+    ) -> Result<crate::ProviderQuotaStatus, RuntimeError> {
+        self.subscription_quota
+            .query(&gateway_id, &provider_id, refresh)
+    }
+
+    pub(crate) fn quota_alerts(&self, since: u64) -> Result<crate::QuotaAlerts, RuntimeError> {
+        Ok(self.subscription_quota.alerts(since))
+    }
+
+    pub(crate) fn provider_quota_history(
+        &self,
+        gateway_id: String,
+        provider_id: String,
+        since_ms: i64,
+    ) -> Result<crate::ProviderQuotaHistory, RuntimeError> {
+        self.subscription_quota
+            .history(&gateway_id, &provider_id, since_ms)
+    }
+
+    pub(crate) fn clear_provider_quota_history(
+        &self,
+        gateway_id: String,
+        provider_id: String,
+    ) -> Result<crate::ProviderQuotaHistory, RuntimeError> {
+        self.subscription_quota
+            .clear_history(&gateway_id, &provider_id)
+    }
+
+    pub(crate) fn read_provider_api_key(
+        &self,
+        gateway_id: String,
+        provider_id: String,
+    ) -> Result<String, RuntimeError> {
+        let provider = self
+            .gateways
+            .iter()
+            .find(|g| g.id == gateway_id)
+            .ok_or_else(|| RuntimeError::invalid("gateway id"))?
+            .providers
+            .iter()
+            .find(|p| p.id == provider_id)
+            .ok_or_else(|| RuntimeError::invalid("provider id"))?;
+        crate::authentication_resolver::read_api_key(provider, &self.options)
+    }
+
+    pub(crate) fn save_provider(
+        &mut self,
+        gateway_id: String,
+        provider: crate::ProviderDraft,
+        authentication: crate::AuthenticationEdit,
+        quota_authentication: Option<crate::QuotaAuthenticationEdit>,
+    ) -> Result<crate::GatewayUpdate, RuntimeError> {
+        self.edit_gateway(
+            &gateway_id,
+            ProviderEdit::Save {
+                provider,
+                authentication,
+                quota_authentication,
+            },
+        )
+    }
+
+    pub(crate) fn delete_provider(
+        &mut self,
+        gateway_id: String,
+        provider_id: String,
+    ) -> Result<crate::GatewayUpdate, RuntimeError> {
+        self.edit_gateway(&gateway_id, ProviderEdit::Delete { provider_id })
+    }
+
+    pub(crate) fn save_model_route(
+        &mut self,
+        gateway_id: String,
+        route: crate::config::ModelRoute,
+    ) -> Result<crate::GatewayUpdate, RuntimeError> {
+        self.edit_gateway(&gateway_id, ProviderEdit::SaveRoute { route })
+    }
+
+    pub(crate) fn delete_model_route(
+        &mut self,
+        gateway_id: String,
+        route_record_key: String,
+    ) -> Result<crate::GatewayUpdate, RuntimeError> {
+        self.edit_gateway(&gateway_id, ProviderEdit::DeleteRoute { route_record_key })
+    }
+
+    fn edit_gateway(
+        &mut self,
+        gateway_id: &str,
+        edit: ProviderEdit,
+    ) -> Result<crate::GatewayUpdate, RuntimeError> {
         if self.execution_active()
             || self
                 .authentication
@@ -76,7 +114,7 @@ impl CoreRuntime {
         let previous_runtimes = self.runtime_instances.clone();
         let mut pending = previous.clone();
         let runtimes = self.runtime_instances.clone();
-        crate::provider_configuration::edit_provider(&mut pending, payload, &|login| {
+        crate::provider_configuration::edit_provider(&mut pending, gateway_id, edit, &|login| {
             crate::claude_cli::linked_directory(login, &runtimes)
         })?;
         link_claude_logins(&previous, &mut pending)?;
@@ -129,18 +167,40 @@ impl CoreRuntime {
                 "提供商配置已保存，但旧订阅认证清理失败；请检查应用配置目录的写入权限。",
             ));
         }
-        Ok(json!({"gateways":self.public_gateways(),"executionInvalidated":reconnect}))
+        Ok(crate::GatewayUpdate {
+            gateways: self.public_gateways(),
+            execution_invalidated: reconnect,
+        })
     }
-    pub(super) fn template_action(&mut self, payload: &Value) -> Result<Value, RuntimeError> {
-        let previous = self.model_templates.clone();
-        let mut pending = previous.clone();
-        crate::provider_configuration::edit_template(&mut pending, payload)?;
-        self.model_templates = pending;
+
+    pub(crate) fn save_model_template(
+        &mut self,
+        template: crate::config::ModelTemplate,
+    ) -> Result<Vec<crate::config::ModelTemplate>, RuntimeError> {
+        let mut pending = self.model_templates.clone();
+        crate::provider_configuration::save_template(&mut pending, template)?;
+        self.store_model_templates(pending)
+    }
+
+    pub(crate) fn delete_model_template(
+        &mut self,
+        id: String,
+    ) -> Result<Vec<crate::config::ModelTemplate>, RuntimeError> {
+        let mut pending = self.model_templates.clone();
+        pending.retain(|template| template.id != id);
+        self.store_model_templates(pending)
+    }
+
+    fn store_model_templates(
+        &mut self,
+        templates: Vec<crate::config::ModelTemplate>,
+    ) -> Result<Vec<crate::config::ModelTemplate>, RuntimeError> {
+        let previous = std::mem::replace(&mut self.model_templates, templates);
         if let Err(error) = self.persist() {
             self.model_templates = previous;
             return Err(error);
         }
-        Ok(serde_json::to_value(&self.model_templates)?)
+        Ok(self.model_templates.clone())
     }
 }
 

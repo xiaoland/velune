@@ -1,11 +1,11 @@
 //! Provider login adapters share progress and staging semantics without sharing secrets.
-use serde_json::Value;
+use velune_conversation::authentication::LoginProgress;
 pub(crate) enum Login {
     Codex(crate::subscription_auth::Login),
     Claude(crate::claude_cli::Login),
 }
 impl Login {
-    pub(crate) fn poll(&mut self) -> Value {
+    pub(crate) fn poll(&mut self) -> LoginProgress {
         match self {
             Self::Codex(v) => v.poll(),
             Self::Claude(v) => v.poll(),

@@ -661,9 +661,11 @@ impl Application {
                 path,
             } => Response::FileDiff(application.file_diff(runtime_id, conversation_id, path)?),
             Command::PreviewProviderImport { gateway_id, source } => {
-                Response::PreviewProviderImport(
-                    application.preview_provider_import(gateway_id, source)?,
-                )
+                Response::PreviewProviderImport(application.runtime.serve(
+                    Focus::None,
+                    Login::Blocks,
+                    |core| core.preview_provider_import(gateway_id, source),
+                )?)
             }
             Command::ApplyProviderImport {
                 gateway_id,
@@ -671,76 +673,118 @@ impl Application {
                 preview_token,
                 selections,
                 replace_existing,
-            } => Response::ApplyProviderImport(application.apply_provider_import(
-                gateway_id,
-                source,
-                preview_token,
-                selections,
-                replace_existing,
+            } => Response::ApplyProviderImport(application.runtime.serve(
+                Focus::None,
+                Login::Blocks,
+                |core| {
+                    core.apply_provider_import(
+                        gateway_id,
+                        source,
+                        preview_token,
+                        selections,
+                        replace_existing,
+                    )
+                },
             )?),
             Command::ProviderQuota {
                 gateway_id,
                 provider_id,
-            } => Response::ProviderQuota(application.provider_quota(gateway_id, provider_id)?),
+            } => Response::ProviderQuota(application.runtime.serve(
+                Focus::None,
+                Login::Blocks,
+                |core| core.provider_quota(gateway_id, provider_id, false),
+            )?),
             Command::RefreshProviderQuota {
                 gateway_id,
                 provider_id,
-            } => Response::RefreshProviderQuota(
-                application.refresh_provider_quota(gateway_id, provider_id)?,
-            ),
+            } => Response::RefreshProviderQuota(application.runtime.serve(
+                Focus::None,
+                Login::Blocks,
+                |core| core.provider_quota(gateway_id, provider_id, true),
+            )?),
             Command::ProviderQuotaHistory {
                 gateway_id,
                 provider_id,
                 since_ms,
-            } => Response::ProviderQuotaHistory(application.provider_quota_history(
-                gateway_id,
-                provider_id,
-                since_ms,
+            } => Response::ProviderQuotaHistory(application.runtime.serve(
+                Focus::None,
+                Login::Blocks,
+                |core| core.provider_quota_history(gateway_id, provider_id, since_ms),
             )?),
             Command::ClearProviderQuotaHistory {
                 gateway_id,
                 provider_id,
-            } => Response::ClearProviderQuotaHistory(
-                application.clear_provider_quota_history(gateway_id, provider_id)?,
-            ),
-            Command::QuotaAlerts { since } => {
-                Response::QuotaAlerts(application.quota_alerts(since)?)
-            }
+            } => Response::ClearProviderQuotaHistory(application.runtime.serve(
+                Focus::None,
+                Login::Blocks,
+                |core| core.clear_provider_quota_history(gateway_id, provider_id),
+            )?),
+            Command::QuotaAlerts { since } => Response::QuotaAlerts(application.runtime.serve(
+                Focus::None,
+                Login::Blocks,
+                |core| core.quota_alerts(since),
+            )?),
             Command::SaveProvider {
                 gateway_id,
                 provider,
                 authentication_edit,
                 quota_authentication_edit,
-            } => Response::SaveProvider(application.save_provider(
-                gateway_id,
-                provider,
-                authentication_edit,
-                quota_authentication_edit,
+            } => Response::SaveProvider(application.runtime.serve(
+                Focus::None,
+                Login::Blocks,
+                |core| {
+                    core.save_provider(
+                        gateway_id,
+                        provider,
+                        authentication_edit,
+                        quota_authentication_edit,
+                    )
+                },
             )?),
             Command::DeleteProvider {
                 gateway_id,
                 provider_id,
-            } => Response::DeleteProvider(application.delete_provider(gateway_id, provider_id)?),
+            } => Response::DeleteProvider(application.runtime.serve(
+                Focus::None,
+                Login::Blocks,
+                |core| core.delete_provider(gateway_id, provider_id),
+            )?),
             Command::SaveModelRoute { gateway_id, route } => {
-                Response::SaveModelRoute(application.save_model_route(gateway_id, route)?)
+                Response::SaveModelRoute(application.runtime.serve(
+                    Focus::None,
+                    Login::Blocks,
+                    |core| core.save_model_route(gateway_id, route),
+                )?)
             }
             Command::DeleteModelRoute {
                 gateway_id,
                 route_record_key,
-            } => Response::DeleteModelRoute(
-                application.delete_model_route(gateway_id, route_record_key)?,
-            ),
+            } => Response::DeleteModelRoute(application.runtime.serve(
+                Focus::None,
+                Login::Blocks,
+                |core| core.delete_model_route(gateway_id, route_record_key),
+            )?),
             Command::ReadProviderApiKey {
                 gateway_id,
                 provider_id,
-            } => Response::ReadProviderApiKey(
-                application.read_provider_api_key(gateway_id, provider_id)?,
-            ),
+            } => Response::ReadProviderApiKey(application.runtime.serve(
+                Focus::None,
+                Login::Blocks,
+                |core| core.read_provider_api_key(gateway_id, provider_id),
+            )?),
             Command::SaveModelTemplate { template } => {
-                Response::SaveModelTemplate(application.save_model_template(template)?)
+                Response::SaveModelTemplate(application.runtime.serve(
+                    Focus::None,
+                    Login::Blocks,
+                    |core| core.save_model_template(template),
+                )?)
             }
             Command::DeleteModelTemplate { id } => {
-                Response::DeleteModelTemplate(application.delete_model_template(id)?)
+                Response::DeleteModelTemplate(application.runtime.serve(
+                    Focus::None,
+                    Login::Blocks,
+                    |core| core.delete_model_template(id),
+                )?)
             }
             Command::ReplyRuntimeInteraction {
                 runtime_id,
@@ -756,29 +800,47 @@ impl Application {
             Command::AuthenticationInspect {
                 gateway_id,
                 provider_id,
-            } => Response::AuthenticationInspect(
-                application.authentication_inspect(gateway_id, provider_id)?,
-            ),
+            } => Response::AuthenticationInspect(application.runtime.serve(
+                Focus::None,
+                Login::Allows,
+                |core| core.authentication_inspect(gateway_id, provider_id),
+            )?),
             Command::AuthenticationStart {
                 gateway_id,
                 provider_id,
-            } => Response::AuthenticationStart(
-                application.authentication_start(gateway_id, provider_id)?,
-            ),
+            } => Response::AuthenticationStart(application.runtime.serve(
+                Focus::None,
+                Login::Allows,
+                |core| core.authentication_start(gateway_id, provider_id),
+            )?),
             Command::AuthenticationLogout {
                 gateway_id,
                 provider_id,
-            } => Response::AuthenticationLogout(
-                application.authentication_logout(gateway_id, provider_id)?,
-            ),
+            } => Response::AuthenticationLogout(application.runtime.serve(
+                Focus::None,
+                Login::Allows,
+                |core| core.authentication_logout(gateway_id, provider_id),
+            )?),
             Command::AuthenticationPoll => {
-                Response::AuthenticationPoll(application.authentication_poll()?)
+                Response::AuthenticationPoll(application.runtime.serve(
+                    Focus::None,
+                    Login::Allows,
+                    |core| core.authentication_poll(),
+                )?)
             }
             Command::AuthenticationReply { prompt_id, value } => {
-                Response::AuthenticationReply(application.authentication_reply(prompt_id, value)?)
+                Response::AuthenticationReply(application.runtime.serve(
+                    Focus::None,
+                    Login::Allows,
+                    |core| core.authentication_reply(prompt_id, value),
+                )?)
             }
             Command::AuthenticationCancel => {
-                Response::AuthenticationCancel(application.authentication_cancel()?)
+                Response::AuthenticationCancel(application.runtime.serve(
+                    Focus::None,
+                    Login::Allows,
+                    |core| core.authentication_cancel(),
+                )?)
             }
             Command::FetchPublicModelCatalog => {
                 Response::FetchPublicModelCatalog(crate::model_catalog::fetch_models_dev()?)

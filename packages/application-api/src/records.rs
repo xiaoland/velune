@@ -3,7 +3,10 @@ use crate::config::*;
 use serde::{Deserialize, Serialize};
 
 use std::collections::BTreeMap;
-use velune_conversation::{ConversationSummary, SettingAction, SettingOption};
+pub use velune_conversation::authentication::{
+    AuthenticationEvent, AuthenticationNotification, AuthenticationPrompt,
+};
+use velune_conversation::{ConversationSummary, SettingAction};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -557,39 +560,6 @@ pub struct AuthenticationProgress {
     pub events: Vec<AuthenticationEvent>,
     pub gateways: Option<Vec<GatewaySummary>>,
     pub execution_invalidated: Option<bool>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AuthenticationEvent {
-    #[serde(rename = "type")]
-    pub type_id: String,
-    pub id: Option<String>,
-    pub prompt: Option<AuthenticationPrompt>,
-    pub notification: Option<AuthenticationNotification>,
-    pub ok: Option<bool>,
-    pub error: Option<String>,
-    pub cancelled: Option<bool>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AuthenticationPrompt {
-    pub kind: String,
-    pub text: String,
-    pub options: Option<Vec<SettingOption>>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AuthenticationNotification {
-    pub kind: String,
-    pub id: Option<String>,
-    pub text: Option<String>,
-    pub url: Option<String>,
-    pub instructions: Option<String>,
-    pub user_code: Option<String>,
-    pub verification_uri: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

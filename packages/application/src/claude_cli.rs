@@ -1,6 +1,6 @@
 //! The unmodified CLI owns authentication and secrets: in an application-owned
 //! directory, or in a login the user already has that a provider only references.
-use serde_json::{Value, json};
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::{
     path::{Path, PathBuf},
@@ -11,6 +11,7 @@ use std::{
     },
     time::Duration,
 };
+use velune_conversation::authentication::{AuthenticationEvent, LoginProgress};
 
 pub(crate) fn directory(home: &Path, id: &str) -> PathBuf {
     home.join("claude-cli").join(id)
@@ -347,7 +348,7 @@ impl Login {
             status: None,
         })
     }
-    pub(crate) fn poll(&mut self) -> Value {
+    pub(crate) fn poll(&mut self) -> LoginProgress {
         let mut events = Vec::new();
         if self.running {
             match self.result.try_recv() {
@@ -361,19 +362,23 @@ impl Login {
                         result.as_ref().err().map(LoginFailure::message)
                     };
                     self.status = if ok { result.ok() } else { None };
-                    events
-                        .push(json!({"type":"result","ok":ok,"error":error,"cancelled":cancelled}));
+                    events.push(AuthenticationEvent::result(ok, error, Some(cancelled)));
                 }
                 Err(mpsc::TryRecvError::Disconnected) => {
                     self.running = false;
-                    events.push(
-                        json!({"type":"result","ok":false,"error":LoginFailure::new("worker","channel_disconnected").message()}),
-                    );
+                    events.push(AuthenticationEvent::result(
+                        false,
+                        Some(LoginFailure::new("worker", "channel_disconnected").message()),
+                        None,
+                    ));
                 }
                 Err(mpsc::TryRecvError::Empty) => {}
             }
         }
-        json!({"running":self.running,"events":events})
+        LoginProgress {
+            running: self.running,
+            events,
+        }
     }
     pub(crate) fn credential_id(&self) -> &str {
         &self.id

@@ -1,7 +1,7 @@
 //! Provider-owned Codex subscription sessions. No Harness auth files are read or written.
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::Value;
 use std::{
     fs::{self, File, OpenOptions},
     io::{Read, Write},
@@ -13,6 +13,9 @@ use std::{
         mpsc,
     },
     time::{Duration, SystemTime, UNIX_EPOCH},
+};
+use velune_conversation::authentication::{
+    AuthenticationEvent, AuthenticationNotification, LoginProgress,
 };
 use velune_gateway::{CredentialResolutionError, ResolvedCredential};
 
@@ -426,10 +429,18 @@ impl Login {
     pub(crate) fn cancel(&mut self) {
         self.cancelled.store(true, Ordering::SeqCst);
     }
-    pub(crate) fn poll(&mut self) -> Value {
+    pub(crate) fn poll(&mut self) -> LoginProgress {
         let mut events = Vec::new();
         if let Some(url) = self.url.take() {
-            events.push(json!({"type":"notify","notification":{"kind":"url","url":url,"instructions":"在浏览器中选择此提供商对应的 ChatGPT 账户。"}}));
+            events.push(AuthenticationEvent::notify(AuthenticationNotification {
+                kind: "url".into(),
+                id: None,
+                text: None,
+                url: Some(url),
+                instructions: Some("在浏览器中选择此提供商对应的 ChatGPT 账户。".into()),
+                user_code: None,
+                verification_uri: None,
+            }));
         }
         match self.result.try_recv() {
             Ok(result) => {
@@ -439,15 +450,29 @@ impl Login {
                 } else {
                     result
                 };
-                events.push(match result { Ok(()) => json!({"type":"result","ok":true}), Err(error) => json!({"type":"result","ok":false,"error":error,"cancelled":self.cancelled.load(Ordering::SeqCst)}) });
+                events.push(match result {
+                    Ok(()) => AuthenticationEvent::result(true, None, None),
+                    Err(error) => AuthenticationEvent::result(
+                        false,
+                        Some(error),
+                        Some(self.cancelled.load(Ordering::SeqCst)),
+                    ),
+                });
             }
             Err(mpsc::TryRecvError::Disconnected) if !self.finished => {
                 self.finished = true;
-                events.push(json!({"type":"result","ok":false,"error":"登录进程已结束"}));
+                events.push(AuthenticationEvent::result(
+                    false,
+                    Some("登录进程已结束".into()),
+                    None,
+                ));
             }
             _ => {}
         }
-        json!({"running":!self.finished,"events":events})
+        LoginProgress {
+            running: !self.finished,
+            events,
+        }
     }
 }
 impl Drop for Login {

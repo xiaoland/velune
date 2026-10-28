@@ -1,6 +1,7 @@
 //! Interactive authentication stays in its provider context; private source coordinates never reach the UI.
 use super::*;
 use crate::provider_authentication::*;
+use velune_conversation::authentication::{AuthenticationEvent, LoginProgress};
 impl CoreRuntime {
     /// Re-reads a referenced Claude Code login, which may have been signed in,
     /// switched or moved with its runtime since, and saves what changed.
@@ -8,7 +9,7 @@ impl CoreRuntime {
         &mut self,
         gateway_id: &str,
         provider_id: &str,
-    ) -> Result<Value, RuntimeError> {
+    ) -> Result<crate::AuthenticationMetadata, RuntimeError> {
         let previous = self.gateways.clone();
         let runtimes = self.runtime_instances.clone();
         let mut pending = previous.clone();
@@ -41,7 +42,12 @@ impl CoreRuntime {
                 .ok_or_else(|| RuntimeError::invalid("authentication revision overflow"))?;
         }
         let description = provider.authentication.description();
-        let capabilities = json!({"protocol":provider.protocol,"endpoint":provider.endpoint,"explicitOutputCap":true,"temperature":true});
+        let metadata = crate::AuthenticationMetadata {
+            configured: description.configured,
+            account_label: description.account_label,
+            capabilities: capabilities(provider, true),
+            actions: Some(description.actions),
+        };
         if !unchanged {
             crate::claude_cli::reject_duplicate_account(&pending, provider_id)?;
             self.gateways = pending;
@@ -51,21 +57,16 @@ impl CoreRuntime {
             }
             self.sync_scheduling(&previous);
         }
-        Ok(
-            json!({"metadata":{"configured":description.configured,"accountLabel":description.account_label,"capabilities":capabilities,"actions":description.actions}}),
-        )
+        Ok(metadata)
     }
-    fn poll_subscription_login(&mut self) -> Result<Value, RuntimeError> {
-        let mut data = self
+    fn poll_subscription_login(&mut self) -> Result<crate::AuthenticationProgress, RuntimeError> {
+        let login = self
             .subscription_login
             .as_mut()
             .ok_or_else(|| RuntimeError::invalid("subscription login missing"))?
             .poll();
-        if data["events"].as_array().is_some_and(|events| {
-            events
-                .iter()
-                .any(|event| event["type"] == "result" && event["ok"] == true)
-        }) {
+        let mut progress = progress(login);
+        if progress.events.iter().any(AuthenticationEvent::succeeded) {
             let staged_id = self
                 .subscription_login
                 .as_ref()
@@ -214,254 +215,336 @@ impl CoreRuntime {
                     "订阅登录已保存，但旧认证清理失败；请检查应用配置目录的写入权限。",
                 ));
             }
-            data["gateways"] = serde_json::to_value(self.public_gateways())?;
-            data["executionInvalidated"] = Value::Bool(true);
+            progress.gateways = Some(self.public_gateways());
+            progress.execution_invalidated = Some(true);
         }
-        if data["running"] == false {
+        if !progress.running {
             self.subscription_login = None;
             self.authentication_provider = None;
         }
-        Ok(data)
+        Ok(progress)
     }
 
-    pub(super) fn authentication_action(&mut self, payload: &Value) -> Result<Value, RuntimeError> {
-        let operation = payload["operation"].as_str().unwrap_or("poll");
-        if operation == "start"
-            && (self.execution_active()
-                || self
-                    .subscription_login
-                    .as_ref()
-                    .is_some_and(crate::provider_login::Login::is_running)
-                || self
-                    .authentication
-                    .as_ref()
-                    .is_some_and(authentication::Login::is_running))
-        {
-            return Err(RuntimeError::invalid("runtime is busy"));
-        }
-        if self.subscription_login.is_some() && matches!(operation, "poll" | "cancel") {
-            if operation == "cancel"
-                && let Some(login) = self.subscription_login.as_mut()
-            {
-                login.cancel();
-            }
-            return self.poll_subscription_login();
-        }
-        if operation == "logout" {
-            if self.execution_active()
-                || self.subscription_login.is_some()
-                || self
-                    .authentication
-                    .as_ref()
-                    .is_some_and(authentication::Login::is_running)
-            {
-                return Err(RuntimeError::invalid("runtime or login is busy"));
-            }
-            let gateway_id = payload["gatewayID"]
-                .as_str()
-                .ok_or_else(|| RuntimeError::invalid("gateway id"))?;
-            let provider_id = payload["providerID"]
-                .as_str()
-                .ok_or_else(|| RuntimeError::invalid("provider id"))?;
-            let previous = self.gateways.clone();
-            let provider = self
-                .gateways
-                .iter_mut()
-                .find(|g| g.id == gateway_id)
-                .and_then(|g| g.providers.iter_mut().find(|p| p.id == provider_id))
-                .ok_or_else(|| RuntimeError::invalid("provider id"))?;
-            let (
-                crate::config::ExecutionBackend::ClaudeCli { binary },
-                AuthenticationMaterial::ClaudeCli {
-                    credential_id,
-                    configured,
-                    ..
-                },
-            ) = (
-                &provider.execution_backend,
-                &mut provider.authentication.material,
-            )
-            else {
-                return Err(RuntimeError::invalid("此认证来源不支持 CLI 退出登录"));
-            };
-            let runtime = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()?;
-            runtime
-                .block_on(crate::claude_cli::logout(
-                    binary,
-                    &crate::claude_cli::directory(&self.options.home_directory, credential_id),
-                ))
-                .map_err(|_| RuntimeError::invalid("Claude Code 退出登录失败"))?;
-            *configured = false;
-            provider.authentication.generation = provider
+    fn login_busy(&self) -> bool {
+        self.subscription_login
+            .as_ref()
+            .is_some_and(crate::provider_login::Login::is_running)
+            || self
                 .authentication
-                .generation
-                .checked_add(1)
-                .ok_or_else(|| RuntimeError::invalid("authentication revision overflow"))?;
-            let persisted = self.persist();
-            self.sync_scheduling(&previous);
-            self.for_each_session(Self::invalidate_execution)?;
-            persisted?;
-            return Ok(json!({"gateways":self.public_gateways(),"executionInvalidated":true}));
-        }
-        let mut request = payload.clone();
-        if matches!(operation, "start" | "inspect") {
-            let gateway_id = payload["gatewayID"]
-                .as_str()
-                .ok_or_else(|| RuntimeError::invalid("gateway id"))?;
-            let provider_id = payload["providerID"]
-                .as_str()
-                .ok_or_else(|| RuntimeError::invalid("provider id"))?;
-            let provider = self
-                .gateways
-                .iter()
-                .find(|g| g.id == gateway_id)
-                .and_then(|g| g.providers.iter().find(|p| p.id == provider_id))
-                .ok_or_else(|| RuntimeError::invalid("provider id"))?;
-            match &provider.authentication.material {
-                AuthenticationMaterial::None | AuthenticationMaterial::ApiKey { .. } => {
-                    if operation == "start" {
-                        return Err(RuntimeError::invalid("此提供商没有交互式登录流程"));
-                    }
-                    let (configured, account_label) =
-                        if provider.request_profile == crate::config::RequestProfile::KimiCoding {
-                            let _ = self
-                                .subscription_quota
-                                .query(gateway_id, provider_id, false);
-                            self.subscription_quota
-                                .identity_status(gateway_id, provider_id)
-                        } else {
-                            (provider.authentication.description().configured, None)
-                        };
-                    return Ok(
-                        json!({"metadata":{"configured":configured,"accountLabel":account_label,"capabilities":{"protocol":provider.protocol,"endpoint":provider.endpoint,"explicitOutputCap":true,"temperature":true},"actions":[]}}),
-                    );
-                }
-                AuthenticationMaterial::CodexSubscription { credential_id, .. } => {
-                    let (configured, account_label) = crate::subscription_auth::status(
+                .as_ref()
+                .is_some_and(authentication::Login::is_running)
+    }
+
+    fn provider(
+        &self,
+        gateway_id: &str,
+        provider_id: &str,
+    ) -> Result<&crate::config::ProviderDefinition, RuntimeError> {
+        self.gateways
+            .iter()
+            .find(|g| g.id == gateway_id)
+            .and_then(|g| g.providers.iter().find(|p| p.id == provider_id))
+            .ok_or_else(|| RuntimeError::invalid("provider id"))
+    }
+
+    pub(crate) fn authentication_inspect(
+        &mut self,
+        gateway_id: String,
+        provider_id: String,
+    ) -> Result<crate::AuthenticationMetadata, RuntimeError> {
+        let provider = self.provider(&gateway_id, &provider_id)?;
+        let login = |id: &str, label: &str| crate::conversation::SettingAction {
+            id: id.into(),
+            label: label.into(),
+        };
+        match &provider.authentication.material {
+            AuthenticationMaterial::None | AuthenticationMaterial::ApiKey { .. } => {
+                let (configured, account_label) =
+                    if provider.request_profile == crate::config::RequestProfile::KimiCoding {
+                        let _ = self
+                            .subscription_quota
+                            .query(&gateway_id, &provider_id, false);
+                        self.subscription_quota
+                            .identity_status(&gateway_id, &provider_id)
+                    } else {
+                        (provider.authentication.description().configured, None)
+                    };
+                Ok(crate::AuthenticationMetadata {
+                    configured,
+                    account_label,
+                    capabilities: capabilities(provider, true),
+                    actions: Some(Vec::new()),
+                })
+            }
+            AuthenticationMaterial::CodexSubscription { credential_id, .. } => {
+                let (configured, account_label) = crate::subscription_auth::status(
+                    &self.options.home_directory,
+                    credential_id,
+                    provider.authentication.generation,
+                );
+                Ok(crate::AuthenticationMetadata {
+                    configured,
+                    account_label,
+                    capabilities: capabilities(provider, false),
+                    actions: Some(vec![login("login", "登录…")]),
+                })
+            }
+            AuthenticationMaterial::ClaudeCli { credential_id, .. } => {
+                let crate::config::ExecutionBackend::ClaudeCli { binary } =
+                    &provider.execution_backend
+                else {
+                    return Err(RuntimeError::invalid("CLI backend missing"));
+                };
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()?;
+                let status = runtime.block_on(crate::claude_cli::status(
+                    binary,
+                    Some(&crate::claude_cli::directory(
                         &self.options.home_directory,
                         credential_id,
-                        provider.authentication.generation,
-                    );
-                    if operation == "inspect" {
-                        return Ok(
-                            json!({"metadata":{"configured":configured,"accountLabel":account_label,"capabilities":{"protocol":provider.protocol,"endpoint":provider.endpoint,"explicitOutputCap":false,"temperature":false},"actions":[{"id":"login","label":"登录…"}]}}),
-                        );
-                    }
-                    let next_generation = provider
-                        .authentication
-                        .generation
-                        .checked_add(1)
-                        .ok_or_else(|| RuntimeError::invalid("authentication revision overflow"))?;
-                    self.subscription_login = Some(crate::provider_login::Login::Codex(
-                        crate::subscription_auth::Login::start(
-                            self.options.home_directory.clone(),
-                            crate::new_record_key(),
-                            next_generation,
-                        )?,
-                    ));
-                    self.authentication_provider = Some((gateway_id.into(), provider_id.into()));
-                    return self.poll_subscription_login();
-                }
-                AuthenticationMaterial::ClaudeCli { credential_id, .. } => {
-                    let crate::config::ExecutionBackend::ClaudeCli { binary } =
-                        &provider.execution_backend
-                    else {
-                        return Err(RuntimeError::invalid("CLI backend missing"));
-                    };
-                    if operation == "inspect" {
-                        let runtime = tokio::runtime::Builder::new_current_thread()
-                            .enable_all()
-                            .build()?;
-                        let status = runtime.block_on(crate::claude_cli::status(
-                            binary,
-                            Some(&crate::claude_cli::directory(
-                                &self.options.home_directory,
-                                credential_id,
-                            )),
-                        ));
-                        return Ok(
-                            json!({"metadata":{"configured":status.as_ref().is_ok_and(|v| v.configured),"accountLabel":status.ok().and_then(|v| v.label),"capabilities":{"protocol":provider.protocol,"endpoint":provider.endpoint,"explicitOutputCap":true,"temperature":true},"actions":[{"id":"login","label":"登录…"},{"id":"logout","label":"退出登录"}]}}),
-                        );
-                    }
-                    self.subscription_login = Some(crate::provider_login::Login::Claude(
-                        crate::claude_cli::Login::start(
-                            self.options.home_directory.clone(),
-                            binary.clone(),
-                        )?,
-                    ));
-                    self.authentication_provider = Some((gateway_id.into(), provider_id.into()));
-                    return self.poll_subscription_login();
-                }
-                AuthenticationMaterial::ClaudeCliLinked { .. } => {
-                    if operation == "start" {
-                        return Err(RuntimeError::invalid(
-                            "此提供商沿用既有的 Claude Code 登录；请在 Claude Code 中登录，再检查登录状态。",
-                        ));
-                    }
-                    return self.inspect_linked_claude(gateway_id, provider_id);
-                }
-                AuthenticationMaterial::RuntimeProvider { source, .. } => {
-                    request["source"] = Value::String(serde_json::to_string(source)?);
-                }
+                    )),
+                ));
+                Ok(crate::AuthenticationMetadata {
+                    configured: status.as_ref().is_ok_and(|v| v.configured),
+                    account_label: status.ok().and_then(|v| v.label),
+                    capabilities: capabilities(provider, true),
+                    actions: Some(vec![login("login", "登录…"), login("logout", "退出登录")]),
+                })
             }
-            if operation == "start" {
-                self.authentication_provider = Some((gateway_id.into(), provider_id.into()));
+            AuthenticationMaterial::ClaudeCliLinked { .. } => {
+                self.inspect_linked_claude(&gateway_id, &provider_id)
+            }
+            AuthenticationMaterial::RuntimeProvider { source, .. } => {
+                let metadata = authentication::inspect(&self.options.resources_directory, source)
+                    .map_err(RuntimeError::Invalid)?;
+                serde_json::from_value(metadata)
+                    .map_err(|error| RuntimeError::context("运行时来源返回的认证描述无效", error))
             }
         }
-        let mut data = authentication::handle(
-            &mut self.authentication,
-            &self.options.resources_directory,
-            &self.options.home_directory,
-            &request,
-        )
-        .map_err(RuntimeError::Invalid)?;
-        if data["events"].as_array().is_some_and(|events| {
-            events
-                .iter()
-                .any(|e| e["type"] == "result" && e["ok"] == true)
-        }) {
-            let previous = self.gateways.clone();
-            let (gateway_id, provider_id) = self
-                .authentication_provider
-                .take()
-                .ok_or_else(|| RuntimeError::invalid("login provider missing"))?;
-            let provider = self
-                .gateways
-                .iter_mut()
-                .find(|g| g.id == gateway_id)
-                .and_then(|g| g.providers.iter_mut().find(|p| p.id == provider_id))
-                .ok_or_else(|| RuntimeError::invalid("login provider missing"))?;
-            if let AuthenticationMaterial::RuntimeProvider {
-                source,
-                method,
-                configured,
-                ..
-            } = &mut provider.authentication.material
-            {
-                *method = AuthenticationMethod::OAuth;
-                *configured = true;
-                source
-                    .settings
-                    .insert("credentialKind".into(), "oauth".into());
+    }
+
+    pub(crate) fn authentication_start(
+        &mut self,
+        gateway_id: String,
+        provider_id: String,
+    ) -> Result<crate::AuthenticationProgress, RuntimeError> {
+        if self.execution_active() || self.login_busy() {
+            return Err(RuntimeError::invalid("runtime is busy"));
+        }
+        let provider = self.provider(&gateway_id, &provider_id)?;
+        let login = match &provider.authentication.material {
+            AuthenticationMaterial::None | AuthenticationMaterial::ApiKey { .. } => {
+                return Err(RuntimeError::invalid("此提供商没有交互式登录流程"));
             }
-            provider.authentication.generation = provider
-                .authentication
-                .generation
-                .checked_add(1)
-                .ok_or_else(|| RuntimeError::invalid("authentication revision overflow"))?;
-            if self.persist().is_err() {
-                self.gateways = previous;
+            AuthenticationMaterial::ClaudeCliLinked { .. } => {
                 return Err(RuntimeError::invalid(
-                    "来源已完成登录，但提供商配置保存失败；请检查配置目录后重试。",
+                    "此提供商沿用既有的 Claude Code 登录；请在 Claude Code 中登录，再检查登录状态。",
                 ));
             }
-            self.sync_scheduling(&previous);
-            self.for_each_session(Self::invalidate_execution)?;
-            data["gateways"] = serde_json::to_value(self.public_gateways())?;
-            data["executionInvalidated"] = Value::Bool(true);
+            AuthenticationMaterial::CodexSubscription { .. } => {
+                let next_generation = provider
+                    .authentication
+                    .generation
+                    .checked_add(1)
+                    .ok_or_else(|| RuntimeError::invalid("authentication revision overflow"))?;
+                crate::provider_login::Login::Codex(crate::subscription_auth::Login::start(
+                    self.options.home_directory.clone(),
+                    crate::new_record_key(),
+                    next_generation,
+                )?)
+            }
+            AuthenticationMaterial::ClaudeCli { .. } => {
+                let crate::config::ExecutionBackend::ClaudeCli { binary } =
+                    &provider.execution_backend
+                else {
+                    return Err(RuntimeError::invalid("CLI backend missing"));
+                };
+                crate::provider_login::Login::Claude(crate::claude_cli::Login::start(
+                    self.options.home_directory.clone(),
+                    binary.clone(),
+                )?)
+            }
+            AuthenticationMaterial::RuntimeProvider { source, .. } => {
+                let source = source.clone();
+                self.authentication_provider = Some((gateway_id, provider_id));
+                let started = authentication::start(
+                    &mut self.authentication,
+                    &self.options.resources_directory,
+                    &self.options.home_directory,
+                    source,
+                )
+                .map_err(RuntimeError::Invalid)?;
+                return self.finish_source_login(started);
+            }
+        };
+        self.subscription_login = Some(login);
+        self.authentication_provider = Some((gateway_id, provider_id));
+        self.poll_subscription_login()
+    }
+
+    pub(crate) fn authentication_poll(
+        &mut self,
+    ) -> Result<crate::AuthenticationProgress, RuntimeError> {
+        if self.subscription_login.is_some() {
+            return self.poll_subscription_login();
         }
-        Ok(data)
+        let polled =
+            authentication::poll(&mut self.authentication).map_err(RuntimeError::Invalid)?;
+        self.finish_source_login(polled)
+    }
+
+    pub(crate) fn authentication_reply(
+        &mut self,
+        prompt_id: String,
+        value: String,
+    ) -> Result<crate::AuthenticationProgress, RuntimeError> {
+        let replied = authentication::reply(&mut self.authentication, &prompt_id, &value)
+            .map_err(RuntimeError::Invalid)?;
+        self.finish_source_login(replied)
+    }
+
+    pub(crate) fn authentication_cancel(
+        &mut self,
+    ) -> Result<crate::AuthenticationProgress, RuntimeError> {
+        if let Some(login) = self.subscription_login.as_mut() {
+            login.cancel();
+            return self.poll_subscription_login();
+        }
+        let cancelled = authentication::cancel(&mut self.authentication);
+        self.finish_source_login(cancelled)
+    }
+
+    pub(crate) fn authentication_logout(
+        &mut self,
+        gateway_id: String,
+        provider_id: String,
+    ) -> Result<crate::GatewayUpdate, RuntimeError> {
+        if self.execution_active()
+            || self.subscription_login.is_some()
+            || self
+                .authentication
+                .as_ref()
+                .is_some_and(authentication::Login::is_running)
+        {
+            return Err(RuntimeError::invalid("runtime or login is busy"));
+        }
+        let previous = self.gateways.clone();
+        let provider = self
+            .gateways
+            .iter_mut()
+            .find(|g| g.id == gateway_id)
+            .and_then(|g| g.providers.iter_mut().find(|p| p.id == provider_id))
+            .ok_or_else(|| RuntimeError::invalid("provider id"))?;
+        let (
+            crate::config::ExecutionBackend::ClaudeCli { binary },
+            AuthenticationMaterial::ClaudeCli {
+                credential_id,
+                configured,
+                ..
+            },
+        ) = (
+            &provider.execution_backend,
+            &mut provider.authentication.material,
+        )
+        else {
+            return Err(RuntimeError::invalid("此认证来源不支持 CLI 退出登录"));
+        };
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        runtime
+            .block_on(crate::claude_cli::logout(
+                binary,
+                &crate::claude_cli::directory(&self.options.home_directory, credential_id),
+            ))
+            .map_err(|_| RuntimeError::invalid("Claude Code 退出登录失败"))?;
+        *configured = false;
+        provider.authentication.generation = provider
+            .authentication
+            .generation
+            .checked_add(1)
+            .ok_or_else(|| RuntimeError::invalid("authentication revision overflow"))?;
+        let persisted = self.persist();
+        self.sync_scheduling(&previous);
+        self.for_each_session(Self::invalidate_execution)?;
+        persisted?;
+        Ok(crate::GatewayUpdate {
+            gateways: self.public_gateways(),
+            execution_invalidated: true,
+        })
+    }
+
+    /// A runtime source's login that finished writes its credential to the
+    /// source; the provider then uses it as an OAuth login.
+    fn finish_source_login(
+        &mut self,
+        login: LoginProgress,
+    ) -> Result<crate::AuthenticationProgress, RuntimeError> {
+        let mut progress = progress(login);
+        if !progress.events.iter().any(AuthenticationEvent::succeeded) {
+            return Ok(progress);
+        }
+        let previous = self.gateways.clone();
+        let (gateway_id, provider_id) = self
+            .authentication_provider
+            .take()
+            .ok_or_else(|| RuntimeError::invalid("login provider missing"))?;
+        let provider = self
+            .gateways
+            .iter_mut()
+            .find(|g| g.id == gateway_id)
+            .and_then(|g| g.providers.iter_mut().find(|p| p.id == provider_id))
+            .ok_or_else(|| RuntimeError::invalid("login provider missing"))?;
+        if let AuthenticationMaterial::RuntimeProvider {
+            source,
+            method,
+            configured,
+            ..
+        } = &mut provider.authentication.material
+        {
+            *method = AuthenticationMethod::OAuth;
+            *configured = true;
+            source
+                .settings
+                .insert("credentialKind".into(), "oauth".into());
+        }
+        provider.authentication.generation = provider
+            .authentication
+            .generation
+            .checked_add(1)
+            .ok_or_else(|| RuntimeError::invalid("authentication revision overflow"))?;
+        if self.persist().is_err() {
+            self.gateways = previous;
+            return Err(RuntimeError::invalid(
+                "来源已完成登录，但提供商配置保存失败；请检查配置目录后重试。",
+            ));
+        }
+        self.sync_scheduling(&previous);
+        self.for_each_session(Self::invalidate_execution)?;
+        progress.gateways = Some(self.public_gateways());
+        progress.execution_invalidated = Some(true);
+        Ok(progress)
+    }
+}
+
+fn capabilities(
+    provider: &crate::config::ProviderDefinition,
+    sampling: bool,
+) -> crate::AuthenticationCapabilities {
+    crate::AuthenticationCapabilities {
+        protocol: provider.protocol.clone(),
+        endpoint: provider.endpoint.clone(),
+        explicit_output_cap: sampling,
+        temperature: sampling,
+    }
+}
+
+fn progress(login: LoginProgress) -> crate::AuthenticationProgress {
+    crate::AuthenticationProgress {
+        running: login.running,
+        events: login.events,
+        gateways: None,
+        execution_invalidated: None,
     }
 }

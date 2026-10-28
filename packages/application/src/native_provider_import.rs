@@ -10,7 +10,7 @@ use crate::config::{
 use crate::provider_authentication::{
     AuthenticationMaterial, LinkedClaudeLogin, ProviderAuthentication,
 };
-use serde_json::{Value, json};
+
 use sha2::{Digest, Sha256};
 use velune_agent_runtime::provider_inventory::{self, Access, Inventory, KeySource, Protocol};
 
@@ -86,7 +86,10 @@ fn cli_binary(runtime: &RuntimeInstance) -> Option<&str> {
         .filter(|path| std::path::Path::new(path).is_absolute())
 }
 
-pub(crate) fn preview(runtime: &RuntimeInstance, gateway: &GatewayConfig) -> Result<Value, Error> {
+pub(crate) fn preview(
+    runtime: &RuntimeInstance,
+    gateway: &GatewayConfig,
+) -> Result<crate::ProviderImportPreview, Error> {
     let inventory = inventory(runtime)?;
     let target = target_fingerprint(gateway)?;
     let providers = inventory
@@ -102,7 +105,7 @@ pub(crate) fn preview(runtime: &RuntimeInstance, gateway: &GatewayConfig) -> Res
                     key,
                 } => (
                     crate::provider_import::protocol_name(&protocol(*kind)),
-                    Value::String(endpoint.clone()),
+                    Some(endpoint.clone()),
                     match key {
                         KeySource::Literal { .. } => "复制来源中的 API key",
                         KeySource::Environment { .. } | KeySource::Helper | KeySource::Missing => {
@@ -116,86 +119,77 @@ pub(crate) fn preview(runtime: &RuntimeInstance, gateway: &GatewayConfig) -> Res
                     }
                     (
                         crate::provider_import::protocol_name(&GatewayProtocol::MessagesV1),
-                        Value::Null,
+                        None,
                         "沿用该运行时的 Claude Code 登录",
                     )
                 }
             };
             let can_import = !provider.models.is_empty()
                 && !matches!(provider.access, Access::ClaudeLogin if cli_binary(runtime).is_none());
-            Ok(json!({
-                "id": id,
-                "sourceProviderId": provider.source_provider_id,
-                "name": provider.name,
-                "protocol": protocol_name,
-                "endpoint": endpoint,
-                "canImport": can_import,
-                "alreadyImported": gateway.providers.iter().any(|p| p.id == id),
-                "credentialStatus": credential,
-                "issues": issues,
-                "models": provider.models.iter().map(|model| json!({
-                    "candidateKey": candidate_key(&id, model),
-                    "providerModelId": model,
-                    "name": model,
-                    "contextWindow": null,
-                    "maxOutputTokens": null,
-                    "reasoningLevels": [],
-                    "canImport": true,
-                    "issues": [],
-                })).collect::<Vec<_>>(),
-            }))
+            crate::ImportProviderCandidate {
+                models: provider
+                    .models
+                    .iter()
+                    .map(|model| crate::ImportModelCandidate {
+                        candidate_key: candidate_key(&id, model),
+                        provider_model_id: model.clone(),
+                        name: model.clone(),
+                        context_window: None,
+                        max_output_tokens: None,
+                        reasoning_levels: Vec::new(),
+                        can_import: true,
+                        issues: Vec::new(),
+                    })
+                    .collect(),
+                already_imported: gateway.providers.iter().any(|p| p.id == id),
+                id,
+                source_provider_id: provider.source_provider_id.clone(),
+                name: provider.name.clone(),
+                protocol: protocol_name.into(),
+                endpoint,
+                can_import,
+                credential_status: credential.into(),
+                issues,
+            }
         })
-        .collect::<Result<Vec<_>, Error>>()?;
-    Ok(json!({
-        "contractVersion": 1,
-        "sourceFingerprint": inventory.fingerprint,
-        "targetFingerprint": target,
-        "sdkVersion": runtime.type_id,
-        "source": {"kind":"harness","harnessTypeId":family(runtime),"sourceInstanceId":runtime.id,"providerId":null,"settings":{}},
-        "providers": providers,
-        "warnings": inventory.warnings,
-        "sourceLabel": inventory.source_label,
-        "token": token(&inventory.fingerprint, &target),
-    }))
+        .collect();
+    Ok(crate::ProviderImportPreview {
+        contract_version: 1,
+        token: token(&inventory.fingerprint, &target),
+        source_fingerprint: inventory.fingerprint,
+        target_fingerprint: target,
+        sdk_version: runtime.type_id.clone(),
+        source: crate::ProviderImportSource {
+            kind: "harness".into(),
+            harness_type_id: family(runtime).into(),
+            source_instance_id: Some(runtime.id.clone()),
+            provider_id: None,
+            settings: Default::default(),
+        },
+        providers,
+        warnings: inventory.warnings,
+        source_label: inventory.source_label,
+    })
 }
 
 pub(crate) fn apply(
-    payload: &Value,
+    preview_token: &str,
+    selections: &[crate::ImportSelection],
+    replace: bool,
     runtime: &RuntimeInstance,
     gateway: &mut GatewayConfig,
     runtimes: &[RuntimeInstance],
-) -> Result<Value, Error> {
+) -> Result<crate::provider_import::Applied, Error> {
     let inventory = inventory(runtime)?;
-    let expected = payload["previewToken"]
-        .as_str()
-        .or_else(|| payload["preview"]["token"].as_str());
-    if expected != Some(token(&inventory.fingerprint, &target_fingerprint(gateway)?).as_str()) {
+    if preview_token != token(&inventory.fingerprint, &target_fingerprint(gateway)?) {
         return Err(Error::invalid("provider import source or target changed"));
     }
-    let replace = payload["replace"]
-        .as_bool()
-        .or_else(|| payload["replaceExisting"].as_bool())
-        .or_else(|| {
-            payload["replaceExisting"]
-                .as_str()
-                .and_then(|v| v.parse().ok())
-        })
-        .unwrap_or(false);
-    let selections = if payload["selections"].is_string() {
-        serde_json::from_str::<Value>(payload["selections"].as_str().unwrap_or("[]"))
-            .map_err(|_| Error::invalid("provider import selections"))?
-    } else {
-        payload["selections"].clone()
-    };
-    let selections = selections
-        .as_array()
-        .filter(|items| !items.is_empty())
-        .ok_or_else(|| Error::invalid("provider import selections"))?;
+    if selections.is_empty() {
+        return Err(Error::invalid("provider import selections"));
+    }
     let mut chosen = Vec::new();
     for selection in selections {
-        let selected_id = selection["providerId"]
-            .as_str()
-            .ok_or_else(|| Error::invalid("provider import selection provider"))?;
+        let selected_id = selection.provider_id.as_str();
         let provider = inventory
             .providers
             .iter()
@@ -209,16 +203,16 @@ pub(crate) fn apply(
                 "provider import duplicate provider selection",
             ));
         }
-        let keys = selection["candidateKeys"]
-            .as_array()
-            .filter(|keys| !keys.is_empty())
-            .ok_or_else(|| Error::invalid("provider import selection models"))?;
+        let keys = &selection.candidate_keys;
+        if keys.is_empty() {
+            return Err(Error::invalid("provider import selection models"));
+        }
         let mut models = Vec::new();
         for key in keys {
             let model = provider
                 .models
                 .iter()
-                .find(|model| Some(candidate_key(selected_id, model).as_str()) == key.as_str())
+                .find(|model| candidate_key(selected_id, model) == *key)
                 .ok_or_else(|| Error::invalid("provider import selection model"))?;
             if models.contains(model) {
                 return Err(Error::invalid("provider import selection model"));
@@ -324,10 +318,5 @@ pub(crate) fn apply(
     }
     gateway.prune_routes();
     gateway.validate().map_err(Error::invalid)?;
-    Ok(json!({
-        "importedProviderIds": imported,
-        "skippedProviderIds": skipped,
-        "sourceFingerprint": inventory.fingerprint,
-        "targetFingerprint": target_fingerprint(gateway)?,
-    }))
+    Ok(crate::provider_import::Applied { imported, skipped })
 }

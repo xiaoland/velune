@@ -1,22 +1,35 @@
-//! Pure provider/template edits shared by local and configuration-only composition.
+//! Pure provider, route and template edits of the gateway configuration.
 use crate::{Error, api::ProviderDraft, config::*, provider_authentication::*};
-use serde_json::Value;
+
+/// One edit of a gateway's providers or routes.
+pub(crate) enum ProviderEdit {
+    Save {
+        provider: ProviderDraft,
+        authentication: AuthenticationEdit,
+        quota_authentication: Option<crate::QuotaAuthenticationEdit>,
+    },
+    Delete {
+        provider_id: String,
+    },
+    SaveRoute {
+        route: ModelRoute,
+    },
+    DeleteRoute {
+        route_record_key: String,
+    },
+}
+
 /// `link` resolves a referenced Claude Code login to its `CLAUDE_CONFIG_DIR`
-/// (`None` for the user's default); only a local composition can.
+/// (`None` for the user's default).
 pub(crate) fn edit_provider(
     gateways: &mut Vec<GatewayConfig>,
-    payload: &Value,
+    gateway_id: &str,
+    edit: ProviderEdit,
     link: &dyn Fn(&LinkedClaudeLogin) -> Result<Option<String>, Error>,
 ) -> Result<(), Error> {
-    let gateway_id = payload["gatewayID"]
-        .as_str()
-        .ok_or_else(|| Error::invalid("gateway id"))?;
-    let operation = payload["operation"]
-        .as_str()
-        .ok_or_else(|| Error::invalid("provider operation"))?;
     let index = match gateways.iter().position(|g| g.id == gateway_id) {
         Some(i) => i,
-        None if gateway_id == "default" && operation == "save" => {
+        None if gateway_id == "default" && matches!(edit, ProviderEdit::Save { .. }) => {
             gateways.push(GatewayConfig {
                 id: gateway_id.into(),
                 name: "默认网关".into(),
@@ -28,9 +41,12 @@ pub(crate) fn edit_provider(
         None => return Err(Error::invalid("gateway id")),
     };
     let gateway = &mut gateways[index];
-    match operation {
-        "save" => {
-            let mut draft: ProviderDraft = serde_json::from_value(payload["provider"].clone())?;
+    match edit {
+        ProviderEdit::Save {
+            provider: mut draft,
+            authentication: edit,
+            quota_authentication: quota_edit,
+        } => {
             if draft.id.is_empty() {
                 draft.id = crate::new_record_key();
             }
@@ -38,10 +54,6 @@ pub(crate) fn edit_provider(
             let mut authentication = previous
                 .map(|p| p.authentication.clone())
                 .unwrap_or_default();
-            let edit: AuthenticationEdit =
-                serde_json::from_value(payload["authenticationEdit"].clone())?;
-            let quota_edit: Option<crate::QuotaAuthenticationEdit> =
-                serde_json::from_value(payload["quotaAuthenticationEdit"].clone())?;
             let source_changed = authentication.source() != draft.authentication_source;
             let reset = source_changed || matches!(edit, AuthenticationEdit::Clear);
             if reset {
@@ -154,18 +166,14 @@ pub(crate) fn edit_provider(
             gateway.prune_routes();
             gateway.validate().map_err(Error::invalid)?;
         }
-        "delete" => {
-            let id = payload["providerID"]
-                .as_str()
-                .ok_or_else(|| Error::invalid("provider id"))?;
-            if !gateway.providers.iter().any(|p| p.id == id) {
+        ProviderEdit::Delete { provider_id } => {
+            if !gateway.providers.iter().any(|p| p.id == provider_id) {
                 return Err(Error::invalid("provider id"));
             }
-            gateway.providers.retain(|p| p.id != id);
+            gateway.providers.retain(|p| p.id != provider_id);
             gateway.prune_routes();
         }
-        "saveRoute" => {
-            let mut route: ModelRoute = serde_json::from_value(payload["route"].clone())?;
+        ProviderEdit::SaveRoute { mut route } => {
             if route.name.trim().is_empty() {
                 return Err(Error::invalid("路由名称不能为空"));
             }
@@ -192,16 +200,16 @@ pub(crate) fn edit_provider(
                 })
             })?;
         }
-        "deleteRoute" => {
-            let key = payload["routeRecordKey"]
-                .as_str()
-                .ok_or_else(|| Error::invalid("route record key"))?;
-            if !gateway.routes.iter().any(|r| r.record_key == key) {
+        ProviderEdit::DeleteRoute { route_record_key } => {
+            if !gateway
+                .routes
+                .iter()
+                .any(|r| r.record_key == route_record_key)
+            {
                 return Err(Error::invalid("route record key"));
             }
-            gateway.routes.retain(|r| r.record_key != key);
+            gateway.routes.retain(|r| r.record_key != route_record_key);
         }
-        _ => return Err(Error::invalid("provider operation")),
     }
     validate_ark_bindings(gateways)?;
     Ok(())
@@ -230,31 +238,19 @@ fn validate_ark_bindings(gateways: &[GatewayConfig]) -> Result<(), Error> {
     }
     Ok(())
 }
-pub(crate) fn edit_template(
+pub(crate) fn save_template(
     templates: &mut Vec<ModelTemplate>,
-    payload: &Value,
+    mut template: ModelTemplate,
 ) -> Result<(), Error> {
-    match payload["operation"].as_str() {
-        Some("save") => {
-            let mut template: ModelTemplate = serde_json::from_value(payload["template"].clone())?;
-            if template.name.trim().is_empty() {
-                return Err(Error::invalid("模板名称不能为空"));
-            }
-            if template.id.is_empty() {
-                template.id = crate::new_record_key();
-            }
-            validate_template(&template)?;
-            templates.retain(|t| t.id != template.id);
-            templates.push(template);
-        }
-        Some("delete") => {
-            let id = payload["templateID"]
-                .as_str()
-                .ok_or_else(|| Error::invalid("template id"))?;
-            templates.retain(|t| t.id != id);
-        }
-        _ => return Err(Error::invalid("template operation")),
+    if template.name.trim().is_empty() {
+        return Err(Error::invalid("模板名称不能为空"));
     }
+    if template.id.is_empty() {
+        template.id = crate::new_record_key();
+    }
+    validate_template(&template)?;
+    templates.retain(|t| t.id != template.id);
+    templates.push(template);
     Ok(())
 }
 pub(crate) fn validate_template(template: &ModelTemplate) -> Result<(), Error> {

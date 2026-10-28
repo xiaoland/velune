@@ -1,7 +1,7 @@
 //! Interactive authentication belongs to the selected source adapter. The core
 //! retains only UI events; credentials are written by the SDK to its source.
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::Value;
 use std::collections::BTreeMap;
 use std::{
     io::{BufRead, BufReader, Read, Write},
@@ -12,10 +12,11 @@ use std::{
         mpsc::{self, Receiver},
     },
 };
+use velune_conversation::authentication::{AuthenticationEvent, LoginProgress};
 
 /// Non-secret Pi authentication-source coordinates provided by application composition.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Source {
     pub kind: String,
     pub harness_type_id: String,
@@ -27,7 +28,7 @@ pub struct Source {
 pub struct Login {
     child: Child,
     input: ChildStdin,
-    events: Receiver<Result<Value, String>>,
+    events: Receiver<Result<AuthenticationEvent, String>>,
     stderr: Arc<Mutex<Vec<u8>>>,
     finished: bool,
     prompt: Option<String>,
@@ -41,9 +42,7 @@ impl Login {
     pub fn is_running(&self) -> bool {
         !self.finished
     }
-    pub fn start(resources: &Path, home: &Path, source: &Value) -> Result<Self, String> {
-        let source: Source = serde_json::from_value(source.clone())
-            .map_err(|error| format!("invalid authentication source: {error}"))?;
+    fn start(resources: &Path, home: &Path, source: Source) -> Result<Self, String> {
         let node = source
             .settings
             .get("nodeBinary")
@@ -117,7 +116,7 @@ impl Login {
                 match read {
                     Ok(0) => break,
                     Ok(_) if bytes.last() == Some(&b'\n') => {
-                        let event = serde_json::from_slice::<Value>(&bytes)
+                        let event = serde_json::from_slice::<AuthenticationEvent>(&bytes)
                             .map_err(|error| error.to_string());
                         if sender.send(event).is_err() {
                             break;
@@ -148,20 +147,21 @@ impl Login {
             source,
         })
     }
-    fn poll(&mut self) -> Result<Value, String> {
+    fn poll(&mut self) -> Result<LoginProgress, String> {
         let mut events = Vec::new();
         while let Ok(event) = self.events.try_recv() {
             let event = event
                 .map_err(|detail| format!("invalid authentication adapter event: {detail}"))?;
-            match event["type"].as_str() {
-                Some("prompt") => self.prompt = event["id"].as_str().map(str::to_owned),
-                Some("result") => {
+            match event.type_id.as_str() {
+                "prompt" => self.prompt = event.id.clone(),
+                "result" => {
                     self.finished = true;
                     self.prompt = None;
                 }
-                Some("notify") => {
-                    if event["notification"]["kind"] == "prompt_cancelled"
-                        && event["notification"]["id"].as_str() == self.prompt.as_deref()
+                "notify" => {
+                    if let Some(notification) = &event.notification
+                        && notification.kind == "prompt_cancelled"
+                        && notification.id.as_deref() == self.prompt.as_deref()
                     {
                         self.prompt = None;
                     }
@@ -183,7 +183,7 @@ impl Login {
                 .events
                 .recv_timeout(std::time::Duration::from_millis(50))
             {
-                Ok(Ok(event)) if event["type"] == "result" => {
+                Ok(Ok(event)) if event.type_id == "result" => {
                     self.finished = true;
                     self.prompt = None;
                     events.push(event);
@@ -193,17 +193,32 @@ impl Login {
                     self.finished = true;
                     self.prompt = None;
                     let stderr = self.failure_stderr();
-                    events.push(json!({"type":"result","ok":false,"error":format!("认证适配器事件失败（{exit_status}）：{detail}；stderr：{stderr}")}));
+                    events.push(AuthenticationEvent::result(
+                        false,
+                        Some(format!(
+                            "认证适配器事件失败（{exit_status}）：{detail}；stderr：{stderr}"
+                        )),
+                        None,
+                    ));
                 }
                 Err(error) => {
                     self.finished = true;
                     self.prompt = None;
                     let stderr = self.failure_stderr();
-                    events.push(json!({"type":"result","ok":false,"error":format!("认证适配器退出（{exit_status}）：{error}；stderr：{stderr}")}));
+                    events.push(AuthenticationEvent::result(
+                        false,
+                        Some(format!(
+                            "认证适配器退出（{exit_status}）：{error}；stderr：{stderr}"
+                        )),
+                        None,
+                    ));
                 }
             }
         }
-        Ok(json!({"running":!self.finished,"events":events}))
+        Ok(LoginProgress {
+            running: !self.finished,
+            events,
+        })
     }
     fn failure_stderr(&self) -> String {
         match self.stderr.lock() {
@@ -218,19 +233,13 @@ impl Login {
             Err(error) => format!("stderr 缓存无法读取：{error}"),
         }
     }
-    fn reply(&mut self, payload: &Value) -> Result<Value, String> {
-        let id = payload["id"]
-            .as_str()
-            .ok_or("authentication prompt identity is required")?;
+    fn reply(&mut self, id: &str, value: &str) -> Result<LoginProgress, String> {
         if self.finished || self.prompt.as_deref() != Some(id) {
             return Err("authentication prompt is no longer active".into());
         }
-        let value = payload["value"]
-            .as_str()
-            .ok_or("authentication answer is required")?;
         serde_json::to_writer(
             &mut self.input,
-            &json!({"type":"answer","id":id,"value":value}),
+            &serde_json::json!({"type":"answer","id":id,"value":value}),
         )
         .map_err(|error| format!("authentication input failed: {error}"))?;
         self.input
@@ -238,7 +247,10 @@ impl Login {
             .and_then(|_| self.input.flush())
             .map_err(|error| format!("authentication input failed: {error}"))?;
         self.prompt = None;
-        Ok(json!({"running":true,"events":[]}))
+        Ok(LoginProgress {
+            running: true,
+            events: Vec::new(),
+        })
     }
     fn cancel(&mut self) {
         let _ = self.child.kill();
@@ -253,93 +265,91 @@ impl Drop for Login {
     }
 }
 
-pub fn handle(
+/// Start the source adapter's interactive login; one runs at a time.
+pub fn start(
     session: &mut Option<Login>,
     resources: &Path,
     home: &Path,
-    payload: &Value,
-) -> Result<Value, String> {
-    match payload["operation"].as_str().unwrap_or("poll") {
-        "start" => {
-            if session.as_ref().is_some_and(Login::is_running) {
-                return Err("authentication is already running".into());
-            }
-            let source: Value = serde_json::from_str(
-                payload["source"]
-                    .as_str()
-                    .ok_or("authentication source is required")?,
+    source: Source,
+) -> Result<LoginProgress, String> {
+    if session.as_ref().is_some_and(Login::is_running) {
+        return Err("authentication is already running".into());
+    }
+    *session = Some(Login::start(resources, home, source)?);
+    Ok(LoginProgress {
+        running: true,
+        events: Vec::new(),
+    })
+}
+
+/// The source adapter's own description of its login, as the adapter writes it.
+pub fn inspect(resources: &Path, source: &Source) -> Result<Value, String> {
+    let node = source
+        .settings
+        .get("nodeBinary")
+        .filter(|value| Path::new(value).is_absolute())
+        .ok_or("authentication requires an absolute Node executable")?;
+    if source.kind != "harness" || source.harness_type_id != "pi" {
+        return Err("authentication source adapter is unavailable".into());
+    }
+    let helper = if source.settings.contains_key("bindingProtocol") {
+        resources.join("pi_provider_import.mjs")
+    } else {
+        resources.join("pi_auth.mjs")
+    };
+    let output = crate::process_tree::command(node)
+        .arg(helper)
+        .arg("--operation")
+        .arg("inspect")
+        .arg("--provider-id")
+        .arg(&source.provider_id)
+        .arg("--source-json")
+        .arg(
+            serde_json::to_string(source)
+                .map_err(|error| format!("invalid authentication source: {error}"))?,
+        )
+        .stdin(Stdio::null())
+        .stderr(Stdio::piped())
+        .output()
+        .map_err(|error| format!("authentication source inspection failed: {error}"))?;
+    if !output.status.success() {
+        let detail = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+        return Err(if detail.is_empty() {
+            format!(
+                "authentication source inspection failed (exit status: {})",
+                output.status
             )
-            .map_err(|error| format!("invalid authentication source: {error}"))?;
-            *session = Some(Login::start(resources, home, &source)?);
-            Ok(json!({"running":true,"events":[]}))
-        }
-        "inspect" => {
-            let source: Source = serde_json::from_str(
-                payload["source"]
-                    .as_str()
-                    .ok_or("authentication source is required")?,
+        } else {
+            format!(
+                "authentication source inspection failed (exit status: {}): {detail}",
+                output.status
             )
-            .map_err(|error| format!("invalid authentication source: {error}"))?;
-            let node = source
-                .settings
-                .get("nodeBinary")
-                .filter(|value| Path::new(value).is_absolute())
-                .ok_or("authentication requires an absolute Node executable")?;
-            if source.kind != "harness" || source.harness_type_id != "pi" {
-                return Err("authentication source adapter is unavailable".into());
-            }
-            let helper = if source.settings.contains_key("bindingProtocol") {
-                resources.join("pi_provider_import.mjs")
-            } else {
-                resources.join("pi_auth.mjs")
-            };
-            let output = crate::process_tree::command(node)
-                .arg(helper)
-                .arg("--operation")
-                .arg("inspect")
-                .arg("--provider-id")
-                .arg(&source.provider_id)
-                .arg("--source-json")
-                .arg(
-                    serde_json::to_string(&source)
-                        .map_err(|error| format!("invalid authentication source: {error}"))?,
-                )
-                .stdin(Stdio::null())
-                .stderr(Stdio::piped())
-                .output()
-                .map_err(|error| format!("authentication source inspection failed: {error}"))?;
-            if !output.status.success() {
-                let detail = String::from_utf8_lossy(&output.stderr).trim().to_owned();
-                return Err(if detail.is_empty() {
-                    format!(
-                        "authentication source inspection failed (exit status: {})",
-                        output.status
-                    )
-                } else {
-                    format!(
-                        "authentication source inspection failed (exit status: {}): {detail}",
-                        output.status
-                    )
-                });
-            }
-            let metadata: Value = serde_json::from_slice(&output.stdout)
-                .map_err(|error| format!("invalid authentication source metadata: {error}"))?;
-            Ok(json!({"metadata":metadata}))
-        }
-        "poll" => session
-            .as_mut()
-            .map_or(Ok(json!({"running":false,"events":[]})), Login::poll),
-        "reply" => session
-            .as_mut()
-            .ok_or("authentication is not running")?
-            .reply(payload),
-        "cancel" => {
-            if let Some(login) = session.as_mut() {
-                login.cancel();
-            }
-            Ok(json!({"running":false,"events":[{"type":"result","ok":false,"cancelled":true}]}))
-        }
-        _ => Err("unsupported authentication operation".into()),
+        });
+    }
+    serde_json::from_slice(&output.stdout)
+        .map_err(|error| format!("invalid authentication source metadata: {error}"))
+}
+
+pub fn poll(session: &mut Option<Login>) -> Result<LoginProgress, String> {
+    session
+        .as_mut()
+        .map_or(Ok(LoginProgress::idle()), Login::poll)
+}
+
+pub fn reply(session: &mut Option<Login>, id: &str, value: &str) -> Result<LoginProgress, String> {
+    session
+        .as_mut()
+        .ok_or("authentication is not running")?
+        .reply(id, value)
+}
+
+pub fn cancel(session: &mut Option<Login>) -> LoginProgress {
+    if let Some(login) = session.as_mut() {
+        login.cancel();
+    }
+    LoginProgress {
+        running: false,
+        events: vec![AuthenticationEvent::result(false, None, Some(true))],
     }
 }
 

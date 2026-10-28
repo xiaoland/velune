@@ -1,16 +1,8 @@
 use crate::config::GatewayProtocol;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+/// The persisted coordinates of a runtime's own provider login.
+pub(crate) use velune_agent_runtime::authentication::Source as AuthenticationSource;
 pub use velune_application_api::authentication::*;
-#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct AuthenticationSource {
-    pub kind: String,
-    pub harness_type_id: String,
-    pub source_instance_id: Option<String>,
-    pub provider_id: String,
-    pub settings: BTreeMap<String, String>,
-}
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(
     tag = "kind",

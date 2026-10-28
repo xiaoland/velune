@@ -4,23 +4,19 @@
 use crate::config::{
     GatewayConfig, GatewayProtocol, ProviderDefinition, ProviderModel, RuntimeInstance,
 };
-use crate::{Error as RuntimeError, Options as RuntimeOptions};
+use crate::{
+    Error as RuntimeError, ImportModelCandidate, ImportProviderCandidate, ImportSelection,
+    Options as RuntimeOptions, ProviderImportPreview, ProviderImportSource,
+};
 use serde::Serialize;
-use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use velune_agent_runtime::provider_source::{Snapshot, Source};
 
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct Preview {
-    contract_version: u64,
-    source_fingerprint: String,
-    target_fingerprint: String,
-    sdk_version: String,
-    source: Value,
-    providers: Vec<Value>,
-    warnings: Vec<String>,
+/// What an applied import changed in the target gateway.
+pub(crate) struct Applied {
+    pub(crate) imported: Vec<String>,
+    pub(crate) skipped: Vec<String>,
 }
 
 pub(crate) fn descriptor() -> crate::config::RuntimeTypeDescriptor {
@@ -45,22 +41,21 @@ pub(crate) fn descriptor() -> crate::config::RuntimeTypeDescriptor {
     }
 }
 
-fn source(payload: &Value) -> Result<Source, RuntimeError> {
-    let value = if payload["source"].is_string() {
-        serde_json::from_str(payload["source"].as_str().unwrap_or("{}"))
-            .map_err(|_| RuntimeError::invalid("provider import source"))?
-    } else {
-        payload["source"].clone()
-    };
-    serde_json::from_value(value).map_err(|_| RuntimeError::invalid("provider import source"))
+fn source(selection: &ProviderImportSource) -> Source {
+    Source {
+        kind: selection.kind.clone(),
+        harness_type_id: selection.harness_type_id.clone(),
+        source_instance_id: selection.source_instance_id.clone(),
+        provider_id: selection.provider_id.clone(),
+        settings: selection.settings.clone(),
+    }
 }
 /// The selected Codex or Claude Code instance, whose files the agent runtime
 /// reads directly; Pi goes through its SDK adapter instead.
 fn native_runtime<'a>(
-    payload: &Value,
+    selection: &ProviderImportSource,
     runtimes: &'a [RuntimeInstance],
 ) -> Result<Option<&'a RuntimeInstance>, RuntimeError> {
-    let selection = source(payload)?;
     let Some(runtime) = runtimes.iter().find(|runtime| {
         Some(runtime.id.as_str()) == selection.source_instance_id.as_deref()
             && crate::native_provider_import::TYPES.contains(&runtime.type_id.as_str())
@@ -80,10 +75,10 @@ fn native_runtime<'a>(
 }
 /// A selection references persisted application configuration; callers cannot supply source paths.
 fn configured_source(
-    payload: &Value,
+    selection: &ProviderImportSource,
     runtimes: &[RuntimeInstance],
 ) -> Result<(Source, String), RuntimeError> {
-    let selection = source(payload)?;
+    let selection = source(selection);
     let id = selection
         .source_instance_id
         .as_deref()
@@ -225,15 +220,15 @@ pub(crate) fn protocol_name(value: &GatewayProtocol) -> &'static str {
 }
 
 pub(crate) fn preview(
-    source_value: &Value,
+    selection: &ProviderImportSource,
     gateway: &GatewayConfig,
     options: &RuntimeOptions,
     runtimes: &[RuntimeInstance],
-) -> Result<Value, RuntimeError> {
-    if let Some(runtime) = native_runtime(source_value, runtimes)? {
+) -> Result<ProviderImportPreview, RuntimeError> {
+    if let Some(runtime) = native_runtime(selection, runtimes)? {
         return crate::native_provider_import::preview(runtime, gateway);
     }
-    let (source, runtime_fingerprint) = configured_source(source_value, runtimes)?;
+    let (source, runtime_fingerprint) = configured_source(selection, runtimes)?;
     let snapshot = run_helper(&source, options)?;
     let source_fingerprint = combined_source_fingerprint(&snapshot, &runtime_fingerprint);
     let target_fingerprint = fingerprint(gateway)?;
@@ -266,72 +261,118 @@ pub(crate) fn preview(
                 )
             ),
         );
-        providers.push(json!({"id":provider_id,"sourceProviderId":provider.source_provider_id,"name":provider.name,"protocol":protocol_name,"endpoint":provider.endpoint,"canImport":!supported.is_empty(),"alreadyImported":gateway.providers.iter().any(|item| item.id == provider_id),"credentialStatus":provider.auth.status_label.clone().unwrap_or_else(|| provider.auth.kind.clone()),"issues":if provider.auth.ready { Vec::<String>::new() } else { vec![provider.auth.reason.clone().unwrap_or_else(|| "需要完成认证".into())] },"models":provider.models.iter().map(|m| json!({"candidateKey":stable_id("pi_candidate", &format!("{}|{}|{}|{}", provider.source_provider_id, m.id, protocol_name, source_identity(&source, &snapshot.models_path, snapshot.auth_path.as_deref()))),"providerModelId":m.id,"name":m.name,"contextWindow":m.context_window,"maxOutputTokens":m.max_tokens,"reasoningLevels":if m.reasoning_levels.is_empty() { vec!["off".to_string()] } else { m.reasoning_levels.clone() },"canImport":m.supported,"issues":if m.unsupported_features.is_empty() { m.unsupported_reason.clone().into_iter().collect() } else { m.unsupported_features.clone() }})).collect::<Vec<_>>() }));
+        let identity = source_identity(
+            &source,
+            &snapshot.models_path,
+            snapshot.auth_path.as_deref(),
+        );
+        let models = provider
+            .models
+            .iter()
+            .map(|m| ImportModelCandidate {
+                candidate_key: stable_id(
+                    "pi_candidate",
+                    &format!(
+                        "{}|{}|{}|{}",
+                        provider.source_provider_id, m.id, protocol_name, identity
+                    ),
+                ),
+                provider_model_id: m.id.clone(),
+                name: m.name.clone(),
+                context_window: m.context_window,
+                max_output_tokens: m.max_tokens,
+                reasoning_levels: if m.reasoning_levels.is_empty() {
+                    vec!["off".to_string()]
+                } else {
+                    m.reasoning_levels.clone()
+                },
+                can_import: m.supported,
+                issues: if m.unsupported_features.is_empty() {
+                    m.unsupported_reason.clone().into_iter().collect()
+                } else {
+                    m.unsupported_features.clone()
+                },
+            })
+            .collect();
+        providers.push(ImportProviderCandidate {
+            already_imported: gateway.providers.iter().any(|item| item.id == provider_id),
+            id: provider_id,
+            source_provider_id: provider.source_provider_id.clone(),
+            name: provider.name.clone(),
+            protocol: protocol_name,
+            endpoint: provider.endpoint.clone(),
+            can_import: !supported.is_empty(),
+            credential_status: provider
+                .auth
+                .status_label
+                .clone()
+                .unwrap_or_else(|| provider.auth.kind.clone()),
+            issues: if provider.auth.ready {
+                Vec::new()
+            } else {
+                vec![
+                    provider
+                        .auth
+                        .reason
+                        .clone()
+                        .unwrap_or_else(|| "需要完成认证".into()),
+                ]
+            },
+            models,
+        });
     }
-    let preview = Preview {
+    Ok(ProviderImportPreview {
         contract_version: 1,
+        token: preview_token(&source_fingerprint, &target_fingerprint),
         source_fingerprint,
         target_fingerprint,
         sdk_version: snapshot.sdk_version,
-        source: json!({"kind":source.kind,"harnessTypeId":source.harness_type_id,"sourceInstanceId":source.source_instance_id,"providerId":source.provider_id,"settings":source.settings}),
+        source: ProviderImportSource {
+            kind: source.kind,
+            harness_type_id: source.harness_type_id,
+            source_instance_id: source.source_instance_id,
+            provider_id: source.provider_id,
+            settings: source.settings,
+        },
         providers,
         warnings,
-    };
-    let mut value = serde_json::to_value(preview)?;
-    value["sourceLabel"] = Value::String("Pi models.json".into());
-    value["token"] = Value::String(preview_token(
-        value["sourceFingerprint"].as_str().unwrap_or(""),
-        value["targetFingerprint"].as_str().unwrap_or(""),
-    ));
-    Ok(value)
+        source_label: "Pi models.json".into(),
+    })
 }
 
 pub(crate) fn apply(
-    source_value: &Value,
+    selection: &ProviderImportSource,
+    preview_token_value: &str,
+    selections: &[ImportSelection],
+    replace: bool,
     gateway: &mut GatewayConfig,
     options: &RuntimeOptions,
     runtimes: &[RuntimeInstance],
-) -> Result<Value, RuntimeError> {
-    if let Some(runtime) = native_runtime(source_value, runtimes)? {
-        return crate::native_provider_import::apply(source_value, runtime, gateway, runtimes);
+) -> Result<Applied, RuntimeError> {
+    if let Some(runtime) = native_runtime(selection, runtimes)? {
+        return crate::native_provider_import::apply(
+            preview_token_value,
+            selections,
+            replace,
+            runtime,
+            gateway,
+            runtimes,
+        );
     }
-    let (source, runtime_fingerprint) = configured_source(source_value, runtimes)?;
+    let (source, runtime_fingerprint) = configured_source(selection, runtimes)?;
     let snapshot = run_helper(&source, options)?;
     let source_fingerprint = combined_source_fingerprint(&snapshot, &runtime_fingerprint);
-    let replace = source_value["replace"]
-        .as_bool()
-        .or_else(|| source_value["replaceExisting"].as_bool())
-        .or_else(|| {
-            source_value["replaceExisting"]
-                .as_str()
-                .and_then(|value| value.parse().ok())
-        })
-        .unwrap_or(false);
     let target_fingerprint = fingerprint(gateway)?;
-    let expected = source_value["previewToken"]
-        .as_str()
-        .or_else(|| source_value["preview"]["token"].as_str());
-    let valid_token =
-        expected == Some(preview_token(&source_fingerprint, &target_fingerprint).as_str());
-    if !valid_token {
+    if preview_token_value != preview_token(&source_fingerprint, &target_fingerprint) {
         return Err(RuntimeError::invalid(
             "provider import source or target changed",
         ));
     }
     let mut imported = Vec::new();
     let mut skipped = Vec::new();
-    let selections = if source_value["selections"].is_string() {
-        serde_json::from_str::<Value>(source_value["selections"].as_str().unwrap_or("[]"))
-            .unwrap_or_else(|_| json!([]))
-    } else {
-        source_value["selections"].clone()
-    };
-    if !selections.is_array() || selections.as_array().is_some_and(|items| items.is_empty()) {
+    if selections.is_empty() {
         return Err(RuntimeError::invalid("provider import selections"));
     }
-    let selection_items = selections
-        .as_array()
-        .ok_or_else(|| RuntimeError::invalid("provider import selections"))?;
     let mut candidate_models = BTreeMap::<String, (String, Vec<String>)>::new();
     for provider in &snapshot.providers {
         let Some(endpoint) = provider.endpoint.as_deref() else {
@@ -389,13 +430,9 @@ pub(crate) fn apply(
         candidate_models.insert(provider_id.clone(), (provider_id, ids));
     }
     let mut selected_providers = std::collections::BTreeSet::new();
-    for selection in selection_items {
-        let provider_id = selection["providerId"]
-            .as_str()
-            .ok_or_else(|| RuntimeError::invalid("provider import selection provider"))?;
-        let candidate_keys = selection["candidateKeys"]
-            .as_array()
-            .ok_or_else(|| RuntimeError::invalid("provider import selection models"))?;
+    for selection in selections {
+        let provider_id = selection.provider_id.as_str();
+        let candidate_keys = &selection.candidate_keys;
         if candidate_keys.is_empty() {
             return Err(RuntimeError::invalid("provider import selection models"));
         }
@@ -411,9 +448,6 @@ pub(crate) fn apply(
         }
         let mut selected = std::collections::BTreeSet::new();
         for model_record_key in candidate_keys {
-            let model_record_key = model_record_key
-                .as_str()
-                .ok_or_else(|| RuntimeError::invalid("provider import selection model"))?;
             if !selected.insert(model_record_key)
                 || !candidates
                     .iter()
@@ -453,9 +487,9 @@ pub(crate) fn apply(
             ),
         );
         if gateway.providers.iter().any(|p| p.id == provider_id) && !replace {
-            if selection_items.iter().any(|selection| {
-                selection["providerId"] == provider_id
-                    || selection["providerId"] == provider.source_provider_id
+            if selections.iter().any(|selection| {
+                selection.provider_id == provider_id
+                    || selection.provider_id == provider.source_provider_id
             }) {
                 skipped.push(provider_id);
             }
@@ -477,20 +511,11 @@ pub(crate) fn apply(
                     ),
                 ),
             );
-            let selection = selections.as_array().and_then(|items| {
-                items.iter().find(|item| {
-                    (item["providerId"] == provider.source_provider_id
-                        || item["providerId"] == provider_id)
-                        && item["candidateKeys"].as_array().is_some_and(|ids| {
-                            ids.iter()
-                                .any(|id| id.as_str() == Some(candidate_id.as_str()))
-                        })
-                })
+            let selected = selections.iter().any(|item| {
+                (item.provider_id == provider.source_provider_id || item.provider_id == provider_id)
+                    && item.candidate_keys.contains(&candidate_id)
             });
-            if selections.is_array()
-                && selections.as_array().is_some_and(|items| !items.is_empty())
-                && selection.is_none()
-            {
+            if !selected {
                 continue;
             }
             let model_record_key = gateway
@@ -645,7 +670,5 @@ pub(crate) fn apply(
     }
     gateway.prune_routes();
     gateway.validate().map_err(RuntimeError::invalid)?;
-    Ok(
-        json!({"importedProviderIds":imported,"skippedProviderIds":skipped,"sourceFingerprint":snapshot.source_fingerprint,"targetFingerprint":fingerprint(gateway)?}),
-    )
+    Ok(Applied { imported, skipped })
 }

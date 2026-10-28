@@ -1,6 +1,15 @@
 //! Local application configuration use cases.
 use super::*;
 use crate::RuntimeExecution;
+fn empty_default_gateway() -> GatewayConfig {
+    GatewayConfig {
+        id: "default".into(),
+        name: "默认网关".into(),
+        providers: Vec::new(),
+        routes: Vec::new(),
+    }
+}
+
 enum RuntimeChange {
     Upsert(RuntimeInstance),
     Delete(String),
@@ -332,93 +341,92 @@ impl CoreRuntime {
             .collect()
     }
 
-    pub(super) fn provider_import_action(
-        &mut self,
-        request: &Value,
-    ) -> Result<Value, RuntimeError> {
+    pub(crate) fn preview_provider_import(
+        &self,
+        gateway_id: String,
+        source: crate::ProviderImportSource,
+    ) -> Result<crate::ProviderImportPreview, RuntimeError> {
         if self.execution_active() {
             return Err(RuntimeError::invalid("runtime is busy"));
         }
-        let operation = request["payload"]["operation"]
-            .as_str()
-            .unwrap_or("preview");
-        let gateway_id = request["payload"]["gatewayID"]
-            .as_str()
-            .ok_or_else(|| RuntimeError::invalid("gateway id"))?;
-        let empty_default = GatewayConfig {
-            id: "default".into(),
-            name: "默认网关".into(),
-            providers: Vec::new(),
-            routes: Vec::new(),
+        let empty = empty_default_gateway();
+        let gateway = match self.gateways.iter().find(|item| item.id == gateway_id) {
+            Some(gateway) => gateway,
+            None if gateway_id == "default" => &empty,
+            None => return Err(RuntimeError::invalid("gateway id")),
         };
+        provider_import::preview(&source, gateway, &self.options, &self.runtime_instances)
+    }
+
+    pub(crate) fn apply_provider_import(
+        &mut self,
+        gateway_id: String,
+        source: crate::ProviderImportSource,
+        preview_token: String,
+        selections: Vec<crate::ImportSelection>,
+        replace_existing: bool,
+    ) -> Result<crate::ImportResult, RuntimeError> {
+        if self.execution_active() {
+            return Err(RuntimeError::invalid("runtime is busy"));
+        }
+        let gateway_id = gateway_id.as_str();
         let existing = self.gateways.iter().position(|item| item.id == gateway_id);
         if existing.is_none() && gateway_id != "default" {
             return Err(RuntimeError::invalid("gateway id"));
         }
-        match operation {
-            "preview" => {
-                let gateway = existing
-                    .map(|index| &self.gateways[index])
-                    .unwrap_or(&empty_default);
-                provider_import::preview(
-                    &request["payload"],
-                    gateway,
-                    &self.options,
-                    &self.runtime_instances,
-                )
-                .map(|preview| json!({"preview":preview,"gateway":crate::api::GatewaySummary::from(gateway)}))
-            }
-            "apply" => {
-                let mut imported_gateway = existing
-                    .map(|index| self.gateways[index].clone())
-                    .unwrap_or(empty_default);
-                let previous = imported_gateway.clone();
-                let result = provider_import::apply(
-                    &request["payload"],
-                    &mut imported_gateway,
-                    &self.options,
-                    &self.runtime_instances,
-                )?;
-                if imported_gateway.providers.is_empty() {
-                    return Err(RuntimeError::invalid(
-                        "provider import selected no providers",
-                    ));
-                }
-                let execution_invalidated = (imported_gateway != previous)
-                    && self
-                        .next_turn_runtime_id
-                        .as_ref()
-                        .and_then(|id| {
-                            self.runtime_instances
-                                .iter()
-                                .find(|runtime| &runtime.id == id)
-                        })
-                        .is_some_and(|runtime| runtime.gateway_id == gateway_id);
-                let previous_runtimes = self.runtime_instances.clone();
-                if let Some(index) = existing {
-                    self.gateways[index] = imported_gateway;
-                } else {
-                    self.gateways.push(imported_gateway);
-                }
-                if let Err(error) = self.persist() {
-                    self.runtime_instances = previous_runtimes;
-                    if let Some(index) = existing {
-                        self.gateways[index] = previous;
-                    } else {
-                        self.gateways.pop();
-                    }
-                    return Err(error);
-                }
-                self.sync_scheduling(std::slice::from_ref(&previous));
-                if execution_invalidated {
-                    self.for_each_session(Self::invalidate_execution)?;
-                }
-                Ok(
-                    json!({"importedProviderIds":result["importedProviderIds"],"skippedProviderIds":result["skippedProviderIds"],"gateways":self.public_gateways(),"executionInvalidated":execution_invalidated}),
-                )
-            }
-            _ => Err(RuntimeError::invalid("provider import operation")),
+        let mut imported_gateway = existing
+            .map(|index| self.gateways[index].clone())
+            .unwrap_or_else(empty_default_gateway);
+        let previous = imported_gateway.clone();
+        let result = provider_import::apply(
+            &source,
+            &preview_token,
+            &selections,
+            replace_existing,
+            &mut imported_gateway,
+            &self.options,
+            &self.runtime_instances,
+        )?;
+        if imported_gateway.providers.is_empty() {
+            return Err(RuntimeError::invalid(
+                "provider import selected no providers",
+            ));
         }
+        let execution_invalidated = (imported_gateway != previous)
+            && self
+                .next_turn_runtime_id
+                .as_ref()
+                .and_then(|id| {
+                    self.runtime_instances
+                        .iter()
+                        .find(|runtime| &runtime.id == id)
+                })
+                .is_some_and(|runtime| runtime.gateway_id == gateway_id);
+        let previous_runtimes = self.runtime_instances.clone();
+        if let Some(index) = existing {
+            self.gateways[index] = imported_gateway;
+        } else {
+            self.gateways.push(imported_gateway);
+        }
+        if let Err(error) = self.persist() {
+            self.runtime_instances = previous_runtimes;
+            if let Some(index) = existing {
+                self.gateways[index] = previous;
+            } else {
+                self.gateways.pop();
+            }
+            return Err(error);
+        }
+        self.sync_scheduling(std::slice::from_ref(&previous));
+        if execution_invalidated {
+            self.for_each_session(Self::invalidate_execution)?;
+        }
+        Ok(crate::ImportResult {
+            imported_provider_ids: result.imported,
+            skipped_provider_ids: result.skipped,
+            gateways: self.public_gateways(),
+            execution_invalidated,
+        })
     }
 
     pub(crate) fn upsert_runtime(

@@ -677,9 +677,6 @@ impl CoreRuntime {
         }
         let action = request["action"].as_str().unwrap_or_default();
         match action {
-            "providerImport" => self.provider_import_action(request),
-            "providers" => self.provider_action(&request["payload"]),
-            "modelTemplates" => self.template_action(&request["payload"]),
             "openAcpConversation" => self.open_acp_conversation_action(request),
             "acpSessionConfig" => self.acp_session_config_action(request, false),
             "setAcpSessionConfig" => self.acp_session_config_action(request, true),
@@ -736,7 +733,6 @@ impl CoreRuntime {
             "cancel" => self.cancel_action(request),
             "stopSubAgents" => self.stop_sub_agents_action(request),
             "replyRuntimeInteraction" => self.reply_runtime_interaction(request),
-            "authentication" => self.authentication_action(&request["payload"]),
             action => Err(RuntimeError::Unsupported(action.into())),
         }
     }
