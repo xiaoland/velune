@@ -8,18 +8,18 @@ import Foundation
 @MainActor
 final class TranscriptRow: @MainActor Identifiable {
     let id: String
-    private(set) var message: Message
+    private(set) var message: DeliveredMessage
     private(set) var contentRevision: UInt64 = 0
     /// A caption under a message the runtime has not confirmed yet, such as "发送中".
     let status: String?
     /// Whether a copy button goes under it: the user's messages and a turn's
     /// closing reply, not the messages and text of its work.
     fileprivate(set) var copies: Bool
-    init(_ message: Message, id: String, status: String? = nil, copies: Bool? = nil) {
+    init(_ message: DeliveredMessage, id: String, status: String? = nil, copies: Bool? = nil) {
         self.id = id; self.message = message; self.status = status
         self.copies = copies ?? (message.role == .user)
     }
-    func update(_ message: Message) {
+    func update(_ message: DeliveredMessage) {
         guard self.message != message else { return }
         contentRevision &+= 1
         self.message = message
@@ -76,7 +76,7 @@ final class TranscriptModel: ObservableObject {
         } + (pendingItem.map { [$0] } ?? [])
     }
     /// Shows `message` at the end of the list with `status` under it; nil removes it.
-    func showPending(_ message: Message?, status: String?) {
+    func showPending(_ message: DeliveredMessage?, status: String?) {
         guard let message else {
             if pending != nil { pending = nil; presentation.revision &+= 1 }
             return
@@ -87,11 +87,11 @@ final class TranscriptModel: ObservableObject {
     }
     func retainedExpandedTurnIDs(_ ids: Set<String>) -> Set<String> { ids.intersection(turns.map(\.id)) }
     func reset() { presentation = Presentation(revision: contentRevision &+ 1) }
-    func apply(_ messages: [Message], turns: [TranscriptTurn], items: [TranscriptItem], outline: [TranscriptOutlineEntry], identities: [TranscriptMessageIdentity]) {
+    func apply(_ messages: [DeliveredMessage], turns: [TranscriptTurn], items: [TranscriptItem], outline: [TranscriptOutlineEntry], identities: [TranscriptMessageIdentity]) {
         let identitiesByMessage = Dictionary(uniqueKeysWithValues: identities.map { ($0.messageId, $0.id) })
         let existing = Dictionary(uniqueKeysWithValues: rows.map { ($0.id, $0) })
         var changed = presentation.turns != turns || presentation.items != items || presentation.outline != outline
-        func row(_ id: String, _ message: Message, copies: Bool) -> TranscriptRow {
+        func row(_ id: String, _ message: DeliveredMessage, copies: Bool) -> TranscriptRow {
             if let row = existing[id] {
                 if row.message != message { row.update(message); changed = true }
                 // A running turn's latest message is its reply until more work follows it.

@@ -3,7 +3,7 @@ import VeluneBindings
 
 
 struct ProviderImportResult: Sendable {
-    var gateways: [GatewayConfig]
+    var gateways: [GatewaySummary]
     var executionInvalidated: Bool
     var importedProviderIds: [String]
     var skippedProviderIds: [String]

@@ -1,4 +1,5 @@
 import SwiftUI
+import VeluneBindings
 
 /// Adding a provider starts by choosing what it is, as Mail does for accounts:
 /// a subscription template fixes how the provider is reached, the API template
@@ -53,7 +54,7 @@ struct ProviderCreationView: View {
         }.frame(width: 650, height: 510)
         .onAppear { if choice == nil { choice = store.providerTemplates.first.map { .template($0.id) } } }
     }
-    @ViewBuilder private func section(_ title: String, kind: ProviderTemplate.Kind, systemImage: String) -> some View {
+    @ViewBuilder private func section(_ title: String, kind: ProviderTemplateKind, systemImage: String) -> some View {
         let templates = store.providerTemplates.filter { $0.kind == kind }
         if !templates.isEmpty {
             Section(title) { ForEach(templates) { row($0.name, summary: $0.summary, systemImage: systemImage).tag(Choice.template($0.id)) } }

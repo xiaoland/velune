@@ -88,7 +88,7 @@ final class AppStore: ObservableObject {
         var accepted = false
     }
     private var pendingSend: PendingSend?
-    @Published private(set) var gateway = GatewayConfig() { didSet { if oldValue != gateway { quotaConfigurationRevision &+= 1; invalidateModelCatalogs() } } }
+    @Published private(set) var gateway = GatewaySummary(id: "default", name: "默认网关", providers: [], routes: []) { didSet { if oldValue != gateway { quotaConfigurationRevision &+= 1; invalidateModelCatalogs() } } }
     @Published private(set) var runtimeInstances: [RuntimeInstance] = [] {
         didSet {
             if oldValue != runtimeInstances {
@@ -98,26 +98,26 @@ final class AppStore: ObservableObject {
         }
     }
     /// Where each instance runs, read with its saved execution; unknown ones count as local.
-    @Published private(set) var runtimeLocations: [String: RuntimeLocation] = [:]
+    @Published private(set) var runtimeLocations: [String: RuntimeTransport] = [:]
     private var runtimeLocationsRequest = UUID()
     @Published private(set) var runtimeTypes: [RuntimeTypeDescriptor] = []
     @Published private(set) var protocols: [ProtocolDescriptor] = []
     @Published private(set) var modelTemplates: [ModelTemplate] = []
     @Published private(set) var providerImportTypes: [RuntimeTypeDescriptor] = []
     @Published private(set) var authenticationRunning = false
-    @Published private(set) var authenticationPrompt: AuthenticationPrompt?
+    @Published private(set) var authenticationPrompt: PendingAuthenticationPrompt?
     @Published private(set) var authenticationNotifications: [AuthenticationNotification] = []
     @Published private(set) var authenticationResult: String?
     @Published var showsAuthentication = false
     /// The core's quota observations by provider ID, as last read.
-    @Published private(set) var providerQuotas: [String: AccountQuota] = [:]
+    @Published private(set) var providerQuotas: [String: QuotaObservation] = [:]
     private var quotaConfigurationRevision: UInt64 = 0
-    @Published private var composerQuotaResult: [ComposerAccountQuota] = []
+    @Published private var composerQuotaResult: [ComposerQuotaEntry] = []
     private var composerQuotaResultRequest: ComposerQuotaRequest?
     @Published private var composerQuotaFailure: String?
     private var quotaReadsPending: Set<String> = []
     /// What a new provider starts from; a static catalog in the core.
-    private(set) lazy var providerTemplates: [ProviderTemplate] = (try? VeluneBindings.providerTemplates().map(BindingMapping.providerTemplate)) ?? []
+    private(set) lazy var providerTemplates: [ProviderTemplate] = (try? VeluneBindings.providerTemplates()) ?? []
     @Published private(set) var isLoading = false
     @Published private(set) var isShuttingDown = false
     @Published private(set) var activity: TranscriptActivity?
@@ -156,7 +156,7 @@ final class AppStore: ObservableObject {
     private var pollPending = false
     private var payloadRequests: Set<PayloadKey> = []
     /// Complete messages read on demand, by message identifier.
-    private var loadedPayloads: [String: Message] = [:]
+    private var loadedPayloads: [String: DeliveredMessage] = [:]
     private var authenticationPollPending = false
     private var hasGateway = false
     private var hasInitializedNextTurnIntent = false
@@ -279,7 +279,7 @@ final class AppStore: ObservableObject {
     var applicationIsGenerating: Bool { isGenerating || executionStarting || !(sharedApplication ?? self).runningConversationIDs.isEmpty }
 
     var enabledRuntimeInstances: [RuntimeInstance] { runtimeInstances.filter(\.enabled) }
-    var providers: [AIProvider] { gateway.providers }
+    var providers: [ProviderSummary] { gateway.providers }
     var loadedConversationID: String? { snapshot?.conversation.id }
     var loadedConversationWorkingDirectory: String? { snapshot?.conversation.cwd }
     /// Set while a native sub-agent's conversation is shown: the conversation that started it.
@@ -354,7 +354,7 @@ final class AppStore: ObservableObject {
         if case .ready(let choices) = modelCatalog { return choices }
         let typeID = runtimeInstances.first { $0.id == nextTurnRuntimeID }?.typeId
         guard let descriptor = runtimeTypes.first(where: { $0.id == typeID }) else { return [] }
-        return gateway.providers.filter { descriptor.supportedProviderProtocols.contains($0.protocolID) }.flatMap { provider in
+        return gateway.providers.filter { descriptor.supportedProviderProtocols.contains($0.protocol) }.flatMap { provider in
             provider.models.map { RuntimeModel(selection: .managed(modelRecordKey: $0.recordKey), name: "\($0.displayName) · \(provider.name)", reasoningEfforts: []) }
         }
     }
@@ -443,14 +443,14 @@ final class AppStore: ObservableObject {
             conversationID: isDraft ? nil : snapshot?.conversation.id,
             conversationRevision: snapshot?.revision, configurationRevision: quotaConfigurationRevision)
     }
-    var composerAccountQuotas: [ComposerAccountQuota] {
+    var composerAccountQuotas: [ComposerQuotaEntry] {
         composerQuotaResultRequest == composerQuotaRequest ? composerQuotaResult : []
     }
     var composerQuotaError: String? { composerQuotaResultRequest == composerQuotaRequest ? composerQuotaFailure : nil }
     func observeComposerQuota(_ request: ComposerQuotaRequest) async {
         guard !isPreview, !isShuttingDown, !request.runtimeID.isEmpty, let transport else { return }
         while !Task.isCancelled && composerQuotaRequest == request {
-            let result: Result<[ComposerAccountQuota], Error> = await withCheckedContinuation { continuation in
+            let result: Result<[ComposerQuotaEntry], Error> = await withCheckedContinuation { continuation in
                 performOnQueue { continuation.resume(returning: Result { try transport.composerQuota(request) }) }
             }
             guard !Task.isCancelled, !isShuttingDown, composerQuotaRequest == request else { return }
@@ -1258,7 +1258,7 @@ final class AppStore: ObservableObject {
         if isPreview {
             guard var value = snapshot else { return false }
             if case .managed(let key)? = model { value.modelRecordKey = key }
-            let message = Message(id: UUID().uuidString, role: .user, blocks: [.text(text)])
+            let message = DeliveredMessage(id: UUID().uuidString, role: .user, blocks: [.text(text: text)])
             value.messages.append(message)
             value.transcriptItems.append(.message(id: message.id, messageId: message.id))
             value.transcriptOutline.append(TranscriptOutlineEntry(id: message.id, messageId: message.id))
@@ -1269,10 +1269,10 @@ final class AppStore: ObservableObject {
         executionStarting = true
         composerRequest = .sending
         pendingSend = PendingSend(previousUserMessageID: snapshot?.messages.last { $0.role == .user }?.id)
-        let sent: [MessageBlock] = (text.isEmpty ? [] : [.text(text)]) + attachments.map { path in
-            Self.imageExtensions.contains(URL(fileURLWithPath: path).pathExtension.lowercased()) ? .image(mediaType: nil, source: .path(path)) : .file(path: path)
+        let sent: [DeliveredBlock] = (text.isEmpty ? [] : [.text(text: text)]) + attachments.map { path in
+            Self.imageExtensions.contains(URL(fileURLWithPath: path).pathExtension.lowercased()) ? .image(mediaType: nil, source: .path(path: path)) : .file(path: path)
         }
-        transcript.showPending(Message(id: "pending:" + UUID().uuidString, role: .user, blocks: sent), status: "发送中")
+        transcript.showPending(DeliveredMessage(id: "pending:" + UUID().uuidString, role: .user, blocks: sent), status: "发送中")
         let creating = isDraft
         let cwd = snapshot?.conversation.cwd
         // Without a level or mode the core keeps the conversation's current one.
@@ -1389,7 +1389,7 @@ final class AppStore: ObservableObject {
         guard !isPreview, !isDraft, canSend, nextTurnRuntimeID == snapshot?.conversation.runtimeID else { return nil }
         return followUp.editable.first { $0.messageId == messageID }
     }
-    func message(id: String) -> Message? { snapshot?.messages.first { $0.id == id } }
+    func message(id: String) -> DeliveredMessage? { snapshot?.messages.first { $0.id == id } }
     func isLastUserMessage(_ messageID: String) -> Bool { snapshot?.messages.last { $0.role == .user }?.id == messageID }
     /// Send `text` in place of a user message. In place the conversation
     /// shows the new turn here; a fork's new conversation goes to `forked`.
@@ -1424,9 +1424,9 @@ final class AppStore: ObservableObject {
             onDone?()
         }
     }
-    func saveProvider(_ value: AIProvider, authenticationEdit: AuthenticationEdit, quotaAuthenticationEdit: QuotaAuthenticationEdit? = nil, onSaved: (() -> Void)? = nil) {
+    func saveProvider(_ value: ProviderDraft, authenticationEdit: AuthenticationEdit, quotaAuthenticationEdit: QuotaAuthenticationEdit? = nil, onSaved: (() -> Void)? = nil) {
         guard !authenticationRunning, !isGenerating else { recordProblem("请先停止当前任务或完成登录"); return }
-        if isPreview { var saved = value; if saved.id.isEmpty { saved.id = UUID().uuidString }; for index in saved.models.indices where saved.models[index].recordKey.isEmpty { saved.models[index].recordKey = UUID().uuidString }; gateway.providers.removeAll { $0.id == saved.id }; gateway.providers.append(saved); hasGateway = true; onSaved?(); return }
+        if isPreview { var saved = value; if saved.id.isEmpty { saved.id = UUID().uuidString }; for index in saved.models.indices where saved.models[index].recordKey.isEmpty { saved.models[index].recordKey = UUID().uuidString }; gateway.providers.removeAll { $0.id == saved.id }; gateway.providers.append(ProviderSummary(previewOf: saved)); hasGateway = true; onSaved?(); return }
         guard let transport else { recordProblem("本地核心未配置"); return }
         enqueue({ try transport.saveProvider(gatewayID: self.gateway.id, provider: value, authenticationEdit: authenticationEdit, quotaAuthenticationEdit: quotaAuthenticationEdit) }) { [weak self] data in
             self?.applyGatewayUpdate(data); onSaved?()
@@ -1459,7 +1459,7 @@ final class AppStore: ObservableObject {
         }
     }
     /// Retained observations since `since`; reading never samples the provider.
-    func readQuotaHistory(_ providerID: String, since: Date, completion: @escaping (Result<[QuotaObservation], Error>) -> Void) {
+    func readQuotaHistory(_ providerID: String, since: Date, completion: @escaping (Result<[QuotaHistorySample], Error>) -> Void) {
         guard !isPreview, let transport else { completion(.success([])); return }
         let gatewayID = gateway.id
         queue.async {
@@ -1521,7 +1521,7 @@ final class AppStore: ObservableObject {
         guard let transport else { recordProblem("本地核心未配置"); return }
         enqueue({ try transport.providerImportApply(gatewayID: self.gateway.id, source: source, previewToken: preview.token, selections: selections, replaceExisting: replaceExisting) }) { [weak self] data in
                 guard let self else { return }
-                if let saved = data.gateways.first(where: { $0.id == self.gateway.id }) { self.gateway = BindingMapping.gateway(saved); self.hasGateway = true }
+                if let saved = data.gateways.first(where: { $0.id == self.gateway.id }) { self.gateway = saved; self.hasGateway = true }
                 if data.executionInvalidated { refreshAfterExecutionInvalidation() }
                 if !data.executionInvalidated { enqueue({ try transport.list() }) { [weak self] in self?.applyList($0) } }
                 completion()
@@ -1535,18 +1535,18 @@ final class AppStore: ObservableObject {
         enqueue({ try transport.authenticationStart(gatewayID: self.gateway.id, providerID: providerID) }) { [weak self] data in
                 guard let self else { return }
                 authenticationPrompt = nil; authenticationNotifications = []; authenticationResult = nil
-                showsAuthentication = true; applyAuthentication(BindingMapping.authenticationProgress(data))
+                showsAuthentication = true; applyAuthentication(data)
             }
     }
     func answerAuthentication(id: String, value: String) {
         if let sharedApplication { sharedApplication.answerAuthentication(id: id, value: value); return }
         guard let transport else { recordProblem("本地核心未配置"); return }
-        enqueue({ try transport.authenticationReply(promptID: id, value: value) }) { [weak self] in self?.authenticationPrompt = nil; self?.applyAuthentication(BindingMapping.authenticationProgress($0)) }
+        enqueue({ try transport.authenticationReply(promptID: id, value: value) }) { [weak self] in self?.authenticationPrompt = nil; self?.applyAuthentication($0) }
     }
     func cancelAuthentication() {
         if let sharedApplication { sharedApplication.cancelAuthentication(); return }
         guard let transport else { recordProblem("本地核心未配置"); return }
-        enqueue({ try transport.authenticationCancel() }) { [weak self] in self?.applyAuthentication(BindingMapping.authenticationProgress($0)) }
+        enqueue({ try transport.authenticationCancel() }) { [weak self] in self?.applyAuthentication($0) }
     }
     /// Signs the provider's source out, e.g. Claude Code CLI's own login.
     /// Reads again the status of a login the provider references, which its own CLI keeps.
@@ -1573,21 +1573,21 @@ final class AppStore: ObservableObject {
                 guard let self else { return }
                 self.authenticationPollPending = false
                 switch result {
-                case .success(let data): self.clearActivityProblem("authentication"); self.applyAuthentication(BindingMapping.authenticationProgress(data))
+                case .success(let data): self.clearActivityProblem("authentication"); self.applyAuthentication(data)
                 case .failure(let failure): self.recordProblem(failure, source: "读取登录进度", activityKey: "authentication")
                 }
             }
         }
     }
-    private func applyAuthentication(_ data: AuthenticationData) {
+    private func applyAuthentication(_ data: AuthenticationProgress) {
         if !data.running { clearActivityProblem("authentication") }
         authenticationRunning = data.running
         if let saved = data.gateways?.first(where: { $0.id == gateway.id }) { gateway = saved }
         if data.executionInvalidated == true { refreshAfterExecutionInvalidation() }
         for event in data.events {
-            if event.type == "prompt", let id = event.id, let prompt = event.prompt {
-                authenticationPrompt = AuthenticationPrompt(id: id, kind: prompt.kind, text: prompt.text, options: prompt.options)
-            } else if event.type == "notify", let notification = event.notification {
+            if event.typeId == "prompt", let id = event.id, let prompt = event.prompt {
+                authenticationPrompt = PendingAuthenticationPrompt(id: id, kind: prompt.kind, text: prompt.text, options: prompt.options)
+            } else if event.typeId == "notify", let notification = event.notification {
                 if notification.kind == "prompt_cancelled" {
                     if authenticationPrompt?.id == notification.id { authenticationPrompt = nil }
                 } else {
@@ -1595,7 +1595,7 @@ final class AppStore: ObservableObject {
                     // A sign-in page opens in the browser; the sheet keeps a link to open it again.
                     if notification.kind == "url", let address = notification.url, let url = URL(string: address), url.scheme == "https" { NSWorkspace.shared.open(url) }
                 }
-            } else if event.type == "result" {
+            } else if event.typeId == "result" {
                 authenticationPrompt = nil
                 authenticationResult = event.ok == true ? "登录完成。" : event.cancelled == true ? "登录已取消。" : nil
                 if event.ok != true && event.cancelled != true { recordProblem(event.error ?? "登录未完成。", source: "登录") }
@@ -1621,7 +1621,7 @@ final class AppStore: ObservableObject {
         enqueue({ try transport.deleteProvider(gatewayID: self.gateway.id, providerID: id) }) { [weak self] in self?.applyGatewayUpdate($0) }
     }
     private func applyGatewayUpdate(_ data: GatewayUpdate) {
-        if let saved = data.gateways.first(where: { $0.id == gateway.id }) { gateway = BindingMapping.gateway(saved); hasGateway = true }
+        if let saved = data.gateways.first(where: { $0.id == gateway.id }) { gateway = saved; hasGateway = true }
         reconcileNextTurnIntent()
         if data.executionInvalidated { refreshAfterExecutionInvalidation() }
     }
@@ -1763,9 +1763,9 @@ final class AppStore: ObservableObject {
         rememberNextTurnIntent()
         rememberLastChoice(effort) { $0.effort = effort }
     }
-    func location(of runtimeID: String?) -> RuntimeLocation { runtimeID.flatMap { runtimeLocations[$0] } ?? .local }
+    func location(of runtimeID: String?) -> RuntimeTransport { runtimeID.flatMap { runtimeLocations[$0] } ?? .local }
     /// Where the open conversation's files are: its runtime's machine.
-    var loadedConversationLocation: RuntimeLocation { location(of: snapshot?.conversation.runtimeID) }
+    var loadedConversationLocation: RuntimeTransport { location(of: snapshot?.conversation.runtimeID) }
     /// Projects of the latest conversations on the machine the next turn
     /// runs on, newest first.
     var recentWorkingDirectories: [String] {
@@ -1786,7 +1786,7 @@ final class AppStore: ObservableObject {
             let result = Result { try transport.runtimeLocations(ids: ids) }
             DispatchQueue.main.async {
                 guard let self, self.runtimeLocationsRequest == request, case .success(let transports) = result else { return }
-                let locations = transports.mapValues(BindingMapping.location)
+                let locations = transports
                 if self.runtimeLocations != locations { self.runtimeLocations = locations }
             }
         }
@@ -1895,7 +1895,6 @@ final class AppStore: ObservableObject {
         // workspaces copy; a workspace's result must reach it, or the stale
         // copy returns (a deleted conversation reappearing in the sidebar).
         sharedApplication?.applyList(data)
-        let mapped = BindingMapping.configuration(data)
         savedBrowserPreferences = data.conversationBrowserPreferences
         if browserPreferencesSaving == 0, conversationBrowserPreferences != data.conversationBrowserPreferences {
             conversationBrowserPreferences = data.conversationBrowserPreferences
@@ -1906,7 +1905,7 @@ final class AppStore: ObservableObject {
         contextUsageDisplay = data.contextUsageDisplay
         statusLine = data.statusLine
         conversationBrowserLimits = data.conversationBrowserLimits
-        conversations = mapped.conversations
+        conversations = data.conversations.map(BindingMapping.listed)
         conversationGroups = data.conversationGroups; conversationProjects = data.conversationProjects; showsArchived = data.showsArchived
         // Organization changes the list's own rows; reached ones follow them.
         let listed = Dictionary(conversations.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
@@ -1914,12 +1913,12 @@ final class AppStore: ObservableObject {
         if searchResults != nil { refreshSearch() }
         selectedConversationIDs = selectedConversationIDs.filter { conversation(id: $0) != nil }
         noteSeen()
-        if let saved = mapped.gateways.first(where: { $0.id == gateway.id }) ?? mapped.gateways.first { gateway = saved; hasGateway = true }
-        runtimeInstances = mapped.runtimes; runtimeTypes = mapped.runtimeTypes; reconcileHistoryProblems(mapped.historyFailures)
-        protocols = mapped.protocols
-        modelTemplates = mapped.modelTemplates
-        providerImportTypes = mapped.importTypes
-        if !hasInitializedNextTurnIntent { nextTurnRuntimeID = mapped.selectedRuntimeID }
+        if let saved = data.gateways.first(where: { $0.id == gateway.id }) ?? data.gateways.first { gateway = saved; hasGateway = true }
+        runtimeInstances = data.runtimeInstances; runtimeTypes = data.runtimeTypes; reconcileHistoryProblems(data.historyFailures)
+        protocols = data.protocols
+        modelTemplates = data.modelTemplates
+        providerImportTypes = data.providerImportTypes
+        if !hasInitializedNextTurnIntent { nextTurnRuntimeID = data.selectedRuntimeInstanceId }
         reconcileNextTurnIntent()
     }
     func recordProblem(_ error: Error, source: String = "操作", activityKey: String? = nil) {
@@ -1941,13 +1940,13 @@ final class AppStore: ObservableObject {
     func clearProblems() { if let sharedApplication { sharedApplication.clearProblems(); return }; problems.removeAll() }
     private func reconcileHistoryProblems(_ failures: [HistoryFailure]) {
         guard sharedApplication == nil else { return }
-        let keys = Set(failures.map { "history:" + $0.runtimeID })
+        let keys = Set(failures.map { "history:" + $0.runtimeId })
         problems.removeAll { $0.activityKey?.hasPrefix("history:") == true && !keys.contains($0.activityKey ?? "") }
         for failure in failures {
-            let key = "history:" + failure.runtimeID
+            let key = "history:" + failure.runtimeId
             if problems.contains(where: { $0.activityKey == key && $0.detail == failure.detail }) { continue }
             problems.removeAll { $0.activityKey == key }
-            appendProblems([AppProblem(id: UUID(), occurredAt: Date(), source: "会话列表 · " + (runtimeInstances.first { $0.id == failure.runtimeID }?.name ?? failure.runtimeID), detail: failure.detail, kind: "history", code: nil, phase: nil, operationID: nil, activityKey: key)])
+            appendProblems([AppProblem(id: UUID(), occurredAt: Date(), source: "会话列表 · " + (runtimeInstances.first { $0.id == failure.runtimeId }?.name ?? failure.runtimeId), detail: failure.detail, kind: "history", code: nil, phase: nil, operationID: nil, activityKey: key)])
         }
     }
     private func reconcileNextTurnIntent() {
@@ -1987,13 +1986,13 @@ final class AppStore: ObservableObject {
     }
     /// What a running turn is doing, from the newest block of its last
     /// message: a reasoning summary, the running tool, or replying.
-    private static func currentWork(_ message: Message?) -> String {
+    private static func currentWork(_ message: DeliveredMessage?) -> String {
         guard let message, message.role == .assistant, let block = message.blocks.last else { return "正在思考" }
         switch block {
         case .reasoning(let summary, _): return summary
         case .tool(_, let title, .running, _, _), .tool(_, let title, .pending, _, _): return title
         case .text: return "正在回复"
-        case .tool, .notice, .image, .file, .agentSender: return "正在思考"
+        case .tool, .notice, .contextCompaction, .image, .file, .agentSender: return "正在思考"
         }
     }
     /// Preparation and operation results replace the projection; polling asks
@@ -2006,7 +2005,7 @@ final class AppStore: ObservableObject {
         case absent, unchanged
         case complete(ConversationSnapshot)
         /// Changed messages only; merged on the main actor into the snapshot at `base`.
-        case changes(base: TranscriptCursor, header: ConversationSnapshot, order: [String], changed: [Message])
+        case changes(base: TranscriptCursor, header: ConversationSnapshot, order: [String], changed: [DeliveredMessage])
     }
     private func poll() {
         guard started, !isDraft, !isPreview, !isShuttingDown, sharedApplication?.isShuttingDown != true, snapshot != nil, !isLoading, !pollPending, let transport, let runtimeID = projectionRuntimeID else { return }
@@ -2025,7 +2024,7 @@ final class AppStore: ObservableObject {
                 case .unchanged: return .unchanged
                 case .changed(let incoming):
                     guard let base = incoming.base else { return .complete(BindingMapping.snapshot(incoming)) }
-                    return .changes(base: base, header: BindingMapping.snapshotHeader(incoming), order: incoming.messageIds, changed: incoming.messages.map(BindingMapping.message))
+                    return .changes(base: base, header: BindingMapping.snapshotHeader(incoming), order: incoming.messageIds, changed: incoming.messages)
                 }
             }
             DispatchQueue.main.async {
@@ -2065,7 +2064,7 @@ final class AppStore: ObservableObject {
         payloadRequests.formUnion(keys)
         let runtimeID = snapshot.contextRuntimeID, conversationID = snapshot.conversation.id
         performOnQueue { [weak self] in
-            let result = Result { try transport.messagePayloads(runtimeID: runtimeID, conversationID: conversationID, messageIDs: Array(wanted)).map(BindingMapping.message) }
+            let result = Result { try transport.messagePayloads(runtimeID: runtimeID, conversationID: conversationID, messageIDs: Array(wanted)) }
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.payloadRequests.subtract(keys)
@@ -2083,10 +2082,10 @@ final class AppStore: ObservableObject {
     private struct PayloadKey: Hashable { var id: String; var stamp: UInt64 }
     /// Substitute loaded payloads for deliveries of the same content; a newer
     /// stamp means the content changed and its old payload is dropped.
-    private func withLoadedPayloads(_ messages: [Message]) -> [Message] {
+    private func withLoadedPayloads(_ messages: [DeliveredMessage]) -> [DeliveredMessage] {
         guard !loadedPayloads.isEmpty else { return messages }
-        var retained: [String: Message] = [:]
-        let merged = messages.map { message -> Message in
+        var retained: [String: DeliveredMessage] = [:]
+        let merged = messages.map { message -> DeliveredMessage in
             guard let loaded = loadedPayloads[message.id], loaded.stamp == message.stamp else { return message }
             retained[message.id] = loaded
             return loaded
@@ -2124,7 +2123,7 @@ final class AppStore: ObservableObject {
     }
     private func seedPreview() {
         conversationBrowserPreferences = ConversationBrowser().preferences
-        gateway = GatewayConfig(providers: [AIProvider(id: "sample-provider", name: "示例 AI 服务", protocolID: .chatCompletions, endpoint: "https://example.invalid/v1", models: [ProviderModel(recordKey: "sample-model", providerModelId: "external-example", nickname: "通用模型", contextWindow: 8192, maxOutputTokens: 4096)])])
+        gateway = GatewaySummary(id: "default", name: "默认网关", providers: [ProviderSummary(previewOf: ProviderDraft(id: "sample-provider", name: "示例 AI 服务", protocol: .chatCompletions, endpoint: "https://example.invalid/v1", executionBackend: .http, requestProfile: .native, authenticationSource: .apiKey, quotaSource: .none, models: [ProviderModel(recordKey: "sample-model", providerModelId: "external-example", nickname: "通用模型", contextWindow: 8192, maxOutputTokens: 4096)], quotaLimits: []))], routes: [])
         hasGateway = true
         protocols = [ProtocolDescriptor(id: .chatCompletions, name: "OpenAI Chat Completions v1", supported: true), ProtocolDescriptor(id: .responses, name: "OpenAI Responses v1", supported: true), ProtocolDescriptor(id: .messages, name: "Anthropic Messages v1", supported: true)]
         runtimeTypes = [RuntimeTypeDescriptor(id: .pi, familyId: "sample", compatibleVersions: "", canRenameConversations: true, canDeleteConversations: true, launchOptions: false, agentInfo: false, sessionOptions: false, nativeAccountQuota: false, remoteResources: false, supportedProtocols: [.chatCompletions, .responses, .messages], supportedProviderProtocols: [.chatCompletions, .responses, .messages], name: "示例运行时", fields: [], permissionModes: [])]
@@ -2138,12 +2137,12 @@ final class AppStore: ObservableObject {
         ]
         for index in topics.indices {
             let conversation = Conversation(id: "sample-\(index)", title: topics[index], updatedAtUnixMs: Int64(Date().timeIntervalSince1970 * 1000) - Int64(index * 86_400_000), createdAtUnixMs: Int64(Date().timeIntervalSince1970 * 1000) - Int64((index + 3) * 86_400_000), runtimeID: runtimeInstances[index == 2 ? 1 : 0].id, cwd: index == 0 ? "/Users/example/Projects/Velune" : index == 1 ? "/Users/example/Projects/Sample" : nil)
-            var history = pairs[index].enumerated().map { Message(id: "sample-\(index)-\($0.offset)", role: $0.offset.isMultiple(of: 2) ? .user : .assistant, blocks: [.text($0.element)]) }
+            var history = pairs[index].enumerated().map { DeliveredMessage(id: "sample-\(index)-\($0.offset)", role: $0.offset.isMultiple(of: 2) ? .user : .assistant, blocks: [.text(text: $0.element)]) }
             history[1].blocks.insert(.reasoning(summary: "先确认上下文", text: .inline(text: "再选择最小的修改范围。")), at: 0)
-            history[1].blocks.append(.tool(id: "sample-tool-\(index)", title: index == 1 ? "检查项目代码" : "读取工作上下文", state: .completed, output: .inline(text: index == 1 ? "已读取 3 个文件，未修改项目。" : "已梳理当前任务的上下文。"), conversation: nil))
+            history[1].blocks.append(.tool(toolId: "sample-tool-\(index)", title: index == 1 ? "检查项目代码" : "读取工作上下文", state: .completed, output: .inline(text: index == 1 ? "已读取 3 个文件，未修改项目。" : "已梳理当前任务的上下文。"), linkedConversationId: nil))
             // The last sample is mid-turn: summaries with and without text yet, then a running tool.
             let running = index == 2
-            if running { history[history.count - 1].blocks = [.reasoning(summary: "Reading the settings view", text: .inline(text: "The sidebar and the detail pane share one split view.")), .reasoning(summary: "Inspecting the project layout", text: .inline(text: "")), .tool(id: "sample-progress", title: "整理项目计划", state: .running, output: .inline(text: "正在整理计划。"), conversation: nil)] }
+            if running { history[history.count - 1].blocks = [.reasoning(summary: "Reading the settings view", text: .inline(text: "The sidebar and the detail pane share one split view.")), .reasoning(summary: "Inspecting the project layout", text: .inline(text: "")), .tool(toolId: "sample-progress", title: "整理项目计划", state: .running, output: .inline(text: "正在整理计划。"), linkedConversationId: nil)] }
             previewSnapshots[conversation.id] = ConversationSnapshot(revision: 1, conversation: conversation, contextRuntimeID: conversation.runtimeID, modelRecordKey: "sample-model", runState: running ? .running : .idle, messages: history,
                 transcriptTurns: [
                     TranscriptTurn(id: "preview-work-" + conversation.id, userMessageId: history[0].id, workMessageIds: [history[1].id], lastMessageId: nil, replyStartBlock: 0, durationMs: nil, isRunning: false, settings: nil, usage: nil),

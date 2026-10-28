@@ -8,13 +8,13 @@ enum QuotaMetric: Hashable, Sendable {
     case balance(id: String, unit: String)
     var title: String {
         switch self {
-        case .window(let id, let models): return QuotaWindow.title(id) + (models.map { "（仅 " + $0.joined(separator: "、") + "）" } ?? "")
-        case .balance(let id, let unit): return QuotaBalance(id: id, amount: 0, unit: unit, observedAt: .now).title
+        case .window(let id, let models): return QuotaWindowObservation.title(id) + (models.map { "（仅 " + $0.joined(separator: "、") + "）" } ?? "")
+        case .balance(let id, let unit): return QuotaBalanceObservation.title(id: id, unit: unit)
         }
     }
 }
 /// One successful observation the core retained.
-struct QuotaObservation: Sendable, Equatable {
+struct QuotaHistorySample: Sendable, Equatable {
     var observedAt: Date
     var available: Bool?
     var values: [QuotaMetric: Double]
@@ -46,18 +46,18 @@ struct QuotaHistorySheet: View {
     let providerID: String
     @Environment(\.dismiss) private var dismiss
     @State private var range: QuotaHistoryRange = .day
-    @State private var observations: [QuotaObservation]?
+    @State private var observations: [QuotaHistorySample]?
     @State private var failure: String?
     @State private var metric: QuotaMetric?
     @State private var selectedDate: Date?
     @State private var confirmingClear = false
     private static let binCount = 96
-    private var provider: AIProvider? { store.providers.first { $0.id == providerID } }
-    private var quota: AccountQuota? { store.providerQuotas[providerID] }
+    private var provider: ProviderSummary? { store.providers.first { $0.id == providerID } }
+    private var quota: QuotaObservation? { store.providerQuotas[providerID] }
     private var remaining: Bool { store.usageDisplay == .remaining }
     /// Current series first, in the order the provider reports them, then ones only history has.
     private var metrics: [QuotaMetric] {
-        var all: [QuotaMetric] = (quota?.windows ?? []).map { .window(id: $0.id, modelIDs: $0.modelIDs) } + (quota?.balances ?? []).map { .balance(id: $0.id, unit: $0.unit) }
+        var all: [QuotaMetric] = (quota?.windows ?? []).map { .window(id: $0.id, modelIDs: $0.modelIds) } + (quota?.balances ?? []).map { .balance(id: $0.id, unit: $0.unit) }
         for observation in observations ?? [] {
             for key in observation.values.keys.sorted(by: { $0.title < $1.title }) where !all.contains(key) { all.append(key) }
         }
@@ -183,7 +183,7 @@ struct QuotaHistorySheet: View {
             HStack(spacing: 18) {
                 LabeledContent("最近一次", value: "\(format(last.latest)) · \(last.latestAt.formatted(.relative(presentation: .named)))")
                 if let extreme { LabeledContent(isWindow && !remaining ? "观测到的最高" : "观测到的最低", value: format(extreme)) }
-                if case .window(let id, let models) = current, let reset = quota?.windows.first(where: { $0.id == id && $0.modelIDs == models })?.resetsAt, reset > Date() {
+                if case .window(let id, let models) = current, let reset = quota?.windows.first(where: { $0.id == id && $0.modelIds == models })?.resetsAt, reset > Date() {
                     LabeledContent("下次重置", value: reset.formatted(.relative(presentation: .named)))
                 }
             }.font(.callout).monospacedDigit()

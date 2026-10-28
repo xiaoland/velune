@@ -2,7 +2,8 @@
 use crate::{
     ProviderQuotaHistory, ProviderQuotaStatus, QuotaAlert, QuotaAlertKind, QuotaAlerts,
     QuotaBalanceObservation, QuotaFreshness, QuotaHistoryBalance, QuotaHistoryPoint,
-    QuotaHistoryWindow, QuotaPaceObservation, QuotaPaceStatus, QuotaWindowObservation,
+    QuotaHistoryWindow, QuotaObservation, QuotaPaceObservation, QuotaPaceStatus,
+    QuotaWindowObservation,
 };
 use crate::{config::GatewayConfig, provider_authentication::AuthenticationMaterial};
 use serde_json::Value;
@@ -650,46 +651,48 @@ impl SubscriptionQuota {
         Ok(ProviderQuotaStatus {
             gateway_id: gateway_id.into(),
             provider_id: provider_id.into(),
-            freshness: if entry.binding.is_none() {
-                QuotaFreshness::Unsupported
-            } else if entry.binding.as_ref().is_some_and(|b| b.kimi.is_some())
-                && entry.owner.is_none()
-            {
-                QuotaFreshness::Unknown
-            } else if fresh(entry) {
-                QuotaFreshness::Fresh
-            } else if entry.observed_at_ms == 0 {
-                QuotaFreshness::Unknown
-            } else {
-                QuotaFreshness::Stale
-            },
-            windows: entry
-                .windows
-                .iter()
-                .map(|w| QuotaWindowObservation {
-                    id: w.id.clone(),
-                    model_ids: w.model_ids.clone(),
-                    used_percent: w.used_percent,
-                    reset_at_ms: w.reset_at_ms,
-                    window_ms: w.window_ms,
-                    observed_at_ms: Some(w.observed_at_ms),
-                    expires_at_ms: Some(w.expires_at_ms),
-                    pace: pace(w),
-                })
-                .collect(),
-            balances: entry.balances.clone(),
-            available: entry.available,
-            refreshing: entry.running,
-            problem: entry.problem.clone().or_else(|| {
-                entry
-                    .binding
-                    .as_ref()
-                    .filter(|b| {
-                        b.source == crate::config::ProviderQuotaSource::ArkCodingUsage
-                            && b.ark.is_none()
+            observation: QuotaObservation {
+                freshness: if entry.binding.is_none() {
+                    QuotaFreshness::Unsupported
+                } else if entry.binding.as_ref().is_some_and(|b| b.kimi.is_some())
+                    && entry.owner.is_none()
+                {
+                    QuotaFreshness::Unknown
+                } else if fresh(entry) {
+                    QuotaFreshness::Fresh
+                } else if entry.observed_at_ms == 0 {
+                    QuotaFreshness::Unknown
+                } else {
+                    QuotaFreshness::Stale
+                },
+                windows: entry
+                    .windows
+                    .iter()
+                    .map(|w| QuotaWindowObservation {
+                        id: w.id.clone(),
+                        model_ids: w.model_ids.clone(),
+                        used_percent: w.used_percent,
+                        reset_at_ms: w.reset_at_ms,
+                        window_ms: w.window_ms,
+                        observed_at_ms: Some(w.observed_at_ms),
+                        expires_at_ms: Some(w.expires_at_ms),
+                        pace: pace(w),
                     })
-                    .map(|_| "尚未配置额度查询认证。".into())
-            }),
+                    .collect(),
+                balances: entry.balances.clone(),
+                available: entry.available,
+                refreshing: entry.running,
+                problem: entry.problem.clone().or_else(|| {
+                    entry
+                        .binding
+                        .as_ref()
+                        .filter(|b| {
+                            b.source == crate::config::ProviderQuotaSource::ArkCodingUsage
+                                && b.ark.is_none()
+                        })
+                        .map(|_| "尚未配置额度查询认证。".into())
+                }),
+            },
         })
     }
 }
@@ -740,6 +743,7 @@ impl QuotaSource for GatewayView {
         }) {
             return QuotaSnapshot::Unknown;
         }
+        let status = status.observation;
         let windows = status
             .windows
             .into_iter()

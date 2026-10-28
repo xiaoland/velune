@@ -44,7 +44,7 @@ struct ComposerStatusLine: View {
     @State private var showsDetails = false
 
     private var status: ConversationStatus { store.conversationStatus }
-    private var accounts: [ComposerAccountQuota] { store.composerAccountQuotas }
+    private var accounts: [ComposerQuotaEntry] { store.composerAccountQuotas }
 
     var body: some View {
         let status = self.status
@@ -126,7 +126,7 @@ struct ComposerStatusLine: View {
             let windows = account.windows.map { window in
                 let used = min(max(window.usedPercent, 0), 100)
                 let label = UsageFormat.label(Int((store.usageDisplay == .remaining ? 100 - used : used).rounded()), store.usageDisplay)
-                return (account.isRecorded && window.period == nil ? "限额" : QuotaWindow.name(window.id)) + " " + label + (short ? "" : "，" + QuotaResetFormat.text(window.resetsAt))
+                return (account.isRecorded && window.period == nil ? "限额" : QuotaWindowObservation.name(window.id)) + " " + label + (short ? "" : "，" + QuotaResetFormat.text(window.resetsAt))
             }
             let balances = (account.quota.balances).map { $0.title + " " + $0.formatted }
             let values = windows + balances
@@ -158,7 +158,7 @@ private struct ContextRing: View {
 /// Recorded conversation usage and the selected accounts' quota, whether pinned or not.
 struct StatusDetails: View {
     let status: ConversationStatus
-    var accounts: [ComposerAccountQuota] = []
+    var accounts: [ComposerQuotaEntry] = []
     let branch: String?
     let display: UsageDisplay
     let quotaDisplay: UsageDisplay

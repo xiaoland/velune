@@ -3,7 +3,7 @@ import VeluneBindings
 
 /// One quota window's usage against the provider's ceiling for it.
 struct QuotaWindowRow: View {
-    let window: QuotaWindow
+    let window: QuotaWindowObservation
     let limit: UInt8?
     /// An expired observation is shown for reference only.
     let fresh: Bool
@@ -19,7 +19,7 @@ struct QuotaWindowRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
             HStack(spacing: 8) {
-                Text(title ?? QuotaWindow.title(window.id)).frame(minWidth: 70, alignment: .leading)
+                Text(title ?? QuotaWindowObservation.title(window.id)).frame(minWidth: 70, alignment: .leading)
                 ProgressView(value: shown, total: 100).tint(reached ? Color.orange : nil)
                 Text(UsageFormat.label(Int(shown.rounded()), display)).monospacedDigit().foregroundStyle(fresh ? .primary : .secondary).frame(width: 64, alignment: .trailing)
             }
@@ -31,14 +31,14 @@ struct QuotaWindowRow: View {
         if let limit { parts.append(UsageFormat.ceiling(limit, display, reached: reached)) }
         parts.append(QuotaResetFormat.text(window.resetsAt))
         if runsShort, let empty = window.pace?.runsOutAt { parts.append("按目前的平均速度约\(empty.formatted(.relative(presentation: .named)))用尽") }
-        if showsModels, let models = window.modelIDs { parts.append("仅 " + models.joined(separator: "、")) }
+        if showsModels, let models = window.modelIds { parts.append("仅 " + models.joined(separator: "、")) }
         return parts.joined(separator: " · ")
     }
 }
 
 /// An amount the account reports, such as its prepaid balance.
 struct QuotaBalanceRow: View {
-    let balance: QuotaBalance
+    let balance: QuotaBalanceObservation
     let fresh: Bool
     var body: some View {
         HStack(spacing: 8) {
@@ -67,11 +67,11 @@ enum UsageFormat {
 
 /// When the quota was observed, or why it is missing.
 struct QuotaStatusText: View {
-    let quota: AccountQuota?
+    let quota: QuotaObservation?
     var body: some View {
         Text(Self.summary(quota)).font(.caption).foregroundStyle(.secondary)
     }
-    static func summary(_ quota: AccountQuota?) -> String {
+    static func summary(_ quota: QuotaObservation?) -> String {
         guard let quota else { return "正在读取额度…" }
         if quota.refreshing && quota.freshness != .fresh { return "正在读取额度…" }
         let observed = quota.observedAt.map { $0.formatted(.relative(presentation: .named)) }
@@ -131,7 +131,7 @@ struct ProviderQuotaForm: View {
     @Binding var limits: [QuotaLimit]
     @State private var showsHistory = false
     private static let presets: [UInt8] = [50, 60, 70, 80, 90, 95, 100]
-    private var quota: AccountQuota? { providerID.flatMap { store.providerQuotas[$0] } }
+    private var quota: QuotaObservation? { providerID.flatMap { store.providerQuotas[$0] } }
     /// Quota is read with the login, so a provider awaiting one has none to show.
     private var signedOut: Bool { providerID.flatMap { id in store.providers.first { $0.id == id } }?.authentication.awaitsSignIn ?? true }
     /// Reported windows first, then ceilings for windows not reported now.
@@ -145,7 +145,7 @@ struct ProviderQuotaForm: View {
     var body: some View {
         Form {
             if let id = providerID, let provider = store.providers.first(where: { $0.id == id }), provider.composition.quotaSource == .arkCodingUsage {
-                Section { Text(provider.quotaBindingConfirmed ? "额度来源由用户关联，账户归属未自动核验。" : "额度来源尚未确认关联；有使用上限时暂停派发。请在连接页配置或重新确认。") }
+                Section { Text(provider.quotaAuthentication.bindingConfirmed ? "额度来源由用户关联，账户归属未自动核验。" : "额度来源尚未确认关联；有使用上限时暂停派发。请在连接页配置或重新确认。") }
             }
             Section {
                 if providerID == nil {
@@ -183,7 +183,7 @@ struct ProviderQuotaForm: View {
                             Text("不限制").tag(UInt8?.none)
                             ForEach(choices(id), id: \.self) { Text(store.usageDisplay == .remaining ? "保留 \(100 - Int($0))%" : "已用 \($0)%").tag(UInt8?.some($0)) }
                         } label: {
-                            Text(QuotaWindow.title(id))
+                            Text(QuotaWindowObservation.title(id))
                             if quota?.windows.contains(where: { $0.id == id }) != true { Text("当前未报告此窗口") }
                         }
                     }

@@ -16,7 +16,7 @@ final class RenderedMessage: @unchecked Sendable {
     /// What the copy button under the message copies; empty for none.
     let copiedText: String
 
-    init(_ message: Message) {
+    init(_ message: DeliveredMessage) {
         role = message.role
         copiedText = message.role == .system ? "" : message.copiedText.trimmingCharacters(in: .whitespacesAndNewlines)
         let alignment: NSTextAlignment = message.role == .system ? .center : .natural
@@ -30,7 +30,7 @@ final class RenderedMessage: @unchecked Sendable {
                     case .code(let language, let text, let source, let indent): return .code(language: language, text: text, source: source, indent: indent)
                     }
                 }
-            case .notice(let text):
+            case .notice(let text), .contextCompaction(let text):
                 return [.text(TranscriptTypography.plain(text, font: TranscriptTypography.callout, color: .secondaryLabelColor, alignment: alignment))]
             case .reasoning(let summary, let text):
                 // A summary without further text is a label only.
@@ -65,19 +65,19 @@ final class RenderedMessage: @unchecked Sendable {
 
 extension RenderedMessage {
     /// Local disclosure identity of a reasoning or tool block within its message.
-    static func disclosureKey(_ block: MessageBlock, at index: Int) -> String? {
+    static func disclosureKey(_ block: DeliveredBlock, at index: Int) -> String? {
         switch block {
         case .reasoning: return "reasoning:\(index)"
         case .tool(let id, _, _, _, _): return "tool:" + (id ?? String(index))
-        case .text, .notice, .image, .file, .agentSender: return nil
+        case .text, .notice, .contextCompaction, .image, .file, .agentSender: return nil
         }
     }
     /// Disclosures whose content has not been read from the core yet.
-    static func deferredDisclosureKeys(_ message: Message) -> Set<String> {
+    static func deferredDisclosureKeys(_ message: DeliveredMessage) -> Set<String> {
         Set(message.blocks.enumerated().compactMap { index, block in
             switch block {
             case .reasoning(_, .deferred), .tool(_, _, _, .deferred?, _): return disclosureKey(block, at: index)
-            case .text, .notice, .reasoning(_, .inline), .tool, .image, .file, .agentSender: return nil
+            case .text, .notice, .contextCompaction, .reasoning(_, .inline), .tool, .image, .file, .agentSender: return nil
             }
         })
     }
@@ -101,7 +101,7 @@ extension RenderedMessage {
 enum TranscriptRowContent: @unchecked Sendable {
     /// `status` is a caption under a message the runtime has not confirmed yet;
     /// `copies` puts a copy button under it.
-    case message(Message, revision: UInt64, expanded: Set<String>, status: String?, copies: Bool)
+    case message(DeliveredMessage, revision: UInt64, expanded: Set<String>, status: String?, copies: Bool)
     /// `expanded` is nil for a turn with no work under its header.
     case work(label: String, expanded: Bool?, settings: TurnSettingsSummary?)
     case activity(TranscriptActivity)
@@ -297,7 +297,7 @@ struct TranscriptRowLayout: @unchecked Sendable {
             for (index, block) in message.blocks.enumerated() {
                 if index > 0 { height += blockSpacing }
                 switch block {
-                case .text(let text), .notice(let text):
+                case .text(let text), .notice(let text), .contextCompaction(let text):
                     // Linear byte scans only: this runs for every row on reload.
                     var newlines = 0
                     for byte in text.utf8 where byte == 10 { newlines += 1 }

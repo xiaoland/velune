@@ -2,12 +2,7 @@ import Foundation
 import VeluneBindings
 
 /// A presentation value projected by application; no provider or runtime configuration.
-struct ComposerAccountQuota: Identifiable {
-    let id: String
-    let name: String
-    let origin: QuotaOrigin
-    let quota: AccountQuota
-    let limits: [QuotaLimit]
+extension ComposerQuotaEntry: Identifiable {
     var title: String {
         switch origin {
         case .provider: name
@@ -15,7 +10,8 @@ struct ComposerAccountQuota: Identifiable {
         case .conversationRecord: "\(name) · 会话记录中的限额"
         }
     }
-    var windows: [QuotaWindow] { quota.windows }
+    var quota: QuotaObservation { observation }
+    var windows: [QuotaWindowObservation] { observation.windows }
     var isRecorded: Bool { if case .conversationRecord = origin { true } else { false } }
     func limit(for windowID: String) -> UInt8? { limits.first { $0.windowId == windowID }?.maxUsedPercent }
 }

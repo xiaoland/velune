@@ -653,12 +653,7 @@ pub struct QuotaBalanceObservation {
 pub struct ProviderQuotaStatus {
     pub gateway_id: String,
     pub provider_id: String,
-    pub freshness: QuotaFreshness,
-    pub windows: Vec<QuotaWindowObservation>,
-    pub balances: Vec<QuotaBalanceObservation>,
-    pub available: Option<bool>,
-    pub refreshing: bool,
-    pub problem: Option<String>,
+    pub observation: QuotaObservation,
 }
 
 /// Read-only quota of the runtime's native CLI login. This does not identify
@@ -667,10 +662,8 @@ pub struct ProviderQuotaStatus {
 #[serde(rename_all = "camelCase")]
 pub struct RuntimeQuotaStatus {
     pub runtime_id: String,
-    pub freshness: QuotaFreshness,
-    pub windows: Vec<QuotaWindowObservation>,
-    pub refreshing: bool,
-    pub problem: Option<String>,
+    /// A native login reports windows only: no balances or availability.
+    pub observation: QuotaObservation,
 }
 
 /// One retained window value; the history keeps no expiry or pace.

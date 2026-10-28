@@ -3,7 +3,7 @@ import VeluneBindings
 
 /// A provider model as a route lists it.
 struct RouteMember: Identifiable {
-    let provider: AIProvider
+    let provider: ProviderSummary
     let model: ProviderModel
     var id: String { model.recordKey }
     var title: String { "\(model.displayName) · \(provider.name)" }
@@ -36,7 +36,7 @@ struct ModelRouteSettingsView: View {
     @State private var selectedID: String?
     @State private var editor: ModelRoute?
     @State private var deleting: ModelRoute?
-    @State private var providerEditor: AIProvider?
+    @State private var providerEditor: ProviderSummary?
     private var routes: [ModelRoute] { store.gateway.routes }
     private var selected: ModelRoute? { route(selectedID) }
     var body: some View {
@@ -92,7 +92,7 @@ private struct ModelRouteOverview: View {
     @ObservedObject var store: AppStore
     let route: ModelRoute
     let edit: () -> Void
-    let editProvider: (AIProvider) -> Void
+    let editProvider: (ProviderSummary) -> Void
     /// Providers whose quota can be read: those of the members, signed in.
     private var providerIDs: [String] {
         var ids: [String] = []
@@ -148,9 +148,9 @@ private struct RouteMemberStatus: View {
     let position: Int
     let weight: UInt32?
     let totalWeight: UInt32
-    private var authentication: ProviderAuthentication { member.provider.authentication }
-    private var quota: AccountQuota? { store.providerQuotas[member.provider.id] }
-    private var windows: [QuotaWindow] { (quota?.windows ?? []).filter { $0.applies(to: member.model.providerModelId) } }
+    private var authentication: ProviderAuthenticationDescription { member.provider.authentication }
+    private var quota: QuotaObservation? { store.providerQuotas[member.provider.id] }
+    private var windows: [QuotaWindowObservation] { (quota?.windows ?? []).filter { $0.applies(to: member.model.providerModelId) } }
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
@@ -182,7 +182,7 @@ private struct RouteMemberStatus: View {
         var parts: [String] = []
         if let name = member.provider.composition.subscriptionName { parts.append(name) } else if authentication.method != .unconfigured { parts.append(authentication.method.label) }
         if let label = authentication.accountLabel { parts.append("账户 …\(label)") }
-        parts.append(needsSignIn ? "需要登录" : authentication.method == .unconfigured ? "尚未配置认证" : authentication.method == .oauth ? "已登录" : "")
+        parts.append(needsSignIn ? "需要登录" : authentication.method == .unconfigured ? "尚未配置认证" : authentication.method == .oAuth ? "已登录" : "")
         return parts.filter { !$0.isEmpty }.joined(separator: " · ")
     }
     /// Why the gateway will not send this member new requests, as far as login and quota tell.
@@ -192,7 +192,7 @@ private struct RouteMemberStatus: View {
         if quota?.available == false { return "提供商表示此账户当前不可用" }
         let limits = member.provider.quotaLimits
         guard !limits.isEmpty else { return nil }
-        if member.provider.composition.quotaSource == .arkCodingUsage && !member.provider.quotaBindingConfirmed { return "额度来源未确认关联，暂停派发" }
+        if member.provider.composition.quotaSource == .arkCodingUsage && !member.provider.quotaAuthentication.bindingConfirmed { return "额度来源未确认关联，暂停派发" }
         if quota?.freshness != .fresh { return "设有使用上限，取得最新额度前暂停" }
         return nil
     }
@@ -210,7 +210,7 @@ private struct ModelRouteEditor: View {
     @State private var selection: String?
     @FocusState private var nameFocused: Bool
     /// Members share the first member's protocol.
-    private var memberProtocol: ApiProtocol? { members.first.flatMap { store.routeMember($0)?.provider.protocolID } }
+    private var memberProtocol: ApiProtocol? { members.first.flatMap { store.routeMember($0)?.provider.protocol } }
     private var totalWeight: UInt32 { members.reduce(0) { $0 + weight($1) } }
     private var valid: Bool { !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !members.isEmpty }
     var body: some View {
@@ -252,7 +252,7 @@ private struct ModelRouteEditor: View {
                                 Section(provider.name) {
                                     ForEach(provider.models) { model in
                                         Button(model.displayName) { members.append(model.recordKey); selection = model.recordKey }
-                                            .disabled(members.contains(model.recordKey) || (memberProtocol.map { $0 != provider.protocolID } ?? false))
+                                            .disabled(members.contains(model.recordKey) || (memberProtocol.map { $0 != provider.protocol } ?? false))
                                     }
                                 }
                             }

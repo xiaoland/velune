@@ -1,6 +1,6 @@
 //! Native login observations have no provider routing, cap, alert or history policy.
 use crate::native_quota_source::Capture;
-use crate::{QuotaFreshness, QuotaWindowObservation, RuntimeQuotaStatus};
+use crate::{QuotaFreshness, QuotaObservation, QuotaWindowObservation, RuntimeQuotaStatus};
 use std::{
     collections::BTreeMap,
     sync::{Arc, Mutex},
@@ -32,29 +32,33 @@ impl Entry {
     fn status(&self, runtime_id: &str) -> RuntimeQuotaStatus {
         RuntimeQuotaStatus {
             runtime_id: runtime_id.into(),
-            freshness: if self.fresh() {
-                QuotaFreshness::Fresh
-            } else if self.windows.is_empty() {
-                QuotaFreshness::Unknown
-            } else {
-                QuotaFreshness::Stale
+            observation: QuotaObservation {
+                freshness: if self.fresh() {
+                    QuotaFreshness::Fresh
+                } else if self.windows.is_empty() {
+                    QuotaFreshness::Unknown
+                } else {
+                    QuotaFreshness::Stale
+                },
+                windows: self
+                    .windows
+                    .iter()
+                    .map(|window| QuotaWindowObservation {
+                        id: window.id.clone(),
+                        model_ids: window.model_ids.clone(),
+                        used_percent: window.used_percent,
+                        reset_at_ms: window.reset_at_ms,
+                        window_ms: window.window_ms,
+                        observed_at_ms: Some(window.observed_at_ms),
+                        expires_at_ms: Some(window.expires_at_ms),
+                        pace: None,
+                    })
+                    .collect(),
+                balances: Vec::new(),
+                available: None,
+                refreshing: self.running,
+                problem: self.problem.clone(),
             },
-            windows: self
-                .windows
-                .iter()
-                .map(|window| QuotaWindowObservation {
-                    id: window.id.clone(),
-                    model_ids: window.model_ids.clone(),
-                    used_percent: window.used_percent,
-                    reset_at_ms: window.reset_at_ms,
-                    window_ms: window.window_ms,
-                    observed_at_ms: Some(window.observed_at_ms),
-                    expires_at_ms: Some(window.expires_at_ms),
-                    pace: None,
-                })
-                .collect(),
-            refreshing: self.running,
-            problem: self.problem.clone(),
         }
     }
 }
@@ -112,10 +116,14 @@ impl RuntimeQuota {
                 }
                 return Ok(RuntimeQuotaStatus {
                     runtime_id: runtime_id.to_owned(),
-                    freshness,
-                    windows: Vec::new(),
-                    refreshing: false,
-                    problem: Some(problem),
+                    observation: QuotaObservation {
+                        freshness,
+                        windows: Vec::new(),
+                        balances: Vec::new(),
+                        available: None,
+                        refreshing: false,
+                        problem: Some(problem),
+                    },
                 });
             }
         };

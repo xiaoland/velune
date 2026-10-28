@@ -130,7 +130,7 @@ import VeluneBindings
             edit(messageID: users[1].id)
         }
     }
-    private func transcript(of store: AppStore) -> [Message] { store.transcript.rows.map(\.message) }
+    private func transcript(of store: AppStore) -> [DeliveredMessage] { store.transcript.rows.map(\.message) }
 
     /// Go back to the conversation shown before, where reading stood in it.
     func goBack() {

@@ -3,7 +3,7 @@ import VeluneBindings
 
 /// A user message opened for editing.
 struct MessageEditRequest: Identifiable {
-    let message: Message
+    let message: DeliveredMessage
     /// Its conversation can take the replacement in place.
     let inPlace: Bool
     /// The conversation's last user message: in place needs no question.

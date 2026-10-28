@@ -136,24 +136,24 @@ final class Transport: @unchecked Sendable {
     func resourceNativeImport(runtimeID: String, templateID: String) throws -> ResourceTemplateImport { try withApplication("resourceNativeImport", .writes, .write) { try $0.resourceNativeImport(runtimeId: runtimeID, templateId: templateID) } }
     func resolveResourceBinding(runtimeID: String, templateID: String, resolution: ResourceBindingResolution) throws { try withApplication("resolveResourceBinding", .writes, .write) { try $0.resolveResourceBinding(runtimeId: runtimeID, templateId: templateID, resolution: resolution) } }
     func list() throws -> ConfigurationSnapshot { try withApplication("list", .reads, .configurationRead) { try $0.list() } }
-    func saveProvider(gatewayID: String, provider: AIProvider, authenticationEdit: AuthenticationEdit, quotaAuthenticationEdit: QuotaAuthenticationEdit? = nil) throws -> GatewayUpdate {
-        try withApplication("saveProvider", .changesConfiguration, .configurationWrite) { try $0.saveProvider(gatewayId: gatewayID, provider: BindingMapping.bindingProvider(provider), authenticationEdit: authenticationEdit, quotaAuthenticationEdit: quotaAuthenticationEdit) }
+    func saveProvider(gatewayID: String, provider: ProviderDraft, authenticationEdit: AuthenticationEdit, quotaAuthenticationEdit: QuotaAuthenticationEdit? = nil) throws -> GatewayUpdate {
+        try withApplication("saveProvider", .changesConfiguration, .configurationWrite) { try $0.saveProvider(gatewayId: gatewayID, provider: provider, authenticationEdit: authenticationEdit, quotaAuthenticationEdit: quotaAuthenticationEdit) }
     }
     func deleteProvider(gatewayID: String, providerID: String) throws -> GatewayUpdate { try withApplication("deleteProvider", .changesConfiguration, .configurationWrite) { try $0.deleteProvider(gatewayId: gatewayID, providerId: providerID) } }
     func saveModelRoute(gatewayID: String, route: ModelRoute) throws -> GatewayUpdate { try withApplication("saveModelRoute", .changesConfiguration, .configurationWrite) { try $0.saveModelRoute(gatewayId: gatewayID, route: route) } }
     func deleteModelRoute(gatewayID: String, recordKey: String) throws -> GatewayUpdate { try withApplication("deleteModelRoute", .changesConfiguration, .configurationWrite) { try $0.deleteModelRoute(gatewayId: gatewayID, routeRecordKey: recordKey) } }
-    func composerQuota(_ request: ComposerQuotaRequest) throws -> [ComposerAccountQuota] {
+    func composerQuota(_ request: ComposerQuotaRequest) throws -> [ComposerQuotaEntry] {
         try withApplication("composerQuota", .reads, .read) { application in
             try application.composerQuota(context: ComposerQuotaContext(runtimeId: request.runtimeID,
-                selection: request.selection, conversationId: request.conversationID), refresh: false).map(BindingMapping.composerQuota)
+                selection: request.selection, conversationId: request.conversationID), refresh: false)
         }
     }
-    func providerQuota(gatewayID: String, providerID: String, refresh: Bool) throws -> AccountQuota {
+    func providerQuota(gatewayID: String, providerID: String, refresh: Bool) throws -> QuotaObservation {
         try withApplication(refresh ? "refreshProviderQuota" : "providerQuota", .reads, .read) { application in
-            BindingMapping.quota(refresh ? try application.refreshProviderQuota(gatewayId: gatewayID, providerId: providerID) : try application.providerQuota(gatewayId: gatewayID, providerId: providerID))
+            (refresh ? try application.refreshProviderQuota(gatewayId: gatewayID, providerId: providerID) : try application.providerQuota(gatewayId: gatewayID, providerId: providerID)).observation
         }
     }
-    func providerQuotaHistory(gatewayID: String, providerID: String, since: Date) throws -> [QuotaObservation] {
+    func providerQuotaHistory(gatewayID: String, providerID: String, since: Date) throws -> [QuotaHistorySample] {
         try withApplication("providerQuotaHistory", .reads, .read) { application in
             try application.providerQuotaHistory(gatewayId: gatewayID, providerId: providerID, sinceMs: Int64(since.timeIntervalSince1970 * 1000)).points.map(BindingMapping.quotaObservation)
         }

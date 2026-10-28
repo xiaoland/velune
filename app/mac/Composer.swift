@@ -557,7 +557,7 @@ struct ComposerView: View {
                 .disabled(!remoteDirectory.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("/"))
             Button("取消", role: .cancel) {}
         } message: {
-            if case .ssh(let host) = store.location(of: store.nextTurnRuntimeID) { Text("\(host) 上的绝对路径；发送时在该机器上检查。") }
+            if let host = store.location(of: store.nextTurnRuntimeID).host { Text("\(host) 上的绝对路径；发送时在该机器上检查。") }
         }
         .onDrop(of: [.fileURL], isTargeted: nil) { providers in
             for provider in providers {
@@ -805,7 +805,7 @@ struct ComposerView: View {
         let recent = store.recentWorkingDirectories
         return Menu {
             // A remote runtime's directories exist only on its machine.
-            if case .ssh(let host) = store.location(of: store.nextTurnRuntimeID) {
+            if let host = store.location(of: store.nextTurnRuntimeID).host {
                 Button("输入 \(host) 上的目录…") { remoteDirectory = path ?? ""; enteringRemoteDirectory = true }
             } else {
                 Button("选择目录…") { chooseDirectory() }

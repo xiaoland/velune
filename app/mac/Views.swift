@@ -586,10 +586,10 @@ private struct ShortcutSettingsView: View {
 struct ProviderSettingsView: View {
     @ObservedObject var store: AppStore
     @State private var selectedID: String?
-    @State private var editor: AIProvider?
+    @State private var editor: ProviderSummary?
     @State private var creating = false
     @State private var templates = false
-    @State private var deleting: AIProvider?
+    @State private var deleting: ProviderSummary?
     var body: some View {
         VStack(spacing: 0) {
             List(selection: $selectedID) {
@@ -620,10 +620,10 @@ struct ProviderSettingsView: View {
         } message: { provider in Text("删除「\(provider.name)」及其模型配置。使用这些模型的运行时需要重新选择模型；原运行时文件与会话保留。") }
     }
     /// A subscription is told apart by its account and login; others by their address.
-    private func providerSummary(_ provider: AIProvider) -> String {
+    private func providerSummary(_ provider: ProviderSummary) -> String {
         let authentication = provider.authentication
         guard let subscription = provider.composition.subscriptionName else { return "\(provider.models.count) 个模型 · \(provider.endpoint)" }
-        let status = authentication.method == .oauth ? (authentication.configured ? "已登录" : "需要登录") : (authentication.configured ? "已配置" : "需要配置认证")
+        let status = authentication.method == .oAuth ? (authentication.configured ? "已登录" : "需要登录") : (authentication.configured ? "已配置" : "需要配置认证")
         return (["\(provider.models.count) 个模型", subscription] + (authentication.accountLabel.map { ["账户 …\($0)"] } ?? []) + [status]).joined(separator: " · ")
     }
 }
@@ -688,7 +688,7 @@ private enum ProviderEditorSelection: Hashable { case connection, quota, model(U
 
 struct ProviderEditor: View {
     @ObservedObject var store: AppStore
-    let provider: AIProvider?
+    let provider: ProviderSummary?
     /// What a new provider starts from; `nil` when editing.
     var template: ProviderTemplate? = nil
     @Environment(\.dismiss) private var dismiss
@@ -721,7 +721,7 @@ struct ProviderEditor: View {
     @FocusState private var providerNameFocused: Bool
     @FocusState private var modelIDFocused: Bool
     private var providerID: String? { provider?.id ?? savedID }
-    private var authentication: ProviderAuthentication { store.providers.first { $0.id == providerID }?.authentication ?? provider?.authentication ?? ProviderAuthentication() }
+    private var authentication: ProviderAuthenticationDescription { store.providers.first { $0.id == providerID }?.authentication ?? provider?.authentication ?? .unconfigured }
     /// A subscription composition fixes the protocol and how the provider is reached.
     private var usesSubscription: Bool { composition.subscriptionName != nil }
     /// OAuth subscriptions sign in once saved, unless they use an existing login.
@@ -747,7 +747,7 @@ struct ProviderEditor: View {
     private var claudeBinary: String? { composition.claudeBinary?.trimmingCharacters(in: .whitespacesAndNewlines) }
     private var valid: Bool { !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && (!usesHTTP || URL(string: endpoint)?.host != nil) && (claudeBinary.map { ($0 as NSString).isAbsolutePath } ?? true) && quotaCredentialsValid && models.allSatisfy(\.valid) && (!editingAPIKey || (!apiKey.isEmpty && (originalAPIKey != nil || authentication.method != .apiKey || clearAuthentication))) }
     private var quotaCredentialsValid: Bool { (quotaAccessKeyID.isEmpty && quotaSecret.isEmpty) || (!quotaAccessKeyID.isEmpty && !quotaSecret.isEmpty) }
-    private var quotaAuthentication: AIProvider? { store.providers.first { $0.id == providerID } ?? provider }
+    private var quotaAuthentication: ProviderSummary? { store.providers.first { $0.id == providerID } ?? provider }
     var body: some View {
         VStack(spacing: 0) {
             Text(provider == nil ? "添加 \(template?.name ?? "AI 提供商")" : "编辑 AI 提供商").font(.headline).frame(maxWidth: .infinity, alignment: .leading).padding(20)
@@ -790,10 +790,10 @@ struct ProviderEditor: View {
         }.frame(width: 650, height: 510)
         .onAppear {
             if let provider {
-                name = provider.name; protocolID = provider.protocolID; endpoint = provider.endpoint; models = provider.models.map(ProviderModelDraft.init); quotaLimits = provider.quotaLimits; composition = provider.composition
+                name = provider.name; protocolID = provider.protocol; endpoint = provider.endpoint; models = provider.models.map(ProviderModelDraft.init); quotaLimits = provider.quotaLimits; composition = provider.composition
             } else if let template {
                 // A subscription is named after it until told apart; an API provider by its service.
-                name = template.kind == .subscription ? template.name : ""; protocolID = template.protocolID; endpoint = template.endpoint; composition = template.composition
+                name = template.kind == .subscription ? template.name : ""; protocolID = template.protocol; endpoint = template.endpoint; composition = template.composition
             }
             linkedLogin = provider?.authentication.linkedLogin
             editingAPIKey = (!usesSubscription || usesAPIKey) && authentication.method == .unconfigured; readAPIKeyIfNeeded()
@@ -861,11 +861,11 @@ struct ProviderEditor: View {
             if composition.quotaSource == .arkCodingUsage {
                 Section {
                     Text("模型 API key 与此处 AK/SK 分别用于模型和额度查询。账户归属未自动核验。")
-                    LabeledContent("状态", value: clearingQuotaAuthentication ? "保存后清除" : quotaAuthentication?.quotaAuthenticationConfigured == true ? (quotaAuthentication?.quotaBindingConfirmed == true ? "已由用户确认关联" : "需要重新确认关联") : "尚未配置")
+                    LabeledContent("状态", value: clearingQuotaAuthentication ? "保存后清除" : quotaAuthentication?.quotaAuthentication.configured == true ? (quotaAuthentication?.quotaAuthentication.bindingConfirmed == true ? "已由用户确认关联" : "需要重新确认关联") : "尚未配置")
                     TextField("AccessKey ID", text: $quotaAccessKeyID).privacySensitive()
                     SecureField("SecretAccessKey", text: $quotaSecret).privacySensitive()
                     Toggle("此次保存时确认此来源对应当前模型 Key 的个人 Coding Plan", isOn: $quotaConfirmed)
-                    if quotaAuthentication?.quotaAuthenticationConfigured == true {
+                    if quotaAuthentication?.quotaAuthentication.configured == true {
                         Button("清除额度查询认证", role: .destructive) { clearingQuotaAuthentication = true; quotaAccessKeyID = ""; quotaSecret = ""; quotaConfirmed = false }
                     }
                 } header: { Text("额度查询认证") } footer: { Text("输入完整 AK/SK 替换；留空保留。改模型 Key 后需再次确认，有上限且未确认时暂停派发。上限按此来源观测执行，不是计费硬预算。") }
@@ -893,7 +893,7 @@ struct ProviderEditor: View {
                 } else if linkedLoginChanged {
                     Text(linkedLoginNote).foregroundStyle(.secondary)
                 } else {
-                    if authentication.method == .oauth && !clearAuthentication {
+                    if authentication.method == .oAuth && !clearAuthentication {
                         LabeledContent("状态", value: authentication.configured ? "已登录" : "需要登录")
                         if let label = authentication.accountLabel { LabeledContent("账户", value: "…\(label)") }
                     }
@@ -913,7 +913,7 @@ struct ProviderEditor: View {
                     SubscriptionDisclosureNote(disclosure: disclosure)
                 }
                 if let provenance = authentication.provenance, providerID != nil {
-                    ImmediateDisclosureGroup("来源详情") { Text(provenance).font(.callout).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading).padding(.top, 8) }
+                    ImmediateDisclosureGroup("来源详情") { Text(provenance.displayName).font(.callout).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading).padding(.top, 8) }
                 }
             }
             if let accountService {
@@ -963,7 +963,7 @@ struct ProviderEditor: View {
         var saving = composition; if let claudeBinary { saving.claudeBinary = claudeBinary }
         // The account source reads only from the official address; another address keeps none.
         if saving.quotaSource == .apiAccount && accountService == nil { saving.quotaSource = .none }
-        store.saveProvider(AIProvider(id: providerID ?? "", name: name.trimmingCharacters(in: .whitespacesAndNewlines), protocolID: protocolID, endpoint: usesHTTP ? endpoint.trimmingCharacters(in: .whitespacesAndNewlines) : "", authentication: authentication, models: models.map(\.definition), quotaLimits: quotaLimits, composition: saving), authenticationEdit: edit, quotaAuthenticationEdit: quotaEdit) {
+        store.saveProvider(ProviderDraft(id: providerID ?? "", name: name.trimmingCharacters(in: .whitespacesAndNewlines), protocol: protocolID, endpoint: usesHTTP ? endpoint.trimmingCharacters(in: .whitespacesAndNewlines) : "", executionBackend: saving.executionBackend, requestProfile: saving.requestProfile, authenticationSource: saving.authenticationSource, quotaSource: saving.quotaSource, models: models.map(\.definition), quotaLimits: quotaLimits), authenticationEdit: edit, quotaAuthenticationEdit: quotaEdit) {
             apiKey = ""; originalAPIKey = nil; quotaAccessKeyID = ""; quotaSecret = ""
             guard signingIn, let saved = store.providers.first(where: { $0.id == providerID }) ?? store.providers.first(where: { !existing.contains($0.id) }) else { dismiss(); return }
             // Later saves keep the new authentication and the models' assigned keys.

@@ -50,7 +50,7 @@ final class ConversationNotifier: NSObject, UNUserNotificationCenterDelegate {
     /// and condition; a later one replaces it.
     func observe(_ alert: QuotaAlert) {
         guard let application, let provider = application.providers.first(where: { $0.id == alert.providerId }) else { return }
-        let window = alert.windowId.map(QuotaWindow.title) ?? ""
+        let window = alert.windowId.map(QuotaWindowObservation.title) ?? ""
         let body: String
         switch alert.kind {
         case .capReached:

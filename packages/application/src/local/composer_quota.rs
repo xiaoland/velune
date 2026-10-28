@@ -51,22 +51,16 @@ impl CoreRuntime {
                 sources
                     .into_iter()
                     .map(|(provider, models)| {
-                        let mut quota =
-                            self.subscription_quota
-                                .query(&gateway.id, &provider.id, refresh)?;
-                        quota.windows = scoped_windows(quota.windows, &models);
+                        let mut observation = self
+                            .subscription_quota
+                            .query(&gateway.id, &provider.id, refresh)?
+                            .observation;
+                        observation.windows = scoped_windows(observation.windows, &models);
                         Ok(ComposerQuotaEntry {
                             id: format!("provider:{}:{}", gateway.id, provider.id),
                             name: provider.name.clone(),
                             origin: QuotaOrigin::Provider,
-                            observation: QuotaObservation {
-                                freshness: quota.freshness,
-                                windows: quota.windows,
-                                balances: quota.balances,
-                                available: quota.available,
-                                refreshing: quota.refreshing,
-                                problem: quota.problem,
-                            },
+                            observation,
                             limits: provider.quota_limits.clone(),
                         })
                     })
@@ -82,14 +76,7 @@ impl CoreRuntime {
                     id: format!("runtime:{}", runtime.id),
                     name: runtime.name.clone(),
                     origin: QuotaOrigin::RuntimeLogin,
-                    observation: QuotaObservation {
-                        freshness: quota.freshness,
-                        windows: quota.windows,
-                        balances: Vec::new(),
-                        available: None,
-                        refreshing: quota.refreshing,
-                        problem: quota.problem,
-                    },
+                    observation: quota.observation,
                     limits: Vec::new(),
                 }]
             }
