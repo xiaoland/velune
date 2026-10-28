@@ -38,11 +38,8 @@ impl CoreRuntime {
             {
                 self.bind_gateway_model()?;
             }
-            match &mut self.session.active_state {
-                ActiveState::Native(session) => session
-                    .compact()
-                    .map_err(|error| RuntimeError::context("上下文压缩", error))?,
-                ActiveState::Pi(session) => session
+            match self.session.active_state.live_mut() {
+                Some(live) if live.can_compact() => live
                     .compact()
                     .map_err(|error| RuntimeError::context("上下文压缩", error))?,
                 _ => return Err(RuntimeError::invalid("此运行时不支持主动压缩上下文")),

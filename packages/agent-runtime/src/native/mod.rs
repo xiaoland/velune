@@ -379,10 +379,13 @@ impl NativeSession {
         self.start_turn(input, false)
     }
 
+    pub fn can_compact(&self) -> bool {
+        crate::version::variant(self.config.kind.runtime_kind()).can_compact
+    }
     /// Maintain the current native context without adding a user turn.
     pub fn compact(&mut self) -> Result<()> {
         self.ensure_idle()?;
-        if self.config.kind == NativeKind::DeepSeek {
+        if !self.can_compact() {
             return Err(Error::new("此运行时不支持主动压缩上下文"));
         }
         if !self.work().is_empty() {

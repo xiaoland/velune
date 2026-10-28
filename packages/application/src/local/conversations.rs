@@ -715,58 +715,33 @@ impl CoreRuntime {
         if !resuming {
             self.request_turn_settings(prompt.runtime_id, &input);
         }
-        if let ActiveState::Acp(session) = &mut self.session.active_state {
-            self.session.unsubmitted_draft = None;
-            session
-                .send(text, &input.images)
-                .map_err(|error| RuntimeError::context("ACP message send", error))?;
-            self.session.cancel_requested = false;
-            self.follow_started_turn();
-            self.started_turn_observation();
-            self.drain_runtime()?;
-            return self.snapshot_result();
-        }
-        if let ActiveState::Native(session) = &mut self.session.active_state {
-            self.session.unsubmitted_draft = None;
-            let result = if resuming {
-                session.resume(input.effort, input.permission_mode)
-            } else {
-                session.send(&input)
-            }
-            .map_err(|error| RuntimeError::context("message send", error));
-            if result.is_err() && self.session.gateway_runner.is_some() && !self.session.executing()
-            {
-                self.finish_managed_turn()?;
-            }
-            result?;
-            self.session.cancel_requested = false;
-            self.follow_started_turn();
-            self.started_turn_observation();
-            self.drain_runtime()?;
-            if self.session.gateway_runner.is_some() && !self.session.executing() {
-                self.finish_managed_turn()?;
-            }
-            return self.snapshot_result();
-        }
-        if matches!(
-            self.session.model_selection,
-            Some(Some(crate::ModelSelection::Managed { .. }))
-        ) {
+        if matches!(self.session.active_state, ActiveState::Pi(_))
+            && matches!(
+                self.session.model_selection,
+                Some(Some(crate::ModelSelection::Managed { .. }))
+            )
+        {
             self.bind_gateway_model()?;
         }
         self.drain_runtime()?;
         self.session.unsubmitted_draft = None;
-        let sent = self.session.pi().and_then(|session| {
-            session
-                .send(&input)
-                .map_err(|error| RuntimeError::context("message send", error))
-        });
-        if sent.is_err() && self.session.gateway_runner.is_some() {
+        let sent = match &mut self.session.active_state {
+            ActiveState::Native(session) if resuming => session
+                .resume(input.effort.clone(), input.permission_mode.clone())
+                .map_err(Into::into),
+            state => match state.live_mut() {
+                Some(live) => live.send(&input),
+                None => Err("会话执行尚未准备".into()),
+            },
+        }
+        .map_err(|error| RuntimeError::context("message send", error));
+        if sent.is_err() && self.session.gateway_runner.is_some() && !self.session.executing() {
             self.finish_managed_turn()?;
         }
         sent?;
         self.session.cancel_requested = false;
         self.follow_started_turn();
+        // Pi handles some messages at once, without a turn.
         if self.turn_running() {
             self.started_turn_observation();
         }
@@ -805,31 +780,19 @@ impl CoreRuntime {
             self.execution_backends
                 .cancel_session(&gateway_id, &session);
         }
-        if let ActiveState::Acp(session) = &mut self.session.active_state {
-            session
-                .cancel()
-                .map_err(|error| RuntimeError::context("ACP cancel", error))?;
-            self.session.cancel_requested = true;
-            self.drain_runtime()?;
-            return self.snapshot_result();
-        }
-        // Stopping the turn stops the sub-agents it started too.
-        if let ActiveState::Native(session) = &mut self.session.active_state {
-            session
-                .cancel()
-                .map_err(|error| RuntimeError::context("message cancel", error))?;
-            self.session.cancel_requested = true;
-            session
-                .stop_background()
-                .map_err(|error| RuntimeError::context("message cancel", error))?;
-            self.drain_runtime()?;
-            return self.snapshot_result();
-        }
         self.session
-            .pi()?
+            .active_state
+            .live_mut()
+            .ok_or_else(|| RuntimeError::invalid("会话执行尚未准备"))?
             .cancel()
             .map_err(|error| RuntimeError::context("message cancel", error))?;
         self.session.cancel_requested = true;
+        // Stopping the turn stops the sub-agents it started too.
+        if let ActiveState::Native(session) = &mut self.session.active_state {
+            session
+                .stop_background()
+                .map_err(|error| RuntimeError::context("message cancel", error))?;
+        }
         self.sync_projection()?;
         self.snapshot_result()
     }

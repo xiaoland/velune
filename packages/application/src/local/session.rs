@@ -47,12 +47,9 @@ pub(super) struct Session {
 impl Session {
     /// The conversation's own turn runs.
     pub(super) fn turn_running(&self) -> bool {
-        match &self.active_state {
-            ActiveState::Native(session) => session.turn_running(),
-            ActiveState::Acp(session) => session.turn_running(),
-            ActiveState::Pi(session) => session.turn_running(),
-            ActiveState::Empty | ActiveState::History(_) => false,
-        }
+        self.active_state
+            .live()
+            .is_some_and(LiveConversation::turn_running)
     }
 
     /// The Pi conversation this session runs.
@@ -91,11 +88,8 @@ impl Session {
     /// The native view this session shows, before Velune decoration.
     pub(super) fn projected(&self) -> Option<&crate::conversation::ConversationSnapshot> {
         match &self.active_state {
-            ActiveState::Native(session) => session.snapshot(),
-            ActiveState::Acp(session) => session.snapshot(),
-            ActiveState::Pi(session) => session.snapshot(),
             ActiveState::History(snapshot) => Some(snapshot.as_ref()),
-            ActiveState::Empty => None,
+            state => state.live().and_then(LiveConversation::snapshot),
         }
     }
 

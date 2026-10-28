@@ -19,7 +19,7 @@ use std::{
 };
 use velune_agent_runtime::history::{self, HistoryConfig};
 use velune_agent_runtime::native::{GatewayInjection, NativeConfig, NativeKind, NativeSession};
-use velune_agent_runtime::{self as pi, Config as PiConfig, PiProjection};
+use velune_agent_runtime::{self as pi, Config as PiConfig, LiveConversation, PiProjection};
 use velune_gateway::Runner;
 
 /// The runtime setting holding ACP launch arguments and environment.
@@ -95,6 +95,26 @@ enum ActiveState {
     Pi(Box<pi::PiSession>),
     Native(Box<NativeSession>),
     Acp(Box<velune_agent_runtime::acp::Client>),
+}
+
+impl ActiveState {
+    /// The running conversation, whatever its runtime kind.
+    fn live(&self) -> Option<&dyn LiveConversation> {
+        match self {
+            Self::Pi(session) => Some(session.as_ref()),
+            Self::Native(session) => Some(session.as_ref()),
+            Self::Acp(session) => Some(session.as_ref()),
+            Self::Empty | Self::History(_) => None,
+        }
+    }
+    fn live_mut(&mut self) -> Option<&mut dyn LiveConversation> {
+        match self {
+            Self::Pi(session) => Some(session.as_mut()),
+            Self::Native(session) => Some(session.as_mut()),
+            Self::Acp(session) => Some(session.as_mut()),
+            Self::Empty | Self::History(_) => None,
+        }
+    }
 }
 
 struct UnsubmittedDraft {
@@ -469,18 +489,11 @@ impl CoreRuntime {
         if was_executing {
             self.session.last_execution = Some(std::time::Instant::now());
         }
-        let result = match &mut self.session.active_state {
-            ActiveState::Acp(session) => session
-                .poll()
-                .map_err(|error| RuntimeError::context("ACP 事件读取失败", error)),
-            ActiveState::Native(session) => session
+        let result = match self.session.active_state.live_mut() {
+            Some(live) => live
                 .poll()
                 .map_err(|error| RuntimeError::context("运行时事件读取失败", error)),
-            ActiveState::Pi(session) => {
-                session.poll();
-                Ok(())
-            }
-            ActiveState::Empty | ActiveState::History(_) => Ok(()),
+            None => Ok(()),
         };
         // A command can fail and stop its runtime before the next poll begins.
         let observed_turn = was_busy

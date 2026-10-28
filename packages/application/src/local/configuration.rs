@@ -243,10 +243,8 @@ impl CoreRuntime {
         // conversations even before their runtime writes history; an agent may
         // have started one. They disappear when that native session closes.
         for session in std::iter::once(&self.session).chain(&self.parked) {
-            if matches!(
-                session.active_state,
-                ActiveState::Pi(_) | ActiveState::Native(_) | ActiveState::Acp(_)
-            ) && let Some(view) = session.projected()
+            if session.active_state.live().is_some()
+                && let Some(view) = session.projected()
                 && !conversations
                     .iter()
                     .any(|item| item.id == view.conversation.id)

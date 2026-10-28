@@ -283,19 +283,13 @@ impl CoreRuntime {
     }
     fn shutdown_active_inner(&mut self) -> Result<(), RuntimeError> {
         let cancellation_requested = self.session.cancel_requested;
-        let state = std::mem::replace(&mut self.session.active_state, ActiveState::Empty);
+        let mut state = std::mem::replace(&mut self.session.active_state, ActiveState::Empty);
         self.session.compacting = false;
-        let result = match state {
-            ActiveState::Acp(mut session) => session
-                .shutdown()
-                .map_err(|error| RuntimeError::context("ACP shutdown", error)),
-            ActiveState::Native(mut session) => session
+        let result = match state.live_mut() {
+            Some(live) => live
                 .shutdown()
                 .map_err(|error| RuntimeError::context("runtime shutdown", error)),
-            ActiveState::Pi(mut session) => session
-                .shutdown()
-                .map_err(|error| RuntimeError::context("runtime shutdown", error)),
-            ActiveState::Empty | ActiveState::History(_) => Ok(()),
+            None => Ok(()),
         };
         self.session.gateway_runner = None;
         self.session.gateway_tunnel = None;

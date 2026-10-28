@@ -224,17 +224,12 @@ impl CoreRuntime {
             permission_mode: None,
             images: super::attachments::turn_images(&attachments.images)?,
         };
-        match &mut self.session.active_state {
-            ActiveState::Native(session) => session
-                .steer(&input)
-                .map_err(|error| RuntimeError::context("message steer", error)),
-            ActiveState::Pi(session) => session
-                .steer(&input)
-                .map_err(|error| RuntimeError::context("message steer", error)),
-            ActiveState::Acp(_) | ActiveState::History(_) | ActiveState::Empty => {
-                Err(RuntimeError::invalid("此运行时当前不能插入消息"))
-            }
-        }
+        self.session
+            .active_state
+            .live_mut()
+            .ok_or_else(|| RuntimeError::invalid("此运行时当前不能插入消息"))?
+            .steer(&input)
+            .map_err(|error| RuntimeError::context("message steer", error))
     }
 
     /// The running turn takes messages through the runtime's own channel.
@@ -242,11 +237,13 @@ impl CoreRuntime {
         if self.session.compacting {
             return false;
         }
-        match &self.session.active_state {
-            ActiveState::Native(session) => session.can_steer(),
-            ActiveState::Pi(session) => session.turn_running() && !self.session.cancel_requested,
-            ActiveState::Acp(_) | ActiveState::History(_) | ActiveState::Empty => false,
-        }
+        // A turn being stopped takes nothing more.
+        !self.session.cancel_requested
+            && self
+                .session
+                .active_state
+                .live()
+                .is_some_and(LiveConversation::can_steer)
     }
 
     /// The addressed session's turn ended with `outcome`: the queue goes on

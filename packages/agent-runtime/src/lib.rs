@@ -23,6 +23,8 @@ pub mod provider_inventory;
 pub mod provider_source;
 
 pub mod execution;
+mod live;
+pub use live::{LiveConversation, LiveError, LiveResult};
 pub mod history;
 pub mod management;
 pub mod mcp;

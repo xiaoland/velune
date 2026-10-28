@@ -249,15 +249,14 @@ impl CoreRuntime {
         reply: velune_conversation::RuntimeInteractionReply,
     ) -> Result<crate::SnapshotResult, RuntimeError> {
         self.ensure_active(runtime_id)?;
-        match &mut self.session.active_state {
-            ActiveState::Acp(session) => session
-                .reply(id, reply)
-                .map_err(|error| RuntimeError::context("ACP 请求回复失败", error))?,
-            ActiveState::Native(session) => session.reply(id, reply).map_err(|error| {
+        self.session
+            .active_state
+            .live_mut()
+            .ok_or_else(|| RuntimeError::invalid("此运行时没有待回复的请求"))?
+            .reply(id, reply)
+            .map_err(|error| {
                 RuntimeError::context("运行时请求回复失败；请求可能已取消或所属会话已改变", error)
-            })?,
-            _ => return Err(RuntimeError::invalid("此运行时没有待回复的请求")),
-        };
+            })?;
         self.drain_runtime()?;
         self.snapshot_result()
     }
