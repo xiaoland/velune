@@ -28,7 +28,7 @@ struct QuotaWindowRow: View {
     private var detail: String {
         var parts: [String] = []
         if let limit { parts.append(UsageFormat.ceiling(limit, display, reached: reached)) }
-        if let reset = window.resetsAt, reset > Date() { parts.append("\(reset.formatted(.relative(presentation: .named)))重置") }
+        parts.append(QuotaResetFormat.text(window.resetsAt))
         if runsShort, let empty = window.pace?.runsOutAt { parts.append("按目前的平均速度约\(empty.formatted(.relative(presentation: .named)))用尽") }
         if showsModels, let models = window.modelIDs { parts.append("仅 " + models.joined(separator: "、")) }
         return parts.joined(separator: " · ")
@@ -68,9 +68,9 @@ enum UsageFormat {
 struct QuotaStatusText: View {
     let quota: ProviderQuota?
     var body: some View {
-        Text(text).font(.caption).foregroundStyle(.secondary)
+        Text(Self.summary(quota)).font(.caption).foregroundStyle(.secondary)
     }
-    private var text: String {
+    static func summary(_ quota: ProviderQuota?) -> String {
         guard let quota else { return "正在读取额度…" }
         if quota.refreshing && quota.freshness != .fresh { return "正在读取额度…" }
         let observed = quota.observedAt.map { $0.formatted(.relative(presentation: .named)) }

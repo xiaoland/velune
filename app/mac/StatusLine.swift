@@ -44,13 +44,24 @@ struct ComposerStatusLine: View {
     @State private var branch: String?
     @State private var showsDetails = false
 
+    private var status: ConversationStatus {
+        var value = store.conversationStatus
+        // Historical native limits can belong to another account or runtime.
+        if case .managed = store.nextTurnModel { value.rateLimits = [] }
+        return value
+    }
+    private var accounts: [ComposerAccountQuota] { store.composerAccountQuotas }
+
     var body: some View {
-        let status = store.conversationStatus
-        let items = store.statusLine.filter(status.has)
+        let status = self.status
+        let items = store.statusLine.filter { $0 == .rateLimits ? !accounts.isEmpty || status.has($0) : status.has($0) }
         Group {
-            if !items.isEmpty {
+            if !items.isEmpty || !accounts.isEmpty {
                 Button { showsDetails.toggle() } label: {
-                    HStack(spacing: 10) { ForEach(items, id: \.self) { compact($0, status) } }
+                    HStack(spacing: 10) {
+                        if items.isEmpty { Text("状态") }
+                        ForEach(items, id: \.self) { compact($0, status) }
+                    }
                         .font(.callout).monospacedDigit().foregroundStyle(.secondary).lineLimit(1)
                         .contentShape(Rectangle())
                 }
@@ -58,9 +69,12 @@ struct ComposerStatusLine: View {
                 .help(summary(items, status))
                 .accessibilityLabel("会话状态")
                 .accessibilityValue(summary(items, status))
-                .popover(isPresented: $showsDetails, arrowEdge: .top) { StatusDetails(status: status, branch: branch, display: store.contextUsageDisplay, quotaDisplay: store.usageDisplay) }
+                .popover(isPresented: $showsDetails, arrowEdge: .top) {
+                    StatusDetails(status: status, accounts: accounts, branch: branch, display: store.contextUsageDisplay, quotaDisplay: store.usageDisplay)
+                }
             }
         }
+        .readsQuota(of: accounts.map(\.id), from: store)
         // The branch can change with any turn; reading it is one git call.
         .task(id: "\(status.conversationID ?? "")|\(status.directory ?? "")|\(status.endedTurns)") {
             guard status.directory != nil else { branch = nil; return }
@@ -86,8 +100,10 @@ struct ComposerStatusLine: View {
                 }.truncationMode(.middle)
             }
         case .rateLimits:
-            Label(status.rateLimits.map { "\(StatusFormat.window($0.windowMinutes, short: true)) \(StatusFormat.limit($0.usedPercent, store.usageDisplay, short: true))" }.joined(separator: " · "),
-                  systemImage: "gauge.with.dots.needle.33percent")
+            let text = accounts.isEmpty
+                ? status.rateLimits.map { "\(StatusFormat.window($0.windowMinutes, short: true)) \(StatusFormat.limit($0.usedPercent, store.usageDisplay, short: true))" }.joined(separator: " · ")
+                : accountSummary(short: true)
+            Label(text, systemImage: "gauge.with.dots.needle.33percent")
         case .sessionCost:
             if let cost = status.costMicroUSD { Text(StatusFormat.cost(cost)) }
         }
@@ -103,11 +119,29 @@ struct ComposerStatusLine: View {
                 return "上下文：已用 \(TokenCount.format(tokens)) / \(TokenCount.format(window)) tokens（\(StatusFormat.percent(fraction))）"
             case .sessionTokens: return status.sessionTokens.map { "本会话累计：\(TokenCount.format($0)) tokens" }
             case .workingDirectory: return status.directory.map { "工作目录：\($0)" + (branch.map { "（\($0)）" } ?? "") }
-            case .rateLimits: return "账户限额：" + status.rateLimits.map { "\(StatusFormat.window($0.windowMinutes, short: false))\(StatusFormat.limit($0.usedPercent, store.usageDisplay, short: false))" }.joined(separator: "，")
+            case .rateLimits:
+                if !accounts.isEmpty { return accountSummary(short: false) }
+                return "账户限额：" + status.rateLimits.map {
+                    StatusFormat.window($0.windowMinutes, short: false) + "：" + StatusFormat.limitDetail($0, store.usageDisplay)
+                }.joined(separator: "；")
             case .sessionCost: return status.costMicroUSD.map { "费用估算：\(StatusFormat.cost($0))" }
             }
         }
         return (lines + ["点按查看会话状态"]).joined(separator: "\n")
+    }
+
+    private func accountSummary(short: Bool) -> String {
+        accounts.map { account in
+            let windows = account.windows.map { window in
+                let used = min(max(window.usedPercent, 0), 100)
+                let label = UsageFormat.label(Int((store.usageDisplay == .remaining ? 100 - used : used).rounded()), store.usageDisplay)
+                return QuotaWindow.name(window.id) + " " + label + (short ? "" : "，" + QuotaResetFormat.text(window.resetsAt))
+            }
+            let balances = (account.quota?.balances ?? []).map { $0.title + " " + $0.formatted }
+            let values = windows + balances
+            let state = account.quota?.freshness == .stale ? "（额度已过期）" : ""
+            return account.provider.name + state + "：" + (values.isEmpty ? QuotaStatusText.summary(account.quota) : values.joined(separator: " · "))
+        }.joined(separator: short ? " · " : "\n")
     }
 }
 
@@ -130,13 +164,21 @@ private struct ContextRing: View {
     }
 }
 
-/// Everything the records say about the conversation, whether pinned or not.
-private struct StatusDetails: View {
+/// Recorded conversation usage and the selected accounts' quota, whether pinned or not.
+struct StatusDetails: View {
     let status: ConversationStatus
+    var accounts: [ComposerAccountQuota] = []
     let branch: String?
     let display: BindingUsageDisplay
     let quotaDisplay: BindingUsageDisplay
     var body: some View {
+        ViewThatFits(in: .vertical) {
+            details
+            ScrollView { details }
+        }
+        .frame(width: 380).frame(maxHeight: 600).fixedSize(horizontal: false, vertical: true)
+    }
+    private var details: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("会话状态").font(.headline)
             Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 6) {
@@ -174,7 +216,7 @@ private struct StatusDetails: View {
                     heading("账户限额")
                     ForEach(Array(status.rateLimits.enumerated()), id: \.offset) { _, limit in
                         row(StatusFormat.window(limit.windowMinutes, short: false),
-                            StatusFormat.limit(limit.usedPercent, quotaDisplay, short: false) + (limit.resetsAtUnixMs.map { "，\(Date(timeIntervalSince1970: Double($0) / 1000).formatted(.relative(presentation: .named)))重置" } ?? ""))
+                            StatusFormat.limitDetail(limit, quotaDisplay))
                     }
                 }
                 if let cost = status.costMicroUSD {
@@ -182,11 +224,24 @@ private struct StatusDetails: View {
                     row("估算", StatusFormat.cost(cost))
                 }
             }
-            Text("取自运行时的原生记录；累计为已记录各轮之和，输入含缓存，输出含推理；费用为运行时按其价目的估算，不代表实际账单。")
+            ForEach(accounts) { account in
+                Divider()
+                Text(account.provider.name).font(.subheadline.weight(.semibold))
+                if account.quota?.available == false { Text("账户当前不可用").font(.caption).foregroundStyle(.orange) }
+                ForEach(Array(account.windows.enumerated()), id: \.offset) { _, window in
+                    QuotaWindowRow(window: window, limit: account.provider.quotaLimits.first { $0.windowID == window.id }?.maxUsedPercent,
+                                   fresh: account.quota?.freshness == .fresh, display: quotaDisplay, showsModels: true)
+                }
+                ForEach(Array((account.quota?.balances ?? []).enumerated()), id: \.offset) { _, balance in
+                    QuotaBalanceRow(balance: balance, fresh: account.quota?.freshness == .fresh)
+                }
+                QuotaStatusText(quota: account.quota)
+            }
+            Text("会话用量取自运行时记录；累计为已记录各轮之和，输入含缓存，输出含推理；费用为运行时估算，不代表实际账单。")
                 .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             SettingsTabLink(tab: .conversation, title: "自定义状态栏…")
         }
-        .padding(14).frame(width: 320, alignment: .leading)
+        .padding(14).frame(width: 380, alignment: .leading)
     }
     private func heading(_ title: String) -> some View {
         GridRow { Text(title).font(.subheadline.weight(.semibold)).gridCellColumns(2).padding(.top, 4) }
@@ -219,6 +274,10 @@ enum StatusFormat {
         case .used: return short ? "\(used)%" : "已用 \(used)%"
         case .remaining: return "剩余 \(100 - used)%"
         }
+    }
+    static func limitDetail(_ value: RateLimit, _ display: BindingUsageDisplay) -> String {
+        let reset = value.resetsAtUnixMs.map { Date(timeIntervalSince1970: Double($0) / 1000) }
+        return limit(value.usedPercent, display, short: false) + "，" + QuotaResetFormat.text(reset)
     }
     static func short(_ tokens: UInt64) -> String { TokenCount.format(tokens) }
     static func cost(_ microUSD: UInt64) -> String {

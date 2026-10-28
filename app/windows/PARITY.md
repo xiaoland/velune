@@ -8,7 +8,7 @@
 | --- | --- | --- |
 | [会话](../../docs/prd/conversations.md) | 已实现 | Windows 未注册 `velune://`；xURL 支持 `agents://` 系统深链与会话正文点击，唯一匹配自动打开 |
 | [会话视图](../../docs/prd/conversation-view.md) | 已实现 | 长转录的性能未在真机验收 |
-| [输入区](../../docs/prd/composer.md) | 已实现 | 模型目录读取中或失败时只说明状态，不像 Mac 先列出可达的 managed 模型；中文输入法未在真机验收 |
+| [输入区](../../docs/prd/composer.md) | 已实现 | 模型目录读取中或失败时只说明状态，不像 Mac 先列出可达的 managed 模型；中文输入法未在真机验收；状态弹层尚未接入所选模型或路由的提供商额度，只显示原生轮次的限额 |
 | [工作区布局](../../docs/prd/workspace-layout.md) | 已实现（[Unit TDD](TDD.md)） | 未在真机逐项操作验收 |
 | [协作](../../docs/prd/collaboration.md) | 关联 Agent、xURL MCP 工具与随包官方 CLI 已实现 | — |
 | [Agent 运行时](../../docs/prd/agent-runtimes.md) | 本机运行时已实现 | 经 SSH 的运行时只能在 Mac 上设置：Windows 宿主没有 OpenSSH ControlMaster 所需的 Unix socket |

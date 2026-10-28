@@ -428,6 +428,9 @@ final class AppStore: ObservableObject {
             rateLimits: turns.last { $0.usage?.rateLimits.isEmpty == false }?.usage?.rateLimits ?? [],
             costMicroUSD: turns.last { $0.usage?.sessionCostMicroUSD != nil }?.usage?.sessionCostMicroUSD)
     }
+    var composerAccountQuotas: [ComposerAccountQuota] {
+        ComposerAccountQuota.accounts(for: nextTurnModel, gateway: gateway, quotas: providerQuotas)
+    }
     func describe(_ turn: TranscriptTurn) -> TurnSettingsSummary? {
         let settings = turn.settings ?? TurnSettings()
         let runtime = settings.runtimeID.flatMap { id in runtimeInstances.first { $0.id == id } }

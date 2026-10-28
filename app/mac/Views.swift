@@ -544,7 +544,7 @@ private struct ConversationSettingsView: View {
     @State private var outlineForm = OutlineForm.popover
     private static let statusLineItems: [(item: BindingStatusLineItem, title: String)] = [
         (.contextUsage, "上下文用量"), (.sessionTokens, "本会话累计 token"), (.workingDirectory, "工作目录与 Git 分支"),
-        (.rateLimits, "账户用量限额（Codex）"), (.sessionCost, "费用估算"),
+        (.rateLimits, "账户用量限额"), (.sessionCost, "费用估算"),
     ]
     var body: some View {
         Form {
