@@ -106,6 +106,7 @@ impl CoreRuntime {
             provider: None,
             model: None,
             session: None,
+            side: false,
             name: None,
             extension: None,
             rpc_entry: None,

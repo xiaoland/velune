@@ -180,3 +180,12 @@ Codex 使用 `thread/compact/start` 并消费独立 turn 与 `contextCompaction`
 `ContextCompaction` 是系统状态块，核心转录投影将其独立呈现，不参与工作成员或最终回复判断。主动压缩占用执行状态和取消通路，但不登记或完成用户轮次，不推进发送队列；自动压缩仍属于已有轮次。历史读取仅恢复原生持久记录，不新建压缩日志。
 
 Codex 0.159.3 未持久化独立压缩失败／取消的专用条目时，重开只能按其原生回合错误和恢复资格呈现，无法恢复主动压缩身份。不能仅因一个用户回合包含压缩条目就将整轮当作独立维护；自动压缩后的普通回复仍保留自己的错误、用量与恢复语义。
+
+## 侧聊
+
+`NativeSession::open_side` 与 `Config.side` 打开会话的侧聊（产品规则见 PRD [侧聊](../../docs/prd/conversations.md#侧聊)）：在运行时内就会话上下文另外提问，不写入任何原生记录，随会话执行结束而消失。之后的发送、取消、审批与 snapshot 与普通会话相同；snapshot 只有侧聊自己的问答。
+
+- Claude Code 用其 stream-json 控制请求 `side_question`（`/btw` 的实现）：每次提问起一个 `--resume <会话> --no-session-persistence` 的子进程，请求带上本次侧聊之前的问答，`control_response` 的回答结束该轮。侧问不能被 `interrupt` 中断，停止与关闭都关闭子进程的输入并让它自行退出（被强制结束的进程会留下 `sessions/<pid>.json`），数秒后仍在才结束它。不接受图片与插入消息。2.1.292 已验证，最低支持的 2.1.286 未验证。
+- Codex 与其 TUI 的 `/side` 相同：`thread/fork {ephemeral: true}`，`developerInstructions` 在配置的开发者说明后附加 `/side` 的说明，再以 `thread/inject_items` 注入“此前历史仅作参考”的边界；两段文字照录 Codex 0.159.3（Apache-2.0，见 `native/codex_side.rs`）。0.159.3 的 fork 沿用继承的开发者上下文，实际请求中只出现边界。临时线程只存在于该 app-server 进程，侧聊因此不能换模型或重启进程；尚未保存的线程不能 fork。
+- Pi 的 `pi_rpc.mjs --side` 以 `SessionManager.inMemory` 载入会话文件的条目，不写盘；snapshot 含继承的消息，由 application 隐去。
+- DSH 不提供侧聊。

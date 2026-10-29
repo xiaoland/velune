@@ -152,6 +152,7 @@ impl CoreRuntime {
             gateway_token: Some(runner.token().into()),
             session_dir: setting_path_optional(&runtime, "sessionDir"),
             session: None,
+            side: false,
             // A session's Pi name belongs to its persisted session_info entry.
             // Runtime names must not overwrite it when reopening a session.
             name: None,
@@ -223,6 +224,7 @@ impl CoreRuntime {
         self.shutdown_pi()?;
         config.working_dir = cwd.clone();
         config.session = session.map(Path::to_owned);
+        config.side = self.session.side.is_some();
         config.name = None;
         if let (Some(logical), Some(physical)) = (model_record_key, physical_model_id) {
             write_selection_file(&config, logical, physical)?;

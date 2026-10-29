@@ -228,16 +228,23 @@ impl CoreRuntime {
             .filter(|id| !id.is_empty())
             .ok_or_else(|| RuntimeError::invalid("conversation id"))?;
         let cwd = snapshot.conversation.cwd.as_deref().map(PathBuf::from);
+        let side = self.session.side.is_some();
         if let ActiveState::Native(session) = &mut self.session.active_state {
-            session
-                .open(
-                    native_id,
-                    cwd.as_deref(),
-                    &runtime.id,
-                    snapshot.messages.clone(),
-                )
-                .map_err(|error| RuntimeError::context("会话恢复失败", error))?;
-            session.set_conversation(snapshot.conversation.clone());
+            if side {
+                session
+                    .open_side(native_id, cwd.as_deref(), &runtime.id)
+                    .map_err(|error| RuntimeError::context("侧聊打开失败", error))?;
+            } else {
+                session
+                    .open(
+                        native_id,
+                        cwd.as_deref(),
+                        &runtime.id,
+                        snapshot.messages.clone(),
+                    )
+                    .map_err(|error| RuntimeError::context("会话恢复失败", error))?;
+                session.set_conversation(snapshot.conversation.clone());
+            }
         }
         self.session.model_record_key = Some(key.into());
         Ok(())

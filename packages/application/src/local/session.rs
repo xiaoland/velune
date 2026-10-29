@@ -42,6 +42,20 @@ pub(super) struct Session {
     /// Context maintenance must not complete a user turn or advance its queue.
     pub(super) compacting: bool,
     pub(super) send_queue: follow_up::SendQueue,
+    /// This session is a side chat on another conversation.
+    pub(super) side: Option<SideChat>,
+}
+
+/// A side chat: a temporary runtime copy of a conversation, never saved,
+/// that is open until it is closed. Clients know it only by its own
+/// identity; it is not a conversation of the list or its activity.
+pub(super) struct SideChat {
+    pub(super) id: String,
+    /// What each question is sent with: the conversation's last turn's.
+    pub(super) effort: Option<String>,
+    pub(super) permission_mode: Option<String>,
+    /// Messages of the conversation the copy began with, which it does not show.
+    pub(super) inherited: std::collections::BTreeSet<String>,
 }
 
 impl Session {
@@ -78,7 +92,8 @@ impl Session {
     /// Must stay open: closing it would end work, drop a request the user
     /// has not answered or drop queued messages.
     pub(super) fn pinned(&self) -> bool {
-        self.executing()
+        self.side.is_some()
+            || self.executing()
             || !self.send_queue.is_empty()
             || self
                 .projected()
@@ -97,6 +112,9 @@ impl Session {
     /// continued conversation by its link or origin, an unsent conversation by
     /// its public or native identity, or the native conversation itself.
     pub(super) fn presents(&self, id: &str) -> bool {
+        if let Some(side) = &self.side {
+            return side.id == id;
+        }
         self.logical_projection
             .as_ref()
             .is_some_and(|projection| projection.link.id == id || projection.origin.id == id)
@@ -110,12 +128,17 @@ impl Session {
     }
 
     /// The identity clients know this conversation by when it differs from
-    /// the native one: a continued conversation's link, an unsent one's
-    /// public identity.
+    /// the native one: a side chat's own, a continued conversation's link,
+    /// an unsent one's public identity.
     fn public_id(&self) -> Option<&str> {
-        self.logical_projection
+        self.side
             .as_ref()
-            .map(|projection| projection.link.id.as_str())
+            .map(|side| side.id.as_str())
+            .or_else(|| {
+                self.logical_projection
+                    .as_ref()
+                    .map(|projection| projection.link.id.as_str())
+            })
             .or_else(|| {
                 self.unsubmitted_draft
                     .as_ref()
@@ -302,6 +325,11 @@ impl CoreRuntime {
 
     /// Record how the addressed session's turn ended.
     pub(super) fn record_finished_turn(&mut self, failed: bool) -> Option<crate::TurnOutcome> {
+        // A side chat's answers are no conversation's turns.
+        if self.session.side.is_some() {
+            self.session.cancel_requested = false;
+            return None;
+        }
         if self.session.projected().is_none() {
             let outcome = if failed {
                 velune_telemetry::Outcome::Failure
@@ -356,6 +384,7 @@ impl CoreRuntime {
                 .collect(),
             resumable: std::iter::once(&self.session)
                 .chain(&self.parked)
+                .filter(|session| session.side.is_none())
                 .filter_map(|session| {
                     let view = session.projected()?;
                     let conversation_id = session.conversation_id()?;
@@ -376,7 +405,7 @@ impl CoreRuntime {
     pub(super) fn active_conversations(&mut self) -> Vec<crate::ActiveConversation> {
         let mut active = Vec::new();
         for session in std::iter::once(&self.session).chain(&self.parked) {
-            let Some(view) = session.projected() else {
+            let Some(view) = session.projected().filter(|_| session.side.is_none()) else {
                 continue;
             };
             let id = session.conversation_id().unwrap_or_default();

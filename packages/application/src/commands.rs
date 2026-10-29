@@ -582,6 +582,40 @@ impl Application {
                 Login::Blocks,
                 |core| core.cancel(&runtime_id),
             )?),
+            Command::OpenSideChat {
+                runtime_id,
+                conversation_id,
+                selection,
+                effort,
+                permission_mode,
+            } => Response::OpenSideChat(application.runtime.serve(
+                Focus::Conversation(conversation_id.clone()),
+                Login::Blocks,
+                |core| {
+                    core.open_side_chat(
+                        &runtime_id,
+                        &conversation_id,
+                        selection,
+                        effort,
+                        permission_mode,
+                    )
+                },
+            )?),
+            Command::SendSideChat { side_chat_id, text } => {
+                Response::SendSideChat(application.runtime.serve(
+                    Focus::Existing(side_chat_id.clone()),
+                    Login::Blocks,
+                    |core| core.send_side_chat(&side_chat_id, text),
+                )?)
+            }
+            Command::CloseSideChat { side_chat_id } => {
+                application.runtime.serve(
+                    Focus::Existing(side_chat_id.clone()),
+                    Login::Allows,
+                    |core| core.close_side_chat(&side_chat_id),
+                )?;
+                Response::CloseSideChat
+            }
             Command::StopSubAgents {
                 runtime_id,
                 conversation_id,
@@ -995,6 +1029,8 @@ impl Application {
             | Response::EditMessage(result)
             | Response::Cancel(result)
             | Response::StopSubAgents(result)
+            | Response::OpenSideChat(result)
+            | Response::SendSideChat(result)
             | Response::ReplyRuntimeInteraction(result) => result.snapshot.as_mut(),
             Response::ReadSnapshotUpdate(SnapshotUpdate::Changed { snapshot }) => Some(snapshot),
             _ => None,

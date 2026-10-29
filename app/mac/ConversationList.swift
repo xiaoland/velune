@@ -336,6 +336,9 @@ struct ConversationListView: View {
         if runMenu(targets) {
             if targets.count == 1, let target = targets.first {
                 Button("发送消息…") { window.openComposerSheet(target.id) }
+                if store.device.hasSideChats(target.runtimeID) {
+                    Button("侧聊") { window.openSideChat(on: target.id) }
+                }
                 if store.device.resumableConversations[target.id] != nil {
                     Button("继续") { window.resumeFromList(target.id) }
                 }

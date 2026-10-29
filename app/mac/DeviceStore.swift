@@ -580,6 +580,11 @@ final class DeviceStore: ObservableObject {
             }
         }
     }
+    /// Whether the runtime has side chats (see 侧聊 in the PRD).
+    func hasSideChats(_ runtimeID: String) -> Bool {
+        guard let kind = runtimeInstances.first(where: { $0.id == runtimeID })?.typeId else { return false }
+        return [RuntimeKind.codex, .claudeCode, .pi].contains(kind)
+    }
     func isStoppable(_ id: String) -> Bool { executionRuntimeIDs[id] != nil && !stoppingConversationIDs.contains(id) }
 
     func shutdown(stoppingWork: Bool = false, completion: @escaping (Bool) -> Void) {

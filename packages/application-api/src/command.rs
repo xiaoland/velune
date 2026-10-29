@@ -115,6 +115,9 @@ pub enum CommandKind {
     EditMessage,
     Cancel,
     StopSubAgents,
+    OpenSideChat,
+    SendSideChat,
+    CloseSideChat,
     ReadConversationActivity,
     ReadWorkingChanges,
     ReadWorkingBranch,
@@ -403,6 +406,26 @@ pub enum Command {
         runtime_id: String,
         conversation_id: String,
     },
+    /// Open a side chat on a sent conversation: questions asked on its
+    /// context without adding to it, with the given next-turn model,
+    /// reasoning level and permission mode. The snapshot is the side chat's, by
+    /// its own identity, which reads, cancels and replies address like a
+    /// conversation's.
+    OpenSideChat {
+        runtime_id: String,
+        conversation_id: String,
+        selection: Option<ModelSelection>,
+        effort: Option<String>,
+        permission_mode: Option<String>,
+    },
+    SendSideChat {
+        side_chat_id: String,
+        text: String,
+    },
+    /// Close a side chat; what runs in it stops and nothing of it stays.
+    CloseSideChat {
+        side_chat_id: String,
+    },
     ReadConversationActivity {
         since: u64,
     },
@@ -589,6 +612,9 @@ pub enum Response {
     EditMessage(SnapshotResult),
     Cancel(SnapshotResult),
     StopSubAgents(SnapshotResult),
+    OpenSideChat(SnapshotResult),
+    SendSideChat(SnapshotResult),
+    CloseSideChat,
     ReadConversationActivity(ConversationActivity),
     ReadWorkingChanges(WorkingChanges),
     ReadWorkingBranch(Option<String>),
@@ -700,6 +726,9 @@ impl Command {
             | Self::EditMessage { .. }
             | Self::Cancel { .. }
             | Self::StopSubAgents { .. }
+            | Self::OpenSideChat { .. }
+            | Self::SendSideChat { .. }
+            | Self::CloseSideChat { .. }
             | Self::ApplyProviderImport { .. }
             | Self::RefreshProviderQuota { .. }
             | Self::ClearProviderQuotaHistory { .. }
@@ -791,6 +820,9 @@ impl Command {
             Self::EditMessage { .. } => CommandKind::EditMessage,
             Self::Cancel { .. } => CommandKind::Cancel,
             Self::StopSubAgents { .. } => CommandKind::StopSubAgents,
+            Self::OpenSideChat { .. } => CommandKind::OpenSideChat,
+            Self::SendSideChat { .. } => CommandKind::SendSideChat,
+            Self::CloseSideChat { .. } => CommandKind::CloseSideChat,
             Self::ReadConversationActivity { .. } => CommandKind::ReadConversationActivity,
             Self::ReadWorkingChanges { .. } => CommandKind::ReadWorkingChanges,
             Self::ReadWorkingBranch { .. } => CommandKind::ReadWorkingBranch,
@@ -863,6 +895,9 @@ impl Command {
                     | Self::ReplyRuntimeInteraction { .. }
                     | Self::Cancel { .. }
                     | Self::StopSubAgents { .. }
+                    | Self::OpenSideChat { .. }
+                    | Self::SendSideChat { .. }
+                    | Self::CloseSideChat { .. }
                     | Self::StartAuthentication { .. }
                     | Self::ReplyAuthentication { .. }
             )

@@ -84,6 +84,9 @@ pub struct Config {
     pub gateway_token: Option<String>,
     pub session_dir: Option<PathBuf>,
     pub session: Option<PathBuf>,
+    /// Run `session` as a side chat: a copy held in memory, never saved.
+    #[serde(default)]
+    pub side: bool,
     pub name: Option<String>,
 }
 
@@ -246,6 +249,9 @@ impl Client {
         }
         if let Some(value) = &config.session {
             command.arg("--session").arg(value);
+        }
+        if config.side {
+            command.arg("--side");
         }
         if let Some(value) = &config.name {
             command.arg("--name").arg(value);

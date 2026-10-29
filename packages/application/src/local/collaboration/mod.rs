@@ -260,6 +260,10 @@ impl CoreRuntime {
     /// Collaboration is best-effort: when the service cannot start, the
     /// conversation runs without it.
     pub(super) fn collaboration_servers(&mut self) -> Vec<velune_agent_runtime::mcp::Server> {
+        // A side chat is no conversation another can address or be started by.
+        if self.session.side.is_some() {
+            return Vec::new();
+        }
         if self.collaboration.server.is_none() {
             match mcp::Server::start(self.collaboration.inbox.clone()) {
                 Ok(server) => self.collaboration.server = Some(server),

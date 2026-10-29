@@ -1180,6 +1180,40 @@ impl VeluneApplication {
         )
     }
 
+    /// Open a side chat on a sent conversation; see `Command::OpenSideChat`.
+    pub fn open_side_chat(
+        &self,
+        runtime_id: String,
+        conversation_id: String,
+        selection: Option<ModelSelection>,
+        effort: Option<String>,
+        permission_mode: Option<String>,
+    ) -> Result<SnapshotResult, BindingError> {
+        request!(
+            self,
+            "open_side_chat",
+            OpenSideChat {
+                runtime_id,
+                conversation_id,
+                selection,
+                effort,
+                permission_mode
+            }
+        )
+    }
+
+    pub fn send_side_chat(
+        &self,
+        side_chat_id: String,
+        text: String,
+    ) -> Result<SnapshotResult, BindingError> {
+        request!(self, "send_side_chat", SendSideChat { side_chat_id, text })
+    }
+
+    pub fn close_side_chat(&self, side_chat_id: String) -> Result<(), BindingError> {
+        request!(self, "close_side_chat", CloseSideChat { side_chat_id }; unit)
+    }
+
     pub fn stop_sub_agents(
         &self,
         runtime_id: String,

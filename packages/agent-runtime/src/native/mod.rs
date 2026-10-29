@@ -16,6 +16,7 @@ mod codex;
 pub use codex::{ThreadChange, manage_thread, manage_thread_at};
 mod codex_history;
 pub mod codex_projects;
+mod codex_side;
 pub use codex_history::{
     list_codex_history, list_codex_history_at, read_codex_history, read_codex_history_at,
     read_codex_summary_at,
@@ -169,6 +170,8 @@ pub struct NativeSession {
     /// The runtime process was ended on purpose; there is nothing to read.
     process_ended: bool,
     gateway_turn: bool,
+    /// A side chat: a temporary copy of a conversation that is never saved.
+    side: bool,
     /// What only a Codex app-server session tracks.
     codex: codex::State,
     /// What only a Claude Code session tracks.
@@ -261,6 +264,7 @@ impl NativeSession {
             restart_required: false,
             process_ended: false,
             gateway_turn: tunnel.is_some(),
+            side: false,
             codex: Default::default(),
             claude: Default::default(),
             tunnel,
@@ -375,6 +379,43 @@ impl NativeSession {
             .clone()
             .ok_or_else(|| Error::new("运行时未恢复会话"))
     }
+    /// Opens a side chat on native conversation `parent_id`, in the
+    /// runtime's own way: Claude Code answers side questions on the
+    /// conversation's context, Codex forks it into an ephemeral thread told
+    /// that what came before is reference only. Nothing of it is saved; it
+    /// lasts as long as this session. The snapshot shows only what is asked
+    /// and answered in it.
+    pub fn open_side(
+        &mut self,
+        parent_id: &str,
+        cwd: Option<&Path>,
+        runtime_id: &str,
+    ) -> Result<ConversationSnapshot> {
+        self.ensure_idle()?;
+        self.validate_cwd(cwd)?;
+        if parent_id.is_empty() {
+            return Err(Error::new("会话身份为空"));
+        }
+        let gateway = if self.gateway_turn {
+            None
+        } else {
+            self.config.gateway.take()
+        };
+        let outcome = match self.config.kind {
+            NativeKind::Codex => self.codex_open_side(parent_id, cwd, runtime_id),
+            NativeKind::ClaudeCode => self.claude_open_side(parent_id, cwd, runtime_id),
+            NativeKind::DeepSeek => Err(Error::new("DeepSeek 运行时不提供侧聊")),
+        };
+        if let Some(gateway) = gateway {
+            self.config.gateway = Some(gateway);
+        }
+        outcome?;
+        self.side = true;
+        self.restart_required = false;
+        self.snapshot
+            .clone()
+            .ok_or_else(|| Error::new("运行时未打开侧聊"))
+    }
     pub fn send(&mut self, input: &crate::TurnInput) -> Result<()> {
         self.start_turn(input, false)
     }
@@ -385,7 +426,7 @@ impl NativeSession {
     /// Maintain the current native context without adding a user turn.
     pub fn compact(&mut self) -> Result<()> {
         self.ensure_idle()?;
-        if !self.can_compact() {
+        if !self.can_compact() || self.side {
             return Err(Error::new("此运行时不支持主动压缩上下文"));
         }
         if !self.work().is_empty() {
@@ -412,7 +453,7 @@ impl NativeSession {
         effort: Option<String>,
         permission_mode: Option<String>,
     ) -> Result<()> {
-        if self.config.kind == NativeKind::DeepSeek {
+        if self.config.kind == NativeKind::DeepSeek || self.side {
             return Err(Error::new("此运行时不支持无新消息恢复"));
         }
         self.start_turn(
@@ -463,6 +504,7 @@ impl NativeSession {
     /// Whether the runtime takes a message into the running turn.
     pub fn can_steer(&self) -> bool {
         self.config.kind != NativeKind::DeepSeek
+            && !(self.side && self.config.kind == NativeKind::ClaudeCode)
             && self
                 .snapshot
                 .as_ref()
@@ -490,6 +532,9 @@ impl NativeSession {
     /// original as it is. The snapshot no longer shows the replaced messages.
     pub fn branch(&mut self, message_id: &str, placement: EditPlacement) -> Result<()> {
         self.ensure_idle()?;
+        if self.side {
+            return Err(Error::new("侧聊不提供消息编辑"));
+        }
         let snapshot = self
             .snapshot
             .as_ref()
@@ -586,6 +631,10 @@ impl NativeSession {
     fn prepare_turn(&mut self, effort: Option<&str>, permission_mode: Option<&str>) -> Result<()> {
         if !self.restart_needed() {
             return Ok(());
+        }
+        // An ephemeral fork lives only in its app-server process.
+        if self.side && self.config.kind == NativeKind::Codex {
+            return Err(Error::new("侧聊不能更换模型"));
         }
         let saved = self
             .snapshot
@@ -797,7 +846,12 @@ impl NativeSession {
         self.codex_restore_provider()
     }
     pub fn shutdown(&mut self) -> Result<()> {
-        self.rpc.shutdown();
+        // A side question's child is let end on its own, as at a stop.
+        if self.side && self.config.kind == NativeKind::ClaudeCode {
+            self.rpc.retire();
+        } else {
+            self.rpc.shutdown();
+        }
         self.process_ended = true;
         self.codex.threads.clear();
         self.interactions.clear();

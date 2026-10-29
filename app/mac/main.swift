@@ -100,6 +100,7 @@ struct ConversationCommands: Commands {
                     .keyboardShortcut(shortcuts[.continueTurn])
                     .disabled(target?.window.focused.submission.canResume != true)
                 item(.compactContext)
+                item(.sideChat)
                 item(.attach)
                 Divider()
                 item(.chooseRuntime)
@@ -247,6 +248,7 @@ struct ConversationWindow: View {
                 if CommandLine.arguments.contains("--check-send-queue") { window.focused.checkSendQueue() }
                 if CommandLine.arguments.contains("--check-edit-message") { window.focused.checkEditMessage() }
                 if CommandLine.arguments.contains("--check-list-actions") { window.checkListActions() }
+                if CommandLine.arguments.contains("--check-side-chat") { window.checkSideChat() }
                 if CommandLine.arguments.contains("--check-dock-areas") { window.tools.move(.outline, to: .docked(.left)); window.tools.move(.list, to: .docked(.right)); window.tools.move(.composer, to: .docked(.bottom)) }
             }
             .onChange(of: window.savedLayout) { _, layout in

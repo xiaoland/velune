@@ -230,6 +230,7 @@ mod resource_library;
 mod runtime_execution;
 mod runtime_management;
 mod session;
+mod side_chat;
 mod sub_agents;
 mod telemetry;
 mod working_changes;
@@ -380,7 +381,10 @@ impl CoreRuntime {
             self.session.transcript_conversation_id = None;
             return None;
         };
-        let mut snapshot = self.decorate_snapshot(native);
+        let mut snapshot = match &self.session.side {
+            Some(side) => side_chat::shown(side, native),
+            None => self.decorate_snapshot(native),
+        };
         continuation::stamp_turn_runtime(&mut snapshot.messages, &snapshot.context_runtime_id);
         if self.session.transcript_conversation_id.as_deref() != Some(&snapshot.conversation.id) {
             self.session.transcript_projection = TranscriptProjection::default();
@@ -415,9 +419,11 @@ impl CoreRuntime {
         snapshot.transcript_outline = self.session.transcript_projection.outline();
         snapshot.transcript_message_identities =
             self.session.transcript_projection.message_identities();
-        snapshot.follow_up = self.follow_up(&snapshot);
-        snapshot.sub_agents = self.sub_agents(&snapshot);
-        snapshot.collaborators = self.collaborators(&snapshot);
+        if self.session.side.is_none() {
+            snapshot.follow_up = self.follow_up(&snapshot);
+            snapshot.sub_agents = self.sub_agents(&snapshot);
+            snapshot.collaborators = self.collaborators(&snapshot);
+        }
         Some(snapshot)
     }
     fn snapshot_result(&mut self) -> Result<crate::SnapshotResult, RuntimeError> {
@@ -535,6 +541,11 @@ impl CoreRuntime {
         if let Some((gateway_id, session)) = self.backend_session_identity() {
             self.execution_backends
                 .finish_user_turn(&gateway_id, &session);
+        }
+        // A side chat's copy lives only in its runtime process; it ends when
+        // the side chat closes.
+        if self.session.side.is_some() {
+            return Ok(());
         }
         // Pi confirms durable message identities only during the settled RPC resync.
         let synchronized = if matches!(&self.session.active_state, ActiveState::Pi(session) if !session.turn_running())

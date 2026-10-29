@@ -115,6 +115,20 @@ struct TabContentView: View {
     var inSheet = false
 
     var body: some View {
+        HStack(spacing: 0) {
+            conversation
+            if let sideChat = tab.sideChat, !inSheet {
+                Divider()
+                SideChatPanel(chat: sideChat, close: tab.closeSideChat)
+                    .frame(minWidth: 240, maxWidth: 340)
+            }
+        }
+        // A side chat belongs to the conversation it was opened on.
+        .onChange(of: store.loadedConversationID) { _, _ in tab.showingChanged() }
+        .onChange(of: store.sideChatTarget != nil) { _, _ in tab.showingChanged() }
+    }
+
+    private var conversation: some View {
         VStack(spacing: 0) {
             Group {
                 if store.isOpeningConversation { ProgressView(store.conversationManagementStatus ?? "正在加载会话…") }

@@ -33,6 +33,53 @@ import VeluneBindings
     }
     /// Kept while the tab is behind another, with the scroll position.
     let reading = TranscriptReading()
+    /// The side chat beside the transcript, while one is open.
+    @Published private(set) var sideChat: SideChatModel?
+    var canOpenSideChat: Bool { sideChat != nil || store.sideChatTarget != nil }
+
+    /// Open a side chat on the shown conversation, or give the open one the keyboard.
+    func openSideChat() {
+        if let sideChat { return sideChat.focus() }
+        guard let target = store.sideChatTarget, let transport = store.sideChatTransport else { return }
+        sideChat = SideChatModel(transport: transport, target: target)
+    }
+
+    func closeSideChat() {
+        sideChat?.close()
+        sideChat = nil
+    }
+
+    /// The conversation a side chat waits for, from the list's menu, and
+    /// what the tab showed when it was asked for.
+    private var sideChatWhenShown: (id: String, from: String?)?
+
+    /// Open a side chat on `conversationID` once this tab shows it and its
+    /// next turn's choices are known.
+    func openSideChat(on conversationID: String) {
+        sideChatWhenShown = (conversationID, store.loadedConversationID)
+        showingChanged()
+    }
+
+    /// What the tab shows changed: a side chat on another conversation ends,
+    /// and one waiting for this conversation opens once it can.
+    func showingChanged() {
+        let id = store.loadedConversationID
+        if let sideChat, sideChat.conversationID != id { closeSideChat() }
+        guard let wanted = sideChatWhenShown else { return }
+        if wanted.id == id, sideChat != nil || store.sideChatTarget != nil {
+            sideChatWhenShown = nil
+            openSideChat()
+        } else if id != wanted.id, id != wanted.from {
+            // The tab went on to show something else.
+            sideChatWhenShown = nil
+        }
+    }
+
+    /// The tab goes away: its side chat ends and its store stops following.
+    func close() {
+        closeSideChat()
+        store.close()
+    }
     /// Reading starts when the tab is first shown, so restored background tabs cost nothing.
     private var pendingStart: (() -> Void)?
 
@@ -630,7 +677,7 @@ struct WindowSeed: Codable, Hashable {
 
     /// The panes before reading starts: the first pane's untouched tab gives way.
     private func replacePanes(with replacement: [Pane], layout: PaneLayout?) {
-        for tab in allTabs { tab.store.close() }
+        for tab in allTabs { tab.close() }
         subscriptions = [:]
         paneSubscriptions = [:]
         panes = Dictionary(uniqueKeysWithValues: replacement.map { ($0.id, $0) })
@@ -646,6 +693,13 @@ struct WindowSeed: Codable, Hashable {
     func open(_ conversationID: String) {
         if select(showing: conversationID) { return }
         focused.store.openLinkedConversation(id: conversationID)
+    }
+
+    /// Open a side chat on a conversation: in the tab that shows it, else
+    /// once the focused tab has opened it.
+    func openSideChat(on conversationID: String) {
+        open(conversationID)
+        focused.openSideChat(on: conversationID)
     }
 
     /// Open a conversation, or a new one, in a new tab after the focused pane's shown tab.
@@ -804,6 +858,38 @@ struct WindowSeed: Codable, Hashable {
         }
     }
 
+    /// Development check of side chats without driving the interface: on the
+    /// first listed conversation, open one from the list, ask in it, then
+    /// close it, leaving time to capture the panel.
+    func checkSideChat(step: Int = 0, attempts: Int = 0) {
+        guard attempts < 240 else { return Self.checkLog("CHECK side-chat: step \(step) timed out") }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [self] in
+            let next = { (step: Int) in self.checkSideChat(step: step) }
+            let retry = { self.checkSideChat(step: step, attempts: attempts + 1) }
+            guard let id = application.conversations.first?.id else { return retry() }
+            switch step {
+            case 0:
+                openSideChat(on: id)
+                Self.checkLog("CHECK side-chat: requested from the list"); next(1)
+            case 1:
+                guard let chat = focused.sideChat, chat.snapshot != nil, !chat.isLoading else { return retry() }
+                chat.draft = "SIDE_QUESTION_FROM_APP"
+                chat.send()
+                Self.checkLog("CHECK side-chat: opened and asked"); next(2)
+            case 2:
+                guard let chat = focused.sideChat, !chat.isRunning, !chat.isLoading, chat.snapshot?.messages.contains(where: { $0.role == .assistant }) == true else { return retry() }
+                chat.draft = "A FOLLOW-UP STILL BEING TYPED"
+                Self.checkLog("CHECK side-chat: answered")
+                // Long enough to capture the panel.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 8) { next(3) }
+            case 3:
+                focused.closeSideChat()
+                Self.checkLog("CHECK side-chat: closed; done")
+            default: break
+            }
+        }
+    }
+
     /// Unbuffered, so a check launched with `open --stderr` shows its progress.
     private static func checkLog(_ line: String) { FileHandle.standardError.write(Data((line + "\n").utf8)) }
 
@@ -890,7 +976,7 @@ struct WindowSeed: Codable, Hashable {
     /// Close a tab: its pane's last tab closes the pane, the window's last closes the window.
     func closeTab(_ id: UUID) {
         guard let tab = detach(id, emptying: .close) else { return }
-        tab.store.close()
+        tab.close()
     }
 
     func closeOtherTabs(_ id: UUID) {
@@ -901,7 +987,7 @@ struct WindowSeed: Codable, Hashable {
     /// Close a pane with all its tabs.
     func closePane(_ id: UUID) {
         guard isSplit, let pane = panes[id] else { return }
-        for tab in pane.tabs { tab.store.close() }
+        for tab in pane.tabs { tab.close() }
         removePane(id)
     }
 

@@ -13,12 +13,15 @@
 | Pi 1.0.2 | 没有侧聊；SDK 有 `SessionManager.inMemory(cwd, options, entries)`。 | 以原会话条目建内存会话，不写盘。 |
 | DSH、通用 ACP | 没有侧聊或 fork。 | 不提供。 |
 
-## 方案（待实施时细化）
+## 实现
 
-- agent-runtime：每种运行时提供打开侧聊的入口，返回一个只存在于内存、不登记到列表的会话执行；Claude Code 的侧聊以侧问实现发送，其余复用普通轮次的发送、取消、审批与快照。
-- application：侧聊以独立的临时会话 session 保存，不进入列表、活动、未读、草稿、下一轮选择、组织记录与 Velune 链接；网关、额度与分析照常记录其模型请求。关闭或应用退出时结束。
-- Mac：会话视图里的侧聊面板（自己的回答列表与输入框），入口为输入区 `/side`（别名 btw）、会话菜单与命令面板；每个标签页最多一个侧聊。
+- agent-runtime：`NativeSession::open_side`（Claude Code 侧问、Codex 临时 fork 加边界）、Pi `Config.side`（`pi_rpc.mjs --side` 内存会话），见 [agent-runtime README](../../packages/agent-runtime/README.md#侧聊)。Claude Code 侧问不能 `interrupt`，停止与关闭改为关闭子进程输入、让它自行退出（强制结束会留下 `sessions/<pid>.json`）。
+- application：侧聊是带 `SideChat` 的独立 session，命令 `OpenSideChat`／`SendSideChat`／`CloseSideChat`，读取、取消与审批沿用会话命令；排除于列表、活动、可恢复、结束的 turn、来源跟随、协作 MCP 与网关轮次后的关闭，见 [application README](../../packages/application/README.md)。
+- Mac：`SideChat.swift` 面板与入口，见 [Mac README](../../app/mac/README.md)。
 
-## 验证
+## 验证（2026-10-29）
 
-待实施后记录。
+- 临时 Python 脚本（不入库）：临时 HOME、合成 Responses／Messages 回环上游，实际 Codex 0.159.3、Claude Code 2.1.292、隔离 Pi 1.0.2。三者都通过：侧聊带原会话上下文回答、第二问带上第一问的问答；原会话运行中也能使用；停止回答后仍可继续提问；回答中关闭即结束；侧聊不出现在列表、活动与结束的 turn 中，原会话消息不变；关闭后原生会话文件（含 Claude Code 的进程登记）不变、没有新增；原会话随后的请求不含侧聊内容。Codex 请求中有注入的边界；0.159.3 的 fork 不把 `developerInstructions` 放进请求（与其 TUI 相同的参数）。
+- 隔离 Mac 副本（`--check-side-chat`，合成 Codex 夹具）：从列表打开侧聊、提问、回答显示在会话右侧面板、关闭。首次核对发现历史会话在应用重开后没有下一轮选择、侧聊落到运行时自己的提供商（向 api.openai.com 发出了无凭据请求，收到 401，内容只有合成文字）；改为由客户端传入下一轮的模型、推理强度与权限模式后复核通过，夹具另设 `OPENAI_BASE_URL` 指向不可达回环。
+- `cargo fmt`、workspace clippy（all features、all targets）、agent-runtime／application 单元测试、Mac Swift 编译通过；相对链接检查无错误。
+- 未验证：用指针实际点按菜单与 `/side` 补全（与“会话”菜单同一命令）；Claude Code 2.1.286 是否已有侧问。

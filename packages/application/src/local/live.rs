@@ -93,7 +93,11 @@ impl CoreRuntime {
         let now = Instant::now();
         // Continued conversations span several native sources; they are
         // reloaded manually.
-        if self.session.logical_projection.is_some() || self.session.unsubmitted_draft.is_some() {
+        // reloaded manually. A side chat's copy follows no native source.
+        if self.session.logical_projection.is_some()
+            || self.session.unsubmitted_draft.is_some()
+            || self.session.side.is_some()
+        {
             return Ok(());
         }
         let Some(view) = self.session.projected() else {

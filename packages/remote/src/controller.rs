@@ -428,6 +428,11 @@ fn operation_targets(command: &Command) -> (Option<String>, Option<String>) {
             runtime_id,
             conversation_id,
         }
+        | Command::OpenSideChat {
+            runtime_id,
+            conversation_id,
+            ..
+        }
         | Command::ReplyRuntimeInteraction {
             runtime_id,
             conversation_id,

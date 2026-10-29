@@ -31,7 +31,10 @@ async function main() {
     modelRuntime.registerProvider(providerId, provider);
   }
   const sessionPath = value("--session"), sessionDir = value("--session-dir");
-  const sessionManager = sessionPath ? sdk.SessionManager.open(sessionPath, sessionDir) : sdk.SessionManager.create(process.cwd(), sessionDir);
+  // A side chat runs on an in-memory copy of the session that is never saved.
+  const sessionManager = sessionPath && args.includes("--side")
+    ? sdk.SessionManager.inMemory(process.cwd(), undefined, sdk.parseSessionEntries(readFileSync(sessionPath, "utf8")))
+    : sessionPath ? sdk.SessionManager.open(sessionPath, sessionDir) : sdk.SessionManager.create(process.cwd(), sessionDir);
   const trustStore = new sdk.ProjectTrustStore(agentDir), trustByCwd = new Map();
   const factory = async ({cwd,agentDir,sessionManager,sessionStartEvent,projectTrustContext}) => {
     const hasProjectResources = sdk.hasTrustRequiringProjectResources(cwd);

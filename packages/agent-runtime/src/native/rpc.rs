@@ -16,7 +16,8 @@ use std::{
 const MAX_STDERR_BYTES: usize = 1024 * 1024;
 const TIMEOUT: Duration = Duration::from_secs(15);
 pub(crate) struct RpcClient {
-    child: ProcessTree,
+    /// None once handed to a thread that lets it end; see `retire`.
+    child: Option<ProcessTree>,
     input: Option<ChildStdin>,
     records: Receiver<Result<Value>>,
     queued: VecDeque<Value>,
@@ -232,7 +233,7 @@ impl RpcClient {
             })
         });
         Ok(Self {
-            child,
+            child: Some(child),
             input: Some(input),
             records,
             queued: VecDeque::new(),
@@ -386,15 +387,39 @@ impl RpcClient {
     pub(crate) fn finish(&mut self) {
         self.input.take();
         for _ in 0..50 {
-            if self.child.try_wait().is_ok_and(|status| status.is_some()) {
+            if self
+                .child
+                .as_mut()
+                .is_none_or(|child| child.try_wait().is_ok_and(|status| status.is_some()))
+            {
                 return;
             }
             thread::sleep(Duration::from_millis(20));
         }
         self.shutdown();
     }
+    /// Let the process end on its own without waiting here: its input
+    /// closes, and a thread stops it if it has not ended within seconds.
+    /// A Claude Code process ended this way removes its own registration.
+    pub(crate) fn retire(&mut self) {
+        self.input.take();
+        let Some(mut child) = self.child.take() else {
+            return;
+        };
+        thread::spawn(move || {
+            for _ in 0..250 {
+                if child.try_wait().is_ok_and(|status| status.is_some()) {
+                    return;
+                }
+                thread::sleep(Duration::from_millis(20));
+            }
+            child.stop();
+        });
+    }
     pub(crate) fn shutdown(&mut self) {
-        self.child.stop();
+        if let Some(child) = &mut self.child {
+            child.stop();
+        }
     }
 }
 impl Drop for RpcClient {

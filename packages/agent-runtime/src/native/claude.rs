@@ -53,6 +53,15 @@ pub(super) struct State {
     pub(super) start: ClaudeStart,
     /// Messages steered into turns, for their local identities.
     pub(super) steer_sequence: u64,
+    /// A side chat's questions and answers so far, which each question
+    /// carries, and the question waiting for its answer.
+    pub(super) side_history: Vec<Value>,
+    pub(super) side_question: Option<SideQuestion>,
+}
+
+pub(super) struct SideQuestion {
+    request_id: String,
+    question: String,
 }
 
 /// How the next Claude Code turn child takes up the conversation's session.
@@ -69,6 +78,8 @@ pub(super) enum ClaudeStart {
     /// Begin the conversation's session as a copy of session `from` up to
     /// record `at`; `from` is left as it is.
     Fork { from: String, at: String },
+    /// Read the session for a side question and save nothing.
+    Side,
 }
 
 impl NativeSession {
@@ -135,6 +146,10 @@ impl NativeSession {
                     .arg("--fork-session")
                     .arg("--session-id")
                     .arg(id),
+                ClaudeStart::Side => command
+                    .arg("--resume")
+                    .arg(id)
+                    .arg("--no-session-persistence"),
             };
             if let Some(cwd) = cwd {
                 command.current_dir(cwd);
@@ -327,7 +342,103 @@ impl NativeSession {
         self.claude.start = ClaudeStart::Resume;
         Ok(())
     }
+    /// A side chat answers each question in a child that reads the session
+    /// and saves nothing; Velune keeps what was asked and answered.
+    pub(super) fn claude_open_side(
+        &mut self,
+        id: &str,
+        cwd: Option<&Path>,
+        runtime_id: &str,
+    ) -> Result<()> {
+        self.replace_snapshot(id, cwd, runtime_id, Vec::new());
+        self.claude.start = ClaudeStart::Side;
+        self.claude.side_history.clear();
+        self.claude.side_question = None;
+        Ok(())
+    }
+    /// Claude Code's own side question (`/btw`): answered on the session's
+    /// context and the side chat's earlier exchanges, without tools.
+    fn claude_side_send(&mut self, input: &crate::TurnInput) -> Result<()> {
+        if !input.images.is_empty() {
+            return Err(Error::new("Claude Code 侧聊不接受图片"));
+        }
+        self.claude.steer_sequence += 1;
+        let request_id = format!("velune-side-{}", self.claude.steer_sequence);
+        self.rpc.write(
+            &json!({"type":"control_request","request_id":request_id,"request":{
+            "subtype":"side_question","question":input.text,"history":self.claude.side_history}}),
+        )?;
+        self.claude.side_question = Some(SideQuestion {
+            request_id,
+            question: input.text.clone(),
+        });
+        self.turn_id = Some(format!(
+            "{}:{}",
+            self.epoch,
+            self.snapshot.as_ref().map_or(0, |s| s.revision)
+        ));
+        self.message(Message {
+            turn_settings: None,
+            turn_usage: None,
+            branch_point: None,
+            completed: true,
+            id: format!("{}:user", self.turn_id.as_deref().unwrap_or_default()),
+            role: MessageRole::User,
+            timestamp_unix_ms: None,
+            blocks: vec![MessageBlock::Text {
+                text: input.text.clone(),
+            }],
+        });
+        self.running();
+        Ok(())
+    }
+    /// The answer to the side question, which ends its turn. The child's
+    /// other records belong to no turn.
+    fn claude_side_record(&mut self, record: &Value) -> Result<()> {
+        let response = &record["response"];
+        let Some(pending) = self.claude.side_question.take_if(|pending| {
+            record["type"] == "control_response" && response["request_id"] == pending.request_id
+        }) else {
+            return Ok(());
+        };
+        let answer = response["response"]["response"]
+            .as_str()
+            .filter(|_| response["subtype"] == "success");
+        match answer {
+            Some(answer) => {
+                self.message(Message {
+                    turn_settings: None,
+                    turn_usage: None,
+                    branch_point: None,
+                    completed: true,
+                    id: format!("{}:answer", self.turn_id.as_deref().unwrap_or_default()),
+                    role: MessageRole::Assistant,
+                    timestamp_unix_ms: None,
+                    blocks: vec![MessageBlock::Text {
+                        text: answer.into(),
+                    }],
+                });
+                self.claude
+                    .side_history
+                    .push(json!({"question": pending.question, "response": answer}));
+                self.finish_turn(RunState::Idle)
+            }
+            None => {
+                let detail = response["error"]
+                    .as_str()
+                    .filter(|detail| !detail.is_empty())
+                    .unwrap_or("未返回回答");
+                self.claude_error(vec![MessageBlock::Notice {
+                    text: format!("Claude Code 未回答侧聊问题：{detail}"),
+                }]);
+                self.finish_turn(RunState::Failed)
+            }
+        }
+    }
     pub(super) fn claude_send(&mut self, input: &crate::TurnInput) -> Result<()> {
+        if self.side {
+            return self.claude_side_send(input);
+        }
         self.compaction_message_id = None;
         let text = input.text.as_str();
         self.claude.result = None;
@@ -473,6 +584,13 @@ impl NativeSession {
     }
 
     pub(super) fn claude_cancel(&mut self) -> Result<()> {
+        // A side question cannot be interrupted; its child is ended instead.
+        if self.side {
+            self.rpc.retire();
+            self.process_ended = true;
+            self.claude.side_question = None;
+            return self.finish_turn(RunState::Idle);
+        }
         self.rpc.claude_control(json!({"subtype":"interrupt"}))?;
         if let Some(snapshot) = &mut self.snapshot {
             snapshot.run_state = RunState::Stopping;
@@ -481,6 +599,9 @@ impl NativeSession {
         Ok(())
     }
     pub(super) fn claude_handle_record(&mut self, record: Value) -> Result<()> {
+        if self.side {
+            return self.claude_side_record(&record);
+        }
         match record["type"].as_str() {
             Some("control_cancel_request") => {
                 let expired = self

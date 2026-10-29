@@ -745,6 +745,17 @@ final class ConversationStore: ObservableObject {
     }
     /// An unsent conversation can still choose its working directory.
     var isUnsentConversation: Bool { isDraft }
+    /// The conversation a side chat opens on, with the next turn's choices it
+    /// asks with: one sent, not a sub-agent's, of a runtime that has side
+    /// chats and that the next turn stays on (see 侧聊 in the PRD).
+    var sideChatTarget: SideChatTarget? {
+        guard !isPreview, !isDraft, nextTurnSettled, let snapshot, snapshot.conversation.parentConversationID == nil,
+              snapshot.messages.contains(where: { $0.role == .user }),
+              nextTurnRuntimeID == snapshot.contextRuntimeID, device.hasSideChats(snapshot.contextRuntimeID) else { return nil }
+        return SideChatTarget(runtimeID: snapshot.contextRuntimeID, conversationID: snapshot.conversation.id,
+                              selection: nextTurnModel, effort: nextTurn?.effort, permissionMode: effectivePermissionMode?.id)
+    }
+    var sideChatTransport: Transport? { transport }
     func setUnsentWorkingDirectory(_ path: String?) {
         guard isDraft, snapshot != nil else { return }
         snapshot?.conversation.cwd = path

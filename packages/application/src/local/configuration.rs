@@ -244,6 +244,7 @@ impl CoreRuntime {
         // have started one. They disappear when that native session closes.
         for session in std::iter::once(&self.session).chain(&self.parked) {
             if session.active_state.live().is_some()
+                && session.side.is_none()
                 && let Some(view) = session.projected()
                 && !conversations
                     .iter()

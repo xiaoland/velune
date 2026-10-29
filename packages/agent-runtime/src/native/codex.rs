@@ -12,6 +12,9 @@ pub(super) struct State {
     pub(super) threads: BTreeMap<String, CodexThread>,
     /// Every thread besides the conversation's own that this app-server has run.
     pub(super) ran_threads: std::collections::BTreeSet<String>,
+    /// The developer instructions Codex's configuration gives, which a side
+    /// chat's own follow.
+    pub(super) developer_instructions: Option<String>,
 }
 
 impl NativeSession {
@@ -34,7 +37,7 @@ impl NativeSession {
         self.rpc.notify("initialized", &json!({}))?;
         Ok(())
     }
-    fn codex_capture_provider(&mut self, cwd: Option<&Path>) -> Result<()> {
+    pub(super) fn codex_capture_provider(&mut self, cwd: Option<&Path>) -> Result<()> {
         let source = self
             .rpc
             .request("config/read", &json!({"includeLayers":false,"cwd":cwd}))?;
@@ -45,6 +48,9 @@ impl NativeSession {
                 self.shadowed_mcp_servers.insert(server.name.clone());
             }
         }
+        self.codex.developer_instructions = source["config"]["developer_instructions"]
+            .as_str()
+            .map(str::to_owned);
         self.native_provider = Some(
             source["config"]["model_provider"]
                 .as_str()
@@ -99,7 +105,7 @@ impl NativeSession {
         Ok(())
     }
 
-    fn codex_options(&self, cwd: Option<&Path>) -> Value {
+    pub(super) fn codex_options(&self, cwd: Option<&Path>) -> Value {
         let mut options = json!({"approvalPolicy":"on-request","sandbox":"workspace-write"});
         if let Some(gateway) = &self.config.gateway {
             options["model"] = json!(gateway.model_alias);

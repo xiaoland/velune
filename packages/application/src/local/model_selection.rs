@@ -321,10 +321,16 @@ impl CoreRuntime {
                     .id
                     .strip_prefix(&format!("{}:", runtime.id))
                     .ok_or_else(|| RuntimeError::invalid("conversation id"))?;
-                session
-                    .open(native_id, cwd, &runtime.id, snapshot.messages.clone())
-                    .map_err(|error| RuntimeError::context("原生会话恢复", error))?;
-                session.set_conversation(snapshot.conversation.clone());
+                if self.session.side.is_some() {
+                    session
+                        .open_side(native_id, cwd, &runtime.id)
+                        .map_err(|error| RuntimeError::context("侧聊打开", error))?;
+                } else {
+                    session
+                        .open(native_id, cwd, &runtime.id, snapshot.messages.clone())
+                        .map_err(|error| RuntimeError::context("原生会话恢复", error))?;
+                    session.set_conversation(snapshot.conversation.clone());
+                }
             }
             self.session.active_state = ActiveState::Native(Box::new(session));
         }
