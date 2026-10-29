@@ -31,6 +31,8 @@ Velune 是外部 Agent 运行时（Harness）的 control surface：UI、AI 网�
 | `telemetry` | 客户端遥测 owner：本地日志与 OTLP SDK 装配 |
 | `bindings` | UniFFI 导出与装配：把 application、remote 与 telemetry 组合成平台可用的对象 |
 
+`application-api` 中的 `ExecutionBackend`、`RequestProfile`、`RoutingStrategy`、`QuotaLimit` 与 gateway／ai-provider 的同名配置有意各保留一份：契约与它们唯一共同的轻量依赖是只承载协议契约的 `velune-ai`，让契约依赖 gateway 会把 HTTP 栈带进控制端构建。application 中的转换是穷尽 `match`，任一侧增减变体都会编译失败。
+
 共享用例不亲自解析 SDK、编码协议或实现文件存储；UI 不按底层步骤自行启动网关、注入配置、启动 Harness 或补偿跨包事务。配置持久化是 application 的内部模块：领域拥有自己的配置类型，application 负责聚合、跨领域引用校验与原子提交。只有出现独立消费者或编译边界无法用内部模块解决时，才复核是否拆出 package。异步执行资源由装配后的运行实例管理，领域包不隐式创建自己的 executor。
 
 两种装配：

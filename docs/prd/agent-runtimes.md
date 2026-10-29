@@ -8,7 +8,7 @@
 
 界面使用“Agent 运行时”表示 Harness 类型及其配置实例。Pi Agent 是一种运行时类型；同类型下不同的配置／状态目录等设置形成独立实例，而非一份全局运行时表单。实例身份、配置和会话投影必须区分，具体外部环境变量由适配器转换。此决定不自动要求所有实例并发运行。来源见 [S15](../sources.md#s15)。
 
-2026-10-06 用户授权增加 Codex（app-server）与 deepseek-harness 接入，并直接消费 huihua 发行包读取会话，不复制其源码；交付须保留对应开源声明与许可证。同一运行时家族的 breaking-change 版本分别作为独立运行时类型，绑定各自适配器与版本正则，允许多种 Pi 版本同时配置。实际版本匹配用于确认所选类型，不是用一个全局版本闸门替代多版本支持。huihua 是只读会话证据库，不代替原生运行控制接口。实施与证据见 多运行时任务（git 历史：tasks/multi-runtime）。
+2026-10-06 用户授权增加 Codex（app-server）与 deepseek-harness 接入，并直接消费 huihua 发行包读取会话，不复制其源码；交付须保留对应开源声明与许可证。同一运行时家族的 breaking-change 版本分别作为独立运行时类型，绑定各自适配器与版本正则，允许多种 Pi 版本同时配置。实际版本匹配用于确认所选类型，不是用一个全局版本闸门替代多版本支持。huihua 是只读会话证据库，不代替原生运行控制接口。
 
 Velune 不随应用分发任何 Agent 运行时，运行时由用户安装、配置或从本机发现；未来的安装运行时功能尚未实施。辅助 adapter 与只读解析依赖可以随应用交付，但不能以 SDK 名义隐含捆绑完整运行时。支持范围必须根据公开版本和实际协议证据决定，公开版本读取失败与已识别但不受支持的版本应明确区分。
 
@@ -16,21 +16,17 @@ Velune 不随应用分发任何 Agent 运行时，运行时由用户安装、配
 
 ## ACP
 
-2026-10-10 用户进一步授权通用 ACP Adapter，继续限定 Rust packages。用户随后澄清，目标是尽可能覆盖更多 Agent Harness，同时避免为每个 Harness 分别开发适配；ACP 是服务该目标的技术方案，不是不可推敲的产品约束。它作为已有专用 Harness adapter 之外的接入方式，使用 Agent 公布的协议能力；配置、模型／会话选项与能力展示已于 2026-10-12 接入 Mac（见 Mac 接入任务（git 历史：tasks/mac-runtime-integration））。指定参考为 [lexoliu/acpsub](https://github.com/lexoliu/acpsub)，不引入其独立 daemon。实现与验收归 ACP 任务（git 历史：tasks/acp-adapter）。
+2026-10-10 用户进一步授权通用 ACP Adapter。用户随后澄清，目标是尽可能覆盖更多 Agent Harness，同时避免为每个 Harness 分别开发适配；ACP 是服务该目标的技术方案，不是不可推敲的产品约束。它作为已有专用 Harness adapter 之外的接入方式，使用 Agent 公布的协议能力；平台提供启动配置、模型／会话选项与能力展示。指定参考为 [lexoliu/acpsub](https://github.com/lexoliu/acpsub)，不引入其独立 daemon。
 
 ## 原生提供商、网关轮次与执行位置
 
-2026-10-10 用户授权推进 Claude Code、SSH 远程运行时及 Velune 管理的运行时 HOME，并明确本轮仅实现 Rust packages。运行时不必同时注册多个提供商：保留它已有的提供商，允许会话下一轮选择其原生模型；选择 Velune 管理的模型时，仅该 turn 临时使用 Velune Gateway，结束后恢复原生提供商。成功、失败及取消都必须结束临时覆盖，不修改或删除原 Harness 的持久提供商配置。运行时原生模型的身份属于其具体实例，不能按裸 model ID 当成 Velune 提供商或另一 Harness 的模型。
+2026-10-10 用户授权推进 Claude Code、SSH 远程运行时及 Velune 管理的运行时 HOME。运行时不必同时注册多个提供商：保留它已有的提供商，允许会话下一轮选择其原生模型；选择 Velune 管理的模型时，仅该 turn 临时使用 Velune Gateway，结束后恢复原生提供商。成功、失败及取消都必须结束临时覆盖，不修改或删除原 Harness 的持久提供商配置。运行时原生模型的身份属于其具体实例，不能按裸 model ID 当成 Velune 提供商或另一 Harness 的模型。
 
 2026-10-16 用户确认（[S32](../sources.md#s32)）：上述“turn 结束”指该轮的工作全部结束，即轮次本身及其启动、仍在运行的原生子 Agent／后台任务都结束、失败或被用户停止；此前运行时进程与临时覆盖保持，子 Agent 不因父轮次结束被终止。工作未结束时，下一轮若不需要重启运行时照常发送；需要重启（例如换成原生模型、Claude Code 换推理强度）时，先等待子 Agent 结束，或由用户确认停止子 Agent 后发送。父会话的停止同时停止该轮及其子 Agent；轮次已结束、只剩子 Agent 运行时，父会话提供停止子 Agent。
 
 使用原生提供商不阻止跨 Harness 接续。会话的历史来源、下一轮目标运行时和下一轮模型分别表达；切换 Harness 后仍按现有目标原生会话与文本上下文交接机制继续，不能重放原生工具或审批状态。SSH 是运行时执行位置，HOME 是实例环境归属；两者都不改变 Harness 拥有会话历史的边界。Velune 管理 HOME 时不复制用户原有凭据或会话，也不把 HOME 隔离描述成安全沙箱。
 
-**本轮不修改 app（前端已于 2026-10-12 接入，见下文）：** composer 展示并选择目标实例的既有提供商模型与 Velune 管理模型；运行时设置提供 SSH 连接与 HOME 归属配置；按远端文件系统解释会话工作目录。平台应消费共享核心的模型身份、能力和失败信息，不自行解析 Harness 配置。Rust 契约与隔离验收完成不表示这些交互已交付。实施状态见 运行时扩展任务（git 历史：tasks/runtime-provider-ssh）。
-
-2026-10-12 用户要求把 Velune 管理的运行时 HOME 接入 Mac 运行时设置：编辑运行时实例时可选继承当前用户 HOME、指定目录或由 Velune 管理。SSH 连接配置已于同日接入（见下段任务）。
-
-2026-10-12 用户指出 Mac App 尚未接入 AI 服务与 Agent 运行时的多项更新（本节及上文标记为前端待实现的内容），因此还无法实际发送消息；这些前端接入成为当前工作，Mac 不再限于本节“本轮不修改 app”的边界。先接入能发送所需的 composer 模型选择（运行时原生模型与 Velune 管理模型），再接入 ACP 运行时配置与会话选项、SSH 连接与远端工作目录、跨 Harness 协作。composer 模型选择（含通用 ACP 的 Agent 默认）、ACP 运行时配置、Agent 信息和会话选项，以及 SSH 运行位置与远端工作目录已接入 Mac，状态见 Mac 接入任务（git 历史：tasks/mac-runtime-integration）；跨 Harness 协作按上文 2026-10-12 纠正，改为 A2A 与原生 sub-agent 展示，归 Agent 间协作任务（git 历史：tasks/agent-collaboration）。
+2026-10-12 用户要求平台接入这些能力：composer 展示并选择目标实例的原生模型与 Velune 管理模型（通用 ACP 另有 Agent 默认）；运行时设置提供 SSH 运行位置、HOME 归属（继承当前用户 HOME、指定目录或由 Velune 管理）与远端工作目录；按远端文件系统解释会话工作目录。平台消费共享核心的模型身份、能力和失败信息，不自行解析 Harness 配置。
 
 ## 会话模型与工作目录
 

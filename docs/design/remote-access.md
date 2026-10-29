@@ -1,6 +1,6 @@
 # 统一设备远控：配对、寻址与恢复
 
-状态：2026-10-18 用户明确本轮实施边界仅限 Rust Library，包括 UniFFI 契约和库级合成验证，不包含 Mac／Android App 接入、界面、安装或产品验收。S1 已有同网证据，S2 稳定服务与 S3 v2 库级出口已完成；S4 库实现、静态检查、目标库与隔离证据已完成，E2／E3 网络能力仍未验证。本文件描述完整目标契约，不等同整项产品已实现或用户已验收。产品约束归 [PRD](../prd/remote-access.md)，共享核心与包边界归 [架构入口](architecture.md#远控契约与唯一执行-owner)。本方案基于锁定的 iroh 1.3.0；源码核查和本机实验归 研究记录（git 历史：tasks/android-minimal），执行次序归 线性计划（git 历史：tasks/android-minimal），通过条件归 验收方案（git 历史：tasks/android-minimal）。实际实现与验收状态以 任务（git 历史：tasks/android-minimal） 为准。
+本文件维护设备、配对、寻址、连接恢复与远程调用的跨 unit 契约。产品约束见 [PRD](../prd/remote-access.md)，共享核心与包边界见[架构](architecture.md#远控契约与唯一执行-owner)，接口见 [remote](../../packages/remote/README.md) 与 [bindings](../../packages/bindings/README.md)。方案基于锁定的 iroh 1.3.0。真实 NAT、跨公网迁移与移动网络行为尚未验证，见[待决事项](../../tasks/open-items/packet.md)。
 
 ## 设备与状态归属
 
@@ -38,7 +38,7 @@ bindings 持有这份稳定服务，显式区分停止本机被控入口、替�
 | `application_for_device(peer_id, view_id)`、未决请求观察 | 保留完整业务 SDK，平台界面与本地使用同一组方法；远程副作用统一经过写前记录，结果确定后自动确认。确认只结束本机跟踪，不取消远端任务、不删除服务端去重信息 |
 | 网络设置（Rust 内 `apply_network`／`retry_network`，平台暂无编辑入口） | 语法校验和持久化后串行应用网络代际；装配失败返回保留已保存目标的 Failed 状态，语法／持久化／冲突失败才返回调用错误 |
 
-2026-10-19 为使各平台只编写一份界面，普通远程代理直接调用具名方法即可执行副作用：Rust 自动分配完整请求 ID，原子记录 pending 后才发送；方法返回成功或确定的业务失败时自动确认，传输中断、结果不明、过期或执行端重启时保留 pending，由界面显示为未解决，不自动重发。释放或关闭代理不关闭共享连接或视图。2026-10-29 删除了没有平台使用的预分配 ID 入口（`prepare_remote_operation`、`next_request_id`、`submit_request`）。同日删除了同样没有平台使用的未决请求手动查询与确认入口（`query_request`／`acknowledge_request`）；未决请求只由 Controller 恢复连接后查询原结果。
+为使各平台只编写一份界面，普通远程代理直接调用具名方法即可执行副作用：Rust 自动分配完整请求 ID，原子记录 pending 后才发送；方法返回成功或确定的业务失败时自动确认，传输中断、结果不明、过期或执行端重启时保留 pending，由界面显示为未解决，不自动重发。释放或关闭代理不关闭共享连接或视图。未决请求只由 Controller 恢复连接后查询原结果，平台没有手动查询或确认入口。
 
 Rust 是身份、联系人 pin、入站 grant、配对事务、未决请求、网络设置及主动暂停意图的唯一权威。复用 remote 内现有原子文件适配，平台显式传应用私有目录，不读取全局应用配置。Kotlin 只保存选中设备、阅读位置等 UI 偏好，删除 `DeviceStore` 对 descriptor 和 pending 的重复持久化；邀请、相机帧和显示码不进入 Bundle、SavedStateHandle 或备份。
 
@@ -80,11 +80,11 @@ relay 配置表达本设备的 home relay 候选和该服务的访问凭据，�
 
 iroh 当前选择一条主数据路径，其他路径主要承担备用、探测与控制；客户端还可能关闭冗余 IP 路径。因此产品不要求 LAN 与公网 IP 始终同时保活，离开 LAN 后可能需要重新探测公网路径或回落 relay。原连接确实关闭后才进入同一设备的受控重连，不为遇到新地址而主动拆连接。
 
-晚到地址是关键接线边界。mDNS 独立订阅不等于向既有 QUIC 连接注入候选：其 resolve 窗口只有 10 秒，窗口外新事件只到独立订阅；iroh 的已有 selected path 可抑制新 lookup，仍运行的 lookup 即使返回新地址，也只更新 peer 缓存。隔离实验中，晚到 lookup 地址进入缓存但在观察窗口内未触发该地址探测；同一地址经对端的 QNT 地址广告后，原连接打开了新路径并继续收发，见 证据（git 历史：tasks/android-minimal）。因此，mDNS 首先补初次连接和重连寻址；活动连接升级须依靠已验证的地址变化／QNT 通路，不能把“接了 mDNS”写成已实现自动 LAN 升级。
+晚到地址是关键接线边界。mDNS 独立订阅不等于向既有 QUIC 连接注入候选：其 resolve 窗口只有 10 秒，窗口外新事件只到独立订阅；iroh 的已有 selected path 可抑制新 lookup，仍运行的 lookup 即使返回新地址，也只更新 peer 缓存。隔离实验中，晚到 lookup 地址进入缓存但在观察窗口内未触发该地址探测；同一地址经对端的 QNT 地址广告后，原连接打开了新路径并继续收发。因此，mDNS 首先补初次连接和重连寻址；活动连接升级须依靠已验证的地址变化／QNT 通路，不能把“接了 mDNS”写成已实现自动 LAN 升级。
 
 原生地址变化与对端 QNT 地址增删会触发打洞；另外有 60 秒周期检查，但仅在没有 IP 路径或最小 IP RTT 大于 10ms 时尝试升级，不能把周期检查当及时发现 LAN 的保证。现有 Connection 没有公开的远端候选探测 API。若后续平台验收证实地址变化／QNT 链路遗漏，才评估上游适配；当前不建立第二条业务连接来规避接口边界。mDNS 的缓存更新另以固定依赖和独立实验核对，不能代替活动连接探测。
 
-实施时先验证两端本机地址变化是否及时进入原生地址广告与探测，包括已在公网连接时加入 LAN、LAN 地址移除与原生网络通知被采样去重的情形。只允许广告本机实际持有或已验证映射的地址，不把收到的对端 mDNS 地址冒充本机 external address。邀请与 Hello 携带的 locator 只含本机网卡地址；QAD 观察到的公网映射留给经 relay 连上后的打洞验证。2026-10-20 实测：Mac 出网经本机代理 TUN 时，QAD 地址是代理的 UDP 映射，对端首包经它回到本机时被改写成 relay QAD 端口来源，若先于 relay 副本到达，握手会一直回复错误地址。若新地址未进入活动连接，先定位发现与探测接线；若地址已知但 socket 无法使用对应 Android Network，修平台装配；只有已验证更好的路径仍长期未被选择时，才评估 selector 调整或上游接口适配。不会用频繁重连掩盖这些缺口。
+实施时先验证两端本机地址变化是否及时进入原生地址广告与探测，包括已在公网连接时加入 LAN、LAN 地址移除与原生网络通知被采样去重的情形。只允许广告本机实际持有或已验证映射的地址，不把收到的对端 mDNS 地址冒充本机 external address。邀请与 Hello 携带的 locator 只含本机网卡地址；QAD 观察到的公网映射留给经 relay 连上后的打洞验证。Mac 出网经本机代理 TUN 时，QAD 地址是代理的 UDP 映射，对端首包经它回到本机时被改写成 relay QAD 端口来源，若先于 relay 副本到达，握手会一直回复错误地址。若新地址未进入活动连接，先定位发现与探测接线；若地址已知但 socket 无法使用对应 Android Network，修平台装配；只有已验证更好的路径仍长期未被选择时，才评估 selector 调整或上游接口适配。不会用频繁重连掩盖这些缺口。
 
 路径观察至少提供进程内连接编号、连接内临时 path 标识、地址族、selected 变化、RTT 和分段字节增量。候选来源只报告实际掌握的事实，原生接口未提供时为 Unknown，不根据私网地址猜测 mDNS。来源不证明实际流量所走接口；普通界面证据不足时只显示“直连”。诊断用受控地址／接口关联验证 LAN，并避免将原始地址放入常规日志。事件落后时保留原生漏事件数并重新读取完整路径快照；快照不能补回遗漏的事件历史。
 
@@ -167,9 +167,9 @@ sequenceDiagram
 
 恢复循环归 Rust Controller；Kotlin 的快照观察失败不得自行拨号。瞬时故障采用从 1 秒增长至最多 15 秒、带有限抖动的退避，新的网络代际或前台恢复可唤醒同一个任务；重复事实不建立新任务。连接状态为 Disconnected（含用户暂停）、Suspended、Discovering、Connecting、Connected、Recovering、Blocked；信任与配对状态另行投影，离线时“上次确认授权”不等于本次已获授权。撤销、身份不符、协议不兼容进入 Blocked，不能靠无期限重试绕过。
 
-## 平台与实施边界
+## 平台接入
 
-下述平台行为规定库的消费者如何接入，不授权本轮修改平台 App。Rust 提供本地批准 API、网络事实输入、活动意图和具名状态；本地可信调用方可由合成宿主验证，不以实际 Mac 设置页作为库出口。相机、二维码显示、系统权限页面与 App 生命周期接线由后续平台接入承担。
+Rust 提供本地批准 API、网络事实输入、活动意图与具名状态；平台负责相机、二维码显示、系统权限页面与 App 生命周期接线。
 
 Android 已实现的装配为 Kotlin／Compose → UniFFI 生成的 Kotlin／JNA API → `libvelune_bindings.so` → Rust remote／iroh。构建仅启用 bindings 的 `remote` feature，不携带本地 application、Harness 或 AI 执行栈。平台初始化的少量 JNI 只提供 Android context，业务仍经 UniFFI 类型接口；新配对、恢复和路径策略继续归 Rust，Kotlin 提供界面、平台网络通知及相机生命周期。
 
@@ -189,22 +189,20 @@ mDNS 单独验证初连、地址更新和过期。S1 选择官方修复提交 `6
 
 subscribe→MemoryLookup 不能替代遗漏的更新或活动连接探测。当前证据支持修正同协议的接口装配，不支持未经协议核对换成 Android NSD 或另造 discovery。真正跨网和非默认 Wi-Fi／蜂窝路由继续独立判别。
 
-| 单元 | 拟议改动 |
+| 单元 | 职责 |
 | --- | --- |
 | remote | 稳定远控服务与可替换端点；方向授权、限期配对事务、连接设置与 locator 刷新 |
 | application／bindings | 复用唯一业务 owner；runtime 和账本寿命正确；具名配对观察／确认／查询 API |
 | Mac | 统一接入开关与设备列表；二维码、数字核对、执行端确认；连接设置渐进披露 |
 | Android | 离线扫码、持久待确认记录、单一自动恢复状态机；前后台和相机资源管理 |
 
-协议、ALPN、邀请及普通存储 schema 一次切到 v2，不维护旧远控协议；设备私钥格式保持不变。UniFFI 改动与 Mac／Android 直接调用方在同一编译切片完成，保留生成器已验证的 shutdown／ListConfiguration 命名及 Android 初始化，不手改生成代码。每个切片都形成两端可编译检查点，切片完成不表示已完成整项产品验收。
-
-库实施按 唯一线性计划（git 历史：tasks/android-minimal） 推进：有界传输判别、稳定服务与账本、v2 契约、寻址与恢复，最后形成库交付清单。完整扫码界面及两端产品接入在当前范围之外。Android socket 接入点、QNT 通知遗漏与 mDNS 修复方式仍须以证据判别；真实 NAT、跨公网迁移和非默认移动网络行为不能由 loopback 或库构建推导。出现需重造传输栈或降低产品目标的证据才重开架构决定。
+Android socket 接入点、QNT 通知遗漏与 mDNS 修复方式须以证据判别；真实 NAT、跨公网迁移和非默认移动网络行为不能由 loopback 或库构建推导。
 
 
 ## 遥测分享与 wire v3
 
-2026-10-27 遥测接入将远控 wire 与 ALPN 升为 v3。Submit/Query 的 W3C carrier 是有界的独立字段，不参与 Command fingerprint、RequestId 或授权。受信的关联只在鉴权后建立；原请求查询继续使用同一 RequestId。
+远控 wire 与 ALPN 为 v3。Submit/Query 的 W3C carrier 是有界的独立字段，不参与 Command fingerprint、RequestId 或授权。受信的关联只在鉴权后建立；原请求查询继续使用同一 RequestId。
 
 `TelemetryProfileRead` 有独立的邀请用途、TLS 核对上下文及 grant。端点在控制或分享需要入站时接纳连接，具体 RPC 各自检查权限。配置读取直接访问本机 telemetry owner，不进入业务账本、结果缓存或持久重试；响应上限 32 KiB。新增分享配对的 pending attempt 与既有已确认联系人分开保存，失败不能破坏原控制关系。
 
-设备存储 v3 显式迁移至 v4，保留联系人、控制 grants、pending RequestId 与 reset notice，新增分享 grants 为空；未来格式报错且不覆写。协议不兼容要求对端升级，不能通过重置身份或重试突变命令补偿。双 SDK 装配与配置导入契约见[遥测设计](telemetry.md)。
+设备存储当前为 v4；更早的普通状态在加载时重置并给出 reset notice（设备身份另存，不受影响），未来格式报错且不覆写。协议不兼容要求对端升级，不能通过重置身份或重试突变命令补偿。双 SDK 装配与配置导入契约见[遥测设计](telemetry.md)。

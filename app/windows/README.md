@@ -2,7 +2,7 @@
 
 Windows 的完整端：在本机运行 Agent、Harness 与网关，也能控制其他已配对的完整端。界面用 C#（.NET 10）与 WinUI 3（Windows App SDK 2.5，非打包、自包含），控件与主题都是 WinUI 自己的 Fluent 控件，随系统明暗、强调色、对比度与文字缩放；Windows 11 上窗口用 Mica 背景，Windows 10 上为纯色。C# 经 `uniffi-bindgen-cs` 生成的绑定以 P/Invoke 调用同目录的 `velune_bindings.dll`，与核心同进程，不启动常驻 Host 进程（见 [bindings](../../packages/bindings/README.md)）。
 
-2026-10-21 起取代 MyGO 版（[S45](../../docs/sources.md#s45)）；进度与验证记录见 任务（git 历史：tasks/windows-winui），各能力与 Mac 的差距见 [对齐表](PARITY.md)。
+2026-10-21 起取代 MyGO 版（[S45](../../docs/sources.md#s45)）；各能力与 Mac 的差距见 [对齐表](PARITY.md)。
 
 ## 界面
 
@@ -97,4 +97,4 @@ NuGet 依赖：Windows App SDK（WinUI、Foundation、InteractiveExperiences）�
 
 遥测设置属于当前客户端，默认未配置且关闭；更换被控设备不改变本机出口。设置页支持 OTLP/gRPC 地址、认证、trace 采样、两侧生效状态和显式测试，以及独立授权的一次性配置复制。保存/复制保留本机开关；分享授权与控制授权分别核对和撤销。手机在前台可提供配置分享，不增加本地执行能力或后台保活，也不保证后台仍可读取。
 
-使用官方原生 SDK 与 Rust SDK，共用实例身份与配置修订。原始会话、路径、认证和底层错误链不外传，本地问题详情保留。接收回执不等于后台查询已可见，未提供的 SDK 丢弃计数为未知。开发启动与隔离验收见[开发遥测](../../docs/development.md#开发遥测)，跨单元契约见[遥测装配](../../docs/design/telemetry.md)，实测边界见任务包（git 历史：tasks/otlp-observability）。
+使用官方原生 SDK 与 Rust SDK，共用实例身份与配置修订。原始会话、路径、认证和底层错误链不外传，本地问题详情保留。接收回执不等于后台查询已可见，未提供的 SDK 丢弃计数为未知。开发启动与隔离验收见[开发遥测](../../docs/development.md#开发遥测)，跨单元契约见[遥测装配](../../docs/design/telemetry.md)。

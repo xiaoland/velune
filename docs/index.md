@@ -24,7 +24,6 @@
 
 ## 当前工作
 
-- [架构重构、测试清理与文档更新](../tasks/architecture-refactor/packet.md)：功能冻结期间的全项目重构，分阶段计划与状态
 - [待决事项与已知缺口](../tasks/open-items/packet.md)：尚未解决的用户决定、未授权的候选与未验证的能力
 
 ## 协作入口

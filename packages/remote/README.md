@@ -83,7 +83,7 @@ pending 最多 256 条，文件与普通 snapshot 只含 ID、CommandKind、view
 
 调用、帧、版本、邀请、存储与授权错误使用无正文的 `RemoteError`；显式业务错误仍由 application 契约返回。完整业务写入冲突、陈旧审批、附件内容边界与每设备独立视图由执行 owner 负责，不由传输 mutex 代替。
 
-2026-10-17 的旧协议合成验收经真实 iroh loopback 选中 Direct，并经显式公共开发 relay 的受控 RelayOnly 连接选中 Relay；这些传输结果不能替代 v2 授权和 pending 验证，也不证明跨 NAT 直连、真实切网或移动后台寿命。早期完整应用闭环见远程控制验证记录（git 历史：tasks/remote-control）。v2 的方向授权、写前存储失败、准确 ID 确认、冷启动查询和真实 ApplicationService／合成 ACP 验收归属Android 最小端验证记录（git 历史：tasks/android-minimal）。`cargo test --locked -p velune-remote pairing::tests` 使用内存身份与 loopback，回归撤销后重新配对、原 Controller 恢复、暂停／活动意图保留及旧配对响应隔离；没有 CI 测试入口。
+隔离验收只经 iroh loopback 与公共 relay 的受控连接，不证明跨 NAT 直连、真实切网或移动后台寿命。`cargo test --locked -p velune-remote pairing::tests` 使用内存身份与 loopback，回归撤销后重新配对、原 Controller 恢复、暂停／活动意图保留及旧配对响应隔离；没有 CI 测试入口。
 
 生产与诊断 mDNS 的 Android 接口集合来自最新 `PlatformNetworkSnapshot`：选择真实 Wi-Fi／Ethernet 且非 VPN 网络的 IPv4，不要求它是默认网络或具有 Internet／VALIDATED。首次事实到达前保持空集合。`ethernet` 与 `vpn` 是平台事实，与现有 Wi-Fi／cellular 字段并列。没有平台事实的桌面宿主在网络代际装配时枚举 UP、支持 multicast、非 loopback、非 point-to-point 接口的 IPv4（诊断探针可用 `refresh_mdns_interfaces()` 重新枚举），不按路由或接口名字推测 LAN。
 
