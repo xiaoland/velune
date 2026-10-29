@@ -169,16 +169,6 @@ impl CoreRuntime {
         Ok(self.runtime_instance(&runtime_id)?.execution()?)
     }
 
-    pub(crate) fn configure_runtime_execution(
-        &mut self,
-        runtime_id: String,
-        execution: RuntimeExecution,
-    ) -> Result<crate::RuntimeUpdate, RuntimeError> {
-        let mut runtime = self.runtime_instance(&runtime_id)?.clone();
-        runtime.set_execution(execution)?;
-        self.upsert_runtime(runtime)
-    }
-
     /// The HOME a runtime is launched with on its execution machine; `None`
     /// when it inherits the user's. A managed HOME is not created by asking.
     pub(crate) fn runtime_home_directory(

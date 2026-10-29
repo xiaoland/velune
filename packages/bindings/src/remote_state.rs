@@ -1,6 +1,6 @@
 //! Safe projections of the Rust-owned remote state; response bodies use explicit query only.
 use crate::*;
-use velune_remote::{DeviceLocator, PairingPermission, RelayCredentialEdit};
+use velune_remote::{DeviceLocator, PairingPermission};
 
 #[derive(Clone, uniffi::Record)]
 pub struct BindingPairingOfferInfo {
@@ -22,12 +22,4 @@ pub fn decode_remote_offer(encoded: String) -> Result<BindingPairingOfferInfo, B
         expires_at_unix_seconds: offer.expires_at_unix_seconds,
         locator: offer.locator,
     })
-}
-
-#[derive(Clone, uniffi::Record)]
-pub struct BindingNetworkSettingsUpdate {
-    pub expected_revision: u64,
-    pub network: BindingRemoteNetworkOptions,
-    pub credentials: Vec<RelayCredentialEdit>,
-    pub restore_lookup_urls: Vec<String>,
 }

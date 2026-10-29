@@ -5,8 +5,8 @@ use crate::{
 };
 use std::{sync::Arc, time::Duration};
 use velune_remote::{
-    ConnectionDiagnostics, ConnectionStatus, DiscoveryConfig, PathPolicy, PlatformNetworkSnapshot,
-    ProbeMdnsEvent, ProbeReply, RelayConfig,
+    ConnectionDiagnostics, ConnectionStatus, DiscoveryConfig, PathObservation, PathPolicy,
+    PlatformNetworkSnapshot, ProbeMdnsEvent, ProbeReply, RelayConfig,
 };
 use velune_remote::{EndpointConfig, ProbeConnection, ProbeTarget, TransportProbe};
 
@@ -132,5 +132,43 @@ impl VeluneTransportProbeConnection {
     pub fn shutdown(&self) -> Result<(), BindingError> {
         self.connection.close();
         Ok(())
+    }
+}
+
+/// An observer retains transport evidence, but disposing it does not close business work.
+#[derive(uniffi::Object)]
+pub struct VelunePathObserver {
+    runtime: Arc<RemoteRuntime>,
+    observer: tokio::sync::Mutex<velune_remote::PathObserver>,
+}
+impl VelunePathObserver {
+    pub(crate) fn new(
+        runtime: Arc<RemoteRuntime>,
+        observer: velune_remote::PathObserver,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            runtime,
+            observer: tokio::sync::Mutex::new(observer),
+        })
+    }
+}
+#[uniffi::export]
+impl VelunePathObserver {
+    /// Null means no event within the bounded wait, or the stream ended; check status.closed.
+    pub fn next(&self, timeout_ms: u64) -> Result<Option<PathObservation>, BindingError> {
+        if timeout_ms == 0 || timeout_ms > 5_000 {
+            return Err(BindingError::Invalid {
+                detail: "路径观察等待必须为 1–5000 毫秒".into(),
+            });
+        }
+        let status = self.runtime.block_on(async {
+            tokio::time::timeout(Duration::from_millis(timeout_ms), async {
+                self.observer.lock().await.next().await
+            })
+            .await
+            .ok()
+            .flatten()
+        });
+        Ok(status)
     }
 }

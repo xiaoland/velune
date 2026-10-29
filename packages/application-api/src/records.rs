@@ -647,7 +647,7 @@ pub struct ProviderQuotaStatus {
 
 /// Read-only quota of the runtime's native CLI login. This does not identify
 /// the billing account of a request using the Harness's other API settings.
-#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RuntimeQuotaStatus {
     pub runtime_id: String,

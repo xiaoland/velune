@@ -59,13 +59,6 @@ pub enum ContactConfirmation {
 pub enum LocatorSource {
     PairingOffer,
     AuthenticatedPeer,
-    ExplicitImport,
-}
-#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
-#[serde(deny_unknown_fields)]
-pub struct LocatorUpdate {
-    pub peer_id: String,
-    pub locator: DeviceLocator,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 #[serde(deny_unknown_fields)]
@@ -448,15 +441,6 @@ impl DeviceStore {
             Ok(())
         })
     }
-    pub(crate) fn record_legacy_reset(&self) -> Result<()> {
-        self.change(|state| {
-            if !state.legacy_reset_recorded {
-                state.reset_notice = Some(ConfigurationResetNotice { id: random_id()? });
-                state.legacy_reset_recorded = true;
-            }
-            Ok(())
-        })
-    }
     pub(crate) fn revoke_grant(&self, peer: &str) -> Result<()> {
         self.change(|state| {
             state.grants.remove(peer);
@@ -524,18 +508,6 @@ impl DeviceStore {
             state
                 .pending
                 .retain(|operation| operation.peer_id != peer || operation.request_id != *id);
-            Ok(())
-        })
-    }
-    pub(crate) fn acknowledge_reset(&self, id: &str) -> Result<()> {
-        self.change(|state| {
-            if state
-                .reset_notice
-                .as_ref()
-                .is_some_and(|notice| notice.id == id)
-            {
-                state.reset_notice = None;
-            }
             Ok(())
         })
     }

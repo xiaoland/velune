@@ -30,7 +30,7 @@ pub struct RuntimeResourceKey {
     pub path: String,
 }
 
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, uniffi::Enum)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum RuntimeResourceNode {
     File,
@@ -39,7 +39,7 @@ pub enum RuntimeResourceNode {
     Other,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, uniffi::Enum)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum RuntimeResourceState {
     Present,
@@ -47,14 +47,14 @@ pub enum RuntimeResourceState {
     Invalid { reason: String },
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, uniffi::Enum)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum RuntimeResourceAccess {
     Writable,
     ReadOnly { reason: String },
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, uniffi::Record)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct RuntimeResourceEntry {
     pub key: RuntimeResourceKey,
@@ -66,21 +66,21 @@ pub struct RuntimeResourceEntry {
     pub size: u64,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, uniffi::Enum)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum RuntimeResourceSupport {
     Supported,
     Unsupported { reason: String },
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, uniffi::Record)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct RuntimeResourceCatalog {
     pub support: RuntimeResourceSupport,
     pub entries: Vec<RuntimeResourceEntry>,
 }
 
-#[derive(Clone, Serialize, Deserialize, PartialEq, Eq, uniffi::Record)]
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct RuntimeResourceDocument {
     pub entry: RuntimeResourceEntry,
@@ -100,7 +100,7 @@ impl fmt::Debug for RuntimeResourceDocument {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, uniffi::Enum)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", content = "revision", rename_all = "camelCase")]
 pub enum RuntimeResourceRevision {
     Missing,

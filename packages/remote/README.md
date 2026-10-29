@@ -22,13 +22,13 @@ relay／lookup 地址拒绝用户名、密码、query 和 fragment；relay 凭�
 
 独立 relay 凭据通过[固定版单 crate 窄补丁](../../third-party/iroh/README.md)接入 iroh 1.3.0，不向 home RelayMap 增加条目，不修改协议或路径选择。token 容器和持有它的原生父对象 Debug 已脱敏；配置、邀请、公开状态与普通日志不输出 token。
 
-默认 `PathPolicy::Automatic` 保留 iroh 的 IPv4／IPv6、relay 协助建连、直连探测与路径选择。relay 不是固定的数据路径；建立直连后由 iroh 选择实际发送路径。`RelayOnly` 清除直接 IP 传输，只用于受控诊断。`report_network_change(snapshot).await` 校验并按序保存平台网络事实，更新生产 mDNS 的实际 LAN IPv4 集合，再转发原生网络通知并唤醒同一个恢复循环；返回输入序号不证明路径已经恢复。平台负责订阅默认网络与仍可用的 Wi-Fi，保留原始事件时间。`network_change().await` 仍可用于不携带事实的原生通知。
+默认 `PathPolicy::Automatic` 保留 iroh 的 IPv4／IPv6、relay 协助建连、直连探测与路径选择。relay 不是固定的数据路径；建立直连后由 iroh 选择实际发送路径。`RelayOnly` 清除直接 IP 传输，只用于受控诊断。`report_network_change(snapshot).await` 校验并按序保存平台网络事实，更新生产 mDNS 的实际 LAN IPv4 集合，再转发原生网络通知并唤醒同一个恢复循环；返回输入序号不证明路径已经恢复。平台负责订阅默认网络与仍可用的 Wi-Fi，保留原始事件时间。
 
 `Controller::connection_status()` 返回当前路径及选中状态；`observe_paths().next().await` 先返回快照，随后按原生路径事件更新。事件积压时重新读取完整快照。快照包含进程内连接编号、连接内 path 编号、单调采样时间、地址族、路径类别、RTT、字节数、丢包及公开设备身份，不包含网络地址或业务正文。原生接口不提供候选来源，因此 source 为 Unknown；Direct 不等于 LAN。每次新拨号分配新连接编号，observer 保留原编号。每条业务请求使用独立 QUIC 双向流；大附件读取不会占住同一连接唯一的业务流。
 
-生产 mDNS 与所配公网 lookup 并行注册。Android 在首次平台事实到达前保持空接口集合；宿主可用 `refresh_local_discovery()` 重采实际 multicast-capable 接口。接口变更重建内部 discoverer，旧回调按代际拒绝；网络关闭清空 registry 并释放本代自持的 mDNS 句柄。它补首次／重新连接寻址，不向活动 QUIC 连接伪造候选；活动路径升级仍归原生地址变化／QNT。
+生产 mDNS 与所配公网 lookup 并行注册。Android 在首次平台事实到达前保持空接口集合；没有平台事实的宿主在网络代际装配时枚举一次本机 multicast-capable 接口。接口变更重建内部 discoverer，旧回调按代际拒绝；网络关闭清空 registry 并释放本代自持的 mDNS 句柄。它补首次／重新连接寻址，不向活动 QUIC 连接伪造候选；活动路径升级仍归原生地址变化／QNT。
 
-联系人 `lookup_urls` 由按 peer 分派的解析器实际消费，与本机全局 lookup 并行；peer URL 只查询该身份，不向它发布本机地址。locator 来源为 PairingOffer／AuthenticatedPeer／ExplicitImport。`update_contact_locator(expected_peer, LocatorUpdate)` 只更新已存在且公钥相同的联系资料，不修改 pin、grant 或确认状态。认证 Hello 可交接新旧 lookup；邀请只带一个启动 lookup。已撤除的本机 lookup URL 保存在有界 `withdrawn_lookup_urls` 中，后续 Hello／导入不能暗中重新启用；明确重新配置或 `restore_lookup_urls` 才恢复。未被撤除的 peer 专属 URL 仍可使用，不要求它出现在本机发布列表。
+联系人 `lookup_urls` 由按 peer 分派的解析器实际消费，与本机全局 lookup 并行；peer URL 只查询该身份，不向它发布本机地址。locator 来源为 PairingOffer／AuthenticatedPeer。认证 Hello 可交接新旧 lookup；邀请只带一个启动 lookup。已撤除的本机 lookup URL 保存在有界 `withdrawn_lookup_urls` 中，后续 Hello 不能暗中重新启用；明确重新配置或 `restore_lookup_urls` 才恢复。未被撤除的 peer 专属 URL 仍可使用，不要求它出现在本机发布列表。
 
 ## 隔离传输诊断
 
@@ -52,7 +52,7 @@ relay／lookup 地址拒绝用户名、密码、query 和 fragment；relay 凭�
 
 同一设备撤销后可通过新邀请重新配对。控制端首次确认当前 attempt 已获批准时，解除已有 Controller 的恢复阻塞并使旧拨号结果失效，继续按原有选中、前后台及主动暂停状态恢复；无需删除联系人或重建窗口。新配对保留联系人的暂停状态，尚未批准不恢复授权。旧 attempt 的迟到响应不能覆盖当前配对，重复查询已确认结果不再次改变连接意图。
 
-`DeviceIdentity::load_or_create` 只访问显式身份文件，继续使用 identity schema 1。既有损坏身份阻止启动，不重生成私钥。`DeviceStore::open` 使用普通状态文件 schema 4，保存联系人、独立的控制／遥测分享 grant、未决元数据与重置通知。未知未来版本报错并保留原文件；其他旧版本（含 schema 3）原子初始化为空状态并留下重置通知，不推导授权、不迁移 pending，也不保留备份；通知跨冷启保留，按准确 ID 确认后才删除。平台在清理自己旧的普通文件前调用 `record_legacy_state_reset`，先保留通知；它不触碰身份、Harness 文件或真实会话。Unix 私有文件为 0600，非普通文件或开放权限拒绝，发布先同步内容、原子替换再同步目录。网络设置与 token 另存为该普通文件名加 `.network-private.json` 的私有原子文件（schema 1），不混入 pending 文件或安全快照；损坏私有配置阻止加载。`validate_device_storage_paths` 在 bindings 创建身份前排除 identity／state／派生配置三者及父目录别名碰撞，普通状态解析也拒绝将带 secret_key 的身份文件重置。
+`DeviceIdentity::load_or_create` 只访问显式身份文件，继续使用 identity schema 1。既有损坏身份阻止启动，不重生成私钥。`DeviceStore::open` 使用普通状态文件 schema 4，保存联系人、独立的控制／遥测分享 grant、未决元数据与重置通知。未知未来版本报错并保留原文件；其他旧版本原子初始化为空状态并在安全快照中留下重置通知，不推导授权、不迁移 pending，也不保留备份；重置不触碰身份、Harness 文件或真实会话。Unix 私有文件为 0600，非普通文件或开放权限拒绝，发布先同步内容、原子替换再同步目录。网络设置与 token 另存为该普通文件名加 `.network-private.json` 的私有原子文件（schema 1），不混入 pending 文件或安全快照；损坏私有配置阻止加载。`validate_device_storage_paths` 在 bindings 创建身份前排除 identity／state／派生配置三者及父目录别名碰撞，普通状态解析也拒绝将带 secret_key 的身份文件重置。
 
 ## 请求交付与操作作用域
 
@@ -85,6 +85,6 @@ pending 最多 256 条，文件与普通 snapshot 只含 ID、CommandKind、view
 
 2026-10-17 的旧协议合成验收经真实 iroh loopback 选中 Direct，并经显式公共开发 relay 的受控 RelayOnly 连接选中 Relay；这些传输结果不能替代 v2 授权和 pending 验证，也不证明跨 NAT 直连、真实切网或移动后台寿命。早期完整应用闭环见[远程控制验证记录](../../tasks/remote-control/verification.md)。v2 的方向授权、写前存储失败、准确 ID 确认、冷启动查询和真实 ApplicationService／合成 ACP 验收归属[Android 最小端验证记录](../../tasks/android-minimal/verification.md)。`cargo test --locked -p velune-remote pairing::tests` 使用内存身份与 loopback，回归撤销后重新配对、原 Controller 恢复、暂停／活动意图保留及旧配对响应隔离；没有 CI 测试入口。
 
-生产与诊断 mDNS 的 Android 接口集合来自最新 `PlatformNetworkSnapshot`：选择真实 Wi-Fi／Ethernet 且非 VPN 网络的 IPv4，不要求它是默认网络或具有 Internet／VALIDATED。首次事实到达前保持空集合。`ethernet` 与 `vpn` 是平台事实，与现有 Wi-Fi／cellular 字段并列。桌面宿主通过 `refresh_local_discovery()`（诊断探针为 `refresh_mdns_interfaces()`） 重新枚举 UP、支持 multicast、非 loopback、非 point-to-point 接口的 IPv4；调用方负责有界周期采样，不按路由或接口名字推测 LAN。
+生产与诊断 mDNS 的 Android 接口集合来自最新 `PlatformNetworkSnapshot`：选择真实 Wi-Fi／Ethernet 且非 VPN 网络的 IPv4，不要求它是默认网络或具有 Internet／VALIDATED。首次事实到达前保持空集合。`ethernet` 与 `vpn` 是平台事实，与现有 Wi-Fi／cellular 字段并列。没有平台事实的桌面宿主在网络代际装配时枚举 UP、支持 multicast、非 loopback、非 point-to-point 接口的 IPv4（诊断探针可用 `refresh_mdns_interfaces()` 重新枚举），不按路由或接口名字推测 LAN。
 
 InterfacesApplied 的私有地址、时间及 generation 只证明 actor 已接受集合并请求旧 discoverer 退出，不证明其 FD 已关闭。接口代际变化会清除旧 scope 的 peer 缓存并发 Expired，不能据此断定远端离线。已有 resolve 保持其期限，可收到新代际结果；已有 QUIC 连接不随缓存清除而关闭。实际旧资源退出和 IPv4 恢复须单独观察。底层 swarm 仍有 wildcard 接收与接口发送失败行为，接口集合不是流量白名单；边界见 vendored README。IPv6-only mDNS 不在当前修补覆盖内，QUIC 的 IPv6 路径能力不因此改变。

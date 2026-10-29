@@ -600,13 +600,6 @@ impl RemoteAccessService {
             _ => Err(RemoteError::Protocol),
         }
     }
-    pub async fn network_change(&self) {
-        if let Ok(network) = self.network() {
-            let _ = network.refresh_local_discovery().await;
-            let _ = network.network_change().await;
-        }
-        wake_controllers(&self.controllers);
-    }
     pub async fn report_network_change(&self, snapshot: PlatformNetworkSnapshot) -> Result<u64> {
         snapshot.validate()?;
         let sequence = snapshot.sequence;
@@ -629,10 +622,6 @@ impl RemoteAccessService {
         network.network_change().await?;
         wake_controllers(&self.controllers);
         Ok(sequence)
-    }
-    /// Resample host LAN interfaces or apply the most recent supplied platform facts.
-    pub async fn refresh_local_discovery(&self) -> Result<u64> {
-        self.network()?.refresh_local_discovery().await
     }
     /// End the service, wait for its one network close and all already accepted completion bookkeeping.
     /// This does not close the business owner or implicitly cancel its work.

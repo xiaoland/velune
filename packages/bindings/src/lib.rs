@@ -324,71 +324,6 @@ impl VeluneApplication {
     pub fn list(&self) -> Result<ConfigurationSnapshot, BindingError> {
         request!(self, "list", ReadConfiguration)
     }
-    pub fn runtime_resource_catalog(
-        &self,
-        runtime_id: String,
-        cwd: Option<String>,
-        kind: RuntimeResourceKind,
-        scope: RuntimeResourceScope,
-    ) -> Result<RuntimeResourceCatalog, BindingError> {
-        request!(
-            self,
-            "runtime_resource_catalog",
-            ReadRuntimeResourceCatalog {
-                runtime_id,
-                cwd,
-                kind,
-                scope
-            }
-        )
-    }
-    pub fn read_runtime_resource(
-        &self,
-        runtime_id: String,
-        cwd: Option<String>,
-        key: RuntimeResourceKey,
-    ) -> Result<RuntimeResourceDocument, BindingError> {
-        request!(
-            self,
-            "read_runtime_resource",
-            ReadRuntimeResource {
-                runtime_id,
-                cwd,
-                key
-            }
-        )
-    }
-    pub fn write_runtime_resource(
-        &self,
-        runtime_id: String,
-        cwd: Option<String>,
-        key: RuntimeResourceKey,
-        expected: RuntimeResourceRevision,
-        bytes: Vec<u8>,
-        executable: Option<bool>,
-    ) -> Result<RuntimeResourceDocument, BindingError> {
-        request!(
-            self,
-            "write_runtime_resource",
-            WriteRuntimeResource {
-                runtime_id,
-                cwd,
-                key,
-                expected,
-                bytes,
-                executable
-            }
-        )
-    }
-    pub fn delete_runtime_resource(
-        &self,
-        runtime_id: String,
-        cwd: Option<String>,
-        key: RuntimeResourceKey,
-        expected: RuntimeResourceRevision,
-    ) -> Result<(), BindingError> {
-        request!(self, "delete_runtime_resource", DeleteRuntimeResource { runtime_id, cwd, key, expected }; unit)
-    }
     pub fn list_resource_templates(&self) -> Result<Vec<ResourceTemplateSummary>, BindingError> {
         request!(self, "list_resource_templates", ListResourceTemplates)
     }
@@ -1005,22 +940,6 @@ impl VeluneApplication {
     pub fn acp_runtime_info(&self, runtime_id: String) -> Result<AcpRuntimeInfo, BindingError> {
         request!(self, "acp_runtime_info", ReadAcpRuntimeInfo { runtime_id })
     }
-    pub fn open_acp_conversation(
-        &self,
-        runtime_id: String,
-        native_session_id: String,
-        cwd: String,
-    ) -> Result<SnapshotResult, BindingError> {
-        request!(
-            self,
-            "open_acp_conversation",
-            OpenAcpConversation {
-                runtime_id,
-                native_session_id,
-                cwd
-            }
-        )
-    }
     pub fn acp_session_config(
         &self,
         runtime_id: String,
@@ -1070,21 +989,6 @@ impl VeluneApplication {
             self,
             "runtime_home_directory",
             ReadRuntimeHomeDirectory { runtime_id }
-        )
-    }
-
-    pub fn configure_runtime_execution(
-        &self,
-        runtime_id: String,
-        execution: RuntimeExecution,
-    ) -> Result<RuntimeUpdate, BindingError> {
-        request!(
-            self,
-            "configure_runtime_execution",
-            ConfigureRuntimeExecution {
-                runtime_id,
-                execution
-            }
         )
     }
 
@@ -1153,31 +1057,8 @@ impl VeluneApplication {
         )
     }
 
-    pub fn runtime_quota(
-        &self,
-        runtime_id: String,
-        refresh: bool,
-    ) -> Result<RuntimeQuotaStatus, BindingError> {
-        request!(
-            self,
-            "runtime_quota",
-            ReadRuntimeQuota {
-                runtime_id,
-                refresh
-            }
-        )
-    }
-
     pub fn runtime_models(&self, runtime_id: String) -> Result<Vec<RuntimeModel>, BindingError> {
         request!(self, "runtime_models", ReadRuntimeModels { runtime_id })
-    }
-
-    pub fn next_turn_model_selection(&self) -> Result<Option<ModelSelection>, BindingError> {
-        request!(
-            self,
-            "next_turn_model_selection",
-            ReadNextTurnModelSelection
-        )
     }
 
     /// Change the conversation's send queue; one added to or resumed while

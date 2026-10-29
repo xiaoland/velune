@@ -5,16 +5,6 @@ use crate::{ModelSelection, RuntimeModel};
 use velune_agent_runtime::native::CLAUDE_EFFORT_LEVELS;
 
 impl CoreRuntime {
-    /// The loaded conversation's model choice for its next turn.
-    pub(crate) fn next_turn_model_selection(
-        &self,
-    ) -> Result<Option<crate::ModelSelection>, RuntimeError> {
-        Ok(self
-            .native_snapshot()
-            .and(self.session.model_selection.clone())
-            .flatten())
-    }
-
     /// Reasoning levels a turn may request for a managed model on this
     /// runtime: those the model declares, in the vocabulary the harness's own
     /// channel accepts. Empty when the harness has no such channel.
@@ -362,20 +352,6 @@ impl CoreRuntime {
             mcp_servers: Vec::new(),
             session_agents: Vec::new(),
         })
-    }
-
-    /// Observe the runtime's own CLI login quota; this never creates a provider.
-    pub(crate) fn runtime_quota(
-        &self,
-        runtime_id: String,
-        refresh: bool,
-    ) -> Result<crate::RuntimeQuotaStatus, RuntimeError> {
-        let runtime = self.runtime_instance(&runtime_id)?;
-        self.runtime_quota.query(
-            &runtime.id,
-            crate::native_quota_source::Capture::from_runtime(runtime),
-            refresh,
-        )
     }
 
     pub(crate) fn runtime_models(

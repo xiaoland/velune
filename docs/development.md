@@ -361,9 +361,9 @@ Mac 主窗口底部面板在输入正文下方提供一条紧凑操作行：运�
 
 2026-10-10 的切片只交付共享 Rust／UniFFI 能力；Mac 的模型选择、HOME 与 SSH 运行位置、远端工作目录入口于 2026-10-12 接入（见 [Mac README](../app/mac/README.md)）。用例及类型契约归 [application](../packages/application/README.md) 和 [bindings](../packages/bindings/README.md)。
 
-通过 `runtime_models` 读取目标实例的原生模型及 managed 模型候选，使用 `create_conversation`／`send_turn` 提交明确来源。原生提供商由 Harness 自行解析，不需先导入网关。`next_turn_model_selection` 是下一轮意图；managed turn 结束后仍选择 managed，不代表临时网关覆盖仍在运行。
+通过 `runtime_models` 读取目标实例的原生模型及 managed 模型候选，使用 `create_conversation`／`send_turn` 提交明确来源。原生提供商由 Harness 自行解析，不需先导入网关。下一轮的选择由核心的 `NextTurn` 解析；managed turn 结束后仍选择 managed，不代表临时网关覆盖仍在运行。
 
-新建实例可用 `upsert_runtime_with_execution` 一次保存运行时与执行配置。`configure_runtime_execution` 更新已有实例，`runtime_execution` 返回具名配置。Local／Ssh 与 Inherit／Existing／Managed HOME 分别选择。本机 managed HOME 由应用按实例稳定分配；SSH managed HOME 需提供远端绝对根目录。既有账户不会复制到新 HOME，用户须自行配置和登录。普通配置重置或删除运行时配置不删除这些原生数据。
+新建实例可用 `upsert_runtime_with_execution` 一次保存运行时与执行配置。更新已有实例同样经该入口，`runtime_execution` 返回具名配置。Local／Ssh 与 Inherit／Existing／Managed HOME 分别选择。本机 managed HOME 由应用按实例稳定分配；SSH managed HOME 需提供远端绝对根目录。既有账户不会复制到新 HOME，用户须自行配置和登录。普通配置重置或删除运行时配置不删除这些原生数据。
 
 SSH 依赖本机 OpenSSH，以及远端 POSIX 环境和 Python 3；各 Harness 需在远端安装匹配版本，Pi／Codex／DSH 的当前配置还需提供远端 Node 路径。目标使用已配置的 OpenSSH 主机名／alias、可选端口和明确 SSH 可执行文件；采用非交互认证与严格主机校验，因此应由用户预先完成认证和主机信任。连接不转发认证 agent，不静默接受未知主机。远端资源目录需独立于原生配置目录；首次使用投送薄 helper 与已打包 parser 依赖，不安装 Harness。Python helper 源码内嵌在 Rust 中，不要求额外复制 `.py` 文件到 app 资源目录。
 
@@ -381,7 +381,7 @@ Rust application 与 UniFFI 提供 `upsert_acp_runtime`，一次保存实例、`
 
 使用 `acp_runtime_info` 查看 Agent 身份、认证方法描述与协商能力。`create_conversation` 不带模型选择（`None`）可创建无模型选择器的会话；普通发送、权限答复、取消使用现有 conversation API。原生模型目录只来自活动会话的 `configOptions`；需要完整的模式、布尔选项或多个选择器时使用 `acp_session_config`／`set_acp_session_config`，保留 Agent 的 config ID 与 opaque value。配置更新以 Agent 返回结果为准。
 
-有 list 能力的 Agent 使用通用会话列表；只有 load 的 Agent 可通过 `open_acp_conversation(runtime_id, native_session_id, cwd)` 显式打开。直接使用 `agent-runtime::acp::Client` 时可分别调用 load 与 resume，后者恢复上下文但不回放历史；application 的历史浏览和持久跨 Harness 接续要求 load。无 load 的连接仍可连续多轮运行，但关闭后不保证重开。通用 ACP 不支持统一的 managed provider 注入，应使用该 Harness 的专用 adapter 获取已实现的网关能力。
+有 list 能力的 Agent 使用通用会话列表；只有 load 的 Agent 不进入会话列表，平台目前没有按原生 ID 打开的入口。直接使用 `agent-runtime::acp::Client` 时可分别调用 load 与 resume，后者恢复上下文但不回放历史；application 的历史浏览和持久跨 Harness 接续要求 load。无 load 的连接仍可连续多轮运行，但关闭后不保证重开。通用 ACP 不支持统一的 managed provider 注入，应使用该 Harness 的专用 adapter 获取已实现的网关能力。
 
 Mac 按运行时类型描述的 `launchOptions`／`agentInfo`／`sessionOptions` 提供启动参数与环境变量、Agent 信息和会话选项界面（见 [Mac README](../app/mac/README.md)）。无真实认证与模型调用的手动验收入口为 `scripts/manual-acp-adapter.py`，具体构建产物、参数、实际 Agent 与 SSH 证据见 [ACP 任务](../tasks/acp-adapter/packet.md)。自动化测试不在仓库验证流程内。
 
@@ -401,17 +401,15 @@ Velune 执行的每个会话都获得 application 注入的 `velune` MCP 服务�
 
 ## Agent runtime 原生资源管理
 
-`runtime_resource_catalog(runtime_id, cwd, kind, scope)` 查询指定实例的资源位置与支持状态；`read_runtime_resource` 读取一项，`write_runtime_resource` 保存一项，`delete_runtime_resource` 删除文件或空目录。四类资源为 `UserInstructions`、`McpServers`、`Skills` 和 `NativeAgentDefinitions`。`User` 使用该实例的原生配置位置，`Project` 使用显式 cwd；路径属于运行时的执行机器，SSH 不会回退到本机同名目录。查询不要求运行时启用、建立会话或安装执行 helper。
+核心的原生资源层（agent-runtime `management`）按实例查询、读取、保存与删除原生资源，只供资源库使用，不经 bindings 直接暴露。四类资源为 `UserInstructions`、`McpServers`、`Skills` 和 `NativeAgentDefinitions`。`User` 使用该实例的原生配置位置，`Project` 使用显式 cwd；路径属于运行时的执行机器，SSH 不会回退到本机同名目录。查询不要求运行时启用、建立会话或安装执行 helper。
 
-先读取目录和条目状态；`Unsupported` 不是空集合，`Missing` 不是读取失败。读取返回的 document 含原生字节、执行位和条目 revision；编辑或删除传 `Match(revision)`，新建传 `Missing`。发生 `conflict` 时须重新读取再决定，不能以无条件保存覆盖外部编辑。管理错误经 UniFFI 保留 `runtime_management` 类别与具体 code。资源访问失败不会重置配置或创建一个空替代。
+`Unsupported` 不是空集合，`Missing` 不是读取失败。编辑或删除以此前读取的 revision 为依据，发生 `conflict` 时由资源库请用户决定，不以无条件保存覆盖外部编辑。管理错误经 UniFFI 保留 `runtime_management` 类别与具体 code。资源访问失败不会重置配置或创建一个空替代。
 
 普通资源 key 是类别根内相对路径；skills 按完整目录树列出附件，并按单文件读取、创建、更新和删除，保存时默认保留已有执行位。MCP key 是服务器名称，document 是该服务器的原生 JSON 对象；显式详情可能含 env 或 header 秘密，列表和诊断不含这些值。更新只替换该服务条目，未编辑的服务与其他原生配置字段保持；不把各 Harness 的 MCP 格式统一转换，也不执行或安装配置中的命令。
 
 当前适配覆盖 Codex／Claude 的四类、Pi 的 instruction／MCP／skills、DSH 的 instruction／skills。Pi 没有内置 sub-agent 定义；DSH 的插件式 MCP／sub-agent 配置和通用 ACP 的私有资源布局没有接入本管理契约，会明确说明不支持。该列表是管理适配范围，不等于对应 Harness 的全部运行能力，也不是组织策略、插件与祖先目录合并后的有效配置视图。
 
 修改在运行中的 turn 存在时拒绝；停用实例仍可编辑原生资源。成功保存不自动重启或重载运行时，具体生效时机由 Harness 决定。受管 HOME 仍保存原生配置，不形成 Velune 同步副本。Mac 以“资源库”窗口管理这些资源：资源在 Velune 中定义，启用到运行时后由 Velune 写入并保持同步，原生被改时由用户选择处理（可先查看差异；可用资源库覆盖、停止同步，或用原生内容更新资源库），忙时延后的写入在运行时空闲后自动补写；手动验收脚本为 `scripts/manual-resource-library.py`，真实 Harness 加载为 `scripts/manual-resource-library-native.py`（sandbox、无模型请求）。实施、具体原生路径与隔离验收见 [运行时资源管理任务](../tasks/runtime-management/packet.md)。
-
-**待实现的 App 编译接入**：下次为 Mac 重新生成绑定时，须在 `app/mac/Transport.swift` 的 `kindName` 穷尽匹配中处理新增的 `BindingFailureKind.runtimeManagement`。当前非 UI 切片保留该 App 源码不变，不能直接把生成的新绑定替换进 App 后宣称构建通过。
 
 手动 API 验收入口为 manual-runtime-management-api.py，真实 Claude／Pi 加载入口为 manual-runtime-management.py。后者要求 macOS sandbox、匹配的 CLI 和隔离安装的 Pi，使用 loopback 合成模型响应；运行参数、Codex／DSH 加载与 WSL 文件边界证据见 [固定版本验收](../tasks/runtime-management/native-evidence.md)。
 

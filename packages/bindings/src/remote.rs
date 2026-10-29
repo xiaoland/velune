@@ -4,50 +4,12 @@ use std::{path::Path, sync::Arc, time::Duration};
 use velune_application_api::{ApplicationReply, ExecutionContext, Revision};
 use velune_remote::{
     ConnectionStatus, Controller, ControllerStatus, DeviceIdentity, DeviceStore, DiscoveryConfig,
-    EndpointConfig, EndpointDescriptor, LocatorUpdate, NetworkState, PairingPermission,
-    PairingStatus, PathObservation, PathPolicy, PlatformNetworkSnapshot, RelayConfig,
-    RemoteAccessService, RemoteServiceSnapshot, RequestId, RequestStatus,
+    EndpointConfig, EndpointDescriptor, PairingPermission, PairingStatus, PathPolicy,
+    PlatformNetworkSnapshot, RelayConfig, RemoteAccessService, RemoteServiceSnapshot,
 };
 #[cfg(unix)]
 mod cli;
 
-/// An observer retains transport evidence, but disposing it does not close business work.
-#[derive(uniffi::Object)]
-pub struct VelunePathObserver {
-    runtime: Arc<RemoteRuntime>,
-    observer: tokio::sync::Mutex<velune_remote::PathObserver>,
-}
-impl VelunePathObserver {
-    pub(crate) fn new(
-        runtime: Arc<RemoteRuntime>,
-        observer: velune_remote::PathObserver,
-    ) -> Arc<Self> {
-        Arc::new(Self {
-            runtime,
-            observer: tokio::sync::Mutex::new(observer),
-        })
-    }
-}
-#[uniffi::export]
-impl VelunePathObserver {
-    /// Null means no event within the bounded wait, or the stream ended; check status.closed.
-    pub fn next(&self, timeout_ms: u64) -> Result<Option<PathObservation>, BindingError> {
-        if timeout_ms == 0 || timeout_ms > 5_000 {
-            return Err(BindingError::Invalid {
-                detail: "路径观察等待必须为 1–5000 毫秒".into(),
-            });
-        }
-        let status = self.runtime.block_on(async {
-            tokio::time::timeout(Duration::from_millis(timeout_ms), async {
-                self.observer.lock().await.next().await
-            })
-            .await
-            .ok()
-            .flatten()
-        });
-        Ok(status)
-    }
-}
 #[derive(Clone, uniffi::Record)]
 pub struct BindingRemoteOptions {
     pub identity_file: String,
@@ -66,71 +28,6 @@ pub struct BindingRemoteInvitation {
     pub encoded: String,
     pub expires_at_unix_seconds: u64,
     pub issuer: String,
-}
-#[derive(uniffi::Record)]
-pub struct BindingVersionedConfiguration {
-    pub configuration: ConfigurationSnapshot,
-    pub revision: u64,
-}
-#[derive(uniffi::Record)]
-pub struct BindingRemoteFailure {
-    pub kind: BindingFailureKind,
-    pub detail: String,
-    pub code: String,
-    pub phase: String,
-    pub current_revision: Option<u64>,
-}
-impl From<Failure> for BindingRemoteFailure {
-    fn from(value: Failure) -> Self {
-        Self {
-            kind: failure_kind(value.kind),
-            detail: value.message,
-            code: value.code,
-            phase: value.phase,
-            current_revision: value.current_revision.map(|revision| revision.0),
-        }
-    }
-}
-// The completed response is one short-lived query result.
-#[allow(clippy::large_enum_variant)]
-#[derive(uniffi::Enum)]
-pub enum BindingRemoteRequestStatus {
-    Running,
-    Completed {
-        revision: u64,
-        response: Response,
-    },
-    Failed {
-        failure: BindingRemoteFailure,
-    },
-    Unknown,
-    ResultExpired,
-    TransportFailed {
-        kind: BindingFailureKind,
-        detail: String,
-        code: String,
-    },
-}
-impl From<RequestStatus> for BindingRemoteRequestStatus {
-    fn from(value: RequestStatus) -> Self {
-        match value {
-            RequestStatus::Running => Self::Running,
-            RequestStatus::Completed(Ok(reply)) => Self::Completed {
-                revision: reply.revision.0,
-                response: reply.response,
-            },
-            RequestStatus::Completed(Err(failure)) => Self::Failed {
-                failure: failure.into(),
-            },
-            RequestStatus::Unknown => Self::Unknown,
-            RequestStatus::ResultExpired => Self::ResultExpired,
-            RequestStatus::Failed(error) => Self::TransportFailed {
-                kind: remote_failure_kind(error),
-                detail: error.to_string(),
-                code: error.code().into(),
-            },
-        }
-    }
 }
 
 pub(crate) fn parse_addresses(
@@ -509,12 +406,6 @@ impl VeluneRemoteEndpoint {
 }
 #[uniffi::export]
 impl VeluneRemoteEndpoint {
-    /// Platform network and foreground notifications can prompt native path recovery.
-    pub fn network_change(&self) {
-        self.owner
-            .runtime
-            .block_on(self.owner.service.network_change());
-    }
     /// A returned sequence confirms notification only, not successful path recovery.
     pub fn report_network_change(
         &self,
@@ -630,12 +521,6 @@ impl VeluneRemoteEndpoint {
     pub fn controller_status(&self, peer_id: String) -> Result<ControllerStatus, BindingError> {
         Ok(self.owner.service.controller(&peer_id)?.status()?)
     }
-    pub fn refresh_local_discovery(&self) -> Result<u64, BindingError> {
-        Ok(self
-            .owner
-            .runtime
-            .block_on(self.owner.service.refresh_local_discovery())?)
-    }
     pub fn read_state(&self) -> Result<RemoteServiceSnapshot, BindingError> {
         Ok(self.owner.service.read_state()?)
     }
@@ -645,70 +530,10 @@ impl VeluneRemoteEndpoint {
             observer: tokio::sync::Mutex::new(self.owner.service.observe_state()),
         })
     }
-    /// Persist reset notification before the platform removes its obsolete ordinary-state files.
-    pub fn record_legacy_state_reset(&self) -> Result<(), BindingError> {
-        self.owner
-            .service
-            .record_legacy_state_reset()
-            .map_err(Into::into)
-    }
-    pub fn acknowledge_reset(&self, notice_id: String) -> Result<(), BindingError> {
-        self.owner
-            .service
-            .acknowledge_reset(&notice_id)
-            .map_err(Into::into)
-    }
-    /// The result of a pending request, without resubmitting it.
-    pub fn query_request(
-        &self,
-        peer_id: String,
-        request_id: RequestId,
-    ) -> Result<BindingRemoteRequestStatus, BindingError> {
-        Ok(self
-            .owner
-            .runtime
-            .block_on(self.owner.service.query_request(&peer_id, request_id))?
-            .into())
-    }
-    /// Stop tracking a pending request; the executing device's work continues.
-    pub fn acknowledge_request(
-        &self,
-        peer_id: String,
-        request_id: RequestId,
-    ) -> Result<(), BindingError> {
-        self.owner
-            .service
-            .acknowledge_request(&peer_id, &request_id)
-            .map_err(Into::into)
-    }
-    pub fn update_contact_locator(
-        &self,
-        expected_peer_id: String,
-        update: LocatorUpdate,
-    ) -> Result<(), BindingError> {
-        let locator: velune_remote::DeviceLocator = update.locator;
-        self.owner
-            .service
-            .update_contact_locator(
-                &expected_peer_id,
-                velune_remote::LocatorUpdate {
-                    peer_id: update.peer_id,
-                    locator,
-                },
-            )
-            .map_err(Into::into)
-    }
     pub fn forget_device(&self, peer_id: String) -> Result<(), BindingError> {
         self.owner
             .service
             .forget_device(&peer_id)
-            .map_err(Into::into)
-    }
-    pub fn disconnect(&self, peer_id: String) -> Result<(), BindingError> {
-        self.owner
-            .service
-            .controller(&peer_id)?
-            .disconnect()
             .map_err(Into::into)
     }
     pub fn revoke_control(&self, peer_id: String) -> Result<(), BindingError> {
@@ -723,30 +548,6 @@ impl VeluneRemoteEndpoint {
             .service
             .set_control_ingress(enabled)
             .map_err(Into::into)
-    }
-    pub fn network_state(&self) -> Result<NetworkState, BindingError> {
-        Ok(self.owner.service.network_state()?)
-    }
-    pub fn apply_network(
-        &self,
-        update: BindingNetworkSettingsUpdate,
-    ) -> Result<NetworkState, BindingError> {
-        let update = velune_remote::NetworkSettingsUpdate {
-            expected_revision: update.expected_revision,
-            config: update.network.config()?,
-            credentials: update.credentials,
-            restore_lookup_urls: update.restore_lookup_urls,
-        };
-        Ok(self
-            .owner
-            .runtime
-            .block_on(self.owner.service.apply_network(update))?)
-    }
-    pub fn retry_network(&self) -> Result<NetworkState, BindingError> {
-        Ok(self
-            .owner
-            .runtime
-            .block_on(self.owner.service.retry_network())?)
     }
     /// Final service shutdown waits for accepted completion bookkeeping; ingress uses its own toggle.
     pub fn shutdown(&self) -> Result<(), BindingError> {
@@ -942,69 +743,8 @@ impl VeluneApplication {
 
 #[uniffi::export]
 impl VeluneApplication {
-    /// A form must retain the revision of the same configuration it displays.
-    pub fn list_with_revision(&self) -> Result<BindingVersionedConfiguration, BindingError> {
-        self.diagnostics.run_context(
-            "bindings.list_with_revision",
-            self.trace_carrier.as_ref(),
-            || {
-                let reply = self
-                    .remote_backend()?
-                    .request_reply(Command::ReadConfiguration)?;
-                let Response::ReadConfiguration(configuration) = reply.response else {
-                    return Err(BindingError::Contract {
-                        detail: "应用返回了不匹配的配置结果".into(),
-                    });
-                };
-                Ok(BindingVersionedConfiguration {
-                    configuration,
-                    revision: reply.revision.0,
-                })
-            },
-        )
-    }
-    /// This observation does not automatically replace an editor's write base.
-    pub fn observed_revision(&self) -> Result<Option<u64>, BindingError> {
-        let state = self.lock()?;
-        match state.as_ref().ok_or(BindingError::Closed)? {
-            Backend::Remote(remote) => Ok(remote.state()?.observed.map(|revision| revision.0)),
-            #[cfg(feature = "local-runtime")]
-            Backend::Local(_) => Ok(None),
-        }
-    }
-    /// Retain the form's revision; conflicts must never trigger an automatic resend.
-    pub fn expect_revision(&self, revision: u64) -> Result<(), BindingError> {
-        let remote = self.remote_backend()?;
-        let mut state = remote.state()?;
-        if state.closed {
-            return Err(BindingError::Closed);
-        }
-        state.expected = Some(Revision(revision));
-        state.user_epoch = state.user_epoch.wrapping_add(1);
-        Ok(())
-    }
-    pub fn observe_paths(&self) -> Result<Arc<VelunePathObserver>, BindingError> {
-        let remote = self.remote_backend()?;
-        Ok(VelunePathObserver::new(
-            remote.owner.runtime.clone(),
-            remote.controller.observe_paths()?,
-        ))
-    }
     pub fn connection_status(&self) -> Result<ConnectionStatus, BindingError> {
         let remote = self.remote_backend()?;
         Ok(remote.controller.connection_status()?)
-    }
-    pub fn remote_descriptor(&self) -> Result<EndpointDescriptor, BindingError> {
-        Ok(self.remote_backend()?.state()?.descriptor.clone())
-    }
-    /// Reconnect only to the saved pin and locator; the authenticated Hello supplies the incarnation.
-    pub fn reconnect(&self) -> Result<(), BindingError> {
-        self.diagnostics
-            .run_context("bindings.reconnect", self.trace_carrier.as_ref(), || {
-                let remote = self.remote_backend()?;
-                remote.owner.runtime.block_on(remote.controller.connect())?;
-                remote.context()?;
-                Ok(())
-            })
     }
 }

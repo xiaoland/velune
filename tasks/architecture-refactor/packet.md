@@ -9,6 +9,8 @@
 - `scripts/manual-*.py` 全部删除（git 保留历史），重构完成后只为类型与静态检查无法表达的真实不变量重建少量分层检查。
 - 重构不改变产品行为，两处例外（2026-10-29）：设置界面可以调整；可观测性可以改进（从长期看更好的事件建模等）。把规则移回核心时，平台间已有分歧统一为一条规则，并写明用户可见的差别。
 - 破坏性变更被鼓励（2026-10-28）：首个 beta 发布前没有维护与交付压力，目标是尽量减轻技术债及其未来增长速度，而不是保持接口兼容。FFI 变更时 Mac 每次提交同步，Windows／移动端在阶段末一次追平。
+- 没有平台调用的导出一律删除，不为尚未接入的能力保留契约（2026-10-29）。
+- 阶段 6 中已完成的任务包：仍成立的事实并入 PRD、TDD 与设计文档后删除任务包目录（git 保留历史）；进行中的任务包保留（2026-10-29）。
 
 ## 诊断（基线 0af7910）
 
@@ -100,7 +102,9 @@
 - 提供商导入的公开入口由 `ProviderImportSource`（核心只接受 `kind = "harness"`、空 settings 与已配置实例的组合）收窄为运行时实例 ID；预览携带 `runtime_id`，应用时以预览所读的实例为准。删除 `ProviderImportSource` 与随之无用的 `family`。
 - 有意保留：`acpLaunch` 仍以 JSON 字符串存在运行时 settings 中，读写经类型化且校验的 `acp_launch()`／`set_acp_launch()`，公开列表剥离；另存会让已保存的 ACP 启动参数丢失，收益只是去掉两个小辅助函数。agent-runtime 中 Pi 导入与认证的两个 `Source` 是适配器 JSON 坐标，认证那份随提供商凭据持久化，合并收益小于改动持久化结构的代价。
 
-## 待用户决定
+## 删除无调用导出（阶段 5 之后）
 
-- 阶段 6 已完成任务包的处理：删除（git 保留）或合并为简短结论。
-- 上列无平台调用的导出：建议保留（均对应已设计的远控与运行时管理能力，删除后再接入要重新设计契约），待确认。
+- bindings 删除 25 个没有平台调用的方法：运行时资源目录／读／写／删、`configure_runtime_execution`、`open_acp_conversation`、`runtime_quota`、`next_turn_model_selection`；远控服务的 `network_change`、`refresh_local_discovery`、`record_legacy_state_reset`、`acknowledge_reset`、`query_request`、`acknowledge_request`、`update_contact_locator`、`disconnect`、`network_state`、`apply_network`、`retry_network`；远程 `VeluneApplication` 的 `list_with_revision`、`observed_revision`、`expect_revision`、`observe_paths`、`remote_descriptor`、`reconnect`。路径观察器只留在诊断特性的传输探针中。
+- 随之删除只服务这些方法的核心命令（8 个 `Command`／`Response`／`CommandKind` 变体）与用例、远控 crate 中无调用的公开方法、`LocatorUpdate` 与 `LocatorSource::ExplicitImport`，以及不再可达的导出类型（`BindingVersionedConfiguration`、`BindingNetworkSettingsUpdate`、`BindingRemoteRequestStatus`、`BindingRemoteFailure`）；8 个原生资源类型、`RuntimeQuotaStatus`、`RelayCredentialEdit`／`CredentialEdit` 改为仅 Rust 内部使用。
+- 保留：agent-runtime 的原生资源层与额度采样（资源库和 composer 额度仍在用）；远控 crate 内的网络设置事务（`apply_network`／`retry_network`）与联系人暂停（`Controller::disconnect`）——两者有测试覆盖、平台暂无入口，接入设置界面时再决定去留。远控状态的 `legacy_reset_recorded` 字段也保留：状态结构拒绝未知字段，删掉会让现有 v4 状态无法读取、配对全部丢失，待下次状态版本变更时一并删除。
+- 观察到的既有问题（未改行为，待用户决定）：远程配置写入的期望 revision 只在取得远程应用对象和自身成功修改时推进；执行端的配置被其他视图改过后，这个远程视图的配置写入会持续冲突，直到重新取得远程应用对象或执行端重启。原设计的恢复路径是 `list_with_revision` + `expect_revision`，但平台从未调用，删除前后行为一致。可选修正：远程视图重读配置时把读到的 revision 作为新的编辑基线。

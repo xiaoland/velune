@@ -50,10 +50,6 @@ pub enum DeliveryClass {
 #[serde(rename_all = "camelCase")]
 pub enum CommandKind {
     ReleaseView,
-    ReadRuntimeResourceCatalog,
-    ReadRuntimeResource,
-    WriteRuntimeResource,
-    DeleteRuntimeResource,
     ListResourceTemplates,
     ReadResourceTemplate,
     SaveResourceTemplate,
@@ -94,19 +90,15 @@ pub enum CommandKind {
     UpsertAcpRuntime,
     ReadAcpLaunch,
     ReadAcpRuntimeInfo,
-    OpenAcpConversation,
     ReadAcpSessionConfig,
     SetAcpSessionConfig,
     DeleteRuntime,
     SelectRuntime,
     ReadRuntimeExecution,
     ReadRuntimeHomeDirectory,
-    ConfigureRuntimeExecution,
     CreateConversation,
     ReadRuntimeModels,
-    ReadRuntimeQuota,
     ReadComposerQuota,
-    ReadNextTurnModelSelection,
     OpenConversation,
     ReadConversation,
     RenameConversation,
@@ -167,32 +159,6 @@ pub enum CommandKind {
 pub enum Command {
     /// Release this view's presentation state; running conversations are unaffected.
     ReleaseView,
-    ReadRuntimeResourceCatalog {
-        runtime_id: String,
-        cwd: Option<String>,
-        kind: crate::RuntimeResourceKind,
-        scope: crate::RuntimeResourceScope,
-    },
-    ReadRuntimeResource {
-        runtime_id: String,
-        cwd: Option<String>,
-        key: crate::RuntimeResourceKey,
-    },
-    WriteRuntimeResource {
-        runtime_id: String,
-        cwd: Option<String>,
-        key: crate::RuntimeResourceKey,
-        expected: crate::RuntimeResourceRevision,
-        #[serde(with = "crate::bytes")]
-        bytes: Vec<u8>,
-        executable: Option<bool>,
-    },
-    DeleteRuntimeResource {
-        runtime_id: String,
-        cwd: Option<String>,
-        key: crate::RuntimeResourceKey,
-        expected: crate::RuntimeResourceRevision,
-    },
     ListResourceTemplates,
     ReadResourceTemplate {
         template_id: String,
@@ -323,11 +289,6 @@ pub enum Command {
     ReadAcpRuntimeInfo {
         runtime_id: String,
     },
-    OpenAcpConversation {
-        runtime_id: String,
-        native_session_id: String,
-        cwd: String,
-    },
     ReadAcpSessionConfig {
         runtime_id: String,
         conversation_id: String,
@@ -350,10 +311,6 @@ pub enum Command {
     ReadRuntimeHomeDirectory {
         runtime_id: String,
     },
-    ConfigureRuntimeExecution {
-        runtime_id: String,
-        execution: crate::RuntimeExecution,
-    },
     CreateConversation {
         runtime_id: String,
         cwd: Option<String>,
@@ -362,15 +319,10 @@ pub enum Command {
     ReadRuntimeModels {
         runtime_id: String,
     },
-    ReadRuntimeQuota {
-        runtime_id: String,
-        refresh: bool,
-    },
     ReadComposerQuota {
         context: ComposerQuotaContext,
         refresh: bool,
     },
-    ReadNextTurnModelSelection,
     OpenConversation {
         runtime_id: String,
         conversation_id: String,
@@ -572,10 +524,6 @@ pub enum Command {
 #[serde(tag = "response", content = "value", rename_all = "camelCase")]
 pub enum Response {
     ReleaseView,
-    ReadRuntimeResourceCatalog(crate::RuntimeResourceCatalog),
-    ReadRuntimeResource(crate::RuntimeResourceDocument),
-    WriteRuntimeResource(crate::RuntimeResourceDocument),
-    DeleteRuntimeResource,
     ListResourceTemplates(Vec<crate::ResourceTemplateSummary>),
     ReadResourceTemplate(crate::ResourceTemplate),
     SaveResourceTemplate(crate::ResourceSaveResult),
@@ -616,19 +564,15 @@ pub enum Response {
     UpsertAcpRuntime(RuntimeUpdate),
     ReadAcpLaunch(crate::AcpLaunch),
     ReadAcpRuntimeInfo(crate::AcpRuntimeInfo),
-    OpenAcpConversation(SnapshotResult),
     ReadAcpSessionConfig(Vec<crate::AcpConfigOption>),
     SetAcpSessionConfig(Vec<crate::AcpConfigOption>),
     DeleteRuntime(RuntimeUpdate),
     SelectRuntime(ConfigurationSnapshot),
     ReadRuntimeExecution(crate::RuntimeExecution),
     ReadRuntimeHomeDirectory(Option<String>),
-    ConfigureRuntimeExecution(RuntimeUpdate),
     CreateConversation(SnapshotResult),
     ReadRuntimeModels(Vec<RuntimeModel>),
-    ReadRuntimeQuota(RuntimeQuotaStatus),
     ReadComposerQuota(Vec<ComposerQuotaEntry>),
-    ReadNextTurnModelSelection(Option<ModelSelection>),
     OpenConversation(SnapshotResult),
     ReadConversation(SnapshotResult),
     RenameConversation(ConfigurationSnapshot),
@@ -679,9 +623,7 @@ impl Command {
     /// Exhaustive classification: new commands must declare whether an uncertain delivery may be reissued.
     pub fn delivery_class(&self) -> DeliveryClass {
         match self {
-            Self::ReadRuntimeResourceCatalog { .. }
-            | Self::ReadRuntimeResource { .. }
-            | Self::ListResourceTemplates
+            Self::ListResourceTemplates
             | Self::ReadResourceTemplate { .. }
             | Self::ImportRuntimeResource { .. }
             | Self::ReadResourceSyncStatus
@@ -703,9 +645,7 @@ impl Command {
             | Self::ReadRuntimeExecution { .. }
             | Self::ReadRuntimeHomeDirectory { .. }
             | Self::ReadRuntimeModels { .. }
-            | Self::ReadRuntimeQuota { .. }
             | Self::ReadComposerQuota { .. }
-            | Self::ReadNextTurnModelSelection
             | Self::ReadConversation { .. }
             | Self::ReadSnapshot { .. }
             | Self::ReadSnapshotUpdate { .. }
@@ -723,8 +663,6 @@ impl Command {
             | Self::FetchPublicModelCatalog
             | Self::ReadAttachment { .. } => DeliveryClass::Observation,
             Self::ReleaseView
-            | Self::WriteRuntimeResource { .. }
-            | Self::DeleteRuntimeResource { .. }
             | Self::SaveResourceTemplate { .. }
             | Self::DeleteResourceTemplate { .. }
             | Self::AdoptRuntimeResource { .. }
@@ -747,11 +685,9 @@ impl Command {
             | Self::UpsertRuntime { .. }
             | Self::UpsertRuntimeWithExecution { .. }
             | Self::UpsertAcpRuntime { .. }
-            | Self::OpenAcpConversation { .. }
             | Self::SetAcpSessionConfig { .. }
             | Self::DeleteRuntime { .. }
             | Self::SelectRuntime { .. }
-            | Self::ConfigureRuntimeExecution { .. }
             | Self::CreateConversation { .. }
             | Self::OpenConversation { .. }
             | Self::RenameConversation { .. }
@@ -786,10 +722,6 @@ impl Command {
     pub fn kind(&self) -> CommandKind {
         match self {
             Self::ReleaseView => CommandKind::ReleaseView,
-            Self::ReadRuntimeResourceCatalog { .. } => CommandKind::ReadRuntimeResourceCatalog,
-            Self::ReadRuntimeResource { .. } => CommandKind::ReadRuntimeResource,
-            Self::WriteRuntimeResource { .. } => CommandKind::WriteRuntimeResource,
-            Self::DeleteRuntimeResource { .. } => CommandKind::DeleteRuntimeResource,
             Self::ListResourceTemplates => CommandKind::ListResourceTemplates,
             Self::ReadResourceTemplate { .. } => CommandKind::ReadResourceTemplate,
             Self::SaveResourceTemplate { .. } => CommandKind::SaveResourceTemplate,
@@ -834,19 +766,15 @@ impl Command {
             Self::UpsertAcpRuntime { .. } => CommandKind::UpsertAcpRuntime,
             Self::ReadAcpLaunch { .. } => CommandKind::ReadAcpLaunch,
             Self::ReadAcpRuntimeInfo { .. } => CommandKind::ReadAcpRuntimeInfo,
-            Self::OpenAcpConversation { .. } => CommandKind::OpenAcpConversation,
             Self::ReadAcpSessionConfig { .. } => CommandKind::ReadAcpSessionConfig,
             Self::SetAcpSessionConfig { .. } => CommandKind::SetAcpSessionConfig,
             Self::DeleteRuntime { .. } => CommandKind::DeleteRuntime,
             Self::SelectRuntime { .. } => CommandKind::SelectRuntime,
             Self::ReadRuntimeExecution { .. } => CommandKind::ReadRuntimeExecution,
             Self::ReadRuntimeHomeDirectory { .. } => CommandKind::ReadRuntimeHomeDirectory,
-            Self::ConfigureRuntimeExecution { .. } => CommandKind::ConfigureRuntimeExecution,
             Self::CreateConversation { .. } => CommandKind::CreateConversation,
             Self::ReadRuntimeModels { .. } => CommandKind::ReadRuntimeModels,
-            Self::ReadRuntimeQuota { .. } => CommandKind::ReadRuntimeQuota,
             Self::ReadComposerQuota { .. } => CommandKind::ReadComposerQuota,
-            Self::ReadNextTurnModelSelection => CommandKind::ReadNextTurnModelSelection,
             Self::OpenConversation { .. } => CommandKind::OpenConversation,
             Self::ReadConversation { .. } => CommandKind::ReadConversation,
             Self::RenameConversation { .. } => CommandKind::RenameConversation,
@@ -907,7 +835,6 @@ impl Command {
                 | Self::UpsertRuntimeWithExecution { .. }
                 | Self::UpsertAcpRuntime { .. }
                 | Self::DeleteRuntime { .. }
-                | Self::ConfigureRuntimeExecution { .. }
                 | Self::ApplyProviderImport { .. }
                 | Self::RenameConversation { .. }
                 | Self::DeleteConversation { .. }
@@ -928,7 +855,6 @@ impl Command {
             || matches!(
                 self,
                 Self::CreateConversation { .. }
-                    | Self::OpenAcpConversation { .. }
                     | Self::SendTurn { .. }
                     | Self::EditSendQueue { .. }
                     | Self::SteerTurn { .. }
@@ -937,8 +863,6 @@ impl Command {
                     | Self::ReplyRuntimeInteraction { .. }
                     | Self::Cancel { .. }
                     | Self::StopSubAgents { .. }
-                    | Self::WriteRuntimeResource { .. }
-                    | Self::DeleteRuntimeResource { .. }
                     | Self::StartAuthentication { .. }
                     | Self::ReplyAuthentication { .. }
             )

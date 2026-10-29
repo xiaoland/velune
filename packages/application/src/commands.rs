@@ -64,52 +64,6 @@ impl Application {
         let application = self;
         Ok(match command {
             Command::ReleaseView => Response::ReleaseView,
-            Command::ReadRuntimeResourceCatalog {
-                runtime_id,
-                cwd,
-                kind,
-                scope,
-            } => Response::ReadRuntimeResourceCatalog(application.runtime.serve(
-                Focus::None,
-                Login::Blocks,
-                |core| core.runtime_resource_catalog(runtime_id, cwd, kind, scope),
-            )?),
-            Command::ReadRuntimeResource {
-                runtime_id,
-                cwd,
-                key,
-            } => Response::ReadRuntimeResource(application.runtime.serve(
-                Focus::None,
-                Login::Blocks,
-                |core| core.read_runtime_resource(runtime_id, cwd, key),
-            )?),
-            Command::WriteRuntimeResource {
-                runtime_id,
-                cwd,
-                key,
-                expected,
-                bytes,
-                executable,
-            } => Response::WriteRuntimeResource(application.runtime.serve(
-                Focus::None,
-                Login::Blocks,
-                |core| {
-                    core.write_runtime_resource(runtime_id, cwd, key, expected, bytes, executable)
-                },
-            )?),
-            Command::DeleteRuntimeResource {
-                runtime_id,
-                cwd,
-                key,
-                expected,
-            } => {
-                application
-                    .runtime
-                    .serve(Focus::None, Login::Blocks, |core| {
-                        core.delete_runtime_resource(runtime_id, cwd, key, expected)
-                    })?;
-                Response::DeleteRuntimeResource
-            }
             Command::ListResourceTemplates => {
                 Response::ListResourceTemplates(application.runtime.serve(
                     Focus::None,
@@ -404,15 +358,6 @@ impl Application {
                     |core| core.acp_runtime_info(runtime_id),
                 )?)
             }
-            Command::OpenAcpConversation {
-                runtime_id,
-                native_session_id,
-                cwd,
-            } => Response::OpenAcpConversation(application.runtime.serve(
-                Focus::New,
-                Login::Blocks,
-                |core| core.open_acp_conversation(&runtime_id, &native_session_id, &cwd),
-            )?),
             Command::ReadAcpSessionConfig {
                 runtime_id,
                 conversation_id,
@@ -461,14 +406,6 @@ impl Application {
                     |core| core.runtime_home_directory(runtime_id),
                 )?)
             }
-            Command::ConfigureRuntimeExecution {
-                runtime_id,
-                execution,
-            } => Response::ConfigureRuntimeExecution(application.runtime.serve(
-                Focus::None,
-                Login::Blocks,
-                |core| core.configure_runtime_execution(runtime_id, execution),
-            )?),
             Command::CreateConversation {
                 runtime_id,
                 cwd,
@@ -485,26 +422,11 @@ impl Application {
                     |core| core.composer_quota(context, refresh),
                 )?)
             }
-            Command::ReadRuntimeQuota {
-                runtime_id,
-                refresh,
-            } => Response::ReadRuntimeQuota(application.runtime.serve(
-                Focus::None,
-                Login::Blocks,
-                |core| core.runtime_quota(runtime_id, refresh),
-            )?),
             Command::ReadRuntimeModels { runtime_id } => {
                 Response::ReadRuntimeModels(application.runtime.serve(
                     Focus::None,
                     Login::Blocks,
                     |core| core.runtime_models(runtime_id),
-                )?)
-            }
-            Command::ReadNextTurnModelSelection => {
-                Response::ReadNextTurnModelSelection(application.runtime.serve(
-                    Focus::None,
-                    Login::Blocks,
-                    |core| core.next_turn_model_selection(),
                 )?)
             }
             Command::OpenConversation {
@@ -1062,7 +984,6 @@ impl Application {
     ) -> Result<Response, Failure> {
         let snapshots = match &mut response {
             Response::CreateConversation(result)
-            | Response::OpenAcpConversation(result)
             | Response::OpenConversation(result)
             | Response::ReadConversation(result)
             | Response::ReadSnapshot(result)

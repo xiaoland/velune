@@ -201,40 +201,6 @@ impl CoreRuntime {
         Ok(())
     }
 
-    /// Load a known native ACP reference even when the Agent cannot list sessions.
-    pub(crate) fn open_acp_conversation(
-        &mut self,
-        runtime_id: &str,
-        native_id: &str,
-        cwd: &str,
-    ) -> Result<crate::SnapshotResult, RuntimeError> {
-        if self.turn_running() {
-            return Err(RuntimeError::invalid("runtime is busy"));
-        }
-        let runtime = self.runtime_instance(runtime_id)?.clone();
-        if native_id.is_empty() {
-            return Err(RuntimeError::invalid("native session id"));
-        }
-        let cwd = Path::new(cwd);
-        self.validate_runtime_cwd(&runtime, cwd)?;
-        let mut session = self.acp_client(&runtime)?;
-        if !session.capabilities().load_session {
-            return Err(RuntimeError::Unsupported(
-                "此 ACP Agent 不支持会话历史加载".into(),
-            ));
-        }
-        session
-            .load(native_id, cwd, runtime_id)
-            .map_err(|error| RuntimeError::context("ACP 会话打开", error))?;
-        self.shutdown_active()?;
-        self.session.logical_projection = None;
-        self.session.unsubmitted_draft = None;
-        self.session.execution_runtime_id = Some(runtime.id);
-        self.session.model_selection = Some(None);
-        self.session.active_state = ActiveState::Acp(Box::new(session));
-        self.snapshot_result()
-    }
-
     /// The loaded ACP conversation's session configuration, after setting
     /// `update` (a config id and its value) when given.
     pub(crate) fn acp_session_config(

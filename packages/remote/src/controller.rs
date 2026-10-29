@@ -347,51 +347,6 @@ impl RemoteAccessService {
             last: None,
         }
     }
-    pub fn record_legacy_state_reset(&self) -> Result<()> {
-        let _access = self.state.access()?;
-        self.state.store.record_legacy_reset()
-    }
-    pub async fn query_request(
-        self: &Arc<Self>,
-        peer: &str,
-        id: RequestId,
-    ) -> Result<RequestStatus> {
-        let controller = self.controller(peer)?;
-        controller.connect().await?;
-        controller.query(id).await
-    }
-    pub fn acknowledge_reset(&self, id: &str) -> Result<()> {
-        let _access = self.state.access()?;
-        self.state.store.acknowledge_reset(id)
-    }
-    pub fn acknowledge_request(&self, peer: &str, id: &RequestId) -> Result<()> {
-        let _access = self.state.access()?;
-        self.state.store.acknowledge(peer, id)
-    }
-    /// Replace routing hints for the already pinned public key without changing either grant.
-    pub fn update_contact_locator(&self, expected_peer: &str, update: LocatorUpdate) -> Result<()> {
-        crate::store::parse_peer(expected_peer)?;
-        if expected_peer != update.peer_id {
-            return Err(RemoteError::Unauthorized);
-        }
-        let _access = self.state.access()?;
-        let contact = self.state.store.contact(expected_peer)?;
-        self.state.store.update_locator_from(
-            expected_peer,
-            contact.name,
-            update.locator,
-            LocatorSource::ExplicitImport,
-        )?;
-        if let Some(controller) = self
-            .controllers
-            .lock()
-            .map_err(|_| RemoteError::Unavailable)?
-            .get(expected_peer)
-        {
-            controller.network_changed();
-        }
-        Ok(())
-    }
     pub fn forget_device(&self, peer: &str) -> Result<()> {
         let _access = self.state.access()?;
         self.state.store.forget_contact(peer)?;
@@ -479,12 +434,8 @@ fn operation_targets(command: &Command) -> (Option<String>, Option<String>) {
             ..
         } => (Some(runtime_id.clone()), Some(conversation_id.clone())),
         Command::CreateConversation { runtime_id, .. }
-        | Command::OpenAcpConversation { runtime_id, .. }
-        | Command::ConfigureRuntimeExecution { runtime_id, .. }
         | Command::AdoptRuntimeResource { runtime_id, .. }
-        | Command::ResolveResourceBinding { runtime_id, .. }
-        | Command::WriteRuntimeResource { runtime_id, .. }
-        | Command::DeleteRuntimeResource { runtime_id, .. } => (Some(runtime_id.clone()), None),
+        | Command::ResolveResourceBinding { runtime_id, .. } => (Some(runtime_id.clone()), None),
         _ => (None, None),
     }
 }
