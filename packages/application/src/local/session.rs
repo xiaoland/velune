@@ -354,6 +354,18 @@ impl CoreRuntime {
                 .filter(|turn| turn.sequence > since)
                 .cloned()
                 .collect(),
+            resumable: std::iter::once(&self.session)
+                .chain(&self.parked)
+                .filter_map(|session| {
+                    let view = session.projected()?;
+                    let conversation_id = session.conversation_id()?;
+                    self.resumable(session, view)
+                        .then(|| crate::ConversationReference {
+                            runtime_id: view.conversation.runtime_id.clone(),
+                            conversation_id: conversation_id.into(),
+                        })
+                })
+                .collect(),
             cursor: self.finished_turns.sequence,
         }
     }

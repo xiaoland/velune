@@ -333,6 +333,21 @@ struct ConversationListView: View {
 
     @ViewBuilder private func conversationManagementMenu(_ ids: Set<String>) -> some View {
         let targets = ids.compactMap { store.conversation(id: $0) }
+        if runMenu(targets) {
+            if targets.count == 1, let target = targets.first {
+                Button("发送消息…") { window.openComposerSheet(target.id) }
+                if store.device.resumableConversations[target.id] != nil {
+                    Button("继续") { window.resumeFromList(target.id) }
+                }
+            }
+            let stoppable = targets.filter { store.device.isStoppable($0.id) }
+            if !stoppable.isEmpty {
+                Button(targets.count > 1 ? "停止所选会话" : "停止") { store.device.stop(stoppable.map(\.id)) }
+            } else if targets.count == 1, let target = targets.first, store.device.subAgentRuntimeIDs[target.id] != nil {
+                Button("停止子 Agent") { store.device.stopSubAgents(of: target.id) }
+            }
+            Divider()
+        }
         if targets.count == 1, let target = targets.first {
             Button("重命名…") { renameTarget = target }.disabled(!store.canManageConversations || !store.canRenameConversation(target))
         }
@@ -371,6 +386,14 @@ struct ConversationListView: View {
             .disabled(targets.isEmpty || !store.canManageConversations || !targets.allSatisfy(store.canDeleteConversation))
         if targets.contains(where: { !store.canDeleteConversation($0) }) { Text("部分关联原生会话当前无法删除") }
         if targets.count == 1, let target = targets.first, !store.canRenameConversation(target) { Text("原生会话标题当前无法修改") }
+    }
+
+    /// Whether the menu offers running the conversations: sending, continuing
+    /// or stopping. Native sub-agents are continued by their parent's agent.
+    private func runMenu(_ targets: [Conversation]) -> Bool {
+        guard !targets.isEmpty, !store.device.isShuttingDown else { return false }
+        if targets.count > 1 { return targets.contains { store.device.isStoppable($0.id) } }
+        return targets[0].parentConversationID == nil
     }
 
     /// Moving files a conversation under another project in Velune's list;

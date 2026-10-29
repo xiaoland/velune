@@ -117,6 +117,13 @@ import QuickLookThumbnailing
         }
     }
 
+    /// Shows the shown conversation's draft as it is kept now, after another
+    /// composer (the send sheet) changed it; the text being edited here stays.
+    func reloadDraft() {
+        guard let conversationID, !(textView?.window?.firstResponder === textView), let kept = store?.draft(for: conversationID), kept != text else { return }
+        replace(with: kept)
+    }
+
     /// Puts an unsent message back, unless the shown conversation has a new draft.
     func restore(_ value: String, attachments sent: [URL]) {
         guard text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, attachments.isEmpty else { return }

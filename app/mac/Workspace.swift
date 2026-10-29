@@ -170,6 +170,21 @@ import VeluneBindings
     }
 }
 
+/// A conversation resumed from the list: the tab that does it without
+/// showing, until the core took the request or refused it.
+@MainActor final class BackgroundResume {
+    let tab: ConversationTab
+    /// The tab's accepted submissions before the resume.
+    let accepted: UInt64
+    var requested = false
+    var watch: AnyCancellable?
+    var timeout: Timer?
+    init(tab: ConversationTab, accepted: UInt64) {
+        self.tab = tab
+        self.accepted = accepted
+    }
+}
+
 /// A leaf of a window's split: its tabs and the one it shows.
 @MainActor final class Pane: ObservableObject, Identifiable {
     let id: UUID
@@ -484,6 +499,10 @@ struct WindowSeed: Codable, Hashable {
     @Published var agentsPopover = false
     /// A conversation opened over the window from one linked to it, and the sheet's size.
     @Published private(set) var sheetTab: ConversationTab?
+    /// A conversation's composer over the window, to send once without showing the conversation.
+    @Published private(set) var composerSheetTab: ConversationTab?
+    /// Conversations resumed from the list through tabs that do not show.
+    private var backgroundResumes: [UUID: BackgroundResume] = [:]
     private(set) var sheetSize = CGSize(width: 760, height: 640)
     /// The list's search text, shared by the sidebar and a floating list.
     @Published var listSearch = ""
@@ -675,6 +694,118 @@ struct WindowSeed: Codable, Hashable {
         sheetTab = nil
         tab.store.close()
     }
+
+    /// Open `conversationID`'s composer in a sheet over the window; the list
+    /// selection and the shown conversations stay.
+    func openComposerSheet(_ conversationID: String) {
+        closeComposerSheet()
+        let tab = makeTab(opening: conversationID)
+        tab.activate()
+        tab.composer.focusWhenShown()
+        composerSheetTab = tab
+    }
+
+    func closeComposerSheet() {
+        guard let tab = composerSheetTab else { return }
+        composerSheetTab = nil
+        tab.store.close()
+        // Tabs showing the conversation take the draft as the sheet left it.
+        for window in Self.openWindows where window.application === application {
+            for pane in window.panes.values {
+                for shown in pane.tabs where shown.store.selectedConversationID == tab.store.selectedConversationID { shown.composer.reloadDraft() }
+            }
+        }
+    }
+
+    /// The composer sheet's conversation in a tab of this window, one that shows it or a new one.
+    func openComposerSheetConversation() {
+        guard let tab = composerSheetTab, let id = tab.store.selectedConversationID else { return }
+        closeComposerSheet()
+        if !select(showing: id) { openInNewTab(id) }
+    }
+
+    /// Resume a conversation's stopped or failed turn from the list, as its
+    /// composer's Continue does, with the next-turn choices it keeps. A tab
+    /// showing it does it; otherwise one that does not show opens it first.
+    func resumeFromList(_ conversationID: String) {
+        if let shown = Self.openWindows.lazy.filter({ $0.application === self.application }).compactMap({ $0.tab(showing: conversationID)?.1 }).first {
+            guard shown.store.canResume else { return list.recordProblem("此会话当前不能继续", source: "继续会话") }
+            return shown.store.continueTurn()
+        }
+        let tab = makeTab(opening: conversationID)
+        tab.activate()
+        let id = tab.id
+        let resume = BackgroundResume(tab: tab, accepted: tab.store.acceptedSubmissions)
+        resume.watch = tab.store.objectWillChange.receive(on: RunLoop.main).sink { [weak self] _ in self?.advanceBackgroundResume(id) }
+        resume.timeout = Timer.scheduledTimer(withTimeInterval: 30, repeats: false) { [weak self] _ in
+            Task { @MainActor in self?.endBackgroundResume(id, problem: "继续会话超时") }
+        }
+        backgroundResumes[id] = resume
+    }
+
+    private func advanceBackgroundResume(_ id: UUID) {
+        guard let resume = backgroundResumes[id] else { return }
+        let store = resume.tab.store
+        if resume.requested {
+            if store.acceptedSubmissions != resume.accepted { return endBackgroundResume(id, problem: nil) }
+            // A refused resume records its own problem.
+            if store.composerRequest == nil && !store.isLoading { endBackgroundResume(id, problem: nil) }
+            return
+        }
+        guard store.loadedConversationID != nil, !store.isLoading, store.nextTurnSettled else { return }
+        guard store.canResume else { return endBackgroundResume(id, problem: "此会话当前不能继续") }
+        resume.requested = true
+        store.continueTurn()
+    }
+
+    private func endBackgroundResume(_ id: UUID, problem: String?) {
+        guard let resume = backgroundResumes.removeValue(forKey: id) else { return }
+        resume.timeout?.invalidate()
+        resume.watch = nil
+        resume.tab.store.close()
+        if let problem { list.recordProblem(problem, source: "继续会话") }
+    }
+
+    /// Development check of the list's run actions without driving the
+    /// interface: on the first listed conversation, send from the composer
+    /// sheet, stop from the list, then continue from the list.
+    func checkListActions(step: Int = 0, attempts: Int = 0) {
+        guard attempts < 240 else { return Self.checkLog("CHECK list-actions: step \(step) timed out") }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [self] in
+            let next = { (step: Int) in self.checkListActions(step: step) }
+            let retry = { self.checkListActions(step: step, attempts: attempts + 1) }
+            // One no tab shows, so continuing goes through a tab that does not show.
+            guard let id = application.conversations.first(where: { tab(showing: $0.id) == nil })?.id ?? application.conversations.first?.id else { return retry() }
+            switch step {
+            case 0:
+                openComposerSheet(id)
+                Self.checkLog("CHECK list-actions: sheet opened"); next(1)
+            case 1:
+                guard let tab = composerSheetTab, tab.store.canSend, tab.store.nextTurnSettled else { return retry() }
+                tab.composer.restore("SHEET_MESSAGE HOLD", attachments: [])
+                // Long enough to capture the sheet with its text.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 4) { tab.send(); next(2) }
+            case 2:
+                guard composerSheetTab == nil else { return retry() }
+                Self.checkLog("CHECK list-actions: sheet closed after the send was accepted"); next(3)
+            case 3:
+                guard application.isStoppable(id) else { return retry() }
+                application.stop([id])
+                Self.checkLog("CHECK list-actions: stop requested from the list"); next(4)
+            case 4:
+                guard application.resumableConversations[id] != nil, !application.isConversationRunning(id) else { return retry() }
+                resumeFromList(id)
+                Self.checkLog("CHECK list-actions: continue requested from the list"); next(5)
+            case 5:
+                guard backgroundResumes.isEmpty, application.resumableConversations[id] == nil else { return retry() }
+                Self.checkLog("CHECK list-actions: done")
+            default: break
+            }
+        }
+    }
+
+    /// Unbuffered, so a check launched with `open --stderr` shows its progress.
+    private static func checkLog(_ line: String) { FileHandle.standardError.write(Data((line + "\n").utf8)) }
 
     /// The sheet's conversation, as it stands, in a new tab after the focused pane's shown tab.
     func moveSheetToTab() {

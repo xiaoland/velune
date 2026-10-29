@@ -313,6 +313,36 @@ impl CoreRuntime {
         }
     }
 
+    /// Whether `session`, presenting `snapshot`, can start a native turn
+    /// without a user message: its own runtime resumes turns, it is idle
+    /// with nothing to answer or still working, and its last turn stopped,
+    /// failed or the native history marks it interrupted.
+    pub(super) fn resumable(
+        &self,
+        session: &session::Session,
+        snapshot: &crate::conversation::ConversationSnapshot,
+    ) -> bool {
+        let idle = !session.turn_running()
+            && matches!(snapshot.run_state, RunState::Idle | RunState::Failed);
+        idle && self
+            .runtime_instance(&snapshot.context_runtime_id)
+            .is_ok_and(|runtime| {
+                runtime.enabled
+                    && velune_agent_runtime::version::variant(runtime.type_id).can_resume_turns
+            })
+            && snapshot.pending_interactions.is_empty()
+            && snapshot.actions.can_send
+            && session.work().is_empty()
+            && snapshot.conversation.parent_conversation_id.is_none()
+            && snapshot
+                .messages
+                .iter()
+                .any(|message| message.role == crate::conversation::MessageRole::User)
+            && (session.send_queue.interrupted.is_some()
+                || snapshot.run_state == RunState::Failed
+                || snapshot.follow_up.can_resume)
+    }
+
     /// The follow-up the addressed session presents with `snapshot`.
     pub(super) fn follow_up(
         &self,
@@ -321,25 +351,6 @@ impl CoreRuntime {
         let queue = &self.session.send_queue;
         let idle =
             !self.turn_running() && matches!(snapshot.run_state, RunState::Idle | RunState::Failed);
-        let native_resume = self
-            .runtime_instance(&snapshot.context_runtime_id)
-            .is_ok_and(|runtime| {
-                runtime.enabled
-                    && velune_agent_runtime::version::variant(runtime.type_id).can_resume_turns
-            });
-        let can_continue = idle
-            && native_resume
-            && snapshot.pending_interactions.is_empty()
-            && snapshot.actions.can_send
-            && self.session.work().is_empty()
-            && snapshot.conversation.parent_conversation_id.is_none()
-            && snapshot
-                .messages
-                .iter()
-                .any(|message| message.role == crate::conversation::MessageRole::User)
-            && (queue.interrupted.is_some()
-                || snapshot.run_state == RunState::Failed
-                || snapshot.follow_up.can_resume);
         FollowUp {
             queue: queue.turns.iter().map(QueuedTurn::public).collect(),
             paused: queue.paused.clone(),
@@ -350,8 +361,7 @@ impl CoreRuntime {
                 .iter()
                 .any(|task| task.state != velune_agent_runtime::work::BackgroundState::Stopping),
             can_steer: self.can_steer(),
-            can_continue,
-            can_resume: can_continue,
+            can_resume: self.resumable(&self.session, snapshot),
             is_compacting: self.session.compacting,
             can_compact: idle
                 && self

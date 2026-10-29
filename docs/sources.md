@@ -489,4 +489,4 @@ S17 实施授权：用户决定全面切换 UniFFI，并要求现在开始拆分
 
 ## S56
 
-2026-10-29 用户解除架构重构期间的功能冻结，并提出首个 beta 前要加的两项功能：“side-chat (aka. claude code's btw)”；“session's context menu provide abilities to interrupt/resume the session or even open the composer in a sheet (for one-time send)”。对侧聊的方案答复：上下文“优先使用 Agent Runtime 的原生行为，如果 Agent Runtime 本身没有那就是按照你说的选项1处理”（选项 1 为在运行时内原生 fork 出不保存的临时副本）；形态为多轮、关闭即丢弃；侧聊中能做什么“由 native agent runtime 自己处理，默认不做任何限制”；两项功能首个 beta 前只做 Mac。产品归 [会话与会话列表](prd/conversations.md#侧聊) 与 [输入区](prd/composer.md#在-sheet-中发送)，实施归 `tasks/side-chat` 与 `tasks/conversation-menu-actions`。
+2026-10-29 用户解除架构重构期间的功能冻结，并提出首个 beta 前要加的两项功能：“side-chat (aka. claude code's btw)”；“session's context menu provide abilities to interrupt/resume the session or even open the composer in a sheet (for one-time send)”。对侧聊的方案答复：上下文“优先使用 Agent Runtime 的原生行为，如果 Agent Runtime 本身没有那就是按照你说的选项1处理”（选项 1 为在运行时内原生 fork 出不保存的临时副本）；形态为多轮、关闭即丢弃；侧聊中能做什么“由 native agent runtime 自己处理，默认不做任何限制”；两项功能首个 beta 前只做 Mac。产品归 [会话与会话列表](prd/conversations.md#侧聊) 与 [输入区](prd/composer.md#在-sheet-中发送)，侧聊的实施归 `tasks/side-chat`；会话菜单的实施已完成（git 历史：tasks/conversation-menu-actions）。

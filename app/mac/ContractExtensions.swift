@@ -7,7 +7,7 @@ import VeluneBindings
 extension FollowUp {
     /// Nothing queued and nothing offered; previews and drafts have no follow-up.
     init() {
-        self.init(queue: [], paused: nil, waiting: nil, canStopSubAgents: false, canSteer: false, canContinue: false,
+        self.init(queue: [], paused: nil, waiting: nil, canStopSubAgents: false, canSteer: false,
                   canResume: false, canCompact: false, isCompacting: false, editable: [])
     }
     /// The next message needs another runtime process; the queue sends it by

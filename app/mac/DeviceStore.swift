@@ -56,6 +56,15 @@ final class DeviceStore: ObservableObject {
     @Published private(set) var subAgentParentIDs: Set<String> = []
     /// Conversations with a request waiting for the user, such as an approval.
     @Published private(set) var waitingConversationIDs: Set<String> = []
+    /// Open conversations whose stopped or failed turn can resume without a
+    /// new message, by the runtime that resumes it.
+    @Published private(set) var resumableConversations: [String: String] = [:]
+    /// The runtime each conversation executing in Velune runs on, for stopping it from the list.
+    private var executionRuntimeIDs: [String: String] = [:]
+    /// The runtime of each conversation whose native sub-agents run in Velune.
+    private(set) var subAgentRuntimeIDs: [String: String] = [:]
+    /// Stops requested from the list and not yet answered.
+    @Published private(set) var stoppingConversationIDs: Set<String> = []
     /// Conversations running elsewhere that the list did not contain when last read again.
     private var unlistedElsewhereIDs: Set<String> = []
     @Published private(set) var gateway = GatewaySummary(id: "default", name: "默认网关", providers: [], routes: []) { didSet { if oldValue != gateway { configurationRevision &+= 1 } } }
@@ -515,6 +524,12 @@ final class DeviceStore: ObservableObject {
                     if self.subAgentParentIDs != parents { self.subAgentParentIDs = parents }
                     let waiting = Set(active.filter { $0.pendingInteractions > 0 }.map(\.conversationId))
                     if self.waitingConversationIDs != waiting { self.waitingConversationIDs = waiting }
+                    self.executionRuntimeIDs = Dictionary(active.filter { $0.runState == .running && $0.parentConversationId == nil }
+                        .map { ($0.conversationId, $0.contextRuntimeId) }, uniquingKeysWith: { first, _ in first })
+                    self.subAgentRuntimeIDs = Dictionary(active.filter { $0.runState == .running }
+                        .compactMap { item in item.parentConversationId.map { ($0, item.contextRuntimeId) } }, uniquingKeysWith: { first, _ in first })
+                    let resumable = Dictionary(activity.resumable.map { ($0.conversationId, $0.runtimeId) }, uniquingKeysWith: { first, _ in first })
+                    if self.resumableConversations != resumable { self.resumableConversations = resumable }
                     // A conversation started outside Velune, or by an agent through
                     // Velune, appears once the list is read again; a sub-agent is
                     // listed under its parent instead.
@@ -533,6 +548,40 @@ final class DeviceStore: ObservableObject {
             }
         }
     }
+    /// Stop the turns of those of `ids` that run in Velune, as their
+    /// composers' stop does, without opening them; sub-agents stop with
+    /// their parent's turn.
+    func stop(_ ids: [String]) {
+        guard !isPreview, !isShuttingDown, let transport else { return }
+        let targets = ids.compactMap { id in executionRuntimeIDs[id].map { (id: id, runtime: $0) } }.filter { !stoppingConversationIDs.contains($0.id) }
+        guard !targets.isEmpty else { return }
+        stoppingConversationIDs.formUnion(targets.map(\.id))
+        performOnQueue { [weak self] in
+            let failures = targets.compactMap { target in
+                (try? transport.cancel(runtimeID: target.runtime, conversationID: target.id)) == nil ? target.id : nil
+            }
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.stoppingConversationIDs.subtract(targets.map(\.id))
+                if !failures.isEmpty { self.recordProblem(failures.count == 1 ? "会话未能停止" : "\(failures.count) 个会话未能停止", source: "停止会话") }
+                self.pollActiveConversations()
+            }
+        }
+    }
+    /// Stop the native sub-agents a conversation started, after its own turn ended.
+    func stopSubAgents(of id: String) {
+        guard !isPreview, !isShuttingDown, let transport, let runtimeID = subAgentRuntimeIDs[id] else { return }
+        performOnQueue { [weak self] in
+            let result = Result { try transport.stopSubAgents(runtimeID: runtimeID, conversationID: id) }
+            DispatchQueue.main.async {
+                guard let self else { return }
+                if case .failure(let failure) = result { self.recordProblem(failure, source: "停止子 Agent") }
+                self.pollActiveConversations()
+            }
+        }
+    }
+    func isStoppable(_ id: String) -> Bool { executionRuntimeIDs[id] != nil && !stoppingConversationIDs.contains(id) }
+
     func shutdown(stoppingWork: Bool = false, completion: @escaping (Bool) -> Void) {
         guard !isShuttingDown else { completion(false); return }
         guard !isPreview, let transport else { completion(true); return }

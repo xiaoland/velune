@@ -76,6 +76,9 @@ struct VeluneRootView: View {
         .sheet(item: Binding(get: { window.sheetTab }, set: { if $0 == nil { window.closeSheet() } })) { sheet in
             LinkedConversationSheet(window: window, tab: sheet, store: sheet.store, size: window.sheetSize)
         }
+        .sheet(item: Binding(get: { window.composerSheetTab }, set: { if $0 == nil { window.closeComposerSheet() } })) { sheet in
+            ComposerSheet(window: window, tab: sheet, store: sheet.store)
+        }
         .onChange(of: store.device.outlinePresentation) { _, _ in window.outlinePopover = false }
         .focusedSceneValue(\.conversationCommands, ConversationCommandTarget(store: focused, send: tab.send, window: window))
         .task { if previewSettings { openSettings() } }

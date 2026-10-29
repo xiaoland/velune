@@ -115,9 +115,6 @@ pub struct FollowUp {
     pub can_stop_sub_agents: bool,
     /// The runtime takes a message into the running turn.
     pub can_steer: bool,
-    /// Legacy name for `can_resume`: the current context permits native
-    /// recovery without a new user message.
-    pub can_continue: bool,
     /// The stopped or failed context can start a native turn without a user message.
     #[serde(default)]
     pub can_resume: bool,

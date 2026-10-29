@@ -358,6 +358,9 @@ pub struct FinishedTurn {
 pub struct ConversationActivity {
     pub active: Vec<ActiveConversation>,
     pub finished: Vec<FinishedTurn>,
+    /// Open conversations that can resume their native turn without a new
+    /// user message now; the resume request checks again.
+    pub resumable: Vec<ConversationReference>,
     pub cursor: u64,
 }
 

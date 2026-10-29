@@ -56,6 +56,8 @@ final class ConversationStore: ObservableObject {
     @Published private var snapshot: ConversationSnapshot?
     @Published private var executionStarting = false
     @Published private(set) var composerRequest: ComposerSubmission.Phase?
+    /// Counts sends, queued messages, insertions and resumes the core took.
+    @Published private(set) var acceptedSubmissions: UInt64 = 0
     @Published private var stopRequested = false
     /// A conversation chosen while an operation ran, opened when it ends.
     private var deferredSelection: (id: String, move: NavigationMove)?
@@ -176,6 +178,12 @@ final class ConversationStore: ObservableObject {
     var canResume: Bool { canSend && followUp.canResume && nextTurnRuntimeID == snapshot?.contextRuntimeID }
     var canCompact: Bool { canSend && followUp.canCompact && nextTurnRuntimeID == snapshot?.contextRuntimeID }
     var continueHelp: String { "从现有上下文继续，不新增用户消息" }
+    /// The next turn's choices are final: its runtime's catalog was read, or could not be.
+    var nextTurnSettled: Bool {
+        guard nextTurn != nil, let runtimeID = nextTurnRuntimeID else { return false }
+        if case .loading = modelCatalogs[runtimeID] ?? .loading { return false }
+        return true
+    }
 
     // MARK: - Next turn
 
@@ -802,6 +810,7 @@ final class ConversationStore: ObservableObject {
             self.executionStarting = false
             self.composerRequest = nil
             self.pendingSend?.accepted = true
+            self.acceptedSubmissions &+= 1
             self.applySnapshotResult(value)
         }
         return true
@@ -843,7 +852,7 @@ final class ConversationStore: ObservableObject {
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !attachments.isEmpty else { return false }
         guard canQueue, let target = nextTurnRuntimeID, let source = snapshot?.conversation.runtimeID else { return false }
         let turn = ComposedTurn(text: text, effort: nextTurn?.effort, permissionMode: effectivePermissionMode?.id, attachments: attachments)
-        changeQueue(.add(sourceRuntimeId: source, targetRuntimeId: target, selection: nextTurnModel, turn: turn), onFailure: onFailure)
+        changeQueue(.add(sourceRuntimeId: source, targetRuntimeId: target, selection: nextTurnModel, turn: turn), onFailure: onFailure) { [weak self] in self?.acceptedSubmissions &+= 1 }
         return true
     }
     func compactContext() {
@@ -867,6 +876,7 @@ final class ConversationStore: ObservableObject {
                 onFailure: { [weak self] _ in self?.executionStarting = false; self?.composerRequest = nil }) { [weak self] value in
             self?.executionStarting = false
             self?.composerRequest = nil
+            self?.acceptedSubmissions &+= 1
             self?.applySnapshotResult(value)
         }
     }
@@ -875,7 +885,10 @@ final class ConversationStore: ObservableObject {
     func steer(text: String, attachments: [String] = [], onFailure: (() -> Void)? = nil) {
         guard canSteer, let runtimeID = projectionRuntimeID, let conversationID = loadedConversationID, let transport else { onFailure?(); return }
         let turn = ComposedTurn(text: text, effort: nil, permissionMode: nil, attachments: attachments)
-        enqueue({ try transport.steerTurn(runtimeID: runtimeID, conversationID: conversationID, turn: turn) }, onFailure: { _ in onFailure?() }) { [weak self] in self?.applySnapshotResult($0) }
+        enqueue({ try transport.steerTurn(runtimeID: runtimeID, conversationID: conversationID, turn: turn) }, onFailure: { _ in onFailure?() }) { [weak self] in
+            self?.acceptedSubmissions &+= 1
+            self?.applySnapshotResult($0)
+        }
     }
     /// Whether the user message may be edited now, and how. The edit goes to
     /// the conversation's own runtime with the next turn's choices.
