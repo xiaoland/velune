@@ -5,7 +5,7 @@ import VeluneBindings
 /// Discovery only probes declared paths and public versions. Importing copies
 /// runtime configuration; provider import remains an explicit separate action.
 struct RuntimeDiscoveryView: View {
-    @ObservedObject var store: AppStore
+    @ObservedObject var store: DeviceStore
     @Environment(\.dismiss) private var dismiss
     @State private var candidates: [RuntimeDiscoveryCandidate] = []
     @State private var selectedIDs: Set<String> = []

@@ -8,7 +8,7 @@ struct AnalyticsMenuItem: View {
 }
 
 struct AnalyticsView: View {
-    @ObservedObject var store: AppStore
+    @ObservedObject var store: DeviceStore
     @Environment(\.scenePhase) private var scenePhase
     @State private var page = AnalyticsPage.overview
     @State private var period = AnalyticsPeriod.sevenDays

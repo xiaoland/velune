@@ -250,7 +250,7 @@ struct DetachedToolContent: View {
 
 private struct SubtitleFollower: ViewModifier {
     let window: ConversationWindowModel
-    @ObservedObject var store: AppStore
+    @ObservedObject var store: ConversationStore
     let kind: ToolWindowKind
 
     func body(content: Content) -> some View {
@@ -264,7 +264,7 @@ private struct SubtitleFollower: ViewModifier {
 struct ToolOutline: View {
     let window: ConversationWindowModel
     @ObservedObject var tab: ConversationTab
-    @ObservedObject var store: AppStore
+    @ObservedObject var store: ConversationStore
     let inSidebar: Bool
 
     var body: some View {
@@ -273,7 +273,7 @@ struct ToolOutline: View {
         } else {
             TranscriptOutlineView(model: store.transcript, inPopover: false, inSidebar: inSidebar, layout: window,
                                   editMessage: { [store, tab] id in store.editability(of: id) == nil ? nil : { tab.edit(messageID: id) } },
-                                  isRunning: store.loadedConversationID.map(store.isConversationRunning) ?? false,
+                                  isRunning: store.loadedConversationID.map(store.device.isConversationRunning) ?? false,
                                   goToBottom: { [tab] in tab.scrollRequest &+= 1 }) { tab.navigate(to: $0) }
         }
     }
@@ -282,7 +282,7 @@ struct ToolOutline: View {
 private struct ToolAgents: View {
     let window: ConversationWindowModel
     let tab: ConversationTab
-    @ObservedObject var store: AppStore
+    @ObservedObject var store: ConversationStore
     let inSidebar: Bool
 
     var body: some View {
@@ -294,7 +294,7 @@ private struct ToolAgents: View {
 private struct ToolComposer: View {
     @ObservedObject var window: ConversationWindowModel
     @ObservedObject var tab: ConversationTab
-    @ObservedObject var store: AppStore
+    @ObservedObject var store: ConversationStore
     let contentHeight: ((CGFloat) -> Void)?
 
     var body: some View {

@@ -12,7 +12,7 @@ struct AgentURIView: View {
                 List(window.agentURIMatches, selection: $selection) { conversation in
                     VStack(alignment: .leading) {
                         Text(conversation.title)
-                        Text(window.list.runtimeInstances.first { $0.id == conversation.runtimeID }?.name ?? conversation.runtimeID).foregroundStyle(.secondary)
+                        Text(window.list.device.runtimeInstances.first { $0.id == conversation.runtimeID }?.name ?? conversation.runtimeID).foregroundStyle(.secondary)
                         if let cwd = conversation.cwd { Text(cwd).font(.caption).foregroundStyle(.secondary) }
                     }
                     .tag(conversation.id)

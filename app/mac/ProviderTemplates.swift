@@ -6,7 +6,7 @@ import VeluneBindings
 /// stays editable, and importing reuses an agent runtime's provider. The
 /// choice then continues in the same sheet.
 struct ProviderCreationView: View {
-    @ObservedObject var store: AppStore
+    @ObservedObject var store: DeviceStore
     @Environment(\.dismiss) private var dismiss
     private enum Choice: Hashable { case template(String), runtimeImport }
     private enum Step { case choosing, editing(ProviderTemplate), importing }

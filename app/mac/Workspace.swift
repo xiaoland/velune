@@ -8,7 +8,7 @@ import VeluneBindings
 /// pane or window.
 @MainActor final class ConversationTab: ObservableObject, Identifiable {
     let id: UUID
-    let store: AppStore
+    let store: ConversationStore
     /// Not observed by the tab: only the composer re-renders while typing.
     let composer = ComposerModel()
     @Published var scrollRequest: UInt64 = 0
@@ -36,7 +36,7 @@ import VeluneBindings
     /// Reading starts when the tab is first shown, so restored background tabs cost nothing.
     private var pendingStart: (() -> Void)?
 
-    init(id: UUID = UUID(), store: AppStore, start: @escaping () -> Void) {
+    init(id: UUID = UUID(), store: ConversationStore, start: @escaping () -> Void) {
         self.id = id
         self.store = store
         pendingStart = start
@@ -130,7 +130,7 @@ import VeluneBindings
             edit(messageID: users[1].id)
         }
     }
-    private func transcript(of store: AppStore) -> [DeliveredMessage] { store.transcript.rows.map(\.message) }
+    private func transcript(of store: ConversationStore) -> [DeliveredMessage] { store.transcript.rows.map(\.message) }
 
     /// Go back to the conversation shown before, where reading stood in it.
     func goBack() {
@@ -429,7 +429,7 @@ struct WindowSeed: Codable, Hashable {
         let request = UUID()
         agentURIRequest = request
         showsAgentURI = false
-        list.resolveAgentURI(uri) { [weak self] result in
+        list.device.resolveAgentURI(uri) { [weak self] result in
             guard let self, agentURIRequest == request else { return }
             agentURIMatches = []
             agentURIFailure = nil
@@ -451,11 +451,11 @@ struct WindowSeed: Codable, Hashable {
         }
     }
 
-    let application: AppStore
+    let application: DeviceStore
     /// The paired device the window shows; nil for this Mac.
     let device: String?
     /// The list's workspace: list, search and selection; it opens no conversation.
-    let list: AppStore
+    let list: ConversationStore
     @Published private(set) var layout: PaneLayout
     @Published private(set) var panes: [UUID: Pane]
     @Published private(set) var focusedPaneID: UUID
@@ -533,12 +533,12 @@ struct WindowSeed: Codable, Hashable {
         return all.lazy.compactMap(\.model).first { $0.pane(holding: tab) != nil }
     }
 
-    init(application: AppStore, kind: ConversationWindowKind, device: String? = nil) {
+    init(application: DeviceStore, kind: ConversationWindowKind, device: String? = nil) {
         self.application = application
         self.kind = kind
         self.device = device
-        list = application.makeWorkspace()
-        let store = application.makeWorkspace()
+        list = ConversationStore(device: application)
+        let store = ConversationStore(device: application)
         let first = Pane(tabs: [ConversationTab(store: store, start: { store.start() })])
         layout = .pane(first.id)
         panes = [first.id: first]
@@ -585,7 +585,7 @@ struct WindowSeed: Codable, Hashable {
             let restored = saved.layout.paneIDs.map { paneID in
                 let savedPane = saved.panes[paneID]!
                 let tabs = savedPane.tabs.map { tabID in
-                    let store = application.makeWorkspace()
+                    let store = ConversationStore(device: application)
                     let conversationID = saved.conversations[tabID]
                     return ConversationTab(id: tabID, store: store, start: {
                         store.start(loadFirstConversation: lone, newConversation: !lone && conversationID == nil, opening: conversationID)
@@ -599,7 +599,7 @@ struct WindowSeed: Codable, Hashable {
             pinned = saved.pinned
             for pane in restored { pane.selected.activate() }
         } else if let id = seed?.conversationID {
-            let store = application.makeWorkspace()
+            let store = ConversationStore(device: application)
             replacePanes(with: [Pane(tabs: [ConversationTab(store: store, start: { store.start(loadFirstConversation: false, opening: id) })])], layout: nil)
             focused.activate()
         } else {
@@ -611,7 +611,7 @@ struct WindowSeed: Codable, Hashable {
 
     /// The panes before reading starts: the first pane's untouched tab gives way.
     private func replacePanes(with replacement: [Pane], layout: PaneLayout?) {
-        for tab in allTabs { tab.store.shutdown { _ in } }
+        for tab in allTabs { tab.store.close() }
         subscriptions = [:]
         paneSubscriptions = [:]
         panes = Dictionary(uniqueKeysWithValues: replacement.map { ($0.id, $0) })
@@ -673,7 +673,7 @@ struct WindowSeed: Codable, Hashable {
     func closeSheet() {
         guard let tab = sheetTab else { return }
         sheetTab = nil
-        tab.store.shutdown { _ in }
+        tab.store.close()
     }
 
     /// The sheet's conversation, as it stands, in a new tab after the focused pane's shown tab.
@@ -697,7 +697,7 @@ struct WindowSeed: Codable, Hashable {
     func openInNewTab(adopting result: SnapshotResult) {
         guard let id = result.snapshot?.conversation.id else { return }
         if select(showing: id) { return }
-        let store = application.makeWorkspace()
+        let store = ConversationStore(device: application)
         let pane = focusedPane
         let index = pane.tabs.firstIndex { $0.id == pane.selectedID }.map { $0 + 1 }
         pane.insert(ConversationTab(store: store, start: {
@@ -715,7 +715,7 @@ struct WindowSeed: Codable, Hashable {
     }
 
     private func makeTab(opening conversationID: String?) -> ConversationTab {
-        let store = application.makeWorkspace()
+        let store = ConversationStore(device: application)
         return ConversationTab(store: store, start: {
             store.start(loadFirstConversation: false, newConversation: conversationID == nil, opening: conversationID)
         })
@@ -759,7 +759,7 @@ struct WindowSeed: Codable, Hashable {
     /// Close a tab: its pane's last tab closes the pane, the window's last closes the window.
     func closeTab(_ id: UUID) {
         guard let tab = detach(id, emptying: .close) else { return }
-        tab.store.shutdown { _ in }
+        tab.store.close()
     }
 
     func closeOtherTabs(_ id: UUID) {
@@ -770,7 +770,7 @@ struct WindowSeed: Codable, Hashable {
     /// Close a pane with all its tabs.
     func closePane(_ id: UUID) {
         guard isSplit, let pane = panes[id] else { return }
-        for tab in pane.tabs { tab.store.shutdown { _ in } }
+        for tab in pane.tabs { tab.store.close() }
         removePane(id)
     }
 

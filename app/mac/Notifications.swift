@@ -9,13 +9,13 @@ import VeluneBindings
 /// appear is the user's choice in System Settings.
 @MainActor
 final class ConversationNotifier: NSObject, UNUserNotificationCenterDelegate {
-    private weak var application: AppStore?
+    private weak var application: DeviceStore?
     private var authorizationRequested = false
     private var pendingCounts: [String: UInt32] = [:]
     /// Conversations whose turn ended while Velune was in the background.
     private var unseenFinished: Set<String> = []
 
-    init(application: AppStore) {
+    init(application: DeviceStore) {
         self.application = application
         super.init()
         UNUserNotificationCenter.current().delegate = self
@@ -107,7 +107,7 @@ final class ConversationNotifier: NSObject, UNUserNotificationCenterDelegate {
             NSApp.activate()
             application?.showConversation(conversationID)
             // The keyboard goes where the notification points: the request waiting, else the composer.
-            guard let application, let window = ConversationWindowModel.openWindows.first(where: { $0.focused.store === application.focusedWorkspace }) else { return }
+            guard let application, let window = ConversationWindowModel.openWindows.first(where: { $0.focused.store === application.focusedConversation }) else { return }
             if application.waitingConversationIDs.contains(conversationID) { window.focused.focusInteraction() } else { window.focused.composer.focusWhenShown() }
         }
     }

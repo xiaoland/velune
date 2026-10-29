@@ -7,7 +7,7 @@ import VeluneBindings
 /// diff below. Read-only; files open in their default application.
 @MainActor
 struct ChangeReviewView: View {
-    @ObservedObject var store: AppStore
+    @ObservedObject var store: ConversationStore
     @State private var changes: WorkingChanges?
     @State private var selection: String?
     @State private var diff: FileDiff?

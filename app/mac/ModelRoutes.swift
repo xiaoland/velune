@@ -9,7 +9,7 @@ struct RouteMember: Identifiable {
     var title: String { "\(model.displayName) · \(provider.name)" }
 }
 
-extension AppStore {
+extension DeviceStore {
     func routeMember(_ recordKey: String) -> RouteMember? {
         for provider in providers { if let model = provider.models.first(where: { $0.recordKey == recordKey }) { return RouteMember(provider: provider, model: model) } }
         return nil
@@ -32,7 +32,7 @@ private func stickyExplanation(_ strategy: RoutingStrategy) -> String {
 }
 
 struct ModelRouteSettingsView: View {
-    @ObservedObject var store: AppStore
+    @ObservedObject var store: DeviceStore
     @State private var selectedID: String?
     @State private var editor: ModelRoute?
     @State private var deleting: ModelRoute?
@@ -89,7 +89,7 @@ struct ModelRouteSettingsView: View {
 
 /// A route as it stands: how it picks, and each member's login and quota.
 private struct ModelRouteOverview: View {
-    @ObservedObject var store: AppStore
+    @ObservedObject var store: DeviceStore
     let route: ModelRoute
     let edit: () -> Void
     let editProvider: (ProviderSummary) -> Void
@@ -143,7 +143,7 @@ private struct ModelRouteOverview: View {
 
 /// One member: which model of which provider, whether it can be used now, and its quota.
 private struct RouteMemberStatus: View {
-    @ObservedObject var store: AppStore
+    @ObservedObject var store: DeviceStore
     let member: RouteMember
     let position: Int
     let weight: UInt32?
@@ -199,7 +199,7 @@ private struct RouteMemberStatus: View {
 }
 
 private struct ModelRouteEditor: View {
-    @ObservedObject var store: AppStore
+    @ObservedObject var store: DeviceStore
     let route: ModelRoute
     @Environment(\.dismiss) private var dismiss
     @State private var name = ""

@@ -4,7 +4,7 @@ import VeluneBindings
 
 /// The focused pane of the key window, and its window.
 struct ConversationCommandTarget {
-    let store: AppStore
+    let store: ConversationStore
     let send: () -> Void
     let window: ConversationWindowModel
 }
@@ -226,7 +226,7 @@ struct ConversationWindow: View {
     @Environment(\.openWindow) private var openWindow
     let previewEmpty: Bool
     let previewSettings: Bool
-    init(application: AppStore, kind: ConversationWindowKind, seed: WindowSeed?, previewEmpty: Bool, previewSettings: Bool) {
+    init(application: DeviceStore, kind: ConversationWindowKind, seed: WindowSeed?, previewEmpty: Bool, previewSettings: Bool) {
         // A paired device's window shows that device's core through the same interface.
         let target = seed?.device.flatMap { DeviceHub.shared?.store(for: $0) } ?? application
         _window = StateObject(wrappedValue: ConversationWindowModel(application: target, kind: kind, device: seed?.device))
@@ -264,7 +264,7 @@ struct ConversationWindow: View {
 
 @MainActor
 final class VeluneApplicationDelegate: NSObject, NSApplicationDelegate {
-    weak var store: AppStore?
+    weak var store: DeviceStore?
     private var terminationPending = false
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
@@ -305,21 +305,21 @@ final class VeluneApplicationDelegate: NSObject, NSApplicationDelegate {
 @MainActor
 struct VeluneApp: App {
     @NSApplicationDelegateAdaptor(VeluneApplicationDelegate.self) private var appDelegate
-    @StateObject private var store: AppStore
+    @StateObject private var store: DeviceStore
     private let previewEmpty: Bool
     private let previewSettings: Bool
 
     init() {
         let preview = Bundle.main.bundleIdentifier == "local.velune.visual-preview" || CommandLine.arguments.contains { $0.hasPrefix("--preview") }
-        let applicationStore = AppStore(preview: preview)
+        let applicationStore = DeviceStore(preview: preview)
         _store = StateObject(wrappedValue: applicationStore)
         previewEmpty = CommandLine.arguments.contains("--preview-empty")
         previewSettings = CommandLine.arguments.contains("--preview-settings")
         appDelegate.store = applicationStore
-        if !preview, let transport = applicationStore.resourceTransport {
+        if !preview, let transport = applicationStore.transport {
             DeviceHub(local: transport).start()
         }
-        KeyboardShortcutSettings.shared.load(home: applicationStore.resourceTransport?.stateDirectory) { [weak applicationStore] in
+        KeyboardShortcutSettings.shared.load(home: applicationStore.transport?.stateDirectory) { [weak applicationStore] in
             applicationStore?.recordProblem($0, source: "保存快捷键")
         }
         // Tabs live in each pane; the system's window tabs would stack a second, look-alike bar above them.

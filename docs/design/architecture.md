@@ -453,7 +453,7 @@ Pi 首条消息前的未落盘会话仍由活动 SessionManager 拥有。仅在�
 
 ## Mac 工作区与共享执行
 
-窗口与原生Tab各自持有AppStore工作区，共享同一个Transport与内嵌application。共享层管理配置、认证、问题与唯一执行投影；各工作区管理当前阅读会话、加载代次、消息投影和下一轮意图。只读read_conversation返回指定会话历史或当前相同身份的活动投影，不替换执行上下文；历史turn由临时TranscriptProjection推导，不改活动计时。snapshot查询同时携带运行时和会话身份，非活动来源返回无快照。send_turn携带来源运行时／会话以及目标运行时／模型，在一个核心操作内激活并派发指定来源。平台命令作用于focused scene，不能广播给全部窗口。
+Mac 每台设备一个 DeviceStore，持有 Transport 与内嵌 application，管理配置、会话列表、认证、问题与运行状态；窗口的会话列表与每个标签页各一个 ConversationStore，管理当前阅读会话、加载代次、消息投影和下一轮意图。只读read_conversation返回指定会话历史或当前相同身份的活动投影，不替换执行上下文；历史turn由临时TranscriptProjection推导，不改活动计时。snapshot查询同时携带运行时和会话身份，非活动来源返回无快照。send_turn携带来源运行时／会话以及目标运行时／模型，在一个核心操作内激活并派发指定来源。平台命令作用于focused scene，不能广播给全部窗口。
 
 Mac未发送草稿不提前创建原生SDK会话，防止多个Tab覆盖尚未落盘的Pi会话。首次发送由共享Transport锁串行执行create与send，创建阶段立即将原生身份交给工作区；发送失败不撤销创建、不自动重发。窗口关闭只释放该工作区，应用终止才关闭共享Transport。该设计没有会话内容数据库或新的Tab布局持久化。
 

@@ -108,7 +108,7 @@ extension View {
     /// once, again every two seconds while a sample is under way or nothing
     /// has been read, and otherwise every half minute. Reading lets the core
     /// sample an expired observation; it never polls an idle provider itself.
-    func readsQuota(of providerIDs: [String], from store: AppStore) -> some View {
+    func readsQuota(of providerIDs: [String], from store: DeviceStore) -> some View {
         task(id: providerIDs) {
             guard !providerIDs.isEmpty else { return }
             var lastRead = Date.distantPast
@@ -125,7 +125,7 @@ extension View {
 /// used-percent ceiling of each window, which every route and direct use of
 /// the provider is held to.
 struct ProviderQuotaForm: View {
-    @ObservedObject var store: AppStore
+    @ObservedObject var store: DeviceStore
     /// `nil` until the provider is saved.
     let providerID: String?
     @Binding var limits: [QuotaLimit]

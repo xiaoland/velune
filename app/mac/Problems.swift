@@ -92,7 +92,7 @@ struct AppProblem: Identifiable, Sendable, Equatable {
 }
 
 struct ProblemsButton: View {
-    @ObservedObject var store: AppStore
+    @ObservedObject var store: DeviceStore
     @Environment(\.openWindow) private var openWindow
     var body: some View {
         Button { openWindow(id: "problems") } label: {
@@ -102,7 +102,7 @@ struct ProblemsButton: View {
 }
 
 struct ProblemsMenuItem: View {
-    @ObservedObject var store: AppStore
+    @ObservedObject var store: DeviceStore
     @ObservedObject private var shortcuts = KeyboardShortcutSettings.shared
     @Environment(\.openWindow) private var openWindow
     var body: some View {
@@ -111,7 +111,7 @@ struct ProblemsMenuItem: View {
 }
 
 struct ProblemsView: View {
-    @ObservedObject var store: AppStore
+    @ObservedObject var store: DeviceStore
     @State private var selection: UUID?
     private var selected: AppProblem? { store.problems.first { $0.id == selection } }
     var body: some View {

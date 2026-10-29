@@ -15,11 +15,11 @@ enum ConversationToolbar {
 struct VeluneRootView: View {
     @ObservedObject var window: ConversationWindowModel
     /// The list's workspace.
-    @ObservedObject var store: AppStore
+    @ObservedObject var store: ConversationStore
     /// The focused pane's shown tab.
     @ObservedObject var tab: ConversationTab
     /// Its workspace.
-    @ObservedObject var focused: AppStore
+    @ObservedObject var focused: ConversationStore
     let previewEmpty: Bool
     let previewSettings: Bool
     @ObservedObject private var shortcuts = KeyboardShortcutSettings.shared
@@ -76,7 +76,7 @@ struct VeluneRootView: View {
         .sheet(item: Binding(get: { window.sheetTab }, set: { if $0 == nil { window.closeSheet() } })) { sheet in
             LinkedConversationSheet(window: window, tab: sheet, store: sheet.store, size: window.sheetSize)
         }
-        .onChange(of: store.outlinePresentation) { _, _ in window.outlinePopover = false }
+        .onChange(of: store.device.outlinePresentation) { _, _ in window.outlinePopover = false }
         .focusedSceneValue(\.conversationCommands, ConversationCommandTarget(store: focused, send: tab.send, window: window))
         .task { if previewSettings { openSettings() } }
     }
@@ -124,7 +124,7 @@ struct VeluneRootView: View {
         if showsPinItem { ToolbarItem(id: "pin") { pinToggle } }
         ToolbarItem(id: "split") { splitButton }
         if Self.changeReviewEnabled { ToolbarItem(id: "changes") { changesToggle } }
-        if !store.problems.isEmpty { ToolbarItem(id: "problems") { ProblemsButton(store: store) } }
+        if !store.device.problems.isEmpty { ToolbarItem(id: "problems") { ProblemsButton(store: store.device) } }
     }
 
     @ToolbarContentBuilder private var toolbarItems: some ToolbarContent {
@@ -142,7 +142,7 @@ struct VeluneRootView: View {
                 case .subAgents: if showsAgentsItem { agentsButton }
                 case .pin: if showsPinItem { pinToggle }
                 case .split: splitButton
-                case .problems: if !store.problems.isEmpty { ProblemsButton(store: store) }
+                case .problems: if !store.device.problems.isEmpty { ProblemsButton(store: store.device) }
                 case .listFilter, .newConversation: EmptyView()
                 }
             }
@@ -220,7 +220,7 @@ struct VeluneRootView: View {
     /// button; in their own place they pop over from it, offered only when
     /// the focused conversation has any.
     @ViewBuilder private var agentsButton: some View {
-        let running = LinkedAgent.all(of: focused).contains { focused.isConversationRunning($0.id) }
+        let running = LinkedAgent.all(of: focused).contains { focused.device.isConversationRunning($0.id) }
         if window.tools[.agents].place != .builtIn {
             Toggle(isOn: Binding(get: { window.tools.isOpen(.agents) }, set: { _ in window.toggle(.agents) })) { Label("关联 Agent", systemImage: "person.2") }
                 .help(shortcuts.help(window.tools.isOpen(.agents) ? "隐藏关联 Agent" : "显示关联 Agent", .showAgents))
@@ -239,7 +239,7 @@ struct VeluneRootView: View {
     }
 
     @ViewBuilder private func settingOutlineButton(unavailable: Bool) -> some View {
-        switch store.outlinePresentation {
+        switch store.device.outlinePresentation {
         case .popover:
             Button { window.outlinePopover.toggle() } label: { Label("会话大纲", systemImage: "list.bullet") }
                 .help(shortcuts.help("会话大纲", .showOutline)).disabled(unavailable)
@@ -247,7 +247,7 @@ struct VeluneRootView: View {
                 .popover(isPresented: Binding(get: { window.outlinePopover && !unavailable }, set: { window.outlinePopover = $0 }), arrowEdge: .bottom) {
                     TranscriptOutlineView(model: focused.transcript, layout: window, editMessage: { [focused, tab] id in
                         focused.editability(of: id) == nil ? nil : { window.outlinePopover = false; tab.edit(messageID: id) }
-                    }, isRunning: focused.loadedConversationID.map(focused.isConversationRunning) ?? false,
+                    }, isRunning: focused.loadedConversationID.map(focused.device.isConversationRunning) ?? false,
                     goToBottom: { [tab] in window.outlinePopover = false; tab.scrollRequest &+= 1 }) { id in
                         window.outlinePopover = false
                         tab.navigate(to: id)
@@ -286,12 +286,12 @@ private struct DockZoneHighlight: View {
 }
 
 struct ConversationRenameView: View {
-    @ObservedObject var store: AppStore
+    @ObservedObject var store: ConversationStore
     let conversation: Conversation
     @Environment(\.dismiss) private var dismiss
     @State private var title: String
     @FocusState private var titleFocused: Bool
-    init(store: AppStore, conversation: Conversation) {
+    init(store: ConversationStore, conversation: Conversation) {
         self.store = store; self.conversation = conversation
         _title = State(initialValue: conversation.title)
     }
@@ -323,7 +323,7 @@ struct ProjectEditorTarget: Identifiable {
 /// working directory is any of its folders belong to it; the folders and
 /// the conversations' working directories are unchanged.
 struct ProjectEditorView: View {
-    @ObservedObject var store: AppStore
+    @ObservedObject var store: ConversationStore
     let target: ProjectEditorTarget
     @Environment(\.dismiss) private var dismiss
     @State private var name: String
@@ -334,9 +334,9 @@ struct ProjectEditorView: View {
     @FocusState private var focused: Bool
     private let worktrees: [String]
     private let isNative: Bool
-    init(store: AppStore, target: ProjectEditorTarget) {
+    init(store: ConversationStore, target: ProjectEditorTarget) {
         self.store = store; self.target = target
-        let project = store.conversationProjects.first { $0.path == target.path }
+        let project = store.device.conversationProjects.first { $0.path == target.path }
         _name = State(initialValue: project?.name ?? "")
         isNative = project?.nativeRuntimeId != nil
         _primary = State(initialValue: project?.primaryFolder ?? "")
@@ -421,7 +421,7 @@ struct ProjectEditorView: View {
     }
     private func save() {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        store.setProject(path: target.path, primaryFolder: primary, name: isNative ? trimmed : (trimmed.isEmpty || trimmed == Self.folderName(primary) ? nil : trimmed),
+        store.device.setProject(path: target.path, primaryFolder: primary, name: isNative ? trimmed : (trimmed.isEmpty || trimmed == Self.folderName(primary) ? nil : trimmed),
                          folders: folders.filter { $0 != primary })
         dismiss()
     }
@@ -483,7 +483,7 @@ struct SettingsTabLink: View {
 }
 
 struct SettingsView: View {
-    @ObservedObject var store: AppStore
+    @ObservedObject var store: DeviceStore
     @ObservedObject private var navigator = SettingsNavigator.shared
     var body: some View {
         TabView(selection: $navigator.tab) {
@@ -494,7 +494,7 @@ struct SettingsView: View {
             ModelRouteSettingsView(store: store).tabItem { Label("模型路由", systemImage: "arrow.triangle.branch") }.tag(SettingsTab.routes)
             RuntimeSettingsView(store: store).tabItem { Label("Agent 运行时", systemImage: "terminal") }.tag(SettingsTab.runtimes)
             TelemetrySettingsView(coordinator: {
-                guard let transport = store.resourceTransport else { throw TransportError.unavailable }
+                guard let transport = store.transport else { throw TransportError.unavailable }
                 return try transport.telemetryCoordinator()
             }, remote: { [hub = DeviceHub.shared] in
                 guard let hub else { throw TransportError.unavailable }; return try hub.telemetryEndpoint()
@@ -511,7 +511,7 @@ struct SettingsView: View {
 /// Settings for how Velune reads and behaves: usage, the conversation list
 /// and, before macOS 26, the toolbars.
 private struct GeneralSettingsView: View {
-    @ObservedObject var store: AppStore
+    @ObservedObject var store: DeviceStore
     @State private var limit = 20
     @State private var totalLimit = 200
     var body: some View {
@@ -540,7 +540,7 @@ private struct GeneralSettingsView: View {
 
 /// Settings for how a conversation reads: its outline, linked agents and status line.
 private struct ConversationSettingsView: View {
-    @ObservedObject var store: AppStore
+    @ObservedObject var store: DeviceStore
     @State private var outlineForm = OutlineForm.popover
     private static let statusLineItems: [(item: StatusLineItem, title: String)] = [
         (.contextUsage, "上下文用量"), (.sessionTokens, "本会话累计 token"), (.workingDirectory, "工作目录与 Git 分支"),
@@ -584,7 +584,7 @@ private struct ShortcutSettingsView: View {
 }
 
 struct ProviderSettingsView: View {
-    @ObservedObject var store: AppStore
+    @ObservedObject var store: DeviceStore
     @State private var selectedID: String?
     @State private var editor: ProviderSummary?
     @State private var creating = false
@@ -687,7 +687,7 @@ private struct ProviderModelFields: View {
 private enum ProviderEditorSelection: Hashable { case connection, quota, model(UUID) }
 
 struct ProviderEditor: View {
-    @ObservedObject var store: AppStore
+    @ObservedObject var store: DeviceStore
     let provider: ProviderSummary?
     /// What a new provider starts from; `nil` when editing.
     var template: ProviderTemplate? = nil
@@ -902,7 +902,7 @@ struct ProviderEditor: View {
                         Button(action.label) { store.inspectAuthentication(providerID) }.disabled(store.isBusy)
                     }
                     if providerID != nil, !clearAuthentication, authentication.configured, authentication.actions.contains(where: { $0.id == "logout" }) {
-                        Button("退出登录…") { confirmingLogout = true }.disabled(store.isBusy || store.isGenerating)
+                        Button("退出登录…") { confirmingLogout = true }.disabled(store.isBusy)
                     }
                 }
                 if !editingAPIKey && (!usesSubscription || usesAPIKey) { Button("使用 API key…") { editingAPIKey = true; clearAuthentication = true; if !usesAPIKey { composition = ProviderComposition() }; apiKey = "" } }
@@ -999,7 +999,7 @@ private struct ModelTemplatePicker: View {
 }
 
 struct ModelTemplatesView: View {
-    @ObservedObject var store: AppStore
+    @ObservedObject var store: DeviceStore
     @Environment(\.dismiss) private var dismiss
     @State private var selectedID: String?
     @State private var editor: ModelTemplate?
@@ -1025,7 +1025,7 @@ struct ModelTemplatesView: View {
     }
 }
 struct ModelTemplateEditor: View {
-    @ObservedObject var store: AppStore
+    @ObservedObject var store: DeviceStore
     let template: ModelTemplate
     @Environment(\.dismiss) private var dismiss
     @State private var name = ""
@@ -1042,7 +1042,7 @@ struct ModelTemplateEditor: View {
 }
 
 struct RuntimeSettingsView: View {
-    @ObservedObject var store: AppStore
+    @ObservedObject var store: DeviceStore
     @Environment(\.openWindow) private var openWindow
     @State private var selectedID: String?
     @State private var editor: RuntimeInstance?
@@ -1103,7 +1103,7 @@ struct RuntimeSettingsView: View {
     private func offerResources() {
         guard let runtime = store.runtimeInstances.first(where: { !knownIDs.contains($0.id) }) else { return }
         let id = runtime.id
-        ResourceLibraryModel.shared(transport: store.resourceTransport).run({ transport in
+        ResourceLibraryModel.shared(transport: store.transport).run({ transport in
             try transport.resourceSyncStatus().filter { status in
                 guard status.runtimeId == id, case .notEnabled = status.state else { return false }
                 return true
@@ -1124,7 +1124,7 @@ struct RuntimeSettingsView: View {
 }
 
 struct RuntimeEditor: View {
-    @ObservedObject var store: AppStore
+    @ObservedObject var store: DeviceStore
     let instance: RuntimeInstance?
     private var types: [RuntimeTypeDescriptor] { store.runtimeTypes }
     private var gatewayID: String { store.gateway.id }
@@ -1651,7 +1651,7 @@ struct SettingFieldView: View {
 }
 
 struct AuthenticationView: View {
-    @ObservedObject var store: AppStore
+    @ObservedObject var store: DeviceStore
     @Environment(\.dismiss) private var dismiss
     @State private var answer = ""
     var body: some View {
@@ -1696,7 +1696,7 @@ struct AuthenticationView: View {
 /// click gives it the keyboard; then 1–9 choose an approval's options and
 /// ⌘⌫ cancels the request. Questions move by Tab and submit with Return.
 struct RuntimeInteractionView: View {
-    @ObservedObject var store: AppStore
+    @ObservedObject var store: ConversationStore
     @ObservedObject var tab: ConversationTab
     let interaction: RuntimeInteraction
     @State private var values: [String: String] = [:]

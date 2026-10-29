@@ -9,9 +9,9 @@ struct ConversationListView: View {
     enum Placement { case sidebar, panel }
     @ObservedObject var window: ConversationWindowModel
     /// The list's workspace.
-    @ObservedObject var store: AppStore
+    @ObservedObject var store: ConversationStore
     /// The focused pane's workspace.
-    @ObservedObject var focused: AppStore
+    @ObservedObject var focused: ConversationStore
     let placement: Placement
     /// Sharing its area with other tools, the search is a button over a popover.
     var compact = false
@@ -70,14 +70,15 @@ struct ConversationListView: View {
             if !window.listSearch.isEmpty { try? await Task.sleep(for: .milliseconds(250)) }
             if !Task.isCancelled { store.setSearchText(window.listSearch) }
         }
-        .onReceive(store.$conversationBrowserPreferences) { value in
+        .onReceive(store.device.$conversationBrowserPreferences) { value in
             if let value, value != browser.preferences { browser.restore(value) }
         }
         .onChange(of: browser.preferences) { _, value in
-            if store.conversationBrowserPreferences != nil { store.setConversationBrowserPreferences(value) }
+            if store.device.conversationBrowserPreferences != nil { store.device.setConversationBrowserPreferences(value) }
         }
         .sheet(item: $renameTarget) { ConversationRenameView(store: store, conversation: $0) }
-        .sheet(item: $projectTarget) { ProjectEditorView(store: store, target: $0) }        .alert(deleteTargets.count == 1 ? "删除会话？" : "删除 \(deleteTargets.count) 个会话？", isPresented: Binding(get: { !deleteTargets.isEmpty }, set: { if !$0 { deleteTargets = [] } })) {
+        .sheet(item: $projectTarget) { ProjectEditorView(store: store, target: $0) }
+        .alert(deleteTargets.count == 1 ? "删除会话？" : "删除 \(deleteTargets.count) 个会话？", isPresented: Binding(get: { !deleteTargets.isEmpty }, set: { if !$0 { deleteTargets = [] } })) {
             Button("取消", role: .cancel) { deleteTargets = [] }
             Button("删除", role: .destructive) { store.deleteConversations(deleteTargets); deleteTargets = [] }
         } message: {
@@ -116,18 +117,18 @@ struct ConversationListView: View {
                                         if NSEvent.modifierFlags.contains(.option) { window.openInNewTab(id) } else { window.open(id) }
                                     }
                                 })) {
-            if store.showsArchived {
+            if store.device.showsArchived {
                 HStack {
                     Label("已归档的会话", systemImage: "archivebox").foregroundStyle(.secondary)
                     Spacer(minLength: 0)
-                    Button("返回") { store.setShowsArchived(false) }.buttonStyle(.link)
+                    Button("返回") { store.device.setShowsArchived(false) }.buttonStyle(.link)
                 }.selectionDisabled(true)
             }
             if conversationSections.isEmpty && !store.isLoading && !focused.isLoading {
                 if store.searchResults != nil || (browser.hasFilters && !store.conversations.isEmpty) {
                     Text("没有匹配的会话").foregroundStyle(.secondary).selectionDisabled(true)
                     if browser.hasFilters { Button("清除筛选") { browser.runtimeID = nil; browser.project = .all }.selectionDisabled(true) }
-                } else if store.showsArchived {
+                } else if store.device.showsArchived {
                     Text("没有已归档的会话").foregroundStyle(.secondary).selectionDisabled(true)
                 }
             }
@@ -153,7 +154,7 @@ struct ConversationListView: View {
                     }
                     if section.hasMore {
                         if store.searchResults == nil {
-                            Button("加载更多（\(section.group.loaded) / \(section.group.total)）") { store.loadMoreConversations(in: section.id) }
+                            Button("加载更多（\(section.group.loaded) / \(section.group.total)）") { store.device.loadMoreConversations(in: section.id) }
                                 .buttonStyle(.plain).foregroundStyle(.secondary).selectionDisabled(true)
                         } else {
                             Text("只显示前 \(section.group.loaded) 个匹配").foregroundStyle(.secondary).selectionDisabled(true)
@@ -168,7 +169,7 @@ struct ConversationListView: View {
         }
         .listStyle(.sidebar)
         .background(ListDragLimit())
-        .disabled(store.authenticationRunning || store.isShuttingDown)
+        .disabled(store.device.authenticationRunning || store.isShuttingDown)
     }
 
     /// ⌘⌫ deletes the selected conversations (after asking, as the menu does);
@@ -198,8 +199,8 @@ struct ConversationListView: View {
         switch key {
         case .all: "会话"
         case .pinned: "置顶"
-        case .runtime(let id): store.runtimeInstances.first { $0.id == id }?.name ?? "Agent 运行时"
-        case .project(let path?): ConversationBrowser.projectName(path, projects: store.conversationProjects)
+        case .runtime(let id): store.device.runtimeInstances.first { $0.id == id }?.name ?? "Agent 运行时"
+        case .project(let path?): ConversationBrowser.projectName(path, projects: store.device.conversationProjects)
         case .project(nil): "无项目"
         }
     }
@@ -212,7 +213,7 @@ struct ConversationListView: View {
             Spacer(minLength: 0)
         }
         .help(path.map { key in
-            guard let project = store.conversationProjects.first(where: { $0.path == key }) else { return key }
+            guard let project = store.device.conversationProjects.first(where: { $0.path == key }) else { return key }
             let folders = project.primaryFolder.map { [$0] + project.folders } ?? []
             return folders.isEmpty ? title : folders.map { ($0 as NSString).abbreviatingWithTildeInPath }.joined(separator: "\n")
         } ?? title)
@@ -246,15 +247,15 @@ struct ConversationListView: View {
         .contextMenu {
             if let path {
                 Button("编辑项目…") { projectTarget = ProjectEditorTarget(path: path) }
-                if section.group.name != nil && store.conversationProjects.first(where: { $0.path == path })?.nativeRuntimeId == nil {
+                if section.group.name != nil && store.device.conversationProjects.first(where: { $0.path == path })?.nativeRuntimeId == nil {
                     Button("恢复文件夹名称") {
-                        let folders = store.conversationProjects.first { $0.path == path }?.folders ?? []
-                        store.setProject(path: path, primaryFolder: path, name: nil, folders: folders)
+                        let folders = store.device.conversationProjects.first { $0.path == path }?.folders ?? []
+                        store.device.setProject(path: path, primaryFolder: path, name: nil, folders: folders)
                     }
                 }
-                if let folder = store.conversationProjects.first(where: { $0.path == path })?.primaryFolder {
+                if let folder = store.device.conversationProjects.first(where: { $0.path == path })?.primaryFolder {
                     Button("在 Finder 中显示") { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: folder)]) }
-                        .disabled(store.location(of: section.conversations.first?.runtimeID) != .local)
+                        .disabled(store.device.location(of: section.conversations.first?.runtimeID) != .local)
                 }
                 Divider()
             }
@@ -298,10 +299,10 @@ struct ConversationListView: View {
     private func conversationRow(_ conversation: Conversation) -> some View {
         // Who started the turn does not matter; running does, its own or a
         // native sub-agent's that outlives it.
-        let ownTurn = store.runningConversationIDs.contains(conversation.id) || store.elsewhereConversationIDs.contains(conversation.id)
-        let running = ownTurn || store.subAgentParentIDs.contains(conversation.id)
+        let ownTurn = store.device.runningConversationIDs.contains(conversation.id) || store.device.elsewhereConversationIDs.contains(conversation.id)
+        let running = ownTurn || store.device.subAgentParentIDs.contains(conversation.id)
         // An approval or question, its own or a sub-agent's, waits for the user.
-        let waiting = store.waitingConversationIDs.contains(conversation.id)
+        let waiting = store.device.waitingConversationIDs.contains(conversation.id)
         // A turn's end is news; its progress is not. The conversation the
         // focused window shows is being read.
         let unread = conversation.unread && !running && !(conversation.id == focused.loadedConversationID && activeState == .key)
@@ -377,8 +378,8 @@ struct ConversationListView: View {
     private func moveMenu(_ targets: [Conversation]) -> some View {
         let current = Set(targets.map(\.project))
         return Menu("移到项目") {
-            ForEach(store.conversationProjects.filter { current != [$0.path] }, id: \.path) { project in
-                Button(ConversationBrowser.projectName(project.path, projects: store.conversationProjects)) { store.organize(targets, .moveToProject(path: project.path)) }
+            ForEach(store.device.conversationProjects.filter { current != [$0.path] }, id: \.path) { project in
+                Button(ConversationBrowser.projectName(project.path, projects: store.device.conversationProjects)) { store.organize(targets, .moveToProject(path: project.path)) }
             }
             Divider()
             Button("其他文件夹…") {
@@ -479,7 +480,7 @@ struct SearchField: NSViewRepresentable {
 struct ConversationFilterMenu: View {
     @ObservedObject var window: ConversationWindowModel
     /// The list's workspace.
-    @ObservedObject var store: AppStore
+    @ObservedObject var store: ConversationStore
     @State private var projectTarget: ProjectEditorTarget?
 
     var body: some View {
@@ -495,25 +496,25 @@ struct ConversationFilterMenu: View {
             Divider()
             Picker("Agent 运行时", selection: $window.listBrowser.runtimeID) {
                 Text("所有运行时").tag(Optional<String>.none)
-                ForEach(store.enabledRuntimeInstances) { Text($0.name).tag(Optional($0.id)) }
-                if let id = window.listBrowser.runtimeID, !store.enabledRuntimeInstances.contains(where: { $0.id == id }) {
+                ForEach(store.device.enabledRuntimeInstances) { Text($0.name).tag(Optional($0.id)) }
+                if let id = window.listBrowser.runtimeID, !store.device.enabledRuntimeInstances.contains(where: { $0.id == id }) {
                     Text("当前筛选的运行时不可用").tag(Optional(id))
                 }
             }
             Picker("项目", selection: $window.listBrowser.project) {
                 Text("所有项目").tag(ConversationBrowser.ProjectFilter.all)
                 Text("无项目").tag(ConversationBrowser.ProjectFilter.unspecified)
-                ForEach(store.conversationProjects, id: \.path) { project in
-                    Text(ConversationBrowser.projectName(project.path, projects: store.conversationProjects)).tag(ConversationBrowser.ProjectFilter.path(project.path))
+                ForEach(store.device.conversationProjects, id: \.path) { project in
+                    Text(ConversationBrowser.projectName(project.path, projects: store.device.conversationProjects)).tag(ConversationBrowser.ProjectFilter.path(project.path))
                 }
-                if case .path(let path) = window.listBrowser.project, !store.conversationProjects.contains(where: { $0.path == path }) {
-                    Text(ConversationBrowser.projectName(path, projects: store.conversationProjects)).tag(ConversationBrowser.ProjectFilter.path(path))
+                if case .path(let path) = window.listBrowser.project, !store.device.conversationProjects.contains(where: { $0.path == path }) {
+                    Text(ConversationBrowser.projectName(path, projects: store.device.conversationProjects)).tag(ConversationBrowser.ProjectFilter.path(path))
                 }
             }
-            if !store.conversationProjects.isEmpty {
+            if !store.device.conversationProjects.isEmpty {
                 Menu("编辑项目") {
-                    ForEach(store.conversationProjects, id: \.path) { project in
-                        Button(ConversationBrowser.projectName(project.path, projects: store.conversationProjects)) {
+                    ForEach(store.device.conversationProjects, id: \.path) { project in
+                        Button(ConversationBrowser.projectName(project.path, projects: store.device.conversationProjects)) {
                             projectTarget = ProjectEditorTarget(path: project.path)
                         }
                     }
@@ -521,24 +522,24 @@ struct ConversationFilterMenu: View {
             }
             if window.listBrowser.hasFilters { Divider(); Button("清除筛选") { window.listBrowser.runtimeID = nil; window.listBrowser.project = .all } }
             Divider()
-            Toggle("显示已归档的会话", isOn: Binding(get: { store.showsArchived }, set: { store.setShowsArchived($0) }))
+            Toggle("显示已归档的会话", isOn: Binding(get: { store.device.showsArchived }, set: { store.device.setShowsArchived($0) }))
             Divider()
             // Where the list itself is; the rest of the window's layout is in a tab's menu.
             Menu("布局") { ToolPlaceMenu(window: window, kind: .list) }
-        } label: { Label("显示", systemImage: window.listBrowser.hasFilters || store.showsArchived ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease") }
+        } label: { Label("显示", systemImage: window.listBrowser.hasFilters || store.device.showsArchived ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease") }
         .help("会话分组、筛选、排序、已归档会话与列表的位置")
         .sheet(item: $projectTarget) { ProjectEditorView(store: store, target: $0) }
         .accessibilityLabel("显示")
-        .disabled(store.conversationBrowserPreferences == nil)
+        .disabled(store.device.conversationBrowserPreferences == nil)
     }
 }
 
 struct NewConversationButton: View {
-    @ObservedObject var focused: AppStore
+    @ObservedObject var focused: ConversationStore
 
     var body: some View {
         Button { focused.createConversation() } label: { Label("新建会话", systemImage: "square.and.pencil") }
-            .help(KeyboardShortcutSettings.shared.help("新建会话", .newConversation)).disabled(focused.isLoading || focused.enabledRuntimeInstances.isEmpty)
+            .help(KeyboardShortcutSettings.shared.help("新建会话", .newConversation)).disabled(focused.isLoading || focused.device.enabledRuntimeInstances.isEmpty)
     }
 }
 
@@ -568,11 +569,11 @@ struct ConversationListHeaderActions: View {
     }
 }
 
-extension AppStore {
+extension ConversationStore {
     /// The list's groups as shown, searching or not.
     var conversationSections: [ConversationBrowser.Section] {
         if let results = searchResults { return ConversationBrowser.sections(conversations: results.conversations, groups: results.groups) }
-        return ConversationBrowser.sections(conversations: conversations, groups: conversationGroups)
+        return ConversationBrowser.sections(conversations: conversations, groups: device.conversationGroups)
     }
 }
 
@@ -581,7 +582,7 @@ extension AppStore {
 /// toolbar is not there to carry it.
 struct ListBlockToolbar: ViewModifier {
     @ObservedObject var window: ConversationWindowModel
-    @ObservedObject var focused: AppStore
+    @ObservedObject var focused: ConversationStore
     @ObservedObject private var toolbarSettings = ToolbarSettings.shared
 
     @ViewBuilder func body(content: Content) -> some View {

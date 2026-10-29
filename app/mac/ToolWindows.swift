@@ -715,14 +715,14 @@ enum OutlineForm: Hashable {
 }
 
 extension ConversationWindowModel {
-    static func outlineForm(application: AppStore) -> OutlineForm {
+    static func outlineForm(application: DeviceStore) -> OutlineForm {
         if application.rememberedToolLayout.layout[.outline].place != .builtIn { return .listed }
         return application.outlinePresentation == .popover ? .popover : .inPlace
     }
 
     /// Applies the form to every open window; listed, the outline docks at
     /// the right unless a window has it somewhere else than the button.
-    static func setOutlineForm(_ form: OutlineForm, application: AppStore) {
+    static func setOutlineForm(_ form: OutlineForm, application: DeviceStore) {
         let presentation: OutlinePresentation = form == .inPlace ? .inPlace : .popover
         if form != .listed, application.outlinePresentation != presentation { application.setOutlinePresentation(presentation) }
         for window in openWindows {

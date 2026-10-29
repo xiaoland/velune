@@ -1,7 +1,7 @@
 import SwiftUI
 
 struct PublicModelCatalogView: View {
-    @ObservedObject var store: AppStore
+    @ObservedObject var store: DeviceStore
     @Environment(\.dismiss) private var dismiss
     @State private var models: [CatalogModel] = []
     @State private var search = ""

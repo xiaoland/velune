@@ -192,14 +192,14 @@ struct ResourceLibraryMenuItem: View {
 /// Instructions, skills, MCP servers and sub-agents defined once in Velune and
 /// enabled on any number of runtimes.
 struct ResourceLibraryView: View {
-    @ObservedObject var store: AppStore
+    @ObservedObject var store: DeviceStore
     @ObservedObject private var navigator = ResourceLibraryNavigator.shared
     @StateObject private var library: ResourceLibraryModel
     @State private var importing = false
 
-    init(store: AppStore) {
+    init(store: DeviceStore) {
         self.store = store
-        _library = StateObject(wrappedValue: ResourceLibraryModel.shared(transport: store.resourceTransport))
+        _library = StateObject(wrappedValue: ResourceLibraryModel.shared(transport: store.transport))
     }
 
     var body: some View {
@@ -239,7 +239,7 @@ struct ResourceLibraryView: View {
         .sheet(isPresented: $importing) { RuntimeImportSheet(store: store, library: library, navigator: navigator) }
         .onAppear { library.reload() }
         // A finished turn lets the core write what waited; show it.
-        .onChange(of: store.applicationIsGenerating) { _, generating in if !generating { library.reload() } }
+        .onChange(of: store.hasRunningWork) { _, generating in if !generating { library.reload() } }
         .onChange(of: store.runtimeInstances) { _, instances in
             if let id = navigator.runtimeID, !instances.contains(where: { $0.id == id }) { navigator.runtimeID = nil }
             library.reload()
@@ -263,7 +263,7 @@ struct ResourceLibraryView: View {
 
 /// Resources of the selected kind, then native entries that no resource manages.
 private struct ResourceListView: View {
-    @ObservedObject var store: AppStore
+    @ObservedObject var store: DeviceStore
     @ObservedObject var library: ResourceLibraryModel
     @ObservedObject var navigator: ResourceLibraryNavigator
     @State private var deleting: ResourceTemplateSummary?
@@ -352,7 +352,7 @@ private struct ResourceListView: View {
 
 /// Edits one resource and chooses the runtimes it is enabled on.
 private struct ResourceDetailView: View {
-    @ObservedObject var store: AppStore
+    @ObservedObject var store: DeviceStore
     @ObservedObject var library: ResourceLibraryModel
     @ObservedObject var navigator: ResourceLibraryNavigator
     let selection: LibrarySelection
@@ -425,7 +425,7 @@ private struct ResourceDetailView: View {
 /// The runtimes a resource is enabled on: a checkbox per runtime with its state
 /// and, where native content changed, the user's choices.
 private struct RuntimeTargetsView: View {
-    @ObservedObject var store: AppStore
+    @ObservedObject var store: DeviceStore
     @ObservedObject var library: ResourceLibraryModel
     let resourceID: String?
     let kind: RuntimeResourceKind
@@ -439,7 +439,7 @@ private struct RuntimeTargetsView: View {
     /// cannot carry are known.
     @State private var taking: (runtime: RuntimeInstance, notes: [String])?
 
-    private var canModify: Bool { !store.applicationIsGenerating && !library.isWorking }
+    private var canModify: Bool { !store.hasRunningWork && !library.isWorking }
     /// Runtimes that support the resource but do not have it yet.
     private var enableable: [RuntimeInstance] {
         guard let id = resourceID else { return [] }
@@ -466,7 +466,7 @@ private struct RuntimeTargetsView: View {
                 }
                 .background(.background, in: RoundedRectangle(cornerRadius: 6))
                 .overlay(RoundedRectangle(cornerRadius: 6).stroke(.separator))
-                if store.applicationIsGenerating { Text("有任务运行时不能更改启用状态；保存的修改会在“待同步”的运行时上稍后重试。").font(.caption).foregroundStyle(.secondary) }
+                if store.hasRunningWork { Text("有任务运行时不能更改启用状态；保存的修改会在“待同步”的运行时上稍后重试。").font(.caption).foregroundStyle(.secondary) }
                 else if isDirty { Text("启用时写入的是已保存的内容。").font(.caption).foregroundStyle(.secondary) }
                 Text("写入后，运行时通常在新会话中加载这些内容；正在进行的会话何时使用新内容由运行时决定，Velune 不会重启会话。").font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
@@ -590,7 +590,7 @@ private struct RuntimeTargetsView: View {
 /// A native entry that no resource manages: shown read-only, with the one
 /// thing to do with it, adding it to the library.
 private struct NativeResourceView: View {
-    @ObservedObject var store: AppStore
+    @ObservedObject var store: DeviceStore
     @ObservedObject var library: ResourceLibraryModel
     @ObservedObject var navigator: ResourceLibraryNavigator
     let kind: RuntimeResourceKind
@@ -625,10 +625,10 @@ private struct NativeResourceView: View {
                         if let namesake {
                             Button("查看“\(namesake.name)”") { navigator.selection = .resource(namesake.id) }
                             Button("改用资源库的“\(namesake.name)”…") { confirmingReplace = namesake }
-                                .buttonStyle(.borderedProminent).disabled(store.applicationIsGenerating || library.isWorking)
+                                .buttonStyle(.borderedProminent).disabled(store.hasRunningWork || library.isWorking)
                         } else {
                             Button("加入资源库…") { if notes.isEmpty { adopt() } else { confirmingAdopt = true } }
-                                .buttonStyle(.borderedProminent).disabled(store.applicationIsGenerating || library.isWorking)
+                                .buttonStyle(.borderedProminent).disabled(store.hasRunningWork || library.isWorking)
                         }
                     }.padding(12)
                 }
@@ -736,7 +736,7 @@ private struct DriftSheet: View {
 /// Adds several native entries of one runtime to the library at once; each
 /// stays enabled on that runtime.
 private struct RuntimeImportSheet: View {
-    @ObservedObject var store: AppStore
+    @ObservedObject var store: DeviceStore
     @ObservedObject var library: ResourceLibraryModel
     @ObservedObject var navigator: ResourceLibraryNavigator
     @Environment(\.dismiss) private var dismiss
@@ -792,7 +792,7 @@ private struct RuntimeImportSheet: View {
                 if library.isWorking { ProgressView().controlSize(.small) }
                 Button(result == nil ? "取消" : "完成") { dismiss() }.keyboardShortcut(.cancelAction)
                 Button("导入 \(chosen.count) 项") { importChosen() }.buttonStyle(.borderedProminent)
-                    .disabled(chosen.isEmpty || library.isWorking || store.applicationIsGenerating)
+                    .disabled(chosen.isEmpty || library.isWorking || store.hasRunningWork)
             }
         }
         .padding(20).frame(width: 560, height: 560)

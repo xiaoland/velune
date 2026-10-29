@@ -109,7 +109,7 @@ struct PaneView: View {
 struct TabContentView: View {
     @ObservedObject var window: ConversationWindowModel
     @ObservedObject var tab: ConversationTab
-    @ObservedObject var store: AppStore
+    @ObservedObject var store: ConversationStore
     let previewEmpty: Bool
     /// Over the window, where a composer the window shares does not reach.
     var inSheet = false
@@ -134,7 +134,7 @@ struct TabContentView: View {
             MessageEditorSheet(store: store, request: request, forked: window.openInNewTab(adopting:))
         }
         .onChange(of: store.loadedConversationID) { _, _ in tab.outlineCollapsed = false }
-        .onChange(of: store.outlinePresentation) { _, _ in tab.outlineCollapsed = false }
+        .onChange(of: store.device.outlinePresentation) { _, _ in tab.outlineCollapsed = false }
     }
 
     /// A native sub-agent is continued by the agent that started it, so its
@@ -162,7 +162,7 @@ struct TabContentView: View {
         } description: {
             Text(store.canSend ? "输入消息，开始工作。" : "先在设置中配置AI提供商、模型与Agent 运行时。")
         } actions: {
-            if !store.canSend { SettingsTabLink(tab: store.enabledRuntimeInstances.isEmpty ? .runtimes : .providers, title: "打开设置") }
+            if !store.canSend { SettingsTabLink(tab: store.device.enabledRuntimeInstances.isEmpty ? .runtimes : .providers, title: "打开设置") }
         }
     }
 
@@ -344,7 +344,7 @@ private struct PaneTabItem: View {
     @ObservedObject var window: ConversationWindowModel
     @ObservedObject var pane: Pane
     @ObservedObject var tab: ConversationTab
-    @ObservedObject var store: AppStore
+    @ObservedObject var store: ConversationStore
     let selected: Bool
     /// In the focused pane, or the window's only one.
     let active: Bool

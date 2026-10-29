@@ -87,7 +87,7 @@ extension ConversationWindowModel {
         }
     }
 
-    private var store: AppStore { focused.store }
+    private var store: ConversationStore { focused.store }
 
     /// Whether `command` does something now; the menus and the palette both ask.
     func canPerform(_ command: ShortcutCommand, composerCommand: Bool = false) -> Bool {
@@ -100,7 +100,7 @@ extension ConversationWindowModel {
         case .continueTurn: composerCommand ? focused.canResumeAfterCommand : focused.submission.canResume
         case .compactContext: store.canCompact
         case .attach: !store.isShuttingDown
-        case .chooseRuntime: !store.enabledRuntimeInstances.isEmpty && !store.isShuttingDown
+        case .chooseRuntime: !store.device.enabledRuntimeInstances.isEmpty && !store.isShuttingDown
         case .chooseModel: store.canSwitchModel
         case .chooseEffort: !store.reasoningEffortOptions.isEmpty
         case .choosePermission: !store.permissionModeOptions.isEmpty
@@ -220,7 +220,7 @@ extension ConversationWindowModel {
             } ?? []
             return commands + queued + pages + windows
         case .conversations:
-            let runtimes = Dictionary(list.runtimeInstances.map { ($0.id, $0.name) }, uniquingKeysWith: { first, _ in first })
+            let runtimes = Dictionary(list.device.runtimeInstances.map { ($0.id, $0.name) }, uniquingKeysWith: { first, _ in first })
             let waiting = application.waitingConversationIDs
             return list.conversations.filter { $0.parentConversationID == nil }.map { conversation in
                 let place = conversation.project ?? conversation.cwd
@@ -234,7 +234,7 @@ extension ConversationWindowModel {
                 }
             }
         case .runtime:
-            return store.enabledRuntimeInstances.map { runtime in
+            return store.device.enabledRuntimeInstances.map { runtime in
                 PaletteItem(id: runtime.id, title: runtime.name, aliases: [runtime.typeId.description], checked: runtime.id == store.nextTurnRuntimeID) { [weak self] _ in
                     self?.closePalette(focusComposer: true)
                     self?.store.selectNextTurnRuntime(runtime.id)
@@ -285,7 +285,7 @@ extension ConversationWindowModel {
 struct CommandPaletteView: View {
     @ObservedObject var window: ConversationWindowModel
     let mode: PaletteMode
-    @ObservedObject private var store: AppStore
+    @ObservedObject private var store: ConversationStore
     @ObservedObject private var composer: ComposerModel
 
     init(window: ConversationWindowModel, mode: PaletteMode) {

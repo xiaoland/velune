@@ -64,7 +64,7 @@ Rust 只外传固定 target、固定事件名及受控字段。`otel.name`／`ot
 | 范围 | 计数／时长 owner | 含义 |
 | --- | --- | --- |
 | 原生调用及等待 | `velune.ui.operations`、`velune.ui.operation.duration` | 固定操作类别与 success/failure/cancelled/unknown；从原生调用入口计时，不代表渲染耗时 |
-| Mac 请求队列 | `velune.ui.queue.wait` | AppStore 入队至开始执行；出队时使用同一客户端 owner 的当前代，不另计业务次数 |
+| Mac 请求队列 | `velune.ui.queue.wait` | `DeviceStore`／`ConversationStore` 入队至开始执行；出队时使用同一客户端 owner 的当前代，不另计业务次数 |
 | Rust 用例与执行边界 | `velune.client.operations`、`velune.client.operation.duration` | operation 区分 bindings、remote request/query/execute、execution turn、harness 与 gateway attempt；result 不重复计量 |
 | 双 SDK 代际启用 | operation=`telemetry.activated` | 每次成功启用各一条，不计为业务轮次完成 |
 

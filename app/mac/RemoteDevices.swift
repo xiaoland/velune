@@ -34,7 +34,7 @@ final class RemoteEndpointBox: @unchecked Sendable {
     @Published private(set) var invitation: BindingRemoteInvitation?
     private let local: Transport
     private let endpoint = RemoteEndpointBox()
-    private var stores: [String: AppStore] = [:]
+    private var stores: [String: DeviceStore] = [:]
     private var prompted: Set<String> = []
     private let queue = DispatchQueue(label: "local.velune.remote", qos: .userInitiated)
 
@@ -184,7 +184,7 @@ final class RemoteEndpointBox: @unchecked Sendable {
     }
 
     /// The application store of a paired device, shared by its windows.
-    func store(for peerID: String) -> AppStore {
+    func store(for peerID: String) -> DeviceStore {
         if let store = stores[peerID] { return store }
         let endpoint = endpoint
         let view = "mac-\(UUID().uuidString)"
@@ -199,7 +199,7 @@ final class RemoteEndpointBox: @unchecked Sendable {
             try? opened.setControllerActivity(peerId: peerID, selected: true, foreground: true)
             return application
         }
-        let store = AppStore(transport: transport)
+        let store = DeviceStore(transport: transport)
         stores[peerID] = store
         return store
     }

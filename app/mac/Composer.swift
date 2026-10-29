@@ -19,7 +19,7 @@ import QuickLookThumbnailing
     private var shownBefore = false
     private(set) var text = ""
     private var undoManagers: [String: UndoManager] = [:]
-    private(set) weak var store: AppStore?
+    private(set) weak var store: ConversationStore?
     /// The `/` command or `@` path list over the text (see `ComposerCompletion`).
     @Published var completion: ComposerCompletion? { didSet { if completion != oldValue { showCompletion() } } }
     /// Where the list shows: a window of its own above the text.
@@ -38,7 +38,7 @@ import QuickLookThumbnailing
     @Published private(set) var isComposing = false
     fileprivate func updateComposition() { isComposing = textView?.hasMarkedText() ?? false }
 
-    func attach(_ store: AppStore) { self.store = store }
+    func attach(_ store: ConversationStore) { self.store = store }
 
     /// Shows the draft of `conversationID`; the previous one is already saved.
     func show(conversationID: String?) {
@@ -479,7 +479,7 @@ struct ComposerEditor: NSViewRepresentable {
 /// The bottom panel: a native multi-line field, with the next-turn runtime
 /// and model and the send or stop button on a row beneath it.
 struct ComposerView: View {
-    @ObservedObject var store: AppStore
+    @ObservedObject var store: ConversationStore
     @ObservedObject var model: ComposerModel
     /// Its window: right-clicked outside the text, the composer offers its places.
     let layout: ConversationWindowModel
@@ -511,7 +511,7 @@ struct ComposerView: View {
         if oneRow != value { oneRow = value }
     }
 
-    private var nextTurnRuntime: RuntimeInstance? { store.runtimeInstances.first { $0.id == store.nextTurnRuntimeID } }
+    private var nextTurnRuntime: RuntimeInstance? { store.device.runtimeInstances.first { $0.id == store.nextTurnRuntimeID } }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -557,7 +557,7 @@ struct ComposerView: View {
                 .disabled(!remoteDirectory.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("/"))
             Button("取消", role: .cancel) {}
         } message: {
-            if let host = store.location(of: store.nextTurnRuntimeID).host { Text("\(host) 上的绝对路径；发送时在该机器上检查。") }
+            if let host = store.device.location(of: store.nextTurnRuntimeID).host { Text("\(host) 上的绝对路径；发送时在该机器上检查。") }
         }
         .onDrop(of: [.fileURL], isTargeted: nil) { providers in
             for provider in providers {
@@ -670,7 +670,7 @@ struct ComposerView: View {
         return Menu {
             Menu("运行时：\(runtime)") {
                 Picker("Agent 运行时", selection: Binding(get: { store.nextTurnRuntimeID }, set: { if let id = $0 { store.selectNextTurnRuntime(id) } })) {
-                    ForEach(store.enabledRuntimeInstances) { runtime in Text(runtime.name).tag(Optional(runtime.id)) }
+                    ForEach(store.device.enabledRuntimeInstances) { runtime in Text(runtime.name).tag(Optional(runtime.id)) }
                 }.pickerStyle(.inline).labelsHidden()
                 Divider()
                 if let runtime = nextTurnRuntime { Button("在资源库中查看 \(runtime.name)…") { ResourceLibraryNavigator.shared.show(runtime.id, openWindow) } }
@@ -805,7 +805,7 @@ struct ComposerView: View {
         let recent = store.recentWorkingDirectories
         return Menu {
             // A remote runtime's directories exist only on its machine.
-            if let host = store.location(of: store.nextTurnRuntimeID).host {
+            if let host = store.device.location(of: store.nextTurnRuntimeID).host {
                 Button("输入 \(host) 上的目录…") { remoteDirectory = path ?? ""; enteringRemoteDirectory = true }
             } else {
                 Button("选择目录…") { chooseDirectory() }

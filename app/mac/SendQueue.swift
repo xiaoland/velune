@@ -5,7 +5,7 @@ import VeluneBindings
 /// one by one after the running turn. A system list: click selects, double
 /// click edits, drag reorders, Delete removes; the context menu has the rest.
 struct SendQueueView: View {
-    @ObservedObject var store: AppStore
+    @ObservedObject var store: ConversationStore
     /// Asks for a message's editor with ⌥↑ while it holds text of its own.
     @ObservedObject var composer: ComposerModel
     @State private var selection = Set<String>()

@@ -9,7 +9,7 @@ struct ProviderImportResult: Sendable {
 }
 
 struct ProviderImportView: View {
-    @ObservedObject var store: AppStore
+    @ObservedObject var store: DeviceStore
     @Environment(\.dismiss) private var dismiss
     @State private var sourceInstanceID: String?
     @State private var preview: ProviderImportPreview?

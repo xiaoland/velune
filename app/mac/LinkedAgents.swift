@@ -16,7 +16,7 @@ struct LinkedAgent: Identifiable, Equatable {
 
     /// The loaded conversation's: the one that started it, its native
     /// sub-agents, then its collaborators, each conversation once.
-    @MainActor static func all(of store: AppStore) -> [LinkedAgent] {
+    @MainActor static func all(of store: ConversationStore) -> [LinkedAgent] {
         guard store.pendingConversationID == nil else { return [] }
         var found: [LinkedAgent] = []
         if let parent = store.loadedParentConversationID {
@@ -32,17 +32,17 @@ struct LinkedAgent: Identifiable, Equatable {
     }
 
     /// "2 个子 Agent，1 个正在运行；1 个协作会话", for the toolbar and the list's foot.
-    @MainActor static func summary(of store: AppStore) -> String {
+    @MainActor static func summary(of store: ConversationStore) -> String {
         let agents = all(of: store)
         var parts: [String] = []
         let subAgents = agents.filter { if case .subAgent = $0.relation { true } else { false } }
         if !subAgents.isEmpty {
-            let running = subAgents.filter { store.isConversationRunning($0.id) }.count
+            let running = subAgents.filter { store.device.isConversationRunning($0.id) }.count
             parts.append(running > 0 ? "\(subAgents.count) 个子 Agent，\(running) 个正在运行" : "\(subAgents.count) 个子 Agent")
         }
         let collaborators = agents.filter { if case .collaborator = $0.relation { true } else { false } }
         if !collaborators.isEmpty {
-            let running = collaborators.filter { store.isConversationRunning($0.id) }.count
+            let running = collaborators.filter { store.device.isConversationRunning($0.id) }.count
             parts.append(running > 0 ? "\(collaborators.count) 个协作会话，\(running) 个正在运行" : "\(collaborators.count) 个协作会话")
         }
         if agents.contains(where: { $0.relation == .parent }) { parts.insert("由父会话启动", at: 0) }
@@ -56,7 +56,7 @@ struct LinkedAgent: Identifiable, Equatable {
 /// A double click (or Return) opens one where the setting says; its menu
 /// offers every place.
 struct LinkedAgentsView: View {
-    @ObservedObject var store: AppStore
+    @ObservedObject var store: ConversationStore
     /// In a popover it has its own size and takes Return.
     var inPopover = true
     var inSidebar = false
@@ -135,7 +135,7 @@ struct LinkedAgentsView: View {
     }
 
     @ViewBuilder private func state(of agent: LinkedAgent) -> some View {
-        if store.isConversationRunning(agent.id) {
+        if store.device.isConversationRunning(agent.id) {
             ProgressView().controlSize(.mini).help("正在运行").accessibilityLabel("正在运行")
         } else {
             switch agent.relation {
@@ -161,7 +161,7 @@ struct LinkedAgentsView: View {
 struct LinkedConversationSheet: View {
     @ObservedObject var window: ConversationWindowModel
     @ObservedObject var tab: ConversationTab
-    @ObservedObject var store: AppStore
+    @ObservedObject var store: ConversationStore
     let size: CGSize
 
     var body: some View {

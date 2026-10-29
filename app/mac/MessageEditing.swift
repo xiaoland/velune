@@ -15,7 +15,7 @@ struct MessageEditRequest: Identifiable {
 /// message continues in place; for an earlier one the user chooses between
 /// a new conversation and replacing what followed it.
 struct MessageEditorSheet: View {
-    @ObservedObject var store: AppStore
+    @ObservedObject var store: ConversationStore
     let request: MessageEditRequest
     /// A fork's new conversation, to show in a new tab.
     let forked: (SnapshotResult) -> Void

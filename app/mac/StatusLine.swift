@@ -39,7 +39,7 @@ struct ConversationStatus: Equatable {
 /// The composer's status line: the pinned items in a compact row; hovering
 /// explains them and a click lists everything the records say.
 struct ComposerStatusLine: View {
-    @ObservedObject var store: AppStore
+    @ObservedObject var store: ConversationStore
     @State private var branch: String?
     @State private var showsDetails = false
 
@@ -48,7 +48,7 @@ struct ComposerStatusLine: View {
 
     var body: some View {
         let status = self.status
-        let items = store.statusLine.filter { $0 == .rateLimits ? !accounts.isEmpty || store.composerQuotaError != nil : status.has($0) }
+        let items = store.device.statusLine.filter { $0 == .rateLimits ? !accounts.isEmpty || store.composerQuotaError != nil : status.has($0) }
         HStack(spacing: 0) {
             if !items.isEmpty || !accounts.isEmpty || store.composerQuotaError != nil {
                 Button { showsDetails.toggle() } label: {
@@ -64,7 +64,7 @@ struct ComposerStatusLine: View {
                 .accessibilityLabel("会话状态")
                 .accessibilityValue(summary(items, status))
                 .popover(isPresented: $showsDetails, arrowEdge: .top) {
-                    StatusDetails(status: status, accounts: accounts, branch: branch, display: store.contextUsageDisplay, quotaDisplay: store.usageDisplay, quotaProblem: store.composerQuotaError)
+                    StatusDetails(status: status, accounts: accounts, branch: branch, display: store.device.contextUsageDisplay, quotaDisplay: store.device.usageDisplay, quotaProblem: store.composerQuotaError)
                 }
             }
         }
@@ -82,7 +82,7 @@ struct ComposerStatusLine: View {
         switch item {
         case .contextUsage:
             if let fraction = status.contextFraction {
-                HStack(spacing: 4) { ContextRing(fraction: fraction, display: store.contextUsageDisplay); Text(StatusFormat.context(fraction, store.contextUsageDisplay)) }
+                HStack(spacing: 4) { ContextRing(fraction: fraction, display: store.device.contextUsageDisplay); Text(StatusFormat.context(fraction, store.device.contextUsageDisplay)) }
             } else if let tokens = status.contextTokens {
                 Text("上下文 \(StatusFormat.short(tokens))")
             }
@@ -109,7 +109,7 @@ struct ComposerStatusLine: View {
             case .contextUsage:
                 guard let tokens = status.contextTokens else { return nil }
                 guard let window = status.contextWindow, let fraction = status.contextFraction else { return "上下文：已用 \(TokenCount.format(tokens)) tokens，模型窗口未知" }
-                if store.contextUsageDisplay == .remaining { return "上下文：剩余 \(TokenCount.format(window.subtractingClamped(tokens))) / \(TokenCount.format(window)) tokens（\(StatusFormat.percent(1 - fraction))）" }
+                if store.device.contextUsageDisplay == .remaining { return "上下文：剩余 \(TokenCount.format(window.subtractingClamped(tokens))) / \(TokenCount.format(window)) tokens（\(StatusFormat.percent(1 - fraction))）" }
                 return "上下文：已用 \(TokenCount.format(tokens)) / \(TokenCount.format(window)) tokens（\(StatusFormat.percent(fraction))）"
             case .sessionTokens: return status.sessionTokens.map { "本会话累计：\(TokenCount.format($0)) tokens" }
             case .workingDirectory: return status.directory.map { "工作目录：\($0)" + (branch.map { "（\($0)）" } ?? "") }
@@ -125,7 +125,7 @@ struct ComposerStatusLine: View {
         accounts.map { account in
             let windows = account.windows.map { window in
                 let used = min(max(window.usedPercent, 0), 100)
-                let label = UsageFormat.label(Int((store.usageDisplay == .remaining ? 100 - used : used).rounded()), store.usageDisplay)
+                let label = UsageFormat.label(Int((store.device.usageDisplay == .remaining ? 100 - used : used).rounded()), store.device.usageDisplay)
                 return (account.isRecorded && window.period == nil ? "限额" : QuotaWindowObservation.name(window.id)) + " " + label + (short ? "" : "，" + QuotaResetFormat.text(window.resetsAt))
             }
             let balances = (account.quota.balances).map { $0.title + " " + $0.formatted }

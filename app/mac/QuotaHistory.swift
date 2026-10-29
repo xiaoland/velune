@@ -42,7 +42,7 @@ private struct QuotaBin: Identifiable {
 /// A provider's retained quota over time. Only observations Velune made are
 /// shown; time without one stays empty instead of carrying a value forward.
 struct QuotaHistorySheet: View {
-    @ObservedObject var store: AppStore
+    @ObservedObject var store: DeviceStore
     let providerID: String
     @Environment(\.dismiss) private var dismiss
     @State private var range: QuotaHistoryRange = .day
