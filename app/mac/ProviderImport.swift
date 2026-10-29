@@ -22,7 +22,6 @@ struct ProviderImportView: View {
 
     private var supportedInstances: [RuntimeInstance] { store.runtimeInstances.filter { instance in store.providerImportTypes.contains { $0.id == instance.typeId } } }
     private var selectedInstance: RuntimeInstance? { supportedInstances.first { $0.id == sourceInstanceID } }
-    private var source: ProviderImportSource? { guard let selectedInstance else { return nil }; return ProviderImportSource(kind: "harness", harnessTypeId: store.providerImportTypes.first { $0.id == selectedInstance.typeId }?.familyId ?? "", sourceInstanceId: selectedInstance.id, providerId: nil, settings: [:]) }
     private var provider: ImportProviderCandidate? { preview?.providers.first { $0.id == providerID } }
     private var model: ImportModelCandidate? { provider?.models.first { $0.id == selectedCandidateKey } }
     private var visibleModels: [ImportModelCandidate] {
@@ -52,7 +51,7 @@ struct ProviderImportView: View {
                 .frame(maxWidth: 330)
                 .disabled(store.isLoading || supportedInstances.isEmpty)
                 Button(preview == nil ? "读取配置" : "重新读取") { readSource() }
-                    .disabled(source == nil || store.isLoading)
+                    .disabled(selectedInstance == nil || store.isLoading)
                 if store.isLoading { ProgressView().controlSize(.small) }
             }
             .padding(16)
@@ -240,11 +239,11 @@ struct ProviderImportView: View {
                 }
                 Button("取消") { dismiss() }.keyboardShortcut(.cancelAction)
                 Button("导入所选") {
-                    guard let preview, let source else { return }
-                    store.applyProviderImport(source, preview: preview, selections: selections, replaceExisting: replaceExisting) { dismiss() }
+                    guard let preview else { return }
+                    store.applyProviderImport(preview, selections: selections, replaceExisting: replaceExisting) { dismiss() }
                 }
                 .keyboardShortcut(.defaultAction)
-                .disabled(source == nil || preview == nil || selections.isEmpty || store.isLoading)
+                .disabled(preview == nil || selections.isEmpty || store.isLoading)
             }
         }.padding(16)
     }
@@ -276,8 +275,8 @@ struct ProviderImportView: View {
         query = ""
     }
     private func readSource() {
-        guard let source else { return }
-        store.previewProviderImport(source) { value in
+        guard let selectedInstance else { return }
+        store.previewProviderImport(runtimeID: selectedInstance.id) { value in
             preview = value
             providerID = value.providers.first?.id
             selectedCandidateKey = nil

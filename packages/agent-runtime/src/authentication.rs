@@ -152,21 +152,19 @@ impl Login {
         while let Ok(event) = self.events.try_recv() {
             let event = event
                 .map_err(|detail| format!("invalid authentication adapter event: {detail}"))?;
-            match event.type_id.as_str() {
-                "prompt" => self.prompt = event.id.clone(),
-                "result" => {
+            match &event {
+                AuthenticationEvent::Asked { id, .. } => self.prompt = Some(id.clone()),
+                AuthenticationEvent::Finished { .. } => {
                     self.finished = true;
                     self.prompt = None;
                 }
-                "notify" => {
-                    if let Some(notification) = &event.notification
-                        && notification.kind == "prompt_cancelled"
+                AuthenticationEvent::Notified { notification } => {
+                    if notification.kind == "prompt_cancelled"
                         && notification.id.as_deref() == self.prompt.as_deref()
                     {
                         self.prompt = None;
                     }
                 }
-                _ => return Err("unsupported authentication adapter event".into()),
             }
             events.push(event);
         }
@@ -183,7 +181,7 @@ impl Login {
                 .events
                 .recv_timeout(std::time::Duration::from_millis(50))
             {
-                Ok(Ok(event)) if event.type_id == "result" => {
+                Ok(Ok(event @ AuthenticationEvent::Finished { .. })) => {
                     self.finished = true;
                     self.prompt = None;
                     events.push(event);
@@ -198,7 +196,7 @@ impl Login {
                         Some(format!(
                             "认证适配器事件失败（{exit_status}）：{detail}；stderr：{stderr}"
                         )),
-                        None,
+                        false,
                     ));
                 }
                 Err(error) => {
@@ -210,7 +208,7 @@ impl Login {
                         Some(format!(
                             "认证适配器退出（{exit_status}）：{error}；stderr：{stderr}"
                         )),
-                        None,
+                        false,
                     ));
                 }
             }
@@ -349,7 +347,7 @@ pub fn cancel(session: &mut Option<Login>) -> LoginProgress {
     }
     LoginProgress {
         running: false,
-        events: vec![AuthenticationEvent::result(false, None, Some(true))],
+        events: vec![AuthenticationEvent::result(false, None, true)],
     }
 }
 

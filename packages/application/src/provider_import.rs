@@ -5,7 +5,7 @@ use crate::config::RuntimeKind;
 use crate::config::{GatewayConfig, Protocol, ProviderDefinition, ProviderModel, RuntimeInstance};
 use crate::{
     Error as RuntimeError, ImportModelCandidate, ImportProviderCandidate, ImportSelection,
-    Options as RuntimeOptions, ProviderImportPreview, ProviderImportSource,
+    Options as RuntimeOptions, ProviderImportPreview,
 };
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -38,67 +38,32 @@ pub(crate) fn descriptor() -> crate::config::RuntimeTypeDescriptor {
     }
 }
 
-fn source(selection: &ProviderImportSource) -> Source {
-    Source {
-        kind: selection.kind.clone(),
-        harness_type_id: selection.harness_type_id.clone(),
-        source_instance_id: selection.source_instance_id.clone(),
-        provider_id: selection.provider_id.clone(),
-        settings: selection.settings.clone(),
-    }
-}
 /// The selected Codex or Claude Code instance, whose files the agent runtime
 /// reads directly; Pi goes through its SDK adapter instead.
 fn native_runtime<'a>(
-    selection: &ProviderImportSource,
+    runtime_id: &str,
     runtimes: &'a [RuntimeInstance],
-) -> Result<Option<&'a RuntimeInstance>, RuntimeError> {
-    let Some(runtime) = runtimes.iter().find(|runtime| {
-        Some(runtime.id.as_str()) == selection.source_instance_id.as_deref()
-            && crate::native_provider_import::TYPES.contains(&runtime.type_id)
-    }) else {
-        return Ok(None);
-    };
-    if selection.kind != "harness"
-        || !selection.settings.is_empty()
-        || selection.provider_id.is_some()
-        || selection.harness_type_id != crate::native_provider_import::family(runtime)
-    {
-        return Err(RuntimeError::invalid(
-            "提供商导入只接受已配置运行时的选择，不能覆盖其来源配置",
-        ));
-    }
-    Ok(Some(runtime))
+) -> Option<&'a RuntimeInstance> {
+    runtimes.iter().find(|runtime| {
+        runtime.id == runtime_id && crate::native_provider_import::TYPES.contains(&runtime.type_id)
+    })
 }
-/// A selection references persisted application configuration; callers cannot supply source paths.
+/// The import reads what the configured runtime's own settings name;
+/// callers cannot supply source paths.
 fn configured_source(
-    selection: &ProviderImportSource,
+    runtime_id: &str,
     runtimes: &[RuntimeInstance],
 ) -> Result<(Source, String), RuntimeError> {
-    let selection = source(selection);
-    let id = selection
-        .source_instance_id
-        .as_deref()
-        .filter(|id| !id.is_empty())
-        .ok_or_else(|| RuntimeError::invalid("请选择已配置的 Agent 运行时"))?;
-    if selection.kind != "harness"
-        || !selection.settings.is_empty()
-        || selection.provider_id.is_some()
-    {
-        return Err(RuntimeError::invalid(
-            "提供商导入只接受已配置运行时的选择，不能覆盖其来源配置",
-        ));
-    }
     let runtime = runtimes
         .iter()
-        .find(|runtime| runtime.id == id)
+        .find(|runtime| runtime.id == runtime_id)
         .ok_or_else(|| RuntimeError::invalid("所选 Agent 运行时已不存在，请重新选择"))?;
     if runtime.execution()? != crate::RuntimeExecution::default() {
         return Err(RuntimeError::invalid(
             "提供商导入目前只支持使用既有本机 HOME 的运行时；远端与 managed HOME 可直接使用原生提供商",
         ));
     }
-    if runtime.type_id != RuntimeKind::Pi || selection.harness_type_id != "pi" {
+    if runtime.type_id != RuntimeKind::Pi {
         return Err(RuntimeError::invalid("所选 Agent 运行时不支持提供商导入"));
     }
     let directory = runtime
@@ -217,15 +182,15 @@ pub(crate) fn protocol_name(value: &Protocol) -> &'static str {
 }
 
 pub(crate) fn preview(
-    selection: &ProviderImportSource,
+    runtime_id: &str,
     gateway: &GatewayConfig,
     options: &RuntimeOptions,
     runtimes: &[RuntimeInstance],
 ) -> Result<ProviderImportPreview, RuntimeError> {
-    if let Some(runtime) = native_runtime(selection, runtimes)? {
+    if let Some(runtime) = native_runtime(runtime_id, runtimes) {
         return crate::native_provider_import::preview(runtime, gateway);
     }
-    let (source, runtime_fingerprint) = configured_source(selection, runtimes)?;
+    let (source, runtime_fingerprint) = configured_source(runtime_id, runtimes)?;
     let snapshot = run_helper(&source, options)?;
     let source_fingerprint = combined_source_fingerprint(&snapshot, &runtime_fingerprint);
     let target_fingerprint = fingerprint(gateway)?;
@@ -324,13 +289,7 @@ pub(crate) fn preview(
         source_fingerprint,
         target_fingerprint,
         sdk_version: snapshot.sdk_version,
-        source: ProviderImportSource {
-            kind: source.kind,
-            harness_type_id: source.harness_type_id,
-            source_instance_id: source.source_instance_id,
-            provider_id: source.provider_id,
-            settings: source.settings,
-        },
+        runtime_id: runtime_id.into(),
         providers,
         warnings,
         source_label: "Pi models.json".into(),
@@ -338,7 +297,7 @@ pub(crate) fn preview(
 }
 
 pub(crate) fn apply(
-    selection: &ProviderImportSource,
+    runtime_id: &str,
     preview_token_value: &str,
     selections: &[ImportSelection],
     replace: bool,
@@ -346,7 +305,7 @@ pub(crate) fn apply(
     options: &RuntimeOptions,
     runtimes: &[RuntimeInstance],
 ) -> Result<Applied, RuntimeError> {
-    if let Some(runtime) = native_runtime(selection, runtimes)? {
+    if let Some(runtime) = native_runtime(runtime_id, runtimes) {
         return crate::native_provider_import::apply(
             preview_token_value,
             selections,
@@ -356,7 +315,7 @@ pub(crate) fn apply(
             runtimes,
         );
     }
-    let (source, runtime_fingerprint) = configured_source(selection, runtimes)?;
+    let (source, runtime_fingerprint) = configured_source(runtime_id, runtimes)?;
     let snapshot = run_helper(&source, options)?;
     let source_fingerprint = combined_source_fingerprint(&snapshot, &runtime_fingerprint);
     let target_fingerprint = fingerprint(gateway)?;

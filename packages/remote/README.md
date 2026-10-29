@@ -52,7 +52,7 @@ relay／lookup 地址拒绝用户名、密码、query 和 fragment；relay 凭�
 
 同一设备撤销后可通过新邀请重新配对。控制端首次确认当前 attempt 已获批准时，解除已有 Controller 的恢复阻塞并使旧拨号结果失效，继续按原有选中、前后台及主动暂停状态恢复；无需删除联系人或重建窗口。新配对保留联系人的暂停状态，尚未批准不恢复授权。旧 attempt 的迟到响应不能覆盖当前配对，重复查询已确认结果不再次改变连接意图。
 
-`DeviceIdentity::load_or_create` 只访问显式身份文件，继续使用 identity schema 1。既有损坏身份阻止启动，不重生成私钥。`DeviceStore::open` 使用普通状态文件 schema 4，保存联系人、独立的控制／遥测分享 grant、未决元数据与重置通知。schema 3 显式迁移到 4，保留身份、联系人、控制 grant 和 pending RequestId，遥测分享 grant 初始为空；未知未来版本或损坏的迁移输入报错并保留原文件。早于 schema 3 的旧普通格式仍原子初始化为空状态，不推导授权、不迁移 pending，也不保留备份；通知跨冷启保留，按准确 ID 确认后才删除。平台在清理自己旧的普通文件前调用 `record_legacy_state_reset`，先保留通知；它不触碰身份、Harness 文件或真实会话。Unix 私有文件为 0600，非普通文件或开放权限拒绝，发布先同步内容、原子替换再同步目录。网络设置与 token 另存为该普通文件名加 `.network-private.json` 的私有原子文件（schema 1），不混入 pending 文件或安全快照；损坏私有配置阻止加载。`validate_device_storage_paths` 在 bindings 创建身份前排除 identity／state／派生配置三者及父目录别名碰撞，普通状态解析也拒绝将带 secret_key 的身份文件重置。
+`DeviceIdentity::load_or_create` 只访问显式身份文件，继续使用 identity schema 1。既有损坏身份阻止启动，不重生成私钥。`DeviceStore::open` 使用普通状态文件 schema 4，保存联系人、独立的控制／遥测分享 grant、未决元数据与重置通知。未知未来版本报错并保留原文件；其他旧版本（含 schema 3）原子初始化为空状态并留下重置通知，不推导授权、不迁移 pending，也不保留备份；通知跨冷启保留，按准确 ID 确认后才删除。平台在清理自己旧的普通文件前调用 `record_legacy_state_reset`，先保留通知；它不触碰身份、Harness 文件或真实会话。Unix 私有文件为 0600，非普通文件或开放权限拒绝，发布先同步内容、原子替换再同步目录。网络设置与 token 另存为该普通文件名加 `.network-private.json` 的私有原子文件（schema 1），不混入 pending 文件或安全快照；损坏私有配置阻止加载。`validate_device_storage_paths` 在 bindings 创建身份前排除 identity／state／派生配置三者及父目录别名碰撞，普通状态解析也拒绝将带 secret_key 的身份文件重置。
 
 ## 请求交付与操作作用域
 

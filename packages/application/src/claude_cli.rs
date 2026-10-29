@@ -363,14 +363,14 @@ impl Login {
                         result.as_ref().err().map(LoginFailure::message)
                     };
                     self.status = if ok { result.ok() } else { None };
-                    events.push(AuthenticationEvent::result(ok, error, Some(cancelled)));
+                    events.push(AuthenticationEvent::result(ok, error, cancelled));
                 }
                 Err(mpsc::TryRecvError::Disconnected) => {
                     self.running = false;
                     events.push(AuthenticationEvent::result(
                         false,
                         Some(LoginFailure::new("worker", "channel_disconnected").message()),
-                        None,
+                        false,
                     ));
                 }
                 Err(mpsc::TryRecvError::Empty) => {}

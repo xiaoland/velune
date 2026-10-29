@@ -178,7 +178,7 @@ impl DeviceStore {
     pub fn open(path: &Path) -> Result<Self> {
         let (state, write) = match read_private(path) {
             Ok(bytes) => {
-                let mut json: serde_json::Value =
+                let json: serde_json::Value =
                     serde_json::from_slice(&bytes).map_err(|_| RemoteError::StateStorage)?;
                 // An independent identity is never an obsolete ordinary-state schema.
                 if json.get("secret_key").is_some() {
@@ -188,26 +188,7 @@ impl DeviceStore {
                 if version.is_some_and(|v| v > 4) {
                     return Err(RemoteError::StateStorage);
                 }
-                if version == Some(3) {
-                    // v3 control grants remain control-only; never infer consent to share credentials.
-                    json["version"] = serde_json::json!(4);
-                    json["profile_grants"] = serde_json::json!({});
-                    json["pending_pairings"] = serde_json::json!({});
-                    if let Some(contacts) = json.get_mut("contacts").and_then(|v| v.as_object_mut())
-                    {
-                        for contact in contacts.values_mut() {
-                            let contact =
-                                contact.as_object_mut().ok_or(RemoteError::StateStorage)?;
-                            contact.insert("control_authorized".into(), serde_json::json!(true));
-                            contact
-                                .insert("pairing_permission".into(), serde_json::json!("control"));
-                        }
-                    }
-                    (
-                        serde_json::from_value(json).map_err(|_| RemoteError::StateStorage)?,
-                        true,
-                    )
-                } else if version != Some(4) {
+                if version != Some(4) {
                     (
                         StoredState {
                             reset_notice: Some(ConfigurationResetNotice { id: random_id()? }),
@@ -621,60 +602,14 @@ fn validate_state(state: &StoredState) -> Result<()> {
 }
 
 #[cfg(test)]
-mod migration_tests {
+mod version_tests {
     use super::*;
-    #[test]
-    fn v3_preserves_contacts_grants_pending_and_notice_without_sharing_consent() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("remote-state.json");
-        let peer = DeviceIdentity::generate("synthetic".into()).unwrap().id();
-        let attempt = random_id().unwrap();
-        let mut old = serde_json::to_value(StoredState::default()).unwrap();
-        old["version"] = serde_json::json!(3);
-        old.as_object_mut().unwrap().remove("profile_grants");
-        old["contacts"][&peer] = serde_json::json!({ "peer_id": peer, "name": "synthetic", "locator": {"relay_urls": [], "direct_addresses": [], "lookup_urls": []}, "confirmation": {"state":"confirmed", "attempt_id":attempt}, "paused":true, "locator_source":"pairingOffer" });
-        old["grants"][&peer] =
-            serde_json::json!({"peer_id":peer,"name":"synthetic","attempt_id":attempt});
-        old["pending"] = serde_json::json!([{"peer_id":peer,"request_id":{"incarnation":random_id().unwrap(),"client":random_id().unwrap(),"sequence":1},"view":"synthetic","execution":{"expected_revision":null},"kind":"List","runtime_id":null,"conversation_id":null,"status":"unknown"}]);
-        // Use the authoritative enum encoding instead of hand-maintaining its wire representation.
-        old["pending"][0]["kind"] = serde_json::to_value(CommandKind::ReadConfiguration).unwrap();
-        old["reset_notice"] = serde_json::json!({"id":random_id().unwrap()});
-        atomic_write(&path, &serde_json::to_vec(&old).unwrap()).unwrap();
-        let store = DeviceStore::open(&path).unwrap();
-        let snapshot = store.snapshot().unwrap();
-        assert_eq!(snapshot.contacts.len(), 1);
-        assert!(snapshot.contacts[0].paused && snapshot.contacts[0].control_authorized);
-        assert_eq!(snapshot.incoming_grants[0].attempt_id, attempt);
-        assert!(snapshot.telemetry_profile_grants.is_empty());
-        assert_eq!(snapshot.pending[0].request_id.sequence, 1);
-        assert!(matches!(snapshot.pending[0].status, PendingStatus::Unknown));
-        assert_eq!(
-            serde_json::to_value(snapshot.reset_notice).unwrap(),
-            old["reset_notice"]
-        );
-        assert_eq!(
-            serde_json::from_slice::<serde_json::Value>(&std::fs::read(path).unwrap()).unwrap()["version"],
-            4
-        );
-    }
     #[test]
     fn unknown_future_version_is_not_reset_or_overwritten() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("remote-state.json");
         let bytes = br#"{"version":99,"synthetic":"preserve"}"#;
         atomic_write(&path, bytes).unwrap();
-        assert!(DeviceStore::open(&path).is_err());
-        assert_eq!(std::fs::read(path).unwrap(), bytes);
-    }
-    #[test]
-    fn damaged_v3_contact_returns_error_without_panicking_or_writing() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("remote-state.json");
-        let mut old = serde_json::to_value(StoredState::default()).unwrap();
-        old["version"] = serde_json::json!(3);
-        old["contacts"]["synthetic"] = serde_json::json!(42);
-        let bytes = serde_json::to_vec(&old).unwrap();
-        atomic_write(&path, &bytes).unwrap();
         assert!(DeviceStore::open(&path).is_err());
         assert_eq!(std::fs::read(path).unwrap(), bytes);
     }

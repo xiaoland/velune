@@ -451,11 +451,11 @@ impl Login {
                     result
                 };
                 events.push(match result {
-                    Ok(()) => AuthenticationEvent::result(true, None, None),
+                    Ok(()) => AuthenticationEvent::result(true, None, false),
                     Err(error) => AuthenticationEvent::result(
                         false,
                         Some(error),
-                        Some(self.cancelled.load(Ordering::SeqCst)),
+                        self.cancelled.load(Ordering::SeqCst),
                     ),
                 });
             }
@@ -464,7 +464,7 @@ impl Login {
                 events.push(AuthenticationEvent::result(
                     false,
                     Some("登录进程已结束".into()),
-                    None,
+                    false,
                 ));
             }
             _ => {}

@@ -147,16 +147,16 @@ static class ProviderFlows
             }
             foreach (var update in shown.Events)
             {
-                switch (update.TypeId)
+                switch (update)
                 {
-                    case "notify" when update.Notification is { } notice:
-                        Notice(notice);
+                    case AuthenticationEvent.Notified notified:
+                        Notice(notified.Notification);
                         break;
-                    case "prompt" when update.Prompt is { } asked && update.Id is { } id:
-                        Prompt(id, asked);
+                    case AuthenticationEvent.Asked asked:
+                        Prompt(asked.Id, asked.Prompt);
                         break;
-                    case "result":
-                        Finish(update.Ok == true ? null : update.Error ?? "登录失败", update.Cancelled == true);
+                    case AuthenticationEvent.Finished finished:
+                        Finish(finished.Ok ? null : finished.Error ?? "登录失败", finished.Cancelled);
                         break;
                 }
             }
@@ -346,7 +346,8 @@ static class ProviderFlows
         panel.Children.Add(outcome);
 
         ProviderImportPreview? preview = null;
-        ProviderImportSource? read = null;
+        // Counts reads; a read answered after a newer one began is dropped.
+        var reads = 0;
         var chosen = new Dictionary<string, List<(string Key, CheckBox Box)>>();
         var imported = new HashSet<string>();
 
@@ -361,9 +362,8 @@ static class ProviderFlows
 
         async void Read()
         {
-            var (runtime, type) = sources[source.SelectedIndex];
-            var asked = new ProviderImportSource("harness", type!.FamilyId, runtime.Id, null, []);
-            read = asked;
+            var (runtime, _) = sources[source.SelectedIndex];
+            var asked = ++reads;
             preview = null;
             chosen.Clear();
             imported.Clear();
@@ -372,8 +372,8 @@ static class ProviderFlows
             status.Text = "正在读取…";
             try
             {
-                var shown = await Task.Run(() => application.PreviewProviderImport(ProvidersPage.DefaultGateway, asked));
-                if (!ReferenceEquals(read, asked))
+                var shown = await Task.Run(() => application.PreviewProviderImport(ProvidersPage.DefaultGateway, runtime.Id));
+                if (asked != reads)
                 {
                     return;
                 }
@@ -395,7 +395,7 @@ static class ProviderFlows
             }
             catch (Exception problem)
             {
-                if (ReferenceEquals(read, asked))
+                if (asked == reads)
                 {
                     status.Text = "";
                     Ui.Show(outcome, Core.Describe(problem));
@@ -506,7 +506,7 @@ static class ProviderFlows
                 .Select(entry => new ImportSelection(entry.Key, [.. entry.Value.Where(model => model.Box.IsChecked == true).Select(model => model.Key)]))
                 .Where(selection => selection.CandidateKeys.Length > 0)
                 .ToArray();
-            if (preview is not { } shown || read is not { } asked || selections.Length == 0)
+            if (preview is not { } shown || selections.Length == 0)
             {
                 e.Cancel = true;
                 deferral.Complete();
@@ -515,7 +515,7 @@ static class ProviderFlows
             var replacing = replace.IsChecked == true;
             try
             {
-                var result = await Task.Run(() => application.ApplyProviderImport(ProvidersPage.DefaultGateway, asked, shown.Token, selections, replacing));
+                var result = await Task.Run(() => application.ApplyProviderImport(ProvidersPage.DefaultGateway, shown.RuntimeId, shown.Token, selections, replacing));
                 page.SetGateway(result.Gateways);
                 page.ShowNotice(result.SkippedProviderIds.Length > 0
                     ? $"已导入 {result.ImportedProviderIds.Length} 个提供商；{result.SkippedProviderIds.Length} 个已存在而未替换。"

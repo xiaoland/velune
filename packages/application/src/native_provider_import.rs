@@ -69,14 +69,6 @@ fn token(source: &str, target: &str) -> String {
         Sha256::digest(format!("{source}|{target}").as_bytes())
     )
 }
-pub(crate) fn family(runtime: &RuntimeInstance) -> &'static str {
-    match runtime.type_id {
-        RuntimeKind::Codex => "codex",
-        RuntimeKind::ClaudeCode | RuntimeKind::Pi | RuntimeKind::DeepSeek | RuntimeKind::Acp => {
-            "claude-code"
-        }
-    }
-}
 fn cli_binary(runtime: &RuntimeInstance) -> Option<&str> {
     runtime
         .settings
@@ -154,13 +146,7 @@ pub(crate) fn preview(
         source_fingerprint: inventory.fingerprint,
         target_fingerprint: target,
         sdk_version: runtime.type_id.to_string(),
-        source: crate::ProviderImportSource {
-            kind: "harness".into(),
-            harness_type_id: family(runtime).into(),
-            source_instance_id: Some(runtime.id.clone()),
-            provider_id: None,
-            settings: Default::default(),
-        },
+        runtime_id: runtime.id.clone(),
         providers,
         warnings: inventory.warnings,
         source_label: inventory.source_label,

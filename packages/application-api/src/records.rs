@@ -1,8 +1,6 @@
 //! Typed application operations and non-secret result records.
 use crate::config::*;
 use serde::{Deserialize, Serialize};
-
-use std::collections::BTreeMap;
 pub use velune_conversation::authentication::{
     AuthenticationEvent, AuthenticationNotification, AuthenticationPrompt,
 };
@@ -463,16 +461,6 @@ pub struct AnalyticsReport {
 
 #[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
-pub struct ProviderImportSource {
-    pub kind: String,
-    pub harness_type_id: String,
-    pub source_instance_id: Option<String>,
-    pub provider_id: Option<String>,
-    pub settings: BTreeMap<String, String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
-#[serde(rename_all = "camelCase")]
 pub struct ImportSelection {
     pub provider_id: String,
     pub candidate_keys: Vec<String>,
@@ -485,7 +473,8 @@ pub struct ProviderImportPreview {
     pub source_fingerprint: String,
     pub target_fingerprint: String,
     pub sdk_version: String,
-    pub source: ProviderImportSource,
+    /// The runtime instance the preview read.
+    pub runtime_id: String,
     pub providers: Vec<ImportProviderCandidate>,
     pub warnings: Vec<String>,
     pub source_label: String,

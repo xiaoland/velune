@@ -41,7 +41,7 @@
 | 2 | Harness 适配器接口；拆分 `gateway/runtime.rs` 等超大模块 | 不变 | 完成 |
 | 3 | FFI 表面：删除 `Binding*` 镜像与 JSON 转换、合并远控转换层；四端机械更新，删除 Mac 映射层 | 变化 | 完成 |
 | 4 | 平台 app 结构：拆分 Mac `AppStore` 与 Windows 对应部分；把平台自行计算的产品规则移回核心 | 变化 | 完成 |
-| 5 | 测试：复核现有 Rust 测试，只为真实不变量重建少量分层检查 | 不变 | 待开始 |
+| 5 | 测试：复核现有 Rust 测试，只为真实不变量重建少量分层检查 | 变化 | 完成 |
 | 6 | 文档：重写 development、architecture 等为当前事实；归档已完成任务包 | 不变 | 待开始 |
 
 ## 阶段 1 结果
@@ -91,12 +91,14 @@
 - 已知且保留的平台差别：Windows 状态行的账户限额来自轮次记录，Mac 来自 composer 额度查询（Windows 尚无 composer 额度，属能力缺口）；Windows 的“跟随当前运行时”取最后一轮的运行时，Mac 取上下文运行时；最近项目与运行中状态文字各自计算。
 - 验证（2026-10-29）：workspace clippy／test 通过；Mac 构建，隔离 `VELUNE_HOME` 后台启动：`--preview` 样例会话与模型选择、`--check-split-panes` 三个面板各自解析下一轮、真实核心空配置的新会话页正常；生成的 C# 单独编译通过；win-ws 上 `36ec90c` 的 `build-windows.ps1` 发布无错误无警告，隔离 `VELUNE_HOME` 启动后仅对 Velune 窗口截图并读取 UIA 名称，主窗口与无运行时时的新会话页正常。没有合成运行时，Mac 的真实发送、排队与编辑路径未在本阶段运行，由编译器与对照旧 `AppStore` 的逐项审查覆盖。
 
-## 留待后续阶段
+## 阶段 5 结果
 
-- 运行时设置仍是 `BTreeMap<String, String>`（如 `acpLaunch`）；`AuthenticationEvent` 是松散结构；`ProviderImportSource` 可收窄；三个 “Source” 类型并存。
-- `repository.rs` 仍为旧配置补 `contextUsageDisplay`，配套测试在阶段 5 复核。
-- `service::usage_tests` 曾在一次 workspace 测试中于 `open().unwrap()` 失败、重跑通过，阶段 5 复核是否有共享状态。
-- 远控 `store.rs` 仍接受 v3 状态文件并迁移（测试 `v3_preserves_contacts_grants_pending_and_notice_without_sharing_consent`），与“持久化数据硬切、不做迁移”的决定不符，阶段 5 删除。
+- 复核全部 64 个 Rust 测试：均守护类型与静态检查表达不了的不变量（来源与授权边界、原生记录解析、文件系统安全、遥测隐私与原子性、网关故障转移、下一轮与用量规则），不再删减；产品代码没有测试专用入口。
+- `service::usage_tests` 的偶发失败已复现并修正：两个测试并行时临时目录名取进程号与时钟，macOS 时钟只到微秒，两者可能同名，第二个打开同一 HOME 得到 “runtime home is already open”。改为随机名并以 `create_dir` 保证唯一；6 路并行各 15 轮由 2 次失败降为 0。
+- 持久化硬切：删除配置读取时为旧文件补 `contextUsageDisplay` 的兼容（测试改为只验证视图隔离与持久化）；删除远控状态 v3 → v4 迁移与两项 v3 测试，v3 与其他旧版本一样初始化为空状态并留下重置通知。近期版本启动时都已写成 v4。
+- `AuthenticationEvent` 由字符串 `type` 加一组可选字段改为枚举 `Asked`／`Notified`／`Finished`（JSON 形式不变，仍与 Pi 认证适配器一致）；Mac 与 Windows 按枚举穷尽处理。
+- 提供商导入的公开入口由 `ProviderImportSource`（核心只接受 `kind = "harness"`、空 settings 与已配置实例的组合）收窄为运行时实例 ID；预览携带 `runtime_id`，应用时以预览所读的实例为准。删除 `ProviderImportSource` 与随之无用的 `family`。
+- 有意保留：`acpLaunch` 仍以 JSON 字符串存在运行时 settings 中，读写经类型化且校验的 `acp_launch()`／`set_acp_launch()`，公开列表剥离；另存会让已保存的 ACP 启动参数丢失，收益只是去掉两个小辅助函数。agent-runtime 中 Pi 导入与认证的两个 `Source` 是适配器 JSON 坐标，认证那份随提供商凭据持久化，合并收益小于改动持久化结构的代价。
 
 ## 待用户决定
 

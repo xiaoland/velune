@@ -334,7 +334,7 @@ impl CoreRuntime {
     pub(crate) fn preview_provider_import(
         &self,
         gateway_id: String,
-        source: crate::ProviderImportSource,
+        runtime_id: String,
     ) -> Result<crate::ProviderImportPreview, RuntimeError> {
         if self.execution_active() {
             return Err(RuntimeError::invalid("runtime is busy"));
@@ -345,13 +345,13 @@ impl CoreRuntime {
             None if gateway_id == "default" => &empty,
             None => return Err(RuntimeError::invalid("gateway id")),
         };
-        provider_import::preview(&source, gateway, &self.options, &self.runtime_instances)
+        provider_import::preview(&runtime_id, gateway, &self.options, &self.runtime_instances)
     }
 
     pub(crate) fn apply_provider_import(
         &mut self,
         gateway_id: String,
-        source: crate::ProviderImportSource,
+        runtime_id: String,
         preview_token: String,
         selections: Vec<crate::ImportSelection>,
         replace_existing: bool,
@@ -369,7 +369,7 @@ impl CoreRuntime {
             .unwrap_or_else(empty_default_gateway);
         let previous = imported_gateway.clone();
         let result = provider_import::apply(
-            &source,
+            &runtime_id,
             &preview_token,
             &selections,
             replace_existing,

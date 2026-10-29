@@ -129,7 +129,7 @@ CLI 额度来源执行内置 `/usage`，关闭工具、外部 MCP、设置来源
 
 `/usage` 适配依据是当前官方命令语义与固定 Magpie 实现，CLI 的版本及输出变化可能使观测不可用。Velune 只执行固定命令，绝不在失败后退回普通 prompt 或换参数重试；输出校验只能判断返回是否符合额度格式，不能保证外部 CLI 内部实现或计量永远不变。Claude Code 2.1.292 的官方订阅登录和额度读取已通过真实验收；额度耗尽时限流传播已验证；额度恢复后，真实文本及调用方工具跨 Runner 往返均通过验收。证据归 [模型路由任务](../../tasks/model-routing/packet.md)。
 
-Claude 认证失败的公开 `AuthenticationEvent.error` 只包含固定阶段与原因，格式为 `Claude Code 认证未完成 [phase=<阶段>;reason=<固定原因>;exit_code=<整数或none>]`。阶段为 `login`、`status` 或 `worker`，用于区分 CLI 退出、超时、状态 JSON、目录绑定与身份校验失败；不含 CLI 的 stdout、stderr、账户信息或 URL。进程退出码来自操作系统，不按原始错误文案猜测供应商原因。
+Claude 认证失败的公开 `AuthenticationEvent::Finished` 的 `error` 只包含固定阶段与原因，格式为 `Claude Code 认证未完成 [phase=<阶段>;reason=<固定原因>;exit_code=<整数或none>]`。阶段为 `login`、`status` 或 `worker`，用于区分 CLI 退出、超时、状态 JSON、目录绑定与身份校验失败；不含 CLI 的 stdout、stderr、账户信息或 URL。进程退出码来自操作系统，不按原始错误文案猜测供应商原因。
 
 
 ## 多端执行 owner

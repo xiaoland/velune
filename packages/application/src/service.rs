@@ -266,13 +266,12 @@ mod usage_tests {
     struct Fixture(PathBuf);
     impl Fixture {
         fn new() -> Self {
-            let id = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos();
+            // Tests run in parallel; a clock-based name can repeat within its resolution.
+            let mut nonce = [0; 8];
+            getrandom::fill(&mut nonce).unwrap();
             let path =
-                std::env::temp_dir().join(format!("velune-usage-{}-{id}", std::process::id()));
-            fs::create_dir_all(&path).unwrap();
+                std::env::temp_dir().join(format!("velune-usage-{:x}", u64::from_le_bytes(nonce)));
+            fs::create_dir(&path).unwrap();
             Self(path)
         }
         fn open(&self) -> ApplicationService {
@@ -302,21 +301,20 @@ mod usage_tests {
     }
 
     #[test]
-    fn independent_usage_preferences_migrate_persist_and_isolate_views() {
+    fn usage_preferences_persist_and_isolate_views() {
         let fixture = Fixture::new();
-        let mut legacy =
-            serde_json::to_value(crate::repository::PersistedConfig::default()).unwrap();
-        legacy["usageDisplay"] = serde_json::json!("remaining");
-        legacy
-            .as_object_mut()
-            .unwrap()
-            .remove("contextUsageDisplay");
-        fs::write(
-            fixture.0.join("generic-config.json"),
-            serde_json::to_vec(&legacy).unwrap(),
+        let app = fixture.open();
+        app.execute(
+            ClientViewId("local".into()),
+            Command::SetUsageDisplay { display: Remaining },
         )
         .unwrap();
-        let app = fixture.open();
+        assert_eq!(display(&app, "local"), (Remaining, Used));
+        app.execute(
+            ClientViewId("local".into()),
+            Command::SetContextUsageDisplay { display: Remaining },
+        )
+        .unwrap();
         assert_eq!(display(&app, "local"), (Remaining, Remaining));
         assert_eq!(display(&app, "existing"), (Remaining, Remaining));
         app.execute(

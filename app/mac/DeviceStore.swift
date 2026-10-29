@@ -674,15 +674,15 @@ final class DeviceStore: ObservableObject {
         guard let transport else { recordProblem("本地核心未配置"); return }
         enqueue({ try transport.deleteTemplate(id: id) }) { [weak self] result in self?.modelTemplates = result }
     }
-    func previewProviderImport(_ source: ProviderImportSource, completion: @escaping (ProviderImportPreview) -> Void) {
+    func previewProviderImport(runtimeID: String, completion: @escaping (ProviderImportPreview) -> Void) {
         guard !isPreview, !authenticationRunning else { recordProblem("请先完成登录，再读取提供商配置"); return }
         guard let transport else { recordProblem("本地核心未配置"); return }
-        enqueue({ try transport.providerImportPreview(gatewayID: self.gateway.id, source: source) }) { completion($0) }
+        enqueue({ try transport.providerImportPreview(gatewayID: self.gateway.id, runtimeID: runtimeID) }) { completion($0) }
     }
-    func applyProviderImport(_ source: ProviderImportSource, preview: ProviderImportPreview, selections: [ImportSelection], replaceExisting: Bool, completion: @escaping () -> Void) {
+    func applyProviderImport(_ preview: ProviderImportPreview, selections: [ImportSelection], replaceExisting: Bool, completion: @escaping () -> Void) {
         guard !isPreview, !authenticationRunning else { recordProblem("请先完成登录，再导入提供商配置"); return }
         guard let transport else { recordProblem("本地核心未配置"); return }
-        enqueue({ try transport.providerImportApply(gatewayID: self.gateway.id, source: source, previewToken: preview.token, selections: selections, replaceExisting: replaceExisting) }) { [weak self] data in
+        enqueue({ try transport.providerImportApply(gatewayID: self.gateway.id, runtimeID: preview.runtimeId, previewToken: preview.token, selections: selections, replaceExisting: replaceExisting) }) { [weak self] data in
             guard let self else { return }
             if let saved = data.gateways.first(where: { $0.id == self.gateway.id }) { self.gateway = saved; self.hasGateway = true }
             self.refreshAfterConfigurationChange()
@@ -773,20 +773,19 @@ final class DeviceStore: ObservableObject {
         if let saved = data.gateways?.first(where: { $0.id == gateway.id }) { gateway = saved }
         if data.executionInvalidated == true { refreshAfterConfigurationChange() }
         for event in data.events {
-            if event.typeId == "prompt", let id = event.id, let prompt = event.prompt {
+            switch event {
+            case .asked(let id, let prompt):
                 authenticationPrompt = PendingAuthenticationPrompt(id: id, kind: prompt.kind, text: prompt.text, options: prompt.options)
-            } else if event.typeId == "notify", let notification = event.notification {
-                if notification.kind == "prompt_cancelled" {
-                    if authenticationPrompt?.id == notification.id { authenticationPrompt = nil }
-                } else {
-                    authenticationNotifications.append(notification)
-                    // A sign-in page opens in the browser; the sheet keeps a link to open it again.
-                    if notification.kind == "url", let address = notification.url, let url = URL(string: address), url.scheme == "https" { NSWorkspace.shared.open(url) }
-                }
-            } else if event.typeId == "result" {
+            case .notified(let notification) where notification.kind == "prompt_cancelled":
+                if authenticationPrompt?.id == notification.id { authenticationPrompt = nil }
+            case .notified(let notification):
+                authenticationNotifications.append(notification)
+                // A sign-in page opens in the browser; the sheet keeps a link to open it again.
+                if notification.kind == "url", let address = notification.url, let url = URL(string: address), url.scheme == "https" { NSWorkspace.shared.open(url) }
+            case .finished(let ok, let error, let cancelled):
                 authenticationPrompt = nil
-                authenticationResult = event.ok == true ? "登录完成。" : event.cancelled == true ? "登录已取消。" : nil
-                if event.ok != true && event.cancelled != true { recordProblem(event.error ?? "登录未完成。", source: "登录") }
+                authenticationResult = ok ? "登录完成。" : cancelled ? "登录已取消。" : nil
+                if !ok && !cancelled { recordProblem(error ?? "登录未完成。", source: "登录") }
             }
         }
     }

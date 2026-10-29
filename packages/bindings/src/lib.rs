@@ -1396,19 +1396,22 @@ impl VeluneApplication {
     pub fn preview_provider_import(
         &self,
         gateway_id: String,
-        source: ProviderImportSource,
+        runtime_id: String,
     ) -> Result<ProviderImportPreview, BindingError> {
         request!(
             self,
             "preview_provider_import",
-            PreviewProviderImport { gateway_id, source }
+            PreviewProviderImport {
+                gateway_id,
+                runtime_id
+            }
         )
     }
 
     pub fn apply_provider_import(
         &self,
         gateway_id: String,
-        source: ProviderImportSource,
+        runtime_id: String,
         preview_token: String,
         selections: Vec<ImportSelection>,
         replace_existing: bool,
@@ -1418,7 +1421,7 @@ impl VeluneApplication {
             "apply_provider_import",
             ApplyProviderImport {
                 gateway_id,
-                source,
+                runtime_id,
                 preview_token,
                 selections,
                 replace_existing

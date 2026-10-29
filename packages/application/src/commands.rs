@@ -700,16 +700,17 @@ impl Application {
                 Login::Blocks,
                 |core| core.file_diff(runtime_id, conversation_id, path),
             )?),
-            Command::PreviewProviderImport { gateway_id, source } => {
-                Response::PreviewProviderImport(application.runtime.serve(
-                    Focus::None,
-                    Login::Blocks,
-                    |core| core.preview_provider_import(gateway_id, source),
-                )?)
-            }
+            Command::PreviewProviderImport {
+                gateway_id,
+                runtime_id,
+            } => Response::PreviewProviderImport(application.runtime.serve(
+                Focus::None,
+                Login::Blocks,
+                |core| core.preview_provider_import(gateway_id, runtime_id),
+            )?),
             Command::ApplyProviderImport {
                 gateway_id,
-                source,
+                runtime_id,
                 preview_token,
                 selections,
                 replace_existing,
@@ -719,7 +720,7 @@ impl Application {
                 |core| {
                     core.apply_provider_import(
                         gateway_id,
-                        source,
+                        runtime_id,
                         preview_token,
                         selections,
                         replace_existing,

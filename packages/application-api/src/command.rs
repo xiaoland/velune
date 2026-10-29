@@ -467,13 +467,14 @@ pub enum Command {
         conversation_id: String,
         path: String,
     },
+    /// Providers and models the runtime instance's own configuration names.
     PreviewProviderImport {
         gateway_id: String,
-        source: ProviderImportSource,
+        runtime_id: String,
     },
     ApplyProviderImport {
         gateway_id: String,
-        source: ProviderImportSource,
+        runtime_id: String,
         preview_token: String,
         selections: Vec<ImportSelection>,
         replace_existing: bool,

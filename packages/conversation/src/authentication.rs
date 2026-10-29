@@ -15,17 +15,30 @@ impl LoginProgress {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
-#[serde(rename_all = "camelCase")]
-pub struct AuthenticationEvent {
-    #[serde(rename = "type")]
-    pub type_id: String,
-    pub id: Option<String>,
-    pub prompt: Option<AuthenticationPrompt>,
-    pub notification: Option<AuthenticationNotification>,
-    pub ok: Option<bool>,
-    pub error: Option<String>,
-    pub cancelled: Option<bool>,
+/// One step of a login, as the source adapter reports it; the wire form is
+/// `{"type": "prompt" | "notify" | "result", ...}`.
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Enum)]
+#[serde(tag = "type")]
+pub enum AuthenticationEvent {
+    /// The login waits for an answer to `prompt`, sent back under `id`.
+    #[serde(rename = "prompt")]
+    Asked {
+        id: String,
+        prompt: AuthenticationPrompt,
+    },
+    #[serde(rename = "notify")]
+    Notified {
+        notification: AuthenticationNotification,
+    },
+    /// The login ended; `ok` means its credential was written.
+    #[serde(rename = "result")]
+    Finished {
+        ok: bool,
+        #[serde(default)]
+        error: Option<String>,
+        #[serde(default)]
+        cancelled: bool,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
@@ -49,32 +62,20 @@ pub struct AuthenticationNotification {
 }
 
 impl AuthenticationEvent {
-    pub fn result(ok: bool, error: Option<String>, cancelled: Option<bool>) -> Self {
-        Self {
-            type_id: "result".into(),
-            id: None,
-            prompt: None,
-            notification: None,
-            ok: Some(ok),
+    pub fn result(ok: bool, error: Option<String>, cancelled: bool) -> Self {
+        Self::Finished {
+            ok,
             error,
             cancelled,
         }
     }
 
     pub fn notify(notification: AuthenticationNotification) -> Self {
-        Self {
-            type_id: "notify".into(),
-            id: None,
-            prompt: None,
-            notification: Some(notification),
-            ok: None,
-            error: None,
-            cancelled: None,
-        }
+        Self::Notified { notification }
     }
 
     /// The login finished and its credential was written.
     pub fn succeeded(&self) -> bool {
-        self.type_id == "result" && self.ok == Some(true)
+        matches!(self, Self::Finished { ok: true, .. })
     }
 }

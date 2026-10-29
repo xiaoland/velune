@@ -126,7 +126,7 @@ impl Repository {
                     use std::os::unix::fs::PermissionsExt;
                     fs::set_permissions(&persisted_path, fs::Permissions::from_mode(0o600))?;
                 }
-                let mut raw: serde_json::Value = serde_json::from_slice(&bytes)?;
+                let raw: serde_json::Value = serde_json::from_slice(&bytes)?;
                 let version = raw["schemaVersion"].as_u64().ok_or_else(|| {
                     RuntimeError::invalid("configuration schema version is required")
                 })?;
@@ -138,12 +138,6 @@ impl Repository {
                         return Err(RuntimeError::invalid(
                             "配置版本高于本应用支持的版本；请使用支持该版本的应用。",
                         ));
-                    }
-                    if raw.get("contextUsageDisplay").is_none() {
-                        raw["contextUsageDisplay"] = raw
-                            .get("usageDisplay")
-                            .cloned()
-                            .unwrap_or_else(|| serde_json::json!("used"));
                     }
                     let value: PersistedConfig = serde_json::from_value(raw)?;
                     if value.conversation_browser_group_limit == 0 {
