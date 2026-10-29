@@ -486,3 +486,7 @@ S17 实施授权：用户决定全面切换 UniFFI，并要求现在开始拆分
 ## S55
 
 2026-10-27 用户：“我希望借鉴 quotio 来改进我们的 ai 提供商、模型路由、聚合功能。（不是要照搬或者非得借鉴什么，我只是希望先看看）”。开发方比较后列出值得借鉴的五项与不宜借鉴的部分（CLIProxyAPI 以 OAuth 冒充官方客户端、读取 CLI 登录令牌查询额度、定时预热请求）。用户答复：“你的分析我同意，请你 borrow 你列出的这些 worth borrow 前4 点。”即实施：智能调度考虑重置节奏；额度状态包含余额等金额；API key 提供商经官方接口读取账户额度；额度历史与提醒。本条修订 [模型路由 PRD](prd/model-routing.md) 中“此阶段不增加重置节奏预测”。产品归 [模型路由](prd/model-routing.md#调度额度与使用上限) 与 [AI 提供商](prd/ai-providers.md#账户额度历史与提醒)，比较与实施归 quotio 参考任务（git 历史：tasks/quotio-reference）。
+
+## S56
+
+2026-10-29 用户解除架构重构期间的功能冻结，并提出首个 beta 前要加的两项功能：“side-chat (aka. claude code's btw)”；“session's context menu provide abilities to interrupt/resume the session or even open the composer in a sheet (for one-time send)”。对侧聊的方案答复：上下文“优先使用 Agent Runtime 的原生行为，如果 Agent Runtime 本身没有那就是按照你说的选项1处理”（选项 1 为在运行时内原生 fork 出不保存的临时副本）；形态为多轮、关闭即丢弃；侧聊中能做什么“由 native agent runtime 自己处理，默认不做任何限制”；两项功能首个 beta 前只做 Mac。产品归 [会话与会话列表](prd/conversations.md#侧聊) 与 [输入区](prd/composer.md#在-sheet-中发送)，实施归 `tasks/side-chat` 与 `tasks/conversation-menu-actions`。

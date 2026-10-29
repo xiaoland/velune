@@ -41,9 +41,9 @@ Velune 是新的独立产品，已经停止继续推进 Factory26。Beluna 是�
 - [Agent 运行时](agent-runtimes.md)：类型与实例、ACP、网关轮次、SSH 与 HOME、版本、快速导入
 - [资源库](resource-library.md)：指令、MCP、技能、子 Agent 定义的管理与同步
 - [Agent 协作与跨 Harness 接续](collaboration.md)：原生 sub-agent、A2A、关联 Agent、换 Harness 继续
-- [会话与会话列表](conversations.md)：会话权威、运行状态、列表分组与项目、会话管理
+- [会话与会话列表](conversations.md)：会话权威、运行状态、列表分组与项目、会话管理、侧聊
 - [消息展示](conversation-view.md)：消息布局、Markdown、工作过程折叠、大纲
-- [输入区（composer）](composer.md)：下一轮选择、附件、status line、发送队列、编辑消息
+- [输入区（composer）](composer.md)：下一轮选择、附件、status line、发送队列、编辑消息、在 sheet 中发送
 - [多窗口、标签与布局](workspace-layout.md)：分屏标签组、停靠区与工具窗口、布局恢复
 - [键盘操作](keyboard.md)：发送键与插入本轮、命令面板与打开会话、审批卡片、消息与会话列表的键盘操作、默认快捷键
 - [问题与诊断](diagnostics.md)：问题面板、本地诊断内容
