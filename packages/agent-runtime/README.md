@@ -95,7 +95,7 @@ DSH 的 ACP 模型目录只随会话返回，且 `session/new` 会持久化空�
 
 Pi 与 Codex 的 stdio JSON-RPC 记录按换行边界读取，不附加固定的 1 MiB 单记录或业务输出上限；历史 helper 的 stdout 也完整读取。stderr 仅保留有界诊断缓存，超出时标记截断，不把诊断量误报成业务输出失败。超时、进程退出、JSON 解析和通道关闭仍按原生错误传播。
 
-Node 与用户配置的 Pi／Codex／DSH 安装均为外部依赖。huihua 固定依赖、完整许可证和安装入口见 [runtime-support 声明](runtime-support/THIRD_PARTY_NOTICES.md) 与 [开发说明](../../docs/development.md#原生运行时与历史读取)。只随 Mac 分发薄 adapter helpers 与 huihua parser 依赖，不分发任何 Agent runtime 或 Pi SDK。所有 Pi 操作从显式 CLI 解析对应外部安装；OAuth 来源固定安装与版本，缺失或变化不隐式回退。
+Node 与用户配置的 Pi／Codex／DSH 安装均为外部依赖。huihua 固定依赖、完整许可证和安装入口见 [runtime-support 声明](runtime-support/THIRD_PARTY_NOTICES.md) 与 [开发说明](../../docs/development.md#原生运行时与历史读取)。只随 Mac 分发薄 adapter helpers 与 huihua parser 依赖，不分发任何 Agent runtime 或 Pi SDK。所有 Pi 操作从显式 CLI 解析对应外部安装；OAuth 来源固定安装与版本，缺失或变化不隐式回退。`pi_sdk.mjs` 从所选 CLI 的真实路径核对包名、版本、公开入口与 bin 关联，执行、历史、导入与 OAuth 使用同一安装；npm／pnpm 的字面 launcher 只解析其中的 CLI 路径，不执行 shell，无法解析的 wrapper 应改选安装包的 CLI。Pi 的 managed 模型目录以 `thinkingLevelMap` 把标准推理等级限制为模型声明的等级。
 
 版本注册表同时声明中立 `RuntimeProtocol` 支持集合。application 将其转换成网关协议描述供界面使用，执行准备也检查同一集合；family 不参与协议资格判断。
 
