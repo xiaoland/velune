@@ -166,6 +166,7 @@ impl View {
             model_record_key: header.model_record_key.clone(),
             run_state: header.run_state.clone(),
             transcript_turns: header.transcript_turns.clone(),
+            usage: ConversationUsage::of(&header.transcript_turns),
             transcript_items: header.transcript_items.clone(),
             transcript_outline: header.transcript_outline.clone(),
             transcript_message_identities: header.transcript_message_identities.clone(),

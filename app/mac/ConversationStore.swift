@@ -328,23 +328,11 @@ final class ConversationStore: ObservableObject {
 
     // MARK: - Status
 
-    /// Where the loaded conversation stands, from its turns' native records.
+    /// Where the loaded conversation stands, as the core reads its turns' native records.
     var conversationStatus: ConversationStatus {
-        let turns = snapshot?.transcriptTurns ?? []
-        let latest = turns.last { $0.usage != nil }?.usage
-        func total(_ count: KeyPath<TurnUsage, UInt64?>) -> UInt64? {
-            let counts = turns.compactMap { $0.usage?[keyPath: count] }
-            return counts.isEmpty ? nil : counts.reduce(0, +)
-        }
-        return ConversationStatus(
-            conversationID: isDraft ? nil : snapshot?.conversation.id,
-            endedTurns: turns.filter { !$0.isRunning }.count,
-            contextTokens: latest?.contextTokens, contextWindow: latest?.contextWindow,
-            inputTokens: total(\.inputTokens), cacheReadTokens: total(\.cacheReadTokens),
-            outputTokens: total(\.outputTokens), reasoningTokens: total(\.reasoningTokens),
-            unrecordedTurns: turns.filter { !$0.isRunning && $0.usage == nil }.count,
-            directory: isDraft ? nil : snapshot?.conversation.cwd,
-            costMicroUSD: turns.last { $0.usage?.sessionCostMicroUsd != nil }?.usage?.sessionCostMicroUsd)
+        ConversationStatus(conversationID: isDraft ? nil : snapshot?.conversation.id,
+                           directory: isDraft ? nil : snapshot?.conversation.cwd,
+                           usage: snapshot?.usage ?? ConversationUsage())
     }
     var composerQuotaRequest: ComposerQuotaRequest {
         ComposerQuotaRequest(runtimeID: nextTurnRuntimeID ?? "", selection: nextTurnModel,

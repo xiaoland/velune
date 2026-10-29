@@ -1,37 +1,24 @@
 import SwiftUI
 import VeluneBindings
 
-/// Where the loaded conversation stands, from its turns' native records:
-/// context is the latest turn's, counts are summed over the turns that
-/// recorded them, and limits and cost are the latest reported.
+/// Where the loaded conversation stands: its usage as the core reads it
+/// from the turns' native records, and its working directory.
 struct ConversationStatus: Equatable {
     var conversationID: String?
-    var endedTurns: Int
-    var contextTokens: UInt64?
-    var contextWindow: UInt64?
-    var inputTokens: UInt64?
-    var cacheReadTokens: UInt64?
-    var outputTokens: UInt64?
-    var reasoningTokens: UInt64?
-    var unrecordedTurns: Int
     var directory: String?
-    var costMicroUSD: UInt64?
+    var usage = ConversationUsage()
 
     var contextFraction: Double? {
-        guard let tokens = contextTokens, let window = contextWindow, window > 0 else { return nil }
+        guard let tokens = usage.contextTokens, let window = usage.contextWindow, window > 0 else { return nil }
         return min(Double(tokens) / Double(window), 1)
-    }
-    var sessionTokens: UInt64? {
-        guard inputTokens != nil || outputTokens != nil else { return nil }
-        return (inputTokens ?? 0) + (outputTokens ?? 0)
     }
     func has(_ item: StatusLineItem) -> Bool {
         switch item {
-        case .contextUsage: contextTokens != nil
-        case .sessionTokens: sessionTokens != nil
+        case .contextUsage: usage.contextTokens != nil
+        case .sessionTokens: usage.sessionTokens != nil
         case .workingDirectory: directory != nil
         case .rateLimits: false
-        case .sessionCost: costMicroUSD != nil
+        case .sessionCost: usage.sessionCostMicroUsd != nil
         }
     }
 }
@@ -72,7 +59,7 @@ struct ComposerStatusLine: View {
             await store.observeComposerQuota(store.composerQuotaRequest)
         }
         // The branch can change with any turn; reading it is one git call.
-        .task(id: "\(status.conversationID ?? "")|\(status.directory ?? "")|\(status.endedTurns)") {
+        .task(id: "\(status.conversationID ?? "")|\(status.directory ?? "")|\(status.usage.endedTurns)") {
             guard status.directory != nil else { branch = nil; return }
             store.readWorkingBranch { branch = $0 }
         }
@@ -83,11 +70,11 @@ struct ComposerStatusLine: View {
         case .contextUsage:
             if let fraction = status.contextFraction {
                 HStack(spacing: 4) { ContextRing(fraction: fraction, display: store.device.contextUsageDisplay); Text(StatusFormat.context(fraction, store.device.contextUsageDisplay)) }
-            } else if let tokens = status.contextTokens {
+            } else if let tokens = status.usage.contextTokens {
                 Text("上下文 \(StatusFormat.short(tokens))")
             }
         case .sessionTokens:
-            if let tokens = status.sessionTokens { Label(StatusFormat.short(tokens), systemImage: "sum").labelStyle(.titleAndIcon) }
+            if let tokens = status.usage.sessionTokens { Label(StatusFormat.short(tokens), systemImage: "sum").labelStyle(.titleAndIcon) }
         case .workingDirectory:
             if let directory = status.directory {
                 HStack(spacing: 4) {
@@ -99,7 +86,7 @@ struct ComposerStatusLine: View {
             let text = store.composerQuotaError.map { _ in "额度读取失败" } ?? accountSummary(short: true)
             Label(text, systemImage: "gauge.with.dots.needle.33percent")
         case .sessionCost:
-            if let cost = status.costMicroUSD { Text(StatusFormat.cost(cost)) }
+            if let cost = status.usage.sessionCostMicroUsd { Text(StatusFormat.cost(cost)) }
         }
     }
 
@@ -107,15 +94,15 @@ struct ComposerStatusLine: View {
         let lines = items.compactMap { item -> String? in
             switch item {
             case .contextUsage:
-                guard let tokens = status.contextTokens else { return nil }
-                guard let window = status.contextWindow, let fraction = status.contextFraction else { return "上下文：已用 \(TokenCount.format(tokens)) tokens，模型窗口未知" }
+                guard let tokens = status.usage.contextTokens else { return nil }
+                guard let window = status.usage.contextWindow, let fraction = status.contextFraction else { return "上下文：已用 \(TokenCount.format(tokens)) tokens，模型窗口未知" }
                 if store.device.contextUsageDisplay == .remaining { return "上下文：剩余 \(TokenCount.format(window.subtractingClamped(tokens))) / \(TokenCount.format(window)) tokens（\(StatusFormat.percent(1 - fraction))）" }
                 return "上下文：已用 \(TokenCount.format(tokens)) / \(TokenCount.format(window)) tokens（\(StatusFormat.percent(fraction))）"
-            case .sessionTokens: return status.sessionTokens.map { "本会话累计：\(TokenCount.format($0)) tokens" }
+            case .sessionTokens: return status.usage.sessionTokens.map { "本会话累计：\(TokenCount.format($0)) tokens" }
             case .workingDirectory: return status.directory.map { "工作目录：\($0)" + (branch.map { "（\($0)）" } ?? "") }
             case .rateLimits:
                 return store.composerQuotaError ?? accountSummary(short: false)
-            case .sessionCost: return status.costMicroUSD.map { "费用估算：\(StatusFormat.cost($0))" }
+            case .sessionCost: return status.usage.sessionCostMicroUsd.map { "费用估算：\(StatusFormat.cost($0))" }
             }
         }
         return (lines + ["点按查看会话状态"]).joined(separator: "\n")
@@ -174,12 +161,12 @@ struct StatusDetails: View {
         VStack(alignment: .leading, spacing: 10) {
             Text("会话状态").font(.headline)
             Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 6) {
-                if let tokens = status.contextTokens {
+                if let tokens = status.usage.contextTokens {
                     heading("上下文")
-                    if display == .remaining, let window = status.contextWindow {
+                    if display == .remaining, let window = status.usage.contextWindow {
                         row("剩余", "\(TokenCount.format(window.subtractingClamped(tokens))) / \(TokenCount.format(window)) tokens")
                     } else {
-                        row("已用", status.contextWindow.map { "\(TokenCount.format(tokens)) / \(TokenCount.format($0)) tokens" } ?? "\(TokenCount.format(tokens)) tokens（模型窗口未知）")
+                        row("已用", status.usage.contextWindow.map { "\(TokenCount.format(tokens)) / \(TokenCount.format($0)) tokens" } ?? "\(TokenCount.format(tokens)) tokens（模型窗口未知）")
                     }
                     if let fraction = status.contextFraction {
                         GridRow {
@@ -191,20 +178,20 @@ struct StatusDetails: View {
                         }
                     }
                 }
-                if status.sessionTokens != nil {
+                if status.usage.sessionTokens != nil {
                     heading("本会话累计")
-                    if let value = status.inputTokens { row("输入", TokenCount.format(value)) }
-                    if let value = status.cacheReadTokens { row("缓存读取", TokenCount.format(value)) }
-                    if let value = status.outputTokens { row("输出", TokenCount.format(value)) }
-                    if let value = status.reasoningTokens { row("推理", TokenCount.format(value)) }
-                    if status.unrecordedTurns > 0 { row("未记录", "\(status.unrecordedTurns) 轮") }
+                    if let value = status.usage.inputTokens { row("输入", TokenCount.format(value)) }
+                    if let value = status.usage.cacheReadTokens { row("缓存读取", TokenCount.format(value)) }
+                    if let value = status.usage.outputTokens { row("输出", TokenCount.format(value)) }
+                    if let value = status.usage.reasoningTokens { row("推理", TokenCount.format(value)) }
+                    if status.usage.unrecordedTurns > 0 { row("未记录", "\(status.usage.unrecordedTurns) 轮") }
                 }
                 if let directory = status.directory {
                     heading("工作目录")
                     row("路径", (directory as NSString).abbreviatingWithTildeInPath)
                     if let branch { row("分支", branch) }
                 }
-                if let cost = status.costMicroUSD {
+                if let cost = status.usage.sessionCostMicroUsd {
                     heading("费用")
                     row("估算", StatusFormat.cost(cost))
                 }

@@ -106,7 +106,7 @@ enum PreviewData {
         let turn = TranscriptTurn(id: "turn", userMessageId: user.id, workMessageIds: [assistant.id], lastMessageId: assistant.id, replyStartBlock: 1, durationMs: 2400, isRunning: false, settings: nil, usage: nil)
         let snapshot = DeliveredSnapshot(cursor: .init(generation: 1, sequence: 1), base: nil, messageIds: [user.id, assistant.id], messages: [user, assistant], revision: 1,
             conversation: .init(id: "sample", title: .native("iPad 控制端"), updatedAtUnixMs: nil, createdAtUnixMs: nil, runtimeId: "sample", cwd: "/sample/velune", canRename: false, canDelete: false, parentConversationId: nil),
-            contextRuntimeId: "sample", resourceId: nil, modelRecordKey: nil, runState: .idle, transcriptTurns: [turn],
+            contextRuntimeId: "sample", resourceId: nil, modelRecordKey: nil, runState: .idle, transcriptTurns: [turn], usage: ConversationUsage(endedTurns: 1, unrecordedTurns: 1),
             transcriptItems: [.message(id: "user", messageId: user.id), .work(turnId: turn.id), .message(id: "reply:assistant", messageId: assistant.id)],
             transcriptOutline: [.init(id: "user", messageId: "user")], transcriptMessageIdentities: [], messageIdentityConfirmations: [], pendingInteractions: [],
             actions: .init(canSend: true, canCancel: false, canSwitch: false),

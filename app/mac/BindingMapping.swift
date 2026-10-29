@@ -33,7 +33,7 @@ enum BindingMapping {
     static func snapshotHeader(_ value: DeliveredSnapshot) -> ConversationSnapshot {
         ConversationSnapshot(cursor: value.cursor, revision: value.revision, conversation: conversation(value.conversation), contextRuntimeID: value.contextRuntimeId,
                              modelRecordKey: value.modelRecordKey, runState: value.runState,
-                             messages: [], transcriptTurns: value.transcriptTurns, transcriptItems: value.transcriptItems, transcriptOutline: value.transcriptOutline,
+                             messages: [], transcriptTurns: value.transcriptTurns, usage: value.usage, transcriptItems: value.transcriptItems, transcriptOutline: value.transcriptOutline,
                              transcriptMessageIdentities: value.transcriptMessageIdentities, messageIdentityConfirmations: value.messageIdentityConfirmations,
                              pendingInteractions: value.pendingInteractions, actions: value.actions, followUp: value.followUp,
                              subAgents: value.subAgents,

@@ -3,8 +3,8 @@
 //! and a client polling with a cursor receives only messages whose content changed.
 use serde::{Deserialize, Serialize};
 use velune_conversation::{
-    ConversationActions, ConversationSummary, MessageIdentityConfirmation, MessageRole, RunState,
-    RuntimeInteraction, ToolState, TranscriptItem, TranscriptMessageIdentity,
+    ConversationActions, ConversationSummary, MessageIdentityConfirmation, MessageRole, RateLimit,
+    RunState, RuntimeInteraction, ToolState, TranscriptItem, TranscriptMessageIdentity,
     TranscriptOutlineEntry, TranscriptTurn,
 };
 
@@ -115,6 +115,8 @@ pub struct DeliveredSnapshot {
     pub model_record_key: Option<String>,
     pub run_state: RunState,
     pub transcript_turns: Vec<TranscriptTurn>,
+    /// What the turns' native records say the conversation used.
+    pub usage: ConversationUsage,
     pub transcript_items: Vec<TranscriptItem>,
     pub transcript_outline: Vec<TranscriptOutlineEntry>,
     pub transcript_message_identities: Vec<TranscriptMessageIdentity>,
@@ -124,6 +126,78 @@ pub struct DeliveredSnapshot {
     pub follow_up: velune_conversation::FollowUp,
     pub sub_agents: Vec<velune_conversation::SubAgent>,
     pub collaborators: Vec<velune_conversation::Collaborator>,
+}
+
+/// Where a conversation stands by its turns' native records: context is
+/// the latest recorded turn's, counts are summed over the turns that
+/// recorded them (absent when none did), and cost and account limits are
+/// the latest reported. Nothing is estimated.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, uniffi::Record)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationUsage {
+    #[uniffi(default = 0)]
+    pub ended_turns: u32,
+    /// Ended turns whose native record has no usage.
+    #[uniffi(default = 0)]
+    pub unrecorded_turns: u32,
+    #[uniffi(default = None)]
+    pub context_tokens: Option<u64>,
+    #[uniffi(default = None)]
+    pub context_window: Option<u64>,
+    #[uniffi(default = None)]
+    pub input_tokens: Option<u64>,
+    #[uniffi(default = None)]
+    pub cache_read_tokens: Option<u64>,
+    #[uniffi(default = None)]
+    pub output_tokens: Option<u64>,
+    #[uniffi(default = None)]
+    pub reasoning_tokens: Option<u64>,
+    /// Input and output together, when either is recorded.
+    #[uniffi(default = None)]
+    pub session_tokens: Option<u64>,
+    #[uniffi(default = None)]
+    pub session_cost_micro_usd: Option<u64>,
+    #[uniffi(default = [])]
+    pub rate_limits: Vec<RateLimit>,
+}
+
+impl ConversationUsage {
+    pub fn of(turns: &[TranscriptTurn]) -> Self {
+        let recorded = || turns.iter().filter_map(|turn| turn.usage.as_ref());
+        let total = |count: fn(&velune_conversation::TurnUsage) -> Option<u64>| {
+            recorded()
+                .filter_map(count)
+                .reduce(|a, b| a.saturating_add(b))
+        };
+        let latest = recorded().next_back();
+        let input_tokens = total(|usage| usage.input_tokens);
+        let output_tokens = total(|usage| usage.output_tokens);
+        let ended = || turns.iter().filter(|turn| !turn.is_running);
+        Self {
+            ended_turns: ended().count() as u32,
+            unrecorded_turns: ended().filter(|turn| turn.usage.is_none()).count() as u32,
+            context_tokens: latest.and_then(|usage| usage.context_tokens),
+            context_window: latest.and_then(|usage| usage.context_window),
+            input_tokens,
+            cache_read_tokens: total(|usage| usage.cache_read_tokens),
+            output_tokens,
+            reasoning_tokens: total(|usage| usage.reasoning_tokens),
+            session_tokens: (input_tokens.is_some() || output_tokens.is_some()).then(|| {
+                input_tokens
+                    .unwrap_or(0)
+                    .saturating_add(output_tokens.unwrap_or(0))
+            }),
+            session_cost_micro_usd: recorded()
+                .rev()
+                .find_map(|usage| usage.session_cost_micro_usd),
+            rate_limits: recorded()
+                .rev()
+                .map(|usage| &usage.rate_limits)
+                .find(|limits| !limits.is_empty())
+                .cloned()
+                .unwrap_or_default(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, uniffi::Enum)]
@@ -137,4 +211,78 @@ pub enum SnapshotUpdate {
     Changed {
         snapshot: DeliveredSnapshot,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use velune_conversation::TurnUsage;
+
+    fn turn(running: bool, usage: Option<TurnUsage>) -> TranscriptTurn {
+        TranscriptTurn {
+            id: String::new(),
+            user_message_id: String::new(),
+            work_message_ids: Vec::new(),
+            last_message_id: None,
+            reply_start_block: 0,
+            duration_ms: None,
+            is_running: running,
+            settings: None,
+            usage,
+        }
+    }
+
+    #[test]
+    fn usage_sums_recorded_counts_and_keeps_latest_reports() {
+        let limit = RateLimit {
+            window_minutes: Some(300),
+            used_percent: 40,
+            resets_at_unix_ms: None,
+        };
+        let turns = [
+            turn(
+                false,
+                Some(TurnUsage {
+                    input_tokens: Some(100),
+                    output_tokens: Some(10),
+                    session_cost_micro_usd: Some(5),
+                    rate_limits: vec![limit.clone()],
+                    ..Default::default()
+                }),
+            ),
+            turn(false, None),
+            turn(
+                false,
+                Some(TurnUsage {
+                    input_tokens: Some(200),
+                    reasoning_tokens: Some(3),
+                    context_tokens: Some(250),
+                    context_window: Some(1000),
+                    ..Default::default()
+                }),
+            ),
+            turn(true, None),
+        ];
+        let usage = ConversationUsage::of(&turns);
+        assert_eq!(usage.ended_turns, 3);
+        assert_eq!(usage.unrecorded_turns, 1);
+        assert_eq!(
+            (
+                usage.input_tokens,
+                usage.output_tokens,
+                usage.cache_read_tokens
+            ),
+            (Some(300), Some(10), None)
+        );
+        assert_eq!(usage.reasoning_tokens, Some(3));
+        assert_eq!(usage.session_tokens, Some(310));
+        assert_eq!(
+            (usage.context_tokens, usage.context_window),
+            (Some(250), Some(1000))
+        );
+        // The latest turn reported neither; the earlier reports stand.
+        assert_eq!(usage.session_cost_micro_usd, Some(5));
+        assert_eq!(usage.rate_limits, vec![limit]);
+        assert_eq!(ConversationUsage::of(&[]), ConversationUsage::default());
+    }
 }

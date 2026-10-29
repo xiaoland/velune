@@ -25,8 +25,8 @@ public sealed partial class ConversationView
         }
         var remaining = Model.Configuration.Usage == UsageDisplay.Remaining;
         var contextRemaining = Model.Configuration.ContextUsage == UsageDisplay.Remaining;
-        var usage = snapshot.TranscriptTurns.Select(turn => turn.Usage).LastOrDefault(usage => usage != null);
-        if (usage?.ContextTokens is { } context)
+        var usage = snapshot.Usage;
+        if (usage.ContextTokens is { } context)
         {
             if (usage.ContextWindow is { } window and > 0)
             {
@@ -40,11 +40,9 @@ public sealed partial class ConversationView
                 items.Add(new(StatusLineItem.ContextUsage, "上下文", $"上下文 {Count(context)}", "模型的上下文窗口未知，只显示最近一次请求的 token 数。"));
             }
         }
-        var tokens = snapshot.TranscriptTurns.Select(turn => turn.Usage).Where(turnUsage => turnUsage != null)
-            .Select(turnUsage => (turnUsage!.InputTokens ?? 0) + (turnUsage.OutputTokens ?? 0)).Sum(count => (decimal)count);
-        if (tokens > 0)
+        if (usage.SessionTokens is { } tokens)
         {
-            items.Add(new(StatusLineItem.SessionTokens, "本会话 token", $"{Count((ulong)tokens)} token", "本会话各轮记录的输入与输出 token 之和。"));
+            items.Add(new(StatusLineItem.SessionTokens, "本会话 token", $"{Count(tokens)} token", "本会话各轮记录的输入与输出 token 之和。"));
         }
         if (snapshot.Conversation.Cwd is { Length: > 0 } cwd)
         {
@@ -54,13 +52,13 @@ public sealed partial class ConversationView
                 cwd + (shownBranch != null ? "，分支 " + shownBranch : "")));
             ReadBranch(cwd, snapshot.TranscriptTurns.Length);
         }
-        if (usage is { RateLimits.Length: > 0 })
+        if (usage.RateLimits.Length > 0)
         {
             var limits = usage.RateLimits.Select(limit =>
                 (limit.WindowMinutes is { } minutes ? Period(minutes) + " " : "") + (remaining ? $"剩余 {100 - Math.Min(limit.UsedPercent, 100)}%" : $"{limit.UsedPercent}%"));
             items.Add(new(StatusLineItem.RateLimits, "账户额度", string.Join(" · ", limits), "运行时最近报告的账户用量限额。"));
         }
-        if (usage?.SessionCostMicroUsd is { } cost)
+        if (usage.SessionCostMicroUsd is { } cost)
         {
             items.Add(new(StatusLineItem.SessionCost, "费用估算", $"${cost / 1_000_000.0:0.00}", "运行时按其价格表估算的本会话费用；经网关或订阅时不代表实际计费。"));
         }

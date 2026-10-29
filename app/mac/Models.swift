@@ -48,6 +48,8 @@ struct ConversationSnapshot: Codable, Sendable, Equatable {
     var runState: RunState
     var messages: [DeliveredMessage]
     var transcriptTurns: [TranscriptTurn] = []
+    /// What the turns' native records say the conversation used, as the core sums it.
+    var usage = ConversationUsage()
     var transcriptItems: [TranscriptItem] = []
     var transcriptOutline: [TranscriptOutlineEntry] = []
     var transcriptMessageIdentities: [TranscriptMessageIdentity] = []
@@ -60,7 +62,7 @@ struct ConversationSnapshot: Codable, Sendable, Equatable {
     var subAgents: [SubAgent] = []
     /// Conversations of Velune's agent-to-agent collaboration, either way.
     var collaborators: [Collaborator] = []
-    enum CodingKeys: String, CodingKey { case revision, conversation, runState, messages, transcriptTurns, transcriptItems, transcriptOutline, transcriptMessageIdentities, messageIdentityConfirmations, pendingInteractions, actions; case modelRecordKey = "modelRecordKey", contextRuntimeID = "contextRuntimeId" }
+    enum CodingKeys: String, CodingKey { case revision, conversation, runState, messages, transcriptTurns, usage, transcriptItems, transcriptOutline, transcriptMessageIdentities, messageIdentityConfirmations, pendingInteractions, actions; case modelRecordKey = "modelRecordKey", contextRuntimeID = "contextRuntimeId" }
 }
 
 /// The models a runtime instance offers, read from the core when first needed.
