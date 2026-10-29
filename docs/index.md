@@ -25,7 +25,6 @@
 ## 当前工作
 
 - [待决事项与已知缺口](../tasks/open-items/packet.md)：尚未解决的用户决定、未授权的候选与未验证的能力
-- [侧聊](../tasks/side-chat/packet.md)：Claude Code `/btw` 式的侧聊，原生侧问或临时 fork（Mac）
 
 ## 协作入口
 

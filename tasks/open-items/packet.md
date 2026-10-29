@@ -34,4 +34,5 @@
 - **Agent 间协作**：只以合成 ACP 运行时验收，真实 Harness 经此路径的协作未验证。（原 `agent-collaboration`）
 - **运行时工作寿命**：Claude Code 2.1.286 的任务中断，以及子 Agent 运行期间 SSH 隧道的长连接，待复核。（原 `runtime-work-lifetime`）
 - **遥测分享**：跨端分享矩阵（各平台互相邀请、授权与撤销）受设备所限未完成验证。（原 `otlp-observability`）
+- **侧聊**：Claude Code 侧问只在 2.1.292 验证，最低支持的 2.1.286 是否已有 `side_question` 未知；Mac 上用指针点按菜单、右键菜单与 `/side` 补全打开侧聊未实测（与已核对的命令同一入口）。（原 `side-chat`）
 - **真实服务**：多数功能只以合成上游与隔离 HOME 验收，真实提供商、真实订阅登录与额度接口、各平台 GUI 体验由用户验收。
