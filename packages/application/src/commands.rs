@@ -270,11 +270,11 @@ impl Application {
                     |core| core.set_conversation_browser_preferences(preferences),
                 )?)
             }
-            Command::ReadComposerDrafts => Response::ReadComposerDrafts(application.runtime.serve(
-                Focus::None,
-                Login::Allows,
-                |core| core.composer_drafts(),
-            )?),
+            Command::ReadComposerDrafts => Response::ReadComposerDrafts(
+                application
+                    .runtime
+                    .serve(Focus::None, Login::Allows, |core| core.composer_drafts())?,
+            ),
             Command::SetComposerDraft {
                 conversation_id,
                 text,
@@ -286,11 +286,11 @@ impl Application {
                     })?;
                 Response::SetComposerDraft
             }
-            Command::ReadComposerChoices => Response::ReadComposerChoices(application.runtime.serve(
-                Focus::None,
-                Login::Blocks,
-                |core| core.composer_choices(),
-            )?),
+            Command::ReadComposerChoices => Response::ReadComposerChoices(
+                application
+                    .runtime
+                    .serve(Focus::None, Login::Blocks, |core| core.composer_choices())?,
+            ),
             Command::SetNextTurnIntent { intent } => {
                 application
                     .runtime
@@ -390,11 +390,13 @@ impl Application {
                 Login::Blocks,
                 |core| core.upsert_acp_runtime(runtime, execution, launch),
             )?),
-            Command::ReadAcpLaunch { runtime_id } => Response::ReadAcpLaunch(application.runtime.serve(
-                Focus::None,
-                Login::Blocks,
-                |core| core.acp_launch(runtime_id),
-            )?),
+            Command::ReadAcpLaunch { runtime_id } => {
+                Response::ReadAcpLaunch(application.runtime.serve(
+                    Focus::None,
+                    Login::Blocks,
+                    |core| core.acp_launch(runtime_id),
+                )?)
+            }
             Command::ReadAcpRuntimeInfo { runtime_id } => {
                 Response::ReadAcpRuntimeInfo(application.runtime.serve(
                     Focus::None,
@@ -757,11 +759,11 @@ impl Application {
                 Login::Blocks,
                 |core| core.clear_provider_quota_history(gateway_id, provider_id),
             )?),
-            Command::ReadQuotaAlerts { since } => Response::ReadQuotaAlerts(application.runtime.serve(
-                Focus::None,
-                Login::Blocks,
-                |core| core.quota_alerts(since),
-            )?),
+            Command::ReadQuotaAlerts { since } => Response::ReadQuotaAlerts(
+                application
+                    .runtime
+                    .serve(Focus::None, Login::Blocks, |core| core.quota_alerts(since))?,
+            ),
             Command::SaveProvider {
                 gateway_id,
                 provider,

@@ -31,6 +31,17 @@ pub struct ProviderModel {
     pub reasoning_levels: Option<Vec<String>>,
 }
 
+impl ProviderModel {
+    /// The nickname, else the provider's model ID.
+    pub fn display_name(&self) -> &str {
+        if self.nickname.is_empty() {
+            &self.provider_model_id
+        } else {
+            &self.nickname
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, uniffi::Record)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ModelTemplate {

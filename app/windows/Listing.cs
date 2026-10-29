@@ -10,6 +10,9 @@ sealed record Configuration(
 {
     public static readonly Configuration Empty = new([], [], []);
 
+    // The gateways the runtimes reach Velune's models through.
+    public IReadOnlyList<GatewaySummary> Gateways { get; init; } = [];
+
     // How the device's settings say conversations show.
     public OutlinePresentation Outline { get; init; } = OutlinePresentation.Popover;
     public LinkedConversationOpening LinkedOpening { get; init; } = LinkedConversationOpening.CurrentTab;
@@ -21,6 +24,9 @@ sealed record Configuration(
 
     public RuntimeTypeDescriptor? RuntimeType(string runtimeId) =>
         Runtime(runtimeId) is { } runtime ? Types.FirstOrDefault(type => type.Id == runtime.TypeId) : null;
+
+    public ProviderSummary[] Providers(string runtimeId) =>
+        Runtime(runtimeId) is { } runtime ? Gateways.FirstOrDefault(gateway => gateway.Id == runtime.GatewayId)?.Providers ?? [] : [];
 }
 
 // A device's conversation list as last read.
@@ -68,6 +74,7 @@ sealed class Listing
                 Usage = list.UsageDisplay,
                 ContextUsage = list.ContextUsageDisplay,
                 StatusLine = list.StatusLine,
+                Gateways = list.Gateways,
             },
             Active = active.ToDictionary(conversation => conversation.ConversationId),
         };

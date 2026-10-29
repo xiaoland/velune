@@ -32,8 +32,8 @@ public sealed partial class WorkspaceWindow
             Command.Attach => composing && model!.Busy == false,
             Command.ChooseRuntime => composing && model!.Configuration.Runtimes.Count > 0,
             Command.ChooseModel => composing && model!.Next.Length > 0,
-            Command.ChooseEffort => composing && model!.EffortOptions().Length > 0,
-            Command.ChoosePermission => composing && model!.PermissionModes().Length > 0,
+            Command.ChooseEffort => composing && model!.NextTurn.Efforts.Length > 0,
+            Command.ChoosePermission => composing && model!.NextTurn.PermissionModes.Length > 0,
             // Continue resumes natively, as the composer's main button does.
             Command.Continue => composing && model!.Submission.CanResume,
             Command.CompactContext => model is { CanCompact: true },

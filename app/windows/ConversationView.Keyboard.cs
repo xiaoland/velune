@@ -338,7 +338,7 @@ public sealed partial class ConversationView
             }, detail, Checked: chosen, Aliases: aliases));
         // What “沿用当前” and “运行时默认” are also found by.
         string[] unchosenAliases = ["current", "default", "keep", "none"];
-        var unchosen = Model.HasTurns(Model.Next) ? "沿用当前" : "运行时默认";
+        var unchosen = Model.NextTurn.HasCurrent ? "沿用当前" : "运行时默认";
         switch (mode)
         {
             case PaletteMode.Runtime:
@@ -348,34 +348,34 @@ public sealed partial class ConversationView
                 }
                 break;
             case PaletteMode.Model:
-                var chosenModel = Model.Choice().Model;
-                Add("", Model.HasTurns(Model.Next) && Model.NextModel() != null ? "沿用当前（" + Model.ModelName() + "）" : "运行时默认",
-                    chosenModel == null, () => Model.Choose(false, choice => choice with { Model = null }), aliases: unchosenAliases);
+                var chosenModel = Model.NextTurn.Choice.Model;
+                Add("", Model.NextTurn.HasCurrent && Model.NextTurn.Model != null ? "沿用当前（" + Model.ModelName() + "）" : "运行时默认",
+                    chosenModel == null, () => Model.Choose(new TurnChoiceChange.Model(null)), aliases: unchosenAliases);
                 var index = 0;
-                foreach (var model in Model.ModelChoices().OrderBy(model => model.Managed))
+                foreach (var model in Model.NextTurn.Models.OrderBy(model => model.Selection is ModelSelection.Managed))
                 {
                     Add(index++ + ":" + model.Name, model.Name, Equals(model.Selection, chosenModel),
-                        () => Model.Choose(true, choice => choice with { Model = model.Selection }), model.Managed ? "Velune 提供商" : null,
+                        () => Model.Choose(new TurnChoiceChange.Model(model.Selection)), model.Selection is ModelSelection.Managed ? "Velune 提供商" : null,
                         model.Selection is ModelSelection.Native native ? [native.ModelId] : null);
                 }
                 break;
             case PaletteMode.Effort:
-                var effort = Model.Effort();
-                Add("", Model.CurrentEffort() is { } current ? "沿用当前（" + current + "）" : unchosen, effort == null,
-                    () => Model.Choose(false, choice => choice with { Effort = null }), aliases: unchosenAliases);
-                foreach (var level in Model.EffortOptions())
+                var effort = Model.NextTurn.Effort;
+                Add("", Model.NextTurn.CurrentEffort is { } current ? "沿用当前（" + current + "）" : unchosen, effort == null,
+                    () => Model.Choose(new TurnChoiceChange.Effort(null)), aliases: unchosenAliases);
+                foreach (var level in Model.NextTurn.Efforts)
                 {
-                    Add(level, level, effort == level, () => Model.Choose(true, choice => choice with { Effort = level }));
+                    Add(level, level, effort == level, () => Model.Choose(new TurnChoiceChange.Effort(level)));
                 }
                 break;
             case PaletteMode.Permission:
-                var permission = Model.PermissionMode(Model.Choice().PermissionMode);
-                var running = Model.PermissionMode(Model.CurrentSettings()?.PermissionMode);
+                var permission = Model.NextTurn.PermissionMode;
+                var running = Model.NextTurn.CurrentPermissionMode;
                 Add("", running != null ? "沿用当前（" + running.Label + "）" : unchosen, permission == null,
-                    () => Model.Choose(false, choice => choice with { PermissionMode = null }), aliases: unchosenAliases);
-                foreach (var option in Model.PermissionModes())
+                    () => Model.Choose(new TurnChoiceChange.PermissionMode(null)), aliases: unchosenAliases);
+                foreach (var option in Model.NextTurn.PermissionModes)
                 {
-                    Add(option.Id, option.Label, permission?.Id == option.Id, () => Model.Choose(true, choice => choice with { PermissionMode = option.Id }), option.Detail, [option.Id]);
+                    Add(option.Id, option.Label, permission?.Id == option.Id, () => Model.Choose(new TurnChoiceChange.PermissionMode(option.Id)), option.Detail, [option.Id]);
                 }
                 break;
         }

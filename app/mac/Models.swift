@@ -69,6 +69,8 @@ enum RuntimeModelCatalog: Equatable, Sendable {
     case failed(String)
     /// The runtime's default when it has one, its own models, then managed models.
     case ready([RuntimeModel])
+
+    var models: [RuntimeModel]? { if case .ready(let models) = self { models } else { nil } }
 }
 
 /// How core reaches the provider; template kind does not determine its authentication method.

@@ -22,7 +22,7 @@ sealed partial class Conversation
     // Turn is a next turn of text and the attachments. Without a level or
     // mode the core keeps the conversation's current one.
     ComposedTurn Turn(string text) =>
-        new(Text: text, Effort: Effort(), Attachments: [.. Attached.Select(attachment => attachment.Reference)], PermissionMode: PermissionMode(Choice().PermissionMode)?.Id);
+        new(Text: text, Effort: NextTurn.Effort, Attachments: [.. Attached.Select(attachment => attachment.Reference)], PermissionMode: NextTurn.PermissionMode?.Id);
 
     // Draft is the text the device keeps for this conversation's composer;
     // an unsent conversation keeps none.
@@ -86,7 +86,7 @@ sealed partial class Conversation
         {
             return false;
         }
-        var operation = new SendQueueOperation.Add(snapshot.ContextRuntimeId, Next, NextModel(), Turn(text));
+        var operation = new SendQueueOperation.Add(snapshot.ContextRuntimeId, Next, NextTurn.Model, Turn(text));
         if (!await Change("更改发送队列", NativeOperation.ConversationWrite, application => application.SendQueue(snapshot.ContextRuntimeId, snapshot.Conversation.Id, operation)))
         {
             return false;
@@ -201,16 +201,16 @@ sealed partial class Conversation
     public async Task Compact()
     {
         if (!CanCompact || Snapshot is not { } snapshot) return;
-        var selection = NextModel();
+        var selection = NextTurn.Model;
         await Change("压缩上下文", NativeOperation.Compact, application => application.CompactConversation(snapshot.ContextRuntimeId, snapshot.Conversation.Id, selection));
     }
 
     public async Task<bool> Continue()
     {
         if (Snapshot is not { } snapshot || !Submission.CanResume) return false;
-        var selection = NextModel();
-        var effort = Effort();
-        var mode = PermissionMode(Choice().PermissionMode)?.Id;
+        var selection = NextTurn.Model;
+        var effort = NextTurn.Effort;
+        var mode = NextTurn.PermissionMode?.Id;
         composerRequest = ComposerSubmission.Phase.Resuming;
         try
         {
@@ -232,8 +232,8 @@ sealed partial class Conversation
         {
             return null;
         }
-        var turn = new ComposedTurn(Text: text.Trim(), Effort: Effort(), Attachments: [], PermissionMode: PermissionMode(Choice().PermissionMode)?.Id);
-        var selection = NextModel();
+        var turn = new ComposedTurn(Text: text.Trim(), Effort: NextTurn.Effort, Attachments: [], PermissionMode: NextTurn.PermissionMode?.Id);
+        var selection = NextTurn.Model;
         DeliveredSnapshot? result = null;
         var done = await Change("编辑消息", NativeOperation.ConversationWrite, application =>
         {

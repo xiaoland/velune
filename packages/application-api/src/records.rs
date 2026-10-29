@@ -242,7 +242,7 @@ pub struct ComposedTurn {
     pub attachments: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
 pub struct RuntimeModel {
     pub selection: ModelSelection,

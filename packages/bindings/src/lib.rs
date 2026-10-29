@@ -1055,7 +1055,11 @@ impl VeluneApplication {
     }
 
     pub fn runtime_execution(&self, runtime_id: String) -> Result<RuntimeExecution, BindingError> {
-        request!(self, "runtime_execution", ReadRuntimeExecution { runtime_id })
+        request!(
+            self,
+            "runtime_execution",
+            ReadRuntimeExecution { runtime_id }
+        )
     }
 
     pub fn runtime_home_directory(
@@ -1142,7 +1146,11 @@ impl VeluneApplication {
         context: ComposerQuotaContext,
         refresh: bool,
     ) -> Result<Vec<ComposerQuotaEntry>, BindingError> {
-        request!(self, "composer_quota", ReadComposerQuota { context, refresh })
+        request!(
+            self,
+            "composer_quota",
+            ReadComposerQuota { context, refresh }
+        )
     }
 
     pub fn runtime_quota(
@@ -1165,7 +1173,11 @@ impl VeluneApplication {
     }
 
     pub fn next_turn_model_selection(&self) -> Result<Option<ModelSelection>, BindingError> {
-        request!(self, "next_turn_model_selection", ReadNextTurnModelSelection)
+        request!(
+            self,
+            "next_turn_model_selection",
+            ReadNextTurnModelSelection
+        )
     }
 
     /// Change the conversation's send queue; one added to or resumed while

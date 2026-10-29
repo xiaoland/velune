@@ -12,6 +12,8 @@
 
 `Failure` 的分类、`code` 和 `phase` 保留 I/O、契约、历史、提供商来源、原生资源、陈旧审批和执行生命周期差别；传输失败与执行结果未知不伪装为业务失败。命令和回复不实现 `Debug`，含密钥、环境、资源内容和附件的结构继续遮蔽内容；普通提供商摘要不带认证材料。运行时摘要省略 ACP 启动参数与环境，显式 `AcpLaunch` 编辑读取仍可返回这些值。API 模型不包含内部 Pi projection，模板快填仍是独立快照。
 
+`resolve_next_turn` 与 `change_next_turn` 是 composer 的下一轮规则，纯函数、不读取任何状态：平台传入运行时类型、网关提供商、已读取的模型目录（未读取为 None）、会话轮次、本会话保存的选择与运行时的选择，得到可选模型（含目录以别名列出的“会话当前”模型；目录未读取时为网关模型）、实际发送的模型、推理强度与权限模式，以及会话当前的值；修改一项选择时由后者决定是否同时成为该运行时的上次选择。各端不再自行推导这些规则。
+
 `provider_templates()` 是不需要执行实例的静态添加目录，按 Codex 订阅、Claude Code 订阅、API 提供商排序。`ProviderTemplate` 统一携带显示内容、订阅／API 种类、协议／地址、执行／请求／认证／额度组合、可选的执行命令和规则披露；每种订阅是一份固定组合，API 模板保持协议与地址可编辑。Claude CLI 模板的 binary 留空，平台须填入执行设备上的绝对路径。application 重导出这份定义，remote-only bindings 直接使用本 unit，不引入本地执行依赖。
 
 `AuthenticationEdit::UseClaudeCodeLogin` 使用 `LinkedClaudeLogin` 引用执行机器用户的默认登录或某个本机 Claude Code 运行时，公开摘要的 `linked_login` 返回同一引用。契约不包含登录目录或凭据；application 负责解析目录、检查登录和保存私有材料，远程控制端不会复制认证来源。

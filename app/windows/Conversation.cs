@@ -13,12 +13,6 @@ sealed record Catalog(RuntimeModel[] Models, bool Loading, string Failure)
     public static readonly Catalog Reading = new([], true, "");
 }
 
-// A model the composer offers.
-sealed record ModelChoice(ModelSelection Selection, string Name, string[] Efforts)
-{
-    public bool Managed => Selection is ModelSelection.Managed;
-}
-
 // One open conversation on a device: its transcript, pending interaction and
 // next turn's choices. It changes on the UI thread only; Changed tells the
 // view to show it again.
@@ -28,7 +22,16 @@ sealed partial class Conversation
     public Device Device { get; }
     public Target Target { get; private set; }
     // The device's, kept current by the main window.
-    public Configuration Configuration { get; set; }
+    public Configuration Configuration
+    {
+        get => configuration;
+        set
+        {
+            configuration = value;
+            nextTurn = null;
+        }
+    }
+    Configuration configuration;
 
     public DeliveredSnapshot? Snapshot { get; private set; }
     public List<DeliveredMessage> Messages { get; private set; } = [];
@@ -87,6 +90,7 @@ sealed partial class Conversation
 
     void Notify()
     {
+        nextTurn = null;
         if (!closed)
         {
             Changed?.Invoke();
@@ -209,6 +213,7 @@ sealed partial class Conversation
             }
         }
         Messages = messages;
+        nextTurn = null;
         Target = new Target(snapshot.ContextRuntimeId, snapshot.Conversation.Id, snapshot.Conversation.Title.DisplayText());
         Snapshot = snapshot;
         if (snapshot.RunState is not (RunState.Running or RunState.Stopping)) stopRequested = false;
@@ -265,7 +270,7 @@ sealed partial class Conversation
         var turn = Turn(text);
         var sentAttachments = Attached.ToList();
         Attached.Clear();
-        var selection = NextModel();
+        var selection = NextTurn.Model;
         var existing = Snapshot is { } snapshot ? (snapshot.ContextRuntimeId, snapshot.Conversation.Id) : default((string, string)?);
         var runtimeID = Next;
         var cwd = Target.Unsent && Cwd.Trim().Length > 0 ? Cwd.Trim() : null;
@@ -388,175 +393,41 @@ sealed partial class Conversation
         }
     }
 
-    // HasTurns tells whether the conversation ran on the runtime, whose
-    // choices an unchosen part then follows; otherwise it is the runtime's default.
-    public bool HasTurns(string runtimeID) =>
-        Snapshot?.TranscriptTurns.Any(turn => turn.Settings?.RuntimeId == runtimeID) ?? false;
-
-    // CurrentSettings are the settings of the conversation's last turn when
-    // it ran on the next turn's runtime.
-    public TurnSettings? CurrentSettings() =>
-        Snapshot?.TranscriptTurns.LastOrDefault()?.Settings is { } settings && settings.RuntimeId == Next ? settings : null;
-
-    // Choice is what this conversation chose for the next turn's runtime. A
-    // runtime it has not run on and chose nothing for starts from what the
-    // runtime's new conversations start with.
-    public TurnChoice Choice()
-    {
-        if (intent.TryGetValue(Next, out var choice))
-        {
-            return choice;
-        }
-        if (HasTurns(Next) || !runtimeChoices.TryGetValue(Next, out var choices))
-        {
-            return new TurnChoice(null, null, null);
-        }
-        return choices.NewConversation is NewConversationChoice.Chosen chosen ? chosen.Choice : choices.LastChosen;
-    }
-
     public Catalog? NextCatalog => catalogs.GetValueOrDefault(Next);
 
-    bool CatalogReady => NextCatalog is { Loading: false, Failure: "" };
+    // NextTurn is what the next turn goes with and what the composer offers
+    // for it, as the core resolves them from this conversation's choices and
+    // the runtime's catalog. It is resolved again after any change.
+    public NextTurn NextTurn => nextTurn ??= VeluneApplicationApiMethods.ResolveNextTurn(new NextTurnInput(
+        Next,
+        Configuration.RuntimeType(Next),
+        Configuration.Providers(Next),
+        NextCatalog is { Loading: false, Failure: "" } read ? read.Models : null,
+        Snapshot?.TranscriptTurns ?? [],
+        Snapshot?.Conversation.RuntimeId,
+        Snapshot?.ModelRecordKey,
+        intent.TryGetValue(Next, out var kept) ? kept : null,
+        runtimeChoices.GetValueOrDefault(Next)));
+    NextTurn? nextTurn;
 
-    List<ModelChoice> CatalogChoices() =>
-        NextCatalog?.Models.Select(model => new ModelChoice(model.Selection, model.Name, model.ReasoningEfforts)).ToList() ?? [];
+    public string ModelName() => NextTurn.Model == null ? "运行时默认" : NextTurn.ModelName ?? "选择模型";
 
-    // ModelChoices are the catalog's models and, first, the conversation's
-    // current model when the runtime recorded it by an ID its catalog does
-    // not list (Claude Code lists aliases).
-    public List<ModelChoice> ModelChoices()
+    // Choose changes a part of this conversation's choice for the next
+    // turn's runtime; the core tells when it also becomes what the runtime
+    // offers first next time.
+    public void Choose(TurnChoiceChange change)
     {
-        var choices = CatalogChoices();
-        var current = LatestTurnModel(Next);
-        if (current is not ModelSelection.Native native || !CatalogReady || choices.Any(choice => Equals(choice.Selection, current)))
+        if (VeluneApplicationApiMethods.ChangeNextTurn(NextTurn, runtimeChoices.GetValueOrDefault(Next), change) is not { } update)
         {
-            return choices;
-        }
-        return [new ModelChoice(current, native.ModelId + "（会话当前）", DefaultEfforts()), .. choices];
-    }
-
-    // LatestTurnModel is the model of the conversation's latest turn on a
-    // runtime: the one Velune sent it with, else the catalog entry its
-    // record names, else the runtime's own model by the recorded ID.
-    ModelSelection? LatestTurnModel(string runtimeID)
-    {
-        var settings = Snapshot?.TranscriptTurns
-            .Select(turn => turn.Settings)
-            .LastOrDefault(settings => settings?.RuntimeId == runtimeID && (settings.Model != null || settings.ModelSelection != null));
-        if (settings == null)
-        {
-            return null;
-        }
-        if (settings.ModelSelection != null)
-        {
-            return settings.ModelSelection;
-        }
-        var model = settings.Model!;
-        var choices = CatalogChoices();
-        if (choices.FirstOrDefault(choice => choice.Name == model) is { } named)
-        {
-            return named.Selection;
-        }
-        if (choices.FirstOrDefault(choice => choice.Selection is ModelSelection.Native { } n && n.ModelId == model) is { } identified)
-        {
-            return identified.Selection;
-        }
-        var natives = choices.Select(choice => choice.Selection).OfType<ModelSelection.Native>().ToList();
-        if (natives.Any(native => native.ProviderId != null) || !CatalogReady || natives.Count == 0)
-        {
-            return null;
-        }
-        return new ModelSelection.Native(null, model);
-    }
-
-    // NextModel is the model the next turn goes with: the one chosen, else
-    // the conversation's current one on the runtime, else the one it
-    // recorded; none is the runtime's default. A read catalog drops those it
-    // no longer offers.
-    public ModelSelection? NextModel()
-    {
-        ModelSelection? recorded = Snapshot is { } snapshot && snapshot.Conversation.RuntimeId == Next && snapshot.ModelRecordKey is { } key
-            ? new ModelSelection.Managed(key)
-            : null;
-        var choices = ModelChoices();
-        foreach (var candidate in new[] { Choice().Model, LatestTurnModel(Next), recorded })
-        {
-            if (candidate != null && (!CatalogReady || choices.Any(choice => Equals(choice.Selection, candidate))))
-            {
-                return candidate;
-            }
-        }
-        return null;
-    }
-
-    public string ModelName()
-    {
-        var model = NextModel();
-        if (model == null)
-        {
-            return "运行时默认";
-        }
-        if (ModelChoices().FirstOrDefault(choice => Equals(choice.Selection, model)) is { } choice)
-        {
-            return choice.Name;
-        }
-        return model is ModelSelection.Native native ? native.ModelId : "选择模型";
-    }
-
-    // DefaultEfforts are the levels of the runtime's own default model, which
-    // no catalog entry describes: those its own models take, unless its
-    // sessions offer them.
-    string[] DefaultEfforts()
-    {
-        if (Configuration.RuntimeType(Next) is { SessionOptions: true })
-        {
-            return [];
-        }
-        return [.. CatalogChoices().Where(choice => !choice.Managed).SelectMany(choice => choice.Efforts).Distinct()];
-    }
-
-    // EffortOptions are the levels the next turn's model accepts, in the
-    // runtime's own vocabulary.
-    public string[] EffortOptions()
-    {
-        var model = NextModel();
-        if (model == null)
-        {
-            return DefaultEfforts();
-        }
-        return ModelChoices().FirstOrDefault(choice => Equals(choice.Selection, model))?.Efforts ?? [];
-    }
-
-    // Effort is the chosen level while the model offers it; none keeps the
-    // conversation's current one.
-    public string? Effort() => Choice().Effort is { } effort && EffortOptions().Contains(effort) ? effort : null;
-
-    public string? CurrentEffort() =>
-        CurrentSettings()?.Effort is { } effort && EffortOptions().Contains(effort) ? effort : null;
-
-    public PermissionMode[] PermissionModes() => Configuration.RuntimeType(Next)?.PermissionModes ?? [];
-
-    public PermissionMode? PermissionMode(string? id) =>
-        id == null ? null : PermissionModes().FirstOrDefault(mode => mode.Id == id);
-
-    // Choose changes a part of this conversation's choice for the next turn's
-    // runtime. A part chosen, or left to a new conversation's runtime
-    // default, is also what the runtime offers first next time.
-    public void Choose(bool chosen, Func<TurnChoice, TurnChoice> update)
-    {
-        intent[Next] = update(Choice());
-        SaveIntent();
-        if (!chosen && HasTurns(Next))
-        {
-            Notify();
             return;
         }
-        var choices = runtimeChoices.TryGetValue(Next, out var known)
-            ? known
-            : new RuntimeComposerChoices(Next, new TurnChoice(null, null, null), new NewConversationChoice.LastChosen());
-        choices = choices with { LastChosen = update(choices.LastChosen) };
-        runtimeChoices[Next] = choices;
-        Write("保存运行时的选择", NativeOperation.ConfigurationWrite, application => application.SetRuntimeComposerChoices(choices));
+        intent[Next] = update.Choice;
+        SaveIntent();
+        if (update.RuntimeChoices is { } choices)
+        {
+            runtimeChoices[Next] = choices;
+            Write("保存运行时的选择", NativeOperation.ConfigurationWrite, application => application.SetRuntimeComposerChoices(choices));
+        }
         Notify();
     }
 

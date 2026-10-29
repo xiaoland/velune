@@ -128,7 +128,7 @@ public sealed partial class ConversationView : UserControl
 
         AgentButton.Visibility = Visible(Model.Next.Length > 0);
         AgentButton.Content = AgentTitle();
-        PermissionButton.Visibility = Visible(Model.Next.Length > 0 && (Model.PermissionModes().Length > 0 || Model.SessionOptions.Length > 0));
+        PermissionButton.Visibility = Visible(Model.Next.Length > 0 && (Model.NextTurn.PermissionModes.Length > 0 || Model.SessionOptions.Length > 0));
         (PermissionButton.Content, var permissionTip) = PermissionTitle();
         ToolTipService.SetToolTip(PermissionButton, permissionTip);
         CwdButton.Visibility = Visible(Model.Target.Unsent);
@@ -292,7 +292,7 @@ public sealed partial class ConversationView : UserControl
     string AgentTitle()
     {
         var parts = new List<string> { Model.Configuration.Runtime(Model.Next)?.Name ?? "选择运行时", Model.ModelName() };
-        if (Model.EffortOptions().Length > 0 && (Model.Effort() ?? Model.CurrentEffort()) is { } effort)
+        if (Model.NextTurn.Efforts.Length > 0 && (Model.NextTurn.Effort ?? Model.NextTurn.CurrentEffort) is { } effort)
         {
             parts.Add(effort);
         }
@@ -301,16 +301,16 @@ public sealed partial class ConversationView : UserControl
 
     (string Title, string Tooltip) PermissionTitle()
     {
-        if (Model.PermissionModes().Length == 0)
+        if (Model.NextTurn.PermissionModes.Length == 0)
         {
             return ("会话选项", "ACP Agent 为此会话提供的选项");
         }
-        var mode = Model.PermissionMode(Model.Choice().PermissionMode);
-        var current = Model.PermissionMode(Model.CurrentSettings()?.PermissionMode);
+        var mode = Model.NextTurn.PermissionMode;
+        var current = Model.NextTurn.CurrentPermissionMode;
         var title = (mode ?? current)?.Label ?? "运行时默认权限";
         var tooltip = mode != null
             ? "权限模式：" + mode.Label + "。" + mode.Detail
-            : Model.HasTurns(Model.Next) ? "权限模式：沿用会话当前的模式" : "权限模式：由运行时使用自己的默认模式";
+            : Model.NextTurn.HasCurrent ? "权限模式：沿用会话当前的模式" : "权限模式：由运行时使用自己的默认模式";
         return (title, tooltip);
     }
 
@@ -337,7 +337,7 @@ public sealed partial class ConversationView : UserControl
         AgentMenu.Items.Clear();
         var runtimeName = Model.Configuration.Runtime(Model.Next)?.Name ?? "选择运行时";
         // An unchosen part follows the conversation's current one, or is the runtime's own.
-        var unchosen = Model.HasTurns(Model.Next) ? "沿用当前" : "运行时默认";
+        var unchosen = Model.NextTurn.HasCurrent ? "沿用当前" : "运行时默认";
 
         var runtimes = new MenuFlyoutSubItem { Text = "运行时：" + runtimeName };
         foreach (var runtime in Model.Configuration.Runtimes)
@@ -357,18 +357,18 @@ public sealed partial class ConversationView : UserControl
         FillModels(models.Items, modelName);
         AgentMenu.Items.Add(models);
 
-        var levels = Model.EffortOptions();
+        var levels = Model.NextTurn.Efforts;
         if (levels.Length == 0)
         {
             return;
         }
-        var effort = Model.Effort();
-        var efforts = new MenuFlyoutSubItem { Text = "推理强度：" + (effort ?? Model.CurrentEffort() ?? unchosen) };
-        var first = Model.CurrentEffort() is { } current ? "沿用当前（" + current + "）" : unchosen;
-        efforts.Items.Add(Choice("effort", first, effort == null, () => Model.Choose(false, choice => choice with { Effort = null })));
+        var effort = Model.NextTurn.Effort;
+        var efforts = new MenuFlyoutSubItem { Text = "推理强度：" + (effort ?? Model.NextTurn.CurrentEffort ?? unchosen) };
+        var first = Model.NextTurn.CurrentEffort is { } current ? "沿用当前（" + current + "）" : unchosen;
+        efforts.Items.Add(Choice("effort", first, effort == null, () => Model.Choose(new TurnChoiceChange.Effort(null))));
         foreach (var level in levels)
         {
-            efforts.Items.Add(Choice("effort", level, effort == level, () => Model.Choose(true, choice => choice with { Effort = level })));
+            efforts.Items.Add(Choice("effort", level, effort == level, () => Model.Choose(new TurnChoiceChange.Effort(level))));
         }
         AgentMenu.Items.Add(efforts);
     }
@@ -387,21 +387,21 @@ public sealed partial class ConversationView : UserControl
                 items.Add(Heading("无法读取运行时的模型：" + failed.Failure));
                 break;
         }
-        var chosenModel = Model.Choice().Model;
-        var first = Model.HasTurns(Model.Next) && Model.NextModel() != null ? "沿用当前（" + modelName + "）" : "运行时默认";
-        items.Add(Choice("model", first, chosenModel == null, () => Model.Choose(false, choice => choice with { Model = null })));
-        var choices = Model.ModelChoices();
-        void Pick(ModelChoice model) =>
-            items.Add(Choice("model", model.Name, Equals(model.Selection, chosenModel), () => Model.Choose(true, choice => choice with { Model = model.Selection })));
-        foreach (var model in choices.Where(model => !model.Managed))
+        var chosenModel = Model.NextTurn.Choice.Model;
+        var first = Model.NextTurn.HasCurrent && Model.NextTurn.Model != null ? "沿用当前（" + modelName + "）" : "运行时默认";
+        items.Add(Choice("model", first, chosenModel == null, () => Model.Choose(new TurnChoiceChange.Model(null))));
+        var choices = Model.NextTurn.Models;
+        void Pick(RuntimeModel model) =>
+            items.Add(Choice("model", model.Name, Equals(model.Selection, chosenModel), () => Model.Choose(new TurnChoiceChange.Model(model.Selection))));
+        foreach (var model in choices.Where(model => model.Selection is not ModelSelection.Managed))
         {
             Pick(model);
         }
-        if (choices.Any(model => model.Managed))
+        if (choices.Any(model => model.Selection is ModelSelection.Managed))
         {
             items.Add(new MenuFlyoutSeparator());
             items.Add(Heading("Velune 提供商"));
-            foreach (var model in choices.Where(model => model.Managed))
+            foreach (var model in choices.Where(model => model.Selection is ModelSelection.Managed))
             {
                 Pick(model);
             }
@@ -417,7 +417,7 @@ public sealed partial class ConversationView : UserControl
     void FillPermissionMenu()
     {
         PermissionMenu.Items.Clear();
-        if (Model.PermissionModes().Length > 0)
+        if (Model.NextTurn.PermissionModes.Length > 0)
         {
             FillPermissionModes();
         }
@@ -426,13 +426,13 @@ public sealed partial class ConversationView : UserControl
 
     void FillPermissionModes()
     {
-        var mode = Model.PermissionMode(Model.Choice().PermissionMode);
-        var current = Model.PermissionMode(Model.CurrentSettings()?.PermissionMode);
-        var first = current != null ? "沿用当前（" + current.Label + "）" : Model.HasTurns(Model.Next) ? "沿用当前" : "运行时默认";
-        PermissionMenu.Items.Add(Choice("permission", first, mode == null, () => Model.Choose(false, choice => choice with { PermissionMode = null })));
-        foreach (var option in Model.PermissionModes())
+        var mode = Model.NextTurn.PermissionMode;
+        var current = Model.NextTurn.CurrentPermissionMode;
+        var first = current != null ? "沿用当前（" + current.Label + "）" : Model.NextTurn.HasCurrent ? "沿用当前" : "运行时默认";
+        PermissionMenu.Items.Add(Choice("permission", first, mode == null, () => Model.Choose(new TurnChoiceChange.PermissionMode(null))));
+        foreach (var option in Model.NextTurn.PermissionModes)
         {
-            var item = Choice("permission", option.Label, mode?.Id == option.Id, () => Model.Choose(true, choice => choice with { PermissionMode = option.Id }));
+            var item = Choice("permission", option.Label, mode?.Id == option.Id, () => Model.Choose(new TurnChoiceChange.PermissionMode(option.Id)));
             ToolTipService.SetToolTip(item, option.Detail);
             PermissionMenu.Items.Add(item);
         }
