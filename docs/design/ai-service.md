@@ -1,6 +1,6 @@
 # AI 服务与 LLM Gateway：职责、契约与实现复核
 
-状态：2026-10-06 三协议 best-effort 转换实施中；此前已于 2026-10-05 重新整理需求并审计实现。产品边界以 [PRD](../prd/ai-providers.md) 为准；本页区分已确认要求、审计后的技术建议与当前代码，不能由设计描述推定能力已交付。具体证据和迁移切片归 [AI 网关审计任务](../../tasks/ai-gateway-audit/packet.md)。
+状态：2026-10-06 三协议 best-effort 转换实施中；此前已于 2026-10-05 重新整理需求并审计实现。产品边界以 [PRD](../prd/ai-providers.md) 为准；本页区分已确认要求、审计后的技术建议与当前代码，不能由设计描述推定能力已交付。具体证据和迁移切片归 AI 网关审计任务（git 历史：tasks/ai-gateway-audit）。
 
 ## 当前配置契约
 
@@ -12,7 +12,7 @@
 
 AI 服务是独立 lib，其领域不限于 LLM；sampling 语义不作为整个 AI 服务的基础模型。AI 服务与 Agent 运行时保持独立，协议和 SDK 由具体 adapter 封装。读取运行时提供商配置属于 application 与运行时 adapter 的导入用例，不使 AI 服务依赖 Harness 的模型目录、认证文件或推理级别。
 
-当前讨论和实现的 gateway 仅为 LLM Gateway，承担 LLM 协议的同协议原生透传、异协议 best-effort 转换、模型路由与 fail-over。2026-10-06 用户已授权三个现有协议全部双向转换；实现与验收状态见 [转换任务](../../tasks/llm-protocol-translation/packet.md)。它是 AI 模块的一种应用模式，不代表 AI 服务整体，也不是 Harness 专属网关；Harness 是它的一类调用方。此前文档中的“AI 网关”在当前范围内均指此 LLM Gateway。当前产品协议范围为 OpenAI ChatCompletions v1、Responses v1 与 Anthropic Messages。它们保持各自原生 HTTP／JSON／SSE 契约，不以这些操作限制整个 AI 服务未来的领域。Messages baseURL 追加 `/v1/messages`，同协议请求版本由调用方的 `anthropic-version` 决定，不重组业务正文；异协议转换为 Messages 时合成版本 `2023-06-01`。API key 使用原生 `x-api-key`，当前未核实的 subscription 认证在派发前拒绝。Pi／DSH 的 Messages 注入采用网关 origin，OpenAI 采用 `/v1`；Codex 适配器发给网关的协议仍是 Responses，上游可通过转换使用其它两个协议。隔离证据见 [本轮任务](../../tasks/settings-protocol-refinement/packet.md)。
+当前讨论和实现的 gateway 仅为 LLM Gateway，承担 LLM 协议的同协议原生透传、异协议 best-effort 转换、模型路由与 fail-over。2026-10-06 用户已授权三个现有协议全部双向转换；实现与验收状态见 转换任务（git 历史：tasks/llm-protocol-translation）。它是 AI 模块的一种应用模式，不代表 AI 服务整体，也不是 Harness 专属网关；Harness 是它的一类调用方。此前文档中的“AI 网关”在当前范围内均指此 LLM Gateway。当前产品协议范围为 OpenAI ChatCompletions v1、Responses v1 与 Anthropic Messages。它们保持各自原生 HTTP／JSON／SSE 契约，不以这些操作限制整个 AI 服务未来的领域。Messages baseURL 追加 `/v1/messages`，同协议请求版本由调用方的 `anthropic-version` 决定，不重组业务正文；异协议转换为 Messages 时合成版本 `2023-06-01`。API key 使用原生 `x-api-key`，当前未核实的 subscription 认证在派发前拒绝。Pi／DSH 的 Messages 注入采用网关 origin，OpenAI 采用 `/v1`；Codex 适配器发给网关的协议仍是 Responses，上游可通过转换使用其它两个协议。隔离证据见 本轮任务（git 历史：tasks/settings-protocol-refinement）。
 
 AI 能力可以由应用直接调用，也可以由 LLM Gateway 组合后对外提供 HTTP 入口；直接消费不要求经过 gateway。应用模式是职责关系，不要求把 gateway 并入 `ai` package。现有独立 `gateway` unit 可以继续承担这一模式，依赖 AI 能力；AI 契约不反向依赖它。非 LLM 能力只按具体用例扩展，不预建其它网关或空领域框架。
 
@@ -28,7 +28,7 @@ application 私有保存 API key 或 OAuth 来源定位，并向 gateway 注入�
 
 认证随提供商配置保存，公开描述只有认证类型、配置状态、来源说明和可执行动作。API key 使用 application 私有配置记录，显式单条读取；保存将普通字段和认证编辑共同原子提交。认证编辑区分保留、更新 API key 和清除，取消草稿或读取失败不清空既有凭据。文件创建时使用 0600，列表、snapshot、Debug 和日志不包含 key。OAuth 保留原来源登录／刷新能力，中立 gateway resolver 不接收 Harness 来源类型。删除中央认证 CRUD、Keychain shim 和旧清理合同。
 
-模板只复制名称、建议 API model ID、图标及可选能力，不复制认证、服务地址、内部记录键或 Pi 适配器投影。可用 effort 声明与当前请求 effort 分开，本轮恢复明确的能力编辑，不新增会话 effort 控制 API。提供商编辑器的信息架构与原生组件详见 [编辑器设计](../../tasks/ai-gateway-audit/provider-editor-design.md)。静态检查与行为验收分开记录；完成接口不等于已完成界面验收。
+模板只复制名称、建议 API model ID、图标及可选能力，不复制认证、服务地址、内部记录键或 Pi 适配器投影。可用 effort 声明与当前请求 effort 分开，本轮恢复明确的能力编辑，不新增会话 effort 控制 API。提供商编辑器的信息架构与原生组件详见 编辑器设计（git 历史：tasks/ai-gateway-audit）。静态检查与行为验收分开记录；完成接口不等于已完成界面验收。
 
 ## 多订阅聚合方向（2026-10-16）
 
@@ -52,7 +52,7 @@ application 私有保存 API key 或 OAuth 来源定位，并向 gateway 注入�
 | application | 配置仓库、秘密解析设施、跨域装配、导入与运行生命周期用例 | 再造协议 decoder 或要求 UI 补偿业务约束 |
 | agent-runtime adapter | Harness 原生配置、身份、模型能力和来源兼容设置的投影 | 接管 AI 网关路由权，或把 Pi 参数变成 AI 服务通用参数 |
 
-提供商模型条目保存稳定 `recordKey`、精确 `providerModelId`、显示字段及可选能力。application 为新条目生成内部记录键；用户可以编辑 API ID，运行时选择仍引用原记录。网关自动派生 `velune/model/<recordKey>`，不接受裸记录键作为 wire model，不再要求单目标另建 Route。导入按来源提供商建立条目，不按名称合并跨提供商记录。官方业务资料见 [模型业务研究](../../tasks/ai-gateway-audit/model-business-research.md)；其中早期两层实体建议已被参数模板方向替代。
+提供商模型条目保存稳定 `recordKey`、精确 `providerModelId`、显示字段及可选能力。application 为新条目生成内部记录键；用户可以编辑 API ID，运行时选择仍引用原记录。网关自动派生 `velune/model/<recordKey>`，不接受裸记录键作为 wire model，不再要求单目标另建 Route。导入按来源提供商建立条目，不按名称合并跨提供商记录。官方业务资料见 模型业务研究（git 历史：tasks/ai-gateway-audit）；其中早期两层实体建议已被参数模板方向替代。
 
 配置只接受 schema 10（2026-10-17 订阅能力组合契约升级）。旧普通配置原子重置为空配置，不转换字段、不保留旧文件或备份；未来 schema、损坏 JSON 与当前版本的未知字段明确拒绝。原 Harness 文件、会话和既有平台秘密不属于重置对象。
 
@@ -89,7 +89,7 @@ flowchart LR
     O -. usage、finish reason 等 .-> T
 ```
 
-公开模型目录适配归 application 的模板用例，不进入 AI／AI-provider 协议执行或网关路由。当前接入选择 models.dev 的 provider-scoped API，保留来源提供商与其模型 ID，能力仅作模板建议；缺失或零规格维持未知，不把目录规范化名称当作另一份 API 标识。用户显式拉取、选择后进入既有模板编辑和保存边界，实际提供商参数仍可编辑且以该提供商协议为准。拉取不消费认证、不创建提供商，也不后台更新已保存快照。具体实施与验证见 [体验复核任务](../../tasks/runtime-session-experience/packet.md)。
+公开模型目录适配归 application 的模板用例，不进入 AI／AI-provider 协议执行或网关路由。当前接入选择 models.dev 的 provider-scoped API，保留来源提供商与其模型 ID，能力仅作模板建议；缺失或零规格维持未知，不把目录规范化名称当作另一份 API 标识。用户显式拉取、选择后进入既有模板编辑和保存边界，实际提供商参数仍可编辑且以该提供商协议为准。拉取不消费认证、不创建提供商，也不后台更新已保存快照。具体实施与验证见 体验复核任务（git 历史：tasks/runtime-session-experience）。
 
 ## 订阅能力组合与执行后端
 
@@ -105,17 +105,17 @@ Claude Code 后端使用显式独立 `CLAUDE_CONFIG_DIR`，登录、秘密和续
 
 运行时提供商导入由两个兄弟 unit 协同：agent-runtime 的 `provider_inventory` 读取 Harness 自身配置——Codex `config.toml` 的自定义 `model_providers`，Claude Code `settings.json` 的 `env` API 与其登录——只携带脱敏的字面 key；application 将 API 映射为 HTTP 提供商，将 Claude Code 登录映射为沿用该运行时登录的 Claude CLI 提供商。字面 key 在导入时复制（与 Pi 导入一致）；`env_key`、`apiKeyHelper` 不解析，导入后在 Velune 填写。Codex 的 OpenAI／ChatGPT 登录与 `auth.json` 不读取；远端与 managed HOME 实例不支持导入；ACP 暂不导入。Velune 以 `x-api-key` 发送 Messages key，来源以 Bearer 发送时在预览中提示。
 
-HTTP 继续使用响应提交闸门。Claude 子进程成功启动后，或向已有进程写入本次输入前，保守进入不可自动重放状态；之后的退出、超时和解析错误不能因为下游尚无响应头而切换账户重做。CLI 故障不伪装成 HTTP 401。实际协议、会话接续和验收记录见 [模型路由任务](../../tasks/model-routing/packet.md)。
+HTTP 继续使用响应提交闸门。Claude 子进程成功启动后，或向已有进程写入本次输入前，保守进入不可自动重放状态；之后的退出、超时和解析错误不能因为下游尚无响应头而切换账户重做。CLI 故障不伪装成 HTTP 401。实际协议、会话接续和验收记录见 模型路由任务（git 历史：tasks/model-routing）。
 
 2026-10-20 Kimi Coding Plan 的实现契约：组合采用 HTTP、Messages 原生上游、API Key、KimiCoding 请求适配与 KimiUsage 额度来源；其它入口协议保留既有 best-effort 转换。服务地址、请求约束与错误语义由同一请求适配拥有，不新增可任意拼接的 ErrorPolicy 配置轴。三种 HTTP 协议共用从 builder 构造的 HttpClient，在构造末尾禁用重定向与底层自动重试；独立消费方的代理、TLS 和超时仍可配置，不能注入已构建的任意 Client 绕过凭据目标边界。ai-provider 输出中立的认证、权限、配额耗尽、短暂限流等失败事实并保留原 HTTP 状态；gateway 不增加 Kimi 品牌分支，继续按提交边界决定停止、冷却和切换。
 
-application 对固定服务目标分别解析账户与额度，不能把 `/me`、`/usages` 伪装成模型请求的认证目标。凭据版本用于取消旧任务并阻止旧结果回写；已验证账户由服务区域与 `user_id` 标识，`global_id` 不用于未经验证的跨区域合并。轮换 Key 期间新凭据尚未验证，旧账户摘要不是它的有效证明；同账户确认后保留使用阈值与账户冷却，不凭换 Key 清零或解除限制。额度窗口按实际返回解析，月额度和钱包缺失维持未知，不猜套餐类型。接入范围、实测条件和验收判据归 [Kimi 接入收敛](../../tasks/model-routing/kimi-coding-plan.md)。
+application 对固定服务目标分别解析账户与额度，不能把 `/me`、`/usages` 伪装成模型请求的认证目标。凭据版本用于取消旧任务并阻止旧结果回写；已验证账户由服务区域与 `user_id` 标识，`global_id` 不用于未经验证的跨区域合并。轮换 Key 期间新凭据尚未验证，旧账户摘要不是它的有效证明；同账户确认后保留使用阈值与账户冷却，不凭换 Key 清零或解除限制。额度窗口按实际返回解析，月额度和钱包缺失维持未知，不猜套餐类型。接入范围、实测条件和验收判据归 Kimi 接入收敛（git 历史：tasks/model-routing）。
 
 ARK Coding Plan 的额度认证由提供商内部单独持有，仅 application 的固定控制面适配使用 AK/SK，不进入模型 CredentialMaterial 或 Harness。用户在保存时明确关联当前模型认证；更换模型认证、额度认证或套餐目标会撤销旧关联并使旧采样失效。已确认来源的窗口可参与已有调度，未确认来源对调度仍为 Unknown；有上限时暂停，无上限保持既有未知策略。该关联不等于自动账户核验，不以 AK 哈希宣称不同订阅，不枚举账号其他模型 Key。Coding 专用目标不自动转为 Agent Plan 或按量地址。
 
 ## 路由、fail-over 与生命周期
 
-2026-10-17 用户确认的智能调度已接入 Rust lib。一个订阅对应一个提供商实例；application 拥有实例认证、额度采集与唯一快照，gateway 只通过中立只读契约取得额度事实并维护运行期共享调度状态。提供商使用上限独立于路由，直接调用同样受约束；路由拥有策略、成员权重和黏性选择。会话身份由装配方显式提供，gateway 不依赖 Agent runtime、不根据正文猜测身份。详细产品行为归 [PRD](../prd/model-routing.md)，额度与调度接口见 [gateway unit](../../packages/gateway/README.md) 和 [bindings unit](../../packages/bindings/README.md)，验证记录归 [模型路由任务](../../tasks/model-routing/packet.md)。
+2026-10-17 用户确认的智能调度已接入 Rust lib。一个订阅对应一个提供商实例；application 拥有实例认证、额度采集与唯一快照，gateway 只通过中立只读契约取得额度事实并维护运行期共享调度状态。提供商使用上限独立于路由，直接调用同样受约束；路由拥有策略、成员权重和黏性选择。会话身份由装配方显式提供，gateway 不依赖 Agent runtime、不根据正文猜测身份。详细产品行为归 [PRD](../prd/model-routing.md)，额度与调度接口见 [gateway unit](../../packages/gateway/README.md) 和 [bindings unit](../../packages/bindings/README.md)，验证记录归 模型路由任务（git 历史：tasks/model-routing）。
 
 2026-10-27 按 [S55](../sources.md#s55) 借鉴 quotio：额度窗口带可选周期，gateway 的 smart 把余量除以周期内尚余时间的比例，只影响排序。application 在快照外另给状态附带节奏（均匀消耗时此刻应已用的比例、按平均速度的预计用尽时间与状态）和金额（ID、数额、单位）；金额不进入 gateway。`ApiAccount` 额度来源只接受以 API key 直连 DeepSeek、Moonshot、OpenRouter 精确官方主机的 HTTP 原生组合，查询固定发往同一主机，不跟随重定向、不重试，响应限 256 KiB。application 把每次成功观测按提供商写入 `$home/quota-history/` 下的 JSONL，带认证绑定的摘要；绑定改变时清空旧记录，未变化的值至多 10 分钟记一次，保留 30 天，配置中删除的提供商一并删除。提醒在观测由不满足变为满足使用上限、窗口用尽或账户不可用时产生，核心保留最近 64 条并以序号游标供平台轮询，不主动推送。
 
@@ -129,7 +129,7 @@ fail-over 由 AI 网关单独决策，provider 执行一次尝试，不隐藏再
 
 日志与观察记录关联 ID、目标身份、阶段、提交状态、耗时、安全错误码及按需提取的 usage／finish reason 等业务指标，默认不记录原生正文、历史或认证。具体日志装配归 [架构](architecture.md#本地可观测性装配) 与 [开发说明](../development.md#本地诊断)。
 
-2026-10-16 按 [S30](../sources.md#s30) 实施有序模型路由，并由用户确认 Codex 多订阅 Rust 支持方案。候选只来自路由显式成员；同协议是必要条件，不证明账户状态可互换。普通认证 401 停止；Codex 订阅允许同账户有界恢复，失效后可提交前切换。429 与明确额度错误、5xx、连接／传输失败在提交前可切换；403 及其它请求错误停止。聚合路由明确拒绝 `previous_response_id`／`conversation`，不再将“取一个候选”当作状态归属证明；直接模型沿各自协议契约执行。成功响应 headers 交付后不再切换，包括后续 SSE 业务失败。具体分类、冷却和观察契约归 [gateway unit](../../packages/gateway/README.md)，执行证据及剩余验收归 [模型路由任务](../../tasks/model-routing/packet.md)。
+2026-10-16 按 [S30](../sources.md#s30) 实施有序模型路由，并由用户确认 Codex 多订阅 Rust 支持方案。候选只来自路由显式成员；同协议是必要条件，不证明账户状态可互换。普通认证 401 停止；Codex 订阅允许同账户有界恢复，失效后可提交前切换。429 与明确额度错误、5xx、连接／传输失败在提交前可切换；403 及其它请求错误停止。聚合路由明确拒绝 `previous_response_id`／`conversation`，不再将“取一个候选”当作状态归属证明；直接模型沿各自协议契约执行。成功响应 headers 交付后不再切换，包括后续 SSE 业务失败。具体分类、冷却和观察契约归 [gateway unit](../../packages/gateway/README.md)，执行证据及剩余验收归 模型路由任务（git 历史：tasks/model-routing）。
 
 2026-10-06 已实施无正文的网关 request／attempt 观测。每个请求使用独立关联编号，记录协议、是否流式、已捕获目标在当前配置快照中的提供商／模型序号、HTTP 状态、阶段、耗时和结束归因。序号不是跨配置身份，也不记录实际模型 ID、alias、地址或认证引用。当时每次请求只有一次 attempt；模型路由的多次 attempt 见上文。
 
@@ -147,7 +147,7 @@ ChatCompletions、Responses 与 Messages 共用一个原生派发契约：ai-pro
 
 HTTP ingress 使用 Axum，application 的提供商认证解析器在每次请求前校验捕获的目标并异步解析，provider 使用本次捕获的认证和共享 HTTP client 执行一次请求。平台与来源 helper 由 application 装配；Unix helper 的进程组在超时、取消和网关关闭时终止，Windows 对应 helper 尚未开放。请求生命周期、配置快照与平台限制见 [gateway unit](../../packages/gateway/README.md)。直接提供商模型只解析单一目标；显式模型路由的候选选择与提交前 fail-over 见上文。未实现无中断热配置。
 
-[原审计](../../tasks/ai-gateway-audit/audit.md)和[失败验收](../../tasks/pi-mac-first-loop/deepseek-import-acceptance.md)保留重构前基线，不能作为当前源码状态。此次重构的静态、人工端到端与安装证据继续归 [当前任务](../../tasks/ai-gateway-audit/packet.md)。
+原审计（git 历史：tasks/ai-gateway-audit）和失败验收（git 历史：tasks/pi-mac-first-loop）保留重构前基线，不能作为当前源码状态。此次重构的静态、人工端到端与安装证据继续归 当前任务（git 历史：tasks/ai-gateway-audit）。
 
 ## Harness 提供商配置导入
 
@@ -161,12 +161,12 @@ HTTP ingress 使用 Axum，application 的提供商认证解析器在每次请�
 
 保存的来源投影在派发时重新核对。绑定缺少 Pi 必需执行元数据时，在运行时准备边界明确拒绝；不借用全局模型或另一提供商的规格，不静默吸收来源变化。`ai` 与 `ai-provider` 不引用 Pi 类型，公开模型 DTO、UniFFI 与平台 UI 不携带 adapter 私有元数据。application 在普通编辑仍保持提供商协议、模型记录键和 API model ID 时保留原投影，改变这些关联时清除投影。旧 `chatCompletionsOutputLimitField` 已删除；来源 Pi 协议 compat 保留其真实编码语义。
 
-来源配置在导入时形成快照，不做双向同步。重复项默认跳过，替换须明确选择；替换更新参数与认证、移除未选模型，保留仍被选中模型的内部记录键。一次选择不得重复引用同一来源提供商，即便分别使用来源 ID 和预览 ID。模型归导入的提供商，模板仅提供快填。导入不自动选择当前会话模型。应用前重新核对来源和目标配置，变化后要求重新预览；派发时核对保存的来源执行绑定，避免来源端点改变后将凭据发送到另一个目标。当前实现与人工验证记录见 [首循环任务](../../tasks/pi-mac-first-loop/packet.md)。
+来源配置在导入时形成快照，不做双向同步。重复项默认跳过，替换须明确选择；替换更新参数与认证、移除未选模型，保留仍被选中模型的内部记录键。一次选择不得重复引用同一来源提供商，即便分别使用来源 ID 和预览 ID。模型归导入的提供商，模板仅提供快填。导入不自动选择当前会话模型。应用前重新核对来源和目标配置，变化后要求重新预览；派发时核对保存的来源执行绑定，避免来源端点改变后将凭据发送到另一个目标。当前实现与人工验证记录见 首循环任务（git 历史：tasks/pi-mac-first-loop）。
 
 
 ## 已删除的 sampling 执行合同
 
-2026-10-03 的有界 sampling 实现（`SamplingService`、`DirectSamplingService`、`ProviderBinding`、MiniMax adapter 及其手动 replay／live 入口与 fixture）没有产品调用方，已于 2026-10-28 架构重构中删除。其契约与采集记录保留在 git 历史和 [当时的任务](../../tasks/ai-service-contracts/packet.md)；原生协议执行不依赖它。
+2026-10-03 的有界 sampling 实现（`SamplingService`、`DirectSamplingService`、`ProviderBinding`、MiniMax adapter 及其手动 replay／live 入口与 fixture）没有产品调用方，已于 2026-10-28 架构重构中删除。其契约与采集记录保留在 git 历史和 当时的任务（git 历史：tasks/ai-service-contracts）；原生协议执行不依赖它。
 
 ## 协议转换
 
@@ -174,7 +174,7 @@ HTTP ingress 使用 Axum，application 的提供商认证解析器在每次请�
 
 转换器保留上游未知计量：OpenAI 响应的未知 token 字段不补零，只有已知输入和输出才计算 total。Messages 必需的数值字段在无法获知时使用协议结构占位，并记录 `usage / required_numeric_placeholder`；占位不表示实际观测到零用量，不进入网关计量事实。缺少上游 response ID 时生成请求范围的转换 ID，它不是可用于上游查询或历史状态恢复的原生 ID。
 
-首版参考 LiteLLM 的协议转换组织方式和 Magpie 的同协议旁路边界；固定提交及具体文件见 [转换任务研究证据](../../tasks/llm-protocol-translation/packet.md)。2026-10-11 用户授权改为接入 New API 的独立 RelayKit 转换模块，以共同维护协议兼容并减少重复实现；接入及验收状态归 [RelayKit 任务](../../tasks/new-api-reuse/packet.md)。
+首版参考 LiteLLM 的协议转换组织方式和 Magpie 的同协议旁路边界；固定提交及具体文件见 转换任务研究证据（git 历史：tasks/llm-protocol-translation）。2026-10-11 用户授权改为接入 New API 的独立 RelayKit 转换模块，以共同维护协议兼容并减少重复实现；接入及验收状态归 RelayKit 任务（git 历史：tasks/new-api-reuse）。
 
 接入边界为 ai-provider 内部的 Go 转换库，不引入 New API 管理服务。Rust 继续拥有 HTTP/SSE、认证、路由、取消、背压和原始计量；App 仍只消费 UniFFI。第三方库私有 ABI 封装请求范围的转换状态，不成为平台产品接口，也不建立常驻 Host 或 IPC。正常结束、失败和释放分别表达，取消及截断不调用成功收尾；同协议继续绕过转换。上游版本和依赖须固定，不能以桥接为名长期保留第二套协议实现或隐藏 fallback。最终发行必须按适用许可完成源码与声明义务。
 

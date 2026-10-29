@@ -59,7 +59,7 @@ wire 类型采用官方 `agent-client-protocol-schema = 1.11.0` 的稳定 v1 模
 
 会话列表来自 `session/list`，保留原生 ID、cwd、标题与 RFC 3339 更新时间，支持分页，不伪造创建时间。`load` 消费 Agent 实际回放的历史；`resume` 只恢复原生上下文并明确提示没有回放，不能当作历史读取。原生消息 ID 可直接确认本地投影身份；没有原生 ID 时使用会话 ID 与消息位置生成确定性投影 ID，同样的回放结构可重复得到同样的身份，但它不是原生持久 UUID。live 用户消息的首个原生回声按本轮位置替换待确认消息，不按正文匹配；若 Agent 改变历史顺序或消息分段，位置身份不能保证跨版本稳定。Velune 不为这些缺口建立另一套历史存储。
 
-通用 ACP 不假定任何 gateway 环境变量、提供商配置格式或认证来源，因而没有 Velune managed provider 注入能力；专用适配器继续负责已验证的注入路径。协议依据于 2026-10-10 复核：[官方初始化](https://agentclientprotocol.com/protocol/v1/initialization)、[会话配置](https://agentclientprotocol.com/protocol/v1/session-config-options)、[会话建立与加载](https://agentclientprotocol.com/protocol/v1/session-setup)。[acpsub](https://github.com/lexoliu/acpsub) 用于参考任意命令接入与已公布配置选项；其 daemon、自动安装、强制模型选择和自动批准策略不属于本包契约。隔离验证及仍待实现的 app 入口见 [任务记录](../../tasks/acp-adapter/packet.md)。
+通用 ACP 不假定任何 gateway 环境变量、提供商配置格式或认证来源，因而没有 Velune managed provider 注入能力；专用适配器继续负责已验证的注入路径。协议依据于 2026-10-10 复核：[官方初始化](https://agentclientprotocol.com/protocol/v1/initialization)、[会话配置](https://agentclientprotocol.com/protocol/v1/session-config-options)、[会话建立与加载](https://agentclientprotocol.com/protocol/v1/session-setup)。[acpsub](https://github.com/lexoliu/acpsub) 用于参考任意命令接入与已公布配置选项；其 daemon、自动安装、强制模型选择和自动批准策略不属于本包契约。隔离验证及仍待实现的 app 入口见 任务记录（git 历史：tasks/acp-adapter）。
 
 ## 会话级协作 MCP 注入
 
@@ -77,7 +77,7 @@ SDK 或协议已有目录入口时只使用其结果处理重名；不扫描认�
 
 MCP 与模型网关复用 `LoopbackTunnel`。远端服务地址由运行时改写为经过核验的目标 loopback 端口，Guard 随运行时执行对象持有；调用方不能再为相同注入包一层转发。通用 ACP 的 stdio 回退在目标机器的私有临时目录投送内嵌 `mcp_stdio_relay.py`，需要当地可用的 Python 3，独立于 Node 与专用 helper 资源包。relay 仅传递 JSON-RPC、初始化的 MCP session/version HTTP 头和显式取消通知；不拥有任务、会话历史、重试或授权决定。每个 HTTP 请求独立等待，避免一次等待堵住其他调用；stdin EOF 与 stdout 断开会结束 relay。执行对象释放后删除临时目录并关闭转发。服务属于会话的可选能力：转发失败或 relay 不可用时省略该服务并记录警告，会话照常运行。
 
-relay 只连接显式端口的 `http://127.0.0.1` 服务，忽略代理环境，不跟随重定向。application 的 MCP 服务必须采用 JSON 响应模式和有界等待；relay 的单请求上限为 60 秒，不支持 SSE 或服务端主动请求。正常 HTTP-capable Harness 使用自身原生 MCP 客户端。接入证据见 [运行时注入验收](../../tasks/harness-interoperation/runtime-injection-evidence.md)，Agent 间协作归 [Agent 间协作任务](../../tasks/agent-collaboration/packet.md)。
+relay 只连接显式端口的 `http://127.0.0.1` 服务，忽略代理环境，不跟随重定向。application 的 MCP 服务必须采用 JSON 响应模式和有界等待；relay 的单请求上限为 60 秒，不支持 SSE 或服务端主动请求。正常 HTTP-capable Harness 使用自身原生 MCP 客户端。接入证据见 运行时注入验收（git 历史：tasks/harness-interoperation），Agent 间协作归 Agent 间协作任务（git 历史：tasks/agent-collaboration）。
 
 ## 专用适配器行为
 
@@ -135,7 +135,7 @@ Claude Code 的每轮执行使用独立 `--print --input-format stream-json --ou
 
 固定版本启用 `CLAUDE_CODE_SDK_READS_SESSION_STATE`。`result` 只记录轮次结果，原生 `session_state_changed: idle` 确认本轮及其原生后台工作结束后才撤销注入。长期观察任务可能阻止 idle：复用 SDK 的十分钟无后续主线程活动上限，且仅在无待答交互、无 local agent/workflow 任务时关闭进程并将结束状态标为失败，不伪造成功。原生运行时退出、取消或派发失败都释放本轮进程与隧道。Claude 历史只读取显式 projects 根下的原生 JSONL，按 parent UUID 还原当前分支；不扫描认证文件，不显示 Harness 注入的 `isMeta` 用户记录。标题依次取 `custom-title`、Claude Code 生成的 `ai-title`、首条用户提示；斜杠命令记录（`<command-name>`）按输入显示为 `/名称 参数`，不当作标题，本地命令输出（`<local-command-stdout>`／`stderr`）非空时显示为系统通知。Claude Code 把会话转到后台继续时，新会话复制原有记录，原会话末尾写入 `continued-in`；该记录之后没有新的对话、且接续会话存在时，原会话不列入索引（仍可按 ID 读取），只列接续会话。会话的工作目录取 Claude Code 存放它的项目目录所对应的记录 `cwd`（Agent 进入 worktree 后会话随之存放在 worktree 下）；记录的 `cwd` 会随 Agent 进入子目录变化，不取最后一条；目录名被缩短而对不上时取第一条记录的 `cwd`。会话旁 `subagents/agent-<id>.jsonl` 以 `<session>/agent-<id>` 列为带父会话的只读子会话（标题取 meta 的 description），父会话的工具结果与 `<task-notification>` 记录（显示为“任务通知”工具块）链接该子会话；实时流同样链接，并丢弃带 `parent_tool_use_id` 的子 Agent 消息。
 
-协议依据于 2026-10-10 复核：[Claude Code CLI](https://code.claude.com/docs/en/cli-reference)、[环境变量与 host-managed provider](https://code.claude.com/docs/en/env-vars)、[官方 SDK 控制协议](https://github.com/anthropics/claude-agent-sdk-python/blob/main/src/claude_agent_sdk/_internal/query.py)、[OpenSSH 转发与控制连接](https://man.openbsd.org/ssh.1)。固定版本与隔离实验范围见当前 [任务记录](../../tasks/runtime-provider-ssh/packet.md)。composer 的来源模型选择、SSH/HOME 编辑入口属于 app，明确待实现；本 unit 只提供可消费契约。
+协议依据于 2026-10-10 复核：[Claude Code CLI](https://code.claude.com/docs/en/cli-reference)、[环境变量与 host-managed provider](https://code.claude.com/docs/en/env-vars)、[官方 SDK 控制协议](https://github.com/anthropics/claude-agent-sdk-python/blob/main/src/claude_agent_sdk/_internal/query.py)、[OpenSSH 转发与控制连接](https://man.openbsd.org/ssh.1)。固定版本与隔离实验范围见当前 任务记录（git 历史：tasks/runtime-provider-ssh）。composer 的来源模型选择、SSH/HOME 编辑入口属于 app，明确待实现；本 unit 只提供可消费契约。
 
 ## 提供商清单
 
@@ -168,7 +168,7 @@ MCP 的 key 是 opaque 服务名，其 `Document.bytes` 仅为该服务的原生
 
 `management::Canonical` 是 Velune 模板的 canonical resource definition：整文件指令、以 `SKILL.md` 为入口的技能文件树、与运行时无关的 MCP 传输（stdio 命令／环境，或 http 地址／请求头），以及子 Agent（描述、指令，可选的模型、工具、推理强度与技能名）。`render(variant, name, canonical)` 按固定版本产出可直接写入的 User 范围原生文件或声明对象：Claude 的 MCP 带 `type`，Codex 的 HTTP 头写作 `http_headers`，子 Agent 在 Claude 为 Markdown＋frontmatter（`model`、`tools`、`effort`、`skills` 列表）、在 Codex 为 agent role TOML（role 文件即一层 config，模型与推理强度写作 `model`、`model_reasoning_effort`；没有预载技能或工具限制的位置）；推理强度不在该 Harness 接受的集合内（Codex none 至 max，Claude Code low 至 max）时不写入；读回（`parse`）同样带入这些字段，Claude 以数值表示的 effort 列为未导入；`per_turn` 的子 Agent 不产出文件（由宿主逐轮提供）；运行时没有对应位置的提示字段不写入并在 `notes` 中说明，运行时不支持该类别时返回 `Skipped` 与原因，不伪造。名称限定为不以 `.` 开头、不超过 64 字符的字母数字及 `-_.`。`fingerprint` 对 MCP 按排序后的 JSON 值哈希，其余按字节哈希，使手工或 Harness 重排 MCP 声明不被当作内容变化。canonical 的 Debug 不输出任何内容，因为环境值与请求头值可能是秘密。
 
-原生入口和实际加载证据见 [固定版本验收](../../tasks/runtime-management/native-evidence.md)。application 负责 busy 修改门控；本包不做 UI、自动同步或热重载。App 的资源管理入口明确待实现。
+原生入口和实际加载证据见 固定版本验收（git 历史：tasks/runtime-management）。application 负责 busy 修改门控；本包不做 UI、自动同步或热重载。App 的资源管理入口明确待实现。
 
 Codex 原生项目通过同一个有界 app-server 连接读取 `project/list` 与 `thread/list.projectId`，不扫描桌面私有配置或根据 cwd 推断成员关系。`native::codex_projects` 保留原生项目 ID、名称和有序根，接受共享目录和零根项目。编辑直接以 `project/update` 提交名称和根，保留 metadata，不附加并发修改检查。原生项目目录不用于覆盖已有线程的 `runtimeWorkspaceRoots`，恢复与继续交给 Codex 保留已存工作区。
 

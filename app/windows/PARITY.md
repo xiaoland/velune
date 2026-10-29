@@ -24,16 +24,16 @@
 2026-10-26：通用设置拆分额度与上下文的占用／剩余显示，状态栏分别消费两个核心偏好。原生 Codex 项目按独立身份列出，可在编辑对话框直接修改原生名称、有序文件夹（含空列表）；目录建议使用 `PrimaryFolder`，不使用项目身份键。
 
 
-2026-10-26：Codex／Claude Code 无新消息恢复的接口与“继续”按钮分派已按 Mac 接入；本次 Windows 构建与浅／深色实际运行的验证状态见 [原生恢复任务](../../tasks/native-turn-resume/packet.md)。
+2026-10-26：Codex／Claude Code 无新消息恢复的接口与“继续”按钮分派已按 Mac 接入；本次 Windows 构建与浅／深色实际运行的验证状态见 原生恢复任务（git 历史：tasks/native-turn-resume）。
 
 
-遥测（2026-10-27）：本机设置、双 SDK 代际、显式 OTLP 测试、独立分享邀请/授权/撤销与一次性复制已接入；Windows 使用官方 .NET SDK。完整 WinUI 构建、浅/深色、计时器和正常退出已验收；SDK 构造失败清理、首次写出前撤销及开发临时配置重启也通过，跨端分享矩阵仍有设备阻塞，证据见[遥测任务](../../tasks/otlp-observability/packet.md)。
+遥测（2026-10-27）：本机设置、双 SDK 代际、显式 OTLP 测试、独立分享邀请/授权/撤销与一次性复制已接入；Windows 使用官方 .NET SDK。完整 WinUI 构建、浅/深色、计时器和正常退出已验收；SDK 构造失败清理、首次写出前撤销及开发临时配置重启也通过，跨端分享矩阵仍有设备阻塞，证据见遥测任务（git 历史：tasks/otlp-observability）。
 
-2026-10-27：Mac 与 Windows 同步为一个发送／排队／继续主按钮，停止独立；实时正文与附件使继续和发送互斥，发送键不触发空输入恢复，组词及停止／请求在途禁止提交。撤去文本继续 fallback。两端判定矩阵与 Windows 完整 WinUI 构建均通过；浅／深色各 11 组实际控件状态检查通过，正常退出且无 crash.log。合成验证的范围与证据见[任务记录](../../tasks/native-turn-resume/packet.md)。
+2026-10-27：Mac 与 Windows 同步为一个发送／排队／继续主按钮，停止独立；实时正文与附件使继续和发送互斥，发送键不触发空输入恢复，组词及停止／请求在途禁止提交。撤去文本继续 fallback。两端判定矩阵与 Windows 完整 WinUI 构建均通过；浅／深色各 11 组实际控件状态检查通过，正常退出且无 crash.log。合成验证的范围与证据见任务记录（git 历史：tasks/native-turn-resume）。
 
-2026-10-27：主动上下文压缩已接入共享核心与 Windows 输入区按钮、更多菜单及可配置快捷键命令，支持 Codex、Claude Code 和 Pi 的原生入口，压缩状态独立展示。Mac 另提供会话菜单、命令面板与 `/compact`。本轮构建与运行证据见[上下文压缩任务](../../tasks/context-compaction/packet.md)。
+2026-10-27：主动上下文压缩已接入共享核心与 Windows 输入区按钮、更多菜单及可配置快捷键命令，支持 Codex、Claude Code 和 Pi 的原生入口，压缩状态独立展示。Mac 另提供会话菜单、命令面板与 `/compact`。本轮构建与运行证据见上下文压缩任务（git 历史：tasks/context-compaction）。
 
-2026-10-27：额度借鉴 quotio（[任务](../../tasks/quotio-reference/packet.md)）。核心的智能排序考虑重置节奏，Windows 的智能策略说明已同步；金额以文字显示，`openrouter:keyLimit` 有显示名。随后接入预计用尽提示（注意色）、路由成员的金额、编辑器的“读取 … 账户额度”开关、“历史…”对话框与额度提醒通知；浅／深色的合成状态检查与构建证据见任务记录。
+2026-10-27：额度借鉴 quotio（任务（git 历史：tasks/quotio-reference））。核心的智能排序考虑重置节奏，Windows 的智能策略说明已同步；金额以文字显示，`openrouter:keyLimit` 有显示名。随后接入预计用尽提示（注意色）、路由成员的金额、编辑器的“读取 … 账户额度”开关、“历史…”对话框与额度提醒通知；浅／深色的合成状态检查与构建证据见任务记录。
 
 遥测调用使用显式 NativeOperation 类别，与 Apple／Android 的同类操作一致；标准事件名、v2 字段、结果含义及迁移归[遥测契约](../../docs/design/telemetry.md)。分类不再依赖 CallerMemberName，写操作不会默认归为读取。
 

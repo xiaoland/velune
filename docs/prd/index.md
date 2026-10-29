@@ -128,7 +128,7 @@ Apple 平台的具体决定见[平台与界面](platforms.md)。
 
 用户将方案收敛交给设计方，自己复核；不用逐项选择底层细节。已认可的方向不重开选择。具体 SDK 桥接、Rust FFI 工具、Apple 桌面落点、打包／服务启动、路由参数与适配契约仍属[架构方案](../design/architecture.md)中的推荐；原型、供应商资格、真实账户与运行效果尚未验证。Velune 名称已确定；当前实施范围见下文。
 
-具体待核实问题由[当前 Task Packet](../../tasks/harness-routing-feasibility/packet.md)维护；不能用本页的目标反推技术可行性。
+具体待核实问题由当前 Task Packet（git 历史：tasks/harness-routing-feasibility）维护；不能用本页的目标反推技术可行性。
 
 ## 验收边界
 

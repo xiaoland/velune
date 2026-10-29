@@ -1,6 +1,6 @@
 # 遥测装配与关联
 
-本文件维护平台 app、bindings、application、remote、gateway 共同遵守的遥测契约。产品行为归[客户端遥测](../prd/diagnostics.md#客户端遥测)，开发入口归[开发与复验](../development.md#开发遥测)，初次接入的实测范围归[原任务](../../tasks/otlp-observability/packet.md)，语义调整进展归[当前任务](../../tasks/telemetry-maintainability/packet.md)。
+本文件维护平台 app、bindings、application、remote、gateway 共同遵守的遥测契约。产品行为归[客户端遥测](../prd/diagnostics.md#客户端遥测)，开发入口归[开发与复验](../development.md#开发遥测)，初次接入的实测范围归原任务（git 历史：tasks/otlp-observability），语义调整进展归当前任务（git 历史：tasks/telemetry-maintainability）。
 
 ## 本机配置与双 SDK
 

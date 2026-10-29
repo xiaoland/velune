@@ -1,75 +1,37 @@
 # Velune 项目知识导航
 
-这里沉淀 Velune 值得长期保留、已有明确归属的项目知识。Beluna 是独立的姐妹项目，不与本导航混用。跨单元方案放设计入口并标明复核状态；研究证据、试验缺口与当前工作状态保留在 Task Packet。
+这里是 Velune 长期知识的入口，每类知识只在一处维护。Beluna 是独立的姐妹项目，不与本导航混用。任务进行中的计划、临时证据与未决事项放在 Task Packet；任务完成后，仍成立的事实并入下列文档，任务包删除（git 保留历史）。
 
-## 长期知识
+## 产品
 
 - [产品定义](prd/index.md)：为什么做、核心优先级、已确认边界与术语；各能力的行为见其“能力”一节列出的分册
-- [来源索引](sources.md)：关键用户决定和 SVC 文档方法来源
+- [来源索引](sources.md)：关键用户决定的定位
 - [界面与交互](../DESIGN.md)：跨平台的界面原则与交互模式
 
-## 架构设计
+## 技术设计
 
 - [Product TDD](product-tdd/index.md)：核心与平台 app 的分工，跨 unit 契约文档入口
+- [多 Harness 路由与协作架构](design/architecture.md)：package 拆分与平台装配、会话权威与展示投影、运行时、协作与执行 owner
+- [AI 服务与 AI 网关](design/ai-service.md)：操作、provider 与网关的职责，协议转换、路由、额度与用量分析
+- [远程访问](design/remote-access.md)：设备、配对、连接与远程调用
+- [遥测装配与关联](design/telemetry.md)：本机配置、SDK 代际、一次性分享与分布式诊断
 
-- [多 Harness 路由与协作架构](design/architecture.md)：已认可产品方向及 Rust／SQLite／原生 UI 基线；具体协作机制、宿主／桥接推荐与验证边界
+各 unit 的内部设计在其 README：共享核心见 `packages/*/README.md`，平台 app 见 `app/*/README.md`。
 
-- [AI 服务与 AI 网关](design/ai-service.md)：已确认需求、操作／provider／网关职责、协议转换、路由与用量分析契约
+## 开发
+
+- [开发与复验](development.md)：构建、运行、验证方式与开发环境
 
 ## 当前工作
 
 - [架构重构、测试清理与文档更新](../tasks/architecture-refactor/packet.md)：功能冻结期间的全项目重构，分阶段计划与状态
-
-- [Rust 远控库](../tasks/android-minimal/packet.md)：稳定服务、方向配对、统一寻址、恢复与 remote-only UniFFI；平台 App 接入另行实施
-
-- [远程控制](../tasks/remote-control/packet.md)：同一用户多设备、公网免 VPN、完整 Velune 业务能力；GUI／headless 共用核心，需求与架构收敛后实现 Rust packages
-
-- [通用 ACP Adapter](../tasks/acp-adapter/packet.md)：Rust 侧 stable v1 接入、能力协商与会话恢复；App 前端待实现
-
-- [Claude Code、原生模型与 SSH 运行时](../tasks/runtime-provider-ssh/packet.md)：Rust packages 的模型选择、单轮网关、远端执行与受管 HOME；前端明确待实现
-
-- [跨 Harness 会话接续](../tasks/cross-harness-continuation/packet.md)：目标原生会话、上下文交接、仅关联元数据与重启投影
-- [Harness 子 Agent 协作](../tasks/harness-interoperation/packet.md)：父 Agent 经 MCP 委派，独立运行时执行、结果回传与生命周期；App 入口待实现
-- [运行时资源管理](../tasks/runtime-management/packet.md)：原生 instruction、MCP、skills 与 sub-agent 定义的管理，以及 Mac“资源库”（以资源为中心、保存即同步）
-
-- [配置体验与原生 Messages](../tasks/settings-protocol-refinement/packet.md)：历史诊断、原生多选与模板、运行时检测、按组分页及协议扩展
-
-- [跨运行时统一会话浏览](../tasks/conversation-browser/packet.md)：全启用实例、项目与标签分组筛选、创建／更新时间排序
-
-- [原生会话管理与切换加载](../tasks/session-management/packet.md)：真实重命名／删除、加载目标与已加载内容隔离
-
-- [运行时与会话配置体验复核](../tasks/runtime-session-experience/packet.md)：会话模型与自动执行准备、独立历史浏览、公开目录模板和原生菜单修复
-
-- [Magpie 架构参考复核](../tasks/magpie-reference/packet.md)：配置 adapter、模型目录、原生／兼容协议与可观测性；已吸纳版本能力、导入边界及无正文网关观测
-
-- [版本化 Codex 与 DeepSeek 运行时](../tasks/multi-runtime/packet.md)：原生控制、huihua 包历史投影、许可与安装包隔离验收；GUI／真实服务由用户验收
-
-- [AI 网关与 AI 服务需求复核及审计](../tasks/ai-gateway-audit/packet.md)：原生协议保真、路由／fail-over、配置／认证和生命周期，包含源码证据与迁移建议
-
-- [独立 package 与平台能力装配](../tasks/package-boundaries/packet.md)：已授权并完成 UniFFI 拆分，保留其边界与验证证据
-
-- [主窗口与分析体验整顿](../tasks/mac-navigation-refinement/packet.md)：原生操作归属、分析分层与系统Pi修复
-
-- [用量与性能分析](../tasks/usage-analytics/packet.md)：网关用量事实、统计口径、原生分析界面与隔离验收
-
-- [Pi 与 Mac 首循环](../tasks/pi-mac-first-loop/packet.md)：原生 control surface、AI 网关、提供商与模型配置、Agent 运行时实例；真实运行待用户验收
-
-- [AI service 有界实现](../tasks/ai-service-contracts/packet.md)：隔离旧改动、契约审核、真实接入／fixture 待确认项
-
-- [Harness、LLM 路由与跨会话协作](../tasks/harness-routing-feasibility/packet.md)：无凭据核心已实现；真实 Harness 与设备体验待接线
-- [证据快照](../tasks/harness-routing-feasibility/evidence.md)：源版本、官方链接、事实与适用边界
+- [待决事项与已知缺口](../tasks/open-items/packet.md)：尚未解决的用户决定、未授权的候选与未验证的能力
 
 ## 协作入口
 
 - [仓库 README](../README.md)
 - [共享 Agent 指引](../AGENTS.md)
 
-已授权并实现无凭据核心；真实模型与原生设备体验分别验收。
-
-- [开发与复验](development.md)：运行命令、能力边界、Mac mini 接线、真实联调准备与反馈契约
-
 ## 文档方法
 
 采用 xiaoland/svc 的[知识归属](https://github.com/xiaoland/svc/blob/4fe4c66ac4deb35209069c00b1bbdc1b22aae3af/corpus/specs/index.md)与 [Task Packet](https://github.com/xiaoland/svc/blob/4fe4c66ac4deb35209069c00b1bbdc1b22aae3af/corpus/task-packet/index.md)方法。项目文档可以直接阅读和编辑，无需 SVC CLI、配置文件或运行环境。
-
-- [会话模型与消息展示](../tasks/conversation-presentation/packet.md)：标题与时间归一、权威投影、原生消息呈现和长列表

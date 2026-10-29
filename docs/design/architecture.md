@@ -1,10 +1,10 @@
 # 多 Harness 路由与协作架构
 
-状态：**核心产品设计及 Rust／SQLite／原生 UI 方向已认可；细化方案待验证**。更新于 2026-10-02 UTC。首批 Codex、Claude Code、Pi 已由用户固定；本页负责收敛实现方案，不重新评选 Harness，也不表示产品已经实现。需求权威见 [PRD](../prd/index.md)，来源和版本见[研究证据](../../tasks/harness-routing-feasibility/evidence.md)。
+状态：**核心产品设计及 Rust／SQLite／原生 UI 方向已认可；细化方案待验证**。更新于 2026-10-02 UTC。首批 Codex、Claude Code、Pi 已由用户固定；本页负责收敛实现方案，不重新评选 Harness，也不表示产品已经实现。需求权威见 [PRD](../prd/index.md)，来源和版本见研究证据（git 历史：tasks/harness-routing-feasibility）。
 
 2026-10-03 范围修订：独立 AI service 的契约、provider 和配置归属以 [AI service 设计](ai-service.md) 为准。本页旧 Account／Slot 和 mock Router 方案不自动成为新 AI lib 的结构；旧 UI／Host 原型保留，本步不迁移。
 
-2026-10-04 首循环边界：用户明确要求实际拆分 `core`（AI 服务、Harness 适配器）与 `app`（Mac 等平台）。当前 Pi 切片由 Pi 拥有会话历史和持久化，Velune 只投影会话列表、消息和运行状态，不另建真实会话数据库。Mac 提供 Chatbot 界面、会话列表与通用资源配置，不能硬编码资源示例；真实验收由用户执行。此切片不将模拟核心的逻辑 Session 契约强加给 Pi 历史，也不声称完整统一自动路由已完成。执行状态见 [首循环任务](../../tasks/pi-mac-first-loop/packet.md)。
+2026-10-04 首循环边界：用户明确要求实际拆分 `core`（AI 服务、Harness 适配器）与 `app`（Mac 等平台）。当前 Pi 切片由 Pi 拥有会话历史和持久化，Velune 只投影会话列表、消息和运行状态，不另建真实会话数据库。Mac 提供 Chatbot 界面、会话列表与通用资源配置，不能硬编码资源示例；真实验收由用户执行。此切片不将模拟核心的逻辑 Session 契约强加给 Pi 历史，也不声称完整统一自动路由已完成。执行状态见 首循环任务（git 历史：tasks/pi-mac-first-loop）。
 
 首循环的当前装配边界（2026-10-04 用户修订，2026-10-05 全面采用 UniFFI）：共享能力是 Rust libs，由 Mac／Windows 等平台应用通过生成的类型接口嵌入，不是独立 Host 应用。CoreRuntime 拥有通用动作、配置校验与原子持久化、Harness 适配与 AI 网关生命周期；平台应用显式注入配置根目录和资源目录，并管理应用级唯一 handle。独立 AI service lib 仍不读取全局配置或环境。提供商拥有其模型条目与私有认证；模板复用填写参数。当前实现原生 OpenAI ChatCompletions v1 与 Responses v1 的静态目标解析，未定义的自动 fail-over 不默认启用。旧 App↔Host IPC 已删除。
 
@@ -30,13 +30,13 @@ Velune 的产品身份是 control surface：UI、AI 服务网关与协调层服�
 
 agent-runtime 拥有 Codex app-server 与 DSH ACP 控制和原生事件转换；Codex 原生 thread API 提供逻辑历史的列表与分页详情，处理 revert 的多个 rollout 与继承前缀；huihua `0.2.0` package 提供 DSH 只读历史 snapshot，不替代 resume。Pi 保留固定 SDK 的分支历史语义。application 显式传入 home、roots、资源与 Node 路径；Node 是外部依赖，huihua 依赖及许可证由 Mac 打包，Codex／DSH CLI 由用户安装。没有第二份会话 DB，也不引入 Obelisk 索引服务。
 
-conversation 定义审批、问题回答与取消的类型契约，bindings 生成语言接口，平台展示并提交用户选择。历史列表与详情独立于执行准备。Pi 可恢复原生 custom entry 中有效的模型引用；Codex／DSH 仅有裸 API 模型标识，不能证明对应 Velune 提供商，继续执行前明确选择。原生控制与只读历史是两种职责。DSH reasoning wire 映射未实现，不将能力列表猜测为编码字典。具体运行步骤、许可与限制见 [开发说明](../development.md#原生运行时与历史读取)，最终构建／安装／验收证据见 [当前任务](../../tasks/multi-runtime/packet.md)。
+conversation 定义审批、问题回答与取消的类型契约，bindings 生成语言接口，平台展示并提交用户选择。历史列表与详情独立于执行准备。Pi 可恢复原生 custom entry 中有效的模型引用；Codex／DSH 仅有裸 API 模型标识，不能证明对应 Velune 提供商，继续执行前明确选择。原生控制与只读历史是两种职责。DSH reasoning wire 映射未实现，不将能力列表猜测为编码字典。具体运行步骤、许可与限制见 [开发说明](../development.md#原生运行时与历史读取)，最终构建／安装／验收证据见 当前任务（git 历史：tasks/multi-runtime）。
 
 ## 独立 package 与平台装配
 
 2026-10-05 用户决定全面采用 UniFFI，并授权按独立 package 拆分。基础 units 为 ai、ai-provider、conversation、agent-runtime、gateway、application、bindings；配置持久化保留在 application 内部。2026-10-10 SSH 切片沿用 agent-runtime 的进程边界，没有建立 remote 空包。2026-10-17 的实际远控工作新增 application-api 与 remote，平台远控界面仍待接入。
 
-2026-10-17 远控目标进一步明确：同一个人的多台设备，通过公网完整使用 Velune，不要求预配 VPN 或端口转发；共享核心同时由 GUI 或 headless 应用装配，不按界面形态分叉远控契约。headless 是拥有核心生命周期的应用宿主，不是要求桌面 App 改回 App↔Host 双进程；既有同进程嵌入边界继续适用。远控操作进入执行端唯一的应用用例 owner，不另开同一配置根或绕过用例直接控制 Harness。实现和证据范围见 [远控任务](../../tasks/remote-control/packet.md)。
+2026-10-17 远控目标进一步明确：同一个人的多台设备，通过公网完整使用 Velune，不要求预配 VPN 或端口转发；共享核心同时由 GUI 或 headless 应用装配，不按界面形态分叉远控契约。headless 是拥有核心生命周期的应用宿主，不是要求桌面 App 改回 App↔Host 双进程；既有同进程嵌入边界继续适用。远控操作进入执行端唯一的应用用例 owner，不另开同一配置根或绕过用例直接控制 Harness。实现和证据范围见 远控任务（git 历史：tasks/remote-control）。
 
 用户已同意以 iroh 承载远控连接，同时要求对比 ds-harness-remote 的 WebRTC／TURN 直连与稳定性机制。连接策略应允许直连与路径升级，并可核实实际直连／中继路径；不为强制中继写另一套业务协议，也不将同机直连视为跨公网 NAT 穿透的证据。具体机制与未验证边界归任务研究和隔离验收。
 
@@ -63,7 +63,7 @@ conversation 定义审批、问题回答与取消的类型契约，bindings 生�
 
 当前配置仓库只有聚合应用配置这一项直接消费者；多个平台共同消费应用 SDK，不等于它有多个独立消费者。内部模块已能隔离文件机制，单独建包反而需要额外公开契约和维护责任。只有出现独立应用用例需要直接消费它，或具体依赖／平台编译边界无法通过内部模块解决，再复核提取；增加平台、切换 SQLite 或代码变长都不是单独建包的充分依据。秘密存取保持平台归属。
 
-当前本地装配由 application 的 `local-runtime` feature 选择；禁用后不链接 agent-runtime，保留普通配置用例，本地执行明确返回 Unsupported。application 的配置校验仍依赖 gateway 的配置类型，连带保留 AI-provider 依赖；纯远程客户端通过下述独立契约与传输路径裁掉执行依赖，不使用这个 application feature 变体。早期拆分证据见 [实施任务](../../tasks/package-boundaries/packet.md)。
+当前本地装配由 application 的 `local-runtime` feature 选择；禁用后不链接 agent-runtime，保留普通配置用例，本地执行明确返回 Unsupported。application 的配置校验仍依赖 gateway 的配置类型，连带保留 AI-provider 依赖；纯远程客户端通过下述独立契约与传输路径裁掉执行依赖，不使用这个 application feature 变体。早期拆分证据见 实施任务（git 历史：tasks/package-boundaries）。
 
 ### 远控契约与唯一执行 owner（2026-10-17）
 
@@ -79,7 +79,7 @@ iroh 的默认自动选路与 QUIC 多流承担传输；路径快照、事件和
 
 后续产品复核已确认使用 iroh 公共设施可接受，用户可替换为自部署或兼容协议的公开 relay；局域网与公网共用同一设备与授权模型，并要求已建立连接在进入／离开 LAN 时自动优选和恢复。方向授权、配对事务、可刷新寻址、连接恢复、设施代际及请求寿命的契约由 [统一设备远控方案](remote-access.md) 维护。iroh 1.3.0 的热更新不承担严格退出事务，Rust 稳定服务独立保留账本与已接纳任务，网络代际串行关闭和重建；mDNS 使用可完整关闭的私有 IO runtime，业务主 runtime 不变。晚到 lookup 不直接触发活动连接探测，活动路径仍沿原生地址变化和 QNT 机制升级，不能据库构建宣称跨公网自动选优已经通过。
 
-2026-10-18 的库交付完成了稳定服务、v2 契约、生产 mDNS、Controller 恢复与设施设置的库级实现和隔离验证。2026-10-19 起远控 MVP 接入平台：完整端（Mac、Windows）装配本地 ApplicationService 与远控服务，控制端（Android）只装配 remote-only 绑定。各端界面只编写一份，经同一 `VeluneApplication` 业务接口操作本机或 `application_for_device` 返回的远端代理，由设备选择决定目标。实施与验收见 [远控 MVP 任务](../../tasks/remote-control-mvp/packet.md)；真实公网迁移和非默认双网仍未验收。
+2026-10-18 的库交付完成了稳定服务、v2 契约、生产 mDNS、Controller 恢复与设施设置的库级实现和隔离验证。2026-10-19 起远控 MVP 接入平台：完整端（Mac、Windows）装配本地 ApplicationService 与远控服务，控制端（Android）只装配 remote-only 绑定。各端界面只编写一份，经同一 `VeluneApplication` 业务接口操作本机或 `application_for_device` 返回的远端代理，由设备选择决定目标。实施与验收见 远控 MVP 任务（git 历史：tasks/remote-control-mvp）；真实公网迁移和非默认双网仍未验收。
 
 ## 1. 已认可方向与收敛方案
 
@@ -122,7 +122,7 @@ iroh 的默认自动选路与 QUIC 多流承担传输；路径快照、事件和
 - **UniFFI bindings**：提供具名动作、record／enum、结构化错误与关闭契约，生成接口管理跨语言内存；不恢复手写 JSON dispatcher，不复制路由或持久化事务到 UI
 - **Swift／Kotlin 等平台 UI**：导航、流式展示、原生交互、系统权限与秘密设施；显式装配路径和能力。关闭窗口与退出应用是不同事件，退出须在运行时空闲且库完成关闭后进行
 
-首循环由 CoreRuntime 原子保存应用配置，不打开旧模拟 SQLite，也不保存另一套 Pi 会话历史。未来协作数据库如需 SQLite，仍由共享核心管理其事务；不能用文件同步制造跨设备共享主库。历史存储研究见[证据](../../tasks/harness-routing-feasibility/evidence.md#原生客户端与-rust-边界)。
+首循环由 CoreRuntime 原子保存应用配置，不打开旧模拟 SQLite，也不保存另一套 Pi 会话历史。未来协作数据库如需 SQLite，仍由共享核心管理其事务；不能用文件同步制造跨设备共享主库。历史存储研究见证据（git 历史：tasks/harness-routing-feasibility）。
 
 **当前跨语言接入**：bindings unit 以 UniFFI 0.32.2 生成 Swift／Kotlin 接口，Mac 通过具名方法、record／enum 和结构化错误操作 application。单个绑定对象拥有应用实例并串行执行同步操作；Mac 在后台队列调用，按快照轮询投影。关闭忙时拒绝并保留对象，执行取消为独立操作；释放平台包装并不等同于发出用户取消。输入与返回值的内存所有权由生成绑定管理，不再保留手写 `velune_core_*` 产品入口。配置 schema 与绑定接口独立演进，生成接口由 UniFFI 校验契约。C# 第三方工具需独立验证兼容性，不宣称已有 Windows app。进程内接入保持，不另加本机 App↔core IPC。
 
@@ -131,8 +131,8 @@ iroh 的默认自动选路与 QUIC 多流承担传输；路径快照、事件和
 ### Apple 与 Android 宿主
 
 - **Apple 当前落点**：Mac 使用 SwiftUI／AppKit 的原生窗口、菜单与设置，嵌入 Rust dylib；iOS／iPadOS 的 UIKit 方向不等于已实现或能运行桌面 Harness。watchOS／tvOS／visionOS 不在本轮承诺内
-- **Windows**：完整端，本机运行 agents 并可控制其他端。2026-10-21 由用户交开发方选择，定为 C#／.NET 10＋WinUI 3（Windows App SDK 2.5，非打包、自包含，Fluent 控件），取代 10-20 的 [MyGO](https://github.com/egoist/mygo) 版（[S45](../sources.md#s45)）；MyGO 版与自建的 Go 生成器已删除。C# 经 `uniffi-bindgen-cs`（固定在支持 UniFFI 0.32 的提交）生成的绑定以 P/Invoke 调用 `velune_bindings.dll`，与核心同进程，不另启 Host 进程；C# 中与同级变体同名的变体字段由 `uniffi.toml` 改名，不改 Rust API。待验证，进度见 [任务](../../tasks/windows-winui/packet.md)。
-- **Android 目标**：Kotlin＋Jetpack Compose 原生控制端，经 remote-only UniFFI／JNA 嵌入 Rust，不携带 Harness 或 AI 执行栈。库已提供 Application JNI context 与系统 TLS verifier 的装配入口；应用私有存储、备份排除与生命周期接入由后续平台工作承担。当前 main 不包含早期 Android App，库产物与历史平台观察见 [任务](../../tasks/android-minimal/packet.md)
+- **Windows**：完整端，本机运行 agents 并可控制其他端。2026-10-21 由用户交开发方选择，定为 C#／.NET 10＋WinUI 3（Windows App SDK 2.5，非打包、自包含，Fluent 控件），取代 10-20 的 [MyGO](https://github.com/egoist/mygo) 版（[S45](../sources.md#s45)）；MyGO 版与自建的 Go 生成器已删除。C# 经 `uniffi-bindgen-cs`（固定在支持 UniFFI 0.32 的提交）生成的绑定以 P/Invoke 调用 `velune_bindings.dll`，与核心同进程，不另启 Host 进程；C# 中与同级变体同名的变体字段由 `uniffi.toml` 改名，不改 Rust API。待验证，进度见 任务（git 历史：tasks/windows-winui）。
+- **Android 目标**：Kotlin＋Jetpack Compose 原生控制端，经 remote-only UniFFI／JNA 嵌入 Rust，不携带 Harness 或 AI 执行栈。库已提供 Application JNI context 与系统 TLS verifier 的装配入口；应用私有存储、备份排除与生命周期接入由后续平台工作承担。当前 main 不包含早期 Android App，库产物与历史平台观察见 任务（git 历史：tasks/android-minimal）
 - **移动端能力**：远端 Harness 接入和后台能力仍需单独验证。嵌入核心不代表手机能常驻桌面 Harness，也不把离线输入显示为远端已启动的任务
 
 Mac 当前交付安装到 Applications，产品显示版本、ABI、配置 schema 与源码提交分开记录。签名／公证／商店分发和 sandbox 权限仍有后续边界，不因本地 ad-hoc 或开发证书签名的构建通过而声称已完成。先完成桌面首循环与共享核心基础，再实施远程客户端，不用 Web 过渡替代原生方向。
@@ -159,7 +159,7 @@ Gateway 负责协议保持、流传递、资源预留和尝试记录，不执行
 
 正式 SIWC 不是通用 Responses 全功能别名：当前要求公开 `/v1/responses`、流式、`store:false`、完整所需历史，不使用 `previous_response_id`；可用模型按当前账户查询，不能把 app-server 缓存列表当 entitlement。注册／workspace／host ID 分开，refresh 串行；正式 app-server 路径需 token 更新后重启并恢复，不能假定环境变量热更新。见下列证据。
 
-具体证据：[Codex](../../tasks/harness-routing-feasibility/evidence.md#codex)、[Claude Code](../../tasks/harness-routing-feasibility/evidence.md#claude-code)、[Pi](../../tasks/harness-routing-feasibility/evidence.md#pi)。
+具体证据：Codex（git 历史：tasks/harness-routing-feasibility）、Claude Code（git 历史：tasks/harness-routing-feasibility）、Pi（git 历史：tasks/harness-routing-feasibility）。
 
 ### 不把最难部分藏在“兼容”二字里
 
@@ -296,7 +296,7 @@ Codex 原生审批事件、Claude 的 hooks／permission 机制、Pi 的扩展 t
 - **ACP**：客户端与 agent 的会话、prompt、流事件、权限、取消，以及按能力声明的 list／load／resume 等。适合接编辑器或已有 ACP adapter；不是供应商 LLM API，也不自动定义产品任务树、跨服务可靠投递和单写接管
 - **MCP**：把 broker 的协作操作暴露为工具／资源；不直接承担 Harness 生命周期和 agent 到 agent 的可靠业务协议
 - **原生 adapters**：Codex app-server、Claude CLI／SDK、Pi RPC／SDK 保留各自真实控制能力；统一一个接口并保留扩展，而非强行把三者削成相同文本输入输出
-- **acpsub**：已检查 `lexoliu/acpsub` 的 `259db0d`。2026-10-11 用户明确要采用其核心产品能力：父 runtime 通过协作工具把另一 runtime 当作可继续的 sub-agent。Velune 参考 MCP→协调→ACP 的分工，子端也复用已有专用 adapters；不引入 acpsub daemon 或 transcript 副本。原 ACP 接入的证据仍见 [ACP 任务](../../tasks/acp-adapter/protocol-evidence.md)，2026-10-12 用户纠正为 Agent 间对等协作，当前设计见下文“Agent 间协作”；10-11 父子实现见 [Harness 协作任务](../../tasks/harness-interoperation/packet.md)。
+- **acpsub**：已检查 `lexoliu/acpsub` 的 `259db0d`。2026-10-11 用户明确要采用其核心产品能力：父 runtime 通过协作工具把另一 runtime 当作可继续的 sub-agent。Velune 参考 MCP→协调→ACP 的分工，子端也复用已有专用 adapters；不引入 acpsub daemon 或 transcript 副本。原 ACP 接入的证据仍见 ACP 任务（git 历史：tasks/acp-adapter），2026-10-12 用户纠正为 Agent 间对等协作，当前设计见下文“Agent 间协作”；10-11 父子实现见 Harness 协作任务（git 历史：tasks/harness-interoperation）。
 
 ### Agent 间协作（2026-10-12，取代 10-11 子 Agent 切片）
 
@@ -306,11 +306,11 @@ Codex 原生审批事件、Claude 的 hooks／permission 机制、Pi 的扩展 t
 
 代价是协作进度依赖客户端请求，与会话事件的推进方式相同；10-11 子执行器“无前台轮询也能完成”的性质不再成立。Mac 持续轮询活动，可接受；若以后需要无客户端推进，再考虑由绑定层的后台线程按收件箱信号推进，不另启 Host。
 
-协作消息带出处包装，作为对方的普通下一轮提交，不授予权限；对方忙碌、待审批或在 Velune 外运行时拒绝，不排队、不注入 busy 会话。等待以“调用方尚未读到的非运行状态”判定，避免把流式修订号暴露给 Agent。取消不跨会话传播，不设递归或联系限制；循环联系由忙碌拒绝自然阻断，不另设上限。服务、转发或 relay 失败时会话照常运行而不带协作工具。实施与验收归 [Agent 间协作任务](../../tasks/agent-collaboration/packet.md)。
+协作消息带出处包装，作为对方的普通下一轮提交，不授予权限；对方忙碌、待审批或在 Velune 外运行时拒绝，不排队、不注入 busy 会话。等待以“调用方尚未读到的非运行状态”判定，避免把流式修订号暴露给 Agent。取消不跨会话传播，不设递归或联系限制；循环联系由忙碌拒绝自然阻断，不另设上限。服务、转发或 relay 失败时会话照常运行而不带协作工具。实施与验收归 Agent 间协作任务（git 历史：tasks/agent-collaboration）。
 
 **原生 sub-agent 展示（已实现，Codex 0.159.3、Claude Code 2.1.286 经实际 CLI 与合成上游验收）。** 会话模型增加两个通用字段，平台不按运行时分支：`ConversationSummary.parent_conversation_id` 标出原生子 Agent 的会话及其父会话，`MessageBlock::Tool.conversation_id` 记录调用启动或指向的子会话。adapter 在产生消息处填写：Codex 的 `collabAgentToolCall` 在恰有一个 receiver 线程时链接该线程，`subAgentActivity` 的 `started` 链接其 `agentThreadId`（标题取 `agentPath` 末段；interacted／interrupted／completed 不进转录），线程列表按 `parentThreadId` 或 `source.subAgent.thread_spawn.parent_thread_id` 标父会话。2026-10-17 对 Codex 0.159.3 本机历史的结构探查（只计数与字段形状）：新线程的历史只有 `subAgentActivity`、没有 `collabAgentToolCall`，`parentThreadId` 不填；子线程通常已归档、不在非归档列表里，fork 的逻辑历史还带着祖先线程的子 Agent，所以子 Agent 面板主要依赖转录链接；Claude Code 以工具结果的 `agentId` 与任务通知链接 `<session>/agent-<id>`，历史读取父会话旁的 `subagents/agent-<id>.jsonl`（标题取 meta 的 description），实时流丢弃带 `parent_tool_use_id` 的子 Agent 消息，与原生历史一致。子会话进入 application 列表（打开仍复用“只打开列表中的会话”的来源校验），客户端不在侧栏显示；Codex 在子 Agent 结束后归档其线程，不在使用中的列表里：按身份查找时 application 以 `history::read_summary`（Codex `thread/read`，归档与否取 rollout 是否在 `archived_sessions`）只读这一个线程，记入 `reached` 供来源校验，不扫描整个归档（2026-10-17 本机 2688 个归档线程，扫描约 14 秒，单读约 0.01 秒）；其历史快照不可发送，`send_turn` 明确拒绝，A2A 的 `list_conversations` 不提供它们。子 Agent 的审批、继续与取消仍归启动它的会话。adapter 为每个会话记住其工具块链接过的子会话（读历史时从快照重建，实时由调用与任务事件补充）。Codex 子线程上的审批请求因此作为父会话的交互出现，标题前缀“子 Agent：”；其他非活动线程的请求仍被拒绝。父会话轮次结束后才到达的子 Agent 请求仍交付父会话，父轮次结束时也保留这些待答请求。Claude Code 的 `Agent` 调用与其结果合并为一个工具块，状态、输出与链接取自结果，实时与历史一致。2026-10-18 起快照另带 `collaborators`（A2A 参与方，取自协作工具结果与收到消息的来源行，带方向），平台与子 Agent、父会话一起作为“关联 Agent”呈现；打开位置是应用配置 `linkedConversationOpening`。
 
-**运行时工作的生命周期（2026-10-16，[PRD](../prd/agent-runtimes.md) S32；Codex 部分已实现并验收）。** 运行时进程及一轮的临时网关覆盖持续到该轮工作全部结束：轮次之外，原生子 Agent／后台任务也算工作。检测归 adapter，寿命策略归 application：agent-runtime 的 `work` 模块定义轮次外工作（会话 ID 与 运行／等待审批／等待输入／停止中），`NativeSession` 以 `turn_running()` 与 `work()` 取代单一的忙碌判断；Codex 跟踪同一 app-server 中父线程以外线程的状态与当前轮次（中断父轮次不会停止它们），Claude Code 取未结束任务，ACP、DSH、Pi 暂无。application 的会话以“轮次运行或仍有工作”判定执行中：经网关的轮次在两者都结束时才结束进程（`release_override`），再以短生命周期 app-server 把该进程运行过的父线程与子线程以原生提供商 `thread/resume` 一次（Codex 保留线程最后运行的提供商；已载入线程的进程内 resume 不改写它），然后释放 runner 与隧道；回收、退出、跟随来源、删除归档与编辑都把它视为执行中。下一轮能复用进程时照常发送；需要另起进程时（选择、提供商、会话变化，Claude Code 每轮）由 adapter 的 `restart_needed` 与 application 的 `ensure_work_ended` 以 `Error::OutstandingWork` 拒绝，不结束子 Agent；直接发送与队列中的消息因此进入发送队列并标记 `FollowUp.waiting = SubAgents`，工作结束后由队列自动发出。父会话的停止同时中断其子 Agent；`stop_sub_agents`（`FollowUp.can_stop_sub_agents`）只停止子 Agent，Mac 在等待的队列上提供“停止子 Agent 并发送”。退出时若有轮次或子 Agent 在 Velune 的进程中运行，Mac 先确认，再以 `shutdown_stopping_work` 结束它们。Claude Code 2.1.286 的任务中断与 SSH 隧道长连接待复核，见 [任务](../../tasks/runtime-work-lifetime/packet.md)。
+**运行时工作的生命周期（2026-10-16，[PRD](../prd/agent-runtimes.md) S32；Codex 部分已实现并验收）。** 运行时进程及一轮的临时网关覆盖持续到该轮工作全部结束：轮次之外，原生子 Agent／后台任务也算工作。检测归 adapter，寿命策略归 application：agent-runtime 的 `work` 模块定义轮次外工作（会话 ID 与 运行／等待审批／等待输入／停止中），`NativeSession` 以 `turn_running()` 与 `work()` 取代单一的忙碌判断；Codex 跟踪同一 app-server 中父线程以外线程的状态与当前轮次（中断父轮次不会停止它们），Claude Code 取未结束任务，ACP、DSH、Pi 暂无。application 的会话以“轮次运行或仍有工作”判定执行中：经网关的轮次在两者都结束时才结束进程（`release_override`），再以短生命周期 app-server 把该进程运行过的父线程与子线程以原生提供商 `thread/resume` 一次（Codex 保留线程最后运行的提供商；已载入线程的进程内 resume 不改写它），然后释放 runner 与隧道；回收、退出、跟随来源、删除归档与编辑都把它视为执行中。下一轮能复用进程时照常发送；需要另起进程时（选择、提供商、会话变化，Claude Code 每轮）由 adapter 的 `restart_needed` 与 application 的 `ensure_work_ended` 以 `Error::OutstandingWork` 拒绝，不结束子 Agent；直接发送与队列中的消息因此进入发送队列并标记 `FollowUp.waiting = SubAgents`，工作结束后由队列自动发出。父会话的停止同时中断其子 Agent；`stop_sub_agents`（`FollowUp.can_stop_sub_agents`）只停止子 Agent，Mac 在等待的队列上提供“停止子 Agent 并发送”。退出时若有轮次或子 Agent 在 Velune 的进程中运行，Mac 先确认，再以 `shutdown_stopping_work` 结束它们。Claude Code 2.1.286 的任务中断与 SSH 隧道长连接待复核，见 任务（git 历史：tasks/runtime-work-lifetime）。
 
 ## 8. Adapter 必须声明的能力
 
@@ -337,7 +337,7 @@ V1 是基础检查点，**V2＋V3 才构成首个可用版本**。不能只接�
 
 ### 待验证而不假定已解决
 
-具体输入、观察证据和通过标准见 [Task Packet](../../tasks/harness-routing-feasibility/packet.md#原型验证队列)。真实账户／费用测试须后续授权；本地模拟结果见 [开发与复验](../development.md)，不作为原生接入证据。
+具体输入、观察证据和通过标准见 Task Packet（git 历史：tasks/harness-routing-feasibility）。真实账户／费用测试须后续授权；本地模拟结果见 [开发与复验](../development.md)，不作为原生接入证据。
 
 ### 分布式路线
 
@@ -385,7 +385,7 @@ Pi 的物理模型身份不能只使用全局逻辑模型 ID。相同逻辑模�
 
 ## AI 网关职责复核
 
-2026-10-05 用户明确当前 gateway 仅为 LLM Gateway，是 AI 模块的一种应用模式；AI 服务不限于 LLM，直接调用 AI 能力无需经过 gateway。该阶段 LLM Gateway 采用同协议原生透传，2026-10-06 已进一步授权三协议 best-effort 双向转换；网关也不限于 Harness 调用方。独立 gateway package 保留应用模式的职责，AI 契约不反向依赖它；不为非 LLM 能力预建通用网关。跨单元职责、原生操作与当前偏差以 [AI 服务设计](ai-service.md) 为准。选择 Velune 管理模型时由网关派发，选择 Harness 原生模型时保留原生派发，两者不改变 AI 服务与 Agent 运行时的独立性。当前 fail-over 未实现，配置仍 Disabled。源码和独立审计证据归 [AI 网关审计](../../tasks/ai-gateway-audit/packet.md)。
+2026-10-05 用户明确当前 gateway 仅为 LLM Gateway，是 AI 模块的一种应用模式；AI 服务不限于 LLM，直接调用 AI 能力无需经过 gateway。该阶段 LLM Gateway 采用同协议原生透传，2026-10-06 已进一步授权三协议 best-effort 双向转换；网关也不限于 Harness 调用方。独立 gateway package 保留应用模式的职责，AI 契约不反向依赖它；不为非 LLM 能力预建通用网关。跨单元职责、原生操作与当前偏差以 [AI 服务设计](ai-service.md) 为准。选择 Velune 管理模型时由网关派发，选择 Harness 原生模型时保留原生派发，两者不改变 AI 服务与 Agent 运行时的独立性。当前 fail-over 未实现，配置仍 Disabled。源码和独立审计证据归 AI 网关审计（git 历史：tasks/ai-gateway-audit）。
 
 版本化运行时 descriptor 同时公开 `supportedProtocols`，由 agent-runtime 的 variant 注册表声明，经 application／UniFFI 传给平台。Mac 模型过滤与执行准备消费同一声明，不按 family 猜测能力。当前 Pi 与 DSH variant 声明 ChatCompletions／Responses，Codex variant 声明 Responses；这是 adapter 的配置能力，不扩大上游协议支持，也不使 AI unit 依赖运行时类型。未知 descriptor 不显示所有模型。
 
@@ -395,7 +395,7 @@ Pi 的物理模型身份不能只使用全局逻辑模型 ID。相同逻辑模�
 
 新建会话显式给出运行时、工作目录与模型，自动准备并由 Harness 建立会话。历史视图中的模型选择先改变当前投影，发送时按需准备／恢复；已准备的同一会话继续使用原生模型切换。未保存的只读选择随视图结束丢弃，不为了保存它新增会话数据库或 sidecar。Pi 的原生选择 metadata 可证明目标时恢复；Codex／DSH 当前历史只保存 API model ID，不能猜测提供商。
 
-保持单活跃执行：忙时禁止切换实例、会话与模型。历史读取目标失败时保留原视图；准备失败保留内容和选择，修正配置后可以重试，但不得自动重发已被 Harness 接受的用户消息。闲置配置变化使执行装配失效，退回历史视图而非要求手动重连。各实例的历史读取失败独立呈现，不阻塞其它实例或设置。 snapshot 的 revision 属于当前投影生命周期，历史与新执行投影之间可以重新起算，不作为跨准备排序键；Mac 用串行请求队列及视图 generation 拒绝过期回调。当前实施与安装证据见 [体验任务](../../tasks/runtime-session-experience/packet.md)。
+保持单活跃执行：忙时禁止切换实例、会话与模型。历史读取目标失败时保留原视图；准备失败保留内容和选择，修正配置后可以重试，但不得自动重发已被 Harness 接受的用户消息。闲置配置变化使执行装配失效，退回历史视图而非要求手动重连。各实例的历史读取失败独立呈现，不阻塞其它实例或设置。 snapshot 的 revision 属于当前投影生命周期，历史与新执行投影之间可以重新起算，不作为跨准备排序键；Mac 用串行请求队列及视图 generation 拒绝过期回调。当前实施与安装证据见 体验任务（git 历史：tasks/runtime-session-experience）。
 
 ## 本地可观测性装配
 
@@ -403,7 +403,7 @@ Pi 的物理模型身份不能只使用全局逻辑模型 ID。相同逻辑模�
 
 OTLP 保留为 subscriber layer 的扩展方向，尚未接入；不预建 exporter 接口或上传配置。诊断由失败边界输出明确 code/phase，并保留实际底层错误、子进程 stderr 和失败上下文。纯本地诊断不以隐私为由删除原因；默认采集范围与未来远端导出应分别决定，不能把完整错误展示扩大为全请求或全会话采集。
 
-Mac 的问题展示属于平台 app 的交互投影，消费现有 typed 失败，不反向增加领域包日志接口。集中“问题”窗口在当前进程内保留有界操作记录，保留原诊断编号以关联 Rust／Swift 日志；持续读取／轮询故障按来源合并并在恢复后消解。问题窗口不主动读取日志正文或采集全部业务消息，完整保存收到的失败详情，不把所有日志变成用户问题。窗口、入口与验收状态见 [问题展示任务](../../tasks/problems-surface/packet.md)。
+Mac 的问题展示属于平台 app 的交互投影，消费现有 typed 失败，不反向增加领域包日志接口。集中“问题”窗口在当前进程内保留有界操作记录，保留原诊断编号以关联 Rust／Swift 日志；持续读取／轮询故障按来源合并并在恢复后消解。问题窗口不主动读取日志正文或采集全部业务消息，完整保存收到的失败详情，不把所有日志变成用户问题。窗口、入口与验收状态见 问题展示任务（git 历史：tasks/problems-surface）。
 
 ## 会话权威与展示投影
 
@@ -413,13 +413,13 @@ Mac 的问题展示属于平台 app 的交互投影，消费现有 typed 失败�
 
 工作过程以用户消息为锚，完整覆盖下一用户消息前的所有响应。单条消息完成只是内容事实，不能据此提前截断工作范围；进度正文之后的工具、推理和最终答复仍有完整展示归属。只有范围末条纯 assistant 正文外露，其他成员折叠；纯正文要求内容块全部为 Text 且至少有非空正文，允许仍在流式输出。末条是工具、混合内容或系统通知时也折叠，不向前寻找旧答复冒充结果。执行结束和工作时长依据 Harness 生命周期，与单条消息完成分开；历史没有完整生命周期证据时不虚构耗时。
 
-展示身份在当前投影内稳定，live→native 确认只修改 canonical 引用，不更换消息行、工作头或大纲锚点的展示身份；映射不持久化为另一套会话记录。Mac 原子消费完整展示更新，按稳定身份复用行对象与 Markdown 缓存，仅处理展开、outline 可见范围及滚动，不另行判定工作分组。历史与执行投影生命周期仍可重新起算 revision，平台以请求 generation 和会话身份处理旧回调，不跨生命周期比较 revision。轻量契约留在 conversation，使无本地执行的 application 构建不依赖执行包。当前实施与验收见 [会话阅读任务](../../tasks/mac-conversation-usability/packet.md)。
+展示身份在当前投影内稳定，live→native 确认只修改 canonical 引用，不更换消息行、工作头或大纲锚点的展示身份；映射不持久化为另一套会话记录。Mac 原子消费完整展示更新，按稳定身份复用行对象与 Markdown 缓存，仅处理展开、outline 可见范围及滚动，不另行判定工作分组。历史与执行投影生命周期仍可重新起算 revision，平台以请求 generation 和会话身份处理旧回调，不跨生命周期比较 revision。轻量契约留在 conversation，使无本地执行的 application 构建不依赖执行包。当前实施与验收见 会话阅读任务（git 历史：tasks/mac-conversation-usability）。
 
 标题由 `ConversationTitle` 区分 Native、FirstMessage、Untitled；这是来源和值的一份权威，bindings 仅导出统一 display text，平台不维护标题来源标志。标题规则为原生显式标题、第一条非空用户内容的单行摘要、未命名会话，文件路径只用于定位。列表、只读打开和自动准备消费同一规则，准备／同步不得把已有标题覆盖成文件名。时间在 adapter 边界规范为可选 Unix 毫秒，缺失保持缺失，平台负责本地时区和格式。配置 schema 不因内存投影契约修改而升级。
 
 Mac 从领域消息有序派生稳定展示行，可将正文、推理、工具和通知分别呈现；行不是持久化事件日志，不反向决定领域状态。用户右侧气泡内左对齐，assistant 与工具左对齐，系统通知独立居中。正文由独立 SwiftPM 解析包 swift-markdown 解析，Mac 映射为原生 TextKit 属性文本，工具输出保留代码／纯文本语义。2026-10-09 用户先决定以 MarkdownView 替换 MarkdownUI，随后因快速上滑跳动与卡住授权重写消息列表渲染并可更换 Markdown 框架；当前实现移除 MarkdownView，每行几何在显示前由纯函数精确计算，渲染结果按消息内容修订缓存，正文变化才失效。替换覆盖未闭合流式正文、代码块、链接处理及原生可变行高，不保留旧渲染器兼容分支。具体锁定版本、API与许可资源以Mac unit和最终构建证据为准。
 
-Mac消息容器是自有的翻转文档视图（NSScrollView 内），按需物化可见行与 overdraw 区域并复用纯 AppKit cell，不在行内承载 SwiftUI，也不使用 NSTableView：后者对未测行使用估计高度、在任意 API 调用与布局中懒测量并自行重锚定，使行高在控制器补偿之外落地。行几何是控制器高度列表的前缀和；每行布局由纯函数按稳定展示身份、内容修订、局部展开状态与实际宽度计算，TextKit 1 测量与显示使用同一属性文本与容器配置。高度只在一次同步提交中变化，同时恢复视口顶部行及其行内偏移（跟随时则到底）；可见带在显示前同步测量，其余行后台测量并分批提交。此前对照中 SwiftUI List 的滚动／可访问性测量开销较高，LazyVStack 与 List＋Textual 远跳未能收敛；容器选择以最新实际行为证据复核，不做用户可切换的实现选项。展开工作过程使用独立消息行；工作过程、工具与推理折叠使用行内 AppKit 原生 disclosure 按钮，设置界面的 DisclosureGroup 保留其原生表单行为。消息区域使用不透明的系统windowBackgroundColor。首次打开与本人发送到底，流式增长在底部跟随；用户滚动离开底部暂停跟随并提供返回底部入口，滚回底部、点击入口或发送消息恢复。远距离跳转由稳定行身份定位，先精确布局目标及其后续可见行再固定位置。布局与渲染对照、隔离验收归 [会话阅读任务](../../tasks/mac-conversation-usability/packet.md)。
+Mac消息容器是自有的翻转文档视图（NSScrollView 内），按需物化可见行与 overdraw 区域并复用纯 AppKit cell，不在行内承载 SwiftUI，也不使用 NSTableView：后者对未测行使用估计高度、在任意 API 调用与布局中懒测量并自行重锚定，使行高在控制器补偿之外落地。行几何是控制器高度列表的前缀和；每行布局由纯函数按稳定展示身份、内容修订、局部展开状态与实际宽度计算，TextKit 1 测量与显示使用同一属性文本与容器配置。高度只在一次同步提交中变化，同时恢复视口顶部行及其行内偏移（跟随时则到底）；可见带在显示前同步测量，其余行后台测量并分批提交。此前对照中 SwiftUI List 的滚动／可访问性测量开销较高，LazyVStack 与 List＋Textual 远跳未能收敛；容器选择以最新实际行为证据复核，不做用户可切换的实现选项。展开工作过程使用独立消息行；工作过程、工具与推理折叠使用行内 AppKit 原生 disclosure 按钮，设置界面的 DisclosureGroup 保留其原生表单行为。消息区域使用不透明的系统windowBackgroundColor。首次打开与本人发送到底，流式增长在底部跟随；用户滚动离开底部暂停跟随并提供返回底部入口，滚回底部、点击入口或发送消息恢复。远距离跳转由稳定行身份定位，先精确布局目标及其后续可见行再固定位置。布局与渲染对照、隔离验收归 会话阅读任务（git 历史：tasks/mac-conversation-usability）。
 
 Pi 1.0.2 的 JSON/RPC `message_update` 只携带增量和累计 usage，adapter 按 native contentIndex 顺序还原 text／thinking／tool 元数据；不能继续假设它携带完整 message 或 partial。message_start 提供初始对象，message_end 提供最终权威。用户行只消费原生回显，不把 RPC 接受回执复制成第二条乐观消息。Pi 的公共 session projection 保留 sourceEntry.id 与条目内序号，历史使用这一原生身份；尚未持久的流式消息使用临时身份，空闲同步以同一原生对象的引用确认身份。确认随快照幂等传递，仅用于保留计时、Markdown 缓存与导航状态，不另建持久会话或身份映射。跨 Harness 内容按 segment 命名空间包裹原生 ID，不能用列表序号重写它。Pi 普通轮询消费原生事件，不反复读取完整消息；首次装载、已处理的扩展命令、运行 settled、取消完成和显式切换边界执行一次权威同步。固定 SDK 的压缩和树导航可能整体改变上下文，因此不能把事件投影等同于永久追加日志，也不能用轻量状态或消息数量判断上下文未变。同步在空闲边界处理缓冲，保留仍存在消息的稳定身份；已处理命令不自动当作用户消息。具体 SDK 证据与验收归展示任务。
 
@@ -427,7 +427,7 @@ Pi 1.0.2 的 JSON/RPC `message_update` 只携带增量和累计 usage，adapter 
 
 会话重命名与删除归 agent-runtime 的原生会话操作，application 负责实例身份校验、执行状态和投影同步，bindings 暴露通用类型接口。平台不写运行时文件、不维护标题覆盖或隐藏列表。版本化描述声明原生管理能力，缺失能力不能用归档或本地隐藏代替。Pi 通过固定 SDK 修改标题并沿用原生会话文件删除语义；Codex 通过 app-server 管理，不以模型或网关可用作为管理前提。当前 DSH ACP adapter 未接入原生管理，公开服务包的额外装配不属于已实现能力。
 
-Mac 的 selectedConversationID 表达目标选择，loadedConversationID 表达已加载内容；pendingConversationID 期间详情使用加载状态而不是原会话正文。切换开始即增加视图代际，旧轮询不得提交。操作成功后使用原生数据刷新列表与当前投影，失败保留已加载内容并恢复对应选择。加载期间使用原生行选择限制暂停普通切换，不能禁用整个侧栏或上下文菜单。原生管理操作可在加载中提交，通过现有串行请求队列安排加载之后执行并呈现等待状态；执行期间不允许改变或删除会话。删除当前会话仅在原生结果确认后清空投影。具体版本证据与安装验收见 [管理任务](../../tasks/session-management/packet.md)。
+Mac 的 selectedConversationID 表达目标选择，loadedConversationID 表达已加载内容；pendingConversationID 期间详情使用加载状态而不是原会话正文。切换开始即增加视图代际，旧轮询不得提交。操作成功后使用原生数据刷新列表与当前投影，失败保留已加载内容并恢复对应选择。加载期间使用原生行选择限制暂停普通切换，不能禁用整个侧栏或上下文菜单。原生管理操作可在加载中提交，通过现有串行请求队列安排加载之后执行并呈现等待状态；执行期间不允许改变或删除会话。删除当前会话仅在原生结果确认后清空投影。具体版本证据与安装验收见 管理任务（git 历史：tasks/session-management）。
 
 Pi 首条消息前的未落盘会话仍由活动 SessionManager 拥有。仅在当前实例、原生 sessionFile 身份精确匹配、重新同步后确认文件不存在时，允许通过活动 RPC 改名或关闭空草稿；首条消息由 SDK 自己持久化名称。它不是任意路径缺失的 fallback，也不由 Velune 创建占位文件。已落盘会话继续执行来源范围校验。
 
@@ -437,13 +437,13 @@ Pi 首条消息前的未落盘会话仍由活动 SessionManager 拥有。仅在�
 
 运行时 enabled 默认 true，作为当前 schema 的增量配置字段；未填写时使用该当前默认值，不迁移旧 schema、不重置有效配置。禁用保留配置与来源历史，停止其本地执行并退出可执行选择，不读取其会话来源；重新启用恢复浏览。每个来源读取失败只报告该实例的问题，不把失败解释为其它来源没有会话。当前列表仍可一次合并，分页／懒来源读取是允许的优化而非新增必需契约。
 
-用户明确标签／分区为组织方式的例子，当前切片只做 runtime／project 浏览及时间排序。若以后增加自定义组织层，它拥有单独的 Velune 组织记录，不改运行时会话正文，也不把 Codex project section 或 Pi tree entry label 映射成通用会话标签。实施证据见 [统一浏览任务](../../tasks/conversation-browser/packet.md)。
+用户明确标签／分区为组织方式的例子，当前切片只做 runtime／project 浏览及时间排序。若以后增加自定义组织层，它拥有单独的 Velune 组织记录，不改运行时会话正文，也不把 Codex project section 或 Pi tree entry label 映射成通用会话标签。实施证据见 统一浏览任务（git 历史：tasks/conversation-browser）。
 
 ## 历史来源、下一轮选择与实际执行
 
-2026-10-06 用户确认并授权纠正：顶部运行时／模型表达下一轮的执行意图，不能从当前历史来源自动覆盖用户选择。历史的原生来源负责读取、重命名和删除；已开始执行的轮次保留自己的实例、会话和模型，用于轮询、取消和交互回复。编辑下一轮选择不得切换正在执行的进程或改变正在等待的审批归属。当前三种状态拆分已实施并通过隔离 AppStore 轮次验收；`sendTurn(runtimeID, modelRecordKey, text)` 原子接纳当轮选择。具体安装证据以 [本轮任务](../../tasks/settings-protocol-refinement/packet.md) 为准。
+2026-10-06 用户确认并授权纠正：顶部运行时／模型表达下一轮的执行意图，不能从当前历史来源自动覆盖用户选择。历史的原生来源负责读取、重命名和删除；已开始执行的轮次保留自己的实例、会话和模型，用于轮询、取消和交互回复。编辑下一轮选择不得切换正在执行的进程或改变正在等待的审批归属。当前三种状态拆分已实施并通过隔离 AppStore 轮次验收；`sendTurn(runtimeID, modelRecordKey, text)` 原子接纳当轮选择。具体安装证据以 本轮任务（git 历史：tasks/settings-protocol-refinement） 为准。
 
-同来源的下一轮可以恢复已有原生会话；不同 Harness 的 native session ID 不能直接恢复，展示消息也不能冒充无损的原生执行上下文。2026-10-06 用户已接受：跨 Harness 接续由 adapter 创建目标原生会话并交接可携带的上下文，不重放旧工具执行或审批；application 持久化来源与目标的原生引用及切换位置，使重启后可以恢复同一逻辑会话。这些关联不包含消息副本，不替代 Harness 的原生会话存储。关联契约、失败恢复与公开接口已实现并通过隔离验收，不以内存拼接宣称持久恢复；安装状态见 [跨 Harness 接续任务](../../tasks/cross-harness-continuation/packet.md)。
+同来源的下一轮可以恢复已有原生会话；不同 Harness 的 native session ID 不能直接恢复，展示消息也不能冒充无损的原生执行上下文。2026-10-06 用户已接受：跨 Harness 接续由 adapter 创建目标原生会话并交接可携带的上下文，不重放旧工具执行或审批；application 持久化来源与目标的原生引用及切换位置，使重启后可以恢复同一逻辑会话。这些关联不包含消息副本，不替代 Harness 的原生会话存储。关联契约、失败恢复与公开接口已实现并通过隔离验收，不以内存拼接宣称持久恢复；安装状态见 跨 Harness 接续任务（git 历史：tasks/cross-harness-continuation）。
 
 当前实施方案为线性逻辑会话：每次切换创建新原生段，回切也不恢复早先旧段。关联文件独立于提供商等普通配置，只保存有序原生引用、封闭段切换位置和交接记录定位；重开从原生历史校验位置并投影，消息 ID 使用段命名空间。当前投影的 Message.id 和 revision 不是持久游标，不据此封闭历史。首版交接文本以明确引用历史与本轮用户请求一起提交，不作为系统或 developer 指令；不携带原生工具、审批或签名推理状态。目标原生历史保存这条请求，展示按明确的记录定位还原用户输入，不能依靠任意文本前缀过滤。
 
@@ -459,7 +459,7 @@ Mac未发送草稿不提前创建原生SDK会话，防止多个Tab覆盖尚未�
 
 ## 原生模型、单轮网关与 SSH 执行
 
-2026-10-10 获准的 Rust 扩展把三个独立选择分开：运行位置决定本机或 SSH，HOME 归属决定实例使用的用户家目录，模型来源决定本轮由原生提供商或 Velune 网关执行。配置文件及 UI 不依据 runtime family 猜测三者；application 解析实例配置并协调准备和释放，agent-runtime 封装原生协议及进程。具体交付与验证归 [运行时扩展任务](../../tasks/runtime-provider-ssh/packet.md)。
+2026-10-10 获准的 Rust 扩展把三个独立选择分开：运行位置决定本机或 SSH，HOME 归属决定实例使用的用户家目录，模型来源决定本轮由原生提供商或 Velune 网关执行。配置文件及 UI 不依据 runtime family 猜测三者；application 解析实例配置并协调准备和释放，agent-runtime 封装原生协议及进程。具体交付与验证归 运行时扩展任务（git 历史：tasks/runtime-provider-ssh）。
 
 模型选择必须区分 Velune 模型条目身份与运行时原生模型身份。原生选择附属于一个实例；应用向目标实例发现模型和传递选择，不按相同 model ID 推断跨提供商等价。使用原生模型不要求建立 Velune provider、复制认证或启动模型网关。跨 Harness 接续依然创建目标原生会话并引用来源文本，原生模型选择不改变历史关联文件的职责。
 
@@ -481,7 +481,7 @@ HOME 是 Harness 及其工具子进程看到的用户家目录，agentDir 是 Ha
 
 创建、prompt、流式更新、权限与取消构成基础交互。list、load、resume、close、delete 分别按能力调用；load 回放原生历史，resume 本身不提供历史。无历史能力的 Agent 仍可 live 多轮使用，但关闭后不保证重开。已知 session ID 与 cwd 可以显式 load，无需先具备 list；跨 Harness 持久关联保存原生引用与真实 cwd，不保存会话正文。该类接续的源与目标都必须能够重新读取原生历史，否则在创建目标或关闭源前明确拒绝，不能写明知重启无法复原的关联。
 
-正常显式关闭对已协商 close 能力的空闲会话先等待 `session/close`，再有界结束进程；业务关闭失败仍清理并报告，Drop 不执行阻塞协议请求。客户端只声明实际实现的能力；当前文件和终端回调不在本次接入范围，权限请求沿用显式答复契约。未知可选配置保持 Agent 默认行为，不把上游未来字段解释为已支持功能。App 的启动配置、模型／会话选项和能力展示仍待实现。协议来源、手动隔离验收与剩余边界见 [ACP 任务](../../tasks/acp-adapter/packet.md)。
+正常显式关闭对已协商 close 能力的空闲会话先等待 `session/close`，再有界结束进程；业务关闭失败仍清理并报告，Drop 不执行阻塞协议请求。客户端只声明实际实现的能力；当前文件和终端回调不在本次接入范围，权限请求沿用显式答复契约。未知可选配置保持 Agent 默认行为，不把上游未来字段解释为已支持功能。App 的启动配置、模型／会话选项和能力展示仍待实现。协议来源、手动隔离验收与剩余边界见 ACP 任务（git 历史：tasks/acp-adapter）。
 
 ## 会话数据通路与按需载入
 
@@ -491,7 +491,7 @@ HOME 是 Harness 及其工具子进程看到的用户家目录，agentDir 是 Ha
 - 交付：core 为每个展示视图（上下文运行时＋会话，最近 8 个）记录已交付内容，按消息内容相等性分配交付序号 stamp，并以 generation／sequence 游标表示交付位置。所有快照结果中超过 2KB 的推理与工具输出只携带字节数，`message_payloads` 按消息读取完整内容；`snapshot_update(since)` 返回不存在、未变化或只含变化消息的快照（附完整消息顺序）。完整 `snapshot` 与各操作结果保持完整消息列表，供操作与人工验收使用。
 - 平台：Mac 轮询只传游标并在主线程按身份合并变化消息；展开显示延迟内容时按需读取，读取结果仅在 stamp 未变时替换对应消息，较新交付需要时重新读取。不实现界面分页。
 
-测量与验收归 [会话数据通路任务](../../tasks/transcript-data-path/packet.md)。
+测量与验收归 会话数据通路任务（git 历史：tasks/transcript-data-path）。
 
 
 ## 运行时原生资源管理（2026-10-11，Rust 已实现，App 待实现）
@@ -504,4 +504,4 @@ HOME 是 Harness 及其工具子进程看到的用户家目录，agentDir 是 Ha
 
 Skill 是包含 SKILL.md 和附件的目录资源。管理允许列举和读写其中的普通文件，保留执行位；既有目录按单文件更新，不承诺跨文件事务替换。符号链接和特殊文件不被当作普通附件跟随、读取或执行。路径在目标机器解析，本机和 SSH 共用资源边界；比较预期版本与替换须在同次目标操作内完成，但不提供与外部编辑器之间的事务隔离。
 
-修改在执行忙碌或协作 scope 存在时拒绝，不自动终止或重启会话；成功只表示原生配置已保存，何时加载仍服从 Harness 的行为。发现和管理范围不冒充所有祖先目录、插件或组织策略合并后的有效配置。能力矩阵和实际加载证据归 [运行时资源管理任务](../../tasks/runtime-management/packet.md)，平台侧以资源库（canonical 定义＋启用记录，保存即同步，漂移由用户处置）为唯一编辑入口，规则见 PRD，实现细节见 application README；此方案已获用户认可，尚未用真实 Harness 验证渲染结果的加载。
+修改在执行忙碌或协作 scope 存在时拒绝，不自动终止或重启会话；成功只表示原生配置已保存，何时加载仍服从 Harness 的行为。发现和管理范围不冒充所有祖先目录、插件或组织策略合并后的有效配置。能力矩阵和实际加载证据归 运行时资源管理任务（git 历史：tasks/runtime-management），平台侧以资源库（canonical 定义＋启用记录，保存即同步，漂移由用户处置）为唯一编辑入口，规则见 PRD，实现细节见 application README；此方案已获用户认可，尚未用真实 Harness 验证渲染结果的加载。

@@ -38,7 +38,7 @@ bash scripts/build-macos.sh
 open /Applications/Velune.app
 ```
 
-RelayKit 接入构建还需要 Go 工具链，桥接模块版本及依赖由 `packages/ai-provider/relaykit-bridge/go.mod` 与 `go.sum` 固定；Go 最低版本以该模块声明为准。Go 转换库作为同进程依赖链接，不启动独立网关后台。Mac bundle 的 ThirdParty/RelayKit 保留上游、Go runtime 和传递依赖许可证，以及模块锁文件；“开源许可…”入口包含 New API 署名与原项目链接。构建 manifest 记录 Go 版本和两个模块文件的摘要。具体平台与行为验收见 [RelayKit 任务](../tasks/new-api-reuse/packet.md)，本机成功构建不代表其它平台已通过验证。
+RelayKit 接入构建还需要 Go 工具链，桥接模块版本及依赖由 `packages/ai-provider/relaykit-bridge/go.mod` 与 `go.sum` 固定；Go 最低版本以该模块声明为准。Go 转换库作为同进程依赖链接，不启动独立网关后台。Mac bundle 的 ThirdParty/RelayKit 保留上游、Go runtime 和传递依赖许可证，以及模块锁文件；“开源许可…”入口包含 New API 署名与原项目链接。构建 manifest 记录 Go 版本和两个模块文件的摘要。具体平台与行为验收见 RelayKit 任务（git 历史：tasks/new-api-reuse），本机成功构建不代表其它平台已通过验证。
 
 应用根目录由启动进程的 `VELUNE_HOME` 环境变量指定，未设置或留空时为 `~/.velune`，非空值必须是绝对目录路径。平台将该路径显式传给 Application，库不自行读取环境。根目录下的 `generic-config.json` 持久化 AI 网关与 Agent 运行时实例配置，API key 由提供商私有认证配置保存，文件权限为 0600；来源型订阅仍委托原 Harness 登录与刷新；Rust lib 另支持由 Velune 独立管理的 Codex 订阅认证，见下文[Codex 订阅与聚合](#codex-订阅与聚合)。公开列表不含 key，查看编辑通过提供商内显式操作。Finder 启动通常不继承 shell 配置，隔离开发可直接带环境运行 bundle 可执行文件：
 
@@ -62,7 +62,7 @@ Velune 向 Harness 注入本机网关提供商配置，Velune 管理的提供商
 
 AI 提供商页的“从运行时导入…”是完整配置导入入口。选择已配置的 Agent 运行时实例后读取预览，复用该实例的目录与 Node 配置，再选择提供商模型导入；模型能力归导入的提供商条目。原提供商与认证文件保留；导入应用时集中保存静态 API key 到提供商私有配置，OAuth 保留来源刷新。重复项默认跳过，明确替换才更新已导入提供商；当前会话模型不自动改变。运行时实例、来源或目标配置在预览后变化时，须重新读取。读取配置不要求执行准备，也不要求当前会话已有模型或路由。仅支持当前网关能够保留语义的配置；不支持项及原因在预览中显示，动态命令不执行。
 
-schema 10 采用 hard-cutoff，旧普通配置打开时直接重置，之后重新配置运行时与提供商；原 Harness 会话和认证保留。活动网关发生导入变更后使执行准备失效，重复跳过保持现有执行状态。提供商编辑器证据见 [AI 网关任务](../tasks/ai-gateway-audit/packet.md)，本轮多运行时构建、隔离验证与最终安装状态见 [多运行时任务](../tasks/multi-runtime/packet.md)。
+schema 10 采用 hard-cutoff，旧普通配置打开时直接重置，之后重新配置运行时与提供商；原 Harness 会话和认证保留。活动网关发生导入变更后使执行准备失效，重复跳过保持现有执行状态。提供商编辑器证据见 AI 网关任务（git 历史：tasks/ai-gateway-audit），本轮多运行时构建、隔离验证与最终安装状态见 多运行时任务（git 历史：tasks/multi-runtime）。
 
 隔离视觉预览使用 `--preview`（合成多轮会话）或 `--preview-empty`；Apple app 不设置独立深色验收入口。预览 Store 无 Transport，不打开 Application、不访问真实配置、Keychain 或会话、不调用模型。dyld 加载惰性的库文件不等于打开运行时，预览不能证明真实循环完成。
 
@@ -88,7 +88,7 @@ Windows 使用 MSVC 目标（`x86_64-pc-windows-msvc`，工具链版本同 `rust
 
 内部角色、类型内容和 Unix 毫秒通过生成绑定消费；Mac 的稳定展示行不是持久化记录。标题在列表、只读打开和准备执行间保持同一含义，来源文件名不作为显示标题。`scripts/manual-session-browser.py` 使用固定 Pi SDK 在临时 HOME 创建带标题、无标题、正文、推理和工具调用／结果的合成历史，验证可读标题、类型角色和时间，以及已完成工具输出；同时保留无模型浏览与准备失败保留视图的验收。必须传入匹配的 bundle、Python bindings、Node 与外部 Pi CLI 绝对路径，不读取既有会话。
 
-Markdown 渲染和长列表的具体手动操作／临时脚本、固定依赖、性能观察及构建安装版本归 [展示任务](../tasks/conversation-presentation/packet.md)。GUI 复核需要检查标题／时间、首次打开到底部、上翻时不抢滚动、返回底部、用户气泡、工具与正文左对齐、完整 Markdown 与长历史滚动。编译或模型层脚本成功不构成这些视觉体验的验收。
+Markdown 渲染和长列表的具体手动操作／临时脚本、固定依赖、性能观察及构建安装版本归 展示任务（git 历史：tasks/conversation-presentation）。GUI 复核需要检查标题／时间、首次打开到底部、上翻时不抢滚动、返回底部、用户气泡、工具与正文左对齐、完整 Markdown 与长历史滚动。编译或模型层脚本成功不构成这些视觉体验的验收。
 
 ## 历史原生协议参考
 
@@ -147,7 +147,7 @@ Codex 历史人工验收入口为 `manual-codex-history-identity.py`。传入绝
 
 审批与问题回答是类型化 pending interaction，用户选择、回答或取消后由 adapter 编码原生回复；不自动批准。取消执行与取消一个交互不同，执行终态按各协议观察。DSH 只暴露 ACP committed semantic 更新，不宣称原始 provider token delta、DSH 专有展示或历史 replay。提供商导入支持 Pi、Codex 与 Claude Code 来源，DSH／ACP 尚无导入；新增执行 adapter 不等于新增导入能力。
 
-DSH 的 Velune 执行 overlay 为 llm-pi-ai 追加网关目录，不改 ACP 原生默认选择，也不禁用 settings 或原生提供商。DSH 历史 header 记录最后使用的 provider／model，因此 app 私有 overlay 保留恢复历史所需的无凭据模型 metadata；native 轮次将该条目的地址设为 loopback 端口 0，先显式选择既有模型再发送。上游 CLI 准备 ACP profile 的行为仍存在，不能声称原目录完全无写入。真实来源、认证与会话禁止用于开发验证；隔离循环只使用临时目录、合成输入与 loopback 上游。当前安装与用户验收状态由 [任务 packet](../tasks/multi-runtime/packet.md) 记录。
+DSH 的 Velune 执行 overlay 为 llm-pi-ai 追加网关目录，不改 ACP 原生默认选择，也不禁用 settings 或原生提供商。DSH 历史 header 记录最后使用的 provider／model，因此 app 私有 overlay 保留恢复历史所需的无凭据模型 metadata；native 轮次将该条目的地址设为 loopback 端口 0，先显式选择既有模型再发送。上游 CLI 准备 ACP profile 的行为仍存在，不能声称原目录完全无写入。真实来源、认证与会话禁止用于开发验证；隔离循环只使用临时目录、合成输入与 loopback 上游。当前安装与用户验收状态由 任务 packet（git 历史：tasks/multi-runtime） 记录。
 
 ## Pi 运行时与本机网关
 
@@ -165,7 +165,7 @@ Application 在 `VELUNE_HOME/runtime-projections/` 下按运行时实例生成�
 
 Pi 的 managed 执行使用 `velune/auto`；native 执行直接选择原生 provider／model。Core 为 managed 轮次决定具体逻辑模型，virtual model 返回相同模型的能力；Pi 的物理模型 ID 使用非秘密路由绑定的稳定身份，网关将该 ID 直接映射到同一次已配置路由，不再二次选择；逻辑模型 ID 保留在界面与选择状态中。Pi 的分支 state 保存实际选择，assistant 历史记录实际模型；新会话在创建表单选择模型，运行时不保存默认模型。模型 `maxTokens` 用作 Harness 元数据；输出参数仅按提供商协议发送和校验，订阅来源不支持服务端输出硬上限，不为其注入 `max_output_tokens`。Pi 的标准推理等级通过 `thinkingLevelMap` 限制为模型声明的等级；本轮不替自定义服务等级猜测转换规则。ChatCompletions 网关保留原生消息、推理历史、多模态内容与未知扩展；实际输入能力仍由所选模型和 Pi SDK 决定。ChatCompletions 与 Responses 保留原生请求 JSON、协议响应状态、安全请求／响应头及 JSON／SSE 内容；Responses 包括工具与 encrypted reasoning，只支持 foreground 创建，不增加查询、删除或 background API。客户端断开或网关停止取消活跃派发；同协议网关不合成 `[DONE]` 或业务终态；异协议按已确认的上游终态映射目标事件，不从 EOF 补造成功。直接模型不自动切换提供商；显式模型路由按下文规则切换，Codex 订阅的 401 允许同账户恢复一次。合法的 Responses incomplete／failed 等业务终态原样返回，不将其误判为传输断流。
 
-隔离验证使用临时目录、fake RPC／假上游与合成工具结果，不启动真实用户会话或调用模型。正式验收状态与具体证据见 [首循环任务](../tasks/pi-mac-first-loop/packet.md)。
+隔离验证使用临时目录、fake RPC／假上游与合成工具结果，不启动真实用户会话或调用模型。正式验收状态与具体证据见 首循环任务（git 历史：tasks/pi-mac-first-loop）。
 
 ## RelayKit 的真实提供商采集与重放
 
@@ -184,7 +184,7 @@ python3 scripts/manual-relaykit-provider.py replay \
 
 重放会启动实际 Pi 读取合成文件，并检查上游模型、对话、工具 schema、结果关联及输出上限与采集时一致。动态 system／developer 提示不纳入比较，固定样本也省略这些提示；保留原有 SSE 事件顺序与工具参数分片，不包含认证信息或本机路径。
 
-真实调用证明所记录的入口与上游方向；离线协议投影只证明已有响应样本能被消费，不能证明另一上游接口接受相应请求。具体供应商身份、版本、覆盖和缺失条件归 [RelayKit 任务](../tasks/new-api-reuse/packet.md)。
+真实调用证明所记录的入口与上游方向；离线协议投影只证明已有响应样本能被消费，不能证明另一上游接口接受相应请求。具体供应商身份、版本、覆盖和缺失条件归 RelayKit 任务（git 历史：tasks/new-api-reuse）。
 
 ## UniFFI 的临时端到端验收
 
@@ -202,7 +202,7 @@ python3 scripts/manual-relaykit-provider.py replay \
 
 根 Cargo.toml 是虚拟工作区，不再输出 velune-core 产品库。共享单位的职责、接口和依赖在 [packages 各 README](../README.md) 与 [架构](design/architecture.md#独立-package-与平台装配) 中说明。Mac 构建会生成 Swift 源及 FFI modulemap，分别编译 Rust 绑定库与 Swift 语言模块，再链接原生 app；生成文件只放在 target 下。
 
-当前 Rust SDK 新增具名远控错误并移除公开模型的 Pi 私有元数据；main 整合保留现有平台 App 源码，未在此任务同步适配或构建 App。更新 SDK 后，平台调用方须单独迁移穷尽错误分支、模型映射和编辑草稿；本节库检查不代表 Mac 构建通过。历史平台构建事实归 [早期远控验收](../tasks/remote-control/verification.md)。
+当前 Rust SDK 新增具名远控错误并移除公开模型的 Pi 私有元数据；main 整合保留现有平台 App 源码，未在此任务同步适配或构建 App。更新 SDK 后，平台调用方须单独迁移穷尽错误分支、模型映射和编辑草稿；本节库检查不代表 Mac 构建通过。历史平台构建事实归 早期远控验收（git 历史：tasks/remote-control）。
 
 ```sh
 cargo fmt --all --check
@@ -215,7 +215,7 @@ cargo tree --locked -p velune-bindings --no-default-features --features remote
 
 `bindings --no-default-features --features remote` 是纯控制端，依赖树不含 application、agent-runtime、gateway 或 ai-provider；完全禁用 feature 时没有本地或远程构造入口。application 自身禁用 `local-runtime` 仅裁掉 Harness，配置校验仍链接 gateway，不是纯远端客户端的装配路径。Kotlin 生成物依赖 JNA 及 kotlinx-coroutines；生成成功之外还需编译检查。C# 工具为第三方，UniFFI 版本兼容性仍需后续 C# app 接入时验证。
 
-远控人工脚本 接受绝对路径 `--library`、`--bindings` 和 `--resources`，动态库与 Python 绑定须来自同一次 v2 构建。脚本通过实际 iroh loopback、UniFFI 与合成 ACP 核对双方派生码，再由夹具显式调用执行端本地批准 API；随后使用一次 Effect 作用域和准确 ID 确认，验证多设备业务、方向授权撤销、断线续跑、请求查询、冲突及附件内容边界。脚本中的已收到后丢弃回执不作为丢 wire 回执或执行端网络替换的证据。动态库需包含默认的本地执行与 remote feature；资源目录可用构建后的 `target/runtime-support`。脚本只使用临时 HOME 与合成资料，不连接公共 relay 或真实模型。早期观察见 [远控验收](../tasks/remote-control/verification.md)，v2 与生命周期判别归 [远控库验证](../tasks/android-minimal/verification.md)。
+远控人工脚本 接受绝对路径 `--library`、`--bindings` 和 `--resources`，动态库与 Python 绑定须来自同一次 v2 构建。脚本通过实际 iroh loopback、UniFFI 与合成 ACP 核对双方派生码，再由夹具显式调用执行端本地批准 API；随后使用一次 Effect 作用域和准确 ID 确认，验证多设备业务、方向授权撤销、断线续跑、请求查询、冲突及附件内容边界。脚本中的已收到后丢弃回执不作为丢 wire 回执或执行端网络替换的证据。动态库需包含默认的本地执行与 remote feature；资源目录可用构建后的 `target/runtime-support`。脚本只使用临时 HOME 与合成资料，不连接公共 relay 或真实模型。早期观察见 远控验收（git 历史：tasks/remote-control），v2 与生命周期判别归 远控库验证（git 历史：tasks/android-minimal）。
 
 ## 会话驱动准备的人工复验
 
@@ -259,7 +259,7 @@ Mac 的“问题”窗口集中显示操作失败与当前读取问题，主界�
 
 会话侧栏的上下文菜单提供原生重命名与删除；删除有永久删除确认。能力由所选版本化运行时描述，Pi 1.0.2 和 Codex 0.159.3 已接入，DSH 当前 ACP adapter 尚未接入。管理不要求模型、AI 认证或网关准备，但执行中不可操作。名称与删除结果写运行时来源并重新读取，不维护 Velune 本地覆盖。
 
-会话加载时立即选中目标、详情显示进度；加载期间仅暂停其它行选择，菜单和重命名／删除提交可用。管理请求等待当前读取完成后按顺序执行并反馈状态，失败恢复明确的会话与内容关系。已加载与待加载身份独立，旧轮询按 generation 丢弃。实施与验收入口见 [任务](../tasks/session-management/packet.md)。
+会话加载时立即选中目标、详情显示进度；加载期间仅暂停其它行选择，菜单和重命名／删除提交可用。管理请求等待当前读取完成后按顺序执行并反馈状态，失败恢复明确的会话与内容关系。已加载与待加载身份独立，旧轮询按 generation 丢弃。实施与验收入口见 任务（git 历史：tasks/session-management）。
 
 隔离手工入口为 `scripts/manual-session-loading.py`（`--bundle`、`--node`、`--pi`，需要同源码 SwiftPM 构建产物，可用 `--swift-build` 指定），以及 `manual-session-browser.py`、`manual-pi-native-loop.py` 和 Codex 原生历史脚本。AppStore 脚本以延迟 helper 驱动真实 UniFFI 读取，验证旧轮询、加载成功／失败恢复、多选与原生标题操作。入口均不进入 CI，不读取既有会话或调用真实模型。旧 session-management 重复入口已删除。
 
@@ -267,7 +267,7 @@ Mac 的“问题”窗口集中显示操作失败与当前读取问题，主界�
 
 列表统一汇总全部启用实例；运行时设置提供启用开关，禁用保留配置与原生数据，重新启用恢复历史。侧栏“显示”菜单负责分组、筛选和创建／更新时间排序，详情工具栏表示下一轮的运行时和模型意图。筛选或分组不切换会话。未知时间不推测，项目以完整 CWD 分组。label／section 是用户提供的组织方式例子，本轮不接入自定义分类；未来应独立保存 Velune 组织记录。
 
-加载中可打开菜单、输入重命名并提交或确认删除，管理请求等待当前读取完成，再执行原生操作。显示等待／执行状态，加载失败不会丢弃已接受的管理请求，删除加载目标后不被旧快照重新插入。实施与验收见 [统一浏览任务](../tasks/conversation-browser/packet.md)。
+加载中可打开菜单、输入重命名并提交或确认删除，管理请求等待当前读取完成，再执行原生操作。显示等待／执行状态，加载失败不会丢弃已接受的管理请求，删除加载目标后不被旧快照重新插入。实施与验收见 统一浏览任务（git 历史：tasks/conversation-browser）。
 
 运行时设置的“快速导入…”只发现可执行文件、公开版本和目录存在性，预览后才保存实例；未支持版本保留在候选列表中但不能导入。运行时目录（环境覆盖或该运行时的默认位置）尚未创建不妨碍导入：已安装但未运行过的运行时在首次运行时自己创建它，此前历史为空。Node 仍是运行时配置的必填项。发现采用平台显式传入的用户目录和允许的非秘密目录覆盖，不读取原来源认证；提供商与模型导入通过后续显式预览操作执行。
 
@@ -277,13 +277,13 @@ Mac 的“问题”窗口集中显示操作失败与当前读取问题，主界�
 
 顶部运行时／模型是纯粹的下一轮 draft；当前快照来源和 core execution owner 独立。公开发送统一为 `send_turn(runtime_id, model_record_key, text)`，旧 `send`／`select_model` 接口已删除。选择本身不准备运行时，历史无模型 marker 也可在发送时指定模型并准备；跨来源发送采用目标原生会话与文本交接，关联文件只保存引用和切换位置；不同 Harness ID 不直接 resume。历史失败日志的 source／execution／next-turn 配置序号分别命名，0表示当前没有实例。
 
-外部 Pi 的安装发现与当前验证范围见 [外部运行时任务](../tasks/external-runtime-and-editing/packet.md)。已知 npm/pnpm literal launcher 只解析字面 CLI，不执行 shell 或继承其环境；无法解析的 wrapper 应手动选择安装包 CLI。公开版本执行失败与已识别但无 adapter 的版本分别显示，不能将坏安装误作不支持版本。
+外部 Pi 的安装发现与当前验证范围见 外部运行时任务（git 历史：tasks/external-runtime-and-editing）。已知 npm/pnpm literal launcher 只解析字面 CLI，不执行 shell 或继承其环境；无法解析的 wrapper 应手动选择安装包 CLI。公开版本执行失败与已识别但无 adapter 的版本分别显示，不能将坏安装误作不支持版本。
 
 ## LLM 协议转换的隔离验收
 
 异协议采用 best-effort 请求／JSON／增量 SSE 转换，同协议继续原生透传。运行时 descriptor 中 `supportedProtocols` 表示它发给网关的协议，`supportedProviderProtocols` 表示通过网关可到达的提供商协议；两者不是同一能力。协议可到达不等于具体模型支持所有工具、输入模态或推理参数。
 
-人工脚本 `scripts/manual-protocol-translation.py` 用临时 HOME、合成凭据与 loopback 上游驱动实际网关，不读取真实配置或调用真实提供商。它不是自动测试或 CI 入口。具体命令、已完成范围与外部 Pi／Codex 客户端证据归 [当前转换任务](../tasks/llm-protocol-translation/packet.md)。Messages 转换缺少请求输出上限时使用模型配置上限，不使用硬编码 token 数；无法映射的字段记录无正文静态诊断，真实流中断仍报告失败。
+人工脚本 `scripts/manual-protocol-translation.py` 用临时 HOME、合成凭据与 loopback 上游驱动实际网关，不读取真实配置或调用真实提供商。它不是自动测试或 CI 入口。具体命令、已完成范围与外部 Pi／Codex 客户端证据归 当前转换任务（git 历史：tasks/llm-protocol-translation）。Messages 转换缺少请求输出上限时使用模型配置上限，不使用硬编码 token 数；无法映射的字段记录无正文静态诊断，真实流中断仍报告失败。
 
 
 消息列表通过 Rust 的 typed turn 引用显示用户问题、工作过程与最新结果。中间消息默认折叠，展开状态按稳定 turn ID 保存；原生历史替换后清理已失效 ID。详情右侧工具栏打开用户消息 outline sheet，选择条目后定位相应用户消息；消息列表内保留回到底部的向下箭头。设置 → 会话 → 消息列表可选择“用户消息大纲”：开始只显示用户消息，选中后保留此前用户索引，并从该位置展开后续完整内容；点击已选项返回大纲，切换会话或锚点被删除也返回大纲。显示偏好持久化到现有 `VELUNE_HOME` 配置，展开位置是当前视图状态，不写入 Harness。
@@ -343,7 +343,7 @@ ChatGPT 额度按查询或使用异步采集，运行准备阶段提前触发候
 
 应用配置 schema 更新为 10，按项目 hard-cutoff 规则，旧普通应用配置在加载时重置为当前默认配置并原子覆盖，不作迁移或备份；原 Harness 文件与认证秘密不在重置范围。本轮隔离验收不加载用户现有应用配置。
 
-设置的“模型路由”页列出路由：名称和按顺序排列的提供商模型。路由与提供商模型一样出现在模型菜单的 Velune 提供商一节，名称附“模型路由”；运行时得到第一个成员的协议、上下文窗口与 reasoning effort，任一成员是订阅认证时整个路由按订阅约束发送。删除提供商或其模型会从路由中移除对应成员，没有成员的路由随之删除。fail-over 规则与观测见 [gateway unit](../packages/gateway/README.md)，策略已由用户确认，Rust 多订阅接入实施及验证状态见 [模型路由任务](../tasks/model-routing/packet.md)。
+设置的“模型路由”页列出路由：名称和按顺序排列的提供商模型。路由与提供商模型一样出现在模型菜单的 Velune 提供商一节，名称附“模型路由”；运行时得到第一个成员的协议、上下文窗口与 reasoning effort，任一成员是订阅认证时整个路由按订阅约束发送。删除提供商或其模型会从路由中移除对应成员，没有成员的路由随之删除。fail-over 规则与观测见 [gateway unit](../packages/gateway/README.md)，策略已由用户确认，Rust 多订阅接入实施及验证状态见 模型路由任务（git 历史：tasks/model-routing）。
 
 人工验收入口为 `scripts/manual-model-routing.py`（指定 `--bundle`、`--bindings`、`--node`、`--codex`、`--pi` 的绝对路径）。第一阶段直接驱动网关和按 bearer 应答的回环上游，核对各类失败是否切换、429 冷却、上游状态引用、异协议转换与每次尝试的 analytics；第二阶段让真实 Codex 与 Pi 在临时 HOME 中经应用选择路由，第一个合成账户返回 429。脚本不读取真实凭据或会话，不接入 CI；真实 ChatGPT 订阅账户的验收由用户完成。
 
@@ -351,7 +351,7 @@ ChatGPT 额度按查询或使用异步采集，运行准备阶段提前触发候
 
 “分析”使用独立原生窗口，从“显示 → 分析…”打开。记录来自启用后经过 Velune 的 LLM 网关请求，保存在应用配置根目录的 analytics.sqlite；不从诊断日志重建用量，不代表其它客户端或既往运行时调用。分析目录随 VELUNE_HOME 或平台传入的配置根目录确定，gateway 本身不读环境变量。窗口提供时间范围、已报告用量及覆盖率、每日趋势、提供商／模型拆分与请求详情；时间按平台本地日边界查询。
 
-缓存输入已包含在输入总量中，推理输出已包含在输出总量中，详情中的子项不能再相加。有效输出速率包含上游等待，以相同有效请求的已报告输出 token 总量除以请求耗时总量；首输出延迟仅在流式语义输出可观察时存在。没有报告与报告零分开显示。具体测量与单位边界见 [AI 服务分析契约](design/ai-service.md#用量与性能分析契约)。实现与隔离人工验证结果见 [分析任务](../tasks/usage-analytics/packet.md)，此说明不代表真实提供商或 GUI 已验收。
+缓存输入已包含在输入总量中，推理输出已包含在输出总量中，详情中的子项不能再相加。有效输出速率包含上游等待，以相同有效请求的已报告输出 token 总量除以请求耗时总量；首输出延迟仅在流式语义输出可观察时存在。没有报告与报告零分开显示。具体测量与单位边界见 [AI 服务分析契约](design/ai-service.md#用量与性能分析契约)。实现与隔离人工验证结果见 分析任务（git 历史：tasks/usage-analytics），此说明不代表真实提供商或 GUI 已验收。
 
 人工验收入口为 `scripts/manual-gateway-analytics.py`（可用 `--fixture-out` 保存实际采集的合成 SQLite）、`scripts/manual-analytics-storage.py`（指定 `--bindings`、`--library`、`--resources`）和 `scripts/manual-analytics-ui.py`（指定实际合成 `--database`、`--library`、`--swift-build`）。它们分别贯通 HTTP→采集→持久化、实际 UniFFI 全量聚合与分页、实际 Mac Store 查询和展示状态，不接入 CI。请求明细最多展示500条，概览与趋势仍遍历该范围的全部记录。存储不可用或队列丢弃会明确显示告警，不用零计量掩盖缺失记录。
 
@@ -371,7 +371,7 @@ managed 请求通过远端 loopback 反向转发访问本机网关，释放执�
 
 Pi 提供商导入／OAuth 来源操作仍限定默认本机 execution，SSH 或显式 HOME 配置返回不支持；原生 provider 的直接执行不受此限制。Codex 与 Claude Code 的 provider 导入同样只接受默认本机 execution；DSH 的 provider 导入没有因为增加运行控制而自动实现。
 
-人工验收可构建 Rust 动态库并生成相同版本 Python bindings，再运行 选择与 HOME 脚本，传入 `--library`、`--bindings`、`--resources` 的绝对路径。该脚本只使用临时 HOME 和合成控制 peer，覆盖原生／managed 模型、终态／失败／取消清理、跨实例接续、原子执行配置和来源文件不变。实际 Claude CLI、真实 OpenSSH 本机隔离连接及旧运行时回归的适用条件归 [本轮 packet](../tasks/runtime-provider-ssh/packet.md)，不把合成 peer 当成真实外部 SSH 主机或真实提供商验收。
+人工验收可构建 Rust 动态库并生成相同版本 Python bindings，再运行 选择与 HOME 脚本，传入 `--library`、`--bindings`、`--resources` 的绝对路径。该脚本只使用临时 HOME 和合成控制 peer，覆盖原生／managed 模型、终态／失败／取消清理、跨实例接续、原子执行配置和来源文件不变。实际 Claude CLI、真实 OpenSSH 本机隔离连接及旧运行时回归的适用条件归 本轮 packet（git 历史：tasks/runtime-provider-ssh），不把合成 peer 当成真实外部 SSH 主机或真实提供商验收。
 
 ## 通用 ACP Agent
 
@@ -383,9 +383,9 @@ Rust application 与 UniFFI 提供 `upsert_acp_runtime`，一次保存实例、`
 
 有 list 能力的 Agent 使用通用会话列表；只有 load 的 Agent 不进入会话列表，平台目前没有按原生 ID 打开的入口。直接使用 `agent-runtime::acp::Client` 时可分别调用 load 与 resume，后者恢复上下文但不回放历史；application 的历史浏览和持久跨 Harness 接续要求 load。无 load 的连接仍可连续多轮运行，但关闭后不保证重开。通用 ACP 不支持统一的 managed provider 注入，应使用该 Harness 的专用 adapter 获取已实现的网关能力。
 
-Mac 按运行时类型描述的 `launchOptions`／`agentInfo`／`sessionOptions` 提供启动参数与环境变量、Agent 信息和会话选项界面（见 [Mac README](../app/mac/README.md)）。无真实认证与模型调用的手动验收入口为 `scripts/manual-acp-adapter.py`，具体构建产物、参数、实际 Agent 与 SSH 证据见 [ACP 任务](../tasks/acp-adapter/packet.md)。自动化测试不在仓库验证流程内。
+Mac 按运行时类型描述的 `launchOptions`／`agentInfo`／`sessionOptions` 提供启动参数与环境变量、Agent 信息和会话选项界面（见 [Mac README](../app/mac/README.md)）。无真实认证与模型调用的手动验收入口为 `scripts/manual-acp-adapter.py`，具体构建产物、参数、实际 Agent 与 SSH 证据见 ACP 任务（git 历史：tasks/acp-adapter）。自动化测试不在仓库验证流程内。
 
-2026-10-10 补充验收了两个原生 ACP 入口，均使用同一通用 adapter，没有新增 Agent 专用分支。Devin CLI `3000.11.3` 的启动参数为 `acp`，隔离未认证状态下通过握手、创建、模式修改、live list 和空会话删除；未验证真实 prompt，未发送 prompt 的空会话跨进程 load 失败。OpenCode `1.18.35` 同样使用 `acp`，经过 UniFFI 在本机合成 provider 上通过模型选择、prompt、流式答复、shutdown 后列表与历史重开。这些是特定版本和条件下的观察，不是对所有 ACP 实现或真实账户的兼容承诺。详见 [Devin 证据](../tasks/acp-adapter/devin-evidence.md)与 [OpenCode 证据](../tasks/acp-adapter/opencode-evidence.md)。
+2026-10-10 补充验收了两个原生 ACP 入口，均使用同一通用 adapter，没有新增 Agent 专用分支。Devin CLI `3000.11.3` 的启动参数为 `acp`，隔离未认证状态下通过握手、创建、模式修改、live list 和空会话删除；未验证真实 prompt，未发送 prompt 的空会话跨进程 load 失败。OpenCode `1.18.35` 同样使用 `acp`，经过 UniFFI 在本机合成 provider 上通过模型选择、prompt、流式答复、shutdown 后列表与历史重开。这些是特定版本和条件下的观察，不是对所有 ACP 实现或真实账户的兼容承诺。详见 Devin 证据（git 历史：tasks/acp-adapter）与 OpenCode 证据（git 历史：tasks/acp-adapter）。
 
 ## Agent 间协作
 
@@ -393,7 +393,7 @@ Velune 执行的每个会话都获得 application 注入的 `velune` MCP 服务�
 
 参与方都是普通会话，出现在会话列表；对方的权限请求留在对方会话，由用户在那里处理，调用方没有批准工具。消息以“[Velune 协作消息] 来自 … 会话「…」（conversation_id: …）”包装提交，声明不是人类授权；对方忙碌、待审批或在 Velune 外运行时拒绝，不排队。没有父子关系、取消传播或联系限制。工具调用在下一次客户端请求推进会话时执行，因此需要客户端持续轮询（Mac 已按活动轮询；脚本需轮询 snapshot 或 `conversation_activity`）。SSH 运行时经会话持有的 loopback 反向转发访问服务；只支持 stdio MCP 的 ACP Agent 使用内嵌 Python helper，目标机器需可运行 Python 3，不可用时会话照常运行但没有协作工具。
 
-手动验收入口为 manual-collaboration.py，传入本次构建的 `--library`、`--bindings` 与 `--resources` 绝对路径；`--seed DIR` 只写入含两个合成 ACP 运行时的 `DIR/velune`，供开发版 App 人工检查。2026-10-11 父子委派模型（`create_collaborative_conversation` 与子任务 API）已按 hard-cutoff 删除，其真实 OpenCode／DSH 证据仍见 [Harness 协作任务](../tasks/harness-interoperation/packet.md)，但不代表新路径的真实 Harness 验收。产品意图与实施状态见 [Agent 间协作任务](../tasks/agent-collaboration/packet.md)。
+手动验收入口为 manual-collaboration.py，传入本次构建的 `--library`、`--bindings` 与 `--resources` 绝对路径；`--seed DIR` 只写入含两个合成 ACP 运行时的 `DIR/velune`，供开发版 App 人工检查。2026-10-11 父子委派模型（`create_collaborative_conversation` 与子任务 API）已按 hard-cutoff 删除，其真实 OpenCode／DSH 证据仍见 Harness 协作任务（git 历史：tasks/harness-interoperation），但不代表新路径的真实 Harness 验收。产品意图与实施状态见 Agent 间协作任务（git 历史：tasks/agent-collaboration）。
 
 资源库的子 Agent 定义由 manual-subagent-definitions.py 验收，参数同下文的原生 sub-agent 脚本：资源库为实际 Codex 0.159.3／Claude Code 2.1.286 的临时 managed HOME 提供技能与两个子 Agent：一个用原生 model ID（写入原生定义），一个用 Velune 模型（不写入，只在经网关的轮次中提供）。父轮次经网关与回环上游启动各子 Agent，检查子 Agent 自己的请求到达其模型所在的提供商（跨协议时经网关转换），带上其指令与推理强度，Claude Code 还带上技能正文；Velune 模型的子 Agent 始终没有写入运行时的定义目录。原生 sub-agent 不经上述工具：Harness 自己启动的子 Agent 会话在会话列表中带 `parent_conversation_id`（平台不在侧栏列出），父会话的对应工具块带 `linked_conversation_id`，打开后只读。手动验收入口为 manual-native-subagents.py，传入 `--library`、`--bindings`、`--bundle`、`--node`、`--codex` 与 `--claude` 绝对路径；它在临时 managed HOME 中由实际 Codex 0.159.3／Claude Code 2.1.286 经网关对回环合成上游执行一轮会启动子 Agent 的 turn（合成上游同时对 Claude Code auto 模式的分类请求答复放行），检查实时与历史两种读取下的链接、父会话不含子 Agent 消息、子会话的父标记、内容与拒绝发送。它还检查 Codex 子 Agent 需要审批的命令作为父会话的“子 Agent：”交互出现，批准后执行，并且所有工具块都以完成或失败结束（Claude Code 的 `Agent` 调用与结果合并为一行）。`--seed DIR` 保留 `DIR/velune` 供开发版 App 检查。
 
@@ -409,9 +409,9 @@ Velune 执行的每个会话都获得 application 注入的 `velune` MCP 服务�
 
 当前适配覆盖 Codex／Claude 的四类、Pi 的 instruction／MCP／skills、DSH 的 instruction／skills。Pi 没有内置 sub-agent 定义；DSH 的插件式 MCP／sub-agent 配置和通用 ACP 的私有资源布局没有接入本管理契约，会明确说明不支持。该列表是管理适配范围，不等于对应 Harness 的全部运行能力，也不是组织策略、插件与祖先目录合并后的有效配置视图。
 
-修改在运行中的 turn 存在时拒绝；停用实例仍可编辑原生资源。成功保存不自动重启或重载运行时，具体生效时机由 Harness 决定。受管 HOME 仍保存原生配置，不形成 Velune 同步副本。Mac 以“资源库”窗口管理这些资源：资源在 Velune 中定义，启用到运行时后由 Velune 写入并保持同步，原生被改时由用户选择处理（可先查看差异；可用资源库覆盖、停止同步，或用原生内容更新资源库），忙时延后的写入在运行时空闲后自动补写；手动验收脚本为 `scripts/manual-resource-library.py`，真实 Harness 加载为 `scripts/manual-resource-library-native.py`（sandbox、无模型请求）。实施、具体原生路径与隔离验收见 [运行时资源管理任务](../tasks/runtime-management/packet.md)。
+修改在运行中的 turn 存在时拒绝；停用实例仍可编辑原生资源。成功保存不自动重启或重载运行时，具体生效时机由 Harness 决定。受管 HOME 仍保存原生配置，不形成 Velune 同步副本。Mac 以“资源库”窗口管理这些资源：资源在 Velune 中定义，启用到运行时后由 Velune 写入并保持同步，原生被改时由用户选择处理（可先查看差异；可用资源库覆盖、停止同步，或用原生内容更新资源库），忙时延后的写入在运行时空闲后自动补写；手动验收脚本为 `scripts/manual-resource-library.py`，真实 Harness 加载为 `scripts/manual-resource-library-native.py`（sandbox、无模型请求）。实施、具体原生路径与隔离验收见 运行时资源管理任务（git 历史：tasks/runtime-management）。
 
-手动 API 验收入口为 manual-runtime-management-api.py，真实 Claude／Pi 加载入口为 manual-runtime-management.py。后者要求 macOS sandbox、匹配的 CLI 和隔离安装的 Pi，使用 loopback 合成模型响应；运行参数、Codex／DSH 加载与 WSL 文件边界证据见 [固定版本验收](../tasks/runtime-management/native-evidence.md)。
+手动 API 验收入口为 manual-runtime-management-api.py，真实 Claude／Pi 加载入口为 manual-runtime-management.py。后者要求 macOS sandbox、匹配的 CLI 和隔离安装的 Pi，使用 loopback 合成模型响应；运行参数、Codex／DSH 加载与 WSL 文件边界证据见 固定版本验收（git 历史：tasks/runtime-management）。
 
 订阅组合人工验收入口为 `python3 scripts/manual-subscription-composition.py`，使用隔离配置目录、合成 Claude CLI 与回环 MCP/HTTP，不读取真实登录。默认场景覆盖 20 组组合、工具往返、跨 Runner 会话与取消/结束恢复；`--case auth-cleanup` 另外覆盖 2 组暂存认证清理。Claude Code 2.1.292 的真实登录、`/usage` 额度读取、文本完成及跨 Runner 工具往返已验证；固定 `/usage` 命令不重写为普通模型提示，无法解析的额度保持未知。
 
@@ -451,7 +451,7 @@ SSH 和 ADB 继续承担实际传输；[服务动作](../scripts/dev_services.py
 
 ## 开发遥测
 
-普通启动与 Debug 构建默认不启用遥测。使用 `scripts/dev-telemetry.py launch` 显式启动隔离实例时，工具通过上述 SVC 入口准备通道并检查 Grafana 与 OTLP 就绪，生成私有临时 profile 和 run manifest。它不修改日常偏好或全局 `OTEL_*`，也不重建／清空 LGTM。业务 home 与 OS home 使用本次运行的独立临时目录，避免长仓库路径超过 Mac 的 Unix socket 长度限制。接收端不可用时继续启动业务并报告未接入；端口冲突不停止无关进程。依赖、资源、保留和查询授权见[实际部署](../tasks/otlp-observability/deployment.md)。
+普通启动与 Debug 构建默认不启用遥测。使用 `scripts/dev-telemetry.py launch` 显式启动隔离实例时，工具通过上述 SVC 入口准备通道并检查 Grafana 与 OTLP 就绪，生成私有临时 profile 和 run manifest。它不修改日常偏好或全局 `OTEL_*`，也不重建／清空 LGTM。业务 home 与 OS home 使用本次运行的独立临时目录，避免长仓库路径超过 Mac 的 Unix socket 长度限制。接收端不可用时继续启动业务并报告未接入；端口冲突不停止无关进程。依赖、资源、保留和查询授权见实际部署（git 历史：tasks/otlp-observability）。
 
 先按各端构建说明生成产物，然后在仓库运行以下入口。桌面 `--app` 必须是已安装或已构建产物的绝对路径；Mac 指向 bundle 内可执行文件，Windows 指向 `Velune.exe`。移动端省略 `--app` 直接使用已安装应用；只有明确传入 APK／bundle 才执行覆盖安装。设备必须已启动；入口会重新启动指定应用，以便读取本次临时配置。
 
@@ -480,7 +480,7 @@ python3 scripts/dev-telemetry.py query /absolute/path/run.json metrics
 语义与扩展范例归[遥测契约](design/telemetry.md#扩展埋点与读取范例)。先限定 run、实例、时间和版本，再沿 trace、operation ID、RequestId 检查受理与执行。Loki 中点号属性会按其映射显示为下划线名称；查询应使用接收端实际字段，不解析日志 body。指标按操作层分别统计，不能将 UI、bindings 与 RPC 次数相加。Gateway 本地诊断的 transport_completed 仍表示传输结束，OTLP 的 outcome 则同时考虑 HTTP 结果；返回完整 503 在 OTLP 中是 failure。
 
 
-Apple coordinator／真实 UniFFI／gRPC 隔离验收使用 `scripts/manual-telemetry.py`，需安装官方 Python `grpcio` 与 `opentelemetry-proto`，以及匹配的 SwiftPM 构建产物。它使用临时 HOME、合成字段和本地接收器，验证三信号、环境隔离、零采样、并发父节点、旧队列撤销与共享关闭。可加 `--distributed --gateway --queue`，验证真实 QUIC／Core 的并行轮次、断连续跑、原 RequestId 恢复、SDK 切换、HTTP Gateway failover 和实际 AppStore 队列等待；不证明实际移动证书、前后台或四平台分享矩阵。当前平台结果与尚缺证据统一记录在[任务包](../tasks/otlp-observability/packet.md)，不能用构建通过替代产品验收。
+Apple coordinator／真实 UniFFI／gRPC 隔离验收使用 `scripts/manual-telemetry.py`，需安装官方 Python `grpcio` 与 `opentelemetry-proto`，以及匹配的 SwiftPM 构建产物。它使用临时 HOME、合成字段和本地接收器，验证三信号、环境隔离、零采样、并发父节点、旧队列撤销与共享关闭。可加 `--distributed --gateway --queue`，验证真实 QUIC／Core 的并行轮次、断连续跑、原 RequestId 恢复、SDK 切换、HTTP Gateway failover 和实际 AppStore 队列等待；不证明实际移动证书、前后台或四平台分享矩阵。当前平台结果与尚缺证据统一记录在任务包（git 历史：tasks/otlp-observability），不能用构建通过替代产品验收。
 
 ## 主动上下文压缩
 

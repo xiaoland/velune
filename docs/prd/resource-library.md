@@ -6,7 +6,7 @@ Agent 运行时的用户指令、MCP、技能与子 Agent 定义的管理：以�
 
 ## 范围
 
-2026-10-11 用户进一步要求将 Agent runtime 管理从会话、模型扩展到 user instruction、MCP、agent skills 与 sub-agent 定义。各运行时允许缺少相应能力或资源；宿主须能区分不支持、尚未配置和读取失败，不能把缺失伪装成统一支持。管理保留原生资源归属与运行时差异，sub-agent 定义不等同于执行中的子会话。App 管理界面的组织见下文“资源库”段落。实施与验收归 [运行时资源管理任务](../../tasks/runtime-management/packet.md)。
+2026-10-11 用户进一步要求将 Agent runtime 管理从会话、模型扩展到 user instruction、MCP、agent skills 与 sub-agent 定义。各运行时允许缺少相应能力或资源；宿主须能区分不支持、尚未配置和读取失败，不能把缺失伪装成统一支持。管理保留原生资源归属与运行时差异，sub-agent 定义不等同于执行中的子会话。App 管理界面的组织见下文“资源库”段落。实施与验收归 运行时资源管理任务（git 历史：tasks/runtime-management）。
 
 ## 组织
 
@@ -37,8 +37,8 @@ Agent 运行时的用户指令、MCP、技能与子 Agent 定义的管理：以�
 - **批量与便捷**：启用于所有运行时、新增运行时后提示可启用已有资源、列表搜索、复制资源。
 - 技能编辑器增强（目录树、附件、头部校验）不在本轮。
 
-实施与验收归 [运行时资源管理任务](../../tasks/runtime-management/packet.md)。
+实施与验收归 运行时资源管理任务（git 历史：tasks/runtime-management）。
 
 ## 子 Agent 资源
 
-2026-10-14 用户要求补全子 Agent 资源（[S23](../sources.md#s23)）：描述与指令一样用多行文本编辑；可配置推理强度；可选择资源库中的技能；Codex 子 Agent 的模型与推理强度要写入，加入资源库时也要带入，不再丢弃。各运行时按原生格式写入能表达的字段，表达不了的照常跳过并说明。同日用户进一步要求子 Agent 既能用 Velune 托管模型也能用原生模型，同一运行时可随时在经 Velune 网关的轮次与原生轮次之间切换，并且选 Velune 模型的子 Agent 在原生轮次中不会被运行时用到：子 Agent 的模型为“沿用父会话”“原生 model ID”或“Velune 模型”之一；原生 ID 写入原生定义，经网关的轮次中改由 Velune 中唯一同 ID 的模型提供；Velune 模型的子 Agent 不写入原生定义，只提供给经网关的轮次。Pi 的子 Agent 由扩展提供，用户计划之后单独支持，届时需处理扩展的版本兼容，不在本轮。实施归 [子 Agent 字段任务](../../tasks/resource-subagent-fields/packet.md)。
+2026-10-14 用户要求补全子 Agent 资源（[S23](../sources.md#s23)）：描述与指令一样用多行文本编辑；可配置推理强度；可选择资源库中的技能；Codex 子 Agent 的模型与推理强度要写入，加入资源库时也要带入，不再丢弃。各运行时按原生格式写入能表达的字段，表达不了的照常跳过并说明。同日用户进一步要求子 Agent 既能用 Velune 托管模型也能用原生模型，同一运行时可随时在经 Velune 网关的轮次与原生轮次之间切换，并且选 Velune 模型的子 Agent 在原生轮次中不会被运行时用到：子 Agent 的模型为“沿用父会话”“原生 model ID”或“Velune 模型”之一；原生 ID 写入原生定义，经网关的轮次中改由 Velune 中唯一同 ID 的模型提供；Velune 模型的子 Agent 不写入原生定义，只提供给经网关的轮次。Pi 的子 Agent 由扩展提供，用户计划之后单独支持，届时需处理扩展的版本兼容，不在本轮。实施归 子 Agent 字段任务（git 历史：tasks/resource-subagent-fields）。

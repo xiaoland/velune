@@ -44,7 +44,7 @@
 | 3 | FFI 表面：删除 `Binding*` 镜像与 JSON 转换、合并远控转换层；四端机械更新，删除 Mac 映射层 | 变化 | 完成 |
 | 4 | 平台 app 结构：拆分 Mac `AppStore` 与 Windows 对应部分；把平台自行计算的产品规则移回核心 | 变化 | 完成 |
 | 5 | 测试：复核现有 Rust 测试，只为真实不变量重建少量分层检查 | 变化 | 完成 |
-| 6 | 文档：重写 development、architecture 等为当前事实；归档已完成任务包 | 不变 | 待开始 |
+| 6 | 文档：重写 development、architecture 等为当前事实；合并并删除已完成任务包 | 不变 | 进行中 |
 
 ## 阶段 1 结果
 
@@ -107,4 +107,11 @@
 - bindings 删除 25 个没有平台调用的方法：运行时资源目录／读／写／删、`configure_runtime_execution`、`open_acp_conversation`、`runtime_quota`、`next_turn_model_selection`；远控服务的 `network_change`、`refresh_local_discovery`、`record_legacy_state_reset`、`acknowledge_reset`、`query_request`、`acknowledge_request`、`update_contact_locator`、`disconnect`、`network_state`、`apply_network`、`retry_network`；远程 `VeluneApplication` 的 `list_with_revision`、`observed_revision`、`expect_revision`、`observe_paths`、`remote_descriptor`、`reconnect`。路径观察器只留在诊断特性的传输探针中。
 - 随之删除只服务这些方法的核心命令（8 个 `Command`／`Response`／`CommandKind` 变体）与用例、远控 crate 中无调用的公开方法、`LocatorUpdate` 与 `LocatorSource::ExplicitImport`，以及不再可达的导出类型（`BindingVersionedConfiguration`、`BindingNetworkSettingsUpdate`、`BindingRemoteRequestStatus`、`BindingRemoteFailure`）；8 个原生资源类型、`RuntimeQuotaStatus`、`RelayCredentialEdit`／`CredentialEdit` 改为仅 Rust 内部使用。
 - 保留：agent-runtime 的原生资源层与额度采样（资源库和 composer 额度仍在用）；远控 crate 内的网络设置事务（`apply_network`／`retry_network`）与联系人暂停（`Controller::disconnect`）——两者有测试覆盖、平台暂无入口，接入设置界面时再决定去留。远控状态的 `legacy_reset_recorded` 字段也保留：状态结构拒绝未知字段，删掉会让现有 v4 状态无法读取、配对全部丢失，待下次状态版本变更时一并删除。
-- 观察到的既有问题（未改行为，待用户决定）：远程配置写入的期望 revision 只在取得远程应用对象和自身成功修改时推进；执行端的配置被其他视图改过后，这个远程视图的配置写入会持续冲突，直到重新取得远程应用对象或执行端重启。原设计的恢复路径是 `list_with_revision` + `expect_revision`，但平台从未调用，删除前后行为一致。可选修正：远程视图重读配置时把读到的 revision 作为新的编辑基线。
+- 观察到的既有问题（未改行为，已转入[待决事项](../open-items/packet.md)）：远程配置写入的期望 revision 只在取得远程应用对象和自身成功修改时推进；执行端的配置被其他视图改过后，这个远程视图的配置写入会持续冲突，直到重新取得远程应用对象或执行端重启。原设计的恢复路径是 `list_with_revision` + `expect_revision`，但平台从未调用，删除前后行为一致。可选修正：远程视图重读配置时把读到的 revision 作为新的编辑基线。
+
+## 阶段 6 进展
+
+- 已完成的 67 个任务包已删除（git 保留历史）。逐包核对：用户决定已在 PRD 各分册，跨 unit 契约与适配器事实已在设计文档和各 unit README（如 agent-runtime 的原生错误映射、ai-provider 的 RelayKit 接入与许可）；任务包其余内容是交付记录、安装证据与验收日志，不再保留。
+- 仍未解决的用户决定、未授权的候选与未验证的能力集中到[待决事项与已知缺口](../open-items/packet.md)：项目许可、配置跨端同步、远控中继部署、远程配置冲突恢复、界面词汇、Pi 子 Agent 来源、OpenAR 建议，以及 Windows 界面、远控网络与 xURL 的未验证范围。
+- 文档中指向已删任务包的 222 处链接改为纯文本“（git 历史：tasks/<名称>）”；`docs/index.md` 改为当前文档结构；删除 10 月 4 日文档重建快照的校验资料 `docs/recovery/`。
+- 待做：`docs/development.md`、`docs/design/architecture.md` 与各 README 只保留当前事实（删除已删 `manual-*.py` 的引用与过程记录）。

@@ -1,6 +1,6 @@
 # 统一设备远控：配对、寻址与恢复
 
-状态：2026-10-18 用户明确本轮实施边界仅限 Rust Library，包括 UniFFI 契约和库级合成验证，不包含 Mac／Android App 接入、界面、安装或产品验收。S1 已有同网证据，S2 稳定服务与 S3 v2 库级出口已完成；S4 库实现、静态检查、目标库与隔离证据已完成，E2／E3 网络能力仍未验证。本文件描述完整目标契约，不等同整项产品已实现或用户已验收。产品约束归 [PRD](../prd/remote-access.md)，共享核心与包边界归 [架构入口](architecture.md#远控契约与唯一执行-owner2026-10-17)。本方案基于锁定的 iroh 1.3.0；源码核查和本机实验归 [研究记录](../../tasks/android-minimal/transport-research.md)，执行次序归 [线性计划](../../tasks/android-minimal/plan.md)，通过条件归 [验收方案](../../tasks/android-minimal/acceptance.md)。实际实现与验收状态以 [任务](../../tasks/android-minimal/packet.md) 为准。
+状态：2026-10-18 用户明确本轮实施边界仅限 Rust Library，包括 UniFFI 契约和库级合成验证，不包含 Mac／Android App 接入、界面、安装或产品验收。S1 已有同网证据，S2 稳定服务与 S3 v2 库级出口已完成；S4 库实现、静态检查、目标库与隔离证据已完成，E2／E3 网络能力仍未验证。本文件描述完整目标契约，不等同整项产品已实现或用户已验收。产品约束归 [PRD](../prd/remote-access.md)，共享核心与包边界归 [架构入口](architecture.md#远控契约与唯一执行-owner2026-10-17)。本方案基于锁定的 iroh 1.3.0；源码核查和本机实验归 研究记录（git 历史：tasks/android-minimal），执行次序归 线性计划（git 历史：tasks/android-minimal），通过条件归 验收方案（git 历史：tasks/android-minimal）。实际实现与验收状态以 任务（git 历史：tasks/android-minimal） 为准。
 
 ## 设备与状态归属
 
@@ -80,7 +80,7 @@ relay 配置表达本设备的 home relay 候选和该服务的访问凭据，�
 
 iroh 当前选择一条主数据路径，其他路径主要承担备用、探测与控制；客户端还可能关闭冗余 IP 路径。因此产品不要求 LAN 与公网 IP 始终同时保活，离开 LAN 后可能需要重新探测公网路径或回落 relay。原连接确实关闭后才进入同一设备的受控重连，不为遇到新地址而主动拆连接。
 
-晚到地址是关键接线边界。mDNS 独立订阅不等于向既有 QUIC 连接注入候选：其 resolve 窗口只有 10 秒，窗口外新事件只到独立订阅；iroh 的已有 selected path 可抑制新 lookup，仍运行的 lookup 即使返回新地址，也只更新 peer 缓存。隔离实验中，晚到 lookup 地址进入缓存但在观察窗口内未触发该地址探测；同一地址经对端的 QNT 地址广告后，原连接打开了新路径并继续收发，见 [证据](../../tasks/android-minimal/transport-research.md)。因此，mDNS 首先补初次连接和重连寻址；活动连接升级须依靠已验证的地址变化／QNT 通路，不能把“接了 mDNS”写成已实现自动 LAN 升级。
+晚到地址是关键接线边界。mDNS 独立订阅不等于向既有 QUIC 连接注入候选：其 resolve 窗口只有 10 秒，窗口外新事件只到独立订阅；iroh 的已有 selected path 可抑制新 lookup，仍运行的 lookup 即使返回新地址，也只更新 peer 缓存。隔离实验中，晚到 lookup 地址进入缓存但在观察窗口内未触发该地址探测；同一地址经对端的 QNT 地址广告后，原连接打开了新路径并继续收发，见 证据（git 历史：tasks/android-minimal）。因此，mDNS 首先补初次连接和重连寻址；活动连接升级须依靠已验证的地址变化／QNT 通路，不能把“接了 mDNS”写成已实现自动 LAN 升级。
 
 原生地址变化与对端 QNT 地址增删会触发打洞；另外有 60 秒周期检查，但仅在没有 IP 路径或最小 IP RTT 大于 10ms 时尝试升级，不能把周期检查当及时发现 LAN 的保证。现有 Connection 没有公开的远端候选探测 API。若后续平台验收证实地址变化／QNT 链路遗漏，才评估上游适配；当前不建立第二条业务连接来规避接口边界。mDNS 的缓存更新另以固定依赖和独立实验核对，不能代替活动连接探测。
 
@@ -198,7 +198,7 @@ subscribe→MemoryLookup 不能替代遗漏的更新或活动连接探测。当�
 
 协议、ALPN、邀请及普通存储 schema 一次切到 v2，不维护旧远控协议；设备私钥格式保持不变。UniFFI 改动与 Mac／Android 直接调用方在同一编译切片完成，保留生成器已验证的 shutdown／ListConfiguration 命名及 Android 初始化，不手改生成代码。每个切片都形成两端可编译检查点，切片完成不表示已完成整项产品验收。
 
-库实施按 [唯一线性计划](../../tasks/android-minimal/plan.md) 推进：有界传输判别、稳定服务与账本、v2 契约、寻址与恢复，最后形成库交付清单。完整扫码界面及两端产品接入在当前范围之外。Android socket 接入点、QNT 通知遗漏与 mDNS 修复方式仍须以证据判别；真实 NAT、跨公网迁移和非默认移动网络行为不能由 loopback 或库构建推导。出现需重造传输栈或降低产品目标的证据才重开架构决定。
+库实施按 唯一线性计划（git 历史：tasks/android-minimal） 推进：有界传输判别、稳定服务与账本、v2 契约、寻址与恢复，最后形成库交付清单。完整扫码界面及两端产品接入在当前范围之外。Android socket 接入点、QNT 通知遗漏与 mDNS 修复方式仍须以证据判别；真实 NAT、跨公网迁移和非默认移动网络行为不能由 loopback 或库构建推导。出现需重造传输栈或降低产品目标的证据才重开架构决定。
 
 
 ## 遥测分享与 wire v3
