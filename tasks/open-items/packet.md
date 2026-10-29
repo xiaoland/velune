@@ -25,4 +25,6 @@
 - **Windows 界面**：中文输入法、双击与右键等真实指针操作、长转录的虚拟化与流式更新性能、Windows 11 Mica、标志在任务栏与标题栏的观感需真机验收；用户从 RDP 会话启动的三次崩溃没有 `crash.log`，原因未查明。键盘操作的命令面板、速查表与审批卡片尚未在浅色与深色下各打开一次核对。（原 `windows-winui`、`full-keyboard`）
 - **远控网络**：WAN→LAN→WAN 漫游、真实 NAT／UDP 故障回落、蜂窝默认且 Wi-Fi LAN 保留、长时后台、IPv6-only mDNS 与公共设施 SLA 没有证据。非空 mDNS 范围仍保留上游 wildcard 接收／发送回落，不是严格的网卡流量白名单。（原 `android-minimal`）
 - **xURL**：应用 URI 查询只支持标题 q 与 limit；官方 `-d` 使用独立原生认证与执行，不继承 Velune 审批、模型路由或取消。真实账户、外部 SSH 运行时及公证未验收。（原 `xurl-support`）
+- **Agent 间协作**：只以合成 ACP 运行时验收，真实 Harness 经此路径的协作未验证。（原 `agent-collaboration`）
+- **运行时工作寿命**：Claude Code 2.1.286 的任务中断，以及子 Agent 运行期间 SSH 隧道的长连接，待复核。（原 `runtime-work-lifetime`）
 - **真实服务**：多数功能只以合成上游与隔离 HOME 验收，真实提供商、真实订阅登录与额度接口、各平台 GUI 体验由用户验收。
