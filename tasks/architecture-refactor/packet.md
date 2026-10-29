@@ -40,7 +40,7 @@
 | 1 | 删除核心内部 JSON 协议：`Command` 直接分派到类型化用例 | 不变 | 完成 |
 | 2 | Harness 适配器接口；拆分 `gateway/runtime.rs` 等超大模块 | 不变 | 完成 |
 | 3 | FFI 表面：删除 `Binding*` 镜像与 JSON 转换、合并远控转换层；四端机械更新，删除 Mac 映射层 | 变化 | 完成 |
-| 4 | 平台 app 结构：拆分 Mac `AppStore` 与 Windows 对应部分；把平台自行计算的产品规则移回核心 | 变化 | 进行中 |
+| 4 | 平台 app 结构：拆分 Mac `AppStore` 与 Windows 对应部分；把平台自行计算的产品规则移回核心 | 变化 | 完成 |
 | 5 | 测试：复核现有 Rust 测试，只为真实不变量重建少量分层检查 | 不变 | 待开始 |
 | 6 | 文档：重写 development、architecture 等为当前事实；归档已完成任务包 | 不变 | 待开始 |
 
@@ -82,14 +82,14 @@
 - 验证（2026-10-29）：Mac 上以 .NET 8 SDK 单独编译生成的 C#（附 `Velune.ToolState`／`Command` 桩类型）复现并确认上述冲突已解决；win-ws worktree 中 `build-windows.ps1` 发布无警告；隔离 `VELUNE_HOME` 在交互会话中启动，仅对 Velune 窗口 PrintWindow 截图并读取 UIA 名称：主窗口、设置各页与“添加 Agent 运行时”对话框（类型与设置字段）渲染正常，核心操作日志全部成功。Mac、iOS、Android 随重新生成的绑定构建通过，Mac 隔离启动无告警；workspace clippy／test、bindings 两组 feature clippy 与 12 个回归脚本通过。
 - 无平台调用的其他导出（2026-10-29 统计）：`configure_runtime_execution`、`next_turn_model_selection`、`open_acp_conversation`、`runtime_quota`、运行时资源四个读写方法，以及远控 `acknowledge`、`acknowledge_reset`、`apply_network`、`controller_status`、`disconnect`、`expect_revision`、`list_with_revision`、`network_change`、`network_state`、`observe_paths`、`observed_revision`、`reconnect`、`record_legacy_state_reset`、`refresh_local_discovery`、`remote_descriptor`、`retry_network`、`update_contact_locator`。它们对应已设计的能力，阶段 3 末与平台追平一起决定删除或保留。
 
-## 阶段 4 进展
+## 阶段 4 结果
 
 - 下一轮规则移入核心（`application-api/src/next_turn.rs`）：`resolve_next_turn` 由保存的选择、运行时类型、提供商、模型目录（未读时以 managed 模型兜底）与会话轮次求出可选模型、推理强度、权限模式与生效值，`change_next_turn` 校验修改并决定是否记为运行时的上次选择。Mac 与 Windows 删除各自的实现，改为保存选择并显示结果。
 - 会话用量移入核心：`DeliveredSnapshot.usage`（`ConversationUsage`）给出最近一轮的上下文、各轮已记录计数之和、结束与未记录轮数、最近报告的费用与账户限额。两端状态行改读它。用户可见差别：Windows 的费用与限额此前取最近一个有用量记录的轮次，该轮未报告时不显示，现与 Mac 一致取最近报告的值。
 - Mac `AppStore`（2 050 行，既是设备级应用状态又是每个标签页的工作区，靠 `copyApplicationState` 复制约 30 个字段、`sharedApplication` 转发）拆为 `DeviceStore`（每台设备一个：配置、会话列表、认证、额度、问题、分析、草稿、保存的下一轮选择、运行状态）与 `ConversationStore`（窗口列表与每个标签页各一个：会话、转录、输入区、下一轮、导航、搜索与多选），后者直接读取所属 `DeviceStore`。设置、资源库、问题与分析视图改用 `DeviceStore`。
 - Windows 已按能力分文件（最大 1 106 行），本阶段只移回产品规则。
 - 已知且保留的平台差别：Windows 状态行的账户限额来自轮次记录，Mac 来自 composer 额度查询（Windows 尚无 composer 额度，属能力缺口）；Windows 的“跟随当前运行时”取最后一轮的运行时，Mac 取上下文运行时；最近项目与运行中状态文字各自计算。
-- 验证（2026-10-29）：workspace clippy／test 通过；Mac 构建，隔离 `VELUNE_HOME` 后台启动：`--preview` 样例会话与模型选择、`--check-split-panes` 三个面板各自解析下一轮、真实核心空配置的新会话页正常；生成的 C# 单独编译通过。Windows 构建与界面检查待做。
+- 验证（2026-10-29）：workspace clippy／test 通过；Mac 构建，隔离 `VELUNE_HOME` 后台启动：`--preview` 样例会话与模型选择、`--check-split-panes` 三个面板各自解析下一轮、真实核心空配置的新会话页正常；生成的 C# 单独编译通过；win-ws 上 `36ec90c` 的 `build-windows.ps1` 发布无错误无警告，隔离 `VELUNE_HOME` 启动后仅对 Velune 窗口截图并读取 UIA 名称，主窗口与无运行时时的新会话页正常。没有合成运行时，Mac 的真实发送、排队与编辑路径未在本阶段运行，由编译器与对照旧 `AppStore` 的逐项审查覆盖。
 
 ## 留待后续阶段
 
