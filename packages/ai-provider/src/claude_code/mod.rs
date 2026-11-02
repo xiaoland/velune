@@ -533,6 +533,7 @@ async fn launch_in(
         command.env("CLAUDE_CODE_MAX_OUTPUT_TOKENS", max.to_string());
     }
     command
+        .env("CLAUDE_CODE_ENTRYPOINT", "velune")
         .env("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1")
         .env("DISABLE_AUTOUPDATER", "1");
     if !body["system"].is_null() {

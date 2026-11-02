@@ -101,7 +101,9 @@ impl NativeSession {
         permission_mode: Option<&str>,
     ) -> Result<Command> {
         let mut command = crate::process_tree::command(&config.binary);
-        command.env("CLAUDE_CODE_SDK_READS_SESSION_STATE", "1");
+        command
+            .env("CLAUDE_CODE_ENTRYPOINT", "velune")
+            .env("CLAUDE_CODE_SDK_READS_SESSION_STATE", "1");
         command.args([
             "--print",
             "--input-format",
@@ -1320,6 +1322,7 @@ pub fn rename_claude_session_at(
             id,
         ])
         .current_dir(cwd)
+        .env("CLAUDE_CODE_ENTRYPOINT", "velune")
         .env_remove("CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST")
         .env_remove("VELUNE_GATEWAY_TOKEN");
     // As for a turn: set even to the default, the variable hides the user's login.

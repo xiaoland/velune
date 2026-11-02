@@ -2,6 +2,8 @@
 
 本 unit 实现通用 ACP v1 接入，以及 Pi RPC／SDK、Codex app-server、Claude Code stream-json 和 DeepSeek Harness ACP 的专用适配器。它负责原生控制、会话读取与消息 projection；真实会话由各 Harness 持久化，Velune 不复制为另一套会话历史。Pi 适配器另提供显式来源的认证交互和只读提供商发现。
 
+Claude Code 执行子进程显式设置 `CLAUDE_CODE_ENTRYPOINT=velune`，保留 print / stream-json 与原生控制协议。2.1.292 已在隔离 HOME、合成凭据和回环上游下验证请求入口标签、流式输出、动态 MCP、审批拒绝、侧聊、中断后续发及跨进程 resume。入口变量属于未公开支持的 CLI 行为；该验证不证明真实订阅配额收益，也不扩大兼容版本区间。
+
 各适配器的模型目录返回 `ModelOption`：原生模型及该 Harness 对它接受的推理强度，取自 Harness 自身目录（Codex `model/list` 的 `supportedReasoningEfforts`、Claude Code initialize 的 `supportsEffort`／`supportedEffortLevels`、Pi `reasoning` 模型的 `PI_THINKING_LEVELS`；DSH 与通用 ACP 暂无对应目录字段，为空）。
 
 权限模式由版本类型声明（`RuntimeVariant.permission_modes`）。`TurnInput.permission_mode` 是这一轮的模式；为空时 adapter 不发送任何权限设置。Claude Code 2.1.286 的取值是其 `--permission-mode` 接受的六种（manual、acceptEdits、plan、auto、dontAsk、bypassPermissions），作为该轮控制进程的启动参数；不传时 Claude Code 在 `--resume` 中沿用会话上次的模式，CLI 没有“回到默认”的取值。Codex 0.159.3 的取值对应其预设：read-only、workspace（Default）、auto-review、full-access，映射为 `turn/start` 的 `approvalPolicy`、`sandboxPolicy` 与 `approvalsReviewer`；Velune 托管路径每轮重启 app-server 后恢复线程，上一轮的覆盖不会保留。因此“沿用会话当前模式”由 application 负责，见其 README。Pi、DSH 与通用 ACP 不声明权限模式，ACP Agent 自报的模式仍是会话配置项。范围外的模式在发送前被拒绝。
