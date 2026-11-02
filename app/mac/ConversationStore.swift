@@ -9,6 +9,7 @@ import VeluneBindings
 /// it reads from `device`.
 @MainActor
 final class ConversationStore: ObservableObject {
+    @Published private(set) var creationFailure: String?
     let device: DeviceStore
     /// This window's search: its text, and the matches once read.
     @Published private(set) var searchText = ""
@@ -322,18 +323,6 @@ final class ConversationStore: ObservableObject {
     }
     /// Where the open conversation's files are: its runtime's machine.
     var loadedConversationLocation: RuntimeTransport { device.location(of: snapshot?.conversation.runtimeID) }
-    /// Projects of the latest conversations on the machine the next turn
-    /// runs on, newest first.
-    var recentWorkingDirectories: [String] {
-        let location = device.location(of: nextTurnRuntimeID)
-        var seen = Set<String>()
-        return device.conversations.filter { device.location(of: $0.runtimeID) == location }
-            .sorted { ($0.updatedAtUnixMs ?? 0) > ($1.updatedAtUnixMs ?? 0) }
-            .compactMap { conversation in
-                conversation.project.flatMap { key in device.conversationProjects.first(where: { $0.path == key })?.primaryFolder }
-            }.filter { seen.insert($0).inserted }.prefix(5).map { $0 }
-    }
-
     // MARK: - Status
 
     /// Where the loaded conversation stands, as the core reads its turns' native records.
@@ -739,6 +728,7 @@ final class ConversationStore: ObservableObject {
         guard let runtimeID = enabled.first(where: { $0.id == nextTurnRuntimeID })?.id ?? enabled.first?.id else { return }
         let id = isPreview ? UUID().uuidString : Self.draftConversationPrefix + UUID().uuidString
         let conversation = Conversation(id: id, title: "新会话", updatedAtUnixMs: isPreview ? Int64(Date().timeIntervalSince1970 * 1000) : nil, runtimeID: runtimeID, cwd: nil, canRename: isPreview, canDelete: isPreview)
+        creationFailure = nil
         isDraft = !isPreview
         projectionRuntimeID = runtimeID
         apply(ConversationSnapshot(revision: 1, conversation: conversation, contextRuntimeID: runtimeID, modelRecordKey: nil, runState: .idle, messages: [], actions: ConversationActions(canSend: true, canCancel: false, canSwitch: true)))
@@ -758,6 +748,7 @@ final class ConversationStore: ObservableObject {
     var sideChatTransport: Transport? { transport }
     func setUnsentWorkingDirectory(_ path: String?) {
         guard isDraft, snapshot != nil else { return }
+        creationFailure = nil
         snapshot?.conversation.cwd = path
     }
     /// Where pasted images are kept so they can be attached by path.
@@ -784,6 +775,7 @@ final class ConversationStore: ObservableObject {
             apply(value); onAccepted?(loadedConversationID); return true
         }
         guard let transport else { recordProblem("本地核心未配置"); return false }
+        creationFailure = nil
         executionStarting = true
         composerRequest = .sending
         pendingSend = PendingSend(previousUserMessageID: snapshot?.messages.last { $0.role == .user }?.id)
@@ -811,7 +803,8 @@ final class ConversationStore: ObservableObject {
                 }
             }
             return try transport.sendTurn(sourceRuntimeID: source, conversationID: conversationID, targetRuntimeID: target, selection: model, turn: turn)
-        }, onAccepted: { [weak self] in onAccepted?(self?.loadedConversationID) }, onFailure: { [weak self] _ in
+        }, onAccepted: { [weak self] in onAccepted?(self?.loadedConversationID) }, onFailure: { [weak self] error in
+            if creating, self?.isDraft == true { self?.creationFailure = AppProblem.failure(error).detail }
             self?.executionStarting = false
             self?.composerRequest = nil
             self?.endPendingSend()
@@ -998,6 +991,7 @@ final class ConversationStore: ObservableObject {
     private func resetProjection() { composerRequest = nil; stopRequested = false; executionStarting = false; intentConversationID = nil; loadedPayloads.removeAll(); isDraft = false; generation += 1; snapshot = nil; projectionRuntimeID = nil; selectedConversationID = nil; pendingConversationID = nil; reachingConversationID = nil; transcript.reset(); endPendingSend(); activity = nil; sessionOptions = nil; sessionOptionsKey = nil }
     private func apply(_ value: ConversationSnapshot?, preserveSelection: Bool = false) {
         guard var value else { return }
+        if value.conversation.id != snapshot?.conversation.id { creationFailure = nil }
         if value.conversation.id != snapshot?.conversation.id || (value.runState != .running && value.runState != .stopping) { stopRequested = false }
         if value.conversation.id != snapshot?.conversation.id || value.contextRuntimeID != snapshot?.contextRuntimeID { loadedPayloads.removeAll() }
         value.messages = withLoadedPayloads(value.messages)

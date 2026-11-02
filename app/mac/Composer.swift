@@ -499,8 +499,6 @@ struct ComposerView: View {
     @Environment(\.controlActiveState) private var activeState
     @Environment(\.openWindow) private var openWindow
     @ObservedObject private var shortcuts = KeyboardShortcutSettings.shared
-    @State private var enteringRemoteDirectory = false
-    @State private var remoteDirectory = ""
     /// The choices fit on the row of the send button. The widths it is
     /// decided from are not observed, so resizing the pane re-renders the
     /// composer only when the decision changes.
@@ -519,9 +517,11 @@ struct ComposerView: View {
     }
 
     private var nextTurnRuntime: RuntimeInstance? { store.device.runtimeInstances.first { $0.id == store.nextTurnRuntimeID } }
+    private var context: ComposerContext { ComposerContext(tab: layout.conversationTab(for: store), model: model) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
+            if store.isUnsentConversation, let failure = store.creationFailure { Text(failure).font(.callout).foregroundStyle(.red).textSelection(.enabled) }
             if store.pendingConversationID == nil, let status = store.conversationManagementStatus {
                 HStack { ProgressView().controlSize(.small); Text(status) }.font(.callout).foregroundStyle(.secondary)
             }
@@ -557,14 +557,6 @@ struct ComposerView: View {
             // can miss reporting its new width, leaving a narrow pane on one row.
             nextTurnControls(compact: false).fixedSize().hidden().id(controlsKey)
                 .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { fit.controlsWidth = $0; refit() }
-        }
-        .alert("远端工作目录", isPresented: $enteringRemoteDirectory) {
-            TextField("绝对路径", text: $remoteDirectory)
-            Button("使用") { store.setUnsentWorkingDirectory(remoteDirectory.trimmingCharacters(in: .whitespacesAndNewlines)) }
-                .disabled(!remoteDirectory.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("/"))
-            Button("取消", role: .cancel) {}
-        } message: {
-            if let host = store.device.location(of: store.nextTurnRuntimeID).host { Text("\(host) 上的绝对路径；发送时在该机器上检查。") }
         }
         .onDrop(of: [.fileURL], isTargeted: nil) { providers in
             for provider in providers {
@@ -809,19 +801,16 @@ struct ComposerView: View {
     private func workingDirectoryMenu(compact: Bool) -> some View {
         let path = store.loadedConversationWorkingDirectory
         let name = path.map { URL(fileURLWithPath: $0).lastPathComponent }
-        let recent = store.recentWorkingDirectories
         return Menu {
-            // A remote runtime's directories exist only on its machine.
-            if let host = store.device.location(of: store.nextTurnRuntimeID).host {
-                Button("输入 \(host) 上的目录…") { remoteDirectory = path ?? ""; enteringRemoteDirectory = true }
-            } else {
-                Button("选择目录…") { chooseDirectory() }
+            if layout.canChooseLocalWorkingDirectory(context) {
+                Button("选择目录…") { layout.chooseWorkingDirectory(context) }
             }
-            if path != nil { Button("使用运行时默认目录") { store.setUnsentWorkingDirectory(nil) } }
-            if !recent.isEmpty {
-                Section("最近使用") {
-                    ForEach(recent, id: \.self) { directory in
-                        Button(directory) { store.setUnsentWorkingDirectory(directory) }
+            Button("输入路径…") { layout.enterWorkingDirectory(context) }
+            if path != nil { Button("使用运行时默认目录") { context.selectWorkingDirectory(nil) } }
+            ForEach(context.workingDirectoryProjects, id: \.project) { project in
+                Section(project.name) {
+                    ForEach(project.directories, id: \.self) { directory in
+                        Button(directory) { context.selectWorkingDirectory(directory) }
                     }
                 }
             }
@@ -831,13 +820,7 @@ struct ComposerView: View {
         .fixedSize()
         .accessibilityLabel("工作目录：\(path ?? "运行时默认目录")")
         .help(path ?? "工作目录：留空时使用运行时的默认目录")
-    }
-
-    private func chooseDirectory() {
-        let panel = NSOpenPanel()
-        panel.title = "选择新会话的工作目录"
-        panel.canChooseDirectories = true; panel.canChooseFiles = false; panel.allowsMultipleSelection = false
-        if panel.runModal() == .OK, let url = panel.url { store.setUnsentWorkingDirectory(url.standardizedFileURL.path) }
+        .disabled(!context.canChangeWorkingDirectory)
     }
 }
 

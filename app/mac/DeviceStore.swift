@@ -37,6 +37,7 @@ final class DeviceStore: ObservableObject {
     /// The list's groups in display order, as the core windows them.
     @Published private(set) var conversationGroups: [ConversationGroup] = []
     @Published private(set) var conversationProjects: [ConversationProject] = []
+    @Published private(set) var workingDirectoryProjects: [String: [WorkingDirectoryProject]] = [:]
     @Published private(set) var showsArchived = false
     /// The runtime instance the core last chose, where a new tab's next turn starts.
     private(set) var selectedRuntimeInstanceID: String?
@@ -211,6 +212,7 @@ final class DeviceStore: ObservableObject {
         contextUsageDisplay = data.contextUsageDisplay
         statusLine = data.statusLine
         conversationBrowserLimits = data.conversationBrowserLimits
+        workingDirectoryProjects = data.workingDirectoryProjects
         // While browser choices are being saved, the list waits for their
         // result: one read before would show groups folded or unfolded as they were.
         if browserPreferencesSaving == 0 {

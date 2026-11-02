@@ -107,6 +107,7 @@ struct ConversationCommands: Commands {
                 item(.chooseModel)
                 item(.chooseEffort)
                 item(.choosePermission)
+                item(.chooseWorkingDirectory)
                 Divider()
                 item(.nextAttention)
                 Divider()

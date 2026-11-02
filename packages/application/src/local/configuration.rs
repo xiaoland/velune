@@ -293,6 +293,7 @@ impl CoreRuntime {
             conversations: page.conversations,
             conversation_groups: page.groups,
             conversation_projects: page.projects,
+            working_directory_projects: page.working_directory_projects,
             shows_archived: self.shows_archived(),
             history_failures,
             gateways: self.public_gateways(),

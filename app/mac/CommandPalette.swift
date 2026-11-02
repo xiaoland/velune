@@ -5,7 +5,7 @@ import SwiftUI
 /// What the palette over a window lists: Velune's commands, the
 /// conversations to open, or one of the next turn's choices.
 enum PaletteMode: Hashable {
-    case commands, conversations, runtime, model, effort, permission
+    case commands, conversations, runtime, model, effort, permission, workingDirectory
 
     var prompt: String {
         switch self {
@@ -15,6 +15,7 @@ enum PaletteMode: Hashable {
         case .model: "下一轮的模型"
         case .effort: "下一轮的推理强度"
         case .permission: "下一轮的权限模式"
+        case .workingDirectory: "新会话的工作目录"
         }
     }
 }
@@ -105,6 +106,7 @@ extension ConversationWindowModel {
         case .chooseModel: store.canSwitchModel
         case .chooseEffort: !store.reasoningEffortOptions.isEmpty
         case .choosePermission: !store.permissionModeOptions.isEmpty
+        case .chooseWorkingDirectory: composerContext().canChangeWorkingDirectory
         case .reload: store.canReloadFromRuntimes
         case .closeSplit, .nextPane, .previousPane: isSplit
         case .back: !store.backHistory.isEmpty
@@ -140,6 +142,7 @@ extension ConversationWindowModel {
         case .chooseModel: showPalette(.model)
         case .chooseEffort: showPalette(.effort)
         case .choosePermission: showPalette(.permission)
+        case .chooseWorkingDirectory: showPalette(.workingDirectory)
         case .nextAttention: goToNextAttention()
         case .reload: store.reloadFromRuntimes()
         case .splitRight: split(.horizontal)
@@ -197,7 +200,7 @@ extension ConversationWindowModel {
                             shortcut: shortcuts.shortcut(command)?.title, enabled: canPerform(command)) { [weak self] _ in
                     guard let self else { return }
                     // A command that opens another list keeps the palette for it.
-                    let opensList: Set<ShortcutCommand> = [.openConversation, .chooseRuntime, .chooseModel, .chooseEffort, .choosePermission]
+                    let opensList: Set<ShortcutCommand> = [.openConversation, .chooseRuntime, .chooseModel, .chooseEffort, .choosePermission, .chooseWorkingDirectory]
                     if opensList.contains(command) { perform(command) } else { closePalette(); perform(command) }
                 }
             }
@@ -264,6 +267,36 @@ extension ConversationWindowModel {
                 PaletteItem(id: level ?? "", title: level ?? none, aliases: level == nil ? Self.unchosenAliases : [], checked: store.nextTurnEffort == level) { [weak self] _ in
                     self?.closePalette(focusComposer: true)
                     self?.store.selectEffort(level)
+                }
+            }
+        case .workingDirectory:
+            let input = composerContext()
+            guard input.canChangeWorkingDirectory else { return [] }
+            let path = input.store.loadedConversationWorkingDirectory
+            var items = [PaletteItem(id: "default", title: "运行时默认目录", aliases: Self.unchosenAliases, checked: path == nil) { [weak self] _ in
+                self?.closePalette(focusComposer: true)
+                self?.composerContext().selectWorkingDirectory(nil)
+            }]
+            if canChooseLocalWorkingDirectory(input) {
+                items.append(PaletteItem(id: "browse", title: "选择目录…", aliases: ["browse", "choose folder", "浏览目录"]) { [weak self] _ in
+                    guard let self else { return }
+                    let input = composerContext()
+                    closePalette()
+                    DispatchQueue.main.async { self.chooseWorkingDirectory(input) }
+                })
+            }
+            items.append(PaletteItem(id: "input", title: "输入路径…", aliases: ["enter path", "manual", "手动输入"]) { [weak self] _ in
+                guard let self else { return }
+                let input = composerContext()
+                closePalette()
+                DispatchQueue.main.async { self.enterWorkingDirectory(input) }
+            })
+            return items + input.workingDirectoryProjects.flatMap { project in
+                project.directories.map { directory in
+                    PaletteItem(id: "directory:" + directory, title: directory, aliases: [project.name], detail: project.name, checked: path == directory) { [weak self] _ in
+                        self?.closePalette(focusComposer: true)
+                        self?.composerContext().selectWorkingDirectory(directory)
+                    }
                 }
             }
         case .permission:

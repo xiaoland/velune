@@ -106,7 +106,7 @@ extension View {
 enum ShortcutCommand: String, CaseIterable, Identifiable {
     case newConversation, openConversation, newTab, newWindow, closeTab, closeWindow
     case find
-    case stop, stopSubAgents, continueTurn, compactContext, sideChat, attach, chooseRuntime, chooseModel, chooseEffort, choosePermission, nextAttention, reload
+    case stop, stopSubAgents, continueTurn, compactContext, sideChat, attach, chooseRuntime, chooseModel, chooseEffort, choosePermission, chooseWorkingDirectory, nextAttention, reload
     case splitRight, splitDown, closeSplit, back, forward, nextPane, previousPane, nextTab, previousTab, moveTabToNewWindow, keepInFront
     case commandPalette, focusTranscript, showList, showOutline, focusComposer, showAgents, rightArea, bottomArea, editorOnly, problems
     case shortcutHelp
@@ -125,7 +125,7 @@ enum ShortcutCommand: String, CaseIterable, Identifiable {
         switch self {
         case .newConversation, .openConversation, .newTab, .newWindow, .closeTab, .closeWindow: .file
         case .find: .edit
-        case .stop, .stopSubAgents, .continueTurn, .compactContext, .sideChat, .attach, .chooseRuntime, .chooseModel, .chooseEffort, .choosePermission, .nextAttention, .reload: .conversation
+        case .stop, .stopSubAgents, .continueTurn, .compactContext, .sideChat, .attach, .chooseRuntime, .chooseModel, .chooseEffort, .choosePermission, .chooseWorkingDirectory, .nextAttention, .reload: .conversation
         case .splitRight, .splitDown, .closeSplit, .back, .forward, .nextPane, .previousPane, .nextTab, .previousTab, .moveTabToNewWindow, .keepInFront: .window
         case .commandPalette, .focusTranscript, .showList, .showOutline, .focusComposer, .showAgents, .rightArea, .bottomArea, .editorOnly, .problems: .view
         case .shortcutHelp: .help
@@ -154,6 +154,7 @@ enum ShortcutCommand: String, CaseIterable, Identifiable {
         case .chooseModel: "选择模型…"
         case .chooseEffort: "选择推理强度…"
         case .choosePermission: "选择权限模式…"
+        case .chooseWorkingDirectory: "选择工作目录…"
         case .nextAttention: "转到待处理的会话"
         case .reload: "重新读取"
         case .splitRight: "向右拆分"
@@ -204,6 +205,7 @@ enum ShortcutCommand: String, CaseIterable, Identifiable {
         case .chooseModel: "Choose Model"
         case .chooseEffort: "Choose Reasoning Effort"
         case .choosePermission: "Choose Permission Mode"
+        case .chooseWorkingDirectory: "Choose Working Directory"
         case .nextAttention: "Go to Next Conversation Needing Attention"
         case .reload: "Reload"
         case .splitRight: "Split Right"
@@ -249,6 +251,7 @@ enum ShortcutCommand: String, CaseIterable, Identifiable {
         case .chooseModel: ["switch model", "llm", "切换模型"]
         case .chooseEffort: ["reasoning", "thinking", "切换推理强度", "思考"]
         case .choosePermission: ["approval", "sandbox", "切换权限", "审批"]
+        case .chooseWorkingDirectory: ["cwd", "directory", "folder", "path", "change directory", "切换目录", "路径", "文件夹"]
         case .nextAttention: ["pending", "waiting", "approval", "unread", "待处理", "未读"]
         case .reload: ["refresh", "刷新"]
         case .splitRight, .splitDown, .closeSplit, .nextPane, .previousPane: ["pane", "分屏"]
@@ -313,7 +316,7 @@ enum ShortcutCommand: String, CaseIterable, Identifiable {
         case .editorOnly: Shortcut("return", [.command, .shift])
         case .problems: Shortcut("m", [.command, .shift])
         // Global ones are the user's to choose: any default would take a key from other apps.
-        case .stopSubAgents, .continueTurn, .compactContext, .sideChat, .closeSplit, .moveTabToNewWindow, .keepInFront, .globalShow, .globalNewConversation: nil
+        case .stopSubAgents, .continueTurn, .compactContext, .sideChat, .chooseWorkingDirectory, .closeSplit, .moveTabToNewWindow, .keepInFront, .globalShow, .globalNewConversation: nil
         }
     }
 

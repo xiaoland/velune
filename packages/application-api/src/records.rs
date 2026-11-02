@@ -1,6 +1,7 @@
 //! Typed application operations and non-secret result records.
 use crate::config::*;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 pub use velune_conversation::authentication::{
     AuthenticationEvent, AuthenticationNotification, AuthenticationPrompt,
 };
@@ -84,6 +85,9 @@ pub struct ConfigurationSnapshot {
     /// Every project of the shown conversations (archived or not), for
     /// filtering and moving.
     pub conversation_projects: Vec<ConversationProject>,
+    /// New-conversation directories by target runtime, independent of the
+    /// sidebar's filters, folded groups and loaded pages.
+    pub working_directory_projects: HashMap<String, Vec<WorkingDirectoryProject>>,
     /// The list shows archived conversations instead of the others.
     pub shows_archived: bool,
     pub history_failures: Vec<HistoryFailure>,
@@ -157,6 +161,17 @@ pub struct ConversationProject {
     /// their repository.
     pub worktrees: Vec<String>,
     pub latest_activity_unix_ms: Option<i64>,
+}
+/// One project's suggested directories on the target runtime's machine.
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkingDirectoryProject {
+    pub project: String,
+    pub name: String,
+    /// Primary folder first, then declared additional folders. Paths are
+    /// deduplicated across the target's projects; historical worktrees are
+    /// not project roots. Existence is checked when creating the conversation.
+    pub directories: Vec<String>,
 }
 /// Matching conversations, grouped like the list.
 #[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]

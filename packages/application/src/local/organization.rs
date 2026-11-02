@@ -58,6 +58,7 @@ pub(super) struct Page {
     pub(super) conversations: Vec<ListedConversation>,
     pub(super) groups: Vec<ConversationGroup>,
     pub(super) projects: Vec<ConversationProject>,
+    pub(super) working_directory_projects: HashMap<String, Vec<crate::WorkingDirectoryProject>>,
 }
 
 pub(crate) fn unix_ms_now() -> i64 {
@@ -640,6 +641,7 @@ impl CoreRuntime {
             }
         }
         Page {
+            working_directory_projects: self.working_directory_projects(&all, &projects),
             conversations,
             groups: descriptors,
             projects,

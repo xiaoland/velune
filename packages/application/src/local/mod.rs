@@ -27,6 +27,7 @@ pub(crate) const ACP_LAUNCH_SETTING: &str = "acpLaunch";
 mod acp_composition;
 mod composer_quota;
 mod discovery;
+mod working_directories;
 
 fn runtime_types() -> Vec<crate::config::RuntimeTypeDescriptor> {
     let field = |key: &str,

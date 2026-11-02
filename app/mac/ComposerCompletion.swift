@@ -23,6 +23,7 @@ struct ComposerCompletion: Equatable {
 enum ComposerSlashCommand {
     static let all: [(name: String, command: ShortcutCommand)] = [
         ("model", .chooseModel), ("effort", .chooseEffort), ("permission", .choosePermission), ("runtime", .chooseRuntime),
+        ("cwd", .chooseWorkingDirectory),
         ("new", .newConversation), ("continue", .continueTurn), ("compact", .compactContext), ("side", .sideChat), ("btw", .sideChat), ("stop", .stop), ("attach", .attach),
         ("open", .openConversation), ("find", .find), ("commands", .commandPalette), ("keys", .shortcutHelp),
     ]
