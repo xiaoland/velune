@@ -26,3 +26,13 @@
 
 - 持久化回归入口 `python3 scripts/check-service-tier-migration.py` 已通过5项检查：预览/备份/幂等/runner、原生非空档位和平台编码、歧义整批拒绝、重复JSON拒绝、活动锁拒绝。证据 `migration-check.log`。相对链接/锚点与 diff 检查通过。
 - 最终修复仅显式升级脚本与文档，没有修改应用 ABI 或核心读取契约，不新增运行时自动迁移。
+
+## 11月5日实际恢复完成
+
+用户明确授权“执行迁移，你始终可以迁移”，替代本包之前等待逐次确认的执行状态。持续约定已更新到开发迁移文档与S79。
+
+- 真实运行完整runner时暴露Codex迁移门禁：本机CLI确为0.159.3，与0.159 adapter匹配，但脚本仍要求0.166。修正为未显式指定实例时保留匹配版本；不放过适配器不匹配或明确要求迁移的错误。新增单项回归已过：完整runner继续后续输入升级、显式指定拒绝、166转换、166 adapter配159 CLI拒绝。未重复既有五项和运行时发送验收。
+- 完整runner已成功处理真实目录。删除30个null速度字段、22份输入拆分到19套目标配置、7份Mac窗口输入恢复点升级、880pt外观宽度转换68.8%。原配置／输入均有备份。已不存在的旧实例关联保持原样，没有删除真实会话或猜测归属。
+- 直接对照升级前备份核验：22份正文／附件／输入身份／修订、bindings、creations、附件目录、19套选择逐值一致；旧composer choices除null字段外完全一致。未输出正文或凭据。
+- 已 `open -g /Applications/Velune.app` 后台启动日常应用，无前台激活或输入注入。进程存活、runtime.lock持有，45秒新增日志130条INFO、无WARN/ERROR/新问题记录；包含应用主动problems_resolved事件。启动阻碍已解除，原日志保留。没有重装应用、也没有发送真实模型请求。
+- 速度备份目录：`~/.velune/before-service-tier-model-variants-ry_ddkyt`；输入备份：`~/.velune/composer-inputs.schema1.backup.json`，本机窗口和外观各有对应备份。

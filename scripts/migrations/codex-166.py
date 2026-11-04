@@ -62,6 +62,11 @@ with (root / 'runtime.lock').open('a+b') as lock:
         if execution['transport'] != 'local':
             parser.error(f'实例 {runtime_id} 在 SSH 执行机器上；先在该机器确认 CLI 0.166，再按开发文档手动修改类型与关联段')
         version = subprocess.run([runtime['settings']['binary'], '--version'], check=True, text=True, capture_output=True, timeout=10).stdout.strip()
+        # The upgrade runner also visits installations that intentionally keep
+        # the supported 0.159 CLI. Matching instances need no adapter migration.
+        if not args.runtime and runtime['typeId'] == 'codex-0.159' and re.fullmatch(r'codex-cli 0\.159\.\d+(?:[-+][^\s]+)?', version):
+            print(f'{runtime_id}: {version} 与现有适配器匹配，保留')
+            continue
         if not re.fullmatch(r'codex-cli 0\.166\.\d+(?:[-+][^\s]+)?', version):
             parser.error(f'实例 {runtime_id} 所配置的可执行文件不是 Codex CLI 0.166.x')
         if runtime['typeId'] != 'codex-0.166':

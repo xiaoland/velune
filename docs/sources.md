@@ -106,6 +106,7 @@
 
 - <a id="2026-10-27分布式可观测性"></a>[2026-10-27：分布式可观测性](sources/development.md#2026-10-27分布式可观测性)
 - <a id="s63"></a>[S63 · 显式手动迁移](sources/development.md#s63)
+- <a id="s79"></a>[S79 · 必要迁移的持续授权](sources/development.md#s79)
 
 ## 综合使用反馈与修复要求
 

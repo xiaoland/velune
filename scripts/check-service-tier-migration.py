@@ -136,6 +136,32 @@ class MigrationTests(unittest.TestCase):
         self.invoke(apply=True, success=False)
         self.assert_unchanged(original)
 
+    @unittest.skipIf(os.name == "nt", "合成 CLI 使用 POSIX shell")
+    def test_codex_runner_keeps_supported_version_and_migrates_new_binary(self):
+        binary = self.home / "codex"
+        binary.write_text("#!/bin/sh\nprintf 'codex-cli 0.159.3\\n'\n")
+        binary.chmod(0o700)
+        config = self.read("generic-config.json")
+        config["runtimeInstances"][0].update(typeId="codex-0.159", settings={"binary": str(binary)})
+        self.write("generic-config.json", config)
+        original = (self.home / "generic-config.json").read_bytes()
+        # A matching old adapter must not block the full input upgrade.
+        self.invoke(SCRIPTS / "run-migrations.py")
+        self.assertEqual((self.home / "generic-config.json").read_bytes(), original)
+        self.assertEqual(self.read("composer-inputs.json")["schemaVersion"], 2)
+        result = subprocess.run([sys.executable, str(SCRIPTS / "migrations/codex-166.py"),
+                                 "--home", str(self.home), "--runtime", "codex", "--apply"],
+                                capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual((self.home / "generic-config.json").read_bytes(), original)
+        binary.write_text("#!/bin/sh\nprintf 'codex-cli 0.166.0-alpha.6\\n'\n")
+        self.invoke(SCRIPTS / "migrations/codex-166.py", apply=True)
+        self.assertEqual(self.read("generic-config.json")["runtimeInstances"][0]["typeId"], "codex-0.166")
+        binary.write_text("#!/bin/sh\nprintf 'codex-cli 0.159.3\\n'\n")
+        self.write("conversation-links.json", {"schemaVersion": 1, "links": [{"segments": [
+            {"runtimeInstanceId": "codex", "runtimeTypeId": "codex-0.159"}]}]})
+        self.invoke(SCRIPTS / "migrations/codex-166.py", apply=True, success=False)
+
     @unittest.skipIf(os.name == "nt", "此锁验证使用 POSIX flock")
     def test_live_runtime_lock_refuses_write(self):
         import fcntl
