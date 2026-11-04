@@ -1,41 +1,37 @@
-# Velune 项目知识导航
+# Velune 文档导航
 
-这里是 Velune 长期知识的入口，每类知识只在一处维护。Beluna 是独立的姐妹项目，不与本导航混用。任务进行中的计划、临时证据与未决事项放在 Task Packet；任务完成后，仍成立的事实并入下列文档，任务包删除（git 保留历史）。
+按要解决的问题进入对应主题，不必从头加载全部文档。PRD 维护当前产品规则，设计文档维护实现契约，来源记录保留历史决定；任务计划、临时证据和未决项不混入这三类文档。
 
-## 产品
+## 从哪里开始
 
-- [产品定义](prd/index.md)：为什么做、核心优先级、已确认边界与术语；各能力的行为见其“能力”一节列出的分册
-- [来源索引](sources.md)：关键用户决定的定位
-- [界面与交互](../DESIGN.md)：跨平台的界面原则与交互模式
+| 需要了解什么 | 入口 |
+| --- | --- |
+| 产品目的、范围与术语 | [产品定义](prd/index.md)、[范围与术语](prd/scope.md) |
+| 某项功能应该怎样工作 | [能力索引](prd/index.md#能力)，直接进入行为分册 |
+| 核心、平台与远控怎样协作 | [技术契约索引](product-tdd/index.md)，按问题进入设计 |
+| 界面原则及平台惯例 | [DESIGN](../DESIGN.md)，具体平台见下表 |
+| 构建、运行、验证、迁移与排障 | [开发与复验](development.md) |
+| 用户为什么作出某个决定 | [来源索引](sources.md)，按主题或 S 编号追溯 |
+| 仍有哪些未决或未验证项 | [待决事项与已知缺口](../tasks/open-items/packet.md) |
 
-## 技术设计
+## 实现与验证位置
 
-- [Product TDD](product-tdd/index.md)：核心与平台 app 的分工，跨 unit 契约文档入口
-- [多 Harness 路由与协作架构](design/architecture.md)：package 拆分与平台装配、会话权威与展示投影、运行时、协作与执行 owner
-- [AI 服务与 AI 网关](design/ai-service.md)：操作、provider 与网关的职责，协议转换、路由、额度与用量分析
-- [远程访问](design/remote-access.md)：设备、配对、连接与远程调用
-- [遥测装配与关联](design/telemetry.md)：本机配置、SDK 代际、一次性分享与分布式诊断
+| 范围 | 入口 |
+| --- | --- |
+| 共享 Rust packages | [架构职责表](design/architecture.md#独立-package-与平台装配)，再进入对应 package README |
+| macOS | [Mac README](../app/mac/README.md) |
+| Windows | [Windows README](../app/windows/README.md) |
+| iPad／iPhone | [iOS README](../app/ios/README.md) |
+| Android | [Android README](../app/android/README.md) |
+| 当前任务 | [tasks/](../tasks/) 中相应任务的 `packet.md`；完成后删除，历史由 git 保留 |
 
-各 unit 的内部设计在其 README：共享核心见 `packages/*/README.md`，平台 app 见 `app/*/README.md`。
+产品目标、设计契约与交付证据分别阅读。来源中的“本轮”“当前切片”和操作授权只属于当时上下文，不能推定今天仍未实现或已获新任务授权。各平台的实现和验证边界由其 README 与任务记录说明。
 
-## 开发
+## 维护约定
 
-- [开发与复验](development.md)：构建、运行、验证方式与开发环境
+每条规则只在一个主题维护，其他页链接引用。按独立用途拆分，不把同一主题机械切成编号文件；入口只提供定位和必要边界。修改规则时合并已被明确取代的表述，保留来源链接；无法确定是否取代的差异留在任务中核实，不让读者自行按日期猜测。
 
-## 当前工作
-
-- [输入区状态、轮次展示与恢复](../tasks/composer-turn-recovery/packet.md)
-
-- [待决事项与已知缺口](../tasks/open-items/packet.md)：尚未解决的用户决定、未授权的候选与未验证的能力
-
-## 协作入口
-
-- [仓库 README](../README.md)
-- [共享 Agent 指引](../AGENTS.md)
-
-## 文档方法
-
-采用 xiaoland/svc 的[知识归属](https://github.com/xiaoland/svc/blob/4fe4c66ac4deb35209069c00b1bbdc1b22aae3af/corpus/specs/index.md)与 [Task Packet](https://github.com/xiaoland/svc/blob/4fe4c66ac4deb35209069c00b1bbdc1b22aae3af/corpus/task-packet/index.md)方法。项目文档可以直接阅读和编辑，无需 SVC CLI、配置文件或运行环境。
+[仓库 README](../README.md)面向产品使用者，[Agent 指引](../AGENTS.md)维护仓库工作约束。Beluna 是独立姐妹项目，不与本目录混用。
 
 <!-- svc:begin navigation sha256=55c5c21e0087021bc7f81047e2ffe91f889b81829473655d86d78fbe2029d4f2 -->
 ## SVC CLI

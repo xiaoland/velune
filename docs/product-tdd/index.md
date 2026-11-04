@@ -1,57 +1,39 @@
-# Velune Product TDD
+# Velune 跨 unit 技术契约
 
-本目录是跨 unit 技术契约的入口：两个以上 unit 必须一致遵守、单靠代码与类型不足以保住含义的约定。产品行为以 [PRD](../prd/index.md) 为准；单个 unit 的内部设计归该 unit。
+<a id="velune-product-tdd"></a>
 
-## Admission
+本入口收录两个以上 unit 必须一致遵守、单靠代码类型不足以说明的权威归属、生命周期与失败语义。产品行为归 [PRD](../prd/index.md)；单个 unit 的内部设计归其 README。技术设计存在不等于相关平台或真实服务已完成验收，已知缺口见[任务记录](../../tasks/open-items/packet.md)。
 
-- 依赖方：共享 Rust packages（经 `bindings` 暴露的 `application`）、平台 app（Mac、Windows、Android）与远控对端。
-- 失去后的后果：各端各自实现一份产品规则，彼此及与远端设备的行为分叉；本机与远端经同一业务接口的前提失效。
-- 为何代码不够：`bindings` 的类型说明“有什么”，说不清“谁说了算”；平台 app 能用本地状态绕开核心而仍然编译通过。
+## 按问题读取
 
-## 平台 app 与 application 的分工
+| 要解决的问题 | 契约 |
+| --- | --- |
+| 哪些产品规则由核心统一，平台能保存什么 | [核心与平台分工](../design/platform-contracts.md) |
+| 包依赖、完整端／控制端装配、唯一执行 owner | [架构](../design/architecture.md) |
+| Harness 如何接入、HOME／SSH、进程寿命与网关注入 | [运行时接入与执行](../design/runtime-execution.md) |
+| 会话投影、跨 Harness 接续、A2A、控制权与定时派发 | [会话与协作](../design/conversations.md) |
+| 输入内容、目标配置、跨设备修订与新建交接 | [Composer 输入身份与同步](../design/composer-state.md) |
+| AI 操作、认证、路由、额度、协议转换与分析 | [AI 服务与网关](../design/ai-service.md) |
+| 网关切换、协议保真与 token 计量 | [LLM 网关](../design/ai-gateway.md) |
+| 组织报表、账单缓存与查询凭据 | [组织用量与账单](../design/ai-billing.md) |
+| 配对、设备身份、网络恢复与远程请求交付 | [远程访问](../design/remote-access.md) |
+| SDK 装配、关联、指标、分享与本地问题历史 | [遥测](../design/telemetry.md) |
 
-- **核心拥有产品规则与产品状态。** 下列内容由 `application` 计算或持久化，经绑定取得，平台 app 不重算、不另存：
-  - 会话转录的轮次划分（工作过程成员、回复起点、时长、运行状态、该轮配置与用量）与大纲条目；
-  - 下一轮意图的解析／变更规则、按“会话 × 运行时”保存的选择、新会话默认、会话输入草稿与发送队列；
-  - 会话列表的分组、排序、筛选、限额、折叠、置顶、已读、归档、项目及其文件夹；
-  - 新会话的工作目录候选，按运行时执行位置从完整项目清单生成，经 `ConfigurationSnapshot.working_directory_projects` 交付，不依赖侧栏加载窗口；
-  - 设置中的产品选项：大纲按钮行为、关联会话打开方式、用量显示、status line 项；
-  - composer 额度的来源解析、路由成员归并、模型窗口适用范围及历史限额归属；平台使用显式下一轮意图查询，不按模型名或本地配置自行挑选来源；
-  - 会话控制权观察与输入准入，以及执行设备上的定时任务定义、触发领取、派发与运行账本；
-  - 可选项与可用性：运行时类型及其字段、协议、提供商模板、模型目录、推理强度、权限模式、ACP 会话选项。
-- **平台 app 拥有呈现状态。** 窗口、标签、分屏、停靠区与工具窗口的布局，快捷键绑定，阅读位置与展开状态由各端按平台惯例保存，不经远控同步。问题面板是核心持久日志的投影，跨重启保留，其生命周期归[遥测设计](../design/telemetry.md)。
-- **输入缓冲的归属随容器。** 会话内与发送 sheet 使用核心保存的会话草稿／选择；独立停靠、浮动或工具窗口的输入缓冲（正文、附件、撤销和明确选择）归所属窗口，随窗口恢复。平台用核心共用的 `resolve_next_turn`／`change_next_turn` 解析、校验显式选择，发送与额度查询捕获同一个目标及有效值；未指定项按该目标解析，不复制一套选择规则。面板收起不改变归属。
-- **本机与远端同一条路径。** 平台 app 只通过 `VeluneApplication` 访问本机或远端设备，同一份界面代码，不按目标设备分支业务逻辑。
-- **缺口在核心补。** 某端需要一条产品规则而核心没有给出时，先在核心补齐再由各端消费，不在一端先行实现；某端暂缺一项能力时如实列为已知限制。
+## 约束与验证
 
-## 跨 unit 契约文档
+共享 packages、平台 app 和远控对端必须遵守同一产品状态与业务接口。`bindings` 类型说明“有什么”，但不能阻止平台用本地状态重算规则；评审仍须核对[核心拥有的产品状态](../design/platform-contracts.md#平台-app-与-application-的分工)。类型与绑定的兼容性通过生成和各端构建验证。
 
-- [多 Harness 路由与协作架构](../design/architecture.md)：package 拆分与平台装配、会话权威与展示投影、运行时、协作与执行 owner
-- [AI 服务与 AI 网关](../design/ai-service.md)：操作、provider 与网关的职责，协议与转换，路由与额度
-- [Composer 输入身份与同步](../design/composer-state.md)：稳定输入、恢复关联、执行目标、修订与新建交接
-- [远程访问](../design/remote-access.md)：设备、配对、连接与远程调用
-- [遥测装配与关联](../design/telemetry.md)：本机配置、双 SDK 代际、一次性分享与分布式诊断
+<a id="admission"></a>
+<a id="平台-app-与-application-的分工"></a>
+<a id="验证"></a>
+分工及其检查见[核心与平台分工](../design/platform-contracts.md)。
 
-## 会话输入准入与调度
+<a id="跨-unit-契约文档"></a>
+契约目录见上方[按问题读取](#按问题读取)。
 
-`ConversationActions.input_access` 独立于 `RunState`。适配器报告原生控制权，application 以执行位置、运行时目录与原生会话身份管理后台观察；首次检查、外部控制、检查不可用、外部执行与只读原因分别投影。未提供排他报告的适配器不伪装为已证明可写；原生写入仍是最终仲裁。平台只消费语义状态，不扫描锁路径、不解析原生错误。锁定保留草稿、允许复制；恢复可编辑不自动发送。发送、恢复、压缩、编辑、steer、队列启动和定时任务共用准入。
+<a id="会话输入准入与调度"></a>
+<a id="自动命名兜底"></a>
+输入准入、定时派发与自动命名归[会话契约](../design/conversations.md)。
 
-本地调度 owner 与 `ApplicationService` 执行 owner 同寿命，复用应用 HOME 的排他锁；窗口、MCP 与远端通过同一命令管理，不能另起一份。定义 revision 与运行账本在 `scheduled-tasks.sqlite3` 保存，事务领取先于派发；重开跳过错过触发，对跨崩溃接纳结果不明的调用不自动重发。既有任务的来源与交接约束见 [定时任务 PRD](../prd/scheduled-tasks.md)。
-
-## 验证
-
-- 类型契约由 `packages/bindings` 生成的各语言绑定强制；平台 app 构建失败即契约不一致。
-- 分工靠评审：新增平台代码时检查它是否重算了上文核心拥有的内容。
-
-
-## Artifact 与编辑区文稿
-
-Mac 的 `EditorTab` 拥有标签身份及激活／关闭／拖动契约，`ConversationTab` 与 `ArtifactTab` 分别拥有会话和内容的生命周期。`Pane` 与窗口交接只处理编辑文稿，不要求每个标签都有运行时 store。Artifact 是携带内容类型、来源定位和源码快照的值；身份包含来源与内容摘要，sheet、标签和独立窗口复用同一 `ArtifactTab`，源码／图表选择随对象移动。已停靠内容加入既有布局日志，临时 sheet 不另建持久存储。
-
-Markdown 代码块把识别出的 Mermaid 交给统一 Artifact 打开入口，不自行创建浏览器或窗口。`ArtifactView` 按类型选 renderer；Mermaid 使用打包的固定版本与本地 WKWebView，内容经参数传入。会话命令在没有会话目标时禁用，查看内容不取得会话控制权或执行生命周期。产品规则见[Artifact](../prd/conversation-view.md#artifact)。
-
-## 自动命名兜底
-
-application 负责实例开关、模型选择、生成时机与持久名称；ai-provider 的文本操作负责三种原生协议的请求／响应边界。调用直接消费 AI 服务，不启动 Harness 或本地网关；后台任务有取消与超时，不占核心调度线程。响应只生成标题，不带工具能力。native／generated／firstMessage 保留不同来源，原生名称优先；无原生标题的摘要在列表与 snapshot 同一处应用 generated 元数据。
-
-生成结果写入既有会话组织记录，不修改 Harness 源文件。原生／用户命名、配置关闭或模型选择改变后，迟到结果被丢弃。平台只呈现配置与核心给出的名称，不各自发起命名请求。
+<a id="artifact-与编辑区文稿"></a>
+Mac 编辑文稿与 renderer 的专属约定见[Artifact 与编辑区文稿](../design/platform-contracts.md#artifact-与编辑区文稿)。

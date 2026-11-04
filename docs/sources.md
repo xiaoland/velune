@@ -1,598 +1,122 @@
 # 来源索引
 
-这是关键决定的精简定位表，不是聊天记录导出。消息 ID 用于回到原对话核对；没有为它们编造可公开访问的 URL。未提供精确时间的消息不补猜时间。
-
-## S1
-
-- 消息：`Sentinel_14f3d0e763e08191a2024621ccb3e8c5`
-- 时间：2026-10-01 08:47 UTC
-- 决定：停止进一步 Factory26 开发，回到用户自己的 coding agent 产品
-
-## S2
-
-- 消息：`Sentinel_9f2c607f16748191a9a563bee396dacf`
-- 时间：2026-10-01 08:49 UTC
-- 决定：首要核心是多订阅、多模型供应商、自动路由、多 harness，以及跨 harness 会话感知、交流和协作；远程控制在此基础上通过分布式架构实现
-- 纠正：此前远程／手机优先的讨论不再作为优先级依据
-
-## S3
-
-- 消息：`Sentinel_ce566f9e822881918fdfbebeedfcc75f`
-- 决定：认可持久化任务—会话模型和任务树视图
-
-## S4
-
-- 消息：`Sentinel_06d6bb74003081919fbdccc180dfe423`
-- 决定：HAPI／Lody 属说明性参考，不要求照搬其功能或实现
-
-## S5
-
-- 消息：`Sentinel_c03879c98b7881919e313d14c34d8c0a`
-- 决定：Claude Code 订阅认证处理方式可以作为参考研究例外；尚未确定本产品认证架构
-
-## S6
-
-- 消息：`Sentinel_ce7bb3296a948191b830282c7b25b744`
-- 决定：排除 GitHub Copilot
-
-## S7
-
-- 消息：`Sentinel_d84f6f77f16881919cce80d5d5ec86e4`
-- 时间：2026-10-01 08:58 UTC
-- 请求：先初始化 Git 仓库，包括 AGENTS.md、xiaoland/svc 文档知识系统和 Task Packet；完成后再继续讨论
-
-## S8
-
-- 消息：`Sentinel_fd6950f44cc48191b07f66cb0747c17f`
-- 日期：2026-10-01
-- 澄清：需要持久化仓库，不需要打包交付；SVC 只采用文档导航和 Task Packet，不安装或保留其 CLI 及额外工程
-- 授权：可以使用用户明确给出的 Git 身份作本地提交；此授权不自动包含远端创建、push 或部署
-
-## S9
-
-- 消息：`Sentinel_55f5e7324b108191bc208034542f9f2b`
-- 时间：2026-10-01 10:03 UTC
-- 决定：首批 Harness 固定 Codex、Claude Code（语音中的 Cloud Code）、Pi；以全部可接管 LLM 路由为设计目标，调查如何实现，不以支持度重新开启选择
-- 参考：跨 Harness 会话通信可研究 lexoliu/acphub，也可采用其他方案
-- 委托：由设计方收敛方案，用户复核；本轮产出为仓库内方案与研究文档，不是产品实现
-
-## S10
-
-- 消息：`Sentinel_2ff262054c108191b25740ff1e05f8ba`
-- 时间：2026-10-01 11:28 UTC
-- 复核：认可上一轮四项产品设计；明确同意 MCP 暴露协作工具、ACP 作为可替换接入
-- 纠正：保存任务树、消息、权限和恢复状态本身不能说明如何完成跨 Harness 协作，需要区分协调机制与支撑设施
-- 技术方向：认可 SQLite，采用 Rust 核心；Apple 原生 Swift／UIKit、Android 原生 Kotlin／Jetpack Compose，替换 Web 前端；接受实验项目带来的开发不便
-- 边界：未逐项批准 FFI 工具、Apple 平台覆盖／Mac Catalyst 选择、服务打包或所有详细实现契约；未授权产品实现、登录或费用测试
-
-## 其他上下文的证据等级
-
-Codex／Claude Code／Pi 的目标范围、LLM 路由与设备调度的区分、用户有两个 ChatGPT 账户，以及完整稳定可恢复、避免锁定等背景，来自初始化时传入的已整理上下文；当前没有为每一句提供独立消息 ID。本仓库保留其含义，不伪造逐句引文。若后来出现冲突，以最新用户明确决定为准并补充来源。
-
-## SVC 官方来源
-
-- [官方仓库](https://github.com/xiaoland/svc)
-- 检查时间：2026-10-01 UTC
-- 源提交：[4fe4c66ac4deb35209069c00b1bbdc1b22aae3af](https://github.com/xiaoland/svc/commit/4fe4c66ac4deb35209069c00b1bbdc1b22aae3af)
-- [Task Packet 语义](https://github.com/xiaoland/svc/blob/4fe4c66ac4deb35209069c00b1bbdc1b22aae3af/corpus/task-packet/index.md)
-- [知识归属规范](https://github.com/xiaoland/svc/blob/4fe4c66ac4deb35209069c00b1bbdc1b22aae3af/corpus/specs/index.md)
-- [PRD 规范](https://github.com/xiaoland/svc/blob/4fe4c66ac4deb35209069c00b1bbdc1b22aae3af/corpus/specs/prd/index.md)
-
-仅采用上述文档方法，不把 SVC CLI 纳入本仓库。PRD 放在 `docs/prd/index.md`，遵从该提交的 PRD 规范入口；不另建旧模板路径的副本。
-
-## S11
-
-- 来源：父会话 `01a0f01b-c0bb-719d-af64-671b0563103f` 的本次 Codex Cloud 委托及后续转达；不伪造原始消息 ID
-- 时间：2026-10-02；用户 06:27 同意先做无凭据最小原型
-- 授权：Rust＋SQLite 核心、本地确定性模拟、代码／文档／测试、官方开发工具链及正常 registry 依赖、本地 Git 提交
-- 仍禁止：读取秘密、登录、真实模型／付费请求、未授权 push／PR／部署、Factory26、SVC CLI
-- 后续要求：Codex Cloud 持续开发 → Mac mini 原生安装体验 → 用户反馈 → 修复复验；Mac mini 首个目标，移动端后续 LAN 连接，不改 VPN。后续父会话报告 Mac 构建条件可用并获准 Swift＋AppKit 薄壳；06:43 UTC 用户明确要求先完成核心验证再接 UI，批准设备构建使用；不自动批准远端 push
-
-## S13
-
-- 来源：父会话 `01a0fb5e-ceba-778c-9e3d-6cbf22b340d8` 于 2026-10-03 转达的逐项讨论结果和有界实现委托；不伪造原始消息 ID
-- 已确认：AI service 是独立 lib，领域不限 LLM；sampling 是其操作；service 拥有调用方／provider 两套权威契约；provider 即 adapter，自行转换外部协议；service 不依赖具体 SDK
-- 配置：provider 为协议配置＋凭据引用＋模型列表，不增加账户／渠道实体；统一配置中心持久化，app main 装配；调用开始后配置稳定，新配置只影响后续调用
-- 范围：只模块／类型／构造校验／必要接口与文档；不做路由、fallback、重试、网络、真实凭据、Host/UI 改造或测试，只允许静态基础检查
-- 隔离：从已发布 `3bce5f9` 新 worktree／分支开始，保留暂停的 IPC／测试改动；允许新有界开发分支普通 push，不改 main、不强推、不创建 PR
-- 验收补充：用户指出仅实现不足以闭环，需要验收方案；随后提出真实 AI 接入并固定 fixture。provider／model、凭据位置和预算尚未答复，未授权猜测或提前访问秘密／调用。固定 fixture 不是无限新增测试框架授权
-
-
-## S14
-
-2026-10-03，父会话 `01a0fb5e-ceba-778c-9e3d-6cbf22b340d8` 的有界委托：从 `7c6f98267a56101d2117311adeaf10b50b01d8f2` 实现 service 直接流式派发、MiniMax 普通 API adapter、合成 live fixture 与离线重复验收；预算总 ¥5，本步最多新增 8 attempts，先文本／工具各一次，工具只返回不执行。批准普通 push 新 dev 分支，禁止 tests／PR／main／force／部署／Host UI 改造／其他 provider。Networksecret 配置类型由用户配置页证据与平台占位契约确认，不输出／保存值。长期技术归属 [AI service](design/ai-service.md)，实际用量、失败和剩余验收项归属 任务（git 历史：tasks/ai-service-contracts）。
-
-## S15
-
-2026-10-04，本会话用户要求将 `dev/minimax-stream-fixtures` 合并主分支，并推进 Pi agent＋Mac app 首循环；资源示例为 ChatGPT 订阅、Tokenflux、ARK Coding Plan。随后明确：资源由用户在应用中配置，不能硬编码；需要 Chatbot 界面与会话列表；会话持久化不在本任务，Velune 只是 projection；真实验收由用户做；模块至少拆为 core（AI 服务、Harness 适配器）与 app（Mac 等平台）。用户在体验后要求完全重写 Mac app，提供 Velune SVG logo，并要求避免与任何提供商或 Agent Harness 耦合。用户进一步指出该界面缺乏 Apple 原生体验，确认项目级原则：尽可能贴近所属平台原生视觉风格，品牌／软件特点在微小细节体现。随后要求 AI providers、Harness 等应用配置通过文件系统持久化，位于 `VELUNE_HOME`（默认 `~/.velune`）。用户进一步明确 Apple app 不必独立验收深色模式：使用原生组件与原生系统视觉，常规明暗适配交由系统。产品边界归属 [PRD](prd/index.md#pi-与-mac-首循环)，执行证据归属 任务（git 历史：tasks/pi-mac-first-loop）。没有为当前消息伪造 ID。
-
-S15 后续纠正：模型独立且跨提供商共享；提供商可关联多个模型，模型有参数与展示元数据；协议首个为 OpenAI ChatCompletions v1 枚举选项。提供商只是 Velune 网关配置一部分，另有路由与 fail-over，Harness 仅使用注入的网关，不利用已有上游认证。“连接”页改为 Agent 运行时，类型与配置实例分离，同为 Pi 的不同配置也形成不同实例。
-
-S15 品牌补充：默认使用 graphite logo，不使用 theme 配色作为默认标志。
-
-S15 产品与协作补充：Velune 是 control surface 而非 Agent；消息按用户右、LLM 左、系统／Harness 中间布局，不显示头像／昵称，不标记 LLM 为 Velune。用户明确持续迭代协作，开发方主动维护任务、长期文档和代码质量，并允许自主提交当前任务改动。此授权未扩为 push／部署。
-
-S15 运行与交付补充：core 应为跨平台一致的 lib，由各平台 app 通过 ABI 嵌入，不能作为独立 Host 进程。Mac 安装到 Applications，修改后重新安装；当前产品显示版本为 0.1 beta.1。旧 Host 版本不匹配是接入实现的偏差，不应要求用户长期手动管理该进程。
-
-S15 协作方式澄清：采用敏捷开发，需求在实现阶段可以变化；早期重视长期可迭代的技术架构与开发基础，不要求仓促产出。关键设计善用 advisor，发现需要用户取舍的问题时，带着证据与建议请求决定。
-
-S15 架构参考补充：用户提出 Mastra、HAPI、Lody 等实现可用于借鉴思路与架构，不以复制功能为目标。具体技术结论需按相关设计问题检查源码版本与前提，不因列入参考就认定兼容或采用。
-
-S15 后续配置与交付纠正：工作目录属于具体会话，运行时目录是配置／状态根目录；用户要求从运行时表单移除必填工作目录。用户允许开发方随时退出或强制退出运行中的 Velune 完成更新，并要求删除全部既有自动化测试，采用静态检查和人工／临时端到端验收。
-
-## S16：统一网关与 Harness 配置来源
-
-2026-10-04 用户提出保留 Harness 原提供商配置，读取、接管并共享其配置与认证来源；希望复用 Pi 订阅登录，Velune 管理会话默认使用 `velune/auto` 或按 Harness 区分的稳定入口。该意图不等同于复制令牌、复用任何客户端注册身份或已授权真实登录。
-
-官方复核：[ChatGPT 开源客户端注册与登录](https://developers.openai.com/siwc/token-sharing-open-source/sign-in)要求明确应用身份、主机标识与授权 scope；[模型与推理](https://developers.openai.com/siwc/token-sharing-open-source/models-and-inference)描述使用 public Responses 端点。2026-10-04 检查；不能将旧 Codex backend 认证与该路径视为相同。Pi 固定版本的具体能力与验证缺口留在当前 Task Packet。
-
-用户在本轮进一步澄清：`max_output_tokens` 等具体字段用于举例能力参数，不是必须支持的需求；以提供商规定的协议为权威。原生 Responses、稳定入口和认证委托的实施已获授权，真实账户验收仍由用户进行。
-
-S16 导入语义纠正：用户明确将 Harness 提供商配置导入 Velune 视为一项完整功能，认证来源接入属于其中，不能作为完整导入已交付的证据。
-
-2026-10-04 用户进一步提醒两个独立边界：Agent Harness 不与 AI 服务耦合，AI 服务不与大语言模型领域耦合；导入配置属于适配／装配行为，LLM 相关字段不能成为整个 AI 服务的基础假设。需求归属 PRD“AI service 的有界实施方向”。
-
-2026-10-04 用户补充原生视觉原则：原生控件无需专门实现深色模式，但 Core Graphics、固定色 PNG、logo、自定义阴影、渐变和边框仍需要处理暗色背景下的显示。此补充已归位 PRD 的平台体验原则。
-
-## S17
-
-2026-10-05 用户提出：共享能力不应全部集中在巨大 core，可考虑 ai、agent-runtime、persist 等独立顶级 package，各平台通过 ABI 按需消费；Android／iOS 例如只需要 remote。用户明确这些名字、边界和逐包 ABI 均为待探讨设想，不是已批准的具体划分。产品意图归 PRD，候选方案归架构，源码观察与下一步归 package-boundaries Task Packet。用户计划次日验收现有 Mac 版本，本次讨论不授权提前重构或改变该安装产物。
-
-S17 后续修订：用户基本认可候选职责边界，同意不建立通用存储框架，但质疑配置仓库独立 package 的必要性，并明确每个 package、app 都是一个 unit。职责边界的认可不等于所有职责必须各建一个包，本轮仍是讨论而非源码重构。
-
-S17 跨语言接入澄清：用户认可配置职责安排，进一步说明 ABI 不是固定技术选择，真实目标是 Swift／Kotlin／C# 等使用 Rust 开发的库。底层调用约定、语言绑定和产物打包应分别讨论；本轮不要求替换现有 Mac 接入。候选工具的官方资料与未验证项留在讨论任务。
-
-S17 实施授权：用户决定全面切换 UniFFI，并要求现在开始拆分。此授权覆盖 package 重构、生成绑定接入及 Mac 重建安装，取代前述仅讨论的阶段限制。
-
-2026-10-05 用户纠正提供商导入入口：选择一个已配置的 Agent 运行时导入，而非重新填写运行时目录。此反馈与导入 sheet 布局修复共同归首循环 Task Packet；来源选择意图归 PRD。
-
-2026-10-05 用户反馈 Pi 导入只有泛化错误，并要求使用 Rust／Swift 各自成熟日志生态做好可观测性，OTLP 暂不接入但保留扩展能力。用户随后确认修正目录后读取成功，要求独立 sub-agent 重新设计导入界面的功能、内容层级、布局、组件和交互。日志契约归架构／开发说明，易变验证与 UI 方案归首循环任务。
-
-2026-10-05 用户在导入验收失败后明确：当前网关无需协议转换／翻译，仅做原生透传、路由与 fail-over。此原则同时适用于 ChatCompletions 和 Responses，产品意图归 PRD，当前实现偏差与技术边界归 AI service 设计，失败证据归首循环任务。
-
-2026-10-05 用户要求从需求重新复核整个 AI 网关并审计实现，必要覆盖整个 AI 服务，明确名称不能限定为 Harness 网关。此授权为需求、设计与实现审计，不直接等同全部重构实施。已确认职责归 PRD 和 AI 服务设计，源码证据及方案取舍归 AI 网关审计任务。
-2026-10-05，用户允许 `SamplingOutput` 作为业务表示，但要求可观测性内容与业务数据分离；指定处理方向为 HTTP → OpenAI ChatCompletions → messages、outputs／stats → SamplingOutput。后续澄清 usage、finish reason 可以同时是业务数据和观察对象。设计释义为原生协议先行，业务投影按需消费，观察独立关联并可消费业务统计。权威归属为 [AI 服务设计](design/ai-service.md)。
-
-2026-10-05，用户明确 AI 服务不限于 LLM，当前 gateway 仅为 LLM Gateway，gateway 是 AI 模块的一种应用模式。职责关系不推出 package 合并，也不要求所有 AI 调用经过网关。权威产品归属为 [PRD](prd/index.md)，技术边界归 [AI 服务设计](design/ai-service.md)。
-
-2026-10-05，用户指出导入后“Pi Agent 认证来源”被列为认证方式，违反 AI 服务与 Harness 解耦；进一步明确仅保留外部凭据引用仍危险，要求统一集中管理。认证资源、目标授权与来源适配归 application，提供商选择已登记资源，Harness 来源不成为 AI 认证类型。既有平台秘密与原订阅认证保留约束继续适用。权威归属为 [PRD](prd/index.md)及 [AI 服务设计](design/ai-service.md)。
-
-
-2026-10-05，用户进一步纠正 model-id：这是提供商规定的模型标识，不是内部记录键；要求核对 Vercel AI SDK、Mastra、Cloudflare AI Gateway 与 OpenAI Developer Docs 的基本概念和业务模型。产品定义归 PRD，官方资料及当前代码对照归 AI 网关审计任务；这次研究不自行授权新的模型迁移实现。
-
-
-2026-10-05 用户认可模型业务复核，明确授权立即实施重构，并反馈导入详情 Disclosure 正文额外左缩进；随后明确本阶段所有重构 hard-cutoff。实施不保留旧 Velune 契约或迁移，旧普通配置直接重置，原 Harness 文件、会话与平台秘密不删除；需求归 PRD，设计归 AI 服务设计，执行证据归 AI 网关任务。
-
-
-2026-10-05 用户后续纠正：ID 与 reasoning effort 藏在提供商页暴露参数归属问题；要求先厘清模型／提供商配置，认为独立模型页与统一凭据管理无必要，提供商协议／地址必须可修改，API key 允许查看和编辑。取代此前强制 Keychain 与独立认证页的产品决定；当前安装源码尚未据此重构。
-
-
-2026-10-05 用户进一步解释：“模型可跨提供商存在”是现实，对 Velune 的意义是避免反复填写模型参数、快速填入模板。已确认的是模板复用价值；配置快照与模板更新不自动传播是助手建议，尚未成为用户决定。归属为 [PRD](prd/ai-providers.md)。
-
-
-2026-10-05 用户复核认可提供商／模型能力／调用参数的归属模型并授权开工；特别要求随提供商表单复杂化，重新整理功能内容需求并重新设计原生界面。实施采用模板快填形成独立配置快照、不自动传播更新作为最小技术选择，不新增模板同步能力。
-
-
-2026-10-05 用户补充提供商 UI 设计方向：窗口更大不一定最优，优先隐藏次要内容、表达层级和渐进披露。作为实施中的持续反馈，已交给 UI owner 合并到现有设计。
-
-2026-10-06 用户授权继续支持 Codex app-server 与 deepseek-harness，要求直接使用 [huihua](https://github.com/wibus-wee/huihua) 的包而非复制源码，遵守声明和许可证；要求运行时类型以 regex 纳入版本兼容，避免 adapter 与运行时不匹配而未诊断。用户次日统一验收；开发方继续隔离验证和安装，不读取真实会话或凭据。
-
-2026-10-06 用户进一步明确版本分型：不同 breaking-change 版本视为不同运行时，允许多个 Pi adapter 版本并存，不只是不匹配报错；并建议参考 obelisk。后者暂以最吻合的 tommy0103/obelisk 核对，不由参考建议推定需要会话索引数据库。
-
-2026-10-06 用户建议重点学习 Magpie。已定位 [yetone/magpie](https://github.com/yetone/magpie)，只进行架构与实现参考复核；这不构成引入 Go／Wails、协议翻译、账号切换或自动 fail-over 的产品决定。固定源码与比较证据归 研究 packet（git 历史：tasks/magpie-reference）。
-
-2026-10-06 用户明确“开始应用对 magpie 的吸纳”，授权将已核对机制落到当前产品。当前切片采用版本化协议能力、导入选择／替换边界和无正文的网关生命周期观测；不接入 Magpie 包或复制源码，不引入协议翻译、重试／fail-over 或 Wails。设计归架构和 AI 服务设计，实施证据归 Magpie packet（git 历史：tasks/magpie-reference）。
-
-2026-10-06 用户验收后质疑运行时“初始模型”和“连接运行时”，并要求修复更多菜单图标、从公开目录取得模型模板。生命周期方向仍在复核，不把提问自动提升为移除现有契约的决定；模板与图标改进已实施授权。公开源核对为 [models.dev 官方 README](https://github.com/anomalyco/models.dev#api)，provider-scoped API 与模板用途归 AI 服务设计，当前方案和验收归 体验任务（git 历史：tasks/runtime-session-experience）。
-
-2026-10-06 用户明确确认“会话选模型、自动准备运行时、独立浏览历史”，指出无初始模型导致连接失败是不正确的前置关系，并要求已添加运行时即可使用。此决定修订原运行时默认模型与手动连接流程；PRD 已更新。启用／禁用是可追加能力，当前必要切片为去除模型与准备对浏览的阻塞。实施归 体验任务（git 历史：tasks/runtime-session-experience）。
-
-2026-10-06 用户反馈标题被 JSONL 文件名替代、时间未格式化、消息未到底部，以及气泡／对齐／Markdown／长列表性能问题；同时确认内部应有权威会话模型，UI 条目可拆分。产品展示意图归 PRD，具体模型和实现证据归 展示任务（git 历史：tasks/conversation-presentation）。
-
-2026-10-06 用户要求删除、重命名真实运行时会话，明确不在 Velune 内覆盖；反馈切换时目标选中→原会话选中→目标选中的回跳，要求考虑加载时延。产品意图归 PRD，执行见 会话管理任务（git 历史：tasks/session-management）。
-
-2026-10-06 用户要求会话列表 context menu 及相关操作在会话加载中保持可用；这修订此前加载时整侧栏禁用的交互选择，原生持久数据与迟到结果隔离要求继续适用。实施归 会话管理任务（git 历史：tasks/session-management）。
-
-2026-10-06 用户追加统一会话浏览需求：单列表包含所有启用 Agent Runtime，支持 Runtime、CWD project、label／section 分组筛选及创建／更新时间排序，不按执行运行时分别显示列表。懒加载／分页允许，标签来源正澄清。归 统一浏览任务（git 历史：tasks/conversation-browser）。
-
-同轮用户澄清 label／section 只是例子，非所有运行时均支持，Codex section 聚合 project；未来自定义 tag／label／section 应由 Velune 独立持久化组织记录。本轮先实现 runtime／project 分组筛选与时间排序，不引入标签 CRUD。
-
-2026-10-06 用户反馈诊断18dbddc3184363d8-a9ce-3的历史详情失败，并要求提供商／运行时双击编辑、模板原生多选与独立选取sheet、运行时快速检测导入、Anthropic Messages原生支持、每组默认20可配置及会话多选。执行与诊断证据归 本轮体验与协议任务（git 历史：tasks/settings-protocol-refinement），正式产品意图归PRD。
-
-2026-10-06 会话浏览后续：用户指出顶部运行时／模型应决定下个 turn 的执行目标，并将其关联到跨 Harness 会话；打开原生历史应由会话来源决定。来源与执行意图区分已进入 PRD；观察到的读取故障相关性仍需诊断证据，不能提升为已确认根因。
-
-2026-10-06 用户接受“目标原生会话＋上下文交接＋只持久化关联元数据”。这授权 application 保存原生会话引用与切换位置，以恢复同一逻辑会话，消息仍归各 Harness；不重放原生工具或审批状态。范围归 PRD，实施与验证归 跨 Harness 接续任务（git 历史：tasks/cross-harness-continuation）。
-
-2026-10-06 用户报告新的 read/ambiguous_session 诊断，授权继续修复。官方 Codex [0.159.3 recorder](https://github.com/openai/codex/blob/rust-v0.159.3/codex-rs/rollout/src/recorder.rs) 与 [revert 实现](https://github.com/openai/codex/blob/rust-v0.159.3/codex-rs/thread-store/src/local/revert_thread.rs) 明确保留 thread ID、创建新 rollout 并保留旧文件；多个文件使用同一 thread ID 是合法行为。[版本化原生协议](https://github.com/openai/codex/blob/rust-v0.159.3/codex-rs/app-server-protocol/src/protocol/v2/thread.rs) 提供逻辑历史分页；不能用物理文件扫描唯一性代替原生历史。检查日期为本日，适用该 variant；真实隔离复现与安装证据归 历史身份修复任务（git 历史：tasks/codex-history-identity），不宣称读取过用户真实会话。
-
-2026-10-06 用户将双击进入编辑明确为项目级 UI/UX 范式，要求所有可编辑列表遵循；并禁止应用捆绑任何 Agent runtime，要求排查系统 Pi 的版本发现。产品意图归 PRD，外部安装解析、版本证据和隔离验收归 本轮 packet（git 历史：tasks/external-runtime-and-editing）。
-
-2026-10-06 用户授权为跨Harness对话实施ChatCompletions、Responses、Anthropic Messages的全部双向转换，建议参考Magpie／LiteLLM；随后明确全部协议转换采用best-effort而不是fail-closed。用户认可Anthropic必需输出上限缺省使用所选模型配置。当前权威要求归PRD与AI服务设计，证据和实现归 转换任务（git 历史：tasks/llm-protocol-translation）。
-
-2026-10-06 用户指出会话列表“历史读取”及 composer／设置底部错误不合理，授权移除并提供类似 VSCode Problems 的集中问题面板，入口由开发方设计。权威产品行为归 PRD，实施和隔离验收归 问题展示任务（git 历史：tasks/problems-surface）。
-
-2026-10-06 用户反馈问题窗口原因不完整，要求核对是否存在安全／隐私过滤，并确认纯本地、用户完全控制的应用不应以此删减诊断。用户同时授权 turn 工作过程折叠、两种用户消息 outline、底部图标入口与设置偏好，并建议 canonical 契约及顺序事件投影归 agent-runtime。包归属与精确折叠边界的建议已提出，当前按用户问题／最终结果可见及轻量契约保留的建议实施，尚不把建议记成用户确认。实施与验收归 本轮任务（git 历史：tasks/transcript-turns-outline）。
-
-2026-10-07 用户授权增加“分析”，参考 [Magpie](https://github.com/yetone/magpie)、[ccusage](https://ccusage.com/guide/all-reports)、[sub2api dashboard API](https://github.com/Wei-Shaw/sub2api/blob/main/frontend/src/api/admin/dashboard.ts)，理解 token 消耗与性能。参考分别体现网关调用、运行时历史及服务端聚合数据，不能假定它们具有相同统计覆盖或直接混算。产品意图归 [PRD](prd/analytics.md)，数据口径归 AI 服务设计，当前范围与证据归 分析任务（git 历史：tasks/usage-analytics）。
-
-
-2026-10-08 用户纠正网关的排他假设：Velune 注册网关提供商使不同 Harness 共享模型、聚合订阅与提供商，从未要求只能使用该网关；授权自查并删除无需求依据的门禁。现行产品归 [PRD](prd/ai-providers.md)，门禁判别和实施证据归 当前清单（git 历史：tasks/composer-pi-send）。
-
-2026-10-08 用户进一步要求边界、校验、门禁尽可能由类型检查与 lint 等静态检查表达。内部关系优先通过类型和编译器维持，外部动态输入仍在接入边界解析；实施约定归 [开发说明](development.md)，当前切片归 任务（git 历史：tasks/composer-pi-send）。
-
-2026-10-09 用户要求链接可打开／原文复制、大纲准确定位、新会话目录默认可选、各Tab独立展示会话。产品行为归PRD，共享核心与工作区边界归架构说明，证据归 会话体验任务（git 历史：tasks/mac-conversation-usability）。
-
-2026-10-09 用户要求替换MarkdownUI，采用[LiYanan2004/MarkdownView](https://github.com/LiYanan2004/MarkdownView)。用户以MarkdownUI维护趋于停滞为替换理由。已按3.0.0的[Package.swift](https://github.com/LiYanan2004/MarkdownView/blob/3.0.0/Package.swift)和[LICENSE](https://github.com/LiYanan2004/MarkdownView/blob/3.0.0/LICENSE)核对macOS13+、Swift6.2及MIT；API接入按锁定源码核对；实施及验证归会话体验任务（git 历史：tasks/mac-conversation-usability）。
-
-2026-10-09 用户反馈Markdown点击重排与长列表上滑异常，要求核对我们的组件接入和虚拟化层；明确若是MarkdownView自身缺陷不必修上游，建议考虑[gonzalezreal/textual](https://github.com/gonzalezreal/textual)。随后明确允许Velune最低支持macOS15。平台底线归PRD；依赖与容器的隔离判别、适用边界归会话体验任务（git 历史：tasks/mac-conversation-usability），候选不等同于已采用。
-
-2026-10-09 用户反馈快速上滑仍跳动甚至卡住，授权重写整个消息列表渲染实现（含必要的 agent runtime UI 事件投影）、自由本地提交，并允许更换 Markdown 渲染框架（举例 Textual）；有余力时继续优化列表与交互体验。实现选择与判别归会话体验任务（git 历史：tasks/mac-conversation-usability）。
-
-2026-10-10 用户要求推进 Rust packages：Claude Code、运行时既有提供商模型选择、每 turn 临时 Velune Gateway 与结束恢复、SSH 远程运行时及 Velune 管理 HOME。用户明确排除本轮 app／前端实施，要求把相关交互标记待实现并沉淀文档。产品行为归 [PRD](prd/agent-runtimes.md)，实现与证据归 运行时扩展任务（git 历史：tasks/runtime-provider-ssh）。
-
-2026-10-10 用户授权继续实现 ACP Adapter，随后更正参考项目为 [lexoliu/acpsub](https://github.com/lexoliu/acpsub)。本轮沿用 Rust packages 范围，App 仍待实现；产品归 PRD，协议与参考证据归 ACP 任务（git 历史：tasks/acp-adapter）。
-
-同轮用户补充：技术提议未必正确，应理解背后动机；本次目标是尽可能支持更多 Agent Harness，而不逐个适配。通用 ACP 方案必须以接入成本和真实能力覆盖判断，不以协议名称本身作为完成依据。
-
-2026-10-11 用户进一步指出 acpsub 的重点是让不同 runtime 成为另一 runtime 的 sub-agent，并明确这是 Harness 互联互通的关键功能。此要求将工作从通用 ACP 接入扩展到实际跨 Harness 委派与结果闭环，仍沿用 Rust packages 和前端待实现边界。产品要求归 [PRD](prd/collaboration.md)，实施归 Harness 协作任务（git 历史：tasks/harness-interoperation）。
-
-2026-10-11 用户提出复用 New API 的 RelayKit，以参与生态并减少重复维护协议转换；明确授权持续推进至接入完成或获得无法接入的具体证据，允许自主提交，并可考虑相邻 Factory26 的真实提供商或重放入口。技术归属及接入边界归 [AI service](design/ai-service.md)，版本、许可调查与验证归 RelayKit 任务（git 历史：tasks/new-api-reuse）。此授权不等于公开发布或替整个项目选择许可证。
-
-- 2026-10-11 用户在 RelayKit 安装后明确要求进行真实测试，允许使用相邻 Factory26 的 MiniMax、Ark Coding Plan、Qwen Coding Plan 提供商，并可固定请求用于重放。此授权覆盖合成输入的有限真实调用及脱敏采集，不涉及既有真实会话或公开凭据。
-
-- 同轮核对发现 Qwen 实际配置为第三方 Token Plan（qianwenaiapi.com），用户明确选择“使用现有 Qwen Token Plan，按真实名称记录”；不将其称为官方 Qwen Coding Plan。
-
-## S18
-
-2026-10-12 用户检查开发中的协作界面后指出：子 Agent（sub-agent）与跨 Harness 协作（A2A）不同，二者本质是否一样不是 Velune 这个 shell 要考虑的；2026-10-11 的 PRD 表述由另一会话编撰，可能有误。用户确认：A2A 参与方是普通会话（出现在会话列表、可单独打开，Agent 可联系已有会话）；联系授权若需要则归运行时设置，但倾向不做任何限制；原生 sub-agent 属于会话体验，暂时只需在消息列表中看到并可单独打开其会话。用户另提示 composer 之后需要简化（已有三个弹出按钮）。产品归 [PRD](prd/collaboration.md)，实施归 Agent 间协作任务（git 历史：tasks/agent-collaboration）。
-
-## S19
-
-2026-10-13 用户在原生 sub-agent 切片之后要求继续解决已报告的缺口，并确认收到的协作消息放在用户侧，标出来源会话即可。同条消息指出 composer 还缺少权限模式选择器。产品归 [PRD](prd/collaboration.md)，实施归 Agent 间协作任务（git 历史：tasks/agent-collaboration）。
-
-## S20
-
-2026-10-13 用户要求继续改进 composer 的运行时、模型、推理、权限选择器（并指出它们在深色模式下没有跟随系统外观），发送后立即在消息列表中显示用户消息与“发送中”之类的状态，以及可以查阅各 turn（含当前 turn）使用的配置。用户选择“两个下拉”的组织方式，并选择在工作过程行右侧显示轮次配置，同时要求再收拢：悬停时展开，或保留一个 plain 图标按钮。同日用户验收新样式后指出下拉的三角离标题太近，且“运行时 · 模型 · 推理强度”下拉的选项太长、太复杂，建议考虑二级菜单等方案。产品归 [PRD](prd/composer.md)，实施归 composer 与轮次配置任务（git 历史：tasks/composer-turn-settings）。
-
-同日实测 Claude Code 2.1.286 恢复会话时沿用上次的权限模式（CLI 没有“回到默认”的取值），Codex 的轮次覆盖在 Velune 的托管路径下不会保留。用户据此选择“沿用会话当前模式”，不读取 Harness 配置来回到默认。
-
-## S21
-
-2026-10-13 用户验收 composer 子菜单后提出下一批改进：composer 的选择进一步按运行时保存，切换运行时而未发送时回到当前／上一轮使用的运行时；推理强度不做本地化，按实际发给运行时的值显示；询问推理强度的“默认”是否真的发送 `default`；轮次配置悬停时只显示运行时与模型，详情增加该轮 usage（特别要包含 reasoning tokens）；此前认为资源库不需要把原生改动回填到资源，实际使用后认为需要。助手说明“默认”不发送任何值、三种 Harness 结果不一致后，用户选择推理强度与权限模式一样“沿用会话当前”，并补充模型也应默认跟随当前／上一轮；对“未发送的选择离开会话后是否保留”，用户选择只有运行时回到最近一轮，各运行时的选择（含配置）按运行时保存。产品归 [PRD](prd/composer.md) 与资源库段落，实施归 composer 与轮次配置任务（git 历史：tasks/composer-turn-settings）。
-
-## S22
-
-2026-10-14 用户验收 S21 各项后，要求在 composer（会话详情视图）中增加 status line，出发点是显示上下文用量，可按需扩展。三种位置方案（composer 下方状态行、操作行右侧紧凑显示、窗口底部状态栏）中用户偏好操作行右侧的紧凑方式，依据是避免信息过载、保持界面干净，同时不损害信息披露，并表示三种都不完全满意。其余候选（本会话累计 token、工作目录与 git 分支、Codex 账户额度、Harness 报告的费用）都可以有，但建议默认不放入 status line，由用户在会话设置中自定义；重点是位置与呈现方式。产品归 [PRD](prd/composer.md)，实施归 status line 任务（git 历史：tasks/composer-status-line）。
-
-## S23
-
-2026-10-14 用户验收 status line 后，对资源库的子 Agent 提出：描述也应是多行文本编辑器；应可配置推理强度；Codex 的子 Agent 支持模型与推理强度，却没有写入，导入时也被丢弃；可以选择技能（用户不确定 Codex／Claude Code 是否支持，认为 Pi 官方的 subagents 插件支持）。用户计划之后让 Pi adapter 支持 subagent extension，并预见版本兼容会使情况复杂不少。产品归 [PRD](prd/index.md) 资源库段落，实施归 子 Agent 字段任务（git 历史：tasks/resource-subagent-fields）。
-
-同日助手实测托管轮次中子 Agent 的原生模型 ID 被网关拒绝，提出三种模型指定方式后，用户要求第四种：既能使用 Velune 托管模型也能使用原生模型，并允许随时切换使用 Velune 与原生 Agent 运行时；同意“原生 ID 写入定义、托管轮次按 ID 路由到 Velune 模型”的方案后，进一步要求解决 Velune 独有模型在原生轮次失败的问题——不是让原生轮次能用 Velune 模型，而是保证原生轮次时运行时不会用到该子 Agent。用户确认此前所说“Pi 官方 subagents 插件支持技能”是记错了。
-
-## S24
-
-2026-10-14 用户验收子 Agent 字段后，要求进一步改进会话管理：会话列表的分组体验、分页加载、总数限制、项目名称显示，以及会话归档。就助手的提问，用户选择：分组可折叠并记住折叠状态，组按最近活动排序；整个列表设总数上限，每组条数改为按需展开，没有“显示全部”，可以有“加载更多”；有的运行时可能有额外的项目注册信息，这样就不必读出全部原生会话也能按项目分组，并按需读取前 N 个会话；项目名称可自定义别名；归档原生优先，其余由 Velune 记录（Codex 用原生归档，Claude Code、Pi 等不改原生会话，已归档默认隐藏、可切换查看）。随后补充遗漏的四项：会话已读／未读、移动项目、复制深链／ID、置顶（Pin）。安装后用户指出 Codex 支持不指定工作目录的模式，本质是在 Codex 管理的位置（如 `~/Documents/Codex`）创建会话，建议将这些会话归为 Chats 或 No Project 组，其他 Agent 运行时有类似情况也这样处理。随后用户要求组旁不显示会话数量，并指出会话“运行中”时不应出现“未读”：未读本质上应定义为一个 turn 结束，不论正常还是异常，建议异常显示为感叹号标。产品归 [PRD](prd/conversations.md) 会话浏览段落，实施归 会话列表管理任务（git 历史：tasks/conversation-list-management）。
-
-## S25
-
-2026-10-14 用户要求改进窗口系统：引入多窗口、窗口平铺、多窗口模式（悬浮、停靠、吸附等），目标是让用户能由浅入深地使用 Velune 高效开展工作，像 JetBrains 的 IDE 及许多专业软件那样，让界面能承担高工作负载、高信息负载。就助手的提问，用户选择：先做窗口内分屏会话（每个面板有自己的会话与输入区，可拖出成独立窗口也可拖回）；工具窗口为会话列表、会话大纲，composer 也可以（不一定 UX 就好，只是这确实是个很神奇的设计）；变更审阅挺好但还没想好呈现，暂缓；跨会话活动面板没必要，后面会引入“任务”层级；不赞成让任意信息都变为可停靠、组合的面板／窗口，那样就不“由浅入深”了，自定义度不是越高越好，做好最常用的 80% 可能反而有 150% 的效果；“吸附”指浮动面板贴边吸附；布局只自动恢复。产品归 [PRD](prd/workspace-layout.md)，实施归 窗口系统任务（git 历史：tasks/window-system）。
-
-## S26
-
-2026-10-15 用户验收窗口系统首轮后认为距离“类似 IDE／专业软件那样专业化、高自定义度、服务高负载工作的界面（布局机制）”还差很远，但说不出具体差在哪，怀疑是热衷于模仿“表面”；报告浮动面板拖动／调整尺寸时主窗口工具栏标题左右跳动，并提出既然可以悬浮也应可作为独立窗口。就助手的诊断（缺统一布局模型、快速开关与聚焦、编辑区标签组、键盘可达）与提问，用户选择按统一布局模型重建；同意引入面板标签组，但应尽可能复用 macOS 自有机制，并指出分屏似乎没有处理好系统自带的 Tab Bar（View → Show Tab Bar）；模式选独立窗口，其余入口与模式（边缘工具条、快捷键、自动隐藏）“没见过”，留给开发方选择。此前同日用户要求保留大纲弹出模式，并选择在菜单中把弹出列为显式选项。产品归 [PRD](prd/workspace-layout.md)，实施归 窗口系统任务（git 历史：tasks/window-system）。
-
-追问（同日）：助手以纯 AppKit 对照说明全高侧栏旁系统 Tab Bar 只覆盖右侧内容属平台行为。用户澄清 Tab Bar 本身没有 UI 问题，只是与分屏角色重复：有分屏就不需要窗口 Tab Bar，或者让每个分屏内有自己的标签栏（类似 VS Code 的 editor）；并选择“窗口 Tab＝工作区，面板内标签”。
-
-再次验收（同日）：用户截图指出系统窗口 Tab Bar 与分屏标签栏叠放的问题仍在。就助手的提问（关闭系统窗口 Tab，或保留并把分屏标签改为编辑器样式），用户表示：如果可能，希望基于系统窗口 Tab 实现分屏的效果；如果不行，就关闭系统窗口 Tab。系统 Tab Bar 属于窗口标题栏、没有公开接口嵌入视图，故关闭。
-
-## S27
-
-2026-10-15 用户确认窗口系统的标签修复后要求实现：编辑用户消息——可以编辑任意一条用户消息，但编辑上一条之外的用户消息会询问是 fork 会话继续还是原地继续；支持消息发送队列、steering；支持 interrupt／continue session。就助手的提问，用户对“interrupt／continue session”选择“只要‘继续’”（中断沿用停止生成，只增加停止或失败后的“继续”）；对队列与 steering 的呈现选择“默认排队，可改 steer”。产品归 [PRD](prd/composer.md)，实施归 消息编辑与发送队列任务（git 历史：tasks/message-editing-queue）。
-
-## S28
-
-2026-10-16 用户试用窗口系统后要求：会话也支持独立窗口；支持拖拽式创建窗口（或者右键进入 context menu 操作，而不至于在 View 菜单中操作）；面板大小可调整（面板完全参考 VS Code 就挺好）；窗口可 pin to top。助手核对后说明分屏与底部区域的分隔条实际只有分隔线本身可拖，单标签时没有标签栏可拖或右键。就助手的提问，用户选择会话独立窗口为“只含会话的窗口”（仿 VS Code 的移到新窗口：只有编辑区，没有会话列表等停靠区，标签可拖进拖出，必要时恢复停靠区）；标签栏始终显示，外观与系统默认的 Tab Bar 保持一致，不需要蓝色的激活条。产品归 [PRD](prd/workspace-layout.md)，实施归 窗口系统任务（git 历史：tasks/window-system）。
-
-追问（同日）：用户指出既然默认有标签栏、上面有标题，工具栏就没必要显示会话标题。
-
-再追问（同日）：标签拖出成窗修正后，用户确认正常，并指出此前要求的是用 context menu 改变布局模式，不需要从 View 菜单切换。
-
-验收（同日）：大纲按钮的右键菜单没有出现；会话列表的右键菜单只在边角才能触发，用户建议把“布局”放到“筛选”菜单中；composer 也应可以右键调整。随后用户澄清：筛选菜单里的“布局”只调整会话列表的位置。随后用户报告底部面板不能调整高度。
-
-## S29
-
-2026-10-16 用户要求会话列表：点击项目名称也可以展开／收起组；条目不再显示最后更新日期和 Agent 运行时信息，只显示会话标题与状态。实现过程中，用户随即取消了“点击名称展开／收起组”，组标题保持原有行为。产品归 [PRD](prd/conversations.md)，实施记录在 会话列表管理任务（git 历史：tasks/conversation-list-management）。
-
-## S30
-
-2026-10-16 用户要求：“接下来我们来实现模型路由；验证场景就通过聚合两个 ChatGPT subscription，自动 fail-over（在 ~/.codex-switcher 下面有两个 subscription 的认证文件，你可以用）”。随后再次明确目标是该目录下已有的两个订阅组成 fail-over。此前开发方因真实目录探查被权限分类器拒绝，提出改用 Pi 登录；这不构成用户接受替代验收，也不能推导为禁止开发产品来源适配。
-
-产品归 [PRD](prd/model-routing.md)，公开格式调查、来源接入与凭据访问边界归 模型路由任务（git 历史：tasks/model-routing）。
-
-同日进一步澄清：用户明确“不必将 codex-switcher 变为产品级别的支持，我只是告诉你那里有两个订阅的凭据，可以用来完成验收”。因此不实施专用 Switcher 集成；模型路由与通用订阅认证方案须先确认，验收来源不提升为产品契约。
-
-用户继续确认：“本质上是和 magpie 一样的，多订阅聚合能力（不是通过 agent runtime 完成聚合）”。AI 服务独立聚合为已确认方向；账户与认证生命周期的具体方案仍待确认。
-
-用户随后确认上述产品行为定义正确，并允许参考 yetone/magpie 和 Codex Switcher 的思路；这不是专用 Switcher 集成要求，也不表示具体认证协议已验证或批准。
-
-用户随后明确知悉目标行为违反 SIWC 规则，要求在产品中澄清，并表达开源软件由使用者自行承担使用责任的立场。此记录确定产品披露要求，不构成供应商许可或法律免责结论；先确认技术方案的要求仍有效。
-
-用户进一步确认：“采取和 Magpie／Switcher 一样的思路，未来会争取实现 SIWC（需要和 ChatGPT 申请）”。本轮按 Codex 订阅接入思路细化方案，正式 SIWC 为未来独立方向，不将其作为本轮前置条件。
-
-用户随后确认开始实施，并限定“只需要实现 rust lib 的支持，前端我另外安排实现”。实施包括独立订阅认证、协议适配、fail-over 及平台可消费接口，不修改 Mac 前端或重建安装应用。
-
-2026-10-17 用户确认上一轮提出的智能／顺序／轮询／权重调度、主动额度、各窗口使用上限、冷却与会话黏性方案；保持一订阅一提供商实例，继续 Rust lib 范围。具体行为归 PRD，实施与验收归模型路由任务。
-
-2026-10-17 用户认可继续解耦，要求先研究 Magpie 的 subscription 特性，下一步计划接入 Claude Code 订阅；实现路径尚待研究结果确认。
-
-用户随后明确回复：“同意。开始按这个方案进行解耦。我确认接受 Claude 订阅依赖本机 Claude Code，并纳入进程、会话和工具桥接。”据此授权 Rust 组合解耦与 Claude 执行后端实现，保持网关拥有聚合决策。
-
-## S31
-
-2026-10-16 诊断一个 Codex 会话未读无法消除时（原因是标已读进行中保护未释放；该会话当时在 Codex 桌面端带子 Agent 运行），用户提出：“我们的 sub-agent / a2a 系列功能不完整，我建议优先补齐 UI 上的短板（未来还需要允许 agent runtime 互调用）”。用户从开发方列出的短板中选定第一批：子 Agent 概览、侧栏状态汇总、子会话导航，并一并解决父轮次结束后到达的子 Agent 审批。随后提醒：“虽然我认为一切都是 A2A，但是现在很多 agent runtime 的实践还有一套并行的 sub-agent 机制”。产品归 [PRD](prd/collaboration.md)，实施归 Agent 间协作任务（git 历史：tasks/agent-collaboration）。
-
-## S32
-
-2026-10-16 子 Agent 界面补齐的验收发现，经网关的 Codex 轮次结束时 Velune 结束运行时进程，后台子 Agent 随之终止。用户：“是的，需要修复这一点，估计这个问题是普遍存在的，不只是 codex 这个 agent runtime 的，而且应该会对 Velune 的 Agent Runtime lib 的架构有较大改变。”随后从开发方的选项中确认：临时覆盖与进程持续到该轮工作（含子 Agent）全部结束；子 Agent 运行时需要重启的下一轮先等待或经确认停止子 Agent；父会话的停止同时停止其子 Agent。产品归 [PRD](prd/agent-runtimes.md)，实施归 运行时工作生命周期任务（git 历史：tasks/runtime-work-lifetime）。
-
-## S33
-
-2026-10-16 用户问“布局持久化是不是没做？”。开发方核对：布局只经 SceneStorage 随系统状态恢复保存，而 macOS 默认“退出 App 时关闭窗口”，正常退出后系统丢弃窗口状态，布局因此不恢复；⌥⌘N 新窗口也总是默认布局。就开发方的提问，用户选择“布局总记住，窗口跟随系统”：工具窗口的位置、停靠区与尺寸总是记住，新窗口沿用；重开哪些窗口、分屏、标签与会话按系统设置决定。产品归 [PRD](prd/workspace-layout.md)，实施归 窗口系统任务（git 历史：tasks/window-system）。
-
-## S34
-
-2026-10-17 本机 Claude Code 自动更新到 2.1.292 后被 Velune 的版本检查拒绝。用户问：“理论上，我们的 adapter 应该是兼容一段版本才正常的；所以真的是 protocol 变了还是仅仅只是 adapter 自己伪宣称自己只能支持 2.1.286”。开发方核对：精确锁定来自架构规则与 `^2\.1\.286$`，没有协议变化的证据；临时放宽后 2.1.292 通过 9 个实际 CLI 脚本。就开发方的提问，用户选择“按兼容区间”：adapter 声明已验证的兼容区间（如 Claude Code ≥2.1.286、<2.2；Codex、Pi、DSH 同理），区间内照常使用，出现破坏性变化才另建 adapter；类型 ID 不含补丁号，按 hard-cutoff 重新添加运行时实例。实施见 版本区间任务（git 历史：tasks/adapter-version-ranges）。
-
-## S35
-
-2026-10-17 用户发现 Claude Code 在 worktree 中的会话（如 `mac-sub-agents-panel`）各自成为独立项目。就开发方“worktree 是否归入所属仓库”的提问，用户答复：“是的，worktree 归到原项目下面；其实正好，我计划让 project 和特定的文件夹解耦，一个 project 可以有多个 folder，有一个 primary folder”。产品归 [PRD](prd/conversations.md)，实施归 多文件夹项目任务（git 历史：tasks/project-folders）。
-
-## S36
-
-2026-10-18 用户要求：“我现在还希望 sub-agent 有更多的打开方式（新 Tab / 当前 tab / Sheet / 新窗口），并且同样可以配置；此外，我们之前说 sub-agent 本质上也就是 A2A，这一点怎么体现，我没想好，现在我想到一点：让‘子 Agent 面板’升级为‘与其它 Agent 面板’（不一定叫这个名字）”。开发方定名“关联 Agent”（沿用 PRD 已有的中立“关联会话”组织），列出父会话、子 Agent 与 A2A 参与方；打开方式为一项应用设置，同样用于消息列表中的会话链接。产品归 [PRD](prd/collaboration.md)，实施归 Agent 间协作任务（git 历史：tasks/agent-collaboration）。
-
-## S37
-
-2026-10-18 用户要求：“使会话列表支持手动排序‘组’”。开发方的做法：拖动组标题或在组的右键菜单中移动，顺序随浏览偏好保存，项目与运行时分组各自一份；置顶组固定在最前，新出现的组排在已排序组之前，可恢复按最近活动排序。用户试用后确认可拖拽排序，并建议：“将这个作为一个显示的排序模式，从而不再依赖创建时间/更新时间，避免排序发生跳动”；据此改为显式的组排序方式（最近活动／手动），手动时新出现的组排在末尾。产品归 [PRD](prd/conversations.md)，实施归 统一浏览任务（git 历史：tasks/conversation-browser）。
-
-## S38
-
-2026-10-18 就后退／前进快捷键，用户决定：“在 tab 之间进行切换可以使用 cmd + ctrl + arrow，历史的前后还是用 alt/opt + arrow 或者 ctrl + [/] 吧”；随后要求“cmd + alt + b, cmd + j 等等，给各个面板加上 VSCode 的快捷键吧（左/主面板仍然是 cmd + ctrl + s）”。开发方取 ⌃[ ⌃]（⌥←／⌥→ 在输入区按词移动光标），右侧区 ⌥⌘B、底部区 ⌘J。用户试用后指出 ⌃⌘←／→ 与其系统设置的切换桌面冲突：“标签页切换的快捷键应该是 cmd + option + arrow……这个标签页切换的快捷键我是学 chrome 的行为的”，并建议增加快捷键设置。另指出 ⌘J 只是让输入区在底部与各面板之间切换，没有展开／收起底部面板；就开发方提问，用户选择收起时连同停靠其中的输入区一起隐藏（⌘J 或 ⌘3 恢复），并选择现在就做快捷键设置。实施记于 [Mac 应用说明](../app/mac/README.md)。
-
-## S39
-
-2026-10-18 用户要求：“让额度可以显示为‘剩余多少’（目前是‘使用了多少’），对于 context window 也是一样；我建议这放到‘通用’或者‘外观’（目前还没有）设置 Tab 中（我还建议将会话、快捷键都合入该 Tab 中）”。开发方以一项“已用／剩余”设置同时作用于额度与上下文，新建“通用”页并将会话、快捷键并入。产品归 [PRD](prd/composer.md)。
-
-## S42
-
-2026-10-18 用户指出：“claude code 的 session 中，模型的“沿用”似乎不太行（我这边看到推理仍然是 medium，但是模型是 default）；不过其实，我一直都没有太具体地管理 runtime, model, thinking, permission 的行为，我们现在来讨论、整理一下”。开发方核对：Claude 历史已读出模型、推理强度与权限模式；模型显示不对，是因为记录中的完整模型 ID 与目录里的别名对不上，Mac 于是改用目录第一项；下一轮的选择也只在内存中按标签页保存。开发方提议各项分“会话当前”与“下一轮的选择”两层、未知时不发送，并就持久化与新会话默认提问。用户答复：“composer 的状态是持久化的，也就是说，重启之后，下一轮的选择要保留”；“新会话的默认值，默认使用上次选择的，但是也可以在运行时实例中设置”；“我同意你的建议，按照你的建议处理就好”。实施中用户补充：“运行时实例中，还可以选择让新会话的默认值使用运行时的默认值；并且我认为所谓的“默认值”，其在 velune 内部应该是 null（避免用"unknown","native"）”。产品归 [PRD](prd/composer.md)，实施归 composer 轮次配置任务（git 历史：tasks/composer-turn-settings）。
-
-## S40
-
-2026-10-17 用户要求参考 [liguobao/ds-harness-remote](https://github.com/liguobao/ds-harness-remote)，共同梳理远程控制需求、厘清架构后实现 Rust packages。随后明确有 GUI 与无 GUI 两种宿主都需要，应用装配相同共享核心，不能按第一批界面形态缩窄远控架构；公网使用不依赖预配 VPN 或端口转发。远控范围为完整 Velune 业务能力，信任对象为同一个人的多台设备。产品归 [PRD](prd/remote-access.md)，方案与证据归 远控任务（git 历史：tasks/remote-control）。
-
-用户随后选择“继续执行，其他已配对设备可接续操作”及“最终开箱即用，同时允许自部署”，确认控制端断线不终止执行、保留审批，以及公网服务的最终产品方向；本轮仍不部署服务。
-
-用户随后明确同意使用 iroh，并要求继续参考、对比 ds-harness-remote 的 WebRTC／TURN 思路，以尽可能在无需中继的情况下获得稳定远控；用户认为该项目的实际效果较好。该体验反馈不替代 Velune 的直连／跨网络验收，也不应以最小自部署 Server 的能力边界否定上游客户端 P2P 机制。
-
-用户在 Android 验收中要求暂停，重新讨论公共设施与繁琐的邀请粘贴。澄清后明确接受使用 iroh 公共服务，允许用户切换自部署或其它兼容协议的公开 relay，并纠正：“不应该让公网远程控制和局域网远程控制变成两套体验。”
-
-用户随后补充“多路连接，也就是在公网中和进入同一局域网内，自动选择最优路径”，将统一体验延伸为已建立连接的路径发现和自动优选，而非只统一添加入口。
-
-## S41
-
-2026-10-17 用户在远控 Rust SDK 交付后要求：“那么我们现在来实现一个最小的安卓端？（我建议基于 kotlin, jet compose）”，并说明 adb 已连接同一 Wi‑Fi 内的设备，可用于验收、实验。产品归 [PRD](prd/remote-access.md)，实现与真机证据归 Android 任务（git 历史：tasks/android-minimal）。该授权包含最小原生端的必要实现和设备实验，不包含真实模型调用、读取个人资料或公网服务部署。
-
-暂停后的讨论中，用户认可“手机扫 Mac 二维码 → Mac 确认新设备 → 此后记住设备并自动重连”。该答复确认配对交互方向，没有回答是否必须支持无法操作执行设备的异地首次添加，也没有授权引入账户系统。
-
-2026-10-18 用户要求“继续直到技术方案，验收方案，以及线性化实现计划收敛”。该轮继续设计与计划，产品实现／真机操作的暂停尚未解除；产出分别归 [技术方案](design/remote-access.md)、验收方案（git 历史：tasks/android-minimal） 和 线性计划（git 历史：tasks/android-minimal）。
-
-上述方案收敛后，用户明确“好的，开始实现”，恢复按线性计划进行必要源码修改、构建和既有范围内的合成设备实验；无真实模型／个人资料访问、公网部署或远端发布的新增授权。
-
-2026-10-18 用户明确纠正：“你的边界应该仅限于 Rust Library，怎么会延伸到 Mac App 呢。”当前任务因而收回平台接入和界面验收，只继续 Rust Library／UniFFI 与库级合成验证；该纠正不等于取消 Android 产品目标，也不授权为库验收继续修改或启动 Mac App。范围归 [PRD](prd/remote-access.md)，实施与收回记录归 当前任务（git 历史：tasks/android-minimal）。
-
-2026-10-18 用户授权将已完成的 Rust Library 工作整合 main；保留 main 现有业务，不包含功能分支中的平台 App 改动，不包含远端发布。整合记录归上述当前任务。
-
-## S43
-
-2026-10-19 用户要求实现远程控制系列能力的 MVP：Windows 端（可在 win-ws.localhost 验收）；Android 端保持既有技术栈并彻底重写，现有实现只是测试原型；“Android 端不是对等的端（未来的 iPad, web 也是），它只有‘控制’能力，实际的 agent runtime 并不在该端上运行；但是任何一端，都具备控制其它端的能力”；“ssh agent-runtime 和我们这里的‘远程控制’不是一个能力”。
-
-开发方核对后指出 MyGO 自绘界面与纯 Go 无 cgo 的取舍。用户答复：MyGO 看起来不太合适，可以看看别的选择（例如 GPUI），也可以先试 MyGO；“Windows MVP 需要包含在 windows 上运行 agents；接受 MyGO 的 native UI 作为例外（GPUI 也是），因为 windows 的 .net, winUI 等开发体验太糟糕了”；Go 桥“坚守 purego”；认可“one interface, switch the target device”架构；Mac 同时作为被控端与控制端纳入 MVP；MVP 先做会话日常闭环，并说明“providers, resources 等是要跨端同步的”；接受使用 iroh 公共 relay；remote 库可以继续修改，甚至进一步拆分；授权完全控制已连接本机的 Android 手机，并使用 win-ws.localhost 等设备。产品归 [PRD](prd/platforms.md)，实施归 远控 MVP 任务（git 历史：tasks/remote-control-mvp）。
-
-
-2026-10-20 用户在 GPUI 版 Windows 应用跨端验收后改定：“现在我们来转移一下阵线：MyGO Windows（我还是希望能使用 MyGO 而不是 GPUI）”。此前 spike 选 GPUI 的结论由此取代；Go 桥仍按上文坚持 purego、不用 cgo。实施归 Windows MyGO 任务（git 历史：tasks/windows-mygo）。
-
-2026-10-20 开发方指出 MyGO 版界面仍是照 GPUI 版逐行移植、未用 MyGO 高层组件，且设置分类、模型菜单与布局和 Mac 不一致。用户答复：希望“尽可能贴合框架、平台的体验”，并“希望跨端的交互体验能尽可能一致（比如设置项目、布局系统、模型菜单选项）”；随后说明“贴近框架/平台”指贴近 MyGO 的风格即可，不必另做 Windows 外观；“安卓的差异很多时候是合理的，因为其屏幕尺寸、设备操作方式就存在巨大差距，也不应该照搬”；并确认“windows以mac为参考基准”。产品归 [PRD](prd/platforms.md)。
-
-## Kimi Coding Plan 接入决定（2026-10-20）
-
-用户在可行性研究后答复：“普通coding api key应该无法查询额度，但既然有第一方实现，你可以验证一下”，并指定相邻 Factory26 的模型凭据文件；随后表示“我同意这个方案，你继续收敛”。此授权覆盖所指 Coding Key 对第一方账户/额度接口的有界只读验证与方案收敛，不自动包含模型调用、读取其他凭据、产品实现或发布。产品方向归 [PRD](prd/model-routing.md)，脱敏结果与技术候选归 模型路由任务（git 历史：tasks/model-routing）。
-
-2026-10-20 完成上述只读验证与方案收敛后，用户明确答复“好的，开始实现”，授权按已收敛方案进行必要源码、类型消费者、合成验收与构建工作；真实模型调用仍不在该答复的授权范围。实施状态见上述模型路由任务。
-
-## ARK Coding Plan 接入决定（2026-10-20）
-
-用户先要求“还看看 ARK Coding Plan”，随后明确“采用‘在提供商内部独立配置额度查询认证’的方案，开始修改”。此授权涵盖独立查询认证、套餐接入及必要消费者与合成验收，不包含真实凭据读取、登录、额度/模型请求或远端发布。产品归 PRD，固定接口证据及实现范围归 ARK 接入记录（git 历史：tasks/model-routing）。
-
-## S44
-
-2026-10-21 Windows 上 ChatGPT 桌面应用带的 Codex 为 0.163.0-alpha.10.2，超出 `codex-0.159` 的区间。用户问：“codex需要新的适配器？为什么？0.155不必支持了呀？还是说 0.163 又太新了”，随后决定：“先进行实测，如果真的不支持，再增加新的 adapter type；并且可以支持 alpha, beta ，这是无所谓的。”即先以实际 CLI 验证，确有破坏性变化才另建 adapter；预发布版本按其正式版计入区间。实测与区间调整见 版本区间任务（git 历史：tasks/adapter-version-ranges）。
-
-## S45
-
-2026-10-21 用户看过 MyGO 版主窗口后问：“这真的是 MyGO 重写的，并且使用了 MyGO Native UI 以及相关组件之后的效果吗？为什么和它们的官方 demo 还有我在推特上看到的别人的分享效果差这么远？是因为它对 windows 的支持不佳，还是你对它的了解不够（有 agent skill 的话建议安装）。如果这两个问题任何一个都无法改善，那我就放手交给你去选择了（不能再选 GPUI，除非你有找到一个还不错的有在积极维护的 GPUI 组件库），用你自己喜欢的不论是 C# 也好、.Net 也好。”
-
-开发方核对：win-ws 为 Windows 10 22H2，MyGO 的 Vibrancy（Mica）需 Windows 11 22H2 以上；MyGO 的主题是其跨平台自有风格而非 Fluent，官方示例 headless 渲染与本应用观感一致，网上分享多为 macOS 的毛玻璃效果；已安装其 `mygo-maintenance` skill，内容只涉及生命周期与测试，不涉及视觉。界面用法已按高层组件改进，但非原生的上限不变。据此开发方在用户授权内选定 C#／.NET＋WinUI 3（实施时用 .NET 10 LTS，因 .NET 8 于 2026-11-10 停止支持）（Windows App SDK），经 UniFFI 的 C# 绑定调用 Rust 核心；本条取代 [S43](#s43) 中“不采用 .NET／WinUI”与 MyGO 的选择，Go／purego 约束随 MyGO 版一并失效。MyGO 版保留至 WinUI 版达到同等功能后删除。实施归 Windows WinUI 任务（git 历史：tasks/windows-winui）。
-
-## S46
-
-2026-10-23 用户：“本任务的核心目标是：改进 Android 端的使用体验（主要集中在 UI/UX 上）……目前安卓端的体验实在是远远低于平均线，所以请你先按照 lody/hapi 或者其它类似开源软件的安卓/iOS进行界面上的‘抄’（与此同时，即便没有直接使用它们的源代码，也需要增加相关的声明并确保我们的开源协议、法律条款等符合要求）”。即 Android 界面先以同类开源移动客户端为样板模仿其布局与交互，并附参考声明、核对许可义务；本条只就 Android 界面放宽 [S4](#s4) 的“不照搬”，不改变其他能力的参考边界。开发方核对许可后只借鉴布局与交互，不复制 AGPL 项目（HAPI、lody-ios）的源码。产品归 [平台](prd/platforms.md)，实施归 Android 体验任务（git 历史：tasks/android-ux）。
-
-## S47
-
-2026-10-23 用户要求“引入对 xurl 的支持”，确认对象为“Xuanwo/xurl：用 agents:// 读取、查询和继续各 Agent 的会话”。在会话地址互通、Agent 使用 xurl 与底层适配三个方向中答复：“1,2就好；3的话，如果有可以学习吸纳，改进我们的效率、稳定性、支持范围的，可以学习”。实现授权覆盖前两项与必要共享契约、隔离验证，不要求替换现有适配器；随后用户要求“给 windows 也接入，安卓也可以试一下”；Windows 验证明确使用 `win-ws.localhost` 的 SSH，Android 使用 ADB。实施归 xURL 任务（git 历史：tasks/xurl-support）。
-
-用户进一步要求停止低收益边界测试并评估过度设计，随后明确：“开始精简；并且你实现的功能很奇怪，要手动复制 xurl 进行跳转...这有什么意义...我要 deeplink 那种”。此决定将用户入口收敛为点击链接后自动打开，仅在设备或实例有歧义时选择；不保留为跳转而新增的手动输入、查找和复制流程。
-
-用户随后指定 Android 验证设备：“安卓用 huawei 去测试，不要用 redmi turbo3”。
-
-2026-10-26 用户询问是否遗漏复制会话为 xURL；开发方建议恢复用于交给 Agent 或其他工具的地址导出，保留 Velune 链接，仅在核心提供有效原生地址时显示 xURL。用户答复：“请实现；不过这样的话 context menu 中‘拷贝’系列功能就有三个了，我建议把他们并入一个二级菜单下”。据此恢复 Mac／Windows 的地址导出并合并为“拷贝”子菜单，不恢复手动输入和查找页面。
-
-## S48
-
-2026-10-23 用户：“最快速度开发一个最基础的 Velune iPad app（但最好未来也能直接构建为 iOS app），能力对齐 Android app 就好。注意避免过度实现、过度保护、验证。”授权以 Android 控制端为范围直接实现 iPad 优先、兼容 iPhone 的基础应用；不扩展本地 Agent 或完整端设置。实现归 [iOS 控制端](../app/ios/README.md)，状态归 iPad 任务（git 历史：tasks/ipad-minimal）。
-
-
-## S49
-
-2026-10-25 用户要求 iPad 版本“现在目标不只是能用，还得好用、好看”，要求真实与视觉验收，同时明确“优先验收主要的路径和明显的问题，不要测试边界问题”。随后提出问题面板、多窗口、有效的已读未读、大纲、Agent 协作以及外接键盘下的高强度工作，要求由 PoC 迈入 MVP／MLP。在评审工作台范围后回复“开始”，授权实现与主路径验收。此决定扩展 [S48](#s48) 的能力范围，继续保留复用共享核心与现有库、避免过度实现的约束；不增加本地 Agent 或完整端设置。产品归 [平台](prd/platforms.md)，实施与验收归 iPad 任务（git 历史：tasks/ipad-minimal）。
-
-2026-10-26 用户要求临时安装适合当前技术栈的技能并全面、深入改善 iPad UI／UX，授权使用 SwiftUI Pro 和 SwiftUI UI Patterns 指导实现。随后强调应先从源码判断并修复明显问题，验收成本高，本轮允许模拟器验收；不再将等待真机或扩大测试范围作为推进条件。
-
-## S50
-
-2026-10-26 用户：“我们来改进 Velune 的交互体验，我们对 velune 的定位是 production-grade, heavy-agent-workflow 的 agent shell，所以我们要使得桌面端不借助鼠标就能高效地使用。”并举例：composer 中“enter 发送，shift-enter 换行（当然可以自定义）”“option + up 编辑队列中的最后一条消息”“输入 `/` 可以执行命令来切换模型、推理强度等”。开发方补充了全局导航（命令面板、快速切换会话、下一个待处理会话、全局唤起、从通知进入）、审批的键盘操作且不抢焦点、composer 的其他键、消息列表与会话列表的键盘操作，以及快捷键作用域、冲突检测、速查表和 Windows 对应等底层约定（A～F）。用户答复：“好的，我同意。你可以开始落地A~F全部。不过 steer 我会推荐就是 Cmd+ Entrer,也就是说，在运行中过程中按 enter 就是正常排队，按 cmd + enter 就是 steer。”本条修订 [S38](#s38) 与 composer 早先“Return 换行、⌘Return 发送”的约定。产品归 [键盘操作](prd/keyboard.md)，实施归 全键盘任务（git 历史：tasks/full-keyboard）。
-
-## S51
-
-2026-10-26 用户：“其实我不喜欢 composer 的 上/下 箭头像 shell history 那样，我更倾向于用户自己通过 outline 到相应的消息上进行复制（可以考虑在消息下面提供复制按钮，应该是 hover 才出现）”。本条撤回 [S50](#s50) 实施中输入区 ↑↓ 调出之前消息的做法：↑↓ 在输入框中只移动光标；重用之前的消息经大纲或“转到消息”找到它再复制，消息下方提供指针悬停时出现的复制按钮。产品归 [键盘操作](prd/keyboard.md) 与 [会话视图](prd/conversation-view.md)，实施归 全键盘任务（git 历史：tasks/full-keyboard）。
-
-同日用户指出：“你加的消息复制按钮忘了排除掉非轮次最后的 assistant message 的 text/content。”复制按钮只出现在用户消息与每轮最后的回复下，工作过程中的消息与收尾消息的工作部分没有。
-
-## S52
-
-2026-10-26 用户：“各种命令应该包含英文名称，否则我不能通过 "model" 搜索到切换模型的命令而得输入 "模型"。我想这背后其实是一种 pattern，我不确定这具体叫什么，但你也许应该找到这个 pattern 并且将它固化、广泛化起来。”开发方将其定为“检索别名”（search aliases，即 VS Code 本地化命令面板同时匹配英文原名、系统设置搜索匹配隐藏关键词的做法）：可输入筛选的列表中，每项除显示的标题外，还按英文名、两种语言的同义词与英文 ID 匹配，别名不显示。命令的英文名由命令定义强制提供。模式归 [DESIGN.md](../DESIGN.md#模式)，产品归 [键盘操作](prd/keyboard.md)，实施归 全键盘任务（git 历史：tasks/full-keyboard）。
-
-## S53
-
-2026-10-26 用户：“我还希望 composer 的 slash 命令面板可以不要撑开 composer 所在的底面板。”`/` 命令与 `@` 文件的候选列表浮在输入框上方、盖住其上的内容，输入区保持原有高度。产品归 [键盘操作](prd/keyboard.md)。
-
-
-## S54
-
-2026-10-26 用户：“Codex 从某个时候开始支持在 interrupt/stop 会话之后 resume 而不需要发送另外一条消息，你看 codex app-server 的协议，是否有这样的功能，有的话，我希望让 Velune 支持它（并且最好看看目前的其他几种 agent runtime 能否也都支持）”。授权按协议证据接入无新用户消息的恢复，兼查其他运行时；本条修订 [S27](#s27) 对“继续”始终发送用户消息的统一实现。产品归 [输入区](prd/composer.md)，实现与验证归 原生恢复任务（git 历史：tasks/native-turn-resume）。
-
-2026-10-27 用户指出“会话进行时继续按钮可以使用”“没有发现继续和发送的互斥关系”，要求重新思考；随后对单一发送／排队／继续主按钮、停止独立、草稿与继续互斥、去掉文本 fallback、统一命令入口和核心资格的方案答复：“可以，别忘了更新文档。”本条修订前一版无原生能力时自动发送文字继续的行为。
-
-## 2026-10-27：分布式可观测性
-
-用户要求初步引入基于 OTLP 的可诊断性与生产可观测性，默认不配置/不开启，开发启动可临时配置；所有客户端各自设置，并能从其他设备一键复制。用户补充“可观测性、可诊断性主要是服务于你（agent）的”“Velune 定位为‘分布式架构’”，要求采用各生态成熟的库，同意 sfp7 开发接收端与收敛后的计划，并明确“可以开始实现以及验收”。产品规则归[客户端遥测](prd/diagnostics.md#客户端遥测)，技术与验收证据归任务包（git 历史：tasks/otlp-observability）。
-
-2026-10-27 用户要求整顿并清理验收，明确可以自由提交，随后指出独立 ProfilePair 程序造成打扰，要求直接使用已安装的 Velune，允许随时覆盖更新。验收因而复用真实应用和合成配置，不再新增产品副本或为穷举组合制造配对程序；此决定不放宽默认关闭、授权与配置完整性要求。
-
-2026-10-27 用户进一步要求完成剩余可用设备验收，允许自由提交，检查并清理过度设计、纠正错误或不易维护的架构和依赖，并明确要求接入 SVC CLI 的 dev 能力以管理复杂开发环境。该授权替代旧的“不引入 SVC CLI”约束；实现与验证归可观测性任务（git 历史：tasks/otlp-observability），开发操作归[开发环境](development.md#开发环境)。
-
-## S55
-
-2026-10-27 用户：“我希望借鉴 quotio 来改进我们的 ai 提供商、模型路由、聚合功能。（不是要照搬或者非得借鉴什么，我只是希望先看看）”。开发方比较后列出值得借鉴的五项与不宜借鉴的部分（CLIProxyAPI 以 OAuth 冒充官方客户端、读取 CLI 登录令牌查询额度、定时预热请求）。用户答复：“你的分析我同意，请你 borrow 你列出的这些 worth borrow 前4 点。”即实施：智能调度考虑重置节奏；额度状态包含余额等金额；API key 提供商经官方接口读取账户额度；额度历史与提醒。本条修订 [模型路由 PRD](prd/model-routing.md) 中“此阶段不增加重置节奏预测”。产品归 [模型路由](prd/model-routing.md#调度额度与使用上限) 与 [AI 提供商](prd/ai-providers.md#账户额度历史与提醒)，比较与实施归 quotio 参考任务（git 历史：tasks/quotio-reference）。
-
-## S56
-
-2026-10-29 用户解除架构重构期间的功能冻结，并提出首个 beta 前要加的两项功能：“side-chat (aka. claude code's btw)”；“session's context menu provide abilities to interrupt/resume the session or even open the composer in a sheet (for one-time send)”。对侧聊的方案答复：上下文“优先使用 Agent Runtime 的原生行为，如果 Agent Runtime 本身没有那就是按照你说的选项1处理”（选项 1 为在运行时内原生 fork 出不保存的临时副本）；形态为多轮、关闭即丢弃；侧聊中能做什么“由 native agent runtime 自己处理，默认不做任何限制”；两项功能首个 beta 前只做 Mac。产品归 [会话与会话列表](prd/conversations.md#侧聊) 与 [输入区](prd/composer.md#在-sheet-中发送)，侧聊的实施归 `tasks/side-chat`；会话菜单的实施已完成（git 历史：tasks/conversation-menu-actions）。
-
-## S57
-
-2026-10-30 用户要求侧聊在 UI 上复用普通会话：“它会 split the view（或者弹出 sheet，行为是可选的，就像 outline 那样）”，同时“它不是另外一种有着不同布局逻辑的 session”，允许背景颜色、标题和 hint 不同。产品归 [侧聊](prd/conversations.md#侧聊)。
-
-## S58
-
-2026-10-30 用户进一步要求：会话列表右键菜单中的侧聊默认通过 sheet 打开，避免切换当前标签页；拆分发生在“editor”级别，而不是 editor 内部；简化 UI，不必说明 temporary，让它与普通会话只在名称上有所区分。产品归 [侧聊](prd/conversations.md#侧聊)。同轮要求考虑撤销针对 SVC Dev 缺陷的脚本修复，PATH 继承交由 SVC Dev 上游处理；保留独立的构建与重装动作。
-
-## S59
-
-2026-10-30 用户要求一并修复：composer 布局决定状态隔离，“在底部面板，或者总之并非跟随 session 的时候，那么状态自然也不应该跟随 session”；压缩完成及轮次错误不要一直留在底部；支持粘贴图片与可行的 Finder 文件；只有 turn 正常结束才折叠工作过程；仅在原生运行时未支持时补足指数退避重试，显示状态，考虑通用 server overloaded 类型与组件。另提出考虑缓存到期前自动压缩，仍在核对缓存与原生行为，未作为已决定的后台动作。产品归[输入区](prd/composer.md#输入与布局)、[失败恢复](prd/composer.md#失败恢复)与[消息展示](prd/conversation-view.md#上下文压缩状态)。
-
-
-## S60
-
-2026-11-02 用户要求改进外部客户端持有会话控制权时的体验：composer 在发送前反映占用，先行 disabled／locked；已有支持的运行时有相应机制也应接入，并建立服务未来运行时的通用机制。随后补充双击会话只重命名、不切换／打开，单击才切换／打开（经澄清确认）。
-
-同日用户要求查清 Codex 本地 scheduled task 是 app-server 还是 ChatGPT 桌面宿主的职责；若属于宿主，Velune 应替代其职能。后续明确需要接管 ChatGPT 中已经创建的本地任务；Velune 退出后暂停，重新打开恢复调度，不要求应用退出后的独立后台执行。随后用户回答“按方案继续实现”，接受占用时保留草稿并锁定、退出期间错过触发不补跑、已有任务先暂停导入并在确认原宿主停用后再激活。另追加 composer 不同状态下高度一致的要求，至少在 bottom drawer 避免高度变化。方案进入实现授权不等于成品已验收。
-
-同日用户指出定时任务系列 UI／UX 较差，建议让 advisor 评审；随后提醒分层验收。界面行为归 [本地定时任务](prd/scheduled-tasks.md)，任务内保留核心、应用接口和原生交互各自的证据边界。
-
-## S61
-
-2026-11-02 用户反馈保存运行时配置失败（诊断编号 `1baebe3d19658b205a84ce39e59b919d`），认为目标运行时没有进行中的会话，并怀疑其他运行时的活动也会阻止保存。确认旧实现使用全局忙时判断后，用户要求修复，并“检查有没有其它类似的产品行为问题，一并修复”。行为归 [运行时实例](prd/agent-runtimes.md#类型与实例)和[资源库](prd/resource-library.md)。
-
-用户随后指出运行中的会话不能重命名，询问是否也是自身施加的不必要限制。确认界面和核心统一禁止、并将重命名与关闭执行耦合后，沿用同类问题修复授权处理；行为归[会话管理](prd/conversations.md#会话管理)。
-
-## S62
-
-2026-11-02 用户要求细化 composer 状态：单栏即使使用 bottom drawer，也应具有按会话“切换”的感受；分屏共用输入区时移动焦点、将 B 换成 C 都保留共享草稿，只改变目标；只整理布局时，当前文字、附件和明确选择继续可见。用户整体同意包含布局连续性、冲突草稿保留与就地切换、状态归属和恢复规则的产品方案，并建议将此次经验沉淀为 UI common pattern，归 [DESIGN.md](../DESIGN.md#未完成工作的连续性)。
-
-同次用户指出锁定 UI 修复造成编辑回退：本应只禁止发送，草稿仍可编辑；认可用“已锁定”替代发送按钮。另要求一并修复侧聊标签未命名、侧聊不能切换运行时／模型等选择、输入框与 bottom drawer 无法缩至一行，以及 429／频率限制自动重试。行为归[输入区](prd/composer.md)和[侧聊](prd/conversations.md#侧聊)。
-
-## S63
-
-2026-11-02 用户修订仓库约定：“虽然可以 hard-reset / hard-cutoff，但是需要做手动迁移（你可以手动，也可以写自动化脚本，但是不能做自动化迁移机制）”。允许手工处理或显式执行一次性脚本，已有数据或配置的迁移必须作为版本切换前的交付完成；不建设应用自动迁移机制。本条修订此前“旧普通配置直接重置、不做迁移”的规则；执行约定归[破坏性变更与手动迁移](development.md#破坏性变更与手动迁移)。
-
-## S64
-
-2026-11-02 用户要求：粘贴的图片也能打开查看，尽可能与普通附件共用系统 Launch Services 路径；恢复 Velune 所创建 Codex 会话的自动命名；修复子 Agent 会话显示“未命名”。用户同时要求交付逐项解释此前要求如何解决，并延续分层、仅关键路径验收。
-
-## S65
-
-2026-11-02 用户要求任意用户消息都能编辑后重新发送，并指出可能曾经实现过。自动重试需要专门的 UI：频率限制（429）和 server overloaded 属于接近的问题，应同时表达可重试性、实际错误／错误信息与重试进程／状态。延续分层、仅受影响关键路径的验收约束。
-
-## S66
-
-2026-11-03 用户要求：在会话列表中右键组时，使用组的属性（Agent Runtime／Project）打开新建会话界面。
-
-同次用户建议避开 computer-use、复用 Opus 留下的脚本；脚本注入全局鼠标事件后，用户明确反对抢占其鼠标。后续验证改用后台应用内检查，不占用全局输入或激活前台。
-
-## S67
-
-2026-11-03 用户要求：核实并接入运行时可用的原生已读／未读；composer 根据自身宽度响应式排布发送目标、附件和编辑区；明确提供无 project/cwd，空 cwd 不被支持时回退到执行机器的 `~/Documents/Velune`；澄清“草稿”指未发送文字，保留输入功能的入口至少不要挤占配置行；改善会话打开约 2～3 秒的延迟；全屏源窗口的新开窗口保持普通窗口，跨窗口拖入标签不再生成额外的虚假全屏窗口。延续后台、不占用鼠标和前台、分层且仅关键路径的验收约束。
-
-
-## S68
-
-2026-11-03 用户授权：根据实际 breaking changes 自主判断 Codex 0.166 是否创建新 adapter type；诊断并根治归档会话导致的崩溃；问题记录跨重启保留，复用既有持久日志，不按本次启动过滤或另开平行错误存储；打开中的会话也能归档；核实 Pi 无新消息“继续”的能力；归档、重命名等需要顺序执行时由应用调度，继续接收其他会话的请求，并沉淀通用 UX 原则；修复 composer 未发送输入重启丢失及正文、配置、发送区域不居中，完成视觉验收。继续遵守分层、仅受影响关键路径、后台验收、不占用鼠标的要求。
-
-
-## S69
-
-2026-11-03 用户要求：识别 Mermaid code block，在复制旁提供“查看”，默认 sheet，并可拖到 Tab 或独立窗口，建立统一 Artifact 架构；修复指定 Claude 会话工作过程未折叠、Pi 无工作区新建扩展写入 `/.pi`、Pi 子代理容量与 steering；诊断指定 Codex 会话无法继续；会话 Tab 提供列表同样的管理菜单与未读／失败等状态；大纲跳到用户消息，并让该消息底部对齐滚动视口底部；为没有原生命名的运行时提供可开关、可选模型的自动命名兜底；队列属于会话详情，删除“本轮结束后依次发送”等重复说明；归档／重命名等全局操作状态放窗口工具栏等全局位置，并沉淀对应 UI 模式；核实队列暂停与 Codex 原生队列能力。延续分层、仅关键路径、不占用鼠标和前台的验收要求。
-
-## S70
-
-2026-11-03 用户在 dogfood 后修订 composer 的状态规则：“在 group 内切换 tab 时，composer 状态跟着 tab 走；切换聚焦 group 则不然。”用户指出规则已经复杂，要求重新整理，并弄清 state key 的组成。该要求修订 S62 中“分屏共用时换标签也只改发送目标”的表述；往返恢复、其他导航与状态身份的推导须与用户明确的新要求区分。能力归[输入区](prd/composer.md#输入与布局)与[工作区布局](prd/workspace-layout.md)。
-
-## S71
-
-2026-11-03 用户认可 composer 的输入身份／导航恢复／发送目标三层模型，并澄清讨论的状态一直是“正文、附件、运行时与模型与权限选择”。用户要求这些状态跨设备同步，指出只有一个用户，许多并发协作问题不必考虑；同时明确“新建会话也是独立的状态（但是全局只有一个‘新建会话’的状态）”。这修订此前按客户端设备隔离输入及每个新建入口分配独立输入的前提，不自动表示已确认全部转换推导或已有实现。行为归[输入区](prd/composer.md#输入与布局)，跨设备范围归[远程控制与多设备](prd/remote-access.md#composer-状态接续)。
-
-
-## S72
-
-2026-11-03 用户明确“同意这个判断，可以落地”，授权按已收敛的输入身份／导航恢复／发送目标模型实现；其中已显示的新建页聚焦继续当前输入，明确新建恢复全局新建项。该授权延续 S70／S71 的跨设备完整输入及全局唯一新建要求。保存端跨不同执行宿主的实际部署选择仍待确认，不能把授权实现写成已经配置真实设备。行为归[输入区](prd/composer.md#输入与布局)，实现契约归[Composer 输入身份与同步](design/composer-state.md)。
-
-
-## S73
-
-2026-11-04 用户要求统一普通发送、排队与插入本轮的即时消息反馈，并检查提交抽象；Pi 缺少无输入恢复时发送 retry／continue 兜底，保留“继续”；支持与模型身份分开的速度选项，并改善 composer 拥挤与最大宽度；在用户消息、工作过程及最终回复的复制旁显示精简创建时间；Pi 背景通知按 client side 放右侧，server side 放左侧；新建独立会话窗口采用内置 composer 默认布局；重启恢复 editor groups 与 Tabs；新增字号和密度外观偏好，允许开发方选择合理分项或预设设计。行为归[输入区](prd/composer.md#提交反馈与速度)、[会话视图](prd/conversation-view.md#消息操作行)、[工作区布局](prd/workspace-layout.md)及[外观偏好](prd/platforms.md#外观偏好)。
-
-## S74
-
-2026-11-04 用户要求：新建会话要新建一个 Tab，而不是替换当前 Tab。适用于 Mac 的所有新建入口（菜单 ⌘N、侧栏工具栏、会话列表组菜单、命令面板与全局快捷键）；当前标签已是未发送的新会话时原地恢复，不叠加空标签。行为归[输入区](prd/composer.md#输入与布局)与[会话](prd/conversations.md#会话列表)。
-
-## S75
-
-2026-11-04 用户提出：会话列表与编辑器 Tab 的关系应对齐 VSCode 的 File Explorer 与 Editor；并指出重启恢复的 Tab 在首次点开前都显示为占位名称——内容可以延迟读取，但标题不能在 Tab 上懒加载。行为归[工作区布局](prd/workspace-layout.md)。同一讨论中用户报告：新建会话首发仍在发送时新建的空白 Tab，在创建落地后变成该会话——这是缺陷，按[输入状态设计](design/composer-state.md)的“同一提交换入下一份输入”修复，不属于行为变更。
-
-## S76
-
-2026-11-04 用户要求支持常见的 Tab 操作，举例 ⌘⇧T 与 ⌘W。⌘W（关闭标签页）与 ⌘T（新建标签页）为既有默认；本次新增 ⇧⌘T 重新打开关闭的标签页（Mac）。行为归[工作区布局](prd/workspace-layout.md#窗口与-tab)、默认键位归[键盘操作](prd/keyboard.md)。
-
-## S77
-
-2026-11-04 用户否定 S73 中“速度=与模型身份分开的按轮选项”的实现方向：速度不应只支持 Codex，也不应由 agent runtime 硬编码模型属性；它是 (提供商, 模型, 账户) 的服务属性。进一步决定：不与协议耦合，managed 模型支持自定义额外请求参数，快速档声明为独立模型记录；运行时自带模型的档位由 adapter 摊平为变体模型（Codex adapter 将 service tier 枚举为变体）。行为归[输入区](prd/composer.md#提交反馈与速度)与 [AI 服务](design/ai-service.md)。
-
-
-## S78
-
-2026-11-04 用户追加 dogfood 改进：系统通知打开新Tab；composer状态详情及时显示当前提供商额度；改善会话打开延迟；调查429后Pi转Codex的异常（用户后来澄清可能发送过retry，但没有手动切运行时，不将其记录为已证实自动跨运行时）；在途执行期间允许保存提供商与运行时配置，不以字段白名单限制编辑；核实Codex多文件夹项目、项目选择与模型目录感知；搜索高亮及工作过程按需展开；⌘Return插入本轮；创建时间从工作过程尾部移除，与copy／fork／edit组成只在悬停时显示的message hover bar；composer宽度改为相对比例。
-
-同轮用户明确确认：跨group移动焦点时“正文和附件保留；运行时、模型、推理与权限跟随目标会话”。这修订S71中整份输入共用身份的边界；内容和目标配置分别持久化与跨设备同步，全局唯一新建状态和同group换Tab规则继续成立。行为归[输入区](prd/composer.md#输入与布局)、[会话视图](prd/conversation-view.md#消息操作行)、[运行时](prd/agent-runtimes.md#类型与实例)及[状态设计](design/composer-state.md)。
+这里定位关键决定及其原始证据，不是聊天记录导出。消息 ID 用于回到原对话核对；不编造公开 URL，也不补猜缺失时间。
+
+来源记录保留当时的授权、候选和限制，后续决定可能已修订它们。现行产品规则、技术契约和开发约定从[文档入口](index.md)查阅；具体任务权限以该任务的明确指令为准，不能从历史授权外推。
+
+按主题只加载需要的来源分册。S 编号沿用旧记录（原记录没有 S12），旧的 `sources.md#sN` 链接仍可定位到对应入口。新记录写入所属主题分册，并在本页增加编号与定位。
+
+## 产品起点与早期授权
+
+- <a id="s1"></a>[S1 · 产品方向切换](sources/foundations.md#s1)
+- <a id="s2"></a>[S2 · 核心优先级](sources/foundations.md#s2)
+- <a id="s3"></a>[S3 · 持久任务与任务树](sources/foundations.md#s3)
+- <a id="s4"></a>[S4 · 参考项目边界](sources/foundations.md#s4)
+- <a id="s5"></a>[S5 · 认证研究例外](sources/foundations.md#s5)
+- <a id="s6"></a>[S6 · 排除 Copilot](sources/foundations.md#s6)
+- <a id="s7"></a>[S7 · 仓库初始化](sources/foundations.md#s7)
+- <a id="s8"></a>[S8 · 持久仓库与早期授权](sources/foundations.md#s8)
+- <a id="s9"></a>[S9 · 三 Harness 与设计委托](sources/foundations.md#s9)
+- <a id="s10"></a>[S10 · Rust、原生 UI 与协作方向](sources/foundations.md#s10)
+- <a id="s11"></a>[S11 · 无凭据原型与交付闭环](sources/foundations.md#s11)
+- <a id="其他上下文的证据等级"></a>[其他上下文的证据等级](sources/foundations.md#其他上下文的证据等级)
+- <a id="svc-官方来源"></a>[SVC 官方来源](sources/foundations.md#svc-官方来源)
+
+## AI 服务与 Mac 首循环
+
+- <a id="s13"></a>[S13 · AI 服务有界契约](sources/first-loop.md#s13)
+- <a id="s14"></a>[S14 · MiniMax 流式切片](sources/first-loop.md#s14)
+- <a id="s15"></a>[S15 · Mac 首循环、配置与原生体验](sources/first-loop.md#s15)
+- <a id="s16统一网关与-harness-配置来源"></a><a id="s16"></a>[S16 · 统一网关与 Harness 配置来源](sources/first-loop.md#s16)
+
+## 共享核心、网关与早期集成
+
+- <a id="s17"></a>[S17 · 包拆分及 10 月 5—11 日集成修订](sources/early-integration.md#s17)
+
+## 订阅聚合、路由与额度
+
+- <a id="s30"></a>[S30 · 订阅聚合与调度](sources/ai-routing.md#s30)
+- <a id="kimi-coding-plan-接入决定2026-10-20"></a>[Kimi Coding Plan 接入决定（2026-10-20）](sources/ai-routing.md#kimi-coding-plan-接入决定2026-10-20)
+- <a id="ark-coding-plan-接入决定2026-10-20"></a>[ARK Coding Plan 接入决定（2026-10-20）](sources/ai-routing.md#ark-coding-plan-接入决定2026-10-20)
+- <a id="s55"></a>[S55 · 重置节奏、额度与提醒](sources/ai-routing.md#s55)
+- <a id="s77"></a>[S77 · 速度改为模型变体](sources/ai-routing.md#s77)
+
+## 运行时、资源库与 Agent 协作
+
+- <a id="s18"></a>[S18 · 原生子 Agent 与 A2A](sources/runtime-collaboration.md#s18)
+- <a id="s19"></a>[S19 · 协作消息与权限选择](sources/runtime-collaboration.md#s19)
+- <a id="s23"></a>[S23 · 子 Agent 配置字段](sources/runtime-collaboration.md#s23)
+- <a id="s31"></a>[S31 · 子 Agent 概览与审批](sources/runtime-collaboration.md#s31)
+- <a id="s32"></a>[S32 · 包含子 Agent 的工作生命周期](sources/runtime-collaboration.md#s32)
+- <a id="s34"></a>[S34 · 运行时版本兼容区间](sources/runtime-collaboration.md#s34)
+- <a id="s36"></a>[S36 · 关联 Agent 与打开方式](sources/runtime-collaboration.md#s36)
+- <a id="s44"></a>[S44 · 预发布版本兼容验证](sources/runtime-collaboration.md#s44)
+
+## 会话管理与侧聊
+
+- <a id="s24"></a>[S24 · 列表、项目与未读](sources/conversations.md#s24)
+- <a id="s29"></a>[S29 · 会话列表精简](sources/conversations.md#s29)
+- <a id="s35"></a>[S35 · 多文件夹项目](sources/conversations.md#s35)
+- <a id="s37"></a>[S37 · 组手动排序](sources/conversations.md#s37)
+- <a id="s47"></a>[S47 · xURL 与深链](sources/conversations.md#s47)
+- <a id="s56"></a>[S56 · 侧聊与会话菜单](sources/conversations.md#s56)
+- <a id="s57"></a>[S57 · 侧聊复用普通会话](sources/conversations.md#s57)
+- <a id="s58"></a>[S58 · 侧聊默认 sheet](sources/conversations.md#s58)
+
+## 输入选择、恢复与状态身份
+
+- <a id="s20"></a>[S20 · 轮次配置与即时反馈](sources/composer.md#s20)
+- <a id="s21"></a>[S21 · 选择的保存与沿用](sources/composer.md#s21)
+- <a id="s22"></a>[S22 · Status line](sources/composer.md#s22)
+- <a id="s27"></a>[S27 · 编辑、队列与继续](sources/composer.md#s27)
+- <a id="s39"></a>[S39 · 已用／剩余显示](sources/composer.md#s39)
+- <a id="s42"></a>[S42 · 持久选择与新会话默认](sources/composer.md#s42)
+- <a id="s54"></a>[S54 · 无输入恢复与主按钮](sources/composer.md#s54)
+- <a id="s62"></a>[S62 · 布局连续性与草稿编辑](sources/composer.md#s62)
+- <a id="s70"></a>[S70 · 组内换 Tab 与跨组聚焦](sources/composer.md#s70)
+- <a id="s71"></a>[S71 · 跨设备输入与全局新建](sources/composer.md#s71)
+- <a id="s72"></a>[S72 · 输入身份模型实施授权](sources/composer.md#s72)
+
+## 窗口、标签与键盘交互
+
+- <a id="s25"></a>[S25 · 多窗口与分屏](sources/workspace-keyboard.md#s25)
+- <a id="s26"></a>[S26 · 统一布局与系统 Tab 取舍](sources/workspace-keyboard.md#s26)
+- <a id="s28"></a>[S28 · 标签、独立窗口与停靠](sources/workspace-keyboard.md#s28)
+- <a id="s33"></a>[S33 · 布局恢复](sources/workspace-keyboard.md#s33)
+- <a id="s38"></a>[S38 · 导航及面板快捷键](sources/workspace-keyboard.md#s38)
+- <a id="s50"></a>[S50 · 全键盘工作流](sources/workspace-keyboard.md#s50)
+- <a id="s51"></a>[S51 · 消息复制与历史导航](sources/workspace-keyboard.md#s51)
+- <a id="s52"></a>[S52 · 检索别名](sources/workspace-keyboard.md#s52)
+- <a id="s53"></a>[S53 · 候选列表浮层](sources/workspace-keyboard.md#s53)
+- <a id="s74"></a>[S74 · 新建会话新增 Tab](sources/workspace-keyboard.md#s74)
+- <a id="s75"></a>[S75 · 列表／Tab 关系与恢复](sources/workspace-keyboard.md#s75)
+- <a id="s76"></a>[S76 · 重新打开关闭的 Tab](sources/workspace-keyboard.md#s76)
+
+## 远程控制与平台选择
+
+- <a id="s40"></a>[S40 · 统一远控与连接路径](sources/remote-platforms.md#s40)
+- <a id="s41"></a>[S41 · Android 最小端与库级边界](sources/remote-platforms.md#s41)
+- <a id="s43"></a>[S43 · 远控 MVP 与平台技术选择](sources/remote-platforms.md#s43)
+- <a id="s45"></a>[S45 · Windows 转向 WinUI](sources/remote-platforms.md#s45)
+- <a id="s46"></a>[S46 · Android 参考界面与许可](sources/remote-platforms.md#s46)
+- <a id="s48"></a>[S48 · iPad 基础控制端](sources/remote-platforms.md#s48)
+- <a id="s49"></a>[S49 · iPad 工作台与体验](sources/remote-platforms.md#s49)
+
+## 可观测性、开发与迁移
+
+- <a id="2026-10-27分布式可观测性"></a>[2026-10-27：分布式可观测性](sources/development.md#2026-10-27分布式可观测性)
+- <a id="s63"></a>[S63 · 显式手动迁移](sources/development.md#s63)
+
+## 综合使用反馈与修复要求
+
+- <a id="s59"></a>[S59 · 输入归属与失败恢复](sources/dogfood.md#s59)
+- <a id="s60"></a>[S60 · 会话占用与本地定时任务](sources/dogfood.md#s60)
+- <a id="s61"></a>[S61 · 配置保存及重命名限制](sources/dogfood.md#s61)
+- <a id="s64"></a>[S64 · 附件查看与自动命名](sources/dogfood.md#s64)
+- <a id="s65"></a>[S65 · 消息编辑与重试状态](sources/dogfood.md#s65)
+- <a id="s66"></a>[S66 · 按组新建与后台验收](sources/dogfood.md#s66)
+- <a id="s67"></a>[S67 · 已读、目录、打开性能与窗口](sources/dogfood.md#s67)
+- <a id="s68"></a>[S68 · 运行可靠性与输入持久化](sources/dogfood.md#s68)
+- <a id="s69"></a>[S69 · Artifact、队列与命名等修复](sources/dogfood.md#s69)
+- <a id="s73"></a>[S73 · 提交反馈与工作区体验](sources/dogfood.md#s73)
+- <a id="s78"></a>[S78 · 输入内容／目标配置分离等修订](sources/dogfood.md#s78)

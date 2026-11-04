@@ -2,6 +2,8 @@
 
 本页维护 AI 服务、提供商与 LLM 网关的职责划分与跨 unit 契约。产品行为见 [AI 提供商](../prd/ai-providers.md) 与 [模型路由](../prd/model-routing.md)；各 unit 的接口见 [gateway](../../packages/gateway/README.md)、[ai-provider](../../packages/ai-provider/README.md)、[application](../../packages/application/README.md) 与 [bindings](../../packages/bindings/README.md)。
 
+按需阅读：[提供商配置](#提供商模型与模板) · [认证](#认证) · [执行后端与额度](#能力组合与执行后端) · [导入](#运行时提供商导入) · [网关数据面](ai-gateway.md) · [组织账单](ai-billing.md)。
+
 ## 职责
 
 AI 服务是独立 lib，领域不限于 LLM；AI 服务与 Agent 运行时互相独立。gateway 是 LLM Gateway，是 AI 服务的一种应用模式：承担同协议原生透传、异协议 best-effort 转换、模型路由与 fail-over。Harness 是它的一类调用方，网关不是 Harness 专属；应用直接消费 AI 能力时不经过网关，AI 契约也不反向依赖 gateway。非 LLM 能力按具体用例扩展，不预建其他网关或空领域框架。
@@ -24,7 +26,7 @@ AI 服务是独立 lib，领域不限于 LLM；AI 服务与 Agent 运行时互�
 
 未知能力保持未知，空推理等级列表表示明确不支持；不全局强制输出上限或统一 effort。缺少描述性规格不阻止原生调用，某个 Harness 必需的字段只在对应 adapter 的准备边界检查。
 
-配置只接受 schema 11，切换版本前必须按[手动迁移约定](../development.md#破坏性变更与手动迁移)将已有配置转为当前格式。现有加载器仍会把未迁移的旧普通配置原子重置为空配置，不转换字段、不保留旧文件；这是当前实现行为，不能代替升级前的手动迁移。未来 schema、损坏 JSON 与当前版本的未知字段明确拒绝。原 Harness 文件、会话与已有平台秘密不在重置范围内。
+配置只接受 schema 11，切换版本前必须按[手动迁移约定](../development/migrations.md)将已有配置转为当前格式。现有加载器仍会把未迁移的旧普通配置原子重置为空配置，不转换字段、不保留旧文件；这是当前实现行为，不能代替升级前的手动迁移。未来 schema、损坏 JSON 与当前版本的未知字段明确拒绝。原 Harness 文件、会话与已有平台秘密不在重置范围内。
 
 ## 认证
 
@@ -52,63 +54,15 @@ application 持有认证生命周期、额度采集与跨 Runner 的执行后端
 
 ## 组织用量与账单
 
-调用配置与账户观测分别建模。共享目录只给出起始快照，协议、执行后端、请求 profile、模型认证、额度来源与可选账单配置各有职责；Moonshot API 与 Kimi Code、OpenAI Platform 与 Codex、Anthropic API 与 Claude Code 分别组合，不按品牌推断接入产品。
-
-```mermaid
-flowchart TB
-    T["共享接入模板"] --> P["提供商配置快照"]
-    H["Agent Harness"] -->|模型请求| G["Gateway：路由、准入、故障切换"]
-    P -->|协议、地址、模型认证| G
-    G --> E["ai-provider：协议与执行适配"]
-    E --> M["模型服务"]
-    P -->|额度来源与认证绑定| Q["application：余额与订阅额度采集"]
-    Q <--> U["官方额度接口或 CLI"]
-    G -->|QuotaSource 非阻塞读取| Q
-    Q -->|余额、窗口、历史、提醒| V["Mac / Windows UI"]
-    P -->|可选组织、统计范围| B["application：组织报表采集与缓存"]
-    K["提供商私有查询凭据：Admin Key / AK-SK"] -->|仅查询认证| B
-    K -->|ARK 查询认证| Q
-    B <-->|固定官方 HTTPS| A["OpenAI / Anthropic Admin API"]
-    B -->|用量、费用、支出限额、速率配置及新鲜度| V
-```
-
-`application-api` 定义 `BillingConfiguration`、`BillingScope` 与带类型的报表；bindings／RPC 传递相同契约，平台只呈现结果。提供商私有查询凭据以 `QueryCredential` 区分 API key 与 AK/SK，不进入模型认证解析器或 Harness。`save_provider_billing` 单独原子持久化，保留／替换／清除秘密，不重建模型执行；`provider_billing` 立即返回状态并按需采集。模型认证 generation 变化暂停关联，不支持的目标清除配置。
-
-账单采集只接受 HTTP、Native、API key 和精确官方 HTTPS 主机，查询目标另行固定，禁止重定向与隐式重试。OpenAI 读取 Usage Completions、Costs 与组织／Project Spend Limit；Anthropic 读取 beta Analytics Usage／Cost 与组织／Workspace Rate Limits。API key 范围只取对应报表，不伪装为拥有该范围的限额。外部响应在 HTTP 边界一次类型化；货币按币种累加，Anthropic 费用和 OpenAI 支出阈值由美分转为主币单位，token 细项按官方含义统计。
-
-缓存身份由服务、组织、scope、查询凭据摘要和 UTC 月起点共同决定；同权限、同范围共享结果，平台不汇总重复组织总额。缓存仅在内存，TTL 15 分钟，手动刷新最短 30 秒，失败退避 60 秒；最多 4 项在途，不后台排队。单请求 12 秒、整个采集 45 秒，单页 2 MiB、最多 32 页／32,000 行；重复游标和中途失败拒绝该项总额，独立成功项可保留。删除、换绑、停机取消旧任务；即使删除后重建同一缓存身份，旧任务也不能回写。
-
-报表带明确范围、UTC 统计区间、本地抓取和上游刷新时刻；Anthropic 整段统计按小时截断。部分失败逐项说明，全部失败保留旧报表并标为过期。报表不进入 `QuotaSnapshot`、准入、历史或提醒；配置限额不是余额，也不是此刻的剩余速率。接口语义依据 [OpenAI Costs](https://developers.openai.com/api/reference/resources/admin/subresources/organization/subresources/usage/methods/costs)、[Spend Limit](https://developers.openai.com/api/reference/resources/admin/subresources/organization/subresources/spend_limit/methods/retrieve)、[Anthropic Analytics](https://platform.claude.com/docs/en/manage-claude/usage-cost-analytics-api) 与 [Rate Limits](https://platform.claude.com/docs/en/manage-claude/rate-limits-api)。
+见[组织用量与账单](ai-billing.md#组织用量与账单)。
 
 ## 路由与 fail-over
 
-一个订阅对应一个提供商实例；application 拥有实例认证、额度采集与唯一快照，gateway 只经中立只读契约取得额度事实，并维护运行期共享的调度状态。提供商的使用上限独立于路由，直接调用同样受约束；路由拥有策略（Smart、Order、Rotate、Weight）、成员权重与粘性。会话身份由装配方显式提供，gateway 不依赖 Agent 运行时，也不根据正文猜测身份。额度窗口可带周期，Smart 按周期内尚余时间的比例衡量余量，只影响排序（[S55](../sources.md#s55)）。
-
-路由捕获一次请求的配置版本、目标与认证引用，热编辑不改变正在执行的尝试。fail-over 由网关单独决策，provider 每次只执行一次尝试，不隐藏重试。候选只来自路由的显式成员；同协议是必要条件，不证明历史、文件、缓存、加密推理或服务端状态可交给另一账户（[S30](../sources.md#s30)）：
-
-- 普通认证 401 停止；Codex 订阅允许同账户有界恢复一次，失效后可在提交前切换。
-- 限流、配额耗尽（含结构化的 402 配额错误）、过载、5xx 与未获答复的连接或传输失败，在提交前可以切换下一成员；权限错误与其他请求错误停止。
-- 聚合路由明确拒绝 `previous_response_id` 与 `conversation` 等上游状态引用，不静默删字段或改投其他账户。
-- 成功响应头交付后不再切换，包括之后的 SSE 业务失败；不拼接两个流，也不缓存完整流来扩大切换窗口。
-- Claude Code 子进程启动后，或向已有进程写入本次输入前，即进入不可自动重放状态；之后的退出、超时与解析错误不切换账户重做。CLI 故障不伪装成 HTTP 401。
-- 取消结束本次调用，不触发 fail-over，也不声称撤销已发生的上游执行。
-
-分类、冷却与观察的细节见 [gateway](../../packages/gateway/README.md)。
-
-额度观测的附加信息由 application 计算，不进入 gateway：节奏（均匀消耗时此刻应已用的比例、按平均速度的预计用尽时间）与金额。每次成功观测按提供商写入 `$home/quota-history/` 的 JSONL，带认证绑定摘要；绑定改变时清空，未变化的值至多 10 分钟记一次，保留 30 天。观测由不满足变为满足使用上限、窗口用尽或账户不可用时产生提醒，核心保留最近 64 条，平台以序号游标轮询。
+见[路由与 fail-over](ai-gateway.md#路由与-fail-over)。
 
 ## 原生派发与观测
 
-ChatCompletions、Responses 与 Messages 是同一原生派发操作的三种线协议：`velune_ai::NativeProvider` 以 `Protocol` 区分，共用请求、事件、失败与完成类型，每个 adapter 只服务构造时确定的一个协议。ai-provider 的 `NativeHttp` 按协议区分端点、认证头、输出上限字段与终态；Claude Code 本机后端实现同一契约。协议实现按协议组织，服务商名称、端点与模型标识是配置数据，不选择不同的通用执行路径。
-
-gateway 按路由绑定写入精确的 `providerModelId`，其余请求字段保持原样；原生 JSON／SSE、HTTP 状态与安全响应头经同一保真边界。保真以非路由字段与响应事件的内容、顺序及含义为准，不要求 JSON 空白与成员顺序不变；同协议的未知扩展不丢弃。原生事件 sink 可等待，下游以容量为 1 的通道施加背压；取消关闭派发 Future。HTTP 入口使用 Axum。
-
-- **Messages**：baseURL 追加 `/v1/messages`，同协议请求的版本由调用方的 `anthropic-version` 决定，异协议转换为 Messages 时使用 `2023-06-01`；API key 以 `x-api-key` 发送。缺少请求输出上限时使用目标模型配置的上限，不用硬编码常数。
-- **注入地址**：Pi 与 DSH 的 Messages 注入使用网关 origin，OpenAI 协议使用 `/v1`。Codex 发给网关的协议是 Responses，上游可经转换使用其他协议。
-
-协议终态与传输结束分别观察：原生 completed、incomplete、failed 与 finish reason 保留原义；HTTP 200、EOF 或客户端没有收到事件都不能单独证明成功或未执行。用量不足时保持未知，不补零。
-
-网关观测记录关联 ID、协议、是否流式、目标在当前配置快照中的序号、HTTP 状态、阶段、耗时与结束归因，不记录正文、实际模型 ID、地址或认证引用。`gateway_response_ready` 只表示响应元数据已准备，不证明客户端已接收，也不是允许重放的提交闸门；request 的 `transport_completed` 表示转发通道结束，不代表模型业务成功。调用方断开与网关关闭分别记为 `downstream_closed` 与 `gateway_stopped`。日志装配见[架构](architecture.md#本地可观测性装配)与[开发说明](../development.md#本地诊断)。
+见[原生派发与观测](ai-gateway.md#原生派发与观测)。
 
 ## 运行时装配
 
@@ -132,21 +86,8 @@ application 优先选择运行时支持的同协议入口，否则选择运行�
 
 ## 协议转换
 
-异协议转换由 ai-provider 内部链接的 New API RelayKit Go 库完成（AGPLv3，见 [ai-provider](../../packages/ai-provider/README.md)），不引入 New API 管理服务。Rust 继续拥有 HTTP/SSE、认证、路由、取消、背压与原始计量；私有桥接封装请求范围的转换状态，不暴露给平台，也不建立常驻 Host 或 IPC。正常结束、失败与释放分别表达，取消与截断不调用成功收尾；同协议绕过转换。
-
-网关在实际候选派发前，以已解析的提供商型号和该模型的输出上限准备转换；排序、fail-over 或认证失败后改选成员时重新准备，响应使用同一次派发的计划。失败且未交付 headers 的尝试不产生转换响应，最终错误仍由调度交付。
-
-转换是 best-effort：无法完整表达的字段尽量保留可用内容、映射参数，并记录不含正文的降级诊断，不整次拒绝；不伪造历史、工具执行或上游成功。
-
-- 文本增量立即交付。转换到 Messages 的工具参数须是合法 JSON object，因此在单个工具完成时交付有界累积的参数；Responses custom 工具在参数完成后解除 `{input:string}` 包装；无法解析的参数保留原始字符串并记录降级。OpenAI 两协议之间的普通 function 参数继续增量交付。
-- 上游未知的 token 字段不补零。Messages 必需的数值字段无法获知时使用结构占位并记录 `usage / required_numeric_placeholder`，占位不进入计量。缺少上游 response ID 时生成请求范围的转换 ID，它不能用于上游查询或状态恢复。
+见[协议转换](ai-gateway.md#协议转换)。
 
 ## 用量与性能分析契约
 
-计量来源是经过 Velune 网关的真实上游请求。ai-provider 从三种协议的原生 JSON／SSE 提取计量事实；gateway 在协议转换之前观察这些事实，关联请求与实际提供商和模型身份，交给调用方注入的统计接收器。统计与 tracing 独立，转换补造的占位值不进入统计；采集不改写同协议的原始响应。
-
-application 持有分析存储、查询与记录生命周期，文件为配置根目录下的 `analytics.sqlite`。记录保留发生时的提供商身份、名称与实际 provider model ID，之后删除或改名不改变历史含义；它不是会话正文数据库。只统计启用后经过 Velune 的请求，不扫描运行时历史。采集与存储失败不影响模型业务结果，但要在本地诊断与分析读取状态中可辨认。
-
-每项 token 数独立保留“已报告”或“未知”。OpenAI 的缓存读取属于输入子集、推理属于输出子集；Messages 的输入总量包含普通输入、缓存读取与缓存创建，缓存字段缺失时总量未知但保留已报告的普通输入。流式累计 usage 覆盖已知值，不逐事件累加。聚合同时返回报告覆盖数量：总量只合计输入与输出均已报告的请求，输入列与输出列各自合计已报告部分；缓存与推理细项不重复计入总量。依据为 [OpenAI usage 字段](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create)与 [Anthropic 缓存计量](https://platform.claude.com/docs/en/build-with-claude/prompt-caching)。
-
-有效输出速率是已报告输出 token 除以从上游派发到业务终态的耗时，包含等待，不是纯生成速度；跨请求聚合用同一组有效请求的输出总量除以耗时总量。首输出延迟单列，只由流式的实际文本、推理或工具参数触发，headers、心跳与仅含 role 的事件不算；非流式不推测。失败或取消请求的已知用量仍保留。日期查询使用平台给出的本地日边界，存储为 UTC 瞬时。费用、订阅余额与输出质量不由这些指标推断。
+见[用量与性能分析契约](ai-gateway.md#用量与性能分析契约)。

@@ -1,6 +1,8 @@
 # 遥测装配与关联
 
-本文件维护平台 app、bindings、application、remote、gateway 共同遵守的遥测契约。产品行为归[客户端遥测](../prd/diagnostics.md#客户端遥测)，开发入口归[开发与复验](../development.md#开发遥测)。
+本文件维护平台 app、bindings、application、remote、gateway 共同遵守的遥测契约。产品行为归[客户端遥测](../prd/diagnostics.md#客户端遥测)，开发入口归[开发与复验](../development/telemetry.md)。
+
+按需读取：[本机配置](#本机配置与双-sdk) · [关联与指标](#关联事件与指标) · [证据与分享](#agent-证据与分享) · [埋点与查询](#扩展埋点与读取范例) · [本地问题历史](#本地问题历史)。
 
 ## 本机配置与双 SDK
 

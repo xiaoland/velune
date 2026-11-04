@@ -1,6 +1,6 @@
 # Composer 输入身份与同步
 
-产品行为归[输入区](../prd/composer.md#输入与布局)。本契约覆盖 application-api、application、bindings 与平台 app；窗口布局、光标、撤销和阅读位置由平台保存。
+产品行为归[输入区](../prd/composer-input.md#内容与目标的归属)。本契约覆盖 application-api、application、bindings 与平台 app；窗口布局、光标、撤销和阅读位置由平台保存。
 
 ## 身份与责任
 
@@ -50,7 +50,7 @@ application 在 `ClientState` 之外持有 `VELUNE_HOME/composer-inputs.json`（
 
 旧输入目录或旧窗口格式必须在升级前显式迁移。schema 1 中同一输入携带的选择转换为每个已绑定 ContextKey 的目标选择；正文／附件和内容身份保持，原文件及孤立输入的旧资料保存在备份中。旧文字／窗口输入先由原迁移接入目录，再拆分内容与目标。应用不自动转换或用空输入覆盖旧文件。
 
-退出使用该 HOME 的 Velune 后，按[手动迁移规则](../development.md#破坏性变更与手动迁移)预览并执行：
+退出使用该 HOME 的 Velune 后，按[手动迁移规则](../development/migrations.md)预览并执行：
 
 ```sh
 python3 scripts/run-migrations.py --home /absolute/VELUNE_HOME
