@@ -6,9 +6,15 @@ import VeluneBindings
 /// What a conversation chose for its next turn: each runtime keeps its own
 /// choice. The runtime itself is kept only for a conversation not yet sent;
 /// a sent one comes back on its current runtime.
-struct ConversationChoices: Equatable {
+struct ConversationChoices: Codable, Equatable {
     var runtimeID: String?
     var choices: [String: TurnChoice] = [:]
+}
+
+struct ComposerDraftUpdate {
+    let conversationID: String
+    let sender: UUID
+    let state: SavedComposerDraft
 }
 
 /// One device's application state, shared by its windows: configuration,
@@ -47,6 +53,57 @@ final class DeviceStore: ObservableObject {
     /// conversation unread when it changed meanwhile, so this follows the
     /// request, not the list.
     private var markingRead: Set<String> = []
+    /// Consume one automatic acknowledgement per displayed native receipt.
+    /// A list change before the transcript catches up must not retry it.
+    private var attemptedReadReceipts: [String: NativeReadState] = [:]
+    struct ConversationManagement: Identifiable, Sendable {
+        let id: UUID
+        let source: String
+        let conversations: Set<String>
+        var running = false
+    }
+    @Published private(set) var conversationManagement: [ConversationManagement] = []
+    /// A live native or generated name can arrive before the next list scan.
+    func rememberConversationTitle(_ conversation: Conversation) {
+        if let index = conversations.firstIndex(where: { $0.id == conversation.id }), conversations[index].title != conversation.title {
+            conversations[index].title = conversation.title
+        }
+        if rememberedConversations[conversation.id] != nil { rememberedConversations[conversation.id]?.title = conversation.title }
+    }
+    @Published private(set) var rememberedConversations: [String: Conversation] = [:]
+    func rememberOrganization(_ targets: [Conversation], _ change: ConversationOrganizationChange) {
+        for var target in targets {
+            switch change {
+            case .archive: target.archived = true; target.pinned = false; target.group = nil
+            case .unarchive: target.archived = false
+            default: continue
+            }
+            rememberedConversations[target.id] = target
+        }
+    }
+
+    /// Accept independent user intentions immediately; serialization belongs
+    /// to the device, and never locks navigation or another management action.
+    func manageConversations<T: Sendable>(source: String, ids: Set<String>, operation: @escaping () throws -> T, apply: @escaping (T) -> Void) {
+        guard !isShuttingDown else { return }
+        let request = ConversationManagement(id: UUID(), source: source, conversations: ids)
+        conversationManagement.append(request)
+        performOnQueue { [weak self] in
+            DispatchQueue.main.async {
+                guard let self, let index = self.conversationManagement.firstIndex(where: { $0.id == request.id }) else { return }
+                self.conversationManagement[index].running = true
+            }
+            let result = Result { try operation() }
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.conversationManagement.removeAll { $0.id == request.id }
+                switch result {
+                case .success(let value): apply(value)
+                case .failure(let error): self.recordProblem(error, source: source); self.refreshConversations()
+                }
+            }
+        }
+    }
     /// Deleted from any tab; a tab showing one closes it.
     @Published private(set) var deletedConversationIDs: Set<String> = []
     /// Conversations executing on this device, across windows.
@@ -100,6 +157,54 @@ final class DeviceStore: ObservableObject {
     @Published private(set) var isLoading = false
     @Published private(set) var isShuttingDown = false
     @Published private(set) var problems: [AppProblem] = []
+    var activeProblemCount: Int { problems.filter { $0.resolvedAt == nil }.count }
+    private let problemQueue = DispatchQueue(label: "local.velune.problems", qos: .utility)
+    private var dismissedProblemIDs: Set<UUID> = []
+    private var recoveredActivityKeys: Set<String> = []
+    private var historyFailures: Set<String>?
+    private(set) lazy var windowWorkspaceJournal = WindowWorkspaceJournal(directory: isPreview ? nil : transport?.stateDirectory) { [weak self] message in
+        DispatchQueue.main.async { self?.recordProblem(message, source: "保存输入与窗口恢复点") }
+    }
+    private func problemJournal(_ operation: @escaping (VeluneTelemetry, String) throws -> Void) {
+        guard let transport, !isPreview else { return }
+        let scope = transport.stateDirectory.path
+        problemQueue.async {
+            do { try operation(transport.telemetryResult.get().binding, scope) }
+            catch {
+                let problem = AppProblem.failure(error, source: "保存问题记录")
+                DispatchQueue.main.async { [weak self] in self?.reportProblemStorageFailure(problem) }
+            }
+        }
+    }
+    private func loadProblems() {
+        guard let transport, !isPreview else { return }
+        let scope = transport.stateDirectory.path
+        problemQueue.async { [weak self] in
+            do {
+                let history = try transport.telemetryResult.get().binding.problems(scope: scope).compactMap(AppProblem.restored)
+                DispatchQueue.main.async {
+                    guard let self else { return }
+                    var loaded = Dictionary(history.map { ($0.id, $0) }, uniquingKeysWith: { _, latest in latest })
+                    for value in self.problems { loaded[value.id] = value }
+                    self.problems = loaded.values.filter { !self.dismissedProblemIDs.contains($0.id) }.sorted { $0.occurredAt < $1.occurredAt }
+                    for key in self.recoveredActivityKeys { self.clearActivityProblem(key) }
+                    if let failures = self.historyFailures {
+                        for key in Set(self.problems.compactMap(\.activityKey)) where key.hasPrefix("history:") && !failures.contains(key) { self.clearActivityProblem(key) }
+                    }
+                }
+            } catch {
+                let problem = AppProblem.failure(error, source: "读取问题记录")
+                DispatchQueue.main.async { self?.reportProblemStorageFailure(problem) }
+            }
+        }
+    }
+
+    private func reportProblemStorageFailure(_ problem: AppProblem) {
+        // The journal itself failed. Surface it without recursively writing
+        // another journal event or hiding the failure in an OS-only log.
+        if !problems.contains(where: { $0.source == problem.source && $0.detail == problem.detail }) { problems.append(problem) }
+    }
+
     @Published private(set) var analyticsReport: AnalyticsReport?
     @Published private(set) var analyticsLoadedQuery: AnalyticsQuery?
     @Published private(set) var analyticsIsLoading = false
@@ -122,6 +227,18 @@ final class DeviceStore: ObservableObject {
     /// Unsent composer text by conversation. Deliberately not published: the
     /// composer owns the text while editing and reads a draft when it switches.
     private var composerDrafts: [String: String] = [:]
+    private var composerEditingStates: [String: SavedComposerDraft] = [:]
+    let composerDraftUpdates = PassthroughSubject<ComposerDraftUpdate, Never>()
+    private(set) lazy var composerInputs = ComposerInputClient(device: self, transport: transport)
+    let conversationRenamed = PassthroughSubject<(id: String, title: String), Never>()
+    func composerEditingState(for id: String) -> SavedComposerDraft? { composerEditingStates[id] }
+    func keepComposerEditingState(_ state: SavedComposerDraft, for id: String, sender: UUID) {
+        guard composerEditingStates[id] != state else { return }
+        composerEditingStates[id] = state
+        setDraft(state.text, for: id)
+        keepChoices(state.choices, for: id)
+        composerDraftUpdates.send(ComposerDraftUpdate(conversationID: id, sender: sender, state: state))
+    }
     private var unsavedDrafts: [String: String] = [:]
     private var draftSave: DispatchWorkItem?
     /// Next-turn choices per conversation; the core keeps them across restarts.
@@ -152,6 +269,7 @@ final class DeviceStore: ObservableObject {
             catch { self.transport = nil; self.recordProblem(error, source: "初始化") }
         }
         if preview { seedPreview() }
+        else { loadProblems() }
         transport?.configurationChanged.receive(on: DispatchQueue.main).sink { [weak self] in
             guard let self, self.started else { return }
             self.refreshConfiguration()
@@ -162,7 +280,9 @@ final class DeviceStore: ObservableObject {
     var providers: [ProviderSummary] { gateway.providers }
     /// Turns or sub-agents run in Velune's runtime processes; quitting ends them.
     var hasRunningWork: Bool { !runningConversationIDs.isEmpty }
-    var isBusy: Bool { isLoading || hasRunningWork || isShuttingDown || authenticationRunning }
+    /// Configuration actions serialize with other requests and login; the core
+    /// checks which running sessions actually depend on the edited resource.
+    var isBusy: Bool { isLoading || isShuttingDown || authenticationRunning }
     /// A conversation runs here or elsewhere, by identity, listed or not.
     func isConversationRunning(_ id: String) -> Bool { runningConversationIDs.contains(id) || elsewhereConversationIDs.contains(id) }
     func location(of runtimeID: String?) -> RuntimeTransport { runtimeID.flatMap { runtimeLocations[$0] } ?? .local }
@@ -178,6 +298,7 @@ final class DeviceStore: ObservableObject {
         notifier = ConversationNotifier(application: self)
         loadDrafts(transport)
         loadComposerChoices(transport)
+        composerInputs.poll(force: true)
         refreshConfiguration()
         schedulePolling()
     }
@@ -202,6 +323,9 @@ final class DeviceStore: ObservableObject {
     }
 
     func applyList(_ data: ConfigurationSnapshot) {
+        for conversation in data.conversations.map(BindingMapping.listed) where rememberedConversations[conversation.id] != nil {
+            rememberedConversations[conversation.id] = conversation
+        }
         savedBrowserPreferences = data.conversationBrowserPreferences
         if browserPreferencesSaving == 0, conversationBrowserPreferences != data.conversationBrowserPreferences {
             conversationBrowserPreferences = data.conversationBrowserPreferences
@@ -273,12 +397,12 @@ final class DeviceStore: ObservableObject {
     }
     /// List operations run besides loading and management: they change only
     /// what the list shows and Velune's organization of it.
-    func browse(_ operation: @escaping () throws -> ConfigurationSnapshot, source: String, finished: (() -> Void)? = nil) {
-        guard !isPreview, !isShuttingDown else { finished?(); return }
+    func browse(_ operation: @escaping () throws -> ConfigurationSnapshot, source: String, finished: ((Result<ConfigurationSnapshot, Error>) -> Void)? = nil) {
+        guard !isPreview, !isShuttingDown else { return }
         performOnQueue { [weak self] in
             let result = Result { try operation() }
             DispatchQueue.main.async {
-                defer { finished?() }
+                defer { finished?(result) }
                 guard let self else { return }
                 switch result {
                 case .success(let data): self.applyList(data)
@@ -303,18 +427,27 @@ final class DeviceStore: ObservableObject {
     }
     /// Marks the conversation read once, while no mark is on its way.
     func markRead(_ conversation: Conversation) {
-        guard !markingRead.contains(conversation.id), let transport else { return }
-        markingRead.insert(conversation.id)
-        let reference = ConversationReference(runtimeId: conversation.runtimeID, conversationId: conversation.id)
-        browse({ try transport.organizeConversations([reference], .markRead) }, source: "整理会话") { [weak self] in
-            self?.markingRead.remove(conversation.id)
+        guard !isShuttingDown, !markingRead.contains(conversation.id), let transport else { return }
+        if let receipt = conversation.nativeReadState {
+            if let attempted = attemptedReadReceipts[conversation.id], attempted.conversationId == receipt.conversationId, attempted.revision == receipt.revision { return }
+            attemptedReadReceipts[conversation.id] = receipt
         }
+        markingRead.insert(conversation.id)
+        let reference = ConversationReference(runtimeId: conversation.runtimeID, conversationId: conversation.id, nativeReadState: conversation.nativeReadState)
+        browse({ try transport.organizeConversations([reference], .markRead) }, source: "整理会话") { [weak self] result in
+            self?.markingRead.remove(conversation.id)
+            if case .failure(let error) = result, AppProblem.failure(error).code != "read_state_conflict" { self?.attemptedReadReceipts[conversation.id] = nil }
+        }
+    }
+    func noteRenamed(_ id: String, title: String) {
+        conversationRenamed.send((id, title))
     }
     /// Deleted conversations close in the tabs showing them; their drafts
     /// and choices go with them (the core removed the persisted ones).
     func noteDeleted(_ ids: Set<String>) {
         deletedConversationIDs.formUnion(ids)
-        for id in ids { conversationChoices[id] = nil; composerDrafts[id] = nil; unsavedDrafts[id] = nil }
+        for id in ids { rememberedConversations[id] = nil; attemptedReadReceipts[id] = nil }
+        for id in ids { conversationChoices[id] = nil; composerDrafts[id] = nil; composerEditingStates[id] = nil; unsavedDrafts[id] = nil }
     }
     /// A pending write must not recreate the draft of a conversation being deleted.
     func dropUnsavedDraft(_ id: String) { unsavedDrafts[id] = nil }
@@ -381,6 +514,7 @@ final class DeviceStore: ObservableObject {
                 switch result {
                 case .success(let drafts):
                     for draft in drafts where self.composerDrafts[draft.conversationId] == nil { self.composerDrafts[draft.conversationId] = draft.text }
+                    self.objectWillChange.send()
                 case .failure(let failure): self.recordProblem(failure, source: "读取草稿")
                 }
             }
@@ -471,7 +605,7 @@ final class DeviceStore: ObservableObject {
         timer = Timer.scheduledTimer(withTimeInterval: 0.6, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 guard let self else { return }
-                self.pollAuthentication(); self.pollActiveConversations(); self.pollQuotaAlerts()
+                self.pollAuthentication(); self.pollActiveConversations(); self.pollQuotaAlerts(); self.composerInputs.poll()
             }
         }
     }
@@ -585,7 +719,7 @@ final class DeviceStore: ObservableObject {
     /// Whether the runtime has side chats (see 侧聊 in the PRD).
     func hasSideChats(_ runtimeID: String) -> Bool {
         guard let kind = runtimeInstances.first(where: { $0.id == runtimeID })?.typeId else { return false }
-        return [RuntimeKind.codex, .claudeCode, .pi].contains(kind)
+        return [RuntimeKind.codex, .codex166, .claudeCode, .pi].contains(kind)
     }
     func isStoppable(_ id: String) -> Bool { executionRuntimeIDs[id] != nil && !stoppingConversationIDs.contains(id) }
 
@@ -593,23 +727,28 @@ final class DeviceStore: ObservableObject {
         guard !isShuttingDown else { completion(false); return }
         guard !isPreview, let transport else { completion(true); return }
         saveDrafts()
+        windowWorkspaceJournal.flush()
         isShuttingDown = true
         timer?.invalidate(); timer = nil
         // Reads queued in any window give way; the changes queued before this still land.
-        transport.beginClosing()
-        performOnQueue { [weak self] in
-            let result = Result { try transport.close(stoppingWork: stoppingWork) }
-            DispatchQueue.main.async {
-                guard let self else { completion(false); return }
-                self.isShuttingDown = false
-                switch result {
-                case .success:
-                    self.started = false
-                    completion(true)
-                case .failure(let failure):
-                    self.recordProblem(failure)
-                    self.schedulePolling()
-                    completion(false)
+        composerInputs.flush { [weak self] in
+            guard let self else { completion(false); return }
+            self.windowWorkspaceJournal.flush()
+            transport.beginClosing()
+            self.performOnQueue { [weak self] in
+                let result = Result { try transport.close(stoppingWork: stoppingWork) }
+                DispatchQueue.main.async {
+                    guard let self else { completion(false); return }
+                    self.isShuttingDown = false
+                    switch result {
+                    case .success:
+                        self.started = false
+                        self.problemQueue.async { DispatchQueue.main.async { completion(true) } }
+                    case .failure(let failure):
+                        self.recordProblem(failure)
+                        self.schedulePolling()
+                        completion(false)
+                    }
                 }
             }
         }
@@ -694,6 +833,22 @@ final class DeviceStore: ObservableObject {
     func readProviderAPIKey(_ providerID: String, completion: @escaping (String) -> Void) {
         guard !isPreview, let transport else { recordProblem("预览不会读取 API key"); return }
         enqueue({ try transport.readProviderAPIKey(gatewayID: self.gateway.id, providerID: providerID) }, apply: completion)
+    }
+    func readProviderBilling(_ providerID: String, refresh: Bool, completion: @escaping (Result<ProviderBillingStatus, Error>) -> Void) {
+        guard let transport, !isPreview else { completion(.failure(TransportError.rejected("预览不读取组织账单；请在已配置的执行设备上查询。"))); return }
+        let gatewayID = gateway.id
+        performOnQueue {
+            let result = Result { try transport.providerBilling(gatewayID: gatewayID, providerID: providerID, refresh: refresh) }
+            DispatchQueue.main.async { completion(result) }
+        }
+    }
+    func saveProviderBilling(_ providerID: String, configuration: BillingConfiguration?, authenticationEdit: BillingAuthenticationEdit, confirmed: Bool, completion: @escaping (Result<ProviderBillingStatus, Error>) -> Void) {
+        guard let transport, !isPreview else { completion(.failure(TransportError.rejected("预览不保存组织查询凭据。"))); return }
+        let gatewayID = gateway.id
+        performOnQueue {
+            let result = Result { try transport.saveProviderBilling(gatewayID: gatewayID, providerID: providerID, configuration: configuration, authenticationEdit: authenticationEdit, confirmed: confirmed) }
+            DispatchQueue.main.async { completion(result) }
+        }
     }
     func saveTemplate(_ value: ModelTemplate, onSaved: (() -> Void)? = nil) {
         if isPreview { var saved = value; if saved.id.isEmpty { saved.id = UUID().uuidString }; modelTemplates.removeAll { $0.id == saved.id }; modelTemplates.append(saved); onSaved?(); return }
@@ -951,30 +1106,47 @@ final class DeviceStore: ObservableObject {
     func recordProblem(_ error: Error, source: String = "操作", activityKey: String? = nil) {
         if case .operation(_, .quitting) = error as? TransportError { return }
         let value = AppProblem.failure(error, source: source, activityKey: activityKey)
-        if let activityKey, problems.contains(where: { $0.activityKey == activityKey && $0.detail == value.detail && $0.code == value.code && $0.phase == value.phase }) { return }
-        if let activityKey { problems.removeAll { $0.activityKey == activityKey } }
+        if let activityKey {
+            if problems.contains(where: { $0.activityKey == activityKey && $0.resolvedAt == nil && $0.detail == value.detail && $0.code == value.code && $0.phase == value.phase }) { return }
+            clearActivityProblem(activityKey)
+            recoveredActivityKeys.remove(activityKey)
+        }
         appendProblems([value])
     }
     func recordProblem(_ message: String, source: String = "操作") { recordProblem(TransportError.rejected(message), source: source) }
     func appendProblems(_ values: [AppProblem]) {
         problems.append(contentsOf: values)
-        if problems.count > 100 { problems.removeFirst(problems.count - 100) }
+        problemJournal { journal, scope in
+            for value in values { try journal.recordProblem(scope: scope, problem: value.record) }
+        }
     }
-    /// A background read that failed before works again.
+    /// Recovery closes an incident; it never erases its diagnostic history.
     func clearActivityProblem(_ key: String) {
-        guard problems.contains(where: { $0.activityKey == key }) else { return }
-        problems.removeAll { $0.activityKey == key }
+        recoveredActivityKeys.insert(key)
+        let ids = problems.filter { $0.activityKey == key && $0.resolvedAt == nil }.map(\.id)
+        guard !ids.isEmpty else { return }
+        let at = Date()
+        for index in problems.indices where ids.contains(problems[index].id) { problems[index].resolvedAt = at }
+        problemJournal { try $0.resolveProblems(scope: $1, ids: ids.map(\.uuidString)) }
     }
-    func clearProblem(_ id: UUID) { problems.removeAll { $0.id == id } }
-    func clearProblems() { problems.removeAll() }
+    func clearProblem(_ id: UUID) {
+        dismissedProblemIDs.insert(id)
+        problems.removeAll { $0.id == id }
+        problemJournal { try $0.dismissProblems(scope: $1, ids: [id.uuidString]) }
+    }
+    func clearProblems() {
+        let ids = problems.map(\.id)
+        dismissedProblemIDs.formUnion(ids)
+        problems.removeAll()
+        problemJournal { try $0.dismissProblems(scope: $1, ids: ids.map(\.uuidString)) }
+    }
     private func reconcileHistoryProblems(_ failures: [HistoryFailure]) {
         let keys = Set(failures.map { "history:" + $0.runtimeId })
-        problems.removeAll { $0.activityKey?.hasPrefix("history:") == true && !keys.contains($0.activityKey ?? "") }
+        historyFailures = keys
+        for key in Set(problems.compactMap(\.activityKey)).filter({ $0.hasPrefix("history:") && !keys.contains($0) }) { clearActivityProblem(key) }
         for failure in failures {
             let key = "history:" + failure.runtimeId
-            if problems.contains(where: { $0.activityKey == key && $0.detail == failure.detail }) { continue }
-            problems.removeAll { $0.activityKey == key }
-            appendProblems([AppProblem(id: UUID(), occurredAt: Date(), source: "会话列表 · " + (runtimeInstances.first { $0.id == failure.runtimeId }?.name ?? failure.runtimeId), detail: failure.detail, kind: "history", code: nil, phase: nil, operationID: nil, activityKey: key)])
+            recordProblem(TransportError.rejected(failure.detail), source: "会话列表 · " + (runtimeInstances.first { $0.id == failure.runtimeId }?.name ?? failure.runtimeId), activityKey: key)
         }
     }
 
@@ -1045,15 +1217,35 @@ final class DeviceStore: ObservableObject {
             if running { history[history.count - 1].blocks = [.reasoning(summary: "Reading the settings view", text: .inline(text: "The sidebar and the detail pane share one split view.")), .reasoning(summary: "Inspecting the project layout", text: .inline(text: "")), .tool(toolId: "sample-progress", title: "整理项目计划", state: .running, output: .inline(text: "正在整理计划。"), linkedConversationId: nil)] }
             previewSnapshots[conversation.id] = ConversationSnapshot(revision: 1, conversation: conversation, contextRuntimeID: conversation.runtimeID, modelRecordKey: "sample-model", runState: running ? .running : .idle, messages: history,
                 transcriptTurns: [
-                    TranscriptTurn(id: "preview-work-" + conversation.id, userMessageId: history[0].id, workMessageIds: [history[1].id], lastMessageId: nil, replyStartBlock: 0, durationMs: nil, isRunning: false, settings: nil, usage: nil),
-                    TranscriptTurn(id: "preview-answer-" + conversation.id, userMessageId: history[2].id, workMessageIds: running ? [history[3].id] : [], lastMessageId: running ? nil : history[3].id, replyStartBlock: 0, durationMs: nil, isRunning: running, settings: nil, usage: nil)
+                    TranscriptTurn(id: "preview-work-" + conversation.id, userMessageId: history[0].id, workMessageIds: [history[1].id], lastMessageId: nil, replyStartBlock: 0, durationMs: nil, isRunning: false, outcome: .completed, settings: nil, usage: nil),
+                    TranscriptTurn(id: "preview-answer-" + conversation.id, userMessageId: history[2].id, workMessageIds: running ? [history[3].id] : [], lastMessageId: running ? nil : history[3].id, replyStartBlock: 0, durationMs: nil, isRunning: running, outcome: running ? nil : .completed, settings: nil, usage: nil)
                 ],
                 transcriptItems: [.message(id: history[0].id, messageId: history[0].id), .work(turnId: "preview-work-" + conversation.id), .message(id: history[2].id, messageId: history[2].id)]
                     + (running ? [.work(turnId: "preview-answer-" + conversation.id)] : [.message(id: history[3].id, messageId: history[3].id)]) + history.dropFirst(4).map { .message(id: $0.id, messageId: $0.id) },
                 transcriptOutline: history.filter { $0.role == .user }.map { TranscriptOutlineEntry(id: $0.id, messageId: $0.id) },
                 transcriptMessageIdentities: history.map { TranscriptMessageIdentity(id: $0.id, messageId: $0.id) },
-                actions: ConversationActions(canSend: !running, canCancel: running, canSwitch: true))
-            conversations.append(conversation)
+                actions: ConversationActions(inputAccess: .editable, canSend: !running, canCancel: running, canSwitch: true))
+            if CommandLine.arguments.contains("--preview-composer-access"), index == 1 {
+                previewSnapshots[conversation.id]?.actions.inputAccess = .externalController
+                previewSnapshots[conversation.id]?.actions.canSend = false
+            }
+            if CommandLine.arguments.contains("--preview-runtime-recovery") {
+                let retry: RuntimeRetry = index == 0 ? .waiting(attempt: 2, maximum: 5, atUnixMs: Int64(Date().addingTimeInterval(45).timeIntervalSince1970 * 1000)) : index == 1 ? .native : .exhausted(attempts: 5)
+                let error = DeliveredMessage(id: "preview-retry-\(index)", role: .system, blocks: [.runtimeFailure(failure: index == 1 ? .serverOverloaded : .rateLimited, detail: index == 1 ? "The server is overloaded. Please try again later." : "HTTP 429: Too many requests. Please retry after the rate limit resets.", retry: retry)])
+                previewSnapshots[conversation.id]?.messages.append(error)
+                previewSnapshots[conversation.id]?.transcriptMessageIdentities.append(TranscriptMessageIdentity(id: error.id, messageId: error.id))
+                previewSnapshots[conversation.id]?.runState = index == 2 ? .failed : .running
+                previewSnapshots[conversation.id]?.actions.canCancel = index != 2
+                previewSnapshots[conversation.id]?.actions.canSend = index == 2
+                previewSnapshots[conversation.id]?.transcriptTurns[1].isRunning = index != 2
+                previewSnapshots[conversation.id]?.transcriptTurns[1].outcome = index == 2 ? .failed : nil
+            }
+            var listed = conversation
+            listed.group = .all
+            listed.canRename = true
+            listed.canDelete = true
+            conversations.append(listed)
         }
+        conversationGroups = [ConversationGroup(key: .all, name: nil, total: UInt32(topics.count), loaded: UInt32(topics.count), latestActivityUnixMs: conversations.first?.updatedAtUnixMs, collapsed: false)]
     }
 }

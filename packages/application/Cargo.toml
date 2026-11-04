@@ -8,6 +8,9 @@ publish = false
 velune-telemetry = { path = "../telemetry" }
 velune-application-api = { path = "../application-api" }
 base64 = "0.23"
+rrule = "=0.14.0"
+chrono-tz = "=0.10.4"
+toml_edit = { version = "0.25", features = ["serde"] }
 chrono = { version = "0.4", default-features = false, features = ["std"] }
 url = "2"
 serde = { version = "1", features = ["derive"] }
@@ -21,10 +24,12 @@ hmac = { version = "0.12" }
 sha2 = { version = "=0.10.9" }
 velune-conversation = { path = "../conversation" }
 velune-agent-runtime = { path = "../agent-runtime" }
+velune-ai = { path = "../ai" }
+velune-ai-provider = { path = "../ai-provider" }
 velune-gateway = { path = "../gateway" }
 
 tokio = { version = "1", features = ["rt", "time", "process", "io-util", "net", "sync"] }
-reqwest = { version = "0.13", default-features = false, features = ["native-tls", "system-proxy", "stream"] }
+reqwest = { version = "0.13", default-features = false, features = ["native-tls", "system-proxy", "stream", "query"] }
 rusqlite = { version = "0.37", features = ["bundled"] }
 
 [target.'cfg(unix)'.dependencies]

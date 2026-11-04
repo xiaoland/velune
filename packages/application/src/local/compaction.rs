@@ -10,6 +10,7 @@ impl CoreRuntime {
         selection: Option<crate::ModelSelection>,
     ) -> Result<crate::SnapshotResult, RuntimeError> {
         self.ensure_active(runtime_id)?;
+        self.require_input_access()?;
         let snapshot = self
             .current_snapshot()
             .ok_or_else(|| RuntimeError::invalid("请选择会话"))?;

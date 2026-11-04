@@ -590,6 +590,7 @@ fn remote_proxy(remote: Arc<RemoteApplication>) -> Arc<VeluneApplication> {
         application: Arc::new(Mutex::new(Some(Backend::Remote(remote)))),
         diagnostics,
         trace_carrier: None,
+        composer_authority: None,
         #[cfg(feature = "local-runtime")]
         remote_service: Arc::new(Mutex::new(None)),
     })

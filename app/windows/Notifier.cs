@@ -95,7 +95,7 @@ sealed class Notifier(Shell shell, DispatcherQueue dispatcher)
         }
         if (!first)
         {
-            foreach (var turn in ended)
+            foreach (var turn in ended.Where(turn => !turn.Silent))
             {
                 var state = turn.Outcome switch
                 {

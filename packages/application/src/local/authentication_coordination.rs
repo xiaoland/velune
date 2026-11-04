@@ -3,6 +3,60 @@ use super::*;
 use crate::provider_authentication::*;
 use velune_conversation::authentication::{AuthenticationEvent, LoginProgress};
 impl CoreRuntime {
+    /// A runtime-backed login writes the source runtime's credentials as well
+    /// as the provider's metadata, so native sessions using that source matter too.
+    fn authentication_source_runtime(&self, gateway_id: &str, provider_id: &str) -> Option<String> {
+        match &self
+            .provider(gateway_id, provider_id)
+            .ok()?
+            .authentication
+            .material
+        {
+            AuthenticationMaterial::RuntimeProvider { source, .. } => {
+                source.source_instance_id.clone()
+            }
+            _ => None,
+        }
+    }
+
+    fn ensure_authentication_idle(
+        &mut self,
+        gateway_id: &str,
+        provider_id: &str,
+    ) -> Result<(), RuntimeError> {
+        self.ensure_gateway_idle(gateway_id)?;
+        if self
+            .authentication_source_runtime(gateway_id, provider_id)
+            .is_some_and(|id| self.runtime_in_use(&id))
+        {
+            return Err(RuntimeError::invalid(
+                "此认证来源的运行时仍有会话或后台任务正在运行，请停止后再登录",
+            ));
+        }
+        Ok(())
+    }
+
+    fn invalidate_authentication_execution(
+        &mut self,
+        gateway_id: &str,
+        provider_id: &str,
+    ) -> Result<bool, RuntimeError> {
+        let source_runtime = self.authentication_source_runtime(gateway_id, provider_id);
+        let mut invalidated = false;
+        self.for_each_session(|core| {
+            if core.session_uses_gateway(gateway_id)
+                || source_runtime
+                    .as_ref()
+                    .is_some_and(|id| core.session.uses_runtime(id))
+            {
+                core.invalidate_execution()?;
+                invalidated = true;
+            }
+            Ok(())
+        })?;
+        Ok(invalidated)
+    }
+
     /// Re-reads a referenced Claude Code login, which may have been signed in,
     /// switched or moved with its runtime since, and saves what changed.
     fn inspect_linked_claude(
@@ -208,7 +262,8 @@ impl CoreRuntime {
                 crate::subscription_auth::remove(&self.options.home_directory, &old_credential)
                     .is_err()
             };
-            self.for_each_session(Self::invalidate_execution)?;
+            let invalidated =
+                self.invalidate_authentication_execution(&gateway_id, &provider_id)?;
             if cleanup_failed {
                 tracing::warn!(event = "subscription_cleanup_failed");
                 return Err(RuntimeError::invalid(
@@ -216,7 +271,7 @@ impl CoreRuntime {
                 ));
             }
             progress.gateways = Some(self.public_gateways());
-            progress.execution_invalidated = Some(true);
+            progress.execution_invalidated = Some(invalidated);
         }
         if !progress.running {
             self.subscription_login = None;
@@ -329,9 +384,10 @@ impl CoreRuntime {
         gateway_id: String,
         provider_id: String,
     ) -> Result<crate::AuthenticationProgress, RuntimeError> {
-        if self.execution_active() || self.login_busy() {
-            return Err(RuntimeError::invalid("runtime is busy"));
+        if self.login_busy() {
+            return Err(RuntimeError::invalid("请先完成当前登录"));
         }
+        self.ensure_authentication_idle(&gateway_id, &provider_id)?;
         let provider = self.provider(&gateway_id, &provider_id)?;
         let login = match &provider.authentication.material {
             AuthenticationMaterial::None | AuthenticationMaterial::ApiKey { .. } => {
@@ -420,14 +476,17 @@ impl CoreRuntime {
         gateway_id: String,
         provider_id: String,
     ) -> Result<crate::GatewayUpdate, RuntimeError> {
-        if self.execution_active()
-            || self.subscription_login.is_some()
+        self.ensure_authentication_idle(&gateway_id, &provider_id)?;
+        if self
+            .subscription_login
+            .as_ref()
+            .is_some_and(crate::provider_login::Login::is_running)
             || self
                 .authentication
                 .as_ref()
                 .is_some_and(authentication::Login::is_running)
         {
-            return Err(RuntimeError::invalid("runtime or login is busy"));
+            return Err(RuntimeError::invalid("请先完成当前登录，再退出登录"));
         }
         let previous = self.gateways.clone();
         let provider = self
@@ -467,11 +526,11 @@ impl CoreRuntime {
             .ok_or_else(|| RuntimeError::invalid("authentication revision overflow"))?;
         let persisted = self.persist();
         self.sync_scheduling(&previous);
-        self.for_each_session(Self::invalidate_execution)?;
+        let invalidated = self.invalidate_authentication_execution(&gateway_id, &provider_id)?;
         persisted?;
         Ok(crate::GatewayUpdate {
             gateways: self.public_gateways(),
-            execution_invalidated: true,
+            execution_invalidated: invalidated,
         })
     }
 
@@ -521,9 +580,9 @@ impl CoreRuntime {
             ));
         }
         self.sync_scheduling(&previous);
-        self.for_each_session(Self::invalidate_execution)?;
+        let invalidated = self.invalidate_authentication_execution(&gateway_id, &provider_id)?;
         progress.gateways = Some(self.public_gateways());
-        progress.execution_invalidated = Some(true);
+        progress.execution_invalidated = Some(invalidated);
         Ok(progress)
     }
 }

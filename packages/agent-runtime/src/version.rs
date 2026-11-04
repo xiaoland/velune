@@ -106,6 +106,14 @@ impl Versions {
         }
     }
 }
+/// Preserve the user's continue action when native empty-input resume is unavailable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResumeStrategy {
+    Unsupported,
+    Native,
+    Message(&'static str),
+}
+
 pub struct RuntimeVariant {
     pub kind: RuntimeKind,
     pub family_id: &'static str,
@@ -121,8 +129,8 @@ pub struct RuntimeVariant {
     pub supported_protocols: &'static [Protocol],
     /// Empty when the runtime offers no per-turn choice.
     pub permission_modes: &'static [PermissionMode],
-    /// Starts a turn without a new user message after a stop or failure.
-    pub can_resume_turns: bool,
+    /// How an interrupted context continues on this runtime.
+    pub resume: ResumeStrategy,
     /// Compacts a conversation's context when the user asks.
     pub can_compact: bool,
     /// A new conversation persists only with its first turn, so it can
@@ -133,7 +141,7 @@ pub struct RuntimeVariant {
 /// Pi's range, shared with the Pi provider import.
 pub const PI_VERSIONS: Versions = Versions::Cli {
     minimum: "1.0.2",
-    below: "1.1.0",
+    below: "1.5.0",
 };
 const VARIANTS: &[RuntimeVariant] = &[
     RuntimeVariant {
@@ -147,7 +155,7 @@ const VARIANTS: &[RuntimeVariant] = &[
         projectless_directories: &[],
         supported_protocols: &[],
         permission_modes: &[],
-        can_resume_turns: false,
+        resume: ResumeStrategy::Unsupported,
         can_compact: false,
         persists_on_first_turn: false,
         accepts_images: true,
@@ -166,7 +174,7 @@ const VARIANTS: &[RuntimeVariant] = &[
         projectless_directories: &[],
         supported_protocols: &[Protocol::Messages],
         permission_modes: CLAUDE_PERMISSION_MODES,
-        can_resume_turns: true,
+        resume: ResumeStrategy::Native,
         can_compact: true,
         persists_on_first_turn: true,
         accepts_images: true,
@@ -174,7 +182,7 @@ const VARIANTS: &[RuntimeVariant] = &[
     RuntimeVariant {
         kind: RuntimeKind::Pi,
         family_id: "pi",
-        name: "Pi Agent 1.0",
+        name: "Pi Agent 1.4",
         versions: PI_VERSIONS,
         can_rename_conversations: true,
         can_delete_conversations: true,
@@ -186,7 +194,7 @@ const VARIANTS: &[RuntimeVariant] = &[
             Protocol::Messages,
         ],
         permission_modes: &[],
-        can_resume_turns: false,
+        resume: ResumeStrategy::Message("continue"),
         can_compact: true,
         persists_on_first_turn: true,
         accepts_images: true,
@@ -206,7 +214,27 @@ const VARIANTS: &[RuntimeVariant] = &[
         projectless_directories: &["Documents/Codex"],
         supported_protocols: &[Protocol::Responses],
         permission_modes: CODEX_PERMISSION_MODES,
-        can_resume_turns: true,
+        resume: ResumeStrategy::Native,
+        can_compact: true,
+        persists_on_first_turn: true,
+        accepts_images: true,
+    },
+    RuntimeVariant {
+        kind: RuntimeKind::Codex166,
+        family_id: "codex",
+        name: "Codex 0.166",
+        versions: Versions::Cli {
+            minimum: "0.166.0",
+            below: "0.167.0",
+        },
+        can_rename_conversations: true,
+        can_delete_conversations: true,
+        can_archive_conversations: true,
+        // The Codex app's default folder for chats without a project.
+        projectless_directories: &["Documents/Codex"],
+        supported_protocols: &[Protocol::Responses],
+        permission_modes: CODEX_PERMISSION_MODES,
+        resume: ResumeStrategy::Native,
         can_compact: true,
         persists_on_first_turn: true,
         accepts_images: true,
@@ -229,7 +257,7 @@ const VARIANTS: &[RuntimeVariant] = &[
             Protocol::Messages,
         ],
         permission_modes: &[],
-        can_resume_turns: false,
+        resume: ResumeStrategy::Unsupported,
         can_compact: false,
         persists_on_first_turn: false,
         accepts_images: false,

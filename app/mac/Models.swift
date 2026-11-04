@@ -13,6 +13,7 @@ struct Conversation: Codable, Sendable, Identifiable, Equatable {
     /// A native sub-agent's conversation: opened from its parent's transcript,
     /// not listed in the sidebar, and continued only by the parent's agent.
     var parentConversationID: String? = nil
+    var nativeReadState: NativeReadState? = nil
     /// Velune's organization of the conversation in the list; see `ListedConversation`.
     var nativeID = ""
     var agentsURI: String? = nil
@@ -81,16 +82,11 @@ struct ProviderComposition: Sendable, Equatable {
     var requestProfile: RequestProfile = .native
     var authenticationSource: ProviderAuthenticationSource = .apiKey
     var quotaSource: ProviderQuotaSource = .none
-    /// The subscription composition's display name, independently of how it authenticates.
-    var subscriptionName: String? {
-        if requestProfile == .kimiCoding { return "Kimi Coding Plan" }
-        if requestProfile == .arkCoding { return "ARK Coding Plan" }
-        switch authenticationSource {
-        case .codexOAuth: return "Codex 订阅"
-        case .claudeCli: return "Claude Code 订阅"
-        case .none, .apiKey, .runtimeProvider: return nil
-        }
+    /// Core owns the subscription composition and its presentation metadata.
+    var subscriptionTemplate: ProviderTemplate? {
+        providerSubscriptionTemplate(executionBackend: executionBackend, requestProfile: requestProfile, authenticationSource: authenticationSource, quotaSource: quotaSource)
     }
+    var subscriptionName: String? { subscriptionTemplate?.name }
     /// How signing in proceeds once a new subscription provider is saved.
     var signInHint: String? {
         switch authenticationSource {

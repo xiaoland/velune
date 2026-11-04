@@ -41,6 +41,25 @@ pub struct VeluneTelemetry {
 }
 #[uniffi::export]
 impl VeluneTelemetry {
+    pub fn problems(
+        &self,
+        scope: String,
+    ) -> Result<Vec<velune_telemetry::DiagnosticProblem>, BindingError> {
+        Ok(self.owner.problems(&scope)?)
+    }
+    pub fn record_problem(
+        &self,
+        scope: String,
+        problem: velune_telemetry::DiagnosticProblem,
+    ) -> Result<(), BindingError> {
+        Ok(self.owner.record_problem(&scope, problem)?)
+    }
+    pub fn resolve_problems(&self, scope: String, ids: Vec<String>) -> Result<(), BindingError> {
+        Ok(self.owner.resolve_problems(&scope, ids)?)
+    }
+    pub fn dismiss_problems(&self, scope: String, ids: Vec<String>) -> Result<(), BindingError> {
+        Ok(self.owner.dismiss_problems(&scope, ids)?)
+    }
     #[uniffi::constructor]
     pub fn open(options: BindingTelemetryOptions) -> Result<Arc<Self>, BindingError> {
         let mut identity =

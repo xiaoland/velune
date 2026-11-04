@@ -13,13 +13,17 @@ pub use claude::{
     rename_claude_session_at,
 };
 mod codex;
-pub use codex::{ThreadChange, manage_thread, manage_thread_at};
+pub use codex::{
+    ThreadChange, manage_thread, manage_thread_at, resume_provider_matches, update_read_state,
+};
 mod codex_history;
 pub mod codex_projects;
+mod codex_retry;
 mod codex_side;
+mod codex_title;
 pub use codex_history::{
-    list_codex_history, list_codex_history_at, read_codex_history, read_codex_history_at,
-    read_codex_summary_at,
+    codex_context_provider, export_codex_context, list_codex_history, list_codex_history_at,
+    read_codex_history, read_codex_history_at, read_codex_summary_at,
 };
 mod deepseek;
 pub(crate) mod rpc;
@@ -42,7 +46,7 @@ impl Error {
             code,
         }
     }
-    pub(crate) fn code(&self) -> &'static str {
+    pub fn code(&self) -> &'static str {
         self.code
     }
     pub(crate) fn detail(&self) -> &str {
@@ -59,6 +63,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum NativeKind {
     Codex,
+    Codex166,
     DeepSeek,
     ClaudeCode,
 }
@@ -67,6 +72,7 @@ impl NativeKind {
         use crate::version::RuntimeKind;
         match self {
             Self::Codex => RuntimeKind::Codex,
+            Self::Codex166 => RuntimeKind::Codex166,
             Self::DeepSeek => RuntimeKind::DeepSeek,
             Self::ClaudeCode => RuntimeKind::ClaudeCode,
         }
@@ -75,6 +81,7 @@ impl NativeKind {
         use crate::version::RuntimeKind;
         match kind {
             RuntimeKind::Codex => Some(Self::Codex),
+            RuntimeKind::Codex166 => Some(Self::Codex166),
             RuntimeKind::DeepSeek => Some(Self::DeepSeek),
             RuntimeKind::ClaudeCode => Some(Self::ClaudeCode),
             RuntimeKind::Pi | RuntimeKind::Acp => None,
@@ -127,6 +134,15 @@ pub struct RuntimeModel {
     pub id: String,
     pub name: String,
 }
+
+/// The display name of a native model selection id: a Codex speed variant
+/// reads as its base model and tier, anything else is itself.
+pub fn display_model_name(kind: crate::version::RuntimeKind, model_id: &str) -> String {
+    match NativeKind::of(kind) {
+        Some(NativeKind::Codex | NativeKind::Codex166) => codex::speed_model_name(model_id),
+        _ => model_id.to_owned(),
+    }
+}
 /// A model a runtime offers, with the reasoning levels the runtime accepts
 /// for it, in the runtime's own vocabulary; empty when it takes none.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -134,6 +150,23 @@ pub struct ModelOption {
     pub model: RuntimeModel,
     pub reasoning_efforts: Vec<String>,
 }
+
+/// A fork whose native file is created by its first turn. Its source and
+/// boundary survive replacing the execution configuration; clients do not
+/// interpret the runtime's resume point.
+#[derive(Clone)]
+pub struct PendingFork {
+    conversation_id: String,
+    from: String,
+    at: Option<String>,
+}
+
+impl PendingFork {
+    pub fn conversation_id(&self) -> &str {
+        &self.conversation_id
+    }
+}
+
 #[derive(Clone)]
 struct PendingRequest {
     id: Value,
@@ -180,6 +213,17 @@ pub struct NativeSession {
     _mcp: crate::mcp::Prepared,
 }
 impl NativeSession {
+    /// A loaded native handle belongs to this execution owner until its process ends.
+    pub fn owns_control(&self, target: &crate::control::Target) -> bool {
+        !self.process_ended
+            && !self.failed
+            && self.native_id.as_deref() == Some(&target.native_id)
+            && self.config.kind.runtime_kind() == target.kind
+            && self.config.execution == target.execution
+            && self.config.agent_dir == target.agent_dir
+            && self.config.os_home == target.os_home
+    }
+
     pub fn connect(mut config: NativeConfig) -> Result<Self> {
         for path in [
             &config.binary,
@@ -224,7 +268,7 @@ impl NativeSession {
         };
         let selected_gateway = config.gateway.take();
         let mut active = config.clone();
-        let tunnel = if config.kind == NativeKind::Codex {
+        let tunnel = if matches!(config.kind, NativeKind::Codex | NativeKind::Codex166) {
             if let Some(gateway) = selected_gateway.as_ref() {
                 let tunnel =
                     crate::execution::LoopbackTunnel::open(&config.execution, &gateway.endpoint)?;
@@ -283,9 +327,30 @@ impl NativeSession {
         permission_mode: Option<&str>,
     ) -> Result<rpc::RpcClient> {
         let mut command = match config.kind {
-            NativeKind::Codex => {
+            NativeKind::Codex | NativeKind::Codex166 => {
                 let mut command = crate::process_tree::command(&config.binary);
                 command.arg("app-server");
+                if config.kind == NativeKind::Codex166
+                    && let Some(gateway) = &config.gateway
+                {
+                    // Admission compares against startup config, before request overrides.
+                    command.args([
+                        "-c",
+                        "model_provider=\"velune\"",
+                        "-c",
+                        "model_providers.velune.name=\"Velune LLM Gateway\"",
+                        "-c",
+                        "model_providers.velune.env_key=\"VELUNE_GATEWAY_TOKEN\"",
+                        "-c",
+                        "model_providers.velune.wire_api=\"responses\"",
+                        "-c",
+                        "model_providers.velune.requires_openai_auth=false",
+                    ]);
+                    command.arg("-c").arg(format!(
+                        "model_providers.velune.base_url={}",
+                        json!(gateway.endpoint)
+                    ));
+                }
                 command
             }
             NativeKind::DeepSeek => Self::dsh_command(config)?,
@@ -294,7 +359,7 @@ impl NativeSession {
             }
         };
         let home_key = match config.kind {
-            NativeKind::Codex => "CODEX_HOME",
+            NativeKind::Codex | NativeKind::Codex166 => "CODEX_HOME",
             NativeKind::DeepSeek => "DSH_HOME",
             NativeKind::ClaudeCode => "CLAUDE_CONFIG_DIR",
         };
@@ -315,7 +380,7 @@ impl NativeSession {
     }
     fn initialize(&mut self) -> Result<()> {
         match self.config.kind {
-            NativeKind::Codex => self.codex_initialize(),
+            NativeKind::Codex | NativeKind::Codex166 => self.codex_initialize(),
             NativeKind::DeepSeek => self.dsh_initialize(),
             NativeKind::ClaudeCode => self.claude_initialize(),
         }
@@ -330,7 +395,7 @@ impl NativeSession {
         };
         let outcome: Result<()> = (|| {
             match self.config.kind {
-                NativeKind::Codex => self.codex_create(cwd, runtime_id)?,
+                NativeKind::Codex | NativeKind::Codex166 => self.codex_create(cwd, runtime_id)?,
                 NativeKind::DeepSeek => self.dsh_create(cwd, runtime_id)?,
                 NativeKind::ClaudeCode => self.claude_create(cwd, runtime_id)?,
             };
@@ -344,6 +409,46 @@ impl NativeSession {
         self.snapshot
             .clone()
             .ok_or_else(|| Error::new("运行时未创建会话"))
+    }
+    /// Start a disposable side context after changing execution configuration.
+    /// Reference history is never imported into the original native session.
+    pub fn create_side_context(
+        &mut self,
+        cwd: Option<&Path>,
+        runtime_id: &str,
+        context: &str,
+    ) -> Result<ConversationSnapshot> {
+        if self.config.kind == NativeKind::DeepSeek {
+            return Err(Error::new("此运行时不提供侧聊"));
+        }
+        self.side = true;
+        self.codex.side_context = Some(context.into());
+        self.create(cwd, runtime_id)?;
+        if self.config.kind == NativeKind::ClaudeCode {
+            let directory = self
+                .config
+                .projection_directory
+                .join(format!("side-context-{}", self.epoch));
+            self.config.execution.create_dir_all(&directory)?;
+            let path = directory.join("context.txt");
+            self.config
+                .execution
+                .write_file_atomic(&path, context.as_bytes())?;
+            self.claude.start = claude::ClaudeStart::SideContext { path };
+        }
+        self.snapshot
+            .clone()
+            .ok_or_else(|| Error::new("侧聊上下文不可用"))
+    }
+    /// A persistent Codex fork whose earlier messages are reference context.
+    pub fn reference_context(&mut self, context: String) -> Result<()> {
+        if !matches!(self.config.kind, NativeKind::Codex | NativeKind::Codex166)
+            || self.native_id.is_some()
+        {
+            return Err(Error::new("此运行时不支持新会话引用上下文"));
+        }
+        self.codex.side_context = Some(context);
+        Ok(())
     }
     pub fn open(
         &mut self,
@@ -364,7 +469,9 @@ impl NativeSession {
         };
         let outcome: Result<()> = (|| {
             match self.config.kind {
-                NativeKind::Codex => self.codex_open(native_id, cwd, runtime_id, history)?,
+                NativeKind::Codex | NativeKind::Codex166 => {
+                    self.codex_open(native_id, cwd, runtime_id, history)?
+                }
                 NativeKind::DeepSeek => self.dsh_open(native_id, cwd, runtime_id, history)?,
                 NativeKind::ClaudeCode => self.claude_open(native_id, cwd, runtime_id, history)?,
             };
@@ -402,7 +509,9 @@ impl NativeSession {
             self.config.gateway.take()
         };
         let outcome = match self.config.kind {
-            NativeKind::Codex => self.codex_open_side(parent_id, cwd, runtime_id),
+            NativeKind::Codex | NativeKind::Codex166 => {
+                self.codex_open_side(parent_id, cwd, runtime_id)
+            }
             NativeKind::ClaudeCode => self.claude_open_side(parent_id, cwd, runtime_id),
             NativeKind::DeepSeek => Err(Error::new("DeepSeek 运行时不提供侧聊")),
         };
@@ -436,8 +545,13 @@ impl NativeSession {
         self.compaction_message_id = None;
         let result = (|| {
             self.prepare_turn(None, None)?;
+            if let Some(snapshot) = &mut self.snapshot {
+                snapshot
+                    .executions
+                    .begin(ExecutionKind::ContextMaintenance, false);
+            }
             match self.config.kind {
-                NativeKind::Codex => self.codex_compact(),
+                NativeKind::Codex | NativeKind::Codex166 => self.codex_compact(),
                 NativeKind::ClaudeCode => self.claude_compact(),
                 NativeKind::DeepSeek => unreachable!(),
             }
@@ -489,12 +603,22 @@ impl NativeSession {
                 "outstanding_work",
             ));
         }
+        self.codex.retry = codex_retry::Retry {
+            effort: input.effort.clone(),
+            permission_mode: input.permission_mode.clone(),
+            ..Default::default()
+        };
         let result = self
             .prepare_turn(input.effort.as_deref(), input.permission_mode.as_deref())
-            .and_then(|()| match self.config.kind {
-                NativeKind::Codex => self.codex_send(input),
-                NativeKind::DeepSeek => self.dsh_send(&input.text),
-                NativeKind::ClaudeCode => self.claude_send(input),
+            .and_then(|()| {
+                if let Some(snapshot) = &mut self.snapshot {
+                    snapshot.executions.begin(ExecutionKind::UserTurn, resuming);
+                }
+                match self.config.kind {
+                    NativeKind::Codex | NativeKind::Codex166 => self.codex_send(input),
+                    NativeKind::DeepSeek => self.dsh_send(&input.text),
+                    NativeKind::ClaudeCode => self.claude_send(input),
+                }
             });
         if result.is_err() {
             self.fail_connection();
@@ -504,6 +628,7 @@ impl NativeSession {
     /// Whether the runtime takes a message into the running turn.
     pub fn can_steer(&self) -> bool {
         self.config.kind != NativeKind::DeepSeek
+            && self.codex.retry.can_steer()
             && !(self.side && self.config.kind == NativeKind::ClaudeCode)
             && self
                 .snapshot
@@ -520,7 +645,7 @@ impl NativeSession {
             return Err(Error::new("消息内容为空"));
         }
         match self.config.kind {
-            NativeKind::Codex => self.codex_steer(input),
+            NativeKind::Codex | NativeKind::Codex166 => self.codex_steer(input),
             NativeKind::ClaudeCode => self.claude_steer(input),
             NativeKind::DeepSeek => Err(Error::new("DeepSeek 运行时不提供插入消息")),
         }
@@ -545,15 +670,87 @@ impl NativeSession {
             .position(|message| message.id == message_id && message.role == MessageRole::User)
             .ok_or_else(|| Error::new("会话中没有这条用户消息"))?;
         match self.config.kind {
-            NativeKind::Codex => self.codex_branch(index, placement),
+            NativeKind::Codex | NativeKind::Codex166 => self.codex_branch(index, placement),
             NativeKind::ClaudeCode => self.claude_branch(index, placement),
             NativeKind::DeepSeek => Err(Error::new("DeepSeek 运行时不提供消息编辑")),
         }
+    }
+    /// Continue in a new native conversation holding everything through the
+    /// turn the user message `message_id` starts: up to the next user
+    /// message, or the whole conversation when there is none. The original
+    /// stays as it is; this session then presents the copy, ready for the
+    /// next turn.
+    pub fn fork_through(&mut self, message_id: &str) -> Result<()> {
+        self.ensure_idle()?;
+        if self.side {
+            return Err(Error::new("侧聊不提供会话分叉"));
+        }
+        let snapshot = self
+            .snapshot
+            .as_ref()
+            .ok_or_else(|| Error::new("没有活动会话"))?;
+        let index = snapshot
+            .messages
+            .iter()
+            .position(|message| message.id == message_id && message.role == MessageRole::User)
+            .ok_or_else(|| Error::new("会话中没有这条用户消息"))?;
+        match self.config.kind {
+            NativeKind::Codex | NativeKind::Codex166 => self.codex_fork(index),
+            NativeKind::ClaudeCode => self.claude_fork(index),
+            NativeKind::DeepSeek => Err(Error::new("DeepSeek 运行时不提供会话分叉")),
+        }
+    }
+
+    pub fn pending_fork(&self) -> Option<PendingFork> {
+        let claude::ClaudeStart::Fork { from, at } = &self.claude.start else {
+            return None;
+        };
+        Some(PendingFork {
+            conversation_id: self.snapshot.as_ref()?.conversation.id.clone(),
+            from: from.clone(),
+            at: at.clone(),
+        })
+    }
+
+    /// Restore only the matching fork after its model/provider configuration
+    /// has changed. Opening the not-yet-created target as a normal resume
+    /// would discard its inherited context.
+    pub fn restore_pending_fork(&mut self, pending: &PendingFork) -> Result<()> {
+        self.ensure_idle()?;
+        if self.config.kind != NativeKind::ClaudeCode
+            || self
+                .snapshot
+                .as_ref()
+                .map(|snapshot| snapshot.conversation.id.as_str())
+                != Some(pending.conversation_id())
+        {
+            return Err(Error::new("待创建的分支与当前原生会话不匹配"));
+        }
+        self.claude.start = claude::ClaudeStart::Fork {
+            from: pending.from.clone(),
+            at: pending.at.clone(),
+        };
+        Ok(())
     }
     /// Drop the messages from `index` on from the snapshot.
     fn truncate_snapshot(&mut self, index: usize) {
         if let Some(snapshot) = &mut self.snapshot {
             snapshot.messages.truncate(index);
+            let kept: std::collections::BTreeSet<_> = snapshot
+                .messages
+                .iter()
+                .map(|message| message.id.as_str())
+                .collect();
+            for record in &mut snapshot.executions.records {
+                if record
+                    .message_ids
+                    .iter()
+                    .any(|id| !kept.contains(id.as_str()))
+                {
+                    record.outcome = None;
+                }
+            }
+            snapshot.executions.retain(&snapshot.messages);
             snapshot.revision += 1;
         }
     }
@@ -561,8 +758,12 @@ impl NativeSession {
         if !self.turn_running() {
             return Ok(());
         }
+        if matches!(self.config.kind, NativeKind::Codex | NativeKind::Codex166) && !self.compacting
+        {
+            return self.codex_cancel_recovery();
+        }
         match self.config.kind {
-            NativeKind::Codex => self.codex_cancel(),
+            NativeKind::Codex | NativeKind::Codex166 => self.codex_cancel(),
             NativeKind::DeepSeek => self.dsh_cancel(),
             NativeKind::ClaudeCode => self.claude_cancel(),
         }
@@ -600,6 +801,13 @@ impl NativeSession {
         if self.config.kind == NativeKind::DeepSeek && provider_id.is_none() {
             return Err(Error::new("DeepSeek 原生模型选择必须包含提供商身份"));
         }
+        let model_id = if matches!(self.config.kind, NativeKind::Codex | NativeKind::Codex166) {
+            let (base, tier) = codex::split_speed(&model_id);
+            self.codex.service_tier = tier;
+            base
+        } else {
+            model_id
+        };
         self.native_selection = Some(RuntimeModel {
             provider_id,
             name: model_id.clone(),
@@ -612,7 +820,7 @@ impl NativeSession {
     pub fn models(&mut self) -> Result<Vec<ModelOption>> {
         self.ensure_idle()?;
         match self.config.kind {
-            NativeKind::Codex => self.codex_models(),
+            NativeKind::Codex | NativeKind::Codex166 => self.codex_models(),
             NativeKind::DeepSeek => self.dsh_models(),
             NativeKind::ClaudeCode => self.claude_models(),
         }
@@ -633,7 +841,7 @@ impl NativeSession {
             return Ok(());
         }
         // An ephemeral fork lives only in its app-server process.
-        if self.side && self.config.kind == NativeKind::Codex {
+        if self.side && matches!(self.config.kind, NativeKind::Codex | NativeKind::Codex166) {
             return Err(Error::new("侧聊不能更换模型"));
         }
         let saved = self
@@ -647,6 +855,9 @@ impl NativeSession {
         let cwd = saved.conversation.cwd.as_deref().map(PathBuf::from);
         self.rpc.shutdown();
         self.tunnel = None;
+        let title_eligible = self.codex.title.eligible;
+        self.codex.title = Default::default();
+        self.codex.title.eligible = title_eligible;
         let mut active = self.config.clone();
         if let Some(gateway) = active.gateway.as_mut() {
             let tunnel =
@@ -673,7 +884,7 @@ impl NativeSession {
             // The previous process owned this loaded-session handle; the replacement has none yet.
             self.native_id = None;
             match self.config.kind {
-                NativeKind::Codex => self.codex_open(
+                NativeKind::Codex | NativeKind::Codex166 => self.codex_open(
                     &id,
                     cwd.as_deref(),
                     &saved.context_runtime_id,
@@ -703,17 +914,30 @@ impl NativeSession {
         if self.failed || self.process_ended {
             return Ok(());
         }
+        let revision = self.snapshot.as_ref().map(|s| s.revision);
         let outcome = (|| {
             let records = self.rpc.poll()?;
             for record in records {
                 match self.config.kind {
-                    NativeKind::Codex => self.codex_handle_record(record)?,
+                    NativeKind::Codex | NativeKind::Codex166 => self.codex_handle_record(record)?,
                     NativeKind::DeepSeek => self.dsh_handle_record(record)?,
                     NativeKind::ClaudeCode => self.claude_handle_record(record)?,
                 }
             }
             if self.config.kind == NativeKind::ClaudeCode {
                 self.claude_check_terminal_timeout();
+            }
+            if matches!(self.config.kind, NativeKind::Codex | NativeKind::Codex166) {
+                self.codex_poll_retry()?;
+                self.codex_poll_title();
+            }
+            if let Some(snapshot) = &mut self.snapshot
+                && revision != Some(snapshot.revision)
+            {
+                snapshot
+                    .executions
+                    .confirm(&snapshot.message_identity_confirmations);
+                snapshot.executions.retain(&snapshot.messages);
             }
             self.end_spent_process();
             Ok(())
@@ -725,6 +949,12 @@ impl NativeSession {
     }
 
     fn fail_connection(&mut self) {
+        if matches!(self.config.kind, NativeKind::Codex | NativeKind::Codex166) && !self.compacting
+        {
+            self.codex_recovery_failure(
+                "运行时控制连接已终止；自动恢复已停止，未重新派发。".into(),
+            );
+        }
         let compacting = self.compacting;
         let pending_compaction = self.snapshot.as_ref().and_then(|snapshot| {
             snapshot
@@ -764,12 +994,42 @@ impl NativeSession {
     pub fn snapshot(&self) -> Option<&ConversationSnapshot> {
         self.snapshot.as_ref()
     }
-    /// The work this session's runtime process does besides the turn, as
-    /// its events tell: the sub-agents Codex runs as other threads of the
-    /// app-server, Claude Code's unfinished tasks.
+
+    /// Native title commands are independent of turn execution and approvals.
+    pub fn rename(&mut self, title: &str) -> Result<()> {
+        if matches!(self.config.kind, NativeKind::Codex | NativeKind::Codex166) {
+            self.codex_cancel_title();
+        }
+        let id = self
+            .native_id
+            .as_deref()
+            .ok_or_else(|| Error::new("原生会话尚未创建"))?;
+        match self.config.kind {
+            NativeKind::Codex | NativeKind::Codex166 => {
+                self.rpc
+                    .request("thread/name/set", &json!({"threadId":id,"name":title}))?;
+            }
+            NativeKind::ClaudeCode => {
+                self.rpc.claude_control(json!({"subtype":"rename_session","title":title,"source":"host","session_id":id}))?;
+            }
+            NativeKind::DeepSeek => return Err(Error::new("此运行时没有原生会话重命名接口")),
+        }
+        if let Some(snapshot) = self.snapshot.as_mut() {
+            snapshot.conversation.title = conversation_title(Some(title), None);
+            snapshot.revision = snapshot.revision.saturating_add(1);
+        }
+        Ok(())
+    }
+    /// Best-effort metadata still uses the process and its model connection,
+    /// but does not make the visible conversation busy or disable input.
+    pub fn has_pending_metadata(&self) -> bool {
+        self.codex.title.pending()
+    }
+
+    /// Native sub-agents and tasks, excluding client metadata requests.
     pub fn work(&self) -> Vec<BackgroundTask> {
         match self.config.kind {
-            NativeKind::Codex => {
+            NativeKind::Codex | NativeKind::Codex166 => {
                 let Some(runtime_id) = self
                     .snapshot
                     .as_ref()
@@ -801,7 +1061,7 @@ impl NativeSession {
     /// its turn, which stays running until they end; stopping the turn stops them.
     pub fn stop_background(&mut self) -> Result<()> {
         match self.config.kind {
-            NativeKind::Codex => self.codex_stop_background(),
+            NativeKind::Codex | NativeKind::Codex166 => self.codex_stop_background(),
             NativeKind::ClaudeCode | NativeKind::DeepSeek => Ok(()),
         }
     }
@@ -818,7 +1078,7 @@ impl NativeSession {
             .cloned()
             .ok_or_else(|| Error::new("此交互请求已经失效"))?;
         match self.config.kind {
-            NativeKind::Codex => self.codex_reply(&pending, reply)?,
+            NativeKind::Codex | NativeKind::Codex166 => self.codex_reply(&pending, reply)?,
             NativeKind::DeepSeek => self.dsh_reply(&pending, reply)?,
             NativeKind::ClaudeCode => self.claude_reply(&pending, reply)?,
         };
@@ -833,8 +1093,8 @@ impl NativeSession {
     }
     /// Ends a gateway turn's process once the turn and its work have ended.
     /// Codex keeps the provider a thread last ran with, so the threads the
-    /// process ran are put back on the runtime's own provider, and a later
-    /// native session does not look for the gateway.
+    /// 0.159 process ran are put back on the runtime's own provider.
+    /// 0.166 retains each context's provider and uses a new context to switch.
     pub fn release_override(&mut self) -> Result<()> {
         self.rpc.shutdown();
         self.process_ended = true;
@@ -846,6 +1106,9 @@ impl NativeSession {
         self.codex_restore_provider()
     }
     pub fn shutdown(&mut self) -> Result<()> {
+        if matches!(self.config.kind, NativeKind::Codex | NativeKind::Codex166) {
+            self.codex_end_recovery(Some(TurnOutcome::Cancelled), false);
+        }
         // A side question's child is let end on its own, as at a stop.
         if self.side && self.config.kind == NativeKind::ClaudeCode {
             self.rpc.retire();
@@ -856,6 +1119,11 @@ impl NativeSession {
         self.codex.threads.clear();
         self.interactions.clear();
         self.pending_rpc.clear();
+        if let claude::ClaudeStart::SideContext { path } = &self.claude.start
+            && let Some(directory) = path.parent()
+        {
+            let _ = self.config.execution.remove_dir_all(directory);
+        }
         self.settle(RunState::Idle);
         Ok(())
     }
@@ -894,6 +1162,7 @@ impl NativeSession {
             context_runtime_id: runtime_id.into(),
             revision: 1,
             conversation: ConversationSummary {
+                native_read_state: None,
                 can_rename: false,
                 can_delete: false,
                 id: format!("{runtime_id}:{id}"),
@@ -911,6 +1180,7 @@ impl NativeSession {
             model_record_key: None,
             run_state: RunState::Idle,
             messages: history,
+            executions: Default::default(),
             transcript_turns: Vec::new(),
             transcript_items: Vec::new(),
             transcript_outline: Vec::new(),
@@ -921,13 +1191,34 @@ impl NativeSession {
             sub_agents: Vec::new(),
             collaborators: Vec::new(),
             actions: ConversationActions {
+                input_access: Default::default(),
                 can_send: true,
                 can_cancel: false,
                 can_switch: true,
             },
         });
     }
+    pub fn restore_context(&mut self, source: &ConversationSnapshot) {
+        if let Some(snapshot) = &mut self.snapshot {
+            snapshot
+                .executions
+                .restore(&source.executions, &snapshot.messages);
+            let receipt = snapshot.conversation.native_read_state.take();
+            snapshot.conversation = source.conversation.clone();
+            // The live resume's receipt accompanies its freshly read messages.
+            snapshot.conversation.native_read_state = receipt;
+        }
+    }
+
     /// Preserve the read-only source metadata when preparing the same native session.
+    pub fn set_read_state(&mut self, receipt: &NativeReadState) {
+        if let Some(snapshot) = &mut self.snapshot
+            && snapshot.conversation.id == receipt.conversation_id
+        {
+            snapshot.conversation.native_read_state = Some(receipt.clone());
+            snapshot.revision += 1;
+        }
+    }
     pub fn set_conversation(&mut self, conversation: ConversationSummary) {
         if let Some(snapshot) = self.snapshot.as_mut() {
             snapshot.conversation = conversation;
@@ -937,6 +1228,7 @@ impl NativeSession {
         if let Some(snapshot) = &mut self.snapshot {
             snapshot.run_state = RunState::Running;
             snapshot.actions = ConversationActions {
+                input_access: Default::default(),
                 can_send: false,
                 can_cancel: true,
                 can_switch: false,
@@ -951,6 +1243,11 @@ impl NativeSession {
     /// Ends the turn. The process stays while it does other work; the
     /// host releases the turn's gateway once that work has ended too.
     fn settle(&mut self, state: RunState) {
+        if let Some(snapshot) = &mut self.snapshot {
+            snapshot
+                .executions
+                .finish((state == RunState::Failed).then_some(TurnOutcome::Failed));
+        }
         if self.config.kind == NativeKind::ClaudeCode {
             self.restart_required = true;
         }
@@ -990,6 +1287,7 @@ impl NativeSession {
                 .pending_interactions
                 .retain(|interaction| background.contains(&interaction.id));
             snapshot.actions = ConversationActions {
+                input_access: Default::default(),
                 can_send: !self.failed,
                 can_cancel: false,
                 can_switch: true,
@@ -1017,10 +1315,15 @@ impl NativeSession {
         self.sub_agents
             .extend(sub_agent_conversations(std::slice::from_ref(&message)));
         if let Some(snapshot) = &mut self.snapshot {
+            snapshot.executions.attach(&message.id);
             if let Some(old) = snapshot.messages.iter_mut().find(|m| m.id == message.id) {
                 // What the turn used arrives apart from its user message.
                 let usage = old.turn_usage.take();
+                let timestamp = old.timestamp_unix_ms;
                 *old = message;
+                if old.timestamp_unix_ms.is_none() {
+                    old.timestamp_unix_ms = timestamp;
+                }
                 if old.turn_usage.is_none() {
                     old.turn_usage = usage;
                 }
@@ -1169,9 +1472,10 @@ done
                 );
             }
             let mut transcript = crate::transcript::TranscriptProjection::default();
-            transcript.apply(crate::transcript::TranscriptEvent::ReplaceMessages(
-                &snapshot.messages,
-            ));
+            transcript.apply(crate::transcript::TranscriptEvent::Replace {
+                messages: &snapshot.messages,
+                executions: &snapshot.executions,
+            });
             assert_eq!(
                 transcript.turns()[0].last_message_id.as_deref(),
                 Some("answer")

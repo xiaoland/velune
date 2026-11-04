@@ -18,13 +18,13 @@ AI 服务是独立 lib，领域不限于 LLM；AI 服务与 Agent 运行时互�
 
 ## 提供商、模型与模板
 
-提供商持有协议、服务地址与认证，拥有多个实际可调用的模型条目；模型条目保存稳定的 `recordKey`、精确的 `providerModelId`、显示字段与可选能力。application 为新条目生成记录键，用户修改 API ID 时运行时选择仍引用原记录。网关派生 `velune/model/<recordKey>` 作为调用入口，不接受裸记录键作为 wire model；直接模型调用不需要另建路由。导入按来源提供商建立条目，不按名称合并跨提供商记录。
+提供商持有协议、服务地址与认证，拥有多个实际可调用的模型条目；模型条目保存稳定的 `recordKey`、精确的 `providerModelId`、显示字段、可选能力与逐请求合并进上游请求体的额外请求参数（`requestParameters`，冲突时覆盖适配器所设字段，上游不识别的字段以其自身错误失败；速度变体等服务档位由此声明为独立条目）。application 为新条目生成记录键，用户修改 API ID 时运行时选择仍引用原记录。网关派生 `velune/model/<recordKey>` 作为调用入口，不接受裸记录键作为 wire model；直接模型调用不需要另建路由。导入按来源提供商建立条目，不按名称合并跨提供商记录。
 
 模板只复制名称、建议 API model ID、图标与可选能力，创建后成为独立快照；不复制认证、服务地址、记录键或 adapter 投影，调用链不保留模板身份。提供商模板（`provider_templates()`）是有序目录，每项含完整的能力组合、订阅或 API 种类、需要定位的本机命令与选择前披露，平台据此呈现“添加提供商”，不自行罗列组合。公开模型目录（models.dev）的适配归 application 的模板用例：显式拉取、保留来源提供商与模型 ID，能力只作建议，缺失或为零的规格保持未知；拉取不消费认证、不创建提供商，也不在后台更新已保存的快照。
 
 未知能力保持未知，空推理等级列表表示明确不支持；不全局强制输出上限或统一 effort。缺少描述性规格不阻止原生调用，某个 Harness 必需的字段只在对应 adapter 的准备边界检查。
 
-配置只接受 schema 10。旧普通配置在加载时原子重置为空配置，不转换字段、不保留旧文件；未来 schema、损坏 JSON 与当前版本的未知字段明确拒绝。原 Harness 文件、会话与已有平台秘密不在重置范围内。
+配置只接受 schema 11，切换版本前必须按[手动迁移约定](../development.md#破坏性变更与手动迁移)将已有配置转为当前格式。现有加载器仍会把未迁移的旧普通配置原子重置为空配置，不转换字段、不保留旧文件；这是当前实现行为，不能代替升级前的手动迁移。未来 schema、损坏 JSON 与当前版本的未知字段明确拒绝。原 Harness 文件、会话与已有平台秘密不在重置范围内。
 
 ## 认证
 
@@ -49,6 +49,36 @@ application 持有认证生命周期、额度采集与跨 Runner 的执行后端
 - **账户额度来源**：`ApiAccount` 只接受以 API key 直连 DeepSeek、Moonshot、OpenRouter 精确官方主机的组合，查询发往同一主机，不跟随重定向、不重试，响应限 256 KiB。
 
 额度窗口按实际返回解析，缺失保持未知，不补零、不猜套餐类型。具体窗口 ID 与字段见 [application](../../packages/application/README.md)。
+
+## 组织用量与账单
+
+调用配置与账户观测分别建模。共享目录只给出起始快照，协议、执行后端、请求 profile、模型认证、额度来源与可选账单配置各有职责；Moonshot API 与 Kimi Code、OpenAI Platform 与 Codex、Anthropic API 与 Claude Code 分别组合，不按品牌推断接入产品。
+
+```mermaid
+flowchart TB
+    T["共享接入模板"] --> P["提供商配置快照"]
+    H["Agent Harness"] -->|模型请求| G["Gateway：路由、准入、故障切换"]
+    P -->|协议、地址、模型认证| G
+    G --> E["ai-provider：协议与执行适配"]
+    E --> M["模型服务"]
+    P -->|额度来源与认证绑定| Q["application：余额与订阅额度采集"]
+    Q <--> U["官方额度接口或 CLI"]
+    G -->|QuotaSource 非阻塞读取| Q
+    Q -->|余额、窗口、历史、提醒| V["Mac / Windows UI"]
+    P -->|可选组织、统计范围| B["application：组织报表采集与缓存"]
+    K["提供商私有查询凭据：Admin Key / AK-SK"] -->|仅查询认证| B
+    K -->|ARK 查询认证| Q
+    B <-->|固定官方 HTTPS| A["OpenAI / Anthropic Admin API"]
+    B -->|用量、费用、支出限额、速率配置及新鲜度| V
+```
+
+`application-api` 定义 `BillingConfiguration`、`BillingScope` 与带类型的报表；bindings／RPC 传递相同契约，平台只呈现结果。提供商私有查询凭据以 `QueryCredential` 区分 API key 与 AK/SK，不进入模型认证解析器或 Harness。`save_provider_billing` 单独原子持久化，保留／替换／清除秘密，不重建模型执行；`provider_billing` 立即返回状态并按需采集。模型认证 generation 变化暂停关联，不支持的目标清除配置。
+
+账单采集只接受 HTTP、Native、API key 和精确官方 HTTPS 主机，查询目标另行固定，禁止重定向与隐式重试。OpenAI 读取 Usage Completions、Costs 与组织／Project Spend Limit；Anthropic 读取 beta Analytics Usage／Cost 与组织／Workspace Rate Limits。API key 范围只取对应报表，不伪装为拥有该范围的限额。外部响应在 HTTP 边界一次类型化；货币按币种累加，Anthropic 费用和 OpenAI 支出阈值由美分转为主币单位，token 细项按官方含义统计。
+
+缓存身份由服务、组织、scope、查询凭据摘要和 UTC 月起点共同决定；同权限、同范围共享结果，平台不汇总重复组织总额。缓存仅在内存，TTL 15 分钟，手动刷新最短 30 秒，失败退避 60 秒；最多 4 项在途，不后台排队。单请求 12 秒、整个采集 45 秒，单页 2 MiB、最多 32 页／32,000 行；重复游标和中途失败拒绝该项总额，独立成功项可保留。删除、换绑、停机取消旧任务；即使删除后重建同一缓存身份，旧任务也不能回写。
+
+报表带明确范围、UTC 统计区间、本地抓取和上游刷新时刻；Anthropic 整段统计按小时截断。部分失败逐项说明，全部失败保留旧报表并标为过期。报表不进入 `QuotaSnapshot`、准入、历史或提醒；配置限额不是余额，也不是此刻的剩余速率。接口语义依据 [OpenAI Costs](https://developers.openai.com/api/reference/resources/admin/subresources/organization/subresources/usage/methods/costs)、[Spend Limit](https://developers.openai.com/api/reference/resources/admin/subresources/organization/subresources/spend_limit/methods/retrieve)、[Anthropic Analytics](https://platform.claude.com/docs/en/manage-claude/usage-cost-analytics-api) 与 [Rate Limits](https://platform.claude.com/docs/en/manage-claude/rate-limits-api)。
 
 ## 路由与 fail-over
 
@@ -103,6 +133,8 @@ application 优先选择运行时支持的同协议入口，否则选择运行�
 ## 协议转换
 
 异协议转换由 ai-provider 内部链接的 New API RelayKit Go 库完成（AGPLv3，见 [ai-provider](../../packages/ai-provider/README.md)），不引入 New API 管理服务。Rust 继续拥有 HTTP/SSE、认证、路由、取消、背压与原始计量；私有桥接封装请求范围的转换状态，不暴露给平台，也不建立常驻 Host 或 IPC。正常结束、失败与释放分别表达，取消与截断不调用成功收尾；同协议绕过转换。
+
+网关在实际候选派发前，以已解析的提供商型号和该模型的输出上限准备转换；排序、fail-over 或认证失败后改选成员时重新准备，响应使用同一次派发的计划。失败且未交付 headers 的尝试不产生转换响应，最终错误仍由调度交付。
 
 转换是 best-effort：无法完整表达的字段尽量保留可用内容、映射参数，并记录不含正文的降级诊断，不整次拒绝；不伪造历史、工具执行或上游成功。
 

@@ -93,17 +93,13 @@ public sealed partial class ConversationView : UserControl
         {
             return;
         }
-        SetInput("");
         // Sending shows the whole list again, at its end.
         if (outlineFolded)
         {
             SetOutlineFolded(false, null);
         }
         ScrollToEnd();
-        if (!await Model.Send(text) && Input.Text.Length == 0)
-        {
-            SetInput(text);
-        }
+        if (await Model.Send(text) && Input.Text == text) SetInput("");
     }
 
     void Render()

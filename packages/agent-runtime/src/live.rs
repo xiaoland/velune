@@ -12,6 +12,10 @@ pub trait LiveConversation {
     fn snapshot(&self) -> Option<&ConversationSnapshot>;
     fn turn_running(&self) -> bool;
     fn set_conversation(&mut self, conversation: ConversationSummary);
+    /// Change native metadata without replacing the running conversation.
+    fn rename(&mut self, _title: &str) -> LiveResult {
+        Err("此运行时没有原生会话重命名接口".into())
+    }
     /// Apply what the runtime reported since the last poll.
     fn poll(&mut self) -> LiveResult;
     /// Start a user turn.
@@ -46,6 +50,9 @@ impl LiveConversation for PiSession {
     }
     fn set_conversation(&mut self, conversation: ConversationSummary) {
         PiSession::set_conversation(self, conversation)
+    }
+    fn rename(&mut self, title: &str) -> LiveResult {
+        Ok(PiSession::set_name(self, title)?)
     }
     fn poll(&mut self) -> LiveResult {
         PiSession::poll(self);
@@ -83,6 +90,9 @@ impl LiveConversation for native::NativeSession {
     }
     fn set_conversation(&mut self, conversation: ConversationSummary) {
         native::NativeSession::set_conversation(self, conversation)
+    }
+    fn rename(&mut self, title: &str) -> LiveResult {
+        Ok(native::NativeSession::rename(self, title)?)
     }
     fn poll(&mut self) -> LiveResult {
         Ok(native::NativeSession::poll(self)?)

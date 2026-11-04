@@ -1,7 +1,7 @@
 import SwiftUI
 import VeluneBindings
 
-/// The conversation's send queue, above the composer: messages that go out
+/// The conversation's send queue, in its detail: messages that go out
 /// one by one after the running turn. A system list: click selects, double
 /// click edits, drag reorders, Delete removes; the context menu has the rest.
 struct SendQueueView: View {
@@ -39,7 +39,11 @@ struct SendQueueView: View {
             if let pause = store.followUp.paused {
                 Label(pause.explanation, systemImage: "pause.circle")
                 Spacer(minLength: 8)
-                if !queue.isEmpty { Button("继续发送队列", action: store.resumeQueue).controlSize(.small).disabled(store.isLoading) }
+                if !queue.isEmpty { Button("继续发送", action: store.resumeQueue).controlSize(.small).disabled(store.isLoading || !store.inputSubmissionAllowed) }
+            } else if store.followUp.waiting == .control {
+                Label("等待会话控制权", systemImage: "lock")
+                    .help(store.inputLockMessage ?? "正在确认会话控制权")
+                Spacer(minLength: 0)
             } else if store.followUp.waitingForSubAgents {
                 Label("子 Agent 仍在运行；结束后发送", systemImage: "hourglass")
                     .help("下一条需要重新启动运行时，这会结束仍在运行的子 Agent")
@@ -47,11 +51,11 @@ struct SendQueueView: View {
                 Button("停止子 Agent 并发送", action: store.stopSubAgents).controlSize(.small)
                     .disabled(!store.followUp.canStopSubAgents || store.isLoading)
             } else {
-                Text(store.isGenerating ? "排队 \(queue.count) 条，本轮结束后依次发送" : "排队 \(queue.count) 条，依次发送")
+                Text("排队 \(queue.count) 条")
                 Spacer(minLength: 0)
             }
         }
-        .font(.callout).foregroundStyle(.secondary)
+        .uiFont(.callout).foregroundStyle(.secondary)
     }
 
     private var list: some View {
@@ -107,11 +111,11 @@ private struct QueuedMessageEditor: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("编辑排队消息").font(.headline)
-            TextEditor(text: $text).font(.body).frame(minWidth: 420, minHeight: 140)
+            Text("编辑排队消息").uiFont(.headline)
+            TextEditor(text: $text).uiFont(.body).frame(minWidth: 420, minHeight: 140)
                 .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(Color(nsColor: .separatorColor)))
             if !message.attachments.isEmpty {
-                Text("附件 \(message.attachments.count) 个保持不变。").font(.callout).foregroundStyle(.secondary)
+                Text("附件 \(message.attachments.count) 个保持不变。").uiFont(.callout).foregroundStyle(.secondary)
             }
             HStack {
                 Spacer()

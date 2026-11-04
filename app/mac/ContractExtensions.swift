@@ -8,7 +8,7 @@ extension FollowUp {
     /// Nothing queued and nothing offered; previews and drafts have no follow-up.
     init() {
         self.init(queue: [], paused: nil, waiting: nil, canStopSubAgents: false, canSteer: false,
-                  canResume: false, canCompact: false, isCompacting: false, editable: [])
+                  canResume: false, canCompact: false, isCompacting: false, editable: [], canFork: false)
     }
     /// The next message needs another runtime process; the queue sends it by
     /// itself once the conversation's sub-agents have ended.
@@ -20,9 +20,9 @@ extension QueuedMessage: Identifiable {}
 extension QueuePause {
     var explanation: String {
         switch self {
-        case .turnStopped: "上一轮已停止，队列暂停"
-        case .turnFailed: "上一轮失败，队列暂停"
-        case .sendFailed: "第一条未能发出，队列暂停"
+        case .turnStopped: "上一轮已停止"
+        case .turnFailed: "上一轮失败"
+        case .sendFailed: "第一条未能发出"
         }
     }
 }
@@ -118,7 +118,7 @@ extension DeliveredMessage: Identifiable {
         blocks.contains { block in
             switch block {
             case .reasoning(_, .deferred), .tool(_, _, _, .deferred?, _), .image(_, .data(.deferred)): return true
-            case .text, .notice, .contextCompaction, .reasoning(_, .inline), .tool, .image, .file, .agentSender: return false
+            case .text, .notice, .runtimeFailure, .contextCompaction, .reasoning(_, .inline), .tool, .image, .file, .agentSender: return false
             }
         }
     }
@@ -131,6 +131,7 @@ extension DeliveredBlock {
     var visibleText: String? {
         switch self {
         case .text(let text), .notice(let text), .contextCompaction(let text): text
+        case .runtimeFailure(_, let detail, _): detail
         case .reasoning, .tool, .image, .file, .agentSender: nil
         }
     }
@@ -138,8 +139,8 @@ extension DeliveredBlock {
 
 extension DeliveredMessage {
     /// A message the Mac shows before the core delivers it: a pending send or a preview.
-    init(id: String, role: MessageRole, blocks: [DeliveredBlock]) {
-        self.init(stamp: 0, completed: true, id: id, role: role, timestampUnixMs: nil, blocks: blocks)
+    init(id: String, role: MessageRole, timestampUnixMs: Int64? = nil, blocks: [DeliveredBlock]) {
+        self.init(stamp: 0, completed: true, id: id, role: role, timestampUnixMs: timestampUnixMs, blocks: blocks)
     }
 }
 
@@ -236,4 +237,61 @@ extension QuotaBalanceObservation {
         }
     }
     var formatted: String { amount.formatted(.currency(code: unit).presentation(.narrow)) }
+}
+
+/// One presentation for typed runtime failures, including native and Velune recovery.
+extension RuntimeRetry {
+    var label: String {
+        switch self {
+        case .native: "运行时正在重试"
+        case .waiting(let attempt, let maximum, let at): "第 \(attempt)/\(maximum) 次重试将于 \(Date(timeIntervalSince1970: Double(at) / 1000).formatted(date: .omitted, time: .standard)) 开始"
+        case .attempted(let attempt, let maximum): "已发起第 \(attempt)/\(maximum) 次重试"
+        case .exhausted(let attempts): "重试 \(attempts) 次后仍未恢复"
+        case .cancelled: "已停止重试"
+        case .recovered: "已恢复"
+        }
+    }
+}
+
+extension RuntimeFailureKind {
+    var title: String {
+        switch self {
+        case .serverOverloaded: "服务器繁忙"
+        case .rateLimited: "请求受频率限制"
+        case .other: "运行时执行失败"
+        }
+    }
+}
+
+extension InputAccess {
+    var composerTitle: String {
+        switch self {
+        case .editable: "可输入"
+        case .checkingControl: "正在检查"
+        case .externalController: "会话已锁定"
+        case .controlUnavailable: "暂不可发送"
+        case .externalExecution: "外部执行中"
+        case .readOnly: "只读会话"
+        }
+    }
+    var composerPlaceholder: String {
+        switch self {
+        case .editable: "输入消息"
+        case .checkingControl: "正在检查会话控制权…"
+        case .externalController: "可继续编辑草稿，控制权释放后可发送"
+        case .controlUnavailable: "可继续编辑草稿，确认会话控制权后可发送"
+        case .externalExecution: "等待外部执行结束后继续"
+        case .readOnly: "此会话只可阅读"
+        }
+    }
+    var message: String? {
+        switch self {
+        case .editable: nil
+        case .checkingControl: "正在检查会话控制权…"
+        case .externalController: "另一个客户端正在控制此会话。草稿可继续编辑，控制权释放后可发送。"
+        case .controlUnavailable: "暂时无法确认会话控制权，正在重试。请检查运行时连接。"
+        case .externalExecution: "此会话正在其他客户端执行，请等待执行结束。"
+        case .readOnly: "此会话当前只可阅读。"
+        }
+    }
 }

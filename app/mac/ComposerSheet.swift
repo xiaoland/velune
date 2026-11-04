@@ -14,17 +14,17 @@ struct ComposerSheet: View {
         // The composer brings its own margins; the title and buttons line up with them.
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 8) {
-                Text(tab.title).font(.headline).lineLimit(1).truncationMode(.middle)
+                Text(tab.title).uiFont(.headline).lineLimit(1).truncationMode(.middle)
                 Spacer(minLength: 12)
                 Button("打开会话", action: window.openComposerSheetConversation)
             }
             .padding([.horizontal, .top], 16)
             if store.isOpeningConversation {
-                ProgressView(store.conversationManagementStatus ?? "正在加载会话…").frame(maxWidth: .infinity).padding(.top, 12)
+                ProgressView("正在加载会话…").frame(maxWidth: .infinity).padding(.top, 12)
             } else if !store.pendingInteractions.isEmpty {
                 Text("此会话有待处理的请求，打开会话处理后才能发送。").foregroundStyle(.secondary).padding([.horizontal, .top], 16)
             }
-            ComposerView(store: store, model: tab.composer, layout: window, send: tab.send, steer: tab.steer, submission: { tab.submission }, resume: tab.resume)
+            ComposerView(store: store, model: window.composer(for: tab), layout: window, send: { window.composerContext(for: tab).send() }, steer: { window.composerContext(for: tab).steer() }, submission: { window.composerContext(for: tab).submission() }, resume: { window.composerContext(for: tab).resume() })
                 .disabled(store.isOpeningConversation)
             HStack {
                 Spacer()

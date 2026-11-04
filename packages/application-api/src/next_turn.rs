@@ -398,6 +398,7 @@ mod tests {
             reply_start_block: 0,
             duration_ms: None,
             is_running: false,
+            outcome: None,
             settings: Some(settings),
             usage: None,
         }
@@ -443,6 +444,7 @@ mod tests {
                 context_window: None,
                 max_output_tokens: None,
                 reasoning_levels: None,
+                request_parameters: None,
             }],
         }
     }

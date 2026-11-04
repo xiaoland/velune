@@ -49,6 +49,11 @@ pub enum DeliveryClass {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, uniffi::Enum)]
 #[serde(rename_all = "camelCase")]
 pub enum CommandKind {
+    ReadComposerOwner,
+    ManageComposerInputs,
+    UploadComposerAttachment,
+    ReadComposerAttachment,
+    ManageScheduledTasks,
     ReleaseView,
     ListResourceTemplates,
     ReadResourceTemplate,
@@ -113,6 +118,7 @@ pub enum CommandKind {
     ResumeTurn,
     CompactConversation,
     EditMessage,
+    ForkConversation,
     Cancel,
     StopSubAgents,
     OpenSideChat,
@@ -124,6 +130,8 @@ pub enum CommandKind {
     ReadFileDiff,
     PreviewProviderImport,
     ApplyProviderImport,
+    ReadProviderBilling,
+    SaveProviderBilling,
     ReadProviderQuota,
     RefreshProviderQuota,
     ReadProviderQuotaHistory,
@@ -159,7 +167,24 @@ pub enum CommandKind {
     rename_all = "camelCase",
     deny_unknown_fields
 )]
+// Foreign-language value contract; the service boxes command envelopes at its queue boundary.
+#[allow(clippy::large_enum_variant)]
 pub enum Command {
+    ReadComposerOwner,
+    ManageComposerInputs {
+        operation: crate::ComposerInputOperation,
+    },
+    UploadComposerAttachment {
+        name: String,
+        #[serde(with = "crate::bytes")]
+        bytes: Vec<u8>,
+    },
+    ReadComposerAttachment {
+        attachment_id: String,
+    },
+    ManageScheduledTasks {
+        operation: crate::ScheduledTasksOperation,
+    },
     /// Release this view's presentation state; running conversations are unaffected.
     ReleaseView,
     ListResourceTemplates,
@@ -398,6 +423,14 @@ pub enum Command {
         selection: Option<ModelSelection>,
         turn: ComposedTurn,
     },
+    /// Fork the conversation through the turn the user message `message_id`
+    /// starts: a new conversation holds everything through that turn's end
+    /// and this one stays as it is. The snapshot is the new conversation's.
+    ForkConversation {
+        runtime_id: String,
+        conversation_id: String,
+        message_id: String,
+    },
     Cancel {
         runtime_id: String,
         conversation_id: String,
@@ -410,7 +443,8 @@ pub enum Command {
     /// context without adding to it, with the given next-turn model,
     /// reasoning level and permission mode. The snapshot is the side chat's, by
     /// its own identity, which reads, cancels and replies address like a
-    /// conversation's.
+    /// conversation's. `runtime_id` is the parent's current context runtime,
+    /// which can differ from the conversation's original source runtime.
     OpenSideChat {
         runtime_id: String,
         conversation_id: String,
@@ -420,7 +454,9 @@ pub enum Command {
     },
     SendSideChat {
         side_chat_id: String,
-        text: String,
+        target_runtime_id: String,
+        selection: Option<ModelSelection>,
+        turn: ComposedTurn,
     },
     /// Close a side chat; what runs in it stops and nothing of it stays.
     CloseSideChat {
@@ -453,6 +489,18 @@ pub enum Command {
         preview_token: String,
         selections: Vec<ImportSelection>,
         replace_existing: bool,
+    },
+    ReadProviderBilling {
+        gateway_id: String,
+        provider_id: String,
+        refresh: bool,
+    },
+    SaveProviderBilling {
+        gateway_id: String,
+        provider_id: String,
+        configuration: Option<crate::BillingConfiguration>,
+        authentication_edit: crate::BillingAuthenticationEdit,
+        confirmed: bool,
     },
     ReadProviderQuota {
         gateway_id: String,
@@ -546,6 +594,11 @@ pub enum Command {
 #[derive(Clone, Serialize, Deserialize, uniffi::Enum)]
 #[serde(tag = "response", content = "value", rename_all = "camelCase")]
 pub enum Response {
+    ReadComposerOwner(String),
+    ManageComposerInputs(crate::ComposerInputUpdate),
+    UploadComposerAttachment(crate::ComposerAttachment),
+    ReadComposerAttachment(crate::ComposerAttachmentContent),
+    ManageScheduledTasks(crate::ScheduledTasksState),
     ReleaseView,
     ListResourceTemplates(Vec<crate::ResourceTemplateSummary>),
     ReadResourceTemplate(crate::ResourceTemplate),
@@ -610,6 +663,7 @@ pub enum Response {
     ResumeTurn(SnapshotResult),
     CompactConversation(SnapshotResult),
     EditMessage(SnapshotResult),
+    ForkConversation(SnapshotResult),
     Cancel(SnapshotResult),
     StopSubAgents(SnapshotResult),
     OpenSideChat(SnapshotResult),
@@ -621,6 +675,8 @@ pub enum Response {
     ReadFileDiff(FileDiff),
     PreviewProviderImport(ProviderImportPreview),
     ApplyProviderImport(ImportResult),
+    ReadProviderBilling(crate::ProviderBillingStatus),
+    SaveProviderBilling(crate::ProviderBillingStatus),
     ReadProviderQuota(ProviderQuotaStatus),
     RefreshProviderQuota(ProviderQuotaStatus),
     ReadProviderQuotaHistory(ProviderQuotaHistory),
@@ -646,9 +702,39 @@ pub enum Response {
 }
 
 impl Command {
+    /// Commands that carry a user-composed turn use one attachment boundary.
+    pub fn composed_turn_mut(&mut self) -> Option<&mut ComposedTurn> {
+        match self {
+            Self::SendTurn { turn, .. }
+            | Self::SteerTurn { turn, .. }
+            | Self::EditMessage { turn, .. }
+            | Self::SendSideChat { turn, .. }
+            | Self::EditSendQueue {
+                operation: SendQueueOperation::Add { turn, .. },
+                ..
+            } => Some(turn),
+            _ => None,
+        }
+    }
     /// Exhaustive classification: new commands must declare whether an uncertain delivery may be reissued.
     pub fn delivery_class(&self) -> DeliveryClass {
         match self {
+            Self::ManageComposerInputs { operation } => match operation {
+                crate::ComposerInputOperation::Read { .. } => DeliveryClass::Observation,
+                _ => DeliveryClass::Effect,
+            },
+            Self::ReadComposerOwner | Self::ReadComposerAttachment { .. } => {
+                DeliveryClass::Observation
+            }
+            Self::UploadComposerAttachment { .. } => DeliveryClass::Effect,
+            Self::ManageScheduledTasks { operation } => match operation {
+                crate::ScheduledTasksOperation::List
+                | crate::ScheduledTasksOperation::PreviewImport { .. }
+                | crate::ScheduledTasksOperation::PreviewSchedule { .. } => {
+                    DeliveryClass::Observation
+                }
+                _ => DeliveryClass::Effect,
+            },
             Self::ListResourceTemplates
             | Self::ReadResourceTemplate { .. }
             | Self::ImportRuntimeResource { .. }
@@ -682,6 +768,7 @@ impl Command {
             | Self::ReadWorkingBranch { .. }
             | Self::ReadFileDiff { .. }
             | Self::PreviewProviderImport { .. }
+            | Self::ReadProviderBilling { .. }
             | Self::ReadProviderQuota { .. }
             | Self::ReadProviderQuotaHistory { .. }
             | Self::ReadQuotaAlerts { .. }
@@ -724,6 +811,7 @@ impl Command {
             | Self::ResumeTurn { .. }
             | Self::CompactConversation { .. }
             | Self::EditMessage { .. }
+            | Self::ForkConversation { .. }
             | Self::Cancel { .. }
             | Self::StopSubAgents { .. }
             | Self::OpenSideChat { .. }
@@ -732,6 +820,7 @@ impl Command {
             | Self::ApplyProviderImport { .. }
             | Self::RefreshProviderQuota { .. }
             | Self::ClearProviderQuotaHistory { .. }
+            | Self::SaveProviderBilling { .. }
             | Self::SaveProvider { .. }
             | Self::DeleteProvider { .. }
             | Self::SaveModelRoute { .. }
@@ -750,6 +839,11 @@ impl Command {
     }
     pub fn kind(&self) -> CommandKind {
         match self {
+            Self::ReadComposerOwner => CommandKind::ReadComposerOwner,
+            Self::ManageComposerInputs { .. } => CommandKind::ManageComposerInputs,
+            Self::UploadComposerAttachment { .. } => CommandKind::UploadComposerAttachment,
+            Self::ReadComposerAttachment { .. } => CommandKind::ReadComposerAttachment,
+            Self::ManageScheduledTasks { .. } => CommandKind::ManageScheduledTasks,
             Self::ReleaseView => CommandKind::ReleaseView,
             Self::ListResourceTemplates => CommandKind::ListResourceTemplates,
             Self::ReadResourceTemplate { .. } => CommandKind::ReadResourceTemplate,
@@ -818,6 +912,7 @@ impl Command {
             Self::ResumeTurn { .. } => CommandKind::ResumeTurn,
             Self::CompactConversation { .. } => CommandKind::CompactConversation,
             Self::EditMessage { .. } => CommandKind::EditMessage,
+            Self::ForkConversation { .. } => CommandKind::ForkConversation,
             Self::Cancel { .. } => CommandKind::Cancel,
             Self::StopSubAgents { .. } => CommandKind::StopSubAgents,
             Self::OpenSideChat { .. } => CommandKind::OpenSideChat,
@@ -829,6 +924,8 @@ impl Command {
             Self::ReadFileDiff { .. } => CommandKind::ReadFileDiff,
             Self::PreviewProviderImport { .. } => CommandKind::PreviewProviderImport,
             Self::ApplyProviderImport { .. } => CommandKind::ApplyProviderImport,
+            Self::ReadProviderBilling { .. } => CommandKind::ReadProviderBilling,
+            Self::SaveProviderBilling { .. } => CommandKind::SaveProviderBilling,
             Self::ReadProviderQuota { .. } => CommandKind::ReadProviderQuota,
             Self::RefreshProviderQuota { .. } => CommandKind::RefreshProviderQuota,
             Self::ReadProviderQuotaHistory { .. } => CommandKind::ReadProviderQuotaHistory,
@@ -857,7 +954,8 @@ impl Command {
     pub fn requires_revision(&self) -> bool {
         matches!(
             self,
-            Self::SaveProvider { .. }
+            Self::SaveProviderBilling { .. }
+                | Self::SaveProvider { .. }
                 | Self::DeleteProvider { .. }
                 | Self::SaveModelRoute { .. }
                 | Self::DeleteModelRoute { .. }
@@ -884,6 +982,7 @@ impl Command {
     }
     pub fn changes_shared_state(&self) -> bool {
         self.requires_revision()
+            || matches!(self, Self::ManageScheduledTasks { operation } if !matches!(operation, crate::ScheduledTasksOperation::List | crate::ScheduledTasksOperation::PreviewImport { .. } | crate::ScheduledTasksOperation::PreviewSchedule { .. }))
             || matches!(
                 self,
                 Self::CreateConversation { .. }
@@ -892,6 +991,7 @@ impl Command {
                     | Self::SteerTurn { .. }
                     | Self::ResumeTurn { .. }
                     | Self::CompactConversation { .. }
+                    | Self::ForkConversation { .. }
                     | Self::ReplyRuntimeInteraction { .. }
                     | Self::Cancel { .. }
                     | Self::StopSubAgents { .. }

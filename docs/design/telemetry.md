@@ -93,3 +93,10 @@ agent 通过本地状态与接收端的 Tempo、Loki、Prometheus API 联合判�
 排障先限定 run、实例、时间与契约版本，再检查 trace 的父子、kind 和结果。没有采样到 span 时，以完成日志的 operation ID、RequestId 与终态字段继续查；缺失的 finished 不能推出仍在执行，需结合 owner_available、observation.age 与业务查询。跨设备时钟可能有偏差，不能将两端时间戳相减当网络延迟。
 
 新增字段同时维护外传准入、类型、单位、指标基数和查询方。改变名称、kind、触发或结果含义属于契约演进，需要说明版本影响；普通源码移动不能改变 eventName。实际输出检查能发现表达偏差，但是否值得新增 span、操作边界是否清楚，仍需按业务语义和维护成本审查。
+
+
+## 本地问题历史
+
+Mac 问题面板是既有 `logs/velune.<UTC日期>.jsonl` 的跨进程投影，不按 run ID 过滤。`DiagnosticProblem` 带时间、来源、详情、错误类别／代码、阶段、operation ID 和恢复时间；新增、恢复、显式清理是同一 rolling writer 的日志事件，写入后 flush。恢复不删除记录，用户清理的记录在重启后不复活。旧 ERROR 与带详情的 WARN 可回填，重复 operation ID 收敛到完整问题记录，断裂或无效单行不遮蔽其他记录。旧日志缺少原始详情时只报告原有证据。保留沿用本地滚动日志的 7 个文件上限，不另建问题数据库或保留第二份错误日志；此限制与重启无关。
+
+这些本地详细事件不进入 OTLP 导出。FFI 提供本地 `problems/record_problem/resolve_problems/dismiss_problems`，无需应用控制锁或连接其他设备；本机状态路径区分投影 scope，日志读写故障在面板明确显示，不递归写入。

@@ -164,6 +164,9 @@ sealed class Editor
     // Restoring selects tabs before the window has this editor; it shows
     // them once it does.
     readonly bool ready;
+    // Closed tabs' targets, latest last, for 重新打开关闭的标签页.
+    readonly List<Target> recentlyClosed = [];
+    public bool CanReopenClosed => recentlyClosed.Count > 0;
 
     public Editor(WorkspaceWindow window, Border host, EditorState state, int focus)
     {
@@ -440,6 +443,24 @@ sealed class Editor
         }
     }
 
+    // ReopenClosed reopens the most recently closed tab after the focused
+    // pane's selected one: a deleted conversation's entry is skipped, an
+    // unsent one reopens as a fresh new tab.
+    public void ReopenClosed()
+    {
+        while (recentlyClosed.Count > 0)
+        {
+            var target = recentlyClosed[^1];
+            recentlyClosed.RemoveAt(recentlyClosed.Count - 1);
+            if (!target.Unsent && !window.Listing.Conversations.Any(listed => listed.Conversation.Id == target.ConversationID))
+            {
+                continue;
+            }
+            NewTab(Focused, target.Unsent ? null : target);
+            return;
+        }
+    }
+
     // Close closes a tab. A pane closes with its last tab; the window keeps
     // a new tab instead of an empty editor, unless asked to close with it.
     public void Close(Tab tab, bool closeWindow)
@@ -454,6 +475,11 @@ sealed class Editor
         {
             window.Shell.RequestClose(window);
             return;
+        }
+        recentlyClosed.Add(tab.Target with { Title = tab.Title });
+        if (recentlyClosed.Count > 25)
+        {
+            recentlyClosed.RemoveAt(0);
         }
         tab.View?.Close();
         tab.View = null;

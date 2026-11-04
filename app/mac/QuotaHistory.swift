@@ -102,7 +102,7 @@ struct QuotaHistorySheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Text("额度历史").font(.headline)
+                Text("额度历史").uiFont(.headline)
                 if let provider { Text(provider.name).foregroundStyle(.secondary) }
                 Spacer()
             }
@@ -169,8 +169,8 @@ struct QuotaHistorySheet: View {
             if let selected {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(format(selected.latest)).monospacedDigit()
-                    Text("观测于 " + selected.latestAt.formatted(date: .abbreviated, time: .shortened)).font(.caption).foregroundStyle(.secondary)
-                    if selected.count > 1 { Text("此区间 \(selected.count) 次观测，\(format(selected.low)) 至 \(format(selected.high))").font(.caption).foregroundStyle(.secondary) }
+                    Text("观测于 " + selected.latestAt.formatted(date: .abbreviated, time: .shortened)).uiFont(.caption).foregroundStyle(.secondary)
+                    if selected.count > 1 { Text("此区间 \(selected.count) 次观测，\(format(selected.low)) 至 \(format(selected.high))").uiFont(.caption).foregroundStyle(.secondary) }
                 }.padding(6).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 6))
             }
         }
@@ -186,7 +186,7 @@ struct QuotaHistorySheet: View {
                 if case .window(let id, let models) = current, let reset = quota?.windows.first(where: { $0.id == id && $0.modelIds == models })?.resetsAt, reset > Date() {
                     LabeledContent("下次重置", value: reset.formatted(.relative(presentation: .named)))
                 }
-            }.font(.callout).monospacedDigit()
+            }.uiFont(.callout).monospacedDigit()
         }
     }
     private func load() {

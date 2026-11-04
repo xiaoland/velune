@@ -8,6 +8,9 @@ pub mod resources;
 mod runtime_kind;
 pub use runtime_kind::RuntimeKind;
 
+mod execution;
+pub use execution::*;
+
 use serde::{Deserialize, Serialize};
 
 uniffi::setup_scaffolding!();
@@ -17,6 +20,7 @@ uniffi::setup_scaffolding!();
 #[serde(tag = "source", content = "text", rename_all = "camelCase")]
 pub enum ConversationTitle {
     Native(String),
+    Generated(String),
     FirstMessage(String),
     Untitled,
 }
@@ -34,7 +38,7 @@ impl ConversationTitle {
     /// naming the agent that sent it.
     pub fn display_text(&self) -> &str {
         match self {
-            Self::Native(text) | Self::FirstMessage(text)
+            Self::Native(text) | Self::Generated(text) | Self::FirstMessage(text)
                 if !agent_message::strip(attachment_list::strip(text))
                     .trim()
                     .is_empty() =>
@@ -45,10 +49,20 @@ impl ConversationTitle {
         }
     }
     pub fn refresh(&mut self, first_user_text: Option<&str>) {
-        if !matches!(self, Self::Native(_)) {
+        if !matches!(self, Self::Native(_) | Self::Generated(_)) {
             *self = conversation_title(None, first_user_text);
         }
     }
+}
+
+/// An opaque native receipt belongs to exactly one source conversation.
+/// Clients echo the receipt they displayed; revisions are equality tokens.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, uniffi::Record)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeReadState {
+    pub conversation_id: String,
+    pub revision: String,
+    pub unread: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, uniffi::Record)]
@@ -72,6 +86,8 @@ pub struct ConversationSummary {
     /// transcript and reads it; the parent's agent continues it.
     #[serde(default)]
     pub parent_conversation_id: Option<String>,
+    #[serde(default)]
+    pub native_read_state: Option<NativeReadState>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, uniffi::Enum)]
@@ -90,9 +106,26 @@ pub enum RunState {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
 pub struct ConversationActions {
+    /// Input admission observed by the execution owner, independent of turn state.
+    #[serde(default)]
+    pub input_access: InputAccess,
     pub can_send: bool,
     pub can_cancel: bool,
     pub can_switch: bool,
+}
+
+/// Runtime submission admission, independent of local draft editing. Unknown
+/// native control blocks submission; runtimes without exclusive control do not.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq, uniffi::Enum)]
+#[serde(rename_all = "camelCase")]
+pub enum InputAccess {
+    #[default]
+    Editable,
+    CheckingControl,
+    ExternalController,
+    ControlUnavailable,
+    ExternalExecution,
+    ReadOnly,
 }
 
 /// What follows the conversation's turns, as Velune keeps it: messages
@@ -115,7 +148,7 @@ pub struct FollowUp {
     pub can_stop_sub_agents: bool,
     /// The runtime takes a message into the running turn.
     pub can_steer: bool,
-    /// The stopped or failed context can start a native turn without a user message.
+    /// The stopped or failed context can continue using its runtime's declared strategy.
     #[serde(default)]
     pub can_resume: bool,
     /// The current native context can be compacted as a separate operation.
@@ -128,6 +161,11 @@ pub struct FollowUp {
     /// while a turn runs.
     #[serde(default)]
     pub editable: Vec<EditableMessage>,
+    /// A turn's closing reply may fork the conversation from that turn's
+    /// end into a new one holding everything through it; none while a turn
+    /// runs.
+    #[serde(default)]
+    pub can_fork: bool,
 }
 
 /// A user message an edit can replace, continuing from just before it.
@@ -167,6 +205,9 @@ pub struct QueuedMessage {
 #[serde(rename_all = "camelCase")]
 pub enum QueueWait {
     SubAgents,
+    /// The execution handle was released; observe native control before
+    /// dispatching the already accepted next message.
+    Control,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, uniffi::Enum)]
@@ -316,9 +357,48 @@ pub fn micro_usd(dollars: f64) -> Option<u64> {
 #[serde(rename_all = "lowercase")]
 pub enum MessageRole {
     User,
+    /// A visible client extension or background notification, not a new user turn.
+    Client,
     Assistant,
     Tool,
     System,
+}
+
+/// How a user turn ended. Absence means no terminal evidence was observed.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, uniffi::Enum)]
+#[serde(rename_all = "camelCase")]
+pub enum TurnOutcome {
+    Completed,
+    Failed,
+    Cancelled,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, uniffi::Enum)]
+#[serde(rename_all = "camelCase")]
+pub enum RuntimeFailureKind {
+    ServerOverloaded,
+    RateLimited,
+    Other,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, uniffi::Enum)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum RuntimeRetry {
+    Native,
+    Waiting {
+        attempt: u32,
+        maximum: u32,
+        at_unix_ms: i64,
+    },
+    Attempted {
+        attempt: u32,
+        maximum: u32,
+    },
+    Exhausted {
+        attempts: u32,
+    },
+    Cancelled,
+    Recovered,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, uniffi::Enum)]
@@ -352,6 +432,11 @@ pub enum MessageBlock {
     },
     Notice {
         text: String,
+    },
+    RuntimeFailure {
+        failure: RuntimeFailureKind,
+        detail: String,
+        retry: Option<RuntimeRetry>,
     },
     /// Native context maintenance, displayed independently of assistant work.
     ContextCompaction {
@@ -399,6 +484,8 @@ pub struct ConversationSnapshot {
     pub model_record_key: Option<String>,
     pub run_state: RunState,
     pub messages: Vec<Message>,
+    #[serde(default)]
+    pub executions: Executions,
     #[serde(default)]
     pub transcript_turns: Vec<TranscriptTurn>,
     pub transcript_items: Vec<TranscriptItem>,
@@ -598,6 +685,9 @@ pub struct TranscriptTurn {
     /// Observed execution elapsed time. None for history without lifecycle evidence.
     pub duration_ms: Option<u64>,
     pub is_running: bool,
+    #[serde(default)]
+    #[uniffi(default = None)]
+    pub outcome: Option<TurnOutcome>,
     #[serde(default)]
     pub settings: Option<TurnSettings>,
     /// What the native record says the turn used.

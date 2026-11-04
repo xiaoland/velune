@@ -35,6 +35,10 @@ import java.util.concurrent.ConcurrentHashMap
  */
 class DeviceHub(private val context: Context) {
     @Volatile private var telemetryOwner: ClientTelemetry? = null
+    private val composerCache = context.getSharedPreferences("composer-inputs", Context.MODE_PRIVATE)
+    internal fun readComposer(key: String): SavedComposerInput? = composerCache.getString(key, null)?.let(SavedComposerInput::decode)
+    internal fun saveComposer(key: String, value: SavedComposerInput) { composerCache.edit().putString(key, value.encode()).apply() }
+    internal fun removeComposer(key: String) { composerCache.edit().remove(key).apply() }
     fun telemetry(): ClientTelemetry = checkNotNull(telemetryOwner) { "遥测设置尚未就绪" }
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val _state = MutableStateFlow<RemoteServiceSnapshot?>(null)

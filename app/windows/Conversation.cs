@@ -79,6 +79,7 @@ sealed partial class Conversation
         Configuration = configuration;
         Next = target.RuntimeID;
         Loading = !target.Unsent;
+        RestoreComposerCache();
         LoadChoices();
         LoadCatalog(Next, false);
         Load();
@@ -110,6 +111,17 @@ sealed partial class Conversation
     // options, waits for one.
     public bool SessionOpen => sent || Running || Interaction != null;
     bool sent;
+
+    public string? InputLockMessage => Snapshot?.Actions.InputAccess switch {
+        InputAccess.CheckingControl => "正在检查会话控制权…",
+        InputAccess.ExternalController => "另一个客户端正在控制此会话。草稿可继续编辑，暂不能发送。",
+        InputAccess.ControlUnavailable => "暂时无法确认会话控制权，正在重试。",
+        InputAccess.ExternalExecution => "此会话正在其他客户端执行。",
+        InputAccess.ReadOnly => "此会话当前只可阅读。",
+        _ => null,
+    };
+    public bool InputEditable => InputLockMessage == null;
+    public bool DraftEditable => Snapshot?.Actions.InputAccess != InputAccess.ReadOnly;
 
     public bool CanCancel => !stopRequested && Snapshot is { RunState: RunState.Running, Actions.CanCancel: true };
 
@@ -151,6 +163,7 @@ sealed partial class Conversation
     {
         while (!closed)
         {
+            await PollComposer();
             await Task.Delay(Running ? 700 : 3_000);
             if (closed || Snapshot is not { } snapshot)
             {
@@ -255,7 +268,7 @@ sealed partial class Conversation
     public async Task<bool> Send(string text)
     {
         text = text.Trim();
-        if (Busy || composing || stopRequested || Snapshot?.RunState == RunState.Stopping || Loading || Uploading > 0 || (text.Length == 0 && Attached.Count == 0) || Next.Length == 0)
+        if (!ComposerReady || Busy || composing || stopRequested || Snapshot?.RunState == RunState.Stopping || Loading || Uploading > 0 || (text.Length == 0 && Attached.Count == 0) || Next.Length == 0)
         {
             return false;
         }
@@ -269,11 +282,15 @@ sealed partial class Conversation
         }
         var turn = Turn(text);
         var sentAttachments = Attached.ToList();
-        Attached.Clear();
         var selection = NextTurn.Model;
-        var existing = Snapshot is { } snapshot ? (snapshot.ContextRuntimeId, snapshot.Conversation.Id) : default((string, string)?);
         var runtimeID = Next;
         var cwd = Target.Unsent && Cwd.Trim().Length > 0 ? Cwd.Trim() : null;
+        var inputId = composerInput?.Id;
+        var oldCache = ComposerCachePath;
+        try { await FlushComposer(); }
+        catch (Exception failure) { Problems.Report("同步输入", failure, Device); return false; }
+        Attached.RemoveAll(sentAttachments.Contains);
+        var existing = Snapshot is { } snapshot ? (snapshot.ContextRuntimeId, snapshot.Conversation.Id) : default((string, string)?);
         Busy = true;
         composerRequest = ComposerSubmission.Phase.Sending;
         Sending = text;
@@ -283,22 +300,24 @@ sealed partial class Conversation
         DeliveredSnapshot? created = null;
         try
         {
-            var sent = await Call(NativeOperation.Send, application =>
-            {
-                if (existing == null)
-                {
-                    created = application.CreateConversation(runtimeID, cwd, selection).Snapshot
-                        ?? throw new InvalidOperationException("设备没有返回新会话");
-                    existing = (created.ContextRuntimeId, created.Conversation.Id);
-                }
-                var (source, id) = existing.Value;
-                return application.SendTurn(source, id, runtimeID, selection, turn);
-            });
+            if (existing == null) {
+                created = (await Call(NativeOperation.ConversationWrite, application => application.CreateConversation(runtimeID, cwd, selection))).Snapshot
+                    ?? throw new InvalidOperationException("设备没有返回新会话");
+                if (inputId == null || composerOwner == null) throw new InvalidOperationException("输入身份尚未恢复");
+                pendingCreation = new(inputId, composerOwner, created.Conversation.RuntimeId, created.Conversation.Id);
+                CacheComposer();
+                Merge(created); CacheComposer(); Notify();
+                await CompleteCreation();
+                if (oldCache != ComposerCachePath && File.Exists(oldCache)) File.Delete(oldCache);
+                existing = (created.ContextRuntimeId, created.Conversation.Id);
+            }
+            var (source, id) = existing.Value;
+            var sent = await Call(NativeOperation.Send, application => application.SendTurn(source, id, runtimeID, selection, turn));
             if (created != null)
             {
                 Merge(created);
                 // The choices made before the first message are the created conversation's.
-                SaveIntent();
+                CacheComposer(); if (oldCache != ComposerCachePath && File.Exists(oldCache)) File.Delete(oldCache);
             }
             Accepted = true;
             this.sent = true;
@@ -449,13 +468,9 @@ sealed partial class Conversation
     // once it is created.
     void SaveIntent()
     {
-        if (Target.Unsent)
-        {
-            return;
-        }
-        var saved = new NextTurnIntent(Target.ConversationID, intentRuntime,
-            [.. intent.OrderBy(entry => entry.Key, StringComparer.Ordinal).Select(entry => new RuntimeTurnChoice(entry.Key, entry.Value))]);
-        Write("保存下一轮的选择", NativeOperation.ConfigurationWrite, application => application.SetNextTurnIntent(saved));
+        intentOwner = composerOwner;
+        ComposerChanged();
+        _ = PollComposer();
     }
 
     // LoadChoices reads what the device keeps of the composer's choices.
@@ -468,14 +483,7 @@ sealed partial class Conversation
             {
                 runtimeChoices[runtime.RuntimeId] = runtime;
             }
-            foreach (var saved in choices.Conversations.Where(saved => !Target.Unsent && saved.ConversationId == Target.ConversationID))
-            {
-                intentRuntime = saved.RuntimeId;
-                foreach (var choice in saved.Choices)
-                {
-                    intent.TryAdd(choice.RuntimeId, choice.Choice);
-                }
-            }
+
         }
         catch (Exception failure)
         {

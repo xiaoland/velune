@@ -54,7 +54,7 @@ struct ShortcutHelpView: View {
 
     private func section(_ title: String, _ rows: [(String, String)]) -> some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text(title).font(.headline)
+            Text(title).uiFont(.headline)
             Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 4) {
                 ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
                     GridRow {

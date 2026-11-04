@@ -5,7 +5,7 @@ import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 
 const adapters = {
-  "pi-1.0": {packageName:"@earendil-works/pi-coding-agent",minimum:[1,0,2],below:[1,1,0],aiPackage:"@earendil-works/pi-ai"},
+  "pi-1.0": {packageName:"@earendil-works/pi-coding-agent",minimum:[1,0,2],below:[1,5,0],aiPackage:"@earendil-works/pi-ai"},
 };
 
 // The adapter's range as version.rs declares it: from `minimum` (no

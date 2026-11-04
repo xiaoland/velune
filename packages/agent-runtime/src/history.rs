@@ -80,6 +80,7 @@ impl HistoryError {
 }
 
 pub struct HistoryConfig {
+    pub kind: RuntimeKind,
     pub execution: crate::execution::ExecutionTarget,
     pub os_home: Option<PathBuf>,
     pub provider: String,
@@ -92,11 +93,15 @@ pub struct HistoryConfig {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct History {
+    #[serde(default)]
+    pub native_read_state: Option<NativeReadState>,
     pub native_id: String,
     pub title: ConversationTitle,
     pub cwd: Option<String>,
     pub messages: Vec<Message>,
-    /// The native history ends with a stopped or failed input-free resumable turn.
+    #[serde(default)]
+    pub executions: Executions,
+    /// The native history ends with a stopped or failed continuable turn.
     #[serde(default)]
     pub can_resume: bool,
 }
@@ -176,7 +181,14 @@ fn execute(
     })?;
     let mut command = if config.provider == "claude-code" {
         let mut command = config.execution.python();
-        command.args(["-c", include_str!("../resources/claude_history.py")]);
+        command.args([
+            "-c",
+            concat!(
+                include_str!("../resources/claude_context.py"),
+                "\n",
+                include_str!("../resources/claude_history.py")
+            ),
+        ]);
         command
     } else {
         let mut command = crate::process_tree::command(&config.node_binary);
@@ -206,6 +218,7 @@ pub fn list(
 ) -> Result<Vec<ConversationSummary>, HistoryError> {
     if config.provider == "codex" {
         return crate::native::list_codex_history_at(
+            config.kind,
             &config.binary,
             &config.home,
             runtime_id,
@@ -236,6 +249,7 @@ fn listed_summaries(
         .sessions
         .into_iter()
         .map(|s| ConversationSummary {
+            native_read_state: None,
             can_rename: false,
             can_delete: false,
             id: format!("{runtime_id}:{}", s.native_id),
@@ -311,6 +325,7 @@ pub fn list_archived(
         return Ok(Vec::new());
     }
     crate::native::list_codex_history_at(
+        config.kind,
         &config.binary,
         &config.home,
         runtime_id,
@@ -331,6 +346,7 @@ pub fn read_summary(
         return Ok(None);
     }
     crate::native::read_codex_summary_at(
+        config.kind,
         &config.binary,
         &config.home,
         runtime_id,
@@ -341,6 +357,19 @@ pub fn read_summary(
     .map(Some)
     .map_err(|error| native_history_error(error, "native_summary"))
 }
+/// Export model input after native compaction, independently of the UI projection.
+pub fn export_context(
+    config: &HistoryConfig,
+    native_id: &str,
+) -> NativeResult<crate::import::Context> {
+    if config.provider == "codex" {
+        return crate::native::export_codex_context(config, native_id);
+    }
+    let bytes = execute(config, "export_context", "", Some(native_id), &[])
+        .map_err(|error| Error::new(error.full_message()))?;
+    crate::import::Context::parse(&bytes)
+}
+
 pub fn read(
     config: &HistoryConfig,
     runtime_id: &str,
@@ -348,6 +377,7 @@ pub fn read(
 ) -> Result<History, HistoryError> {
     if config.provider == "codex" {
         return crate::native::read_codex_history_at(
+            config.kind,
             &config.binary,
             &config.home,
             runtime_id,
@@ -446,6 +476,15 @@ pub fn read_pi(
 ) -> NativeResult<serde_json::Value> {
     execute_pi(config, PiOperation::Inspect(session), None)
 }
+pub fn export_pi_context(
+    config: &crate::Config,
+    session: &std::path::Path,
+) -> NativeResult<crate::import::Context> {
+    let value = execute_pi(config, PiOperation::ExportContext(session), None)?;
+    crate::import::Context::parse(
+        &serde_json::to_vec(&value).map_err(|error| Error::new(error.to_string()))?,
+    )
+}
 /// Modify Pi's native source with the fixed SDK; no Velune metadata overlay.
 pub fn manage_pi(
     config: &crate::Config,
@@ -471,6 +510,7 @@ pub fn manage_pi(
 enum PiOperation<'a> {
     List,
     Inspect(&'a std::path::Path),
+    ExportContext(&'a std::path::Path),
     Rename(&'a std::path::Path),
     Delete(&'a std::path::Path),
 }
@@ -505,6 +545,9 @@ fn execute_pi(
         .arg(crate::version::RuntimeKind::Pi.id());
     match operation {
         PiOperation::List => {}
+        PiOperation::ExportContext(session) => {
+            command.arg("--export-context").arg(session);
+        }
         PiOperation::Inspect(session) => {
             command.arg("--inspect-session").arg(session);
         }

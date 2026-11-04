@@ -24,7 +24,7 @@ struct TranscriptOutlineView: View {
             if inSidebar { list.listStyle(.sidebar) } else { list.listStyle(.inset) }
             Divider()
             HStack {
-                Text("\(model.userRows.count) 条用户消息").font(.callout).foregroundStyle(.secondary)
+                Text("\(model.userRows.count) 条用户消息").uiFont(.callout).foregroundStyle(.secondary)
                 Spacer()
                 Button("前往") { if let selectedID { go(to: selectedID) } }
                     .keyboardShortcut(inPopover ? .defaultAction : nil).disabled(selectedID == nil)

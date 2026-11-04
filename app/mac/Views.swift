@@ -64,6 +64,16 @@ struct VeluneRootView: View {
                 }
             }
         }
+        .sheet(item: Binding(get: { window.artifactSheet }, set: { if $0 == nil { window.closeArtifactSheet() } })) { tab in
+            ArtifactSheet(window: window, tab: tab)
+        }
+        .sheet(item: $window.renameTarget) { ConversationRenameView(store: window.list, conversation: $0) }
+        .alert(window.deleteTargets.count == 1 ? "删除会话？" : "删除 \(window.deleteTargets.count) 个会话？", isPresented: Binding(get: { !window.deleteTargets.isEmpty }, set: { if !$0 { window.deleteTargets = [] } })) {
+            Button("取消", role: .cancel) { window.deleteTargets = [] }
+            Button("删除", role: .destructive) { window.list.deleteConversations(window.deleteTargets); window.deleteTargets = [] }
+        } message: {
+            Text("将永久删除所选 \(window.deleteTargets.count) 个会话，以及它们在各 Agent 运行时中的关联会话数据。此操作无法撤销。")
+        }
         .sheet(isPresented: $window.showsShortcutHelp) { ShortcutHelpView(window: window) }
         .onAppear {
             window.openScene = { [openWindow] in openWindow(id: $0) }
@@ -73,14 +83,17 @@ struct VeluneRootView: View {
         .onChange(of: tab.id) { _, _ in window.outlinePopover = false; window.agentsPopover = false }
         .onChange(of: focused.pendingConversationID) { _, value in if value != nil { window.outlinePopover = false; window.agentsPopover = false } }
         .onChange(of: focused.loadedConversationID) { _, _ in window.outlinePopover = false; window.agentsPopover = false }
-        .sheet(item: Binding(get: { window.sheetTab }, set: { if $0 == nil { window.closeSheet() } })) { sheet in
+        .sheet(item: Binding(get: { window.sheetTab }, set: { if $0 == nil { window.closeSheet() } }), onDismiss: {
+            // AppKit cannot move focus out of a sheet until dismissal finishes.
+            if window.focused.store.isSideChat { window.focused.composer.focusWhenShown() }
+        }) { sheet in
             LinkedConversationSheet(window: window, tab: sheet, store: sheet.store, size: window.sheetSize)
         }
         .sheet(item: Binding(get: { window.composerSheetTab }, set: { if $0 == nil { window.closeComposerSheet() } })) { sheet in
             ComposerSheet(window: window, tab: sheet, store: sheet.store)
         }
         .onChange(of: store.device.outlinePresentation) { _, _ in window.outlinePopover = false }
-        .focusedSceneValue(\.conversationCommands, ConversationCommandTarget(store: focused, send: tab.send, window: window))
+        .focusedSceneValue(\.conversationCommands, ConversationCommandTarget(window: window))
         .task { if previewSettings { openSettings() } }
     }
 
@@ -92,7 +105,7 @@ struct VeluneRootView: View {
             }
         }
         // The window keeps the title for the Window menu and Mission Control; the tab bar shows it.
-        .navigationTitle([previewEmpty ? "新会话" : focused.selectedConversationTitle ?? "Velune", deviceName].compactMap { $0 }.joined(separator: " — "))
+        .navigationTitle([previewEmpty ? "新会话" : window.focusedEditor.title, deviceName].compactMap { $0 }.joined(separator: " — "))
         .toolbar(removing: .title)
     }
 
@@ -120,6 +133,7 @@ struct VeluneRootView: View {
             if let deviceName { ToolbarItem(id: "device", placement: .navigation) { deviceLabel(deviceName) } }
         }
         // Without the title nothing holds the buttons to the trailing end.
+        if !store.device.conversationManagement.isEmpty { ToolbarItem(id: "operations") { ConversationOperationStatus(device: store.device) } }
         ToolbarSpacer(.flexible)
         ToolbarItem(id: "reload") { reloadButton }
         ToolbarItem(id: "outline") { outlineButton }
@@ -136,6 +150,7 @@ struct VeluneRootView: View {
             forwardButton
             if let deviceName { deviceLabel(deviceName) }
         }
+        if !store.device.conversationManagement.isEmpty { ToolbarItem { ConversationOperationStatus(device: store.device) } }
         ToolbarItem { Spacer() }
         ToolbarItemGroup {
             ForEach(toolbarSettings.shown(in: .detail)) { button in
@@ -168,18 +183,18 @@ struct VeluneRootView: View {
         PaneAnchor { [window] in window.registerToolbarButton(kind, anchor: $0) }
     }
 
-    private var showsAgentsItem: Bool { window.tools[.agents].place != .builtIn || focused.hasLinkedAgents }
+    private var showsAgentsItem: Bool { window.hasConversationFocus && (window.tools[.agents].place != .builtIn || focused.hasLinkedAgents) }
     /// A window of the editor area alone is often one to keep in view.
     private var showsPinItem: Bool { !window.hasToolWindows || window.pinned }
 
     private var backButton: some View {
         Button { tab.goBack() } label: { Label("后退", systemImage: "chevron.backward") }
-            .help(shortcuts.help("回到之前查看的会话", .back)).disabled(focused.backHistory.isEmpty)
+            .help(shortcuts.help("回到之前查看的会话", .back)).disabled(!window.hasConversationFocus || focused.backHistory.isEmpty)
     }
 
     private var forwardButton: some View {
         Button { tab.goForward() } label: { Label("前进", systemImage: "chevron.forward") }
-            .help(shortcuts.help("前往后退前的会话", .forward)).disabled(focused.forwardHistory.isEmpty)
+            .help(shortcuts.help("前往后退前的会话", .forward)).disabled(!window.hasConversationFocus || focused.forwardHistory.isEmpty)
     }
 
     private var reloadButton: some View {
@@ -209,7 +224,7 @@ struct VeluneRootView: View {
     /// In its own place the setting decides: a popover anchored to the
     /// button, or a toggle that collapses the focused pane's message list in place.
     @ViewBuilder private var outlineButton: some View {
-        let unavailable = focused.pendingConversationID != nil || focused.transcript.userRows.isEmpty
+        let unavailable = !window.hasConversationFocus || focused.pendingConversationID != nil || focused.transcript.userRows.isEmpty
         if window.tools[.outline].place != .builtIn {
             Toggle(isOn: Binding(get: { window.tools.isOpen(.outline) }, set: { _ in window.toggle(.outline) })) { Label("会话大纲", systemImage: "list.bullet") }
                 .help(shortcuts.help(window.tools.isOpen(.outline) ? "隐藏会话大纲" : "显示会话大纲", .showOutline))
@@ -300,14 +315,11 @@ struct ConversationRenameView: View {
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("重命名会话").font(.headline)
+            Text("重命名会话").uiFont(.headline)
             TextField("会话名称", text: $title).focused($titleFocused).onSubmit(rename)
-                .disabled(store.conversationManagementStatus != nil)
-            if let status = store.conversationManagementStatus { Text(status).font(.callout).foregroundStyle(.secondary) }
             HStack {
-                if store.conversationManagementStatus != nil { ProgressView().controlSize(.small) }
                 Spacer()
-                Button("取消") { dismiss() }.keyboardShortcut(.cancelAction).disabled(store.conversationManagementStatus != nil)
+                Button("取消") { dismiss() }.keyboardShortcut(.cancelAction)
                 Button("重命名", action: rename).keyboardShortcut(.defaultAction)
                     .disabled(!store.canManageConversations || title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
@@ -348,10 +360,10 @@ struct ProjectEditorView: View {
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text(isNative ? "编辑 Codex 项目" : "编辑项目").font(.headline)
+            Text(isNative ? "编辑 Codex 项目" : "编辑项目").uiFont(.headline)
             TextField("项目名称", text: $name, prompt: Text(Self.folderName(primary))).focused($focused)
-            if isNative { Text("保存到 Codex").font(.caption).foregroundStyle(.secondary) }
-            Text("文件夹").font(.subheadline.weight(.semibold)).padding(.top, 4)
+            if isNative { Text("保存到 Codex").uiFont(.caption).foregroundStyle(.secondary) }
+            Text("文件夹").uiFont(.subheadline.weight(.semibold)).padding(.top, 4)
             VStack(spacing: 0) {
                 List(selection: $selection) {
                     ForEach(folders, id: \.self) { folder in
@@ -386,9 +398,9 @@ struct ProjectEditorView: View {
                 .buttonStyle(.borderless).controlSize(.small).padding(.top, 4)
             }
             Text(isNative ? "修改项目文件夹不会替换已有会话的工作目录和权限范围。" : "工作目录在任一文件夹中的会话都归入此项目；新会话的工作目录建议使用主文件夹。")
-                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                .uiFont(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             if !worktrees.isEmpty {
-                Text("Git worktree").font(.subheadline.weight(.semibold)).padding(.top, 4)
+                Text("Git worktree").uiFont(.subheadline.weight(.semibold)).padding(.top, 4)
                 ScrollView {
                     VStack(alignment: .leading, spacing: 4) {
                         ForEach(worktrees, id: \.self) { folder in
@@ -397,7 +409,7 @@ struct ProjectEditorView: View {
                     }.frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .frame(maxHeight: 72).foregroundStyle(.secondary)
-                Text("这些 worktree 中的会话按所属仓库自动归入此项目。").font(.caption).foregroundStyle(.secondary)
+                Text("这些 worktree 中的会话按所属仓库自动归入此项目。").uiFont(.caption).foregroundStyle(.secondary)
             }
             HStack {
                 Spacer()
@@ -519,6 +531,7 @@ private struct GeneralSettingsView: View {
     @State private var totalLimit = 200
     var body: some View {
         Form {
+            AppearanceSettingsSection()
             Section("用量显示") {
                 Picker("额度", selection: Binding(get: { store.usageDisplay }, set: { store.setUsageDisplay($0) })) {
                     Text("占用").tag(UsageDisplay.used)
@@ -532,7 +545,7 @@ private struct GeneralSettingsView: View {
             Section("会话列表") {
                 LabeledContent("每次加载") { TextField("数量", value: $limit, format: .number).frame(width: 70); Text("个会话") }
                 LabeledContent("列表总数上限") { TextField("数量", value: $totalLimit, format: .number).frame(width: 70); Text("个会话") }
-                Text("列表最多先读取总数上限个会话，按组依次分给各组，每组每次加载若干个；折叠的组不读取。之后可在各组中加载更多。").font(.caption).foregroundStyle(.secondary)
+                Text("列表最多先读取总数上限个会话，按组依次分给各组，每组每次加载若干个；折叠的组不读取。之后可在各组中加载更多。").uiFont(.caption).foregroundStyle(.secondary)
                 Button("保存") { store.setConversationBrowserLimits(ConversationBrowserLimits(page: UInt32(limit), total: UInt32(totalLimit))) }
                     .disabled(limit < 1 || totalLimit < 1 || (limit == Int(store.conversationBrowserLimits.page) && totalLimit == Int(store.conversationBrowserLimits.total)) || store.isShuttingDown)
             }
@@ -557,7 +570,16 @@ private struct ConversationSettingsView: View {
                     Text("就地折叠").tag(OutlineForm.inPlace)
                     Text("单独列出").tag(OutlineForm.listed)
                 }.disabled(store.isLoading || store.isShuttingDown)
-                Text("大纲以用户消息为条目，打开时停在最末一条；会话还在运行时，点击最末一条即前往会话末尾。弹出面板在工具栏按钮处列出大纲；就地折叠把消息列表缩起为只剩用户消息，点击其中一条即恢复完整会话并停在该处；单独列出把大纲停靠在窗口右侧的面板中（位置可在大纲的右键菜单中另选）。").font(.caption).foregroundStyle(.secondary)
+                Text("大纲以用户消息为条目，打开时停在最末一条；会话还在运行时，点击最末一条即前往会话末尾。弹出面板在工具栏按钮处列出大纲；就地折叠把消息列表缩起为只剩用户消息，点击其中一条即恢复完整会话并停在该处；单独列出把大纲停靠在窗口右侧的面板中（位置可在大纲的右键菜单中另选）。").uiFont(.caption).foregroundStyle(.secondary)
+            }
+            Section("侧聊") {
+                Picker("展示方式", selection: Binding(
+                    get: { store.rememberedToolLayout.layout.sideChatPresentation ?? .split },
+                    set: { ConversationWindowModel.setSideChatPresentation($0, application: store) })) {
+                    ForEach(SideChatPresentation.allCases, id: \.self) { Text($0.title).tag($0) }
+                }
+                Text("选择从当前会话打开侧聊时的展示方式；列表右键菜单始终先在 sheet 中打开。")
+                    .uiFont(.caption).foregroundStyle(.secondary)
             }
             Section("关联 Agent") {
                 Picker("打开方式", selection: Binding(get: { store.linkedConversationOpening }, set: { store.setLinkedConversationOpening($0) })) {
@@ -566,7 +588,7 @@ private struct ConversationSettingsView: View {
                     Text("浮层").tag(LinkedConversationOpening.sheet)
                     Text("新窗口").tag(LinkedConversationOpening.newWindow)
                 }.disabled(store.isLoading || store.isShuttingDown)
-                Text("关联 Agent 是会话的父会话、子 Agent 和经 Velune 协作的会话。在关联 Agent 面板中双击一项，或点按消息列表中的“打开会话”、来源与“打开父会话”时，在这里选择的位置打开；面板的右键菜单可选其他位置。浮层盖在窗口上，可从中转到标签页或独立窗口。").font(.caption).foregroundStyle(.secondary)
+                Text("关联 Agent 是会话的父会话、子 Agent 和经 Velune 协作的会话。在关联 Agent 面板中双击一项，或点按消息列表中的“打开会话”、来源与“打开父会话”时，在这里选择的位置打开；面板的右键菜单可选其他位置。浮层盖在窗口上，可从中转到标签页或独立窗口。").uiFont(.caption).foregroundStyle(.secondary)
             }
             Section("状态栏") {
                 ForEach(Self.statusLineItems, id: \.item) { entry in
@@ -574,7 +596,7 @@ private struct ConversationSettingsView: View {
                         get: { store.statusLine.contains(entry.item) },
                         set: { pinned in store.setStatusLine(pinned ? store.statusLine + [entry.item] : store.statusLine.filter { $0 != entry.item }) }))
                 }.disabled(store.isLoading || store.isShuttingDown)
-                Text("状态栏位于输入框下方、发送按钮左侧，只显示运行时原生记录中已有的项；点按它可查看全部项。费用为运行时按其价目的估算。").font(.caption).foregroundStyle(.secondary)
+                Text("状态栏位于输入框下方、发送按钮左侧，只显示运行时原生记录中已有的项；点按它可查看全部项。费用为运行时按其价目的估算。").uiFont(.caption).foregroundStyle(.secondary)
             }
         }.formStyle(.grouped).onAppear { outlineForm = ConversationWindowModel.outlineForm(application: store) }
     }
@@ -599,7 +621,7 @@ struct ProviderSettingsView: View {
                 ForEach(store.providers) { provider in
                     VStack(alignment: .leading, spacing: 3) {
                         Text(provider.name)
-                        Text(providerSummary(provider)).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                        Text(providerSummary(provider)).uiFont(.caption).foregroundStyle(.secondary).lineLimit(1)
                     }.tag(provider.id)
                 }
             }.contextMenu(forSelectionType: String.self) { ids in
@@ -641,21 +663,37 @@ private struct ProviderModelDraft: Identifiable {
     var maxOutputTokens = ""
     var declaresReasoning = false
     var reasoningLevels = ""
+    var requestParameters = ""
     init() {}
     init(_ model: ProviderModel) {
         recordKey = model.recordKey; providerModelID = model.providerModelId; nickname = model.nickname; icon = model.icon ?? ""
         contextWindow = model.contextWindow.map { TokenCount.format($0) } ?? ""; maxOutputTokens = model.maxOutputTokens.map { TokenCount.format($0) } ?? ""
         declaresReasoning = model.reasoningLevels != nil; reasoningLevels = model.reasoningLevels?.joined(separator: ", ") ?? ""
+        requestParameters = model.requestParameters?.map { "\($0.key)=\($0.value)" }.joined(separator: ", ") ?? ""
     }
     var displayName: String { nickname.isEmpty ? (providerModelID.isEmpty ? "新模型" : providerModelID) : nickname }
     var validTokens: Bool { TokenCount.validLimits(context: contextWindow, output: maxOutputTokens) }
-    var valid: Bool { !providerModelID.isEmpty && validTokens }
+    /// Each pair reads `key=value`; a missing `=` or empty key is invalid.
+    var parameters: [String: String]? {
+        let pairs = requestParameters.split(separator: ",").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+        guard !pairs.isEmpty else { return nil }
+        var parsed: [String: String] = [:]
+        for pair in pairs {
+            guard let separator = pair.firstIndex(of: "=") else { return [:] }
+            let key = pair[..<separator].trimmingCharacters(in: .whitespaces)
+            if key.isEmpty { return [:] }
+            parsed[key] = pair[pair.index(after: separator)...].trimmingCharacters(in: .whitespaces)
+        }
+        return parsed
+    }
+    var validParameters: Bool { requestParameters.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || parameters != [:] }
+    var valid: Bool { !providerModelID.isEmpty && validTokens && validParameters }
     var efforts: [String]? { declaresReasoning ? reasoningLevels.split(separator: ",").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty } : nil }
     var capabilitySummary: String {
         let effortsSummary = efforts.map { $0.isEmpty ? "不支持推理 effort" : "支持 effort：" + $0.joined(separator: "、") } ?? "推理 effort 未知"
         return effortsSummary + (contextWindow.isEmpty ? "" : " · 上下文 \(TokenCount.parse(contextWindow).map { TokenCount.format($0) } ?? contextWindow)") + (maxOutputTokens.isEmpty ? "" : " · 输出 \(TokenCount.parse(maxOutputTokens).map { TokenCount.format($0) } ?? maxOutputTokens)")
     }
-    var definition: ProviderModel { ProviderModel(recordKey: recordKey, providerModelId: providerModelID, nickname: nickname, icon: icon.isEmpty ? nil : icon, contextWindow: TokenCount.parse(contextWindow), maxOutputTokens: TokenCount.parse(maxOutputTokens), reasoningLevels: efforts) }
+    var definition: ProviderModel { ProviderModel(recordKey: recordKey, providerModelId: providerModelID, nickname: nickname, icon: icon.isEmpty ? nil : icon, contextWindow: TokenCount.parse(contextWindow), maxOutputTokens: TokenCount.parse(maxOutputTokens), reasoningLevels: efforts, requestParameters: parameters) }
 }
 
 private struct ProviderModelFields: View {
@@ -672,16 +710,19 @@ private struct ProviderModelFields: View {
                 VStack(alignment: .leading, spacing: 12) {
                     TextField("上下文窗口", text: $draft.contextWindow, prompt: Text("未知，如 272K"))
                     TextField("最大输出 Token", text: $draft.maxOutputTokens, prompt: Text("未知，如 32K"))
-                    if !draft.validTokens { Text(TokenCount.inputError).font(.caption).foregroundStyle(.red) }
+                    if !draft.validTokens { Text(TokenCount.inputError).uiFont(.caption).foregroundStyle(.red) }
                     Toggle("声明支持的 reasoning effort", isOn: $draft.declaresReasoning)
                     if draft.declaresReasoning {
                         TextField("支持的 effort", text: $draft.reasoningLevels, prompt: Text("逗号分隔，空白表示不支持"))
                     }
-                    Text("以提供商协议为准；此处声明可用能力，不改变会话当前选择的 effort。").font(.caption).foregroundStyle(.secondary)
+                    TextField("额外请求参数", text: $draft.requestParameters, prompt: Text("逗号分隔的 key=value，如 service_tier=priority"))
+                    if !draft.validParameters { Text("每对参数写为 key=value").uiFont(.caption).foregroundStyle(.red) }
+                    Text("随每个上游请求发送，覆盖适配器的同名字段；提供商不认识的参数会以它自己的错误失败。速度变体声明为独立模型，例如同一模型 ID 加 service_tier=priority。").uiFont(.caption).foregroundStyle(.secondary)
+                    Text("以提供商协议为准；此处声明可用能力，不改变会话当前选择的 effort。").uiFont(.caption).foregroundStyle(.secondary)
                     TextField("图标", text: $draft.icon, prompt: Text("可选的 SF Symbol 名称"))
                 }.frame(maxWidth: .infinity, alignment: .leading).padding(.top, 8)
             } label: {
-                VStack(alignment: .leading, spacing: 3) { Text("能力与 reasoning effort"); Text(draft.capabilitySummary).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }
+                VStack(alignment: .leading, spacing: 3) { Text("能力与 reasoning effort"); Text(draft.capabilitySummary).uiFont(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }
             }
         }
     }
@@ -721,6 +762,7 @@ struct ProviderEditor: View {
     @State private var savedID: String?
     @State private var templateDraft: ModelTemplate?
     @State private var choosingTemplates = false
+    @State private var showingBilling = false
     @FocusState private var providerNameFocused: Bool
     @FocusState private var modelIDFocused: Bool
     private var providerID: String? { provider?.id ?? savedID }
@@ -741,7 +783,7 @@ struct ProviderEditor: View {
         }
     }
     /// The command a CLI backend runs, from the template the composition comes from.
-    private var executableCommand: String? { template?.executableCommand ?? store.providerTemplates.first { $0.composition.authenticationSource == composition.authenticationSource }?.executableCommand }
+    private var executableCommand: String? { template?.executableCommand ?? composition.subscriptionTemplate?.executableCommand }
     private var usesHTTP: Bool { if case .http = composition.executionBackend { return true }; return false }
     /// The official API service at this address, whose account quota the provider's key can read.
     private var accountService: String? { usesSubscription || !usesHTTP ? nil : apiAccountServiceName(endpoint: endpoint.trimmingCharacters(in: .whitespacesAndNewlines)) }
@@ -753,7 +795,7 @@ struct ProviderEditor: View {
     private var quotaAuthentication: ProviderSummary? { store.providers.first { $0.id == providerID } ?? provider }
     var body: some View {
         VStack(spacing: 0) {
-            Text(provider == nil ? "添加 \(template?.name ?? "AI 提供商")" : "编辑 AI 提供商").font(.headline).frame(maxWidth: .infinity, alignment: .leading).padding(20)
+            Text(provider == nil ? "添加 \(template?.name ?? "AI 提供商")" : "编辑 AI 提供商").uiFont(.headline).frame(maxWidth: .infinity, alignment: .leading).padding(20)
             Divider()
             HSplitView {
                 VStack(spacing: 0) {
@@ -761,7 +803,7 @@ struct ProviderEditor: View {
                         Label("连接与认证", systemImage: "network").tag(ProviderEditorSelection.connection)
                         if showsQuota { Label("额度与使用上限", systemImage: "gauge.with.dots.needle.50percent").tag(ProviderEditorSelection.quota) }
                         Section("模型") {
-                            ForEach(models) { model in VStack(alignment: .leading, spacing: 3) { Text(model.displayName).lineLimit(1); if !model.providerModelID.isEmpty { Text(model.providerModelID).font(.caption).foregroundStyle(.secondary).lineLimit(1) } }.tag(ProviderEditorSelection.model(model.id)) }
+                            ForEach(models) { model in VStack(alignment: .leading, spacing: 3) { Text(model.displayName).lineLimit(1); if !model.providerModelID.isEmpty { Text(model.providerModelID).uiFont(.caption).foregroundStyle(.secondary).lineLimit(1) } }.tag(ProviderEditorSelection.model(model.id)) }
                         }
                     }.contextMenu(forSelectionType: ProviderEditorSelection.self) { ids in
                         if ids.count == 1, let target = ids.first { Button("编辑") { editSelection(target) } }
@@ -805,6 +847,11 @@ struct ProviderEditor: View {
         }
         .onChange(of: selection) { _, value in if value == .connection { readAPIKeyIfNeeded() } }
         .sheet(isPresented: $choosingTemplates) { ModelTemplatePicker(templates: store.modelTemplates) { values in for template in values { addModel(ProviderModelDraft(template.model)) } } }
+        .sheet(isPresented: $showingBilling) {
+            if let saved = quotaAuthentication, let service = providerBillingService(endpoint: saved.endpoint) {
+                ProviderBillingView(store: store, providerID: saved.id, service: service)
+            }
+        }
         .sheet(item: $templateDraft) { value in ModelTemplateEditor(store: store, template: value) }
         .sheet(isPresented: $store.showsAuthentication) { AuthenticationView(store: store) }
         .confirmationDialog("退出“\(name)”的登录？", isPresented: $confirmingLogout) {
@@ -916,7 +963,7 @@ struct ProviderEditor: View {
                     SubscriptionDisclosureNote(disclosure: disclosure)
                 }
                 if let provenance = authentication.provenance, providerID != nil {
-                    ImmediateDisclosureGroup("来源详情") { Text(provenance.displayName).font(.callout).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading).padding(.top, 8) }
+                    ImmediateDisclosureGroup("来源详情") { Text(provenance.displayName).uiFont(.callout).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading).padding(.top, 8) }
                 }
             }
             if let accountService {
@@ -924,6 +971,15 @@ struct ProviderEditor: View {
                     Toggle("读取 \(accountService) 账户额度", isOn: Binding(get: { composition.quotaSource == .apiAccount }, set: { composition.quotaSource = $0 ? .apiAccount : .none }))
                 } footer: {
                     Text(accountService == "OpenRouter" ? "用这个 API key 向 OpenRouter 读取它的花费上限与剩余额度；没有设置上限的 Key 不报告额度。" : "用这个 API key 向 \(accountService) 官方地址读取账户余额；提供商表示余额不足时暂停新请求。")
+                        .formFooterStyle()
+                }
+            }
+            if usesHTTP && !usesSubscription && usesAPIKey && composition.requestProfile == .native && providerBillingService(endpoint: endpoint) != nil {
+                Section {
+                    Button("用量与账单…") { showingBilling = true }
+                        .disabled(providerID == nil || quotaAuthentication?.endpoint != endpoint)
+                } footer: {
+                    Text("保存连接与模型认证后，可另行配置组织查询凭据。账单报表只读展示，不代表充值余额。")
                         .formFooterStyle()
                 }
             }
@@ -987,12 +1043,12 @@ private struct ModelTemplatePicker: View {
     private var candidates: [ModelTemplate] { templates.filter { search.isEmpty || "\($0.name) \($0.suggestedProviderModelId)".localizedCaseInsensitiveContains(search) } }
     var body: some View {
         VStack(spacing: 0) {
-            HStack { Text("从模板中选取").font(.headline); Spacer() }.padding(20)
+            HStack { Text("从模板中选取").uiFont(.headline); Spacer() }.padding(20)
             TextField("搜索模板", text: $search).textFieldStyle(.roundedBorder).padding(.horizontal, 20).padding(.bottom, 8)
-            List(selection: $selection) { ForEach(candidates) { value in VStack(alignment: .leading, spacing: 3) { Text(value.name); Text(value.suggestedProviderModelId).font(.caption).foregroundStyle(.secondary) }.tag(value.id) } }.listStyle(.bordered).padding(.horizontal, 20)
+            List(selection: $selection) { ForEach(candidates) { value in VStack(alignment: .leading, spacing: 3) { Text(value.name); Text(value.suggestedProviderModelId).uiFont(.caption).foregroundStyle(.secondary) }.tag(value.id) } }.listStyle(.bordered).padding(.horizontal, 20)
             .overlay { if candidates.isEmpty { Text(templates.isEmpty ? "尚无模型模板，可在设置中添加。" : "没有匹配的模板").foregroundStyle(.secondary) } }
             HStack {
-                Text(addedCount > 0 ? "已添加 \(addedCount) 个模型" : "按住 ⌘ 或 Shift 选择多个模板").font(.caption).foregroundStyle(.secondary)
+                Text(addedCount > 0 ? "已添加 \(addedCount) 个模型" : "按住 ⌘ 或 Shift 选择多个模板").uiFont(.caption).foregroundStyle(.secondary)
                 Spacer(); Button("完成") { dismiss() }.keyboardShortcut(.cancelAction)
                 Button("添加所选") { let values = templates.filter { selection.contains($0.id) }; add(values); addedCount += values.count; selection.removeAll() }.disabled(selection.isEmpty).keyboardShortcut(.defaultAction)
             }.padding(16)
@@ -1009,9 +1065,9 @@ struct ModelTemplatesView: View {
     @State private var catalog = false
     var body: some View {
         VStack(spacing: 0) {
-            Text("模型模板").font(.headline).frame(maxWidth: .infinity, alignment: .leading).padding(20)
-            Text("模板用于快速填写模型，修改模板不会改变已配置的模型。").font(.callout).foregroundStyle(.secondary).padding(.horizontal, 20).padding(.bottom, 12)
-            List(selection: $selectedID) { ForEach(store.modelTemplates) { template in VStack(alignment: .leading, spacing: 3) { Text(template.name); Text(template.suggestedProviderModelId).font(.caption).foregroundStyle(.secondary) }.tag(template.id) } }
+            Text("模型模板").uiFont(.headline).frame(maxWidth: .infinity, alignment: .leading).padding(20)
+            Text("模板用于快速填写模型，修改模板不会改变已配置的模型。").uiFont(.callout).foregroundStyle(.secondary).padding(.horizontal, 20).padding(.bottom, 12)
+            List(selection: $selectedID) { ForEach(store.modelTemplates) { template in VStack(alignment: .leading, spacing: 3) { Text(template.name); Text(template.suggestedProviderModelId).uiFont(.caption).foregroundStyle(.secondary) }.tag(template.id) } }
             .contextMenu(forSelectionType: String.self) { ids in
                 if ids.count == 1, let id = ids.first, let template = store.modelTemplates.first(where: { $0.id == id }) { Button("编辑…") { editor = template } }
             } primaryAction: { ids in if ids.count == 1, let id = ids.first { editor = store.modelTemplates.first { $0.id == id } } }
@@ -1036,7 +1092,7 @@ struct ModelTemplateEditor: View {
     @FocusState private var modelIDFocused: Bool
     var body: some View {
         VStack(spacing: 0) {
-            Text("编辑模型模板").font(.headline).frame(maxWidth: .infinity, alignment: .leading).padding(16)
+            Text("编辑模型模板").uiFont(.headline).frame(maxWidth: .infinity, alignment: .leading).padding(16)
             Form { Section { TextField("模板名称", text: $name) }; ProviderModelFields(draft: $draft, modelIDFocused: $modelIDFocused) }.formStyle(.grouped)
 
             HStack { Spacer(); Button("取消") { dismiss() }.keyboardShortcut(.cancelAction); Button("保存") { let model = draft.definition; store.saveTemplate(ModelTemplate(id: template.id, name: name, suggestedProviderModelId: model.providerModelId, nickname: model.nickname, icon: model.icon, contextWindow: model.contextWindow, maxOutputTokens: model.maxOutputTokens, reasoningLevels: model.reasoningLevels)) { dismiss() } }.keyboardShortcut(.defaultAction).disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !draft.valid || store.isLoading) }.padding(16)
@@ -1064,7 +1120,7 @@ struct RuntimeSettingsView: View {
                 ForEach(store.runtimeInstances) { instance in
                     VStack(alignment: .leading, spacing: 3) {
                         HStack { Text(instance.name); if !instance.enabled { Text("已停用").foregroundStyle(.secondary) } }
-                        Text((store.runtimeTypes.first { $0.id == instance.typeId }?.name ?? instance.typeId.description) + (store.location(of: instance.id).host.map { " · SSH \($0)" } ?? "")).font(.caption).foregroundStyle(.secondary)
+                        Text((store.runtimeTypes.first { $0.id == instance.typeId }?.name ?? instance.typeId.description) + (store.location(of: instance.id).host.map { " · SSH \($0)" } ?? "")).uiFont(.caption).foregroundStyle(.secondary)
                     }.tag(instance.id)
                 }
             }
@@ -1204,7 +1260,7 @@ struct RuntimeEditor: View {
         return path.hasPrefix("/") && !path.contains("\0") ? .some(path) : nil
     }
     /// A managed HOME holds the runtime directory, so that field goes away.
-    private var fields: [SettingField] { (descriptor?.fields ?? []).filter { !(home == .managed && $0.key == "agentDir") } }
+    private var fields: [SettingField] { (descriptor?.fields ?? []).filter { !(home == .managed && $0.key == "agentDir") && !["automaticNaming", "automaticNamingModel"].contains($0.key) } }
     private var homeField: SettingField {
         SettingField(key: "home", label: "HOME 目录", kind: remote ? .text : .directoryPath, required: true, value: "", options: [],
                      help: remote ? "执行机器上的绝对目录。" : nil)
@@ -1237,7 +1293,7 @@ struct RuntimeEditor: View {
         }
         return AcpLaunch(args: launchArguments.map(\.value).filter { !$0.isEmpty }, environment: variables)
     }
-    private var valid: Bool { !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && descriptor != nil && homeExecution != nil && transportExecution != nil && remoteResourcesExecution != nil && (descriptor?.launchOptions != true || launch != nil) && (!enabled || fields.allSatisfy { field in
+    private var valid: Bool { (!enabled || settings["automaticNaming"] != "true" || store.gateway.providers.flatMap(\.models).contains { $0.recordKey == settings["automaticNamingModel"] }) && !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && descriptor != nil && homeExecution != nil && transportExecution != nil && remoteResourcesExecution != nil && (descriptor?.launchOptions != true || launch != nil) && (!enabled || fields.allSatisfy { field in
         let value = settings[field.key] ?? field.value
         return (!field.required || !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) && MacPath.isValid(value, field: field, remote: remote)
     }) }
@@ -1247,7 +1303,7 @@ struct RuntimeEditor: View {
     }
     var body: some View {
         VStack(spacing: 0) {
-            Text(instance == nil ? "添加 Agent 运行时" : "编辑 Agent 运行时").font(.headline).frame(maxWidth: .infinity, alignment: .leading).padding([.horizontal, .top], 20)
+            Text(instance == nil ? "添加 Agent 运行时" : "编辑 Agent 运行时").uiFont(.headline).frame(maxWidth: .infinity, alignment: .leading).padding([.horizontal, .top], 20)
             Form {
                 Section {
                     TextField("实例名称", text: $name)
@@ -1266,14 +1322,15 @@ struct RuntimeEditor: View {
                                 discoveryAction: discoveryAction(for: field)
                             )
                         }
-                        if let pathValidationMessage { Text(pathValidationMessage).font(.caption).foregroundStyle(.red) }
+                        if let pathValidationMessage { Text(pathValidationMessage).uiFont(.caption).foregroundStyle(.red) }
                         if let executableDiscoveryMessage {
-                            Text(executableDiscoveryMessage).font(.caption).foregroundStyle(.secondary)
+                            Text(executableDiscoveryMessage).uiFont(.caption).foregroundStyle(.secondary)
                         }
                     }
                 }
                 if descriptor?.launchOptions == true, case .ready = execution { launchSections }
                 if descriptor?.agentInfo == true, let instance { agentSection(instance) }
+                if descriptor?.fields.contains(where: { $0.key == "automaticNaming" }) == true { automaticNamingSection }
                 if let instance { newConversationSection(instance) }
             }.formStyle(.grouped)
             HStack {
@@ -1312,6 +1369,24 @@ struct RuntimeEditor: View {
         }
     }
 
+    private var automaticNamingSection: some View {
+        Section {
+            Toggle("为尚未命名的会话自动取名", isOn: Binding(get: { settings["automaticNaming"] == "true" }, set: { settings["automaticNaming"] = $0 ? "true" : "false" }))
+            if settings["automaticNaming"] == "true" {
+                Picker("命名模型", selection: Binding(get: { settings["automaticNamingModel"] ?? "" }, set: { settings["automaticNamingModel"] = $0 })) {
+                    Text("选择模型").tag("")
+                    ForEach(store.gateway.providers) { provider in
+                        ForEach(provider.models) { model in
+                            Text(provider.name + " · " + model.displayName).tag(model.recordKey)
+                        }
+                    }
+                }
+            }
+        } header: { Text("自动命名") } footer: {
+            Text("原生名称优先。开启后，所选模型会读取会话首轮的消息与回复，为 Velune 中的会话生成标题。").uiFont(.caption).foregroundStyle(.secondary)
+        }
+    }
+
     @ViewBuilder private var homeSection: some View {
         switch execution {
         case .loading:
@@ -1327,9 +1402,9 @@ struct RuntimeEditor: View {
                 SettingFieldView(field: sshBinaryField, value: $sshBinary)
                 SettingFieldView(field: sshDestinationField, value: $sshDestination)
                 SettingFieldView(field: sshPortField, value: $sshPort)
-                if transportExecution == nil { Text("需要 SSH 程序的绝对路径、不含空白且不以“-”开头的主机，端口为 1–65535。").font(.caption).foregroundStyle(.red) }
+                if transportExecution == nil { Text("需要 SSH 程序的绝对路径、不含空白且不以“-”开头的主机，端口为 1–65535。").uiFont(.caption).foregroundStyle(.red) }
                 SettingFieldView(field: remoteResourcesField, value: $remoteResources, remote: true)
-                Text("执行机器需要 POSIX 环境与 Python 3，运行时自身也须安装在那里；下方的路径均指执行机器上的路径。").font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                Text("执行机器需要 POSIX 环境与 Python 3，运行时自身也须安装在那里；下方的路径均指执行机器上的路径。").uiFont(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
             Picker("HOME", selection: $home) {
                 Text("继承当前用户").tag(HomeChoice.inherit)
@@ -1338,14 +1413,14 @@ struct RuntimeEditor: View {
             }
             switch home {
             case .inherit:
-                Text("以\(remote ? "执行机器上用户" : "你")的 HOME 启动，与在终端中直接运行相同。").font(.caption).foregroundStyle(.secondary)
+                Text("以\(remote ? "执行机器上用户" : "你")的 HOME 启动，与在终端中直接运行相同。").uiFont(.caption).foregroundStyle(.secondary)
             case .existing:
                 SettingFieldView(field: homeField, value: $homePath)
-                Text("以此目录作为 HOME 启动；运行时目录仍按下方设置。").font(.caption).foregroundStyle(.secondary)
+                Text("以此目录作为 HOME 启动；运行时目录仍按下方设置。").uiFont(.caption).foregroundStyle(.secondary)
             case .managed:
                 if remote { SettingFieldView(field: remoteRootField, value: $remoteRoot) }
                 Text("Velune 为此实例单独建立 HOME，运行时目录位于其中，首次使用时创建。不会复制现有的登录、配置或会话；HOME 也不是安全沙箱。")
-                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    .uiFont(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 if let managedHome, !remote {
                     VStack(alignment: .leading, spacing: 6) {
                         Text("位置")
@@ -1371,7 +1446,7 @@ struct RuntimeEditor: View {
             }
             Button("添加参数") { launchArguments.append(LaunchArgument()) }
         } header: { Text("启动参数") } footer: {
-            Text("按顺序逐个传给运行时入口，不经过 shell，因此空格与引号原样保留。").font(.caption).foregroundStyle(.secondary)
+            Text("按顺序逐个传给运行时入口，不经过 shell，因此空格与引号原样保留。").uiFont(.caption).foregroundStyle(.secondary)
         }
         Section {
             ForEach($environment) { $entry in
@@ -1383,9 +1458,9 @@ struct RuntimeEditor: View {
                 }
             }
             Button("添加变量") { environment.append(EnvironmentEntry()) }
-            if launch == nil { Text("变量需要名称，名称不能包含“=”或重复。").font(.caption).foregroundStyle(.red) }
+            if launch == nil { Text("变量需要名称，名称不能包含“=”或重复。").uiFont(.caption).foregroundStyle(.red) }
         } header: { Text("环境变量") } footer: {
-            Text("在继承的环境之上设置，只用于此实例。值以明文保存在本机应用配置中。").font(.caption).foregroundStyle(.secondary)
+            Text("在继承的环境之上设置，只用于此实例。值以明文保存在本机应用配置中。").uiFont(.caption).foregroundStyle(.secondary)
         }
     }
 
@@ -1405,7 +1480,7 @@ struct RuntimeEditor: View {
             }
             if newConversationMode == .chosen { newConversationPickers }
         } header: { Text("新会话") } footer: {
-            Text(newConversationFooter).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            Text(newConversationFooter).uiFont(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         }
     }
     private var newConversationFooter: String {
@@ -1427,7 +1502,7 @@ struct RuntimeEditor: View {
         }
         switch newConversationModels {
         case .loading?: HStack { ProgressView().controlSize(.small); Text("正在读取运行时的模型…").foregroundStyle(.secondary) }
-        case .failed(let detail)?: Text("无法读取运行时的模型：\(detail)").font(.caption).foregroundStyle(.secondary)
+        case .failed(let detail)?: Text("无法读取运行时的模型：\(detail)").uiFont(.caption).foregroundStyle(.secondary)
         case .ready?, nil: EmptyView()
         }
         let levels = newConversationEfforts(models)
@@ -1477,7 +1552,7 @@ struct RuntimeEditor: View {
         Section {
             switch agent {
             case nil:
-                Text("启动一次已保存的 Agent，读取它报告的名称、版本、会话能力与登录方式；不会发送消息。").font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                Text("启动一次已保存的 Agent，读取它报告的名称、版本、会话能力与登录方式；不会发送消息。").uiFont(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             case .loading:
                 HStack { ProgressView().controlSize(.small); Text("正在读取 Agent 信息…").foregroundStyle(.secondary) }
             case .failed(let detail):
@@ -1508,7 +1583,7 @@ struct RuntimeEditor: View {
                             }
                         }
                     }
-                    Text("登录在 Agent 自己的流程中完成，Velune 不代为认证。").font(.caption).foregroundStyle(.secondary)
+                    Text("登录在 Agent 自己的流程中完成，Velune 不代为认证。").uiFont(.caption).foregroundStyle(.secondary)
                 }
             }
             HStack {
@@ -1643,7 +1718,7 @@ struct SettingFieldView: View {
                     if !remote && (field.kind == .filePath || field.kind == .directoryPath) { Button("选择…", action: choosePath) }
                     if let discoveryTitle, let discoveryAction { Button(discoveryTitle, action: discoveryAction).disabled(discoveryTitle == "探测中…") }
                 }
-                if let help = field.help { Text(help).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }
+                if let help = field.help { Text(help).uiFont(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }
             }
         }
     }
@@ -1659,7 +1734,7 @@ struct AuthenticationView: View {
     @State private var answer = ""
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("认证来源登录").font(.headline).frame(maxWidth: .infinity, alignment: .leading)
+            Text("认证来源登录").uiFont(.headline).frame(maxWidth: .infinity, alignment: .leading)
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
                     ForEach(Array(store.authenticationNotifications.enumerated()), id: \.offset) { _, notice in
@@ -1768,7 +1843,7 @@ struct RuntimeInteractionView: View {
                 HStack {
                     Text(question.text).textSelection(.enabled)
                     if cardFocused, current == question.id {
-                        Text("按 1–\(min(question.options.count, 9)) 选择").font(.callout).foregroundStyle(.secondary)
+                        Text("按 1–\(min(question.options.count, 9)) 选择").uiFont(.callout).foregroundStyle(.secondary)
                     }
                 }
                 field(question, questions: questions).focused($focusedField, equals: question.id)
@@ -1799,8 +1874,8 @@ struct RuntimeInteractionView: View {
     private func header(_ title: String) -> some View {
         HStack(spacing: 6) {
             Image(systemName: "exclamationmark.circle.fill").foregroundStyle(.orange)
-            Text(title).font(.headline).frame(maxWidth: .infinity, alignment: .leading)
-            if store.pendingInteractions.count > 1 { Text("还有 \(store.pendingInteractions.count - 1) 个请求").font(.callout).foregroundStyle(.secondary) }
+            Text(title).uiFont(.headline).frame(maxWidth: .infinity, alignment: .leading)
+            if store.pendingInteractions.count > 1 { Text("还有 \(store.pendingInteractions.count - 1) 个请求").uiFont(.callout).foregroundStyle(.secondary) }
         }
     }
 

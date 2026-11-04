@@ -16,7 +16,11 @@ use sha2::{Digest, Sha256};
 use velune_agent_runtime::provider_inventory::{self, Access, Inventory, KeySource};
 
 /// Runtime types whose configuration the agent runtime can read for import.
-pub(crate) const TYPES: [RuntimeKind; 2] = [RuntimeKind::Codex, RuntimeKind::ClaudeCode];
+pub(crate) const TYPES: [RuntimeKind; 3] = [
+    RuntimeKind::Codex,
+    RuntimeKind::Codex166,
+    RuntimeKind::ClaudeCode,
+];
 
 fn inventory(runtime: &RuntimeInstance) -> Result<Inventory, Error> {
     if runtime.execution()? != crate::RuntimeExecution::default() {
@@ -31,7 +35,7 @@ fn inventory(runtime: &RuntimeInstance) -> Result<Inventory, Error> {
         .filter(|path| path.is_absolute())
         .ok_or_else(|| Error::invalid("请先为所选运行时配置绝对路径的运行时目录"))?;
     match runtime.type_id {
-        RuntimeKind::Codex => provider_inventory::codex(directory),
+        RuntimeKind::Codex | RuntimeKind::Codex166 => provider_inventory::codex(directory),
         RuntimeKind::ClaudeCode => provider_inventory::claude_code(directory),
         RuntimeKind::Pi | RuntimeKind::DeepSeek | RuntimeKind::Acp => {
             return Err(Error::invalid("所选 Agent 运行时不支持提供商导入"));
@@ -223,6 +227,7 @@ pub(crate) fn apply(
                 context_window: None,
                 max_output_tokens: None,
                 reasoning_levels: None,
+                request_parameters: None,
                 pi_projection: None,
             })
             .collect();
@@ -234,6 +239,7 @@ pub(crate) fn apply(
                 key,
             } => ProviderDefinition {
                 quota_authentication: Default::default(),
+                billing: Default::default(),
                 id: id.clone(),
                 name: source.name.clone(),
                 protocol: *kind,
@@ -264,6 +270,7 @@ pub(crate) fn apply(
                 };
                 ProviderDefinition {
                     quota_authentication: Default::default(),
+                    billing: Default::default(),
                     id: id.clone(),
                     name: format!("{} · {}", source.name, runtime.name),
                     protocol: Protocol::Messages,

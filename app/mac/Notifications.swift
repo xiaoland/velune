@@ -33,7 +33,7 @@ final class ConversationNotifier: NSObject, UNUserNotificationCenterDelegate {
             }
         }
         pendingCounts = counts
-        for turn in activity.finished {
+        for turn in activity.finished where !turn.silent {
             let body: String
             switch turn.outcome {
             case .completed: body = "已完成"
@@ -108,7 +108,7 @@ final class ConversationNotifier: NSObject, UNUserNotificationCenterDelegate {
             application?.showConversation(conversationID)
             // The keyboard goes where the notification points: the request waiting, else the composer.
             guard let application, let window = ConversationWindowModel.openWindows.first(where: { $0.focused.store === application.focusedConversation }) else { return }
-            if application.waitingConversationIDs.contains(conversationID) { window.focused.focusInteraction() } else { window.focused.composer.focusWhenShown() }
+            if application.waitingConversationIDs.contains(conversationID) { window.focused.focusInteraction() } else { window.composer(for: window.focused).focusWhenShown() }
         }
     }
 }

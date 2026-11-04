@@ -46,7 +46,7 @@ struct ModelRouteSettingsView: View {
                     ForEach(routes) { route in
                         VStack(alignment: .leading, spacing: 3) {
                             Text(route.name).lineLimit(1)
-                            Text("\(route.strategy.label) · \(route.members.count) 个模型").font(.caption).foregroundStyle(.secondary)
+                            Text("\(route.strategy.label) · \(route.members.count) 个模型").uiFont(.caption).foregroundStyle(.secondary)
                         }.tag(route.recordKey)
                     }
                 }.contextMenu(forSelectionType: String.self) { ids in
@@ -106,7 +106,7 @@ private struct ModelRouteOverview: View {
                 LabeledContent("策略", value: route.strategy.label)
                 LabeledContent("会话保持", value: route.sticky ? "开启" : "关闭")
             } header: {
-                HStack { Text(route.name).font(.headline); Spacer(); Button("编辑…", action: edit).controlSize(.small) }
+                HStack { Text(route.name).uiFont(.headline); Spacer(); Button("编辑…", action: edit).controlSize(.small) }
             } footer: {
                 Text(route.strategy.explanation + (route.sticky ? stickyExplanation(route.strategy) : "每个请求重新选择模型。"))
                     .formFooterStyle()
@@ -157,21 +157,21 @@ private struct RouteMemberStatus: View {
                 Text("\(position)").monospacedDigit().foregroundStyle(.secondary).frame(width: 16, alignment: .trailing)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(member.title).lineLimit(1)
-                    Text(account).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    Text(account).uiFont(.caption).foregroundStyle(.secondary).lineLimit(1)
                 }
                 Spacer()
-                if let weight, totalWeight > 0 { Text("权重 \(weight) · \(Int((Double(weight) / Double(totalWeight) * 100).rounded()))%").font(.caption).foregroundStyle(.secondary).monospacedDigit() }
+                if let weight, totalWeight > 0 { Text("权重 \(weight) · \(Int((Double(weight) / Double(totalWeight) * 100).rounded()))%").uiFont(.caption).foregroundStyle(.secondary).monospacedDigit() }
                 if needsSignIn, let action = authentication.loginAction {
                     Button(action.label) { store.startAuthentication(member.provider.id) }.controlSize(.small).disabled(store.isBusy)
                 }
             }
             Group {
-                if let notice { Label(notice, systemImage: "pause.circle").font(.caption).foregroundStyle(.orange) }
+                if let notice { Label(notice, systemImage: "pause.circle").uiFont(.caption).foregroundStyle(.orange) }
                 ForEach(Array(windows.enumerated()), id: \.offset) { _, window in
                     QuotaWindowRow(window: window, limit: member.provider.quotaLimits.first { $0.windowId == window.id }?.maxUsedPercent, fresh: quota?.freshness == .fresh, display: store.usageDisplay)
                 }
                 ForEach(Array((quota?.balances ?? []).enumerated()), id: \.offset) { _, balance in
-                    QuotaBalanceRow(balance: balance, fresh: quota?.freshness == .fresh).font(.caption)
+                    QuotaBalanceRow(balance: balance, fresh: quota?.freshness == .fresh).uiFont(.caption)
                 }
                 if !needsSignIn, let quota, quota.freshness != .unsupported, quota.freshness != .fresh || (windows.isEmpty && quota.balances.isEmpty) { QuotaStatusText(quota: quota) }
             }.padding(.leading, 24)
@@ -215,7 +215,7 @@ private struct ModelRouteEditor: View {
     private var valid: Bool { !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !members.isEmpty }
     var body: some View {
         VStack(spacing: 0) {
-            Text(route.recordKey.isEmpty ? "添加模型路由" : "编辑模型路由").font(.headline).frame(maxWidth: .infinity, alignment: .leading).padding(20)
+            Text(route.recordKey.isEmpty ? "添加模型路由" : "编辑模型路由").uiFont(.headline).frame(maxWidth: .infinity, alignment: .leading).padding(20)
             Divider()
             Form {
                 Section { TextField("名称", text: $name, prompt: Text("在模型选择中显示")).focused($nameFocused) }
@@ -234,7 +234,7 @@ private struct ModelRouteEditor: View {
                                 Text(store.routeMember(key)?.title ?? "已删除的模型").lineLimit(1)
                                 Spacer()
                                 if strategy == .weight {
-                                    Text(totalWeight > 0 ? "\(Int((Double(weight(key)) / Double(totalWeight) * 100).rounded()))%" : "").font(.caption).foregroundStyle(.secondary).monospacedDigit()
+                                    Text(totalWeight > 0 ? "\(Int((Double(weight(key)) / Double(totalWeight) * 100).rounded()))%" : "").uiFont(.caption).foregroundStyle(.secondary).monospacedDigit()
                                     TextField("权重", value: weightBinding(key), format: .number).labelsHidden().multilineTextAlignment(.trailing).frame(width: 44)
                                     Stepper("权重", value: weightBinding(key), in: 1...999).labelsHidden()
                                 }

@@ -1,182 +1,371 @@
 {
-  "schema_version": 4,
+  "schema_version": 5,
   "dev": {
-    "targets": {
+    "resources": {
       "lgtm": {
+        "label": "lgtm",
         "scope": "host",
         "host_key": "velune-lgtm-sfp7",
-        "probe": {
-          "kind": "exec",
-          "argv": [
-            "ssh",
-            "-o",
-            "BatchMode=yes",
-            "-o",
-            "ConnectTimeout=5",
-            "sfp7-ws.localhost",
-            "curl -fsS --max-time 5 http://127.0.0.1:30300/api/health"
-          ],
-          "timeout": 10
-        },
-        "provision": {
-          "kind": "exec",
-          "mode": "activate",
-          "argv": [
-            "ssh",
-            "-o",
-            "BatchMode=yes",
-            "sfp7-ws.localhost",
-            "cd ~/.local/share/velune-observability && docker compose --env-file private.env up -d"
-          ]
-        },
-        "stop": {
-          "kind": "exec",
-          "argv": [
-            "ssh",
-            "-o",
-            "BatchMode=yes",
-            "sfp7-ws.localhost",
-            "cd ~/.local/share/velune-observability && docker compose --env-file private.env stop"
-          ],
-          "timeout": 60
-        },
-        "readiness_timeout": 90,
-        "poll_interval": 2,
         "access": [
           "ssh sfp7-ws.localhost",
           "开发接收端；停止保留数据卷"
-        ]
+        ],
+        "observations": {
+          "ready": {
+            "label": "服务就绪",
+            "purpose": "runtime-readiness",
+            "probe": {
+              "kind": "exec",
+              "argv": [
+                "ssh",
+                "-o",
+                "BatchMode=yes",
+                "-o",
+                "ConnectTimeout=5",
+                "sfp7-ws.localhost",
+                "curl -fsS --max-time 5 http://127.0.0.1:30300/api/health"
+              ],
+              "timeout": 10
+            }
+          }
+        },
+        "actions": {
+          "ensure": {
+            "kind": "exec",
+            "intent": "复用或启动 sfp7 的 Velune LGTM 容器（保留数据卷）",
+            "traits": [
+              "runtime",
+              "provision"
+            ],
+            "effect_scope": "sfp7 的 Velune LGTM 容器（保留数据卷）",
+            "data_effect": "modify",
+            "argv": [
+              "ssh",
+              "-o",
+              "BatchMode=yes",
+              "sfp7-ws.localhost",
+              "cd ~/.local/share/velune-observability && docker compose --env-file private.env up -d"
+            ],
+            "completion": "exit",
+            "interruption": "wait",
+            "conditions": [
+              "ready"
+            ],
+            "completion_timeout": 90,
+            "poll_interval": 2,
+            "convergent": true
+          },
+          "stop": {
+            "kind": "exec",
+            "intent": "停止 sfp7 的 Velune LGTM 容器（保留数据卷）",
+            "traits": [
+              "runtime"
+            ],
+            "effect_scope": "sfp7 的 Velune LGTM 容器（保留数据卷）",
+            "data_effect": "unchanged",
+            "argv": [
+              "ssh",
+              "-o",
+              "BatchMode=yes",
+              "sfp7-ws.localhost",
+              "cd ~/.local/share/velune-observability && docker compose --env-file private.env stop"
+            ],
+            "completion": "exit",
+            "interruption": "terminate",
+            "timeout": 60
+          }
+        }
       },
       "telemetry": {
+        "label": "telemetry",
         "scope": "host",
         "host_key": "velune-lgtm-local",
-        "probe": {
-          "kind": "exec",
-          "argv": [
-            "python3",
-            "scripts/dev_services.py",
-            "telemetry",
-            "status",
-            "--host",
-            "sfp7-ws.localhost"
-          ],
-          "timeout": 10
-        },
-        "provision": {
-          "kind": "exec",
-          "mode": "activate",
-          "argv": [
-            "python3",
-            "scripts/dev_services.py",
-            "telemetry",
-            "start",
-            "--host",
-            "sfp7-ws.localhost"
-          ]
-        },
-        "stop": {
-          "kind": "exec",
-          "argv": [
-            "python3",
-            "scripts/dev_services.py",
-            "telemetry",
-            "stop",
-            "--host",
-            "sfp7-ws.localhost"
-          ],
-          "timeout": 15
-        },
-        "readiness_timeout": 120,
-        "poll_interval": 1,
         "access": [
           "http://127.0.0.1:30300",
           "OTLP/gRPC http://127.0.0.1:34317"
-        ]
+        ],
+        "observations": {
+          "ready": {
+            "label": "服务就绪",
+            "purpose": "runtime-readiness",
+            "probe": {
+              "kind": "exec",
+              "argv": [
+                "python3",
+                "scripts/dev_services.py",
+                "telemetry",
+                "status",
+                "--host",
+                "sfp7-ws.localhost"
+              ],
+              "timeout": 10
+            }
+          }
+        },
+        "actions": {
+          "ensure": {
+            "kind": "exec",
+            "intent": "复用或启动本机至 sfp7 的 Grafana／OTLP 回环隧道",
+            "traits": [
+              "connection"
+            ],
+            "effect_scope": "本机至 sfp7 的 Grafana／OTLP 回环隧道",
+            "data_effect": "unchanged",
+            "argv": [
+              "python3",
+              "scripts/dev_services.py",
+              "telemetry",
+              "start",
+              "--host",
+              "sfp7-ws.localhost"
+            ],
+            "completion": "exit",
+            "interruption": "wait",
+            "conditions": [
+              "ready"
+            ],
+            "completion_timeout": 120,
+            "poll_interval": 1,
+            "convergent": true
+          },
+          "stop": {
+            "kind": "exec",
+            "intent": "停止本机至 sfp7 的 Grafana／OTLP 回环隧道",
+            "traits": [
+              "connection"
+            ],
+            "effect_scope": "本机至 sfp7 的 Grafana／OTLP 回环隧道",
+            "data_effect": "unchanged",
+            "argv": [
+              "python3",
+              "scripts/dev_services.py",
+              "telemetry",
+              "stop",
+              "--host",
+              "sfp7-ws.localhost"
+            ],
+            "completion": "exit",
+            "interruption": "terminate",
+            "timeout": 15
+          }
+        }
       },
       "telemetry-windows": {
+        "label": "telemetry-windows",
         "scope": "host",
         "host_key": "velune-lgtm-windows",
-        "probe": {
-          "kind": "exec",
-          "argv": [
-            "python3",
-            "scripts/dev_services.py",
-            "windows",
-            "status",
-            "--host",
-            "win-ws.localhost"
-          ],
-          "timeout": 20
-        },
-        "provision": {
-          "kind": "exec",
-          "mode": "activate",
-          "argv": [
-            "python3",
-            "scripts/dev_services.py",
-            "windows",
-            "start",
-            "--host",
-            "win-ws.localhost"
-          ]
-        },
-        "stop": {
-          "kind": "exec",
-          "argv": [
-            "python3",
-            "scripts/dev_services.py",
-            "windows",
-            "stop",
-            "--host",
-            "win-ws.localhost"
-          ],
-          "timeout": 15
-        },
-        "readiness_timeout": 180,
-        "poll_interval": 2,
         "access": [
           "Windows 回环 Grafana 30300、OTLP/gRPC 34317"
-        ]
+        ],
+        "observations": {
+          "ready": {
+            "label": "服务就绪",
+            "purpose": "runtime-readiness",
+            "probe": {
+              "kind": "exec",
+              "argv": [
+                "python3",
+                "scripts/dev_services.py",
+                "windows",
+                "status",
+                "--host",
+                "win-ws.localhost"
+              ],
+              "timeout": 20
+            }
+          }
+        },
+        "actions": {
+          "ensure": {
+            "kind": "exec",
+            "intent": "复用或启动win-ws 的 Grafana／OTLP 回环隧道",
+            "traits": [
+              "connection"
+            ],
+            "effect_scope": "win-ws 的 Grafana／OTLP 回环隧道",
+            "data_effect": "unchanged",
+            "argv": [
+              "python3",
+              "scripts/dev_services.py",
+              "windows",
+              "start",
+              "--host",
+              "win-ws.localhost"
+            ],
+            "completion": "exit",
+            "interruption": "wait",
+            "conditions": [
+              "ready"
+            ],
+            "completion_timeout": 180,
+            "poll_interval": 2,
+            "convergent": true
+          },
+          "stop": {
+            "kind": "exec",
+            "intent": "停止win-ws 的 Grafana／OTLP 回环隧道",
+            "traits": [
+              "connection"
+            ],
+            "effect_scope": "win-ws 的 Grafana／OTLP 回环隧道",
+            "data_effect": "unchanged",
+            "argv": [
+              "python3",
+              "scripts/dev_services.py",
+              "windows",
+              "stop",
+              "--host",
+              "win-ws.localhost"
+            ],
+            "completion": "exit",
+            "interruption": "terminate",
+            "timeout": 15
+          }
+        }
       },
       "telemetry-android": {
+        "label": "telemetry-android",
         "scope": "host",
         "host_key": "velune-lgtm-android-usb",
-        "probe": {
-          "kind": "exec",
-          "argv": [
-            "python3",
-            "scripts/dev_services.py",
-            "android",
-            "status"
-          ],
-          "timeout": 10
-        },
-        "provision": {
-          "kind": "exec",
-          "mode": "activate",
-          "argv": [
-            "python3",
-            "scripts/dev_services.py",
-            "android",
-            "start"
-          ]
-        },
-        "stop": {
-          "kind": "exec",
-          "argv": [
-            "python3",
-            "scripts/dev_services.py",
-            "android",
-            "stop"
-          ],
-          "timeout": 15
-        },
-        "readiness_timeout": 150,
-        "poll_interval": 1,
         "access": [
           "唯一 USB Android：OTLP/gRPC http://127.0.0.1:34317"
-        ]
+        ],
+        "observations": {
+          "ready": {
+            "label": "服务就绪",
+            "purpose": "runtime-readiness",
+            "probe": {
+              "kind": "exec",
+              "argv": [
+                "python3",
+                "scripts/dev_services.py",
+                "android",
+                "status"
+              ],
+              "timeout": 10
+            }
+          }
+        },
+        "actions": {
+          "ensure": {
+            "kind": "exec",
+            "intent": "复用或启动唯一 USB Android 的 OTLP ADB reverse",
+            "traits": [
+              "connection"
+            ],
+            "effect_scope": "唯一 USB Android 的 OTLP ADB reverse",
+            "data_effect": "unchanged",
+            "argv": [
+              "python3",
+              "scripts/dev_services.py",
+              "android",
+              "start"
+            ],
+            "completion": "exit",
+            "interruption": "wait",
+            "conditions": [
+              "ready"
+            ],
+            "completion_timeout": 150,
+            "poll_interval": 1,
+            "convergent": true
+          },
+          "stop": {
+            "kind": "exec",
+            "intent": "停止唯一 USB Android 的 OTLP ADB reverse",
+            "traits": [
+              "connection"
+            ],
+            "effect_scope": "唯一 USB Android 的 OTLP ADB reverse",
+            "data_effect": "unchanged",
+            "argv": [
+              "python3",
+              "scripts/dev_services.py",
+              "android",
+              "stop"
+            ],
+            "completion": "exit",
+            "interruption": "terminate",
+            "timeout": 15
+          }
+        }
+      },
+      "macos-app": {
+        "label": "Velune Mac 构建与重装",
+        "scope": "host",
+        "host_key": "velune-macos-install",
+        "access": [
+          "/Applications/Velune.app",
+          "构建完成后正常退出旧版、安装并在后台启动新版；在 Velune 外部执行"
+        ],
+        "observations": {
+          "installed": {
+            "label": "应用已安装",
+            "probe": {
+              "kind": "exec",
+              "argv": [
+                "test",
+                "-d",
+                "/Applications/Velune.app"
+              ]
+            }
+          }
+        },
+        "actions": {
+          "build": {
+            "kind": "exec",
+            "intent": "构建并验证 Mac 应用签名",
+            "traits": [
+              "provision"
+            ],
+            "effect_scope": "当前工作树的 target/ 与 .build/",
+            "data_effect": "modify",
+            "argv": [
+              "bash",
+              "scripts/build-macos.sh",
+              "--build-only"
+            ],
+            "completion": "exit",
+            "interruption": "wait"
+          },
+          "reinstall": {
+            "kind": "exec",
+            "intent": "构建、正常退出旧版、重装并在后台启动 Velune",
+            "traits": [
+              "installation",
+              "runtime"
+            ],
+            "effect_scope": "当前工作树构建产物与 /Applications/Velune.app；退出会停止当前应用中的运行任务",
+            "data_effect": "modify",
+            "argv": [
+              "bash",
+              "scripts/reinstall-macos.sh"
+            ],
+            "completion": "exit",
+            "interruption": "wait"
+          }
+        }
       }
+    }
+  },
+  "run": {
+    "build-macos": {
+      "argv": [
+        "svc",
+        "dev",
+        "act",
+        "macos-app",
+        "build"
+      ]
+    },
+    "reinstall-macos": {
+      "argv": [
+        "svc",
+        "dev",
+        "act",
+        "macos-app",
+        "reinstall"
+      ]
     }
   }
 }

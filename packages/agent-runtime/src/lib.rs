@@ -19,6 +19,7 @@ pub use pi_session::PiSession;
 pub mod acp;
 pub mod activity;
 pub mod authentication;
+pub mod control;
 pub mod provider_inventory;
 pub mod provider_source;
 
@@ -26,6 +27,7 @@ pub mod execution;
 mod live;
 pub use live::{LiveConversation, LiveError, LiveResult};
 pub mod history;
+pub mod import;
 pub mod management;
 pub mod mcp;
 pub mod native;

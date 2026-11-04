@@ -9,7 +9,7 @@ use std::{
     io::Write,
     path::{Path, PathBuf},
 };
-pub(crate) const CURRENT_SCHEMA_VERSION: u32 = 10;
+pub(crate) const CURRENT_SCHEMA_VERSION: u32 = 11;
 /// 2: projects with folders replace per-folder names.
 const ORGANIZATION_SCHEMA_VERSION: u64 = 2;
 
@@ -112,7 +112,9 @@ impl Repository {
         match home_lock.try_lock() {
             Ok(()) => {}
             Err(TryLockError::WouldBlock) => {
-                return Err(RuntimeError::invalid("runtime home is already open"));
+                return Err(RuntimeError::invalid(
+                    "另一个 Velune 实例正在使用此状态目录；请退出它后重试",
+                ));
             }
             Err(TryLockError::Error(error)) => return Err(error.into()),
         }
@@ -194,54 +196,6 @@ impl Repository {
         commit(
             &self.home.join("generic-config.json"),
             &serde_json::to_vec_pretty(config)?,
-        )
-    }
-
-    /// Composer drafts live beside the configuration, not in it: they change
-    /// while typing and survive an ordinary configuration reset.
-    pub(crate) fn load_composer_drafts(
-        &self,
-    ) -> Result<std::collections::BTreeMap<String, String>, RuntimeError> {
-        let bytes = match fs::read(self.home.join("composer-drafts.json")) {
-            Ok(bytes) => bytes,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                return Ok(Default::default());
-            }
-            Err(error) => return Err(error.into()),
-        };
-        let value: serde_json::Value = serde_json::from_slice(&bytes)?;
-        if value["schemaVersion"].as_u64() != Some(1) {
-            return Err(RuntimeError::invalid("composer drafts schema version"));
-        }
-        let drafts: Vec<crate::config::ComposerDraft> =
-            serde_json::from_value(value["drafts"].clone())?;
-        let mut result = std::collections::BTreeMap::new();
-        for draft in drafts {
-            if draft.conversation_id.is_empty()
-                || draft.text.is_empty()
-                || result.insert(draft.conversation_id, draft.text).is_some()
-            {
-                return Err(RuntimeError::invalid("composer draft identity"));
-            }
-        }
-        Ok(result)
-    }
-
-    pub(crate) fn store_composer_drafts(
-        &self,
-        drafts: &std::collections::BTreeMap<String, String>,
-    ) -> Result<(), RuntimeError> {
-        let drafts: Vec<_> = drafts
-            .iter()
-            .map(|(id, text)| crate::config::ComposerDraft {
-                conversation_id: id.clone(),
-                text: text.clone(),
-            })
-            .collect();
-        let value = serde_json::json!({"schemaVersion":1,"drafts":drafts});
-        commit(
-            &self.home.join("composer-drafts.json"),
-            &serde_json::to_vec_pretty(&value)?,
         )
     }
 

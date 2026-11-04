@@ -19,6 +19,12 @@ impl CoreRuntime {
                 conversation_id: id.to_owned(),
                 title: listed
                     .get(id)
+                    .filter(|source| {
+                        !matches!(
+                            source.summary.title,
+                            crate::conversation::ConversationTitle::Untitled
+                        )
+                    })
                     .map_or(title, |source| source.summary.title.display_text())
                     .to_owned(),
                 failed: failures.get(id).copied().unwrap_or(false),

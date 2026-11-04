@@ -51,6 +51,7 @@ impl Reply {
 struct Upstream {
     replies: Arc<Mutex<BTreeMap<String, Reply>>>,
     hits: Arc<Mutex<Vec<String>>>,
+    requests: Arc<Mutex<Vec<Value>>>,
 }
 impl Upstream {
     async fn start() -> (Self, String) {
@@ -73,6 +74,14 @@ impl Upstream {
         let path = request.uri().path().to_owned();
         let provider = path.split('/').nth(1).unwrap_or_default().to_owned();
         upstream.hits.lock().unwrap().push(path);
+        let bytes = axum::body::to_bytes(request.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        upstream
+            .requests
+            .lock()
+            .unwrap()
+            .push(serde_json::from_slice(&bytes).unwrap());
         let reply = upstream.replies.lock().unwrap().get(&provider).cloned();
         let reply = reply.unwrap_or_else(|| Reply::json(404, json!({"error": "unscripted"})));
         let mut response = Response::builder().status(reply.status);
@@ -167,6 +176,7 @@ fn provider(id: &str, protocol: Api, upstream: &str) -> ProviderDefinition {
             context_window: None,
             max_output_tokens: None,
             reasoning_levels: None,
+            request_parameters: BTreeMap::new(),
         }],
         quota_limits: Vec::new(),
     }
@@ -246,12 +256,11 @@ async fn admission_rejections_are_recorded_in_analytics() {
         assert_eq!(response.status(), 400);
     }
     // Rejections after route resolution record the route's first member.
-    let response = post(
-        json!({"model": "velune/model/route", "stream": "yes", "messages": []}).to_string(),
-    )
-    .send()
-    .await
-    .unwrap();
+    let response =
+        post(json!({"model": "velune/model/route", "stream": "yes", "messages": []}).to_string())
+            .send()
+            .await
+            .unwrap();
     assert_eq!(response.status(), 400);
     // Unauthenticated requests are not usage and stay out of analytics.
     let response = client
@@ -281,6 +290,27 @@ async fn admission_rejections_are_recorded_in_analytics() {
     let ids: std::collections::BTreeSet<_> =
         records.iter().map(|record| &record.request_id).collect();
     assert_eq!(ids.len(), 4);
+}
+
+#[tokio::test]
+async fn request_parameters_merge_into_the_upstream_body() {
+    let protocol = Api::Chat;
+    let (upstream, address) = Upstream::start().await;
+    let mut config = gateway_config(protocol, &address);
+    config.providers[0]
+        .models
+        .iter_mut()
+        .find(|model| model.record_key == "a-model")
+        .unwrap()
+        .request_parameters
+        .insert("service_tier".into(), "priority".into());
+    upstream.reply("a", Reply::json(200, protocol.success()));
+    let runner = Runner::start(config, Arc::new(Keys), BTreeMap::new()).unwrap();
+    let answer = send(&runner, protocol, "velune/model/a-model", false).await;
+    assert_eq!(answer.status, 200);
+    let requests = upstream.requests.lock().unwrap();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0]["service_tier"], "priority");
 }
 
 #[tokio::test]
@@ -395,6 +425,59 @@ async fn quota_exhaustion_moves_to_the_next_member() {
     let answer = send(&runner, protocol, "velune/model/route", false).await;
     assert_eq!(answer.status, 200);
     assert_eq!(upstream.hits().len(), 2);
+}
+
+#[tokio::test]
+async fn translated_attempts_use_the_selected_models_rules_and_limit() {
+    for failover in [false, true] {
+        let (upstream, address) = Upstream::start().await;
+        let mut config = gateway_config(Api::Messages, &address);
+        config.providers[0].models[0].provider_model_id = "claude-sonnet-4-5".into();
+        config.providers[0].models[0].max_output_tokens = Some(2048);
+        config.providers[1].models[0].provider_model_id = "claude-opus-4-7".into();
+        config.providers[1].models[0].max_output_tokens = Some(4096);
+        if !failover {
+            config.routes[0].strategy = RoutingStrategy::Rotate;
+        }
+        let runner = Runner::start(config, Arc::new(Keys), BTreeMap::new()).unwrap();
+        let success = json!({"id":"msg", "type":"message", "role":"assistant",
+            "model":"fixture", "content":[{"type":"text", "text":"answer"}],
+            "stop_reason":"end_turn", "usage":{"input_tokens":10,"output_tokens":2}});
+        upstream.reply(
+            "a",
+            if failover {
+                Reply::json(500, json!({"error":{"message":"retry"}}))
+            } else {
+                Reply::json(200, success.clone())
+            },
+        );
+        upstream.reply("b", Reply::json(200, success));
+        for _ in 0..if failover { 1 } else { 2 } {
+            let response = reqwest::Client::new()
+                .post(format!("{}/chat/completions", runner.endpoint()))
+                .timeout(std::time::Duration::from_secs(5))
+                .bearer_auth(runner.token())
+                .json(
+                    &json!({"model":"velune/model/route", "reasoning_effort":"high",
+                    "messages":[{"role":"user","content":"fixture"}]}),
+                )
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), 200);
+            let body: Value = response.json().await.unwrap();
+            assert_eq!(body["choices"][0]["message"]["content"], "answer");
+        }
+        let requests = upstream.requests.lock().unwrap();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[0]["model"], "claude-sonnet-4-5");
+        assert_eq!(requests[0]["max_tokens"], 2048);
+        assert_eq!(requests[0]["thinking"]["type"], "enabled");
+        assert_eq!(requests[1]["model"], "claude-opus-4-7");
+        assert_eq!(requests[1]["max_tokens"], 4096);
+        assert_eq!(requests[1]["thinking"]["type"], "adaptive");
+        assert_eq!(requests[1]["output_config"]["effort"], "high");
+    }
 }
 
 fn gateway_config(protocol: Api, upstream: &str) -> GatewayConfig {

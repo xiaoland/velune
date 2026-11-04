@@ -10,9 +10,10 @@
 /.swiftpm/
 
 # Local state and secrets.
+/.pi/
+/.ryugi/
 *.sqlite*
 .env
-/svc.local.json
 __pycache__/
 
 # Android Gradle outputs.
@@ -24,3 +25,8 @@ __pycache__/
 
 # Xcode per-user state.
 /app/ios/**/xcuserdata/
+
+# svc:begin local-config sha256=0cb2591848c4e5675766aa516f16dfb9981fc52e1dcbadd8cec89b6982db927d
+svc.local.json
+AGENTS.local.md
+# svc:end local-config

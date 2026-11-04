@@ -55,7 +55,7 @@ impl Diagnostics {
                     #[cfg(feature = "remote")]
                     if matches!(error, BindingError::RemoteRequest { .. }) { return Err(error); }
                     let (kind, code, phase, detail) = error.diagnostic_parts();
-                    tracing::error!(target: "velune_bindings", event = "operation_failed", code, phase, failure_kind = kind.as_str(), elapsed_ms = started.elapsed().as_millis() as u64);
+                    tracing::error!(target: "velune_bindings", event = "operation_failed", code, phase, failure_kind = kind.as_str(), detail = %detail, elapsed_ms = started.elapsed().as_millis() as u64);
                     Err(BindingError::Diagnostic { kind, code, phase, detail, operation_id })
                 }
             }

@@ -1,9 +1,15 @@
 //! Transport-neutral, typed Velune application contracts.
 pub mod acp;
 mod api_account;
+mod billing;
+pub use billing::*;
 pub mod authentication;
 mod catalog;
 mod command;
+mod composer;
+pub use composer::*;
+mod scheduled_tasks;
+pub use scheduled_tasks::*;
 pub mod config;
 mod failure;
 mod next_turn;
@@ -20,7 +26,9 @@ pub use command::*;
 pub use config::*;
 pub use failure::*;
 pub use next_turn::*;
-pub use provider_template::{ProviderTemplate, ProviderTemplateKind, provider_templates};
+pub use provider_template::{
+    ProviderTemplate, ProviderTemplateKind, provider_subscription_template, provider_templates,
+};
 pub use records::*;
 pub use resource_library::*;
 pub use runtime_execution::*;

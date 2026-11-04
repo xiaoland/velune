@@ -50,7 +50,7 @@ struct TranscriptFindBar: View {
             TextField("在会话中查找", text: $find.query)
                 .textFieldStyle(.plain).focused($focused).frame(width: 200)
                 .onSubmit { step(NSEvent.modifierFlags.contains(.shift) ? -1 : 1, in: matches) }
-            Text(status(matches)).font(.callout).foregroundStyle(.secondary).monospacedDigit()
+            Text(status(matches)).uiFont(.callout).foregroundStyle(.secondary).monospacedDigit()
             Button { step(-1, in: matches) } label: { Image(systemName: "chevron.up") }
                 .help("上一个").accessibilityLabel("上一个").disabled(matches.isEmpty)
             Button { step(1, in: matches) } label: { Image(systemName: "chevron.down") }

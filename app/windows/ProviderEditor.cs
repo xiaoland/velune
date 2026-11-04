@@ -42,7 +42,9 @@ sealed partial class ProviderEditor : UserControl
         profile = existing?.RequestProfile ?? template?.RequestProfile ?? RequestProfile.Native;
         authenticationSource = existing?.AuthenticationSource ?? template?.AuthenticationSource ?? ProviderAuthenticationSource.ApiKey;
         quotaSource = existing?.QuotaSource ?? template?.QuotaSource ?? ProviderQuotaSource.None;
-        subscription = template?.Kind == ProviderTemplateKind.Subscription || page.IsSubscription(profile, authenticationSource, quotaSource);
+        subscription = VeluneBindingsMethods.ProviderSubscriptionTemplate(
+            existing?.ExecutionBackend ?? template?.ExecutionBackend ?? new ExecutionBackend.Http(),
+            profile, authenticationSource, quotaSource) != null;
 
         trail.ItemClicked += (_, e) =>
         {
@@ -59,6 +61,7 @@ sealed partial class ProviderEditor : UserControl
         BuildConnection();
         BuildAuthentication();
         BuildAccountQuota();
+        BuildBilling();
         BuildModels();
         BuildQuota();
 

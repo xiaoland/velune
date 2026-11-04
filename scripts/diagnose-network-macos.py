@@ -2,6 +2,7 @@
 """Read-only, bounded network-resource snapshots; no packet or address capture."""
 import argparse
 import collections
+import csv
 import datetime
 import json
 import os
@@ -47,10 +48,27 @@ def snapshot():
                 continue
             counts = sockets[int(fields[pid_column])]
             counts[protocol + "_sockets"] += 1
-            counts["recv_bytes"] += int(fields[1])
-            counts["send_bytes"] += int(fields[2])
+            counts["recv_queue_bytes"] += int(fields[1])
+            counts["send_queue_bytes"] += int(fields[2])
             if protocol == "tcp":
                 counts["tcp_" + fields[5].lower()] += 1
+    # Process-only counters: never request connection rows or address lookup.
+    traffic = command("/usr/bin/nettop", "-P", "-L", "1", "-n", "-x", "-c",
+                      "-J", "bytes_in,bytes_out,rx_dupe,rx_ooo,re-tx")
+    if isinstance(traffic, str):
+        for row in csv.reader(traffic.splitlines()):
+            if len(row) < 6 or not row[0]:
+                continue
+            _, separator, pid = row[0].rpartition(".")
+            if not separator or not pid.isdigit() or not all(value.isdigit() for value in row[1:6]):
+                errors.append({"error": "unrecognized nettop row"})
+                continue
+            counts = sockets[int(pid)]
+            for name, value in zip(("bytes_in_total", "bytes_out_total", "duplicate_bytes",
+                                    "out_of_order_bytes", "retransmitted_bytes"), row[1:6]):
+                counts[name] = int(value)
+    else:
+        errors.append(traffic)
     return {
         "time": datetime.datetime.now().astimezone().isoformat(),
         "os": platform.mac_ver()[0],

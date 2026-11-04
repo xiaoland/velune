@@ -43,6 +43,7 @@ final class Transport: @unchecked Sendable {
     let configurationChanged = PassthroughSubject<Void, Never>()
     /// This Mac's Velune home; a remote device's transport keeps its interface state here too.
     let stateDirectory: URL
+    private let remoteAttachments: Bool
     /// Opens the application this transport talks to: this Mac's core, or a paired device.
     private let open: () throws -> VeluneApplication
     let telemetryResult: Result<ClientTelemetry, Error>
@@ -50,6 +51,11 @@ final class Transport: @unchecked Sendable {
     private let lock = NSLock()
     private static let logger = Logger(subsystem: "local.velune", category: "transport")
     private var application: VeluneApplication?
+    /// A failed open is retried at most once per interval; operations in between
+    /// fail with the recorded reason instead of each opening and logging anew.
+    private static let openRetryInterval: TimeInterval = 15
+    private var openFailure: (error: Error, at: Date)?
+    private struct CachedOpenFailure: Error { let error: Error }
     private var isClosed = false
     /// From the moment quitting starts until the core closes or refuses to; apart from `lock`, which an operation holds throughout.
     private let closingLock = NSLock()
@@ -58,6 +64,7 @@ final class Transport: @unchecked Sendable {
 
     init(stateDirectory: URL, resourcesDirectory: URL) {
         self.stateDirectory = stateDirectory
+        remoteAttachments = false
         let result = Result { try ClientTelemetry(home: stateDirectory, platform: "macos", localLogs: true,
             developmentProfile: ProcessInfo.processInfo.environment["VELUNE_TELEMETRY_PROFILE"], runID: ProcessInfo.processInfo.environment["VELUNE_RUN_ID"]) }
         telemetryResult = result
@@ -69,10 +76,16 @@ final class Transport: @unchecked Sendable {
     }
 
     /// A paired device's application; the same named methods reach its core.
-    init(stateDirectory: URL, telemetry: Result<ClientTelemetry, Error>, remote: @escaping () throws -> VeluneApplication) {
+    init(stateDirectory: URL, telemetry: Result<ClientTelemetry, Error>, composerAuthority: Transport? = nil, remote: @escaping () throws -> VeluneApplication) {
         self.stateDirectory = stateDirectory
+        remoteAttachments = true
         telemetryResult = telemetry; ownsTelemetry = false
-        open = remote
+        open = {
+            let application = try remote()
+            guard let composerAuthority else { return application }
+            let authority = try composerAuthority.withApplication("composerAuthority", .reads, .conversationRead) { $0 }
+            return try application.withComposerAuthority(authority: authority)
+        }
     }
 
     func telemetryCoordinator() throws -> ClientTelemetry {
@@ -106,6 +119,13 @@ final class Transport: @unchecked Sendable {
     func setUsageDisplay(_ display: UsageDisplay) throws -> UsageDisplay { try withApplication("setUsageDisplay", .changesConfiguration, .configurationWrite) { try $0.setUsageDisplay(display: display) } }
     func setContextUsageDisplay(_ display: UsageDisplay) throws -> UsageDisplay { try withApplication("setContextUsageDisplay", .changesConfiguration, .configurationWrite) { try $0.setContextUsageDisplay(display: display) } }
     func composerDrafts() throws -> [ComposerDraft] { try withApplication("composerDrafts", .reads, .conversationRead) { try $0.composerDrafts() } }
+    func composerInputs(_ operation: ComposerInputOperation) throws -> ComposerInputUpdate {
+        let reading: Bool = if case .read = operation { true } else { false }
+        return try withApplication("composerInputs", reading ? .reads : .writes, reading ? .conversationRead : .conversationWrite) { try $0.manageComposerInputs(operation: operation) }
+    }
+    func composerOwnerID() throws -> String { try withApplication("composerOwnerID", .reads, .conversationRead) { try $0.composerOwnerId() } }
+    func uploadComposerAttachment(name: String, bytes: Data) throws -> ComposerAttachment { try withApplication("uploadComposerAttachment", .writes, .conversationWrite) { try $0.uploadComposerAttachment(name: name, bytes: bytes) } }
+    func readComposerAttachment(_ id: String) throws -> Data { try withApplication("readComposerAttachment", .reads, .conversationRead) { try $0.readComposerAttachment(attachmentId: id).bytes } }
     func setComposerDraft(conversationID: String, text: String) throws { try withApplication("setComposerDraft", .writes, .conversationWrite) { try $0.setComposerDraft(conversationId: conversationID, text: text) } }
     func composerChoices() throws -> ComposerChoices { try withApplication("composerChoices", .reads, .configurationRead) { try $0.composerChoices() } }
     func setNextTurnIntent(_ intent: VeluneBindings.NextTurnIntent) throws { try withApplication("setNextTurnIntent", .writes, .configurationWrite) { try $0.setNextTurnIntent(intent: intent) } }
@@ -153,6 +173,12 @@ final class Transport: @unchecked Sendable {
             (refresh ? try application.refreshProviderQuota(gatewayId: gatewayID, providerId: providerID) : try application.providerQuota(gatewayId: gatewayID, providerId: providerID)).observation
         }
     }
+    func providerBilling(gatewayID: String, providerID: String, refresh: Bool) throws -> ProviderBillingStatus {
+        try withApplication("providerBilling", .reads, .read) { try $0.providerBilling(gatewayId: gatewayID, providerId: providerID, refresh: refresh) }
+    }
+    func saveProviderBilling(gatewayID: String, providerID: String, configuration: BillingConfiguration?, authenticationEdit: BillingAuthenticationEdit, confirmed: Bool) throws -> ProviderBillingStatus {
+        try withApplication("saveProviderBilling", .changesConfiguration, .configurationWrite) { try $0.saveProviderBilling(gatewayId: gatewayID, providerId: providerID, configuration: configuration, authenticationEdit: authenticationEdit, confirmed: confirmed) }
+    }
     func providerQuotaHistory(gatewayID: String, providerID: String, since: Date) throws -> [QuotaHistorySample] {
         try withApplication("providerQuotaHistory", .reads, .read) { application in
             try application.providerQuotaHistory(gatewayId: gatewayID, providerId: providerID, sinceMs: Int64(since.timeIntervalSince1970 * 1000)).points.map(BindingMapping.quotaObservation)
@@ -193,33 +219,61 @@ final class Transport: @unchecked Sendable {
             let created = try application.createConversation(runtimeId: runtimeID, cwd: cwd, selection: selection)
             onCreated(created)
             guard let native = created.snapshot else { throw TransportError.rejected("运行时未返回新会话") }
-            return try application.sendTurn(sourceRuntimeId: native.conversation.runtimeId, conversationId: native.conversation.id, targetRuntimeId: runtimeID, selection: selection, turn: turn)
+            return try application.sendTurn(sourceRuntimeId: native.conversation.runtimeId, conversationId: native.conversation.id, targetRuntimeId: runtimeID, selection: selection, turn: try deliver(turn, using: application))
         }
     }
     func openConversation(runtimeID: String, conversationID: String) throws -> SnapshotResult { try withApplication("openConversation", .reads, .conversationRead) { try $0.readConversation(runtimeId: runtimeID, conversationId: conversationID) } }
     func renameConversation(runtimeID: String, conversationID: String, title: String) throws -> ConfigurationSnapshot { try withApplication("renameConversation", .writes, .conversationWrite) { try $0.renameConversation(runtimeId: runtimeID, conversationId: conversationID, title: title) } }
     func deleteConversation(runtimeID: String, conversationID: String) throws -> ConfigurationSnapshot { try withApplication("deleteConversation", .writes, .conversationWrite) { try $0.deleteConversation(runtimeId: runtimeID, conversationId: conversationID) } }
+    func scheduledTasks(_ operation: ScheduledTasksOperation) throws -> ScheduledTasksState {
+        switch operation {
+        case .list, .previewImport, .previewSchedule:
+            return try withApplication("scheduledTasks", .reads, .read) { try $0.scheduledTasks(operation: operation) }
+        default:
+            return try withApplication("scheduledTasks", .writes, .write) { try $0.scheduledTasks(operation: operation) }
+        }
+    }
     func snapshot(runtimeID: String, conversationID: String) throws -> SnapshotResult { try withApplication("snapshot", .reads, .conversationRead) { try $0.snapshot(runtimeId: runtimeID, conversationId: conversationID) } }
     func snapshotUpdate(runtimeID: String, conversationID: String, since: TranscriptCursor) throws -> SnapshotUpdate { try withApplication("snapshotUpdate", .reads, .conversationRead) { try $0.snapshotUpdate(runtimeId: runtimeID, conversationId: conversationID, since: since) } }
     func messagePayloads(runtimeID: String, conversationID: String, messageIDs: [String]) throws -> [DeliveredMessage] { try withApplication("messagePayloads", .reads, .conversationRead) { try $0.messagePayloads(runtimeId: runtimeID, conversationId: conversationID, messageIds: messageIDs) } }
-    func sendTurn(sourceRuntimeID: String, conversationID: String, targetRuntimeID: String, selection: ModelSelection?, turn: ComposedTurn) throws -> SnapshotResult { try withApplication("sendTurn", .writes, .send) { try $0.sendTurn(sourceRuntimeId: sourceRuntimeID, conversationId: conversationID, targetRuntimeId: targetRuntimeID, selection: selection, turn: turn) } }
+    func sendTurn(sourceRuntimeID: String, conversationID: String, targetRuntimeID: String, selection: ModelSelection?, turn: ComposedTurn) throws -> SnapshotResult { try withApplication("sendTurn", .writes, .send) { try $0.sendTurn(sourceRuntimeId: sourceRuntimeID, conversationId: conversationID, targetRuntimeId: targetRuntimeID, selection: selection, turn: try deliver(turn, using: $0)) } }
     /// The runtime's own models first, then the managed models; every entry
     /// carries the levels the runtime accepts for it.
     func runtimeModels(runtimeID: String) throws -> [RuntimeModel] { try withApplication("runtimeModels", .reads, .configurationRead) { try $0.runtimeModels(runtimeId: runtimeID) } }
-    func steerTurn(runtimeID: String, conversationID: String, turn: ComposedTurn) throws -> SnapshotResult { try withApplication("steerTurn", .writes, .send) { try $0.steerTurn(runtimeId: runtimeID, conversationId: conversationID, turn: turn) } }
+    func steerTurn(runtimeID: String, conversationID: String, turn: ComposedTurn) throws -> SnapshotResult { try withApplication("steerTurn", .writes, .send) { try $0.steerTurn(runtimeId: runtimeID, conversationId: conversationID, turn: try deliver(turn, using: $0)) } }
     func compactConversation(runtimeID: String, conversationID: String, selection: ModelSelection?) throws -> SnapshotResult {
         try withApplication("compactConversation", .writes, .compact) { try $0.compactConversation(runtimeId: runtimeID, conversationId: conversationID, selection: selection) }
     }
     func resumeTurn(runtimeID: String, conversationID: String, selection: ModelSelection?, effort: String?, permissionMode: String?) throws -> SnapshotResult {
         try withApplication("resumeTurn", .writes, .send) { try $0.resumeTurn(runtimeId: runtimeID, conversationId: conversationID, selection: selection, effort: effort, permissionMode: permissionMode) }
     }
-    func sendQueue(runtimeID: String, conversationID: String, operation: SendQueueOperation) throws -> SnapshotResult { try withApplication("sendQueue", .writes, .conversationWrite) { try $0.sendQueue(runtimeId: runtimeID, conversationId: conversationID, operation: operation) } }
-    func editMessage(runtimeID: String, conversationID: String, messageID: String, placement: EditPlacement, selection: ModelSelection?, turn: ComposedTurn) throws -> SnapshotResult { try withApplication("editMessage", .writes, .conversationWrite) { try $0.editMessage(runtimeId: runtimeID, conversationId: conversationID, messageId: messageID, placement: placement, selection: selection, turn: turn) } }
+    private func deliver(_ turn: ComposedTurn, using application: VeluneApplication) throws -> ComposedTurn {
+        guard remoteAttachments else { return turn }
+        var delivered = turn
+        delivered.attachments = try turn.attachments.map { path in
+            guard path.hasPrefix("/") else { return path }
+            let url = URL(fileURLWithPath: path)
+            return try application.uploadAttachment(name: url.lastPathComponent, bytes: Data(contentsOf: url)).reference
+        }
+        return delivered
+    }
+    func sendQueue(runtimeID: String, conversationID: String, operation: SendQueueOperation) throws -> SnapshotResult {
+        try withApplication("sendQueue", .writes, .conversationWrite) { application in
+            let delivered: SendQueueOperation
+            if case let .add(source, target, selection, turn) = operation { delivered = .add(sourceRuntimeId: source, targetRuntimeId: target, selection: selection, turn: try deliver(turn, using: application)) }
+            else { delivered = operation }
+            return try application.sendQueue(runtimeId: runtimeID, conversationId: conversationID, operation: delivered)
+        }
+    }
+    func editMessage(runtimeID: String, conversationID: String, messageID: String, placement: EditPlacement, selection: ModelSelection?, turn: ComposedTurn) throws -> SnapshotResult { try withApplication("editMessage", .writes, .conversationWrite) { try $0.editMessage(runtimeId: runtimeID, conversationId: conversationID, messageId: messageID, placement: placement, selection: selection, turn: try deliver(turn, using: $0)) } }
+    func forkConversation(runtimeID: String, conversationID: String, messageID: String) throws -> SnapshotResult { try withApplication("forkConversation", .writes, .conversationWrite) { try $0.forkConversation(runtimeId: runtimeID, conversationId: conversationID, messageId: messageID) } }
     func cancel(runtimeID: String, conversationID: String) throws -> SnapshotResult { try withApplication("cancel", .writes, .cancel) { try $0.cancel(runtimeId: runtimeID, conversationId: conversationID) } }
     func openSideChat(runtimeID: String, conversationID: String, selection: ModelSelection?, effort: String?, permissionMode: String?) throws -> SnapshotResult {
         try withApplication("openSideChat", .writes, .send) { try $0.openSideChat(runtimeId: runtimeID, conversationId: conversationID, selection: selection, effort: effort, permissionMode: permissionMode) }
     }
-    func sendSideChat(sideChatID: String, text: String) throws -> SnapshotResult { try withApplication("sendSideChat", .writes, .send) { try $0.sendSideChat(sideChatId: sideChatID, text: text) } }
+    func sendSideChat(sideChatID: String, runtimeID: String, selection: ModelSelection?, turn: ComposedTurn) throws -> SnapshotResult {
+        try withApplication("sendSideChat", .writes, .send) { try $0.sendSideChat(sideChatId: sideChatID, targetRuntimeId: runtimeID, selection: selection, turn: try deliver(turn, using: $0)) }
+    }
     func closeSideChat(sideChatID: String) throws { try withApplication("closeSideChat", .writes, .cancel) { try $0.closeSideChat(sideChatId: sideChatID) } }
     func stopSubAgents(runtimeID: String, conversationID: String) throws -> SnapshotResult { try withApplication("stopSubAgents", .writes, .cancel) { try $0.stopSubAgents(runtimeId: runtimeID, conversationId: conversationID) } }
     func workingBranch(runtimeID: String, conversationID: String) throws -> String? { try withApplication("workingBranch", .reads, .conversationRead) { try $0.workingBranch(runtimeId: runtimeID, conversationId: conversationID) } }
@@ -266,13 +320,28 @@ final class Transport: @unchecked Sendable {
                 lock.lock(); defer { lock.unlock() }
                 guard !isClosed else { throw TransportError.operation(operation, .closed) }
                 guard effect != .reads || !isClosing else { throw TransportError.operation(operation, .quitting) }
-                if application == nil { application = try open() }
+                if application == nil {
+                    if let failure = openFailure, Date().timeIntervalSince(failure.at) < Self.openRetryInterval {
+                        throw CachedOpenFailure(error: failure.error)
+                    }
+                    do {
+                        application = try open()
+                        openFailure = nil
+                    } catch {
+                        openFailure = (error, Date())
+                        throw error
+                    }
+                }
                 return try body(application!.withTraceContext(carrier: carrier))
             }
             if effect == .changesConfiguration { configurationChanged.send() }
             return value
         }
-        catch { logFailure(operation: operation, localCorrelation: correlation, error: error); throw TransportError.operation(operation, map(error)) }
+        catch {
+            // A cached open failure was already logged when the open itself failed.
+            if let cached = error as? CachedOpenFailure { throw TransportError.operation(operation, map(cached.error)) }
+            logFailure(operation: operation, localCorrelation: correlation, error: error); throw TransportError.operation(operation, map(error))
+        }
     }
 
     private func map(_ error: Error) -> TransportError {

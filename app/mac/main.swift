@@ -1,12 +1,13 @@
 import AppKit
+import Combine
 import SwiftUI
 import VeluneBindings
 
 /// The focused pane of the key window, and its window.
-struct ConversationCommandTarget {
-    let store: ConversationStore
-    let send: () -> Void
+@MainActor struct ConversationCommandTarget {
     let window: ConversationWindowModel
+    var store: ConversationStore { window.commandTab.store }
+    func send() { window.send() }
 }
 private struct ConversationCommandTargetKey: FocusedValueKey {
     typealias Value = ConversationCommandTarget
@@ -28,13 +29,14 @@ private struct Observing<Object: ObservableObject, Content: View>: View {
 
 @MainActor
 struct ConversationCommands: Commands {
+    @Environment(\.openWindow) private var openWindow
     @FocusedValue(\.conversationCommands) private var focusedTarget
     @ObservedObject private var pinning = WindowPinning.shared
     @ObservedObject private var shortcuts = KeyboardShortcutSettings.shared
     /// A floating panel or tool window is no scene: while one is key, its window is the target.
     private var target: ConversationCommandTarget? {
         focusedTarget ?? ConversationWindowModel.owning(detached: NSApp.keyWindow).map { window in
-            ConversationCommandTarget(store: window.focused.store, send: window.focused.send, window: window)
+            ConversationCommandTarget(window: window)
         }
     }
     /// Items as `object` stands, or as they are without it.
@@ -43,19 +45,19 @@ struct ConversationCommands: Commands {
     }
     /// Items as the key window, its focused pane and that pane's tab stand.
     @ViewBuilder private func followingFocus<Content: View>(@ViewBuilder _ content: @escaping () -> Content) -> some View {
-        following(target?.window) { following(target?.window.focusedPane) { following(target?.window.focused, content) } }
+        following(target?.window) { following(target?.window.focusedPane) { following(target?.window.commandTab, content) } }
     }
     /// Items as the focused tab's conversation stands as well.
     @ViewBuilder private func followingConversation<Content: View>(@ViewBuilder _ content: @escaping () -> Content) -> some View {
-        followingFocus { following(target?.window.focused.store) { following(target?.window.focused.composer, content) } }
+        followingFocus { following(target?.window.commandTab.store) { following(target?.window.composerContext().model, content) } }
     }
 
     var body: some Commands {
         CommandGroup(replacing: .newItem) {
             followingConversation {
-                Button("新建会话") { target?.store.createConversation() }
+                Button("新建会话") { target?.window.createConversation() }
                     .keyboardShortcut(shortcuts[.newConversation])
-                    .disabled(target == nil || target?.store.isLoading == true)
+                    .disabled(target == nil || target?.window.canPerform(.newConversation) != true)
             }
             item(.openConversation)
             Button("新建标签页") { target?.window.openInNewTab() }
@@ -64,6 +66,7 @@ struct ConversationCommands: Commands {
             Button("新建窗口") { target?.window.openWindow?(.workspace, WindowSeed()) }
                 .keyboardShortcut(shortcuts[.newWindow])
                 .disabled(target?.window.openWindow == nil)
+            item(.reopenClosedTab)
         }
         // Not in place of the save items: an app without documents shows none of that group.
         // Above the system's Close, which keeps ⌘W too, so the menu takes these first.
@@ -71,7 +74,8 @@ struct ConversationCommands: Commands {
             Divider()
             // A conversation window closes its shown tab; the last one closes the window. Any other window closes.
             Button("关闭标签页") {
-                if let window = ConversationWindowModel.owning(window: NSApp.keyWindow) { window.closeTab(window.focused.id) }
+                let keyWindow = NSApp.keyWindow
+                if let window = ConversationWindowModel.owning(window: keyWindow?.sheetParent ?? keyWindow) { window.perform(.closeTab) }
                 else { NSApp.keyWindow?.performClose(nil) }
             }
             .keyboardShortcut(shortcuts[.closeTab])
@@ -89,19 +93,22 @@ struct ConversationCommands: Commands {
         }
         CommandMenu("会话") {
             followingConversation {
-                Button(target?.window.focused.submission.action == .queue ? "排队" : "发送消息") { target?.send() }
+                Button(target?.window.composerContext().submission().action == .queue ? "排队" : "发送消息") { target?.send() }
                     .keyboardShortcut(.return, modifiers: .command)
-                    .disabled(target?.window.focused.submission.canSubmitDraft != true)
+                    .disabled(target?.window.canTargetConversation != true || target?.window.composerContext().submission().canSubmitDraft != true)
                 // ⌘Return also steers from the composer when Return sends; the menu keeps the key both modes share.
-                Button("插入本轮") { target?.window.focused.steer() }
+                Button("插入本轮") { target?.window.composerContext().steer() }
                     .keyboardShortcut(.return, modifiers: [.command, .option])
-                    .disabled(target?.window.focused.canSteer != true)
-                Button("继续") { target?.window.focused.resume() }
+                    .disabled(target?.window.composerContext().canSteer != true)
+                Button("继续") { target?.window.resume() }
                     .keyboardShortcut(shortcuts[.continueTurn])
-                    .disabled(target?.window.focused.submission.canResume != true)
+                    .disabled(target?.window.canTargetConversation != true || target?.window.composerContext().submission().canResume != true)
                 item(.compactContext)
                 item(.sideChat)
                 item(.attach)
+                if let window = target?.window {
+                    PreservedInputMenu(window: window, tab: window.commandTab, model: window.composerContext().model)
+                }
                 Divider()
                 item(.chooseRuntime)
                 item(.chooseModel)
@@ -165,6 +172,8 @@ struct ConversationCommands: Commands {
             Divider()
         }
         CommandGroup(before: .sidebar) { followingFocus {
+            Button("本机定时任务…") { openWindow(id: "scheduled-tasks") }
+            Divider()
             item(.commandPalette)
             Divider()
             item(.focusTranscript)
@@ -224,6 +233,8 @@ struct ConversationWindow: View {
     @StateObject private var window: ConversationWindowModel
     /// The window's panes as last arranged, restored with the window.
     @SceneStorage("windowLayout") private var savedLayout = ""
+    @SceneStorage("windowIdentity") private var windowIdentity = UUID().uuidString
+    @State private var startsWindowed: Bool
     let seed: WindowSeed?
     @Environment(\.openWindow) private var openWindow
     let previewEmpty: Bool
@@ -232,6 +243,7 @@ struct ConversationWindow: View {
         // A paired device's window shows that device's core through the same interface.
         let target = seed?.device.flatMap { DeviceHub.shared?.store(for: $0) } ?? application
         _window = StateObject(wrappedValue: ConversationWindowModel(application: target, kind: kind, device: seed?.device))
+        _startsWindowed = State(initialValue: seed.map { WindowPresentation.windowed.contains($0.id) } ?? false)
         self.seed = seed
         self.previewEmpty = previewEmpty
         self.previewSettings = previewSettings
@@ -239,10 +251,21 @@ struct ConversationWindow: View {
     var body: some View {
         VeluneRootView(window: window, store: window.list, tab: window.focused, focused: window.focused.store,
                        previewEmpty: previewEmpty, previewSettings: previewSettings)
+            .applicationAppearance()
+            // Explicitly opened windows start as ordinary windows even when
+            // the source is full screen. Re-enable full screen after presentation.
+            .windowFullScreenBehavior(startsWindowed ? .disabled : .automatic)
             .onAppear {
-                window.openWindow = { [openWindow] in openWindow(id: $0.sceneID, value: $1) }
+                if let seed { WindowPresentation.windowed.remove(seed.id) }
+                window.openWindow = { [openWindow] kind, seed in
+                    WindowPresentation.windowed.insert(seed.id)
+                    openWindow(id: kind.sceneID, value: seed)
+                }
+                DispatchQueue.main.async {
+                    if startsWindowed, window.window?.isKeyWindow == true { startsWindowed = false }
+                }
                 let saved = savedLayout.data(using: .utf8).flatMap { try? JSONDecoder().decode(SavedWindowLayout.self, from: $0) }
-                window.start(restoring: saved, seed: seed)
+                window.start(restoring: saved, seed: seed, persistenceID: windowIdentity)
                 // Development check of split panes without driving the interface.
                 if CommandLine.arguments.contains("--check-split-panes"), !window.isSplit { window.split(.horizontal); window.openInNewTab(); window.split(.vertical) }
                 if CommandLine.arguments.contains("--check-tool-windows") { window.tools.move(.list, to: .floating); window.tools.move(.outline, to: .window); window.tools.move(.composer, to: .floating) }
@@ -250,10 +273,33 @@ struct ConversationWindow: View {
                 if CommandLine.arguments.contains("--check-edit-message") { window.focused.checkEditMessage() }
                 if CommandLine.arguments.contains("--check-list-actions") { window.checkListActions() }
                 if CommandLine.arguments.contains("--check-side-chat") { window.checkSideChat() }
+                if CommandLine.arguments.contains("--check-composer-state") { window.checkComposerState() }
+                if CommandLine.arguments.contains("--check-group-creation") { window.checkGroupCreation() }
+                if CommandLine.arguments.contains("--check-composer-recovery-read") { window.checkComposerRecovery() }
                 if CommandLine.arguments.contains("--check-dock-areas") { window.tools.move(.outline, to: .docked(.left)); window.tools.move(.list, to: .docked(.right)); window.tools.move(.composer, to: .docked(.bottom)) }
+                if window.application.isPreview, CommandLine.arguments.contains("--check-composer-minimum") {
+                    window.tools.bottomHeight = Double(ComposerTextView.minimumHeight + 54)
+                    UserDefaults.standard.set(true, forKey: "NSQuitAlwaysKeepsWindows")
+                }
+                if window.application.isPreview, CommandLine.arguments.contains("--check-composer-sharing") { window.checkComposerSharing() }
+            }
+            .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { note in
+                guard startsWindowed, let shown = note.object as? NSWindow, shown === window.window else { return }
+                DispatchQueue.main.async { startsWindowed = false }
             }
             .onChange(of: window.savedLayout) { _, layout in
                 if let data = try? JSONEncoder().encode(layout), let text = String(data: data, encoding: .utf8) { savedLayout = text }
+                window.persistWorkspace()
+            }
+            .onReceive(window.composerDrafts.changes.debounce(for: .milliseconds(350), scheduler: RunLoop.main)) { _ in
+                if let data = try? JSONEncoder().encode(window.savedLayout), let text = String(data: data, encoding: .utf8) { savedLayout = text }
+            }
+            .onReceive(NotificationCenter.default.publisher(for: NSWindow.willCloseNotification)) { note in
+                if let closed = note.object as? NSWindow, closed === window.window,
+                   let data = try? JSONEncoder().encode(window.savedLayout), let text = String(data: data, encoding: .utf8) { savedLayout = text; window.persistWorkspace() }
+            }
+            .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
+                if let data = try? JSONEncoder().encode(window.savedLayout), let text = String(data: data, encoding: .utf8) { savedLayout = text }
             }
             // A conversation link opens in a window already showing Velune.
             .handlesExternalEvents(preferring: [ConversationLink.scheme, "agents"], allowing: [ConversationLink.scheme, "agents"])
@@ -292,6 +338,7 @@ final class VeluneApplicationDelegate: NSObject, NSApplicationDelegate {
             guard alert.runModal() == .alertSecondButtonReturn else { return .terminateCancel }
         }
         store.rememberedToolLayout.flush()
+        for window in ConversationWindowModel.openWindows { window.persistWorkspace() }
         terminationPending = true
         store.shutdown(stoppingWork: stoppingWork) { [weak self] closed in
             // Preview and unopened cores can complete synchronously. Reply only
@@ -314,8 +361,14 @@ struct VeluneApp: App {
     private let previewSettings: Bool
 
     init() {
+        if CommandLine.arguments.contains("--check-composer-ownership") { composerOwnershipCheck() }
+        if CommandLine.arguments.contains("--check-new-tab") { composerOwnershipCheck() }
+        if CommandLine.arguments.contains("--check-message-experience") { messageExperienceChecks() }
         let preview = Bundle.main.bundleIdentifier == "local.velune.visual-preview" || CommandLine.arguments.contains { $0.hasPrefix("--preview") }
         let applicationStore = DeviceStore(preview: preview)
+        AppearancePreferences.shared.load(home: preview ? nil : applicationStore.transport?.stateDirectory) { [weak applicationStore] detail in
+            applicationStore?.recordProblem(detail, source: "外观设置")
+        }
         _store = StateObject(wrappedValue: applicationStore)
         previewEmpty = CommandLine.arguments.contains("--preview-empty")
         previewSettings = CommandLine.arguments.contains("--preview-settings")
@@ -370,6 +423,9 @@ struct VeluneApp: App {
         Window("问题", id: "problems") {
             ProblemsView(store: store).frame(minWidth: 600, minHeight: 320)
         }.defaultSize(width: 760, height: 480)
+        Window("本机定时任务", id: "scheduled-tasks") {
+            ScheduledTasksView(store: store).frame(minWidth: 860, minHeight: 560)
+        }.defaultSize(width: 1040, height: 700)
         Window("资源库", id: "resource-library") {
             ResourceLibraryView(store: store).frame(minWidth: 820, minHeight: 500)
         }.defaultSize(width: 1040, height: 680)
@@ -378,6 +434,7 @@ struct VeluneApp: App {
         }.defaultSize(width: 860, height: 640)
         Settings {
             SettingsView(store: store)
+                .applicationAppearance()
         }
     }
 }

@@ -151,6 +151,7 @@ pub(super) struct WaitConversation {
 }
 
 pub(super) enum Operation {
+    Scheduled(Box<crate::ScheduledTasksOperation>),
     ListAgents,
     XurlInstructions,
     ResolveUri(xurl::ResolveUri),
@@ -364,6 +365,9 @@ impl CoreRuntime {
     fn collaborate(&mut self, ticket: &str, operation: Operation) -> Result<Served, RuntimeError> {
         let caller = self.caller(ticket)?;
         match operation {
+            Operation::Scheduled(operation) => self
+                .scheduled_tasks(*operation)
+                .and_then(|state| Ok(Served::Now(serde_json::to_value(state)?))),
             Operation::XurlInstructions => {
                 Ok(Served::Now(json!({"instructions":include_str!("xurl.md")})))
             }

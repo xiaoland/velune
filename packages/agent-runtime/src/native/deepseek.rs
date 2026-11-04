@@ -442,6 +442,11 @@ impl NativeSession {
                     StopReason::Refusal => self.notice("DeepSeek 拒绝本轮请求。"),
                     _ => return Err(Error::new("DeepSeek prompt 响应缺少可识别的结束原因")),
                 }
+                if let Some(snapshot) = &mut self.snapshot {
+                    snapshot
+                        .executions
+                        .finish(crate::acp::prompt_outcome(&response.stop_reason));
+                }
                 self.finish_turn(RunState::Idle)?;
             }
         }

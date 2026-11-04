@@ -1,9 +1,12 @@
 //! Codex app-server 0.159.3 control and projection, independent of Pi.
 use super::*;
+pub(super) const NATIVE_RETRY_DETAIL: &str = "\nCodex 正在自动重试。";
 
 /// What only a Codex app-server session tracks.
 #[derive(Default)]
 pub(super) struct State {
+    pub(super) title: super::codex_title::Title,
+    pub(super) retry: super::codex_retry::Retry,
     pub(super) cancel_pending: bool,
     /// Last error of the active turn, if its completion omits details.
     pub(super) turn_error: Option<Value>,
@@ -15,6 +18,43 @@ pub(super) struct State {
     /// The developer instructions Codex's configuration gives, which a side
     /// chat's own follow.
     pub(super) developer_instructions: Option<String>,
+    pub(super) side_context: Option<String>,
+    /// The speed tier of the selected speed variant, sent per turn; `None`
+    /// is Codex's own default.
+    pub(super) service_tier: Option<String>,
+}
+
+/// Adapter-owned selection IDs keep upstream IDs and tiers unambiguous.
+const SPEED_PREFIX: &str = "velune:codex-speed:";
+
+fn speed_id(base: &str, tier: &str) -> String {
+    format!("{SPEED_PREFIX}{}", json!([base, tier]))
+}
+
+pub(super) fn split_speed(model_id: &str) -> (String, Option<String>) {
+    if let Some(encoded) = model_id.strip_prefix(SPEED_PREFIX)
+        && let Ok((base, tier)) = serde_json::from_str::<(String, String)>(encoded)
+        && !base.is_empty()
+        && !tier.is_empty()
+    {
+        return (base, Some(tier));
+    }
+    (model_id.to_owned(), None)
+}
+
+/// A speed tier as the catalog reports it; variants keep id and name.
+#[derive(Clone, serde::Deserialize)]
+struct CatalogTier {
+    id: String,
+    name: String,
+}
+
+/// A speed variant reads as its base model and tier; anything else is itself.
+pub(crate) fn speed_model_name(model_id: &str) -> String {
+    match split_speed(model_id) {
+        (base, Some(tier)) => format!("{base} · {tier}"),
+        (id, None) => id,
+    }
 }
 
 impl NativeSession {
@@ -51,6 +91,17 @@ impl NativeSession {
         self.codex.developer_instructions = source["config"]["developer_instructions"]
             .as_str()
             .map(str::to_owned);
+        self.codex.title.mcp_servers = source["config"]["mcp_servers"]
+            .as_object()
+            .into_iter()
+            .flat_map(|servers| servers.keys().cloned())
+            .chain(
+                self.config
+                    .mcp_servers
+                    .iter()
+                    .map(|server| server.name.clone()),
+            )
+            .collect();
         self.native_provider = Some(
             source["config"]["model_provider"]
                 .as_str()
@@ -163,11 +214,23 @@ impl NativeSession {
                     .collect(),
             );
         }
+        if let Some(context) = &self.codex.side_context {
+            options["developerInstructions"] =
+                json!(match self.codex.developer_instructions.as_deref() {
+                    Some(existing) if !existing.trim().is_empty() =>
+                        format!("{existing}\n\n{context}"),
+                    _ => context.clone(),
+                });
+        }
         options
     }
     pub(super) fn codex_create(&mut self, cwd: Option<&Path>, runtime_id: &str) -> Result<()> {
         self.codex_capture_provider(cwd)?;
-        let result = self.rpc.request("thread/start", &self.codex_options(cwd))?;
+        let mut options = self.codex_options(cwd);
+        if self.side {
+            options["ephemeral"] = json!(true);
+        }
+        let result = self.rpc.request("thread/start", &options)?;
         if self.native_selection.is_none()
             && self.config.gateway.is_none()
             && let Some(model) = result["model"].as_str()
@@ -186,6 +249,10 @@ impl NativeSession {
             .map(PathBuf::from)
             .or_else(|| cwd.map(Path::to_path_buf));
         self.replace_snapshot(id, resolved_cwd.as_deref(), runtime_id, Vec::new());
+        self.codex.title.eligible = !self.side
+            && result["thread"]["name"]
+                .as_str()
+                .is_none_or(|name| name.trim().is_empty());
         if let Some(snapshot) = self.snapshot.as_mut() {
             // app-server Thread dates are Unix seconds, including before the
             // first rollout is persisted. Preserve that native creation date.
@@ -209,7 +276,14 @@ impl NativeSession {
         let mut options = self.codex_options(cwd);
         options["threadId"] = json!(id);
         options["excludeTurns"] = json!(false);
-        let result = self.rpc.request("thread/resume", &options)?;
+        let result = self
+            .rpc
+            .request_classified("thread/resume", &options, |error| {
+                (error["code"].as_i64() == Some(-32600)
+                    && error["message"].as_str()
+                        == Some(format!("thread {id} already has an active writer").as_str()))
+                .then_some("control_held_elsewhere")
+            })?;
         if result["thread"]["id"].as_str() != Some(id) {
             return Err(Error::new("Codex 恢复了不同的会话"));
         }
@@ -228,6 +302,14 @@ impl NativeSession {
             .map(PathBuf::from)
             .or_else(|| cwd.map(Path::to_path_buf));
         self.replace_snapshot(id, resolved_cwd.as_deref(), runtime_id, history);
+        let metadata = self
+            .rpc
+            .request("thread/read", &json!({"threadId":id,"includeTurns":false}))?;
+        let receipt = super::codex_history::read_state(metadata.get("readState"), runtime_id, id)?;
+        if let Some(snapshot) = &mut self.snapshot {
+            snapshot.conversation.title = super::codex_history::thread_title(&result["thread"]);
+            snapshot.conversation.native_read_state = receipt;
+        }
         if let Some(turns) = result["thread"]["turns"].as_array() {
             if let Some(snapshot) = &mut self.snapshot {
                 snapshot.follow_up.can_resume = turns.last().is_some_and(|turn| {
@@ -276,11 +358,48 @@ impl NativeSession {
                 if let Some(message) = project_turn_error(turn)? {
                     self.message(message);
                 }
+                let maintenance = turn["items"].as_array().is_some_and(|items| {
+                    !items.is_empty()
+                        && items.iter().all(|item| item["type"] == "contextCompaction")
+                });
+                if let Some(snapshot) = &mut self.snapshot {
+                    let ids = snapshot.messages[start..]
+                        .iter()
+                        .map(|m| m.id.clone())
+                        .collect();
+                    let kind = if maintenance {
+                        ExecutionKind::ContextMaintenance
+                    } else {
+                        ExecutionKind::UserTurn
+                    };
+                    let resumed = !snapshot.messages[start..]
+                        .iter()
+                        .any(|m| m.role == MessageRole::User)
+                        && kind == ExecutionKind::UserTurn;
+                    if resumed
+                        && let Some(record) = snapshot
+                            .executions
+                            .records
+                            .iter_mut()
+                            .rev()
+                            .find(|r| r.kind == kind)
+                    {
+                        record.message_ids.extend(ids);
+                        record.outcome = turn_outcome(turn["status"].as_str());
+                    } else {
+                        snapshot.executions.history(
+                            turn["id"].as_str().unwrap_or_default().into(),
+                            kind,
+                            ids,
+                            turn_outcome(turn["status"].as_str()),
+                        );
+                    }
+                }
             }
         }
         Ok(())
     }
-    pub(super) fn codex_send(&mut self, input: &crate::TurnInput) -> Result<()> {
+    pub(super) fn codex_turn_params(&self, input: &crate::TurnInput) -> Result<Value> {
         let id = self
             .native_id
             .as_deref()
@@ -307,21 +426,39 @@ impl NativeSession {
             "effort": input.effort,
             "input": items
         });
+        // A speed variant's tier rides each turn of its selection; a gateway
+        // turn's serving belongs to the gateway's own model record.
+        if self.config.gateway.is_none()
+            && let Some(tier) = &self.codex.service_tier
+        {
+            let field = if self.config.kind == NativeKind::Codex166 {
+                "serviceTierForTurn"
+            } else {
+                "serviceTier"
+            };
+            params[field] = json!(tier);
+        }
         if let Some((approval, sandbox, reviewer)) = policy {
             params["approvalPolicy"] = json!(approval);
             params["sandboxPolicy"] = sandbox;
             params["approvalsReviewer"] = json!(reviewer);
         }
+        Ok(params)
+    }
+    pub(super) fn codex_send(&mut self, input: &crate::TurnInput) -> Result<()> {
+        let params = self.codex_turn_params(input)?;
         let result = self.rpc.request("turn/start", &params)?;
         let turn_id = result["turn"]["id"]
             .as_str()
             .ok_or_else(|| Error::new("Codex 未返回轮次身份"))?;
         self.turn_id = Some(turn_id.into());
         self.codex.turn_error = None;
+        self.codex.retry.native = false;
         if let Some(snapshot) = &mut self.snapshot {
             snapshot.follow_up.can_resume = false;
         }
         self.running();
+        self.codex_start_title(input);
         Ok(())
     }
     /// `turn/steer` names the turn it expects to be running; Codex refuses
@@ -375,9 +512,71 @@ impl NativeSession {
                     .as_str()
                     .ok_or_else(|| Error::new("Codex 未返回 fork 会话身份"))?
                     .to_owned();
-                self.native_id = None;
-                self.codex_open(&fork, cwd.as_deref(), &runtime_id, Vec::new())?;
+                self.codex_adopt_fork(&thread, &fork, cwd.as_deref(), &runtime_id)?;
+                // Editing immediately sends the replacement as one operation.
+                // Acquire only the fork's writer before application admission;
+                // an asynchronous control probe must not interrupt that send.
+                self.prepare_turn(None, None)?;
             }
+        }
+        Ok(())
+    }
+    /// `thread/fork` copies the thread through the turn the message at
+    /// `index` belongs to; the copy resumes here and the original thread is
+    /// left as it is.
+    pub(super) fn codex_fork(&mut self, index: usize) -> Result<()> {
+        let snapshot = self.snapshot.as_ref().expect("forked snapshot");
+        let thread = self
+            .native_id
+            .clone()
+            .ok_or_else(|| Error::new("Codex 没有活动会话"))?;
+        // A message steered into a turn has no point of its own; the fork
+        // covers the turn it belongs to.
+        let turn = snapshot.messages[..=index]
+            .iter()
+            .rev()
+            .filter(|message| message.role == MessageRole::User)
+            .find_map(|message| message.branch_point.clone())
+            .ok_or_else(|| Error::new("这条消息没有对应的 Codex 轮次"))?;
+        let cwd = snapshot.conversation.cwd.as_deref().map(PathBuf::from);
+        let runtime_id = snapshot.conversation.runtime_id.clone();
+        let mut options = self.codex_options(cwd.as_deref());
+        options["threadId"] = json!(thread);
+        options["lastTurnId"] = json!(turn);
+        options["excludeTurns"] = json!(true);
+        let result = self.rpc.request("thread/fork", &options)?;
+        let fork = result["thread"]["id"]
+            .as_str()
+            .ok_or_else(|| Error::new("Codex 未返回 fork 会话身份"))?
+            .to_owned();
+        self.codex_adopt_fork(&thread, &fork, cwd.as_deref(), &runtime_id)?;
+        Ok(())
+    }
+
+    /// The app-server that loaded the source also owns its writer after
+    /// forking. Unsubscribing can leave it resident; ending this short-lived
+    /// process releases both writers, and the next turn opens only the fork.
+    fn codex_adopt_fork(
+        &mut self,
+        source: &str,
+        fork: &str,
+        cwd: Option<&Path>,
+        runtime_id: &str,
+    ) -> Result<()> {
+        self.native_id = None;
+        self.codex_open(fork, cwd, runtime_id, Vec::new())?;
+        self.shutdown()?;
+        self.restart_required = true;
+        if self.gateway_turn && self.config.kind == NativeKind::Codex {
+            // 0.159's resume override also touches its persisted provider.
+            // Put both source and fork back as at the end of a gateway turn,
+            // while keeping the desired injection for the fork's next turn.
+            self.codex.ran_threads.insert(source.into());
+            let desired = self.config.gateway.take();
+            let result = self.codex_restore_provider();
+            self.config.gateway = desired;
+            self.gateway_turn = false;
+            result?;
         }
         Ok(())
     }
@@ -411,20 +610,44 @@ impl NativeSession {
                 let id = model["model"]
                     .as_str()
                     .ok_or_else(|| Error::new("Codex 模型缺少身份"))?;
-                let efforts = model["supportedReasoningEfforts"]
+                let efforts: Vec<String> = model["supportedReasoningEfforts"]
                     .as_array()
                     .into_iter()
                     .flatten()
                     .filter_map(|effort| effort["reasoningEffort"].as_str().map(str::to_owned))
                     .collect();
-                catalog.push(ModelOption {
-                    model: RuntimeModel {
-                        provider_id: None,
-                        id: id.into(),
-                        name: model["displayName"].as_str().unwrap_or(id).into(),
+                let name = model["displayName"].as_str().unwrap_or(id).to_owned();
+                // Speed tiers are serving variants of the model, listed as
+                // models of their own: selecting one asks for that tier.
+                let tiers = model
+                    .get("serviceTiers")
+                    .cloned()
+                    .map(serde_json::from_value::<Vec<CatalogTier>>)
+                    .transpose()
+                    .map_err(|error| Error::new(format!("Codex 速度档位目录格式无效：{error}")))?
+                    .unwrap_or_default();
+                catalog.push((
+                    ModelOption {
+                        model: RuntimeModel {
+                            provider_id: None,
+                            id: id.into(),
+                            name: name.clone(),
+                        },
+                        reasoning_efforts: efforts.clone(),
                     },
-                    reasoning_efforts: efforts,
-                });
+                    tiers
+                        .into_iter()
+                        .filter(|tier| !tier.id.is_empty())
+                        .map(|tier| ModelOption {
+                            model: RuntimeModel {
+                                provider_id: None,
+                                id: speed_id(id, &tier.id),
+                                name: format!("{name} · {}", tier.name),
+                            },
+                            reasoning_efforts: efforts.clone(),
+                        })
+                        .collect::<Vec<_>>(),
+                ));
             }
             let Some(next) = page["nextCursor"].as_str() else {
                 break;
@@ -435,25 +658,38 @@ impl NativeSession {
             cursor = json!(next);
         }
         let Some(configured) = configured else {
-            return Ok(catalog);
+            return Ok(catalog
+                .into_iter()
+                .flat_map(|(base, variants)| std::iter::once(base).chain(variants))
+                .collect());
         };
-        let efforts = catalog
+        let found = catalog
             .iter()
-            .find(|option| option.model.id == configured)
-            .map(|option| option.reasoning_efforts.clone())
+            .find(|(option, _)| option.model.id == configured);
+        let (efforts, tiers) = found
+            .map(|(option, variants)| (option.reasoning_efforts.clone(), variants.clone()))
             .unwrap_or_default();
-        catalog.retain(|option| option.model.id != configured);
+        catalog.retain(|(option, _)| option.model.id != configured);
+        let mut catalog: Vec<ModelOption> = catalog
+            .into_iter()
+            .flat_map(|(base, variants)| std::iter::once(base).chain(variants))
+            .collect();
+        let provider = Some(provider);
         catalog.insert(
             0,
             ModelOption {
                 model: RuntimeModel {
-                    provider_id: Some(provider),
+                    provider_id: provider.clone(),
                     id: configured.clone(),
-                    name: configured,
+                    name: configured.clone(),
                 },
-                reasoning_efforts: efforts,
+                reasoning_efforts: efforts.clone(),
             },
         );
+        for (offset, mut variant) in tiers.into_iter().enumerate() {
+            variant.model.provider_id = provider.clone();
+            catalog.insert(offset + 1, variant);
+        }
         Ok(catalog)
     }
     pub(super) fn codex_compact(&mut self) -> Result<()> {
@@ -511,6 +747,12 @@ impl NativeSession {
         }
     }
     pub(super) fn codex_handle_record(&mut self, record: Value) -> Result<()> {
+        if self.codex_title_record(&record) {
+            return Ok(());
+        }
+        if self.codex_recovery_record(&record)? {
+            return Ok(());
+        }
         let method = record["method"].as_str().unwrap_or_default();
         let params = &record["params"];
         if let Some(thread) = params["threadId"].as_str()
@@ -555,7 +797,27 @@ impl NativeSession {
         if record.get("id").is_some() && record.get("method").is_some() {
             return self.codex_request(&record, false);
         }
+        if let Some(turn) = params["turnId"].as_str()
+            && self
+                .snapshot
+                .as_ref()
+                .and_then(|s| s.executions.current.as_ref())
+                .is_some()
+            && self.turn_id.as_deref() != Some(turn)
+        {
+            return Ok(());
+        }
         match method {
+            "thread/readState/changed" => {
+                if let Some(snapshot) = &mut self.snapshot {
+                    snapshot.conversation.native_read_state = super::codex_history::read_state(
+                        params.get("readState"),
+                        &snapshot.context_runtime_id,
+                        self.native_id.as_deref().unwrap_or_default(),
+                    )?;
+                    snapshot.revision += 1;
+                }
+            }
             "turn/started" if self.compacting => {
                 self.turn_id = params["turn"]["id"].as_str().map(str::to_owned);
                 if self.codex.cancel_pending {
@@ -572,6 +834,9 @@ impl NativeSession {
                         .find(|message| Some(message.id.as_str()) == params["item"]["id"].as_str())
                 }) {
                     message.completed = method == "item/completed";
+                    if message.timestamp_unix_ms.is_none() {
+                        message.timestamp_unix_ms = params["startedAtMs"].as_i64();
+                    }
                     for block in &mut message.blocks {
                         if let MessageBlock::ContextCompaction { text } = block {
                             *text = if message.completed {
@@ -618,6 +883,9 @@ impl NativeSession {
                     && Some(turn) == self.turn_id.as_deref()
                 {
                     let status = params["turn"]["status"].as_str();
+                    if !matches!(status, Some("completed" | "failed" | "interrupted")) {
+                        return Err(Error::new("Codex 轮次缺少有效结束状态"));
+                    }
                     if !self.compacting
                         && let Some(snapshot) = &mut self.snapshot
                     {
@@ -634,13 +902,20 @@ impl NativeSession {
                         } else {
                             error
                         };
-                        let error =
+                        let mut error =
                             project_error(turn, error, false, turn_completed_at(&params["turn"]))?;
+                        let retry = self.codex_retry_transient(&mut error);
                         self.codex_error_message(error);
-                    } else if let Some(snapshot) = &mut self.snapshot {
-                        let id = error_id(turn);
-                        snapshot.messages.retain(|message| message.id != id);
+                        if retry {
+                            self.codex.turn_error = None;
+                            return Ok(());
+                        }
                     }
+                    let exhausted = matches!(
+                        self.codex.retry.phase,
+                        super::codex_retry::Phase::Ended(Some(RuntimeRetry::Exhausted { .. }))
+                    );
+                    self.codex_end_recovery(turn_outcome(status), exhausted);
                     self.codex.turn_error = None;
                     self.finish_turn(if status == Some("failed") {
                         RunState::Failed
@@ -702,6 +977,7 @@ impl NativeSession {
                     let retrying = params["willRetry"]
                         .as_bool()
                         .ok_or_else(|| Error::new("Codex 错误通知缺少重试状态"))?;
+                    self.codex.retry.native |= retrying;
                     let error = project_error(turn, &params["error"], retrying, None)?;
                     self.codex_error_message(error);
                     self.codex.turn_error = Some(params["error"].clone());
@@ -719,9 +995,12 @@ impl NativeSession {
                 .blocks
                 .into_iter()
                 .map(|block| match block {
-                    MessageBlock::Notice { text } => MessageBlock::ContextCompaction {
-                        text: format!("上下文压缩失败：{text}"),
-                    },
+                    MessageBlock::Notice { text }
+                    | MessageBlock::RuntimeFailure { detail: text, .. } => {
+                        MessageBlock::ContextCompaction {
+                            text: format!("上下文压缩失败：{text}"),
+                        }
+                    }
                     block => block,
                 })
                 .collect();
@@ -809,6 +1088,7 @@ impl NativeSession {
             .or_else(|| self.native_provider.clone())
             .ok_or_else(|| Error::new("Codex 原生提供商未知，未能恢复会话的提供商"))?;
         let mut rpc = history_client_at(
+            self.config.kind.runtime_kind(),
             &self.config.binary,
             &self.config.agent_dir,
             &self.config.execution,
@@ -1029,6 +1309,7 @@ pub enum ThreadChange<'a> {
 /// Native thread metadata management without model selection or gateway startup.
 pub fn manage_thread(binary: &Path, home: &Path, id: &str, change: ThreadChange) -> Result<()> {
     manage_thread_at(
+        crate::version::RuntimeKind::Codex,
         binary,
         home,
         id,
@@ -1038,6 +1319,7 @@ pub fn manage_thread(binary: &Path, home: &Path, id: &str, change: ThreadChange)
     )
 }
 pub fn manage_thread_at(
+    kind: crate::version::RuntimeKind,
     binary: &Path,
     home: &Path,
     id: &str,
@@ -1045,7 +1327,7 @@ pub fn manage_thread_at(
     execution: &crate::execution::ExecutionTarget,
     os_home: Option<&Path>,
 ) -> Result<()> {
-    let mut rpc = history_client_at(binary, home, execution, os_home)?;
+    let mut rpc = history_client_at(kind, binary, home, execution, os_home)?;
     let result = match change {
         ThreadChange::Rename(name) => {
             rpc.request("thread/name/set", &json!({"threadId":id,"name":name}))
@@ -1058,6 +1340,7 @@ pub fn manage_thread_at(
     result.map(|_| ())
 }
 pub(super) fn history_client_at(
+    kind: crate::version::RuntimeKind,
     binary: &Path,
     home: &Path,
     execution: &crate::execution::ExecutionTarget,
@@ -1066,13 +1349,7 @@ pub(super) fn history_client_at(
     if !binary.is_absolute() || !home.is_absolute() {
         return Err(Error::new("Codex 历史配置必须使用绝对路径"));
     }
-    crate::version::check_version_at(
-        crate::version::RuntimeKind::Codex,
-        binary,
-        None,
-        execution,
-        os_home,
-    )?;
+    crate::version::check_version_at(kind, binary, None, execution, os_home)?;
     let mut command = crate::process_tree::command(binary);
     command.arg("app-server");
     command.env("CODEX_HOME", home);
@@ -1080,6 +1357,15 @@ pub(super) fn history_client_at(
     rpc.request("initialize", &json!({"clientInfo":{"name":"velune","version":"0.1.0-beta.1"},"capabilities":{"experimentalApi":true}}))?;
     rpc.notify("initialized", &json!({}))?;
     Ok(rpc)
+}
+
+pub(super) fn turn_outcome(status: Option<&str>) -> Option<TurnOutcome> {
+    match status {
+        Some("completed") => Some(TurnOutcome::Completed),
+        Some("failed") => Some(TurnOutcome::Failed),
+        Some("interrupted") => Some(TurnOutcome::Cancelled),
+        _ => None,
+    }
 }
 
 fn error_id(turn: &str) -> String {
@@ -1136,18 +1422,44 @@ fn project_error(
         );
     }
     if retrying {
-        text.push_str("\nCodex 正在自动重试。");
+        text.push_str(NATIVE_RETRY_DETAIL);
     }
     Ok(Message {
         id: error_id(turn),
         role: MessageRole::System,
         timestamp_unix_ms,
-        blocks: vec![MessageBlock::Notice { text }],
-        completed: !retrying,
+        blocks: vec![MessageBlock::RuntimeFailure {
+            failure: failure_kind(error),
+            detail: text,
+            retry: retrying.then_some(RuntimeRetry::Native),
+        }],
+        completed: true,
         turn_settings: None,
         turn_usage: None,
         branch_point: None,
     })
+}
+
+/// Codex distinguishes temporary frequency limits from account usage caps.
+/// Status codes are forwarded on the transport error variants, not the root.
+fn failure_kind(error: &Value) -> RuntimeFailureKind {
+    let info = &error["codexErrorInfo"];
+    if info == "serverOverloaded" {
+        return RuntimeFailureKind::ServerOverloaded;
+    }
+    if info == "rateLimitExceeded"
+        || [
+            "httpConnectionFailed",
+            "responseStreamConnectionFailed",
+            "responseStreamDisconnected",
+            "responseTooManyFailedAttempts",
+        ]
+        .iter()
+        .any(|variant| info[variant]["httpStatusCode"] == 429)
+    {
+        return RuntimeFailureKind::RateLimited;
+    }
+    RuntimeFailureKind::Other
 }
 
 pub(super) fn project_item(item: &Value, runtime_id: &str) -> Option<Message> {
@@ -1336,7 +1648,7 @@ pub(super) fn project_item(item: &Value, runtime_id: &str) -> Option<Message> {
         completed: true,
         id: id.into(),
         role: kind,
-        timestamp_unix_ms: None,
+        timestamp_unix_ms: item["startedAtMs"].as_i64(),
         blocks,
     })
 }
@@ -1390,9 +1702,91 @@ impl Default for CodexThread {
     }
 }
 
+/// 0.166 resumes a saved provider only when it matches startup selection.
+/// A change of provider requires a new context; never rewrite saved metadata
+/// or overlay a native provider's credentials with gateway configuration.
+pub fn resume_provider_matches(
+    config: &crate::history::HistoryConfig,
+    id: &str,
+    managed: bool,
+    cwd: Option<&str>,
+) -> Result<bool> {
+    let mut rpc = history_client_at(
+        config.kind,
+        &config.binary,
+        &config.home,
+        &config.execution,
+        config.os_home.as_deref(),
+    )?;
+    let metadata = rpc.request("thread/read", &json!({"threadId":id,"includeTurns":false}))?;
+    let saved = metadata["thread"]["modelProvider"]
+        .as_str()
+        .ok_or_else(|| Error::new("Codex 会话缺少提供商身份"))?;
+    let selected = if managed {
+        "velune".to_owned()
+    } else {
+        let config = rpc.request("config/read", &json!({"includeLayers":false,"cwd":cwd}))?;
+        config["config"]["model_provider"]
+            .as_str()
+            .unwrap_or("openai")
+            .to_owned()
+    };
+    Ok(saved == selected)
+}
+
+pub fn update_read_state(
+    config: &crate::history::HistoryConfig,
+    runtime: &str,
+    receipt: &NativeReadState,
+    read: bool,
+) -> Result<NativeReadState> {
+    let id = receipt
+        .conversation_id
+        .strip_prefix(&format!("{runtime}:"))
+        .ok_or_else(|| Error::new("原生已读状态不属于此运行时"))?;
+    let mut rpc = history_client_at(
+        config.kind,
+        &config.binary,
+        &config.home,
+        &config.execution,
+        config.os_home.as_deref(),
+    )?;
+    let result = rpc.request_classified(
+        "thread/readState/update",
+        &json!({"threadId":id,"expectedRevision":receipt.revision,
+        "operation":{"type":if read {"read"} else {"unread"}}}),
+        |error| {
+            (error["code"] == -32600 && error["data"]["reason"] == "readStateConflict")
+                .then_some("read_state_conflict")
+        },
+    )?;
+    super::codex_history::read_state(result.get("readState"), runtime, id)?
+        .ok_or_else(|| Error::new("Codex 未返回已读状态"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn speed_variants_split_only_the_adapter_own_encoding() {
+        assert_eq!(
+            split_speed(&speed_id("gpt-5.1-codex", "fast")),
+            ("gpt-5.1-codex".to_owned(), Some("fast".into()))
+        );
+        for ordinary in ["gpt-5.1-codex", "gpt-5.1-codex~", "~fast", "a~b~c"] {
+            assert_eq!(
+                split_speed(ordinary),
+                (ordinary.to_owned(), None),
+                "{ordinary}"
+            );
+        }
+        assert_eq!(
+            speed_model_name(&speed_id("gpt-5.1-codex", "fast")),
+            "gpt-5.1-codex · fast"
+        );
+        assert_eq!(speed_model_name("gpt-5.1-codex"), "gpt-5.1-codex");
+    }
 
     #[test]
     fn error_projection_preserves_details_and_distinguishes_retry() {
@@ -1404,17 +1798,27 @@ mod tests {
         .unwrap()
         .unwrap();
         assert_eq!(retry.id, failed.id);
-        assert!(!retry.completed);
+        assert!(retry.completed);
         assert!(failed.completed);
         assert_eq!(failed.timestamp_unix_ms, Some(123_000));
-        let MessageBlock::Notice { text } = &failed.blocks[0] else {
+        let MessageBlock::RuntimeFailure {
+            detail: text,
+            failure: RuntimeFailureKind::ServerOverloaded,
+            ..
+        } = &failed.blocks[0]
+        else {
             panic!()
         };
         assert_eq!(
             text,
             "Selected model is at capacity. Please try a different model.\nsynthetic request detail\nCodex 错误类型：serverOverloaded"
         );
-        let MessageBlock::Notice { text } = &retry.blocks[0] else {
+        let MessageBlock::RuntimeFailure {
+            detail: text,
+            retry: Some(RuntimeRetry::Native),
+            ..
+        } = &retry.blocks[0]
+        else {
             panic!()
         };
         assert!(text.ends_with("Codex 正在自动重试。"));

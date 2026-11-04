@@ -1,4 +1,4 @@
-// Pi 1.0.2 owns this source's credential store and refresh lock. Only request
+// Pi owns this source's credential store and refresh lock. Only request
 // auth crosses the helper boundary; refresh credentials never leave the SDK.
 import { stat, realpath } from "node:fs/promises";
 import { isAbsolute } from "node:path";

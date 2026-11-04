@@ -8,10 +8,12 @@ package main
 import "C"
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"io"
 	"runtime/cgo"
 	"strings"
 	"unsafe"
@@ -30,6 +32,7 @@ type session struct {
 	terminal, finishSeen, finalized, usageSeen          bool
 	inputKnown, outputKnown, cacheKnown, reasoningKnown bool
 	cacheCreationKnown                                  bool
+	claudeUsage                                         map[string]any
 }
 
 type command struct {
@@ -133,7 +136,12 @@ func decode(format types.RelayFormat, data []byte, request, stream bool) (any, e
 }
 func object(data []byte) (map[string]any, error) {
 	var value map[string]any
-	if err := json.Unmarshal(data, &value); err != nil || value == nil {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	if err := decoder.Decode(&value); err != nil || value == nil {
+		return nil, errors.New("object")
+	}
+	if decoder.Decode(new(any)) != io.EOF {
 		return nil, errors.New("object")
 	}
 	return value, nil
@@ -314,9 +322,11 @@ func run(handle C.uintptr_t, cmd command) (reply, error) {
 			}
 		}
 		if cmd.From == types.RelayFormatOpenAI {
-			if count, ok := body["n"].(float64); ok && count > 1 {
-				body["n"] = 1
-				compatibilityNotes = append(compatibilityNotes, note{"first_choice_only", "n"})
+			if count, ok := body["n"].(json.Number); ok {
+				if n, err := count.Int64(); err == nil && n > 1 {
+					body["n"] = 1
+					compatibilityNotes = append(compatibilityNotes, note{"first_choice_only", "n"})
+				}
 			}
 		}
 		cmd.Body, err = json.Marshal(body)
@@ -392,6 +402,31 @@ func run(handle C.uintptr_t, cmd command) (reply, error) {
 		}
 		if err := s.observe(value, true); err != nil {
 			return reply{}, err
+		}
+		if s.to == types.RelayFormatClaude {
+			// RelayKit currently projects message_delta usage in isolation. Carry
+			// forward only omitted fields, including split cache creation counts;
+			// explicit zero counts from the latest event remain authoritative.
+			for _, owner := range []map[string]any{child(value, "message"), value} {
+				usage := child(owner, "usage")
+				if usage == nil {
+					continue
+				}
+				for key, previous := range s.claudeUsage {
+					if _, present := usage[key]; !present {
+						usage[key] = previous
+					} else if key == "cache_creation" {
+						if current := child(usage, key); current != nil {
+							for field, count := range child(s.claudeUsage, key) {
+								if _, present := current[field]; !present {
+									current[field] = count
+								}
+							}
+						}
+					}
+				}
+				s.claudeUsage = usage
+			}
 		}
 		data, err := json.Marshal(value)
 		if err != nil {

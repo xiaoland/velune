@@ -3,6 +3,7 @@ use crate::local::{Focus, Login, TurnRequest};
 use crate::*;
 use base64::Engine;
 use std::io::Read;
+use velune_application_api::{ComposerContextKey, ComposerInputOperation};
 
 const MAX_ATTACHMENT_BYTES: usize = 20 * 1024 * 1024;
 impl Application {
@@ -12,9 +13,7 @@ impl Application {
         remote: bool,
         view: &ClientViewId,
     ) -> Result<Response, Failure> {
-        if remote {
-            self.resolve_remote_attachments(&mut command, view)?;
-        }
+        self.resolve_input_attachments(&mut command, view, remote)?;
         if let Command::ReplyRuntimeInteraction {
             runtime_id,
             conversation_id,
@@ -63,6 +62,21 @@ impl Application {
     ) -> Result<Response, Error> {
         let application = self;
         Ok(match command {
+            Command::ReadComposerOwner => {
+                Response::ReadComposerOwner(application.composer.owner_id())
+            }
+            Command::ManageComposerInputs { operation } => {
+                Response::ManageComposerInputs(application.composer.update(operation)?)
+            }
+            Command::UploadComposerAttachment { name, bytes } => {
+                Response::UploadComposerAttachment(application.composer.upload(name, bytes)?)
+            }
+            Command::ReadComposerAttachment { attachment_id } => Response::ReadComposerAttachment(
+                application.composer.read_attachment(&attachment_id)?,
+            ),
+            Command::ManageScheduledTasks { operation } => {
+                Response::ManageScheduledTasks(application.runtime.scheduled_tasks(operation)?)
+            }
             Command::ReleaseView => Response::ReleaseView,
             Command::ListResourceTemplates => {
                 Response::ListResourceTemplates(application.runtime.serve(
@@ -224,33 +238,32 @@ impl Application {
                     |core| core.set_conversation_browser_preferences(preferences),
                 )?)
             }
-            Command::ReadComposerDrafts => Response::ReadComposerDrafts(
-                application
-                    .runtime
-                    .serve(Focus::None, Login::Allows, |core| core.composer_drafts())?,
-            ),
+            Command::ReadComposerDrafts => {
+                Response::ReadComposerDrafts(application.composer.legacy_drafts())
+            }
             Command::SetComposerDraft {
                 conversation_id,
                 text,
             } => {
                 application
-                    .runtime
-                    .serve(Focus::None, Login::Blocks, |runtime| {
-                        runtime.set_composer_draft(conversation_id, text)
-                    })?;
+                    .composer
+                    .legacy_edit(conversation_id, Some(text), None)?;
                 Response::SetComposerDraft
             }
-            Command::ReadComposerChoices => Response::ReadComposerChoices(
-                application
-                    .runtime
-                    .serve(Focus::None, Login::Blocks, |core| core.composer_choices())?,
-            ),
+            Command::ReadComposerChoices => {
+                let mut choices =
+                    application
+                        .runtime
+                        .serve(Focus::None, Login::Blocks, |core| core.composer_choices())?;
+                choices.conversations = application.composer.legacy_intents();
+                Response::ReadComposerChoices(choices)
+            }
             Command::SetNextTurnIntent { intent } => {
-                application
-                    .runtime
-                    .serve(Focus::None, Login::Blocks, |runtime| {
-                        runtime.set_next_turn_intent(intent)
-                    })?;
+                application.composer.legacy_edit(
+                    intent.conversation_id.clone(),
+                    None,
+                    Some(intent),
+                )?;
                 Response::SetNextTurnIntent
             }
             Command::SetRuntimeComposerChoices { choices } => {
@@ -457,11 +470,22 @@ impl Application {
             Command::DeleteConversation {
                 runtime_id,
                 conversation_id,
-            } => Response::DeleteConversation(application.runtime.serve(
-                Focus::Conversation(conversation_id.clone()),
-                Login::Blocks,
-                |core| core.delete_conversation(&runtime_id, &conversation_id),
-            )?),
+            } => {
+                let result = application.runtime.serve(
+                    Focus::Conversation(conversation_id.clone()),
+                    Login::Blocks,
+                    |core| core.delete_conversation(&runtime_id, &conversation_id),
+                )?;
+                application
+                    .composer
+                    .operate(ComposerInputOperation::Forget {
+                        context: ComposerContextKey::Conversation {
+                            owner_id: application.composer.owner_id(),
+                            conversation_id,
+                        },
+                    })?;
+                Response::DeleteConversation(result)
+            }
             Command::ReadSnapshot {
                 runtime_id,
                 conversation_id,
@@ -574,6 +598,15 @@ impl Application {
                     )
                 },
             )?),
+            Command::ForkConversation {
+                runtime_id,
+                conversation_id,
+                message_id,
+            } => Response::ForkConversation(application.runtime.serve(
+                Focus::Conversation(conversation_id.clone()),
+                Login::Blocks,
+                |core| core.fork_message(&runtime_id, &conversation_id, &message_id),
+            )?),
             Command::Cancel {
                 runtime_id,
                 conversation_id,
@@ -601,13 +634,16 @@ impl Application {
                     )
                 },
             )?),
-            Command::SendSideChat { side_chat_id, text } => {
-                Response::SendSideChat(application.runtime.serve(
-                    Focus::Existing(side_chat_id.clone()),
-                    Login::Blocks,
-                    |core| core.send_side_chat(&side_chat_id, text),
-                )?)
-            }
+            Command::SendSideChat {
+                side_chat_id,
+                target_runtime_id,
+                selection,
+                turn,
+            } => Response::SendSideChat(application.runtime.serve(
+                Focus::Existing(side_chat_id.clone()),
+                Login::Blocks,
+                |core| core.send_side_chat(&side_chat_id, &target_runtime_id, selection, turn),
+            )?),
             Command::CloseSideChat { side_chat_id } => {
                 application.runtime.serve(
                     Focus::Existing(side_chat_id.clone()),
@@ -680,6 +716,34 @@ impl Application {
                         preview_token,
                         selections,
                         replace_existing,
+                    )
+                },
+            )?),
+            Command::ReadProviderBilling {
+                gateway_id,
+                provider_id,
+                refresh,
+            } => Response::ReadProviderBilling(application.runtime.serve(
+                Focus::None,
+                Login::Allows,
+                |core| core.provider_billing(gateway_id, provider_id, refresh),
+            )?),
+            Command::SaveProviderBilling {
+                gateway_id,
+                provider_id,
+                configuration,
+                authentication_edit,
+                confirmed,
+            } => Response::SaveProviderBilling(application.runtime.serve(
+                Focus::None,
+                Login::Allows,
+                |core| {
+                    core.save_provider_billing(
+                        gateway_id,
+                        provider_id,
+                        configuration,
+                        authentication_edit,
+                        confirmed,
                     )
                 },
             )?),
@@ -918,13 +982,26 @@ impl Application {
         })
     }
 
-    fn resolve_remote_attachments(
+    fn resolve_input_attachments(
         &self,
         command: &mut Command,
         view: &ClientViewId,
+        remote: bool,
     ) -> Result<(), Failure> {
         let resolve = |turn: &mut ComposedTurn| -> Result<(), Failure> {
             for reference in &mut turn.attachments {
+                if let Some(id) = reference.strip_prefix("composer:") {
+                    *reference = self
+                        .composer
+                        .attachment_path(id)
+                        .map_err(Failure::from)?
+                        .to_string_lossy()
+                        .into_owned();
+                    continue;
+                }
+                if !remote && !reference.starts_with("attachment:") {
+                    continue;
+                }
                 let Some((owner, path)) = self
                     .uploaded_attachments
                     .get(reference)
@@ -939,15 +1016,8 @@ impl Application {
             }
             Ok(())
         };
-        match command {
-            Command::SendTurn { turn, .. }
-            | Command::SteerTurn { turn, .. }
-            | Command::EditMessage { turn, .. } => resolve(turn)?,
-            Command::EditSendQueue {
-                operation: SendQueueOperation::Add { turn, .. },
-                ..
-            } => resolve(turn)?,
-            _ => {}
+        if let Some(turn) = command.composed_turn_mut() {
+            resolve(turn)?;
         }
         Ok(())
     }
@@ -1027,6 +1097,7 @@ impl Application {
             | Response::ResumeTurn(result)
             | Response::CompactConversation(result)
             | Response::EditMessage(result)
+            | Response::ForkConversation(result)
             | Response::Cancel(result)
             | Response::StopSubAgents(result)
             | Response::OpenSideChat(result)

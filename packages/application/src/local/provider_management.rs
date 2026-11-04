@@ -2,6 +2,91 @@
 use super::*;
 use crate::provider_configuration::ProviderEdit;
 impl CoreRuntime {
+    /// A managed session can route to any model in its captured gateway,
+    /// including models used by native sub-agents. Native-only sessions do not use it.
+    pub(super) fn session_uses_gateway(&self, gateway_id: &str) -> bool {
+        self.session.gateway_runner.is_some()
+            && self
+                .session
+                .execution_runtime_id
+                .as_ref()
+                .is_some_and(|id| {
+                    self.runtime_instances
+                        .iter()
+                        .any(|runtime| &runtime.id == id && runtime.gateway_id == gateway_id)
+                })
+    }
+
+    pub(super) fn ensure_gateway_idle(&mut self, gateway_id: &str) -> Result<(), RuntimeError> {
+        self.for_each_session(|core| {
+            if core.session.executing() && core.session_uses_gateway(gateway_id) {
+                return Err(RuntimeError::invalid(
+                    "此网关仍有会话或后台任务正在使用，请停止后再修改提供商、模型或认证",
+                ));
+            }
+            Ok(())
+        })
+    }
+
+    pub(super) fn invalidate_gateway_execution(
+        &mut self,
+        gateway_id: &str,
+    ) -> Result<bool, RuntimeError> {
+        let mut invalidated = false;
+        self.for_each_session(|core| {
+            if core.session_uses_gateway(gateway_id) {
+                core.invalidate_execution()?;
+                invalidated = true;
+            }
+            Ok(())
+        })?;
+        Ok(invalidated)
+    }
+
+    pub(crate) fn provider_billing(
+        &self,
+        gateway_id: String,
+        provider_id: String,
+        refresh: bool,
+    ) -> Result<crate::ProviderBillingStatus, RuntimeError> {
+        let provider = self
+            .gateways
+            .iter()
+            .find(|g| g.id == gateway_id)
+            .and_then(|g| g.providers.iter().find(|p| p.id == provider_id))
+            .ok_or_else(|| RuntimeError::invalid("提供商不存在"))?;
+        Ok(self.billing.query(&gateway_id, provider, refresh))
+    }
+    pub(crate) fn save_provider_billing(
+        &mut self,
+        gateway_id: String,
+        provider_id: String,
+        configuration: Option<crate::BillingConfiguration>,
+        authentication_edit: crate::BillingAuthenticationEdit,
+        confirmed: bool,
+    ) -> Result<crate::ProviderBillingStatus, RuntimeError> {
+        let gateway_index = self
+            .gateways
+            .iter()
+            .position(|g| g.id == gateway_id)
+            .ok_or_else(|| RuntimeError::invalid("网关不存在"))?;
+        let provider_index = self.gateways[gateway_index]
+            .providers
+            .iter()
+            .position(|p| p.id == provider_id)
+            .ok_or_else(|| RuntimeError::invalid("提供商不存在"))?;
+        let provider = &self.gateways[gateway_index].providers[provider_index];
+        let previous = provider.billing.clone();
+        let mut pending = previous.clone();
+        pending.apply(provider, configuration, authentication_edit, confirmed)?;
+        self.gateways[gateway_index].providers[provider_index].billing = pending;
+        if let Err(error) = self.persist() {
+            self.gateways[gateway_index].providers[provider_index].billing = previous;
+            return Err(error);
+        }
+        self.billing.configure(&self.gateways);
+        self.provider_billing(gateway_id, provider_id, false)
+    }
     pub(crate) fn provider_quota(
         &self,
         gateway_id: String,
@@ -98,17 +183,19 @@ impl CoreRuntime {
         gateway_id: &str,
         edit: ProviderEdit,
     ) -> Result<crate::GatewayUpdate, RuntimeError> {
-        if self.execution_active()
-            || self
-                .authentication
-                .as_ref()
-                .is_some_and(authentication::Login::is_running)
+        self.ensure_gateway_idle(gateway_id)?;
+        if self
+            .authentication
+            .as_ref()
+            .is_some_and(authentication::Login::is_running)
             || self
                 .subscription_login
                 .as_ref()
                 .is_some_and(crate::provider_login::Login::is_running)
         {
-            return Err(RuntimeError::invalid("runtime or login is busy"));
+            return Err(RuntimeError::invalid(
+                "请先完成登录，再修改提供商或模型配置",
+            ));
         }
         let previous = self.gateways.clone();
         let previous_runtimes = self.runtime_instances.clone();
@@ -141,26 +228,8 @@ impl CoreRuntime {
                 cleanup_failed |= crate::claude_cli::remove(&self.options.home_directory,credential_id).is_err();
             }
         }
-        let reconnect = self.next_turn_runtime_id.as_ref().is_some_and(|id| {
-            let before = previous_runtimes.iter().find(|runtime| &runtime.id == id);
-            let after = self
-                .runtime_instances
-                .iter()
-                .find(|runtime| &runtime.id == id);
-            before != after
-                || before.is_some_and(|runtime| {
-                    previous
-                        .iter()
-                        .find(|gateway| gateway.id == runtime.gateway_id)
-                        != self
-                            .gateways
-                            .iter()
-                            .find(|gateway| gateway.id == runtime.gateway_id)
-                })
-        });
-        if reconnect {
-            self.for_each_session(Self::invalidate_execution)?;
-        }
+        let reconnect =
+            previous != self.gateways && self.invalidate_gateway_execution(gateway_id)?;
         if cleanup_failed {
             tracing::warn!(event = "subscription_cleanup_failed");
             return Err(RuntimeError::invalid(

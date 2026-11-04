@@ -4,12 +4,12 @@ import Markdown
 /// Typography shared by measurement and display. Both sides must read the same
 /// values, otherwise a measured row height would not match its drawn text.
 enum TranscriptTypography {
-    static let body = NSFont.systemFont(ofSize: NSFont.systemFontSize)
-    static let callout = NSFont.systemFont(ofSize: NSFont.systemFontSize - 1)
-    static let caption = NSFont.systemFont(ofSize: NSFont.smallSystemFontSize - 1)
-    static let code = NSFont.monospacedSystemFont(ofSize: NSFont.systemFontSize - 1, weight: .regular)
-    static let lineSpacing: CGFloat = 2
-    static let blockSpacing: CGFloat = 8
+    static var body: NSFont { NSFont.systemFont(ofSize: NSFont.systemFontSize * AppearancePreferences.rendering.read().messages.scale) }
+    static var callout: NSFont { NSFont.systemFont(ofSize: (NSFont.systemFontSize - 1) * AppearancePreferences.rendering.read().messages.scale) }
+    static var caption: NSFont { NSFont.systemFont(ofSize: (NSFont.smallSystemFontSize - 1) * AppearancePreferences.rendering.read().ui.scale) }
+    static var code: NSFont { NSFont.monospacedSystemFont(ofSize: (NSFont.systemFontSize - 1) * AppearancePreferences.rendering.read().code.scale, weight: .regular) }
+    static var lineSpacing: CGFloat { 2 * AppearancePreferences.rendering.read().density.spacing }
+    static var blockSpacing: CGFloat { 8 * AppearancePreferences.rendering.read().density.spacing }
 
     static func paragraph(alignment: NSTextAlignment = .natural) -> NSMutableParagraphStyle {
         let style = NSMutableParagraphStyle()
@@ -130,7 +130,7 @@ struct MarkdownAttributedRenderer {
             emit(inlines(paragraph, font: TranscriptTypography.body, context: context), style(context))
         case let heading as Heading:
             let sizes: [CGFloat] = [20, 17, 15, 13, 13, 13]
-            let font = NSFont.systemFont(ofSize: sizes[min(max(heading.level, 1), 6) - 1], weight: .semibold)
+            let font = NSFont.systemFont(ofSize: sizes[min(max(heading.level, 1), 6) - 1] * AppearancePreferences.rendering.read().messages.scale, weight: .semibold)
             let style = style(context)
             style.paragraphSpacingBefore = 6
             emit(inlines(heading, font: font, context: context), style, spacingAfter: 6)
@@ -248,7 +248,7 @@ struct MarkdownAttributedRenderer {
                 case .right: style.alignment = .right
                 default: style.alignment = .natural
                 }
-                let font = rowIndex == 0 ? NSFont.systemFont(ofSize: NSFont.systemFontSize, weight: .semibold) : TranscriptTypography.body
+                let font = rowIndex == 0 ? NSFont.systemFont(ofSize: TranscriptTypography.body.pointSize, weight: .semibold) : TranscriptTypography.body
                 emit(inlines(cell, font: font, context: context), style, spacingAfter: 0)
                 column += span
             }
@@ -269,7 +269,7 @@ struct MarkdownAttributedRenderer {
                 result.append(NSAttributedString(string: "\u{2028}", attributes: attributes))
             case let code as InlineCode:
                 var attributes = attributes
-                attributes[.font] = NSFont.monospacedSystemFont(ofSize: font.pointSize - 1, weight: .regular)
+                attributes[.font] = TranscriptTypography.code
                 attributes[.backgroundColor] = NSColor.quaternarySystemFill
                 result.append(NSAttributedString(string: code.code, attributes: attributes))
             case is Emphasis:

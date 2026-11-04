@@ -12,7 +12,6 @@ pub(crate) struct ClientState {
     pub(super) usage_display: crate::config::UsageDisplay,
     pub(super) context_usage_display: crate::config::UsageDisplay,
     pub(super) status: Vec<crate::config::StatusLineItem>,
-    drafts: BTreeMap<String, String>,
     choices: crate::config::ComposerChoices,
     runtime: Option<String>,
     listed: BTreeMap<String, organization::ListedSource>,
@@ -42,7 +41,6 @@ impl CoreRuntime {
             usage_display: self.usage_display,
             context_usage_display: self.context_usage_display,
             status: self.status_line.clone(),
-            drafts: self.composer_drafts.clone(),
             choices: self.composer_choices.clone(),
             runtime: None,
             listed: Default::default(),
@@ -93,7 +91,6 @@ impl CoreRuntime {
             &mut state.context_usage_display,
         );
         std::mem::swap(&mut self.status_line, &mut state.status);
-        std::mem::swap(&mut self.composer_drafts, &mut state.drafts);
         std::mem::swap(&mut self.composer_choices, &mut state.choices);
         std::mem::swap(&mut self.next_turn_runtime_id, &mut state.runtime);
         std::mem::swap(self.last_listed.get_mut(), &mut state.listed);
@@ -103,6 +100,7 @@ impl CoreRuntime {
         let result = self.drain_sessions();
         self.serve_collaboration();
         self.sync_due_resources();
+        self.advance_scheduled_tasks();
         self.trim_sessions();
         result
     }

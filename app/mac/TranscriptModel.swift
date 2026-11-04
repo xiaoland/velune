@@ -15,9 +15,16 @@ final class TranscriptRow: @MainActor Identifiable {
     /// Whether a copy button goes under it: the user's messages and a turn's
     /// closing reply, not the messages and text of its work.
     fileprivate(set) var copies: Bool
-    init(_ message: DeliveredMessage, id: String, status: String? = nil, copies: Bool? = nil) {
+    /// A turn's closing reply forks the conversation from there: the turn's
+    /// user message ID; nil shows no fork button.
+    fileprivate(set) var fork: String?
+    /// The user message may be edited now; shows an edit button beside copy.
+    fileprivate(set) var edit: Bool
+    init(_ message: DeliveredMessage, id: String, status: String? = nil, copies: Bool? = nil, fork: String? = nil, edit: Bool = false) {
         self.id = id; self.message = message; self.status = status
         self.copies = copies ?? (message.role == .user)
+        self.fork = fork
+        self.edit = edit
     }
     func update(_ message: DeliveredMessage) {
         guard self.message != message else { return }
@@ -38,8 +45,8 @@ final class TranscriptModel: ObservableObject {
     @Published private var presentation = Presentation()
     /// The message just sent, shown after the projection until the runtime's
     /// own copy appears in it.
-    @Published private var pending: TranscriptRow?
-    var rows: [TranscriptRow] { presentation.rows + (pending.map { [$0] } ?? []) }
+    @Published private var pending: [TranscriptRow] = []
+    var rows: [TranscriptRow] { presentation.rows + pending }
     var turns: [TranscriptTurn] { presentation.turns }
     var contentRevision: UInt64 { presentation.revision }
     var userRows: [TranscriptRow] {
@@ -61,7 +68,7 @@ final class TranscriptModel: ObservableObject {
         // A message split into work and reply has two rows; work members use the first.
         let byMessage = Dictionary(rows.map { ($0.message.id, $0) }, uniquingKeysWith: { first, _ in first })
         let byTurn = Dictionary(uniqueKeysWithValues: turns.map { ($0.id, $0) })
-        let pendingItem = pending.flatMap { visible.contains($0.id) ? Item.message($0) : nil }
+        let pendingItems = pending.filter { visible.contains($0.id) }.map(Item.message)
         return presentation.items.flatMap { item -> [Item] in
             switch item {
             case .message(let id, let messageID):
@@ -73,45 +80,47 @@ final class TranscriptModel: ObservableObject {
                 guard !members.isEmpty else { return [] }
                 return [.work(turn, members)]
             }
-        } + (pendingItem.map { [$0] } ?? [])
+        } + pendingItems
     }
-    /// Shows `message` at the end of the list with `status` under it; nil removes it.
-    func showPending(_ message: DeliveredMessage?, status: String?) {
-        guard let message else {
-            if pending != nil { pending = nil; presentation.revision &+= 1 }
-            return
-        }
-        guard pending?.message != message || pending?.status != status else { return }
-        pending = TranscriptRow(message, id: message.id, status: status)
+    func showSubmissions(_ messages: [SubmittedMessage]) {
+        guard pending.map({ SubmittedMessage(message: $0.message, status: $0.status) }) != messages else { return }
+        pending = messages.map { TranscriptRow($0.message, id: $0.message.id, status: $0.status) }
         presentation.revision &+= 1
     }
     func retainedExpandedTurnIDs(_ ids: Set<String>) -> Set<String> { ids.intersection(turns.map(\.id)) }
-    func reset() { presentation = Presentation(revision: contentRevision &+ 1) }
-    func apply(_ messages: [DeliveredMessage], turns: [TranscriptTurn], items: [TranscriptItem], outline: [TranscriptOutlineEntry], identities: [TranscriptMessageIdentity]) {
+    func reset() { pending = []; presentation = Presentation(revision: contentRevision &+ 1) }
+    /// `canFork` puts a fork button under each turn's closing reply;
+    /// `editable` puts an edit button under those user messages.
+    func apply(_ messages: [DeliveredMessage], turns: [TranscriptTurn], items: [TranscriptItem], outline: [TranscriptOutlineEntry], identities: [TranscriptMessageIdentity], canFork: Bool, editable: Set<String>) {
         let identitiesByMessage = Dictionary(uniqueKeysWithValues: identities.map { ($0.messageId, $0.id) })
         let existing = Dictionary(uniqueKeysWithValues: rows.map { ($0.id, $0) })
         var changed = presentation.turns != turns || presentation.items != items || presentation.outline != outline
-        func row(_ id: String, _ message: DeliveredMessage, copies: Bool) -> TranscriptRow {
+        func row(_ id: String, _ message: DeliveredMessage, copies: Bool, fork: String? = nil) -> TranscriptRow {
+            let edit = editable.contains(message.id)
             if let row = existing[id] {
                 if row.message != message { row.update(message); changed = true }
                 // A running turn's latest message is its reply until more work follows it.
                 if row.copies != copies { row.copies = copies; changed = true }
+                if row.fork != fork { row.fork = fork; changed = true }
+                if row.edit != edit { row.edit = edit; changed = true }
                 return row
             }
             changed = true
-            return TranscriptRow(message, id: id, copies: copies)
+            return TranscriptRow(message, id: id, copies: copies, fork: fork, edit: edit)
         }
         // The closing message splits into its work blocks and its reply.
         let replyStarts = Dictionary(turns.compactMap { turn in turn.lastMessageId.map { ($0, Int(turn.replyStartBlock)) } }, uniquingKeysWith: { first, _ in first })
+        let forkTurns = canFork ? Dictionary(turns.compactMap { turn in turn.lastMessageId.map { ($0, turn.userMessageId) } }, uniquingKeysWith: { first, _ in first }) : [:]
         let next = messages.flatMap { message -> [TranscriptRow] in
             guard let id = identitiesByMessage[message.id] else { preconditionFailure("Missing transcript presentation identity") }
-            let user = message.role == .user
+            let user = message.role == .user || message.role == .client
+            let fork = forkTurns[message.id]
             // Only a turn's closing message replies; a reply from its first block is the whole message.
             guard let start = replyStarts[message.id] else { return [row(id, message, copies: user)] }
-            guard start > 0, start < message.blocks.count else { return [row(id, message, copies: user || start == 0)] }
+            guard start > 0, start < message.blocks.count else { return [row(id, message, copies: user || start == 0, fork: start == 0 ? fork : nil)] }
             var work = message, reply = message
             work.blocks = Array(message.blocks[..<start]); reply.blocks = Array(message.blocks[start...])
-            return [row(id, work, copies: false), row("reply:" + id, reply, copies: true)]
+            return [row(id, work, copies: false), row("reply:" + id, reply, copies: true, fork: fork)]
         }
         if rows.count != next.count || zip(rows, next).contains(where: { $0 !== $1 }) { changed = true }
         guard changed else { return }

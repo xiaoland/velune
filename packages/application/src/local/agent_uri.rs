@@ -25,7 +25,7 @@ fn uuid(value: &str) -> bool {
 
 pub(super) fn provider(kind: RuntimeKind) -> Option<&'static str> {
     match kind {
-        RuntimeKind::Codex => Some("codex"),
+        RuntimeKind::Codex | RuntimeKind::Codex166 => Some("codex"),
         RuntimeKind::ClaudeCode => Some("claude"),
         RuntimeKind::Pi => Some("pi"),
         RuntimeKind::DeepSeek | RuntimeKind::Acp => None,

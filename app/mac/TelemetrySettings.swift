@@ -75,13 +75,25 @@ struct TelemetrySettingsView: View {
                         perform { try remote().createTelemetryInvitation(lifetimeSeconds: 300) } success: { invitation = $0 }
                     }
                     if let invitation, invitation.expiresAtUnixSeconds > UInt64(Date().timeIntervalSince1970) {
-                        Text(invitation.encoded).font(.caption.monospaced()).textSelection(.enabled)
+                        Text(invitation.encoded)
+                            #if os(macOS)
+                            .uiFont(.caption.monospaced())
+                            #else
+                            .font(.caption.monospaced())
+                            #endif
+                            .textSelection(.enabled)
                         ShareLink("分享邀请", item: invitation.encoded)
                     }
                     ForEach(incoming, id: \.attemptId) { pairing in
                         VStack(alignment: .leading) {
                             Text("\(pairing.name) · 遥测配置（含认证）")
-                            Text(pairing.verificationCode ?? "").font(.title.monospaced()).textSelection(.enabled)
+                            Text(pairing.verificationCode ?? "")
+                                #if os(macOS)
+                                .uiFont(.title.monospaced())
+                                #else
+                                .font(.title.monospaced())
+                                #endif
+                                .textSelection(.enabled)
                             HStack {
                                 Button("核对一致，允许") { remoteAction { _ = try $0.approvePairing(attemptId: pairing.attemptId, expectedPeerId: pairing.peerId) } }
                                 Button("拒绝") { remoteAction { _ = try $0.rejectPairing(attemptId: pairing.attemptId, expectedPeerId: pairing.peerId) } }

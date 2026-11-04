@@ -32,43 +32,19 @@ use velune_ai::{
     NativeOutput, NativeProvider, NativeRequest, NativeSink, NativeSuccess, Payload,
     http::{Header, ResponseMeta},
 };
-use velune_ai_provider::{
-    NativeHttp, claude_code::ClaudeCode, claude_code::ClaudeCodeConfig,
-    translation::PreparedTranslation,
-};
+use velune_ai_provider::{NativeHttp, claude_code::ClaudeCode, claude_code::ClaudeCodeConfig};
 
 /// One admitted caller request, as each attempt sends it.
 pub(super) struct Exchange {
     pub(super) request_id: String,
     pub(super) started_at_ms: i64,
+    pub(super) protocol: Protocol,
     pub(super) body: Value,
     pub(super) headers: Vec<Header>,
     pub(super) stream: bool,
 }
 
 pub(super) async fn dispatch(
-    state: Arc<Ingress>,
-    exchange: Exchange,
-    candidates: Vec<RouteTarget>,
-    translation: Option<PreparedTranslation>,
-    sender: mpsc::Sender<WireEvent>,
-    telemetry: TelemetryContext,
-) {
-    let Some(plan) = translation else {
-        return attempts(state, exchange, candidates, sender, telemetry).await;
-    };
-    let model = candidates[0].model.as_str().to_owned();
-    let stream = exchange.stream;
-    let (upstream, receiver) = mpsc::channel(1);
-    // Both futures belong to the ingress task. Downstream drop aborts both;
-    // bounded channels retain native backpressure and cancellation. Every
-    // attempt delivers into the same conversion.
-    let native = attempts(state, exchange, candidates, upstream, telemetry);
-    let conversion = crate::translation::deliver(plan, model, stream, receiver, sender);
-    tokio::join!(native, conversion);
-}
-
-async fn attempts(
     state: Arc<Ingress>,
     exchange: Exchange,
     candidates: Vec<RouteTarget>,
@@ -311,12 +287,82 @@ impl Attempt<'_> {
         let mut body = exchange.body.clone();
         // The gateway alone resolves ingress aliases to the exact provider identifier.
         body["model"] = Value::String(self.target.model.as_str().to_owned());
+        let plan = if exchange.protocol == self.target.protocol {
+            None
+        } else {
+            match velune_ai_provider::translation::prepare(
+                exchange.protocol,
+                self.target.protocol,
+                &body,
+                self.target.max_output_tokens,
+            ) {
+                Ok(plan) => {
+                    tracing::info!(
+                        event = "gateway_translation_prepared",
+                        source_protocol = ?exchange.protocol,
+                        target_protocol = ?self.target.protocol,
+                    );
+                    body = plan.request().clone();
+                    Some(plan)
+                }
+                Err(error) => {
+                    tracing::warn!(event = "gateway_translation_failed", field = error.field);
+                    return self.abandon(
+                        "translation_failed",
+                        400,
+                        if error.field == "max_tokens_required" {
+                            "protocol conversion requires max_tokens or a configured model output limit"
+                        } else {
+                            "protocol conversion failed for the selected provider"
+                        },
+                    );
+                }
+            }
+        };
+        // The model record's extra parameters override what translation set;
+        // a field the upstream rejects fails the request with its own error.
+        if !self.target.request_parameters.is_empty()
+            && let Some(object) = body.as_object_mut()
+        {
+            for (key, value) in &self.target.request_parameters {
+                object.insert(key.clone(), Value::String(value.clone()));
+            }
+        }
         let request = NativeRequest {
             model: self.target.model.clone(),
             body: Payload::new(body),
-            headers: exchange.headers.clone(),
+            headers: if plan.is_some() {
+                crate::translation::upstream_headers(exchange.headers.clone(), self.target.protocol)
+            } else {
+                exchange.headers.clone()
+            },
             stream: exchange.stream,
         };
+        let Some(plan) = plan else {
+            return self.execute(request).await;
+        };
+        let sender = self.sender.clone();
+        let model = self.target.model.as_str().to_owned();
+        let (upstream, receiver) = mpsc::channel(1);
+        // A failed attempt that emitted no headers has nothing to convert. A
+        // successful one retains its own tool state, model rules and limits.
+        // Both futures stay in the ingress task for cancellation and backpressure.
+        let native = async {
+            let end = Attempt {
+                sender: &upstream,
+                ..self
+            }
+            .execute(request)
+            .await;
+            drop(upstream);
+            end
+        };
+        let conversion =
+            crate::translation::deliver(plan, model, exchange.stream, receiver, sender);
+        tokio::join!(native, conversion).0
+    }
+
+    async fn execute(mut self, request: NativeRequest) -> AttemptEnd {
         let reference = self.target.reference.clone();
         let destination = self.destination();
         let resolver = self.state.resolver.clone();

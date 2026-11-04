@@ -31,7 +31,7 @@ impl CoreRuntime {
         let declared = model.reasoning_levels.as_deref().unwrap_or_default();
         Ok(match runtime.type_id {
             // Codex passes the level on as the Responses reasoning effort.
-            RuntimeKind::Codex => declared.to_vec(),
+            RuntimeKind::Codex | RuntimeKind::Codex166 => declared.to_vec(),
             RuntimeKind::ClaudeCode => declared
                 .iter()
                 .filter(|level| CLAUDE_EFFORT_LEVELS.contains(&level.as_str()))
@@ -129,7 +129,7 @@ impl CoreRuntime {
                 .iter()
                 .any(|level| level == effort),
             Some(ModelSelection::Native { .. }) | None => match runtime.type_id {
-                RuntimeKind::Codex => {
+                RuntimeKind::Codex | RuntimeKind::Codex166 => {
                     !effort.trim().is_empty() && !effort.chars().any(char::is_control)
                 }
                 RuntimeKind::ClaudeCode => CLAUDE_EFFORT_LEVELS.contains(&effort),
@@ -197,6 +197,7 @@ impl CoreRuntime {
         is_new: bool,
     ) -> Result<(), RuntimeError> {
         self.ensure_work_ended()?;
+        let conversation_id = snapshot.conversation.id.clone();
         if self
             .runtime_instance(&snapshot.conversation.runtime_id)?
             .type_id
@@ -205,6 +206,7 @@ impl CoreRuntime {
             self.prepare_acp_snapshot(&snapshot, selection, is_new)?;
             self.session.model_selection = Some(selection.cloned());
             self.session.model_record_key = None;
+            self.session.pending_native_fork = None;
             return Ok(());
         }
         if let Some(ModelSelection::Managed { model_record_key }) = selection {
@@ -226,6 +228,10 @@ impl CoreRuntime {
                     self.session.active_state = ActiveState::History(Box::new(snapshot));
                 }
                 self.session.model_selection = previous_selection;
+                if matches!(&error, RuntimeError::Contract(failure) if failure.code == "control_held_elsewhere")
+                {
+                    self.control_held_elsewhere();
+                }
                 return Err(error);
             }
         }
@@ -234,6 +240,23 @@ impl CoreRuntime {
             Some(ModelSelection::Managed { model_record_key }) => Some(model_record_key.clone()),
             _ => None,
         };
+        if is_new
+            || self
+                .session
+                .pending_native_fork
+                .as_ref()
+                .is_some_and(|pending| pending.conversation_id() != conversation_id)
+        {
+            self.session.pending_native_fork = None;
+        }
+        if let Some(pending) = &self.session.pending_native_fork
+            && pending.conversation_id() == conversation_id
+            && let ActiveState::Native(session) = &mut self.session.active_state
+        {
+            session
+                .restore_pending_fork(pending)
+                .map_err(|error| RuntimeError::context("恢复待创建的会话分支", error))?;
+        }
         Ok(())
     }
 
@@ -285,13 +308,14 @@ impl CoreRuntime {
                 })
                 .transpose()?;
             self.start_pi_for_session(cwd, native_id.map(Path::new), None, None)?;
+            let persistent = self.session.side.is_none();
             let session = self.session.pi()?;
-            if is_new {
+            if is_new && persistent {
                 session
                     .new_session()
                     .map_err(|error| RuntimeError::context("会话创建", error))?;
             } else {
-                session.set_conversation(snapshot.conversation.clone());
+                session.restore_context(snapshot);
             }
             if let Some((_, model_id)) = native {
                 let provider = session.config().provider.clone();
@@ -312,9 +336,20 @@ impl CoreRuntime {
                     .map_err(|error| RuntimeError::context("原生模型选择", error))?;
             }
             if is_new {
-                session
-                    .create(cwd, &runtime.id)
-                    .map_err(|error| RuntimeError::context("原生会话创建", error))?;
+                if let Some(side) = &self.session.side {
+                    session
+                        .create_side_context(cwd, &runtime.id, &side.context)
+                        .map_err(|error| RuntimeError::context("侧聊上下文创建", error))?;
+                } else {
+                    if let Some(context) = self.session.reference_context.take() {
+                        session
+                            .reference_context(context)
+                            .map_err(|error| RuntimeError::context("编辑引用上下文", error))?;
+                    }
+                    session
+                        .create(cwd, &runtime.id)
+                        .map_err(|error| RuntimeError::context("原生会话创建", error))?;
+                }
             } else {
                 let native_id = snapshot
                     .conversation
@@ -329,7 +364,7 @@ impl CoreRuntime {
                     session
                         .open(native_id, cwd, &runtime.id, snapshot.messages.clone())
                         .map_err(|error| RuntimeError::context("原生会话恢复", error))?;
-                    session.set_conversation(snapshot.conversation.clone());
+                    session.restore_context(snapshot);
                 }
             }
             self.session.active_state = ActiveState::Native(Box::new(session));
@@ -493,7 +528,12 @@ impl CoreRuntime {
                     Some(format!("{name} · {}", provider.name))
                 })
             }
-            ModelSelection::Native { model_id, .. } => Some(model_id.clone()),
+            ModelSelection::Native { model_id, .. } => {
+                let kind = self.runtime_instance(runtime_id).ok()?.type_id;
+                Some(velune_agent_runtime::native::display_model_name(
+                    kind, model_id,
+                ))
+            }
         }
     }
 

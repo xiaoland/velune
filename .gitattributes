@@ -1,0 +1,4 @@
+
+# Preserve vendored upstream bytes, including license line endings and bundle hashes.
+app/mac/Assets/Artifacts/mermaid.min.js -whitespace
+app/mac/Licenses/Mermaid/Licenses/** -whitespace

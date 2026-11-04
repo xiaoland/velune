@@ -76,7 +76,7 @@ private object Sample {
 
     private fun listed(id: String, title: String, runtime: String, minutesAgo: Long, project: String?, pinned: Boolean = false, unread: Boolean = false, failed: Boolean = false) =
         ListedConversation(
-            ConversationSummary(id, ConversationTitle.Native(title), now - minutesAgo * MINUTE, now - minutesAgo * MINUTE, runtime, project, true, true, null),
+            ConversationSummary(id, ConversationTitle.Native(title), now - minutesAgo * MINUTE, now - minutesAgo * MINUTE, runtime, project, true, true, null, null),
             id, "agents://$runtime/11111111-1111-4111-8111-111111111111", pinned, unread, false, project, false, failed, null,
         )
 
@@ -153,21 +153,21 @@ private object Sample {
         ),
     )
 
-    private val turn = TranscriptTurn("turn1", "u1", listOf("a1"), "a1", 5u, 83_000uL, false, null, null)
+    private val turn = TranscriptTurn("turn1", "u1", listOf("a1"), "a1", 5u, 83_000uL, false, null, null, null)
     private val items = listOf(TranscriptItem.Message("u1", "u1"), TranscriptItem.Work("turn1"), TranscriptItem.Message("reply:a1", "a1"))
     private val byId = messages.associateBy { it.id }
 
     val finished = ConversationState(
         conversation = null, entries = transcriptEntries(items, listOf(turn)) { byId[it] }, loading = false, models = models,
         selection = models[0].selection,
-    ).copy(conversation = ConversationSummary("c2", ConversationTitle.Native(header.title), now, now, "claude", header.cwd, true, true, null))
+    ).copy(conversation = ConversationSummary("c2", ConversationTitle.Native(header.title), now, now, "claude", header.cwd, true, true, null, null))
 
     private val runningMessages = messages + message("u2", MessageRole.USER, DeliveredBlock.Text("顺便跑一下全部检查。")) + message(
         "a2", MessageRole.ASSISTANT,
         DeliveredBlock.Tool("t5", "Bash scripts/build-android.sh --skip-native", ToolState.RUNNING, null, null),
     )
     private val runningById = runningMessages.associateBy { it.id }
-    private val runningTurns = listOf(turn, TranscriptTurn("turn2", "u2", listOf("a2"), null, 0u, null, true, null, null))
+    private val runningTurns = listOf(turn, TranscriptTurn("turn2", "u2", listOf("a2"), null, 0u, null, true, null, null, null))
     private val runningItems = items + listOf(TranscriptItem.Message("u2", "u2"), TranscriptItem.Work("turn2"))
 
     val running = finished.copy(

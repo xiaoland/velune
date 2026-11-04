@@ -119,7 +119,7 @@ fun Transcript(state: ConversationState, load: (String) -> Unit, modifier: Modif
 @Composable
 private fun MessageView(message: DeliveredMessage, bubbleWidth: androidx.compose.ui.unit.Dp, expanded: MutableMap<String, Boolean>, load: (String) -> Unit) {
     when (message.role) {
-        MessageRole.USER -> UserBubble(message.blocks, bubbleWidth)
+        MessageRole.USER, MessageRole.CLIENT -> UserBubble(message.blocks, bubbleWidth)
         MessageRole.ASSISTANT, MessageRole.TOOL, MessageRole.SYSTEM -> Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             message.blocks.forEachIndexed { index, block -> WorkBlock(message.id, index, block, expanded, load, reply = message.role == MessageRole.ASSISTANT) }
         }
@@ -206,6 +206,7 @@ private fun WorkBlock(messageId: String, index: Int, block: DeliveredBlock, expa
             block.text, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
             textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp),
         )
+        is DeliveredBlock.RuntimeFailure -> Text(block.detail, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         is DeliveredBlock.ContextCompaction -> Text(
             block.text, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
             textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp),

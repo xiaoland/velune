@@ -1,7 +1,8 @@
 //! Ordered, disposable message-list projection. Native snapshots remain authoritative.
 use crate::conversation::{
-    Message, MessageBlock, MessageIdentityConfirmation, MessageRole, RunState, TranscriptItem,
-    TranscriptMessageIdentity, TranscriptOutlineEntry, TranscriptTurn, TurnSettings, TurnUsage,
+    ExecutionKind, Executions, Message, MessageBlock, MessageIdentityConfirmation, MessageRole,
+    RunState, TranscriptItem, TranscriptMessageIdentity, TranscriptOutlineEntry, TranscriptTurn,
+    TurnOutcome, TurnSettings, TurnUsage,
 };
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -11,14 +12,18 @@ use std::{
 /// Forward consumption includes replacement: native branching and compaction are not append-only.
 pub enum TranscriptEvent<'a> {
     ConfirmIdentities(&'a [MessageIdentityConfirmation]),
-    ReplaceMessages(&'a [Message]),
+    Replace {
+        messages: &'a [Message],
+        executions: &'a Executions,
+    },
     ExecutionState(RunState),
 }
 
 struct MessageAnchor {
     id: String,
     role: MessageRole,
-    compaction: bool,
+    standalone: bool,
+    outcome: Option<TurnOutcome>,
     /// Index of the first block of the trailing visible text, which is the
     /// agent's reply; `None` when an assistant message does not end in text.
     reply_start: Option<usize>,
@@ -83,16 +88,38 @@ impl TranscriptProjection {
                     }
                 }
             }
-            TranscriptEvent::ReplaceMessages(messages) => {
+            TranscriptEvent::Replace {
+                messages,
+                executions,
+            } => {
+                let membership: BTreeMap<_, _> = executions
+                    .records
+                    .iter()
+                    .flat_map(|record| {
+                        record
+                            .message_ids
+                            .iter()
+                            .map(move |id| (id.as_str(), (record.kind, record.outcome)))
+                    })
+                    .collect();
                 self.messages = messages
                     .iter()
                     .map(|message| MessageAnchor {
                         id: message.id.clone(),
                         role: message.role.clone(),
-                        compaction: message
-                            .blocks
-                            .iter()
-                            .any(|block| matches!(block, MessageBlock::ContextCompaction { .. })),
+                        standalone: message.role == MessageRole::Client
+                            || membership
+                                .get(message.id.as_str())
+                                .is_some_and(|(kind, _)| {
+                                    *kind == ExecutionKind::ContextMaintenance
+                                })
+                            || (message.blocks.iter().any(|block| {
+                                matches!(block, MessageBlock::ContextCompaction { .. })
+                            }) && (!message.completed
+                                || !membership.contains_key(message.id.as_str()))),
+                        outcome: membership
+                            .get(message.id.as_str())
+                            .and_then(|(_, outcome)| *outcome),
                         reply_start: (message.role == MessageRole::Assistant)
                             .then(|| trailing_text_start(&message.blocks))
                             .flatten(),
@@ -248,17 +275,19 @@ impl TranscriptProjection {
                     .unwrap_or(self.messages.len());
                 let responses: Vec<_> = self.messages[start + 1..next_user]
                     .iter()
-                    .filter(|message| !message.compaction)
+                    .filter(|message| !message.standalone)
                     .collect();
                 // The reply is the text at the end of the closing assistant
                 // message. Everything before it, including that message's own
                 // reasoning and tool blocks, is work; a turn that does not end
                 // in text folds fully.
                 let visible = responses
-                    .last()
+                    .iter()
+                    .rev()
+                    .find(|message| message.role != MessageRole::System)
+                    .copied()
                     .filter(|message| message.reply_start.is_some());
                 let reply_start = visible.and_then(|message| message.reply_start).unwrap_or(0);
-                let work_end = responses.len() - usize::from(visible.is_some() && reply_start == 0);
                 let user = &self.messages[*start];
                 let duration_ms = self
                     .active
@@ -269,14 +298,18 @@ impl TranscriptProjection {
                 TranscriptTurn {
                     id: format!("turn:{}", self.presentation_ids[&user.id]),
                     user_message_id: user.id.clone(),
-                    work_message_ids: responses[..work_end]
+                    work_message_ids: responses
                         .iter()
+                        .filter(|message| {
+                            reply_start > 0 || visible.is_none_or(|reply| reply.id != message.id)
+                        })
                         .map(|message| message.id.clone())
                         .collect(),
                     last_message_id: visible.map(|message| message.id.clone()),
                     reply_start_block: u32::try_from(reply_start).unwrap_or(u32::MAX),
                     duration_ms,
                     is_running: ordinal + 1 == starts.len() && (self.running || self.elsewhere),
+                    outcome: user.outcome,
                     settings: self.settings(user),
                     usage: user.usage.clone(),
                 }
@@ -286,47 +319,43 @@ impl TranscriptProjection {
 
     pub fn items(&self) -> Vec<TranscriptItem> {
         let turns = self.turns();
-        let work: BTreeMap<_, _> = turns
+        let by_user: BTreeMap<_, _> = turns
+            .iter()
+            .map(|turn| (turn.user_message_id.as_str(), turn))
+            .collect();
+        let grouped: BTreeSet<_> = turns
             .iter()
             .flat_map(|turn| {
                 turn.work_message_ids
                     .iter()
-                    .map(move |id| (id.as_str(), turn.id.as_str()))
+                    .chain(turn.last_message_id.iter())
             })
             .collect();
-        // A reply that shares its message with work gets its own item identity.
-        let split: BTreeSet<_> = turns
-            .iter()
-            .filter(|turn| turn.reply_start_block > 0)
-            .filter_map(|turn| turn.last_message_id.as_deref())
-            .collect();
-        let mut emitted = BTreeSet::new();
-        self.messages
-            .iter()
-            .flat_map(|message| {
-                let mut items = Vec::new();
-                if let Some(turn_id) = work.get(message.id.as_str())
-                    && emitted.insert(*turn_id)
-                {
+        let item = |id: &String, reply: bool| TranscriptItem::Message {
+            id: format!(
+                "{}{}",
+                if reply { "reply:" } else { "" },
+                self.presentation_ids[id]
+            ),
+            message_id: id.clone(),
+        };
+        let mut items = Vec::new();
+        for message in &self.messages {
+            if let Some(turn) = by_user.get(message.id.as_str()) {
+                items.push(item(&message.id, false));
+                if !turn.work_message_ids.is_empty() {
                     items.push(TranscriptItem::Work {
-                        turn_id: (*turn_id).into(),
+                        turn_id: turn.id.clone(),
                     });
                 }
-                let presentation_id = &self.presentation_ids[&message.id];
-                if split.contains(message.id.as_str()) {
-                    items.push(TranscriptItem::Message {
-                        id: format!("reply:{presentation_id}"),
-                        message_id: message.id.clone(),
-                    });
-                } else if !work.contains_key(message.id.as_str()) {
-                    items.push(TranscriptItem::Message {
-                        id: presentation_id.clone(),
-                        message_id: message.id.clone(),
-                    });
+                if let Some(reply) = &turn.last_message_id {
+                    items.push(item(reply, turn.reply_start_block > 0));
                 }
-                items
-            })
-            .collect()
+            } else if !grouped.contains(&message.id) {
+                items.push(item(&message.id, false));
+            }
+        }
+        items
     }
 
     pub fn message_identities(&self) -> Vec<TranscriptMessageIdentity> {
@@ -377,13 +406,147 @@ mod tests {
             {"id":"answer","role":"assistant","completed":true,"blocks":[{"kind":"text","text":"done"}]},
             {"id":"compact","role":"system","completed":false,"blocks":[{"kind":"contextCompaction","text":"正在压缩上下文"}]}
         ])).unwrap();
+        let mut executions = Executions::default();
+        executions.begin(ExecutionKind::UserTurn, false);
+        for message in &messages {
+            executions.attach(&message.id);
+        }
         let mut projection = TranscriptProjection::default();
-        projection.apply(TranscriptEvent::ReplaceMessages(&messages));
+        projection.apply(TranscriptEvent::Replace {
+            messages: &messages,
+            executions: &executions,
+        });
         let turn = &projection.turns()[0];
         assert_eq!(turn.last_message_id.as_deref(), Some("answer"));
         assert!(turn.work_message_ids.is_empty());
         assert!(
             matches!(projection.items().last(), Some(TranscriptItem::Message { message_id, .. }) if message_id == "compact")
         );
+    }
+
+    #[test]
+    fn client_notifications_stay_outside_work_and_preserve_the_final_reply() {
+        let messages: Vec<Message> = serde_json::from_value(serde_json::json!([
+            {"id":"user","role":"user","completed":true,"blocks":[{"kind":"text","text":"hello"}]},
+            {"id":"thinking","role":"assistant","completed":true,"blocks":[{"kind":"reasoning","text":"checking"}]},
+            {"id":"answer","role":"assistant","completed":true,"blocks":[{"kind":"text","text":"done"}]},
+            {"id":"notice","role":"client","completed":true,"blocks":[{"kind":"text","text":"background task complete"}]}
+        ])).unwrap();
+        let mut executions = Executions::default();
+        executions.begin(ExecutionKind::UserTurn, false);
+        for message in &messages {
+            executions.attach(&message.id);
+        }
+        executions.finish(Some(TurnOutcome::Completed));
+        let mut projection = TranscriptProjection::default();
+        projection.apply(TranscriptEvent::Replace {
+            messages: &messages,
+            executions: &executions,
+        });
+        let turns = projection.turns();
+        assert_eq!(turns.len(), 1);
+        assert_eq!(turns[0].last_message_id.as_deref(), Some("answer"));
+        assert_eq!(turns[0].work_message_ids, ["thinking"]);
+        assert!(
+            matches!(projection.items().last(), Some(TranscriptItem::Message { message_id, .. }) if message_id == "notice")
+        );
+        assert_eq!(projection.outline().len(), 1);
+    }
+
+    #[test]
+    fn completed_statuses_join_work_before_the_reply_and_keep_outcome() {
+        let messages: Vec<Message> = serde_json::from_value(serde_json::json!([
+            {"id":"user","role":"user","completed":true,"blocks":[{"kind":"text","text":"hello"}]},
+            {"id":"answer","role":"assistant","completed":true,"blocks":[{"kind":"text","text":"done"}]},
+            {"id":"error","role":"system","completed":true,"blocks":[{"kind":"notice","text":"serverOverloaded"}]},
+            {"id":"compact","role":"system","completed":true,"blocks":[{"kind":"contextCompaction","text":"上下文已压缩"}]}
+        ])).unwrap();
+        let mut executions = Executions::default();
+        executions.begin(ExecutionKind::UserTurn, false);
+        for message in &messages {
+            executions.attach(&message.id);
+        }
+        let mut projection = TranscriptProjection::default();
+        projection.apply(TranscriptEvent::Replace {
+            messages: &messages,
+            executions: &executions,
+        });
+        executions.finish(Some(TurnOutcome::Cancelled));
+        projection.apply(TranscriptEvent::Replace {
+            messages: &messages,
+            executions: &executions,
+        });
+        let turn = &projection.turns()[0];
+        assert_eq!(turn.last_message_id.as_deref(), Some("answer"));
+        assert_eq!(turn.work_message_ids, ["error", "compact"]);
+        assert!(matches!(
+            &projection.items()[1],
+            TranscriptItem::Work { .. }
+        ));
+        assert!(
+            matches!(&projection.items()[2], TranscriptItem::Message { message_id, .. } if message_id == "answer")
+        );
+        projection.apply(TranscriptEvent::Replace {
+            messages: &messages,
+            executions: &executions,
+        });
+        assert_eq!(projection.turns()[0].outcome, Some(TurnOutcome::Cancelled));
+        executions.begin(ExecutionKind::UserTurn, true);
+        executions.finish(Some(TurnOutcome::Completed));
+        projection.apply(TranscriptEvent::Replace {
+            messages: &messages,
+            executions: &executions,
+        });
+        assert_eq!(projection.turns()[0].outcome, Some(TurnOutcome::Completed));
+        let mut continued = messages;
+        continued.push(serde_json::from_value(serde_json::json!({"id":"more-work","role":"assistant","completed":false,"blocks":[{"kind":"tool","toolID":"call","title":"continuing","state":"running","output":null}]})).unwrap());
+        projection.apply(TranscriptEvent::Replace {
+            messages: &continued,
+            executions: &executions,
+        });
+        assert!(projection.turns()[0].last_message_id.is_none());
+    }
+    #[test]
+    fn steer_segments_share_result_and_manual_maintenance_never_joins_previous_work() {
+        let messages: Vec<Message> = serde_json::from_value(serde_json::json!([
+            {"id":"u1","role":"user","completed":true,"blocks":[]},
+            {"id":"work","role":"assistant","completed":true,"blocks":[{"kind":"text","text":"working"}]},
+            {"id":"u2","role":"user","completed":true,"blocks":[]},
+            {"id":"answer","role":"assistant","completed":true,"blocks":[{"kind":"text","text":"done"}]},
+            {"id":"manual","role":"system","completed":true,"blocks":[{"kind":"contextCompaction","text":"done"}]}
+        ])).unwrap();
+        for outcome in [
+            TurnOutcome::Completed,
+            TurnOutcome::Failed,
+            TurnOutcome::Cancelled,
+        ] {
+            let mut executions = Executions::default();
+            executions.begin(ExecutionKind::UserTurn, false);
+            for m in &messages[..4] {
+                executions.attach(&m.id);
+            }
+            executions.finish(Some(outcome));
+            executions.begin(ExecutionKind::ContextMaintenance, false);
+            executions.attach("manual");
+            executions.finish(Some(TurnOutcome::Completed));
+            let mut projection = TranscriptProjection::default();
+            projection.apply(TranscriptEvent::Replace {
+                messages: &messages,
+                executions: &executions,
+            });
+            assert!(
+                projection
+                    .turns()
+                    .iter()
+                    .all(|t| t.outcome == Some(outcome))
+            );
+            assert!(
+                projection
+                    .turns()
+                    .iter()
+                    .all(|t| !t.work_message_ids.contains(&"manual".into()))
+            );
+            assert!(projection.items().iter().any(|i| matches!(i, TranscriptItem::Message { message_id, .. } if message_id == "manual")));
+        }
     }
 }

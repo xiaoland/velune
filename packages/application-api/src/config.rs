@@ -29,6 +29,13 @@ pub struct ProviderModel {
     pub max_output_tokens: Option<u32>,
     #[uniffi(default = None)]
     pub reasoning_levels: Option<Vec<String>>,
+    /// Extra fields merged into every upstream request body for this model,
+    /// overriding what the adapter sets; a speed variant is a model record of
+    /// its own carrying the provider's serving parameter here. Unknown fields
+    /// fail upstream with the provider's own error.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[uniffi(default = None)]
+    pub request_parameters: Option<crate::StringMap>,
 }
 
 impl ProviderModel {

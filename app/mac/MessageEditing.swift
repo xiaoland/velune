@@ -32,8 +32,9 @@ struct MessageEditorSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("编辑消息").font(.headline)
-            TextEditor(text: $text).font(.body).frame(minWidth: 460, minHeight: 160)
+            Text("编辑消息").uiFont(.headline)
+            if let runtime = store.messageEditingRuntimeName { Text("重新发送使用：\(runtime)").uiFont(.callout).foregroundStyle(.secondary) }
+            TextEditor(text: $text).uiFont(.body).frame(minWidth: 460, minHeight: 160)
                 .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(Color(nsColor: .separatorColor)))
             if !attachments.isEmpty {
                 VStack(alignment: .leading, spacing: 4) {
@@ -47,10 +48,10 @@ struct MessageEditorSheet: View {
                 }
             }
             if embeddedImages > 0 {
-                Text("原消息中的 \(embeddedImages) 张内嵌图片没有文件，编辑后的消息不包含它们。").font(.callout).foregroundStyle(.secondary)
+                Text("原消息中的 \(embeddedImages) 张内嵌图片没有文件，编辑后的消息不包含它们。").uiFont(.callout).foregroundStyle(.secondary)
             }
             if !store.canSend {
-                Text("当前不能发送。").font(.callout).foregroundStyle(.secondary)
+                Text("当前不能发送。").uiFont(.callout).foregroundStyle(.secondary)
             }
             HStack {
                 Spacer()
@@ -76,12 +77,11 @@ struct MessageEditorSheet: View {
         } message: {
             Text(request.inPlace
                  ? "在原会话中继续会替换这条消息及其后的全部内容；在新会话中继续则保留当前会话，新会话包含这条消息之前的内容。"
-                 : "此运行时不能在原会话中替换这条消息；新会话包含这条消息之前的内容，当前会话保持不变。")
+                 : "这条消息只能在新会话中继续。此前可取得的内容会保留为上下文参考，当前会话保持不变。")
         }
     }
 
     private func send(_ placement: EditPlacement) {
-        store.editMessage(request.message.id, placement: placement, text: text.trimmingCharacters(in: .whitespacesAndNewlines), attachments: attachments, forked: forked)
-        dismiss()
+        store.editMessage(request.message.id, placement: placement, text: text.trimmingCharacters(in: .whitespacesAndNewlines), attachments: attachments, forked: forked, accepted: { dismiss() })
     }
 }

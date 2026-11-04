@@ -161,7 +161,7 @@ impl CoreRuntime {
         runtime: &RuntimeInstance,
     ) -> Result<HistoryConfig, RuntimeError> {
         let provider = match runtime.type_id {
-            RuntimeKind::Codex => "codex",
+            RuntimeKind::Codex | RuntimeKind::Codex166 => "codex",
             RuntimeKind::DeepSeek => "deepseek",
             RuntimeKind::ClaudeCode => "claude-code",
             RuntimeKind::Pi | RuntimeKind::Acp => {
@@ -171,6 +171,7 @@ impl CoreRuntime {
         let context = self.prepare_execution_context(runtime)?;
         let home = context.agent_dir;
         Ok(HistoryConfig {
+            kind: runtime.type_id,
             provider: provider.into(),
             binary: setting_path(runtime, "binary")?,
             node_binary: setting_path_optional(runtime, "nodeBinary").unwrap_or_default(),
@@ -191,10 +192,23 @@ impl CoreRuntime {
         key: &str,
     ) -> Result<(), RuntimeError> {
         let runtime = self.active_instance()?.clone();
+        let side_context = self.session.side.as_ref().map(|side| side.context.clone());
+        let reference_context = self.session.reference_context.take();
         if let ActiveState::Native(session) = &mut self.session.active_state {
-            session
-                .create(cwd, &runtime.id)
-                .map_err(|error| RuntimeError::context("会话创建失败", error))?;
+            if let Some(context) = side_context {
+                session
+                    .create_side_context(cwd, &runtime.id, &context)
+                    .map_err(|error| RuntimeError::context("侧聊上下文创建", error))?;
+            } else {
+                if let Some(context) = reference_context {
+                    session
+                        .reference_context(context)
+                        .map_err(|error| RuntimeError::context("编辑引用上下文", error))?;
+                }
+                session
+                    .create(cwd, &runtime.id)
+                    .map_err(|error| RuntimeError::context("会话创建失败", error))?;
+            }
         }
         if runtime.type_id == RuntimeKind::DeepSeek {
             // ACP new flushes its native header before replying, but does not
@@ -242,8 +256,19 @@ impl CoreRuntime {
                         &runtime.id,
                         snapshot.messages.clone(),
                     )
-                    .map_err(|error| RuntimeError::context("会话恢复失败", error))?;
-                session.set_conversation(snapshot.conversation.clone());
+                    .map_err(|error| {
+                        if error.code() == "control_held_elsewhere" {
+                            let mut failure = crate::Failure::new(
+                                crate::FailureKind::Conflict,
+                                "另一个客户端正在控制此会话；草稿已保留，未自动重发",
+                            );
+                            failure.code = error.code().into();
+                            RuntimeError::Contract(failure)
+                        } else {
+                            RuntimeError::context("会话恢复失败", error)
+                        }
+                    })?;
+                session.restore_context(snapshot);
             }
         }
         self.session.model_record_key = Some(key.into());

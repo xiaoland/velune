@@ -1,6 +1,6 @@
 use crate::conversation::{
-    ConversationActions, ConversationSnapshot, ConversationSummary, Message, MessageBlock,
-    MessageRole, RunState, ToolState, first_user_text,
+    ConversationActions, ConversationSnapshot, ConversationSummary, ExecutionKind, Message,
+    MessageBlock, MessageRole, RunState, ToolState, TurnOutcome, first_user_text,
 };
 use serde_json::Value;
 
@@ -22,7 +22,7 @@ pub struct PiProjection {
     next_native_identity: Option<String>,
     history_synchronized: bool,
     /// The current or latest turn ended a model response with an error.
-    turn_failed: bool,
+    terminal: Option<TurnOutcome>,
     lifecycle: Lifecycle,
     failed_message_id: Option<String>,
     manual_compaction: Option<String>,
@@ -41,6 +41,7 @@ impl PiProjection {
                 model_record_key: None,
                 run_state: RunState::Idle,
                 messages: Vec::new(),
+                executions: Default::default(),
                 transcript_turns: Vec::new(),
                 transcript_items: Vec::new(),
                 transcript_outline: Vec::new(),
@@ -51,6 +52,7 @@ impl PiProjection {
                 sub_agents: Vec::new(),
                 collaborators: Vec::new(),
                 actions: ConversationActions {
+                    input_access: Default::default(),
                     can_send: true,
                     can_cancel: false,
                     can_switch: true,
@@ -61,7 +63,7 @@ impl PiProjection {
             active_native_message: None,
             next_native_identity: None,
             history_synchronized: false,
-            turn_failed: false,
+            terminal: None,
             lifecycle: Lifecycle::Idle,
             failed_message_id: None,
             manual_compaction: None,
@@ -73,12 +75,16 @@ impl PiProjection {
     /// Pi records a failed model response as an assistant message and keeps
     /// the conversation usable; this tells such a turn from a completed one.
     pub fn turn_failed(&self) -> bool {
-        self.turn_failed
+        self.terminal == Some(TurnOutcome::Failed)
     }
 
     /// An accepted prompt may still be waiting for the runtime to start.
     pub fn begin_turn(&mut self) {
         self.compaction_notice = None;
+        self.terminal = None;
+        if let Some(snapshot) = &mut self.snapshot {
+            snapshot.executions.begin(ExecutionKind::UserTurn, false);
+        }
         if !matches!(self.lifecycle, Lifecycle::Running | Lifecycle::Closed) {
             self.lifecycle = Lifecycle::Idle;
         }
@@ -103,8 +109,13 @@ impl PiProjection {
         self.manual_compaction = Some(command_id);
         self.compaction_notice = None;
         self.compaction_aborted = false;
-        self.turn_failed = false;
+        self.terminal = None;
         self.lifecycle = Lifecycle::Running;
+        if let Some(snapshot) = &mut self.snapshot {
+            snapshot
+                .executions
+                .begin(ExecutionKind::ContextMaintenance, false);
+        }
         if let Some(snapshot) = &mut self.snapshot {
             snapshot.run_state = RunState::Running;
             snapshot.actions.can_send = false;
@@ -202,7 +213,42 @@ impl PiProjection {
         if let Some(notice) = &self.compaction_notice {
             projected.push(notice.clone());
         }
+        snapshot
+            .executions
+            .confirm(&snapshot.message_identity_confirmations);
         snapshot.messages = projected;
+        snapshot.executions.retain(&snapshot.messages);
+        let visible: std::collections::BTreeSet<_> = snapshot
+            .messages
+            .iter()
+            .map(|message| message.id.as_str())
+            .collect();
+        let claimed: std::collections::BTreeSet<_> = snapshot
+            .executions
+            .records
+            .iter()
+            .flat_map(|record| record.message_ids.iter().cloned())
+            .collect();
+        let mut start = 0;
+        for (index, native) in messages.iter().enumerate() {
+            if let Some(outcome) = pi_outcome(native) {
+                let ids: Vec<_> = messages[start..=index]
+                    .iter()
+                    .filter_map(|m| m["id"].as_str())
+                    .filter(|id| visible.contains(id) && !claimed.contains(*id))
+                    .map(str::to_owned)
+                    .collect();
+                if !ids.is_empty() {
+                    snapshot.executions.history(
+                        format!("pi-history-{index}"),
+                        ExecutionKind::UserTurn,
+                        ids,
+                        Some(outcome),
+                    );
+                }
+                start = index + 1;
+            }
+        }
         refresh_title(&mut snapshot);
         snapshot.revision = snapshot.revision.saturating_add(1);
         self.snapshot = Some(snapshot);
@@ -222,10 +268,11 @@ impl PiProjection {
         let Some(mut snapshot) = self.snapshot.take() else {
             return;
         };
+        let before = snapshot.messages.len();
         match event["type"].as_str().unwrap_or_default() {
             "agent_start" | "turn_start" => {
                 if event["type"] == "agent_start" {
-                    self.turn_failed = false;
+                    self.terminal = None;
                     self.lifecycle = Lifecycle::Running;
                 }
                 snapshot.run_state = RunState::Running;
@@ -253,7 +300,7 @@ impl PiProjection {
             "message_start" | "message_end" => {
                 let native = &event["message"];
                 if event["type"] == "message_end" && native["role"] == "assistant" {
-                    self.turn_failed = native["stopReason"] == "error";
+                    self.terminal = pi_outcome(native);
                 }
                 if native["role"] == "toolResult" {
                     if event["type"] == "message_start" {
@@ -289,7 +336,8 @@ impl PiProjection {
                     };
                     if let Some(mut message) = message_from_pi(native, id.clone()) {
                         if event["type"] == "message_end" && native["role"] == "assistant" {
-                            self.failed_message_id = self.turn_failed.then(|| id.clone());
+                            self.failed_message_id =
+                                (self.terminal == Some(TurnOutcome::Failed)).then(|| id.clone());
                         }
                         message.completed = event["type"] == "message_end"
                             || message.role != MessageRole::Assistant;
@@ -406,9 +454,7 @@ impl PiProjection {
                     "上下文未压缩".into()
                 };
                 self.compaction_status(&mut snapshot, text, true);
-                if succeeded {
-                    self.compaction_notice = None;
-                }
+
                 self.history_synchronized = false;
             }
             "response"
@@ -432,8 +478,15 @@ impl PiProjection {
                     );
                 }
                 self.manual_compaction = None;
-                self.turn_failed = failed;
+                self.terminal = Some(if self.compaction_aborted {
+                    TurnOutcome::Cancelled
+                } else if failed {
+                    TurnOutcome::Failed
+                } else {
+                    TurnOutcome::Completed
+                });
                 self.lifecycle = Lifecycle::Ended;
+                snapshot.executions.finish(self.terminal);
                 snapshot.run_state = RunState::Idle;
                 snapshot.actions.can_send = true;
                 snapshot.actions.can_cancel = false;
@@ -448,12 +501,18 @@ impl PiProjection {
                     self.snapshot = Some(snapshot);
                     return;
                 }
+                // Pi 1.1+ also reports cancellation before an assistant message
+                // exists, for example while a before_agent_start hook runs.
+                if event["aborted"] == true {
+                    self.terminal = Some(TurnOutcome::Cancelled);
+                }
                 self.lifecycle = Lifecycle::Ended;
+                snapshot.executions.finish(self.terminal);
                 for message in &mut snapshot.messages {
                     message.completed = true;
                 }
                 self.history_synchronized = false;
-                snapshot.run_state = if self.turn_failed {
+                snapshot.run_state = if self.terminal == Some(TurnOutcome::Failed) {
                     RunState::Failed
                 } else {
                     RunState::Idle
@@ -468,23 +527,26 @@ impl PiProjection {
                 if let Some(id) = self.failed_message_id.take() {
                     snapshot.messages.retain(|message| message.id != id);
                 }
-                self.turn_failed = false;
-                let text = format!(
-                    "{}\nPi 正在自动重试（{}/{}）。",
-                    event["errorMessage"].as_str().unwrap_or("Pi 请求失败"),
-                    event["attempt"],
-                    event["maxAttempts"]
-                );
+                self.terminal = None;
+                let text = event["errorMessage"]
+                    .as_str()
+                    .unwrap_or("Pi 请求失败")
+                    .to_owned();
                 let message = Message {
                     id: "pi-auto-retry".into(),
                     role: MessageRole::System,
                     timestamp_unix_ms: None,
-                    blocks: vec![MessageBlock::Notice { text }],
+                    blocks: vec![MessageBlock::RuntimeFailure {
+                        failure: crate::conversation::RuntimeFailureKind::Other,
+                        detail: text,
+                        retry: Some(crate::conversation::RuntimeRetry::Native),
+                    }],
                     completed: false,
                     turn_settings: None,
                     turn_usage: None,
                     branch_point: None,
                 };
+                snapshot.executions.attach(&message.id);
                 if let Some(old) = snapshot.messages.iter_mut().find(|m| m.id == message.id) {
                     *old = message;
                 } else {
@@ -524,7 +586,7 @@ impl PiProjection {
                 }
                 self.manual_compaction = None;
                 self.lifecycle = Lifecycle::Closed;
-                self.turn_failed = true;
+                self.terminal = Some(TurnOutcome::Failed);
                 snapshot.run_state = RunState::Failed;
                 snapshot.actions.can_send = false;
                 snapshot.actions.can_cancel = false;
@@ -544,11 +606,18 @@ impl PiProjection {
                 if !compacting {
                     self.diagnostic(&mut snapshot, error.into());
                 }
+                for message in &snapshot.messages[before.min(snapshot.messages.len())..] {
+                    snapshot.executions.attach(&message.id);
+                }
+                snapshot.executions.finish(Some(TurnOutcome::Failed));
             }
             _ => {
                 self.snapshot = Some(snapshot);
                 return;
             }
+        }
+        for message in &snapshot.messages[before.min(snapshot.messages.len())..] {
+            snapshot.executions.attach(&message.id);
         }
         refresh_title(&mut snapshot);
         snapshot.revision = snapshot.revision.saturating_add(1);
@@ -603,6 +672,7 @@ impl PiProjection {
         } else {
             snapshot.messages.push(message.clone());
         }
+        snapshot.executions.attach(&message.id);
         self.compaction_notice = Some(message);
     }
 }
@@ -792,10 +862,14 @@ fn apply_tool_result(messages: &mut Vec<Message>, native: &Value, identity: Opti
     }
 }
 fn message_from_pi(message: &Value, fallback_id: String) -> Option<Message> {
+    if message["role"] == "custom" && message["display"] == false {
+        return None;
+    }
     let role = match message["role"].as_str()? {
         "user" => MessageRole::User,
         "assistant" => MessageRole::Assistant,
         "toolResult" => MessageRole::Tool,
+        "custom" => MessageRole::Client,
         _ => MessageRole::System,
     };
     let id = message["id"]
@@ -897,13 +971,26 @@ fn pi_usage(usage: &Value) -> crate::conversation::TurnUsage {
     }
 }
 
+fn pi_outcome(message: &Value) -> Option<TurnOutcome> {
+    if message["role"] != "assistant" {
+        return None;
+    }
+    match message["stopReason"].as_str() {
+        Some("stop") => Some(TurnOutcome::Completed),
+        Some("error") => Some(TurnOutcome::Failed),
+        Some("aborted") => Some(TurnOutcome::Cancelled),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
 
-    fn projection() -> PiProjection {
+    pub(super) fn projection() -> PiProjection {
         PiProjection::new(ConversationSummary {
+            native_read_state: None,
             id: "pi:synthetic".into(),
             runtime_id: "pi".into(),
             title: crate::conversation::conversation_title(None, None),
@@ -919,6 +1006,34 @@ mod tests {
     fn message(projection: &mut PiProjection, value: Value) {
         projection.apply_event(&json!({"type":"message_start","message":value}));
         projection.apply_event(&json!({"type":"message_end","message":value}));
+    }
+
+    #[test]
+    fn extension_notifications_are_visible_client_events_without_a_user_turn() {
+        let mut p = projection();
+        message(
+            &mut p,
+            json!({"role":"custom","customType":"background-task","content":"Task completed","display":true,"timestamp":1234}),
+        );
+        let snapshot = p.snapshot.as_ref().unwrap();
+        assert_eq!(snapshot.messages.last().unwrap().role, MessageRole::Client);
+        assert_eq!(
+            snapshot.messages.last().unwrap().timestamp_unix_ms,
+            Some(1234)
+        );
+        assert!(
+            !snapshot
+                .messages
+                .iter()
+                .any(|message| message.role == MessageRole::User)
+        );
+        assert!(
+            message_from_pi(
+                &json!({"role":"custom","content":"hidden context","display":false}),
+                "hidden".into()
+            )
+            .is_none()
+        );
     }
 
     #[test]
@@ -941,9 +1056,10 @@ mod tests {
                 matches!(&snapshot.messages.last().unwrap().blocks[0], MessageBlock::ContextCompaction { text } if text.contains("synthetic EOF"))
             );
             let mut transcript = crate::transcript::TranscriptProjection::default();
-            transcript.apply(crate::transcript::TranscriptEvent::ReplaceMessages(
-                &snapshot.messages,
-            ));
+            transcript.apply(crate::transcript::TranscriptEvent::Replace {
+                messages: &snapshot.messages,
+                executions: &snapshot.executions,
+            });
             assert_eq!(
                 transcript.turns()[0].last_message_id.as_deref(),
                 Some("answer")
@@ -1075,6 +1191,27 @@ mod tests {
     }
 
     #[test]
+    fn settled_abort_without_assistant_is_cancelled_but_idle_does_not_imply_success() {
+        for aborted in [false, true] {
+            let mut p = projection();
+            p.begin_turn();
+            p.apply_event(&json!({"type":"agent_start"}));
+            message(
+                &mut p,
+                json!({"id":"user","role":"user","content":"question"}),
+            );
+            p.apply_event(&json!({"type":"agent_settled","aborted":aborted}));
+            let snapshot = p.snapshot.as_ref().unwrap();
+            assert_eq!(
+                snapshot.executions.record("user").unwrap().outcome,
+                aborted.then_some(TurnOutcome::Cancelled)
+            );
+            assert!(p.turn_ended());
+            assert!(!p.turn_failed());
+        }
+    }
+
+    #[test]
     fn terminal_connection_failure_survives_late_lifecycle_and_history_records() {
         let mut p = projection();
         p.apply_event(&json!({"type":"agent_settled"}));
@@ -1120,5 +1257,48 @@ mod tests {
                 .any(|m| m.id == "pi-auto-retry")
         );
         assert!(p.turn_ended() && !p.can_sync_history());
+    }
+}
+
+#[cfg(test)]
+mod execution_tests {
+    use super::*;
+    use serde_json::json;
+    #[test]
+    fn settled_without_terminal_message_is_unknown() {
+        let mut p = super::tests::projection();
+        p.begin_turn();
+        p.apply_event(&json!({"type":"agent_start"}));
+        p.apply_event(&json!({"type":"agent_settled"}));
+        let snapshot = p.snapshot.unwrap();
+        assert_eq!(snapshot.run_state, RunState::Idle);
+        assert!(snapshot.executions.current.unwrap().ended);
+        assert_eq!(snapshot.executions.records[0].outcome, None);
+    }
+    #[test]
+    fn pi_terminal_evidence_survives_native_confirmation_and_namespace() {
+        for (stop, expected) in [
+            ("stop", Some(TurnOutcome::Completed)),
+            ("error", Some(TurnOutcome::Failed)),
+            ("aborted", Some(TurnOutcome::Cancelled)),
+            ("toolUse", None),
+        ] {
+            let mut p = super::tests::projection();
+            p.begin_turn();
+            p.apply_event(&json!({"type":"agent_start"}));
+            for message in [
+                json!({"id":"local-user","role":"user","content":"question"}),
+                json!({"id":"reply","role":"assistant","stopReason":stop,"content":"answer"}),
+            ] {
+                p.apply_event(&json!({"type":"message_start","message":message}));
+                p.apply_event(&json!({"type":"message_end","message":message}));
+            }
+            p.apply_event(&json!({"type":"agent_settled"}));
+            p.replace_history(&json!({"messages":[{"id":"native-user","role":"user","content":"question"},{"id":"reply","role":"assistant","stopReason":stop,"content":"answer"}], "identityConfirmations":[{"previousId":"local-user","currentId":"native-user"}]}));
+            let snapshot = p.snapshot.as_mut().unwrap();
+            snapshot.executions.map_ids(&|id| format!("segment-2:{id}"));
+            let record = snapshot.executions.record("segment-2:native-user").unwrap();
+            assert_eq!(record.outcome, expected, "{stop}");
+        }
     }
 }

@@ -149,7 +149,7 @@ pub(crate) fn edit_provider(
                     stored
                 })
                 .collect();
-            let provider = ProviderDefinition {
+            let mut provider = ProviderDefinition {
                 id: draft.id.clone(),
                 name: draft.name,
                 protocol: draft.protocol,
@@ -159,9 +159,15 @@ pub(crate) fn edit_provider(
                 quota_source: draft.quota_source,
                 authentication,
                 quota_authentication,
+                billing: previous.map(|p| p.billing.clone()).unwrap_or_default(),
                 models,
                 quota_limits: draft.quota_limits,
             };
+            if provider.billing.settings.as_ref().is_some_and(|settings| {
+                crate::billing::supported(&provider) != Some(settings.service)
+            }) {
+                provider.billing = Default::default();
+            }
             gateway.providers.retain(|p| p.id != draft.id);
             gateway.providers.push(provider);
             gateway.assign_record_keys();
@@ -230,7 +236,7 @@ fn validate_ark_bindings(gateways: &[GatewayConfig]) -> Result<(), Error> {
         {
             return Err(Error::invalid("相同的 ARK 模型 Key 已配置到另一个提供商"));
         }
-        if let Some(key) = &provider.quota_authentication.access_key
+        if let Some(key) = provider.quota_authentication.access_key()
             && !query_keys.insert(key.id.as_str())
         {
             return Err(Error::invalid(

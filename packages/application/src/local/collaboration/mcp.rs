@@ -221,6 +221,18 @@ fn parse(name: &str, args: Value) -> Result<Operation, Error> {
     #[serde(deny_unknown_fields)]
     struct Empty {}
     Ok(match name {
+        "scheduled_tasks" => {
+            let operation: crate::ScheduledTasksOperation = decode(args)?;
+            if matches!(
+                operation,
+                crate::ScheduledTasksOperation::ConfirmHandover { .. }
+                    | crate::ScheduledTasksOperation::Import { .. }
+                    | crate::ScheduledTasksOperation::PreviewImport { .. }
+            ) {
+                return Err(Error::invalid("来源导入和宿主交接由用户在定时任务窗口处理"));
+            }
+            Operation::Scheduled(Box::new(operation))
+        }
         "list_agents" => {
             let _: Empty = decode(args)?;
             Operation::ListAgents
@@ -245,6 +257,7 @@ fn tools() -> Vec<Tool> {
     let text = json!({"type":"string","minLength":1});
     let conversation = json!({"conversation_id":text,"runtime_id":text});
     [
+        ("scheduled_tasks", "管理 Velune 执行设备的本地定时任务。operation=list 返回完整定义和 revision；save 的 parameters.task 传完整定义（新建 id 为空、revision=0；更新必须保留当前 revision）。支持 delete、runNow（parameters 为 id/revision）、setEnabled（另加 enabled 布尔值，暂停无需修复配置）、previewSchedule（parameters 为 rrule/timeZone 和可选 pattern，仅预览）。规则为 RFC5545 RRULE、timeZone 为 IANA 时区，状态 active/paused；新建 task 必填 name、prompt、rrule、timeZone、status、target，其他项可省略。target={kind:newConversation,runtimeId,workingDirectories:[绝对路径],worktree:false}，或 {kind:existingConversation,runtimeId,conversationId}；model 可省略为运行时默认，也可用 list_agents 给出的模型身份。任务随 Velune 启停，退出错过的触发不补跑。原宿主交接只能由用户在窗口确认。", json!({"operation":{"type":"string","enum":["list","save","delete","runNow","setEnabled","previewSchedule"]},"parameters":{"type":"object"}}), vec!["operation"]),
         ("xurl_instructions", "取得 Xuanwo/xurl 官方 CLI 的查询、读取、发现与独立续接指引；先读指引，再用 list_agents 的可执行文件和环境。", json!({}), vec![]),
         ("resolve_agent_uri", "在当前设备已启用实例中定位 agents://codex、claude、pi 会话或查询 collection。q 按标题搜索，limit 为 1–100。返回 conversations 与 failures；多匹配需选 runtime_id，不要猜。路径、角色和全文搜索使用官方 CLI。", json!({"uri":text,"runtime_id":text}), vec!["uri"]),
         ("read_conversation", "分页读取会话文字历史（正文、思考、工具记录，不含图片字节）。conversation_id 接受 Velune ID 或具体 agents:// 地址。offset/limit 按 Unicode 字符计数，后续页传 expected_revision 避免历史变化导致错页。", json!({"conversation_id":text,"runtime_id":text,"offset":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1,"maximum":64000},"expected_revision":text}), vec!["conversation_id"]),

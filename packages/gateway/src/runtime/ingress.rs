@@ -352,8 +352,6 @@ async fn ingress_observed(
             );
         }
     };
-    // Members share a protocol; the first one stands for the route here.
-    let target = &route[0];
     let stream = match body.get("stream") {
         None => false,
         Some(Value::Bool(value)) => *value,
@@ -365,41 +363,6 @@ async fn ingress_observed(
                 Some(&route[0]),
             );
         }
-    };
-    let translation = if target.protocol == protocol {
-        None
-    } else {
-        match velune_ai_provider::translation::prepare(
-            protocol,
-            target.protocol,
-            &body,
-            target.max_output_tokens,
-        ) {
-            Ok(plan) => {
-                tracing::info!(
-                    event = "gateway_translation_prepared",
-                    source_protocol = ?protocol,
-                    target_protocol = ?target.protocol,
-                );
-                Some(plan)
-            }
-            Err(error) => {
-                return admission.reject(
-                    observation,
-                    StatusCode::BAD_REQUEST,
-                    &format!("protocol conversion: {error}"),
-                    Some(target),
-                );
-            }
-        }
-    };
-    let body = translation
-        .as_ref()
-        .map_or(body.clone(), |plan| plan.request().clone());
-    let headers = if translation.is_some() {
-        crate::translation::upstream_headers(headers, target.protocol)
-    } else {
-        headers
     };
     tracing::Span::current().record("stream", stream);
     let candidates = match state.candidates(&route) {
@@ -416,11 +379,12 @@ async fn ingress_observed(
         let exchange = Exchange {
             request_id,
             started_at_ms,
+            protocol,
             body,
             headers,
             stream,
         };
-        dispatch(state, exchange, candidates, translation, sender, telemetry)
+        dispatch(state, exchange, candidates, sender, telemetry)
             .instrument(request_span)
             .with_subscriber(dispatcher)
             .await;

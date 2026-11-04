@@ -18,20 +18,20 @@ struct RuntimeDiscoveryView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            Text("快速导入 Agent 运行时").font(.headline).frame(maxWidth: .infinity, alignment: .leading).padding(20)
+            Text("快速导入 Agent 运行时").uiFont(.headline).frame(maxWidth: .infinity, alignment: .leading).padding(20)
             Text("选择已安装的运行时，预览版本与目录后添加配置。提供商与模型可在下一步单独导入。")
-                .font(.callout).foregroundStyle(.secondary).padding(.horizontal, 20).padding(.bottom, 12)
+                .uiFont(.callout).foregroundStyle(.secondary).padding(.horizontal, 20).padding(.bottom, 12)
             List(selection: $selectedIDs) {
                 ForEach(candidates, id: \.runtime.id) { candidate in
                     VStack(alignment: .leading, spacing: 4) {
                         HStack { Text(candidate.runtime.name); if let version = candidate.version { Text(version).foregroundStyle(.secondary) }; if candidate.alreadyConfigured { Text("已配置").foregroundStyle(.secondary) } }
-                        Text(candidate.runtime.settings["agentDir"] ?? "").font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
-                        Text(candidate.runtime.settings["binary"] ?? "").help("Node：" + (candidate.runtime.settings["nodeBinary"] ?? "")).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
-                        if !candidate.supported { Text(candidate.detail).font(.caption).foregroundStyle(.secondary) }
+                        Text(candidate.runtime.settings["agentDir"] ?? "").uiFont(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+                        Text(candidate.runtime.settings["binary"] ?? "").help("Node：" + (candidate.runtime.settings["nodeBinary"] ?? "")).uiFont(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+                        if !candidate.supported { Text(candidate.detail).uiFont(.caption).foregroundStyle(.secondary) }
                     }.tag(candidate.runtime.id).selectionDisabled(!candidate.supported || candidate.alreadyConfigured)
                 }
             }.listStyle(.bordered).padding(.horizontal, 20).disabled(discovering || store.isBusy)
-            HStack { if discovering { ProgressView().controlSize(.small) }; Text(status).font(.caption).foregroundStyle(.secondary); Spacer() }.padding(.horizontal, 20).padding(.top, 10)
+            HStack { if discovering { ProgressView().controlSize(.small) }; Text(status).uiFont(.caption).foregroundStyle(.secondary); Spacer() }.padding(.horizontal, 20).padding(.top, 10)
 
             HStack {
                 Button("重新发现") { discover() }.disabled(discovering || store.isBusy)

@@ -6,14 +6,14 @@ struct AgentURIView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("打开会话").font(.headline)
+            Text("打开会话").uiFont(.headline)
             if let failure = window.agentURIFailure { Text(failure).foregroundStyle(.secondary).textSelection(.enabled) }
             if !window.agentURIMatches.isEmpty {
                 List(window.agentURIMatches, selection: $selection) { conversation in
                     VStack(alignment: .leading) {
                         Text(conversation.title)
                         Text(window.list.device.runtimeInstances.first { $0.id == conversation.runtimeID }?.name ?? conversation.runtimeID).foregroundStyle(.secondary)
-                        if let cwd = conversation.cwd { Text(cwd).font(.caption).foregroundStyle(.secondary) }
+                        if let cwd = conversation.cwd { Text(cwd).uiFont(.caption).foregroundStyle(.secondary) }
                     }
                     .tag(conversation.id)
                 }

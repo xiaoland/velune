@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import VeluneBindings
 
 struct AppProblem: Identifiable, Sendable, Equatable {
     let id: UUID
@@ -11,6 +12,19 @@ struct AppProblem: Identifiable, Sendable, Equatable {
     let phase: String?
     let operationID: String?
     let activityKey: String?
+    var resolvedAt: Date? = nil
+
+    var record: DiagnosticProblem {
+        DiagnosticProblem(id: id.uuidString, occurredAtUnixMs: Int64(occurredAt.timeIntervalSince1970 * 1000), source: source, detail: detail, kind: kind,
+                          code: code, phase: phase, operationId: operationID, activityKey: activityKey,
+                          resolvedAtUnixMs: resolvedAt.map { Int64($0.timeIntervalSince1970 * 1000) })
+    }
+    static func restored(_ value: DiagnosticProblem) -> AppProblem? {
+        guard let id = UUID(uuidString: value.id) else { return nil }
+        return AppProblem(id: id, occurredAt: Date(timeIntervalSince1970: Double(value.occurredAtUnixMs) / 1000), source: value.source, detail: value.detail, kind: value.kind,
+                          code: value.code, phase: value.phase, operationID: value.operationId, activityKey: value.activityKey,
+                          resolvedAt: value.resolvedAtUnixMs.map { Date(timeIntervalSince1970: Double($0) / 1000) })
+    }
 
     static func failure(_ error: Error, source: String = "操作", activityKey: String? = nil) -> AppProblem {
         if let transport = error as? TransportError {
@@ -87,7 +101,7 @@ struct AppProblem: Identifiable, Sendable, Equatable {
     }
     var diagnosticText: String {
         (["时间：\(occurredAt.formatted())", "来源：\(source)", "类别：\(kind)", "详情：\(detail)"] +
-         [code.map { "代码：\($0)" }, phase.map { "阶段：\($0)" }, operationID.map { "操作编号：\($0)" }].compactMap { $0 }).joined(separator: "\n")
+         [resolvedAt.map { "已恢复：\($0.formatted())" }, code.map { "代码：\($0)" }, phase.map { "阶段：\($0)" }, operationID.map { "操作编号：\($0)" }].compactMap { $0 }).joined(separator: "\n")
     }
 }
 
@@ -96,8 +110,8 @@ struct ProblemsButton: View {
     @Environment(\.openWindow) private var openWindow
     var body: some View {
         Button { openWindow(id: "problems") } label: {
-            HStack(spacing: 5) { Image(systemName: "exclamationmark.triangle"); if !store.problems.isEmpty { Text(store.problems.count, format: .number).monospacedDigit() } }
-        }.accessibilityLabel("问题，\(store.problems.count) 项").help("查看问题与诊断详情")
+            HStack(spacing: 5) { Image(systemName: "exclamationmark.triangle"); if store.activeProblemCount > 0 { Text(store.activeProblemCount, format: .number).monospacedDigit() } }
+        }.accessibilityLabel("问题，\(store.activeProblemCount) 项未恢复").help("查看问题与历史诊断")
     }
 }
 
@@ -137,9 +151,9 @@ struct ProblemsView: View {
             List(selection: $selection) {
                 ForEach(store.problems.reversed()) { problem in
                     VStack(alignment: .leading, spacing: 4) {
-                        Text(problem.source).font(.headline).lineLimit(1)
+                        Label(problem.source, systemImage: problem.resolvedAt == nil ? "exclamationmark.triangle" : "checkmark.circle").uiFont(.headline).lineLimit(1)
                         Text(problem.detail).lineLimit(2).foregroundStyle(.secondary)
-                        Text(problem.occurredAt, format: .dateTime.hour().minute().second()).font(.caption).foregroundStyle(.secondary)
+                        Text(problem.occurredAt, format: .dateTime.month().day().hour().minute().second()).uiFont(.caption).foregroundStyle(.secondary)
                     }.padding(.vertical, 3).tag(problem.id)
                 }
             }.frame(minWidth: 230, idealWidth: 280)
@@ -148,15 +162,16 @@ struct ProblemsView: View {
             ScrollView {
                 if let selected {
                     VStack(alignment: .leading, spacing: 16) {
-                        Text(selected.source).font(.headline)
+                        Text(selected.source).uiFont(.headline)
                         Text(selected.detail).textSelection(.enabled)
                         Grid(alignment: .leading, horizontalSpacing: 14, verticalSpacing: 10) {
                             diagnosticRow("时间", selected.occurredAt.formatted())
+                            if let at = selected.resolvedAt { diagnosticRow("已恢复", at.formatted()) }
                             diagnosticRow("类别", selected.kind)
                             if let value = selected.code { diagnosticRow("代码", value) }
                             if let value = selected.phase { diagnosticRow("阶段", value) }
                             if let value = selected.operationID { diagnosticRow("操作编号", value) }
-                        }.font(.callout).textSelection(.enabled)
+                        }.uiFont(.callout).textSelection(.enabled)
                         if selected.activityKey?.hasPrefix("history:") == true {
                             Button("重新读取会话列表") { store.refreshConversations() }.disabled(store.isBusy)
                         }

@@ -100,7 +100,7 @@ struct AnalyticsView: View {
                 Text("\(loadedRange?.caption ?? "") · \(loadedScopeName)").lineLimit(1).truncationMode(.middle).help(loadedRange?.description ?? "")
                 Spacer()
                 if let updated = store.analyticsUpdatedAt { Text("更新于 \(updated.formatted(date: .omitted, time: .shortened))") }
-            }.font(.caption).foregroundStyle(.secondary)
+            }.uiFont(.caption).foregroundStyle(.secondary)
             if store.analyticsIsLoading || store.analyticsReadFailed || report.storageWarning != nil {
                 HStack(alignment: .firstTextBaseline) {
                     if store.analyticsIsLoading { Text("正在读取新范围，当前仍显示上次结果。").foregroundStyle(.secondary) }
@@ -108,7 +108,7 @@ struct AnalyticsView: View {
                     else { Label("部分用量记录未能保存。", systemImage: "exclamationmark.triangle") }
                     Spacer()
                     if store.analyticsReadFailed || report.storageWarning != nil { ProblemsButton(store: store) }
-                }.font(.callout)
+                }.uiFont(.callout)
             }
         }.padding(.horizontal, 20).padding(.bottom, 12)
     }
@@ -117,36 +117,36 @@ struct AnalyticsView: View {
             VStack(alignment: .leading, spacing: 20) {
                 HStack(alignment: .top, spacing: 28) {
                     VStack(alignment: .leading, spacing: 12) {
-                        Text("已报告 Token").font(.headline)
+                        Text("已报告 Token").uiFont(.headline)
                         HStack(alignment: .top, spacing: 24) {
                             metric("输入", value: AnalyticsFormatting.tokens(report.overview.inputTokens), coverage: coverage(report.overview.inputReportedCount, report.overview.requestCount))
                             metric("输出", value: AnalyticsFormatting.tokens(report.overview.outputTokens), coverage: coverage(report.overview.outputReportedCount, report.overview.requestCount))
                         }
                     }.frame(maxWidth: .infinity, alignment: .leading)
                     VStack(alignment: .leading, spacing: 12) {
-                        Text("性能").font(.headline)
+                        Text("性能").uiFont(.headline)
                         metric("有效输出速率", value: AnalyticsFormatting.speed(report.overview.outputTokensPerSecond), coverage: "\(report.overview.eligibleSpeedCount) / \(report.overview.requestCount) 次请求可计算")
                     }.frame(maxWidth: .infinity, alignment: .leading).help(AnalyticsFormatting.speedDefinition)
                 }
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("\(report.overview.requestCount.formatted()) 次请求").font(.headline)
-                    Text(requestSummary(report.overview)).font(.callout).foregroundStyle(.secondary)
+                    Text("\(report.overview.requestCount.formatted()) 次请求").uiFont(.headline)
+                    Text(requestSummary(report.overview)).uiFont(.callout).foregroundStyle(.secondary)
                 }
                 Divider()
                 if (loadedRange?.boundaries.count ?? 0) > 2 { trend(report) }
-                else { Text("今日用量与性能见上方汇总。每日趋势可切换至最近 7 天或 30 天。").font(.callout).foregroundStyle(.secondary) }
+                else { Text("今日用量与性能见上方汇总。每日趋势可切换至最近 7 天或 30 天。").uiFont(.callout).foregroundStyle(.secondary) }
                 ImmediateDisclosureGroup {
-                    HStack { Text("完整报告总量"); Text(AnalyticsFormatting.tokens(report.overview.totalTokens) + " Token").monospacedDigit(); Text(coverage(report.overview.totalReportedCount, report.overview.requestCount)).foregroundStyle(.secondary) }.font(.callout)
+                    HStack { Text("完整报告总量"); Text(AnalyticsFormatting.tokens(report.overview.totalTokens) + " Token").monospacedDigit(); Text(coverage(report.overview.totalReportedCount, report.overview.requestCount)).foregroundStyle(.secondary) }.uiFont(.callout)
                     Text(AnalyticsFormatting.totalDefinition)
                     Text(AnalyticsFormatting.speedDefinition)
                     Text("仅统计 Velune LLM 网关新请求的上游用量报告，不读取 Agent 运行时历史。— 表示未知，0 表示已报告为零。")
                 } label: { Text("指标与数据来源说明") }
-                .font(.caption).foregroundStyle(.secondary)
+                .uiFont(.caption).foregroundStyle(.secondary)
             }.padding(20)
         }
     }
     private func metric(_ title: String, value: String, coverage: String) -> some View {
-        VStack(alignment: .leading, spacing: 6) { Text(title).font(.callout).foregroundStyle(.secondary); Text(value).font(.title2).monospacedDigit().lineLimit(1).minimumScaleFactor(0.8).help(value); Text(coverage).font(.caption).foregroundStyle(.secondary) }.frame(maxWidth: .infinity, alignment: .leading)
+        VStack(alignment: .leading, spacing: 6) { Text(title).uiFont(.callout).foregroundStyle(.secondary); Text(value).uiFont(.title2).monospacedDigit().lineLimit(1).minimumScaleFactor(0.8).help(value); Text(coverage).uiFont(.caption).foregroundStyle(.secondary) }.frame(maxWidth: .infinity, alignment: .leading)
     }
     private func requestSummary(_ totals: AnalyticsTotals) -> String {
         var parts = ["\(totals.completedCount) 次完成"]
@@ -160,7 +160,7 @@ struct AnalyticsView: View {
     private func trend(_ report: AnalyticsReport) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Text("每日趋势").font(.headline)
+                Text("每日趋势").uiFont(.headline)
                 Spacer()
                 Picker("趋势指标", selection: $chartMetric) { ForEach(AnalyticsChartMetric.allCases) { Text($0.title).tag($0) } }.pickerStyle(.segmented).labelsHidden().frame(width: 190).accessibilityLabel("趋势指标")
             }
@@ -179,8 +179,8 @@ struct AnalyticsView: View {
                 .frame(height: 175)
             } else { ContentUnavailableView(chartMetric == .tokens ? "暂无已报告的 Token 用量" : "暂无可计算的有效输出速率", systemImage: "chart.bar.xaxis").frame(height: 175) }
             if let chartSelection, let bucket = report.trend.first(where: { Double($0.fromMs) / 1_000 <= chartSelection.timeIntervalSince1970 && Double($0.toMs) / 1_000 > chartSelection.timeIntervalSince1970 }) {
-                Text("\((loadedRange ?? range).dayLabel(Date(timeIntervalSince1970: Double(bucket.fromMs) / 1_000))) · 输入：\(AnalyticsFormatting.tokens(bucket.totals.inputTokens)) · 输出：\(AnalyticsFormatting.tokens(bucket.totals.outputTokens)) · 有效输出速率：\(AnalyticsFormatting.speed(bucket.totals.outputTokensPerSecond))").font(.caption).foregroundStyle(.secondary)
-            } else { Text("输入、输出按各自报告绘制；未报告不补零。速率包含等待时间。").font(.caption).foregroundStyle(.secondary) }
+                Text("\((loadedRange ?? range).dayLabel(Date(timeIntervalSince1970: Double(bucket.fromMs) / 1_000))) · 输入：\(AnalyticsFormatting.tokens(bucket.totals.inputTokens)) · 输出：\(AnalyticsFormatting.tokens(bucket.totals.outputTokens)) · 有效输出速率：\(AnalyticsFormatting.speed(bucket.totals.outputTokensPerSecond))").uiFont(.caption).foregroundStyle(.secondary)
+            } else { Text("输入、输出按各自报告绘制；未报告不补零。速率包含等待时间。").uiFont(.caption).foregroundStyle(.secondary) }
         }
     }
     private func hasChartData(_ report: AnalyticsReport) -> Bool {
@@ -197,7 +197,7 @@ struct AnalyticsView: View {
                 TableColumn(breakdownMode.title) { row in
                     VStack(alignment: .leading, spacing: 3) {
                         Text(row.value.name).lineLimit(1).help(row.value.name)
-                        if breakdownMode == .model { Text(report.providers.first { $0.providerId == row.value.providerId }?.name ?? "未知提供商").font(.caption).foregroundStyle(.secondary) }
+                        if breakdownMode == .model { Text(report.providers.first { $0.providerId == row.value.providerId }?.name ?? "未知提供商").uiFont(.caption).foregroundStyle(.secondary) }
                     }
                 }
                 TableColumn("请求") { row in Text(row.value.totals.requestCount, format: .number).monospacedDigit() }.width(65)
@@ -211,14 +211,14 @@ struct AnalyticsView: View {
     private func requestList(_ report: AnalyticsReport) -> some View {
         VStack(spacing: 0) {
             HStack {
-                Text("筛选：\(loadedScopeName)").font(.callout)
+                Text("筛选：\(loadedScopeName)").uiFont(.callout)
                 if scope != nil || store.analyticsLoadedQuery?.providerId != nil || store.analyticsLoadedQuery?.modelRecordKey != nil { Button("清除筛选") { scope = nil; requestLimit = 100; load() } }
                 Spacer()
                 Button("显示详情…") { showRequestDetail(selectedRequestID) }.disabled(selectedRequestID == nil)
             }.padding(.horizontal, 20).padding(.bottom, 12)
             Table(report.requests.map(AnalyticsRequestRow.init), selection: $selectedRequestID) {
                 TableColumn("时间") { row in Text(Date(timeIntervalSince1970: Double(row.value.startedAtMs) / 1_000), format: .dateTime.month(.twoDigits).day(.twoDigits).hour().minute()).monospacedDigit() }.width(125)
-                TableColumn("提供商 / 模型") { row in VStack(alignment: .leading, spacing: 3) { Text(row.value.providerName); Text(row.value.providerModelId).font(.caption).foregroundStyle(.secondary) }.lineLimit(1) }
+                TableColumn("提供商 / 模型") { row in VStack(alignment: .leading, spacing: 3) { Text(row.value.providerName); Text(row.value.providerModelId).uiFont(.caption).foregroundStyle(.secondary) }.lineLimit(1) }
                 TableColumn("结果") { row in Text(AnalyticsFormatting.outcome(row.value.outcome)) }.width(70)
                 TableColumn("输出 Token") { row in Text(AnalyticsFormatting.tokens(row.value.outputTokens)).monospacedDigit() }.width(100)
             }.contextMenu(forSelectionType: String.self) { ids in if let id = ids.first { Button("显示详情…") { showRequestDetail(id) } } } primaryAction: { ids in showRequestDetail(ids.first) }
@@ -227,10 +227,10 @@ struct AnalyticsView: View {
             // same-scope refresh still retains its table and request-ID selection.
             .id(requestTableScope)
             HStack {
-                Text("最近 \(report.requests.count) / \(report.overview.requestCount) 条请求记录").font(.caption).foregroundStyle(.secondary)
+                Text("最近 \(report.requests.count) / \(report.overview.requestCount) 条请求记录").uiFont(.caption).foregroundStyle(.secondary)
                 Spacer()
                 if report.overview.requestCount > UInt64(report.requests.count) && requestLimit < 500 { Button("加载更多") { requestLimit = min(500, requestLimit + 100); load() } }
-                else if report.overview.requestCount > UInt64(report.requests.count) { Text("最多展示最近 500 条").font(.caption).foregroundStyle(.secondary) }
+                else if report.overview.requestCount > UInt64(report.requests.count) { Text("最多展示最近 500 条").uiFont(.caption).foregroundStyle(.secondary) }
             }.padding(12)
         }
     }
@@ -241,7 +241,7 @@ private struct AnalyticsRequestDetail: View {
     @Environment(\.dismiss) private var dismiss
     var body: some View {
         VStack(spacing: 0) {
-            HStack { Text("请求详情").font(.headline); Spacer(); Button("完成") { dismiss() }.keyboardShortcut(.cancelAction) }.padding(20)
+            HStack { Text("请求详情").uiFont(.headline); Spacer(); Button("完成") { dismiss() }.keyboardShortcut(.cancelAction) }.padding(20)
             Divider()
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
@@ -265,7 +265,7 @@ private struct AnalyticsRequestDetail: View {
                             row("缓存读取", AnalyticsFormatting.tokens(request.cacheReadInputTokens))
                             row("缓存创建", AnalyticsFormatting.tokens(request.cacheCreationInputTokens))
                         }
-                        Text("缓存字段按上游协议保留，不再次加到已归一的输入中；推理 Token 属于输出子集。").font(.caption).foregroundStyle(.secondary)
+                        Text("缓存字段按上游协议保留，不再次加到已归一的输入中；推理 Token 属于输出子集。").uiFont(.caption).foregroundStyle(.secondary)
                     } label: { Text("推理与缓存用量") }
                     ImmediateDisclosureGroup {
                         Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 10) {
@@ -279,7 +279,7 @@ private struct AnalyticsRequestDetail: View {
                         Text(AnalyticsFormatting.speedDefinition)
                         Text("首输出延迟从上游派发到首次正文、推理或工具内容；非流式响应未知。请求耗时涵盖完成接收、失败或取消；速率仅使用可确认的业务终态耗时。— 表示未知。")
                     } label: { Text("指标说明") }
-                    .font(.caption).foregroundStyle(.secondary)
+                    .uiFont(.caption).foregroundStyle(.secondary)
                 }.padding(20).textSelection(.enabled)
             }
         }.frame(width: 500, height: 540)

@@ -1,5 +1,5 @@
 //! Read-only Pi provider/model import preview and transactional application.
-//! The JavaScript adapter owns SDK 1.0.2 parsing; Rust only validates the
+//! The JavaScript adapter owns SDK parsing; Rust only validates the
 //! non-secret snapshot and projects supported models into gateway config.
 use crate::config::RuntimeKind;
 use crate::config::{GatewayConfig, Protocol, ProviderDefinition, ProviderModel, RuntimeInstance};
@@ -505,6 +505,7 @@ pub(crate) fn apply(
                         .unwrap_or(model.reasoning_levels),
                 ),
                 pi_projection: model.pi_projection.clone(),
+                request_parameters: None,
             });
         }
         // An explicit model selection must not create other source providers.
@@ -584,6 +585,7 @@ pub(crate) fn apply(
         };
         let mut provider_def = ProviderDefinition {
             quota_authentication: Default::default(),
+            billing: Default::default(),
             id: provider_id.clone(),
             name: provider.name,
             protocol: protocol_kind,

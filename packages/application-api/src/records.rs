@@ -2,6 +2,7 @@
 use crate::config::*;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+pub use velune_conversation::TurnOutcome;
 pub use velune_conversation::authentication::{
     AuthenticationEvent, AuthenticationNotification, AuthenticationPrompt,
 };
@@ -195,6 +196,8 @@ pub struct ConversationReference {
     pub runtime_id: String,
     #[serde(rename = "conversationID")]
     pub conversation_id: String,
+    #[serde(default)]
+    pub native_read_state: Option<velune_conversation::NativeReadState>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, uniffi::Enum)]
 #[serde(rename_all = "camelCase", tag = "operation")]
@@ -346,20 +349,12 @@ pub enum DiffLineKind {
     Notice,
 }
 
-/// How a Velune turn ended.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, uniffi::Enum)]
-#[serde(rename_all = "camelCase")]
-pub enum TurnOutcome {
-    Completed,
-    Failed,
-    /// The user stopped it.
-    Cancelled,
-}
-
 /// A Velune turn that ended, numbered in the order turns ended.
 #[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
 pub struct FinishedTurn {
+    #[serde(default)]
+    pub silent: bool,
     pub sequence: u64,
     pub context_runtime_id: String,
     pub conversation_id: String,

@@ -43,7 +43,7 @@ struct ProviderImportView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 12) {
-                Text("导入提供商").font(.headline)
+                Text("导入提供商").uiFont(.headline)
                 Spacer()
                 Picker("来源", selection: Binding(get: { sourceInstanceID ?? "" }, set: { sourceInstanceID = $0 })) {
                     ForEach(supportedInstances) { Text($0.name).tag($0.id) }
@@ -85,7 +85,7 @@ struct ProviderImportView: View {
                     ForEach(preview.providers) { candidate in
                         VStack(alignment: .leading, spacing: 3) {
                             Text(candidate.name).lineLimit(1)
-                            Text(providerStatus(candidate)).font(.caption).foregroundStyle(.secondary)
+                            Text(providerStatus(candidate)).uiFont(.caption).foregroundStyle(.secondary)
                         }
                         .padding(.vertical, 2)
                         .tag(candidate.id)
@@ -122,11 +122,11 @@ struct ProviderImportView: View {
                         TableColumn("模型") { model in
                             VStack(alignment: .leading, spacing: 3) {
                                 Text(model.name.isEmpty ? model.providerModelId : model.name).lineLimit(1)
-                                Text(model.providerModelId).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                                Text(model.providerModelId).uiFont(.caption).foregroundStyle(.secondary).lineLimit(1)
                             }.padding(.vertical, 3)
                         }.width(min: 160, ideal: 210)
                         TableColumn("状态") { model in
-                            Text(modelStatus(model, provider: provider)).foregroundStyle(.secondary).font(.caption)
+                            Text(modelStatus(model, provider: provider)).foregroundStyle(.secondary).uiFont(.caption)
                         }.width(65)
                     }
                     .overlay {
@@ -144,17 +144,17 @@ struct ProviderImportView: View {
                     if let provider {
                         if let model { modelDetails(model, provider: provider) }
                         else {
-                            Text(provider.name).font(.headline)
+                            Text(provider.name).uiFont(.headline)
                             Text("\(provider.models.count) 个模型").foregroundStyle(.secondary)
-                            Text("选择模型以查看详情与关联。").font(.callout).foregroundStyle(.secondary)
+                            Text("选择模型以查看详情与关联。").uiFont(.callout).foregroundStyle(.secondary)
                         }
                         if provider.alreadyImported && !replaceExisting {
                             Text("此提供商已存在，默认跳过。可在“导入选项”中允许替换。")
-                                .font(.caption).foregroundStyle(.secondary)
+                                .uiFont(.caption).foregroundStyle(.secondary)
                         }
                         if provider.alreadyImported && replaceExisting {
                             Text("替换会更新名称、认证与所选模型的参数；未选模型会移除，对它们的选择会清除。")
-                                .font(.caption).foregroundStyle(.secondary)
+                                .uiFont(.caption).foregroundStyle(.secondary)
                         }
                         ImmediateDisclosureGroup("提供商信息") {
                             providerDetails(provider).padding(.top, 8)
@@ -185,14 +185,14 @@ struct ProviderImportView: View {
             Text(provider.credentialStatus).foregroundStyle(.secondary)
             issueList(provider.issues)
         }
-        .font(.callout)
+        .uiFont(.callout)
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func modelDetails(_ model: ImportModelCandidate, provider: ImportProviderCandidate) -> some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text(model.name.isEmpty ? model.providerModelId : model.name).font(.headline)
-            Text(model.providerModelId).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+            Text(model.name.isEmpty ? model.providerModelId : model.name).uiFont(.headline)
+            Text(model.providerModelId).uiFont(.caption).foregroundStyle(.secondary).textSelection(.enabled)
                 .fixedSize(horizontal: false, vertical: true)
             if !enabled(provider) || !model.canImport {
                 Label(modelStatus(model, provider: provider), systemImage: "info.circle").foregroundStyle(.secondary)
@@ -203,14 +203,14 @@ struct ProviderImportView: View {
                     GridRow { Text("上下文窗口").foregroundStyle(.secondary); Text(model.contextWindow.map { TokenCount.format($0) } ?? "未知") }
                     GridRow { Text("最大输出").foregroundStyle(.secondary); Text(model.maxOutputTokens.map { TokenCount.format($0) } ?? "未知") }
                     GridRow { Text("运行时推理级别").foregroundStyle(.secondary); Text(model.reasoningLevels.isEmpty ? "未声明" : model.reasoningLevels.joined(separator: "、")) }
-                }.font(.caption).frame(maxWidth: .infinity, alignment: .leading).padding(.top, 8)
+                }.uiFont(.caption).frame(maxWidth: .infinity, alignment: .leading).padding(.top, 8)
             }
         }
     }
 
     private func issueList(_ issues: [String]) -> some View {
         ForEach(Array(issues.enumerated()), id: \.offset) { _, issue in
-            Text(issue).font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            Text(issue).uiFont(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         }
     }
 
@@ -220,7 +220,7 @@ struct ProviderImportView: View {
                 ImmediateDisclosureGroup("读取提示 · \(preview.warnings.count)") {
                     ScrollView { issueList(preview.warnings).frame(maxWidth: .infinity, alignment: .leading) }
                         .frame(maxHeight: 80)
-                }.font(.callout)
+                }.uiFont(.callout)
             }
 
             HStack {

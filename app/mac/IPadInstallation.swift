@@ -92,7 +92,7 @@ struct IPadInstallationPanel: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("安装到 iPad").font(.title2)
+            Text("安装到 iPad").uiFont(.title2)
             Form {
                 HStack {
                     Text("源码目录")
@@ -117,10 +117,10 @@ struct IPadInstallationPanel: View {
                 .disabled(model.installing || model.refreshing)
             }
             Text("需要安装 Xcode，并在其中登录签名团队对应的 Apple 账号。连接并解锁 iPad，信任此 Mac 并开启开发者模式。安装所选源码目录的版本，保留应用数据。")
-                .font(.caption).foregroundStyle(.secondary)
+                .uiFont(.caption).foregroundStyle(.secondary)
             if !model.status.isEmpty {
                 ScrollView {
-                    Text(model.status).font(.caption).textSelection(.enabled)
+                    Text(model.status).uiFont(.caption).textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .frame(maxHeight: 100)

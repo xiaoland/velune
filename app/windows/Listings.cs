@@ -17,6 +17,7 @@ sealed class Listings(Core core)
         public int Written;
         // Conversations whose read mark is on its way.
         public readonly HashSet<string> MarkingRead = [];
+        public readonly Dictionary<string, (string NativeID, string Revision)> AttemptedReadReceipts = [];
         // Where the device's ended turns were read to, across rounds, and
         // whether the list was read yet.
         public ulong Cursor;
@@ -183,24 +184,29 @@ sealed class Listings(Core core)
     public async void MarkRead(Device device, ListedConversation listed)
     {
         var id = listed.Conversation.Id;
-        if (!feeds.TryGetValue(device, out var feed) || !feed.MarkingRead.Add(id))
+        if (!feeds.TryGetValue(device, out var feed))
         {
             return;
         }
-        var reference = new ConversationReference(listed.Conversation.RuntimeId, id);
+        var receipt = listed.Conversation.NativeReadState;
+        if (receipt is not null && feed.AttemptedReadReceipts.TryGetValue(id, out var attempted)
+            && attempted == (receipt.ConversationId, receipt.Revision)) return;
+        if (!feed.MarkingRead.Add(id)) return;
+        if (receipt is not null) feed.AttemptedReadReceipts[id] = (receipt.ConversationId, receipt.Revision);
+        feed.Writing++;
+        var reference = new ConversationReference(listed.Conversation.RuntimeId, id, listed.Conversation.NativeReadState);
         try
         {
-            await core.Call(device, NativeOperation.ConversationWrite, application => application.OrganizeConversations([reference], new ConversationOrganizationChange.MarkRead()));
-            var conversations = feed.Listing.Conversations;
-            if (conversations.FindIndex(shown => shown.Conversation.Id == id) is var at and >= 0)
-            {
-                conversations[at] = conversations[at] with { Unread = false };
-            }
+            var updated = await core.Call(device, NativeOperation.ConversationWrite, application => application.OrganizeConversations([reference], new ConversationOrganizationChange.MarkRead()));
+            feed.Listing = Listing.From(updated, [.. feed.Listing.Active.Values]);
         }
         catch (Exception failure)
         {
+            if (failure is not BindingException.Diagnostic { code: "read_state_conflict" }) feed.AttemptedReadReceipts.Remove(id);
             Problems.Report("标为已读", failure, device);
         }
+        feed.Writing--;
+        feed.Written++;
         feed.MarkingRead.Remove(id);
         Notify(device);
     }

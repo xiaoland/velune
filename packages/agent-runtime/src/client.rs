@@ -644,6 +644,16 @@ impl Client {
         Ok(())
     }
 
+    /// Continue in a new session holding the whole current branch; this
+    /// client then runs that session.
+    pub fn clone(&mut self) -> Result<()> {
+        let response = self.request(json!({"type":"clone"}))?;
+        if response["data"]["cancelled"] == true {
+            return Err(Error::Sdk("Pi 取消了会话复制".into()));
+        }
+        Ok(())
+    }
+
     pub fn sync_virtual_selection(&mut self) -> Result<Value> {
         self.request(json!({"type":"prompt","message":"/velune-sync-selection"}))
     }

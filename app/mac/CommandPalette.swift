@@ -67,6 +67,7 @@ enum FuzzyMatch {
 
 extension ConversationWindowModel {
     func showPalette(_ mode: PaletteMode) {
+        composerContext().prepare()
         if palette == mode { return closePalette() }
         if palette == nil {
             // A field's editor stands in for the field, which is what takes the keyboard back.
@@ -84,29 +85,45 @@ extension ConversationWindowModel {
         paletteReturnResponder = nil
         DispatchQueue.main.async { [weak self] in
             if !focusComposer, let view = responder as? NSView, let window = view.window, window.makeFirstResponder(view) { return }
-            self?.focused.composer.focusWhenShown()
+            _ = self.map { $0.composer(for: $0.commandTab).focusWhenShown() }
         }
     }
 
-    private var store: ConversationStore { focused.store }
+    private var store: ConversationStore { commandTab.store }
 
     /// Whether `command` does something now; the menus and the palette both ask.
-    func canPerform(_ command: ShortcutCommand, composerCommand: Bool = false) -> Bool {
-        switch command {
-        case .newConversation: !store.isLoading
+    func canPerform(_ command: ShortcutCommand, composerCommand: Bool = false, for context: ConversationStore? = nil) -> Bool {
+        if context == nil, artifactSheet != nil || !hasConversationFocus {
+            switch command {
+            case .newConversation, .newWindow, .openConversation, .newTab, .reopenClosedTab, .closeTab, .closeWindow,
+                 .splitRight, .splitDown, .commandPalette, .rightArea, .bottomArea, .editorOnly,
+                 .problems, .shortcutHelp, .nextAttention, .nextTab, .previousTab, .moveTabToNewWindow,
+                 .closeSplit, .nextPane, .previousPane, .keepInFront, .showList: break
+            default: return false
+            }
+        }
+        let tab = conversationTab(for: context)
+        let store = tab.store
+        let input = composerContext(for: tab)
+        return switch command {
+        // A new conversation opens its own tab: the shown store's loading
+        // does not matter, but a side chat is no target and a runtime must
+        // be there to take it.
+        case .newConversation: !store.isSideChat && !store.device.enabledRuntimeInstances.isEmpty
+        case .reopenClosedTab: canReopenClosedTab
         case .newWindow: openWindow != nil
         case .openConversation, .newTab, .closeTab, .closeWindow, .find, .splitRight, .splitDown, .commandPalette, .focusTranscript, .rightArea, .bottomArea, .editorOnly, .problems, .shortcutHelp, .nextAttention: true
         case .stop: store.canCancel && !store.isLoading
         case .stopSubAgents: store.followUp.canStopSubAgents
-        case .continueTurn: composerCommand ? focused.canResumeAfterCommand : focused.submission.canResume
-        case .compactContext: store.canCompact
-        case .sideChat: focused.canOpenSideChat
-        case .attach: !store.isShuttingDown
-        case .chooseRuntime: !store.device.enabledRuntimeInstances.isEmpty && !store.isShuttingDown
-        case .chooseModel: store.canSwitchModel
-        case .chooseEffort: !store.reasoningEffortOptions.isEmpty
-        case .choosePermission: !store.permissionModeOptions.isEmpty
-        case .chooseWorkingDirectory: composerContext().canChangeWorkingDirectory
+        case .continueTurn: input.submission(ignoringText: composerCommand).canResume
+        case .compactContext: input.canCompact
+        case .sideChat: input.sideChatTarget != nil
+        case .attach: store.allowsAttachments && !store.isShuttingDown
+        case .chooseRuntime: !store.device.enabledRuntimeInstances.filter { !store.isSideChat || store.device.hasSideChats($0.id) }.isEmpty && !store.isShuttingDown
+        case .chooseModel: input.canSwitchModel
+        case .chooseEffort: input.canSwitchModel && !input.reasoningEffortOptions.isEmpty
+        case .choosePermission: input.canSwitchModel && !input.permissionModeOptions.isEmpty
+        case .chooseWorkingDirectory: input.canChangeWorkingDirectory
         case .reload: store.canReloadFromRuntimes
         case .closeSplit, .nextPane, .previousPane: isSplit
         case .back: !store.backHistory.isEmpty
@@ -116,28 +133,31 @@ extension ConversationWindowModel {
         case .keepInFront: WindowPinning.shared.canPin
         case .showList: canToggle(.list)
         case .showOutline: canToggle(.outline)
-        case .focusComposer: canToggle(.composer)
+        case .focusComposer: store.isSideChat || canToggle(.composer)
         case .showAgents: canToggle(.agents)
         case .globalShow, .globalNewConversation: false
         }
     }
 
-    func perform(_ command: ShortcutCommand) {
-        guard canPerform(command) else { return }
+    func perform(_ command: ShortcutCommand, for context: ConversationStore? = nil) {
+        guard canPerform(command, for: context) else { return }
+        let tab = conversationTab(for: context)
+        let store = tab.store
         switch command {
-        case .newConversation: store.createConversation()
+        case .newConversation: if canTargetConversation { createConversation() } else { closeArtifactSheet(); openInNewTab() }
         case .openConversation: showPalette(.conversations)
         case .newTab: openInNewTab()
+        case .reopenClosedTab: reopenClosedTab()
         case .newWindow: openWindow?(.workspace, WindowSeed())
-        case .closeTab: closeTab(focused.id)
+        case .closeTab: if artifactSheet != nil { closeArtifactSheet() } else if !hasConversationFocus { closeTab(focusedEditor.id) } else if tab === sheetTab { closeSheet() } else if tab === composerSheetTab { closeComposerSheet() } else { closeTab(tab.id) }
         case .closeWindow: NSApp.keyWindow?.performClose(nil)
         case .find: find()
         case .stop: store.cancel()
         case .stopSubAgents: store.stopSubAgents()
-        case .continueTurn: focused.resume()
-        case .compactContext: store.compactContext()
-        case .sideChat: focused.openSideChat()
-        case .attach: focused.composer.chooseAttachments()
+        case .continueTurn: composerContext(for: tab).resume()
+        case .compactContext: composerContext(for: tab).compactContext()
+        case .sideChat: openSideChat(from: tab)
+        case .attach: composerContext(for: tab).chooseAttachments()
         case .chooseRuntime: showPalette(.runtime)
         case .chooseModel: showPalette(.model)
         case .chooseEffort: showPalette(.effort)
@@ -154,13 +174,13 @@ extension ConversationWindowModel {
         case .previousPane: focusNeighbour(forward: false)
         case .nextTab: selectNeighbourTab(forward: true)
         case .previousTab: selectNeighbourTab(forward: false)
-        case .moveTabToNewWindow: moveToNewWindow(focused.id)
+        case .moveTabToNewWindow: if artifactSheet != nil { moveArtifactSheetToWindow() } else { moveToNewWindow(focusedEditor.id) }
         case .keepInFront: WindowPinning.shared.toggle()
         case .commandPalette: showPalette(.commands)
-        case .focusTranscript: focused.focusTranscript()
+        case .focusTranscript: tab.focusTranscript()
         case .showList: toggle(.list)
         case .showOutline: toggle(.outline)
-        case .focusComposer: focusComposer()
+        case .focusComposer: if tab === sheetTab || tab === composerSheetTab { tab.composer.focusWhenShown() } else { focusComposer() }
         case .showAgents: toggle(.agents)
         case .rightArea: tools.toggleArea(.right)
         case .bottomArea: tools.toggleArea(.bottom)
@@ -178,13 +198,13 @@ extension ConversationWindowModel {
     func goToNextAttention() {
         let current = store.loadedConversationID
         let waiting = application.waitingConversationIDs
-        if !store.pendingInteractions.isEmpty { focused.focusInteraction(); return }
+        if !store.pendingInteractions.isEmpty { commandTab.focusInteraction(); return }
         let listed = list.conversations.sorted { ($0.updatedAtUnixMs ?? 0) > ($1.updatedAtUnixMs ?? 0) }
         let ordered = listed.filter { waiting.contains($0.id) } + listed.filter { $0.unread && !$0.failed && !waiting.contains($0.id) }
             + listed.filter { $0.unread && $0.failed && !waiting.contains($0.id) }
         guard let next = ordered.first(where: { $0.id != current }) else { NSSound.beep(); return }
         open(next.id)
-        if waiting.contains(next.id) { focused.focusInteraction() } else { focused.composer.focusWhenShown() }
+        if waiting.contains(next.id) { focused.focusInteraction() } else { composer(for: focused).focusWhenShown() }
     }
 
     /// What “沿用当前” and “运行时默认” are also found by.
@@ -220,7 +240,7 @@ extension ConversationWindowModel {
             let queued = store.followUp.queue.last.map { _ in
                 [PaletteItem(id: "queue:last", title: "编辑最后一条排队消息", aliases: ["Edit Last Queued Message", "queue"], detail: "输入区", shortcut: "⌥↑") { [weak self] _ in
                     self?.closePalette(focusComposer: true)
-                    DispatchQueue.main.async { _ = self?.focused.composer.takeLastQueued() }
+                    DispatchQueue.main.async { _ = self.map { $0.composer(for: $0.focused).takeLastQueued() } }
                 }]
             } ?? []
             return commands + queued + pages + windows
@@ -239,15 +259,15 @@ extension ConversationWindowModel {
                 }
             }
         case .runtime:
-            return store.device.enabledRuntimeInstances.map { runtime in
-                PaletteItem(id: runtime.id, title: runtime.name, aliases: [runtime.typeId.description], checked: runtime.id == store.nextTurnRuntimeID) { [weak self] _ in
+            return store.device.enabledRuntimeInstances.filter { !store.isSideChat || store.device.hasSideChats($0.id) }.map { runtime in
+                PaletteItem(id: runtime.id, title: runtime.name, aliases: [runtime.typeId.description], checked: runtime.id == composerContext().nextTurnRuntimeID) { [weak self] _ in
                     self?.closePalette(focusComposer: true)
-                    self?.store.selectNextTurnRuntime(runtime.id)
+                    self?.composerContext().selectNextTurnRuntime(runtime.id)
                 }
             }
         case .model:
-            let none = store.nextTurnHasCurrent && store.nextTurnModel != nil ? "沿用当前（\(store.selectedModelName ?? "")）" : "运行时默认"
-            let choices: [(String, String?, ModelSelection?)] = [(none, nil, nil)] + store.modelChoices.map { choice in
+            let none = composerContext().nextTurnHasCurrent && composerContext().nextTurnModel != nil ? "沿用当前（\(composerContext().selectedModelName ?? "")）" : "运行时默认"
+            let choices: [(String, String?, ModelSelection?)] = [(none, nil, nil)] + composerContext().modelChoices.map { choice in
                 if case .managed = choice.selection { (choice.name, "Velune 提供商", choice.selection) } else { (choice.name, nil, choice.selection) }
             }
             return choices.enumerated().map { index, choice in
@@ -256,24 +276,24 @@ extension ConversationWindowModel {
                 case .managed?: []
                 case nil: Self.unchosenAliases
                 }
-                return PaletteItem(id: "\(index):\(choice.0)", title: choice.0, aliases: aliases, detail: choice.1, checked: store.chosenModel == choice.2) { [weak self] _ in
+                return PaletteItem(id: "\(index):\(choice.0)", title: choice.0, aliases: aliases, detail: choice.1, checked: composerContext().chosenModel == choice.2) { [weak self] _ in
                     self?.closePalette(focusComposer: true)
-                    self?.store.selectModel(choice.2)
+                    self?.composerContext().selectModel(choice.2)
                 }
             }
         case .effort:
-            let none = store.currentEffort.map { "沿用当前（\($0)）" } ?? (store.nextTurnHasCurrent ? "沿用当前" : "运行时默认")
-            return ([nil] + store.reasoningEffortOptions.map(Optional.some)).map { level in
-                PaletteItem(id: level ?? "", title: level ?? none, aliases: level == nil ? Self.unchosenAliases : [], checked: store.nextTurnEffort == level) { [weak self] _ in
+            let none = composerContext().currentEffort.map { "沿用当前（\($0)）" } ?? (composerContext().nextTurnHasCurrent ? "沿用当前" : "运行时默认")
+            return ([nil] + composerContext().reasoningEffortOptions.map(Optional.some)).map { level in
+                PaletteItem(id: level ?? "", title: level ?? none, aliases: level == nil ? Self.unchosenAliases : [], checked: composerContext().nextTurnEffort == level) { [weak self] _ in
                     self?.closePalette(focusComposer: true)
-                    self?.store.selectEffort(level)
+                    self?.composerContext().selectEffort(level)
                 }
             }
         case .workingDirectory:
             let input = composerContext()
             guard input.canChangeWorkingDirectory else { return [] }
             let path = input.store.loadedConversationWorkingDirectory
-            var items = [PaletteItem(id: "default", title: "运行时默认目录", aliases: Self.unchosenAliases, checked: path == nil) { [weak self] _ in
+            var items = [PaletteItem(id: "default", title: "无工作区", aliases: Self.unchosenAliases + ["no workspace", "无项目"], checked: path == nil) { [weak self] _ in
                 self?.closePalette(focusComposer: true)
                 self?.composerContext().selectWorkingDirectory(nil)
             }]
@@ -300,14 +320,14 @@ extension ConversationWindowModel {
                 }
             }
         case .permission:
-            let current = store.currentPermissionMode
-            let none = current.map { "沿用当前（\($0.label)）" } ?? (store.nextTurnHasCurrent ? "沿用当前" : "运行时默认")
-            let chosen = store.effectivePermissionMode?.id
-            return [PaletteItem(id: "", title: none, aliases: Self.unchosenAliases, checked: chosen == nil) { [weak self] _ in self?.closePalette(focusComposer: true); self?.store.selectPermissionMode(nil) }]
-                + store.permissionModeOptions.map { option in
+            let current = composerContext().currentPermissionMode
+            let none = current.map { "沿用当前（\($0.label)）" } ?? (composerContext().nextTurnHasCurrent ? "沿用当前" : "运行时默认")
+            let chosen = composerContext().effectivePermissionMode?.id
+            return [PaletteItem(id: "", title: none, aliases: Self.unchosenAliases, checked: chosen == nil) { [weak self] _ in self?.closePalette(focusComposer: true); self?.composerContext().selectPermissionMode(nil) }]
+                + composerContext().permissionModeOptions.map { option in
                     PaletteItem(id: option.id, title: option.label, aliases: [option.id], detail: option.detail, checked: chosen == option.id) { [weak self] _ in
                         self?.closePalette(focusComposer: true)
-                        self?.store.selectPermissionMode(option.id)
+                        self?.composerContext().selectPermissionMode(option.id)
                     }
                 }
         }
@@ -325,7 +345,7 @@ struct CommandPaletteView: View {
 
     init(window: ConversationWindowModel, mode: PaletteMode) {
         self.window = window; self.mode = mode
-        store = window.focused.store; composer = window.focused.composer
+        store = window.commandTab.store; composer = window.composer(for: window.commandTab)
     }
 
     @State private var query = ""

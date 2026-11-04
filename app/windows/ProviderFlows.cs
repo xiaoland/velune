@@ -538,7 +538,7 @@ static class ProviderFlows
     {
         var entries = page.ModelTemplates
             .Select(template => (Name: template.Name, Detail: Parameters(template.SuggestedProviderModelId, template.ContextWindow, template.MaxOutputTokens, template.ReasoningLevels),
-                Model: new ProviderModel("", template.SuggestedProviderModelId, template.Nickname, template.Icon, template.ContextWindow, template.MaxOutputTokens, template.ReasoningLevels)))
+                Model: new ProviderModel("", template.SuggestedProviderModelId, template.Nickname, template.Icon, template.ContextWindow, template.MaxOutputTokens, template.ReasoningLevels, null)))
             .ToList();
         var search = new AutoSuggestBox { PlaceholderText = "搜索", QueryIcon = new SymbolIcon(Symbol.Find) };
         var list = new ListView { SelectionMode = ListViewSelectionMode.Multiple, Height = 320 };
@@ -584,7 +584,7 @@ static class ProviderFlows
                 var fetched = await Task.Run(page.Core.Local.FetchPublicModelCatalog);
                 entries.AddRange(fetched.Select(entry => (Name: entry.Name.Length > 0 ? entry.Name : entry.ModelId,
                     Detail: "目录 · " + entry.SourceProviderName + " · " + Parameters(entry.ModelId, entry.ContextWindow, entry.MaxOutputTokens, entry.ReasoningLevels),
-                    Model: new ProviderModel("", entry.ModelId, entry.Name.Length > 0 ? entry.Name : entry.ModelId, null, entry.ContextWindow, entry.MaxOutputTokens, entry.ReasoningLevels))));
+                    Model: new ProviderModel("", entry.ModelId, entry.Name.Length > 0 ? entry.Name : entry.ModelId, null, entry.ContextWindow, entry.MaxOutputTokens, entry.ReasoningLevels, null))));
                 status.Text = $"已读取 {fetched.Length} 个目录条目。条目只作参数起点，不说明此提供商支持该模型。";
                 catalog.Visibility = Visibility.Collapsed;
                 Show();

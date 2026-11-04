@@ -122,6 +122,7 @@ def history(path, native_id, runtime_id, sidechain=False):
     # The current turn's prompt and the usage of each model response in it,
     # by message id: a response's records repeat it, the last one complete.
     prompt, usages, prompt_id, can_resume = None, {}, None, False
+    executions, execution = [], None
     for entry in reversed(chain):
         role = entry.get("type")
         if role == "system" and entry.get("subtype") == "compact_boundary":
@@ -140,6 +141,8 @@ def history(path, native_id, runtime_id, sidechain=False):
                 and "promptSource" not in entry and "turnPosition" not in entry \
                 and entry.get("message", {}).get("content") == [{"type": "text", "text": "[Request interrupted by user]"}]:
             can_resume = True
+            if execution is not None:
+                execution["outcome"] = "cancelled"
             continue
         content = entry.get("message", {}).get("content")
         if role == "user" and (entry.get("origin") or {}).get("kind") == "task-notification" and isinstance(content, str):
@@ -170,6 +173,11 @@ def history(path, native_id, runtime_id, sidechain=False):
             calls.update((b["tool_id"], b) for b in content if b["kind"] == "tool" and b["tool_id"])
         model = entry.get("message", {}).get("model")
         api_error = role == "assistant" and entry.get("isApiErrorMessage") is True
+        if role == "assistant" and execution is not None:
+            # stop_reason is the native turn boundary; completed text blocks
+            # before tool_use are progress, not a successful execution.
+            stop = entry.get("message", {}).get("stop_reason")
+            execution["outcome"] = "failed" if api_error else "completed" if stop in ("end_turn", "stop_sequence") else None
         if api_error:
             content = [{"kind": "notice", "text": block["text"]} for block in content if block["kind"] == "text"]
             if isinstance(entry.get("error"), str):
@@ -195,6 +203,8 @@ def history(path, native_id, runtime_id, sidechain=False):
         message = {"id": entry["uuid"], "role": "system" if api_error else "tool" if role == "user" and all(b["kind"] == "tool" for b in content) else role,
                    "completed": True, "timestamp_unix_ms": timestamp(entry.get("timestamp")), "blocks": content}
         if message["role"] == "user":
+            execution = {"id": "claude-history:" + message["id"], "kind": "UserTurn", "message_ids": [], "outcome": None}
+            executions.append(execution)
             prompt_id = entry.get("promptId")
             can_resume = False
             # A replacement resumes at the nearest message record before the
@@ -212,6 +222,8 @@ def history(path, native_id, runtime_id, sidechain=False):
             close_turn(prompt, usages)
             prompt, usages = message, {}
         messages.append(message)
+        if execution is not None:
+            execution["message_ids"].append(message["id"])
     close_turn(prompt, usages)
     # The session's cost so far, written after each run; only while Claude
     # Code knows every model's price.
@@ -233,7 +245,7 @@ def history(path, native_id, runtime_id, sidechain=False):
     cwd = session_cwd(records, os.path.basename(folder))
     dates = [value for r in records if (value := timestamp(r.get("timestamp"))) is not None]
     return {"nativeId": native_id, "title": ({"source":"native", "text":title} if title else {"source":"firstMessage", "text":first_user} if first_user else {"source":"untitled"}), "cwd": cwd,
-            "messages": messages, "canResume": can_resume, "createdAtUnixMs": min(dates) if dates else None, "updatedAtUnixMs": max(dates) if dates else None}
+            "messages": messages, "executions": {"records": executions, "current": None}, "canResume": can_resume, "createdAtUnixMs": min(dates) if dates else None, "updatedAtUnixMs": max(dates) if dates else None}
 
 
 def close_turn(prompt, usages):
@@ -387,7 +399,7 @@ def main():
     runtime_id = request["runtimeId"]
     operation = request["operation"]
     requested = request.get("nativeId")
-    found = sessions(roots, requested.partition("/")[0] if operation == "read" else None)
+    found = sessions(roots, requested.partition("/")[0] if operation in ("read", "export_context") else None)
     if operation == "index":
         # File state only: which sessions exist, when their files changed,
         # and each project folder's working directory from its newest session.
@@ -430,7 +442,7 @@ def main():
             except (ValueError, OSError) as error:
                 failures.append({"code": "provider_read", "detail": type(error).__name__})
         return {"contractVersion": 1, "sessions": result, "failures": failures}
-    if operation == "read":
+    if operation in ("read", "export_context"):
         session, _, agent = requested.partition("/")
         uuid.UUID(session)
         if agent and not (agent.startswith("agent-") and AGENT_ID.fullmatch(agent[len("agent-"):])):
@@ -440,6 +452,8 @@ def main():
             path = dict(subagents(path)).get(requested)
         if path is None:
             return {"error": {"code": "session_not_found"}}
+        if operation == "export_context":
+            return export_context(path, sidechain=bool(agent))
         return {"contractVersion": 1, "history": history(path, requested, runtime_id, sidechain=bool(agent))}
     raise ValueError("unknown operation")
 

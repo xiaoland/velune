@@ -27,23 +27,24 @@ struct ConversationStatus: Equatable {
 /// explains them and a click lists everything the records say.
 struct ComposerStatusLine: View {
     @ObservedObject var store: ConversationStore
+    let context: ComposerContext
     @State private var branch: String?
     @State private var showsDetails = false
 
     private var status: ConversationStatus { store.conversationStatus }
-    private var accounts: [ComposerQuotaEntry] { store.composerAccountQuotas }
+    private var accounts: [ComposerQuotaEntry] { context.composerAccountQuotas }
 
     var body: some View {
         let status = self.status
-        let items = store.device.statusLine.filter { $0 == .rateLimits ? !accounts.isEmpty || store.composerQuotaError != nil : status.has($0) }
+        let items = store.device.statusLine.filter { $0 == .rateLimits ? !accounts.isEmpty || context.composerQuotaError != nil : status.has($0) }
         HStack(spacing: 0) {
-            if !items.isEmpty || !accounts.isEmpty || store.composerQuotaError != nil {
+            if !items.isEmpty || !accounts.isEmpty || context.composerQuotaError != nil {
                 Button { showsDetails.toggle() } label: {
                     HStack(spacing: 10) {
                         if items.isEmpty { Text("状态") }
                         ForEach(items, id: \.self) { compact($0, status) }
                     }
-                        .font(.callout).monospacedDigit().foregroundStyle(.secondary).lineLimit(1)
+                        .uiFont(.callout).monospacedDigit().foregroundStyle(.secondary).lineLimit(1)
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.borderless)
@@ -51,12 +52,12 @@ struct ComposerStatusLine: View {
                 .accessibilityLabel("会话状态")
                 .accessibilityValue(summary(items, status))
                 .popover(isPresented: $showsDetails, arrowEdge: .top) {
-                    StatusDetails(status: status, accounts: accounts, branch: branch, display: store.device.contextUsageDisplay, quotaDisplay: store.device.usageDisplay, quotaProblem: store.composerQuotaError)
+                    StatusDetails(status: status, accounts: accounts, branch: branch, display: store.device.contextUsageDisplay, quotaDisplay: store.device.usageDisplay, quotaProblem: context.composerQuotaError)
                 }
             }
         }
-        .task(id: store.composerQuotaRequest) {
-            await store.observeComposerQuota(store.composerQuotaRequest)
+        .task(id: context.composerQuotaRequest) {
+            await context.observeComposerQuota(context.composerQuotaRequest)
         }
         // The branch can change with any turn; reading it is one git call.
         .task(id: "\(status.conversationID ?? "")|\(status.directory ?? "")|\(status.usage.endedTurns)") {
@@ -83,7 +84,7 @@ struct ComposerStatusLine: View {
                 }.truncationMode(.middle)
             }
         case .rateLimits:
-            let text = store.composerQuotaError.map { _ in "额度读取失败" } ?? accountSummary(short: true)
+            let text = context.composerQuotaError.map { _ in "额度读取失败" } ?? accountSummary(short: true)
             Label(text, systemImage: "gauge.with.dots.needle.33percent")
         case .sessionCost:
             if let cost = status.usage.sessionCostMicroUsd { Text(StatusFormat.cost(cost)) }
@@ -101,7 +102,7 @@ struct ComposerStatusLine: View {
             case .sessionTokens: return status.usage.sessionTokens.map { "本会话累计：\(TokenCount.format($0)) tokens" }
             case .workingDirectory: return status.directory.map { "工作目录：\($0)" + (branch.map { "（\($0)）" } ?? "") }
             case .rateLimits:
-                return store.composerQuotaError ?? accountSummary(short: false)
+                return context.composerQuotaError ?? accountSummary(short: false)
             case .sessionCost: return status.usage.sessionCostMicroUsd.map { "费用估算：\(StatusFormat.cost($0))" }
             }
         }
@@ -159,7 +160,7 @@ struct StatusDetails: View {
     }
     private var details: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("会话状态").font(.headline)
+            Text("会话状态").uiFont(.headline)
             Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 6) {
                 if let tokens = status.usage.contextTokens {
                     heading("上下文")
@@ -199,8 +200,8 @@ struct StatusDetails: View {
             if let quotaProblem { Divider(); Text(quotaProblem).foregroundStyle(.secondary) }
             ForEach(accounts) { account in
                 Divider()
-                Text(account.title).font(.subheadline.weight(.semibold))
-                if account.quota.available == false { Text("账户当前不可用").font(.caption).foregroundStyle(.orange) }
+                Text(account.title).uiFont(.subheadline.weight(.semibold))
+                if account.quota.available == false { Text("账户当前不可用").uiFont(.caption).foregroundStyle(.orange) }
                 ForEach(Array(account.windows.enumerated()), id: \.offset) { _, window in
                     QuotaWindowRow(window: window, limit: account.limit(for: window.id),
                                    fresh: account.quota.freshness == .fresh, display: quotaDisplay, showsModels: true, title: account.isRecorded && window.period == nil ? "限额" : nil)
@@ -209,17 +210,17 @@ struct StatusDetails: View {
                     QuotaBalanceRow(balance: balance, fresh: account.quota.freshness == .fresh)
                 }
                 if account.isRecorded {
-                    Text("会话记录，非实时账户查询").font(.caption).foregroundStyle(.secondary)
+                    Text("会话记录，非实时账户查询").uiFont(.caption).foregroundStyle(.secondary)
                 } else { QuotaStatusText(quota: account.quota) }
             }
             Text("会话用量取自运行时记录；累计为已记录各轮之和，输入含缓存，输出含推理；费用为运行时估算，不代表实际账单。")
-                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                .uiFont(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             SettingsTabLink(tab: .conversation, title: "自定义状态栏…")
         }
         .padding(14).frame(width: 380, alignment: .leading)
     }
     private func heading(_ title: String) -> some View {
-        GridRow { Text(title).font(.subheadline.weight(.semibold)).gridCellColumns(2).padding(.top, 4) }
+        GridRow { Text(title).uiFont(.subheadline.weight(.semibold)).gridCellColumns(2).padding(.top, 4) }
     }
     private func row(_ label: String, _ value: String) -> some View {
         GridRow {

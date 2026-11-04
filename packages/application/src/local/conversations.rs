@@ -39,7 +39,14 @@ impl CoreRuntime {
         &mut self,
         request: TurnRequest,
     ) -> Result<SnapshotResult, RuntimeError> {
-        match self.send_and_restore(&request) {
+        let result = self.send_and_restore(&request);
+        if matches!(&result, Err(RuntimeError::Contract(failure)) if failure.code == "control_held_elsewhere")
+        {
+            self.control_held_elsewhere();
+        } else if result.is_err() {
+            self.session.control = None;
+        }
+        match result {
             Err(RuntimeError::OutstandingWork) => {
                 self.queue_after_work(request);
                 self.snapshot_result()
@@ -122,6 +129,7 @@ impl CoreRuntime {
             self.session.model_record_key = source.model_record_key.clone();
             self.session.active_state = ActiveState::History(Box::new(source));
         }
+        self.require_input_access()?;
         let snapshot = self
             .native_snapshot()
             .ok_or_else(|| RuntimeError::invalid("conversation is not active"))?;
@@ -188,14 +196,35 @@ impl CoreRuntime {
                 });
             }
         }
-        if snapshot.conversation.runtime_id != runtime_id {
+        let changes_provider = !unsubmitted
+            && snapshot.conversation.runtime_id == runtime_id
+            && self.runtime_instance(runtime_id)?.type_id == RuntimeKind::Codex166
+            && {
+                let raw = self
+                    .native_snapshot()
+                    .ok_or_else(|| RuntimeError::invalid("会话上下文不可用"))?;
+                let native_id = raw
+                    .conversation
+                    .id
+                    .strip_prefix(&format!("{runtime_id}:"))
+                    .ok_or_else(|| RuntimeError::invalid("Codex 会话身份无效"))?;
+                !velune_agent_runtime::native::resume_provider_matches(
+                    &self.history_config(self.runtime_instance(runtime_id)?)?,
+                    native_id,
+                    matches!(selection, Some(crate::ModelSelection::Managed { .. })),
+                    raw.conversation.cwd.as_deref(),
+                )
+                .map_err(|error| RuntimeError::context("检查 Codex 提供商切换", error))?
+            };
+        if snapshot.conversation.runtime_id != runtime_id || changes_provider {
             return self.continue_in_runtime(
-                runtime_id,
                 selection.as_ref(),
-                text,
-                effort,
-                permission_mode,
-                images,
+                Prompt {
+                    runtime_id,
+                    message: Some((text, images)),
+                    effort,
+                    permission_mode,
+                },
             );
         }
         if matches!(self.session.active_state, ActiveState::History(_))
@@ -224,12 +253,31 @@ impl CoreRuntime {
         if !runtime.enabled {
             return Err(RuntimeError::invalid("此运行时已停用，请先启用"));
         }
-        let cwd = cwd.map(PathBuf::from);
+        let cwd = if cwd.is_none()
+            && matches!(
+                runtime.type_id,
+                RuntimeKind::Pi | RuntimeKind::Acp | RuntimeKind::DeepSeek
+            ) {
+            // These runtimes require a real cwd (Pi uses process.cwd()). Keep projectless
+            // work away from the app's launch directory on the target host.
+            let directory = self
+                .user_home(&runtime)
+                .ok_or_else(|| RuntimeError::invalid("无法确定执行机器的用户目录"))?
+                .join("Documents/Velune");
+            self.prepare_runtime_location(&runtime)?
+                .0
+                .create_dir_all(&directory)
+                .map_err(|error| RuntimeError::context("创建无工作区目录失败", error))?;
+            Some(directory)
+        } else {
+            cwd.map(PathBuf::from)
+        };
         if let Some(cwd) = &cwd {
             self.validate_runtime_cwd(&runtime, cwd)?;
         }
         self.validate_model_selection(&runtime, selection.as_ref())?;
         let snapshot = PiProjection::new(ConversationSummary {
+            native_read_state: None,
             can_rename: false,
             can_delete: false,
             id: "new".into(),
@@ -263,7 +311,19 @@ impl CoreRuntime {
     ) -> Result<SnapshotResult, RuntimeError> {
         // Reopening a conversation whose turn or sub-agents run shows it as it
         // runs; its native history is read again once they have ended.
-        if self.session.executing() {
+        if self.session.executing()
+            || self
+                .session
+                .pending_native_fork
+                .as_ref()
+                .is_some_and(|pending| {
+                    pending.conversation_id() == id
+                        && self.session.projected().is_some_and(|snapshot| {
+                            snapshot.conversation.runtime_id == runtime_id
+                                && snapshot.conversation.id == id
+                        })
+                })
+        {
             return self.snapshot_result();
         }
         let (snapshot, projection) = self.read_conversation_source(runtime_id, id)?;
@@ -281,6 +341,7 @@ impl CoreRuntime {
     ) {
         self.session.logical_projection = projection;
         self.session.unsubmitted_draft = None;
+        self.session.pending_native_fork = None;
         self.session.model_record_key = snapshot.model_record_key.clone();
         self.session.model_selection = snapshot
             .model_record_key
@@ -303,6 +364,29 @@ impl CoreRuntime {
                 .is_none_or(|segment| segment.runtime_instance_id != runtime_id)
             {
                 return Err(RuntimeError::invalid("会话来源运行时不匹配"));
+            }
+            let (snapshot, projection) = self.read_link(link)?;
+            Ok((snapshot, Some(projection)))
+        } else {
+            Ok((self.read_history(runtime_id, id)?, None))
+        }
+    }
+
+    /// Reopen a queried view by its current native context. A continued
+    /// conversation keeps its source identity, but queries address its last
+    /// segment's runtime, including when no session is loaded yet.
+    pub(super) fn read_conversation_context(
+        &self,
+        runtime_id: &str,
+        id: &str,
+    ) -> Result<(ConversationSnapshot, Option<LogicalProjection>), RuntimeError> {
+        if let Some(link) = self.conversation_links.iter().find(|link| link.id == id) {
+            if link
+                .segments
+                .last()
+                .is_none_or(|segment| segment.runtime_instance_id != runtime_id)
+            {
+                return Err(RuntimeError::invalid("会话当前上下文运行时不匹配"));
             }
             let (snapshot, projection) = self.read_link(link)?;
             Ok((snapshot, Some(projection)))
@@ -345,6 +429,7 @@ impl CoreRuntime {
             return self.snapshot_result();
         }
         let (mut snapshot, projection) = self.read_conversation_source(runtime_id, id)?;
+        let control_target = self.read_control_target(&snapshot, projection.as_ref());
         if let Some(projection) = projection {
             let segment = projection
                 .link
@@ -356,10 +441,11 @@ impl CoreRuntime {
             if index > 0 {
                 messages.push(self.boundary_message(segment, index));
             }
-            for confirmation in &mut snapshot.message_identity_confirmations {
-                confirmation.previous_id = format!("segment-{index}:{}", confirmation.previous_id);
-                confirmation.current_id = format!("segment-{index}:{}", confirmation.current_id);
-            }
+            super::continuation::namespace_associations(&mut snapshot, index);
+            snapshot
+                .executions
+                .records
+                .extend(projection.executions.records);
             messages.extend(display_segment(segment, &snapshot.messages, index)?);
             snapshot.conversation = projection.origin;
             snapshot.context_runtime_id = segment.runtime_instance_id.clone();
@@ -380,7 +466,10 @@ impl CoreRuntime {
         transcript.apply(TranscriptEvent::ConfirmIdentities(
             &snapshot.message_identity_confirmations,
         ));
-        transcript.apply(TranscriptEvent::ReplaceMessages(&snapshot.messages));
+        transcript.apply(TranscriptEvent::Replace {
+            messages: &snapshot.messages,
+            executions: &snapshot.executions,
+        });
         super::composer_choices::recall_turn_requests(
             &self.turn_requests,
             &mut transcript,
@@ -394,6 +483,7 @@ impl CoreRuntime {
         snapshot.transcript_message_identities = transcript.message_identities();
         snapshot.sub_agents = self.sub_agents(&snapshot);
         snapshot.collaborators = self.collaborators(&snapshot);
+        self.apply_read_input_access(&mut snapshot, control_target);
         Ok(SnapshotResult {
             snapshot: Some(self.delivery.snapshot(snapshot)),
         })
@@ -414,7 +504,6 @@ impl CoreRuntime {
         id: &str,
     ) -> Result<ConfigurationSnapshot, RuntimeError> {
         let result = self.manage_conversation(runtime_id, id, ConversationChange::Delete)?;
-        self.discard_composer_draft(id);
         self.discard_conversation_choices(id);
         Ok(result)
     }
@@ -426,7 +515,7 @@ impl CoreRuntime {
         change: ConversationChange,
     ) -> Result<ConfigurationSnapshot, RuntimeError> {
         let deleting = matches!(change, ConversationChange::Delete);
-        if self.session.executing() {
+        if deleting && self.session.executing() {
             return Err(RuntimeError::invalid(
                 "请先停止正在执行的任务与子 Agent，再修改会话",
             ));
@@ -463,12 +552,12 @@ impl CoreRuntime {
         id: &str,
         change: ConversationChange,
     ) -> Result<ConfigurationSnapshot, RuntimeError> {
-        if self.session.executing() {
+        let deleting = matches!(change, ConversationChange::Delete);
+        if deleting && self.session.executing() {
             return Err(RuntimeError::invalid(
                 "请先停止正在执行的任务与子 Agent，再修改会话",
             ));
         }
-        let deleting = matches!(change, ConversationChange::Delete);
         let runtime = self.runtime_instance(runtime_id)?.clone();
         if !runtime.enabled {
             return Err(RuntimeError::invalid("此运行时已停用，请先启用"));
@@ -507,10 +596,33 @@ impl CoreRuntime {
                 "Claude Code 子 Agent 会话没有自己的名称",
             ));
         }
+        if let Some(title) = title {
+            let mut renamed_live = false;
+            // A linked conversation may name a source owned by another open
+            // session. Always use its live owner instead of a second file writer.
+            self.for_each_session(|core| {
+                if core.session.execution_runtime_id.as_deref() == Some(runtime_id)
+                    && core
+                        .native_snapshot()
+                        .is_some_and(|view| view.conversation.id == id)
+                    && let Some(live) = core.session.active_state.live_mut()
+                {
+                    live.rename(title)
+                        .map_err(|error| RuntimeError::context("原生会话重命名失败", error))?;
+                    renamed_live = true;
+                    core.sync_projection()?;
+                }
+                Ok(())
+            })?;
+            if renamed_live {
+                return self.list();
+            }
+        }
         // Re-resolve within the configured instance before invoking a native mutation.
         let listed_summary = self.conversation_summary(&runtime, id)?;
         let listed = listed_summary.is_some();
-        if !listed
+        if deleting
+            && !listed
             && runtime.type_id == RuntimeKind::Pi
             && matches!(self.session.active_state, ActiveState::Pi(_))
             && self.session.execution_runtime_id.as_deref() == Some(runtime_id)
@@ -532,29 +644,10 @@ impl CoreRuntime {
                     .path_exists(Path::new(native_id))
                     .map_err(|error| RuntimeError::context("原生草稿路径检查", error))?
             {
-                if deleting {
-                    self.invalidate_execution()?;
-                    self.session.active_state = ActiveState::Empty;
-                    self.session.model_record_key = None;
-                } else {
-                    self.session
-                        .pi()?
-                        .set_name(title.expect("rename title"))
-                        .map_err(|error| {
-                            RuntimeError::context("Pi 原生草稿重命名失败，请重试", error)
-                        })?;
-                    self.sync_projection()?;
-                    if !self.native_snapshot().is_some_and(|snapshot| {
-                        snapshot.conversation.id == id
-                            && snapshot.conversation.title.display_text()
-                                == title.expect("rename title")
-                    }) {
-                        return Err(RuntimeError::invalid("Pi 未确认原生草稿名称，请重试"));
-                    }
-                }
-                if deleting {
-                    self.session.unsubmitted_draft = None;
-                }
+                self.invalidate_execution()?;
+                self.session.active_state = ActiveState::Empty;
+                self.session.model_record_key = None;
+                self.session.unsubmitted_draft = None;
                 return self.list();
             }
         }
@@ -564,7 +657,7 @@ impl CoreRuntime {
         let current = self
             .native_snapshot()
             .is_some_and(|snapshot| snapshot.conversation.id == id);
-        if current {
+        if current && deleting {
             self.invalidate_execution()?;
         }
         if runtime.type_id == RuntimeKind::Pi {
@@ -600,6 +693,7 @@ impl CoreRuntime {
         } else {
             let context = self.execution_context(&runtime)?;
             velune_agent_runtime::native::manage_thread_at(
+                runtime.type_id,
                 &setting_path(&runtime, "binary")?,
                 &context.agent_dir,
                 native_id,
@@ -675,6 +769,10 @@ impl CoreRuntime {
     }
 
     fn send_prompt(&mut self, prompt: Prompt) -> Result<SnapshotResult, RuntimeError> {
+        // Queued and collaboration turns can arrive without a command's Login::Blocks guard.
+        if self.login_running() {
+            return Err(RuntimeError::invalid("请先完成登录，再发送消息"));
+        }
         self.ensure_active(prompt.runtime_id)?;
         if self.turn_running() {
             return Err(RuntimeError::invalid("runtime is busy"));
@@ -735,6 +833,9 @@ impl CoreRuntime {
             },
         }
         .map_err(|error| RuntimeError::context("message send", error));
+        if let ActiveState::Native(session) = &self.session.active_state {
+            self.session.pending_native_fork = session.pending_fork();
+        }
         if sent.is_err() && self.session.gateway_runner.is_some() && !self.session.executing() {
             self.finish_managed_turn()?;
         }

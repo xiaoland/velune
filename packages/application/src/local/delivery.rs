@@ -241,6 +241,15 @@ fn delivered_block(
     Some(match block {
         MessageBlock::Text { text } => DeliveredBlock::Text { text: text.clone() },
         MessageBlock::Notice { text } => DeliveredBlock::Notice { text: text.clone() },
+        MessageBlock::RuntimeFailure {
+            failure,
+            detail,
+            retry,
+        } => DeliveredBlock::RuntimeFailure {
+            failure: *failure,
+            detail: detail.clone(),
+            retry: retry.clone(),
+        },
         MessageBlock::ContextCompaction { text } => {
             DeliveredBlock::ContextCompaction { text: text.clone() }
         }

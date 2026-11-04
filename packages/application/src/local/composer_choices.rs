@@ -1,8 +1,6 @@
 //! What the user chose for coming turns, and Velune's record of what it sent.
 use super::*;
-use crate::config::{
-    ComposerChoices, NewConversationChoice, NextTurnIntent, RuntimeComposerChoices,
-};
+use crate::config::{ComposerChoices, NewConversationChoice, RuntimeComposerChoices};
 use crate::conversation::{ConversationSnapshot, MessageBlock, MessageRole, TurnSettings};
 use sha2::{Digest, Sha256};
 use velune_agent_runtime::transcript::TranscriptProjection;
@@ -111,37 +109,6 @@ impl CoreRuntime {
 
     pub(crate) fn composer_choices(&self) -> Result<ComposerChoices, RuntimeError> {
         Ok(self.composer_choices.clone())
-    }
-
-    /// An intent without choices or runtime removes the conversation's.
-    pub(crate) fn set_next_turn_intent(
-        &mut self,
-        mut intent: NextTurnIntent,
-    ) -> Result<(), RuntimeError> {
-        if intent.conversation_id.is_empty() {
-            return Err(RuntimeError::invalid("conversation id"));
-        }
-        // A choice of nothing is kept: on a runtime the conversation
-        // has no turn on, it asks for the runtime's own defaults.
-        intent
-            .choices
-            .sort_by(|a, b| a.runtime_id.cmp(&b.runtime_id));
-        if intent
-            .choices
-            .windows(2)
-            .any(|pair| pair[0].runtime_id == pair[1].runtime_id)
-        {
-            return Err(RuntimeError::invalid("next-turn runtime choices"));
-        }
-        let mut next = self.composer_choices.clone();
-        next.conversations
-            .retain(|kept| kept.conversation_id != intent.conversation_id);
-        if intent.runtime_id.is_some() || !intent.choices.is_empty() {
-            next.conversations.push(intent);
-            next.conversations
-                .sort_by(|a, b| a.conversation_id.cmp(&b.conversation_id));
-        }
-        self.store_composer_choices(next)
     }
 
     pub(crate) fn set_runtime_composer_choices(

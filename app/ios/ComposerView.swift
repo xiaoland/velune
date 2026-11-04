@@ -22,12 +22,29 @@ struct ComposerView: View {
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
+            if let message = model.inputLockMessage { Label(message, systemImage: "lock.fill").font(.caption).textSelection(.enabled) }
             if model.failure != nil {
                 HStack {
                     Label("操作未完成", systemImage: "exclamationmark.triangle").foregroundStyle(.orange)
                     Spacer()
                     ProblemsButton()
                 }.font(.caption).padding(.horizontal, 4)
+            }
+            if !model.legacyInputs.isEmpty {
+                Menu("恢复本机旧输入") {
+                    ForEach(model.legacyInputs) { entry in Button(entry.title) { model.importLegacyInput(entry.content) } }
+                }.font(.caption).disabled(model.busy)
+            } else if model.legacyInput != nil { Button("恢复本机旧输入", action: model.importLegacyInput).font(.caption).disabled(model.busy) }
+            if let message = model.composerFailure { Text(message).font(.caption).foregroundStyle(.secondary).textSelection(.enabled) }
+            if !model.inputAttachments.isEmpty {
+                ScrollView(.horizontal) {
+                    HStack {
+                        ForEach(model.inputAttachments, id: \.id) { attachment in
+                            HStack { Text(attachment.name); Button("移除", systemImage: "xmark.circle", action: { model.removeInputAttachment(attachment.id) }).labelStyle(.iconOnly) }
+                                .font(.caption).padding(6).background(.quaternary, in: Capsule())
+                        }
+                    }
+                }
             }
             HStack(alignment: .bottom, spacing: 8) {
                 // Match TextEditor's native text insets; keep Return and text selection native.
@@ -36,6 +53,9 @@ struct ComposerView: View {
                     .padding(.horizontal, 5).padding(.vertical, 8)
                     .frame(minHeight: 44).hidden().accessibilityHidden(true)
                     .overlay {
+                        if !model.canEditDraft {
+                            ScrollView { Text(model.draft.isEmpty ? " " : model.draft).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 5).padding(.vertical, 8) }
+                        } else {
                         TextEditor(text: $model.draft)
                             .scrollContentBackground(.hidden)
                             .overlay(alignment: .topLeading) {
@@ -51,6 +71,7 @@ struct ComposerView: View {
                                 guard key.modifiers.contains(.command) else { return .ignored }
                                 sendFromKeyboard(); return .handled
                             }
+                        }
                     }
                     .font(.body)
                 Button {

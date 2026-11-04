@@ -17,6 +17,7 @@ public sealed partial class ConversationView
     readonly DispatcherTimer draftTimer = new() { Interval = TimeSpan.FromMilliseconds(600) };
     // Set while the view puts text in the input, which is no edit to save.
     bool restoringDraft;
+    ulong composerVersion;
     bool composing;
     // The queue as last shown, and the queued message being edited in place.
     string shownQueue = "";
@@ -103,11 +104,7 @@ public sealed partial class ConversationView
             Send();
             return;
         }
-        SetInput("");
-        if (!await Model.Steer(text) && Input.Text.Length == 0)
-        {
-            SetInput(text);
-        }
+        if (await Model.Steer(text) && Input.Text == text) SetInput("");
     }
 
     async Task AttachFile(string path)
@@ -165,6 +162,7 @@ public sealed partial class ConversationView
 
     async void PasteFiles(DataPackageView content)
     {
+        if (!Model.DraftEditable) return;
         try
         {
             foreach (var file in (await content.GetStorageItemsAsync()).OfType<StorageFile>())
@@ -181,6 +179,7 @@ public sealed partial class ConversationView
     // PasteImage attaches the clipboard's bitmap as a PNG.
     async void PasteImage(DataPackageView content)
     {
+        if (!Model.DraftEditable) return;
         try
         {
             using var source = await (await content.GetBitmapAsync()).OpenReadAsync();
@@ -207,6 +206,14 @@ public sealed partial class ConversationView
 
     void RenderComposer()
     {
+        if (composerVersion != Model.ComposerVersion) {
+            composerVersion = Model.ComposerVersion;
+            restoringDraft = true; Input.Text = Model.ComposerText; restoringDraft = false;
+        }
+        Input.IsReadOnly = !Model.DraftEditable;
+        InputLock.Text = Model.InputLockMessage ?? Model.ComposerIssue ?? "";
+        InputLock.Visibility = Visible(!Model.InputEditable || Model.ComposerIssue != null);
+        if (!Model.DraftEditable) CompletionPopup.IsOpen = false;
         if (!sessionOptionsRead && Model.Snapshot != null && Model.SessionOpen)
         {
             sessionOptionsRead = true;
@@ -223,11 +230,11 @@ public sealed partial class ConversationView
         SendButton.IsEnabled = submission.Enabled;
         var keys = window.Shell.Commands;
         Input.PlaceholderText = $"输入消息，{keys.SendKey} 发送，{keys.NewLineKey} 换行，/ 命令";
-        ToolTipService.SetToolTip(SendButton, submission.Action == ComposerSubmission.Kind.Resume ? "从现有上下文继续，不新增用户消息"
+        ToolTipService.SetToolTip(SendButton, submission.Action == ComposerSubmission.Kind.Resume ? "继续当前会话；不支持原生恢复的运行时会发送“continue”"
             : submission.Action == ComposerSubmission.Kind.Queue
                 ? Model.CanSteer ? $"{keys.SendKey} 加入发送队列；{keys.SteerKey} 插入本轮" : $"{keys.SendKey} 加入发送队列，本轮结束后发出"
                 : $"{keys.SendKey} 发送消息");
-        AttachButton.IsEnabled = !Model.Busy;
+        AttachButton.IsEnabled = !Model.Busy && Model.DraftEditable;
         CompactButton.IsEnabled = Model.CanCompact;
     }
 
@@ -518,7 +525,7 @@ public sealed partial class ConversationView
             QueueBar.ActionButton = action;
             if (action != null)
             {
-                action.IsEnabled = !Model.Busy;
+                action.IsEnabled = !Model.Busy && (action != resumeQueue || Model.InputEditable);
             }
         }
         else

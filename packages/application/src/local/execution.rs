@@ -245,6 +245,7 @@ impl CoreRuntime {
             .as_deref()
             .unwrap_or_default();
         let mut projection = PiProjection::new(ConversationSummary {
+            native_read_state: None,
             can_rename: false,
             can_delete: false,
             id: session
@@ -285,6 +286,11 @@ impl CoreRuntime {
     }
     fn shutdown_active_inner(&mut self) -> Result<(), RuntimeError> {
         let cancellation_requested = self.session.cancel_requested;
+        if let ActiveState::Native(session) = &self.session.active_state
+            && let Some(pending) = session.pending_fork()
+        {
+            self.session.pending_native_fork = Some(pending);
+        }
         let mut state = std::mem::replace(&mut self.session.active_state, ActiveState::Empty);
         self.session.compacting = false;
         let result = match state.live_mut() {

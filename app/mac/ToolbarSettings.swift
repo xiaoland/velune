@@ -122,7 +122,7 @@ struct ToolbarSettingsSection: View {
                     .onMove { settings.move(in: area, from: $0, to: $1) }
                 }
                 if area == .sidebar {
-                    Text("勾选决定按钮是否显示，拖动调整顺序。有些按钮只在适用时才出现（关联 Agent、保持在最前面、问题）。").font(.caption).foregroundStyle(.secondary)
+                    Text("勾选决定按钮是否显示，拖动调整顺序。有些按钮只在适用时才出现（关联 Agent、保持在最前面、问题）。").uiFont(.caption).foregroundStyle(.secondary)
                     Button("恢复默认") { settings.reset() }.disabled(settings.isDefault)
                 }
             }

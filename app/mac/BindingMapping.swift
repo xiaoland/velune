@@ -10,7 +10,7 @@ enum BindingMapping {
     static func conversation(_ value: ConversationSummary) -> Conversation {
         Conversation(id: value.id, title: value.title.displayText(), updatedAtUnixMs: value.updatedAtUnixMs, createdAtUnixMs: value.createdAtUnixMs,
                      runtimeID: value.runtimeId, cwd: value.cwd, canRename: value.canRename, canDelete: value.canDelete,
-                     parentConversationID: value.parentConversationId)
+                     parentConversationID: value.parentConversationId, nativeReadState: value.nativeReadState)
     }
 
     static func listed(_ value: ListedConversation) -> Conversation {

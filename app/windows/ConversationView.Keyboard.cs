@@ -165,6 +165,7 @@ public sealed partial class ConversationView
 
     internal async void Attach()
     {
+        if (!Model.DraftEditable) return;
         foreach (var path in await Native.PickFiles(window))
         {
             await AttachFile(path);

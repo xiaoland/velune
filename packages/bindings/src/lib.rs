@@ -143,11 +143,33 @@ pub fn provider_templates() -> Result<Vec<ProviderTemplate>, BindingError> {
     Ok(velune_application_api::provider_templates())
 }
 
+/// Presentation metadata for a validated subscription composition. API providers return None.
+#[uniffi::export]
+pub fn provider_subscription_template(
+    execution_backend: ExecutionBackend,
+    request_profile: RequestProfile,
+    authentication_source: ProviderAuthenticationSource,
+    quota_source: ProviderQuotaSource,
+) -> Option<ProviderTemplate> {
+    velune_application_api::provider_subscription_template(
+        &execution_backend,
+        request_profile,
+        authentication_source,
+        quota_source,
+    )
+}
+
 /// The official API service an address belongs to, whose account balance or
 /// key limit the `apiAccount` quota source reads; None for any other address.
 #[uniffi::export]
 pub fn api_account_service_name(endpoint: String) -> Option<String> {
     velune_application_api::api_account_service(&endpoint).map(|service| service.name().into())
+}
+
+/// Official account reporting support, independent of the selected model protocol.
+#[uniffi::export]
+pub fn provider_billing_service(endpoint: String) -> Option<BillingService> {
+    velune_application_api::billing_service(&endpoint)
 }
 
 #[derive(Clone, uniffi::Record)]
@@ -168,6 +190,7 @@ enum Backend {
 pub struct VeluneApplication {
     application: Arc<Mutex<Option<Backend>>>,
     trace_carrier: Option<velune_telemetry::TraceCarrier>,
+    composer_authority: Option<Arc<VeluneApplication>>,
     diagnostics: diagnostics::Diagnostics,
     #[cfg(all(feature = "local-runtime", feature = "remote"))]
     remote_service: Arc<Mutex<Option<Arc<remote::ServiceOwner>>>>,
@@ -180,7 +203,28 @@ impl VeluneApplication {
             .map_err(|_| BindingError::Unavailable)
     }
 
-    fn request(&self, name: &'static str, command: Command) -> Result<Response, BindingError> {
+    fn request(&self, name: &'static str, mut command: Command) -> Result<Response, BindingError> {
+        if matches!(
+            command,
+            Command::ManageComposerInputs { .. }
+                | Command::UploadComposerAttachment { .. }
+                | Command::ReadComposerAttachment { .. }
+        ) && let Some(authority) = &self.composer_authority
+        {
+            return authority.request(name, command);
+        }
+        if let Some(authority) = &self.composer_authority
+            && let Some(turn) = command.composed_turn_mut()
+        {
+            for reference in &mut turn.attachments {
+                if let Some(id) = reference.strip_prefix("composer:") {
+                    let content = authority.read_composer_attachment(id.to_owned())?;
+                    *reference = self
+                        .upload_attachment(content.attachment.name, content.bytes)?
+                        .reference;
+                }
+            }
+        }
         self.diagnostics
             .run_context(name, self.trace_carrier.as_ref(), || {
                 #[cfg(any(feature = "local-runtime", feature = "remote"))]
@@ -277,6 +321,7 @@ impl VeluneApplication {
         Ok(Arc::new(Self {
             application: Arc::new(Mutex::new(Some(Backend::Local(application)))),
             trace_carrier: None,
+            composer_authority: None,
             diagnostics,
             #[cfg(feature = "remote")]
             remote_service: Arc::new(Mutex::new(None)),
@@ -301,6 +346,7 @@ impl VeluneApplication {
             application: self.application.clone(),
             diagnostics: self.diagnostics.clone(),
             trace_carrier: carrier,
+            composer_authority: self.composer_authority.clone(),
             #[cfg(all(feature = "local-runtime", feature = "remote"))]
             remote_service: self.remote_service.clone(),
         }))
@@ -518,6 +564,56 @@ impl VeluneApplication {
             SetConversationBrowserPreferences { preferences }
         )
     }
+    pub fn with_composer_authority(
+        &self,
+        authority: Option<Arc<VeluneApplication>>,
+    ) -> Result<Arc<Self>, BindingError> {
+        if self.lock()?.is_none() {
+            return Err(BindingError::Closed);
+        }
+        Ok(Arc::new(Self {
+            application: self.application.clone(),
+            trace_carrier: self.trace_carrier.clone(),
+            diagnostics: self.diagnostics.clone(),
+            composer_authority: authority,
+            #[cfg(all(feature = "local-runtime", feature = "remote"))]
+            remote_service: self.remote_service.clone(),
+        }))
+    }
+    pub fn composer_owner_id(&self) -> Result<String, BindingError> {
+        request!(self, "composer_owner_id", ReadComposerOwner)
+    }
+    pub fn manage_composer_inputs(
+        &self,
+        operation: ComposerInputOperation,
+    ) -> Result<ComposerInputUpdate, BindingError> {
+        request!(
+            self,
+            "manage_composer_inputs",
+            ManageComposerInputs { operation }
+        )
+    }
+    pub fn upload_composer_attachment(
+        &self,
+        name: String,
+        bytes: Vec<u8>,
+    ) -> Result<ComposerAttachment, BindingError> {
+        request!(
+            self,
+            "upload_composer_attachment",
+            UploadComposerAttachment { name, bytes }
+        )
+    }
+    pub fn read_composer_attachment(
+        &self,
+        attachment_id: String,
+    ) -> Result<ComposerAttachmentContent, BindingError> {
+        request!(
+            self,
+            "read_composer_attachment",
+            ReadComposerAttachment { attachment_id }
+        )
+    }
     pub fn composer_choices(&self) -> Result<ComposerChoices, BindingError> {
         request!(self, "composer_choices", ReadComposerChoices)
     }
@@ -633,6 +729,42 @@ impl VeluneApplication {
         )
     }
 
+    pub fn provider_billing(
+        &self,
+        gateway_id: String,
+        provider_id: String,
+        refresh: bool,
+    ) -> Result<ProviderBillingStatus, BindingError> {
+        request!(
+            self,
+            "provider_billing",
+            ReadProviderBilling {
+                gateway_id,
+                provider_id,
+                refresh
+            }
+        )
+    }
+    pub fn save_provider_billing(
+        &self,
+        gateway_id: String,
+        provider_id: String,
+        configuration: Option<BillingConfiguration>,
+        authentication_edit: BillingAuthenticationEdit,
+        confirmed: bool,
+    ) -> Result<ProviderBillingStatus, BindingError> {
+        request!(
+            self,
+            "save_provider_billing",
+            SaveProviderBilling {
+                gateway_id,
+                provider_id,
+                configuration,
+                authentication_edit,
+                confirmed
+            }
+        )
+    }
     pub fn provider_quota(
         &self,
         gateway_id: String,
@@ -856,6 +988,12 @@ impl VeluneApplication {
                 conversation_id
             }
         )
+    }
+    pub fn scheduled_tasks(
+        &self,
+        operation: ScheduledTasksOperation,
+    ) -> Result<ScheduledTasksState, BindingError> {
+        request!(self, "scheduled_tasks", ManageScheduledTasks { operation })
     }
     pub fn snapshot(
         &self,
@@ -1165,6 +1303,25 @@ impl VeluneApplication {
         )
     }
 
+    /// Fork the conversation through the turn the user message `message_id`
+    /// starts; answers with the new conversation's snapshot.
+    pub fn fork_conversation(
+        &self,
+        runtime_id: String,
+        conversation_id: String,
+        message_id: String,
+    ) -> Result<SnapshotResult, BindingError> {
+        request!(
+            self,
+            "fork_conversation",
+            ForkConversation {
+                runtime_id,
+                conversation_id,
+                message_id
+            }
+        )
+    }
+
     pub fn cancel(
         &self,
         runtime_id: String,
@@ -1205,9 +1362,20 @@ impl VeluneApplication {
     pub fn send_side_chat(
         &self,
         side_chat_id: String,
-        text: String,
+        target_runtime_id: String,
+        selection: Option<ModelSelection>,
+        turn: ComposedTurn,
     ) -> Result<SnapshotResult, BindingError> {
-        request!(self, "send_side_chat", SendSideChat { side_chat_id, text })
+        request!(
+            self,
+            "send_side_chat",
+            SendSideChat {
+                side_chat_id,
+                target_runtime_id,
+                selection,
+                turn
+            }
+        )
     }
 
     pub fn close_side_chat(&self, side_chat_id: String) -> Result<(), BindingError> {

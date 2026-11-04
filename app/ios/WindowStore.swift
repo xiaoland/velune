@@ -7,6 +7,8 @@ struct WindowRoute: Hashable, Codable {
     var target: ConversationTarget?
 }
 
+struct PendingComposerCreation: Codable { var inputID: String; var ownerID: String; var runtimeID: String; var conversationID: String }
+
 struct ComposerState: Codable {
     var text = ""
     var selection: ModelSelection?
@@ -14,6 +16,15 @@ struct ComposerState: Codable {
     var offset: CGFloat = 0
     var destination: DraftDestination?
     var choices: [String: TurnChoice]?
+    var sharedInput: ComposerInput?
+    var composerPending: Bool?
+    var composerBaseline: UInt64?
+    var legacyInput: ComposerInputContent?
+    var composerUnbound: Bool?
+    var composerDirectoryRevision: UInt64?
+    var pendingCreation: PendingComposerCreation?
+    var composerBindingRevision: UInt64?
+    var composerBindingBaseline: UInt64?
 }
 
 struct DraftDestination: Codable {
@@ -44,7 +55,7 @@ final class DeviceStore: ObservableObject {
     private var composers: [String: ComposerState] = [:]
     @Published private var drafts: [String: ConversationTarget] = [:]
     var pendingDrafts: [ConversationTarget] {
-        drafts.filter { $0.key.hasPrefix((peer ?? "") + "/") }.map(\.value).sorted { $0.key < $1.key }
+        drafts.filter { $0.key.hasPrefix((peer ?? "") + "/") && $0.key == key($0.value) }.map(\.value).sorted { $0.key < $1.key }
     }
     func draftTitle(_ target: ConversationTarget) -> String {
         composers[key(target)]?.text.trimmingCharacters(in: .whitespacesAndNewlines).components(separatedBy: .newlines).first ?? "新会话"
@@ -79,6 +90,14 @@ final class DeviceStore: ObservableObject {
         if let cached = models[storageKey] { return cached }
         let model = ConversationModel(client: client, peer: peer ?? "", target: target)
         if let saved = composers[storageKey] { model.restore(saved) }
+        if target.conversation == nil {
+            model.legacyInputs = drafts.compactMap { oldKey, oldTarget in
+                guard oldTarget.conversation == nil, oldKey.hasPrefix((peer ?? "") + "/"), oldKey != storageKey,
+                      let saved = composers[oldKey], saved.sharedInput == nil, !saved.text.isEmpty else { return nil }
+                return LegacyComposerEntry(id: oldKey, content: .init(text: saved.text, attachments: [], runtimeId: saved.destination?.runtime ?? oldTarget.runtime, runtimeOwnerId: nil,
+                    choices: (saved.choices ?? [:]).map { .init(ownerId: "", runtimeId: $0.key, choice: $0.value) }, choiceEdited: true))
+            }.sorted { $0.id < $1.id }
+        }
         model.problemContext = deviceName + " · " + target.title
         model.onComposerChange = { [weak self] model in self?.save(model) }
         model.onIdentityChange = { [weak self] model in self?.adopt(model) }

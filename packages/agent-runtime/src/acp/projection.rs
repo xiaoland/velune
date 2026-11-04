@@ -146,6 +146,11 @@ impl Client {
                 native_id,
             });
         }
+        if let Some(snapshot) = &mut self.snapshot {
+            snapshot
+                .executions
+                .confirm(&snapshot.message_identity_confirmations);
+        }
         let id = self.stream.as_ref().expect("active chunk").id.clone();
         let mut message = self
             .snapshot
@@ -292,6 +297,7 @@ impl Client {
     }
     pub(super) fn message(&mut self, message: Message) {
         if let Some(snapshot) = &mut self.snapshot {
+            snapshot.executions.attach(&message.id);
             if let Some(previous) = snapshot
                 .messages
                 .iter_mut()
@@ -325,6 +331,7 @@ impl Client {
         if let Some(snapshot) = &mut self.snapshot {
             snapshot.run_state = run_state;
             snapshot.actions = ConversationActions {
+                input_access: Default::default(),
                 can_send,
                 can_cancel,
                 can_switch: !can_cancel,
@@ -338,6 +345,7 @@ impl Client {
         self.snapshot = Some(ConversationSnapshot {
             revision: 1,
             conversation: ConversationSummary {
+                native_read_state: None,
                 id: format!("{runtime_id}:{native_id}"),
                 runtime_id: runtime_id.into(),
                 title: ConversationTitle::Untitled,
@@ -353,6 +361,7 @@ impl Client {
             model_record_key: None,
             run_state: RunState::Idle,
             messages: Vec::new(),
+            executions: Default::default(),
             transcript_turns: Vec::new(),
             transcript_items: Vec::new(),
             transcript_outline: Vec::new(),
@@ -363,6 +372,7 @@ impl Client {
             sub_agents: Vec::new(),
             collaborators: Vec::new(),
             actions: ConversationActions {
+                input_access: Default::default(),
                 can_send: true,
                 can_cancel: false,
                 can_switch: true,

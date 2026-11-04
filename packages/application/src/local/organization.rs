@@ -108,6 +108,7 @@ impl CoreRuntime {
                         .projectless_directories
                         .iter()
                         .map(|directory| home.join(directory))
+                        .chain(std::iter::once(home.join("Documents/Velune")))
                         .collect()
                 });
                 let on_this_mac = self
@@ -127,7 +128,7 @@ impl CoreRuntime {
 
     /// The HOME a runtime's conversations see: the one it is given, else the
     /// app's on this Mac or the login's over SSH.
-    fn user_home(&self, runtime: &RuntimeInstance) -> Option<PathBuf> {
+    pub(super) fn user_home(&self, runtime: &RuntimeInstance) -> Option<PathBuf> {
         let (target, os_home) = self.runtime_location(runtime).ok()?;
         if os_home.is_some() {
             return os_home;
@@ -288,13 +289,22 @@ impl CoreRuntime {
             });
         let moved = marks.and_then(|m| m.project.clone());
         ListedConversation {
-            conversation: summary.clone(),
+            conversation: {
+                let mut summary = summary.clone();
+                self.apply_generated_title(&mut summary);
+                summary
+            },
             native_id: self.native_segment(summary).1,
             agents_uri: self.agents_uri(summary),
             pinned: !archived && marks.is_some_and(|m| m.pinned_at_unix_ms.is_some()),
             unread: !archived
-                && (marks.is_some_and(|m| m.marked_unread)
-                    || summary.updated_at_unix_ms.is_some_and(|at| at > seen)),
+                && summary.native_read_state.as_ref().map_or_else(
+                    || {
+                        marks.is_some_and(|m| m.marked_unread)
+                            || summary.updated_at_unix_ms.is_some_and(|at| at > seen)
+                    },
+                    |receipt| receipt.unread,
+                ),
             archived,
             moved: moved.is_some(),
             failed: false,
@@ -712,7 +722,7 @@ impl CoreRuntime {
     /// A conversation its runtime describes by identity, outside every
     /// listing in use, kept so that opening it finds it: reading one thread
     /// rather than the runtime's whole archive.
-    fn reach(&self, runtime: &RuntimeInstance, id: &str) -> Option<ListedSource> {
+    pub(super) fn reach(&self, runtime: &RuntimeInstance, id: &str) -> Option<ListedSource> {
         let native_id = id.strip_prefix(&format!("{}:", runtime.id))?;
         let read = self
             .history_config(runtime)
@@ -776,20 +786,79 @@ impl CoreRuntime {
         let places = self.projectless_places();
         let mut targets = Vec::new();
         for reference in &references {
-            let listed = self.last_listed.borrow();
-            let source = listed
+            // Open archived threads remain manageable even when the ordinary
+            // browser no longer includes them. Resolve within their native owner.
+            let source = self
+                .last_listed
+                .borrow()
                 .get(&reference.conversation_id)
+                .cloned()
+                .or_else(|| {
+                    self.runtime_instance(&reference.runtime_id)
+                        .ok()
+                        .and_then(|runtime| self.reach(runtime, &reference.conversation_id))
+                })
                 .filter(|source| source.summary.runtime_id == reference.runtime_id)
                 .ok_or_else(|| RuntimeError::invalid("会话列表中没有这个会话，请刷新后重试"))?;
             targets.push((
                 source.summary.clone(),
                 source.archived_natively,
-                self.listed(source, &places),
+                self.listed(&source, &places),
             ));
+        }
+        let mut native_updated = BTreeSet::new();
+        // Native CAS uses the receipt actually seen by the caller. Never
+        // substitute a newer cache revision or retry an acknowledgement.
+        if matches!(
+            change,
+            ConversationOrganizationChange::MarkRead | ConversationOrganizationChange::MarkUnread
+        ) {
+            for ((summary, _, _), reference) in targets.iter().zip(&references) {
+                if summary.native_read_state.is_some() || reference.native_read_state.is_some() {
+                    let (owner, native) = self.native_segment(summary);
+                    let expected_id = format!("{owner}:{native}");
+                    let receipt = reference
+                        .native_read_state
+                        .as_ref()
+                        .filter(|r| r.conversation_id == expected_id)
+                        .ok_or_else(|| RuntimeError::invalid("会话已读状态已改变，请刷新后重试"))?;
+                    let (runtime_id, _) = receipt
+                        .conversation_id
+                        .split_once(':')
+                        .ok_or_else(|| RuntimeError::invalid("原生会话身份无效"))?;
+                    let runtime = self.runtime_instance(runtime_id)?;
+                    if runtime.type_id != RuntimeKind::Codex166 {
+                        return Err(RuntimeError::invalid("此运行时没有原生已读状态"));
+                    }
+                    let result = velune_agent_runtime::native::update_read_state(
+                        &self.history_config(runtime)?,
+                        runtime_id,
+                        receipt,
+                        matches!(change, ConversationOrganizationChange::MarkRead),
+                    )
+                    .map_err(|error| {
+                        if error.code() == "read_state_conflict" {
+                            let mut failure = crate::Failure::new(
+                                crate::FailureKind::Conflict,
+                                "会话已更新，未覆盖新的已读状态；请查看后重试",
+                            );
+                            failure.code = error.code().into();
+                            RuntimeError::Contract(failure)
+                        } else {
+                            RuntimeError::context("修改原生已读状态", error)
+                        }
+                    })?;
+                    self.keep_native_read_state(&result)?;
+                    native_updated.insert(summary.id.clone());
+                }
+            }
         }
         let mut next = self.organization.clone();
         let now = unix_ms_now();
         for (summary, archived_natively, listed) in &targets {
+            if native_updated.contains(&summary.id) {
+                continue;
+            }
             let native_archive = matches!(
                 change,
                 ConversationOrganizationChange::Archive | ConversationOrganizationChange::Unarchive
@@ -805,6 +874,18 @@ impl CoreRuntime {
                         .any(|session| session.presents(&summary.id) && session.executing())
                 {
                     return Err(RuntimeError::invalid("请先停止正在执行的任务，再归档会话"));
+                }
+                if archiving {
+                    self.for_each_session(|core| {
+                        if core.session.presents(&summary.id)
+                            && core.session.active_state.live().is_some()
+                        {
+                            core.invalidate_execution()?;
+                            core.session.source = None;
+                            core.session.control = None;
+                        }
+                        Ok(())
+                    })?;
                 }
                 self.change_native_archive(summary, archiving)?;
             }
@@ -865,7 +946,14 @@ impl CoreRuntime {
         }
         next.conversations.retain(|marks| !marks.is_empty());
         self.store_organization(next)?;
-        let listing = self.list()?;
+        let listing = if matches!(
+            change,
+            ConversationOrganizationChange::Archive | ConversationOrganizationChange::Unarchive
+        ) {
+            self.list()?
+        } else {
+            self.cached_list()
+        };
         // The list read again may already show newer activity than the mark.
         let listed = self.last_listed.borrow();
         for (summary, _, _) in &targets {
@@ -884,12 +972,14 @@ impl CoreRuntime {
             .conversations
             .iter()
             .any(|m| m.conversation_id == id)
+            && !self.organization.generated_titles.contains_key(id)
         {
             return;
         }
         let mut next = self.organization.clone();
         next.conversations
             .retain(|marks| marks.conversation_id != id);
+        next.generated_titles.remove(id);
         if let Err(error) = self.store_organization(next) {
             tracing::warn!(target:"velune_application",event="conversation_organization_store_failed",detail=%error);
         }
@@ -955,6 +1045,7 @@ impl CoreRuntime {
             .strip_prefix(&format!("{}:", runtime.id))
             .ok_or_else(|| RuntimeError::invalid("conversation id"))?;
         velune_agent_runtime::native::manage_thread_at(
+            runtime.type_id,
             &setting_path(runtime, "binary")?,
             &context.agent_dir,
             native_id,

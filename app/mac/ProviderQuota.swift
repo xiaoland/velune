@@ -23,7 +23,7 @@ struct QuotaWindowRow: View {
                 ProgressView(value: shown, total: 100).tint(reached ? Color.orange : nil)
                 Text(UsageFormat.label(Int(shown.rounded()), display)).monospacedDigit().foregroundStyle(fresh ? .primary : .secondary).frame(width: 64, alignment: .trailing)
             }
-            if !detail.isEmpty { Text(detail).font(.caption).foregroundStyle(reached || runsShort ? .orange : .secondary) }
+            if !detail.isEmpty { Text(detail).uiFont(.caption).foregroundStyle(reached || runsShort ? .orange : .secondary) }
         }
     }
     private var detail: String {
@@ -69,7 +69,7 @@ enum UsageFormat {
 struct QuotaStatusText: View {
     let quota: QuotaObservation?
     var body: some View {
-        Text(Self.summary(quota)).font(.caption).foregroundStyle(.secondary)
+        Text(Self.summary(quota)).uiFont(.caption).foregroundStyle(.secondary)
     }
     static func summary(_ quota: QuotaObservation?) -> String {
         guard let quota else { return "正在读取额度…" }
@@ -92,8 +92,8 @@ struct SubscriptionDisclosureNote: View {
     var body: some View {
         Label {
             VStack(alignment: .leading, spacing: 2) {
-                Text(disclosure.title).font(.callout)
-                Text(disclosure.detail).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                Text(disclosure.title).uiFont(.callout)
+                Text(disclosure.detail).uiFont(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
         } icon: { Image(systemName: "exclamationmark.triangle.fill").symbolRenderingMode(.multicolor) }
     }

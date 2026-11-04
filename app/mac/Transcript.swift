@@ -31,9 +31,17 @@ struct TranscriptView: View {
     let loadPayloads: ([String]) -> Void
     let openConversation: (String) -> Void
     let openAgentURI: (String) -> Void
+    var openArtifact: (ArtifactDocument) -> Void = { _ in }
     /// Edits the user message of this ID, when it may be edited now.
     var editMessage: (String) -> (() -> Void)? = { _ in nil }
+    /// Forks the conversation through the turn this user message ID starts.
+    var forkConversation: (String) -> Void = { _ in }
     let describeSettings: (TranscriptTurn) -> TurnSettingsSummary?
+    var recovery: RuntimeRecovery? = nil
+    var stoppingRecovery = false
+    var canStopRecovery = false
+    var stopRecovery: () -> Void = {}
+    @State private var dismissedRecovery: String?
     @State private var scrollerStyle = NSScroller.preferredScrollerStyle
 
     var body: some View {
@@ -43,11 +51,11 @@ struct TranscriptView: View {
             visibleRows = model.rows.filter { userIDs.contains($0.id) }
         } else { visibleRows = model.rows }
         return TranscriptTable(controller: reading.table, conversationID: conversationID, items: model.items(for: visibleRows, turnHeaders: !outlineCollapsed), revision: model.contentRevision,
-                               activity: activity, outlineCollapsed: outlineCollapsed, outlineAnchorID: reading.outlineAnchorID,
+                               activity: recovery?.active == true ? nil : activity, outlineCollapsed: outlineCollapsed, outlineAnchorID: reading.outlineAnchorID,
                                cwd: cwd, remoteHost: remoteHost, bottomRequest: reading.bottomRequest, jump: navigation,
                                followingChanged: { [reading] value in if reading.following != value { reading.following = value } },
                                outlineToggle: { [reading] id in reading.outlineAnchorID = id; outlineCollapsed = false }, loadPayloads: loadPayloads,
-                               openConversation: openConversation, openAgentURI: openAgentURI, editMessage: editMessage, describeSettings: describeSettings)
+                               openConversation: openConversation, openAgentURI: openAgentURI, openArtifact: openArtifact, editMessage: editMessage, forkConversation: forkConversation, describeSettings: describeSettings)
             .background(Color(nsColor: .windowBackgroundColor))
             .overlay(alignment: .bottomTrailing) {
                 if !reading.following {
@@ -57,10 +65,16 @@ struct TranscriptView: View {
                         .padding(.bottom, 16).padding(.trailing, 16 + scrollerInset)
                 }
             }
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                if let recovery, recovery.active || dismissedRecovery != recovery.id {
+                    RuntimeRecoveryView(recovery: recovery, stopping: stoppingRecovery, canStop: canStopRecovery, stop: stopRecovery) { dismissedRecovery = recovery.id }
+                }
+            }
             .onReceive(NotificationCenter.default.publisher(for: NSScroller.preferredScrollerStyleDidChangeNotification)) { _ in
                 scrollerStyle = NSScroller.preferredScrollerStyle
             }
             .onChange(of: conversationID) { _, _ in reading.following = reading.table.isFollowing; reading.outlineAnchorID = nil }
+            .onChange(of: conversationID) { _, _ in dismissedRecovery = nil }
             // A toolbar toggle keeps the section at the top of the viewport.
             .onChange(of: outlineCollapsed) { _, collapsed in if collapsed { reading.outlineAnchorID = nil } }
             .onChange(of: scrollRequest) { _, _ in

@@ -1,7 +1,8 @@
 //! Associations and disposable projections; native sessions own every message.
 use super::*;
 use crate::config::{
-    ConversationCutoff, ConversationHandoff, ConversationLink, ConversationSegmentReference,
+    ConversationCutoff, ConversationHandoff, ConversationImport, ConversationLink,
+    ConversationSegmentReference,
 };
 use crate::conversation::{ConversationSnapshot, Message, MessageBlock, MessageRole, ToolState};
 use sha2::{Digest, Sha256};
@@ -10,6 +11,7 @@ pub(super) struct LogicalProjection {
     pub link: ConversationLink,
     pub origin: ConversationSummary,
     pub prefix: Vec<Message>,
+    pub executions: velune_conversation::Executions,
 }
 
 fn single_target_alias(link: &ConversationLink) -> Option<&ConversationSegmentReference> {
@@ -33,12 +35,36 @@ fn prefix_digest(messages: &[Message]) -> Result<String, RuntimeError> {
     Ok(digest(&serde_json::to_vec(&content)?))
 }
 
+fn display_id(index: usize, id: &str) -> String {
+    format!("segment-{index}:{id}")
+}
+
+/// The same namespace boundary is used by live and read-only logical views.
+pub(super) fn namespace_associations(snapshot: &mut ConversationSnapshot, index: usize) {
+    snapshot.executions.map_ids(&|id| display_id(index, id));
+    for confirmation in &mut snapshot.message_identity_confirmations {
+        confirmation.previous_id = display_id(index, &confirmation.previous_id);
+        confirmation.current_id = display_id(index, &confirmation.current_id);
+    }
+}
+
 pub(super) fn display_segment(
     segment: &ConversationSegmentReference,
     messages: &[Message],
     index: usize,
 ) -> Result<Vec<Message>, RuntimeError> {
     let mut result = messages.to_vec();
+    if let Some(imported) = &segment.imported {
+        let count = usize::try_from(imported.prefix.message_count)
+            .map_err(|error| RuntimeError::context("导入上下文位置无效", error))?;
+        if count > result.len() || prefix_digest(&result[..count])? != imported.prefix.prefix_digest
+        {
+            return Err(RuntimeError::invalid(
+                "导入的原生上下文已变更，无法可靠恢复展示边界",
+            ));
+        }
+        result.drain(..count);
+    }
     if let Some(handoff) = &segment.handoff {
         let ordinal = usize::try_from(handoff.user_message_ordinal)
             .map_err(|error| RuntimeError::context("交接用户记录位置无效", error))?;
@@ -80,7 +106,7 @@ pub(super) fn display_segment(
         // A newly prepared target has no user record until native send is accepted.
     }
     for message in &mut result {
-        message.id = format!("segment-{index}:{}", message.id);
+        message.id = display_id(index, &message.id);
     }
     stamp_turn_runtime(&mut result, &segment.runtime_instance_id);
     Ok(result)
@@ -191,6 +217,7 @@ impl CoreRuntime {
                 .find(|s| s.id == origin.native_conversation_id)
                 .cloned()
                 .unwrap_or_else(|| ConversationSummary {
+                    native_read_state: None,
                     id: link.id.clone(),
                     title: velune_conversation::ConversationTitle::Untitled,
                     runtime_id: origin.runtime_instance_id.clone(),
@@ -201,6 +228,15 @@ impl CoreRuntime {
                     can_delete: false,
                     parent_conversation_id: None,
                 });
+            summary.native_read_state = link
+                .segments
+                .last()
+                .and_then(|segment| {
+                    original
+                        .iter()
+                        .find(|s| s.id == segment.native_conversation_id)
+                })
+                .and_then(|s| s.native_read_state.clone());
             summary.id = link.id.clone();
             summary.updated_at_unix_ms = link.segments.last().and_then(|segment| {
                 original
@@ -262,11 +298,67 @@ impl CoreRuntime {
         )
     }
 
+    /// A placeholder for an accepted but temporarily unreadable target,
+    /// including a reserved Pi file not yet persisted after an ambiguous
+    /// send. Checked source history stays visible; a resume is never
+    /// fabricated.
+    fn unavailable_tail_snapshot(segment: &ConversationSegmentReference) -> ConversationSnapshot {
+        ConversationSnapshot {
+            revision: 1,
+            context_runtime_id: segment.runtime_instance_id.clone(),
+            conversation: ConversationSummary {
+                native_read_state: None,
+                id: segment.native_conversation_id.clone(),
+                runtime_id: segment.runtime_instance_id.clone(),
+                title: velune_conversation::ConversationTitle::Untitled,
+                cwd: None,
+                created_at_unix_ms: None,
+                updated_at_unix_ms: None,
+                can_rename: false,
+                can_delete: false,
+                parent_conversation_id: None,
+            },
+            resource_id: None,
+            model_record_key: None,
+            run_state: RunState::Failed,
+            pending_interactions: Vec::new(),
+            follow_up: Default::default(),
+            sub_agents: Vec::new(),
+            collaborators: Vec::new(),
+            executions: Default::default(),
+            transcript_turns: Vec::new(),
+            transcript_items: Vec::new(),
+            transcript_outline: Vec::new(),
+            transcript_message_identities: Vec::new(),
+            message_identity_confirmations: Vec::new(),
+            messages: vec![Message {
+                turn_settings: None,
+                turn_usage: None,
+                branch_point: None,
+                completed: true,
+                id: "context-unavailable".into(),
+                role: MessageRole::System,
+                timestamp_unix_ms: None,
+                blocks: vec![MessageBlock::Notice {
+                    text: "当前运行时的原生会话尚不可读取，未自动重发。请修复来源后重新打开。"
+                        .into(),
+                }],
+            }],
+            actions: crate::conversation::ConversationActions {
+                input_access: Default::default(),
+                can_send: false,
+                can_cancel: false,
+                can_switch: true,
+            },
+        }
+    }
+
     pub(super) fn read_link(
         &self,
         link: &ConversationLink,
     ) -> Result<(ConversationSnapshot, LogicalProjection), RuntimeError> {
         let mut prefix = Vec::new();
+        let mut executions = velune_conversation::Executions::default();
         let mut origin = None;
         let mut tail = None;
         for (index, segment) in link.segments.iter().enumerate() {
@@ -277,19 +369,8 @@ impl CoreRuntime {
                         && !segment.deleted
                         && segment.cutoff.is_none() =>
                 {
-                    // An accepted target can be temporarily unreadable, including
-                    // a reserved Pi file not yet persisted after an ambiguous send.
-                    // Keep checked source history visible, but never fabricate a resume.
                     tracing::warn!(target:"velune_application", event="conversation_context_unavailable", phase="history_tail", detail=%error);
-                    let unavailable = ConversationSnapshot {
-                        revision:1, context_runtime_id:segment.runtime_instance_id.clone(),
-                        conversation:ConversationSummary {id:segment.native_conversation_id.clone(),runtime_id:segment.runtime_instance_id.clone(),
-                            title:velune_conversation::ConversationTitle::Untitled,cwd:None,created_at_unix_ms:None,updated_at_unix_ms:None,can_rename:false,can_delete:false, parent_conversation_id: None,},
-                        resource_id:None, model_record_key:None,run_state:RunState::Failed,pending_interactions:Vec::new(),follow_up:Default::default(),sub_agents:Vec::new(),collaborators:Vec::new(),transcript_turns:Vec::new(),transcript_items:Vec::new(),transcript_outline:Vec::new(),transcript_message_identities:Vec::new(),message_identity_confirmations:Vec::new(),
-                        messages:vec![Message { turn_settings: None, turn_usage: None, branch_point: None, completed: true, id:"context-unavailable".into(),role:MessageRole::System,timestamp_unix_ms:None,
-                            blocks:vec![MessageBlock::Notice {text:"当前运行时的原生会话尚不可读取，未自动重发。请修复来源后重新打开。".into()}]}],
-                        actions:crate::conversation::ConversationActions {can_send:false,can_cancel:false,can_switch:true},
-                    };
+                    let unavailable = Self::unavailable_tail_snapshot(segment);
                     if index == 0 {
                         origin = Some(unavailable.conversation.clone());
                     }
@@ -315,6 +396,11 @@ impl CoreRuntime {
                 if index > 0 {
                     prefix.push(self.boundary_message(segment, index));
                 }
+                snapshot.executions.retain(&snapshot.messages);
+                snapshot
+                    .executions
+                    .map_ids(&|id| format!("segment-{index}:{id}"));
+                executions.records.extend(snapshot.executions.records);
                 prefix.extend(display_segment(segment, &snapshot.messages, index)?);
             } else {
                 if index + 1 != link.segments.len() {
@@ -335,6 +421,7 @@ impl CoreRuntime {
                 link: link.clone(),
                 origin,
                 prefix,
+                executions,
             },
         ))
     }
@@ -357,16 +444,19 @@ impl CoreRuntime {
             return snapshot;
         };
         let index = projection.link.segments.len() - 1;
-        for confirmation in &mut snapshot.message_identity_confirmations {
-            confirmation.previous_id = format!("segment-{index}:{}", confirmation.previous_id);
-            confirmation.current_id = format!("segment-{index}:{}", confirmation.current_id);
-        }
+        namespace_associations(&mut snapshot, index);
+        snapshot
+            .executions
+            .records
+            .extend(projection.executions.records.clone());
         let messages = display_segment(segment, &snapshot.messages, index);
         let activity = snapshot.conversation.updated_at_unix_ms;
         if index == 0 {
             snapshot.conversation.id = projection.link.id.clone();
         } else {
+            let receipt = snapshot.conversation.native_read_state.clone();
             snapshot.conversation = projection.origin.clone();
+            snapshot.conversation.native_read_state = receipt;
         }
         snapshot.conversation.updated_at_unix_ms =
             activity.or(snapshot.conversation.updated_at_unix_ms);
@@ -462,6 +552,7 @@ impl CoreRuntime {
             link,
             origin,
             prefix: Vec::new(),
+            executions: Default::default(),
         });
         let draft = self
             .session
@@ -487,23 +578,40 @@ impl CoreRuntime {
 
     pub(super) fn continue_in_runtime(
         &mut self,
-        runtime_id: &str,
         model: Option<&crate::ModelSelection>,
-        text: &str,
-        effort: Option<&str>,
-        permission_mode: Option<&str>,
-        images: &[PathBuf],
+        prompt: super::conversations::Prompt<'_>,
     ) -> Result<crate::SnapshotResult, RuntimeError> {
-        self.validate_acp_handoff_target(self.runtime_instance(runtime_id)?)?;
+        self.validate_acp_handoff_target(self.runtime_instance(prompt.runtime_id)?)?;
+        // Runtimes with a writable native session take the history as
+        // translated native records; the rest keep the quoted-payload
+        // handoff.
+        if matches!(
+            self.runtime_instance(prompt.runtime_id)?.type_id,
+            RuntimeKind::ClaudeCode | RuntimeKind::Codex | RuntimeKind::Codex166 | RuntimeKind::Pi
+        ) {
+            return self.continue_imported(model, prompt);
+        }
+        let super::conversations::Prompt {
+            runtime_id,
+            message,
+            effort,
+            permission_mode,
+        } = prompt;
+        let (text, images) = message.expect("a handoff carries a submitted message");
         let raw = self
             .native_snapshot()
             .ok_or_else(|| RuntimeError::invalid("conversation is not active"))?;
         let source = self.read_segment(&self.segment_reference(&raw)?)?;
-        let (mut link, mut prefix, origin) =
+        let (mut link, mut prefix, origin, mut executions) =
             if let Some(projection) = &self.session.logical_projection {
                 // Re-read every sealed segment before carrying context into another runtime.
                 let (_, checked) = self.read_link(&projection.link)?;
-                (checked.link, checked.prefix, checked.origin)
+                (
+                    checked.link,
+                    checked.prefix,
+                    checked.origin,
+                    checked.executions,
+                )
             } else {
                 let segment = self.segment_reference(&source)?;
                 (
@@ -513,6 +621,7 @@ impl CoreRuntime {
                     },
                     Vec::new(),
                     source.conversation.clone(),
+                    Default::default(),
                 )
             };
         let index = link.segments.len() - 1;
@@ -525,11 +634,16 @@ impl CoreRuntime {
         if index > 0 {
             prefix.push(self.boundary_message(segment, index));
         }
+        let mut source_executions = source.executions.clone();
+        source_executions.restore(&raw.executions, &source.messages);
+        source_executions.map_ids(&|id| format!("segment-{index}:{id}"));
+        executions.records.extend(source_executions.records);
         prefix.extend(visible);
         let mut quoted = Vec::new();
         for message in &prefix {
             let role = match message.role {
                 MessageRole::User => "user",
+                MessageRole::Client => "client_notification",
                 MessageRole::Assistant => "assistant",
                 MessageRole::Tool => "completed_tool_result",
                 MessageRole::System => continue,
@@ -583,12 +697,239 @@ impl CoreRuntime {
             link,
             origin,
             prefix,
+            executions,
         });
         tracing::info!(target:"velune_application", event="conversation_handoff_committed", phase="association_commit");
         // Persist ownership before sending. Never retry an ambiguous native send.
         self.send_action(super::conversations::Prompt {
             runtime_id,
             message: Some((&payload, images)),
+            effort,
+            permission_mode,
+        })
+        .inspect_err(|_| {
+            tracing::warn!(target:"velune_application", event="conversation_handoff_failed", phase="dispatch");
+        })
+    }
+
+    /// Hand the conversation to a runtime with a writable native session:
+    /// translate effective model context into a native session the target owns,
+    /// link it as the new tail, and send this turn's request as an ordinary
+    /// first message. A failed send leaves the imported session intact and
+    /// the conversation answerable, unlike a poisoned payload tail.
+    fn continue_imported(
+        &mut self,
+        model: Option<&crate::ModelSelection>,
+        prompt: super::conversations::Prompt<'_>,
+    ) -> Result<crate::SnapshotResult, RuntimeError> {
+        let super::conversations::Prompt {
+            runtime_id,
+            message,
+            effort,
+            permission_mode,
+        } = prompt;
+        let (text, images) = message.expect("a handoff carries a submitted message");
+        let runtime = self.runtime_instance(runtime_id)?.clone();
+        let raw = self
+            .native_snapshot()
+            .ok_or_else(|| RuntimeError::invalid("conversation is not active"))?;
+        let source = self.read_segment(&self.segment_reference(&raw)?)?;
+        let (mut link, mut prefix, origin, mut executions) =
+            if let Some(projection) = &self.session.logical_projection {
+                // Re-read every sealed segment before carrying context into another runtime.
+                let (_, checked) = self.read_link(&projection.link)?;
+                (
+                    checked.link,
+                    checked.prefix,
+                    checked.origin,
+                    checked.executions,
+                )
+            } else {
+                let segment = self.segment_reference(&source)?;
+                (
+                    ConversationLink {
+                        id: source.conversation.id.clone(),
+                        segments: vec![segment],
+                    },
+                    Vec::new(),
+                    source.conversation.clone(),
+                    Default::default(),
+                )
+            };
+        let index = link.segments.len() - 1;
+        let segment = link.segments.last_mut().expect("source segment");
+        segment.cutoff = Some(ConversationCutoff {
+            message_count: source.messages.len() as u64,
+            prefix_digest: prefix_digest(&source.messages)?,
+        });
+        let visible = display_segment(segment, &source.messages, index)?;
+        if index > 0 {
+            prefix.push(self.boundary_message(segment, index));
+        }
+        prefix.extend(visible);
+        let mut source_executions = source.executions.clone();
+        source_executions.restore(&raw.executions, &source.messages);
+        source_executions.map_ids(&|id| format!("segment-{index}:{id}"));
+        executions.records.extend(source_executions.records);
+        // Native context owns compaction and branch semantics. The complete
+        // transcript stays in sealed source segments solely for presentation.
+        let source_runtime = self.runtime_instance(&source.conversation.runtime_id)?;
+        let source_id = source
+            .conversation
+            .id
+            .strip_prefix(&format!("{}:", source_runtime.id))
+            .ok_or_else(|| RuntimeError::invalid("来源会话身份无效"))?;
+        let context = match source_runtime.type_id {
+            RuntimeKind::Pi => velune_agent_runtime::history::export_pi_context(
+                &self.pi_history_config(source_runtime)?,
+                Path::new(source_id),
+            ),
+            RuntimeKind::Codex | RuntimeKind::Codex166 | RuntimeKind::ClaudeCode => {
+                velune_agent_runtime::history::export_context(
+                    &self.history_config(source_runtime)?,
+                    source_id,
+                )
+            }
+            _ => {
+                return Err(RuntimeError::invalid(
+                    "来源运行时尚不支持可靠导出原生上下文，未交接",
+                ));
+            }
+        }
+        .map_err(|error| RuntimeError::context("导出原生上下文", error))?;
+        let cwd = source
+            .conversation
+            .cwd
+            .clone()
+            .ok_or_else(|| RuntimeError::invalid("交接来源缺少工作目录"))?;
+        let cwd = PathBuf::from(cwd);
+        let imported = match runtime.type_id {
+            RuntimeKind::ClaudeCode => {
+                let config = self.native_config(&runtime, None)?;
+                let version = velune_agent_runtime::version::probe_version_at(
+                    "claude-code",
+                    &config.binary,
+                    config.node_binary.as_deref(),
+                    &config.execution,
+                    config.os_home.as_deref(),
+                )
+                .map_err(|error| RuntimeError::context("Claude 版本探测", error))?;
+                // Claude Code names the project folder after the physical
+                // working directory; resolve links the way its process will.
+                let physical = match &config.execution {
+                    velune_agent_runtime::execution::ExecutionTarget::Local => {
+                        std::fs::canonicalize(&cwd).unwrap_or_else(|_| cwd.clone())
+                    }
+                    _ => cwd.clone(),
+                };
+                velune_agent_runtime::import::import_claude_conversation(
+                    &config.execution,
+                    &config.agent_dir,
+                    &physical,
+                    &context,
+                    &version,
+                )
+            }
+            RuntimeKind::Codex | RuntimeKind::Codex166 => {
+                let config = self.native_config(&runtime, None)?;
+                let version = velune_agent_runtime::version::probe_version_at(
+                    "codex",
+                    &config.binary,
+                    config.node_binary.as_deref(),
+                    &config.execution,
+                    config.os_home.as_deref(),
+                )
+                .map_err(|error| RuntimeError::context("Codex 版本探测", error))?;
+                let provider = if matches!(model, Some(crate::ModelSelection::Managed { .. })) {
+                    "velune".to_owned()
+                } else {
+                    velune_agent_runtime::native::codex_context_provider(
+                        &self.history_config(&runtime)?,
+                        &cwd,
+                    )
+                    .map_err(|error| RuntimeError::context("Codex 提供商配置", error))?
+                };
+                velune_agent_runtime::import::import_codex_conversation(
+                    &config.execution,
+                    &config.agent_dir,
+                    &cwd,
+                    &context,
+                    &version,
+                    &provider,
+                )
+            }
+            RuntimeKind::Pi => {
+                let config = self.pi_history_config(&runtime)?;
+                velune_agent_runtime::import::import_pi_conversation(
+                    &config.execution,
+                    config
+                        .agent_dir
+                        .as_deref()
+                        .ok_or_else(|| RuntimeError::invalid("Pi 来源目录无效"))?,
+                    config.session_dir.as_deref(),
+                    &cwd,
+                    &context,
+                )
+            }
+            _ => unreachable!("continue_imported gates native kinds"),
+        }
+        .map_err(|error| RuntimeError::context("交接历史翻译", error))?;
+        let native_id = match &imported {
+            velune_agent_runtime::import::ImportedConversation::ClaudeCode { session_id } => {
+                session_id.clone()
+            }
+            velune_agent_runtime::import::ImportedConversation::Codex { thread_id } => {
+                thread_id.clone()
+            }
+            velune_agent_runtime::import::ImportedConversation::Pi { path } => {
+                path.to_string_lossy().into_owned()
+            }
+        };
+        // The imported session is an existing native conversation: the
+        // runtime resumes it by identity like any of its own.
+        let mut target = source.clone();
+        target.conversation.runtime_id = runtime_id.into();
+        target.conversation.id = format!("{runtime_id}:{native_id}");
+        target.conversation.cwd = Some(cwd.to_string_lossy().into_owned());
+        // Read the target's own display seed before resuming it. Its count
+        // cannot be inferred from context blocks (tools group differently).
+        target.messages = self
+            .read_history(runtime_id, &target.conversation.id)?
+            .messages;
+        self.prepare_with_selection(target, model, false)?;
+        tracing::info!(target:"velune_application", event="conversation_handoff_prepared", phase="import");
+        let native = self
+            .native_snapshot()
+            .ok_or_else(|| RuntimeError::invalid("目标运行时未返回原生会话"))?;
+        let mut target_segment = self.segment_reference(&native)?;
+        target_segment.imported = Some(ConversationImport {
+            prefix: ConversationCutoff {
+                message_count: native.messages.len() as u64,
+                prefix_digest: prefix_digest(&native.messages)?,
+            },
+        });
+        link.segments.push(target_segment);
+        let mut links = self.conversation_links.clone();
+        links.retain(|l| l.id != link.id);
+        links.push(link.clone());
+        if let Err(error) = self.store_links(links) {
+            tracing::warn!(target:"velune_application", event="conversation_handoff_failed", phase="association_commit");
+            // No prompt was sent; the imported session stays as an orphan.
+            let _ = self.shutdown_active();
+            self.session.active_state = ActiveState::History(Box::new(source));
+            return Err(error);
+        }
+        self.session.logical_projection = Some(LogicalProjection {
+            link,
+            origin,
+            prefix,
+            executions,
+        });
+        tracing::info!(target:"velune_application", event="conversation_handoff_committed", phase="association_commit");
+        // Persist ownership before sending. Never retry an ambiguous native send.
+        self.send_action(super::conversations::Prompt {
+            runtime_id,
+            message: Some((text, images)),
             effort,
             permission_mode,
         })
@@ -610,6 +951,7 @@ impl CoreRuntime {
             cwd: snapshot.conversation.cwd.clone(),
             cutoff: None,
             handoff: None,
+            imported: None,
             deleted: false,
         })
     }
@@ -656,6 +998,7 @@ impl CoreRuntime {
         }
         if deleting {
             let mut summary = ConversationSummary {
+                native_read_state: None,
                 id: link.id.clone(),
                 runtime_id: link.segments[0].runtime_instance_id.clone(),
                 title: velune_conversation::ConversationTitle::Untitled,
@@ -676,7 +1019,7 @@ impl CoreRuntime {
         let is_current = self
             .current_snapshot()
             .is_some_and(|s| s.conversation.id == link.id);
-        if is_current {
+        if is_current && deleting {
             self.invalidate_execution()?;
             if deleting {
                 // A partial native deletion can invalidate the readable prefix.
@@ -733,7 +1076,9 @@ impl CoreRuntime {
         } else if is_current && !failed {
             let (tail, projection) = self.read_link(&link)?;
             self.session.logical_projection = Some(projection);
-            self.session.active_state = ActiveState::History(Box::new(tail));
+            if self.session.active_state.live().is_none() {
+                self.session.active_state = ActiveState::History(Box::new(tail));
+            }
         }
         if failed {
             return Err(RuntimeError::invalid(if deleting {
@@ -743,5 +1088,71 @@ impl CoreRuntime {
             }));
         }
         self.list()
+    }
+}
+
+#[cfg(test)]
+mod identity_tests {
+    use super::*;
+    use velune_conversation::{
+        ConversationTitle, ExecutionKind, MessageIdentityConfirmation, TurnOutcome,
+    };
+    #[test]
+    fn logical_namespace_keeps_steer_outcomes_and_native_control_references() {
+        let conversation = ConversationSummary {
+            native_read_state: None,
+            id: "pi:synthetic".into(),
+            runtime_id: "pi".into(),
+            title: ConversationTitle::Untitled,
+            cwd: None,
+            created_at_unix_ms: None,
+            updated_at_unix_ms: None,
+            can_rename: false,
+            can_delete: false,
+            parent_conversation_id: None,
+        };
+        let mut snapshot = PiProjection::new(conversation).snapshot.unwrap();
+        snapshot.messages = serde_json::from_value(json!([
+            {"id":"native-user","role":"user","completed":true,"branch_point":"native-control","blocks":[]},
+            {"id":"steer","role":"user","completed":true,"blocks":[]},
+            {"id":"answer","role":"assistant","completed":true,"blocks":[{"kind":"text","text":"done"}]}
+        ])).unwrap();
+        snapshot.executions.begin(ExecutionKind::UserTurn, false);
+        for message in &snapshot.messages {
+            snapshot.executions.attach(&message.id);
+        }
+        snapshot.executions.finish(Some(TurnOutcome::Completed));
+        let activity = snapshot.executions.current.as_ref().unwrap().id.clone();
+        snapshot
+            .message_identity_confirmations
+            .push(MessageIdentityConfirmation {
+                previous_id: "live-user".into(),
+                current_id: "native-user".into(),
+            });
+        namespace_associations(&mut snapshot, 2);
+        for message in &mut snapshot.messages {
+            message.id = display_id(2, &message.id);
+        }
+        assert_eq!(
+            snapshot.messages[0].branch_point.as_deref(),
+            Some("native-control")
+        );
+        assert_eq!(snapshot.executions.current.as_ref().unwrap().id, activity);
+        assert_eq!(
+            snapshot.message_identity_confirmations[0].current_id,
+            "segment-2:native-user"
+        );
+        let mut transcript = velune_agent_runtime::transcript::TranscriptProjection::default();
+        transcript.apply(velune_agent_runtime::transcript::TranscriptEvent::Replace {
+            messages: &snapshot.messages,
+            executions: &snapshot.executions,
+        });
+        assert_eq!(transcript.turns().len(), 2);
+        assert!(
+            transcript
+                .turns()
+                .iter()
+                .all(|t| t.outcome == Some(TurnOutcome::Completed))
+        );
     }
 }

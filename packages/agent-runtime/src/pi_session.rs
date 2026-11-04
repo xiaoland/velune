@@ -37,8 +37,10 @@ impl PiSession {
     /// Runs `client`, which was spawned from this session's configuration,
     /// shown through `projection`.
     pub fn start(&mut self, client: Client, projection: PiProjection) {
+        self.busy = projection.snapshot.as_ref().is_some_and(|snapshot| {
+            matches!(snapshot.run_state, RunState::Running | RunState::Stopping)
+        });
         self.running = Some(Running { client, projection });
-        self.busy = false;
     }
 
     /// Stop the process; the configuration stays, without its conversation.
@@ -75,6 +77,17 @@ impl PiSession {
         self.projection().is_some_and(PiProjection::turn_failed)
     }
 
+    pub fn restore_context(&mut self, source: &ConversationSnapshot) {
+        if let Some(running) = &mut self.running
+            && let Some(snapshot) = &mut running.projection.snapshot
+        {
+            snapshot
+                .executions
+                .restore(&source.executions, &snapshot.messages);
+            snapshot.conversation = source.conversation.clone();
+        }
+    }
+
     pub fn set_conversation(&mut self, conversation: ConversationSummary) {
         if let Some(running) = &mut self.running {
             running.projection.set_conversation(conversation);
@@ -101,6 +114,10 @@ impl PiSession {
             running.projection.apply_event(&event);
             if running.projection.turn_ended() {
                 self.busy = false;
+            } else if event["type"] == "agent_start" {
+                // Extensions may start follow-up runs without a prompt from
+                // Velune. They have the same steering/cancellation contract.
+                self.busy = true;
             }
         }
     }
@@ -130,6 +147,7 @@ impl PiSession {
         if let Some(path) = state["data"]["sessionFile"].as_str() {
             let previous = projection.snapshot.as_ref().map(|s| &s.conversation);
             projection.set_conversation(ConversationSummary {
+                native_read_state: None,
                 can_rename: false,
                 can_delete: false,
                 id: format!("{runtime_id}:{path}"),
@@ -202,6 +220,19 @@ impl PiSession {
         Ok(())
     }
 
+    /// Continue in a new session holding what precedes the user entry
+    /// `entry_id`, or the whole current branch when there is none; the
+    /// original session stays as it is.
+    pub fn fork_at(&mut self, entry_id: Option<&str>) -> Result<()> {
+        let running = self.running()?;
+        match entry_id {
+            Some(entry_id) => running.client.fork(entry_id)?,
+            None => running.client.clone()?,
+        }
+        running.projection.invalidate_history();
+        Ok(())
+    }
+
     /// Start a new session in the running process.
     pub fn new_session(&mut self) -> Result<()> {
         self.request(json!({"type":"new_session"})).map(drop)
@@ -209,6 +240,14 @@ impl PiSession {
 
     pub fn set_name(&mut self, name: &str) -> Result<()> {
         self.request(json!({"type":"set_session_name","name":name}))?;
+        let state = self.request(json!({"type":"get_state"}))?;
+        if let Some(snapshot) = self.running()?.projection.snapshot.as_mut() {
+            snapshot.conversation.title = crate::conversation::conversation_title(
+                state["data"]["sessionName"].as_str(),
+                None,
+            );
+            snapshot.revision = snapshot.revision.saturating_add(1);
+        }
         self.invalidate_history();
         Ok(())
     }

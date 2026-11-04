@@ -2,7 +2,7 @@
 
 `velune-application` 是平台 app 共用的应用用例 unit。公开 DTO 与具名 `Command`／`Response` 归 [application-api](../application-api/README.md)，本 unit 实现用例。`ApplicationService` 为平台和远控入口持有唯一执行 owner；原有 `Application` 类型化方法保留为同一用例实现。平台不自行协调文件提交、子进程状态与投影失败清理。
 
-多个会话可以同时执行。每个打开的会话有自己的执行、模型选择、投影与协作票据；以会话 ID 寻址的操作（打开、发送、取消、回复交互、重命名、删除、snapshot）作用于该会话，每次操作都推进所有会话。每个会话同一时刻最多一个 turn；`cancel` 与 `reply_runtime_interaction` 需要会话 ID。重开正在执行的会话返回其运行中的视图，结束后再打开才重读原生历史。执行中或有待处理交互的会话保持打开，空闲会话按最近使用保留 8 个。同一运行时的并发执行各用一个 lane 目录（`runtime-projections/<运行时>/lane-<n>`）存放网关模型与选择文件。`conversation_activity(since)` 列出执行中或待处理交互的会话，并返回游标之后结束的 Velune turn 及其结果（完成、失败、用户停止；Pi 以错误结束模型响应也算失败），最近 64 个可补读，另列出打开的会话中当前可无新消息恢复的会话（资格同 snapshot 的 `can_resume`，恢复请求仍重新判定）；可频繁轮询。运行时、提供商、导入与登录配置在任一会话执行时拒绝变更。并行会话手动验收 用隔离 Pi 1.0.2 与本机 loopback 上游检查同时执行、独立结束、取消与配置门禁。
+多个会话可以同时执行。每个打开的会话有自己的执行、模型选择、投影与协作票据；以会话 ID 寻址的操作（打开、发送、取消、回复交互、重命名、删除、snapshot）作用于该会话，每次操作都推进所有会话。每个会话同一时刻最多一个 turn；`cancel` 与 `reply_runtime_interaction` 需要会话 ID。重开正在执行的会话返回其运行中的视图，结束后再打开才重读原生历史。执行中或有待处理交互的会话保持打开，空闲会话按最近使用保留 8 个。同一运行时的并发执行各用一个 lane 目录（`runtime-projections/<运行时>/lane-<n>`）存放网关模型与选择文件。`conversation_activity(since)` 列出执行中或待处理交互的会话，并返回游标之后结束的 Velune turn 及其结果（完成、失败、用户停止；Pi 以错误结束模型响应也算失败），最近 64 个可补读，另列出打开的会话中当前可无新消息恢复的会话（资格同 snapshot 的 `can_resume`，恢复请求仍重新判定）；可频繁轮询。运行时保存、提供商、导入与登录配置在任一会话执行时拒绝变更。运行时删除只在依赖该实例的会话或后台任务执行时拒绝；其他实例执行不阻止删除失效实例，删除不改动 Harness 原生文件。并行会话手动验收 用隔离 Pi 1.0.2 与本机 loopback 上游检查同时执行、独立结束、取消与配置门禁。
 
 侧聊（PRD [侧聊](../../docs/prd/conversations.md#侧聊)）是一个独立的打开会话：`open_side_chat` 对已首发、不是子 Agent 的 Claude Code／Codex／Pi 会话，以客户端给出的下一轮模型、推理强度与权限模式（与 `resume_turn` 一样校验）让运行时打开侧聊（见 [agent-runtime](../agent-runtime/README.md#侧聊)），返回以 `side-chat:<n>` 寻址的 snapshot，只含侧聊自己的问答。`send_side_chat` 提问，`cancel`、`reply_runtime_interaction` 与 snapshot 读取按此身份寻址，`close_side_chat` 结束其执行并丢弃它。侧聊打开期间保持执行（网关轮次结束不关闭运行时进程），不进入列表、活动、可恢复与结束的 turn，不跟随原生文件，不注入协作 MCP；网关、额度与分析照常记录其请求，以侧聊身份为会话标识。
 
@@ -10,9 +10,11 @@
 
 编辑用户消息归 `local/editing.rs`：`followUp.editable` 列出当前可编辑的用户消息及能否原地替换（运行中、待回复请求、跨 Harness 接续、sub-agent 与未发送会话均无；Codex 插入本轮的消息随所在轮次，不单独列出；Claude Code 第一条只能 fork）。`edit_message` 先按发送同样的规则检查附件、模型、推理与权限，再重新读取原生历史，按用户消息序号与正文认出这条消息（不一致时拒绝，提示在别处已改变），之后经原生机制分叉并作为新一轮发出：Codex `thread/revert`／`thread/fork`（复制到前一轮），Claude Code 下一轮子进程 `--resume-session-at`（fork 另加 `--fork-session --session-id`），Pi 扩展命令 `velune-rewind`（`navigateTree`，旧分支留在会话树）／RPC `fork`。第一条消息 fork 时 Codex 与 Claude Code 在同一目录新建会话。fork 在新的会话（session）中进行，原会话保持不变，结果是新会话的快照；分叉前失败时回到原会话。消息编辑手动验收。
 
+会话分叉（不带新消息）同为 `local/editing.rs`：`followUp.can_fork` 在与编辑相同的空闲／守卫条件下、且会话自身运行时原生可分叉时为真。`fork_message` 以某轮起始用户消息为界：重新读取原生历史认出该消息后，`NativeSession::fork_through` 把新会话建到下一轮用户消息之前（Codex `thread/fork` 复制到该轮；Claude Code `--resume-session-at` 取下一用户消息前一条记录，最后一轮则不设 `at` 复制整个分支），Pi 用 RPC `fork`（下一用户条目前）或 `clone`（最后一轮复制当前分支）。分叉不发送新轮次，结果是新会话的快照；原会话不变，失败时回到原会话。
+
 会话的权威在 Harness；Velune 对本机 Codex、Claude Code 与 Pi 运行时 best-effort 跟随原生文件。被 snapshot 轮询的会话在没有会话通道时（例如只读打开的视图）由首次轮询读入并打开通道；其后约每秒检查原生文件，未在 Velune 中执行且文件被改动时重新读取，空闲的执行先释放，下一 turn 从改动后的会话继续；读取较慢时按耗时放宽间隔。自身执行期间及结束后 5 秒内的写入视为自己的。Harness 自己的存活记录（见 agent-runtime `activity`）显示另一进程正在运行该会话时，视图的 `run_state` 为 `Elsewhere`（展示为运行中，不可由 Velune 取消，仍可发送）；文件变化时及之后每 5 秒重新判断，进程中途退出后即回到空闲，不依赖时间窗。活动列表另外每 5 秒读取这些运行时的存活记录，附加未被 Velune 执行的 `Elsewhere` 会话。SSH、ACP、DeepSeek Harness 与跨 Harness 续接的会话不跟随，仍靠手动重新读取。实时会话手动验收 以实际 Pi CLI 作为另一客户端检查上述行为，实际 Harness 实时脚本 检查 Codex 与 Claude Code，包括进程中途被杀后不再运行。
 
-发送接受 `ComposedTurn`（正文、可选推理强度、可选权限模式与附件）。权限模式须是目标运行时类型在 `RuntimeTypeDescriptor.permission_modes` 中声明的取值，否则在任何状态改变与发送前拒绝；跨 Harness 接续时随目标运行时的首轮一并交付。权限模式是会话状态。未指定时，application 取会话最近一轮在同一运行时上的模式重新发送（Codex 恢复线程时不保留轮次覆盖）；不知道当前模式就不发送，由运行时使用自己的默认或恢复的状态。发送时把本轮的运行时实例、模型名称（managed 模型为“名称 · 提供商”，原生模型为其 ID）、推理强度与权限模式登记到 transcript projection，供 `TranscriptTurn.settings` 显示。轮次用量（`TranscriptTurn.usage`）只取 Harness 原生记录，见 agent-runtime README；网关的分析记录没有会话归属，不参与。唯一例外是上下文窗口：Harness 对它不认识的模型只会给出自己的猜测（Codex 0.159.3 报 258400，Claude Code 2.1.286 报 200000），因此该轮模型以 Velune 的名称对应到 managed 模型且其配置了上下文窗口时，application 用配置值替换或补上。原生提供商可能以同一 ID 提供该模型（如 Codex 原生订阅的 `gpt-6.1-sol`，Codex 0.159.3 按自身目录报告 475000），所以 Velune 以原生模型发送的轮次不替换；只靠唯一的提供商模型 ID 对应到时，仅在 Harness 未报告窗口时补上。其余情况保留 Harness 报告的值。`working_branch(runtime, conversation)` 只读地返回会话工作目录当前的 git 分支（`git symbolic-ref --short -q HEAD`），仓库外或 detached HEAD 为空，远端运行时报错。composer 状态栏显示的项（`StatusLineItem`：上下文用量、本会话累计 token、工作目录与分支、账户额度、费用估算）是应用配置，默认只有上下文用量；`set_status_line` 保存时去重并按显示顺序排列。application 给每条用户消息补上所在段的运行时实例，并把 Pi 记录的网关路由 alias 换回 managed 模型的名称。轮次配置手动验收 检查实时与重启后读历史两种情况。权限模式手动验收 用实际 Codex 与 Claude Code 检查声明、拒绝，以及 Harness 实际告诉模型的权限。附件是本机绝对路径，在任何状态改变与发送前检查：必须是可读的普通文件；扩展名为 png／jpg／jpeg／gif／webp 的按图片处理，内容须与类型相符且不超过 20 MB，经 Harness 自身的图片输入交付——Codex `turn/start` 的 `localImage{path}`，Claude Code stream-json 用户消息的 base64 `image` 块（置于正文前），Pi RPC `prompt.images`，通用 ACP 的 `image` 块（仅当 Agent 声明 `promptCapabilities.image`）；DeepSeek Harness 不接受图片。其他文件以“附件：”绝对路径列表追加到正文末尾，由 Agent 用自身工具读取，不内联内容。有图片时正文可为空。远端运行时的附件、无法交付的附件都整条拒绝，不静默丢弃。跨 Harness 接续时文件列表随正文进入交接内容，图片随该 turn 交付。Pi 网关模型声明 text＋image 输入（Velune 不知道网关模型的模态，由上游接受或拒绝）。附件手动验收 用实际 Codex、Claude Code 与 Pi 经回环上游检查图片字节、文件路径列表、仅图片的 turn 与各类拒绝。`reasoning_efforts(runtime, model)` 给出该运行时与 managed 模型可选的强度：模型声明的级别按 Harness 自身通道的词汇映射——Codex 原样作为 Responses reasoning effort（`turn/start.effort`），Claude Code 取与 `--effort` 接受集合（low／medium／high／xhigh／max）的交集，Pi 用 Pi 级别名（`none` 对应 `off`）并经 `set_thinking_level` 设置；DeepSeek Harness 与通用 ACP 不提供。不在选项内的强度在任何状态改变与发送前拒绝。推理强度与权限模式一样是会话状态：Harness 自身在 Velune 下都不保留它（Codex 不选时不发送，Claude Code 每 turn 启动一次，Pi 的执行以 off 开始），因此未指定时 application 取会话最近一轮在同一运行时上的级别，所选模型仍接受时重新发送；不知道就不发送。按会话、按运行时记住所选强度是平台的职责。推理强度手动验收 用实际 Codex、Claude Code 与 Pi 经回环上游检查选项、拒绝与上游实际收到的推理字段。
+发送接受 `ComposedTurn`（正文、可选推理强度、可选速度档位、可选权限模式与附件）。权限模式须是目标运行时类型在 `RuntimeTypeDescriptor.permission_modes` 中声明的取值，否则在任何状态改变与发送前拒绝；跨 Harness 接续时随目标运行时的首轮一并交付。权限模式是会话状态。未指定时，application 取会话最近一轮在同一运行时上的模式重新发送（Codex 恢复线程时不保留轮次覆盖）；不知道当前模式就不发送，由运行时使用自己的默认或恢复的状态。发送时把本轮的运行时实例、模型名称（managed 模型为“名称 · 提供商”，原生模型为其 ID）、推理强度与权限模式登记到 transcript projection，供 `TranscriptTurn.settings` 显示。轮次用量（`TranscriptTurn.usage`）只取 Harness 原生记录，见 agent-runtime README；网关的分析记录没有会话归属，不参与。唯一例外是上下文窗口：Harness 对它不认识的模型只会给出自己的猜测（Codex 0.159.3 报 258400，Claude Code 2.1.286 报 200000），因此该轮模型以 Velune 的名称对应到 managed 模型且其配置了上下文窗口时，application 用配置值替换或补上。原生提供商可能以同一 ID 提供该模型（如 Codex 原生订阅的 `gpt-6.1-sol`，Codex 0.159.3 按自身目录报告 475000），所以 Velune 以原生模型发送的轮次不替换；只靠唯一的提供商模型 ID 对应到时，仅在 Harness 未报告窗口时补上。其余情况保留 Harness 报告的值。`working_branch(runtime, conversation)` 只读地返回会话工作目录当前的 git 分支（`git symbolic-ref --short -q HEAD`），仓库外或 detached HEAD 为空，远端运行时报错。composer 状态栏显示的项（`StatusLineItem`：上下文用量、本会话累计 token、工作目录与分支、账户额度、费用估算）是应用配置，默认只有上下文用量；`set_status_line` 保存时去重并按显示顺序排列。application 给每条用户消息补上所在段的运行时实例，并把 Pi 记录的网关路由 alias 换回 managed 模型的名称。轮次配置手动验收 检查实时与重启后读历史两种情况。权限模式手动验收 用实际 Codex 与 Claude Code 检查声明、拒绝，以及 Harness 实际告诉模型的权限。附件是本机绝对路径，在任何状态改变与发送前检查：必须是可读的普通文件；扩展名为 png／jpg／jpeg／gif／webp 的按图片处理，内容须与类型相符且不超过 20 MB，经 Harness 自身的图片输入交付——Codex `turn/start` 的 `localImage{path}`，Claude Code stream-json 用户消息的 base64 `image` 块（置于正文前），Pi RPC `prompt.images`，通用 ACP 的 `image` 块（仅当 Agent 声明 `promptCapabilities.image`）；DeepSeek Harness 不接受图片。其他文件以“附件：”绝对路径列表追加到正文末尾，由 Agent 用自身工具读取，不内联内容。有图片时正文可为空。远端运行时的附件、无法交付的附件都整条拒绝，不静默丢弃。跨 Harness 接续时文件列表随正文进入交接内容，图片随该 turn 交付。Pi 网关模型声明 text＋image 输入（Velune 不知道网关模型的模态，由上游接受或拒绝）。附件手动验收 用实际 Codex、Claude Code 与 Pi 经回环上游检查图片字节、文件路径列表、仅图片的 turn 与各类拒绝。`reasoning_efforts(runtime, model)` 给出该运行时与 managed 模型可选的强度：模型声明的级别按 Harness 自身通道的词汇映射——Codex 原样作为 Responses reasoning effort（`turn/start.effort`），Claude Code 取与 `--effort` 接受集合（low／medium／high／xhigh／max）的交集，Pi 用 Pi 级别名（`none` 对应 `off`）并经 `set_thinking_level` 设置；DeepSeek Harness 与通用 ACP 不提供。不在选项内的强度在任何状态改变与发送前拒绝。推理强度与权限模式一样是会话状态：Harness 自身在 Velune 下都不保留它（Codex 不选时不发送，Claude Code 每 turn 启动一次，Pi 的执行以 off 开始），因此未指定时 application 取会话最近一轮在同一运行时上的级别，所选模型仍接受时重新发送；不知道就不发送。按会话、按运行时记住所选强度是平台的职责。推理强度手动验收 用实际 Codex、Claude Code 与 Pi 经回环上游检查选项、拒绝与上游实际收到的推理字段。
 
 核心内部的原生资源层管理指定实例的原生 user instructions、MCP server 条目、skills 与原生 Agent 定义。只供资源库使用，不对外暴露；调用方明确给出 User／Project 范围；Project 的 cwd 属于执行机器。目录是 adapter 已知的原生来源，不是 Harness 合并后的最终配置，也不扫描任意命令猜测其资源格式。catalog 将功能不支持与资源 Missing／Invalid 分开，并单独说明可写或只读；不支持原因可能是原生功能缺失、协议没有入口或适配器尚未实现。
 
@@ -32,7 +34,7 @@ MCP 新增 `xurl_instructions`、`resolve_agent_uri`、`read_conversation`；后
 
 MCP 线程不访问 application：工具调用进入收件箱，由执行 owner 推进各会话后处理，并在结束后恢复原先寻址的会话。`ApplicationService` 无客户端请求时也每约 40 ms 推进事件、队列、协作、资源补写与终态清理；耗时同步用例仍可能延后推进，60 秒内未被处理的协作调用向 Agent 返回结果未知。服务启动失败、SSH 转发失败或 ACP stdio relay 不可用时，会话照常运行而不带协作工具；会话关闭即撤销其票据。没有专门的 bindings API，平台通过普通会话、消息与交互呈现。A2A 手动验收以两个合成 ACP 运行时检查新建与联系已有会话、审批留在对方会话、忙碌与未知票据被拒。
 
-`config` 定义 schema 10 的应用配置；`repository` 是内部文件设施，负责锁、加载和原子提交。提供商拥有模型条目和私有认证，参数模板仅用于复制填写字段，不参与调用解析。API key 与普通配置在同一文件原子保存，文件创建权限为 0600；公开配置摘要不含 key，只有显式单提供商读取接口返回已保存的值。认证编辑区分保留、更新和清除，读取失败不清空原值。运行时来源 OAuth 保留原来源登录和刷新，来源定位不进入公开摘要。根目录与资源目录由平台通过 `Options` 显式传入。
+`config` 定义 schema 11 的应用配置；`repository` 是内部文件设施，负责锁、加载和原子提交。提供商拥有模型条目和私有认证，参数模板仅用于复制填写字段，不参与调用解析。API key 与普通配置在同一文件原子保存，文件创建权限为 0600；公开配置摘要不含 key，只有显式单提供商读取接口返回已保存的值。认证编辑区分保留、更新和清除，读取失败不清空原值。运行时来源 OAuth 保留原来源登录和刷新，来源定位不进入公开摘要。根目录与资源目录由平台通过 `Options` 显式传入。
 
 提供商导入选择已保存的 Agent 运行时实例，应用从其配置确定目录及 Node 路径；调用方不能另填来源配置。预览不解析秘密，应用导入时将静态 API key 保存到提供商私有配置，OAuth 仍委托来源刷新。实例、源目录元数据或目标配置变化使预览失效。读取不要求执行准备或当前会话选择模型。来源文件与 Harness 会话保留，Velune 不新建会话数据库。保存首个使用默认网关的运行时会建立空的默认网关，便于先配置运行时再导入。
 
@@ -50,9 +52,9 @@ Codex 订阅由 application 自身管理，与 Harness 登录独立。保存提�
 
 公开 DTO、`Command`／`Response` 与静态提供商模板目录定义在 `application-api`，`api.rs` 实现类型化的本地用例方法，没有平台 JSON dispatcher。内部用例仍有 JSON 投影转换，不构成跨语言契约。隐藏稳定 `recordKey` 用于模型选择引用；`providerModelId` 是可编辑的精确上游标识，修改它不改变内部身份。能力可以未知，只有具体运行时准备边界检查必需字段。模板不复制内部键、认证、服务地址或 Pi 执行元数据。
 
-只接受 schema 10。更低版本的普通配置原子覆盖为空配置，不备份、不迁移、不操作原 Harness 会话、认证或既有平台秘密；未来版本、损坏 JSON 和当前版本中的未知字段明确报错。
+只接受 schema 11，升级前必须完成[显式手动迁移](../../docs/development.md#破坏性变更与手动迁移)。当前加载器仍将未迁移的更低版本普通配置原子覆盖为空配置，不在应用内迁移或备份；此行为不能代替迁移交付。原 Harness 会话、认证或既有平台秘密不在重置范围内；未来版本、损坏 JSON 和当前版本中的未知字段明确报错。
 
-运行时描述包含 familyId、versioned variant ID 与兼容版本区间文字（compatibleVersions），配置实例引用 variant。专用适配器支持 `pi-1.0`、`codex-0.159`、`claude-code-2.1` 与 `dsh-acp-0.2`；通用 `acp-v1` 表示协商的协议版本，不限定 Agent 品牌或 CLI 版本。family 不参与控制协议派发。应用协调 Codex app-server／DSH ACP 与 huihua 历史读取，原生 ID 与 runtimeId 共同形成公开会话身份；读取成功不等于原生恢复成功。运行时添加后直接可读历史，不要求模型或执行准备。新建显式给出会话模型并自动准备；历史视图选择模型后，在发送时按需恢复执行。Pi 历史中的 Velune 模型标记只恢复 managed 引用；原生目录提供的模型通过显式 native 选择发送，不另存会话状态。
+运行时描述包含 familyId、versioned variant ID 与兼容版本区间文字（compatibleVersions），配置实例引用 variant。专用适配器支持 `pi-1.0`、`codex-0.159`、`codex-0.166`、`claude-code-2.1` 与 `dsh-acp-0.2`；通用 `acp-v1` 表示协商的协议版本，不限定 Agent 品牌或 CLI 版本。family 不参与控制协议派发。应用协调 Codex app-server／DSH ACP 与 huihua 历史读取，原生 ID 与 runtimeId 共同形成公开会话身份；读取成功不等于原生恢复成功。运行时添加后直接可读历史，不要求模型或执行准备。新建显式给出会话模型并自动准备；历史视图选择模型后，在发送时按需恢复执行。Pi 历史中的 Velune 模型标记只恢复 managed 引用；原生目录提供的模型通过显式 native 选择发送，不另存会话状态。
 
 原生审批、问题回答及取消通过 RuntimeInteraction／RuntimeInteractionReply 完成，配置变更、执行和失败清理由应用协调。提供商导入支持 Pi、Codex 与 Claude Code 运行时；DSH 与通用 ACP 尚无提供商导入，增加执行 adapter 不自动增加导入。DSH 模型能力注入只使用已知字段，reasoning wire 映射未实现，不将能力列表解释为请求参数。
 
@@ -62,9 +64,11 @@ Codex 订阅由 application 自身管理，与 Harness 登录独立。保存提�
 
 列表窗口由 `local/organization.rs` 计算：按浏览偏好筛选、分组（组按最近活动排序，置顶组在前、无项目在后）与排序，总数上限依次分给各组的首页，折叠组不读取，`load_more_conversations` 只为该组追加一页；改变分组、排序或筛选时清空追加页。`list()` 返回窗口内的会话（`ListedConversation`，含原生 ID、置顶、未读、归档、所属项目与组）以及仍打开但不在窗口内的会话（组为空）、组描述与项目清单。会话的项目以主文件夹标识（`local/projects.rs`）：工作目录是某个项目的文件夹时归该项目；否则若它是 Git worktree，归其所属仓库的项目（Claude Code 约定的 `.claude/worktrees/<名称>` 按路径判断，SSH 会话与已删除的 worktree 同样适用；本机会话另读 worktree 的 `.git` 文件与 `commondir`，每个目录读一次并缓存）；再否则工作目录自成项目。`set_project` 设定项目的名称、主文件夹与附加文件夹，一个文件夹只属于一个项目；并入的目录及原主文件夹上的移动记录、项目筛选与折叠分组改指新的主文件夹。运行时在没有项目时安排的位置不算项目、归入无项目组：文件系统根（应用自身不指定目录时的位置）、运行时看到的 HOME（SSH 继承 HOME 时探测一次并缓存），以及版本描述 `projectless_directories` 列出的 HOME 下目录（Codex 为 `Documents/Codex`，即 Codex 应用无项目聊天的默认目录）。Velune 的列表组织记录保存在 `conversation-organization.json`（schema 2）：置顶、Velune 归档、已读位置、手动未读、移到的项目（主文件夹），以及调整过的项目（主文件夹、名称、附加文件夹）；缺少文件或遇到旧 schema 时以当前时间为已读基线重新开始。窗口中未读且在本机的会话另读原生会话文件末尾判断最近结束的轮次是否失败（`failed`，按文件签名缓存；用户停止不算失败）。运行时有原生归档（版本描述 `can_archive_conversations`，当前为 Codex）时归档改用原生 `thread/archive`／`thread/unarchive`，归档视图另读其已归档列表；其余运行时只记录、不改原生会话。归档会取消置顶，向 Velune 归档的会话发送消息会取消归档，删除会话时移除其记录。Claude Code 与 Pi 按文件索引（`local/browsing.rs`）：未读会话以文件时间与会话头的工作目录参与分组、计数和窗口分配，`browse_read` 只读取窗口显示到的会话，读取后以原生时间重排至稳定；搜索读出全部未读会话，按 ID 查找只读该会话，协作工具读取全部。
 
-跨运行时发送通过同一 `send_turn` 接纳下一轮目标，创建目标原生会话并以明确引用文本交接上下文。逻辑会话保持公开身份，并以首个实际原生段的标题为权威，`context_runtime_id` 表示当前原生查询／执行上下文，不能从列表的来源实例推断。`local/continuation.rs` 装配有序投影，封闭段从权威历史计算截止数量和内容摘要；原生前缀变更明确拒绝，截止后的追加不进入旧段。每次回切创建新原生段，不恢复旧执行状态。
+跨运行时发送通过同一 `send_turn` 接纳下一轮目标。Pi、Claude Code 与 Codex 由来源 adapter 导出 compact 后的有效模型上下文，翻译成目标原生消息后恢复发送；摘要、保留消息及工具参数／结果成对交接，不按固定预算截断。展示仍读取封闭来源段，目标导入前缀按目标自身历史的数量与内容摘要校验、隐藏。逻辑会话保持公开身份，并以首个实际原生段的标题为权威，`context_runtime_id` 表示当前原生查询／执行上下文，不能从列表的来源实例推断。`local/continuation.rs` 装配有序投影；原生前缀变更明确拒绝，截止后的追加不进入旧段。每次回切创建新原生段，不恢复旧执行状态。
 
-`conversation-links.json` 是 schema 1 的关联文件，独立于 schema 10 普通配置，只保存原生引用、截止位置及交接记录定位，不保存消息或凭据。`composer-drafts.json`（schema 1，0600）按会话公开身份保存未发送的 composer 文字，同样独立于普通配置、不随配置重置；空文字删除条目，删除会话时一并删除，尚未首发的新建会话不写入。公开身份可以是单目标别名；后续交接继续向同一关联追加原生段。目标准备成功后原子保存关联，再发送；未知发送结果不自动重试。重开以各原生历史重建消息，精确校验交接记录后只显示本轮用户输入，不递归复制交接包。首版交接仅携带文本及完成的工具结果引用；工具执行、审批和签名推理状态不重放。
+首次 snapshot／snapshot update 或侧聊创建即使尚无载入的 session，也按关联最后一段的 `context_runtime_id` 校验并载入当前上下文。列表的只读打开不建立 session，不能用它是否曾展示过来假定上下文已载入。按列表来源打开、发送与管理会话仍校验第一段的来源实例；不把来源实例与当前上下文互相替代。
+
+`conversation-links.json` 是 schema 1 的关联文件，独立于 schema 11 普通配置，只保存原生引用、截止位置及交接记录定位，不保存消息或凭据。公开身份可以是单目标别名；后续交接继续向同一关联追加原生段。目标导入和准备成功后原子保存关联，再发送；未知发送结果不自动重试。重开以各原生历史重建展示，不递归复制交接包。工具执行、审批和签名推理状态不重放。ACP／DeepSeek 目标仍使用既有引用路径；旧引用载荷、无法完整解析的 Codex 继承／回滚上下文明确拒绝原生翻译，不能静默丢失内容。composer 的完整输入持久化与同步见[状态设计](../../docs/design/composer-state.md)，旧文字文件由显式脚本迁移。
 
 当前进程成功新建的 Codex、Claude Code 和 Pi 草稿，在首次发送前切换模型或实例时可以重建实际目标，并以单目标关联保留公开身份。该资格来自明确的新建生命周期，不能从空消息或历史缺失推断。目标创建及关联原子提交成功后才发送；创建失败保留草稿身份供显式重试，关联提交失败保留已创建的活动目标而不发送。第一次发送调用即消耗草稿资格，失败或断连不自动重建或重发。重启后目标尚无原生历史时显示不可发送状态；确认目标不存在后，显式删除可撤除这条单目标关联。未提交且未关联的内存草稿不保证跨重启保留。DSH 新建时已有原生记录，继续使用普通历史接续。
 
@@ -113,9 +117,15 @@ ACP 的列表能力缺失与空列表不同；汇总列表通过 `history_failur
 
 原生 CLI 登录额度经 `composer_quota` 只读提供，不需要导入提供商，也不创建网关账户。`RuntimeTypeDescriptor.native_account_quota` 声明能力；当前为本机继承 HOME 的 Claude Code。运行时配置由核心解析，本机默认登录不设置 `CLAUDE_CONFIG_DIR`，独立目录使用对应位置，其它 HOME 与 SSH 明确返回 Unsupported。原生与提供商共享 Claude 采集和解析，原生观测只作展示，不进入提供商的调度、上限、告警或历史。按实例与执行绑定合并并发、最多四项在途，成功观测有效 60 秒，失败退避 30 秒；显式 refresh 可重试。修改入口／目录、删除实例及应用关闭时取消旧采样，迟到结果不能恢复旧来源。这里显示的是登录额度，不据此推断使用 Harness 其它 API 设置的请求如何计费。
 
+## 组织用量与账单
+
+`provider_billing`／`save_provider_billing` 管理已保存官方 API 提供商下的可选报表；查询 Key 与模型认证分开，公开状态不含秘密。范围、货币、统计周期与新鲜度由共享 DTO 表达，部分失败不发布不完整总额，报表不进入网关准入。配置、缓存身份、取消与官方适配的权威契约及 Mermaid 见 [AI 服务设计](../../docs/design/ai-service.md#组织用量与账单)。
+
 ## 提供商能力组合与 Claude CLI
 
-`provider_templates()` 重导出中立 API 中的添加目录，保留每种订阅的固定业务组合与 API 模板的可编辑协议／地址。模板只提供命令名称，不读取 PATH；CLI 的实际绝对路径由执行设备一侧定位或用户填写，控制设备路径不作为远程执行路径。
+`provider_templates()` 重导出中立 API 中的添加目录，保留每种订阅的固定业务组合与 API 模板的可编辑协议／地址。`application-api::provider_subscription_template` 按执行后端类型、请求 profile、认证来源与额度来源识别订阅并返回展示元数据，绑定层供各平台共用；不按品牌、协议或 API key 判断，也不把模板变为保存配置的运行时引用。完整组合校验仍归 application。模板只提供命令名称，不读取 PATH；CLI 的实际绝对路径由执行设备一侧定位或用户填写，控制设备路径不作为远程执行路径。
+
+官方 API 模板显式指定协议与额度来源：OpenAI Platform 为 `Responses`＋`https://api.openai.com/v1`，Anthropic API 为 `Messages`＋`https://api.anthropic.com`；两者均为 HTTP、Native、API key，默认不查询账户额度。DeepSeek、Moonshot 与 OpenRouter 继续默认使用 Chat Completions 并读取官方账户额度。API 模板保存后协议与地址仍可编辑；模型及能力参数由提供商模型拥有，模板不预置会随服务变化的模型清单。
 
 `ProviderDraft` 明确保存 `execution_backend`（`Http` 或 `ClaudeCli { binary }`）、`request_profile`（`Native` 或 `CodexResponses`）、`authentication_source` 与 `quota_source`。认证来源为 `None`、`ApiKey`、`CodexOAuth`、已导入的 `RuntimeProvider` 或 `ClaudeCli`；额度来源为 `None`、`CodexUsage` 或 `ClaudeCliUsage`。公开摘要返回同一组字段；私有认证材料持有来源与 generation，不另建账户注册表。新建普通 HTTP 提供商应选择 `Http`、`Native` 和 `None` 额度来源。`AuthenticationEdit` 区分 `Keep`、`SetApiKey`、`Clear` 与 `UseClaudeCodeLogin`：切换来源或清除会初始化所选来源的空认证，保存原登录使用 `Keep`。运行时来源只能由导入建立。
 
@@ -142,7 +152,9 @@ Claude 认证失败的公开 `AuthenticationEvent::Finished` 的 `error` 只包�
 
 远程回复包含当前 `Revision`。配置修改、删除和消息替换要求 `expected_revision` 与当前值相同；配置之外的发送等共享写入也使旧版本失效。这个版本是进程内串行观察版本，不是 Harness 的持久会话版本，也不承诺跨崩溃 exactly-once。原生资源另有文件 revision。审批在派发前重新读取当前 pending interaction，另一端已经答复或运行时已撤回的审批返回 `StaleInteraction`。请求 ID、接受／结果查询与去重由 remote 唯一维护，application 不建立第二套命令记录。公开 `interaction.id` 已由 adapter 绑定真实待决请求的寿命：原生 Harness 统一经 [`NativeSession::add_interaction`](../agent-runtime/src/native/mod.rs) 生成随机会话 epoch 加跨 turn 单调序号，ACP 经 [`Client::next_id`](../agent-runtime/src/acp/projection.rs) 生成相同性质的公开 ID；私有映射才保存 Harness 原始请求 ID。答复成功后立即消费映射，取消、失效或结束时按真实请求清理；下一轮即使复用原始 ID，也获得新的公开 ID。两台设备观察同一待决请求时取得同一公开 ID，轮询不会换号。重建 adapter 生成新随机 epoch，旧 ID 不会恢复权限。不在应用投影处再发行第二套审批 token，也不用与审批无关的全局配置版本代替请求寿命。
 
-每个 view 分别保留所选会话、下一轮运行时、列表筛选／分组排序／归档／分页、outline／关联会话打开方式／用量显示方式／状态栏和未发送草稿。远程这些呈现选择不写入执行设备的默认界面配置；会话、项目组织和实际配置仍共享。`ReleaseView` 释放临时状态，不取消会话、不删除历史或已上传文件；最多保留 128 个 view，超出时回收最久未访问者的临时状态，所以长期 headless 运行不因累计窗口耗尽视图。会话按自身运行／审批／队列与空闲保留规则管理，视图回收不会改变工作寿命。
+每个 view 分别保留所选会话、列表筛选／分组排序／归档／分页、outline／关联会话打开方式／用量显示方式／状态栏。远程这些呈现选择不写入执行设备的默认界面配置；会话、项目组织和实际配置仍共享。`ReleaseView` 释放临时状态，不取消会话、不删除历史或已上传文件；最多保留 128 个 view，超出时回收最久未访问者的临时状态，所以长期 headless 运行不因累计窗口耗尽视图。会话按自身运行／审批／队列与空闲保留规则管理，视图回收不会改变工作寿命。
+
+未发送正文、附件、明确选择与恢复关联由 `ComposerInputs` 在 `ClientState` 之外共享持有，使用稳定 InputID、输入 CAS 与条件目录修订；全局新建只有一份。原生身份交接记录同时服务幂等恢复和其他编辑视图接续，详见 [Composer 契约](../../docs/design/composer-state.md)。
 
 新 view 继承最近一次本地成功保存的完整浏览偏好、分页上限、outline、关联会话打开方式、用量显示方式和状态栏。local-runtime 与 portable 都在配置原子保存成功后记录这六项的实际提交快照，离开本地调用时更新默认值；已存在的远程 view 保留自己的选择。远程保存共享配置时保留这些本地默认值，保存失败不推进默认值，保存后的响应失败也不撤销已提交的默认值。所选会话、执行状态和草稿不参与该快照。
 
@@ -161,7 +173,9 @@ ARK Coding Plan 模板 `arkCodingPlan` 组合 Http、ResponsesV1、ApiKey、ArkC
 查询认证及其 generation 保存在提供商私有配置，公开 quota_authentication 只给 configured、binding_confirmed。关联是用户声明，不是服务器自动核验；更换模型认证、查询凭据或套餐目标会撤销旧关联并丢弃旧采样，查询换 Key 不清除模型冷却和会话绑定。相同模型 Key 或相同 AK 绑定不能重复保存，不推导跨 AK 的订阅唯一性。固定 GetCodingPlanUsage 使用独立 V4 签名，不读取 CLI 登录或枚举其他模型 Key；错误与超大响应不泄露正文。窗口 ark:session/weekly/monthly 以实际比例/重置为准，未确认来源供查看但调度为 Unknown；失败的主动刷新会让旧观测过期，不把旧值当新值，也不补零。
 
 
-`resume_turn(runtime_id, conversation_id, selection, effort, permission_mode)` 在 `FollowUp.can_resume` 为真时，从当前原生上下文启动无用户消息的新轮次。`runtime_id` 是 `context_runtime_id`，包括跨 Harness 关联会话的尾段；不允许借此切换实例。Codex 使用 `turn/start` 的空 `input`，不是仅载入会话的 `thread/resume`；Claude Code 在新轮次子进程中使用 stream-json 的空 `user.message.content`。停止／失败、无待处理交互、无子 Agent 工作且有已记录的用户输入时才提供；中断状态从原生历史恢复。`can_continue` 与 `can_resume` 均表示当前原生恢复资格，不承诺文本继续；Idle／Failed 才可恢复，Elsewhere 独立禁止普通发送、恢复及新增／恢复队列。恢复失败不补发用户消息、不释放暂停队列，也不在转录中登记等待下一条用户消息的发送配置；无输入轮次的原生用量归到前一用户消息所在段，保留那条消息原有的发送配置。
+`resume_turn(runtime_id, conversation_id, selection, effort, permission_mode)` 在 `FollowUp.can_resume` 为真时，按版本声明的 `ResumeStrategy` 继续当前上下文。`runtime_id` 是 `context_runtime_id`，包括跨 Harness 关联会话的尾段；不允许借此切换实例。Codex 使用 `turn/start` 的空 `input`，Claude Code 使用 stream-json 的空 `user.message.content`；Pi 没有受支持的空输入恢复，以普通原生用户消息发送 `continue`，该消息真实进入历史和轮次配置。停止／失败、无待处理交互、无子 Agent 工作且有已记录的用户输入时才提供，资格从原生历史与最近执行记录恢复。Idle／Failed 才可继续，Elsewhere 独立禁止普通发送、继续及新增／恢复队列。失败不释放暂停队列。原生无输入轮次不登记等待用户回显的发送配置，其用量归前一用户段；文本兜底按正常新消息登记。
+
+速度不是独立的按轮选项，而是模型目录中的独立条目。managed 模型记录的 `request_parameters` 声明随每个上游请求合并进请求体的额外字段，适配器设过的同名字段被覆盖，上游不认识的字段以其自身错误失败；快速档是同一 `provider_model_id` 的另一条记录，可独立进入路由与 fail-over。原生运行时的速度档位由 adapter 扫平为变体模型（见 agent-runtime README）。
 
 Claude Code 的 SDK 中断标记复用原输入的 `promptId`，且没有输入的 `promptSource`／`turnPosition`。历史投影据此识别原生中断标记，恢复资格来自该标记；用户实际输入相同文字仍作为用户消息保留。无输入恢复不生成空用户投影，前后计量累计到同一用户段；流末尾的输出 token 更新实时上下文用量。其他历史格式缺少这些证据时不从文字猜测恢复资格。
 
@@ -174,3 +188,25 @@ Claude Code 的 SDK 中断标记复用原输入的 `promptId`，且没有输入�
 `QuotaOrigin` 区分提供商候选账户、运行时登录和会话历史记录。登录额度不证明该轮实际计费账户。历史来源只读取已交付的会话投影，并核对上下文与轮次的运行时；managed 轮次不能成为原生账户观测。没有记录的观测时间与过期时间为 None，不用查询时刻补造。平台保留日期与百分比的格式化，不解析来源或重算窗口范围。
 
 `native_quota_source` 捕获类型、执行位置、CLI 和登录目录，并分派到具体采集器。`RuntimeQuota` 只接收捕获结果和来源 ID，负责观测有效期、并发、退避与取消。配置所有者提交新的来源绑定以撤销旧采集。原生登录和提供商缓存继续分离；`SubscriptionQuota` 的调度、上限、账户归属确认、历史和提醒契约保持独立。
+
+已读、置顶与项目归属等本地列表组织操作只对既有历史索引重新投影，保留最近扫描失败，不重新遍历所有运行时；原生归档仍重新读取变动。没有指定工作目录的新会话，对接受 optional cwd 的原生 adapter 保留空值；ACP／DSH 则在配置的执行机器及 HOME 下创建 Documents/Velune 作为绝对目录，并归入无项目。
+
+## 会话控制权与本地定时任务
+
+输入准入由 `local/control.rs` 计算，原生观察位于 agent-runtime；共享 `ConversationActions.input_access` 与运行状态分开，后台检查按物理上下文隔离过期结果，平台不读取锁文件。原生 writer 仍做最后仲裁；已识别的 Codex resume 占用冲突立即投影，未自动重发。
+
+`scheduled_tasks` 保存定义、来源与运行账本，`local/scheduled_tasks.rs` 在同一执行 owner 的 advance 循环派发。SQLite 事务领取先于原生调用，重开跳过等待项并将未结算的派发／运行标为待核查。业务命令与会话票据授权的 `scheduled_tasks` MCP 工具共用入口；来源导入和宿主交接保留给用户窗口，见 [PRD](../../docs/prd/scheduled-tasks.md)。
+
+任务工作树属于持久执行产物：本机位于应用 HOME 的 `scheduled-worktrees/<run-id>`，SSH 位于执行设备资源目录的同名子目录；不依赖 Harness 的 agentDir，ACP 同样可用。运行记录保存实际 cwd；删除任务／运行时或刷新运行时投影不移除工作树，不能把该目录视为可丢弃的 adapter cache。
+
+日程的简单编辑表示由 `scheduled_tasks/schedule.rs` 从 RRULE 无损派生；`PreviewSchedule` 统一构造、时区锚点修改与未来三次触发计算，简单表示不另行持久化。`SetEnabled` 使用 revision 并独立暂停，不要求无效目标先被修复；启用与运行一次仍检查配置和交接。列表给出启用／手动运行的不可用原因。重新导入须携带用户所核对目标的 `expected_revision`，避免覆盖预览后其他客户端更新的定义。
+
+
+原生已读 receipt 随 `ConversationSummary` 和正文快照交付；`ConversationReference.native_read_state` 回传实际所见版本。逻辑会话的 receipt 属于最新原生段，而非标题来源段。原生可用时不写第二份本地已读标记；CAS 冲突保留新结果，调用方刷新后由新的查看行为决定是否确认。Codex 0.166 跨 provider 的新上下文复用现有 logical projection／原生交接，不改原生记录；显式配置迁移见[开发文档](../../docs/development.md#codex-0166-实例迁移)。
+
+
+### 队列等待与命名
+
+发送队列仍由 application 统一持有逐项的 ComposedTurn、目标运行时与模型选择。QueueWait::Control 表示释放原生连接后的异步控制权确认；尚未派发的消息保持等待，后续轮询在准入恢复后继续，不能把 CheckingControl 锁存为 SendFailed。停止／失败后的暂停仍保留明确用户恢复的边界。Codex 0.166 的实验性 thread/queue 接口只有输入存储与显式 start，尚未承载上述逐项执行选择，因此本实现没有镜像另一份原生待发队列。
+
+自动命名兜底配置属于 RuntimeInstance 的 automaticNaming／automaticNamingModel。仅观察到正常完成后，在后台直接调用 ai-provider 的有界文本操作，使用指定模型及现有认证解析；没有 Harness turn、工具或本地 gateway。禁用默认不产生调用。超时／取消／失败不改变会话状态；完成结果先复核实例选择与原生名称，再写入现有组织记录的 generatedTitles。ConversationTitle::Generated 区分生成名与 Native／FirstMessage；原生名优先，列表与 snapshot 使用相同投影。

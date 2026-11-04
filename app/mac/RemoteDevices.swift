@@ -226,7 +226,7 @@ struct DeviceSettingsView: View {
                     InvitationView(invitation: invitation) { hub.cancelInvitation() }
                 } else {
                     Button("添加控制设备…") { hub.createInvitation() }.disabled(hub.state == nil)
-                    Text("在另一台设备上扫描二维码或粘贴邀请，两台设备显示的核对码一致时，在这台 Mac 上允许。").font(.caption).foregroundStyle(.secondary)
+                    Text("在另一台设备上扫描二维码或粘贴邀请，两台设备显示的核对码一致时，在这台 Mac 上允许。").uiFont(.caption).foregroundStyle(.secondary)
                 }
                 ForEach(hub.state?.incomingGrants ?? [], id: \.peerId) { grant in
                     LabeledContent {
@@ -250,7 +250,7 @@ struct DeviceSettingsView: View {
                     TextField("邀请", text: $offer, prompt: Text("粘贴另一台设备的邀请"))
                     Button("连接") { hub.beginPairing(offer); offer = "" }.disabled(offer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || hub.state == nil)
                 }
-                Text("粘贴来源设备的控制或遥测分享邀请，核对两端数字，并在来源设备上批准对应权限。").font(.caption).foregroundStyle(.secondary)
+                Text("粘贴来源设备的控制或遥测分享邀请，核对两端数字，并在来源设备上批准对应权限。").uiFont(.caption).foregroundStyle(.secondary)
             }
             if let failure = hub.failure {
                 Section { Text(failure).foregroundStyle(.red) }

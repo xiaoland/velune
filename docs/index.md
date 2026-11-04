@@ -24,6 +24,8 @@
 
 ## 当前工作
 
+- [输入区状态、轮次展示与恢复](../tasks/composer-turn-recovery/packet.md)
+
 - [待决事项与已知缺口](../tasks/open-items/packet.md)：尚未解决的用户决定、未授权的候选与未验证的能力
 
 ## 协作入口
@@ -34,3 +36,9 @@
 ## 文档方法
 
 采用 xiaoland/svc 的[知识归属](https://github.com/xiaoland/svc/blob/4fe4c66ac4deb35209069c00b1bbdc1b22aae3af/corpus/specs/index.md)与 [Task Packet](https://github.com/xiaoland/svc/blob/4fe4c66ac4deb35209069c00b1bbdc1b22aae3af/corpus/task-packet/index.md)方法。项目文档可以直接阅读和编辑，无需 SVC CLI、配置文件或运行环境。
+
+<!-- svc:begin navigation sha256=55c5c21e0087021bc7f81047e2ffe91f889b81829473655d86d78fbe2029d4f2 -->
+## SVC CLI
+
+Use `svc --help` and the installed SVC Skills for framework guidance. Project documentation outside this marked block remains Consumer-owned.
+<!-- svc:end navigation -->

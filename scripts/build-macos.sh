@@ -22,6 +22,35 @@ cargo run --locked -p velune-bindings --no-default-features --features cli --bin
 app="$PWD/target/macos/Velune.app"
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources" "$app/Contents/Frameworks"
+# The bundle identity goes first: a build failing later still leaves a
+# launchable app (direct execution needs it, e.g. UNUserNotificationCenter).
+cat > "$app/Contents/Info.plist" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>CFBundleExecutable</key><string>Velune</string>
+<key>CFBundleIdentifier</key><string>local.velune.prototype</string>
+<key>CFBundleName</key><string>Velune</string>
+<key>CFBundleIconFile</key><string>Velune</string>
+<key>LSMinimumSystemVersion</key><string>15.0</string>
+<key>CFBundleVersion</key><string>1</string>
+<key>CFBundleShortVersionString</key><string>0.1</string>
+<key>NSHighResolutionCapable</key><true/>
+<key>UTExportedTypeDeclarations</key><array><dict>
+<key>UTTypeIdentifier</key><string>local.velune.conversation-link</string>
+<key>UTTypeDescription</key><string>Velune conversation link</string>
+<key>UTTypeConformsTo</key><array><string>public.data</string></array>
+</dict><dict>
+<key>UTTypeIdentifier</key><string>local.velune.conversation-group</string>
+<key>UTTypeDescription</key><string>Velune conversation list group</string>
+<key>UTTypeConformsTo</key><array><string>public.data</string></array>
+</dict></array>
+<key>CFBundleURLTypes</key><array><dict>
+<key>CFBundleURLName</key><string>local.velune.conversation</string>
+<key>CFBundleURLSchemes</key><array><string>velune</string><string>agents</string></array>
+</dict></array>
+</dict></plist>
+PLIST
 cp target/release/libvelune_bindings.dylib "$app/Contents/Frameworks/libvelune_bindings.dylib"
 install_name_tool -id '@rpath/libvelune_bindings.dylib' "$app/Contents/Frameworks/libvelune_bindings.dylib"
 # Each crate with UniFFI types generates its own Swift file and header; all of
@@ -70,40 +99,16 @@ mkdir -p "$app/Contents/Resources/ThirdParty/Swift"
 cp app/mac/Licenses/*.txt app/mac/Licenses/NOTICE.md "$app/Contents/Resources/ThirdParty/Swift/"
 cp -R app/mac/Licenses/SwiftPackages "$app/Contents/Resources/ThirdParty/Swift/"
 cp -R app/mac/Licenses/RelayKit "$app/Contents/Resources/ThirdParty/RelayKit"
+cp -R app/mac/Licenses/Mermaid "$app/Contents/Resources/ThirdParty/Mermaid"
+cat app/mac/Licenses/Mermaid/NOTICE.md >> "$app/Contents/Resources/ThirdParty/THIRD_PARTY_NOTICES.md"
 python3 -I scripts/android-licenses.py local-runtime,remote "$app/Contents/Resources/ThirdParty/rust-licenses.txt" "$(rustc -vV | awk '/^host:/ {print $2}')"
 cat app/mac/Licenses/RelayKit/NOTICE.md >> "$app/Contents/Resources/ThirdParty/THIRD_PARTY_NOTICES.md"
 cp packages/ai-provider/relaykit-bridge/go.mod packages/ai-provider/relaykit-bridge/go.sum "$app/Contents/Resources/ThirdParty/RelayKit/"
 cp Package.resolved "$app/Contents/Resources/ThirdParty/swift-package-resolved.json"
 cp -R assets/brand "$app/Contents/Resources/Brand"
+cp -R app/mac/Assets/Artifacts "$app/Contents/Resources/Artifacts"
 xcrun swift scripts/render-app-icon.swift assets/brand target/macos/Velune.iconset
 iconutil -c icns target/macos/Velune.iconset -o "$app/Contents/Resources/Velune.icns"
-cat > "$app/Contents/Info.plist" <<'PLIST'
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0"><dict>
-<key>CFBundleExecutable</key><string>Velune</string>
-<key>CFBundleIdentifier</key><string>local.velune.prototype</string>
-<key>CFBundleName</key><string>Velune</string>
-<key>CFBundleIconFile</key><string>Velune</string>
-<key>LSMinimumSystemVersion</key><string>15.0</string>
-<key>CFBundleVersion</key><string>1</string>
-<key>CFBundleShortVersionString</key><string>0.1</string>
-<key>NSHighResolutionCapable</key><true/>
-<key>UTExportedTypeDeclarations</key><array><dict>
-<key>UTTypeIdentifier</key><string>local.velune.conversation-link</string>
-<key>UTTypeDescription</key><string>Velune conversation link</string>
-<key>UTTypeConformsTo</key><array><string>public.data</string></array>
-</dict><dict>
-<key>UTTypeIdentifier</key><string>local.velune.conversation-group</string>
-<key>UTTypeDescription</key><string>Velune conversation list group</string>
-<key>UTTypeConformsTo</key><array><string>public.data</string></array>
-</dict></array>
-<key>CFBundleURLTypes</key><array><dict>
-<key>CFBundleURLName</key><string>local.velune.conversation</string>
-<key>CFBundleURLSchemes</key><array><string>velune</string><string>agents</string></array>
-</dict></array>
-</dict></plist>
-PLIST
 python3 - "$app/Contents/Resources/build-manifest.json" <<'PY'
 import hashlib,json,platform,plistlib,re,subprocess,sys
 from pathlib import Path

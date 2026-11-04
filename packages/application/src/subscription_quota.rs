@@ -214,7 +214,7 @@ impl SubscriptionQuota {
                                 directory: LoginDirectory::Owned,
                                 kimi: None,
                                 account: None,
-                                ark: p.quota_authentication.access_key.as_ref().map(|key| {
+                                ark: p.quota_authentication.access_key().map(|key| {
                                     crate::ark_quota::Capture {
                                         key: key.clone(),
                                         generation: p.quota_authentication.generation,

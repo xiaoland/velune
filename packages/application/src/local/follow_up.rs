@@ -57,8 +57,7 @@ fn queued_id() -> String {
 }
 
 impl CoreRuntime {
-    /// Resume only the addressed native context; no cross-runtime handoff or
-    /// text fallback can preserve the meaning of an input-free turn.
+    /// Continue the addressed context using its declared native or message strategy.
     pub(crate) fn resume_turn(
         &mut self,
         runtime_id: &str,
@@ -67,11 +66,12 @@ impl CoreRuntime {
         permission_mode: Option<String>,
     ) -> Result<SnapshotResult, RuntimeError> {
         self.ensure_active(runtime_id)?;
+        self.require_input_access()?;
         let snapshot = self
             .current_snapshot()
             .ok_or_else(|| RuntimeError::invalid("conversation is not active"))?;
         if !snapshot.follow_up.can_resume {
-            return Err(RuntimeError::invalid("当前会话不能无新消息恢复"));
+            return Err(RuntimeError::invalid("当前会话不能继续"));
         }
         let runtime = self.runtime_instance(&snapshot.context_runtime_id)?.clone();
         self.validate_model_selection(&runtime, selection.as_ref())?;
@@ -87,9 +87,16 @@ impl CoreRuntime {
             let native = self.native_snapshot().expect("resumable context");
             self.prepare_with_selection(native, selection.as_ref(), false)?;
         }
+        let message = match velune_agent_runtime::version::variant(runtime.type_id).resume {
+            velune_agent_runtime::version::ResumeStrategy::Native => None,
+            velune_agent_runtime::version::ResumeStrategy::Message(text) => Some((text, &[][..])),
+            velune_agent_runtime::version::ResumeStrategy::Unsupported => {
+                return Err(RuntimeError::invalid("此运行时不支持继续"));
+            }
+        };
         let result = self.send_action(Prompt {
             runtime_id,
-            message: None,
+            message,
             effort: effort.as_deref(),
             permission_mode: permission_mode.as_deref(),
         })?;
@@ -104,6 +111,12 @@ impl CoreRuntime {
     ) -> Result<SnapshotResult, RuntimeError> {
         if self.session.compacting {
             return Err(RuntimeError::invalid("上下文压缩期间不能修改发送队列"));
+        }
+        if matches!(
+            operation,
+            SendQueueOperation::Add { .. } | SendQueueOperation::Resume
+        ) {
+            self.require_input_access()?;
         }
         let snapshot = self.native_snapshot();
         if matches!(
@@ -205,6 +218,7 @@ impl CoreRuntime {
     }
 
     fn steer(&mut self, turn: &ComposedTurn) -> Result<(), RuntimeError> {
+        self.require_input_access()?;
         if !self.can_steer() {
             return Err(RuntimeError::invalid("此运行时当前不能插入消息"));
         }
@@ -294,6 +308,21 @@ impl CoreRuntime {
     /// Send the first queued message as its own turn. One that is not
     /// accepted stays first and the queue waits; it is never resent unasked.
     fn send_next_queued(&mut self) {
+        if self.current_snapshot().is_some_and(|snapshot| {
+            matches!(
+                snapshot.actions.input_access,
+                crate::conversation::InputAccess::CheckingControl
+                    | crate::conversation::InputAccess::ControlUnavailable
+                    | crate::conversation::InputAccess::ExternalController
+                    | crate::conversation::InputAccess::ExternalExecution
+            )
+        }) {
+            // Checking a released native handle is asynchronous. No message
+            // was submitted: keep the queue waiting instead of latching a
+            // send failure that would require the user's intervention.
+            self.session.send_queue.waiting = Some(QueueWait::Control);
+            return;
+        }
         let Some(turn) = self.session.send_queue.turns.pop_front() else {
             return;
         };
@@ -328,7 +357,10 @@ impl CoreRuntime {
             .runtime_instance(&snapshot.context_runtime_id)
             .is_ok_and(|runtime| {
                 runtime.enabled
-                    && velune_agent_runtime::version::variant(runtime.type_id).can_resume_turns
+                    && !matches!(
+                        velune_agent_runtime::version::variant(runtime.type_id).resume,
+                        velune_agent_runtime::version::ResumeStrategy::Unsupported
+                    )
             })
             && snapshot.pending_interactions.is_empty()
             && snapshot.actions.can_send
@@ -340,7 +372,22 @@ impl CoreRuntime {
                 .any(|message| message.role == crate::conversation::MessageRole::User)
             && (session.send_queue.interrupted.is_some()
                 || snapshot.run_state == RunState::Failed
-                || snapshot.follow_up.can_resume)
+                || snapshot.follow_up.can_resume
+                || snapshot
+                    .executions
+                    .records
+                    .iter()
+                    .rev()
+                    .find(|record| record.kind == crate::conversation::ExecutionKind::UserTurn)
+                    .is_some_and(|record| {
+                        matches!(
+                            record.outcome,
+                            Some(
+                                crate::conversation::TurnOutcome::Cancelled
+                                    | crate::conversation::TurnOutcome::Failed
+                            )
+                        )
+                    }))
     }
 
     /// The follow-up the addressed session presents with `snapshot`.
@@ -376,6 +423,7 @@ impl CoreRuntime {
                 && snapshot.conversation.parent_conversation_id.is_none()
                 && !snapshot.messages.is_empty(),
             editable: self.editable_messages(snapshot),
+            can_fork: self.forkable(snapshot),
         }
     }
 }

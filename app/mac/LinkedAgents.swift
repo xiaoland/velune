@@ -77,7 +77,7 @@ struct LinkedAgentsView: View {
                 if inSidebar { list(agents).listStyle(.sidebar) } else { list(agents).listStyle(.inset) }
                 Divider()
                 HStack {
-                    Text(LinkedAgent.summary(of: store)).font(.callout).foregroundStyle(.secondary).lineLimit(2)
+                    Text(LinkedAgent.summary(of: store)).uiFont(.callout).foregroundStyle(.secondary).lineLimit(2)
                     Spacer()
                     Button("打开") { if let selectedID { open(selectedID, nil) } }
                         .keyboardShortcut(inPopover ? .defaultAction : nil).disabled(selectedID == nil)
@@ -117,7 +117,7 @@ struct LinkedAgentsView: View {
                         state(of: agent).frame(width: 14)
                         VStack(alignment: .leading, spacing: 1) {
                             Text(agent.title).lineLimit(2)
-                            if let detail = detail(of: agent) { Text(detail).font(.caption).foregroundStyle(.secondary).lineLimit(1) }
+                            if let detail = detail(of: agent) { Text(detail).uiFont(.caption).foregroundStyle(.secondary).lineLimit(1) }
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
                     }
@@ -167,7 +167,7 @@ struct LinkedConversationSheet: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 8) {
-                Text(tab.title).font(.headline).lineLimit(1).truncationMode(.middle)
+                Text(tab.title).uiFont(.headline).lineLimit(1).truncationMode(.middle)
                 Spacer(minLength: 12)
                 Button("在标签页中打开", action: window.moveSheetToTab)
                 Button("在新窗口中打开", action: window.moveSheetToNewWindow)

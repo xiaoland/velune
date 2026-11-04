@@ -40,6 +40,7 @@ public sealed partial class WorkspaceWindow
             Command.Stop => model is { CanCancel: true, Busy: false },
             Command.FocusTranscript => view != null,
             Command.CloseTab or Command.Rename => Editor.Focused.Selected != null,
+            Command.ReopenClosedTab => Editor.CanReopenClosed,
             Command.GlobalShow or Command.GlobalNewConversation => false,
             _ => true,
         };

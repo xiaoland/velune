@@ -217,7 +217,7 @@ public sealed partial class ConversationView
                 }
             };
         }
-        return copies ? WithCopy(element, CopiedText(message, from), message.Role == MessageRole.User) : element;
+        return copies ? WithCopy(element, CopiedText(message, from), message.Role is MessageRole.User or MessageRole.Client) : element;
     }
 
     // CopiedText is what a row's copy button copies: the text and notices
@@ -286,7 +286,7 @@ public sealed partial class ConversationView
     // `from` up to `to`.
     UIElement Message(DeliveredMessage message, int from, int to)
     {
-        if (message.Role == MessageRole.User)
+        if (message.Role is MessageRole.User or MessageRole.Client)
         {
             return UserMessage(message);
         }
@@ -297,12 +297,6 @@ public sealed partial class ConversationView
             {
                 blocks.Children.Add(block);
             }
-        }
-        if (message.Role == MessageRole.System)
-        {
-            // The system's and the Harness's states sit in the middle of the list.
-            blocks.HorizontalAlignment = HorizontalAlignment.Stretch;
-            return blocks;
         }
         return Column(blocks);
     }
@@ -389,6 +383,8 @@ public sealed partial class ConversationView
                 centered.HorizontalAlignment = HorizontalAlignment.Center;
                 centered.TextAlignment = TextAlignment.Center;
                 return centered;
+            case DeliveredBlock.RuntimeFailure failure:
+                return Muted(failure.Detail);
             case DeliveredBlock.ContextCompaction compaction:
                 var status = Muted(compaction.TextValue);
                 status.HorizontalAlignment = HorizontalAlignment.Center;

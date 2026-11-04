@@ -25,7 +25,7 @@ struct ProviderCreationView: View {
     }
     private var picker: some View {
         VStack(spacing: 0) {
-            Text("添加 AI 提供商").font(.headline).frame(maxWidth: .infinity, alignment: .leading).padding(20)
+            Text("添加 AI 提供商").uiFont(.headline).frame(maxWidth: .infinity, alignment: .leading).padding(20)
             Divider()
             List(selection: $choice) {
                 section("订阅", kind: .subscription, systemImage: "person.crop.circle")
@@ -42,7 +42,7 @@ struct ProviderCreationView: View {
                 Divider()
                 VStack(alignment: .leading, spacing: 8) {
                     if let disclosure = template.disclosure { SubscriptionDisclosureNote(disclosure: disclosure) }
-                    Text("一个提供商关联一个订阅账户。聚合多个账户时分别添加，再在“模型路由”中组合。").font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    Text("一个提供商关联一个订阅账户。聚合多个账户时分别添加，再在“模型路由”中组合。").uiFont(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 }.frame(maxWidth: .infinity, alignment: .leading).padding(16)
             }
             Divider()
@@ -62,10 +62,10 @@ struct ProviderCreationView: View {
     }
     private func row(_ name: String, summary: String, systemImage: String) -> some View {
         HStack(spacing: 12) {
-            Image(systemName: systemImage).font(.title2).foregroundStyle(.secondary).frame(width: 28)
+            Image(systemName: systemImage).uiFont(.title2).foregroundStyle(.secondary).frame(width: 28)
             VStack(alignment: .leading, spacing: 2) {
                 Text(name)
-                Text(summary).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                Text(summary).uiFont(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
         }.padding(.vertical, 4)
     }

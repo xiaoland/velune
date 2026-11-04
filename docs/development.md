@@ -4,7 +4,17 @@
 
 内部不变量优先由类型表达：解析后的对象携带所需关联，枚举区分有效状态，穷尽匹配让新增变体触发编译错误。已在配置入口验证的不可变数据不在每次派发时全量重验。lint 用于有明确代码模式和实际维护收益的规则，不以扫描字符串或禁止所有条件分支代替类型设计。文件内容、用户配置、HTTP 与子进程响应仍在接入边界解析；运行时版本、目标存在性和实际执行失败不能预先由编译器证明。
 
-首个 beta 发布前，破坏性的 API、FFI 与数据变更优先于兼容：持久化结构直接 hard-cut，不写迁移（旧数据重置并在需要时给出通知，原 Harness 会话与认证不动）；没有平台调用的导出删除，不为尚未接入的能力保留契约。
+首个 beta 发布前，破坏性的 API、FFI 与数据变更优先于兼容；没有平台调用的导出删除，不为尚未接入的能力保留契约。持久化结构的切换遵守下述手动迁移约定。
+
+## 破坏性变更与手动迁移
+
+允许 hard-reset／hard-cutoff，但涉及已有数据或配置时，必须在切换到新格式的版本前完成显式手动迁移并核验结果，不能用“旧数据会被重置”代替迁移交付。原 Harness 会话与认证的处理边界保持不变。
+
+迁移可以由 Agent 手工完成，也可以编写并显式执行一次性脚本。脚本自动处理转换仍属于手动发起的迁移；应用运行时不自动检测并转换旧格式，不引入长期维护的自动迁移框架、兼容层或多版本迁移链。
+
+一次性迁移脚本归 `scripts/migrations/`，文件名顺序即执行顺序，接口统一为 `--home <VELUNE_HOME>`（必填）与 `--apply`（写入，缺省为预览）。脚本自行获取 `runtime.lock` 排他锁，不改动正在运行的核心；自检适用性并幂等，无事可迁移时以 0 退出，前置条件不满足（如需人工核对的实例）以非 0 退出并说明手工步骤。`scripts/run-migrations.py --home <dir>` 先探测目录锁占用并列出占用进程，再顺序执行全部迁移，任一失败即中止。Mac 重装在安装后、启动新版前对本机状态目录调用该入口（见下文重装一节）；这是用户显式发起重装的一部分，不属于应用运行时自动迁移。
+
+对应任务记录迁移的来源与目标格式、执行方式和验证结果；未完成的迁移明确保留为升级前的待办。真实数据与凭据操作仍遵守[隔离验证与敏感数据](#隔离验证与敏感数据)。本约定修订此前“不写迁移、直接清空旧普通配置”的规则，来源见 [S63](sources.md#s63)。
 
 ## 隔离验证与敏感数据
 
@@ -33,37 +43,68 @@ cargo tree --locked -p velune-bindings --no-default-features --features remote
 
 ## 开发环境
 
-在当前 Mac 开发工作区使用 `svc dev` 管理已声明的长期服务。配置归仓库 [svc.json](../svc.json)，本机已验证 SVC CLI 16.0.2（schema 4）。CLI 仅用于开发；产品运行不依赖它。`svc dev status` 只观察，`ensure` 复用或启动一个目标，`stop` 运行该目标声明的停止动作。
+在当前 Mac 开发工作区使用 SVC CLI 18.3.0（配置 schema 5）。配置归仓库 [svc.json](../svc.json)：`dev.resources` 声明资源的观察与动作，`run` 提供构建和重装的命令入口。CLI 仅用于开发；产品运行不依赖它。先用 `svc status` 核对配置和接入状态；`svc dev list` 只列声明，`svc dev status <资源>` 才实际探测，`svc dev act <资源> <动作>` 执行声明的动作。
 
-| 目标 | 能力与启动依赖 |
+| 资源 | 能力与启动依赖 |
 | --- | --- |
+| `macos-app` | `build` 只构建；`reinstall` 构建、正常退出旧版、安装并在后台启动。host scope 串行协调各工作树对日常安装的操作 |
 | `lgtm` | sfp7 上已有的 Docker Compose 接收端，停止保留数据卷 |
 | `telemetry` | sfp7→本机的 Grafana 30300 与 OTLP/gRPC 34317；先确保 `lgtm` 就绪 |
 | `telemetry-windows` | 本机→Windows 的相同回环端口；先确保 `telemetry` 就绪 |
 | `telemetry-android` | 唯一 USB Android 的 ADB reverse 34317；先确保 `telemetry` 就绪 |
 
 ```sh
-svc dev status
-svc dev ensure telemetry
-svc dev ensure telemetry-windows
-svc dev ensure telemetry-android
-svc dev stop telemetry-android
-svc dev stop telemetry-windows
+svc status
+svc dev list
+svc run build-macos
+# 在 Velune 外的终端或 SVC Dev 中执行，会退出正在使用的 Velune：
+svc run reinstall-macos
+# 与两个 run 入口调用相同的动作：
+svc dev act macos-app build
+svc dev act macos-app reinstall
+svc dev status telemetry
+svc dev act lgtm ensure
+svc dev act telemetry ensure
+svc dev act telemetry-windows ensure
+svc dev act telemetry-android ensure
+svc dev act telemetry-android stop
+svc dev act telemetry-windows stop
 ```
 
-SSH 和 ADB 继续承担实际传输；[服务动作](../scripts/dev_services.py)只把就绪和有界停止交给 SVC，不维护另一套进程注册表。SSH control socket 位于本机 `~/.local/state/velune/dev/`，不会因工作树切换重复开通道。停止一个通道不级联停止上游。上游恢复时复用仍存活的下游隧道，端口冲突不接管其他服务。SVC 回执提供实际操作日志位置；也可用 `--json` 获取机器结果。
+Mac 重装先调用既有构建脚本并验证新 bundle 签名，成功后才通过 AppKit 请求目标位置的旧版正常退出。未保存修改或运行中任务仍由应用自己的退出确认处理；取消退出或 30 秒内未退出时停止重装，保留旧版。安装器校验同 bundle ID 的运行实例（拒绝时列出 PID 与路径）、暂存复制、签名与失败回滚。安装完成后、启动前对本机状态目录执行 `scripts/run-migrations.py`：目录锁仍被占用或任一迁移失败时不启动新版，由用户按输出处理。成功后 `open -g` 在后台启动新版。此命令须由用户从 Velune 外部执行，Agent 配置和验证入口时不执行日常重装。只重装已有产物可直接运行 `bash scripts/reinstall-macos.sh --skip-build`；隔离目标可加 `--destination /absolute/Velune.app`。
 
-共享配置使用已有 SSH 别名 `sfp7-ws.localhost`、`win-ws.localhost`，Android 默认选择唯一 USB 设备。需要不同主机或指定设备时，在被 Git 忽略的 `svc.local.json` 中用 schema 4 稀疏覆盖相应目标的 `probe.argv`、`provision.argv` 和 `stop.argv`；设备参数为 `--device <serial>`，ADB 路径可用 `--adb` 指定。切换物理目标前先停止旧目标，并修改 `host_key`，避免与另一设备共享协调身份。认证仍由 SSH 和远端私有文件管理，不写入这些声明。
+SSH 和 ADB 继续承担实际传输；[服务动作](../scripts/dev_services.py)只把就绪和有界停止交给 SVC，不维护另一套进程注册表。SSH control socket 位于本机 `~/.local/state/velune/dev/`，不会因工作树切换重复开通道。停止一个通道不级联停止上游。上游恢复时复用仍存活的下游隧道，端口冲突不接管其他服务。SVC 回执提供执行 ID 和日志位置；也可用 `--json` 获取机器结果。`svc run --follow <执行ID>` 跟随某次 run，`svc run --inspect <执行ID> --json` 读取其状态；已结束的 run 再次显式调用会重新执行。
+
+共享配置使用已有 SSH 别名 `sfp7-ws.localhost`、`win-ws.localhost`，Android 默认选择唯一 USB 设备。需要不同主机或指定设备时，在被 Git 忽略的 `svc.local.json` 中用 schema 5 稀疏覆盖相应资源的 `observations.ready.probe.argv`、`actions.ensure.argv` 和 `actions.stop.argv`；设备参数为 `--device <serial>`，ADB 路径可用 `--adb` 指定。切换物理目标前先停止旧目标，并修改 `host_key`，避免与另一设备共享协调身份。认证仍由 SSH 和远端私有文件管理，不写入这些声明。
+
+`macos-app.actions.build.env` 与 `macos-app.actions.reinstall.env` 可在本机覆盖 `VELUNE_CODESIGN_IDENTITY` 和 `CARGO_HOME`，两个 run 入口会采用同一资源动作的有效环境。例如（签名名称和缓存目录按本机填写）：
+
+```json
+{
+  "schema_version": 5,
+  "dev": {
+    "resources": {
+      "macos-app": {
+        "actions": {
+          "build": {"env": {"VELUNE_CODESIGN_IDENTITY": "Apple Development: …", "CARGO_HOME": "/absolute/cargo-cache"}},
+          "reinstall": {"env": {"VELUNE_CODESIGN_IDENTITY": "Apple Development: …", "CARGO_HOME": "/absolute/cargo-cache"}}
+        }
+      }
+    }
+  }
+}
+```
 
 ## Mac 构建
 
-Mac 应用的结构与界面见 [Mac README](../app/mac/README.md)。先安装历史读取依赖与 xURL，再构建并安装：
+Mac 应用的结构与界面见 [Mac README](../app/mac/README.md)。先安装历史读取依赖与 xURL，再通过已配置的 SVC 入口构建或重装：
 
 ```sh
 ./scripts/install-runtime-support.sh
 bash scripts/install-xurl.sh
-bash scripts/build-macos.sh
-open /Applications/Velune.app
+svc run build-macos
+# 需要更新日常应用时，在应用外执行：
+svc run reinstall-macos
 ```
 
 构建脚本先生成 UniFFI 模块，再用 SwiftPM 的 Xcode 后端构建本机架构产品，固定 macOS 15 部署底线。swift-markdown 0.9.0 的 manifest 需要 Swift 6.2 或以上工具链。应用与生成绑定目标各自启用 warnings-as-errors，依赖保持其声明的 Swift 语言模式；不构建或执行依赖的测试 targets。生成文件只放在 `target/` 下。
@@ -110,13 +151,13 @@ Velune 不分发 Agent runtime、Pi SDK、Codex CLI 或 Node。各 Harness 由�
 
 | 运行时 | 执行机器上需要 |
 | --- | --- |
-| Pi 1.0 | Pi CLI 与 Node 22.19+ 的绝对路径 |
-| Codex 0.159 | Codex CLI 与 Node 22.19+ 的绝对路径（历史直接调用 app-server） |
+| Pi 1.4 | Pi CLI 与 Node 22.19+ 的绝对路径 |
+| Codex 0.159／0.166 | Codex CLI 与 Node 22.19+ 的绝对路径（历史直接调用 app-server） |
 | DeepSeek Harness 0.2 | DSH 包的 JavaScript 入口与 Node 22.19+ 的绝对路径 |
 | Claude Code 2.1 | Claude CLI；历史读取使用 Python 3 执行 Rust 内嵌的只读 helper |
 | 通用 ACP | ACP 程序或 bridge 的绝对路径；协作 MCP 的 stdio 回退需要 Python 3 |
 
-[`install-runtime-support.sh`](../scripts/install-runtime-support.sh) 按 [`package-lock.json`](../packages/agent-runtime/runtime-support/package-lock.json) 把 huihua 及其依赖安装到忽略的 `target/runtime-support`，禁用 npm lifecycle scripts，不修改全局安装。Mac 构建只分发其 parser 依赖和薄 adapter helpers，并带完整许可声明与依赖锁，清单见[第三方声明](../packages/agent-runtime/runtime-support/THIRD_PARTY_NOTICES.md)。`install-pi-runtime.sh` 仅供开发者在忽略的 `target/pi-runtime` 安装一份隔离的外部 Pi，用作验收时的 `--pi` 路径，不是构建前置条件，也不进入应用包。
+[`install-runtime-support.sh`](../scripts/install-runtime-support.sh) 按 [`package-lock.json`](../packages/agent-runtime/runtime-support/package-lock.json) 把 huihua 及其依赖安装到忽略的 `target/runtime-support`，禁用 npm lifecycle scripts，不修改全局安装。Mac 构建只分发其 parser 依赖和薄 adapter helpers，并带完整许可声明与依赖锁，清单见[第三方声明](../packages/agent-runtime/runtime-support/THIRD_PARTY_NOTICES.md)。Pi 验收使用执行机器上用户安装的外部 CLI 绝对路径与合成 HOME；仓库不再安装另一份 Pi。
 
 SSH 运行时依赖本机 OpenSSH，以及远端 POSIX 环境、Python 3 和匹配版本的 Harness；采用非交互认证与严格主机校验，应由用户预先完成认证和主机信任。Windows 宿主暂不支持 SSH 运行时（依赖 OpenSSH ControlMaster 与 Unix socket）。执行位置与 HOME 的契约见 [agent-runtime](../packages/agent-runtime/README.md#原生提供商远端与-home)。
 
@@ -156,7 +197,7 @@ python3 scripts/dev-telemetry.py launch ios-simulator --device <Simulator UUID> 
 python3 scripts/dev-telemetry.py launch android --device <ADB serial> --package app.velune.android.telemetry
 ```
 
-Android 复用已安装的 debug 应用和合成配置。工具经 ADB reverse 把设备回环 34317 转发到开发机，只通过 `run-as` 的 stdin 写入 debug 应用私有 profile，不经过共享存储。该转发需要保留 ADB；手机与桌面的回环地址没有自动互换。Simulator 使用容器私有文件和 `SIMCTL_CHILD_*`，真机需要另行验证可达的受控入口。Windows 的原生 OpenSSH 不支持多路复用，工具复用显式准备的回环 30300／34317 转发并检查就绪；当前开发环境由 `svc dev ensure telemetry-windows` 从 Mac 反向映射到 Windows，不开放 LGTM 到 LAN。
+Android 复用已安装的 debug 应用和合成配置。工具经 ADB reverse 把设备回环 34317 转发到开发机，只通过 `run-as` 的 stdin 写入 debug 应用私有 profile，不经过共享存储。该转发需要保留 ADB；手机与桌面的回环地址没有自动互换。Simulator 使用容器私有文件和 `SIMCTL_CHILD_*`，真机需要另行验证可达的受控入口。Windows 的原生 OpenSSH 不支持多路复用，工具复用显式准备的回环 30300／34317 转发并检查就绪；当前开发环境由 `svc dev act telemetry-windows ensure` 从 Mac 反向映射到 Windows，不开放 LGTM 到 LAN。
 
 输出的 `manifestPath` 指向 `target/telemetry-development/<run-id>/run.json`。它含 run ID、应用路径、工作区当前提交（`workspaceRevision`）、进程／设备、状态路径、查询凭据文件位置与保留范围，不含认证值。该提交只标识启动工具所在工作区，不代表已安装应用的构建版本。复制的构建目录可以没有 Git，此字段为 null，不阻止应用启动。读取状态与限定本次运行的查询：
 
@@ -172,3 +213,14 @@ python3 scripts/dev-telemetry.py query /absolute/path/run.json metrics
 查询默认选择 `velune.telemetry.schema.version="2"`。历史数据使用 `python3 scripts/dev-telemetry.py query <manifest> traces --schema-version legacy`，混合版本用 `--schema-version all`；logs 和 metrics 支持同一选项。旧属性 operation／operation_id／outcome 与 v2 的 velune.operation／velune.operation.id／velune.outcome 分开解释，不能把新查询无结果理解为旧记录消失。trace 可能跨版本，查看详细记录时按各自 resource 判断。legacy trace 的缺属性条件使用 Tempo 的 `= nil`，接收端需支持该语法。
 
 语义与扩展范例归[遥测契约](design/telemetry.md#扩展埋点与读取范例)。先限定 run、实例、时间和版本，再沿 trace、operation ID、RequestId 检查受理与执行。Loki 中点号属性会按其映射显示为下划线名称；查询应使用接收端实际字段，不解析日志 body。指标按操作层分别统计，不能将 UI、bindings 与 RPC 次数相加。Gateway 本地诊断的 transport_completed 仍表示传输结束，OTLP 的 outcome 则同时考虑 HTTP 结果；返回完整 503 在 OTLP 中是 failure。
+
+
+### Codex 0.166 实例迁移
+
+0.166 改变了 provider 准入，采用独立的 `codex-0.166` 类型。先安装包含新适配器的构建，再正常退出使用该状态目录的所有 Velune 进程。保留实例 ID 与 CODEX_HOME；本机先预览 `python3 scripts/migrations/codex-166.py --home <VELUNE_HOME>`（可加 `--runtime <实例ID>` 限定单个实例），确认范围后加 `--apply` 显式迁移。脚本验证所配置 CLI 为 0.166.x，同时修改实例的 `typeId` 与 `conversation-links.json` 中该实例的旧 `runtimeTypeId`，原文件以私有权限保存在状态目录下的一次性备份中；不访问原生会话正文或认证存储，不修改 Harness 配置。中断可重跑，已经迁移的实例仍会修复剩余关联段。SSH 实例先在执行机器核实 CLI，再手动完成同样的两处类型修改。应用不自动迁移，不要仅改实例类型而遗漏已有会话关联。
+
+## 整机网络缓冲区诊断
+
+遇到 `No buffer space available` 或所有应用无法联网时，在重启前运行 `python3 scripts/diagnose-network-macos.py`。输出默认保存在 `~/Library/Logs/Velune/network-时间.jsonl`，包含 mbuf／文件资源计数、按 PID 汇总的 TCP／UDP 数量、收发队列及累计流量／重传计数；不保存远端地址、请求内容、凭据或进程参数，不更改网络设置。队列长度不是累计流量，同一 PID 的相邻 `bytes_in_total`／`bytes_out_total` 差值才表示采样间收发量，进程退出重建后不跨身份比较。用 `--count 120 --interval 10` 可作约20分钟有界观察，Ctrl-C 可停止；每条记录立即写入，已有文件不覆盖。
+
+内核缓冲区耗尽属于系统级现象；某进程等待分配只说明它受影响，不能单凭堆栈归因。需结合故障前后计数与进程退出后的变化判断。不要以增大系统缓冲区、强杀系统扩展或高负载复现代替诊断。

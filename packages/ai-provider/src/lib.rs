@@ -11,4 +11,5 @@ mod native;
 pub use native::NativeHttp;
 mod responses;
 mod service_error;
+pub mod text;
 pub mod translation;

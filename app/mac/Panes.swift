@@ -93,8 +93,13 @@ struct PaneView: View {
         VStack(spacing: 0) {
             PaneTabBar(window: window, pane: pane)
             let tab = pane.selected
-            TabContentView(window: window, tab: tab, store: tab.store, previewEmpty: previewEmpty)
-                .id(tab.id)
+            Group {
+                if let tab = tab as? ConversationTab {
+                    TabContentView(window: window, tab: tab, store: tab.store, previewEmpty: previewEmpty)
+                } else if let tab = tab as? ArtifactTab {
+                    ArtifactView(tab: tab)
+                }
+            }.id(tab.id)
                 // Exactly the room the pane has, however wide a tab's content would like to be.
                 .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
         }
@@ -105,7 +110,7 @@ struct PaneView: View {
     }
 }
 
-/// A tab's conversation: its transcript above its composer.
+/// The conversation surface shared by ordinary editors and sheets.
 struct TabContentView: View {
     @ObservedObject var window: ConversationWindowModel
     @ObservedObject var tab: ConversationTab
@@ -115,23 +120,9 @@ struct TabContentView: View {
     var inSheet = false
 
     var body: some View {
-        HStack(spacing: 0) {
-            conversation
-            if let sideChat = tab.sideChat, !inSheet {
-                Divider()
-                SideChatPanel(chat: sideChat, close: tab.closeSideChat)
-                    .frame(minWidth: 240, maxWidth: 340)
-            }
-        }
-        // A side chat belongs to the conversation it was opened on.
-        .onChange(of: store.loadedConversationID) { _, _ in tab.showingChanged() }
-        .onChange(of: store.sideChatTarget != nil) { _, _ in tab.showingChanged() }
-    }
-
-    private var conversation: some View {
         VStack(spacing: 0) {
             Group {
-                if store.isOpeningConversation { ProgressView(store.conversationManagementStatus ?? "正在加载会话…") }
+                if store.isOpeningConversation { ProgressView("正在加载会话…") }
                 else if previewEmpty || store.transcript.rows.isEmpty { emptyState }
                 else { transcript }
             }
@@ -142,8 +133,16 @@ struct TabContentView: View {
             if let interaction = store.pendingInteractions.first {
                 RuntimeInteractionView(store: store, tab: tab, interaction: interaction).id(interaction.id)
             }
+            if !store.followUp.queue.isEmpty {
+                SendQueueView(store: store, composer: window.composer(for: tab))
+                    .padding(.horizontal, 16).padding(.vertical, 8)
+                Divider()
+            }
             footer
         }
+        .background(PaneAnchor { [weak window, weak tab] anchor in
+            guard let tab else { return }; window?.registerConversation(tab, anchor: anchor)
+        })
         .sheet(item: $tab.editing) { request in
             MessageEditorSheet(store: store, request: request, forked: window.openInNewTab(adopting:))
         }
@@ -166,17 +165,25 @@ struct TabContentView: View {
             }
             .background(.bar)
         } else if inSheet || window.tools.panesHaveComposer {
-            ComposerView(store: store, model: tab.composer, layout: window, send: tab.send, steer: tab.steer, submission: { tab.submission }, resume: tab.resume)
+            ComposerView(store: store, model: window.composer(for: tab), layout: window, send: { window.composerContext(for: tab).send() }, steer: { window.composerContext(for: tab).steer() }, submission: { window.composerContext(for: tab).submission() }, resume: { window.composerContext(for: tab).resume() })
         }
     }
 
-    private var emptyState: some View {
-        ContentUnavailableView {
-            Label { Text("新会话") } icon: { VeluneLogo(size: 48) }
-        } description: {
-            Text(store.canSend ? "输入消息，开始工作。" : "先在设置中配置AI提供商、模型与Agent 运行时。")
-        } actions: {
-            if !store.canSend { SettingsTabLink(tab: store.device.enabledRuntimeInstances.isEmpty ? .runtimes : .providers, title: "打开设置") }
+    @ViewBuilder private var emptyState: some View {
+        if store.isSideChat {
+            ContentUnavailableView {
+                Label { Text(tab.title) } icon: { VeluneLogo(size: 48) }
+            } description: {
+                Text(store.openingFailure ?? "输入消息，开始工作。")
+            }
+        } else {
+            ContentUnavailableView {
+                Label { Text("新会话") } icon: { VeluneLogo(size: 48) }
+            } description: {
+                Text(store.canSend ? "输入消息，开始工作。" : "先在设置中配置AI提供商、模型与Agent 运行时。")
+            } actions: {
+                if !store.canSend { SettingsTabLink(tab: store.device.enabledRuntimeInstances.isEmpty ? .runtimes : .providers, title: "打开设置") }
+            }
         }
     }
 
@@ -185,9 +192,12 @@ struct TabContentView: View {
                        cwd: store.loadedConversationWorkingDirectory, remoteHost: store.loadedConversationLocation.host, outlineCollapsed: $tab.outlineCollapsed, navigation: tab.outlineNavigation,
                        activity: store.activity, loadPayloads: { [store] ids in store.loadPayloads(messageIDs: ids) },
                        openConversation: { [window, tab] id in window.openLinked(id, from: tab) },
-                       openAgentURI: window.openAgentURI,
+                       openAgentURI: window.openAgentURI, openArtifact: window.openArtifact,
                        editMessage: { [store, tab] id in store.editability(of: id) == nil ? nil : { tab.edit(messageID: id) } },
-                       describeSettings: { [store] in store.describe($0) })
+                       forkConversation: { [store, window] id in store.forkConversation(through: id, forked: window.openInNewTab(adopting:)) },
+                       describeSettings: { [store] in store.describe($0) },
+                       recovery: store.runtimeRecovery, stoppingRecovery: store.isStopping,
+                       canStopRecovery: store.canCancel, stopRecovery: store.cancel)
     }
 }
 
@@ -219,9 +229,16 @@ private struct PaneTabBar: View {
                 HStack(spacing: 0) {
                     ForEach(Array(pane.tabs.enumerated()), id: \.element.id) { index, tab in
                         let slides = tab.id == sliding?.id
-                        PaneTabItem(window: window, pane: pane, tab: tab, store: tab.store,
-                                    selected: tab.id == pane.selectedID, active: active, place: index,
-                                    slide: { slideChanged(tab.id, $0, width: width) })
+                        Group {
+                            if let tab = tab as? ConversationTab {
+                                PaneTabItem(window: window, pane: pane, tab: tab, store: tab.store,
+                                            selected: tab.id == pane.selectedID, active: active, place: index,
+                                            slide: { slideChanged(tab.id, $0, width: width) })
+                            } else if let tab = tab as? ArtifactTab {
+                                ArtifactTabItem(window: window, tab: tab, selected: tab.id == pane.selectedID,
+                                                place: index, count: pane.tabs.count, slide: { slideChanged(tab.id, $0, width: width) })
+                            }
+                        }
                             .frame(width: width)
                             .overlay(alignment: .leading) { if insertion == index { insertionMark } }
                             .overlay(alignment: .trailing) { if insertion == index + 1 && index == pane.tabs.count - 1 { insertionMark } }
@@ -368,6 +385,7 @@ private struct PaneTabItem: View {
     @State private var hovering = false
     @State private var closePointer: TabHandle.ClosePointer = .outside
     @State private var renaming: String?
+    @Environment(\.controlActiveState) private var activeState
     @FocusState private var renameFocused: Bool
 
     var body: some View {
@@ -436,6 +454,13 @@ private struct PaneTabItem: View {
                 .accessibilityLabel("等待你的回应")
         } else if running {
             ProgressView().controlSize(.mini).accessibilityLabel("正在运行")
+        } else if let conversation, conversation.unread && !(selected && active && activeState == .key) {
+            if conversation.failed {
+                Image(systemName: "exclamationmark.circle.fill").foregroundStyle(.red).imageScale(.small)
+                    .help("未读，上一轮失败").accessibilityLabel("未读，上一轮失败")
+            } else {
+                Circle().fill(.tint).frame(width: 7, height: 7).help("未读").accessibilityLabel("未读")
+            }
         }
     }
 
@@ -459,22 +484,13 @@ private struct PaneTabItem: View {
     /// Splitting moves the tab beside its pane; a pane's only tab stays, and
     /// a new conversation opens beside it.
     private func menu() -> NSMenu {
-        let menu = NSMenu()
-        if canRename { menu.addItem(ClosureMenuItem("重命名") { renaming = tab.title }) }
-        menu.addItem(ClosureMenuItem("关闭标签页") { window.closeTab(tab.id) })
-        if pane.tabs.count > 1 { menu.addItem(ClosureMenuItem("关闭其他标签页") { window.closeOtherTabs(tab.id) }) }
-        menu.addItem(.separator())
-        if pane.tabs.count > 1 {
-            menu.addItem(ClosureMenuItem("移到右侧拆分") { window.splitTab(tab.id, edge: .trailing) })
-            menu.addItem(ClosureMenuItem("移到下方拆分") { window.splitTab(tab.id, edge: .bottom) })
-        } else {
-            menu.addItem(ClosureMenuItem("向右拆分") { window.focus(pane.id); window.split(.horizontal) })
-            menu.addItem(ClosureMenuItem("向下拆分") { window.focus(pane.id); window.split(.vertical) })
-        }
-        if window.canMoveTabToNewWindow { menu.addItem(ClosureMenuItem("移到新窗口") { window.moveToNewWindow(tab.id) }) }
-        menu.addItem(.separator())
-        menu.addItem(window.layoutMenuItem())
-        return menu
+        NSHostingMenu(rootView: Group {
+            if let conversation {
+                ConversationManagementMenu(window: window, store: store, ids: [conversation.id])
+                Divider()
+            }
+            EditorTabActions(window: window, tabID: tab.id)
+        })
     }
 }
 
@@ -496,7 +512,7 @@ final class ClosureMenuItem: NSMenuItem {
 /// A tab as an AppKit view, since only AppKit tells where a drag ended:
 /// dropped where nothing takes it, outside every window, the tab becomes a
 /// window of its own. It selects on mouse down, as the system's tabs do.
-private struct TabHandle: NSViewRepresentable {
+struct TabHandle: NSViewRepresentable {
     struct Actions {
         let select: () -> Void
         let rename: () -> Void
@@ -513,7 +529,7 @@ private struct TabHandle: NSViewRepresentable {
     static let closeInset: CGFloat = 6
     static let closeSize: CGFloat = 16
     let window: ConversationWindowModel
-    let tab: ConversationTab
+    let tab: EditorTab
     let title: String
     /// Its place among `count` tabs sharing the bar equally.
     let place: Int
@@ -532,7 +548,7 @@ private struct TabHandle: NSViewRepresentable {
 
     final class HandleView: NSView, NSDraggingSource {
         weak var model: ConversationWindowModel?
-        weak var tab: ConversationTab?
+        weak var tab: EditorTab?
         var actions: Actions?
         var place = (index: 0, count: 1)
         private var pressed: NSEvent?
@@ -697,6 +713,7 @@ private struct TabDropDelegate: DropDelegate {
 
     func performDrop(info: DropInfo) -> Bool {
         guard let at = insertion, let provider = info.itemProviders(for: ConversationLink.dropTypes).first else { insertion = nil; return false }
+        ListDragWatch.shared.accepted()
         insertion = nil
         ConversationLink.load(provider) { [window, pane] url in
             Task { @MainActor in window.drop(url, on: pane, zone: .center, at: at) }
@@ -727,6 +744,7 @@ private struct PaneDropDelegate: DropDelegate {
 
     func performDrop(info: DropInfo) -> Bool {
         guard let zone, let provider = info.itemProviders(for: ConversationLink.dropTypes).first else { zone = nil; return false }
+        ListDragWatch.shared.accepted()
         self.zone = nil
         ConversationLink.load(provider) { [window, pane] url in
             Task { @MainActor in window.drop(url, on: pane, zone: zone) }

@@ -26,8 +26,12 @@ def running_instances(bundle_id):
         except (OSError, ValueError):
             continue
         if info.get("CFBundleIdentifier") == bundle_id:
-            found.append(int(parts[0]))
+            found.append((int(parts[0]), str(executable)))
     return found
+
+
+def describe(instances):
+    return "\n".join(f"  PID {pid}：{executable}" for pid, executable in instances)
 
 
 def verify(bundle):
@@ -38,8 +42,9 @@ def install(source, destination):
     info = bundle_info(source)
     identifier = info["CFBundleIdentifier"]
     verify(source)
-    if running_instances(identifier):
-        raise RuntimeError("Velune 尚未退出。请先停止活跃任务并正常退出应用，再重新安装；安装器不会强制终止任务。")
+    found = running_instances(identifier)
+    if found:
+        raise RuntimeError("Velune 尚未退出。请先停止活跃任务并正常退出应用，再重新安装；安装器不会强制终止任务。仍在运行的实例：\n" + describe(found))
     if destination.exists() and bundle_info(destination).get("CFBundleIdentifier") != identifier:
         raise RuntimeError("目标位置存在不同的应用，未进行覆盖。")
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -49,8 +54,9 @@ def install(source, destination):
         subprocess.run(["/usr/bin/ditto", str(source), str(staging)], check=True)
         verify(staging)
         # Check again after copying so a launched app cannot be replaced accidentally.
-        if running_instances(identifier):
-            raise RuntimeError("复制期间 Velune 已启动，未替换应用。")
+        found = running_instances(identifier)
+        if found:
+            raise RuntimeError("复制期间 Velune 已启动，未替换应用：\n" + describe(found))
         if destination.exists():
             os.replace(destination, backup)
         try:

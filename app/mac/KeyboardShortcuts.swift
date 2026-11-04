@@ -104,7 +104,7 @@ extension View {
 /// come with. Sending and steering stay with the composer's own keys (see
 /// `SendMode`); the global ones work while another app is active.
 enum ShortcutCommand: String, CaseIterable, Identifiable {
-    case newConversation, openConversation, newTab, newWindow, closeTab, closeWindow
+    case newConversation, openConversation, newTab, newWindow, reopenClosedTab, closeTab, closeWindow
     case find
     case stop, stopSubAgents, continueTurn, compactContext, sideChat, attach, chooseRuntime, chooseModel, chooseEffort, choosePermission, chooseWorkingDirectory, nextAttention, reload
     case splitRight, splitDown, closeSplit, back, forward, nextPane, previousPane, nextTab, previousTab, moveTabToNewWindow, keepInFront
@@ -123,7 +123,7 @@ enum ShortcutCommand: String, CaseIterable, Identifiable {
 
     var menu: Menu {
         switch self {
-        case .newConversation, .openConversation, .newTab, .newWindow, .closeTab, .closeWindow: .file
+        case .newConversation, .openConversation, .newTab, .newWindow, .reopenClosedTab, .closeTab, .closeWindow: .file
         case .find: .edit
         case .stop, .stopSubAgents, .continueTurn, .compactContext, .sideChat, .attach, .chooseRuntime, .chooseModel, .chooseEffort, .choosePermission, .chooseWorkingDirectory, .nextAttention, .reload: .conversation
         case .splitRight, .splitDown, .closeSplit, .back, .forward, .nextPane, .previousPane, .nextTab, .previousTab, .moveTabToNewWindow, .keepInFront: .window
@@ -141,6 +141,7 @@ enum ShortcutCommand: String, CaseIterable, Identifiable {
         case .openConversation: "打开会话…"
         case .newTab: "新建标签页"
         case .newWindow: "新建窗口"
+        case .reopenClosedTab: "重新打开关闭的标签页"
         case .closeTab: "关闭标签页"
         case .closeWindow: "关闭窗口"
         case .find: "查找…"
@@ -192,6 +193,7 @@ enum ShortcutCommand: String, CaseIterable, Identifiable {
         case .openConversation: "Open Conversation"
         case .newTab: "New Tab"
         case .newWindow: "New Window"
+        case .reopenClosedTab: "Reopen Closed Tab"
         case .closeTab: "Close Tab"
         case .closeWindow: "Close Window"
         case .find: "Find"
@@ -281,6 +283,8 @@ enum ShortcutCommand: String, CaseIterable, Identifiable {
         case .openConversation: Shortcut("p")
         case .newTab: Shortcut("t")
         case .newWindow: Shortcut("n", [.command, .option])
+        // As in browsers and VS Code.
+        case .reopenClosedTab: Shortcut("t", [.command, .shift])
         case .closeTab: Shortcut("w")
         case .closeWindow: Shortcut("w", [.command, .shift])
         case .find: Shortcut("f")
@@ -439,12 +443,12 @@ struct ShortcutSettingsSections: View {
                     ForEach(SendMode.allCases) { Text($0.title).tag($0) }
                 }
                 Text("运行中按 \(shortcuts.sendMode.sendKey) 排队，按 \(shortcuts.sendMode.steerKey) 插入本轮；运行时不支持插入时改为排队。输入框为空时 ↑↓ 调出本会话之前的消息，⌥↑ 取回最后一条排队消息。")
-                    .foregroundStyle(.secondary).font(.callout)
+                    .foregroundStyle(.secondary).uiFont(.callout)
             }
             Section("快捷键") {
                 HStack {
                     Text("点按快捷键后按下新的组合，按 ⌫ 移除，再点按一次取消。")
-                        .foregroundStyle(.secondary).font(.callout)
+                        .foregroundStyle(.secondary).uiFont(.callout)
                     Spacer()
                     Button("全部恢复默认") { shortcuts.resetAll(); refusal = nil }.disabled(shortcuts.changed.isEmpty)
                 }

@@ -85,10 +85,18 @@ export default function (pi) {
   pi.on("model_select", (event) => {
     if (event.model?.provider === "velune" && event.model.id === "auto") appendSelection();
   });
+  // Extension admission (including delegates) reads catalog limits before
+  // making a route request. A virtual model's default limits are zero.
+  const catalog = JSON.parse(readFileSync(process.env.VELUNE_PI_MODELS_PATH, "utf8"));
+  const selected = selection();
+  const physical = catalog.providers["velune-gateway"].models.find(model => model.id === selected.physicalModelId);
+  if (!physical) throw new Error("Velune Pi selected model is absent from its catalog");
   pi.registerVirtualModel({
     provider: "velune",
     id: "auto",
     name: "Velune Auto",
+    contextWindow: physical.contextWindow,
+    maxTokens: physical.maxTokens,
     thinkingLevels: ["off", "minimal", "low", "medium", "high", "xhigh", "max"],
     input: ["text", "image"],
     route(request, ctx) {

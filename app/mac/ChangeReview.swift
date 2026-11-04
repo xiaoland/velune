@@ -31,9 +31,9 @@ struct ChangeReviewView: View {
     private var header: some View {
         HStack(spacing: 8) {
             VStack(alignment: .leading, spacing: 2) {
-                Text(changes?.repository.map { URL(fileURLWithPath: $0).lastPathComponent } ?? "变更").font(.headline).lineLimit(1)
-                if let branch = changes?.branch { Label(branch, systemImage: "arrow.triangle.branch").font(.caption).foregroundStyle(.secondary).lineLimit(1) }
-                else if changes?.repository != nil { Text("分离的 HEAD").font(.caption).foregroundStyle(.secondary) }
+                Text(changes?.repository.map { URL(fileURLWithPath: $0).lastPathComponent } ?? "变更").uiFont(.headline).lineLimit(1)
+                if let branch = changes?.branch { Label(branch, systemImage: "arrow.triangle.branch").uiFont(.caption).foregroundStyle(.secondary).lineLimit(1) }
+                else if changes?.repository != nil { Text("分离的 HEAD").uiFont(.caption).foregroundStyle(.secondary) }
             }
             .help(changes?.repository ?? changes?.directory ?? "")
             Spacer(minLength: 0)
@@ -82,8 +82,8 @@ struct ChangeReviewView: View {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 0) {
                     ForEach(Array(diff.lines.enumerated()), id: \.offset) { _, line in DiffLineRow(line: line) }
-                    if diff.truncated { Text("差异过长，只显示开头部分。").font(.caption).foregroundStyle(.secondary).padding(8) }
-                    if diff.lines.isEmpty { Text("没有可显示的文本差异。").font(.caption).foregroundStyle(.secondary).padding(8) }
+                    if diff.truncated { Text("差异过长，只显示开头部分。").uiFont(.caption).foregroundStyle(.secondary).padding(8) }
+                    if diff.lines.isEmpty { Text("没有可显示的文本差异。").uiFont(.caption).foregroundStyle(.secondary).padding(8) }
                 }
                 .textSelection(.enabled)
             }
@@ -134,12 +134,12 @@ private struct ChangedFileRow: View {
     var body: some View {
         let name = (file.path as NSString).lastPathComponent, directory = (file.path as NSString).deletingLastPathComponent
         HStack(spacing: 8) {
-            Text(kind.letter).font(.caption.monospaced().bold()).foregroundStyle(kind.color).frame(width: 14)
+            Text(kind.letter).uiFont(.caption.monospaced().bold()).foregroundStyle(kind.color).frame(width: 14)
                 .help(kind.title).accessibilityLabel(kind.title)
             VStack(alignment: .leading, spacing: 1) {
                 Text(name).lineLimit(1).truncationMode(.middle)
                 if !directory.isEmpty || kind.from != nil {
-                    Text(kind.from.map { "← " + $0 } ?? directory).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.head)
+                    Text(kind.from.map { "← " + $0 } ?? directory).uiFont(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.head)
                 }
             }
             Spacer(minLength: 0)
@@ -147,7 +147,7 @@ private struct ChangedFileRow: View {
                 HStack(spacing: 4) {
                     Text("+\(additions)").foregroundStyle(.green)
                     Text("−\(deletions)").foregroundStyle(.red)
-                }.font(.caption.monospacedDigit())
+                }.uiFont(.caption.monospacedDigit())
             }
         }
         .help(file.path)

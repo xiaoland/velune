@@ -54,6 +54,11 @@ pub enum DeliveredBlock {
     Notice {
         text: String,
     },
+    RuntimeFailure {
+        failure: velune_conversation::RuntimeFailureKind,
+        detail: String,
+        retry: Option<velune_conversation::RuntimeRetry>,
+    },
     ContextCompaction {
         text: String,
     },
@@ -227,6 +232,7 @@ mod tests {
             reply_start_block: 0,
             duration_ms: None,
             is_running: running,
+            outcome: None,
             settings: None,
             usage,
         }

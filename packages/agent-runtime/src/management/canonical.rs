@@ -154,7 +154,7 @@ pub fn render(runtime: RuntimeKind, name: &str, canonical: &Canonical) -> Result
         });
     }
     let claude = runtime == RuntimeKind::ClaudeCode;
-    let codex = runtime == RuntimeKind::Codex;
+    let codex = matches!(runtime, RuntimeKind::Codex | RuntimeKind::Codex166);
     let key = |path: String| ResourceKey {
         kind,
         scope: ResourceScope::User,
@@ -300,7 +300,7 @@ fn mcp_object(
     };
     let mut object = Map::new();
     let claude = runtime == RuntimeKind::ClaudeCode;
-    let codex = runtime == RuntimeKind::Codex;
+    let codex = matches!(runtime, RuntimeKind::Codex | RuntimeKind::Codex166);
     match transport {
         McpTransport::Stdio {
             command,
@@ -503,7 +503,7 @@ pub fn parse(
                 map
             };
             let claude = runtime == RuntimeKind::ClaudeCode;
-            let codex = runtime == RuntimeKind::Codex;
+            let codex = matches!(runtime, RuntimeKind::Codex | RuntimeKind::Codex166);
             let timeout_field = if codex { "tool_timeout_sec" } else { "timeout" };
             let timeout_seconds = match object.get(timeout_field).and_then(Value::as_u64) {
                 Some(value) if claude => u32::try_from(value.div_ceil(1000)).ok(),
@@ -553,7 +553,7 @@ pub fn parse(
                 return Err(invalid("子 Agent 应为单个文件"));
             };
             let source = text(file)?;
-            if runtime == RuntimeKind::Codex {
+            if matches!(runtime, RuntimeKind::Codex | RuntimeKind::Codex166) {
                 let document = source
                     .parse::<toml_edit::DocumentMut>()
                     .map_err(|_| invalid("子 Agent 定义不是有效的 TOML"))?;

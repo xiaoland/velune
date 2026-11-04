@@ -328,6 +328,7 @@ impl Client {
                     return Err(Error::new("ACP 会话目录返回重复身份"));
                 }
                 result.push(ConversationSummary {
+                    native_read_state: None,
                     id: format!("{runtime_id}:{id}"),
                     runtime_id: runtime_id.into(),
                     cwd: Some(cwd),
@@ -458,6 +459,9 @@ impl Client {
                 return Err(error);
             }
         };
+        if let Some(snapshot) = &mut self.snapshot {
+            snapshot.executions.begin(ExecutionKind::UserTurn, false);
+        }
         self.prompt_id = Some(request);
         self.stream = None;
         let message_id = self.next_message_id();
@@ -710,6 +714,11 @@ impl Client {
                     }
                     _ => return Err(Error::new("ACP prompt 响应缺少可识别的结束原因")),
                 }
+                if let Some(snapshot) = &mut self.snapshot {
+                    snapshot
+                        .executions
+                        .finish(prompt_outcome(&response.stop_reason));
+                }
                 self.finish(RunState::Idle);
             }
         }
@@ -835,6 +844,11 @@ impl Client {
         self.notice("ACP 控制连接已终止；已有消息仍保留，请重新连接。");
     }
     fn finish(&mut self, state: RunState) {
+        if let Some(snapshot) = &mut self.snapshot {
+            snapshot
+                .executions
+                .finish((state == RunState::Failed).then_some(TurnOutcome::Failed));
+        }
         self.permissions.clear();
         if let Some(snapshot) = &mut self.snapshot {
             snapshot.pending_interactions.clear();
@@ -866,6 +880,15 @@ fn timestamp(value: &str) -> Option<i64> {
     time::OffsetDateTime::parse(value, &time::format_description::well_known::Rfc3339)
         .ok()
         .and_then(|time| i64::try_from(time.unix_timestamp_nanos() / 1_000_000).ok())
+}
+
+/// Explicit stop reasons; limits and refusals ended the request without proving success.
+pub(crate) fn prompt_outcome(reason: &wire::StopReason) -> Option<TurnOutcome> {
+    match reason {
+        wire::StopReason::EndTurn => Some(TurnOutcome::Completed),
+        wire::StopReason::Cancelled => Some(TurnOutcome::Cancelled),
+        _ => None,
+    }
 }
 
 #[cfg(test)]

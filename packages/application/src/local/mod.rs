@@ -27,6 +27,7 @@ pub(crate) const ACP_LAUNCH_SETTING: &str = "acpLaunch";
 mod acp_composition;
 mod composer_quota;
 mod discovery;
+mod naming;
 mod working_directories;
 
 fn runtime_types() -> Vec<crate::config::RuntimeTypeDescriptor> {
@@ -63,14 +64,20 @@ fn runtime_types() -> Vec<crate::config::RuntimeTypeDescriptor> {
         let mut binary=field("binary","运行时入口",crate::conversation::SettingKind::FilePath,true,String::new(),"当前运行时版本的绝对可执行路径。执行准备时会核对实际版本。");
         if variant.kind==RuntimeKind::Acp {binary.help=Some("支持 ACP v1 的命令或 bridge 的绝对路径；启动参数与环境变量在下方设置，启动时协商协议。".into());}
         if variant.family_id=="pi" {binary.executable_discovery=Some(crate::conversation::ExecutableDiscovery{command:"pi".into(),minimum_version:"1.0.2".into()});}
-        if variant.kind==RuntimeKind::Codex {binary.executable_discovery=Some(crate::conversation::ExecutableDiscovery{command:"codex".into(),minimum_version:"0.159.3".into()});}
+        if matches!(variant.kind, RuntimeKind::Codex | RuntimeKind::Codex166) {binary.executable_discovery=Some(crate::conversation::ExecutableDiscovery{command:"codex".into(),minimum_version:if variant.kind==RuntimeKind::Codex166 {"0.166.0"} else {"0.159.3"}.into()});}
         if variant.kind==RuntimeKind::DeepSeek {binary.executable_discovery=Some(crate::conversation::ExecutableDiscovery{command:"dsh".into(),minimum_version:"0.2.0".into()});}
         let mut runtime_node = node.clone();
         runtime_node.required = variant.family_id != "claude-code";
         if variant.family_id == "claude-code" { binary.executable_discovery=Some(crate::conversation::ExecutableDiscovery{command:"claude".into(),minimum_version:"2.1.286".into()}); }
-        let mut fields=vec![binary,runtime_node,field("agentDir","运行时目录",crate::conversation::SettingKind::DirectoryPath,true,String::new(),match variant.kind {RuntimeKind::ClaudeCode=>"该实例的 CLAUDE_CONFIG_DIR；配置与原生会话目录，不是任务工作目录。",RuntimeKind::Codex=>"该实例的 CODEX_HOME；配置与会话根目录，不是任务工作目录。",RuntimeKind::DeepSeek=>"该实例的 DeepSeek Harness 配置与会话根目录，不是任务工作目录。",_=>"该实例的 Pi 配置与状态根目录，不是任务工作目录。"})];
+        let mut fields=vec![binary,runtime_node,field("agentDir","运行时目录",crate::conversation::SettingKind::DirectoryPath,true,String::new(),match variant.kind {RuntimeKind::ClaudeCode=>"该实例的 CLAUDE_CONFIG_DIR；配置与原生会话目录，不是任务工作目录。",RuntimeKind::Codex | RuntimeKind::Codex166 =>"该实例的 CODEX_HOME；配置与会话根目录，不是任务工作目录。",RuntimeKind::DeepSeek=>"该实例的 DeepSeek Harness 配置与会话根目录，不是任务工作目录。",_=>"该实例的 Pi 配置与状态根目录，不是任务工作目录。"})];
         if variant.kind==RuntimeKind::Acp {fields.retain(|field| field.key=="binary");}
         if variant.kind==RuntimeKind::Pi {fields.push(field("sessionDir","会话存储目录",crate::conversation::SettingKind::DirectoryPath,false,String::new(),"覆盖 Pi 默认的会话存储位置；留空采用运行时目录的 sessions，此项不是任务工作目录。"));}
+        if !matches!(variant.kind, RuntimeKind::Codex | RuntimeKind::Codex166) {
+            let mut naming = field("automaticNaming", "自动命名兜底", crate::conversation::SettingKind::Choice, false, "false".into(), "原生名称优先；由 Velune 使用所选模型为尚未命名的会话取名。");
+            naming.options = vec![crate::conversation::SettingOption { id: "false".into(), label: "关闭".into() }, crate::conversation::SettingOption { id: "true".into(), label: "开启".into() }];
+            fields.push(naming);
+            fields.push(field("automaticNamingModel", "命名模型", crate::conversation::SettingKind::Text, false, String::new(), "Velune 中配置的模型记录键。"));
+        }
         crate::config::RuntimeTypeDescriptor{id:variant.kind,family_id:variant.family_id.into(),compatible_versions:variant.versions.describe(),can_rename_conversations:variant.can_rename_conversations,can_delete_conversations:variant.can_delete_conversations,launch_options:variant.kind==RuntimeKind::Acp,agent_info:variant.kind==RuntimeKind::Acp,session_options:variant.kind==RuntimeKind::Acp,native_account_quota:crate::native_quota_source::Capture::supported(variant.kind),remote_resources:variant.kind!=RuntimeKind::Acp,supported_protocols:crate::config::runtime_protocols(variant.kind),supported_provider_protocols:crate::config::runtime_provider_protocols(variant.kind),name:variant.name.into(),fields,permission_modes:variant.permission_modes.iter().map(|mode| crate::config::PermissionMode{id:mode.id.into(),label:mode.label.into(),detail:mode.detail.into()}).collect()}
     }).collect()
 }
@@ -145,6 +152,8 @@ pub struct CoreRuntime {
     parked: Vec<session::Session>,
     elsewhere: live::ElsewhereScan,
     finished_turns: session::FinishedTurns,
+    scheduled_tasks: crate::scheduled_tasks::Store,
+    schedule_next_check: std::time::Instant,
     gateways: Vec<GatewayConfig>,
     model_templates: Vec<crate::config::ModelTemplate>,
     conversation_links: Vec<crate::config::ConversationLink>,
@@ -156,6 +165,8 @@ pub struct CoreRuntime {
     last_listed: std::cell::RefCell<BTreeMap<String, organization::ListedSource>>,
     /// The runtimes' own archives, listed while the archive view shows.
     archived_listing: std::cell::RefCell<Vec<ConversationSummary>>,
+    /// Failures from the last history scan, retained when only organization changes.
+    history_failures: std::cell::RefCell<Vec<crate::HistoryFailure>>,
     /// Conversations no listing holds, reached by identity (a native
     /// sub-agent its runtime archived), as last described, for opening them.
     reached: std::cell::RefCell<BTreeMap<String, organization::ListedSource>>,
@@ -164,13 +175,12 @@ pub struct CoreRuntime {
     usage_display: crate::config::UsageDisplay,
     context_usage_display: crate::config::UsageDisplay,
     status_line: Vec<crate::config::StatusLineItem>,
-    composer_drafts: BTreeMap<String, String>,
     composer_choices: crate::config::ComposerChoices,
     turn_requests: TurnRequests,
     resource_templates: Vec<crate::ResourceTemplate>,
     resource_bindings: Vec<crate::ResourceBinding>,
-    /// A resource save could not reach its runtimes because one was busy; retried once idle.
-    resource_sync_due: bool,
+    /// Targets whose resource writes need retrying once their own work ends.
+    resource_sync_due: std::collections::BTreeSet<String>,
     conversation_browser_preferences: crate::config::ConversationBrowserPreferences,
     subscription_login: Option<crate::provider_login::Login>,
     authentication_provider: Option<(String, String)>,
@@ -196,6 +206,7 @@ pub struct CoreRuntime {
     scheduling_state: velune_gateway::SchedulingState,
     execution_backends: velune_gateway::ExecutionBackends,
     subscription_quota: Arc<crate::subscription_quota::SubscriptionQuota>,
+    billing: Arc<crate::billing::Billing>,
     runtime_quota: Arc<crate::runtime_quota::RuntimeQuota>,
     repository: crate::repository::Repository,
 }
@@ -220,6 +231,7 @@ mod execution;
 mod follow_up;
 use crate::SendQueueOperation;
 mod collaborators;
+mod control;
 mod live;
 mod model_selection;
 mod native_composition;
@@ -230,6 +242,7 @@ mod provider_management;
 mod resource_library;
 mod runtime_execution;
 mod runtime_management;
+mod scheduled_tasks;
 mod session;
 mod side_chat;
 mod sub_agents;
@@ -246,12 +259,14 @@ impl CoreRuntime {
         options.validate()?;
         let (repository, persisted) = crate::repository::Repository::open(&options.home_directory)?;
         let conversation_links = repository.load_conversation_links()?;
-        let composer_drafts = repository.load_composer_drafts()?;
         let composer_choices = repository.load_composer_choices()?;
         let turn_requests = repository.load_turn_requests()?;
         let organization = repository.load_conversation_organization()?;
         let (resource_templates, resource_bindings) = repository.load_resource_library()?;
+        let scheduled_tasks = crate::scheduled_tasks::Store::open(&options.home_directory)?;
         let scheduling_state = velune_gateway::SchedulingState::default();
+        let billing = Arc::new(crate::billing::Billing::default());
+        billing.configure(&persisted.gateways);
         let subscription_quota = crate::subscription_quota::SubscriptionQuota::new(
             options.home_directory.clone(),
             &persisted.gateways,
@@ -265,6 +280,8 @@ impl CoreRuntime {
             parked: Vec::new(),
             elsewhere: live::ElsewhereScan::default(),
             finished_turns: session::FinishedTurns::default(),
+            scheduled_tasks,
+            schedule_next_check: std::time::Instant::now(),
             repository,
             gateways: persisted.gateways,
             model_templates: persisted.model_templates,
@@ -279,17 +296,20 @@ impl CoreRuntime {
             local_presentation_commit: std::cell::RefCell::new(None),
             last_listed: Default::default(),
             archived_listing: Default::default(),
+            history_failures: Default::default(),
             reached: Default::default(),
             outline_presentation: persisted.outline_presentation,
             linked_conversation_opening: persisted.linked_conversation_opening,
             usage_display: persisted.usage_display,
             context_usage_display: persisted.context_usage_display,
             status_line: crate::config::canonical_status_line(persisted.status_line),
-            composer_drafts,
             composer_choices,
             turn_requests,
             resource_templates,
-            resource_sync_due: !resource_bindings.is_empty(),
+            resource_sync_due: resource_bindings
+                .iter()
+                .map(|binding| binding.runtime_id.clone())
+                .collect(),
             resource_bindings,
             conversation_browser_preferences: persisted.conversation_browser_preferences,
             subscription_login: None,
@@ -310,6 +330,7 @@ impl CoreRuntime {
             scheduling_state,
             execution_backends: Default::default(),
             subscription_quota,
+            billing,
             runtime_quota: Arc::default(),
         })
     }
@@ -365,6 +386,7 @@ impl CoreRuntime {
             }
         }
         self.subscription_quota.configure(&self.gateways);
+        self.billing.configure(&self.gateways);
     }
     fn turn_running(&self) -> bool {
         self.session.turn_running()
@@ -386,6 +408,7 @@ impl CoreRuntime {
             Some(side) => side_chat::shown(side, native),
             None => self.decorate_snapshot(native),
         };
+        self.apply_generated_title(&mut snapshot.conversation);
         continuation::stamp_turn_runtime(&mut snapshot.messages, &snapshot.context_runtime_id);
         if self.session.transcript_conversation_id.as_deref() != Some(&snapshot.conversation.id) {
             self.session.transcript_projection = TranscriptProjection::default();
@@ -398,7 +421,10 @@ impl CoreRuntime {
             ));
         self.session
             .transcript_projection
-            .apply(TranscriptEvent::ReplaceMessages(&snapshot.messages));
+            .apply(TranscriptEvent::Replace {
+                messages: &snapshot.messages,
+                executions: &snapshot.executions,
+            });
         composer_choices::recall_turn_requests(
             &self.turn_requests,
             &mut self.session.transcript_projection,
@@ -425,6 +451,7 @@ impl CoreRuntime {
             snapshot.sub_agents = self.sub_agents(&snapshot);
             snapshot.collaborators = self.collaborators(&snapshot);
         }
+        self.apply_input_access(&mut snapshot);
         Some(snapshot)
     }
     fn snapshot_result(&mut self) -> Result<crate::SnapshotResult, RuntimeError> {
@@ -480,7 +507,7 @@ impl CoreRuntime {
             }
             // A conversation shown read-only has no session yet; its first
             // poll opens one so the view can follow native changes.
-            match self.read_conversation_source(runtime_id, conversation_id) {
+            match self.read_conversation_context(runtime_id, conversation_id) {
                 Ok((snapshot, projection)) => self.present_history(snapshot, projection),
                 Err(error) => {
                     tracing::warn!(target: "velune_application", event = "followed_conversation_read_failed", detail = %error);
@@ -496,7 +523,6 @@ impl CoreRuntime {
     }
     fn drain_runtime(&mut self) -> Result<(), RuntimeError> {
         let compacting = self.session.compacting;
-        let was_busy = self.turn_running();
         let was_executing = self.session.executing();
         if was_executing {
             self.session.last_execution = Some(std::time::Instant::now());
@@ -507,15 +533,8 @@ impl CoreRuntime {
                 .map_err(|error| RuntimeError::context("运行时事件读取失败", error)),
             None => Ok(()),
         };
-        // A command can fail and stop its runtime before the next poll begins.
-        let observed_turn = was_busy
-            || self
-                .session
-                .turn_observation
-                .as_ref()
-                .is_some_and(|observation| observation.execution_has_started());
-        let outcome = if !compacting && observed_turn && (!self.turn_running() || result.is_err()) {
-            self.record_finished_turn(result.is_err())
+        let outcome = if !self.turn_running() || result.is_err() {
+            self.record_finished_turn()
         } else {
             None
         };
@@ -525,6 +544,7 @@ impl CoreRuntime {
         {
             self.finish_managed_turn()?;
         }
+        self.poll_automatic_naming(outcome == Some(crate::TurnOutcome::Completed));
         if let Some(outcome) = outcome {
             self.follow_finished_turn(outcome);
         }
@@ -614,6 +634,7 @@ impl CoreRuntime {
             return Err(RuntimeError::invalid("runtime is busy"));
         }
         self.subscription_quota.stop();
+        self.billing.stop();
         self.runtime_quota.stop();
         self.execution_backends.shutdown();
         self.collaboration.shutdown();
@@ -685,6 +706,7 @@ impl Drop for CoreRuntime {
             owner.execution_owner_unavailable();
         }
         self.subscription_quota.stop();
+        self.billing.stop();
         self.runtime_quota.stop();
         self.execution_backends.shutdown();
     }

@@ -142,7 +142,7 @@ enum ConversationLink {
         let data = url(runtimeID: runtimeID, conversationID: conversationID).dataRepresentation
         let provider = NSItemProvider()
         provider.registerDataRepresentation(forTypeIdentifier: dragType.identifier, visibility: .ownProcess) { done in
-            done(data, nil)
+            DispatchQueue.main.async { done(data, nil) }
             return nil
         }
         return provider

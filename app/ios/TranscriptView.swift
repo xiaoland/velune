@@ -85,14 +85,15 @@ private struct MessageView: View {
     var openLinked: (String, Bool) -> Void
     var body: some View {
         HStack(alignment: .top) {
-            if message.role == .user { Spacer(minLength: 40) }
+            if (message.role == .user || message.role == .client) { Spacer(minLength: 40) }
             VStack(alignment: .leading, spacing: 10) {
                 ForEach(Array(blocks.enumerated()), id: \.offset) { _, block in
                     switch block {
                     case .text(let text):
-                        if message.role == .user { Text(text).textSelection(.enabled) }
+                        if (message.role == .user || message.role == .client) { Text(text).textSelection(.enabled) }
                         else { MarkdownText(source: text) }
-                    case .notice(let text), .contextCompaction(let text): Text(text).font(.callout).foregroundStyle(.secondary).frame(maxWidth: .infinity)
+                    case .runtimeFailure(_, let detail, _): Text(detail).font(.callout).foregroundStyle(.secondary)
+                    case .notice(let text), .contextCompaction(let text): Text(text).font(.callout).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading)
                     case .reasoning(let summary, let payload):
                         DisclosureGroup(summary.isEmpty ? "思考" : summary) { PayloadView(payload: payload, messageID: message.id, model: model) }
                     case .tool(_, let title, let state, let payload, let linked):
@@ -117,9 +118,9 @@ private struct MessageView: View {
                     }
                 }
             }
-            .padding(message.role == .user ? 12 : 0)
-            .background(message.role == .user ? Color.accentColor.opacity(0.12) : .clear, in: RoundedRectangle(cornerRadius: 16))
-            if message.role != .user { Spacer(minLength: 0) }
+            .padding((message.role == .user || message.role == .client) ? 12 : 0)
+            .background((message.role == .user || message.role == .client) ? Color.accentColor.opacity(0.12) : .clear, in: RoundedRectangle(cornerRadius: 16))
+            if message.role != .user && message.role != .client { Spacer(minLength: 0) }
         }
         .contextMenu {
             Button("复制消息", systemImage: "doc.on.doc") {

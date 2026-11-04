@@ -26,7 +26,7 @@ struct FailureBanner: View {
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
             Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.yellow)
-            Text(message).font(.callout).textSelection(.enabled)
+            Text(message).uiFont(.callout).textSelection(.enabled)
             Spacer()
         }.padding(8).background(.quaternary, in: RoundedRectangle(cornerRadius: 6))
     }
@@ -241,22 +241,22 @@ struct ResourceForm: View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 8) {
                 Image(systemName: draft.kind.templateSymbol).foregroundStyle(.secondary)
-                Text(draft.kind.templateTitle).font(.headline)
+                Text(draft.kind.templateTitle).uiFont(.headline)
             }
             field(draft.kind == .userInstructions ? "标题" : "名称", $draft.name)
             switch draft.kind {
             case .userInstructions:
-                Text("启用后整体写入运行时的用户指令文件；每个运行时只能启用一份指令。").font(.callout).foregroundStyle(.secondary)
+                Text("启用后整体写入运行时的用户指令文件；每个运行时只能启用一份指令。").uiFont(.callout).foregroundStyle(.secondary)
                 editor($draft.body, height: 280)
             case .nativeAgentDefinitions:
-                Text("描述").font(.subheadline)
+                Text("描述").uiFont(.subheadline)
                 editor($draft.description, height: 64)
-                Text("运行时据此决定何时委派给它。").font(.caption).foregroundStyle(.secondary)
+                Text("运行时据此决定何时委派给它。").uiFont(.caption).foregroundStyle(.secondary)
                 modelField
                 effortField
                 field("工具", $draft.tools, prompt: "以逗号分隔，可选")
                 skillsField
-                Text("指令").font(.subheadline)
+                Text("指令").uiFont(.subheadline)
                 editor($draft.body, height: 220)
             case .mcpServers: mcp
             case .skills: SkillFilesEditor(files: $draft.skillFiles, canEdit: canEdit)
@@ -287,7 +287,7 @@ struct ResourceForm: View {
             if draft.modelSource == .native {
                 field("模型 ID", $draft.model, prompt: "运行时提供商的 model ID")
             }
-            Text(modelExplanation).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            Text(modelExplanation).uiFont(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         } else {
             LabeledContent("模型", value: draft.modelSource == .native ? draft.model : draft.modelSource == .velune ? (veluneName ?? "已删除的模型") : "沿用父会话")
         }
@@ -313,7 +313,7 @@ struct ResourceForm: View {
                 ForEach(Self.efforts, id: \.self) { Text($0).tag($0) }
                 if !draft.effort.isEmpty && !Self.efforts.contains(draft.effort) { Text(draft.effort).tag(draft.effort) }
             }
-            Text("Codex 接受 none 至 max，Claude Code 接受 low 至 max；运行时不接受的级别不写入。").font(.caption).foregroundStyle(.secondary)
+            Text("Codex 接受 none 至 max，Claude Code 接受 low 至 max；运行时不接受的级别不写入。").uiFont(.caption).foregroundStyle(.secondary)
         } else {
             LabeledContent("推理强度", value: draft.effort.isEmpty ? "—" : draft.effort)
         }
@@ -340,7 +340,7 @@ struct ResourceForm: View {
             }
         }
         if canEdit {
-            Text("子 Agent 启动时载入所选技能；目前只有 Claude Code 支持，技能也需启用于同一运行时。").font(.caption).foregroundStyle(.secondary)
+            Text("子 Agent 启动时载入所选技能；目前只有 Claude Code 支持，技能也需启用于同一运行时。").uiFont(.caption).foregroundStyle(.secondary)
         }
     }
 
@@ -371,7 +371,7 @@ struct ResourceForm: View {
     }
 
     @ViewBuilder private var mcpJSONEditor: some View {
-        Text("可直接粘贴 MCP 文档中的声明（含 mcpServers 的片段亦可）；超时以 timeoutSeconds 表示，单位为秒。").font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+        Text("可直接粘贴 MCP 文档中的声明（含 mcpServers 的片段亦可）；超时以 timeoutSeconds 表示，单位为秒。").uiFont(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         PlainTextEditor(text: Binding(get: { jsonText }, set: { text in
             jsonText = text
             var updated = draft
@@ -385,8 +385,8 @@ struct ResourceForm: View {
         .frame(height: 260)
         .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 6))
         .overlay(RoundedRectangle(cornerRadius: 6).stroke(.separator))
-        if let jsonMessage { Text(jsonMessage).font(.caption).foregroundStyle(.orange) }
-        Text("JSON 含环境变量与请求头的值，可能包含密钥。").font(.caption).foregroundStyle(.secondary)
+        if let jsonMessage { Text(jsonMessage).uiFont(.caption).foregroundStyle(.orange) }
+        Text("JSON 含环境变量与请求头的值，可能包含密钥。").uiFont(.caption).foregroundStyle(.secondary)
     }
 
     @ViewBuilder private var mcpForm: some View {
@@ -397,14 +397,14 @@ struct ResourceForm: View {
         }
         if draft.isHTTP { field("地址", $draft.url, prompt: "https://") } else { field("命令", $draft.command) }
         if !draft.isHTTP {
-            Text("参数（每行一个）").font(.subheadline)
+            Text("参数（每行一个）").uiFont(.subheadline)
             editor($draft.arguments, height: 80)
             field("工作目录", $draft.cwd, prompt: "可选，绝对路径")
-            if !draft.cwd.isEmpty { Text("Claude Code 的 MCP 配置没有工作目录，写入 Claude Code 时会省略。").font(.caption).foregroundStyle(.secondary) }
+            if !draft.cwd.isEmpty { Text("Claude Code 的 MCP 配置没有工作目录，写入 Claude Code 时会省略。").uiFont(.caption).foregroundStyle(.secondary) }
         }
         field("超时（秒）", $draft.timeout, prompt: "可选，单次工具调用的上限")
         HStack {
-            Text(draft.isHTTP ? "请求头" : "环境变量").font(.subheadline)
+            Text(draft.isHTTP ? "请求头" : "环境变量").uiFont(.subheadline)
             Spacer()
             Toggle("显示值", isOn: $revealSecrets).toggleStyle(.checkbox)
             if canEdit { Button { draft.pairs.append(DraftKeyValue(key: "", value: "")) } label: { Image(systemName: "plus") }.help("添加").accessibilityLabel("添加") }
@@ -416,7 +416,7 @@ struct ResourceForm: View {
                 if canEdit { Button { draft.pairs.removeAll { $0.id == pair.id } } label: { Image(systemName: "minus.circle") }.buttonStyle(.borderless).help("移除").accessibilityLabel("移除") }
             }
         }
-        Text("值可能含密钥，只保存在 Velune 的私有文件中，默认遮盖。").font(.caption).foregroundStyle(.secondary)
+        Text("值可能含密钥，只保存在 Velune 的私有文件中，默认遮盖。").uiFont(.caption).foregroundStyle(.secondary)
     }
 }
 

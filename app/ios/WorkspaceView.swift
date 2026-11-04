@@ -197,7 +197,7 @@ struct WorkspaceView: View {
         Task {
             do {
                 listing = try await devices.client.application(peer, operation: .conversationWrite) {
-                    try $0.organizeConversations(conversations: [.init(runtimeId: row.conversation.runtimeId, conversationId: row.conversation.id)], change: change)
+                    try $0.organizeConversations(conversations: [.init(runtimeId: row.conversation.runtimeId, conversationId: row.conversation.id, nativeReadState: row.conversation.nativeReadState)], change: change)
                 }
                 await search()
             } catch { report(error, "标记会话") }

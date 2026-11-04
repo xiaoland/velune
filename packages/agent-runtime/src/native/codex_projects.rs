@@ -30,6 +30,7 @@ pub fn list_projects(
     archived: bool,
 ) -> Result<ProjectListing> {
     let mut rpc = codex::history_client_at(
+        config.kind,
         &config.binary,
         &config.home,
         &config.execution,
@@ -85,6 +86,7 @@ pub fn update_project(
     roots: &[String],
 ) -> Result<NativeProject> {
     let mut rpc = codex::history_client_at(
+        config.kind,
         &config.binary,
         &config.home,
         &config.execution,

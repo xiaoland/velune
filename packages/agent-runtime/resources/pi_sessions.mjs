@@ -1,4 +1,4 @@
-// Pi v1.0.2 SDK session-list projection. CoreRuntime owns process isolation;
+// Pi SDK session-list projection. CoreRuntime owns process isolation;
 // Pi's SessionManager remains authoritative for session metadata.
 
 import { resolvePiSdk } from "./pi_sdk.mjs";
@@ -19,7 +19,29 @@ const sessionManager = () => installation.importModule("dist/core/session-manage
 const sessionDir = value("--session-dir");
 const inspectPath = value("--inspect-session");
 const mutationPath = value("--rename-session") ?? value("--delete-session");
-if (mutationPath) {
+const exportPath = value("--export-context");
+if (exportPath) {
+  const { SessionManager } = await sessionManager();
+  const { convertToLlm } = await installation.importModule("dist/core/messages.js");
+  const context = SessionManager.open(exportPath).buildSessionContext();
+  const blocks = content => typeof content === "string" ? [{type:"text", text:content}] : content.flatMap(block => {
+    switch (block.type) {
+      case "text": return [{type:"text", text:block.text}];
+      case "image": return [{type:"image", media_type:block.mimeType, data:block.data}];
+      case "toolCall": return [{type:"tool_call", id:block.id, name:block.name, arguments:block.arguments}];
+      case "thinking": return [];
+      default: throw new Error(`Unsupported Pi context block: ${block.type}`);
+    }
+  });
+  const messages = convertToLlm(context.messages).flatMap(message => {
+    if (message.role === "system") return [];
+    if (message.role === "toolResult") return [{role:"user",content:[{type:"tool_result",id:message.toolCallId,content:blocks(message.content),is_error:message.isError}]}];
+    if (!["user", "assistant"].includes(message.role)) throw new Error(`Unsupported Pi context role: ${message.role}`);
+    const content = blocks(message.content);
+    return content.length ? [{role:message.role,content}] : [];
+  });
+  process.stdout.write(JSON.stringify({messages}));
+} else if (mutationPath) {
   const { SessionManager } = await sessionManager();
   const { realpath, lstat, unlink } = await import("node:fs/promises");
   const { resolve, relative, isAbsolute } = await import("node:path");

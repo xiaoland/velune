@@ -3,6 +3,8 @@ mod config;
 mod context;
 mod health;
 mod probe;
+mod problems;
+pub use problems::DiagnosticProblem;
 mod sdk;
 mod sdk_diagnostics;
 mod transport;

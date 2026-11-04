@@ -12,6 +12,8 @@ Messages 保留调用方的 `anthropic-version`／beta 请求头与原生 JSON�
 
 转换语义由固定版本的 New API RelayKit 提供，Go 依赖见 `relaykit-bridge/go.mod` 和 `go.sum`。Rust 内部桥接管理唯一请求句柄，流转换消费请求计划，释放不会生成终态。桥接仅处理 JSON 与事件；HTTP、认证、取消和原始计量仍由 Rust 持有。不能跨提供商复用的服务端引用按 best-effort 省略并诊断，不补造历史；内联媒体在本地解析，外部媒体 URL 不触发桥接联网。诊断丢弃上游任意说明与字段值，不把原始错误送入日志。
 
+调用转换前，请求的 `model` 必须已替换为实际提供商型号，输出上限缺省值也必须来自该目标；不同派发候选分别创建计划，不能共用模型专属参数或工具编码状态。Go 桥接以原始数字表示解析 JSON，避免大整数经浮点往返改变。Messages SSE 的 usage 跨 message_start／message_delta 保留已报告而后续省略的字段，再交给 RelayKit 转换；后续显式零值仍覆盖旧值，未知用量不因此补零。该处理只影响转换输出，Rust 仍观察原始上游计量。
+
 Cargo 构建会调用 Go，以同进程库链接。Mac 使用 c-archive；Android 配置为 c-shared，需要平台打包相应共享库，不能把它作为常驻进程运行。目标映射不是运行验证。平台公开接口仍是 UniFFI，这个私有桥接不对 App 暴露。RelayKit 使用 AGPLv3，发行时必须连同适用源码义务处理；Mac 的原始声明和传递依赖许可保存在 [许可证目录](../../app/mac/Licenses/RelayKit/NOTICE.md)。
 
 `metrics::ResponseMetrics` 从原生 JSON／SSE 提取用量、语义输出和业务终态，仅观察、不改写正文。独立未知字段和 Messages 缓存组成保留原始含义；协议转换占位不是其计量来源。统计关联与持久化分别由 gateway 和 application 承担。

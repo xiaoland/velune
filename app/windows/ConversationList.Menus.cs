@@ -98,7 +98,7 @@ sealed partial class ConversationList
 
     void Organize(List<ListedConversation> chosen, ConversationOrganizationChange change)
     {
-        var references = chosen.Select(listed => new ConversationReference(listed.Conversation.RuntimeId, listed.Conversation.Id)).ToArray();
+        var references = chosen.Select(listed => new ConversationReference(listed.Conversation.RuntimeId, listed.Conversation.Id, listed.Conversation.NativeReadState)).ToArray();
         Change("整理会话", NativeOperation.ConversationWrite, application => application.OrganizeConversations(references, change));
     }
 

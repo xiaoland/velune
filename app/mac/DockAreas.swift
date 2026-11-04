@@ -12,15 +12,9 @@ struct DockAreaView: View {
         let kinds = window.tools.tools(in: side)
         let flexible = side == .bottom ? kinds : kinds.filter { $0 != .composer }
         VStack(spacing: 0) {
-            // The composer alone below the panes is as tall as its content (see
-            // `BottomAreaView`); a split, which only divides the room it is
-            // given, would have no height there.
-            if side == .bottom, flexible == [.composer] {
-                tool(.composer, titled: false)
-            // One split for any number of tools, so a tool keeps its identity as
-            // others come and go: the sidebar's list would otherwise be made anew,
-            // and the window toolbar drops the items it gave the old one.
-            } else if !flexible.isEmpty {
+            // The bottom area provides stable room, including when it holds
+            // only the composer. Side areas retain their weighted split.
+            if !flexible.isEmpty {
                 WeightedSplit(axis: side == .bottom ? .horizontal : .vertical, ids: flexible,
                               weights: flexible.map { window.tools[$0].weight },
                               commit: { weights in window.tools.setWeights(Dictionary(uniqueKeysWithValues: zip(flexible, weights))) }) { kind in
@@ -53,7 +47,7 @@ private struct ToolHeader: View {
 
     var body: some View {
         HStack(spacing: 4) {
-            Text(kind.title).font(.subheadline.weight(.semibold)).foregroundStyle(.secondary).lineLimit(1)
+            Text(kind.title).uiFont(.subheadline.weight(.semibold)).foregroundStyle(.secondary).lineLimit(1)
             Spacer(minLength: 0)
             if kind == .list { ConversationListHeaderActions(window: window, side: side) }
             Menu { ToolPlaceMenu(window: window, kind: kind) } label: { Image(systemName: "ellipsis") }
@@ -153,10 +147,8 @@ struct WeightedSplit<ID: Hashable, Content: View>: View {
     }
 }
 
-/// The strip below the panes: as tall as the user made it, or, holding the
-/// composer alone, as tall as the composer, whose text box the divider then
-/// makes taller (its text still grows past that). Its top divider's grip
-/// reaches over the panes' edge; a double click restores the usual height.
+/// The bottom drawer keeps its user-selected height across conversation and
+/// composer states. Input scrolls within that space instead of resizing panes.
 struct BottomAreaView: View {
     @ObservedObject var window: ConversationWindowModel
     /// The room the panes and this area share.
@@ -165,34 +157,20 @@ struct BottomAreaView: View {
     @State private var dragStart: Double?
 
     var body: some View {
-        let kinds = window.tools.tools(in: .bottom)
-        let fits = kinds == [.composer]
-        let limit = max(100, available - 200)
+        let minimum = window.composerMinimumHeight
+            + (window.tools.tools(in: .bottom).count > 1 ? PaneChrome.barHeight : 0)
+        let limit = max(minimum, available - 200)
         VStack(spacing: 0) {
             Divider()
             DockAreaView(window: window, side: .bottom)
-                .frame(height: fits ? nil : min(dragged ?? window.tools.bottomHeight, limit))
-                // Otherwise the composer's room, which fills downward, would share the height with the panes.
-                .fixedSize(horizontal: false, vertical: fits)
+                .frame(height: min(max(dragged ?? window.tools.bottomHeight, minimum), limit))
         }
         .overlay(alignment: .top) {
-            if fits {
-                SplitSash(axis: .vertical,
-                          drag: { distance in
-                              let start = dragStart ?? Double(max(window.focused.composer.height, window.tools.composerHeight.map { CGFloat($0) } ?? 0))
-                              if dragStart == nil { dragStart = start }
-                              window.tools.composerHeight = min(max(start - distance, Double(ComposerTextView.minimumHeight)), limit - 80)
-                          },
-                          end: { dragStart = nil },
-                          reset: { window.tools.composerHeight = nil })
-                    .frame(height: SplitSash.thickness)
-                    .offset(y: -SplitSash.thickness / 2)
-            } else {
                 SplitSash(axis: .vertical,
                           drag: { distance in
                               let start = dragStart ?? min(window.tools.bottomHeight, limit)
                               if dragStart == nil { dragStart = start }
-                              dragged = min(max(start - distance, 100), limit)
+                              dragged = min(max(start - distance, minimum), limit)
                           },
                           end: {
                               if let dragged { window.tools.bottomHeight = dragged }
@@ -202,7 +180,6 @@ struct BottomAreaView: View {
                           reset: { window.tools.bottomHeight = ToolWindowLayout().bottomHeight })
                     .frame(height: SplitSash.thickness)
                     .offset(y: -SplitSash.thickness / 2)
-            }
         }
     }
 }
@@ -229,7 +206,11 @@ struct ToolContent: View {
         case .outline:
             ToolOutline(window: window, tab: tab, store: tab.store, inSidebar: side == .left).id(tab.id)
         case .composer:
-            ToolComposer(window: window, tab: tab, store: tab.store, contentHeight: contentHeight).id(tab.id)
+            if !window.hasConversationFocus {
+                Text("选择会话以输入").foregroundStyle(.secondary).frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+            ToolComposer(window: window, tab: tab, store: tab.store, contentHeight: contentHeight)
+            }
         case .agents:
             ToolAgents(window: window, tab: tab, store: tab.store, inSidebar: side == .left).id(tab.id)
         }
@@ -299,21 +280,17 @@ private struct ToolComposer: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            if window.isSplit || window.tabCount > 1 {
-                Text("发往：\(store.selectedConversationTitle ?? "新会话")")
-                    .font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
-                    .padding(.horizontal, 16).padding(.top, 8)
-            }
             if store.loadedParentConversationID != nil, store.pendingConversationID == nil {
                 Text("这是原生 sub-agent 的会话，由启动它的会话继续。").foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity).padding(16)
             } else {
-                ComposerView(store: store, model: tab.composer, layout: window, send: tab.send, steer: tab.steer, submission: { tab.submission }, resume: tab.resume,
-                             minimumTextHeight: window.tools[.composer].place == .docked(.bottom) ? window.tools.composerHeight.map { CGFloat($0) } : nil)
+                ComposerView(store: store, model: window.composer(for: tab), layout: window, send: { window.send() }, steer: { window.composerContext().steer() }, submission: { window.composerContext().submission() }, resume: { window.resume() },
+                             fillsHeight: window.tools[.composer].place == .docked(.bottom),
+                             recipient: window.composerOwner(for: tab) == .shared ? store.selectedConversationTitle ?? "新会话" : nil)
             }
         }
-        .fixedSize(horizontal: false, vertical: true)
+        .fixedSize(horizontal: false, vertical: window.tools[.composer].place != .docked(.bottom))
         .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { contentHeight?($0) }
-        .frame(maxHeight: contentHeight == nil ? nil : .infinity, alignment: .top)
+        .frame(maxHeight: contentHeight != nil || window.tools[.composer].place == .docked(.bottom) ? .infinity : nil, alignment: .top)
     }
 }

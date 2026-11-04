@@ -307,6 +307,14 @@ impl RpcClient {
         Ok(id)
     }
     pub(crate) fn request(&mut self, method: &str, params: &Value) -> Result<Value> {
+        self.request_classified(method, params, |_| None)
+    }
+    pub(crate) fn request_classified(
+        &mut self,
+        method: &str,
+        params: &Value,
+        classify: impl Fn(&Value) -> Option<&'static str>,
+    ) -> Result<Value> {
         let id = self.begin(method, params)?;
         let deadline = Instant::now() + TIMEOUT;
         loop {
@@ -319,10 +327,13 @@ impl RpcClient {
                 .map_err(|error| self.with_stderr(error))?;
             if record["id"].as_u64() == Some(id) && record.get("method").is_none() {
                 if record.get("error").is_some() {
-                    return Err(self.with_stderr(Error::new(format!(
-                        "运行时拒绝控制请求，请检查适配器版本与配置：{}",
-                        record["error"]
-                    ))));
+                    return Err(self.with_stderr(Error::with_code(
+                        format!(
+                            "运行时拒绝控制请求，请检查适配器版本与配置：{}",
+                            record["error"]
+                        ),
+                        classify(&record["error"]).unwrap_or("internal"),
+                    )));
                 }
                 return record
                     .get("result")

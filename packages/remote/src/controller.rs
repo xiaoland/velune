@@ -420,6 +420,11 @@ fn operation_targets(command: &Command) -> (Option<String>, Option<String>) {
             conversation_id,
             ..
         }
+        | Command::ForkConversation {
+            runtime_id,
+            conversation_id,
+            ..
+        }
         | Command::Cancel {
             runtime_id,
             conversation_id,

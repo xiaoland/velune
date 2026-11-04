@@ -96,6 +96,7 @@ impl CoreRuntime {
                     MessageBlock::Text { text: body }
                     | MessageBlock::Reasoning { text: body }
                     | MessageBlock::Notice { text: body }
+                    | MessageBlock::RuntimeFailure { detail: body, .. }
                     | MessageBlock::ContextCompaction { text: body } => text.push_str(body),
                     MessageBlock::Tool { title, output, .. } => {
                         text.push_str(title);

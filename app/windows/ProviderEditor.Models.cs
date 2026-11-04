@@ -76,6 +76,7 @@ sealed partial class ProviderEditor
         readonly TextBox context = Count("上下文窗口（token）");
         readonly TextBox output = Count("最大输出（token）");
         readonly TextBox levels = new() { Header = "支持的推理强度", PlaceholderText = "例如 low, medium, high；留空表示不声明" };
+        readonly TextBox parameters = new() { Header = "额外请求参数", PlaceholderText = "逗号分隔的 key=value，如 service_tier=priority" };
 
         public ModelRow(ProviderEditor editor, ProviderModel? model)
         {
@@ -87,6 +88,7 @@ sealed partial class ProviderEditor
             context.Text = model?.ContextWindow is { } window ? TokenCount.Format(window) : "";
             output.Text = model?.MaxOutputTokens is { } maximum ? TokenCount.Format(maximum) : "";
             levels.Text = model?.ReasoningLevels is { } declared ? string.Join(", ", declared) : "";
+            parameters.Text = model?.RequestParameters is { } extra ? string.Join(", ", extra.Select(pair => pair.Key + "=" + pair.Value)) : "";
             detail.TextWrapping = TextWrapping.NoWrap;
             detail.TextTrimming = TextTrimming.CharacterEllipsis;
             var header = new StackPanel { Spacing = 2, Padding = new Thickness(0, 6, 0, 6) };
@@ -97,7 +99,7 @@ sealed partial class ProviderEditor
             var fields = new Grid { ColumnSpacing = 12, RowSpacing = 12 };
             fields.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
             fields.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-            for (var i = 0; i < 3; i++)
+            for (var i = 0; i < 4; i++)
             {
                 fields.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
             }
@@ -107,6 +109,8 @@ sealed partial class ProviderEditor
             Place(fields, output, 1, 1);
             Place(fields, levels, 2, 0);
             Grid.SetColumnSpan(levels, 2);
+            Place(fields, parameters, 3, 0);
+            Grid.SetColumnSpan(parameters, 2);
 
             var asTemplate = new Button { Content = "存为模板…" };
             asTemplate.Click += (_, _) =>
@@ -182,6 +186,28 @@ sealed partial class ProviderEditor
             return declared.Length > 0 ? declared : null;
         }
 
+        // Each pair reads `key=value`; a malformed pair drops the field rather
+        // than guessing, and the core rejects empty keys at save.
+        Dictionary<string, string>? Parameters()
+        {
+            var parts = parameters.Text.Split([',', '，'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            if (parts.Length == 0)
+            {
+                return null;
+            }
+            var parsed = new Dictionary<string, string>();
+            foreach (var part in parts)
+            {
+                var separator = part.IndexOf('=');
+                if (separator <= 0)
+                {
+                    return null;
+                }
+                parsed[part[..separator].Trim()] = part[(separator + 1)..].Trim();
+            }
+            return parsed;
+        }
+
         public ProviderModel Value() => new(
             RecordKey: recordKey,
             ProviderModelId: ID,
@@ -189,7 +215,8 @@ sealed partial class ProviderEditor
             Icon: icon,
             ContextWindow: Optional(context),
             MaxOutputTokens: Optional(output),
-            ReasoningLevels: Levels());
+            ReasoningLevels: Levels(),
+            RequestParameters: Parameters());
 
         // Keep takes the record a save gave a new model.
         public void Keep(ProviderModel[] saved)

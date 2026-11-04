@@ -158,12 +158,6 @@ sealed class ProvidersPage : UserControl
     internal string ProtocolName(Protocol protocol) =>
         Protocols.FirstOrDefault(descriptor => descriptor.Id == protocol)?.Name ?? $"协议 {protocol}";
 
-    // IsSubscription tells whether a provider's connection is fixed by a
-    // subscription template, so its protocol and address are not edited.
-    internal bool IsSubscription(RequestProfile profile, ProviderAuthenticationSource authentication, ProviderQuotaSource quota) =>
-        Templates.Any(template => template.Kind == ProviderTemplateKind.Subscription
-            && template.RequestProfile == profile && template.AuthenticationSource == authentication && template.QuotaSource == quota);
-
     async void Add()
     {
         if (Protocols.Length == 0 || Busy)

@@ -19,6 +19,10 @@ pub struct ProviderModel {
     pub context_window: Option<u32>,
     pub max_output_tokens: Option<u32>,
     pub reasoning_levels: Option<Vec<String>>,
+    /// Extra fields merged into every upstream request body for this model,
+    /// overriding what the adapter sets; unknown fields fail upstream.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub request_parameters: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -150,6 +154,22 @@ impl GatewayConfig {
                     {
                         return Err("invalid reasoning declaration");
                     }
+                }
+                if binding
+                    .request_parameters
+                    .keys()
+                    .any(|key| key.is_empty() || key.chars().any(char::is_control))
+                    || binding
+                        .request_parameters
+                        .values()
+                        .any(|value| value.chars().any(char::is_control))
+                {
+                    return Err("invalid request parameter declaration");
+                }
+                if !binding.request_parameters.is_empty()
+                    && !matches!(provider.execution_backend, ExecutionBackend::Http)
+                {
+                    return Err("request parameters require an HTTP execution backend");
                 }
             }
         }

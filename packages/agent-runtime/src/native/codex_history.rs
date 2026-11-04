@@ -27,9 +27,10 @@ pub(super) fn summary(thread: &Value, runtime_id: &str) -> Result<ConversationSu
         .filter(|id| !id.is_empty())
         .ok_or_else(|| Error::new("Codex 历史缺少原生会话身份"))?;
     Ok(ConversationSummary {
+        native_read_state: read_state(thread.get("readState"), runtime_id, id)?,
         id: format!("{runtime_id}:{id}"),
         runtime_id: runtime_id.into(),
-        title: conversation_title(thread["name"].as_str(), thread["preview"].as_str()),
+        title: thread_title(thread),
         cwd: thread["cwd"].as_str().map(str::to_owned),
         created_at_unix_ms: thread["createdAt"]
             .as_i64()
@@ -48,6 +49,23 @@ pub(super) fn summary(thread: &Value, runtime_id: &str) -> Result<ConversationSu
     })
 }
 
+/// Stored names and native agent nicknames are authoritative across listing,
+/// history and live resume. Internal agents may have no user-message preview.
+pub(super) fn thread_title(thread: &Value) -> ConversationTitle {
+    let name = thread["name"]
+        .as_str()
+        .filter(|name| !name.trim().is_empty())
+        .or_else(|| {
+            thread["agentNickname"]
+                .as_str()
+                .filter(|name| !name.trim().is_empty())
+        });
+    match conversation_title(name, thread["preview"].as_str()) {
+        ConversationTitle::Untitled => conversation_title(thread["agentRole"].as_str(), None),
+        title => title,
+    }
+}
+
 // Native cursors are opaque; repeating one is a contract failure, not a reason
 // to loop forever. The SDK owns page sizes and the adapter does not impose a
 // second aggregate history-size ceiling.
@@ -59,7 +77,16 @@ pub(super) fn pages(rpc: &mut RpcClient, method: &str, mut params: Value) -> Res
         let data = page["data"]
             .as_array()
             .ok_or_else(|| Error::new("Codex 历史分页缺少内容"))?;
-        entries.extend(data.iter().cloned());
+        for entry in data {
+            let mut entry = entry.clone();
+            if method == "thread/list"
+                && let Some(id) = entry["id"].as_str()
+                && let Some(receipt) = page["readStates"].get(id)
+            {
+                entry["readState"] = receipt.clone();
+            }
+            entries.push(entry);
+        }
         match page.get("nextCursor") {
             Some(Value::Null) => break,
             Some(Value::String(cursor)) if !cursor.is_empty() && cursors.insert(cursor.clone()) => {
@@ -77,6 +104,7 @@ pub fn list_codex_history(
     runtime_id: &str,
 ) -> Result<Vec<ConversationSummary>> {
     list_codex_history_at(
+        crate::version::RuntimeKind::Codex,
         binary,
         home,
         runtime_id,
@@ -87,6 +115,7 @@ pub fn list_codex_history(
 }
 /// The runtime's threads, either those in use or those it archived.
 pub fn list_codex_history_at(
+    kind: crate::version::RuntimeKind,
     binary: &Path,
     home: &Path,
     runtime_id: &str,
@@ -94,7 +123,7 @@ pub fn list_codex_history_at(
     execution: &crate::execution::ExecutionTarget,
     os_home: Option<&Path>,
 ) -> Result<Vec<ConversationSummary>> {
-    let mut rpc = codex::history_client_at(binary, home, execution, os_home)?;
+    let mut rpc = codex::history_client_at(kind, binary, home, execution, os_home)?;
     let threads = pages(
         &mut rpc,
         "thread/list",
@@ -120,6 +149,7 @@ pub fn list_codex_history_at(
 /// thread no listing in use holds: a native sub-agent Codex archived once it
 /// ended. Codex keeps archived rollouts in its `archived_sessions` folder.
 pub fn read_codex_summary_at(
+    kind: crate::version::RuntimeKind,
     binary: &Path,
     home: &Path,
     runtime_id: &str,
@@ -127,7 +157,7 @@ pub fn read_codex_summary_at(
     execution: &crate::execution::ExecutionTarget,
     os_home: Option<&Path>,
 ) -> Result<(ConversationSummary, bool)> {
-    let mut rpc = codex::history_client_at(binary, home, execution, os_home)?;
+    let mut rpc = codex::history_client_at(kind, binary, home, execution, os_home)?;
     let metadata = rpc.request("thread/read", &json!({"threadId":id,"includeTurns":false}))?;
     let thread = &metadata["thread"];
     if thread["id"].as_str() != Some(id) {
@@ -138,7 +168,9 @@ pub fn read_codex_summary_at(
             .components()
             .any(|component| component.as_os_str() == "archived_sessions")
     });
-    Ok((summary(thread, runtime_id)?, archived))
+    let mut summary = summary(thread, runtime_id)?;
+    summary.native_read_state = read_state(metadata.get("readState"), runtime_id, id)?;
+    Ok((summary, archived))
 }
 
 pub fn read_codex_history(
@@ -148,6 +180,7 @@ pub fn read_codex_history(
     id: &str,
 ) -> Result<History> {
     read_codex_history_at(
+        crate::version::RuntimeKind::Codex,
         binary,
         home,
         runtime_id,
@@ -156,7 +189,55 @@ pub fn read_codex_history(
         None,
     )
 }
+pub fn codex_context_provider(
+    config: &crate::history::HistoryConfig,
+    cwd: &Path,
+) -> Result<String> {
+    let mut rpc = codex::history_client_at(
+        config.kind,
+        &config.binary,
+        &config.home,
+        &config.execution,
+        config.os_home.as_deref(),
+    )?;
+    let value = rpc.request("config/read", &json!({"includeLayers":false,"cwd":cwd}))?;
+    Ok(value["config"]["model_provider"]
+        .as_str()
+        .unwrap_or("openai")
+        .to_owned())
+}
+
+/// Resolve the authoritative rollout through Codex before reading model input.
+pub fn export_codex_context(
+    config: &crate::history::HistoryConfig,
+    id: &str,
+) -> Result<crate::import::Context> {
+    let mut rpc = codex::history_client_at(
+        config.kind,
+        &config.binary,
+        &config.home,
+        &config.execution,
+        config.os_home.as_deref(),
+    )?;
+    let metadata = rpc.request("thread/read", &json!({"threadId":id,"includeTurns":false}))?;
+    let thread = &metadata["thread"];
+    if thread["id"].as_str() != Some(id) {
+        return Err(Error::new("Codex 返回不同的原生会话"));
+    }
+    let path = thread["path"]
+        .as_str()
+        .ok_or_else(|| Error::new("Codex 未提供上下文来源路径"))?;
+    let bytes = config.execution.read_file(Path::new(path))?;
+    let mut command = config.execution.python();
+    command.args(["-c", include_str!("../../resources/codex_context.py")]);
+    let output = config
+        .execution
+        .output(command, Some(bytes), config.os_home.as_deref())?;
+    crate::import::Context::parse(&output)
+}
+
 pub fn read_codex_history_at(
+    kind: crate::version::RuntimeKind,
     binary: &Path,
     home: &Path,
     runtime_id: &str,
@@ -164,7 +245,7 @@ pub fn read_codex_history_at(
     execution: &crate::execution::ExecutionTarget,
     os_home: Option<&Path>,
 ) -> Result<History> {
-    let mut rpc = codex::history_client_at(binary, home, execution, os_home)?;
+    let mut rpc = codex::history_client_at(kind, binary, home, execution, os_home)?;
     let metadata = rpc.request("thread/read", &json!({"threadId":id,"includeTurns":false}))?;
     let thread = &metadata["thread"];
     if thread["id"].as_str() != Some(id) {
@@ -174,33 +255,67 @@ pub fn read_codex_history_at(
         .as_str()
         .filter(|mode| matches!(*mode, "legacy" | "paginated"))
         .ok_or_else(|| Error::new("Codex 返回未知的历史契约"))?;
-    let title = conversation_title(thread["name"].as_str(), thread["preview"].as_str());
-    let items = pages(
-        &mut rpc,
-        "thread/items/list",
-        json!({"threadId":id,"limit":50,"sortDirection":"asc"}),
-    )?;
-    let native_turns = pages(
-        &mut rpc,
-        "thread/turns/list",
-        json!({"threadId":id,"limit":50,"sortDirection":"asc","itemsView":"notLoaded"}),
-    )?;
+    let title = thread_title(thread);
+    let (items, native_turns) = if history_mode == "legacy" {
+        // Legacy rollouts explicitly do not implement items/list. thread/read
+        // owns their logical turns (including native fork/revert resolution).
+        let read = rpc.request("thread/read", &json!({"threadId":id,"includeTurns":true}))?;
+        legacy_history(&read["thread"], id)?
+    } else {
+        (
+            pages(
+                &mut rpc,
+                "thread/items/list",
+                json!({"threadId":id,"limit":50,"sortDirection":"asc"}),
+            )?,
+            pages(
+                &mut rpc,
+                "thread/turns/list",
+                json!({"threadId":id,"limit":50,"sortDirection":"asc","itemsView":"notLoaded"}),
+            )?,
+        )
+    };
     // The rollout is a file on the executing machine; only a local one is read.
     let turns = match (execution, thread["path"].as_str()) {
         (crate::execution::ExecutionTarget::Local, Some(path)) => rollout_turns(Path::new(path)),
         _ => HashMap::new(),
     };
-    let messages = project_history(&items, &native_turns, &turns, runtime_id)?;
+    let (messages, executions) = project_history(&items, &native_turns, &turns, runtime_id)?;
     tracing::info!(target:"velune_agent_runtime",event="history_native_resolution",phase="read",runtime_family="codex",native_items=items.len(),projected_messages=messages.len(),history_mode);
     Ok(History {
         native_id: id.into(),
         title,
         cwd: thread["cwd"].as_str().map(str::to_owned),
         messages,
+        executions,
+        native_read_state: read_state(metadata.get("readState"), runtime_id, id)?,
         can_resume: native_turns
             .last()
             .is_some_and(|turn| matches!(turn["status"].as_str(), Some("interrupted" | "failed"))),
     })
+}
+
+fn legacy_history(thread: &Value, id: &str) -> Result<(Vec<Value>, Vec<Value>)> {
+    if thread["id"].as_str() != Some(id) || thread["historyMode"] != "legacy" {
+        return Err(Error::new("Codex 历史契约在读取期间改变，请重新打开"));
+    }
+    let turns = thread["turns"]
+        .as_array()
+        .ok_or_else(|| Error::new("Codex 未返回 legacy 轮次"))?
+        .clone();
+    let mut items = Vec::new();
+    for turn in &turns {
+        let turn_id = turn["id"]
+            .as_str()
+            .ok_or_else(|| Error::new("Codex legacy 轮次缺少身份"))?;
+        for item in turn["items"]
+            .as_array()
+            .ok_or_else(|| Error::new("Codex 未载入 legacy 轮次条目"))?
+        {
+            items.push(json!({"turnId":turn_id,"item":item,"startedAtMs":turn["startedAt"].as_i64().and_then(|at| at.checked_mul(1000)),"completedAtMs":turn["completedAt"].as_i64().and_then(|at| at.checked_mul(1000))}));
+        }
+    }
+    Ok((items, turns))
 }
 
 fn project_history(
@@ -208,12 +323,22 @@ fn project_history(
     native_turns: &[Value],
     turns: &HashMap<String, RolloutTurn>,
     runtime_id: &str,
-) -> Result<Vec<Message>> {
+) -> Result<(Vec<Message>, Executions)> {
     let ends: HashMap<&str, usize> = items
         .iter()
         .enumerate()
         .filter_map(|(index, entry)| entry["turnId"].as_str().map(|id| (id, index + 1)))
         .collect();
+    let mut maintenance = HashMap::new();
+    for entry in items {
+        if let Some(id) = entry["turnId"].as_str() {
+            let compact = entry["item"]["type"] == "contextCompaction";
+            maintenance
+                .entry(id)
+                .and_modify(|only: &mut bool| *only &= compact)
+                .or_insert(compact);
+        }
+    }
     let mut errors: HashMap<usize, Vec<Message>> = HashMap::new();
     let mut end = 0;
     for turn in native_turns {
@@ -252,13 +377,53 @@ fn project_history(
         }) {
             last_user = Some(index);
         } else if let Some(index) = last_user {
+            if maintenance.get(id) == Some(&true) {
+                continue;
+            }
             add_resumed_usage(
                 &mut messages[..=index],
                 turns.get(id).and_then(|turn| turn.usage.as_ref()),
             );
         }
     }
-    Ok(messages)
+    let mut executions = Executions::default();
+    for turn in native_turns {
+        let Some(id) = turn["id"].as_str() else {
+            continue;
+        };
+        let mut ids: Vec<_> = items
+            .iter()
+            .filter(|entry| entry["turnId"] == id)
+            .filter_map(|entry| codex::project_item(&entry["item"], runtime_id).map(|m| m.id))
+            .filter(|id| messages.iter().any(|m| m.id == *id))
+            .collect();
+        if let Some(error) = codex::project_turn_error(turn)? {
+            ids.push(error.id);
+        }
+        let kind = if maintenance.get(id) == Some(&true) {
+            ExecutionKind::ContextMaintenance
+        } else {
+            ExecutionKind::UserTurn
+        };
+        let has_user = messages
+            .iter()
+            .any(|m| m.role == MessageRole::User && ids.contains(&m.id));
+        if !has_user
+            && kind == ExecutionKind::UserTurn
+            && let Some(record) = executions.records.iter_mut().rev().find(|r| r.kind == kind)
+        {
+            record.message_ids.extend(ids);
+            record.outcome = codex::turn_outcome(turn["status"].as_str());
+        } else {
+            executions.history(
+                id.into(),
+                kind,
+                ids,
+                codex::turn_outcome(turn["status"].as_str()),
+            );
+        }
+    }
+    Ok((messages, executions))
 }
 
 /// Input-free turns belong to the preceding user message's visible segment,
@@ -279,6 +444,44 @@ pub(super) fn add_resumed_usage(messages: &mut [Message], usage: Option<&TurnUsa
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn thread_names_preserve_native_agent_identity_without_a_preview() {
+        let thread = json!({"id":"child","name":"人工名称","agentNickname":"Kepler","agentRole":"explorer","preview":"任务首句"});
+        assert_eq!(
+            thread_title(&thread),
+            ConversationTitle::Native("人工名称".into())
+        );
+        let mut thread = thread;
+        thread["name"] = Value::Null;
+        thread["preview"] = json!("");
+        assert_eq!(
+            summary(&thread, "runtime").unwrap().title,
+            ConversationTitle::Native("Kepler".into())
+        );
+        thread["agentNickname"] = json!("  ");
+        assert_eq!(
+            thread_title(&thread),
+            ConversationTitle::Native("explorer".into())
+        );
+        thread["preview"] = json!("任务首句");
+        assert_eq!(
+            thread_title(&thread),
+            ConversationTitle::FirstMessage("任务首句".into())
+        );
+    }
+
+    #[test]
+    fn legacy_history_uses_loaded_native_turns_and_keeps_branch_identity() {
+        let thread = serde_json::json!({"id":"synthetic","historyMode":"legacy","turns":[
+            {"id":"turn","status":"completed","items":[{"type":"userMessage","id":"message","content":[{"type":"text","text":"synthetic"}]}]}
+        ]});
+        let (items, turns) = super::legacy_history(&thread, "synthetic").unwrap();
+        assert_eq!(items[0]["turnId"], "turn");
+        assert_eq!(items[0]["item"]["id"], "message");
+        assert_eq!(turns.len(), 1);
+        assert!(super::legacy_history(&thread, "another").is_err());
+    }
+
     use super::*;
 
     #[test]
@@ -289,13 +492,14 @@ mod tests {
         ];
         let turns =
             vec![json!({"id":"user-turn","status":"failed","error":{"message":"answer failed"}})];
-        let messages = project_history(&items, &turns, &HashMap::new(), "runtime").unwrap();
+        let (messages, _executions) =
+            project_history(&items, &turns, &HashMap::new(), "runtime").unwrap();
         assert!(messages.iter().any(|message| message.blocks
             == vec![MessageBlock::ContextCompaction {
                 text: "上下文已压缩".into()
             }]));
         assert!(messages.iter().any(|message| message.blocks.iter().any(
-            |block| matches!(block, MessageBlock::Notice { text } if text.contains("answer failed"))
+            |block| matches!(block, MessageBlock::RuntimeFailure { detail: text, .. } if text.contains("answer failed"))
         )));
     }
 
@@ -305,11 +509,13 @@ mod tests {
             json!({"turnId":"first","item":{"id":"u1","type":"userMessage","content":[{"type":"text","text":"original"}]}}),
             json!({"turnId":"resume","item":{"id":"a1","type":"agentMessage","text":"resumed"}}),
             json!({"turnId":"next","item":{"id":"u2","type":"userMessage","content":[{"type":"text","text":"next"}]}}),
+            json!({"turnId":"maintenance","item":{"id":"compact","type":"contextCompaction"}}),
         ];
         let native = vec![
-            json!({"id":"first"}),
-            json!({"id":"resume"}),
-            json!({"id":"next"}),
+            json!({"id":"first","status":"interrupted"}),
+            json!({"id":"resume","status":"completed"}),
+            json!({"id":"next","status":"interrupted"}),
+            json!({"id":"maintenance","status":"completed"}),
         ];
         let records = [
             ("first", 2, "original"),
@@ -334,8 +540,16 @@ mod tests {
             )
         })
         .collect();
-        let messages = project_history(&items, &native, &records, "runtime").unwrap();
-        assert_eq!(messages.len(), 3);
+        let (messages, executions) = project_history(&items, &native, &records, "runtime").unwrap();
+        assert_eq!(messages.len(), 4);
+        assert_eq!(
+            executions.record(&messages[0].id).unwrap().outcome,
+            Some(TurnOutcome::Completed)
+        );
+        assert_eq!(
+            executions.record(&messages[2].id).unwrap().outcome,
+            Some(TurnOutcome::Cancelled)
+        );
         assert_eq!(
             messages[0].turn_settings.as_ref().unwrap().model.as_deref(),
             Some("original")
@@ -374,7 +588,8 @@ mod tests {
             json!({"id":"ok","status":"completed","error":null}),
             json!({"id":"empty-last","status":"failed","error":{"message":"quota"}}),
         ];
-        let messages = project_history(&items, &turns, &HashMap::new(), "runtime").unwrap();
+        let (messages, _executions) =
+            project_history(&items, &turns, &HashMap::new(), "runtime").unwrap();
         assert_eq!(
             messages.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(),
             vec![
@@ -389,12 +604,12 @@ mod tests {
         assert_eq!(messages[1].timestamp_unix_ms, Some(1000));
         assert_eq!(messages[1].branch_point.as_deref(), Some("failed"));
         assert_eq!(messages[4].timestamp_unix_ms, Some(3000));
-        let MessageBlock::Notice { text } = &messages[0].blocks[0] else {
+        let MessageBlock::RuntimeFailure { detail: text, .. } = &messages[0].blocks[0] else {
             panic!()
         };
         assert!(text.contains("上游未提供错误详情"));
         let empty = project_history(&[], &turns[..1], &HashMap::new(), "runtime").unwrap();
-        assert_eq!(empty.len(), 1);
+        assert_eq!(empty.0.len(), 1);
     }
 }
 
@@ -561,4 +776,31 @@ fn permission_mode(context: &Value) -> Option<String> {
         }
         .to_owned(),
     )
+}
+
+/// Validate a native receipt once, at the protocol boundary. Older servers
+/// and ineligible threads expose no receipt, preserving the local fallback.
+pub(super) fn read_state(
+    value: Option<&Value>,
+    runtime: &str,
+    id: &str,
+) -> Result<Option<NativeReadState>> {
+    let Some(value) = value.filter(|v| !v.is_null()) else {
+        return Ok(None);
+    };
+    let revision = value["revision"]
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| Error::new("Codex 已读状态缺少版本"))?;
+    let first = value
+        .get("firstUnread")
+        .ok_or_else(|| Error::new("Codex 已读状态缺少位置"))?;
+    if !first.is_null() && !matches!(first["type"].as_str(), Some("threadStart" | "turn")) {
+        return Err(Error::new("Codex 已读状态位置无效"));
+    }
+    Ok(Some(NativeReadState {
+        conversation_id: format!("{runtime}:{id}"),
+        revision: revision.into(),
+        unread: !first.is_null(),
+    }))
 }

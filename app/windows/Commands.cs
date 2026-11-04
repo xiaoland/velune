@@ -12,6 +12,7 @@ enum Command
 {
     NewConversation,
     NewTab,
+    ReopenClosedTab,
     NewWindow,
     CloseTab,
     CloseWindow,
@@ -118,6 +119,8 @@ sealed class Commands
     {
         [Command.NewConversation] = ("新建会话", "New Conversation", new(Ctrl, VirtualKey.N)),
         [Command.NewTab] = ("新建标签页", "New Tab", new(Ctrl, VirtualKey.T)),
+        // As in browsers and VS Code.
+        [Command.ReopenClosedTab] = ("重新打开关闭的标签页", "Reopen Closed Tab", new(Ctrl | Shift, VirtualKey.T)),
         [Command.NewWindow] = ("新建窗口", "New Window", new(Ctrl | Shift, VirtualKey.N)),
         [Command.CloseTab] = ("关闭标签页", "Close Tab", new(Ctrl, VirtualKey.W)),
         [Command.CloseWindow] = ("关闭窗口", "Close Window", new(Ctrl | Shift, VirtualKey.W)),

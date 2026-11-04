@@ -94,9 +94,10 @@ enum ToolChoice: Hashable {
 struct ToolWindowLayout: Codable, Equatable {
     var tools: [ToolWindowKind: ToolWindowState] = [.list: ToolWindowState(place: .docked(.left)), .outline: ToolWindowState(place: .builtIn), .composer: ToolWindowState(place: .builtIn)]
     var collapsed: Set<DockSide> = []
+    /// Nil in older saved layouts means the default split presentation.
+    var sideChatPresentation: SideChatPresentation?
+    /// Total drawer height, independent of composer state or draft length.
     var bottomHeight = 220.0
-    /// The composer's text box below the panes, when dragged taller than its text.
-    var composerHeight: Double?
     /// The areas "editor only" collapsed, to open again.
     var editorOnly: Set<DockSide>?
 
@@ -178,8 +179,8 @@ struct ToolWindowLayout: Codable, Equatable {
 
     /// The tools of a window opened for one conversation: its linked agents
     /// on the left in the list's place; the list stays one command away.
-    func forSingleConversation() -> ToolWindowLayout {
-        var layout = self
+    static func forSingleConversation() -> ToolWindowLayout {
+        var layout = ToolWindowLayout()
         layout[.list].shown = false
         layout[.agents].place = .docked(.left)
         layout[.agents].shown = true
@@ -821,6 +822,6 @@ extension ConversationWindowModel {
         // Put away with its area, it comes back with it.
         if !tools.panesHaveComposer, !tools.isOpen(.composer) { tools.show(.composer) }
         if tools.sharesComposer { detached.bringForward(.composer) }
-        focused.composer.focusWhenShown()
+        composer(for: focused).focusWhenShown()
     }
 }

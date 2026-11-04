@@ -16,10 +16,7 @@ RelayKit 遵循 GNU Affero General Public License v3.0，完整条款与上游�
 | 组件 | 版本 | 许可证文件 |
 | --- | --- | --- |
 | Go runtime | 构建版本见 build-manifest.json | Go-LICENSE.txt |
+| github.com/MoeForge/moego | v0.1.0-alpha.1 | moego-LICENSE.txt |
 | github.com/google/uuid | v1.6.0 | uuid-LICENSE.txt |
 | github.com/samber/lo | v1.53.0 | lo-LICENSE.txt |
-| github.com/tidwall/gjson | v1.19.0 | gjson-LICENSE.txt |
-| github.com/tidwall/sjson | v1.2.5 | sjson-LICENSE.txt |
-| github.com/tidwall/match | v1.1.1 | match-LICENSE.txt |
-| github.com/tidwall/pretty | v1.2.0 | pretty-LICENSE.txt |
 | golang.org/x/text | v0.35.0 | x-text-LICENSE.txt |

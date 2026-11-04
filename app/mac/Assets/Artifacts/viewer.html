@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; img-src data:; font-src 'none'; connect-src 'none'; base-uri 'none'; form-action 'none'">
+<title>Mermaid 图表</title>
+<style>
+:root { color-scheme: light dark; font: 13px -apple-system, system-ui; }
+body { margin: 0; background: Canvas; color: CanvasText; }
+main { display: grid; min-height: 100vh; place-items: center; box-sizing: border-box; padding: 24px; }
+#diagram { min-width: 0; }
+svg { display: block; max-width: none !important; }
+#error { max-width: 640px; white-space: pre-wrap; overflow-wrap: anywhere; color: CanvasText; }
+</style>
+<main><div id="diagram" aria-label="Mermaid 图表"></div><pre id="error" hidden></pre></main>
+<script src="mermaid.min.js"></script>
+<script src="viewer.js"></script>
+</html>

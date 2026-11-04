@@ -1,19 +1,15 @@
 //! Query credentials are provider-private and bound to a confirmed model revision.
+pub(crate) use crate::query_credential::AccessKey;
+use crate::query_credential::{QueryCredential, valid_secret};
 use crate::{Error, QuotaAuthenticationDescription, QuotaAuthenticationEdit};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct QuotaAuthentication {
-    pub access_key: Option<AccessKey>,
+    pub credential: Option<QueryCredential>,
     pub generation: u64,
     pub confirmed_model_generation: Option<u64>,
-}
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct AccessKey {
-    pub id: String,
-    pub secret: String,
 }
 impl std::fmt::Debug for QuotaAuthentication {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -23,20 +19,26 @@ impl std::fmt::Debug for QuotaAuthentication {
     }
 }
 impl QuotaAuthentication {
+    pub(crate) fn access_key(&self) -> Option<&AccessKey> {
+        self.credential
+            .as_ref()
+            .and_then(QueryCredential::access_key)
+    }
     pub(crate) fn valid(&self, model_generation: u64) -> bool {
         self.confirmed_model_generation
             .is_none_or(|g| g <= model_generation)
-            && self
-                .access_key
-                .as_ref()
-                .map_or(self.confirmed_model_generation.is_none(), |key| {
+            && match &self.credential {
+                None => self.confirmed_model_generation.is_none(),
+                Some(QueryCredential::AccessKeyPair { key }) => {
                     valid_id(&key.id) && valid_secret(&key.secret)
-                })
+                }
+                Some(QueryCredential::ApiKey { .. }) => false,
+            }
     }
     pub(crate) fn description(&self, model_generation: u64) -> QuotaAuthenticationDescription {
         QuotaAuthenticationDescription {
-            configured: self.access_key.is_some(),
-            binding_confirmed: self.access_key.is_some()
+            configured: self.access_key().is_some(),
+            binding_confirmed: self.access_key().is_some()
                 && self.confirmed_model_generation == Some(model_generation),
         }
     }
@@ -58,11 +60,11 @@ impl QuotaAuthentication {
         match edit {
             None => {}
             Some(QuotaAuthenticationEdit::Clear) => {
-                self.access_key = None;
+                self.credential = None;
                 self.confirmed_model_generation = None;
             }
             Some(QuotaAuthenticationEdit::ConfirmBinding) => {
-                if self.access_key.is_none() || !model_configured {
+                if self.access_key().is_none() || !model_configured {
                     return Err(Error::invalid(
                         "先配置模型 API key 与额度查询凭据，再确认关联",
                     ));
@@ -80,9 +82,11 @@ impl QuotaAuthentication {
                 {
                     return Err(Error::invalid("额度查询凭据或关联确认无效"));
                 }
-                self.access_key = Some(AccessKey {
-                    id: access_key_id,
-                    secret: secret_access_key,
+                self.credential = Some(QueryCredential::AccessKeyPair {
+                    key: AccessKey {
+                        id: access_key_id,
+                        secret: secret_access_key,
+                    },
                 });
                 self.confirmed_model_generation = confirmed.then_some(model_generation);
             }
@@ -103,10 +107,4 @@ fn valid_id(value: &str) -> bool {
         && value
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b))
-}
-fn valid_secret(value: &str) -> bool {
-    !value.is_empty()
-        && value.trim() == value
-        && value.len() <= 4096
-        && !value.chars().any(char::is_control)
 }

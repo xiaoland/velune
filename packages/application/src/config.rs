@@ -1,6 +1,7 @@
 //! Application-owned provider configuration and private adapter integration metadata.
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
 use velune_agent_runtime::model_projection::PiModelProjection;
 pub use velune_application_api::config::*;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -13,6 +14,8 @@ pub struct ProviderModel {
     pub context_window: Option<u32>,
     pub max_output_tokens: Option<u32>,
     pub reasoning_levels: Option<Vec<String>>,
+    /// Extra fields merged into every upstream request body for this model.
+    pub request_parameters: Option<BTreeMap<String, String>>,
     pub pi_projection: Option<PiModelProjection>,
 }
 
@@ -29,6 +32,8 @@ pub struct ProviderDefinition {
     pub(crate) authentication: crate::provider_authentication::ProviderAuthentication,
     #[serde(default)]
     pub(crate) quota_authentication: crate::quota_authentication::QuotaAuthentication,
+    #[serde(default)]
+    pub(crate) billing: crate::billing::Configuration,
     pub models: Vec<ProviderModel>,
     pub quota_limits: Vec<QuotaLimit>,
 }
@@ -76,7 +81,18 @@ pub(crate) struct ConversationSegmentReference {
     pub cwd: Option<String>,
     pub cutoff: Option<ConversationCutoff>,
     pub handoff: Option<ConversationHandoff>,
+    /// The segment begins with translated effective model context; display
+    /// continues to use the original sealed transcript segments.
+    #[serde(default)]
+    pub imported: Option<ConversationImport>,
     pub deleted: bool,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct ConversationImport {
+    /// Native display records seeded by import, hidden from the joined
+    /// transcript so compact summaries and retained content are not repeated.
+    pub prefix: ConversationCutoff,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -202,6 +218,7 @@ impl GatewayConfig {
             context_window: binding.context_window,
             max_output_tokens: binding.max_output_tokens,
             reasoning_levels: binding.reasoning_levels.as_ref(),
+            request_parameters: binding.request_parameters.as_ref(),
         };
         let canonical = serde_json::to_vec(&identity).map_err(|_| "binding identity encoding")?;
         let digest = Sha256::digest(canonical);
@@ -247,6 +264,7 @@ struct PiBindingIdentity<'a> {
     context_window: Option<u32>,
     max_output_tokens: Option<u32>,
     reasoning_levels: Option<&'a Vec<String>>,
+    request_parameters: Option<&'a BTreeMap<String, String>>,
 }
 
 /// The versioned runtime registry owns support; family IDs never grant capabilities.
@@ -314,6 +332,10 @@ impl GatewayConfig {
                                 context_window: m.context_window,
                                 max_output_tokens: m.max_output_tokens,
                                 reasoning_levels: m.reasoning_levels.clone(),
+                                request_parameters: m
+                                    .request_parameters
+                                    .clone()
+                                    .unwrap_or_default(),
                             })
                             .collect(),
                     })
@@ -341,6 +363,10 @@ impl GatewayConfig {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ConversationOrganization {
+    /// Application-generated titles for runtimes without native renaming.
+    /// A native title always takes precedence.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub generated_titles: BTreeMap<String, String>,
     /// Activity at or before this time counts as read without a mark: the
     /// conversations that existed before read state was first recorded.
     pub read_baseline_unix_ms: i64,
@@ -399,6 +425,7 @@ impl ProjectRecord {
 }
 impl ProviderDefinition {
     pub(crate) fn validate_composition(&self) -> Result<(), &'static str> {
+        self.billing.validate(self)?;
         use crate::provider_authentication::ProviderAuthenticationSource as Auth;
         if !self
             .quota_authentication
@@ -407,7 +434,7 @@ impl ProviderDefinition {
             return Err("额度查询认证配置无效");
         }
         if self.quota_source != ProviderQuotaSource::ArkCodingUsage
-            && self.quota_authentication.access_key.is_some()
+            && self.quota_authentication.access_key().is_some()
         {
             return Err("此额度来源不接受独立 AK/SK");
         }
@@ -525,6 +552,7 @@ impl From<&ProviderModel> for velune_application_api::ProviderModel {
             context_window: model.context_window,
             max_output_tokens: model.max_output_tokens,
             reasoning_levels: model.reasoning_levels.clone(),
+            request_parameters: model.request_parameters.clone(),
         }
     }
 }
@@ -538,6 +566,7 @@ impl From<velune_application_api::ProviderModel> for ProviderModel {
             context_window: model.context_window,
             max_output_tokens: model.max_output_tokens,
             reasoning_levels: model.reasoning_levels,
+            request_parameters: model.request_parameters,
             pi_projection: None,
         }
     }

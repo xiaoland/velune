@@ -2,7 +2,7 @@ namespace Velune;
 
 // An attachment uploaded for the next message: the device's reference to it,
 // and its name for the composer.
-sealed record Attachment(string Reference, string Name, bool Image);
+sealed record Attachment(string Reference, string Name, bool Image, ComposerAttachment? Content = null);
 
 // What follows the next turn's text: its attachments and draft, the send
 // queue and steering while a turn runs, continuing after one stopped or
@@ -26,43 +26,20 @@ sealed partial class Conversation
 
     // Draft is the text the device keeps for this conversation's composer;
     // an unsent conversation keeps none.
-    public async Task<string> Draft()
-    {
-        if (Target.Unsent)
-        {
-            return "";
-        }
-        var id = Target.ConversationID;
-        try
-        {
-            var drafts = await Call(NativeOperation.ConversationRead, application => application.ComposerDrafts());
-            return drafts.FirstOrDefault(draft => draft.ConversationId == id)?.Text ?? "";
-        }
-        catch (Exception failure)
-        {
-            Problems.Report("读取草稿", failure, Device);
-            return "";
-        }
-    }
-
-    public void SaveDraft(string text)
-    {
-        if (!Target.Unsent)
-        {
-            var id = Target.ConversationID;
-            Write("保存草稿", NativeOperation.ConversationWrite, application => application.SetComposerDraft(id, text));
-        }
-    }
+    public async Task<string> Draft() { await PollComposer(); return composerText; }
+    public void SaveDraft(string text) { composerText = text; ComposerChanged(); _ = PollComposer(); }
 
     // Attach uploads a file to the device that runs the conversation.
     public async Task Attach(string name, byte[] bytes)
     {
+        if (!DraftEditable) return;
         Uploading++;
         Notify();
         try
         {
-            var uploaded = await Call(NativeOperation.ConversationWrite, application => application.UploadAttachment(name, bytes));
-            Attached.Add(new Attachment(uploaded.Reference, uploaded.Name, imageExtensions.Contains(Path.GetExtension(name).ToLowerInvariant())));
+            var uploaded = await Call(NativeOperation.ConversationWrite, application => application.UploadComposerAttachment(name, bytes));
+            Attached.Add(new Attachment("composer:" + uploaded.Id, uploaded.Name, imageExtensions.Contains(Path.GetExtension(name).ToLowerInvariant()), uploaded));
+            ComposerChanged(); await PollComposer();
         }
         catch (Exception failure)
         {
@@ -74,7 +51,8 @@ sealed partial class Conversation
 
     public void Detach(Attachment attachment)
     {
-        Attached.Remove(attachment);
+        if (!DraftEditable) return;
+        Attached.Remove(attachment); ComposerChanged(); _ = PollComposer();
         Notify();
     }
 
@@ -110,8 +88,11 @@ sealed partial class Conversation
         application.SendQueue(runtimeID, conversation, new SendQueueOperation.Steer(id)));
 
     // ResumeQueue sends the queue again after it paused.
-    public void ResumeQueue() => Act("继续发送队列", NativeOperation.ConversationWrite, (application, runtimeID, conversation) =>
-        application.SendQueue(runtimeID, conversation, new SendQueueOperation.Resume()));
+    public void ResumeQueue() {
+        if (!InputEditable) return;
+        Act("继续发送队列", NativeOperation.ConversationWrite, (application, runtimeID, conversation) =>
+            application.SendQueue(runtimeID, conversation, new SendQueueOperation.Resume()));
+    }
 
     public void StopSubAgents() => Act("停止子 Agent", NativeOperation.Cancel, (application, runtimeID, conversation) => application.StopSubAgents(runtimeID, conversation));
 
@@ -173,12 +154,14 @@ sealed partial class Conversation
     public void UpdateComposer(string text, bool isComposing)
     {
         if (composerText == text && composing == isComposing) return;
+        var changed = composerText != text;
         composerText = text;
         composing = isComposing;
+        if (changed) ComposerChanged();
         Notify();
     }
 
-    public bool CanSteer => !Busy && !stopRequested && !composing && Snapshot?.RunState == RunState.Running && FollowUp is { CanSteer: true };
+    public bool CanSteer => InputEditable && !Busy && !stopRequested && !composing && Snapshot?.RunState == RunState.Running && FollowUp is { CanSteer: true };
 
     public ComposerSubmission Submission
     {
@@ -187,7 +170,7 @@ sealed partial class Conversation
             var phase = stopRequested || Snapshot?.RunState == RunState.Stopping ? ComposerSubmission.Phase.Stopping
                 : composerRequest ?? (Running ? ComposerSubmission.Phase.Running
                 : Working || activityRunning || Loading || Busy || ParentID != null ? ComposerSubmission.Phase.Blocked : ComposerSubmission.Phase.Idle);
-            var ready = !Busy && !Loading && Next.Length > 0 && Uploading == 0;
+            var ready = ComposerReady && InputEditable && !Busy && !Loading && Next.Length > 0 && Uploading == 0;
             var canSend = ready && !Working && !activityRunning && (Target.Unsent || Snapshot is { Actions.CanSend: true } snapshot && !snapshot.PendingInteractions.Any());
             return ComposerSubmission.Resolve(phase, !string.IsNullOrWhiteSpace(composerText) || Attached.Count > 0 || Uploading > 0,
                 composing, canSend, ready && Running && !stopRequested && FollowUp?.IsCompacting != true,

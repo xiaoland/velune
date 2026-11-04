@@ -190,10 +190,10 @@ fn random_id() -> Result<String, RuntimeError> {
 }
 
 impl CoreRuntime {
-    fn require_idle_for_resources(&self) -> Result<(), RuntimeError> {
-        if self.execution_active() {
+    fn require_idle_for_resources(&self, runtime_id: &str) -> Result<(), RuntimeError> {
+        if self.runtime_in_use(runtime_id) {
             return Err(RuntimeError::invalid(
-                "请先结束运行中的轮次并关闭协作范围，再修改原生资源",
+                "此运行时仍有会话或后台任务正在运行，请停止后再修改其原生资源",
             ));
         }
         Ok(())
@@ -241,7 +241,7 @@ impl CoreRuntime {
     }
 
     /// Create (empty id) or replace a resource, then write it to the runtimes it is enabled on
-    /// and in sync with. Runtimes changed outside Velune, or all of them while a turn runs, stay
+    /// and in sync with. Runtimes changed outside Velune, or still executing, stay
     /// as they are and report their state through `resource_sync_status`.
     pub(crate) fn save_resource_template(
         &mut self,
@@ -431,17 +431,28 @@ impl CoreRuntime {
         })
     }
 
-    /// Retries the writes a busy runtime held back, once nothing runs. Failures stay visible as
+    /// Retries the writes each busy runtime held back when it becomes idle. Failures stay visible as
     /// pending states rather than failing the unrelated request that triggered the retry.
     pub(super) fn sync_due_resources(&mut self) {
-        if !self.resource_sync_due || self.execution_active() {
+        let idle: Vec<_> = self
+            .resource_sync_due
+            .iter()
+            .filter(|id| !self.runtime_in_use(id))
+            .cloned()
+            .collect();
+        if idle.is_empty() {
             return;
         }
-        self.resource_sync_due = false;
+        for id in &idle {
+            self.resource_sync_due.remove(id);
+        }
         let ids: Vec<_> = self
-            .resource_templates
+            .resource_bindings
             .iter()
-            .map(|template| template.id.clone())
+            .filter(|binding| idle.contains(&binding.runtime_id))
+            .map(|binding| binding.template_id.clone())
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
             .collect();
         for id in ids {
             let _ = self.sync_pending(&id);
@@ -449,15 +460,11 @@ impl CoreRuntime {
     }
 
     /// Writes a saved resource to the runtimes where it is due. Runtimes whose native entries
-    /// were changed or removed wait for the user; while a turn runs everything stays pending.
+    /// were changed or removed wait for the user; busy targets stay pending independently.
     fn sync_pending(
         &mut self,
         template_id: &str,
     ) -> Result<Vec<TemplateApplyReport>, RuntimeError> {
-        if self.execution_active() {
-            self.resource_sync_due = true;
-            return Ok(Vec::new());
-        }
         let template = self.template(template_id)?.clone();
         let runtime_ids: Vec<_> = self
             .resource_bindings
@@ -467,6 +474,10 @@ impl CoreRuntime {
             .collect();
         let mut reports = Vec::new();
         for runtime_id in runtime_ids {
+            if self.runtime_in_use(&runtime_id) {
+                self.resource_sync_due.insert(runtime_id);
+                continue;
+            }
             if self.sync_state(&template, &runtime_id) == ResourceSyncState::Pending {
                 reports.push(self.apply_to_runtime(
                     &template,
@@ -520,7 +531,6 @@ impl CoreRuntime {
         template_id: String,
         targets: Vec<TemplateApplyTarget>,
     ) -> Result<Vec<TemplateApplyReport>, RuntimeError> {
-        self.require_idle_for_resources()?;
         let template = self.template(&template_id)?.clone();
         let mut reports = Vec::new();
         for target in targets {
@@ -537,7 +547,7 @@ impl CoreRuntime {
         kind: RuntimeResourceKind,
         path: String,
     ) -> Result<ResourceTemplateSummary, RuntimeError> {
-        self.require_idle_for_resources()?;
+        self.require_idle_for_resources(&runtime_id)?;
         self.adopt_runtime_resource(&runtime_id, kind, &path)
     }
 
@@ -549,7 +559,9 @@ impl CoreRuntime {
         template_id: String,
         resolution: ResourceBindingResolution,
     ) -> Result<(), RuntimeError> {
-        self.require_idle_for_resources()?;
+        if !matches!(resolution, ResourceBindingResolution::Unmanage) {
+            self.require_idle_for_resources(&runtime_id)?;
+        }
         let template = self.template(&template_id)?.clone();
         self.resolve_binding(&runtime_id, &template, resolution)
     }
@@ -568,6 +580,7 @@ impl CoreRuntime {
 
     /// Drops a deleted runtime's bindings; its native entries are not touched.
     pub(super) fn discard_runtime_bindings(&mut self, runtime_id: &str) {
+        self.resource_sync_due.remove(runtime_id);
         let bindings: Vec<_> = self
             .resource_bindings
             .iter()
@@ -914,6 +927,14 @@ impl CoreRuntime {
             outcome,
             notes,
         };
+        if let Err(error) = self.require_idle_for_resources(runtime_id) {
+            return Ok(report(
+                TemplateApplyOutcome::Failed {
+                    reason: error.to_string(),
+                },
+                Vec::new(),
+            ));
+        }
         let config = match self.management_config(runtime_id) {
             Ok(config) => config,
             Err(error) => {

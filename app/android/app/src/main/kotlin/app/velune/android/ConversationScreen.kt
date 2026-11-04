@@ -1,5 +1,6 @@
 package app.velune.android
 
+import app.velune.bindings.conversation.InputAccess
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -64,7 +65,6 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -92,6 +92,8 @@ class ConversationActions(
     val select: (ModelSelection?) -> Unit,
     val load: (messageId: String) -> Unit,
     val compact: () -> Unit = {},
+    val editDraft: (String) -> Unit = {},
+    val removeAttachment: (String) -> Unit = {},
 )
 
 @Composable
@@ -107,7 +109,7 @@ fun ConversationScreen(hub: DeviceHub, peer: String, runtime: RuntimeLabel?, mod
         cwd = state.conversation?.cwd ?: (target as? ConversationTarget.New)?.cwd,
     )
     ConversationContent(header, state, remember(model, back) {
-        ConversationActions(back, model::send, model::stop, model::reply, model::select, { model.loadPayload(it) }, model::compact)
+        ConversationActions(back, model::send, model::stop, model::reply, model::select, { model.loadPayload(it) }, model::compact, model::editDraft, model::removeAttachment)
     })
 }
 
@@ -232,15 +234,32 @@ private fun InteractionCard(interaction: RuntimeInteraction, enabled: Boolean, r
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun Composer(state: ConversationState, actions: ConversationActions) {
-    var text by rememberSaveable { mutableStateOf("") }
+    val text = state.draft
     var choosing by remember { mutableStateOf(false) }
-    val canSend = !state.busy && text.isNotBlank() && state.canSend
+    val canSend = !state.busy && state.composerReady && state.composerFailure == null && (text.isNotBlank() || state.attachments.isNotEmpty()) && state.canSend
     Column(Modifier.fillMaxWidth().navigationBarsPadding().padding(start = 12.dp, end = 12.dp, top = 4.dp, bottom = 8.dp)) {
+        val lockMessage = when (state.inputAccess) {
+            InputAccess.EDITABLE -> null
+            InputAccess.CHECKING_CONTROL -> "正在检查会话控制权…"
+            InputAccess.EXTERNAL_CONTROLLER -> "另一个客户端正在控制此会话。草稿可继续编辑，暂不能发送。"
+            InputAccess.CONTROL_UNAVAILABLE -> "暂时无法确认会话控制权，正在重试。"
+            InputAccess.EXTERNAL_EXECUTION -> "此会话正在其他客户端执行。"
+            InputAccess.READ_ONLY -> "此会话当前只可阅读。"
+        }
+        if (lockMessage != null) Text(lockMessage, style = MaterialTheme.typography.bodySmall)
+        if (!state.composerReady) Text("正在恢复输入", style = MaterialTheme.typography.bodySmall)
+        state.composerFailure?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+        state.attachments.forEach { attachment ->
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(attachment.name, style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
+                TextButton(onClick = { actions.removeAttachment(attachment.id) }) { Text("移除") }
+            }
+        }
         RunStatus(state.runState)
         Surface(color = MaterialTheme.colorScheme.surfaceContainerHigh, shape = RoundedCornerShape(24.dp), modifier = Modifier.fillMaxWidth()) {
             Column {
                 TextField(
-                    value = text, onValueChange = { text = it }, placeholder = { Text("给 Agent 发消息") },
+                    value = text, onValueChange = actions.editDraft, readOnly = state.inputAccess == InputAccess.READ_ONLY, placeholder = { Text("给 Agent 发消息") },
                     maxLines = 6, modifier = Modifier.fillMaxWidth(),
                     colors = TextFieldDefaults.colors(
                         focusedContainerColor = Color.Transparent, unfocusedContainerColor = Color.Transparent, disabledContainerColor = Color.Transparent,
@@ -265,7 +284,7 @@ private fun Composer(state: ConversationState, actions: ConversationActions) {
                         }
                     } else {
                         FilledIconButton(
-                            enabled = canSend, onClick = { actions.send(text.trim()) { text = "" } }, modifier = Modifier.size(40.dp),
+                            enabled = canSend, onClick = { actions.send(text.trim()) {} }, modifier = Modifier.size(40.dp),
                             colors = IconButtonDefaults.filledIconButtonColors(disabledContainerColor = MaterialTheme.colorScheme.surfaceContainerHighest),
                         ) {
                             if (state.busy && state.sending != null) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)

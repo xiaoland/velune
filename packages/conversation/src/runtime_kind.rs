@@ -13,6 +13,8 @@ pub enum RuntimeKind {
     Pi,
     #[serde(rename = "codex-0.159")]
     Codex,
+    #[serde(rename = "codex-0.166")]
+    Codex166,
     #[serde(rename = "claude-code-2.1")]
     ClaudeCode,
     #[serde(rename = "dsh-acp-0.2")]
@@ -23,11 +25,12 @@ pub enum RuntimeKind {
 }
 
 impl RuntimeKind {
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::Acp,
         Self::ClaudeCode,
         Self::Pi,
         Self::Codex,
+        Self::Codex166,
         Self::DeepSeek,
     ];
 
@@ -35,6 +38,7 @@ impl RuntimeKind {
         match self {
             Self::Pi => "pi-1.0",
             Self::Codex => "codex-0.159",
+            Self::Codex166 => "codex-0.166",
             Self::ClaudeCode => "claude-code-2.1",
             Self::DeepSeek => "dsh-acp-0.2",
             Self::Acp => "acp-v1",

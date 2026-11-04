@@ -12,14 +12,17 @@ final class RenderedMessage: @unchecked Sendable {
         case attachment(TranscriptAttachment)
     }
     let role: MessageRole
+    var clientSide: Bool { role == .user || role == .client }
     let blocks: [Block]
     /// What the copy button under the message copies; empty for none.
     let copiedText: String
+    let timestamp: Int64?
 
     init(_ message: DeliveredMessage) {
         role = message.role
+        timestamp = message.timestampUnixMs
         copiedText = message.role == .system ? "" : message.copiedText.trimmingCharacters(in: .whitespacesAndNewlines)
-        let alignment: NSTextAlignment = message.role == .system ? .center : .natural
+        let alignment: NSTextAlignment = .natural
         blocks = message.blocks.enumerated().flatMap { index, block -> [Block] in
             switch block {
             case .text(let text):
@@ -32,6 +35,9 @@ final class RenderedMessage: @unchecked Sendable {
                 }
             case .notice(let text), .contextCompaction(let text):
                 return [.text(TranscriptTypography.plain(text, font: TranscriptTypography.callout, color: .secondaryLabelColor, alignment: alignment))]
+            case .runtimeFailure(let failure, let detail, let retry):
+                let title = failure.title
+                return [.disclosure(key: "failure:\(index)", title: title, symbol: retry == .recovered ? "checkmark.circle" : "exclamationmark.circle", detail: TranscriptTypography.plain(detail, font: TranscriptTypography.callout, color: .secondaryLabelColor), detailMaxWidth: 560)]
             case .reasoning(let summary, let text):
                 // A summary without further text is a label only.
                 let detail: NSAttributedString? = if case .inline("") = text { nil } else { Self.detail(text, font: TranscriptTypography.callout, empty: "") }
@@ -69,6 +75,7 @@ extension RenderedMessage {
         switch block {
         case .reasoning: return "reasoning:\(index)"
         case .tool(let id, _, _, _, _): return "tool:" + (id ?? String(index))
+        case .runtimeFailure: return "failure:\(index)"
         case .text, .notice, .contextCompaction, .image, .file, .agentSender: return nil
         }
     }
@@ -77,7 +84,7 @@ extension RenderedMessage {
         Set(message.blocks.enumerated().compactMap { index, block in
             switch block {
             case .reasoning(_, .deferred), .tool(_, _, _, .deferred?, _): return disclosureKey(block, at: index)
-            case .text, .notice, .contextCompaction, .reasoning(_, .inline), .tool, .image, .file, .agentSender: return nil
+            case .text, .notice, .contextCompaction, .runtimeFailure, .reasoning(_, .inline), .tool, .image, .file, .agentSender: return nil
             }
         })
     }
@@ -100,10 +107,12 @@ extension RenderedMessage {
 /// background pass can lay rows out without touching main-actor state.
 enum TranscriptRowContent: @unchecked Sendable {
     /// `status` is a caption under a message the runtime has not confirmed yet;
-    /// `copies` puts a copy button under it.
-    case message(DeliveredMessage, revision: UInt64, expanded: Set<String>, status: String?, copies: Bool)
+    /// `copies` puts a copy button under it, `edits` an edit button and `forks`
+    /// a fork button beside it.
+    case message(DeliveredMessage, revision: UInt64, expanded: Set<String>, status: String?, copies: Bool, edits: Bool, forks: Bool)
     /// `expanded` is nil for a turn with no work under its header.
     case work(label: String, expanded: Bool?, settings: TurnSettingsSummary?)
+    case messageActions(text: String, timestamp: Int64?, trailing: Bool)
     case activity(TranscriptActivity)
     /// Fixed breathing room after the last row, above the composer.
     case end
@@ -124,15 +133,18 @@ struct TranscriptRowLayout: @unchecked Sendable {
         case turnSettings(TurnSettingsSummary, frame: NSRect)
         /// The copy button under a message, shown while the pointer is on the row.
         case copy(String, frame: NSRect)
+        /// The edit and fork buttons beside it, shown while the pointer is on the row.
+        case edit(NSRect)
+        case fork(NSRect)
     }
     var elements: [Element]
     var height: CGFloat
 
-    static let rowInset: CGFloat = 24
+    static var rowInset: CGFloat { 24 * AppearancePreferences.rendering.read().density.spacing }
     static let columnMaxWidth: CGFloat = 760
-    static let headerHeight: CGFloat = 18
-    static let blockSpacing: CGFloat = 9
-    static let bubblePadding: CGFloat = 12
+    static var headerHeight: CGFloat { max(18, ceil(NSLayoutManager().defaultLineHeight(for: TranscriptTypography.callout))) }
+    static var blockSpacing: CGFloat { 9 * AppearancePreferences.rendering.read().density.spacing }
+    static var bubblePadding: CGFloat { 12 * AppearancePreferences.rendering.read().density.spacing }
     static let bubbleMaxWidth: CGFloat = 600
     static let codePadding: CGFloat = 12
     static let codeLabelHeight: CGFloat = 18
@@ -195,9 +207,12 @@ struct TranscriptRowLayout: @unchecked Sendable {
             y += headerHeight
         case .end:
             break
-        case .message(_, _, let expanded, let status, let copies):
+        case .messageActions(let text, let timestamp, let trailing):
+            y = 0
+            messageActions(text: text, timestamp: timestamp, trailing: trailing, column: column, y: &y, elements: &elements, measurer: measurer)
+        case .message(_, _, let expanded, let status, let copies, let edits, let forks):
             guard let rendered else { preconditionFailure("A message row is laid out from its rendered revision") }
-            if rendered.role == .user {
+            if rendered.clientSide {
                 // Images lead files regardless of which part of the native record carried them.
                 let items = rendered.blocks.compactMap { if case .attachment(let item) = $0 { return item }; return nil }
                 let attachments = items.filter(\.isImage) + items.filter { !$0.isImage }
@@ -217,7 +232,7 @@ struct TranscriptRowLayout: @unchecked Sendable {
                     }
                     measured.append((text, measurer.size(of: text, width: maxText)))
                 }
-                if measured.isEmpty { return TranscriptRowLayout(elements: elements, height: ceil(y)) }
+                if !measured.isEmpty {
                 if !attachments.isEmpty { y += blockSpacing }
                 let textWidth = min(ceil(measured.map(\.1.width).max() ?? 0) + 1, maxText)
                 var inner = y + bubblePadding
@@ -233,6 +248,7 @@ struct TranscriptRowLayout: @unchecked Sendable {
                 elements.append(.bubble(NSRect(x: column.x + column.width - textWidth - bubblePadding * 2, y: y, width: textWidth + bubblePadding * 2, height: bubbleHeight)))
                 elements += texts
                 y += bubbleHeight
+                }
                 if let status {
                     let caption = TranscriptTypography.plain(status, font: TranscriptTypography.caption, color: .secondaryLabelColor)
                     let size = measurer.size(of: caption, width: column.width)
@@ -240,7 +256,7 @@ struct TranscriptRowLayout: @unchecked Sendable {
                     elements.append(.text(caption, frame: NSRect(x: column.x + column.width - ceil(size.width) - 1, y: y, width: ceil(size.width) + 1, height: size.height), inBubble: false))
                     y += size.height
                 }
-                if copies { copy(rendered, at: column.x + column.width - actionSize + actionInset, y: &y, into: &elements) }
+                if copies { messageActions(text: rendered.copiedText, timestamp: rendered.timestamp, edits: edits, forks: forks, trailing: true, column: column, y: &y, elements: &elements, measurer: measurer) }
             } else {
                 for (index, block) in rendered.blocks.enumerated() {
                     if index > 0 { y += blockSpacing }
@@ -272,16 +288,36 @@ struct TranscriptRowLayout: @unchecked Sendable {
                         }
                     }
                 }
-                if copies { copy(rendered, at: column.x - actionInset, y: &y, into: &elements) }
+                if copies { messageActions(text: rendered.copiedText, timestamp: rendered.timestamp, edits: edits, forks: forks, trailing: false, column: column, y: &y, elements: &elements, measurer: measurer) }
             }
         }
         return TranscriptRowLayout(elements: elements, height: ceil(y))
     }
 
-    private static func copy(_ rendered: RenderedMessage, at x: CGFloat, y: inout CGFloat, into elements: inout [Element]) {
-        guard !rendered.copiedText.isEmpty else { return }
+    private static func messageActions(text: String, timestamp: Int64?, edits: Bool = false, forks: Bool = false, trailing: Bool, column: (x: CGFloat, width: CGFloat), y: inout CGFloat, elements: inout [Element], measurer: TextMeasurer) {
+        let time = MessageMetadata.time(timestamp)
+        guard !text.isEmpty || time != nil || edits || forks else { return }
         y += actionGap
-        elements.append(.copy(rendered.copiedText, frame: NSRect(x: x, y: y, width: actionSize, height: actionSize)))
+        // Buttons hug the bubble/column edge: copy first, then edit and fork
+        // extending inward (trailing) or rightward.
+        var x = trailing ? column.x + column.width - actionSize + actionInset : column.x - actionInset
+        var placed = 0
+        if !text.isEmpty { elements.append(.copy(text, frame: NSRect(x: x, y: y, width: actionSize, height: actionSize))); placed += 1 }
+        if edits {
+            if placed > 0 { x = trailing ? x - actionSize - 2 : x + actionSize + 2 }
+            elements.append(.edit(NSRect(x: x, y: y, width: actionSize, height: actionSize))); placed += 1
+        }
+        if forks {
+            if placed > 0 { x = trailing ? x - actionSize - 2 : x + actionSize + 2 }
+            elements.append(.fork(NSRect(x: x, y: y, width: actionSize, height: actionSize))); placed += 1
+        }
+        if let time {
+            let label = TranscriptTypography.plain(time, font: TranscriptTypography.caption, color: .secondaryLabelColor)
+            let size = measurer.size(of: label, width: column.width)
+            let buttons = placed == 0 ? 0 : CGFloat(placed) * actionSize + CGFloat(placed - 1) * 2
+            let x = trailing ? column.x + column.width - (buttons == 0 ? 0 : buttons + 6) - ceil(size.width) : column.x + (buttons == 0 ? 0 : buttons + 4)
+            elements.append(.text(label, frame: NSRect(x: x, y: y + (actionSize - size.height) / 2, width: ceil(size.width) + 1, height: size.height), inBubble: false))
+        }
         y += actionSize
     }
 
@@ -290,8 +326,9 @@ struct TranscriptRowLayout: @unchecked Sendable {
         let column = column(for: width)
         switch content {
         case .work, .activity: return rowInset + headerHeight
+        case .messageActions: return actionGap + actionSize
         case .end: return rowInset
-        case .message(let message, _, let expanded, _, let copies):
+        case .message(let message, _, let expanded, _, let copies, _, _):
             let charactersPerLine = max(column.width / 7.5, 8)
             var height: CGFloat = 0
             for (index, block) in message.blocks.enumerated() {
@@ -303,7 +340,7 @@ struct TranscriptRowLayout: @unchecked Sendable {
                     for byte in text.utf8 where byte == 10 { newlines += 1 }
                     let wrapped = ceil(CGFloat(text.utf16.count) / charactersPerLine)
                     height += CGFloat(max(newlines + 1, Int(wrapped))) * 19
-                case .reasoning, .tool:
+                case .reasoning, .tool, .runtimeFailure:
                     height += headerHeight
                     if !expanded.isEmpty { height += 60 }
                 case .agentSender:
@@ -313,7 +350,7 @@ struct TranscriptRowLayout: @unchecked Sendable {
                 }
             }
             let copied = copies && message.role != .system && !message.text.isEmpty
-            return rowInset + max(height, 19) + (message.role == .user ? bubblePadding * 2 : 0) + (copied ? actionGap + actionSize : 0)
+            return rowInset + max(height, 19) + (message.role == .user || message.role == .client ? bubblePadding * 2 : 0) + (copied ? actionGap + actionSize : 0)
         }
     }
 }

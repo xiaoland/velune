@@ -15,18 +15,18 @@ struct PublicModelCatalogView: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                Text("公开模型目录").font(.headline)
+                Text("公开模型目录").uiFont(.headline)
                 Spacer()
                 Link("models.dev", destination: URL(string: "https://models.dev")!)
             }.padding(20)
             Text("选择来源提供商的模型，复制为可编辑模板。目录信息仅供参考；协议、服务地址与能力参数仍需核对提供商文档。")
-                .font(.callout).foregroundStyle(.secondary).padding(.horizontal, 20).padding(.bottom, 12)
+                .uiFont(.callout).foregroundStyle(.secondary).padding(.horizontal, 20).padding(.bottom, 12)
             TextField("搜索模型或来源提供商", text: $search).textFieldStyle(.roundedBorder).padding(.horizontal, 20).padding(.bottom, 8)
             List(selection: $selectedIDs) {
                 ForEach(candidates) { model in
                     VStack(alignment: .leading, spacing: 3) {
                         Text(model.name)
-                        Text("\(model.sourceProviderName) (\(model.sourceProviderID)) · \(model.modelID)").font(.caption).foregroundStyle(.secondary)
+                        Text("\(model.sourceProviderName) (\(model.sourceProviderID)) · \(model.modelID)").uiFont(.caption).foregroundStyle(.secondary)
                     }.tag(model.id)
                 }
             }.disabled(store.isLoading).listStyle(.bordered).padding(.horizontal, 20)
@@ -41,12 +41,12 @@ struct PublicModelCatalogView: View {
                     Text("上下文：\(selected.contextWindow.map { TokenCount.format($0) } ?? "未知")")
                     Text("输出上限：\(selected.maxOutputTokens.map { TokenCount.format($0) } ?? "未知")")
                     Spacer()
-                }.font(.caption).foregroundStyle(.secondary).padding(.horizontal, 20).padding(.top, 8)
+                }.uiFont(.caption).foregroundStyle(.secondary).padding(.horizontal, 20).padding(.top, 8)
             }
             if let selected, let levels = selected.reasoningLevels {
-                Text("来源声明的推理等级：\(levels.joined(separator: "、"))").font(.caption).foregroundStyle(.secondary).padding(.horizontal, 20).padding(.top, 4)
+                Text("来源声明的推理等级：\(levels.joined(separator: "、"))").uiFont(.caption).foregroundStyle(.secondary).padding(.horizontal, 20).padding(.top, 4)
             }
-            if addedCount > 0 { Text("已添加 \(addedCount) 个模板").font(.caption).foregroundStyle(.secondary).padding(.top, 8) }
+            if addedCount > 0 { Text("已添加 \(addedCount) 个模板").uiFont(.caption).foregroundStyle(.secondary).padding(.top, 8) }
 
             HStack {
                 Button(models.isEmpty ? "拉取目录" : "重新拉取") { fetch() }.disabled(store.isLoading)

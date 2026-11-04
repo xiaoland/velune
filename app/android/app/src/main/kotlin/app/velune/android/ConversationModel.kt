@@ -1,10 +1,19 @@
 package app.velune.android
 
+import app.velune.bindings.application.ComposerAttachment
+import app.velune.bindings.application.ComposerInput
+import app.velune.bindings.application.ComposerInputContent
+import app.velune.bindings.application.ComposerInputOperation
+import app.velune.bindings.application.ComposerContextKey
+import app.velune.bindings.application.ComposerRuntimeChoice
+import app.velune.bindings.application.TurnChoice
+import java.util.UUID
 import app.velune.bindings.application.ComposedTurn
 import app.velune.bindings.application.DeliveredSnapshot
 import app.velune.bindings.conversation.ConversationSummary
 import app.velune.bindings.application.DeliveredMessage
 import app.velune.bindings.conversation.ModelSelection
+import app.velune.bindings.conversation.InputAccess
 import app.velune.bindings.conversation.RunState
 import app.velune.bindings.conversation.RuntimeInteraction
 import app.velune.bindings.conversation.RuntimeInteractionReply
@@ -38,6 +47,7 @@ data class ConversationState(
     val entries: List<TranscriptEntry> = emptyList(),
     val interactions: List<RuntimeInteraction> = emptyList(),
     val canSend: Boolean = true,
+    val inputAccess: InputAccess = InputAccess.EDITABLE,
     val canCancel: Boolean = false,
     val canCompact: Boolean = false,
     val models: List<RuntimeModel> = emptyList(),
@@ -48,6 +58,10 @@ data class ConversationState(
     val failure: String? = null,
     /** The text just sent, shown until the device's copy of it arrives. */
     val sending: String? = null,
+    val draft: String = "",
+    val attachments: List<ComposerAttachment> = emptyList(),
+    val composerReady: Boolean = false,
+    val composerFailure: String? = null,
 ) {
     val running: Boolean get() = runState == RunState.RUNNING || runState == RunState.STOPPING
 }
@@ -64,12 +78,34 @@ class ConversationModel(
     private val _state = MutableStateFlow(ConversationState(loading = initial is ConversationTarget.Existing))
     val state: StateFlow<ConversationState> = _state.asStateFlow()
     private var polling: Job? = null
+    private var composer: ComposerInput? = null
+    private var composerOwner: String? = null
+    private var composerRevision: ULong? = null
+    private var composerBaseline: ULong? = null
+    private var composerPending = false
+    private var pendingCreation: PendingComposerCreation? = null
+    private var composerUnbound = false
+    private var composerRestored = false
+    private var composerBindingRevision: ULong? = null
+    private var composerBindingBaseline: ULong? = null
+    private var composerSaving = false
+    private var composerPolling = false
+    private var composerCatalogRuntime: String? = null
+    private var composerSave: Job? = null
+    private val composerKey: String get() = peer + "/" + ((target as? ConversationTarget.Existing)?.conversationId ?: "new")
     private var snapshot: DeliveredSnapshot? = null
     private var messages: Map<String, DeliveredMessage> = emptyMap()
     /** Deferred payloads read on request, by message ID. */
     private var payloads: Map<String, DeliveredMessage> = emptyMap()
 
     init {
+        runCatching { hub.readComposer(composerKey) }.onSuccess { saved ->
+            if (saved != null) {
+                composer = saved.input; composerPending = saved.pending; composerBaseline = saved.baseline; composerUnbound = saved.unbound; composerRevision = saved.directoryRevision; pendingCreation = saved.creation; composerRestored = true; composerBindingRevision = saved.bindingRevision; composerBindingBaseline = saved.bindingBaseline
+                _state.update { it.copy(draft = saved.input.content.text, attachments = saved.input.content.attachments, selection = saved.input.content.choices.firstOrNull { choice -> choice.runtimeId == target.runtimeId }?.choice?.model) }
+            }
+        }.onFailure { error -> _state.update { it.copy(composerFailure = error.describe()) } }
+        scope.launch { pollComposer() }
         scope.launch {
             val models = runCatching { io(NativeOperation.CONFIGURATION_READ) { it.runtimeModels(target.runtimeId) } }.getOrDefault(emptyList())
             _state.update { it.copy(models = models) }
@@ -95,6 +131,7 @@ class ConversationModel(
         polling = scope.launch {
             while (isActive) {
                 delay(if (_state.value.running) 700 else 3_000)
+                pollComposer()
                 poll()
             }
         }
@@ -143,9 +180,10 @@ class ConversationModel(
                 entries = entries(next),
                 interactions = next.pendingInteractions,
                 canSend = next.actions.canSend,
+                inputAccess = next.actions.inputAccess,
                 canCompact = next.followUp.canCompact,
                 canCancel = next.actions.canCancel,
-                selection = state.selection ?: next.modelRecordKey?.let { ModelSelection.Managed(it) },
+                selection = if (composer != null) state.selection else state.selection ?: next.modelRecordKey?.let { ModelSelection.Managed(it) },
             )
         }
         val conversation = next.conversation
@@ -155,22 +193,152 @@ class ConversationModel(
     private fun entries(of: DeliveredSnapshot) =
         transcriptEntries(of.transcriptItems, of.transcriptTurns) { id -> payloads[id] ?: messages[id] }
 
-    fun select(selection: ModelSelection?) = _state.update { it.copy(selection = selection) }
+    fun select(selection: ModelSelection?) {
+        val input = composer ?: return
+        val runtime = input.content.runtimeId ?: target.runtimeId
+        val previous = input.content.choices.firstOrNull { it.runtimeId == runtime && it.ownerId == composerOwner }?.choice ?: TurnChoice(model = null, effort = null, permissionMode = null)
+        composer = input.copy(content = input.content.copy(runtimeOwnerId = composerOwner, choices = input.content.choices.filter { it.runtimeId != runtime || it.ownerId != composerOwner } + ComposerRuntimeChoice(composerOwner ?: return, runtime, previous.copy(model = selection)), choiceEdited = true))
+        _state.update { it.copy(selection = selection) }; composerChanged()
+    }
+    fun editDraft(text: String) { _state.update { it.copy(draft = text) }; composerChanged() }
+    fun removeAttachment(id: String) { _state.update { it.copy(attachments = it.attachments.filter { file -> file.id != id }) }; composerChanged() }
+    private fun content(): ComposerInputContent {
+        val original = composer?.content ?: ComposerInputContent("", emptyList(), null, null, emptyList(), false)
+        val runtime = original.runtimeId ?: if (target is ConversationTarget.New) target.runtimeId else null
+        return original.copy(text = _state.value.draft, attachments = _state.value.attachments, runtimeId = runtime, runtimeOwnerId = if (runtime == null) null else original.runtimeOwnerId ?: composerOwner)
+    }
+    private fun cacheComposer() { composer?.let { hub.saveComposer(composerKey, SavedComposerInput(it.copy(content = content()), composerPending, composerBaseline, composerUnbound, composerRevision, pendingCreation, composerBindingRevision, composerBindingBaseline)) } }
+    private fun composerChanged() {
+        if (!composerPending) composerBaseline = composer?.revision
+        composerPending = true
+        if (composer == null) { composer = ComposerInput(UUID.randomUUID().toString(), 0u, content()); composerUnbound = true; composerBindingBaseline = composerBindingRevision }
+        cacheComposer()
+        composerSave?.cancel()
+        composerSave = scope.launch {
+            delay(250)
+            try { flushComposer() } catch (error: CancellationException) { throw error } catch (error: Exception) { _state.update { it.copy(composerFailure = error.describe()) } }
+        }
+    }
+    private suspend fun flushComposer() {
+        if (composerSaving || !_state.value.composerReady) return
+        composerSaving = true
+        try {
+            while (composerPending) {
+                val input = composer ?: return
+                val sent = content()
+                val update = io(NativeOperation.CONVERSATION_WRITE) { it.manageComposerInputs(ComposerInputOperation.Save(input.id, composerBaseline?.takeUnless { revision -> revision == 0uL }, sent)) }
+                val saved = update.state?.inputs?.firstOrNull { it.id == input.id } ?: error("设备没有返回输入")
+                composer = saved; composerBaseline = saved.revision
+                if (content() == sent) { composerPending = false; composerBaseline = null }
+                cacheComposer()
+            }
+            if (composerUnbound) {
+                val owner = composerOwner ?: error("输入来源尚未恢复")
+                val context = (target as? ConversationTarget.Existing)?.let { ComposerContextKey.Conversation(owner, it.conversationId) } ?: ComposerContextKey.NewConversation
+                val inputId = composer!!.id
+                io(NativeOperation.CONVERSATION_WRITE) { it.manageComposerInputs(ComposerInputOperation.Bind(context, inputId, composerBindingBaseline)) }
+                composerUnbound = false; cacheComposer()
+            }
+        } finally { composerSaving = false }
+    }
+    private suspend fun completeCreation() {
+        val creation = pendingCreation ?: return
+        check(creation.ownerId == composerOwner) { "新会话的执行来源不可用，输入已保留" }
+        val oldKey = composerKey
+        if (snapshot == null) {
+            val created = io(NativeOperation.CONVERSATION_READ) { it.readConversation(creation.runtimeId, creation.conversationId) }
+            apply(created); target = ConversationTarget.Existing(creation.runtimeId, creation.conversationId, "会话")
+        }
+        io(NativeOperation.CONVERSATION_WRITE) { it.manageComposerInputs(ComposerInputOperation.Promote(creation.inputId, creation.ownerId, creation.conversationId, creation.runtimeId)) }
+        pendingCreation = null; cacheComposer()
+        val newKey = peer + "/new"
+        if (hub.readComposer(newKey)?.creation?.inputId == creation.inputId) hub.removeComposer(newKey)
+        if (oldKey != composerKey && hub.readComposer(oldKey)?.input?.id == creation.inputId) hub.removeComposer(oldKey)
+    }
+    private suspend fun pollComposer() {
+        if (_state.value.busy || composerPolling || composerSaving) return
+        composerPolling = true
+        try {
+            val owner = composerOwner ?: io(NativeOperation.CONVERSATION_READ) { it.composerOwnerId() }.also { composerOwner = it }
+            completeCreation()
+            var context = (target as? ConversationTarget.Existing)?.let { ComposerContextKey.Conversation(owner, it.conversationId) } ?: ComposerContextKey.NewConversation
+            val baseline = composerRevision ?: 0uL
+            val update = io(NativeOperation.CONVERSATION_READ) { it.manageComposerInputs(ComposerInputOperation.Read(composerRevision)) }
+            if (update.state != null) {
+                var directory = checkNotNull(update.state)
+                val creation = directory.creations.firstOrNull { creation -> creation.inputId == composer?.id && creation.ownerId == owner && creation.revision > baseline && directory.bindings.any { it.inputId == creation.inputId && it.context == ComposerContextKey.Conversation(owner, creation.conversationId) } }
+                if (target is ConversationTarget.New && creation != null) {
+                    _state.update { it.copy(composerReady = false) }
+                    val oldKey = composerKey
+                    val created = io(NativeOperation.CONVERSATION_READ) { it.readConversation(creation.runtimeId, creation.conversationId) }
+                    apply(created); target = ConversationTarget.Existing(creation.runtimeId, creation.conversationId, "会话")
+                    context = ComposerContextKey.Conversation(owner, creation.conversationId)
+                    cacheComposer(); hub.removeComposer(oldKey)
+                }
+                if (directory.bindings.none { it.context == context }) {
+                    directory = io(NativeOperation.CONVERSATION_WRITE) { it.manageComposerInputs(ComposerInputOperation.Ensure(context, UUID.randomUUID().toString(), ComposerInputContent("", emptyList(), null, null, emptyList(), false))) }.state ?: error("设备没有返回输入目录")
+                }
+                composerRevision = directory.revision
+                val binding = directory.bindings.first { it.context == context }
+                val inputId = binding.inputId
+                composerBindingRevision = binding.revision
+                if (composerUnbound && inputId == composer?.id) { composerUnbound = false; composerBindingBaseline = null }
+                else if (composerUnbound && !composerRestored && composer?.revision == 0uL) composerBindingBaseline = binding.revision
+                if (!composerPending && !composerUnbound) {
+                    val input = directory.inputs.first { it.id == inputId }
+                    composer = input
+                    val runtime = input.content.runtimeId ?: target.runtimeId
+                    val choice = input.content.choices.firstOrNull { it.runtimeId == runtime && it.ownerId == composerOwner }?.choice
+                    _state.update { it.copy(draft = input.content.text, attachments = input.content.attachments, selection = choice?.model) }
+                    cacheComposer()
+                }
+            }
+            check(composer?.content?.runtimeOwnerId == null || composer?.content?.runtimeOwnerId == owner) { "所选运行时位于另一设备，输入已保留" }
+            val selectedRuntime = composer?.content?.runtimeId ?: target.runtimeId
+            val catalog = if (composerCatalogRuntime == selectedRuntime) _state.value.models else io(NativeOperation.CONFIGURATION_READ) { it.runtimeModels(selectedRuntime) }.also { composerCatalogRuntime = selectedRuntime }
+            val selection = _state.value.selection
+            check(selection == null || catalog.any { it.selection == selection }) { "所选模型在此设备不可用，输入已保留" }
+            _state.update { it.copy(composerReady = true, models = catalog) }
+            flushComposer()
+            _state.update { it.copy(composerFailure = null) }
+        } catch (error: CancellationException) { throw error } catch (error: Exception) { _state.update { it.copy(composerFailure = error.describe()) } }
+        finally { composerPolling = false }
+    }
 
-    fun send(text: String, onSent: () -> Unit) = act(sending = text) {
-        val turn = ComposedTurn(text = text, effort = null, permissionMode = null, attachments = emptyList())
+    fun send(text: String, onSent: () -> Unit) {
+        val submitted = content()
         val selection = _state.value.selection
+        act(sending = text) {
+        if (!_state.value.composerReady || pendingCreation != null || _state.value.composerFailure != null) return@act
+        flushComposer()
+        val input = composer ?: return@act
+        val runtime = submitted.runtimeId ?: target.runtimeId
+        val choice = submitted.choices.firstOrNull { it.runtimeId == runtime && it.ownerId == composerOwner }?.choice
+        val turn = ComposedTurn(text = text, effort = choice?.effort, permissionMode = choice?.permissionMode, attachments = submitted.attachments.map { "composer:" + it.id })
         val existing = snapshot
         val result = if (existing == null) {
-            val created = io(NativeOperation.CONVERSATION_WRITE) { it.createConversation(target.runtimeId, (target as? ConversationTarget.New)?.cwd, selection) }
-            apply(created)
+            val created = io(NativeOperation.CONVERSATION_WRITE) { it.createConversation(runtime, (target as? ConversationTarget.New)?.cwd, selection) }
+            val oldKey = composerKey
             val snapshot = created.snapshot ?: error("设备没有返回新会话")
-            io(NativeOperation.SEND) { it.sendTurn(snapshot.contextRuntimeId, snapshot.conversation.id, snapshot.contextRuntimeId, selection, turn) }
+            val owner = composerOwner ?: error("输入来源尚未恢复")
+            pendingCreation = PendingComposerCreation(input.id, owner, snapshot.conversation.runtimeId, snapshot.conversation.id)
+            _state.update { it.copy(composerReady = false) }
+            cacheComposer()
+            apply(created); target = ConversationTarget.Existing(snapshot.contextRuntimeId, snapshot.conversation.id, "新会话")
+            cacheComposer()
+            completeCreation()
+            _state.update { it.copy(composerReady = true) }
+            if (hub.readComposer(oldKey)?.input?.id == input.id) hub.removeComposer(oldKey)
+            io(NativeOperation.SEND) { it.sendTurn(snapshot.contextRuntimeId, snapshot.conversation.id, runtime, selection, turn) }
         } else {
-            io(NativeOperation.SEND) { it.sendTurn(existing.contextRuntimeId, existing.conversation.id, existing.contextRuntimeId, selection, turn) }
+            io(NativeOperation.SEND) { it.sendTurn(existing.contextRuntimeId, existing.conversation.id, runtime, selection, turn) }
         }
         apply(result)
+        if (composer?.id == input.id && content() == submitted) {
+            _state.update { it.copy(draft = "", attachments = emptyList()) }; composer = composer?.let { it.copy(content = it.content.copy(choiceEdited = false)) }; composerChanged(); flushComposer()
+        }
         onSent()
+        }
     }
 
     fun compact() = act {

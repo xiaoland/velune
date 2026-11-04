@@ -283,7 +283,7 @@ private struct ResourceListView: View {
                     ForEach(others, id: \.self) { entry in
                         VStack(alignment: .leading, spacing: 2) {
                             Text(entry.path).lineLimit(1)
-                            Text(store.runtimeInstances.first { $0.id == entry.runtimeId }?.name ?? entry.runtimeId).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                            Text(store.runtimeInstances.first { $0.id == entry.runtimeId }?.name ?? entry.runtimeId).uiFont(.caption).foregroundStyle(.secondary).lineLimit(1)
                         }
                         .padding(.vertical, 2)
                         .tag(LibrarySelection.native(runtimeID: entry.runtimeId, path: entry.path))
@@ -314,7 +314,7 @@ private struct ResourceListView: View {
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
                     Text(item.name).lineLimit(1)
-                    if library.isDirty(.resource(item.id)) { Text("已修改").font(.caption).foregroundStyle(.secondary) }
+                    if library.isDirty(.resource(item.id)) { Text("已修改").uiFont(.caption).foregroundStyle(.secondary) }
                 }
                 subtitle(item)
             }
@@ -332,12 +332,12 @@ private struct ResourceListView: View {
         let states = library.states[item.id] ?? [:]
         if let runtimeID = navigator.runtimeID {
             let state = states[runtimeID] ?? .notEnabled
-            Text(state.title).font(.caption).foregroundStyle(state.needsAttention ? .orange : .secondary).lineLimit(1)
+            Text(state.title).uiFont(.caption).foregroundStyle(state.needsAttention ? .orange : .secondary).lineLimit(1)
         } else {
             let enabled = states.values.filter(\.isEnabled)
             let attention = enabled.contains { $0.needsAttention }
             Text(enabled.isEmpty ? "未启用" : attention ? "有运行时需要处理" : "已启用于 \(enabled.count) 个运行时")
-                .font(.caption).foregroundStyle(attention ? .orange : .secondary).lineLimit(1)
+                .uiFont(.caption).foregroundStyle(attention ? .orange : .secondary).lineLimit(1)
         }
     }
 
@@ -395,7 +395,7 @@ private struct ResourceDetailView: View {
     private var footer: some View {
         HStack(spacing: 8) {
             if let message = library.failure { FailureBanner(message: message) }
-            else if library.isDirty(selection) { Text("保存后同步到已启用的运行时").font(.callout).foregroundStyle(.secondary) }
+            else if library.isDirty(selection) { Text("保存后同步到已启用的运行时").uiFont(.callout).foregroundStyle(.secondary) }
             Spacer()
             if library.isWorking { ProgressView().controlSize(.small) }
             if !isNew { Button("删除…", role: .destructive) { confirmingDelete = true }.disabled(library.isWorking) }
@@ -439,7 +439,7 @@ private struct RuntimeTargetsView: View {
     /// cannot carry are known.
     @State private var taking: (runtime: RuntimeInstance, notes: [String])?
 
-    private var canModify: Bool { !store.hasRunningWork && !library.isWorking }
+    private var canModify: Bool { !library.isWorking }
     /// Runtimes that support the resource but do not have it yet.
     private var enableable: [RuntimeInstance] {
         guard let id = resourceID else { return [] }
@@ -449,7 +449,7 @@ private struct RuntimeTargetsView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
-                Text("启用于").font(.headline)
+                Text("启用于").uiFont(.headline)
                 Spacer()
                 if enableable.count > 1 { Button("全部启用") { enableAll() }.disabled(!canModify) }
             }
@@ -466,9 +466,9 @@ private struct RuntimeTargetsView: View {
                 }
                 .background(.background, in: RoundedRectangle(cornerRadius: 6))
                 .overlay(RoundedRectangle(cornerRadius: 6).stroke(.separator))
-                if store.hasRunningWork { Text("有任务运行时不能更改启用状态；保存的修改会在“待同步”的运行时上稍后重试。").font(.caption).foregroundStyle(.secondary) }
-                else if isDirty { Text("启用时写入的是已保存的内容。").font(.caption).foregroundStyle(.secondary) }
-                Text("写入后，运行时通常在新会话中加载这些内容；正在进行的会话何时使用新内容由运行时决定，Velune 不会重启会话。").font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                if store.hasRunningWork { Text("正在运行的目标需结束后才能改写原生内容；其他运行时可照常修改，保存的待同步内容会在目标空闲后自动写入。").uiFont(.caption).foregroundStyle(.secondary) }
+                else if isDirty { Text("启用时写入的是已保存的内容。").uiFont(.caption).foregroundStyle(.secondary) }
+                Text("写入后，运行时通常在新会话中加载这些内容；正在进行的会话何时使用新内容由运行时决定，Velune 不会重启会话。").uiFont(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
         }
         .confirmationDialog("在 \(disabling?.name ?? "") 上停用“\(name)”？", isPresented: Binding(get: { disabling != nil }, set: { if !$0 { disabling = nil } })) {
@@ -510,7 +510,7 @@ private struct RuntimeTargetsView: View {
             .disabled(!canModify || { if case .unsupported = state { true } else { false } }())
             Spacer()
             Text(state.isEnabled || { if case .unsupported = state { true } else { false } }() ? state.title : "")
-                .font(.callout).foregroundStyle(state.needsAttention ? .orange : .secondary).lineLimit(1).truncationMode(.tail)
+                .uiFont(.callout).foregroundStyle(state.needsAttention ? .orange : .secondary).lineLimit(1).truncationMode(.tail)
             switch state {
             case .pending:
                 Button("同步") { enable(runtime, overwrite: false) }.disabled(!canModify)
@@ -619,16 +619,16 @@ private struct NativeResourceView: View {
                     Divider()
                     HStack(spacing: 8) {
                         if let message = library.failure { FailureBanner(message: message) }
-                        else if let namesake { Text("资源库中已有同名的“\(namesake.name)”。").font(.callout).foregroundStyle(.secondary) }
+                        else if let namesake { Text("资源库中已有同名的“\(namesake.name)”。").uiFont(.callout).foregroundStyle(.secondary) }
                         Spacer()
                         if library.isWorking { ProgressView().controlSize(.small) }
                         if let namesake {
                             Button("查看“\(namesake.name)”") { navigator.selection = .resource(namesake.id) }
                             Button("改用资源库的“\(namesake.name)”…") { confirmingReplace = namesake }
-                                .buttonStyle(.borderedProminent).disabled(store.hasRunningWork || library.isWorking)
+                                .buttonStyle(.borderedProminent).disabled(library.isWorking)
                         } else {
                             Button("加入资源库…") { if notes.isEmpty { adopt() } else { confirmingAdopt = true } }
-                                .buttonStyle(.borderedProminent).disabled(store.hasRunningWork || library.isWorking)
+                                .buttonStyle(.borderedProminent).disabled(library.isWorking)
                         }
                     }.padding(12)
                 }
@@ -688,11 +688,11 @@ private struct DriftSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("“\(resourceName)”在 \(runtime.name) 中的改动").font(.title3.bold())
+            Text("“\(resourceName)”在 \(runtime.name) 中的改动").uiFont(.title3.bold())
             HStack(spacing: 16) {
                 Label("− 当前原生内容", systemImage: "square.fill").foregroundStyle(.red.opacity(0.7))
                 Label("+ 覆盖后（资源库）", systemImage: "square.fill").foregroundStyle(.green.opacity(0.7))
-            }.font(.caption).labelStyle(.titleOnly)
+            }.uiFont(.caption).labelStyle(.titleOnly)
             if let files {
                 if files.isEmpty {
                     Text("没有差异。").foregroundStyle(.secondary).frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -700,14 +700,14 @@ private struct DriftSheet: View {
                     if files.count > 1 {
                         Picker("文件", selection: $selected) { ForEach(Array(files.enumerated()), id: \.offset) { Text($0.element.path).tag($0.offset) } }.fixedSize()
                     } else {
-                        Text(files[0].path).font(.headline)
+                        Text(files[0].path).uiFont(.headline)
                     }
                     let file = files[min(selected, files.count - 1)]
                     if file.binary {
                         Text("这是非文本内容，无法逐行比较。").foregroundStyle(.secondary).frame(maxWidth: .infinity, maxHeight: .infinity)
                     } else {
-                        if file.native == nil { Text("原生侧没有这个文件；覆盖将创建它。").font(.callout).foregroundStyle(.secondary) }
-                        if file.library == nil { Text("资源库不再包含这个文件；覆盖将删除它。").font(.callout).foregroundStyle(.secondary) }
+                        if file.native == nil { Text("原生侧没有这个文件；覆盖将创建它。").uiFont(.callout).foregroundStyle(.secondary) }
+                        if file.library == nil { Text("资源库不再包含这个文件；覆盖将删除它。").uiFont(.callout).foregroundStyle(.secondary) }
                         TextDiffView(native: file.native, library: file.library)
                     }
                 }
@@ -758,9 +758,9 @@ private struct RuntimeImportSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("从运行时导入").font(.title3.bold())
+            Text("从运行时导入").uiFont(.title3.bold())
             Picker("运行时", selection: $runtimeID) { ForEach(store.runtimeInstances) { Text($0.name).tag($0.id) } }.fixedSize()
-            Text("选中的内容将加入资源库，并继续启用于该运行时；原生文件改写为资源库的形式。").font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            Text("选中的内容将加入资源库，并继续启用于该运行时；原生文件改写为资源库的形式。").uiFont(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             Group {
                 if let candidates {
                     if candidates.isEmpty {
@@ -779,7 +779,7 @@ private struct RuntimeImportSheet: View {
                     ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
             }.frame(minHeight: 260, maxHeight: .infinity)
-            if let result { Text(result).font(.callout).foregroundStyle(.secondary) }
+            if let result { Text(result).uiFont(.callout).foregroundStyle(.secondary) }
             if let message = library.failure { FailureBanner(message: message) }
             HStack {
                 if let candidates, candidates.contains(where: { !$0.clashes }) {
@@ -792,7 +792,7 @@ private struct RuntimeImportSheet: View {
                 if library.isWorking { ProgressView().controlSize(.small) }
                 Button(result == nil ? "取消" : "完成") { dismiss() }.keyboardShortcut(.cancelAction)
                 Button("导入 \(chosen.count) 项") { importChosen() }.buttonStyle(.borderedProminent)
-                    .disabled(chosen.isEmpty || library.isWorking || store.hasRunningWork)
+                    .disabled(chosen.isEmpty || library.isWorking)
             }
         }
         .padding(20).frame(width: 560, height: 560)
@@ -805,9 +805,9 @@ private struct RuntimeImportSheet: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(candidate.path)
                 if candidate.clashes {
-                    Text("资源库已有同名的“\(candidate.name)”，请在“运行时中的其他内容”中逐项处理").font(.caption).foregroundStyle(.secondary)
+                    Text("资源库已有同名的“\(candidate.name)”，请在“运行时中的其他内容”中逐项处理").uiFont(.caption).foregroundStyle(.secondary)
                 } else if !candidate.notes.isEmpty {
-                    Text("不会带入：" + candidate.notes.joined(separator: "；")).font(.caption).foregroundStyle(.orange)
+                    Text("不会带入：" + candidate.notes.joined(separator: "；")).uiFont(.caption).foregroundStyle(.orange)
                 }
             }
         }

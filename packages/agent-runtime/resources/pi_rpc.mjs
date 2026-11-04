@@ -16,6 +16,8 @@ async function main() {
   process.env.PI_CODING_AGENT_DIR = agentDir;
   if (selectionFile) process.env.VELUNE_PI_SELECTION_FILE = selectionFile;
   else delete process.env.VELUNE_PI_SELECTION_FILE;
+  if (modelsPath) process.env.VELUNE_PI_MODELS_PATH = modelsPath;
+  else delete process.env.VELUNE_PI_MODELS_PATH;
   const sdk = await installation.importSdk();
   const injectedMcp = JSON.parse(process.env.VELUNE_MCP_SERVERS ?? "{}");
   delete process.env.VELUNE_MCP_SERVERS;
@@ -32,8 +34,8 @@ async function main() {
   }
   const sessionPath = value("--session"), sessionDir = value("--session-dir");
   // A side chat runs on an in-memory copy of the session that is never saved.
-  const sessionManager = sessionPath && args.includes("--side")
-    ? sdk.SessionManager.inMemory(process.cwd(), undefined, sdk.parseSessionEntries(readFileSync(sessionPath, "utf8")))
+  const sessionManager = args.includes("--side")
+    ? sdk.SessionManager.inMemory(process.cwd(), undefined, sessionPath ? sdk.parseSessionEntries(readFileSync(sessionPath, "utf8")) : undefined)
     : sessionPath ? sdk.SessionManager.open(sessionPath, sessionDir) : sdk.SessionManager.create(process.cwd(), sessionDir);
   const trustStore = new sdk.ProjectTrustStore(agentDir), trustByCwd = new Map();
   const factory = async ({cwd,agentDir,sessionManager,sessionStartEvent,projectTrustContext}) => {

@@ -31,7 +31,7 @@ impl SessionFormat {
     pub fn for_runtime(kind: crate::version::RuntimeKind) -> Option<Self> {
         use crate::version::RuntimeKind;
         match kind {
-            RuntimeKind::Codex => Some(Self::Codex),
+            RuntimeKind::Codex | RuntimeKind::Codex166 => Some(Self::Codex),
             RuntimeKind::ClaudeCode => Some(Self::ClaudeCode),
             RuntimeKind::Pi => Some(Self::Pi),
             RuntimeKind::DeepSeek | RuntimeKind::Acp => None,

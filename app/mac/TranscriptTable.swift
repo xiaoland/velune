@@ -46,8 +46,11 @@ struct TranscriptTable: NSViewRepresentable {
     /// Show another conversation, from a collaboration link in this one.
     let openConversation: (String) -> Void
     let openAgentURI: (String) -> Void
+    let openArtifact: (ArtifactDocument) -> Void
     /// Edits the user message of this ID, when it may be edited now.
     let editMessage: (String) -> (() -> Void)?
+    /// Forks the conversation through the turn this user message ID starts.
+    let forkConversation: (String) -> Void
     /// Names a turn's settings and usage: runtime and permission names come from the configuration.
     let describeSettings: (TranscriptTurn) -> TurnSettingsSummary?
 
@@ -67,19 +70,21 @@ struct TranscriptTable: NSViewRepresentable {
         case message(TranscriptRow)
         /// `expandable` is false for a header with no work under it.
         case work(TranscriptTurn, label: String, expandable: Bool, settings: TurnSettingsSummary?)
+        case workActions(id: String, text: String, timestamp: Int64?)
         case activity(TranscriptActivity)
         case end
         var id: String {
             switch self {
             case .message(let row): return row.id
             case .work(let turn, _, _, _): return "work:" + turn.id
+            case .workActions(let id, _, _): return "work-actions:" + id
             case .activity: return "transcript-activity"
             case .end: return "transcript-end"
             }
         }
     }
     private enum ContentKey: Equatable {
-        case message(UInt64, [String], String?, Bool), work(String, Bool?, TurnSettingsSummary?), activity(TranscriptActivity), end
+        case message(UInt64, [String], String?, Bool, Bool, Bool), work(String, Bool?, TurnSettingsSummary?), messageActions(String, Int64?), activity(TranscriptActivity), end
     }
     private struct Measured {
         var key: ContentKey
@@ -209,6 +214,8 @@ struct TranscriptTable: NSViewRepresentable {
         NotificationCenter.default.addObserver(self, selector: #selector(clipBoundsChanged), name: NSView.boundsDidChangeNotification, object: clip)
         NotificationCenter.default.addObserver(self, selector: #selector(clipFrameChanged), name: NSView.frameDidChangeNotification, object: clip)
         NotificationCenter.default.addObserver(self, selector: #selector(liveResizeEnded), name: NSWindow.didEndLiveResizeNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(typographyChanged), name: .veluneAppearanceChanged, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(typographyChanged), name: .NSCalendarDayChanged, object: nil)
         return scroll
     }
 
@@ -220,6 +227,14 @@ struct TranscriptTable: NSViewRepresentable {
     }
 
     // MARK: SwiftUI input
+
+    @objc private func typographyChanged() {
+        finishTransition()
+        measureToken?.cancel()
+        rendered.removeAll(); measured.removeAll(); lastKnown.removeAll()
+        for cell in visibleCells.values { cell.configurationToken = nil }
+        rebuildEntries()
+    }
 
     func update(_ input: TranscriptTable) {
         let contentChanged = input.conversationID != conversationID || input.revision != revision || input.activity != activity
@@ -269,7 +284,7 @@ struct TranscriptTable: NSViewRepresentable {
         }
         if let jump = input.jump, jump.token != lastJumpToken {
             lastJumpToken = jump.token
-            scrollTo(jump.id)
+            scrollTo(jump.id, alignBottom: true)
         }
         if let restored { scrollTo(restored.top) }
     }
@@ -302,6 +317,9 @@ struct TranscriptTable: NSViewRepresentable {
                 next.append(.work(turn, label: Self.workLabel(turn, hasWork: !rows.isEmpty), expandable: !rows.isEmpty,
                                   settings: parent?.describeSettings(turn)))
                 if showsWork(turn) { next += rows.map(Entry.message) }
+                if !rows.isEmpty {
+                    next.append(.workActions(id: turn.id, text: rows.map { $0.message.copiedText }.filter { !$0.isEmpty }.joined(separator: "\n\n"), timestamp: rows.compactMap { $0.message.timestampUnixMs }.first))
+                }
             }
         }
         if let activity = parent?.activity { next.append(.activity(activity)) }
@@ -520,8 +538,8 @@ struct TranscriptTable: NSViewRepresentable {
         switch entries[index] {
         case .message(let row):
             let expanded = expandedBlocks[row.id] ?? []
-            return (.message(row.contentRevision, expanded.sorted(), row.status, row.copies),
-                    .message(row.message, revision: row.contentRevision, expanded: expanded, status: row.status, copies: row.copies))
+            return (.message(row.contentRevision, expanded.sorted(), row.status, row.copies, row.edit, row.fork != nil),
+                    .message(row.message, revision: row.contentRevision, expanded: expanded, status: row.status, copies: row.copies, edits: row.edit, forks: row.fork != nil))
         case .work(let turn, let label, let expandable, let settings):
             let expanded = expandable ? showsWork(turn) : nil
             return (.work(label, expanded, settings), .work(label: label, expanded: expanded, settings: settings))
@@ -529,6 +547,8 @@ struct TranscriptTable: NSViewRepresentable {
             return (.activity(activity), .activity(activity))
         case .end:
             return (.end, .end)
+        case .workActions(_, let text, let timestamp):
+            return (.messageActions(text, timestamp), .messageActions(text: text, timestamp: timestamp, trailing: false))
         }
     }
 
@@ -648,19 +668,35 @@ struct TranscriptTable: NSViewRepresentable {
 
     private func scrollToBottom() { setOrigin(offsets.last ?? 0) }
 
-    private func scrollTo(_ id: String) {
+    private func scrollTo(_ id: String, alignBottom: Bool = false) {
         guard let index = indexByID[id], let scroll else { return }
         setFollowing(false)
         // Lay out the target and what follows it, then pin the target's top.
         var filled: CGFloat = 0
+        var first = index
         var last = index
         for row in index ..< entries.count {
             filled += exactLayout(row).height
             last = row
             if filled > scroll.contentView.bounds.height * 1.5 { break }
         }
-        commitExactHeights(in: index ... last, keeping: nil)
-        setOrigin(offsets[index] + TranscriptRowLayout.rowInset - 8)
+        if alignBottom {
+            // This viewport ends at the chosen message, so measure the rows
+            // before it too; deferred estimates must not move its endpoint.
+            filled = 0
+            for row in stride(from: index, through: 0, by: -1) {
+                filled += exactLayout(row).height
+                first = row
+                if filled > scroll.contentView.bounds.height * 1.5 { break }
+            }
+        }
+        commitExactHeights(in: first ... last, keeping: nil)
+        let target = exactLayout(index)
+        let bottom = target.elements.compactMap { element -> CGFloat? in
+            if case .bubble(let frame) = element { return frame.maxY }
+            return nil
+        }.last ?? target.height
+        setOrigin(alignBottom ? offsets[index] + bottom - scroll.contentView.bounds.height : offsets[index] + TranscriptRowLayout.rowInset - 8)
         materializeVisibleRows()
     }
 
@@ -817,7 +853,7 @@ struct TranscriptTable: NSViewRepresentable {
                 if token.cancelled { return }
                 var renderedMessage = job.rendered
                 var revision: UInt64?
-                if case .message(let message, let messageRevision, _, _, _) = job.content {
+                if case .message(let message, let messageRevision, _, _, _, _, _) = job.content {
                     revision = messageRevision
                     if renderedMessage == nil { renderedMessage = RenderedMessage(message) }
                 }
@@ -1030,9 +1066,23 @@ struct TranscriptTable: NSViewRepresentable {
             outlineToggle = { [weak self] in self?.parent?.outlineToggle(entry.id) }
             toggleHelp = "展开完整会话并停在此消息"
         }
-        cell.apply(layout, rowID: entry.id, outlineToggle: outlineToggle, toggleHelp: toggleHelp, textDelegate: self) { [weak self] key in
+        let sourceID: String
+        if case .message(let row) = entry { sourceID = row.message.id } else { sourceID = entry.id }
+        var fork: (() -> Void)?
+        if case .message(let row) = entry, let forkID = row.fork {
+            fork = { [weak self] in self?.parent?.forkConversation(forkID) }
+        }
+        var edit: (() -> Void)?
+        if case .message(let row) = entry, row.edit {
+            edit = parent?.editMessage(row.message.id)
+        }
+        cell.apply(layout, rowID: entry.id, outlineToggle: outlineToggle, edit: edit, fork: fork, toggleHelp: toggleHelp, textDelegate: self, openArtifact: { [weak self] source in
+            guard let parent = self?.parent else { return }
+            parent.openArtifact(.mermaid(source: source, conversationID: parent.conversationID, sourceID: sourceID))
+        }) { [weak self] key in
             self?.toggle(entryID: entry.id, key: key)
         }
+        cell.setAccessibilityIdentifier(entry.id)
         cell.configurationToken = token
     }
 
@@ -1044,7 +1094,7 @@ struct TranscriptTable: NSViewRepresentable {
         let wasFollowing = following
         following = false
         if case .work(let turn, _, true, _) = entries[index] {
-            if turn.isRunning { collapsedRunningWork.formSymmetricDifference([turn.id]) }
+            if turn.isRunning || turn.outcome != .completed { collapsedRunningWork.formSymmetricDifference([turn.id]) }
             else { expandedWork.formSymmetricDifference([turn.id]) }
             rebuildEntries()
             restore(anchor)
@@ -1061,7 +1111,7 @@ struct TranscriptTable: NSViewRepresentable {
     }
 
     private func showsWork(_ turn: TranscriptTurn) -> Bool {
-        turn.isRunning ? !collapsedRunningWork.contains(turn.id) : expandedWork.contains(turn.id)
+        turn.isRunning || turn.outcome != .completed ? !collapsedRunningWork.contains(turn.id) : expandedWork.contains(turn.id)
     }
 
     /// A turn without work of its own has a header only for its settings;
@@ -1226,7 +1276,11 @@ enum TranscriptConversationLink {
     private var activityLabel: ShimmeringLabel?
     private var turnSettings: TranscriptTurnSettingsView?
     private var copyButton: MessageCopyButton?
+    private var editButton: MessageEditButton?
+    private var forkButton: MessageForkButton?
     private var outlineToggle: (() -> Void)?
+    private var editAction: (() -> Void)?
+    private var forkAction: (() -> Void)?
     private var hovered = false
 
     override var isFlipped: Bool { true }
@@ -1234,6 +1288,7 @@ enum TranscriptConversationLink {
     override init(frame: NSRect) {
         super.init(frame: frame)
         addSubview(bubble)
+        bubble.setAccessibilityIdentifier("message-bubble")
         bubble.isHidden = true
         bubble.addGestureRecognizer(NSClickGestureRecognizer(target: self, action: #selector(bubbleClicked)))
     }
@@ -1249,17 +1304,23 @@ enum TranscriptConversationLink {
         rowID = nil
         configurationToken = nil
         outlineToggle = nil
+        editAction = nil
+        forkAction = nil
         hovered = false
         copyButton?.alphaValue = 0
+        editButton?.alphaValue = 0
+        forkButton?.alphaValue = 0
         for view in textViews { view.clear() }
         for view in codeBlocks { view.clear() }
         spinner?.stopAnimation(nil)
         activityLabel?.show("", shimmering: false)
     }
 
-    func apply(_ layout: TranscriptRowLayout, rowID: String, outlineToggle: (() -> Void)?, toggleHelp: String?, textDelegate: NSTextViewDelegate, toggle: @escaping (String) -> Void) {
+    func apply(_ layout: TranscriptRowLayout, rowID: String, outlineToggle: (() -> Void)?, edit: (() -> Void)?, fork: (() -> Void)?, toggleHelp: String?, textDelegate: NSTextViewDelegate, openArtifact: @escaping (String) -> Void, toggle: @escaping (String) -> Void) {
         self.rowID = rowID
         self.outlineToggle = outlineToggle
+        editAction = edit
+        forkAction = fork
         var textIndex = 0, disclosureIndex = 0, codeIndex = 0, attachmentIndex = 0
         bubble.isHidden = true
         bubble.toolTip = toggleHelp
@@ -1267,6 +1328,8 @@ enum TranscriptConversationLink {
         activityLabel?.isHidden = true
         turnSettings?.isHidden = true
         copyButton?.isHidden = true
+        editButton?.isHidden = true
+        forkButton?.isHidden = true
         for element in layout.elements {
             switch element {
             case .bubble(let frame):
@@ -1291,7 +1354,8 @@ enum TranscriptConversationLink {
                 let view = codeBlocks[codeIndex]; codeIndex += 1
                 view.isHidden = false
                 view.show(language: language, source: source, text: text, frame: frame,
-                          textFrame: textFrame.offsetBy(dx: -frame.minX, dy: -frame.minY), textDelegate: textDelegate)
+                          textFrame: textFrame.offsetBy(dx: -frame.minX, dy: -frame.minY), textDelegate: textDelegate,
+                          openArtifact: { openArtifact(source) })
             case .disclosure(let key, let title, let symbol, let expanded, let frame):
                 if disclosureIndex == disclosures.count {
                     let view = TranscriptDisclosureView()
@@ -1344,6 +1408,26 @@ enum TranscriptConversationLink {
                 copyButton?.frame = frame
                 copyButton?.text = text
                 copyButton?.isHidden = false
+            case .edit(let frame):
+                if editButton == nil {
+                    let button = MessageEditButton()
+                    button.alphaValue = hovered ? 1 : 0
+                    addSubview(button)
+                    editButton = button
+                }
+                editButton?.frame = frame
+                editButton?.isHidden = false
+                editButton?.clicked = { [weak self] in self?.editAction?() }
+            case .fork(let frame):
+                if forkButton == nil {
+                    let button = MessageForkButton()
+                    button.alphaValue = hovered ? 1 : 0
+                    addSubview(button)
+                    forkButton = button
+                }
+                forkButton?.frame = frame
+                forkButton?.isHidden = false
+                forkButton?.clicked = { [weak self] in self?.forkAction?() }
             }
         }
         for view in textViews[textIndex...] { view.isHidden = true; view.clear() }
@@ -1365,10 +1449,11 @@ enum TranscriptConversationLink {
     private func reveal(_ shown: Bool) {
         guard hovered != shown else { return }
         hovered = shown
-        guard let copyButton else { return }
         NSAnimationContext.runAnimationGroup { context in
             context.duration = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? 0 : 0.12
-            copyButton.animator().alphaValue = shown ? 1 : 0
+            copyButton?.animator().alphaValue = shown ? 1 : 0
+            editButton?.animator().alphaValue = shown ? 1 : 0
+            forkButton?.animator().alphaValue = shown ? 1 : 0
         }
     }
 }
@@ -1491,6 +1576,8 @@ enum TranscriptConversationLink {
 @MainActor private final class TranscriptCodeBlockView: NSView {
     private let label = NSTextField(labelWithString: "")
     private let copyButton = CodeCopyButton()
+    private let viewButton = NSButton(title: "查看", target: nil, action: nil)
+    private var openArtifact: (() -> Void)?
     private let text = TranscriptTextView()
     override var isFlipped: Bool { true }
 
@@ -1498,13 +1585,19 @@ enum TranscriptConversationLink {
         super.init(frame: frame)
         label.font = TranscriptTypography.caption
         label.textColor = .secondaryLabelColor
-        addSubview(label); addSubview(copyButton); addSubview(text)
+        viewButton.bezelStyle = .accessoryBarAction
+        viewButton.controlSize = .small
+        viewButton.font = TranscriptTypography.caption
+        viewButton.target = self; viewButton.action = #selector(viewArtifact)
+        addSubview(label); addSubview(copyButton); addSubview(viewButton); addSubview(text)
     }
     convenience init() { self.init(frame: .zero) }
     required init?(coder: NSCoder) { fatalError("init(coder:) is unavailable") }
 
-    func show(language: String?, source: String, text value: NSAttributedString, frame: NSRect, textFrame: NSRect, textDelegate: NSTextViewDelegate) {
+    func show(language: String?, source: String, text value: NSAttributedString, frame: NSRect, textFrame: NSRect, textDelegate: NSTextViewDelegate, openArtifact: @escaping () -> Void) {
         self.frame = frame
+        self.openArtifact = openArtifact
+        viewButton.isHidden = language?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() != "mermaid"
         label.stringValue = language ?? "代码"
         let padding = TranscriptRowLayout.codePadding, labelHeight = TranscriptRowLayout.codeLabelHeight
         label.sizeToFit()
@@ -1512,11 +1605,14 @@ enum TranscriptConversationLink {
         copyButton.code = source
         copyButton.sizeToFit()
         copyButton.frame.origin = NSPoint(x: frame.width - padding - copyButton.frame.width, y: padding + (labelHeight - copyButton.frame.height) / 2)
+        viewButton.sizeToFit()
+        viewButton.frame.origin = NSPoint(x: copyButton.frame.minX - viewButton.frame.width - 8, y: padding + (labelHeight - viewButton.frame.height) / 2)
         text.delegate = textDelegate
         text.show(value, frame: textFrame)
     }
 
-    func clear() { text.clear() }
+    @objc private func viewArtifact() { openArtifact?() }
+    func clear() { text.clear(); openArtifact = nil }
 
     override func draw(_ dirtyRect: NSRect) {
         NSColor.quaternarySystemFill.setFill()
@@ -1589,6 +1685,48 @@ enum TranscriptConversationLink {
         resetWork = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 2, execute: work)
     }
+}
+
+/// The button under an editable user message that opens the message editor.
+@MainActor private final class MessageEditButton: NSButton {
+    var clicked: () -> Void = {}
+
+    init() {
+        super.init(frame: .zero)
+        bezelStyle = .accessoryBarAction
+        showsBorderOnlyWhileMouseInside = true
+        imagePosition = .imageOnly
+        contentTintColor = .secondaryLabelColor
+        target = self; action = #selector(editClicked)
+        image = NSImage(systemSymbolName: "pencil", accessibilityDescription: nil)?.withSymbolConfiguration(.init(pointSize: 11, weight: .regular))
+        toolTip = "编辑消息"
+        setAccessibilityLabel("编辑消息")
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) is unavailable") }
+
+    // NSControl.edit(withFrame:editor:delegate:event:) 占用 edit 选择器名。
+    @objc private func editClicked() { clicked() }
+}
+
+/// The button under a turn's closing reply that forks the conversation from
+/// there into a new one.
+@MainActor private final class MessageForkButton: NSButton {
+    var clicked: () -> Void = {}
+
+    init() {
+        super.init(frame: .zero)
+        bezelStyle = .accessoryBarAction
+        showsBorderOnlyWhileMouseInside = true
+        imagePosition = .imageOnly
+        contentTintColor = .secondaryLabelColor
+        target = self; action = #selector(fork)
+        image = NSImage(systemSymbolName: "arrow.triangle.branch", accessibilityDescription: nil)?.withSymbolConfiguration(.init(pointSize: 11, weight: .regular))
+        toolTip = "从此轮结束处分叉会话"
+        setAccessibilityLabel("从此轮结束处分叉会话")
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) is unavailable") }
+
+    @objc private func fork() { clicked() }
 }
 
 /// One line of secondary text; while it describes live work a band of light
@@ -1844,17 +1982,17 @@ private struct TurnSettingsPopover: View {
     let settings: TurnSettingsSummary
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("本轮配置").font(.headline)
+            Text("本轮配置").uiFont(.headline)
             Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 6) {
                 rows(settings.parts)
                 if !settings.usage.isEmpty {
-                    GridRow { Text("Token 用量").font(.subheadline.weight(.semibold)).gridCellColumns(2).padding(.top, 4) }
+                    GridRow { Text("Token 用量").uiFont(.subheadline.weight(.semibold)).gridCellColumns(2).padding(.top, 4) }
                     rows(settings.usage)
                 }
             }
             Text(settings.usage.isEmpty ? "取自运行时的记录与 Velune 发送时的选择；没有记录的项不显示。"
                  : "配置取自运行时的记录与 Velune 发送时的选择，用量取自运行时的记录；输入含缓存，输出含推理。没有记录的项不显示。")
-                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                .uiFont(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         }
         .padding(14).frame(width: 300, alignment: .leading)
     }

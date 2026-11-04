@@ -88,7 +88,11 @@ pub(super) async fn deliver(
             phase = "request"
         );
     }
-    let Some(WireEvent::Headers(meta)) = receiver.recv().await else {
+    // Scheduling handles an attempt that failed before delivering any response.
+    let Some(first) = receiver.recv().await else {
+        return;
+    };
+    let WireEvent::Headers(meta) = first else {
         interrupted(&sender, false, "upstream_headers_missing").await;
         return;
     };

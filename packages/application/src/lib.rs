@@ -6,12 +6,20 @@ pub use acp::{
 };
 mod analytics;
 mod commands;
+mod composer;
+mod scheduled_tasks;
+pub use velune_application_api::{
+    SchedulePattern, SchedulePreview, ScheduledRun, ScheduledRunPhase, ScheduledTarget,
+    ScheduledTask, ScheduledTaskAvailability, ScheduledTaskSource, ScheduledTaskStatus,
+    ScheduledTasksOperation, ScheduledTasksState,
+};
 mod service;
 pub use service::ApplicationService;
 mod analytics_report;
 mod api_account_quota;
 mod ark_quota;
 mod authentication_resolver;
+mod billing;
 mod claude_cli;
 mod claude_quota;
 mod credential_helper;
@@ -19,6 +27,7 @@ mod kimi_quota;
 mod native_quota_source;
 mod provider_authentication;
 mod provider_login;
+mod query_credential;
 mod quota_authentication;
 mod quota_history;
 mod runtime_quota;
@@ -29,6 +38,10 @@ pub use provider_authentication::{
     CODEX_SUBSCRIPTION_ENDPOINT, CODEX_SUBSCRIPTION_PROTOCOL, LinkedClaudeLogin,
     ProviderAuthenticationDescription, ProviderAuthenticationSource,
     QuotaAuthenticationDescription, QuotaAuthenticationEdit, SubscriptionDisclosure,
+};
+pub use velune_application_api::{
+    BilledCost, BillingAuthenticationEdit, BillingConfiguration, BillingRateLimit, BillingReport,
+    BillingScope, BillingService, BillingSpendLimit, BillingUsage, ProviderBillingStatus,
 };
 pub use velune_application_api::{ProviderTemplate, ProviderTemplateKind, provider_templates};
 pub mod config;
@@ -129,6 +142,7 @@ impl Error {
     }
 }
 pub struct Application {
+    composer: composer::ComposerInputs,
     runtime: local::CoreRuntime,
     analytics: std::sync::Arc<analytics::AnalyticsStore>,
     attachment_directory: PathBuf,
@@ -143,10 +157,14 @@ impl Application {
             }),
         );
         let attachment_directory = options.home_directory.join("remote-attachments");
+        let composer_home = options.home_directory.clone();
+        let runtime = local::CoreRuntime::open(options, analytics.clone())?;
+        let composer = composer::ComposerInputs::open(&composer_home)?;
         Ok(Self {
+            composer,
             attachment_directory,
             uploaded_attachments: Default::default(),
-            runtime: local::CoreRuntime::open(options, analytics.clone())?,
+            runtime,
             analytics,
         })
     }

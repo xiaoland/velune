@@ -42,7 +42,7 @@ fn claude_agents(agents: &[SessionAgent]) -> Value {
 #[derive(Default)]
 pub(super) struct State {
     /// The turn's result, whether it failed, and the last activity since.
-    pub(super) result: Option<(bool, std::time::Instant)>,
+    pub(super) result: Option<(TurnOutcome, std::time::Instant)>,
     /// Background tasks the turn started.
     pub(super) tasks: std::collections::BTreeSet<String>,
     pub(super) requires_action: bool,
@@ -76,10 +76,13 @@ pub(super) enum ClaudeStart {
     /// it, and what came after stays in the file on another branch.
     ResumeAt { at: String },
     /// Begin the conversation's session as a copy of session `from` up to
-    /// record `at`; `from` is left as it is.
-    Fork { from: String, at: String },
+    /// record `at`, or of its whole current branch without one; `from` is
+    /// left as it is.
+    Fork { from: String, at: Option<String> },
     /// Read the session for a side question and save nothing.
     Side,
+    /// A portable side context, with no native session to resume or save.
+    SideContext { path: PathBuf },
 }
 
 impl NativeSession {
@@ -140,18 +143,23 @@ impl NativeSession {
                     .arg(id)
                     .arg("--resume-session-at")
                     .arg(at),
-                ClaudeStart::Fork { from, at } => command
-                    .arg("--resume")
-                    .arg(from)
-                    .arg("--resume-session-at")
-                    .arg(at)
-                    .arg("--fork-session")
-                    .arg("--session-id")
-                    .arg(id),
+                ClaudeStart::Fork { from, at } => {
+                    command.arg("--resume").arg(from);
+                    if let Some(at) = at {
+                        command.arg("--resume-session-at").arg(at);
+                    }
+                    command.arg("--fork-session").arg("--session-id").arg(id)
+                }
                 ClaudeStart::Side => command
                     .arg("--resume")
                     .arg(id)
                     .arg("--no-session-persistence"),
+                ClaudeStart::SideContext { path } => command
+                    .arg("--session-id")
+                    .arg(id)
+                    .arg("--no-session-persistence")
+                    .arg("--append-system-prompt-file")
+                    .arg(path),
             };
             if let Some(cwd) = cwd {
                 command.current_dir(cwd);
@@ -328,9 +336,40 @@ impl NativeSession {
                 let runtime_id = snapshot.conversation.runtime_id.clone();
                 let history = snapshot.messages[..index].to_vec();
                 self.replace_snapshot(&id, cwd.as_deref(), &runtime_id, history);
-                self.claude.start = ClaudeStart::Fork { from, at };
+                self.claude.start = ClaudeStart::Fork { from, at: Some(at) };
             }
         }
+        Ok(())
+    }
+    /// The fork's first turn child copies the session up to the record
+    /// before the next user message after `index`, or through the current
+    /// branch's last record. Pin even the last turn: the source can receive
+    /// another turn before this fork's first child is launched.
+    pub(super) fn claude_fork(&mut self, index: usize) -> Result<()> {
+        let snapshot = self.snapshot.as_ref().expect("forked snapshot");
+        let from = self
+            .native_id
+            .clone()
+            .ok_or_else(|| Error::new("没有原生会话身份"))?;
+        let next = snapshot.messages[index + 1..]
+            .iter()
+            .position(|message| message.role == MessageRole::User)
+            .map(|offset| index + 1 + offset);
+        let at = next
+            .map(|next| {
+                snapshot.messages[next]
+                    .branch_point
+                    .clone()
+                    .ok_or_else(|| Error::new("Claude Code 不能在该处分叉会话"))
+            })
+            .transpose()?
+            .or_else(|| snapshot.messages.last().map(|message| message.id.clone()));
+        let id = claude_session_id()?;
+        let cwd = snapshot.conversation.cwd.as_deref().map(PathBuf::from);
+        let runtime_id = snapshot.conversation.runtime_id.clone();
+        let history = snapshot.messages[..next.unwrap_or(snapshot.messages.len())].to_vec();
+        self.replace_snapshot(&id, cwd.as_deref(), &runtime_id, history);
+        self.claude.start = ClaudeStart::Fork { from, at };
         Ok(())
     }
     pub(super) fn claude_open(
@@ -423,6 +462,9 @@ impl NativeSession {
                 self.claude
                     .side_history
                     .push(json!({"question": pending.question, "response": answer}));
+                if let Some(snapshot) = &mut self.snapshot {
+                    snapshot.executions.finish(Some(TurnOutcome::Completed));
+                }
                 self.finish_turn(RunState::Idle)
             }
             None => {
@@ -572,6 +614,11 @@ impl NativeSession {
                 },
             );
         }
+        if let Some(snapshot) = &mut self.snapshot {
+            snapshot
+                .executions
+                .confirm(&snapshot.message_identity_confirmations);
+        }
         self.compaction_message_id = Some(id.clone());
         self.message(Message {
             id,
@@ -591,6 +638,9 @@ impl NativeSession {
             self.rpc.retire();
             self.process_ended = true;
             self.claude.side_question = None;
+            if let Some(snapshot) = &mut self.snapshot {
+                snapshot.executions.finish(Some(TurnOutcome::Cancelled));
+            }
             return self.finish_turn(RunState::Idle);
         }
         self.rpc.claude_control(json!({"subtype":"interrupt"}))?;
@@ -745,9 +795,12 @@ impl NativeSession {
                     self.claude.requires_action = record["state"] == "requires_action";
                     if record["state"] == "idle"
                         && self.turn_running()
-                        && let Some((failed, _)) = self.claude.result.take()
+                        && let Some((outcome, _)) = self.claude.result.take()
                     {
-                        self.finish_turn(if failed {
+                        if let Some(snapshot) = &mut self.snapshot {
+                            snapshot.executions.finish(Some(outcome));
+                        }
+                        self.finish_turn(if outcome == TurnOutcome::Failed {
                             RunState::Failed
                         } else {
                             RunState::Idle
@@ -955,7 +1008,16 @@ impl NativeSession {
                 if failed {
                     self.claude_error(claude_error_blocks(&record)?);
                 }
-                self.claude.result = Some((failed, std::time::Instant::now()));
+                self.claude.result = Some((
+                    if interrupted {
+                        TurnOutcome::Cancelled
+                    } else if failed {
+                        TurnOutcome::Failed
+                    } else {
+                        TurnOutcome::Completed
+                    },
+                    std::time::Instant::now(),
+                ));
                 // The turn's usage over its requests, the context its last
                 // reply left with that model's window, and the session's cost
                 // while Claude Code knows every model's price.

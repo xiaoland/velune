@@ -109,52 +109,6 @@ impl CoreRuntime {
         Ok(self.status_line.clone())
     }
 
-    pub(crate) fn composer_drafts(
-        &self,
-    ) -> Result<Vec<crate::config::ComposerDraft>, RuntimeError> {
-        Ok(self
-            .composer_drafts
-            .iter()
-            .map(|(id, text)| crate::config::ComposerDraft {
-                conversation_id: id.clone(),
-                text: text.clone(),
-            })
-            .collect())
-    }
-
-    /// Empty text removes the conversation's draft.
-    pub(crate) fn set_composer_draft(
-        &mut self,
-        conversation_id: String,
-        text: String,
-    ) -> Result<(), RuntimeError> {
-        if conversation_id.is_empty() {
-            return Err(RuntimeError::invalid("conversation id"));
-        }
-        let mut next = self.composer_drafts.clone();
-        if text.is_empty() {
-            next.remove(&conversation_id);
-        } else {
-            next.insert(conversation_id, text);
-        }
-        if next != self.composer_drafts {
-            if self.client_baseline.is_none() {
-                self.repository.store_composer_drafts(&next)?;
-            }
-            self.composer_drafts = next;
-        }
-        Ok(())
-    }
-
-    /// The conversation is already deleted; a failed write only leaves a stale
-    /// entry on disk, which the next successful draft write drops.
-    pub(super) fn discard_composer_draft(&mut self, conversation_id: &str) {
-        if self.composer_drafts.remove(conversation_id).is_some() && self.client_baseline.is_none()
-        {
-            let _ = self.repository.store_composer_drafts(&self.composer_drafts);
-        }
-    }
-
     pub(crate) fn set_conversation_browser_limits(
         &mut self,
         limits: crate::ConversationBrowserLimits,
@@ -209,6 +163,7 @@ impl CoreRuntime {
         } else {
             Vec::new()
         };
+        *self.history_failures.borrow_mut() = history_failures.clone();
         Ok((self.cached_sources(), history_failures))
     }
 
@@ -220,10 +175,11 @@ impl CoreRuntime {
         for runtime in self.runtime_instances.iter().filter(|r| r.enabled) {
             for entry in self.indexed(runtime) {
                 match entry.state {
-                    browsing::EntryState::Read(summary) => conversations.push(summary),
+                    browsing::EntryState::Read(summary) => conversations.push(*summary),
                     browsing::EntryState::Unread => {
                         provisional.insert(entry.id.clone());
                         conversations.push(ConversationSummary {
+                            native_read_state: None,
                             id: entry.id,
                             title: velune_conversation::ConversationTitle::Untitled,
                             updated_at_unix_ms: entry.hint.activity_unix_ms,
@@ -243,7 +199,7 @@ impl CoreRuntime {
         // conversations even before their runtime writes history; an agent may
         // have started one. They disappear when that native session closes.
         for session in std::iter::once(&self.session).chain(&self.parked) {
-            if session.active_state.live().is_some()
+            if (session.active_state.live().is_some() || session.pending_native_fork.is_some())
                 && session.side.is_none()
                 && let Some(view) = session.projected()
                 && !conversations
@@ -274,6 +230,23 @@ impl CoreRuntime {
 
     pub(crate) fn list(&self) -> Result<crate::ConfigurationSnapshot, RuntimeError> {
         let (sources, history_failures) = self.list_sources(false)?;
+        Ok(self.configuration_from_sources(sources, history_failures))
+    }
+
+    /// Reapply list organization to the indexed history. A read receipt or
+    /// pin changes no native files and must not wait for unrelated runtimes.
+    pub(super) fn cached_list(&self) -> crate::ConfigurationSnapshot {
+        self.configuration_from_sources(
+            self.cached_sources(),
+            self.history_failures.borrow().clone(),
+        )
+    }
+
+    fn configuration_from_sources(
+        &self,
+        sources: Vec<organization::ListedSource>,
+        history_failures: Vec<crate::HistoryFailure>,
+    ) -> crate::ConfigurationSnapshot {
         let page = self.browse_read(sources, None);
         let runtime_types = runtime_types();
         let provider_import_types = std::iter::once(provider_import::descriptor())
@@ -289,7 +262,7 @@ impl CoreRuntime {
             name: name.into(),
             supported: true,
         };
-        Ok(crate::ConfigurationSnapshot {
+        crate::ConfigurationSnapshot {
             conversations: page.conversations,
             conversation_groups: page.groups,
             conversation_projects: page.projects,
@@ -317,7 +290,7 @@ impl CoreRuntime {
                 protocol(crate::config::Protocol::Messages, "Anthropic Messages"),
             ],
             selected_runtime_instance_id: self.next_turn_runtime_id.clone(),
-        })
+        }
     }
 
     /// Runtime instances as clients see them: ACP launch arguments and
@@ -338,9 +311,6 @@ impl CoreRuntime {
         gateway_id: String,
         runtime_id: String,
     ) -> Result<crate::ProviderImportPreview, RuntimeError> {
-        if self.execution_active() {
-            return Err(RuntimeError::invalid("runtime is busy"));
-        }
         let empty = empty_default_gateway();
         let gateway = match self.gateways.iter().find(|item| item.id == gateway_id) {
             Some(gateway) => gateway,
@@ -358,9 +328,7 @@ impl CoreRuntime {
         selections: Vec<crate::ImportSelection>,
         replace_existing: bool,
     ) -> Result<crate::ImportResult, RuntimeError> {
-        if self.execution_active() {
-            return Err(RuntimeError::invalid("runtime is busy"));
-        }
+        self.ensure_gateway_idle(&gateway_id)?;
         let gateway_id = gateway_id.as_str();
         let existing = self.gateways.iter().position(|item| item.id == gateway_id);
         if existing.is_none() && gateway_id != "default" {
@@ -384,16 +352,7 @@ impl CoreRuntime {
                 "provider import selected no providers",
             ));
         }
-        let execution_invalidated = (imported_gateway != previous)
-            && self
-                .next_turn_runtime_id
-                .as_ref()
-                .and_then(|id| {
-                    self.runtime_instances
-                        .iter()
-                        .find(|runtime| &runtime.id == id)
-                })
-                .is_some_and(|runtime| runtime.gateway_id == gateway_id);
+        let gateway_changed = imported_gateway != previous;
         let previous_runtimes = self.runtime_instances.clone();
         if let Some(index) = existing {
             self.gateways[index] = imported_gateway;
@@ -410,9 +369,8 @@ impl CoreRuntime {
             return Err(error);
         }
         self.sync_scheduling(std::slice::from_ref(&previous));
-        if execution_invalidated {
-            self.for_each_session(Self::invalidate_execution)?;
-        }
+        let execution_invalidated =
+            gateway_changed && self.invalidate_gateway_execution(gateway_id)?;
         Ok(crate::ImportResult {
             imported_provider_ids: result.imported,
             skipped_provider_ids: result.skipped,
@@ -459,8 +417,18 @@ impl CoreRuntime {
         &mut self,
         change: RuntimeChange,
     ) -> Result<crate::RuntimeUpdate, RuntimeError> {
-        if self.execution_active() {
-            return Err(RuntimeError::invalid("runtime is busy"));
+        match &change {
+            RuntimeChange::Delete(id) if self.runtime_in_use(id) => {
+                return Err(RuntimeError::invalid(
+                    "此运行时仍有会话或后台任务正在运行，请停止后再删除",
+                ));
+            }
+            RuntimeChange::Upsert(runtime) if self.runtime_in_use(&runtime.id) => {
+                return Err(RuntimeError::invalid(
+                    "此运行时仍有会话或后台任务正在运行，请停止后再修改配置",
+                ));
+            }
+            _ => {}
         }
         self.acp_capability_cache.borrow_mut().clear();
         let previous = self.runtime_instances.clone();
@@ -476,6 +444,31 @@ impl CoreRuntime {
                             .any(|item| item.id == runtime.gateway_id))
                 {
                     return Err(RuntimeError::invalid("runtime instance"));
+                }
+                if runtime
+                    .settings
+                    .get("automaticNaming")
+                    .is_some_and(|v| !matches!(v.as_str(), "true" | "false"))
+                {
+                    return Err(RuntimeError::invalid("自动命名开关无效"));
+                }
+                if runtime.enabled
+                    && runtime
+                        .settings
+                        .get("automaticNaming")
+                        .is_some_and(|v| v == "true")
+                {
+                    let key = runtime
+                        .settings
+                        .get("automaticNamingModel")
+                        .filter(|v| !v.is_empty())
+                        .ok_or_else(|| RuntimeError::invalid("请选择自动命名使用的模型"))?;
+                    self.gateways
+                        .iter()
+                        .find(|g| g.id == runtime.gateway_id)
+                        .ok_or_else(|| RuntimeError::invalid("命名模型的网关不存在"))?
+                        .resolve_dispatch(key)
+                        .map_err(RuntimeError::invalid)?;
                 }
                 if runtime.enabled {
                     runtime

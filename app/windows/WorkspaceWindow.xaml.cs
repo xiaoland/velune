@@ -431,7 +431,9 @@ public sealed partial class WorkspaceWindow : Window
         if (foreground && ShownID is { } id && !Shell.Listings.MarkingRead(Device, id)
             && Listing.Conversations.FirstOrDefault(listed => listed.Conversation.Id == id) is { Unread: true } listed)
         {
-            Shell.Listings.MarkRead(Device, listed);
+            if (FocusedView?.Model.Snapshot?.Conversation is { NativeReadState: { } receipt } shown && shown.Id == id) {
+                if (receipt.Unread) Shell.Listings.MarkRead(Device, listed with { Conversation = shown });
+            } else if (listed.Conversation.NativeReadState is null) Shell.Listings.MarkRead(Device, listed);
         }
     }
 
@@ -734,10 +736,17 @@ public sealed partial class WorkspaceWindow : Window
         switch (command)
         {
             case Command.NewConversation:
-                Open(new Target("", "", ""), Opening.CurrentTab);
+                // A new conversation opens its own tab; an unsent one is kept.
+                if (tab is not { Target.Unsent: true })
+                {
+                    Editor.NewTab(Editor.Focused, null);
+                }
                 break;
             case Command.NewTab:
                 Editor.NewTab(Editor.Focused, null);
+                break;
+            case Command.ReopenClosedTab:
+                Editor.ReopenClosed();
                 break;
             case Command.NewWindow:
                 Shell.NewWindow(Device);

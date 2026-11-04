@@ -99,10 +99,11 @@ async function main() {
     }
     return {contractVersion:1,sessions,failures};
   }
-  if (request.operation !== "read") throw new RequestError("unsupported_operation");
+  if (!["read", "locate"].includes(String(request.operation))) throw new RequestError("unsupported_operation");
   const nativeId = requiredString(request.nativeId);
   const matches = refs.filter(ref => ref.id === nativeId);
   if (matches.length !== 1) throw new RequestError(matches.length ? "ambiguous_session" : "session_not_found");
+  if (request.operation === "locate") return {contractVersion:1,path:matches[0].source.path};
   const session = await provider.read(matches[0]);
   /** @type {Message[]} */
   const messages = [];

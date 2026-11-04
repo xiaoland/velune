@@ -15,6 +15,10 @@ impl Default for SessionKey {
 
 #[derive(Default)]
 pub(super) struct Session {
+    pub(super) naming: Option<super::naming::Job>,
+    pub(super) naming_attempted: bool,
+    pub(super) finished_activity: Option<String>,
+    pub(super) scheduled_run: Option<(String, bool)>,
     pub(super) turn_observation: Option<velune_telemetry::Operation>,
     pub(super) key: SessionKey,
     /// Authorizes this session's executions to use Velune's collaboration tools.
@@ -30,10 +34,17 @@ pub(super) struct Session {
     /// is the runtime's own default.
     pub(super) model_selection: Option<Option<crate::ModelSelection>>,
     pub(super) unsubmitted_draft: Option<UnsubmittedDraft>,
+    /// A native fork that is only persisted when its first turn starts.
+    /// Unlike an empty new conversation, reconfiguration must keep its
+    /// inherited source and boundary instead of replacing it with a blank one.
+    pub(super) pending_native_fork: Option<velune_agent_runtime::native::PendingFork>,
+    /// One new Codex thread's quoted context, consumed during creation.
+    pub(super) reference_context: Option<String>,
     pub(super) gateway_tunnel: Option<velune_agent_runtime::execution::LoopbackTunnel>,
     /// Private execution files of this session's runtime; see `CoreRuntime::lane`.
     pub(super) lane: Option<usize>,
     pub(super) source: Option<live::SourceWatch>,
+    pub(super) control: Option<control::ControlWatch>,
     /// When this session was last seen executing; its native writes until
     /// shortly after that are Velune's own.
     pub(super) last_execution: Option<std::time::Instant>,
@@ -49,11 +60,16 @@ pub(super) struct Session {
 /// A side chat: a temporary runtime copy of a conversation, never saved,
 /// that is open until it is closed. Clients know it only by its own
 /// identity; it is not a conversation of the list or its activity.
+#[derive(Clone)]
 pub(super) struct SideChat {
     pub(super) id: String,
-    /// What each question is sent with: the conversation's last turn's.
-    pub(super) effort: Option<String>,
-    pub(super) permission_mode: Option<String>,
+    pub(super) title: velune_conversation::ConversationTitle,
+    pub(super) reference: crate::conversation::ConversationSnapshot,
+    pub(super) prior: Vec<crate::conversation::Message>,
+    pub(super) prior_executions: velune_conversation::Executions,
+    pub(super) segment: u64,
+    pub(super) context: String,
+    pub(super) context_pending: bool,
     /// Messages of the conversation the copy began with, which it does not show.
     pub(super) inherited: std::collections::BTreeSet<String>,
 }
@@ -84,15 +100,34 @@ impl Session {
         }
     }
 
-    /// Its runtime process works: the turn runs, or work besides it does.
+    /// Its runtime connection is still needed by execution or metadata;
+    /// visible activity remains the user turn and native background work.
     pub(super) fn executing(&self) -> bool {
-        self.turn_running() || !self.work().is_empty()
+        self.turn_running()
+            || !self.work().is_empty()
+            || matches!(&self.active_state, ActiveState::Native(session) if session.has_pending_metadata())
+    }
+
+    /// Editing or removing a source also invalidates a continued conversation's projection.
+    pub(super) fn uses_runtime(&self, id: &str) -> bool {
+        self.execution_runtime_id.as_deref() == Some(id)
+            || self.logical_projection.as_ref().is_some_and(|projection| {
+                projection
+                    .link
+                    .segments
+                    .iter()
+                    .any(|segment| segment.runtime_instance_id == id)
+            })
+            || self
+                .projected()
+                .is_some_and(|snapshot| snapshot.conversation.runtime_id == id)
     }
 
     /// Must stay open: closing it would end work, drop a request the user
     /// has not answered or drop queued messages.
     pub(super) fn pinned(&self) -> bool {
         self.side.is_some()
+            || self.naming.is_some()
             || self.executing()
             || !self.send_queue.is_empty()
             || self
@@ -246,12 +281,12 @@ impl CoreRuntime {
         self.for_each_session(Self::drain_runtime)
     }
 
-    /// Any session executes; configuration that execution depends on must
-    /// not change underneath it.
-    pub(super) fn execution_active(&self) -> bool {
+    /// Work still depends on this execution instance or a history source;
+    /// its configuration and native resources must not change underneath it.
+    pub(super) fn runtime_in_use(&self, runtime_id: &str) -> bool {
         std::iter::once(&self.session)
             .chain(&self.parked)
-            .any(Session::executing)
+            .any(|session| session.executing() && session.uses_runtime(runtime_id))
     }
 
     /// Refuses what would end the addressed session's runtime process while
@@ -324,37 +359,37 @@ impl CoreRuntime {
     }
 
     /// Record how the addressed session's turn ended.
-    pub(super) fn record_finished_turn(&mut self, failed: bool) -> Option<crate::TurnOutcome> {
-        // A side chat's answers are no conversation's turns.
-        if self.session.side.is_some() {
-            self.session.cancel_requested = false;
-            return None;
-        }
-        if self.session.projected().is_none() {
-            let outcome = if failed {
-                velune_telemetry::Outcome::Failure
-            } else if self.session.cancel_requested {
-                velune_telemetry::Outcome::Cancelled
-            } else {
-                velune_telemetry::Outcome::Unknown
-            };
-            self.complete_turn_observation(outcome);
-            return None;
-        }
+    pub(super) fn record_finished_turn(&mut self) -> Option<crate::TurnOutcome> {
         let view = self.session.projected()?;
-        let outcome = if failed
-            || view.run_state == RunState::Failed
-            || matches!(&self.session.active_state, ActiveState::Pi(session) if session.turn_failed())
-        {
-            crate::TurnOutcome::Failed
-        } else if self.session.cancel_requested {
-            crate::TurnOutcome::Cancelled
-        } else {
-            crate::TurnOutcome::Completed
-        };
+        let activity = view.executions.current.as_ref()?.clone();
+        if !activity.ended || self.session.finished_activity.as_ref() == Some(&activity.id) {
+            return None;
+        }
+        let record = view
+            .executions
+            .records
+            .iter()
+            .find(|r| r.id == activity.execution_id)?;
+        let outcome = record.outcome;
+        let maintenance = record.kind == velune_conversation::ExecutionKind::ContextMaintenance;
+        self.session.finished_activity = Some(activity.id);
+        self.session.cancel_requested = false;
+        self.complete_turn_observation(match outcome {
+            Some(crate::TurnOutcome::Completed) => velune_telemetry::Outcome::Success,
+            Some(crate::TurnOutcome::Failed) => velune_telemetry::Outcome::Failure,
+            Some(crate::TurnOutcome::Cancelled) => velune_telemetry::Outcome::Cancelled,
+            None => velune_telemetry::Outcome::Unknown,
+        });
+        let outcome = outcome?;
+        if maintenance || self.session.side.is_some() {
+            return None;
+        }
+        let silent = self.settle_scheduled_turn(outcome);
+        let view = self.session.projected()?;
         let finished = &mut self.finished_turns;
         finished.sequence += 1;
         finished.turns.push_back(crate::FinishedTurn {
+            silent,
             sequence: finished.sequence,
             context_runtime_id: view.conversation.runtime_id.clone(),
             conversation_id: self.session.conversation_id().unwrap_or_default().into(),
@@ -363,12 +398,6 @@ impl CoreRuntime {
         if finished.turns.len() > RETAINED_FINISHED_TURNS {
             finished.turns.pop_front();
         }
-        self.session.cancel_requested = false;
-        self.complete_turn_observation(match outcome {
-            crate::TurnOutcome::Completed => velune_telemetry::Outcome::Success,
-            crate::TurnOutcome::Failed => velune_telemetry::Outcome::Failure,
-            crate::TurnOutcome::Cancelled => velune_telemetry::Outcome::Cancelled,
-        });
         Some(outcome)
     }
 
@@ -390,6 +419,7 @@ impl CoreRuntime {
                     let conversation_id = session.conversation_id()?;
                     self.resumable(session, view)
                         .then(|| crate::ConversationReference {
+                            native_read_state: view.conversation.native_read_state.clone(),
                             runtime_id: view.conversation.runtime_id.clone(),
                             conversation_id: conversation_id.into(),
                         })

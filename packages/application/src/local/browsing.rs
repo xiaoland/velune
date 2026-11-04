@@ -57,7 +57,7 @@ pub(super) struct ConversationHint {
 #[derive(Clone)]
 pub(super) enum EntryState {
     Unread,
-    Read(ConversationSummary),
+    Read(Box<ConversationSummary>),
     /// The runtime could not read it as a session; not listed until it changes.
     Unreadable,
 }
@@ -126,13 +126,15 @@ impl CoreRuntime {
                     id: summary.id.clone(),
                     identity: String::new(),
                     hint: ConversationHint::default(),
-                    state: EntryState::Read(summary),
+                    state: EntryState::Read(Box::new(summary)),
                 })
                 .collect::<Vec<_>>()
         };
         let mut entries = match runtime.type_id {
             RuntimeKind::Acp => read(self.acp_summaries(runtime)?),
-            RuntimeKind::Codex => read(self.read_codex_projects(runtime, false)?),
+            RuntimeKind::Codex | RuntimeKind::Codex166 => {
+                read(self.read_codex_projects(runtime, false)?)
+            }
             RuntimeKind::Pi => history::list_pi(&self.pi_history_config(runtime)?, &[])
                 .map_err(|error| {
                     RuntimeError::context("Pi 历史无法读取；请检查实例路径与 SDK 配置后重试", error)
@@ -273,6 +275,7 @@ impl CoreRuntime {
                     (
                         id.clone(),
                         ConversationSummary {
+                            native_read_state: None,
                             can_rename: false,
                             can_delete: false,
                             id,
@@ -314,7 +317,9 @@ impl CoreRuntime {
                     if let Some(identity) = identities.get(id) {
                         entry.identity = identity.clone();
                     }
-                    entry.state = summary.map_or(EntryState::Unreadable, EntryState::Read);
+                    entry.state = summary.map_or(EntryState::Unreadable, |summary| {
+                        EntryState::Read(Box::new(summary))
+                    });
                 }
                 None => {
                     if let Some(summary) = summary {
@@ -322,7 +327,7 @@ impl CoreRuntime {
                             id: id.clone(),
                             identity: String::new(),
                             hint: ConversationHint::default(),
-                            state: EntryState::Read(summary),
+                            state: EntryState::Read(Box::new(summary)),
                         });
                     }
                 }
@@ -396,7 +401,7 @@ impl CoreRuntime {
             .filter(|listing| listing.runtime == *runtime)
             .and_then(|listing| {
                 listing.entries.iter().find_map(|entry| match &entry.state {
-                    EntryState::Read(summary) if entry.id == id => Some(summary.clone()),
+                    EntryState::Read(summary) if entry.id == id => Some(summary.as_ref().clone()),
                     _ => None,
                 })
             })
@@ -452,6 +457,8 @@ impl CoreRuntime {
         // Source-scoped lookup prevents arbitrary caller paths from being opened.
         // Conversations are opened from a listing, so its membership is reused;
         // an identifier the latest listing does not contain lists again.
+        // Codex can omit a fork with inherited history and no own user turn;
+        // its native read-by-identity API still owns that conversation.
         let summary = match self.listed_summary(runtime, id) {
             Some(summary) => summary,
             None => self
@@ -464,6 +471,12 @@ impl CoreRuntime {
                         error
                     }
                 })?
+                .or_else(|| {
+                    matches!(runtime.type_id, RuntimeKind::Codex | RuntimeKind::Codex166)
+                        .then(|| self.reach(runtime, id))
+                        .flatten()
+                        .map(|source| source.summary)
+                })
                 .ok_or_else(|| RuntimeError::invalid("此会话不属于所选运行时历史目录"))?,
         };
         if runtime.type_id == RuntimeKind::Acp {
@@ -482,6 +495,7 @@ impl CoreRuntime {
             model_record_key: None,
             run_state: RunState::Idle,
             messages: Vec::new(),
+            executions: Default::default(),
             transcript_turns: Vec::new(),
             transcript_items: Vec::new(),
             transcript_outline: Vec::new(),
@@ -492,6 +506,7 @@ impl CoreRuntime {
             sub_agents: Vec::new(),
             collaborators: Vec::new(),
             actions: ConversationActions {
+                input_access: Default::default(),
                 can_send: false,
                 can_cancel: false,
                 can_switch: true,
@@ -507,7 +522,9 @@ impl CoreRuntime {
             })?;
             let mut projection = PiProjection::new(snapshot.conversation.clone());
             projection.replace_history(&saved);
-            snapshot.messages = projection.snapshot.expect("history projection").messages;
+            let projected = projection.snapshot.expect("history projection");
+            snapshot.messages = projected.messages;
+            snapshot.executions = projected.executions;
             snapshot.conversation.cwd = saved["cwd"].as_str().map(str::to_owned);
             let marker = &saved["virtualState"];
             if marker["provider"] == "velune" || marker["provider"] == "velune-gateway" {
@@ -522,8 +539,10 @@ impl CoreRuntime {
                 tracing::warn!(target: "velune_application", event = "runtime_history_read_failed", phase = error.phase(), failure_kind = error.code(), runtime_family = family, runtime_id=%runtime.id, runtime_name=%runtime.name, runtime_type_id=%runtime.type_id, binary=?runtime.settings.get("binary"), node_binary=?runtime.settings.get("nodeBinary"), agent_dir=?runtime.settings.get("agentDir"), detail=%error);
                 RuntimeError::History(error)
             })?;
+            snapshot.conversation.native_read_state = read.native_read_state;
             snapshot.conversation.cwd = read.cwd;
             snapshot.messages = read.messages;
+            snapshot.executions = read.executions;
             snapshot.follow_up.can_resume = read.can_resume;
         }
         // A history projection is send-capable once the UI supplies the next
@@ -560,6 +579,7 @@ impl CoreRuntime {
                 view.run_state = RunState::Idle;
                 view.pending_interactions.clear();
                 view.actions = ConversationActions {
+                    input_access: Default::default(),
                     can_send: can_restore && view.conversation.parent_conversation_id.is_none(),
                     can_cancel: false,
                     can_switch: true,
@@ -654,13 +674,14 @@ impl CoreRuntime {
                 Some(key),
                 Some(&physical),
             )?;
+            let persistent = self.session.side.is_none();
             let session = self.session.pi()?;
-            if is_new {
+            if is_new && persistent {
                 session
                     .new_session()
                     .map_err(|error| RuntimeError::context("conversation create", error))?;
             } else {
-                session.set_conversation(snapshot.conversation.clone());
+                session.restore_context(&snapshot);
             }
             self.session.model_record_key = Some(key.into());
             self.bind_gateway_model()?;
@@ -693,5 +714,44 @@ impl CoreRuntime {
             return Err(error);
         }
         Ok(())
+    }
+}
+
+impl CoreRuntime {
+    pub(super) fn keep_native_read_state(
+        &mut self,
+        receipt: &velune_conversation::NativeReadState,
+    ) -> Result<(), RuntimeError> {
+        let update = |summary: &mut ConversationSummary| {
+            if summary.id == receipt.conversation_id
+                || summary
+                    .native_read_state
+                    .as_ref()
+                    .is_some_and(|s| s.conversation_id == receipt.conversation_id)
+            {
+                summary.native_read_state = Some(receipt.clone());
+            }
+        };
+        for source in self.last_listed.borrow_mut().values_mut() {
+            update(&mut source.summary);
+        }
+        for source in self.reached.borrow_mut().values_mut() {
+            update(&mut source.summary);
+        }
+        for listing in self.history_listings.borrow_mut().values_mut() {
+            for entry in &mut listing.entries {
+                if let EntryState::Read(summary) = &mut entry.state {
+                    update(summary);
+                }
+            }
+        }
+        self.for_each_session(|core| {
+            match &mut core.session.active_state {
+                ActiveState::History(snapshot) => update(&mut snapshot.conversation),
+                ActiveState::Native(session) => session.set_read_state(receipt),
+                _ => {}
+            }
+            Ok(())
+        })
     }
 }

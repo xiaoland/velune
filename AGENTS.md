@@ -13,6 +13,18 @@
 
 ## 仓库约束
 
+- 允许 hard-reset／hard-cutoff，但涉及已有数据或配置时必须完成显式手动迁移。可由 Agent 手工处理或显式执行一次性脚本，不在应用中建立自动迁移机制；见[破坏性变更与手动迁移](docs/development.md#破坏性变更与手动迁移)。
 - 开发验证使用合成数据；真实凭据、账户状态、支付信息和会话记录的处理边界与授权例外见 [`docs/development.md`](docs/development.md)。
-- 项目文档和任务包直接用 Markdown 维护。开发服务由 `svc.json` 的 `svc dev` 入口观察、复用、启动和停止；见 [开发环境](docs/development.md#开发环境)。
+- 项目文档和任务包直接用 Markdown 维护。开发资源和构建／重装命令归 `svc.json`，使用 `svc dev` 与 `svc run`；见 [开发环境](docs/development.md#开发环境)。重装日常应用会退出当前 Velune，由用户在应用外执行。
 - 修改文档后检查相对链接与标题锚点，并运行 `git diff --check`。
+
+<!-- svc:begin -->
+## SVC
+
+Use `svc --help` or `svc <command> --help`.
+
+- `svc status`: inspect project state
+- `svc dev`: manage declared development targets
+
+If `AGENTS.local.md` exists, read it after this file. It is ignored local guidance; shared rules belong here.
+<!-- svc:end -->

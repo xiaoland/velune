@@ -96,7 +96,7 @@ import Combine
         window?.makeKeyAndOrderFront(nil)
         guard command == .globalNewConversation, let model = ConversationWindowModel.owning(window: window) ?? ConversationWindowModel.openWindows.first else { return }
         model.perform(.newConversation)
-        model.focused.composer.focusWhenShown()
+        model.composer(for: model.focused).focusWhenShown()
     }
 }
 
