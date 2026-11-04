@@ -37,6 +37,8 @@ def model(value):
 
 
 def choice(value):
+    if "serviceTier" in value:
+        raise ValueError("旧按轮档位尚未迁移；请先运行 python3 scripts/migrations/01-service-tier-model-variants.py --home <VELUNE_HOME> --apply，原文件保持不变")
     return {"model": model(value.get("model")), "effort": value.get("effort"), "permissionMode": value.get("permissionMode")}
 
 
@@ -230,6 +232,19 @@ def main():
         else:
             import fcntl
             fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        # This script can be invoked independently of the sorted runner. Refuse
+        # old tiers before re-encoding choices or creating any files/backups.
+        def has_old_tier(value):
+            if isinstance(value, dict):
+                return bool({"serviceTier", "ServiceTier"} & value.keys()) or any(has_old_tier(item) for item in value.values())
+            return isinstance(value, list) and any(has_old_tier(item) for item in value)
+
+        sources = [home / "composer-inputs.json", home / "composer-choices.json"]
+        sources += list((home / "mac-window-workspaces").glob("*.json"))
+        sources += list((home / "composer-cache").glob("*.json"))
+        for path in sources:
+            if path.exists() and not path.name.endswith(".backup.json") and has_old_tier(json.loads(path.read_text())):
+                parser.error("旧按轮档位尚未迁移；请先运行 python3 scripts/migrations/01-service-tier-model-variants.py --home <VELUNE_HOME> --apply，原文件保持不变")
         if target.exists():
             value = json.loads(target.read_text())
             migrate_combined(home, target, value, args.apply)
