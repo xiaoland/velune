@@ -12,10 +12,11 @@ use std::{
     sync::{Arc, Mutex},
 };
 use velune_gateway::{
-    CredentialMaterial, CredentialRecovery, CredentialResolutionError, CredentialResolver,
-    CredentialTarget, ExecutionBackend, GatewayConfig, HttpAuthorization, ModelRoute,
-    ProviderDefinition, ProviderModel, RequestCapabilities, RequestProfile, ResolvedCredential,
-    RoutingStrategy, Runner,
+    AnalyticsOutcome, AnalyticsRecord, AnalyticsSink, CredentialMaterial, CredentialRecovery,
+    CredentialResolutionError, CredentialResolver, CredentialTarget, ExecutionBackend,
+    GatewayConfig, HttpAuthorization, ModelRoute, ProviderDefinition, ProviderModel,
+    RequestCapabilities, RequestProfile, ResolvedCredential, RoutingStrategy, Runner,
+    SchedulingState,
 };
 
 #[derive(Clone)]
@@ -201,6 +202,85 @@ async fn send(runner: &Runner, protocol: Api, model: &str, stream: bool) -> Answ
         headers: response.headers().clone(),
         body: response.text().await.unwrap(),
     }
+}
+
+#[tokio::test]
+async fn admission_rejections_are_recorded_in_analytics() {
+    struct Collect {
+        records: Mutex<Vec<AnalyticsRecord>>,
+    }
+    impl AnalyticsSink for Collect {
+        fn record(&self, record: AnalyticsRecord) {
+            self.records.lock().unwrap().push(record);
+        }
+    }
+    let protocol = Api::Chat;
+    let (_upstream, address) = Upstream::start().await;
+    let analytics = Arc::new(Collect {
+        records: Mutex::new(Vec::new()),
+    });
+    let runner = Runner::start_with_analytics(
+        gateway_config(protocol, &address),
+        Arc::new(Keys),
+        BTreeMap::new(),
+        Some(analytics.clone()),
+        SchedulingState::default(),
+    )
+    .unwrap();
+    let client = reqwest::Client::new();
+    let url = format!("{}{}", runner.endpoint(), protocol.path());
+    let post = |body: String| {
+        client
+            .post(&url)
+            .bearer_auth(runner.token())
+            .header("content-type", "application/json")
+            .body(body)
+    };
+    // Bodies rejected before route resolution carry no provider identity.
+    for body in [
+        "{ not json".to_owned(),
+        json!({}).to_string(),
+        json!({"model": "velune/model/absent"}).to_string(),
+    ] {
+        let response = post(body).send().await.unwrap();
+        assert_eq!(response.status(), 400);
+    }
+    // Rejections after route resolution record the route's first member.
+    let response = post(
+        json!({"model": "velune/model/route", "stream": "yes", "messages": []}).to_string(),
+    )
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(response.status(), 400);
+    // Unauthenticated requests are not usage and stay out of analytics.
+    let response = client
+        .post(&url)
+        .header("content-type", "application/json")
+        .body("{ not json")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 401);
+
+    let records = analytics.records.lock().unwrap();
+    assert_eq!(records.len(), 4);
+    assert!(records.iter().all(|record| {
+        record.outcome == AnalyticsOutcome::Rejected
+            && record.status == Some(400)
+            && record.protocol == velune_gateway::Protocol::ChatCompletions
+    }));
+    assert!(
+        records[..3]
+            .iter()
+            .all(|record| record.provider_id.is_empty() && record.model_record_key.is_empty())
+    );
+    assert_eq!(records[3].provider_id, "a");
+    assert_eq!(records[3].model_record_key, "a-model");
+    assert_eq!(records[3].provider_model_id, "a-native");
+    let ids: std::collections::BTreeSet<_> =
+        records.iter().map(|record| &record.request_id).collect();
+    assert_eq!(ids.len(), 4);
 }
 
 #[tokio::test]

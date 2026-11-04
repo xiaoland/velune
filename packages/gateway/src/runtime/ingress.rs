@@ -131,6 +131,67 @@ async fn ingress(
     .await
 }
 
+/// Rejection path shared by every authenticated admission failure. Records
+/// the exchange in request analytics with whatever route identity is known at
+/// that point, so gateway-side rejections appear next to dispatched requests
+/// instead of only in diagnostic logs. Unauthenticated requests are not usage
+/// and stay out of analytics.
+struct Admission<'a> {
+    state: &'a Ingress,
+    request_id: &'a str,
+    started_at_ms: i64,
+    protocol: Protocol,
+}
+impl Admission<'_> {
+    fn reject(
+        &self,
+        observation: Observation,
+        status: StatusCode,
+        message: &str,
+        target: Option<&RouteTarget>,
+    ) -> Response<Body> {
+        self.record(status, target);
+        rejected(observation, status, message)
+    }
+    fn reject_scheduling(
+        &self,
+        observation: Observation,
+        unavailable: ScheduleUnavailable,
+        target: Option<&RouteTarget>,
+    ) -> Response<Body> {
+        let response = scheduling_rejected(observation, unavailable);
+        self.record(response.status(), target);
+        response
+    }
+    fn record(&self, status: StatusCode, target: Option<&RouteTarget>) {
+        let Some(sink) = &self.state.analytics else {
+            return;
+        };
+        let terminal_at_ms = now_ms();
+        sink.record(AnalyticsRecord {
+            request_id: self.request_id.to_owned(),
+            provider_id: target.map_or_else(String::new, |target| target.provider_id.clone()),
+            provider_name: target.map_or_else(String::new, |target| target.provider_name.clone()),
+            model_record_key: target
+                .map_or_else(String::new, |target| target.model_record_key.clone()),
+            provider_model_id: target
+                .map_or_else(String::new, |target| target.model.as_str().to_owned()),
+            protocol: target.map_or(self.protocol, |target| target.protocol),
+            started_at_ms: self.started_at_ms,
+            terminal_at_ms,
+            elapsed_ms: u64::try_from(terminal_at_ms.saturating_sub(self.started_at_ms))
+                .unwrap_or(0),
+            first_output_ms: None,
+            terminal_elapsed_ms: None,
+            status: Some(status.as_u16()),
+            outcome: AnalyticsOutcome::Rejected,
+            usage: TokenUsage::default(),
+            usage_reported: false,
+            usage_complete: false,
+        });
+    }
+}
+
 async fn ingress_observed(
     state: Arc<Ingress>,
     request_id: String,
@@ -159,64 +220,111 @@ async fn ingress_observed(
             "gateway authentication failed",
         );
     }
+    // Authenticated admission failures carry usage-relevant diagnostics; the
+    // admission context records them in request analytics at each rejection.
+    let admission = Admission {
+        state: &state,
+        request_id: &request_id,
+        started_at_ms,
+        protocol,
+    };
     let (parts, body) = request.into_parts();
     let headers = forward_headers(&parts.headers);
     let bytes = match tokio::time::timeout(REQUEST_READ_TIMEOUT, to_bytes(body, usize::MAX)).await {
         Ok(Ok(bytes)) => bytes,
-        Ok(Err(_)) => {
-            return rejected(
+        Ok(Err(error)) => {
+            tracing::warn!(
+                event = "gateway_request_body_rejected",
+                reason = "read_failed",
+                read_error = %error,
+            );
+            return admission.reject(
                 observation,
                 StatusCode::BAD_REQUEST,
                 "gateway request body read failed",
+                None,
             );
         }
         Err(_) => {
-            return rejected(
+            tracing::warn!(
+                event = "gateway_request_body_rejected",
+                reason = "read_deadline",
+            );
+            return admission.reject(
                 observation,
                 StatusCode::REQUEST_TIMEOUT,
                 "gateway request body deadline",
+                None,
             );
         }
     };
     let body: Value = match serde_json::from_slice(&bytes) {
         Ok(Value::Object(value)) => Value::Object(value),
-        _ => {
-            return rejected(
+        Ok(_) => {
+            tracing::warn!(
+                event = "gateway_request_body_rejected",
+                reason = "not_an_object",
+                body_bytes = bytes.len(),
+                opens_with_brace = bytes.first() == Some(&b'{'),
+            );
+            return admission.reject(
                 observation,
                 StatusCode::BAD_REQUEST,
                 "gateway requires a JSON object",
+                None,
+            );
+        }
+        Err(error) => {
+            // Length, first-byte shape and the parser position distinguish an
+            // empty, truncated or misaligned body without logging any payload.
+            tracing::warn!(
+                event = "gateway_request_body_rejected",
+                reason = "invalid_json",
+                body_bytes = bytes.len(),
+                opens_with_brace = bytes.first() == Some(&b'{'),
+                parse_error = %error,
+            );
+            return admission.reject(
+                observation,
+                StatusCode::BAD_REQUEST,
+                "gateway requires a JSON object",
+                None,
             );
         }
     };
     let Some(model) = body["model"].as_str() else {
-        return rejected(
+        return admission.reject(
             observation,
             StatusCode::BAD_REQUEST,
             "gateway model is required",
+            None,
         );
     };
     let route = match state.routes.read() {
         Ok(routes) => routes.get(model).cloned(),
         Err(_) => {
-            return rejected(
+            return admission.reject(
                 observation,
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "gateway alias state unavailable",
+                None,
             );
         }
     };
     let Some(route) = route else {
-        return rejected(
+        return admission.reject(
             observation,
             StatusCode::BAD_REQUEST,
             "gateway model route is missing",
+            None,
         );
     };
     if route[0].aggregate && has_upstream_state(&body) {
-        return rejected(
+        return admission.reject(
             observation,
             StatusCode::BAD_REQUEST,
             "model routes require full history; previous_response_id and conversation are unsupported",
+            Some(&route[0]),
         );
     }
     if let Some(session) = state.backend_session()
@@ -226,19 +334,21 @@ async fn ingress_observed(
             .validate_result_ids(&session, &tail_tool_result_ids(protocol, &body))
             .is_err()
     {
-        return rejected(
+        return admission.reject(
             observation,
             StatusCode::CONFLICT,
             "tool results belong to a cancelled or invalidated Claude interaction",
+            Some(&route[0]),
         );
     }
     let route = match state.continuation_route(&route) {
         Ok(route) => route,
         Err(()) => {
-            return rejected(
+            return admission.reject(
                 observation,
                 StatusCode::CONFLICT,
                 "Claude tool continuation is unavailable for this session and provider binding",
+                Some(&route[0]),
             );
         }
     };
@@ -248,10 +358,11 @@ async fn ingress_observed(
         None => false,
         Some(Value::Bool(value)) => *value,
         Some(_) => {
-            return rejected(
+            return admission.reject(
                 observation,
                 StatusCode::BAD_REQUEST,
                 "stream must be a boolean",
+                Some(&route[0]),
             );
         }
     };
@@ -273,10 +384,11 @@ async fn ingress_observed(
                 Some(plan)
             }
             Err(error) => {
-                return rejected(
+                return admission.reject(
                     observation,
                     StatusCode::BAD_REQUEST,
                     &format!("protocol conversion: {error}"),
+                    Some(target),
                 );
             }
         }
@@ -292,7 +404,9 @@ async fn ingress_observed(
     tracing::Span::current().record("stream", stream);
     let candidates = match state.candidates(&route) {
         Ok(candidates) => candidates,
-        Err(unavailable) => return scheduling_rejected(observation, unavailable),
+        Err(unavailable) => {
+            return admission.reject_scheduling(observation, unavailable, Some(&route[0]));
+        }
     };
     let (sender, mut receiver) = mpsc::channel(1);
     let request_span = tracing::Span::current();
