@@ -7,8 +7,7 @@
 //! points do not start one that early.
 use std::{
     io,
-    ops::{Deref, DerefMut},
-    process::{Child, Command},
+    process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, ExitStatus},
 };
 
 /// A command that does not open a console window when the host is a GUI app.
@@ -33,6 +32,7 @@ pub fn hide_console(command: &mut Command) {
 
 pub(crate) struct ProcessTree {
     child: Child,
+    group_owned: bool,
     #[cfg(windows)]
     job: windows::Job,
 }
@@ -57,22 +57,82 @@ impl ProcessTree {
                     return Err(error);
                 }
             };
-            Ok(Self { child, job })
+            Ok(Self {
+                child,
+                group_owned: true,
+                job,
+            })
         }
         #[cfg(not(windows))]
-        Ok(Self { child })
+        Ok(Self {
+            child,
+            group_owned: true,
+        })
+    }
+
+    pub(crate) fn take_stdin(&mut self) -> Option<ChildStdin> {
+        self.child.stdin.take()
+    }
+    pub(crate) fn take_stdout(&mut self) -> Option<ChildStdout> {
+        self.child.stdout.take()
+    }
+    pub(crate) fn take_stderr(&mut self) -> Option<ChildStderr> {
+        self.child.stderr.take()
+    }
+
+    /// Observe exit without releasing the leader's PID until its group is stopped.
+    /// Exposing the raw Child would let a caller reap it before this cleanup.
+    pub(crate) fn try_wait(&mut self) -> io::Result<Option<ExitStatus>> {
+        if !self.group_owned {
+            return self.child.try_wait();
+        }
+        #[cfg(unix)]
+        {
+            // SAFETY: waitid fills this plain C struct. WNOWAIT keeps our child
+            // unreaped, pinning its PID/PGID until stop has signalled the group.
+            let exited = unsafe {
+                let mut info: libc::siginfo_t = std::mem::zeroed();
+                loop {
+                    if libc::waitid(
+                        libc::P_PID,
+                        self.child.id() as libc::id_t,
+                        &mut info,
+                        libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+                    ) == 0
+                    {
+                        break info.si_pid() != 0;
+                    }
+                    let error = io::Error::last_os_error();
+                    if error.kind() != io::ErrorKind::Interrupted {
+                        return Err(error);
+                    }
+                }
+            };
+            if !exited {
+                return Ok(None);
+            }
+            self.stop();
+            self.child.try_wait()
+        }
+        #[cfg(not(unix))]
+        {
+            let status = self.child.try_wait()?;
+            if status.is_some() {
+                self.stop();
+            }
+            Ok(status)
+        }
     }
 
     /// Kill the child and its descendants, then reap the child.
     pub(crate) fn stop(&mut self) {
-        // A reaped child's process group id may already belong to another process.
-        if matches!(self.child.try_wait(), Ok(Some(_))) {
-            #[cfg(windows)]
-            self.job.terminate();
+        if !self.group_owned {
             return;
         }
+        self.group_owned = false;
         #[cfg(unix)]
-        // SAFETY: the child has not been reaped, so its group id is still ours.
+        // SAFETY: only this owner can reap the child, and it always signals the
+        // group first. No later stop/drop may signal this PGID after reap.
         unsafe {
             libc::kill(-(self.child.id() as i32), libc::SIGKILL);
         }
@@ -83,16 +143,9 @@ impl ProcessTree {
     }
 }
 
-impl Deref for ProcessTree {
-    type Target = Child;
-    fn deref(&self) -> &Child {
-        &self.child
-    }
-}
-
-impl DerefMut for ProcessTree {
-    fn deref_mut(&mut self) -> &mut Child {
-        &mut self.child
+impl Drop for ProcessTree {
+    fn drop(&mut self) {
+        self.stop();
     }
 }
 

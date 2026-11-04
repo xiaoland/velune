@@ -54,3 +54,20 @@
 - 原生交接不支持缺少完整replacement的Codex继承／旧compact／未解析rollback；会明确报错，不丢上下文。ACP／DeepSeek沿用引用交接。
 - Claude未首发的分支仍为进程内准备状态，不保证跨应用重启恢复；已首发的原生分支重开已验证。
 - Mac为本批多数体验的实现端；Windows仅隔离构建，iOS／Android完成受影响契约构建，不宣称已移植所有Mac体验或做过各端UI验收。
+
+## 11月4日晚继续：归因与持续证据
+
+用户要求继续追查，至少改进下次故障时对Velune的确认／排除能力。保留既有网络诊断授权；只读采集系统资源和进程元数据，不采集地址、请求、凭据、会话或活动代理profile，不做网络压力实验，不自动结束用户应用／代理。
+
+设计选择：单次快照缺少增长起点；随Velune退出的应用内采集又会丢失最关键的退出后窗口。因此先部署独立低频记录器，启动时可选择有限7天观察，逐条落盘、总量有上限、可停止卸载。使用boot＋进程启动时间＋PID作为身份，已确认Velune后代在重挂父进程后继续跟踪；系统mbuf、socket队列、连接状态和进程流量同一时间轴。不能把“没采到连接”当作绝对排除，也不能将进程相关性直接视为内核泄漏归属。
+
+并行复核：原系统栈与XNU／sing-box证据；源码中流式响应取消、重试、池与子进程释放；记录器的身份、滚动、持久化与实际只读采样。独立记录器通过后启动，不需重装或退出日常Velune。
+
+### 继续调查结果与部署
+
+- exact XNU确认class4为mbuf+2KB packet cluster，非socket/FD数。晚间34,314条utun4 ENOBUFS晚于首条压力12分钟；该错误分支会mbuf_freem，不能视为直接泄漏证据。sfamt和remotepairingd均等待sendmsg_x数据包分配，前者Go符号已交叉验证；仍缺FD与完整上层调用链。晚间sfamt PID4983从11:27:45持续到19:23关机，因此此前GUI重开不足以排除扩展保留资源。详细证据见忽略目录的network-attribution.md。
+- 已确认并修复ProcessTree的实际后代遗留：提前reap后stop、直接drop及prefix写失败等路径。WNOWAIT→清组→reap并移除裸Child出口；实际ProcessTree四路径、RpcClient三调用链修前遗留、修后清掉loopback孙进程，无关进程均存活。
+- NativeHttp不再强制Connection:close；13个实际HTTP/1.1合成请求从13条连接降到4条，截断、取消、abort后后续请求正常，最终池连接释放。两包release严格Clippy通过。没有因此重复各平台UI或重装日常应用。上述缺陷不能等同于已证实当日断网根因。
+- 独立记录器7项窄验＋新增TCP/UDP mbuf解析窄验通过；涵盖进程身份/重挂、异常ABI、隐私、滚动权限/fsync、锁、到期、stale、SIGTERM和模拟安装卸载。新增实际采样wall0.114s、CPU0.105s、峰值21MB；所有上游请求与进程证明均为合成回环。
+- **2026-11-04 22:06（Asia/Shanghai）已部署并启动**用户LaunchAgent `app.velune.network-flight-recorder`，60秒资源样本／300秒流量，128MiB，11月11日约22:06到期。首个实际样本TCP、UDP、mbuf、接口、kctl与TCP/UDP socket mbuf均observed；status披露208个系统进程秒级时间回退、28个socket关联身份不可用/变化，不能将这些缺口视为无活动。记录独立于Velune、无公网发送，脚本复制到用户Application Support，未修改系统网络。
+- 持续诊断立即生效；应用资源修复需要包含本次源码的构建。记录最多约22小时（当前样本大小估算），不是七天历史保证。正常退出/崩溃/主动脱组仍需依据实际进程记录区分。网络资源最终归属仍开放，下一次能直接对照socket mbuf持有层与退出／扩展重启时间线。

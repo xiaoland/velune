@@ -227,3 +227,5 @@ Codex `model/list.serviceTiers` 报告的档位摊平为变体模型条目：选
 Pi `custom` 消息在 `display != false` 时投影为 `MessageRole::Client`，与 User 的新轮／大纲语义分开，转录中独立呈现，不能吞入工作过程；跨运行时引用保留 `client_notification` 来源。
 
 Codex166 的 `create_in_project` 使用已读取的原生项目身份，向 `thread/start` 同时提交 `projectId` 与 `runtimeWorkspaceRoots`，cwd为首根。项目归属和实际模型／沙箱可见目录是两件事；只提交projectId不会自动注入所有根。普通create继续只按cwd准备，不扩大目录。
+
+原生子进程由`ProcessTree`独占退出观察与回收，调用方不能取得裸Child。Unix在`waitid(WNOWAIT)`观察终态后先清理进程组，再回收leader，防止PID/PGID复用；stop与Drop共用幂等所有权边界，启动前缀写失败同样清理。Windows沿用Job Object。此保证覆盖仍在拥有进程组内的后代；主动脱组以及宿主SIGKILL跳过析构不是正常清理保证，不能把关闭窗口等同于所有派生工作已终止。

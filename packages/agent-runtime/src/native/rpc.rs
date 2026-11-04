@@ -44,20 +44,17 @@ pub(crate) fn bounded_process(
         .map_err(|error| Error::with_code(format!("运行时辅助进程无法启动：{error}"), "spawn"))?;
     if let Some(bytes) = input {
         let mut stdin = child
-            .stdin
-            .take()
+            .take_stdin()
             .ok_or_else(|| Error::with_code("辅助进程输入不可用", "transport"))?;
         thread::spawn(move || {
             let _ = stdin.write_all(&bytes);
         });
     }
     let mut stdout = child
-        .stdout
-        .take()
+        .take_stdout()
         .ok_or_else(|| Error::with_code("运行时输出不可用", "transport"))?;
     let stderr = child
-        .stderr
-        .take()
+        .take_stderr()
         .ok_or_else(|| Error::with_code("运行时错误输出不可用", "transport"))?;
     let (tx, rx) = mpsc::sync_channel(1);
     let (stderr_tx, stderr_rx) = mpsc::sync_channel(1);
@@ -177,19 +174,16 @@ impl RpcClient {
         let mut child = ProcessTree::spawn(&mut command)
             .map_err(|error| Error::new(format!("运行时进程无法启动：{error}")))?;
         let mut input = child
-            .stdin
-            .take()
+            .take_stdin()
             .ok_or_else(|| Error::new("运行时输入不可用"))?;
         input
             .write_all(&prepared.input_prefix)
             .map_err(|error| Error::new(format!("运行时启动请求发送失败：{error}")))?;
         let output = child
-            .stdout
-            .take()
+            .take_stdout()
             .ok_or_else(|| Error::new("运行时输出不可用"))?;
         let stderr_output = child
-            .stderr
-            .take()
+            .take_stderr()
             .ok_or_else(|| Error::new("运行时错误输出不可用"))?;
         let stderr = Arc::new(Mutex::new(Vec::new()));
         let stderr_copy = Arc::clone(&stderr);

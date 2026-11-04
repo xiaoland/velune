@@ -283,10 +283,10 @@ impl Client {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         let mut child = crate::process_tree::ProcessTree::spawn(&mut command)?;
-        let mut stdin = child.stdin.take().ok_or(Error::ChildExited)?;
+        let mut stdin = child.take_stdin().ok_or(Error::ChildExited)?;
         stdin.write_all(&prepared.input_prefix)?;
-        let stdout = child.stdout.take().ok_or(Error::ChildExited)?;
-        let stderr_output = child.stderr.take().ok_or(Error::ChildExited)?;
+        let stdout = child.take_stdout().ok_or(Error::ChildExited)?;
+        let stderr_output = child.take_stderr().ok_or(Error::ChildExited)?;
         let stderr: SharedStderr = Arc::new((
             Mutex::new(StderrCapture {
                 bytes: Vec::new(),

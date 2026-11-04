@@ -129,20 +129,14 @@ impl NativeHttp {
         };
         let mut auth = HeaderValue::from_str(&value).map_err(|_| NativeErrorKind::InvalidInput)?;
         auth.set_sensitive(true);
-        let mut builder = self
-            .client
-            .inner
-            .post(endpoint)
-            .header(name, auth)
-            .header(
-                "accept",
-                if stream {
-                    "text/event-stream"
-                } else {
-                    "application/json"
-                },
-            )
-            .header("connection", "close");
+        let mut builder = self.client.inner.post(endpoint).header(name, auth).header(
+            "accept",
+            if stream {
+                "text/event-stream"
+            } else {
+                "application/json"
+            },
+        );
         let own_agent = matches!(
             profile,
             RequestProfile::KimiCoding | RequestProfile::ArkCoding
