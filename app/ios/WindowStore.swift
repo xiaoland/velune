@@ -7,9 +7,14 @@ struct WindowRoute: Hashable, Codable {
     var target: ConversationTarget?
 }
 
-struct PendingComposerCreation: Codable { var inputID: String; var ownerID: String; var runtimeID: String; var conversationID: String }
+struct PendingComposerCreation: Codable { var inputID: String; var ownerID: String; var runtimeID: String; var conversationID: String; var choices: ComposerTargetChoices? = nil }
 
 struct ComposerState: Codable {
+    var composerSchema: Int? = 2
+    var sharedTarget: ComposerTarget?
+    var targetPending: Bool?
+    var targetBaseline: UInt64?
+    var legacyTarget: ComposerTargetChoices?
     var text = ""
     var selection: ModelSelection?
     var following = true
@@ -94,8 +99,7 @@ final class DeviceStore: ObservableObject {
             model.legacyInputs = drafts.compactMap { oldKey, oldTarget in
                 guard oldTarget.conversation == nil, oldKey.hasPrefix((peer ?? "") + "/"), oldKey != storageKey,
                       let saved = composers[oldKey], saved.sharedInput == nil, !saved.text.isEmpty else { return nil }
-                return LegacyComposerEntry(id: oldKey, content: .init(text: saved.text, attachments: [], runtimeId: saved.destination?.runtime ?? oldTarget.runtime, runtimeOwnerId: nil,
-                    choices: (saved.choices ?? [:]).map { .init(ownerId: "", runtimeId: $0.key, choice: $0.value) }, choiceEdited: true))
+                return LegacyComposerEntry(id: oldKey, content: .init(text: saved.text, attachments: []), target: saved.legacyTarget ?? .init(runtimeId: saved.destination?.runtime ?? oldTarget.runtime, runtimeOwnerId: nil, choices: (saved.choices ?? [:]).map { .init(ownerId: "", runtimeId: $0.key, choice: $0.value) }, choiceEdited: true))
             }.sorted { $0.id < $1.id }
         }
         model.problemContext = deviceName + " · " + target.title

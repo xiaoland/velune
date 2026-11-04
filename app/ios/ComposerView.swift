@@ -32,7 +32,7 @@ struct ComposerView: View {
             }
             if !model.legacyInputs.isEmpty {
                 Menu("恢复本机旧输入") {
-                    ForEach(model.legacyInputs) { entry in Button(entry.title) { model.importLegacyInput(entry.content) } }
+                    ForEach(model.legacyInputs) { entry in Button(entry.title) { model.importLegacyInput(entry.content, target: entry.target) } }
                 }.font(.caption).disabled(model.busy)
             } else if model.legacyInput != nil { Button("恢复本机旧输入", action: model.importLegacyInput).font(.caption).disabled(model.busy) }
             if let message = model.composerFailure { Text(message).font(.caption).foregroundStyle(.secondary).textSelection(.enabled) }
@@ -109,7 +109,7 @@ struct ComposerView: View {
                         .lineLimit(1).truncationMode(.middle).padding(.horizontal, 4).frame(minHeight: 44)
                 }
                 .accessibilityLabel("运行时与项目").accessibilityValue(runtimeName + " · " + projectName)
-                .disabled(model.busy)
+                .disabled(model.busy || !model.canEditTarget)
                 Spacer(minLength: 0)
                 Menu {
                     Picker("模型", selection: $model.selection) {
@@ -124,7 +124,7 @@ struct ComposerView: View {
                     }.padding(.horizontal, 4).frame(minHeight: 44)
                 }
                 .accessibilityLabel("模型").accessibilityValue(modelName)
-                .disabled(model.busy || model.loadingModels || model.models.isEmpty)
+                .disabled(model.busy || !model.canEditTarget || model.loadingModels || model.models.isEmpty)
             }
             .font(.footnote).foregroundStyle(.secondary).menuStyle(.borderlessButton)
         }

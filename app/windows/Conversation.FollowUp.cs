@@ -65,6 +65,7 @@ sealed partial class Conversation
             return false;
         }
         var operation = new SendQueueOperation.Add(snapshot.ContextRuntimeId, Next, NextTurn.Model, Turn(text));
+        if (!await PrepareComposerSubmission()) return false;
         if (!await Change("更改发送队列", NativeOperation.ConversationWrite, application => application.SendQueue(snapshot.ContextRuntimeId, snapshot.Conversation.Id, operation)))
         {
             return false;
@@ -127,6 +128,7 @@ sealed partial class Conversation
             return false;
         }
         var turn = Turn(text);
+        if (!await PrepareComposerSubmission()) return false;
         if (!await Change("插入本轮", NativeOperation.Send, application => application.SteerTurn(snapshot.ContextRuntimeId, snapshot.Conversation.Id, turn)))
         {
             return false;
@@ -161,7 +163,7 @@ sealed partial class Conversation
         Notify();
     }
 
-    public bool CanSteer => InputEditable && !Busy && !stopRequested && !composing && Snapshot?.RunState == RunState.Running && FollowUp is { CanSteer: true };
+    public bool CanSteer => ComposerReady && InputEditable && !Busy && !stopRequested && !composing && Snapshot?.RunState == RunState.Running && FollowUp is { CanSteer: true };
 
     public ComposerSubmission Submission
     {
@@ -174,7 +176,7 @@ sealed partial class Conversation
             var canSend = ready && !Working && !activityRunning && (Target.Unsent || Snapshot is { Actions.CanSend: true } snapshot && !snapshot.PendingInteractions.Any());
             return ComposerSubmission.Resolve(phase, !string.IsNullOrWhiteSpace(composerText) || Attached.Count > 0 || Uploading > 0,
                 composing, canSend, ready && Running && !stopRequested && FollowUp?.IsCompacting != true,
-                FollowUp is { CanResume: true } && Next == Snapshot?.ContextRuntimeId);
+                ready && FollowUp is { CanResume: true } && Next == Snapshot?.ContextRuntimeId);
         }
     }
 
@@ -194,6 +196,7 @@ sealed partial class Conversation
         var selection = NextTurn.Model;
         var effort = NextTurn.Effort;
         var mode = NextTurn.PermissionMode?.Id;
+        if (!await PrepareComposerSubmission()) return false;
         composerRequest = ComposerSubmission.Phase.Resuming;
         try
         {

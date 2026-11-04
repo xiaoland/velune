@@ -422,11 +422,12 @@ impl Application {
             Command::CreateConversation {
                 runtime_id,
                 cwd,
+                project,
                 selection,
             } => Response::CreateConversation(application.runtime.serve(
                 Focus::New,
                 Login::Blocks,
-                |core| core.create_conversation(&runtime_id, cwd, selection),
+                |core| core.create_conversation_target(&runtime_id, cwd, project, selection),
             )?),
             Command::ReadComposerQuota { context, refresh } => {
                 Response::ReadComposerQuota(application.runtime.serve(

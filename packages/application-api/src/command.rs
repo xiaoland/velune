@@ -342,6 +342,8 @@ pub enum Command {
     CreateConversation {
         runtime_id: String,
         cwd: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        project: Option<String>,
         selection: Option<ModelSelection>,
     },
     ReadRuntimeModels {

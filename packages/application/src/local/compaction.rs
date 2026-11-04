@@ -27,7 +27,7 @@ impl CoreRuntime {
         }
         let result = (|| {
             if let Some((gateway_id, session)) = self.backend_session_identity() {
-                self.execution_backends
+                self.session_backends()
                     .begin_user_turn(&gateway_id, &session)
                     .map_err(|error| RuntimeError::context("上下文压缩准备", error))?;
             }

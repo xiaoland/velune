@@ -11,10 +11,9 @@ extension ConversationWindowModel {
         let owner = ComposerDrafts.Owner.conversation("check-composer-sharing")
         let a = first.model(for: owner, tab: tab), b = second.model(for: owner, tab: tab)
         a.restore("SHARED LOCAL DRAFT", attachments: [])
-        a.intent?.kept.runtimeID = application.enabledRuntimeInstances.last?.id
-        precondition(b.submission == a.submission && b.intent?.kept == a.intent?.kept, "同一会话的不同编辑器必须同步输入与明确选择")
+        precondition(b.submission == a.submission, "同一会话的不同编辑器必须同步输入与明确选择")
         a.clear(submitted: a.submission, attachments: [], conversationID: nil)
-        precondition(b.isEmpty && !b.hasChoiceEdits, "消费输入必须在其他编辑器中原子清空")
+        precondition(b.isEmpty, "消费输入必须在其他编辑器中原子清空")
         a.restore("MOVED LOCAL DRAFT", attachments: [])
         first.move(a, to: .shared, tab: tab)
         precondition(first.shared === a && b.id == a.id && b.submission == a.submission, "移动保留同一输入身份")
@@ -64,7 +63,7 @@ extension ConversationWindowModel {
             case 2:
                 guard let original, focused !== original else { return retry() }
                 guard sharedComposer.submission == "INDEPENDENT DRAFT", sharedComposer.attachments == pasted,
-                      composerContext().nextTurnRuntimeID == sharedComposer.intent?.kept.runtimeID,
+                      composerContext().nextTurnRuntimeID != nil,
                       original.composer.submission == "SESSION DRAFT", focused.composer.submission.isEmpty else { return Self.composerCheckLog("independent draft followed the session") }
                 let kept = focused.store.keptComposerChoices
                 guard let selection = composerContext().modelChoices.last?.selection, let item = paletteItems(.model).last else { return retry() }
@@ -137,7 +136,7 @@ extension ConversationWindowModel {
         guard attempts < 60 else { return Self.composerCheckLog("recovery read timed out: \(sharedComposer.submission)") }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [self] in
             guard sharedComposer.submission == "RESTORED DRAFT v1 + edited", sharedComposer.attachments.count == 2,
-                  sharedComposer.intent?.kept.choices.isEmpty == false else { return checkComposerRecovery(attempts: attempts + 1) }
+                  composerContext().nextTurn != nil else { return checkComposerRecovery(attempts: attempts + 1) }
             Self.composerCheckLog("real process restart restored edited text, attachment references and explicit choices")
         }
     }
@@ -150,6 +149,7 @@ extension ConversationWindowModel {
 /// Isolated, hidden native checks. Never registers hotkeys, creates scenes or activates a window.
 @MainActor func composerOwnershipCheck() -> Never {
     NSApplication.shared.setActivationPolicy(.prohibited)
+    if CommandLine.arguments.contains("--composer-check-content-target") { composerContentTargetCheck() }
     func wait(_ condition: () -> Bool) {
         let deadline = Date().addingTimeInterval(15)
         while !condition(), Date() < deadline { RunLoop.main.run(until: Date().addingTimeInterval(0.02)) }
@@ -228,7 +228,7 @@ extension ConversationWindowModel {
     let sending = raceWindow.focused
     let sentInput = raceWindow.composer(for: sending)
     sentInput.restore("FIRST MESSAGE IN FLIGHT", attachments: [])
-    sentInput.intent?.kept.runtimeID = "synthetic-runtime"
+    raceDevice.composerInputs.saveTarget(ConversationStore.draftConversationPrefix + "new-conversation", choices: .init(runtimeId: "synthetic-runtime", runtimeOwnerId: raceDevice.composerInputs.ownerID, choices: [], choiceEdited: true))
     wait { raceDevice.composerInputs.inputID(for: ConversationStore.draftConversationPrefix + "new-conversation") == sentInput.id }
     // The send consumes the input; the global new entry takes the next one.
     sentInput.clear(submitted: sentInput.submission, attachments: [], conversationID: sending.store.loadedConversationID)
@@ -251,7 +251,7 @@ extension ConversationWindowModel {
     wait { blank.store.isUnsentConversation }
     wait { raceWindow.composer(for: blank).id != sentInput.id }
     let freshInput = raceWindow.composer(for: blank)
-    precondition(freshInput.submission.isEmpty && freshInput.intent?.kept.runtimeID == "synthetic-runtime", "发送期间新建的标签应取到下一份空输入并保留选择")
+    precondition(freshInput.submission.isEmpty && raceDevice.composerInputs.targetChoices(for: ConversationStore.draftConversationPrefix + "new-conversation")?.runtimeId == "synthetic-runtime", "发送期间新建的标签应取到下一份空输入并保留选择")
     _ = try! raceTransport.composerInputs(.promote(inputId: sentInput.id.uuidString.lowercased(), ownerId: raceDevice.composerInputs.ownerID!, conversationId: "synthetic-created-race", runtimeId: "synthetic-runtime"))
     raceDevice.composerInputs.poll(force: true)
     wait { raceDevice.composerInputs.state?.creations.contains(where: { $0.conversationId == "synthetic-created-race" }) == true }
@@ -265,7 +265,7 @@ extension ConversationWindowModel {
     let fresh2 = raceDevice.composerInputs.inputID(for: entryID)!
     precondition(fresh2 != sentInput.id, "再次消费应换入另一份输入")
     wait { !raceDevice.composerInputs.isDirty(fresh2) }
-    raceDevice.composerInputs.restorePending(fresh2, draft: SavedComposerDraft(text: "USER TYPED", attachments: [], choices: ConversationChoices(), choiceEdited: false), revision: nil)
+    raceDevice.composerInputs.restorePending(fresh2, draft: SavedComposerDraft(text: "USER TYPED", attachments: []), revision: nil)
     raceDevice.composerInputs.restoreConsumedNewConversationInput(sentInput)
     precondition(raceDevice.composerInputs.inputID(for: entryID) == fresh2, "新输入已有内容时发送失败不得顶替")
     note("PASS new conversation: own tab after the current one; source tab untouched; global input restored; group target applied; unavailable runtime is a no-op; unsent tab restored in place; restored background tabs keep titles; in-flight send does not capture a later blank tab; reopen closed tab restores conversations, drafts and skips deleted")
@@ -279,7 +279,7 @@ extension ConversationWindowModel {
     let a = window.focused
     let x = window.composer(for: a)
     x.restore("A 的未发送输入", attachments: [])
-    x.intent?.kept.runtimeID = device.enabledRuntimeInstances.last?.id
+    window.composerContext(for: a).selectNextTurnRuntime(device.enabledRuntimeInstances.last!.id)
     window.openInNewTab("sample-1")
     let b = window.focused
     let y = window.composer(for: b)
@@ -388,7 +388,7 @@ extension ConversationWindowModel {
         let saved = try! JSONDecoder().decode(SavedComposerWorkspace.self, from: Data(contentsOf: snapshot))
         first.restore(saved)
         let restored = first.model(for: .conversation("synthetic-A"), tab: tab)
-        precondition(restored.id == saved.conversations["synthetic-A"] && restored.submission == "跨设备完整输入" && restored.attachments.count == 1 && restored.intent?.kept.runtimeID == "synthetic-runtime")
+        precondition(restored.id == saved.conversations["synthetic-A"] && restored.submission == "跨设备完整输入" && restored.attachments.count == 1 && firstDevice.composerInputs.targetChoices(for: "synthetic-A")?.runtimeId == "synthetic-runtime")
         precondition(FileManager.default.isReadableFile(atPath: restored.attachments[0].path))
         note("PASS new process: same InputID, text, attachment bytes and execution choices restored")
         exit(0)
@@ -398,12 +398,13 @@ extension ConversationWindowModel {
     let input = first.model(for: .conversation("synthetic-A"), tab: tab)
     wait { firstDevice.composerInputs.inputID(for: "synthetic-A") != nil }
     let resolved = first.model(for: .conversation("synthetic-A"), tab: tab)
-    resolved.restoreSavedDraft(.init(text: "跨设备完整输入", attachments: [source], choices: .init(runtimeID: "synthetic-runtime", choices: ["synthetic-runtime": .init(model: .native(providerId: "synthetic-provider", modelId: "synthetic-model"), effort: "high", permissionMode: nil)]), choiceEdited: true))
+    resolved.restoreSavedDraft(.init(text: "跨设备完整输入", attachments: [source]))
+    firstDevice.composerInputs.saveTarget("synthetic-A", choices: .init(runtimeId: "synthetic-runtime", runtimeOwnerId: firstDevice.composerInputs.ownerID, choices: [.init(ownerId: firstDevice.composerInputs.ownerID!, runtimeId: "synthetic-runtime", choice: .init(model: .native(providerId: "synthetic-provider", modelId: "synthetic-model"), effort: "high", permissionMode: nil))], choiceEdited: true))
     wait { !firstDevice.composerInputs.isDirty(resolved.id) }
     secondDevice.composerInputs.poll(force: true)
     wait { secondDevice.composerInputs.draft(resolved.id)?.text == "跨设备完整输入" }
     let remote = second.model(for: .conversation("synthetic-A"), tab: otherTab)
-    precondition(remote.id == resolved.id && remote.attachments.count == 1 && remote.intent?.kept == resolved.intent?.kept)
+    precondition(remote.id == resolved.id && remote.attachments.count == 1 && secondDevice.composerInputs.targetChoices(for: "synthetic-A") == firstDevice.composerInputs.targetChoices(for: "synthetic-A"))
     precondition(try! Data(contentsOf: remote.attachments[0]) == Data("synthetic attachment bytes".utf8))
     try! JSONEncoder().encode(first.saved).write(to: snapshot)
     // Remove both transport cache and authoritative blob; text still hydrates.

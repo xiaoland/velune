@@ -236,7 +236,6 @@ final class DeviceStore: ObservableObject {
         guard composerEditingStates[id] != state else { return }
         composerEditingStates[id] = state
         setDraft(state.text, for: id)
-        keepChoices(state.choices, for: id)
         composerDraftUpdates.send(ComposerDraftUpdate(conversationID: id, sender: sender, state: state))
     }
     private var unsavedDrafts: [String: String] = [:]
@@ -295,7 +294,7 @@ final class DeviceStore: ObservableObject {
     func start() {
         guard !started else { return }; started = true
         guard !isPreview, let transport else { return }
-        notifier = ConversationNotifier(application: self)
+        if NSApp.activationPolicy() != .prohibited { notifier = ConversationNotifier(application: self) }
         loadDrafts(transport)
         loadComposerChoices(transport)
         composerInputs.poll(force: true)

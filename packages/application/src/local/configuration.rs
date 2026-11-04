@@ -328,7 +328,6 @@ impl CoreRuntime {
         selections: Vec<crate::ImportSelection>,
         replace_existing: bool,
     ) -> Result<crate::ImportResult, RuntimeError> {
-        self.ensure_gateway_idle(&gateway_id)?;
         let gateway_id = gateway_id.as_str();
         let existing = self.gateways.iter().position(|item| item.id == gateway_id);
         if existing.is_none() && gateway_id != "default" {
@@ -421,11 +420,6 @@ impl CoreRuntime {
             RuntimeChange::Delete(id) if self.runtime_in_use(id) => {
                 return Err(RuntimeError::invalid(
                     "此运行时仍有会话或后台任务正在运行，请停止后再删除",
-                ));
-            }
-            RuntimeChange::Upsert(runtime) if self.runtime_in_use(&runtime.id) => {
-                return Err(RuntimeError::invalid(
-                    "此运行时仍有会话或后台任务正在运行，请停止后再修改配置",
                 ));
             }
             _ => {}
@@ -547,6 +541,10 @@ impl CoreRuntime {
                     .execution_runtime_id
                     .as_ref()
                     .is_some_and(changed);
+            if invalidated && core.session.executing() {
+                core.session.configuration_changed = true;
+                return Ok(());
+            }
             execution_invalidated |= invalidated;
             if invalidated {
                 core.invalidate_execution()?;

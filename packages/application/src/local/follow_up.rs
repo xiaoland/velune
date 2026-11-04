@@ -222,12 +222,7 @@ impl CoreRuntime {
         if !self.can_steer() {
             return Err(RuntimeError::invalid("此运行时当前不能插入消息"));
         }
-        let runtime_id = self
-            .native_snapshot()
-            .map(|snapshot| snapshot.conversation.runtime_id)
-            .ok_or_else(|| RuntimeError::invalid("conversation is not active"))?;
-        let attachments =
-            self.turn_attachments(self.runtime_instance(&runtime_id)?, &turn.attachments)?;
+        let attachments = self.turn_attachments(self.active_instance()?, &turn.attachments)?;
         let text = super::attachments::compose_text(&turn.text, &attachments.files);
         if text.trim().is_empty() && attachments.images.is_empty() {
             return Err(RuntimeError::invalid("message text"));

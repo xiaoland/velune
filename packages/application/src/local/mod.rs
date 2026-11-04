@@ -205,6 +205,9 @@ pub struct CoreRuntime {
     /// Shared admission, recovery and session affinity across gateway runners.
     scheduling_state: velune_gateway::SchedulingState,
     execution_backends: velune_gateway::ExecutionBackends,
+    /// Saved provider versions whose dispatch resources are still leased by a turn.
+    retired_gateway_providers: Vec<(String, crate::config::ProviderDefinition)>,
+    pending_provider_identity_changes: std::collections::BTreeSet<(String, String)>,
     subscription_quota: Arc<crate::subscription_quota::SubscriptionQuota>,
     billing: Arc<crate::billing::Billing>,
     runtime_quota: Arc<crate::runtime_quota::RuntimeQuota>,
@@ -329,64 +332,148 @@ impl CoreRuntime {
             analytics,
             scheduling_state,
             execution_backends: Default::default(),
+            retired_gateway_providers: Vec::new(),
+            pending_provider_identity_changes: Default::default(),
             subscription_quota,
             billing,
             runtime_quota: Arc::default(),
         })
     }
 
-    fn sync_scheduling(&self, previous: &[GatewayConfig]) {
+    fn sync_scheduling(&mut self, previous: &[GatewayConfig]) {
+        // Runners already capture their registry and resolver. Keep those services
+        // alive for their turn; configure a new binding service/backend pool only
+        // when the old one is leased. Admission/health stays shared by stable IDs.
+        let leased = std::iter::once(&self.session)
+            .chain(&self.parked)
+            .any(|session| {
+                session.executing()
+                    && session
+                        .execution_configuration
+                        .as_ref()
+                        .and_then(|configuration| configuration.gateway.as_ref())
+                        .is_some_and(|captured| {
+                            previous.iter().any(|old| {
+                                old.id == captured.id
+                                    && self
+                                        .gateways
+                                        .iter()
+                                        .find(|current| current.id == captured.id)
+                                        != Some(old)
+                            })
+                        })
+            });
+        if leased {
+            self.subscription_quota = self.subscription_quota.fork_configuration(&self.gateways);
+            self.execution_backends = Default::default();
+        }
         for gateway in previous {
             for provider in &gateway.providers {
-                let current = self
+                if self
                     .gateways
                     .iter()
-                    .find(|g| g.id == gateway.id)
-                    .and_then(|g| g.providers.iter().find(|p| p.id == provider.id));
-                if current.is_some_and(|p| {
-                    matches!(
-                        p.request_profile,
-                        crate::config::RequestProfile::KimiCoding
-                            | crate::config::RequestProfile::ArkCoding
-                    ) && provider.request_profile == p.request_profile
-                        && p.endpoint == provider.endpoint
-                        && p.protocol == provider.protocol
-                        && p.execution_backend == provider.execution_backend
-                        && p.quota_source == provider.quota_source
-                        && matches!(
-                            p.authentication.material,
-                            crate::provider_authentication::AuthenticationMaterial::ApiKey { .. }
-                        )
-                        && matches!(
-                            provider.authentication.material,
-                            crate::provider_authentication::AuthenticationMaterial::ApiKey { .. }
-                        )
-                }) {
-                    if current.is_some_and(|p| {
-                        p.authentication != provider.authentication
-                            || p.quota_authentication != provider.quota_authentication
-                    }) {
-                        self.scheduling_state
-                            .invalidate_credentials(&gateway.id, &provider.id);
-                    }
-                    continue;
-                }
-                if current.is_none_or(|p| {
-                    p.authentication != provider.authentication
-                        || p.endpoint != provider.endpoint
-                        || p.protocol != provider.protocol
-                        || p.execution_backend != provider.execution_backend
-                        || p.request_profile != provider.request_profile
-                }) {
-                    self.execution_backends
-                        .invalidate_provider(&gateway.id, &provider.id);
-                    self.scheduling_state
-                        .invalidate_provider(&gateway.id, &provider.id);
+                    .find(|current| current.id == gateway.id)
+                    .and_then(|current| {
+                        current
+                            .providers
+                            .iter()
+                            .find(|current| current.id == provider.id)
+                    })
+                    != Some(provider)
+                    && !self
+                        .retired_gateway_providers
+                        .iter()
+                        .any(|(id, old)| id == &gateway.id && old == provider)
+                {
+                    self.retired_gateway_providers
+                        .push((gateway.id.clone(), provider.clone()));
                 }
             }
         }
+        self.retire_gateway_configurations();
         self.subscription_quota.configure(&self.gateways);
         self.billing.configure(&self.gateways);
+    }
+
+    fn retire_gateway_configurations(&mut self) {
+        self.pending_provider_identity_changes
+            .extend(self.subscription_quota.take_identity_changes());
+        for (gateway, provider) in std::mem::take(&mut self.pending_provider_identity_changes) {
+            if self.provider_in_use(&gateway, &provider) {
+                self.pending_provider_identity_changes
+                    .insert((gateway, provider));
+            } else {
+                self.scheduling_state
+                    .invalidate_provider(&gateway, &provider);
+            }
+        }
+        let retired = std::mem::take(&mut self.retired_gateway_providers);
+        for (gateway_id, provider) in retired {
+            // Retiring an epoch would also reject a still-running captured
+            // runner. Wait until this stable provider is idle, across versions.
+            if self.provider_in_use(&gateway_id, &provider.id) {
+                self.retired_gateway_providers.push((gateway_id, provider));
+                continue;
+            }
+            self.retire_provider_configuration(&gateway_id, &provider);
+        }
+    }
+
+    fn retire_provider_configuration(
+        &self,
+        gateway_id: &str,
+        provider: &crate::config::ProviderDefinition,
+    ) {
+        let current = self
+            .gateways
+            .iter()
+            .find(|gateway| gateway.id == gateway_id)
+            .and_then(|gateway| {
+                gateway
+                    .providers
+                    .iter()
+                    .find(|current| current.id == provider.id)
+            });
+        let same_account_source = current.is_some_and(|current| {
+            matches!(
+                current.request_profile,
+                crate::config::RequestProfile::KimiCoding
+                    | crate::config::RequestProfile::ArkCoding
+            ) && provider.request_profile == current.request_profile
+                && current.endpoint == provider.endpoint
+                && current.protocol == provider.protocol
+                && current.execution_backend == provider.execution_backend
+                && current.quota_source == provider.quota_source
+                && matches!(
+                    current.authentication.material,
+                    crate::provider_authentication::AuthenticationMaterial::ApiKey { .. }
+                )
+                && matches!(
+                    provider.authentication.material,
+                    crate::provider_authentication::AuthenticationMaterial::ApiKey { .. }
+                )
+        });
+        if same_account_source {
+            if current.is_some_and(|current| {
+                current.authentication != provider.authentication
+                    || current.quota_authentication != provider.quota_authentication
+            }) {
+                self.scheduling_state
+                    .invalidate_credentials(gateway_id, &provider.id);
+            }
+        } else if current.is_none_or(|current| {
+            current.authentication != provider.authentication
+                || current.endpoint != provider.endpoint
+                || current.protocol != provider.protocol
+                || current.execution_backend != provider.execution_backend
+                || current.request_profile != provider.request_profile
+        }) {
+            self.execution_backends
+                .invalidate_provider(gateway_id, &provider.id);
+            self.scheduling_state
+                .invalidate_provider(gateway_id, &provider.id);
+        }
+        self.cleanup_retired_provider(provider);
     }
     fn turn_running(&self) -> bool {
         self.session.turn_running()
@@ -544,6 +631,10 @@ impl CoreRuntime {
         {
             self.finish_managed_turn()?;
         }
+        // A queued next turn also prepares from the saved configuration.
+        if !self.session.executing() && self.session.configuration_changed {
+            self.invalidate_execution()?;
+        }
         self.poll_automatic_naming(outcome == Some(crate::TurnOutcome::Completed));
         if let Some(outcome) = outcome {
             self.follow_finished_turn(outcome);
@@ -560,7 +651,7 @@ impl CoreRuntime {
 
     fn finish_managed_turn(&mut self) -> Result<(), RuntimeError> {
         if let Some((gateway_id, session)) = self.backend_session_identity() {
-            self.execution_backends
+            self.session_backends()
                 .finish_user_turn(&gateway_id, &session);
         }
         // A side chat's copy lives only in its runtime process; it ends when
@@ -641,6 +732,8 @@ impl CoreRuntime {
         let result = self.for_each_session(Self::shutdown_active);
         self.parked.clear();
         result?;
+        // Stopping work releases the last captured credential/backend leases too.
+        self.retire_gateway_configurations();
         // Release the lock explicitly; a concurrent child spawn can briefly
         // inherit the open file description before exec closes its descriptors.
         self.repository.unlock()?;
@@ -681,6 +774,7 @@ impl CoreRuntime {
         self.serve_collaboration();
         focused?;
         self.sync_due_resources();
+        self.retire_gateway_configurations();
         if login == Login::Blocks && self.login_running() {
             return Err(RuntimeError::invalid("authentication is running"));
         }

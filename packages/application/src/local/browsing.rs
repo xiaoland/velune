@@ -598,6 +598,7 @@ impl CoreRuntime {
         snapshot: ConversationSnapshot,
         key: &str,
         is_new: bool,
+        project: Option<&velune_agent_runtime::native::codex_projects::NativeProject>,
     ) -> Result<(), RuntimeError> {
         let previous = self.native_snapshot();
         let previous_runtime = self.next_turn_runtime_id.clone();
@@ -643,7 +644,7 @@ impl CoreRuntime {
             self.prepare_runtime(&runtime_id, key)?;
             if runtime.type_id != RuntimeKind::Pi {
                 if is_new {
-                    self.native_create(cwd.as_deref(), key)?;
+                    self.native_create(cwd.as_deref(), key, project)?;
                 } else {
                     self.native_resume(&snapshot, key)?;
                 }

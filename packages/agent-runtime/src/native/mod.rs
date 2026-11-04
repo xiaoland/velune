@@ -386,6 +386,26 @@ impl NativeSession {
         }
     }
     pub fn create(&mut self, cwd: Option<&Path>, runtime_id: &str) -> Result<ConversationSnapshot> {
+        self.create_with_project(cwd, runtime_id, None)
+    }
+    /// A project is an explicit workspace choice, separate from the command cwd.
+    pub fn create_in_project(
+        &mut self,
+        cwd: Option<&Path>,
+        runtime_id: &str,
+        project: &codex_projects::NativeProject,
+    ) -> Result<ConversationSnapshot> {
+        if self.config.kind != NativeKind::Codex166 {
+            return Err(Error::new("此运行时不支持选择整个 Codex 项目"));
+        }
+        self.create_with_project(cwd, runtime_id, Some(project))
+    }
+    fn create_with_project(
+        &mut self,
+        cwd: Option<&Path>,
+        runtime_id: &str,
+        project: Option<&codex_projects::NativeProject>,
+    ) -> Result<ConversationSnapshot> {
         self.ensure_idle()?;
         self.validate_cwd(cwd)?;
         let gateway = if self.gateway_turn {
@@ -395,7 +415,9 @@ impl NativeSession {
         };
         let outcome: Result<()> = (|| {
             match self.config.kind {
-                NativeKind::Codex | NativeKind::Codex166 => self.codex_create(cwd, runtime_id)?,
+                NativeKind::Codex | NativeKind::Codex166 => {
+                    self.codex_create(cwd, runtime_id, project)?
+                }
                 NativeKind::DeepSeek => self.dsh_create(cwd, runtime_id)?,
                 NativeKind::ClaudeCode => self.claude_create(cwd, runtime_id)?,
             };

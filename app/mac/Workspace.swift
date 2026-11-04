@@ -53,6 +53,7 @@ import VeluneBindings
         self.store = store
         pendingStart = start
         super.init(id: id)
+        reading.table.observeFind(find)
     }
 
     override func activate() {
@@ -172,6 +173,7 @@ import VeluneBindings
 
     /// Opens the find bar on the shown conversation, or brings its field forward.
     func beginFind() {
+        outlineCollapsed = false
         find.isShown = true
         find.focusRequest &+= 1
     }
@@ -636,11 +638,22 @@ struct WindowSeed: Codable, Hashable {
         } else { nil }
         let runtimeID: String? = if case .runtime(let id) = group { id } else { project?.nativeRuntimeId }
         let targetRuntimeID = runtimeID ?? composerContext(for: focused).nextTurnRuntimeID
+        let selectedProject: NewConversationProject? = project.flatMap { project in
+            guard let runtimeID = project.nativeRuntimeId,
+                  let choice = application.workingDirectoryProjects[runtimeID]?.first(where: { $0.project == project.path && $0.canSelectProject }) else { return nil }
+            return NewConversationProject(key: choice.project, name: choice.name, runtimeID: runtimeID, directories: choice.directories)
+        }
+        // A native project's group means that whole project; do not quietly
+        // reduce an unavailable project to its first directory.
+        if project?.nativeRuntimeId != nil && selectedProject == nil {
+            list.recordProblem("此项目当前没有可用的完整工作区，请刷新项目或选择工作目录", source: "新建会话")
+            return
+        }
         let tab: ConversationTab?
         if let shown = focusedEditor as? ConversationTab, shown.store.isUnsentConversation {
-            tab = shown.store.createConversation(runtimeID: targetRuntimeID, cwd: project?.primaryFolder) ? shown : nil
+            tab = shown.store.createConversation(runtimeID: targetRuntimeID, cwd: project?.primaryFolder, project: selectedProject) ? shown : nil
         } else {
-            tab = openNewConversationTab(runtimeID: targetRuntimeID, cwd: project?.primaryFolder)
+            tab = openNewConversationTab(runtimeID: targetRuntimeID, cwd: project?.primaryFolder, project: selectedProject)
         }
         guard let tab else { return }
         if let runtimeID { composerContext(for: tab).selectNextTurnRuntime(runtimeID) }
@@ -650,9 +663,9 @@ struct WindowSeed: Codable, Hashable {
     /// was followed, so the shared input is navigated to as selecting the tab
     /// would. `start` only reads; the snapshot already exists (the preview
     /// branch would otherwise recreate it with the default target).
-    private func openNewConversationTab(runtimeID: String? = nil, cwd: String? = nil) -> ConversationTab? {
+    private func openNewConversationTab(runtimeID: String? = nil, cwd: String? = nil, project: NewConversationProject? = nil) -> ConversationTab? {
         let store = ConversationStore(device: application)
-        guard store.createConversation(runtimeID: runtimeID, cwd: cwd) else { return nil }
+        guard store.createConversation(runtimeID: runtimeID, cwd: cwd, project: project) else { return nil }
         let tab = ConversationTab(store: store, start: {
             store.start(loadFirstConversation: false, newConversation: false)
         })
@@ -909,6 +922,16 @@ struct WindowSeed: Codable, Hashable {
         if select(showing: conversationID) { return }
         if focused.store.isSideChat { openInNewTab(conversationID) }
         else { focused.store.openLinkedConversation(id: conversationID) }
+    }
+
+    /// Notifications preserve the current editor. Reuse a conversation tab
+    /// in this device's windows, otherwise add one in its last focused window.
+    static func openNotificationConversation(_ conversationID: String, application: DeviceStore) -> ConversationWindowModel? {
+        let windows = openWindows.filter { $0.application === application }
+        let existing = windows.first { $0.tab(showing: conversationID) != nil }
+        guard let target = existing ?? windows.first(where: { $0.focused.store === application.focusedConversation }) ?? windows.first else { return nil }
+        target.openInNewTab(conversationID)
+        return target
     }
 
     /// Ordinary conversation commands use the chosen editor presentation.
@@ -1348,7 +1371,7 @@ struct WindowSeed: Codable, Hashable {
 
     func tab(showing conversationID: String) -> (Pane, ConversationTab)? {
         for pane in orderedPanes {
-            if let tab = pane.tabs.compactMap({ $0 as? ConversationTab }).first(where: { $0.store.selectedConversationID == conversationID }) { return (pane, tab) }
+            if let tab = pane.tabs.compactMap({ $0 as? ConversationTab }).first(where: { $0.store.selectedConversationID == conversationID || $0.store.reachingConversationID == conversationID }) { return (pane, tab) }
         }
         return nil
     }

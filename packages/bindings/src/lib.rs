@@ -1136,12 +1136,34 @@ impl VeluneApplication {
         cwd: Option<String>,
         selection: Option<ModelSelection>,
     ) -> Result<SnapshotResult, BindingError> {
+        let project = None;
         request!(
             self,
             "create_conversation",
             CreateConversation {
                 runtime_id,
                 cwd,
+                project,
+                selection
+            }
+        )
+    }
+
+    pub fn create_conversation_in_project(
+        &self,
+        runtime_id: String,
+        project: String,
+        selection: Option<ModelSelection>,
+    ) -> Result<SnapshotResult, BindingError> {
+        let cwd = None;
+        let project = Some(project);
+        request!(
+            self,
+            "create_conversation_in_project",
+            CreateConversation {
+                runtime_id,
+                cwd,
+                project,
                 selection
             }
         )

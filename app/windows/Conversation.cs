@@ -283,12 +283,12 @@ sealed partial class Conversation
         var turn = Turn(text);
         var sentAttachments = Attached.ToList();
         var selection = NextTurn.Model;
+        var targetChoices = ComposerTargetContent();
         var runtimeID = Next;
         var cwd = Target.Unsent && Cwd.Trim().Length > 0 ? Cwd.Trim() : null;
         var inputId = composerInput?.Id;
         var oldCache = ComposerCachePath;
-        try { await FlushComposer(); }
-        catch (Exception failure) { Problems.Report("同步输入", failure, Device); return false; }
+        if (!await PrepareComposerSubmission()) return false;
         Attached.RemoveAll(sentAttachments.Contains);
         var existing = Snapshot is { } snapshot ? (snapshot.ContextRuntimeId, snapshot.Conversation.Id) : default((string, string)?);
         Busy = true;
@@ -304,10 +304,10 @@ sealed partial class Conversation
                 created = (await Call(NativeOperation.ConversationWrite, application => application.CreateConversation(runtimeID, cwd, selection))).Snapshot
                     ?? throw new InvalidOperationException("设备没有返回新会话");
                 if (inputId == null || composerOwner == null) throw new InvalidOperationException("输入身份尚未恢复");
-                pendingCreation = new(inputId, composerOwner, created.Conversation.RuntimeId, created.Conversation.Id);
+                pendingCreation = new(inputId, composerOwner, created.Conversation.RuntimeId, created.Conversation.Id, targetChoices);
                 CacheComposer();
-                Merge(created); CacheComposer(); Notify();
-                await CompleteCreation();
+                await CompleteCreation(created);
+                Notify();
                 if (oldCache != ComposerCachePath && File.Exists(oldCache)) File.Delete(oldCache);
                 existing = (created.ContextRuntimeId, created.Conversation.Id);
             }
@@ -329,11 +329,8 @@ sealed partial class Conversation
             Sending = null;
             // What was sent goes back to the composer, ahead of anything attached since.
             Attached.InsertRange(0, sentAttachments);
-            if (created != null)
-            {
-                Merge(created);
-                SaveIntent();
-            }
+            if (created != null && pendingCreation == null) Merge(created);
+            ComposerChanged();
             Problems.Report("发送消息", failure, Device);
             return false;
         }
@@ -469,7 +466,7 @@ sealed partial class Conversation
     void SaveIntent()
     {
         intentOwner = composerOwner;
-        ComposerChanged();
+        ComposerTargetChanged();
         _ = PollComposer();
     }
 

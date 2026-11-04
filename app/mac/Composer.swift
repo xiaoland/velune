@@ -4,19 +4,10 @@ import VeluneBindings
 import AppKit
 import QuickLookThumbnailing
 
-/// Choices kept by a window's independent composer, separate from session drafts.
-@MainActor final class ComposerIntent {
-    var kept = ConversationChoices() { didSet { if kept != oldValue { changed?() } } }
-    var changed: (() -> Void)?
-}
-
+/// Content identity owns only text and persistent attachment references.
 struct SavedComposerDraft: Codable, Equatable {
     var text: String
     var attachments: [URL]
-    var choices: ConversationChoices
-    var choiceEdited: Bool?
-    var runtimeOwnerID: String? = nil
-    var foreignChoices: [ComposerRuntimeChoice]? = nil
 }
 
 /// Editing state of the composer in one window. The text view owns the text
@@ -25,14 +16,9 @@ struct SavedComposerDraft: Codable, Equatable {
 @MainActor final class ComposerModel: ObservableObject {
     let id: UUID
     let followsConversation: Bool
-    let intent: ComposerIntent?
-    private(set) var runtimeOwnerID: String?
-    private var foreignChoices: [ComposerRuntimeChoice] = []
     init(followsConversation: Bool = true, id: UUID = UUID()) {
         self.id = id
         self.followsConversation = followsConversation
-        intent = followsConversation ? nil : ComposerIntent()
-        intent?.changed = { [weak self] in self?.hasChoiceEdits = true; self?.draftChanged() }
     }
     @Published private(set) var isEmpty = true
     @Published private(set) var isFocused = false
@@ -46,9 +32,7 @@ struct SavedComposerDraft: Codable, Equatable {
     private var shownBefore = false
     let draftChanges = PassthroughSubject<Void, Never>()
     private(set) var revision: UInt64 = 0
-    private(set) var intentInitialized = false
-    private(set) var hasChoiceEdits = false
-    var hasUnfinishedInput: Bool { !text.isEmpty || !attachments.isEmpty || hasChoiceEdits || undoManagers.values.contains { $0.canUndo } }
+    var hasUnfinishedInput: Bool { !text.isEmpty || !attachments.isEmpty || undoManagers.values.contains { $0.canUndo } }
     private var selection = NSRange(location: 0, length: 0)
     private var scrollOrigin = NSPoint.zero
     private var conversationRevisions: [String: UInt64] = [:]
@@ -61,7 +45,7 @@ struct SavedComposerDraft: Codable, Equatable {
         draftChanges.send(); objectWillChange.send()
     }
     /// Publish complete semantic edits, so other editors never receive a
-    /// half-cleared input or choices before initialization has settled.
+    /// half-cleared input while its attachments are being updated.
     private func changeDraft(_ edit: () -> Void) {
         changingDraft = true
         edit()
@@ -76,11 +60,6 @@ struct SavedComposerDraft: Codable, Equatable {
             store.setDraft(text, for: id)
             attachmentsByConversation[id] = attachments
         } else { restore(text, attachments: attachments) }
-    }
-    func initializeIntent(from store: ConversationStore) {
-        guard let intent, !intentInitialized, store.loadedConversationID != nil else { return }
-        intentInitialized = true
-        changeDraft { intent.kept = store.keptComposerChoices; hasChoiceEdits = false }
     }
     private(set) var text = "" { didSet { if text != oldValue { draftChanged() } } }
     private var undoManagers: [String: UndoManager] = [:]
@@ -100,24 +79,13 @@ struct SavedComposerDraft: Codable, Equatable {
 
     var submission: String { text }
     var savedDraft: SavedComposerDraft? {
-        intent.map { SavedComposerDraft(text: text, attachments: attachments, choices: $0.kept, choiceEdited: hasChoiceEdits, runtimeOwnerID: runtimeOwnerID, foreignChoices: foreignChoices) }
+        followsConversation ? nil : SavedComposerDraft(text: text, attachments: attachments)
     }
     func restoreSavedDraft(_ saved: SavedComposerDraft?) {
         guard !followsConversation, let saved else { return }
-        intentInitialized = true
         changeDraft {
-            runtimeOwnerID = saved.runtimeOwnerID; foreignChoices = saved.foreignChoices ?? []
-            intent?.kept = saved.choices
             replace(with: saved.text)
             setAttachments(saved.attachments)
-            hasChoiceEdits = saved.choiceEdited ?? false
-        }
-    }
-    func selectRuntime(_ runtime: String, owner: String?) {
-        changeDraft {
-            let changedOwner = runtimeOwnerID != owner
-            runtimeOwnerID = owner; intent?.kept.runtimeID = runtime
-            if changedOwner { draftChanged() }
         }
     }
     func receiveDraft(_ saved: SavedComposerDraft) {
@@ -206,7 +174,7 @@ struct SavedComposerDraft: Codable, Equatable {
         guard text == submitted, attachments == sent else { return }
         if let conversationID, followsConversation { undoManagers[conversationID] = nil }
         else { undoManagers.removeAll() }
-        changeDraft { setAttachments([]); replace(with: ""); hasChoiceEdits = false }
+        changeDraft { setAttachments([]); replace(with: "") }
         if followsConversation, let conversationID { store?.setDraft("", for: conversationID) }
     }
 
@@ -660,24 +628,25 @@ struct ComposerView: View {
     @State private var showingAccessories = false
     @State private var accessoriesHeight: CGFloat = 64
     @State private var availableHeight: CGFloat = .infinity
-    /// The choices fit on the row of the send button. The widths it is
-    /// decided from are not observed, so resizing the pane re-renders the
-    /// composer only when the decision changes.
+    /// Keep the choices beside the send button while the proportionally sized
+    /// editor has room; their intrinsic measurement is independent of resizing.
     @State private var oneRow = true
     @State private var fit = RowFit()
+    @State private var availableWidth: CGFloat = 760
     private final class RowFit {
-        /// The room the composer has, and what its choices take at full length.
-        var width: CGFloat = 760
+        /// What the choices take at full length.
         var controlsWidth: CGFloat = 0
     }
     /// The send button and a little of the status line beside the choices.
     private static let sendWidth: CGFloat = 130
-    private var editorMaximumWidth: CGFloat { CGFloat(appearance.values.composerWidth) }
+    private var editorMaximumWidth: CGFloat {
+        appearance.values.composerWidth(available: availableWidth, reserved: columns ? 2 * (wingWidth + 16) : 0)
+    }
     private func refit() {
         let sideWidth = wingWidth > 0 ? 2 * (wingWidth + 16) : 0
-        let wide = sideWidth > 0 && fit.width >= 640 + sideWidth
+        let wide = sideWidth > 0 && availableWidth >= 640 + sideWidth
         if columns != wide { columns = wide }
-        let value = min(editorMaximumWidth, fit.width - (wide ? sideWidth : 0)) >= fit.controlsWidth + Self.sendWidth
+        let value = appearance.values.composerWidth(available: availableWidth, reserved: wide ? sideWidth : 0) >= fit.controlsWidth + Self.sendWidth
         if oneRow != value { oneRow = value }
     }
     private var wingWidth: CGFloat { max(recipient == nil ? 0 : 156, model.attachments.isEmpty ? 0 : 208) }
@@ -742,7 +711,7 @@ struct ComposerView: View {
         }
         .padding(.horizontal, 16).padding(.top, 10).padding(.bottom, 14)
         .frame(minWidth: 0, maxWidth: .infinity)
-        .onGeometryChange(for: CGFloat.self) { $0.size.width - 32 } action: { fit.width = $0; refit() }
+        .onGeometryChange(for: CGFloat.self) { max(0, $0.size.width - 32) } action: { availableWidth = $0; refit() }
         .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { availableHeight = $0 }
         .onChange(of: model.attachments.count) { _, _ in refit() }
         .onChange(of: recipient) { _, _ in refit() }
@@ -853,7 +822,7 @@ struct ComposerView: View {
             Button("停止", action: store.cancel).disabled(store.isLoading).help("停止当前生成")
         }
         if store.inputSubmissionAllowed, current.action == .queue && store.followUp.canSteer {
-            Button("插入本轮", action: steer).disabled(!current.canSubmitDraft || !store.canSteer)
+            Button("插入本轮", action: steer).disabled(!context.canSteer)
                 .help("将消息插入正在运行的本轮")
         }
         if store.followUp.canStopSubAgents && !store.isGenerating && !store.followUp.waitingForSubAgents {
@@ -1056,7 +1025,9 @@ struct ComposerView: View {
     /// Only a conversation that has not been sent yet can still pick where it works.
     private func workingDirectoryMenu(compact: Bool) -> some View {
         let path = store.loadedConversationWorkingDirectory
-        let name = path.map { URL(fileURLWithPath: $0).lastPathComponent }
+        let selectedProject = context.selectedWorkingProject
+        let name = selectedProject?.name ?? path.map { URL(fileURLWithPath: $0).lastPathComponent }
+        let detail = selectedProject.map { "项目：\($0.name)\n\($0.directories.joined(separator: "\n"))" } ?? path
         return Menu {
             if layout.canChooseLocalWorkingDirectory(context) {
                 Button("选择目录…") { layout.chooseWorkingDirectory(context) }
@@ -1065,6 +1036,9 @@ struct ComposerView: View {
             Button("无工作区") { context.selectWorkingDirectory(nil) }
             ForEach(context.workingDirectoryProjects, id: \.project) { project in
                 Section(project.name) {
+                    if project.canSelectProject {
+                        Button("整个项目（\(project.directories.count) 个文件夹）") { context.selectWorkingProject(project) }
+                    }
                     ForEach(project.directories, id: \.self) { directory in
                         Button(directory) { context.selectWorkingDirectory(directory) }
                     }
@@ -1074,8 +1048,8 @@ struct ComposerView: View {
             Text(Self.pullDownTitle(compact ? Self.shortened(name ?? "无工作区", to: 8) : name ?? "无工作区")).lineLimit(1).truncationMode(.middle).frame(maxWidth: 160, alignment: .leading)
         }
         .fixedSize()
-        .accessibilityLabel("工作目录：\(path ?? "无工作区")")
-        .help(path ?? "无工作区：运行时允许时不指定目录；必须指定时使用执行机器的 ~/Documents/Velune")
+        .accessibilityLabel(detail ?? "无工作区")
+        .help(detail ?? "无工作区：运行时允许时不指定目录；必须指定时使用执行机器的 ~/Documents/Velune")
         .disabled(!context.canChangeWorkingDirectory)
     }
 }

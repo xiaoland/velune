@@ -33,7 +33,6 @@ impl CoreRuntime {
         locations
             .iter()
             .map(|(runtime, location)| {
-                let mut seen = BTreeSet::new();
                 let choices = projects
                     .iter()
                     .filter(|project| {
@@ -51,6 +50,7 @@ impl CoreRuntime {
                             && self.project_record(&project.path).is_some()
                     })
                     .filter_map(|project| {
+                        let mut seen = BTreeSet::new();
                         let directories: Vec<_> = project
                             .primary_folder
                             .iter()
@@ -70,6 +70,12 @@ impl CoreRuntime {
                         Some(WorkingDirectoryProject {
                             project: project.path.clone(),
                             name,
+                            can_select_project: project.native_runtime_id.as_deref()
+                                == Some(*runtime)
+                                && self.runtime_instances.iter().any(|instance| {
+                                    instance.id.as_str() == *runtime
+                                        && instance.type_id == RuntimeKind::Codex166
+                                }),
                             directories,
                         })
                     })

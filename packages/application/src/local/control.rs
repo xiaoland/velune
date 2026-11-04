@@ -78,7 +78,13 @@ impl CoreRuntime {
                 )
             })
             .unwrap_or((&view.context_runtime_id, &view.conversation.id));
-        let runtime = self.runtime_instance(runtime_id)?;
+        let runtime = self
+            .session
+            .execution_configuration
+            .as_ref()
+            .filter(|configuration| configuration.runtime.id == runtime_id)
+            .map(|configuration| &configuration.runtime)
+            .map_or_else(|| self.runtime_instance(runtime_id), Ok)?;
         if !velune_agent_runtime::control::reports_control(runtime.type_id) {
             return Ok(None);
         }

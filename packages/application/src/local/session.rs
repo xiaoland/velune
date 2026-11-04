@@ -29,6 +29,10 @@ pub(super) struct Session {
     pub(super) active_state: ActiveState,
     pub(super) gateway_runner: Option<Runner>,
     pub(super) execution_runtime_id: Option<String>,
+    /// Immutable launch/provider configuration of the prepared execution.
+    pub(super) execution_configuration: Option<super::execution::ExecutionConfiguration>,
+    /// A saved edit takes effect when this execution next prepares, never mid-turn.
+    pub(super) configuration_changed: bool,
     pub(super) model_record_key: Option<String>,
     /// The model the session's turns are sent with, once known; `Some(None)`
     /// is the runtime's own default.

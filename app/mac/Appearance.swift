@@ -17,7 +17,13 @@ struct AppearanceValues: Codable, Equatable, Sendable {
     var messages = AppearanceSize.standard
     var code = AppearanceSize.standard
     var density = AppearanceDensity.standard
-    var composerWidth = 960.0
+    var composerWidthRatio = 0.75
+
+    /// The editor stays centered in the pane. Narrow panes use all their room;
+    /// symmetric recipient and attachment columns reserve equal space beside it.
+    func composerWidth(available: CGFloat, reserved: CGFloat = 0) -> CGFloat {
+        min(max(0, available - reserved), max(560, available * CGFloat(composerWidthRatio)))
+    }
 }
 
 /// Native measurement can run off the main thread; it reads a complete value.
@@ -54,7 +60,7 @@ extension Notification.Name {
         if FileManager.default.fileExists(atPath: target.path) {
             switch Result(catching: { try JSONDecoder().decode(AppearanceValues.self, from: Data(contentsOf: target)) }) {
             case .success(let saved):
-                if saved.composerWidth.isFinite && (640...1440).contains(saved.composerWidth) { values = saved }
+                if saved.composerWidthRatio.isFinite && (0.5...1).contains(saved.composerWidthRatio) { values = saved }
                 else { report("外观配置中的输入区宽度无效") }
             case .failure(let error): report(error.localizedDescription)
             }
@@ -124,9 +130,10 @@ struct AppearanceSettingsSection: View {
             Picker("紧凑程度", selection: $appearance.values.density) {
                 ForEach(AppearanceDensity.allCases, id: \.self) { Text($0.title).tag($0) }
             }.pickerStyle(.segmented)
-            LabeledContent("输入区最大宽度") {
-                Slider(value: $appearance.values.composerWidth, in: 640...1440, step: 40)
-                Text("\(Int(appearance.values.composerWidth)) pt").monospacedDigit().frame(width: 64, alignment: .trailing)
+            LabeledContent("输入区宽度") {
+                Slider(value: $appearance.values.composerWidthRatio, in: 0.5...1, step: 0.05)
+                Text(appearance.values.composerWidthRatio.formatted(.percent.precision(.fractionLength(0))))
+                    .monospacedDigit().frame(width: 48, alignment: .trailing)
             }
             Button("恢复外观默认值") { appearance.values = AppearanceValues() }.disabled(appearance.values == AppearanceValues())
         }

@@ -4,7 +4,9 @@ import VeluneBindings
 
 struct SavedComposerBinding: Codable, Equatable { var inputID: UUID; var revision: UInt64? }
 
-struct SavedComposerPromotion: Codable, Equatable { var inputID: UUID; var runtimeID: String }
+struct SavedComposerPromotion: Codable, Equatable { var inputID: UUID; var runtimeID: String; var choices: ComposerTargetChoices? = nil }
+struct SavedComposerTarget: Codable, Equatable { var choices: ComposerTargetChoices; var revision: UInt64? }
+
 
 /// Serial I/O for a shared directory. A window never becomes its storage owner.
 private final class ComposerInputWorker: @unchecked Sendable {
@@ -14,6 +16,7 @@ private final class ComposerInputWorker: @unchecked Sendable {
     private var executionOwnerID: String?
     private var prepared: [UUID: SavedComposerDraft] = [:]
     private var lastWrites: [String: UInt64] = [:]
+    private var lastTargetWrites: [ComposerContextKey: UInt64] = [:]
     private var attachments: [String: ComposerAttachment] = [:]
     private var sourceVersions: [String: (Date?, Int?)] = [:]
     init(transport: Transport) { self.transport = transport }
@@ -24,8 +27,6 @@ private final class ComposerInputWorker: @unchecked Sendable {
     }
 
     func content(_ draft: SavedComposerDraft) throws -> ComposerInputContent {
-        let owner = try executionOwnerID ?? transport.composerOwnerID()
-        executionOwnerID = owner
         var seen: Set<String> = []
         let files = try draft.attachments.map { url -> ComposerAttachment in
             if let reference = attachments[url.path], !FileManager.default.isReadableFile(atPath: url.path) { return reference }
@@ -43,9 +44,7 @@ private final class ComposerInputWorker: @unchecked Sendable {
             sourceVersions[cache.path] = (cachedVersion.contentModificationDate, cachedVersion.fileSize)
             return reference
         }.filter { seen.insert($0.id).inserted }
-        return ComposerInputContent(text: draft.text, attachments: files, runtimeId: draft.choices.runtimeID, runtimeOwnerId: draft.choices.runtimeID == nil ? nil : draft.runtimeOwnerID ?? owner,
-            choices: (draft.foreignChoices ?? []) + draft.choices.choices.sorted { $0.key < $1.key }.map { ComposerRuntimeChoice(ownerId: owner, runtimeId: $0.key, choice: $0.value) },
-            choiceEdited: draft.choiceEdited ?? false)
+        return ComposerInputContent(text: draft.text, attachments: files)
     }
 
     func perform(_ operation: ComposerInputOperation) throws -> (ComposerInputState, [UUID: SavedComposerDraft], String) {
@@ -58,7 +57,7 @@ private final class ComposerInputWorker: @unchecked Sendable {
         if case .ensure(_, let id, let seed) = operation,
            let input = result.inputs.first(where: { $0.id.caseInsensitiveCompare(id) == .orderedSame }) {
             let old = previous?.inputs.first { $0.id.caseInsensitiveCompare(id) == .orderedSame }
-            if old == nil && input.revision == 1 || old?.revision == 1 && old?.content == ComposerInputContent(text: "", attachments: [], runtimeId: nil, runtimeOwnerId: nil, choices: [], choiceEdited: false) && input.revision == 2 && input.content == seed { lastWrites[id] = input.revision }
+            if old == nil && input.revision == 1 || old?.revision == 1 && old?.content == ComposerInputContent(text: "", attachments: []) && input.revision == 2 && input.content == seed { lastWrites[id] = input.revision }
         }
         var contents: [UUID: SavedComposerDraft] = [:]
         for input in result.inputs {
@@ -80,9 +79,12 @@ private final class ComposerInputWorker: @unchecked Sendable {
                 }
                 return url
             }
-            contents[id] = SavedComposerDraft(text: input.content.text, attachments: urls,
-                choices: ConversationChoices(runtimeID: input.content.runtimeId,
-                    choices: Dictionary(uniqueKeysWithValues: input.content.choices.filter { $0.ownerId == executionOwnerID }.map { ($0.runtimeId, $0.choice) })), choiceEdited: input.content.choiceEdited, runtimeOwnerID: input.content.runtimeOwnerId, foreignChoices: input.content.choices.filter { $0.ownerId != executionOwnerID })
+            contents[id] = SavedComposerDraft(text: input.content.text, attachments: urls)
+        }
+        if case .ensureTarget(let context, let seed) = operation,
+           let target = result.targets.first(where: { $0.context == context }), target.choices == seed,
+           previous?.targets.first(where: { $0.context == context }) == nil || previous?.targets.first(where: { $0.context == context })?.choices == ComposerTargetChoices(runtimeId: nil, runtimeOwnerId: nil, choices: [], choiceEdited: false) {
+            lastTargetWrites[context] = target.revision
         }
         prepared = contents
         return (result, contents, executionOwnerID!)
@@ -103,6 +105,14 @@ private final class ComposerInputWorker: @unchecked Sendable {
         lastWrites[key] = result.0.inputs.first { $0.id.caseInsensitiveCompare(key) == .orderedSame }?.revision
         return result
     }
+    func saveTarget(context: ComposerContextKey, observed: UInt64?, choices: ComposerTargetChoices, chainOwnWrites: Bool) throws -> (ComposerInputState, [UUID: SavedComposerDraft], String) {
+        let current = state?.targets.first { $0.context == context }?.revision
+        let expected = chainOwnWrites && current != nil && lastTargetWrites[context] == current ? current : observed
+        let result = try perform(.saveTarget(context: context, expectedRevision: expected, choices: choices))
+        lastTargetWrites[context] = result.0.targets.first { $0.context == context }?.revision
+        return result
+    }
+
 }
 
 /// Content and context bindings synchronize; each window keeps its own navigation cursor.
@@ -113,6 +123,11 @@ private final class ComposerInputWorker: @unchecked Sendable {
     private(set) var state: ComposerInputState?
     private var contents: [UUID: SavedComposerDraft] = [:]
     private var dirty: [UUID: SavedComposerDraft] = [:]
+    private var targetDirty: [ComposerContextKey: SavedComposerTarget] = [:]
+    private var targetFailures: Set<ComposerContextKey> = []
+    private var ensuringTargets: Set<ComposerContextKey> = []
+    private var previewTargets: [ComposerContextKey: ComposerTargetChoices] = [:]
+    private var submittedTargets: [UUID: ComposerTargetChoices] = [:]
     private var baselines: [UUID: UInt64] = [:]
     private var saveFailures: Set<UUID> = []
     private var available = false
@@ -139,6 +154,78 @@ private final class ComposerInputWorker: @unchecked Sendable {
         guard !conversationID.hasPrefix("tab:"), !conversationID.hasPrefix("side-chat:"), let ownerID else { return nil }
         return .conversation(ownerId: ownerID, conversationId: conversationID)
     }
+    func targetChoices(for conversationID: String) -> ComposerTargetChoices? {
+        guard let context = context(conversationID) else { return nil }
+        return targetDirty[context]?.choices ?? state?.targets.first { $0.context == context }?.choices ?? previewTargets[context]
+    }
+    func targetIssue(for conversationID: String) -> String? {
+        guard worker != nil else { return nil }
+        guard let context = context(conversationID), state != nil else { return "正在恢复目标执行配置" }
+        guard available else { return "目标执行配置尚未同步" }
+        if targetFailures.contains(context) { return "执行配置未同步；重新选择运行时或模型以采用当前配置" }
+        guard targetChoices(for: conversationID) != nil else { return "正在恢复目标执行配置" }
+        return nil
+    }
+    var pendingTargets: [String: SavedComposerTarget] {
+        targetDirty.reduce(into: [:]) { values, item in
+            switch item.key {
+            case .newConversation: values[ConversationStore.draftConversationPrefix + "new-conversation"] = item.value
+            case .conversation(let owner, let id): if owner == ownerID { values[id] = item.value }
+            }
+        }
+    }
+    func restoreTarget(_ conversationID: String, value: SavedComposerTarget) {
+        guard let context = context(conversationID) else {
+            if ownerID == nil { deferred.append { [weak self] in self?.restoreTarget(conversationID, value: value) } }
+            return
+        }
+        guard targetDirty[context] == nil else { return }
+        targetDirty[context] = value
+        saveTarget(conversationID, choices: value.choices)
+    }
+    /// A target is initialized only from its loaded native identity. Opening
+    /// another target while an old transcript is visible never seeds it.
+    func ensureTarget(_ conversationID: String, seed: ComposerTargetChoices) {
+        guard let context = context(conversationID), !ensuringTargets.contains(context), targetDirty[context] == nil else { return }
+        if let current = targetChoices(for: conversationID), current != ComposerTargetChoices(runtimeId: nil, runtimeOwnerId: nil, choices: [], choiceEdited: false) { return }
+        guard let worker else { previewTargets[context] = seed; return }
+        ensuringTargets.insert(context)
+        worker.queue.async { [weak self] in
+            let result = Result { try worker.perform(.ensureTarget(context: context, seed: seed)) }
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.ensuringTargets.remove(context)
+                switch result {
+                case .success(let value): self.apply(value)
+                case .failure(let error): self.available = false; self.changes.send(); self.device?.recordProblem(error, source: "恢复目标执行配置")
+                }
+            }
+        }
+    }
+    func saveTarget(_ conversationID: String, choices: ComposerTargetChoices, userEdit: Bool = false) {
+        guard let context = context(conversationID) else { return }
+        guard let worker else { previewTargets[context] = choices; changes.send(); return }
+        let latest = state?.targets.first { $0.context == context }?.revision
+        // Only a new explicit choice can accept the latest observed target.
+        // Reconnect, restoration and queued retries keep their original CAS.
+        let baseline = userEdit ? latest : targetDirty[context]?.revision ?? latest
+        targetDirty[context] = .init(choices: choices, revision: baseline)
+        changes.send()
+        worker.queue.async { [weak self] in
+            let result = Result { try worker.saveTarget(context: context, observed: baseline, choices: choices, chainOwnWrites: userEdit) }
+            DispatchQueue.main.async {
+                guard let self else { return }
+                switch result {
+                case .success(let value):
+                    self.targetFailures.remove(context)
+                    if self.targetDirty[context]?.choices == choices { self.targetDirty[context] = nil }
+                    self.apply(value); self.changes.send()
+                case .failure(let error): self.targetFailures.insert(context); self.changes.send(); self.device?.recordProblem(error, source: "同步目标执行配置")
+                }
+            }
+        }
+    }
+    func captureTarget(_ id: UUID, choices: ComposerTargetChoices) { submittedTargets[id] = choices }
     func inputID(for conversationID: String) -> UUID? {
         guard let context = context(conversationID) else { return nil }
         if worker == nil { return previewBindings[context] }
@@ -169,13 +256,6 @@ private final class ComposerInputWorker: @unchecked Sendable {
         guard dirty[id] == nil else { return }
         dirty[id] = draft; baselines[id] = revision
         saveNow(id, draft: draft)
-    }
-    func needsNewSeed(_ conversationID: String) -> Bool {
-        guard conversationID.hasPrefix(ConversationStore.draftConversationPrefix) else { return false }
-        guard let id = inputID(for: conversationID) else { return true }
-        if worker == nil { return contents[id] == nil }
-        guard let input = state?.inputs.first(where: { UUID(uuidString: $0.id) == id }) else { return true }
-        return input.revision == 1 && input.content == ComposerInputContent(text: "", attachments: [], runtimeId: nil, runtimeOwnerId: nil, choices: [], choiceEdited: false)
     }
 
     func poll(force: Bool = false) {
@@ -213,6 +293,16 @@ private final class ComposerInputWorker: @unchecked Sendable {
                 saveFailures.remove(id); saveNow(id, draft: draft)
             }
         }
+        for context in Array(targetFailures) {
+            guard let pending = targetDirty[context], let received = result.0.targets.first(where: { $0.context == context }) else { continue }
+            if received.choices == pending.choices { targetDirty[context] = nil; targetFailures.remove(context); changes.send() }
+            else if received.revision == pending.revision {
+                targetFailures.remove(context)
+                let id: String
+                switch context { case .newConversation: id = ConversationStore.draftConversationPrefix + "new-conversation"; case .conversation(_, let conversation): id = conversation }
+                saveTarget(id, choices: pending.choices)
+            }
+        }
         if !deferred.isEmpty { let waiting = deferred; deferred.removeAll(); waiting.forEach { $0() } }
         retryAssociations()
     }
@@ -232,7 +322,7 @@ private final class ComposerInputWorker: @unchecked Sendable {
             }
             return
         }
-        let seed = model.savedDraft ?? SavedComposerDraft(text: "", attachments: [], choices: ConversationChoices(), choiceEdited: false)
+        let seed = model.savedDraft ?? SavedComposerDraft(text: "", attachments: [])
         let id = model.id
         worker.queue.async { [weak self] in
             let result = Result {
@@ -307,9 +397,7 @@ private final class ComposerInputWorker: @unchecked Sendable {
     func consumeNewConversationInput(_ sent: ComposerModel) {
         let draftID = ConversationStore.draftConversationPrefix + "new-conversation"
         guard inputID(for: draftID) == sent.id else { return }
-        let kept = sent.savedDraft
         let fresh = ComposerModel(followsConversation: false)
-        fresh.restoreSavedDraft(SavedComposerDraft(text: "", attachments: [], choices: kept?.choices ?? ConversationChoices(), choiceEdited: kept?.choiceEdited ?? false, runtimeOwnerID: kept?.runtimeOwnerID, foreignChoices: kept?.foreignChoices))
         bind(draftID, input: fresh)
     }
     /// A failed first send hands the consumed input back to the global new
@@ -324,7 +412,7 @@ private final class ComposerInputWorker: @unchecked Sendable {
     }
     func promote(_ model: ComposerModel, to conversationID: String, runtimeID: String) {
         guard worker != nil, ownerID != nil else { return }
-        promotions[conversationID] = .init(inputID: model.id, runtimeID: runtimeID)
+        promotions[conversationID] = .init(inputID: model.id, runtimeID: runtimeID, choices: submittedTargets.removeValue(forKey: model.id))
         if let draft = model.savedDraft { saveNow(model.id, draft: draft) }
         retryAssociations()
     }
@@ -347,8 +435,15 @@ private final class ComposerInputWorker: @unchecked Sendable {
     private func run(_ worker: ComposerInputWorker, _ operation: ComposerInputOperation) {
         if case .bind(let context, _, _) = operation { guard runningBindings.insert(context).inserted else { return } }
         if case .promote(_, _, let conversation, _) = operation { guard runningPromotions.insert(conversation).inserted else { return } }
+        let promotionSeed: ComposerTargetChoices?
+        if case .promote(_, _, let conversation, _) = operation { promotionSeed = promotions[conversation]?.choices } else { promotionSeed = nil }
         worker.queue.async { [weak self] in
-            let result = Result { try worker.perform(operation) }
+            let result = Result {
+                if case .promote(_, let owner, let conversation, _) = operation, let promotionSeed {
+                    _ = try worker.perform(.ensureTarget(context: .conversation(ownerId: owner, conversationId: conversation), seed: promotionSeed))
+                }
+                return try worker.perform(operation)
+            }
             DispatchQueue.main.async {
                 guard let self else { return }
                 if case .bind(let context, _, _) = operation { self.runningBindings.remove(context) }

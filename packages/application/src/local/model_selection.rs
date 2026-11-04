@@ -196,6 +196,15 @@ impl CoreRuntime {
         selection: Option<&ModelSelection>,
         is_new: bool,
     ) -> Result<(), RuntimeError> {
+        self.prepare_with_project(snapshot, selection, is_new, None)
+    }
+    pub(super) fn prepare_with_project(
+        &mut self,
+        snapshot: ConversationSnapshot,
+        selection: Option<&ModelSelection>,
+        is_new: bool,
+        project: Option<&velune_agent_runtime::native::codex_projects::NativeProject>,
+    ) -> Result<(), RuntimeError> {
         self.ensure_work_ended()?;
         let conversation_id = snapshot.conversation.id.clone();
         if self
@@ -210,7 +219,7 @@ impl CoreRuntime {
             return Ok(());
         }
         if let Some(ModelSelection::Managed { model_record_key }) = selection {
-            self.prepare_snapshot(snapshot, model_record_key, is_new)?;
+            self.prepare_snapshot(snapshot, model_record_key, is_new, project)?;
         } else {
             let native = match selection {
                 Some(ModelSelection::Native {
@@ -221,7 +230,7 @@ impl CoreRuntime {
             };
             let previous = self.native_snapshot();
             let previous_selection = self.session.model_selection.clone();
-            let result = self.prepare_native_snapshot(&snapshot, native, is_new);
+            let result = self.prepare_native_snapshot(&snapshot, native, is_new, project);
             if let Err(error) = result {
                 let _ = self.shutdown_active();
                 if let Some(snapshot) = previous {
@@ -267,6 +276,7 @@ impl CoreRuntime {
         snapshot: &ConversationSnapshot,
         native: Option<(Option<String>, &str)>,
         is_new: bool,
+        project: Option<&velune_agent_runtime::native::codex_projects::NativeProject>,
     ) -> Result<(), RuntimeError> {
         let runtime = self
             .runtime_instance(&snapshot.conversation.runtime_id)?
@@ -288,6 +298,7 @@ impl CoreRuntime {
         )
         .map_err(|error| RuntimeError::context("运行时版本检查", error))?;
         self.shutdown_active()?;
+        self.capture_execution_configuration(&runtime, None);
         self.session.execution_runtime_id = Some(runtime.id.clone());
         if runtime.type_id == RuntimeKind::Pi {
             let servers = self.collaboration_servers();
@@ -346,9 +357,11 @@ impl CoreRuntime {
                             .reference_context(context)
                             .map_err(|error| RuntimeError::context("编辑引用上下文", error))?;
                     }
-                    session
-                        .create(cwd, &runtime.id)
-                        .map_err(|error| RuntimeError::context("原生会话创建", error))?;
+                    match project {
+                        Some(project) => session.create_in_project(cwd, &runtime.id, project),
+                        None => session.create(cwd, &runtime.id),
+                    }
+                    .map_err(|error| RuntimeError::context("原生会话创建", error))?;
                 }
             } else {
                 let native_id = snapshot

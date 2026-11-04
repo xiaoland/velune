@@ -3,6 +3,7 @@ import SwiftUI
 struct LegacyComposerEntry: Identifiable {
     var id: String
     var content: ComposerInputContent
+    var target: ComposerTargetChoices? = nil
     var title: String { String(content.text.split(whereSeparator: \.isNewline).first?.prefix(40) ?? "本机输入".prefix(40)) }
 }
 
@@ -45,7 +46,7 @@ final class ConversationModel: ObservableObject {
             inputRuntimeOwner = composerOwner; composerChoiceEdited = true
             var kept = choices[runtimeID] ?? .init(model: nil, effort: nil, permissionMode: nil)
             kept.model = selection; choices[runtimeID] = kept
-            composerChanged()
+            targetChanged()
         }
     }
     @Published private(set) var destination: DraftDestination
@@ -66,6 +67,13 @@ final class ConversationModel: ObservableObject {
     @Published private(set) var legacyInput: ComposerInputContent?
     var legacyInputs: [LegacyComposerEntry] = []
     private var composerDirty = false
+    private var contentGeneration: UInt64 = 0
+    private var sharedTarget: ComposerTarget?
+    private var targetDirty = false
+    private var targetBaseline: UInt64?
+    private var observedTargetRevision: UInt64?
+    private var targetWriteFailed = false
+    private var legacyTarget: ComposerTargetChoices?
     private var composerUnbound = false
     private var composerRestored = false
     private var composerBindingRevision: UInt64?
@@ -94,6 +102,7 @@ final class ConversationModel: ObservableObject {
         destination = .init(runtime: target.runtime, cwd: target.cwd)
     }
 
+    var canEditTarget: Bool { peer == "preview" || composerLoaded && sharedTarget != nil }
     var runtimeID: String { inputRuntime ?? snapshot?.contextRuntimeId ?? destination.runtime }
     var title: String {
         if snapshot?.conversation.parentConversationId != nil { return target.title }
@@ -108,22 +117,25 @@ final class ConversationModel: ObservableObject {
     var isNew: Bool { snapshot == nil && target.conversation == nil }
     var composerState: ComposerState {
         var cached = sharedInput; cached?.content = composerContent
-        return .init(text: draft, selection: selection, following: following, offset: readingOffset, destination: destination, choices: choices, sharedInput: cached, composerPending: composerDirty, composerBaseline: composerBaseline, legacyInput: legacyInput, composerUnbound: composerUnbound, composerDirectoryRevision: composerDirectoryRevision, pendingCreation: pendingCreation, composerBindingRevision: composerBindingRevision, composerBindingBaseline: composerBindingBaseline)
+        return .init(sharedTarget: sharedTarget.map { .init(context: $0.context, revision: $0.revision, choices: composerTargetContent) }, targetPending: targetDirty, targetBaseline: targetBaseline, legacyTarget: legacyTarget, text: draft, selection: selection, following: following, offset: readingOffset, destination: destination, choices: choices, sharedInput: cached, composerPending: composerDirty, composerBaseline: composerBaseline, legacyInput: legacyInput, composerUnbound: composerUnbound, composerDirectoryRevision: composerDirectoryRevision, pendingCreation: pendingCreation, composerBindingRevision: composerBindingRevision, composerBindingBaseline: composerBindingBaseline)
     }
     func restore(_ state: ComposerState) {
         applyingComposer = true
         defer { applyingComposer = false }
+        sharedTarget = state.sharedTarget; observedTargetRevision = state.sharedTarget?.revision; targetDirty = state.targetPending ?? false; targetBaseline = state.targetBaseline; legacyTarget = state.legacyTarget
         composerRestored = true; composerBindingRevision = state.composerBindingRevision; composerBindingBaseline = state.composerBindingBaseline
         composerDirectoryRevision = state.composerDirectoryRevision; pendingCreation = state.pendingCreation
         sharedInput = state.sharedInput; composerDirty = state.composerPending ?? false; composerUnbound = state.composerUnbound ?? false; composerBaseline = state.composerBaseline
         legacyInput = state.legacyInput
-        if state.sharedInput == nil, !state.text.isEmpty || !(state.choices ?? [:]).isEmpty {
-            legacyInput = .init(text: state.text, attachments: [], runtimeId: state.destination?.runtime, runtimeOwnerId: nil,
-                choices: (state.choices ?? [:]).map { .init(ownerId: "", runtimeId: $0.key, choice: $0.value) }, choiceEdited: true)
+        if state.composerSchema != 2, state.sharedInput != nil || !state.text.isEmpty || !(state.choices ?? [:]).isEmpty {
+            // Keep old local work behind the existing explicit restore action.
+            legacyInput = state.sharedInput?.content ?? .init(text: state.text, attachments: [])
+            legacyTarget = .init(runtimeId: state.destination?.runtime, runtimeOwnerId: nil, choices: (state.choices ?? [:]).map { .init(ownerId: "", runtimeId: $0.key, choice: $0.value) }, choiceEdited: true)
+            sharedInput = nil; composerDirty = false; composerUnbound = false
         }
-        inputAttachments = state.sharedInput?.content.attachments ?? []
-        composerChoiceEdited = state.sharedInput?.content.choiceEdited ?? false
-        inputRuntime = state.sharedInput?.content.runtimeId; inputRuntimeOwner = state.sharedInput?.content.runtimeOwnerId
+        inputAttachments = sharedInput?.content.attachments ?? []
+        composerChoiceEdited = state.sharedTarget?.choices.choiceEdited ?? false
+        inputRuntime = state.sharedTarget?.choices.runtimeId; inputRuntimeOwner = state.sharedTarget?.choices.runtimeOwnerId
         if let saved = state.destination { destination = saved }
         choices = state.choices ?? [runtimeID: .init(model: state.selection, effort: nil, permissionMode: nil)]
         restoringSelection = true
@@ -136,14 +148,14 @@ final class ConversationModel: ObservableObject {
         onComposerChange?(self)
     }
     func chooseRuntime(_ runtime: String) {
-        guard isNew, !busy, runtime != runtimeID else { return }
+        guard isNew, !busy, canEditTarget, runtime != runtimeID else { return }
         // The draft's identity stays fixed while its sending destination changes.
         destination.runtime = runtime; inputRuntime = runtime; inputRuntimeOwner = composerOwner; composerChoiceEdited = true
         restoringSelection = true
         selection = choices[runtime]?.model
         restoringSelection = false
         models = []
-        composerChanged()
+        targetChanged()
     }
     func loadModels() async {
         let runtime = runtimeID
@@ -158,7 +170,7 @@ final class ConversationModel: ObservableObject {
             guard runtimeID == runtime, !Task.isCancelled else { return }
             runtimeAvailable = true
             models = result.0
-            if needsDefault, choices[runtime] == nil, sharedInput?.content.runtimeOwnerId == nil {
+            if needsDefault, choices[runtime] == nil, sharedTarget?.choices.runtimeOwnerId == nil {
                 restoringSelection = true
                 defer { restoringSelection = false }
                 if let defaults = result.1?.runtimes.first(where: { $0.runtimeId == runtime }) {
@@ -273,10 +285,12 @@ final class ConversationModel: ObservableObject {
         guard canSend else { return }
         let runtime = runtimeID, cwd = cwd, selection = selection
         let submittedContent = composerContent
+        let submittedGeneration = contentGeneration
+        let submittedTarget = composerTargetContent
         act("发送消息") {
             try await self.flushComposer()
             guard let input = self.sharedInput else { throw MobileError.unavailable }
-            let choice = submittedContent.choices.first { $0.runtimeId == runtime && $0.ownerId == self.composerOwner }?.choice
+            let choice = submittedTarget.choices.first { $0.runtimeId == runtime && $0.ownerId == self.composerOwner }?.choice
             self.sending = text
             defer { self.sending = nil }
             if self.snapshot == nil {
@@ -285,7 +299,7 @@ final class ConversationModel: ObservableObject {
                     try $0.createConversation(runtimeId: runtime, cwd: cwd, selection: selection)
                 }
                 guard let native = created.snapshot, let owner = self.composerOwner else { throw MobileError.missingConversation }
-                self.pendingCreation = .init(inputID: input.id, ownerID: owner, runtimeID: native.conversation.runtimeId, conversationID: native.conversation.id)
+                self.pendingCreation = .init(inputID: input.id, ownerID: owner, runtimeID: native.conversation.runtimeId, conversationID: native.conversation.id, choices: submittedTarget)
                 self.apply(created)
                 self.onComposerChange?(self)
                 try await self.completeCreation()
@@ -296,7 +310,7 @@ final class ConversationModel: ObservableObject {
                 try $0.sendTurn(sourceRuntimeId: current.contextRuntimeId, conversationId: current.conversation.id,
                     targetRuntimeId: runtime, selection: selection, turn: turn)
             })
-            if self.sharedInput?.id == input.id, self.composerContent == submittedContent {
+            if self.sharedInput?.id == input.id, self.contentGeneration == submittedGeneration, self.composerContent == submittedContent {
                 self.applyingComposer = true
                 self.draft = ""; self.inputAttachments = []; self.composerChoiceEdited = false
                 self.applyingComposer = false
@@ -349,13 +363,41 @@ final class ConversationModel: ObservableObject {
 
 
 extension ConversationModel {
-    private var composerContent: ComposerInputContent {
-        let runtime = inputRuntime ?? (isNew ? destination.runtime : nil)
-        return .init(text: draft, attachments: inputAttachments, runtimeId: runtime, runtimeOwnerId: runtime == nil ? nil : inputRuntimeOwner ?? composerOwner,
-              choices: (sharedInput?.content.choices.filter { $0.ownerId != composerOwner } ?? []) + choices.sorted { $0.key < $1.key }.map { .init(ownerId: composerOwner ?? "", runtimeId: $0.key, choice: $0.value) }, choiceEdited: composerChoiceEdited)
+    private var composerContent: ComposerInputContent { .init(text: draft, attachments: inputAttachments) }
+    private var composerTargetContent: ComposerTargetChoices {
+        let runtime = inputRuntime ?? runtimeID
+        return .init(runtimeId: runtime, runtimeOwnerId: inputRuntimeOwner ?? composerOwner,
+                     choices: (sharedTarget?.choices.choices.filter { $0.ownerId != composerOwner } ?? []) + choices.sorted { $0.key < $1.key }.map { .init(ownerId: composerOwner ?? "", runtimeId: $0.key, choice: $0.value) }, choiceEdited: composerChoiceEdited)
+    }
+    private var composerTargetContext: ComposerContextKey? {
+        guard let owner = composerOwner else { return nil }
+        return (snapshot?.conversation.id ?? target.conversation).map { .conversation(ownerId: owner, conversationId: $0) } ?? .newConversation
+    }
+    private func composerError(_ error: Error) -> String {
+        mobileError(error) + (targetWriteFailed ? "；重新选择以采用当前配置" : "")
+    }
+    private func targetChanged() {
+        guard !applyingComposer else { return }
+        // This method is reached only by an explicit selection/import.
+        targetBaseline = observedTargetRevision ?? sharedTarget?.revision
+        targetDirty = true; onComposerChange?(self)
+        composerSaveTask?.cancel()
+        composerSaveTask = Task { [weak self] in
+            do { try await Task.sleep(for: .milliseconds(250)); try await self?.flushComposer() }
+            catch is CancellationError {} catch { self?.composerFailure = self?.composerError(error); self?.report(error, source: "同步目标执行配置") }
+        }
+    }
+    private func receiveTarget(_ target: ComposerTarget) {
+        applyingComposer = true
+        sharedTarget = target; composerChoiceEdited = target.choices.choiceEdited
+        inputRuntime = target.choices.runtimeId; inputRuntimeOwner = target.choices.runtimeOwnerId
+        choices = Dictionary(uniqueKeysWithValues: target.choices.choices.filter { $0.ownerId == composerOwner }.map { ($0.runtimeId, $0.choice) })
+        restoringSelection = true; selection = choices[runtimeID]?.model; restoringSelection = false
+        applyingComposer = false; onComposerChange?(self)
     }
     private func composerChanged() {
         guard !applyingComposer else { return }
+        contentGeneration &+= 1
         if !composerDirty { composerBaseline = sharedInput?.revision }
         composerDirty = true
         if sharedInput == nil { sharedInput = .init(id: UUID().uuidString.lowercased(), revision: 0, content: composerContent); composerUnbound = true; composerBindingBaseline = composerBindingRevision }
@@ -365,15 +407,13 @@ extension ConversationModel {
             do {
                 try await Task.sleep(for: .milliseconds(250))
                 try await self?.flushComposer()
-            } catch is CancellationError {} catch { self?.composerFailure = mobileError(error); self?.report(error, source: "同步输入") }
+            } catch is CancellationError {} catch { self?.composerFailure = self?.composerError(error); self?.report(error, source: "同步输入") }
         }
     }
     private func receiveComposer(_ input: ComposerInput) {
         applyingComposer = true
-        sharedInput = input; composerChoiceEdited = input.content.choiceEdited; inputRuntime = input.content.runtimeId; inputRuntimeOwner = input.content.runtimeOwnerId
+        sharedInput = input
         draft = input.content.text; inputAttachments = input.content.attachments
-        choices = Dictionary(uniqueKeysWithValues: input.content.choices.filter { $0.ownerId == composerOwner }.map { ($0.runtimeId, $0.choice) })
-        restoringSelection = true; selection = choices[runtimeID]?.model; restoringSelection = false
         applyingComposer = false
         onComposerChange?(self)
     }
@@ -391,6 +431,17 @@ extension ConversationModel {
             if composerContent == content { composerDirty = false; composerBaseline = nil }
             composerFailure = nil; onComposerChange?(self)
         }
+        while targetDirty, let context = composerTargetContext {
+            let content = composerTargetContent, baseline = targetBaseline
+            let update: ComposerInputUpdate
+            do { update = try await client.application(peer, operation: .conversationWrite) { try $0.manageComposerInputs(operation: .saveTarget(context: context, expectedRevision: baseline, choices: content)) } }
+            catch { targetWriteFailed = true; throw error }
+            targetWriteFailed = false
+            guard let saved = update.state?.targets.first(where: { $0.context == context }) else { throw MobileError.unavailable }
+            sharedTarget = saved; observedTargetRevision = saved.revision; targetBaseline = saved.revision
+            if composerTargetContent == content { targetDirty = false; targetBaseline = nil }
+            composerFailure = nil; onComposerChange?(self)
+        }
         if composerUnbound, let input = sharedInput, let owner = composerOwner {
             let context: ComposerContextKey = (snapshot?.conversation.id ?? target.conversation).map { .conversation(ownerId: owner, conversationId: $0) } ?? .newConversation
             let baseline = composerBindingBaseline
@@ -404,6 +455,9 @@ extension ConversationModel {
         if snapshot == nil {
             let result = try await client.application(peer, operation: .conversationRead) { try $0.readConversation(runtimeId: creation.runtimeID, conversationId: creation.conversationID) }
             apply(result)
+        }
+        if let choices = creation.choices {
+            _ = try await client.application(peer, operation: .conversationWrite) { try $0.manageComposerInputs(operation: .ensureTarget(context: .conversation(ownerId: creation.ownerID, conversationId: creation.conversationID), seed: choices)) }
         }
         _ = try await client.application(peer, operation: .conversationWrite) { try $0.manageComposerInputs(operation: .promote(inputId: creation.inputID, ownerId: creation.ownerID, conversationId: creation.conversationID, runtimeId: creation.runtimeID)) }
         pendingCreation = nil; onComposerChange?(self)
@@ -431,11 +485,22 @@ extension ConversationModel {
                 }
                 var resolved = state
                 if !state.bindings.contains(where: { $0.context == context }) {
-                    let seed = ComposerInputContent(text: "", attachments: [], runtimeId: nil, runtimeOwnerId: nil, choices: [], choiceEdited: false)
+                    let seed = ComposerInputContent(text: "", attachments: [])
                     let created = try await client.application(peer, operation: .conversationWrite) {
                         try $0.manageComposerInputs(operation: .ensure(context: context, inputId: UUID().uuidString.lowercased(), seed: seed))
                     }
                     guard let state = created.state else { throw MobileError.unavailable }; resolved = state
+                }
+                guard isNew || snapshot != nil else { return }
+                if !resolved.targets.contains(where: { $0.context == context }) || resolved.targets.first(where: { $0.context == context })?.choices.runtimeId == nil {
+                    let seed = ComposerTargetChoices(runtimeId: snapshot?.contextRuntimeId ?? destination.runtime, runtimeOwnerId: owner, choices: [], choiceEdited: false)
+                    let created = try await client.application(peer, operation: .conversationWrite) { try $0.manageComposerInputs(operation: .ensureTarget(context: context, seed: seed)) }
+                    guard let state = created.state else { throw MobileError.unavailable }; resolved = state
+                }
+                if let target = resolved.targets.first(where: { $0.context == context }) {
+                    observedTargetRevision = target.revision
+                    if targetDirty && target.choices == composerTargetContent { targetDirty = false; targetBaseline = nil; targetWriteFailed = false }
+                    if !targetDirty { receiveTarget(target) }
                 }
                 composerDirectoryRevision = resolved.revision
                 let binding = resolved.bindings.first { $0.context == context }
@@ -447,16 +512,19 @@ extension ConversationModel {
             composerLoaded = true
             try await flushComposer()
             composerFailure = nil
-        } catch { composerFailure = mobileError(error); report(error, source: "接续输入") }
+        } catch { composerFailure = composerError(error); report(error, source: "接续输入") }
     }
     func importLegacyInput() { if let legacyInput { importLegacyInput(legacyInput) } }
-    func importLegacyInput(_ content: ComposerInputContent) {
+    func importLegacyInput(_ content: ComposerInputContent, target importedTarget: ComposerTargetChoices? = nil) {
         guard let owner = composerOwner else { return }
-        var legacyInput = content
-        legacyInput.runtimeOwnerId = legacyInput.runtimeId == nil ? nil : owner
-        legacyInput.choices = legacyInput.choices.map { .init(ownerId: owner, runtimeId: $0.runtimeId, choice: $0.choice) }
-        receiveComposer(.init(id: UUID().uuidString.lowercased(), revision: 0, content: legacyInput))
-        self.legacyInput = nil; composerUnbound = true; composerBindingBaseline = composerBindingRevision
+        receiveComposer(.init(id: UUID().uuidString.lowercased(), revision: 0, content: content))
+        if var target = importedTarget ?? legacyTarget {
+            target.runtimeOwnerId = target.runtimeId == nil ? nil : owner
+            target.choices = target.choices.map { .init(ownerId: owner, runtimeId: $0.runtimeId, choice: $0.choice) }
+            let context = composerTargetContext ?? .newConversation
+            receiveTarget(.init(context: context, revision: sharedTarget?.revision ?? 0, choices: target)); targetChanged()
+        }
+        self.legacyInput = nil; legacyTarget = nil; composerUnbound = true; composerBindingBaseline = composerBindingRevision
         composerChanged()
         Task { await pollComposer() }
     }

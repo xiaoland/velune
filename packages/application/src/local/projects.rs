@@ -21,6 +21,34 @@ fn native_key(runtime: &str, project: &str) -> String {
 }
 
 impl CoreRuntime {
+    /// Resolve opaque catalog identity here; callers never interpret its spelling.
+    pub(super) fn creation_project(
+        &self,
+        runtime: &RuntimeInstance,
+        key: &str,
+    ) -> Result<velune_agent_runtime::native::codex_projects::NativeProject, RuntimeError> {
+        if runtime.type_id != RuntimeKind::Codex166 {
+            return Err(RuntimeError::invalid(
+                "此运行时不支持整个 Codex 项目；请重新选择项目或工作目录",
+            ));
+        }
+        let (owner, project) = self
+            .native_project(key)
+            .ok_or_else(|| RuntimeError::invalid("所选项目已不可用，请刷新并重新选择"))?;
+        if owner != runtime.id {
+            return Err(RuntimeError::invalid(
+                "所选项目属于另一运行时，请重新选择项目或工作目录",
+            ));
+        }
+        if project.roots.is_empty() {
+            return Err(RuntimeError::invalid("所选项目没有工作区文件夹"));
+        }
+        for root in &project.roots {
+            self.validate_runtime_cwd(runtime, Path::new(&root.path))?;
+        }
+        Ok(project)
+    }
+
     pub(super) fn read_codex_projects(
         &self,
         runtime: &RuntimeInstance,

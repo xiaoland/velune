@@ -46,10 +46,24 @@ pub struct ComposerRuntimeChoice {
 pub struct ComposerInputContent {
     pub text: String,
     pub attachments: Vec<ComposerAttachment>,
+}
+
+/// Execution choices belong to a target, independently of borrowed input content.
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize, uniffi::Record)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ComposerTargetChoices {
     pub runtime_id: Option<String>,
     pub runtime_owner_id: Option<String>,
     pub choices: Vec<ComposerRuntimeChoice>,
     pub choice_edited: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, uniffi::Record)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ComposerTarget {
+    pub context: ComposerContextKey,
+    pub revision: u64,
+    pub choices: ComposerTargetChoices,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, uniffi::Record)]
@@ -86,6 +100,7 @@ pub struct ComposerInputState {
     pub revision: u64,
     pub inputs: Vec<ComposerInput>,
     pub bindings: Vec<ComposerInputBinding>,
+    pub targets: Vec<ComposerTarget>,
     /// Native identity handoffs, including completed operations, for idempotent recovery.
     pub creations: Vec<ComposerCreation>,
 }
@@ -121,6 +136,15 @@ pub enum ComposerInputOperation {
         input_id: String,
         expected_revision: Option<u64>,
         content: ComposerInputContent,
+    },
+    EnsureTarget {
+        context: ComposerContextKey,
+        seed: ComposerTargetChoices,
+    },
+    SaveTarget {
+        context: ComposerContextKey,
+        expected_revision: Option<u64>,
+        choices: ComposerTargetChoices,
     },
     Bind {
         context: ComposerContextKey,

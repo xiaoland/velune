@@ -100,6 +100,7 @@ impl CoreRuntime {
         let result = self.drain_sessions();
         self.serve_collaboration();
         self.sync_due_resources();
+        self.retire_gateway_configurations();
         self.advance_scheduled_tasks();
         self.trim_sessions();
         result

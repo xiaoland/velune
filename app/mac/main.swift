@@ -94,12 +94,11 @@ struct ConversationCommands: Commands {
         CommandMenu("会话") {
             followingConversation {
                 Button(target?.window.composerContext().submission().action == .queue ? "排队" : "发送消息") { target?.send() }
-                    .keyboardShortcut(.return, modifiers: .command)
+                    .keyboardShortcut(shortcuts.sendMode == .commandReturnSends ? KeyboardShortcut(.return, modifiers: .command) : nil)
                     .disabled(target?.window.canTargetConversation != true || target?.window.composerContext().submission().canSubmitDraft != true)
-                // ⌘Return also steers from the composer when Return sends; the menu keeps the key both modes share.
                 Button("插入本轮") { target?.window.composerContext().steer() }
-                    .keyboardShortcut(.return, modifiers: [.command, .option])
-                    .disabled(target?.window.composerContext().canSteer != true)
+                    .keyboardShortcut(.return, modifiers: shortcuts.sendMode == .returnSends ? .command : [.command, .option])
+                    .disabled(target?.window.canTargetConversation != true || target?.window.composerContext().canSteer != true)
                 Button("继续") { target?.window.resume() }
                     .keyboardShortcut(shortcuts[.continueTurn])
                     .disabled(target?.window.canTargetConversation != true || target?.window.composerContext().submission().canResume != true)
@@ -363,6 +362,7 @@ struct VeluneApp: App {
     init() {
         if CommandLine.arguments.contains("--check-composer-ownership") { composerOwnershipCheck() }
         if CommandLine.arguments.contains("--check-new-tab") { composerOwnershipCheck() }
+        if CommandLine.arguments.contains("--check-composer-controls") { composerControlsCheck() }
         if CommandLine.arguments.contains("--check-message-experience") { messageExperienceChecks() }
         let preview = Bundle.main.bundleIdentifier == "local.velune.visual-preview" || CommandLine.arguments.contains { $0.hasPrefix("--preview") }
         let applicationStore = DeviceStore(preview: preview)

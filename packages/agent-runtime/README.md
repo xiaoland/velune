@@ -225,3 +225,5 @@ Claude 只读历史 helper 将原生 end_turn／stop_sequence、API failure 和�
 Codex `model/list.serviceTiers` 报告的档位摊平为变体模型条目：选择 id 为 `<model>~<tier>`，名称为 `<显示名> · <档位名>`；不从模型名称猜测。选择变体后每轮携带档位：0.166 使用 `turn/start.serviceTierForTurn`，0.159 使用 `serviceTier`；普通模型不发送。Codex 0.166 的实时 `item/started.startedAtMs` 作为消息创建时间，后续完成更新保留已有创建时间。
 
 Pi `custom` 消息在 `display != false` 时投影为 `MessageRole::Client`，与 User 的新轮／大纲语义分开，转录中独立呈现，不能吞入工作过程；跨运行时引用保留 `client_notification` 来源。
+
+Codex166 的 `create_in_project` 使用已读取的原生项目身份，向 `thread/start` 同时提交 `projectId` 与 `runtimeWorkspaceRoots`，cwd为首根。项目归属和实际模型／沙箱可见目录是两件事；只提交projectId不会自动注入所有根。普通create继续只按cwd准备，不扩大目录。

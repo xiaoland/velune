@@ -213,10 +213,12 @@ final class Transport: @unchecked Sendable {
     func selectRuntime(id: String) throws -> ConfigurationSnapshot { try withApplication("selectRuntime", .writes, .configurationWrite) { try $0.selectRuntime(id: id) } }
     /// Keep first creation and dispatch under the same shared application lock.
     /// Report the native identity before dispatch so failure never recreates a draft.
-    func createAndSend(runtimeID: String, cwd: String?, selection: ModelSelection?, turn: ComposedTurn, onCreated: (SnapshotResult) -> Void) throws -> SnapshotResult {
+    func createAndSend(runtimeID: String, cwd: String?, project: String? = nil, selection: ModelSelection?, turn: ComposedTurn, onCreated: (SnapshotResult) -> Void) throws -> SnapshotResult {
         let selection = selection
         return try withApplication("sendTurn", .writes, .send) { application in
-            let created = try application.createConversation(runtimeId: runtimeID, cwd: cwd, selection: selection)
+            let created: SnapshotResult
+            if let project { created = try application.createConversationInProject(runtimeId: runtimeID, project: project, selection: selection) }
+            else { created = try application.createConversation(runtimeId: runtimeID, cwd: cwd, selection: selection) }
             onCreated(created)
             guard let native = created.snapshot else { throw TransportError.rejected("运行时未返回新会话") }
             return try application.sendTurn(sourceRuntimeId: native.conversation.runtimeId, conversationId: native.conversation.id, targetRuntimeId: runtimeID, selection: selection, turn: try deliver(turn, using: application))

@@ -27,10 +27,20 @@ struct ConversationStatus: Equatable {
 /// explains them and a click lists everything the records say.
 struct ComposerStatusLine: View {
     @ObservedObject var store: ConversationStore
-    let context: ComposerContext
+    @ObservedObject private var model: ComposerModel
+    private let tab: ConversationTab
     @State private var branch: String?
     @State private var showsDetails = false
 
+    init(store: ConversationStore, context: ComposerContext) {
+        self.store = store
+        self._model = ObservedObject(wrappedValue: context.model)
+        self.tab = context.tab
+    }
+
+    /// Resolve the current target each time intent changes, including while
+    /// the popover is open. A captured next-turn value can name an old account.
+    private var context: ComposerContext { ComposerContext(tab: tab, model: model) }
     private var status: ConversationStatus { store.conversationStatus }
     private var accounts: [ComposerQuotaEntry] { context.composerAccountQuotas }
 

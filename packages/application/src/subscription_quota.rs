@@ -67,6 +67,7 @@ struct ViewBinding {
     binding: Option<Binding>,
     incarnation: String,
 }
+#[derive(Clone)]
 struct Entry {
     // Recreating a deleted provider can reuse its ID, key and credential generation.
     incarnation: String,
@@ -100,6 +101,9 @@ struct State {
 pub(crate) struct SubscriptionQuota {
     home: PathBuf,
     scheduling: velune_gateway::SchedulingState,
+    /// A fork cannot retire an account epoch still held by the old execution.
+    defer_identity_retirement: bool,
+    identity_changes: Arc<Mutex<BTreeSet<Key>>>,
     state: Mutex<State>,
     history: crate::quota_history::QuotaHistory,
 }
@@ -136,11 +140,54 @@ impl SubscriptionQuota {
             history: crate::quota_history::QuotaHistory::new(home.join("quota-history")),
             home,
             scheduling,
+            defer_identity_retirement: false,
+            identity_changes: Arc::default(),
             state: Mutex::new(State::default()),
         });
         service.configure(gateways);
         service
     }
+    /// Keep unchanged observations and account claims; workers/cancellation belong
+    /// to one configuration version, so changing the new one cannot cancel the old.
+    pub(crate) fn fork_configuration(&self, gateways: &[GatewayConfig]) -> Arc<Self> {
+        let state = self.state.lock().expect("quota state");
+        let service = Arc::new(Self {
+            home: self.home.clone(),
+            scheduling: self.scheduling.clone(),
+            defer_identity_retirement: true,
+            identity_changes: self.identity_changes.clone(),
+            history: crate::quota_history::QuotaHistory::new(self.home.join("quota-history")),
+            state: Mutex::new(State {
+                entries: state
+                    .entries
+                    .iter()
+                    .map(|(key, entry)| {
+                        let mut snapshot = entry.clone();
+                        snapshot.cancel = tokio::sync::watch::channel(false).0;
+                        snapshot.running = false;
+                        snapshot.resample = false;
+                        (key.clone(), snapshot)
+                    })
+                    .collect(),
+                alerts: state.alerts.clone(),
+                alert_sequence: state.alert_sequence,
+                ..State::default()
+            }),
+        });
+        drop(state);
+        service.configure(gateways);
+        service
+    }
+
+    pub(crate) fn take_identity_changes(&self) -> BTreeSet<Key> {
+        std::mem::take(
+            &mut *self
+                .identity_changes
+                .lock()
+                .expect("quota identity changes"),
+        )
+    }
+
     pub(crate) fn configure(&self, gateways: &[GatewayConfig]) {
         let desired: BTreeMap<Key, (Option<Binding>, Vec<crate::config::QuotaLimit>)> = gateways
             .iter()
@@ -569,9 +616,17 @@ impl SubscriptionQuota {
                             .as_ref()
                             .is_some_and(|previous| previous != &owner)
                         {
-                            service
-                                .scheduling
-                                .invalidate_provider(&worker_key.0, &worker_key.1);
+                            if service.defer_identity_retirement {
+                                service
+                                    .identity_changes
+                                    .lock()
+                                    .expect("quota identity changes")
+                                    .insert(worker_key.clone());
+                            } else {
+                                service
+                                    .scheduling
+                                    .invalidate_provider(&worker_key.0, &worker_key.1);
+                            }
                             entry.windows.clear();
                             entry.balances.clear();
                             entry.available = None;
@@ -1008,4 +1063,81 @@ fn collect_kimi(
         let result=tokio::select! { result=capture.windows(observed,ttl)=>result.map(|windows| { let expires=windows.iter().map(|w|w.expires_at_ms).min().expect("nonempty windows"); observation(windows,None,observed,expires) }), _=cancel.changed()=>Err(()) };
         (Some(owner),result)
     })
+}
+
+#[cfg(test)]
+mod configuration_tests {
+    use super::*;
+
+    #[test]
+    fn configuration_fork_preserves_quota_and_does_not_cancel_the_running_version() {
+        let home =
+            std::env::temp_dir().join(format!("velune-quota-fork-{}", crate::new_record_key()));
+        let provider = crate::config::ProviderDefinition {
+            id: "fixture".into(),
+            name: "Fixture".into(),
+            protocol: crate::config::Protocol::Responses,
+            endpoint: "http://127.0.0.1:1/v1".into(),
+            execution_backend: crate::config::ExecutionBackend::Http,
+            request_profile: crate::config::RequestProfile::Native,
+            quota_source: crate::config::ProviderQuotaSource::CodexUsage,
+            authentication: crate::provider_authentication::ProviderAuthentication {
+                material: AuthenticationMaterial::CodexSubscription {
+                    credential_id: "synthetic".into(),
+                    configured: true,
+                },
+                generation: 1,
+            },
+            quota_authentication: Default::default(),
+            billing: Default::default(),
+            models: Vec::new(),
+            quota_limits: Vec::new(),
+        };
+        let mut gateways = vec![GatewayConfig {
+            id: "fixture".into(),
+            name: "Fixture".into(),
+            providers: vec![provider],
+            routes: Vec::new(),
+        }];
+        let service = SubscriptionQuota::new(home.clone(), &gateways, Default::default());
+        let now = now_ms();
+        let old_cancellation = {
+            let mut state = service.state.lock().unwrap();
+            let entry = state
+                .entries
+                .get_mut(&("fixture".into(), "fixture".into()))
+                .unwrap();
+            entry.observed_at_ms = now;
+            entry.expires_at_ms = now + 60_000;
+            entry.windows = vec![QuotaWindow {
+                id: "fixture-window".into(),
+                model_ids: None,
+                used_percent: 98.0,
+                reset_at_ms: Some(now + 60_000),
+                window_ms: Some(300_000),
+                observed_at_ms: now,
+                expires_at_ms: now + 60_000,
+            }];
+            entry.cancel.subscribe()
+        };
+        gateways[0].providers[0].name = "Saved label".into();
+        let next = service.fork_configuration(&gateways);
+        let observation = next.query("fixture", "fixture", false).unwrap().observation;
+        assert!(matches!(observation.freshness, QuotaFreshness::Fresh));
+        assert_eq!(observation.windows[0].used_percent, 98.0);
+        assert!(!observation.refreshing);
+        // Replacing the next version's binding must not revoke the running one.
+        gateways[0].providers[0].authentication.generation = 2;
+        next.configure(&gateways);
+        assert!(!*old_cancellation.borrow());
+        let old = service
+            .query("fixture", "fixture", false)
+            .unwrap()
+            .observation;
+        assert!(matches!(old.freshness, QuotaFreshness::Fresh));
+        assert_eq!(old.windows[0].used_percent, 98.0);
+        service.stop();
+        next.stop();
+        let _ = std::fs::remove_dir_all(home);
+    }
 }

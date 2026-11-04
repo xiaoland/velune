@@ -169,8 +169,11 @@ pub struct ConversationProject {
 pub struct WorkingDirectoryProject {
     pub project: String,
     pub name: String,
+    /// This runtime owns the native project and supports its full workspace.
+    #[serde(default)]
+    pub can_select_project: bool,
     /// Primary folder first, then declared additional folders. Paths are
-    /// deduplicated across the target's projects; historical worktrees are
+    /// deduplicated within this project; historical worktrees are
     /// not project roots. Existence is checked when creating the conversation.
     pub directories: Vec<String>,
 }

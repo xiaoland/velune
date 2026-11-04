@@ -8,13 +8,105 @@ impl CoreRuntime {
         self.session.gateway_runner.is_some()
             && self
                 .session
-                .execution_runtime_id
+                .execution_configuration
                 .as_ref()
-                .is_some_and(|id| {
-                    self.runtime_instances
-                        .iter()
-                        .any(|runtime| &runtime.id == id && runtime.gateway_id == gateway_id)
-                })
+                .and_then(|configuration| configuration.gateway.as_ref())
+                .is_some_and(|gateway| gateway.id == gateway_id)
+    }
+
+    pub(super) fn provider_in_use(&self, gateway_id: &str, provider_id: &str) -> bool {
+        std::iter::once(&self.session)
+            .chain(&self.parked)
+            .any(|session| {
+                session.executing()
+                    && session
+                        .execution_configuration
+                        .as_ref()
+                        .and_then(|configuration| configuration.gateway.as_ref())
+                        .is_some_and(|gateway| {
+                            gateway.id == gateway_id
+                                && gateway
+                                    .providers
+                                    .iter()
+                                    .any(|provider| provider.id == provider_id)
+                        })
+            })
+    }
+
+    /// Owned credentials outlive every execution that captured them.
+    pub(super) fn cleanup_retired_provider(&self, provider: &crate::config::ProviderDefinition) {
+        use crate::provider_authentication::AuthenticationMaterial;
+        let material = &provider.authentication.material;
+        let referenced = self
+            .gateways
+            .iter()
+            .flat_map(|gateway| &gateway.providers)
+            .any(
+                |current| match (material, &current.authentication.material) {
+                    (
+                        AuthenticationMaterial::CodexSubscription {
+                            credential_id: old, ..
+                        },
+                        AuthenticationMaterial::CodexSubscription {
+                            credential_id: current,
+                            ..
+                        },
+                    )
+                    | (
+                        AuthenticationMaterial::ClaudeCli {
+                            credential_id: old, ..
+                        },
+                        AuthenticationMaterial::ClaudeCli {
+                            credential_id: current,
+                            ..
+                        },
+                    ) => old == current,
+                    _ => false,
+                },
+            );
+        if referenced {
+            return;
+        }
+        let result = match material {
+            AuthenticationMaterial::CodexSubscription { credential_id, .. } => {
+                crate::subscription_auth::remove(&self.options.home_directory, credential_id)
+            }
+            AuthenticationMaterial::ClaudeCli {
+                credential_id,
+                configured,
+                ..
+            } => {
+                if *configured
+                    && let crate::config::ExecutionBackend::ClaudeCli { binary } =
+                        &provider.execution_backend
+                {
+                    let result = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                        .map_err(RuntimeError::from)
+                        .and_then(|runtime| {
+                            runtime
+                                .block_on(crate::claude_cli::logout(
+                                    binary,
+                                    &crate::claude_cli::directory(
+                                        &self.options.home_directory,
+                                        credential_id,
+                                    ),
+                                ))
+                                .map_err(|()| RuntimeError::invalid("旧订阅认证清理失败"))
+                        });
+                    if let Err(error) = result {
+                        tracing::warn!(event = "subscription_cleanup_failed", detail = %error);
+                    }
+                }
+                crate::claude_cli::remove(&self.options.home_directory, credential_id)
+                    .map_err(RuntimeError::from)
+            }
+            _ => Ok(()),
+        };
+        if let Err(error) = result {
+            tracing::warn!(event = "subscription_cleanup_failed", detail = %error);
+        }
     }
 
     pub(super) fn ensure_gateway_idle(&mut self, gateway_id: &str) -> Result<(), RuntimeError> {
@@ -35,8 +127,12 @@ impl CoreRuntime {
         let mut invalidated = false;
         self.for_each_session(|core| {
             if core.session_uses_gateway(gateway_id) {
-                core.invalidate_execution()?;
-                invalidated = true;
+                if core.session.executing() {
+                    core.session.configuration_changed = true;
+                } else {
+                    core.invalidate_execution()?;
+                    invalidated = true;
+                }
             }
             Ok(())
         })?;
@@ -159,6 +255,7 @@ impl CoreRuntime {
         gateway_id: String,
         provider_id: String,
     ) -> Result<crate::GatewayUpdate, RuntimeError> {
+        self.ensure_gateway_idle(&gateway_id)?;
         self.edit_gateway(&gateway_id, ProviderEdit::Delete { provider_id })
     }
 
@@ -183,7 +280,6 @@ impl CoreRuntime {
         gateway_id: &str,
         edit: ProviderEdit,
     ) -> Result<crate::GatewayUpdate, RuntimeError> {
-        self.ensure_gateway_idle(gateway_id)?;
         if self
             .authentication
             .as_ref()
@@ -212,30 +308,8 @@ impl CoreRuntime {
             return Err(error);
         }
         self.sync_scheduling(&previous);
-        let mut cleanup_failed = false;
-        for old in previous.iter().flat_map(|g| &g.providers) {
-            if let crate::provider_authentication::AuthenticationMaterial::CodexSubscription { credential_id, .. } = &old.authentication.material
-                && !self.gateways.iter().flat_map(|g| &g.providers).any(|p| matches!(&p.authentication.material, crate::provider_authentication::AuthenticationMaterial::CodexSubscription { credential_id: current, .. } if current == credential_id))
-            { cleanup_failed |= crate::subscription_auth::remove(&self.options.home_directory, credential_id).is_err(); }
-        }
-        for old in previous.iter().flat_map(|g| &g.providers) {
-            if let crate::provider_authentication::AuthenticationMaterial::ClaudeCli { credential_id, configured, .. } = &old.authentication.material
-                && !self.gateways.iter().flat_map(|g| &g.providers).any(|p| matches!(&p.authentication.material, crate::provider_authentication::AuthenticationMaterial::ClaudeCli { credential_id: current, .. } if current == credential_id)) {
-                if *configured && let crate::config::ExecutionBackend::ClaudeCli { binary } = &old.execution_backend {
-                    let runtime=tokio::runtime::Builder::new_current_thread().enable_all().build()?;
-                    cleanup_failed |= runtime.block_on(crate::claude_cli::logout(binary,&crate::claude_cli::directory(&self.options.home_directory,credential_id))).is_err();
-                }
-                cleanup_failed |= crate::claude_cli::remove(&self.options.home_directory,credential_id).is_err();
-            }
-        }
         let reconnect =
             previous != self.gateways && self.invalidate_gateway_execution(gateway_id)?;
-        if cleanup_failed {
-            tracing::warn!(event = "subscription_cleanup_failed");
-            return Err(RuntimeError::invalid(
-                "提供商配置已保存，但旧订阅认证清理失败；请检查应用配置目录的写入权限。",
-            ));
-        }
         Ok(crate::GatewayUpdate {
             gateways: self.public_gateways(),
             execution_invalidated: reconnect,

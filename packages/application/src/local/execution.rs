@@ -1,6 +1,34 @@
 //! On-demand execution preparation and process/gateway lifecycle.
 use super::*;
+
+pub(super) struct ExecutionConfiguration {
+    pub(super) runtime: RuntimeInstance,
+    pub(super) gateway: Option<GatewayConfig>,
+    pub(super) backends: velune_gateway::ExecutionBackends,
+}
 impl CoreRuntime {
+    pub(super) fn capture_execution_configuration(
+        &mut self,
+        runtime: &RuntimeInstance,
+        gateway: Option<&GatewayConfig>,
+    ) {
+        self.session.execution_configuration = Some(ExecutionConfiguration {
+            runtime: runtime.clone(),
+            gateway: gateway.cloned(),
+            backends: self.execution_backends.clone(),
+        });
+        self.session.configuration_changed = false;
+    }
+
+    pub(super) fn session_backends(&self) -> &velune_gateway::ExecutionBackends {
+        self.session
+            .execution_configuration
+            .as_ref()
+            .map_or(&self.execution_backends, |configuration| {
+                &configuration.backends
+            })
+    }
+
     pub(super) fn prepare_runtime(
         &mut self,
         runtime_id: &str,
@@ -40,6 +68,7 @@ impl CoreRuntime {
         }
         if runtime.type_id != RuntimeKind::Pi {
             self.shutdown_active()?;
+            self.capture_execution_configuration(&runtime, Some(&gateway));
             let runtime_projection = self.execution_context(&runtime)?.projection;
             let lane = self.lane_projection(&runtime_projection);
             let runner = Runner::start_with_scheduling(
@@ -106,6 +135,7 @@ impl CoreRuntime {
             })
             .collect::<Result<BTreeMap<_, _>, _>>()?;
         self.shutdown_active()?;
+        self.capture_execution_configuration(&runtime, Some(&gateway));
         let runner = Runner::start_with_scheduling(
             gateway.to_gateway_config()?,
             crate::authentication_resolver::ProviderResolver::capture_for_dispatch(
@@ -196,7 +226,7 @@ impl CoreRuntime {
             .execution_runtime_id
             .as_deref()
             .ok_or_else(|| RuntimeError::invalid("Pi 执行运行时不可用"))
-            .and_then(|id| self.runtime_instance(id).cloned())?;
+            .and_then(|_| self.active_instance().cloned())?;
         let runtime_context = format!(
             "runtime startup；{}",
             super::browsing::runtime_context(&runtime)
@@ -302,6 +332,8 @@ impl CoreRuntime {
         self.session.gateway_runner = None;
         self.session.gateway_tunnel = None;
         self.session.execution_runtime_id = None;
+        self.session.execution_configuration = None;
+        self.session.configuration_changed = false;
         self.session.model_record_key = None;
         self.complete_turn_observation(if result.is_ok() && cancellation_requested {
             velune_telemetry::Outcome::Cancelled

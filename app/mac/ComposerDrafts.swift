@@ -14,7 +14,7 @@ struct SavedComposerWorkspace: Codable, Equatable {
         var pending: Bool? = nil
         var revision: UInt64? = nil
     }
-    var schemaVersion: Int? = 2
+    var schemaVersion: Int? = 3
     var drafts: [Draft]
     var conversations: [String: UUID]
     var shared: UUID
@@ -24,6 +24,7 @@ struct SavedComposerWorkspace: Codable, Equatable {
     var synchronizedRevision: UInt64? = nil
     var pendingBindings: [String: SavedComposerBinding]? = nil
     var pendingPromotions: [String: SavedComposerPromotion]? = nil
+    var pendingTargets: [String: SavedComposerTarget]? = nil
 }
 
 @MainActor final class ComposerDrafts {
@@ -48,6 +49,7 @@ struct SavedComposerWorkspace: Codable, Equatable {
     private var deviceWatch: AnyCancellable?
     private var receiving = false
     private var restoredBindings: [String: SavedComposerBinding] = [:]
+    private var restoredTargets: [String: SavedComposerTarget] = [:]
 
     init(device: DeviceStore) {
         self.device = device
@@ -108,17 +110,14 @@ struct SavedComposerWorkspace: Codable, Equatable {
         else {
             model = ComposerModel(followsConversation: false, id: key ?? UUID())
             model.attach(tab.store)
-            var state = key.flatMap { device?.composerInputs.draft($0) }
-                ?? SavedComposerDraft(text: "", attachments: [], choices: ConversationChoices(), choiceEdited: false)
-            if device?.composerInputs.needsNewSeed(id) == true, let runtime = tab.store.nextTurnRuntimeID {
-                state.choices = ConversationChoices(runtimeID: runtime, choices: [runtime: tab.store.nextTurn?.choice ?? TurnChoice()])
-            }
+            let state = key.flatMap { device?.composerInputs.draft($0) }
+                ?? SavedComposerDraft(text: "", attachments: [])
             model.restoreSavedDraft(state)
             register(model, name: tab.title + " 的输入")
         }
         conversations[id] = model.id
         model.attach(tab.store); model.show(conversationID: tab.store.loadedConversationID)
-        if !id.hasPrefix("tab:"), !id.hasPrefix("side-chat:"), synced == nil || device?.composerInputs.needsNewSeed(id) == true, !resolving.contains(id), let device {
+        if !id.hasPrefix("tab:"), !id.hasPrefix("side-chat:"), synced == nil, !resolving.contains(id), let device {
             resolving.insert(id)
             device.composerInputs.ensure(id, model: model) { [weak self, weak model] resolved in
                 guard let self, let model else { return }
@@ -156,6 +155,10 @@ struct SavedComposerWorkspace: Codable, Equatable {
         if device.composerInputs.ownerID != nil, !restoredBindings.isEmpty {
             let bindings = restoredBindings; restoredBindings.removeAll()
             for (context, id) in bindings { device.composerInputs.restoreBinding(context, value: id) }
+        }
+        if device.composerInputs.ownerID != nil, !restoredTargets.isEmpty {
+            let targets = restoredTargets; restoredTargets.removeAll()
+            for (context, target) in targets { device.composerInputs.restoreTarget(context, value: target) }
         }
         let baseline = synchronizedRevision ?? 0
         synchronizedRevision = device.composerInputs.state?.revision
@@ -216,7 +219,7 @@ struct SavedComposerWorkspace: Codable, Equatable {
         if let state = device?.composerInputs.state {
             let referenced = Set(state.bindings.map(\.inputId))
             for input in state.inputs where !referenced.contains(input.id) {
-                guard let id = UUID(uuidString: input.id), models[id] == nil, let saved = device?.composerInputs.draft(id), !saved.text.isEmpty || !saved.attachments.isEmpty || saved.choiceEdited == true else { continue }
+                guard let id = UUID(uuidString: input.id), models[id] == nil, let saved = device?.composerInputs.draft(id), !saved.text.isEmpty || !saved.attachments.isEmpty else { continue }
                 let model = ComposerModel(followsConversation: false, id: id)
                 model.restoreSavedDraft(saved); register(model, name: "保留的输入"); keep(id)
             }
@@ -257,7 +260,7 @@ struct SavedComposerWorkspace: Codable, Equatable {
         return SavedComposerWorkspace(drafts: models.values.filter { referenced.contains($0.id) }.compactMap { model in
             model.savedDraft.map { .init(id: model.id, name: names[model.id] ?? "输入", state: $0, conversationID: conversations.first { $0.value == model.id }?.key, editedAt: editedAt[model.id], pending: device?.composerInputs.isDirty(model.id), revision: device?.composerInputs.revision(model.id)) }
         }.sorted { $0.id.uuidString < $1.id.uuidString }, conversations: conversations, shared: shared.id, retained: retained, activeContext: activeContext, targetContext: targetContext,
-            synchronizedRevision: synchronizedRevision, pendingBindings: conversations.reduce(into: restoredBindings) { if let input = device?.composerInputs.pendingBinding($1.key) { $0[$1.key] = input } }, pendingPromotions: device?.composerInputs.pendingPromotions)
+            synchronizedRevision: synchronizedRevision, pendingBindings: conversations.reduce(into: restoredBindings) { if let input = device?.composerInputs.pendingBinding($1.key) { $0[$1.key] = input } }, pendingPromotions: device?.composerInputs.pendingPromotions, pendingTargets: restoredTargets.merging(device?.composerInputs.pendingTargets ?? [:]) { _, pending in pending })
     }
     func restore(_ saved: SavedComposerWorkspace?) {
         guard let saved else { return }
@@ -279,6 +282,11 @@ struct SavedComposerWorkspace: Codable, Equatable {
         if device?.composerInputs.ownerID != nil {
             for (conversation, input) in restoredBindings { device?.composerInputs.restoreBinding(conversation, value: input) }
             restoredBindings.removeAll()
+        }
+        restoredTargets = saved.pendingTargets ?? [:]
+        if device?.composerInputs.ownerID != nil {
+            for (conversation, target) in restoredTargets { device?.composerInputs.restoreTarget(conversation, value: target) }
+            restoredTargets.removeAll()
         }
         for (conversation, input) in saved.pendingPromotions ?? [:] { device?.composerInputs.restorePromotion(conversation, value: input) }
         register(shared, name: "共享输入")

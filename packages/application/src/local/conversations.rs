@@ -246,6 +246,15 @@ impl CoreRuntime {
         cwd: Option<String>,
         selection: Option<ModelSelection>,
     ) -> Result<SnapshotResult, RuntimeError> {
+        self.create_conversation_target(runtime_id, cwd, None, selection)
+    }
+    pub(crate) fn create_conversation_target(
+        &mut self,
+        runtime_id: &str,
+        cwd: Option<String>,
+        project_key: Option<String>,
+        selection: Option<ModelSelection>,
+    ) -> Result<SnapshotResult, RuntimeError> {
         if self.turn_running() {
             return Err(RuntimeError::invalid("runtime is busy"));
         }
@@ -253,6 +262,18 @@ impl CoreRuntime {
         if !runtime.enabled {
             return Err(RuntimeError::invalid("此运行时已停用，请先启用"));
         }
+        let project = project_key
+            .map(|key| self.creation_project(&runtime, &key))
+            .transpose()?;
+        let cwd = match &project {
+            Some(project) => {
+                if cwd.is_some() {
+                    return Err(RuntimeError::invalid("项目与单个工作目录不能同时选择"));
+                }
+                Some(project.roots[0].path.clone())
+            }
+            None => cwd,
+        };
         let cwd = if cwd.is_none()
             && matches!(
                 runtime.type_id,
@@ -290,7 +311,7 @@ impl CoreRuntime {
         })
         .snapshot
         .expect("new projection");
-        self.prepare_with_selection(snapshot, selection.as_ref(), true)?;
+        self.prepare_with_project(snapshot, selection.as_ref(), true, project.as_ref())?;
         self.session.logical_projection = None;
         let native = self
             .native_snapshot()
@@ -799,7 +820,7 @@ impl CoreRuntime {
         }
         self.begin_turn_observation();
         if let Some((gateway_id, session)) = self.backend_session_identity() {
-            self.execution_backends
+            self.session_backends()
                 .begin_user_turn(&gateway_id, &session)
                 .map_err(|error| RuntimeError::context("CLI 新轮准备", error))?;
         }
@@ -863,9 +884,7 @@ impl CoreRuntime {
     pub(super) fn backend_session_identity(
         &self,
     ) -> Option<(String, velune_gateway::SessionIdentity)> {
-        let runtime = self.runtime_instances.iter().find(|runtime| {
-            Some(runtime.id.as_str()) == self.session.execution_runtime_id.as_deref()
-        })?;
+        let runtime = &self.session.execution_configuration.as_ref()?.runtime;
         Some((
             runtime.gateway_id.clone(),
             velune_gateway::SessionIdentity {
@@ -878,7 +897,7 @@ impl CoreRuntime {
     pub(crate) fn cancel(&mut self, runtime_id: &str) -> Result<SnapshotResult, RuntimeError> {
         self.ensure_active(runtime_id)?;
         if let Some((gateway_id, session)) = self.backend_session_identity() {
-            self.execution_backends
+            self.session_backends()
                 .cancel_session(&gateway_id, &session);
         }
         self.session

@@ -112,7 +112,8 @@ enum TranscriptRowContent: @unchecked Sendable {
     case message(DeliveredMessage, revision: UInt64, expanded: Set<String>, status: String?, copies: Bool, edits: Bool, forks: Bool)
     /// `expanded` is nil for a turn with no work under its header.
     case work(label: String, expanded: Bool?, settings: TurnSettingsSummary?)
-    case messageActions(text: String, timestamp: Int64?, trailing: Bool)
+    /// Copying work has no message creation time of its own.
+    case workActions(text: String)
     case activity(TranscriptActivity)
     /// Fixed breathing room after the last row, above the composer.
     case end
@@ -136,6 +137,8 @@ struct TranscriptRowLayout: @unchecked Sendable {
         /// The edit and fork buttons beside it, shown while the pointer is on the row.
         case edit(NSRect)
         case fork(NSRect)
+        /// Creation time shares the message actions' hover visibility.
+        case time(NSAttributedString, frame: NSRect)
     }
     var elements: [Element]
     var height: CGFloat
@@ -207,9 +210,9 @@ struct TranscriptRowLayout: @unchecked Sendable {
             y += headerHeight
         case .end:
             break
-        case .messageActions(let text, let timestamp, let trailing):
+        case .workActions(let text):
             y = 0
-            messageActions(text: text, timestamp: timestamp, trailing: trailing, column: column, y: &y, elements: &elements, measurer: measurer)
+            messageActions(text: text, timestamp: nil, trailing: false, column: column, y: &y, elements: &elements, measurer: measurer)
         case .message(_, _, let expanded, let status, let copies, let edits, let forks):
             guard let rendered else { preconditionFailure("A message row is laid out from its rendered revision") }
             if rendered.clientSide {
@@ -316,7 +319,7 @@ struct TranscriptRowLayout: @unchecked Sendable {
             let size = measurer.size(of: label, width: column.width)
             let buttons = placed == 0 ? 0 : CGFloat(placed) * actionSize + CGFloat(placed - 1) * 2
             let x = trailing ? column.x + column.width - (buttons == 0 ? 0 : buttons + 6) - ceil(size.width) : column.x + (buttons == 0 ? 0 : buttons + 4)
-            elements.append(.text(label, frame: NSRect(x: x, y: y + (actionSize - size.height) / 2, width: ceil(size.width) + 1, height: size.height), inBubble: false))
+            elements.append(.time(label, frame: NSRect(x: x, y: y + (actionSize - size.height) / 2, width: ceil(size.width) + 1, height: size.height)))
         }
         y += actionSize
     }
@@ -326,7 +329,7 @@ struct TranscriptRowLayout: @unchecked Sendable {
         let column = column(for: width)
         switch content {
         case .work, .activity: return rowInset + headerHeight
-        case .messageActions: return actionGap + actionSize
+        case .workActions: return actionGap + actionSize
         case .end: return rowInset
         case .message(let message, _, let expanded, _, let copies, _, _):
             let charactersPerLine = max(column.width / 7.5, 8)

@@ -196,6 +196,7 @@ impl CoreRuntime {
                 .map_err(|error| RuntimeError::context("ACP 模型选择", error))?;
         }
         self.shutdown_active()?;
+        self.capture_execution_configuration(&runtime, None);
         self.session.execution_runtime_id = Some(runtime.id);
         self.session.active_state = ActiveState::Acp(Box::new(session));
         Ok(())

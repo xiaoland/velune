@@ -68,15 +68,24 @@ impl ComposerInputs {
             .collect()
     }
     pub(crate) fn legacy_intents(&self) -> Vec<NextTurnIntent> {
-        self.legacy_drafts()
-            .into_iter()
-            .map(|draft| {
-                let input = self.legacy_input(&draft.conversation_id).unwrap();
-                NextTurnIntent {
-                    conversation_id: draft.conversation_id,
-                    runtime_id: input.content.runtime_id.clone(),
-                    choices: input
-                        .content
+        self.stored
+            .state
+            .targets
+            .iter()
+            .filter_map(|target| {
+                let conversation_id = match &target.context {
+                    ComposerContextKey::NewConversation => "draft:new-conversation".into(),
+                    ComposerContextKey::Conversation {
+                        owner_id,
+                        conversation_id,
+                    } if owner_id == &self.owner_id() => conversation_id.clone(),
+                    _ => return None,
+                };
+                Some(NextTurnIntent {
+                    conversation_id,
+                    runtime_id: target.choices.runtime_id.clone(),
+                    choices: target
+                        .choices
                         .choices
                         .iter()
                         .filter(|choice| choice.owner_id == self.owner_id())
@@ -85,7 +94,7 @@ impl ComposerInputs {
                             choice: choice.choice.clone(),
                         })
                         .collect(),
-                }
+                })
             })
             .collect()
     }
@@ -121,7 +130,7 @@ impl ComposerInputs {
     ) -> Result<(), Error> {
         let context = self.legacy_context(&id);
         self.operate(ComposerInputOperation::Ensure {
-            context,
+            context: context.clone(),
             input_id: identity(),
             seed: Default::default(),
         })?;
@@ -132,10 +141,20 @@ impl ComposerInputs {
         }
         if let Some(intent) = intent {
             let owner_id = self.owner_id();
-            content.runtime_owner_id = intent.runtime_id.as_ref().map(|_| owner_id.clone());
-            content.runtime_id = intent.runtime_id;
-            content.choices.retain(|choice| choice.owner_id != owner_id);
-            content
+            let target = self
+                .stored
+                .state
+                .targets
+                .iter()
+                .find(|target| target.context == context);
+            let mut choices = target
+                .map(|target| target.choices.clone())
+                .unwrap_or_default();
+            let expected_revision = target.map(|target| target.revision);
+            choices.runtime_owner_id = intent.runtime_id.as_ref().map(|_| owner_id.clone());
+            choices.runtime_id = intent.runtime_id;
+            choices.choices.retain(|choice| choice.owner_id != owner_id);
+            choices
                 .choices
                 .extend(
                     intent
@@ -147,7 +166,12 @@ impl ComposerInputs {
                             choice: choice.choice,
                         }),
                 );
-            content.choice_edited = true;
+            choices.choice_edited = true;
+            self.operate(ComposerInputOperation::SaveTarget {
+                context,
+                expected_revision,
+                choices,
+            })?;
         }
         self.operate(ComposerInputOperation::Save {
             input_id: id,
@@ -177,8 +201,12 @@ impl ComposerInputs {
         let path = home.join("composer-inputs.json");
         let stored = match fs::read(&path) {
             Ok(bytes) => {
-                let stored: Stored = serde_json::from_slice(&bytes)?;
-                if stored.schema_version != 1 {
+                let value: serde_json::Value = serde_json::from_slice(&bytes)?;
+                if value.get("schemaVersion").and_then(|value| value.as_u64()) == Some(1) {
+                    return Err(Error::Invalid("输入存储需要显式迁移：请退出 Velune 后执行 python3 scripts/migrations/composer-state.py --home <VELUNE_HOME> --apply；现有输入保持原样".into()));
+                }
+                let stored: Stored = serde_json::from_value(value)?;
+                if stored.schema_version != 2 {
                     return Err(Error::invalid("composer input schema version"));
                 }
                 validate_state(&stored)?;
@@ -201,7 +229,7 @@ impl ComposerInputs {
                                     workspace
                                         .get("schemaVersion")
                                         .and_then(|version| version.as_u64())
-                                        != Some(2)
+                                        != Some(3)
                                 })
                                 || value.get("composer").is_some_and(|value| !value.is_null()))
                         },
@@ -221,11 +249,16 @@ impl ComposerInputs {
                     content: Default::default(),
                 };
                 let stored = Stored {
-                    schema_version: 1,
+                    schema_version: 2,
                     state: ComposerInputState {
                         owner_id: identity(),
                         revision: 1,
                         creations: Vec::new(),
+                        targets: vec![ComposerTarget {
+                            context: ComposerContextKey::NewConversation,
+                            revision: 1,
+                            choices: Default::default(),
+                        }],
                         bindings: vec![ComposerInputBinding {
                             context: ComposerContextKey::NewConversation,
                             input_id: input.id.clone(),
@@ -343,6 +376,65 @@ impl ComposerInputs {
                     }
                 }
             }
+            Op::EnsureTarget { context, seed } => {
+                validate_context(&context)?;
+                validate_choices(&seed)?;
+                if let Some(target) = next
+                    .state
+                    .targets
+                    .iter_mut()
+                    .find(|target| target.context == context)
+                {
+                    if target.revision == 1
+                        && target.choices == ComposerTargetChoices::default()
+                        && seed != ComposerTargetChoices::default()
+                    {
+                        target.choices = seed;
+                        target.revision += 1;
+                    }
+                } else {
+                    next.state.targets.push(ComposerTarget {
+                        context,
+                        revision: 1,
+                        choices: seed,
+                    });
+                }
+            }
+            Op::SaveTarget {
+                context,
+                expected_revision,
+                choices,
+            } => {
+                validate_context(&context)?;
+                validate_choices(&choices)?;
+                match next
+                    .state
+                    .targets
+                    .iter_mut()
+                    .find(|target| target.context == context)
+                {
+                    Some(target) if expected_revision == Some(target.revision) => {
+                        if target.choices != choices {
+                            target.choices = choices;
+                            target.revision += 1;
+                        }
+                    }
+                    None if expected_revision.is_none() => {
+                        next.state.targets.push(ComposerTarget {
+                            context,
+                            revision: 1,
+                            choices,
+                        })
+                    }
+                    _ => {
+                        return Err(Failure::new(
+                            FailureKind::Conflict,
+                            "目标执行配置已在另一端更新，当前选择已保留",
+                        )
+                        .into());
+                    }
+                }
+            }
             Op::Bind {
                 context,
                 input_id,
@@ -404,23 +496,33 @@ impl ComposerInputs {
                 }
                 next.state.creations.push(ComposerCreation {
                     input_id: input_id.clone(),
-                    owner_id,
-                    runtime_id,
+                    owner_id: owner_id.clone(),
+                    runtime_id: runtime_id.clone(),
                     conversation_id,
                     revision: next.state.revision + 1,
                 });
-                let input = next
+                if !next.state.inputs.iter().any(|input| input.id == input_id) {
+                    return Err(Error::invalid("composer input does not exist"));
+                }
+                // The native target starts from the creation's execution snapshot;
+                // the global new target remains independent for the next creation.
+                if !next
                     .state
-                    .inputs
+                    .targets
                     .iter()
-                    .find(|input| input.id == input_id)
-                    .ok_or_else(|| Error::invalid("composer input does not exist"))?;
-                let seed = ComposerInputContent {
-                    text: String::new(),
-                    attachments: Vec::new(),
-                    choice_edited: false,
-                    ..input.content.clone()
-                };
+                    .any(|target| target.context == context)
+                {
+                    let choices = ComposerTargetChoices {
+                        runtime_id: Some(runtime_id),
+                        runtime_owner_id: Some(owner_id),
+                        ..Default::default()
+                    };
+                    next.state.targets.push(ComposerTarget {
+                        context: context.clone(),
+                        revision: 1,
+                        choices,
+                    });
+                }
                 if let Some(binding) = next
                     .state
                     .bindings
@@ -448,7 +550,7 @@ impl ComposerInputs {
                     let fresh = ComposerInput {
                         id: identity(),
                         revision: 1,
-                        content: seed,
+                        content: Default::default(),
                     };
                     new.input_id = fresh.id.clone();
                     new.revision = revision;
@@ -465,6 +567,9 @@ impl ComposerInputs {
                 next.state
                     .bindings
                     .retain(|binding| binding.context != context);
+                next.state
+                    .targets
+                    .retain(|target| target.context != context);
             }
         }
         if next.state != self.stored.state {
@@ -475,7 +580,6 @@ impl ComposerInputs {
     }
 
     fn validate_content(&self, content: &ComposerInputContent) -> Result<(), Error> {
-        validate_choices(content)?;
         let mut attachments = BTreeSet::new();
         if content.attachments.iter().any(|attachment| {
             !attachments.insert(&attachment.id) || !self.stored.attachments.contains(attachment)
@@ -557,7 +661,7 @@ fn validate_id(id: &str) -> Result<(), Error> {
     Ok(())
 }
 
-fn validate_choices(content: &ComposerInputContent) -> Result<(), Error> {
+fn validate_choices(content: &ComposerTargetChoices) -> Result<(), Error> {
     let mut choices = BTreeSet::new();
     if content.runtime_id.as_ref().is_some_and(String::is_empty)
         || content.runtime_id.is_some() != content.runtime_owner_id.is_some()
@@ -628,10 +732,20 @@ fn validate_state(stored: &Stored) -> Result<(), Error> {
     let mut ids = BTreeSet::new();
     for input in &stored.state.inputs {
         validate_id(&input.id)?;
-        validate_choices(&input.content)?;
         if input.revision == 0 || !ids.insert(&input.id) {
             return Err(Error::invalid("composer input record"));
         }
+    }
+    let mut targets = BTreeSet::new();
+    for target in &stored.state.targets {
+        validate_context(&target.context)?;
+        validate_choices(&target.choices)?;
+        if target.revision == 0 || !targets.insert(&target.context) {
+            return Err(Error::invalid("composer target record"));
+        }
+    }
+    if !targets.contains(&ComposerContextKey::NewConversation) {
+        return Err(Error::invalid("global new-conversation target missing"));
     }
     let mut contexts = BTreeSet::new();
     for binding in &stored.state.bindings {
@@ -713,21 +827,6 @@ mod tests {
         let content = ComposerInputContent {
             text: "borrowed X".into(),
             attachments: vec![attachment.clone()],
-            runtime_id: Some("chosen-runtime".into()),
-            runtime_owner_id: Some(store.owner_id()),
-            choices: vec![
-                ComposerRuntimeChoice {
-                    owner_id: store.owner_id(),
-                    runtime_id: "same-runtime-id".into(),
-                    choice: Default::default(),
-                },
-                ComposerRuntimeChoice {
-                    owner_id: identity(),
-                    runtime_id: "same-runtime-id".into(),
-                    choice: Default::default(),
-                },
-            ],
-            ..Default::default()
         };
         store
             .operate(ComposerInputOperation::Ensure {
@@ -737,16 +836,59 @@ mod tests {
             })
             .unwrap();
         store
+            .operate(ComposerInputOperation::EnsureTarget {
+                context: context.clone(),
+                seed: ComposerTargetChoices {
+                    runtime_id: Some("chosen-runtime".into()),
+                    runtime_owner_id: Some(store.owner_id()),
+                    choices: vec![
+                        ComposerRuntimeChoice {
+                            owner_id: store.owner_id(),
+                            runtime_id: "same-runtime-id".into(),
+                            choice: Default::default(),
+                        },
+                        ComposerRuntimeChoice {
+                            owner_id: identity(),
+                            runtime_id: "same-runtime-id".into(),
+                            choice: Default::default(),
+                        },
+                    ],
+                    ..Default::default()
+                },
+            })
+            .unwrap();
+        store
             .legacy_edit("A".into(), Some("edited X".into()), None)
             .unwrap();
         let input = store.legacy_input("A").unwrap();
         assert_eq!(input.content.attachments, vec![attachment]);
         assert_eq!(
-            input.content.choices.len(),
+            store
+                .stored
+                .state
+                .targets
+                .iter()
+                .find(|target| target.context == context)
+                .unwrap()
+                .choices
+                .choices
+                .len(),
             2,
             "same runtime ID on different execution hosts must remain distinct"
         );
-        assert_eq!(input.content.runtime_id.as_deref(), Some("chosen-runtime"));
+        assert_eq!(
+            store
+                .stored
+                .state
+                .targets
+                .iter()
+                .find(|target| target.context == context)
+                .unwrap()
+                .choices
+                .runtime_id
+                .as_deref(),
+            Some("chosen-runtime")
+        );
         let state = store
             .operate(ComposerInputOperation::Promote {
                 input_id: input_id.clone(),
@@ -877,22 +1019,32 @@ mod tests {
         let payload = ComposerInputContent {
             text: "UNSENT X".into(),
             attachments: vec![attachment.clone()],
-            runtime_id: Some("runtime-a".into()),
-            runtime_owner_id: Some(first.owner_id.clone()),
-            choices: vec![ComposerRuntimeChoice {
-                owner_id: first.owner_id.clone(),
-                runtime_id: "runtime-a".into(),
-                choice: TurnChoice {
-                    model: Some(ModelSelection::Native {
-                        model_id: "model-a".into(),
-                        provider_id: None,
-                    }),
-                    effort: Some("high".into()),
-                    permission_mode: Some("allow-edits".into()),
-                },
-            }],
-            choice_edited: true,
         };
+        call(
+            &service,
+            "desktop",
+            ComposerInputOperation::SaveTarget {
+                context: ComposerContextKey::NewConversation,
+                expected_revision: Some(1),
+                choices: ComposerTargetChoices {
+                    runtime_id: Some("runtime-a".into()),
+                    runtime_owner_id: Some(first.owner_id.clone()),
+                    choices: vec![ComposerRuntimeChoice {
+                        owner_id: first.owner_id.clone(),
+                        runtime_id: "runtime-a".into(),
+                        choice: TurnChoice {
+                            model: Some(ModelSelection::Native {
+                                model_id: "model-a".into(),
+                                provider_id: None,
+                            }),
+                            effort: Some("high".into()),
+                            permission_mode: Some("allow-edits".into()),
+                        },
+                    }],
+                    choice_edited: true,
+                },
+            },
+        );
         let written = call(
             &service,
             "desktop",
@@ -959,7 +1111,17 @@ mod tests {
             .unwrap()
             .content;
         assert!(next.text.is_empty() && next.attachments.is_empty());
-        assert_eq!(next.choices, payload.choices);
+        assert_eq!(
+            promoted
+                .targets
+                .iter()
+                .find(|target| target.context == ComposerContextKey::NewConversation)
+                .unwrap()
+                .choices
+                .runtime_id
+                .as_deref(),
+            Some("runtime-a")
+        );
         let bytes = match service
             .execute_checked(
                 ClientViewId("another-view".into()),
@@ -990,6 +1152,114 @@ mod tests {
             promoted
         );
         service.close(false).unwrap();
+        fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn content_and_target_choices_have_independent_revisions_and_stale_targets_cannot_win() {
+        let home = std::env::temp_dir().join(format!("velune-composer-{}", identity()));
+        fs::create_dir_all(&home).unwrap();
+        let mut store = ComposerInputs::open(&home).unwrap();
+        let id = store.stored.state.inputs[0].id.clone();
+        let owner = store.owner_id();
+        let target = ComposerContextKey::Conversation {
+            owner_id: owner.clone(),
+            conversation_id: "pi-target".into(),
+        };
+        let pi = ComposerTargetChoices {
+            runtime_id: Some("pi".into()),
+            runtime_owner_id: Some(owner),
+            choice_edited: true,
+            ..Default::default()
+        };
+        store
+            .operate(ComposerInputOperation::SaveTarget {
+                context: target.clone(),
+                expected_revision: None,
+                choices: pi.clone(),
+            })
+            .unwrap();
+        store
+            .operate(ComposerInputOperation::Save {
+                input_id: id.clone(),
+                expected_revision: Some(1),
+                content: ComposerInputContent {
+                    text: "retry".into(),
+                    ..Default::default()
+                },
+            })
+            .unwrap();
+        assert_eq!(
+            store
+                .stored
+                .state
+                .targets
+                .iter()
+                .find(|value| value.context == target)
+                .unwrap()
+                .revision,
+            1
+        );
+        let mut changed = pi.clone();
+        changed.choices.push(ComposerRuntimeChoice {
+            owner_id: store.owner_id(),
+            runtime_id: "pi".into(),
+            choice: TurnChoice {
+                effort: Some("high".into()),
+                ..Default::default()
+            },
+        });
+        store
+            .operate(ComposerInputOperation::SaveTarget {
+                context: target.clone(),
+                expected_revision: Some(1),
+                choices: changed.clone(),
+            })
+            .unwrap();
+        assert!(
+            store
+                .operate(ComposerInputOperation::SaveTarget {
+                    context: target.clone(),
+                    expected_revision: Some(1),
+                    choices: pi
+                })
+                .is_err()
+        );
+        let content = store
+            .stored
+            .state
+            .inputs
+            .iter()
+            .find(|input| input.id == id)
+            .unwrap();
+        assert_eq!(content.revision, 2);
+        assert_eq!(content.content.text, "retry");
+        assert_eq!(
+            store
+                .stored
+                .state
+                .targets
+                .iter()
+                .find(|value| value.context == target)
+                .unwrap()
+                .choices,
+            changed
+        );
+        drop(store);
+        let reopened = ComposerInputs::open(&home).unwrap();
+        assert_eq!(
+            reopened
+                .stored
+                .state
+                .targets
+                .iter()
+                .find(|value| value.context == target)
+                .unwrap()
+                .choices
+                .runtime_id
+                .as_deref(),
+            Some("pi")
+        );
         fs::remove_dir_all(home).unwrap();
     }
 

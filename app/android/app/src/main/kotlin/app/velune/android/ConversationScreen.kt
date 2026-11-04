@@ -270,7 +270,7 @@ private fun Composer(state: ConversationState, actions: ConversationActions) {
                     if (state.models.isNotEmpty()) {
                         val name = state.models.firstOrNull { it.selection == state.selection }?.name ?: "运行时默认模型"
                         Surface(shape = CircleShape, color = MaterialTheme.colorScheme.surfaceContainerHighest, modifier = Modifier.widthIn(max = 240.dp)) {
-                            Row(Modifier.clickable { choosing = true }.padding(start = 10.dp, end = 6.dp, top = 6.dp, bottom = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Row(Modifier.clickable(enabled = state.composerReady && !state.busy) { choosing = true }.padding(start = 10.dp, end = 6.dp, top = 6.dp, bottom = 6.dp), verticalAlignment = Alignment.CenterVertically) {
                                 Icon(Icons.Outlined.AutoAwesome, contentDescription = null, modifier = Modifier.size(16.dp))
                                 Text(name, style = MaterialTheme.typography.labelLarge, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(start = 6.dp).weight(1f, fill = false))
                                 Icon(Icons.Filled.ArrowDropDown, contentDescription = "选择模型", modifier = Modifier.size(20.dp))

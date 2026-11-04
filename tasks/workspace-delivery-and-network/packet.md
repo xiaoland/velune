@@ -43,7 +43,9 @@
 
 原始旧任务的 `/tmp` 证据已随本次机器重启清理；复用包中记录的既有结果，不为恢复截图而全量重跑。本轮证据收拢至 `target/verification/workspace-delivery-20261104`（忽略、不入git），包含构建日志、关键运行时日志／脚本、离屏PNG和网络计数／关机堆栈。
 
-最终共享核心证据：`fork-build-4.log`、`fork-clippy-3.log`；实际fork路径：`fork-codex-pending.log`、`fork-claude-fixed.log`、`edit-codex-fork.log`。Mac Swift完整build2（SVC 3f5d1bef-88c5-43d9-a596-32f7dbaf9718）已通过，随后仅修改Rust内部fork生命周期，未改变公开bindings契约；没有因此重跑全部Swift／视觉检查。Windows隔离树将精确同步最终修复再补一次构建。
+最终共享核心证据：`fork-build-4.log`、`fork-clippy-3.log`；实际fork路径：`fork-codex-pending.log`、`fork-claude-fixed.log`、`edit-codex-fork.log`。Mac Swift完整build2（SVC 3f5d1bef-88c5-43d9-a596-32f7dbaf9718）已通过，随后仅修改Rust内部fork生命周期，未改变公开bindings契约；没有因此重跑全部Swift／视觉检查。Windows build3 已对最终12份修复文件冻结快照逐一SHA256核对并构建通过；未启动UI。工作树及缓存junction曾按后续新任务授权保留复用，现已在后续Windows构建通过后安全清理；日常缓存保留，见后续包的windows-cleanup.log。
+
+本批提交：`d8c3db5`（网络诊断脚本）、`9567b02`（全部交织的工作区功能及关键修复）。随后新增dogfood改进独立记录于[后续任务](../post-dogfood-ux/packet.md)，不混同本批完成状态。
 
 ## 尚未改变的边界
 

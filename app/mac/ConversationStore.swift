@@ -17,6 +17,9 @@ final class ConversationStore: ObservableObject {
     var allowsAttachments: Bool { !isSideChat && draftEditable }
     private let sideChatLease: SideChatLease?
     private var temporaryDraft = ""
+    /// A temporary side chat owns its next-turn choices for its lifetime;
+    /// neither its source conversation nor the shared composer directory does.
+    private var temporaryChoices = ConversationChoices()
     @Published private(set) var openingFailure: String?
     @Published private(set) var creationFailure: String?
     /// This window's search: its text, and the matches once read.
@@ -88,6 +91,10 @@ final class ConversationStore: ObservableObject {
     init(device: DeviceStore, sideChat: SideChatTarget? = nil) {
         self.device = device
         sideChatContext = sideChat
+        if let sideChat {
+            temporaryChoices = ConversationChoices(runtimeID: sideChat.runtimeID, choices: [sideChat.runtimeID:
+                TurnChoice(model: sideChat.selection, effort: sideChat.effort, permissionMode: sideChat.permissionMode)])
+        }
         sideChatLease = sideChat.flatMap { _ in device.transport.map(SideChatLease.init) }
         seenConfigurationRevision = device.configurationRevision
         seenComposerChoicesRevision = device.composerChoicesRevision
@@ -111,8 +118,9 @@ final class ConversationStore: ObservableObject {
         }.store(in: &subscriptions)
         deviceChanged()
         if isPreview {
+            if let sideChat { nextTurnRuntimeID = sideChat.runtimeID; nextTurn = sideChat.nextTurn }
             apply(device.previewSnapshots["sample-0"])
-            selectModel(.managed(modelRecordKey: "sample-model"))
+            if sideChat == nil { selectModel(.managed(modelRecordKey: "sample-model")) }
         }
     }
 
@@ -155,6 +163,7 @@ final class ConversationStore: ObservableObject {
     var applicationIsGenerating: Bool { isGenerating || executionStarting || device.hasRunningWork }
     var loadedConversationID: String? { snapshot?.conversation.id }
     var loadedConversationWorkingDirectory: String? { snapshot?.conversation.cwd }
+    var loadedConversationProject: NewConversationProject? { isDraft ? snapshot?.conversation.creationProject : nil }
     /// Set while a native sub-agent's conversation is shown: the conversation that started it.
     var loadedParentConversationID: String? { snapshot?.conversation.parentConversationID }
     /// The list's conversations, the open one with its runtime's fields, and
@@ -217,7 +226,7 @@ final class ConversationStore: ObservableObject {
 
     // MARK: - Next turn
 
-    var canSwitchModel: Bool { !isSideChat && nextTurnRuntimeID != nil && !isShuttingDown }
+    var canSwitchModel: Bool { nextTurnRuntimeID != nil && !isShuttingDown }
     var modelCatalog: RuntimeModelCatalog? { nextTurnRuntimeID.flatMap { modelCatalogs[$0] } }
     var chosenModelUnavailable: Bool { nextTurn?.chosenModelUnavailable ?? false }
     /// Whether the conversation has a turn on the next turn's runtime, whose
@@ -250,10 +259,10 @@ final class ConversationStore: ObservableObject {
     /// Keeps the changed choice for this conversation on the next turn's
     /// runtime and, as the core decides, as the runtime's last choice.
     func changeNextTurn(_ change: TurnChoiceChange) {
-        guard !isSideChat else { return }
         guard let nextTurn, let update = VeluneBindings.changeNextTurn(next: nextTurn, runtimeChoices: device.runtimeComposerChoices[nextTurn.runtimeId], change: change) else { return }
         if let choices = update.runtimeChoices { device.setRuntimeComposerChoices(choices) }
-        if let intentConversationID {
+        if isSideChat { temporaryChoices.choices[nextTurn.runtimeId] = update.choice }
+        else if let intentConversationID {
             var kept = device.choices(of: intentConversationID) ?? ConversationChoices()
             kept.choices[nextTurn.runtimeId] = update.choice
             device.keepChoices(kept, for: intentConversationID)
@@ -261,9 +270,10 @@ final class ConversationStore: ObservableObject {
         refreshNextTurn()
     }
     func selectNextTurnRuntime(_ id: String) {
-        guard !isSideChat, !isShuttingDown, device.enabledRuntimeInstances.contains(where: { $0.id == id }) else { return }
+        guard !isShuttingDown, device.enabledRuntimeInstances.contains(where: { $0.id == id }), !isSideChat || device.hasSideChats(id) else { return }
         hasInitializedNextTurnIntent = true
-        if let intentConversationID {
+        if isSideChat { temporaryChoices.runtimeID = id }
+        else if let intentConversationID {
             var kept = device.choices(of: intentConversationID) ?? ConversationChoices()
             kept.runtimeID = id
             device.keepChoices(kept, for: intentConversationID)
@@ -292,7 +302,9 @@ final class ConversationStore: ObservableObject {
     /// Listing native models starts the runtime, so a catalog is read only
     /// for an open conversation's next-turn runtime and kept until invalidated.
     func loadModelCatalog(runtimeID explicitRuntimeID: String? = nil) {
-        guard snapshot != nil, let runtimeID = explicitRuntimeID ?? nextTurnRuntimeID, device.enabledRuntimeInstances.contains(where: { $0.id == runtimeID }), modelCatalogs[runtimeID] == nil else { refreshNextTurn(); return }
+        // Navigation retains the previous snapshot until the destination opens.
+        // Its composer event must not start a runtime catalog ahead of that open.
+        guard !isOpeningConversation, snapshot != nil, let runtimeID = explicitRuntimeID ?? nextTurnRuntimeID, device.enabledRuntimeInstances.contains(where: { $0.id == runtimeID }), modelCatalogs[runtimeID] == nil else { refreshNextTurn(); return }
         if isPreview {
             let managed = device.gateway.providers.flatMap { provider in provider.models.map { RuntimeModel(selection: .managed(modelRecordKey: $0.recordKey), name: "\($0.displayName) · \(provider.name)", reasoningEfforts: $0.reasoningLevels ?? []) } }
             modelCatalogs[runtimeID] = .ready([RuntimeModel(selection: .native(providerId: "sample", modelId: "sample-native"), name: "运行时示例模型", reasoningEfforts: ["low", "medium", "high"])] + managed)
@@ -325,7 +337,7 @@ final class ConversationStore: ObservableObject {
             runtimeId: runtimeID, runtimeType: device.runtimeTypes.first { $0.id == typeID }, providers: device.gateway.providers,
             catalog: modelCatalogs[runtimeID]?.models, turns: isDraft ? [] : snapshot?.transcriptTurns ?? [],
             conversationRuntimeId: snapshot?.conversation.runtimeID, modelRecordKey: snapshot?.modelRecordKey,
-            kept: intentConversationID.flatMap { device.choices(of: $0)?.choices[runtimeID] },
+            kept: isSideChat ? temporaryChoices.choices[runtimeID] : intentConversationID.flatMap { device.choices(of: $0)?.choices[runtimeID] },
             runtimeChoices: device.runtimeComposerChoices[runtimeID]))
         if nextTurn != resolved { nextTurn = resolved }
     }
@@ -337,13 +349,10 @@ final class ConversationStore: ObservableObject {
             runtimeId: runtimeID, runtimeType: device.runtimeTypes.first { $0.id == typeID }, providers: device.gateway.providers,
             catalog: modelCatalogs[runtimeID]?.models, turns: isDraft ? [] : snapshot?.transcriptTurns ?? [],
             conversationRuntimeId: snapshot?.conversation.runtimeID, modelRecordKey: snapshot?.modelRecordKey,
-            kept: kept.choices[runtimeID] ?? TurnChoice(), runtimeChoices: device.runtimeComposerChoices[runtimeID]))
+            kept: kept.choices[runtimeID], runtimeChoices: device.runtimeComposerChoices[runtimeID]))
     }
     var keptComposerChoices: ConversationChoices {
-        if let sideChatContext {
-            return ConversationChoices(runtimeID: sideChatContext.runtimeID, choices: [sideChatContext.runtimeID:
-                TurnChoice(model: sideChatContext.selection, effort: sideChatContext.effort, permissionMode: sideChatContext.permissionMode)])
-        }
+        if isSideChat { return temporaryChoices }
         return intentConversationID.flatMap { device.choices(of: $0) } ?? ConversationChoices()
     }
     /// A conversation comes back on its current runtime (one not sent yet on
@@ -696,7 +705,7 @@ final class ConversationStore: ObservableObject {
     }
     private func finishConversationLoading() {
         pendingConversationID = nil
-        if !isShuttingDown { noteSeen() }
+        if !isShuttingDown { noteSeen(); loadModelCatalog() }
     }
 
     // MARK: - Managing conversations
@@ -782,13 +791,13 @@ final class ConversationStore: ObservableObject {
     /// runtime and model start from the current next-turn choice and can be
     /// changed in the composer; the conversation is created at the first send.
     @discardableResult
-    func createConversation(runtimeID requestedRuntimeID: String? = nil, cwd: String? = nil) -> Bool {
+    func createConversation(runtimeID requestedRuntimeID: String? = nil, cwd: String? = nil, project: NewConversationProject? = nil) -> Bool {
         guard !isSideChat, !isLoading, !executionStarting else { return false }
         let enabled = device.enabledRuntimeInstances
         guard let runtimeID = requestedRuntimeID ?? enabled.first(where: { $0.id == nextTurnRuntimeID })?.id ?? enabled.first?.id,
               enabled.contains(where: { $0.id == runtimeID }) else { return false }
         let id = Self.draftConversationPrefix + "new-conversation"
-        let conversation = Conversation(id: id, title: "新会话", updatedAtUnixMs: isPreview ? Int64(Date().timeIntervalSince1970 * 1000) : nil, runtimeID: runtimeID, cwd: cwd, canRename: isPreview, canDelete: isPreview)
+        let conversation = Conversation(id: id, title: "新会话", updatedAtUnixMs: isPreview ? Int64(Date().timeIntervalSince1970 * 1000) : nil, runtimeID: runtimeID, cwd: project?.directories.first ?? cwd, creationProject: project, canRename: isPreview, canDelete: isPreview)
         creationFailure = nil
         isDraft = !isPreview
         projectionRuntimeID = runtimeID
@@ -831,6 +840,14 @@ final class ConversationStore: ObservableObject {
         guard isDraft, snapshot != nil else { return }
         creationFailure = nil
         snapshot?.conversation.cwd = path
+        snapshot?.conversation.creationProject = nil
+        composerEvents.send(.creationTargetChanged)
+    }
+    func setUnsentProject(_ project: NewConversationProject) {
+        guard isDraft, snapshot != nil else { return }
+        creationFailure = nil
+        snapshot?.conversation.cwd = project.directories.first
+        snapshot?.conversation.creationProject = project
         composerEvents.send(.creationTargetChanged)
     }
     /// Where pasted images are kept so they can be attached by path.
@@ -846,6 +863,10 @@ final class ConversationStore: ObservableObject {
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !attachments.isEmpty else { return false }
         guard allowsAttachments || attachments.isEmpty else { return false }
         guard canSend, let next = next ?? nextTurn, case let target = next.runtimeId, let source = snapshot?.conversation.runtimeID, let conversationID = loadedConversationID else { return false }
+        if let project = snapshot?.conversation.creationProject, project.runtimeID != target {
+            recordProblem("所选项目属于另一运行时，请重新选择项目或工作目录")
+            return false
+        }
         let model = next.model
         if isPreview {
             guard var value = snapshot else { return false }
@@ -865,12 +886,13 @@ final class ConversationStore: ObservableObject {
         let creating = isDraft
         let temporary = isSideChat
         let cwd = snapshot?.conversation.cwd
+        let project = snapshot?.conversation.creationProject
         // Without a level or mode the core keeps the conversation's current one.
         let turn = ComposedTurn(text: text, effort: next.effort, permissionMode: next.permissionMode?.id, attachments: attachments)
         enqueue({
             if temporary { return try transport.sendSideChat(sideChatID: conversationID, runtimeID: target, selection: model, turn: turn) }
             if creating {
-                return try transport.createAndSend(runtimeID: target, cwd: cwd, selection: model, turn: turn) { [weak self] created in
+                return try transport.createAndSend(runtimeID: target, cwd: cwd, project: project?.key, selection: model, turn: turn) { [weak self] created in
                     DispatchQueue.main.async {
                         guard let self else { return }
                         self.isDraft = false
@@ -1291,5 +1313,28 @@ final class ConversationStore: ObservableObject {
                 }
             }
         }
+    }
+}
+
+extension ConversationStore {
+    /// Hidden native check of the production navigation/catalog admission path.
+    /// A retained source snapshot must not launch any catalog before open finishes.
+    static func checkOpeningCatalogAdmission() {
+        let device = DeviceStore(preview: true)
+        let store = ConversationStore(device: device)
+        let source = device.previewSnapshots["sample-0"]!
+        store.apply(source)
+        store.modelCatalogs.removeAll()
+        let targetRuntime = "sample-review"
+        store.pendingConversationID = "synthetic-opening-destination"
+        store.loadModelCatalog(runtimeID: targetRuntime)
+        precondition(store.modelCatalogs[targetRuntime] == nil, "打开会话前不应启动旧输入触发的模型目录")
+        store.nextTurnRuntimeID = targetRuntime
+        precondition(store.modelCatalogs[targetRuntime] == nil, "加载中的目标选择不应阻塞历史打开")
+        store.finishConversationLoading()
+        guard case .ready? = store.modelCatalogs[targetRuntime] else {
+            preconditionFailure("会话打开完成后应加载实际目标运行时的模型目录")
+        }
+        FileHandle.standardError.write(Data("PASS conversation opening: retained snapshot cannot start a catalog ahead of open; destination catalog loads after opening\n".utf8))
     }
 }

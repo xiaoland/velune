@@ -142,6 +142,9 @@ impl CoreRuntime {
             .collect()
     }
     pub(super) fn active_instance(&self) -> Result<&RuntimeInstance, RuntimeError> {
+        if let Some(configuration) = &self.session.execution_configuration {
+            return Ok(&configuration.runtime);
+        }
         let id = match &self.session.active_state {
             ActiveState::History(snapshot) => &snapshot.conversation.runtime_id,
             ActiveState::Native(_) | ActiveState::Acp(_) | ActiveState::Pi(_) => self
@@ -190,6 +193,7 @@ impl CoreRuntime {
         &mut self,
         cwd: Option<&Path>,
         key: &str,
+        project: Option<&velune_agent_runtime::native::codex_projects::NativeProject>,
     ) -> Result<(), RuntimeError> {
         let runtime = self.active_instance()?.clone();
         let side_context = self.session.side.as_ref().map(|side| side.context.clone());
@@ -205,9 +209,11 @@ impl CoreRuntime {
                         .reference_context(context)
                         .map_err(|error| RuntimeError::context("编辑引用上下文", error))?;
                 }
-                session
-                    .create(cwd, &runtime.id)
-                    .map_err(|error| RuntimeError::context("会话创建失败", error))?;
+                match project {
+                    Some(project) => session.create_in_project(cwd, &runtime.id, project),
+                    None => session.create(cwd, &runtime.id),
+                }
+                .map_err(|error| RuntimeError::context("会话创建失败", error))?;
             }
         }
         if runtime.type_id == RuntimeKind::DeepSeek {

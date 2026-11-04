@@ -16,6 +16,10 @@ import VeluneBindings
     }
     AppearancePreferences.shared.load(home: home) { fatalError($0) }
     func stamp(_ date: Date) -> Int64 { Int64(date.timeIntervalSince1970 * 1000) }
+    if CommandLine.arguments.contains("--experience-navigation-only") {
+        ConversationStore.checkOpeningCatalogAdmission()
+        navigationTranscriptChecks(home: home)
+    }
     if CommandLine.arguments.contains("--experience-typography-only") {
         let model = ComposerModel(followsConversation: false)
         let editor = ComposerTextView()
@@ -158,12 +162,13 @@ import VeluneBindings
         cell.frame = NSRect(x: 0, y: y, width: 1000, height: layout.height)
         cell.apply(layout, rowID: id, outlineToggle: nil, edit: nil, fork: nil, toggleHelp: nil, textDelegate: delegate, openArtifact: { _ in }, toggle: { _ in })
         for button in cell.subviews.compactMap({ $0 as? NSButton }) { button.alphaValue = 1 }
+        for label in cell.subviews where label.accessibilityIdentifier() == "message-created-at" { label.alphaValue = 1 }
         rows.addSubview(cell); y += layout.height
     }
     for message in messages {
         if message.role == .assistant {
             add(.work(label: "工作过程", expanded: false, settings: nil), rendered: nil, id: "work")
-            add(.messageActions(text: "核对运行时目录与提交状态。", timestamp: now, trailing: false), rendered: nil, id: "work-actions")
+            add(.workActions(text: "核对运行时目录与提交状态。"), rendered: nil, id: "work-actions")
         }
         add(.message(message, revision: 0, expanded: [], status: nil, copies: true, edits: message.role == .user, forks: message.role == .assistant), rendered: RenderedMessage(message), id: message.id)
     }
@@ -177,4 +182,114 @@ import VeluneBindings
 
 @MainActor private final class MessageSampleCanvas: NSView {
     override var isFlipped: Bool { true }
+}
+
+/// Targeted navigation and transcript checks, using only synthetic state and
+/// an unordered native window. Events below go directly to one cell, never
+/// through the application event queue or the system pointer.
+@MainActor private func navigationTranscriptChecks(home: URL) -> Never {
+    func note(_ text: String) { FileHandle.standardError.write(Data((text + "\n").utf8)) }
+    func descendants(_ root: NSView) -> [NSView] { [root] + root.subviews.flatMap(descendants) }
+    let device = DeviceStore(preview: true)
+    let window = ConversationWindowModel(application: device, kind: .workspace)
+    let original = window.focused
+    original.store.selectConversation(id: "sample-0")
+    let draft = window.composer(for: original)
+    draft.restore("PRESERVED SYNTHETIC DRAFT", attachments: [])
+    original.store.noteFocused()
+    let count = window.tabCount
+    precondition(ConversationWindowModel.openNotificationConversation("sample-1", application: device) === window)
+    let notified = window.focused
+    precondition(window.tabCount == count + 1 && notified !== original)
+    precondition(original.store.loadedConversationID == "sample-0" && draft.submission == "PRESERVED SYNTHETIC DRAFT")
+    window.selectTab(original.id)
+    precondition(ConversationWindowModel.openNotificationConversation("sample-1", application: device) === window)
+    precondition(window.focused === notified && window.tabCount == count + 1)
+    let second = ConversationWindowModel(application: device, kind: .workspace)
+    second.focused.store.selectConversation(id: "sample-2")
+    window.selectTab(original.id)
+    precondition(ConversationWindowModel.openNotificationConversation("sample-2", application: device) === second)
+    precondition(second.tabCount == 1 && window.focused === original)
+    original.outlineCollapsed = true
+    original.beginFind()
+    precondition(!original.outlineCollapsed)
+    note("PASS notification navigation: new tab preserves original conversation/draft; repeated and other-window targets reuse their tab; find reveals full transcript")
+
+    let now: Int64 = 1_793_793_600_000
+    let messages: [DeliveredMessage] = [
+        .init(id: "user", role: .user, timestampUnixMs: now, blocks: [.text(text: "合成输入")]),
+        .init(id: "work", role: .assistant, timestampUnixMs: now, blocks: [
+            .text(text: "记录工作步骤"),
+            .reasoning(summary: "隐藏推理", text: .inline(text: "A Café Needle inside work.")),
+            .tool(toolId: "unrelated", title: "无关工具", state: .completed, output: .inline(text: "UNRELATED HIDDEN DETAIL"), linkedConversationId: nil)
+        ]),
+        .init(id: "deferred", role: .assistant, timestampUnixMs: now, blocks: [
+            .tool(toolId: "deferred-tool", title: "延迟工具", state: .completed, output: .deferred(bytes: 4096), linkedConversationId: nil)
+        ]),
+        .init(id: "answer", role: .assistant, timestampUnixMs: now, blocks: [.text(text: "结果 Needle\n\n```swift\nlet needle = true\n```")])
+    ]
+    let turn = TranscriptTurn(id: "turn", userMessageId: "user", workMessageIds: ["work", "deferred"], lastMessageId: "answer", replyStartBlock: 0, durationMs: 1200, isRunning: false, outcome: .completed, settings: nil, usage: nil)
+    let model = TranscriptModel()
+    model.apply(messages, turns: [turn], items: [.message(id: "user", messageId: "user"), .work(turnId: "turn"), .message(id: "answer", messageId: "answer")], outline: [.init(id: "user", messageId: "user")], identities: messages.map { .init(id: $0.id, messageId: $0.id) }, canFork: true, editable: ["user"])
+    let find = TranscriptFind()
+    let controller = TranscriptTableController()
+    controller.observeFind(find)
+    let scroll = controller.view()
+    let host = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 960, height: 1000), styleMask: [.borderless], backing: .buffered, defer: false)
+    host.contentView = scroll
+    var loaded: Set<String> = []
+    func input(jump: TranscriptJump? = nil) -> TranscriptTable {
+        TranscriptTable(controller: controller, conversationID: "synthetic", items: model.items(for: model.rows, turnHeaders: true), revision: model.contentRevision, activity: nil, outlineCollapsed: false, outlineAnchorID: nil, cwd: nil, bottomRequest: 0, jump: jump, followingChanged: { _ in }, outlineToggle: { _ in }, loadPayloads: { loaded.formUnion($0) }, openConversation: { _ in }, openAgentURI: { _ in }, openArtifact: { _ in }, editMessage: { _ in {} }, forkConversation: { _ in }, describeSettings: { _ in nil })
+    }
+    func cell(_ id: String) -> TranscriptCellView? { scroll.documentView?.subviews.compactMap { $0 as? TranscriptCellView }.first { $0.rowID == id } }
+    controller.update(input())
+    precondition(cell("work") == nil, "完成的工作默认保持折叠")
+    find.isShown = true
+    find.query = "needle"
+    precondition(find.matches(in: model) == ["work", "answer"])
+    precondition(loaded == ["deferred"], "仅搜索期间读取延迟文本")
+    controller.update(input(jump: .init(id: "work", token: 1)))
+    guard let work = cell("work"), let answer = cell("answer"), let user = cell("user") else { fatalError("命中工作行未展开或未物化") }
+    let workText = descendants(work).compactMap { $0 as? TranscriptTextView }.filter { !$0.isHidden }
+    precondition(workText.contains { $0.string == "A Café Needle inside work." })
+    precondition(!workText.contains { $0.string == "UNRELATED HIDDEN DETAIL" }, "不展开未命中的工具详情")
+    let highlighted = workText.first { $0.string.contains("Needle") }!
+    let range = TranscriptSearch.ranges(in: highlighted.string, query: "needle").first!
+    precondition(highlighted.layoutManager?.temporaryAttribute(.backgroundColor, atCharacterIndex: range.location, effectiveRange: nil) != nil)
+    let code = descendants(answer).compactMap { $0 as? TranscriptTextView }.first { $0.string.contains("let needle") }!
+    precondition(code.layoutManager?.temporaryAttribute(.backgroundColor, atCharacterIndex: 4, effectiveRange: nil) != nil)
+    precondition(TranscriptSearch.ranges(in: "Café CAFE", query: "cafe").count == 2)
+    find.isShown = false
+    precondition(highlighted.layoutManager?.temporaryAttribute(.backgroundColor, atCharacterIndex: range.location, effectiveRange: nil) == nil)
+    find.isShown = true
+    note("PASS transcript search: folded reasoning and reply results; selected work/disclosure opens; unrelated detail stays folded; deferred text loads; prose/code highlights clear with find")
+
+    func timeLabel(_ cell: TranscriptCellView) -> TranscriptTextView? { cell.subviews.compactMap { $0 as? TranscriptTextView }.first { $0.accessibilityIdentifier() == "message-created-at" } }
+    let footer = cell("work-actions:turn")!
+    precondition(timeLabel(footer) == nil && timeLabel(work) == nil)
+    for row in [user, answer] {
+        let label = timeLabel(row)!
+        let buttons = row.subviews.compactMap { $0 as? NSButton }.filter { !$0.isHidden }
+        precondition(!buttons.isEmpty && label.alphaValue == 0 && buttons.allSatisfy { $0.alphaValue == 0 })
+        let entered = NSEvent.enterExitEvent(with: .mouseEntered, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: 0, context: nil, eventNumber: 0, trackingNumber: 0, userData: nil)!
+        row.mouseEntered(with: entered)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.18))
+        precondition(label.alphaValue == 1 && buttons.allSatisfy { $0.alphaValue == 1 })
+        let exited = NSEvent.enterExitEvent(with: .mouseExited, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: 0, context: nil, eventNumber: 0, trackingNumber: 0, userData: nil)!
+        row.mouseExited(with: exited)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.18))
+        precondition(label.alphaValue == 0 && buttons.allSatisfy { $0.alphaValue == 0 })
+    }
+    let creationTimes = descendants(scroll).compactMap { $0 as? TranscriptTextView }.filter { $0.accessibilityIdentifier() == "message-created-at" && !$0.isHidden }
+    precondition(creationTimes.count == 2, "仅真实用户消息和最终回复拥有创建时间")
+    answer.mouseEntered(with: NSEvent.enterExitEvent(with: .mouseEntered, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: 0, context: nil, eventNumber: 0, trackingNumber: 0, userData: nil)!)
+    RunLoop.main.run(until: Date().addingTimeInterval(0.18))
+    scroll.layoutSubtreeIfNeeded(); scroll.displayIfNeeded()
+    if let bitmap = scroll.bitmapImageRepForCachingDisplay(in: scroll.bounds) {
+        scroll.cacheDisplay(in: scroll.bounds, to: bitmap)
+        try! bitmap.representation(using: .png, properties: [:])!.write(to: home.appendingPathComponent("transcript-search.png"))
+    }
+    precondition(!host.isVisible && !host.isKeyWindow && !NSApp.isActive)
+    note("PASS message creation time: only real messages; copy/edit/fork and time share hover visibility; no work-footer or assistant-top time; hidden native window never activated")
+    exit(0)
 }

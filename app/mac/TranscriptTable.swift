@@ -1,4 +1,5 @@
 import SwiftUI
+import Combine
 import VeluneBindings
 import AppKit
 import QuartzCore
@@ -70,21 +71,21 @@ struct TranscriptTable: NSViewRepresentable {
         case message(TranscriptRow)
         /// `expandable` is false for a header with no work under it.
         case work(TranscriptTurn, label: String, expandable: Bool, settings: TurnSettingsSummary?)
-        case workActions(id: String, text: String, timestamp: Int64?)
+        case workActions(id: String, text: String)
         case activity(TranscriptActivity)
         case end
         var id: String {
             switch self {
             case .message(let row): return row.id
             case .work(let turn, _, _, _): return "work:" + turn.id
-            case .workActions(let id, _, _): return "work-actions:" + id
+            case .workActions(let id, _): return "work-actions:" + id
             case .activity: return "transcript-activity"
             case .end: return "transcript-end"
             }
         }
     }
     private enum ContentKey: Equatable {
-        case message(UInt64, [String], String?, Bool, Bool, Bool), work(String, Bool?, TurnSettingsSummary?), messageActions(String, Int64?), activity(TranscriptActivity), end
+        case message(UInt64, [String], String?, Bool, Bool, Bool), work(String, Bool?, TurnSettingsSummary?), workActions(String), activity(TranscriptActivity), end
     }
     private struct Measured {
         var key: ContentKey
@@ -132,6 +133,58 @@ struct TranscriptTable: NSViewRepresentable {
     private static let transitionDuration: CFTimeInterval = 0.3
 
     private var parent: TranscriptTable?
+    private var findChanges: AnyCancellable?
+    private var findQuery = ""
+
+    /// Search belongs to the tab, while highlights and disclosure geometry
+    /// belong to this native list. No row measurement changes for highlighting.
+    func observeFind(_ find: TranscriptFind) {
+        findChanges = Publishers.CombineLatest(find.$isShown, find.$query).sink { [weak self] shown, query in
+            self?.setFindQuery(shown ? query : "")
+        }
+    }
+
+    private func setFindQuery(_ query: String) {
+        let query = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard findQuery != query else { return }
+        findQuery = query
+        for cell in visibleCells.values { cell.highlight(query) }
+        requestFindPayloads()
+    }
+
+    private func requestFindPayloads() {
+        guard !findQuery.isEmpty, let parent else { return }
+        let rows = parent.items.flatMap { item -> [TranscriptRow] in
+            switch item { case .message(let row): return [row]; case .work(_, let rows): return rows }
+        }
+        let ids = Set(rows.filter { !RenderedMessage.deferredDisclosureKeys($0.message).isEmpty }.map { $0.message.id })
+        if !ids.isEmpty { parent.loadPayloads(Array(ids)) }
+    }
+
+    private func revealFindResult(_ id: String) {
+        guard !findQuery.isEmpty else { return }
+        var changed = false
+        var target: TranscriptRow?
+        for item in parent?.items ?? [] {
+            switch item {
+            case .message(let row): if row.id == id { target = row }
+            case .work(let turn, let rows):
+                guard let row = rows.first(where: { $0.id == id }) else { continue }
+                target = row
+                if !showsWork(turn) {
+                    if turn.isRunning || turn.outcome != .completed { collapsedRunningWork.remove(turn.id) }
+                    else { expandedWork.insert(turn.id) }
+                    changed = true
+                }
+            }
+        }
+        if let target {
+            let before = expandedBlocks[id] ?? []
+            let after = before.union(TranscriptSearch.disclosureKeys(in: target.message, query: findQuery))
+            if before != after { expandedBlocks[id] = after; changed = true }
+        }
+        if changed { rebuildEntries() }
+    }
     /// Kept while no view shows it, so it is shown again where it was.
     private var scroll: NSScrollView?
     /// Views showing the list: two for a moment when a tab moves.
@@ -284,9 +337,11 @@ struct TranscriptTable: NSViewRepresentable {
         }
         if let jump = input.jump, jump.token != lastJumpToken {
             lastJumpToken = jump.token
+            revealFindResult(jump.id)
             scrollTo(jump.id, alignBottom: true)
         }
         if let restored { scrollTo(restored.top) }
+        if contentChanged { requestFindPayloads() }
     }
 
     /// Reading follows the end of the conversation.
@@ -317,9 +372,8 @@ struct TranscriptTable: NSViewRepresentable {
                 next.append(.work(turn, label: Self.workLabel(turn, hasWork: !rows.isEmpty), expandable: !rows.isEmpty,
                                   settings: parent?.describeSettings(turn)))
                 if showsWork(turn) { next += rows.map(Entry.message) }
-                if !rows.isEmpty {
-                    next.append(.workActions(id: turn.id, text: rows.map { $0.message.copiedText }.filter { !$0.isEmpty }.joined(separator: "\n\n"), timestamp: rows.compactMap { $0.message.timestampUnixMs }.first))
-                }
+                let copied = rows.map { $0.message.copiedText }.filter { !$0.isEmpty }.joined(separator: "\n\n")
+                if !copied.isEmpty { next.append(.workActions(id: turn.id, text: copied)) }
             }
         }
         if let activity = parent?.activity { next.append(.activity(activity)) }
@@ -547,8 +601,8 @@ struct TranscriptTable: NSViewRepresentable {
             return (.activity(activity), .activity(activity))
         case .end:
             return (.end, .end)
-        case .workActions(_, let text, let timestamp):
-            return (.messageActions(text, timestamp), .messageActions(text: text, timestamp: timestamp, trailing: false))
+        case .workActions(_, let text):
+            return (.workActions(text), .workActions(text: text))
         }
     }
 
@@ -1082,6 +1136,7 @@ struct TranscriptTable: NSViewRepresentable {
         }) { [weak self] key in
             self?.toggle(entryID: entry.id, key: key)
         }
+        cell.highlight(findQuery)
         cell.setAccessibilityIdentifier(entry.id)
         cell.configurationToken = token
     }
@@ -1278,6 +1333,7 @@ enum TranscriptConversationLink {
     private var copyButton: MessageCopyButton?
     private var editButton: MessageEditButton?
     private var forkButton: MessageForkButton?
+    private var timeLabel: TranscriptTextView?
     private var outlineToggle: (() -> Void)?
     private var editAction: (() -> Void)?
     private var forkAction: (() -> Void)?
@@ -1310,6 +1366,8 @@ enum TranscriptConversationLink {
         copyButton?.alphaValue = 0
         editButton?.alphaValue = 0
         forkButton?.alphaValue = 0
+        timeLabel?.alphaValue = 0
+        timeLabel?.clear()
         for view in textViews { view.clear() }
         for view in codeBlocks { view.clear() }
         spinner?.stopAnimation(nil)
@@ -1330,6 +1388,7 @@ enum TranscriptConversationLink {
         copyButton?.isHidden = true
         editButton?.isHidden = true
         forkButton?.isHidden = true
+        timeLabel?.isHidden = true
         for element in layout.elements {
             switch element {
             case .bubble(let frame):
@@ -1418,6 +1477,18 @@ enum TranscriptConversationLink {
                 editButton?.frame = frame
                 editButton?.isHidden = false
                 editButton?.clicked = { [weak self] in self?.editAction?() }
+            case .time(let text, let frame):
+                if timeLabel == nil {
+                    let label = TranscriptTextView()
+                    label.isSelectable = false
+                    label.setAccessibilityRole(.staticText)
+                    label.setAccessibilityIdentifier("message-created-at")
+                    addSubview(label)
+                    timeLabel = label
+                }
+                timeLabel?.show(text, frame: frame)
+                timeLabel?.alphaValue = hovered ? 1 : 0
+                timeLabel?.isHidden = false
             case .fork(let frame):
                 if forkButton == nil {
                     let button = MessageForkButton()
@@ -1434,6 +1505,12 @@ enum TranscriptConversationLink {
         for view in disclosures[disclosureIndex...] { view.isHidden = true }
         for view in codeBlocks[codeIndex...] { view.isHidden = true; view.clear() }
         for view in attachments[attachmentIndex...] { view.isHidden = true }
+    }
+
+    func highlight(_ query: String) {
+        for view in textViews { view.highlight(query) }
+        for view in codeBlocks { view.highlight(query) }
+        for view in disclosures { view.highlight(query) }
     }
 
     // The copy button shows while the pointer is anywhere on the row; moving
@@ -1454,6 +1531,7 @@ enum TranscriptConversationLink {
             copyButton?.animator().alphaValue = shown ? 1 : 0
             editButton?.animator().alphaValue = shown ? 1 : 0
             forkButton?.animator().alphaValue = shown ? 1 : 0
+            timeLabel?.animator().alphaValue = shown ? 1 : 0
         }
     }
 }
@@ -1499,6 +1577,14 @@ enum TranscriptConversationLink {
         shown = text
         setSelectedRange(NSRange(location: 0, length: 0))
         textStorage?.setAttributedString(text)
+    }
+
+    func highlight(_ query: String) {
+        let whole = NSRange(location: 0, length: (string as NSString).length)
+        layoutManager?.removeTemporaryAttribute(.backgroundColor, forCharacterRange: whole)
+        for range in TranscriptSearch.ranges(in: string, query: query) {
+            layoutManager?.addTemporaryAttribute(.backgroundColor, value: NSColor.findHighlightColor, forCharacterRange: range)
+        }
     }
 
     func clear() {
@@ -1557,6 +1643,15 @@ enum TranscriptConversationLink {
         needsLayout = true
     }
 
+    func highlight(_ query: String) {
+        let title = NSMutableAttributedString(attributedString: label.attributedTitle)
+        title.removeAttribute(.backgroundColor, range: NSRange(location: 0, length: title.length))
+        for range in TranscriptSearch.ranges(in: title.string, query: query) {
+            title.addAttribute(.backgroundColor, value: NSColor.findHighlightColor, range: range)
+        }
+        label.attributedTitle = title
+    }
+
     override func layout() {
         super.layout()
         let size = triangle.fittingSize
@@ -1613,6 +1708,7 @@ enum TranscriptConversationLink {
 
     @objc private func viewArtifact() { openArtifact?() }
     func clear() { text.clear(); openArtifact = nil }
+    func highlight(_ query: String) { text.highlight(query) }
 
     override func draw(_ dirtyRect: NSRect) {
         NSColor.quaternarySystemFill.setFill()

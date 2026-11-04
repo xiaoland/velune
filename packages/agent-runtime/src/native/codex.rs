@@ -1,4 +1,4 @@
-//! Codex app-server 0.159.3 control and projection, independent of Pi.
+//! Codex app-server control and projection, independent of Pi.
 use super::*;
 pub(super) const NATIVE_RETRY_DETAIL: &str = "\nCodex 正在自动重试。";
 
@@ -224,9 +224,26 @@ impl NativeSession {
         }
         options
     }
-    pub(super) fn codex_create(&mut self, cwd: Option<&Path>, runtime_id: &str) -> Result<()> {
+    pub(super) fn codex_create(
+        &mut self,
+        cwd: Option<&Path>,
+        runtime_id: &str,
+        project: Option<&super::codex_projects::NativeProject>,
+    ) -> Result<()> {
         self.codex_capture_provider(cwd)?;
         let mut options = self.codex_options(cwd);
+        if let Some(project) = project {
+            options["projectId"] = json!(project.id);
+            // projectId records membership; Codex does not expand it into the
+            // runtime workspace or the model's environment context itself.
+            options["runtimeWorkspaceRoots"] = json!(
+                project
+                    .roots
+                    .iter()
+                    .map(|root| &root.path)
+                    .collect::<Vec<_>>()
+            );
+        }
         if self.side {
             options["ephemeral"] = json!(true);
         }

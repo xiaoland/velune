@@ -40,7 +40,7 @@ extension ConversationWindowModel {
         guard draft.store.isUnsentConversation else { return groupCreationCheck("FAIL no unsent tab to retarget") }
         let input = composer(for: draft)
         input.restore("GROUP SHARED DRAFT", attachments: [])
-        input.intent?.kept.runtimeID = runtimes[0].id
+        composerContext(for: draft).selectNextTurnRuntime(runtimes[0].id)
         let baseTabs = tabCount
         createConversation(in: .runtime(runtimeId: runtimes[1].id))
         guard focused === draft, tabCount == baseTabs,

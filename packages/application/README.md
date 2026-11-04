@@ -135,7 +135,7 @@ Claude 登录复用 `authentication_start`、`authentication_poll`、`authentica
 
 Claude CLI 提供商也可沿用既有登录：`AuthenticationEdit::UseClaudeCodeLogin { login }` 引用 `LinkedClaudeLogin::UserDefault`（不设置 `CLAUDE_CONFIG_DIR`）或 `Runtime { instance_id }`（本机、既有 HOME 的 `claude-code-2.1` 实例的 `agentDir`）。目录在保存、导入与检查时解析并记录在私有材料中，执行时不再查询运行时。`authentication_inspect` 重新解析并读取状态；沿用的登录没有 start／logout，删除提供商或改用独立登录（`Clear`）都不会退出它，也不创建 `claude-cli` 目录。`account_label` 是账户摘要尾 8 位，平台自行加措辞。同一账户在保存、导入或检查时若已绑定另一提供商（独立或沿用），操作被拒绝。
 
-应用共享执行池，跨 Runner 保留进程内会话；网关显式传入会话身份。换绑、删除、退出或关闭停止旧绑定，取消停止当前交互。真实新用户轮才调用 `begin_user_turn`，Harness turn 结束调用 `finish_user_turn`，释放仍在执行或等待工具的交互，保留已完成的空闲进程；普通准备或 Runner 替换不清理会话。不承诺应用重启后恢复 CLI 会话。CLI 的工具请求由网关桥接，应用不让它直接执行项目工具。
+每个执行会话持有自己的 Runner，网关显式传入会话身份。一般情况下应用共享执行池并跨 Runner 保留进程内会话；在途保存配置时，旧执行保留其池／认证／额度快照至工作结束，新准备使用最新配置。稳定提供商的调度账本继续共享，epoch退休等清理延至没有活跃引用，不能按配置代数放大并发或重置冷却。删除、显式退出及关闭保留各自的生命周期保护，取消停止当前交互。真实新用户轮才调用 `begin_user_turn`，Harness turn 结束调用 `finish_user_turn`，释放仍在执行或等待工具的交互，保留已完成的空闲进程；普通准备或 Runner 替换不清理会话。不承诺应用重启后恢复 CLI 会话。CLI 的工具请求由网关桥接，应用不让它直接执行项目工具。
 
 CLI 额度来源执行内置 `/usage`，关闭工具、外部 MCP、设置来源与会话持久化。仅解析可验证的 `Current session` 与 `Current week (all models)` 百分比，映射为 `window:18000` 和 `window:604800`。未知文本、缺失窗口、进程失败不产生满额快照；保留上次观测并给出未知或过期状态及安全错误。人类可读 reset 文本不被猜测为时间戳，按现有短 TTL 在下次查询或使用时重新观测；不会推断额度恢复。模型特定窗口没有稳定 model ID 映射时不伪装为全模型窗口。额度是按需观测，不是持续轮询。
 
@@ -154,7 +154,7 @@ Claude 认证失败的公开 `AuthenticationEvent::Finished` 的 `error` 只包�
 
 每个 view 分别保留所选会话、列表筛选／分组排序／归档／分页、outline／关联会话打开方式／用量显示方式／状态栏。远程这些呈现选择不写入执行设备的默认界面配置；会话、项目组织和实际配置仍共享。`ReleaseView` 释放临时状态，不取消会话、不删除历史或已上传文件；最多保留 128 个 view，超出时回收最久未访问者的临时状态，所以长期 headless 运行不因累计窗口耗尽视图。会话按自身运行／审批／队列与空闲保留规则管理，视图回收不会改变工作寿命。
 
-未发送正文、附件、明确选择与恢复关联由 `ComposerInputs` 在 `ClientState` 之外共享持有，使用稳定 InputID、输入 CAS 与条件目录修订；全局新建只有一份。原生身份交接记录同时服务幂等恢复和其他编辑视图接续，详见 [Composer 契约](../../docs/design/composer-state.md)。
+未发送正文／附件、目标明确选择与恢复关联由 `ComposerInputs` 在 `ClientState` 之外共享持有；内容按稳定 InputID，选择按 ContextKey，二者及恢复关联各自 CAS，目录提供条件修订。全局新建只有一份内容关联和一套选择。原生身份交接记录同时服务幂等恢复和其他编辑视图接续，详见 [Composer 契约](../../docs/design/composer-state.md)。
 
 新 view 继承最近一次本地成功保存的完整浏览偏好、分页上限、outline、关联会话打开方式、用量显示方式和状态栏。local-runtime 与 portable 都在配置原子保存成功后记录这六项的实际提交快照，离开本地调用时更新默认值；已存在的远程 view 保留自己的选择。远程保存共享配置时保留这些本地默认值，保存失败不推进默认值，保存后的响应失败也不撤销已提交的默认值。所选会话、执行状态和草稿不参与该快照。
 
@@ -164,7 +164,7 @@ Claude 认证失败的公开 `AuthenticationEvent::Finished` 的 `error` 只包�
 
 Kimi Coding Plan 模板 `kimiCodingPlan` 固定组合为 `Http`、`MessagesV1`、`ApiKey`、`KimiCoding` 与 `KimiUsage`，地址为官方 `https://api.kimi.com/coding/`（海外区域 `https://api.kimi.ai/coding/`）。保存拒绝不匹配组合和其他地址；模型 ID 仍由提供商模型拥有。公开模板和提供商认证描述携带个人交互式使用、共享额度及加油包可能继续计费的说明。
 
-身份门禁、账户去重与订阅使用上限由显式 `KimiCoding`＋`KimiUsage` 组合提供；通用 `Native` API 配置不会仅凭地址被自动识别为订阅。Kimi 身份与额度由 application 读取固定 `/coding/v1/me` 和 `/coding/v1/usages`，不扩大模型凭据目标。每次新 Key revision 都先验证区域与 `user_id`；未验证或重复账户不返回模型凭据，所有网关的 provider 在同一服务锁内声明归属。公开 `configured` 只在当前 Key 已验证后为 true，`account_label` 仅显示已知账户稳定摘要的短尾；重启重新验证，不保存账户注册表。换 Key 取消旧采集并拒绝旧结果，同账户保留阈值、冷却与会话绑定，确认换账户才清除旧账户状态。
+身份门禁、账户去重与订阅使用上限由显式 `KimiCoding`＋`KimiUsage` 组合提供；通用 `Native` API 配置不会仅凭地址被自动识别为订阅。Kimi 身份与额度由 application 读取固定 `/coding/v1/me` 和 `/coding/v1/usages`，不扩大模型凭据目标。每次新 Key revision 都先验证区域与 `user_id`；未验证或重复账户不返回模型凭据，所有网关的 provider 在同一服务锁内声明归属。公开 `configured` 只在当前 Key 已验证后为 true，`account_label` 仅显示已知账户稳定摘要的短尾；重启重新验证，不保存账户注册表。换 Key 后新的查询绑定拒绝旧结果；仍有在途执行时，其旧采集／凭据快照保留到该执行结束，不被新配置取消。同账户保留阈值、冷却与会话绑定，确认换账户后的调度退休也等待旧执行引用释放。
 
 额度 API 沿用 `provider_quota`／`refresh_provider_quota`。Kimi 窗口 ID 为 `kimi:limit_5h`、`kimi:limit_7d`、`kimi:limit_month_total`、`kimi:limit_month_code`，仅生成实际上游返回的有效项；`used_ratio` 支持有限 0–1 数字及数字字符串，`reset_time` 必须是有效未来 RFC3339 时间。缺失、非法或读取失败不补零，月窗口不伪造固定天数，钱包缺失不证明不会扣充值余额。`/me` 成功但额度失败时，无 cap 的候选仍可使用；有 cap 且缺少相应 fresh 窗口时暂停。显式额度耗尽事件触发按需重取，不重放已交付响应。
 

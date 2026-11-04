@@ -1,6 +1,15 @@
 import Foundation
 import VeluneBindings
 
+/// A tab's explicit creation workspace. The core resolves its opaque key again
+/// at send time, so saved labels and roots never grant stale workspace access.
+struct NewConversationProject: Codable, Sendable, Equatable {
+    var key: String
+    var name: String
+    var runtimeID: String
+    var directories: [String]
+}
+
 struct Conversation: Codable, Sendable, Identifiable, Equatable {
     let id: String
     var title: String
@@ -8,6 +17,7 @@ struct Conversation: Codable, Sendable, Identifiable, Equatable {
     var createdAtUnixMs: Int64? = nil
     var runtimeID: String
     var cwd: String?
+    var creationProject: NewConversationProject? = nil
     var canRename = true
     var canDelete = true
     /// A native sub-agent's conversation: opened from its parent's transcript,
@@ -28,7 +38,7 @@ struct Conversation: Codable, Sendable, Identifiable, Equatable {
     var failed = false
     /// The list group showing it; nil for an open conversation the list does not show.
     var group: ConversationGroupKey? = nil
-    enum CodingKeys: String, CodingKey { case id, title, updatedAtUnixMs, createdAtUnixMs, cwd, canRename, canDelete; case runtimeID = "runtimeId"; case parentConversationID = "parentConversationId" }
+    enum CodingKeys: String, CodingKey { case id, title, updatedAtUnixMs, createdAtUnixMs, cwd, creationProject, canRename, canDelete; case runtimeID = "runtimeId"; case parentConversationID = "parentConversationId" }
     /// This conversation's runtime fields with `listed`'s organization.
     func organized(like listed: Conversation) -> Conversation {
         var value = self
