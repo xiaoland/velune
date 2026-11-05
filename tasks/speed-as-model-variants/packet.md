@@ -45,3 +45,19 @@
 - 文档：docs/prd/composer.md（速度=目录组合）、application README（resume_turn 签名与速度段）、agent-runtime README（Codex 档段落）、ai-service.md（模型条目能力）、PARITY.md、sources.md 新增 S77、旧任务包标记取代。
 
 工作区收尾已通过 workspace/all-features/all-targets 严格 Clippy；速度组合改为 adapter 命名空间内的无歧义 JSON 二元组，普通含 `~` 的模型 ID 不被误解析。实际 Codex 0.166 原生目录变体→回环 Responses 请求验证通过：上游模型不变，变体携带 priority，选择普通模型清除档位。managed 自定义参数也通过实际 Claude 网关请求捕获确认。平台构建与提交授权由[工作区收尾任务](../workspace-delivery-and-network/packet.md)接管，不再沿用本包最初的“不提交”边界。
+
+## 2026-11-04 追加收尾
+
+- 启动失败（`unknown field serviceTier`）已由并行任务 startup-service-tier 用显式迁移脚本修复并完成真实目录迁移与备份；产品数据缺陷关闭。
+- deny_unknown_fields 松绑：已提交 32d090e（application-api/composer.rs 全部、runtime_execution.rs、application/composer.rs、remote/store.rs），在干净 worktree（HEAD + 仅松绑 diff）中验证 application-api/remote/application 三 crate 编译通过。其余触及文件（application-api/config.rs、application/repository.rs、composer_choices.rs、lib.rs、conversation/lib.rs）因混入并行任务的 schema v2 迁移与 fork 改动，未纳入本提交，随对方提交。
+- 速度模型变体改造已由对方提交并记录在本包末尾。
+
+## 2026-11-05 复查与纠正
+
+用户要求逐条核对本任务修复是否治标不治本或造成架构腐坏。结论与纠正：
+
+1. **编码归属（已纠正）**：Codex 变体 id 编码 `velune:codex-speed:[base,tier]` 原本三处各知一部分（adapter、应用命名、迁移脚本），且 application-api 的轮次恢复匹配不到它。编码上移为 velune-conversation 的 `model_variant` 模块（Velune 选择 id 约定），adapter 决定何时铸造，composer/迁移/显示共用同一规则。
+2. **历史重读丢档位（已纠正）**：codex_history 不读 `turn_context.service_tier`，Velune 记录丢失后变体轮静默降为基础模型。现组合为变体 id；`name_turn_models` 把变体 id 呈现为显示名；`latest_turn_model` 增加显示名匹配。新增 rollout 与 next_turn 测试。
+3. **兜底伪造模型 id（已纠正）**：`latest_turn_model` 末尾把任何未匹配的记录名当原生模型 id 铸造选择，Codex 上可能把显示名发给 turn/start。该兜底只对按 id 记录历史的 Claude Code 保留。
+4. **RuntimeComposerChoices 仍严格（已纠正）**：内嵌已松绑的 TurnChoice 却保留 deny_unknown_fields，已去除（文件含并行任务的未提交改动，本行随其提交）。
+5. **判定为正确、保留**：显式迁移脚本 + schema 版本拒绝（仓库既定规则，reinstall 已接线 run-migrations.py）；ai-provider Codex profile 的 service_tier 白名单（profile 怪癖归 profile）；`request_parameters` 值为字符串（当前真实用例足够，不做投机泛化）；32d090e 的松绑清单与保留清单。

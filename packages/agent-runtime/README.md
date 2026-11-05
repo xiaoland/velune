@@ -6,7 +6,7 @@ Claude Code 执行子进程显式设置 `CLAUDE_CODE_ENTRYPOINT=velune`，保留
 
 各适配器的模型目录返回 `ModelOption`：原生模型、该 Harness 对它接受的推理强度与速度档位，取自 Harness 自身目录（Codex `model/list` 的 `supportedReasoningEfforts`、Claude Code initialize 的 `supportsEffort`／`supportedEffortLevels`、Pi `reasoning` 模型的 `PI_THINKING_LEVELS`；DSH 与通用 ACP 暂无对应目录字段，为空）。
 
-权限模式由版本类型声明（`RuntimeVariant.permission_modes`）。`TurnInput.permission_mode` 是这一轮的模式；为空时 adapter 不发送任何权限设置。Claude Code 2.1.286 的取值是其 `--permission-mode` 接受的六种（manual、acceptEdits、plan、auto、dontAsk、bypassPermissions），作为该轮控制进程的启动参数；不传时 Claude Code 在 `--resume` 中沿用会话上次的模式，CLI 没有“回到默认”的取值。Codex 0.159.3 的取值对应其预设：read-only、workspace（Default）、auto-review、full-access，映射为 `turn/start` 的 `approvalPolicy`、`sandboxPolicy` 与 `approvalsReviewer`；Velune 托管路径每轮重启 app-server 后恢复线程，上一轮的覆盖不会保留。因此“沿用会话当前模式”由 application 负责，见其 README。Pi、DSH 与通用 ACP 不声明权限模式，ACP Agent 自报的模式仍是会话配置项。范围外的模式在发送前被拒绝。
+权限模式由版本类型声明（`RuntimeVariant.permission_modes`）。`TurnInput.permission_mode` 是这一轮的模式；为空时 adapter 不发送任何权限设置。Claude Code 2.1.286 的取值是其 `--permission-mode` 接受的六种（manual、acceptEdits、plan、auto、dontAsk、bypassPermissions），作为该轮控制进程的启动参数；不传时 Claude Code 在 `--resume` 中沿用会话上次的模式，CLI 没有“回到默认”的取值。Codex 0.166 的取值对应其预设：read-only、workspace（Default）、auto-review、full-access，映射为 `turn/start` 的 `approvalPolicy`、`sandboxPolicy` 与 `approvalsReviewer`；Velune 托管路径每轮重启 app-server 后恢复线程，上一轮的覆盖不会保留。因此“沿用会话当前模式”由 application 负责，见其 README。Pi、DSH 与通用 ACP 不声明权限模式，ACP Agent 自报的模式仍是会话配置项。范围外的模式在发送前被拒绝。
 
 用户消息的 `turn_settings` 是原生记录里这一轮的配置，读不到就留空：
 
@@ -37,15 +37,15 @@ Claude Code 执行子进程显式设置 `CLAUDE_CODE_ENTRYPOINT=velune`，保留
 
 Pi 来源适配器按固定 SDK 1.4.0 的协议与有效兼容要求判断可导入性。Chat Completions 的已知设置只在当前网关请求能保持其语义时放行；原提供商和 URL 推断的输出字段、推理格式等默认要求也参与判断。`max_tokens` 来源设置通过可选 Pi 投影交给 application 转换为提供商模型的类型化 wire 选项，adapter 不依赖 AI-provider。未知字段或需要未实现 wire 行为的设置逐项说明原因，不将所有非空 compat 对象一概拒绝，也不把旧 Codex 后端或 Messages API 冒充受支持的 OpenAI 协议。
 
-`activity` 是对本机原生会话的 best-effort 观察：按 Codex rollout、Claude Code project JSONL 与 Pi 会话目录的布局定位会话文件、给出变化标记，并按各 Harness 自己的存活记录判断会话是否正在运行，不论 turn 由谁发起。Codex 0.159.3 在线程载入期间持有 `thread-writer-locks/<thread id>.lock`（退出后文件残留，锁随进程释放），以不加锁的 `F_GETLK` 查询（macOS 上也报告 `flock`），再由 rollout 末尾的 `task_started`／`task_complete` 等判断 turn 未结束。较新的 Codex（ChatGPT 应用内置的 0.162.0-alpha.17.2 已见）把一个线程分段写入多个 rollout，后续段命名为 `rollout-<本段开始时间>-<thread id>_<segment id>.jsonl`：线程 ID 取段 ID 之前的 UUID，定位与运行判断都用最后写入的一段；Claude Code 2.1.286 每个进程在 `sessions/<pid>.json` 登记会话 ID、状态（busy／shell／idle／waiting）与进程启动时间，busy 或 waiting 且 pid 仍是同一进程（`ps` 的 UTC 启动时间相同）即运行中，不读取同目录的其他文件；Pi 1.4.0 没有存活记录、逐条追加且不保持文件打开，按工作目录相同、在会话文件最后写入前启动的 Pi 进程（进程标题 `pi`／`pi-rpc` 或命令含包路径，排除本进程的子进程）加上末条 user／toolResult 或 `stopReason=toolUse` 判断。进程信息每次观察以 `ps`／`lsof` 读取一次。`last_turn_failed` 从会话文件末尾判断最近结束的轮次是否失败：Codex 为带 `error` 的 `task_complete`，Claude Code 为带 `isApiErrorMessage` 的助手记录，Pi 为 `stopReason: error` 的助手消息；用户停止的轮次不算失败。它不解析展示用历史；Linux 的 `F_GETLK` 不报告 `flock`，该平台的 Codex 判断未验证。
+`activity` 是对本机原生会话的 best-effort 观察：按 Codex rollout、Claude Code project JSONL 与 Pi 会话目录的布局定位会话文件、给出变化标记，并按各 Harness 自己的存活记录判断会话是否正在运行，不论 turn 由谁发起。Codex 0.166 在线程载入期间持有 `thread-writer-locks/<thread id>.lock`（退出后文件残留，锁随进程释放），以不加锁的 `F_GETLK` 查询（macOS 上也报告 `flock`），再由 rollout 末尾的 `task_started`／`task_complete` 等判断 turn 未结束。较新的 Codex（ChatGPT 应用内置的 0.162.0-alpha.17.2 已见）把一个线程分段写入多个 rollout，后续段命名为 `rollout-<本段开始时间>-<thread id>_<segment id>.jsonl`：线程 ID 取段 ID 之前的 UUID，定位与运行判断都用最后写入的一段；Claude Code 2.1.286 每个进程在 `sessions/<pid>.json` 登记会话 ID、状态（busy／shell／idle／waiting）与进程启动时间，busy 或 waiting 且 pid 仍是同一进程（`ps` 的 UTC 启动时间相同）即运行中，不读取同目录的其他文件；Pi 1.4.0 没有存活记录、逐条追加且不保持文件打开，按工作目录相同、在会话文件最后写入前启动的 Pi 进程（进程标题 `pi`／`pi-rpc` 或命令含包路径，排除本进程的子进程）加上末条 user／toolResult 或 `stopReason=toolUse` 判断。进程信息每次观察以 `ps`／`lsof` 读取一次。`last_turn_failed` 从会话文件末尾判断最近结束的轮次是否失败：Codex 为带 `error` 的 `task_complete`，Claude Code 为带 `isApiErrorMessage` 的助手记录，Pi 为 `stopReason: error` 的助手消息；用户停止的轮次不算失败。它不解析展示用历史；Linux 的 `F_GETLK` 不报告 `flock`，该平台的 Codex 判断未验证。
 
 Pi 固定版本及协议边界见 [开发说明](../../docs/development.md)。SDK 与 Node 资源只随需要本地执行的 app 装配，不进入禁用 local-runtime 的绑定产物。
 
 ## 版本与原生控制
 
-运行时类型是 versioned variant，family 仅用于展示分组，不作为派发键。五个专用 variant 为 `pi-1.0`（family `pi`）、`codex-0.159` 与 `codex-0.166`（family 均为 `codex`）、`dsh-acp-0.2`（family `deepseek-harness`）、`claude-code-2.1`（family `claude-code`）。各自声明已验证的兼容区间（`Versions::Cli`，语义化版本比较）：≥1.0.2 <1.5.0、≥0.159.3 <0.164.0、≥0.166.0 <0.167.0、≥0.2.0-rc.2 <0.3.0、≥2.1.286 <2.2.0；下限是以实际 CLI 验证过的版本，上限不含。比较只看 major.minor.patch，alpha、beta 等预发布版本按其正式版计入。Pi 1.4.0 保留了本适配器消费的 SDK／RPC／会话接口，因此沿用 `pi-1.0` 实例身份，并消费 1.1 起的 `agent_settled.aborted` 取消证据。较新的 CLI 经实际验证没有破坏性变化时提高上限（Codex 0.163.0-alpha.10.2 已于 2026-10-21 验证）。专用适配器启动前探测配置的 CLI 版本；协议握手继续检查所需能力。区间内的版本照常使用；出现破坏性变化才增加独立 variant 与 adapter，未经实际 CLI 验证不扩大区间；多个 variant 与同 variant 的多个实例可并存。
+运行时类型是 versioned variant，family 仅用于展示分组，不作为派发键。四个专用 variant 为 `pi-1.0`（family `pi`）、`codex-0.166`（family `codex`）、`dsh-acp-0.2`（family `deepseek-harness`）、`claude-code-2.1`（family `claude-code`）。各自声明已验证的兼容区间（`Versions::Cli`，语义化版本比较）：≥1.0.2 <1.5.0、≥0.166.0 <0.167.0、≥0.2.0-rc.2 <0.3.0、≥2.1.286 <2.2.0；下限是以实际 CLI 验证过的版本，上限不含。比较只看 major.minor.patch，alpha、beta 等预发布版本按其正式版计入。Pi 1.4.0 保留了本适配器消费的 SDK／RPC／会话接口，因此沿用 `pi-1.0` 实例身份，并消费 1.1 起的 `agent_settled.aborted` 取消证据。较新的 CLI 经实际验证没有破坏性变化时提高上限（Codex 0.163.0-alpha.10.2 已于 2026-10-21 验证）。专用适配器启动前探测配置的 CLI 版本；协议握手继续检查所需能力。区间内的版本照常使用；出现破坏性变化才增加独立 variant 与 adapter，未经实际 CLI 验证不扩大区间；多个 variant 与同 variant 的多个实例可并存。
 
-Codex 0.166 的 `load_for_resume` 同时核对保存的 provider、请求 provider 与启动配置，`turn/start` 再检查当前 provider；旧适配器仅在请求中注入 `velune` 不再成立。新类型在子进程启动参数中注入自己的 gateway provider。原生与托管 provider 之间切换由 application 的既有逻辑会话接续处理；同 provider 恢复仍用原生 thread/resume。0.159 的轮次结束后恢复原 provider 路径只适用于旧类型，0.166 不改写原生 provider，不覆盖原 provider 的定义或凭据。历史、管理、控制探测与原生执行均保留具体 variant，不将 0.166 折回旧类型。
+Codex 0.166 的 `load_for_resume` 同时核对保存的 provider、请求 provider 与启动配置，`turn/start` 再检查当前 provider；旧适配器仅在请求中注入 `velune` 不再成立。新类型在子进程启动参数中注入自己的 gateway provider。原生与托管 provider 之间切换由 application 的既有逻辑会话接续处理；同 provider 恢复仍用原生 thread/resume。0.166 不改写原生 provider，不覆盖原 provider 的定义或凭据。历史、管理、控制探测与原生执行均保留具体 variant，不将 0.166 折回旧类型。
 
 0.166 的 thread/list `readStates`、thread/read `readState` 与 `thread/readState/changed` 投影为 `NativeReadState {conversation_id, revision, unread}`；receipt 不属于通用 Thread 对象。更新用 `thread/readState/update` 的精确 expectedRevision，冲突作为 `read_state_conflict` 返回，不自动重试。旧版和原生不合格线程没有 receipt，继续使用 application 的本地列表规则。Pi 1.4 RPC 没有公开空输入继续命令；直接调用底层 Agent.continue 会绕过 AgentSession 的运行、重试和 settled 生命周期。版本以 `ResumeStrategy::Message("continue")` 声明普通消息兜底，由 application 通过正常发送入口执行；Codex／Claude Code 声明 Native，其余未支持的类型声明 Unsupported。
 
@@ -89,7 +89,7 @@ relay 只连接显式端口的 `http://127.0.0.1` 服务，忽略代理环境，
 
 Codex 使用 app-server 的 thread／turn 控制；轮次以 interrupted 或 failed 结束时，Codex 不为被中止的工具调用发送 `item/completed`，历史也不保留它们，因此本轮仍在进行的工具块标为失败；DSH 使用 ACP v1 的 session/new、resume、prompt、cancel、set_config_option。DSH 的 agentInfo.version 是 ACP 插件版本，不用于判断 CLI 版本。Codex 历史由 app-server 的 thread/list、thread/read、thread/items/list 与 thread/turns/list 读取，原生服务负责逻辑身份和历史继承；spawn 的子 Agent 线程带父会话，`collabAgentToolCall` 在恰有一个 receiver 时链接该线程；DSH 历史通过 huihua `0.2.0` 公开 provider API 读取显式 home／roots，未知记录不原样输出。历史浏览不启动 turn 或模型网关，不替代原生 resume；Pi 保留 SDK SessionManager 的分支与模型选择语义。
 
-Codex 0.159.3 的 thread/revert 保留稳定 thread ID，同时创建新的 rollout 文件并更新当前历史；paginated 历史还可以引用旧文件的前缀。因此不能把 thread ID 当成物理文件唯一键，也不能按时间任选重复文件。列表使用原生 thread/list 的完整来源枚举与空提供商过滤；详情用 thread/read 核对身份，再按升序分页读取 thread/items/list 与 thread/turns/list。后者使用 notLoaded 的 itemsView，只补回合状态和错误。legacy 与 paginated 共用原生入口及实时消息的 item 投影，保留原生 item 时间，不自行解析 history_base 或扫描所有文件。短生命周期 app-server 与既有原生管理共用有界 RPC；原生读取失败明确诊断，不回退为文件选择。
+Codex 0.166 的 thread/revert 保留稳定 thread ID，同时创建新的 rollout 文件并更新当前历史；paginated 历史还可以引用旧文件的前缀。因此不能把 thread ID 当成物理文件唯一键，也不能按时间任选重复文件。列表使用原生 thread/list 的完整来源枚举与空提供商过滤；详情用 thread/read 核对身份，再按升序分页读取 thread/items/list 与 thread/turns/list。后者使用 notLoaded 的 itemsView，只补回合状态和错误。legacy 与 paginated 共用原生入口及实时消息的 item 投影，保留原生 item 时间，不自行解析 history_base 或扫描所有文件。短生命周期 app-server 与既有原生管理共用有界 RPC；原生读取失败明确诊断，不回退为文件选择。
 
 Codex 的实时 error 通知和 turn/completed 的最终错误使用同一回合消息身份，展示 message、非空 additionalDetails 与原生 codexErrorInfo，不把重复事件变成多条通知。willRetry 为 true 时标明正在自动重试，不提前结束执行；成功或中断后结束进行中的重试标签，错误记录仍按原顺序留在工作过程。最终失败优先使用 turn.error，缺失时保留本轮最近的错误详情。历史读取和 thread/resume 都把原生回合错误投影为系统通知，放在该回合内容之后；没有 item 的失败回合也保留顺序。上游标记 failed 却没有详情时明确说明未提供原因。此展示不新增原始响应日志或 Velune 历史存储，上游未保存的错误无法在重新打开时恢复。
 
@@ -123,7 +123,7 @@ Codex 的自动命名由客户端承担：新建会话首条文字受理后，�
 
 Pi 1.4.0 的 auto_retry_start 会省略那次失败助手消息；adapter 同步移除它并显示临时类型化重试状态，auto_retry_end 后移除该状态。重试耗尽和取消都可能带 success=false，最终状态由剩余原生助手消息及 agent_settled 判断。错误不能因历史刷新而重新出现。扩展诊断随身份确认迁移到原生消息身份；分支或压缩移除其锚点时，该诊断随原上下文消失，不移到下一轮末尾。
 
-Pi 的无效 JSON、读取故障和 EOF 会终止控制连接，保留首个原因、可用的 stderr 与退出状态。迟到的 settled 或历史响应不能恢复该连接，也不能留下“正在自动重试”的提示。PiProjection 在 adapter 内匹配启动与结束事件；application 在 prompt 被接受后调用 begin_turn，消费 turn_ended 清除 busy，并尊重 can_sync_history 与发送能力。连接不可用时仍能返回现有失败快照，恢复依赖新的执行连接。
+Pi 的无效 JSON、读取故障和 EOF 会终止控制连接，保留首个原因、可用的 stderr 与退出状态。迟到的 settled 或历史响应不能恢复该连接，也不能留下“正在自动重试”的提示。PiProjection 在 adapter 内匹配启动与结束事件；PiSession 在 prompt 被接受后调用 begin_turn，统一消费轮询及历史 RPC 期间缓冲的事件来更新 busy，并尊重 can_sync_history 与发送能力。扩展在历史查询期间自行启动也保留 steering／停止资格。连接不可用时仍能返回现有失败快照，恢复依赖新的执行连接。
 
 版本描述声明原生会话重命名／删除能力。Pi 管理通过固定 SDK 和来源范围内的原会话文件完成；Codex 使用独立 app-server 的 thread/name/set 与 thread/delete，不准备 AI 网关。Codex 名称与消息历史都由原生 thread API 提供。Claude Code 只能重命名：在会话的项目目录以 print 模式 `--resume` 启动独立子进程，发送 SDK 的 `rename_session`（`source=host`，带会话 ID），由 Claude Code 自己写入 `custom-title`；不发送轮次、不准备网关，子 Agent 会话不可重命名，也不提供删除。DSH 当前 ACP adapter 不开放会话管理，不把归档、本地隐藏或改标题投影代替持久操作。
 
@@ -133,7 +133,7 @@ Pi 的无效 JSON、读取故障和 EOF 会终止控制连接，保留首个原�
 
 `ExecutionTarget` 明确区分本机和 OpenSSH 目标。运行时可执行文件、Node、会话 cwd、Harness 配置根和历史根均属于目标机器；只把 SSH 客户端路径和待安装的应用资源视为本机路径。版本探测、Pi SDK 验证、历史与执行共用目标传输，不能用本机目录是否存在来判断远端路径。远端需要 Python 3 标准库；OpenSSH 使用既有 host alias、认证与 known-host 配置，启用非交互认证及主机身份检查，不复制 SSH 私钥。
 
-SSH 启动请求通过 stdin 长度帧传入 argv、环境与 cwd，后续 stdin 保留原生协议记录。provider token 不放入 SSH 命令行。远端 supervisor 为 Harness 建立独立进程组，断连后关闭输入并终止该组；脱离该进程组自行 daemonize 的外部工具仍由工具自身负责。一次性版本和历史 helper 使用有界执行，不能将它们的正常输入 EOF 当成会话断连。应用 helper 只由 `install_resources` 从固定白名单及随应用分发的 `node_modules` 安装到显式远端资源目录，不读取 Harness HOME。
+SSH 启动请求通过 stdin 长度帧传入 argv、环境与 cwd，后续 stdin 保留原生协议记录。provider token 不放入 SSH 命令行。远端 supervisor 面向 Unix 目标，为 Harness 建立独立进程组，断连后关闭输入并终止该组；先以 waitid(WNOWAIT) 观察退出、发完进程组信号后再回收 leader，避免向复用的 PID／PGID 发信号。Linux 使用 Python 的 os.waitid，macOS 通过系统 waitid 与 Darwin siginfo_t 调用同一语义。脱离该进程组自行 daemonize 的外部工具仍由工具自身负责。一次性版本和历史 helper 使用有界执行，不能将它们的正常输入 EOF 当成会话断连。应用 helper 只由 `install_resources` 从固定白名单及随应用分发的 `node_modules` 安装到显式远端资源目录，不读取 Harness HOME。
 
 本机网关通过该运行时持有的 SSH master 创建动态远端 loopback 反向转发；启动后核对监听实际只在 loopback，释放 guard 时撤销转发。SSH 服务端若强制开放公网监听，或目标平台无法核对监听地址，则明确报错，不把受限隧道降级为开放端口。Pi 的 gateway／隧道由 application 持有，原生 `NativeSession` 持有自身一轮使用的隧道；caller 不得为同一 native injection 再包一层远端转发。
 
@@ -159,7 +159,7 @@ Claude Code 的每轮执行使用独立 `--print --input-format stream-json --ou
 
 | 固定版本 | User／Project 指令 | User／Project skills 根 | User／Project MCP | User／Project 原生 Agent 定义 |
 | --- | --- | --- | --- | --- |
-| Codex 0.159.3 | `A/AGENTS.md`、`P/AGENTS.md`（各自的 `AGENTS.override.md`） | `A/skills`／`P/.agents/skills` | `A/config.toml`／`P/.codex/config.toml` 的 `mcp_servers` | `A/agents`／`P/.codex/agents` 下递归 `.toml` |
+| Codex 0.166 | `A/AGENTS.md`、`P/AGENTS.md`（各自的 `AGENTS.override.md`） | `A/skills`／`P/.agents/skills` | `A/config.toml`／`P/.codex/config.toml` 的 `mcp_servers` | `A/agents`／`P/.codex/agents` 下递归 `.toml` |
 | Claude Code 2.1.286 | `A/CLAUDE.md`／`P/CLAUDE.md`（项目 `.claude/CLAUDE.md`、`CLAUDE.local.md`） | `A/skills`／`P/.claude/skills` | `A/.claude.json`／`P/.mcp.json` 的 `mcpServers` | `A/agents`／`P/.claude/agents` 下 `.md` |
 | Pi 1.4.0 | `A/AGENTS.md`／`P/AGENTS.md`（各自的 `AGENTS.override.md`、`AGENTS.MD`、`CLAUDE.md`、`CLAUDE.MD`） | `A/skills`／`P/.pi/skills` | `A/mcp.json`／`P/.pi/mcp.json` 的 `mcpServers` | 当前没有内置定义格式；扩展自有格式不在范围内 |
 | DSH 0.2.0-rc.2 | `A/AGENTS.md`／`P/AGENTS.md`（项目 `CLAUDE.md`、`AGENTS.local.md`、`CLAUDE.local.md`） | `A/skills`／`P/.dsh/skills` | 当前管理适配未支持 Cordis patch／插件声明 | 当前管理适配未支持 Cordis persona／preset 定义 |
@@ -187,7 +187,7 @@ Codex 使用 `thread/compact/start` 并消费独立 turn 与 `contextCompaction`
 
 `ContextCompaction` 是系统状态块，独立维护始终单独呈现；用户轮次内压缩进行时独立可见，完成后归入该轮工作，不改变最终回复。历史无法确认归属时保持独立。主动压缩占用执行状态和取消通路，但不登记或完成用户轮次，不推进发送队列；自动压缩仍属于已有轮次。历史读取仅恢复原生持久记录，不新建压缩日志。
 
-Codex 0.159.3 未持久化独立压缩失败／取消的专用条目时，重开只能按其原生回合错误和恢复资格呈现，无法恢复主动压缩身份。不能仅因一个用户回合包含压缩条目就将整轮当作独立维护；自动压缩后的普通回复仍保留自己的错误、用量与恢复语义。
+原生历史未持久化独立压缩失败／取消的专用条目时，重开只能按其原生回合错误和恢复资格呈现，无法恢复主动压缩身份。不能仅因一个用户回合包含压缩条目就将整轮当作独立维护；自动压缩后的普通回复仍保留自己的错误、用量与恢复语义。
 
 ## 跨运行时历史导入
 
@@ -195,10 +195,12 @@ Codex 0.159.3 未持久化独立压缩失败／取消的专用条目时，重开
 
 ## 侧聊
 
+`RuntimeVariant.side_chat` 统一声明适配策略，原生侧聊操作据此分派。application 将是否支持投影为 `RuntimeTypeDescriptor.can_side_chat`，打开及切换侧聊运行时使用同一策略校验。平台消费能力描述。启用状态和会话是否已首发分别由实例及会话准入决定。
+
 `NativeSession::open_side` 与 `Config.side` 打开会话的侧聊（产品规则见 PRD [侧聊](../../docs/prd/conversations.md#侧聊)）：在运行时内就会话上下文另外提问，不写入任何原生记录，随会话执行结束而消失。之后的发送、取消、审批与 snapshot 与普通会话相同；snapshot 只有侧聊自己的问答。
 
 - Claude Code 用其 stream-json 控制请求 `side_question`（`/btw` 的实现）：每次提问起一个 `--resume <会话> --no-session-persistence` 的子进程，请求带上本次侧聊之前的问答，`control_response` 的回答结束该轮。侧问不能被 `interrupt` 中断，停止与关闭都关闭子进程的输入并让它自行退出（被强制结束的进程会留下 `sessions/<pid>.json`），数秒后仍在才结束它。不接受图片与插入消息。2.1.292 已验证，最低支持的 2.1.286 未验证。
-- Codex 与其 TUI 的 `/side` 相同：`thread/fork {ephemeral: true}`，`developerInstructions` 在配置的开发者说明后附加 `/side` 的说明，再以 `thread/inject_items` 注入“此前历史仅作参考”的边界；两段文字照录 Codex 0.159.3（Apache-2.0，见 `native/codex_side.rs`）。0.159.3 的 fork 沿用继承的开发者上下文，实际请求中只出现边界。临时线程只存在于该 app-server 进程，原生句柄不能跨重启保留；application 在切换模型或运行时时用已有侧聊上下文重建临时执行，保留侧聊逻辑身份。尚未保存的线程不能 fork。
+- Codex 与其 TUI 的 `/side` 相同：`thread/fork {ephemeral: true}`，`developerInstructions` 在配置的开发者说明后附加 `/side` 的说明，再以 `thread/inject_items` 注入“此前历史仅作参考”的边界；两段文字照录 Codex 0.159.3（Apache-2.0，见 `native/codex_side.rs`）。临时线程只存在于该 app-server 进程，原生句柄不能跨重启保留；application 在切换模型或运行时时用已有侧聊上下文重建临时执行，保留侧聊逻辑身份。尚未保存的线程不能 fork。
 - Pi 的 `pi_rpc.mjs --side` 以 `SessionManager.inMemory` 载入会话文件的条目，不写盘；snapshot 含继承的消息，由 application 隐去。
 - DSH 不提供侧聊。
 
@@ -210,7 +212,7 @@ Codex 0.159.3 未持久化独立压缩失败／取消的专用条目时，重开
 
 频率限制（`rateLimitExceeded` 或错误中的 HTTP 429）复用上述恢复，账户配额耗尽不自动恢复。Pi 的 `auto_retry_start` 投影为保留原始错误的 `RuntimeFailure`／`RuntimeRetry::Native`，不再仅发 Notice；结束仍以原生消息结果为准。Codex 为旧客户端附加的“正在自动重试”说明在 Native 状态结束时移除，避免与终止状态矛盾；平台应以类型化恢复状态展示进度，未知的原生次数／时间不推测。
 
-消息编辑优先使用各运行时原生分叉。不带新消息的会话分叉用 `NativeSession::fork_through`（Codex `thread/fork` 复制到该消息所属轮次；Claude Code `Fork { from, at }` 的 `at` 为下一用户消息前一条记录，`None` 复制整个分支）与 `PiSession::fork_at`（下一条目 RPC `fork`，无则 RPC `clone` 复制当前分支）。Codex 无法按单条消息精确截断时，application 可在创建前一次性设置 `NativeSession::reference_context`，以 `developerInstructions` 创建独立的持久线程；这与临时侧聊共用上下文注入渠道，但不设置 ephemeral。引用合并已有 developer instructions，在创建、同进程恢复及原生持久化后的重新打开中保留，不共享旧线程所有权，也不重写旧历史。上下文取舍及不重放旧工具／审批的约束由 application 的编辑入口负责。
+消息编辑优先使用各运行时原生分叉。不带新消息的会话分叉用 `NativeSession::fork_through`（Codex `thread/fork` 复制到该消息所属轮次；Claude Code `Fork { from, at }` 的 `at` 为下一用户消息前一条记录，`None` 复制整个分支）与 `PiSession::fork_at`（下一条目 RPC `fork`，无则 RPC `clone` 复制当前分支）。关联会话由 application 逐段导出有效模型上下文，确认可定位的消息边界后截断，再通过本 unit 的 import 写成当前上下文运行时的新原生会话；不把旧正文塞入 developer instructions。源会话、关联图和旧原生记录保持原样，压缩或改写导致边界无法确认时明确拒绝。运行中已完成 turn 的按钮资格与分叉执行资格不同；Mac 可先安排，原生分叉仍须等待当前 turn 结束，不能通过释放源 writer 中断其运行。
 
 
 ### Pi 扩展与运行状态
@@ -222,7 +224,7 @@ Pi 的工作目录来自 SessionManager／进程 cwd，不能把“无工作区�
 Claude 只读历史 helper 将原生 end_turn／stop_sequence、API failure 和明确中断投影为 executions 的终态。工具阶段或单个文本块完成不作为用户轮次的正常完成证据。
 
 
-Codex `model/list.serviceTiers` 报告的档位摊平为变体模型条目：选择 id 为 `<model>~<tier>`，名称为 `<显示名> · <档位名>`；不从模型名称猜测。选择变体后每轮携带档位：0.166 使用 `turn/start.serviceTierForTurn`，0.159 使用 `serviceTier`；普通模型不发送。Codex 0.166 的实时 `item/started.startedAtMs` 作为消息创建时间，后续完成更新保留已有创建时间。
+Codex `model/list.serviceTiers` 报告的档位摊平为变体模型条目：选择 id 为 `velune:codex-speed:` 加 JSON 二元组（model、tier），名称为 `<显示名> · <档位名>`；不从模型名称猜测。选择变体后每轮携带档位：使用 `turn/start.serviceTierForTurn`；普通模型不发送。rollout `turn_context.service_tier` 组合为同一变体 id，重读历史不丢档位。Codex 0.166 的实时 `item/started.startedAtMs` 作为消息创建时间，后续完成更新保留已有创建时间。
 
 Pi `custom` 消息在 `display != false` 时投影为 `MessageRole::Client`，与 User 的新轮／大纲语义分开，转录中独立呈现，不能吞入工作过程；跨运行时引用保留 `client_notification` 来源。
 

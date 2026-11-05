@@ -24,6 +24,8 @@ pub enum RemoteError {
     ExpiredInvitation,
     #[error("设备未获授权或授权已撤销")]
     Unauthorized,
+    #[error("对端身份与预期设备不符，可能存在地址冲突或中间人干扰")]
+    PeerMismatch,
     #[error("远控连接不可用")]
     Unavailable,
     #[error("远控请求超时；已接纳的业务可能仍在执行")]
@@ -64,6 +66,7 @@ impl RemoteError {
             Self::InvalidInvitation => "invalid_invitation",
             Self::ExpiredInvitation => "expired_invitation",
             Self::Unauthorized => "unauthorized",
+            Self::PeerMismatch => "peer_mismatch",
             Self::Unavailable => "unavailable",
             Self::Timeout => "timeout",
             Self::Protocol => "protocol",

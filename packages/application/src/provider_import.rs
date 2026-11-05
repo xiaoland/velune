@@ -25,6 +25,7 @@ pub(crate) fn descriptor() -> crate::config::RuntimeTypeDescriptor {
         compatible_versions: velune_agent_runtime::version::PI_VERSIONS.describe(),
         can_rename_conversations: true,
         can_delete_conversations: true,
+        can_side_chat: false,
         launch_options: false,
         agent_info: false,
         session_options: false,

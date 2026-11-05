@@ -3,18 +3,12 @@ import Foundation
 import AppKit
 import VeluneBindings
 
-/// What a conversation chose for its next turn: each runtime keeps its own
-/// choice. The runtime itself is kept only for a conversation not yet sent;
-/// a sent one comes back on its current runtime.
+/// A target's kept next-turn runtime and each runtime's choice. Ordinary
+/// targets persist through the shared composer directory; side chats keep
+/// temporary choices while they live.
 struct ConversationChoices: Codable, Equatable {
     var runtimeID: String?
     var choices: [String: TurnChoice] = [:]
-}
-
-struct ComposerDraftUpdate {
-    let conversationID: String
-    let sender: UUID
-    let state: SavedComposerDraft
 }
 
 /// One device's application state, shared by its windows: configuration,
@@ -60,6 +54,7 @@ final class DeviceStore: ObservableObject {
         let id: UUID
         let source: String
         let conversations: Set<String>
+        let deleting: Bool
         var running = false
     }
     @Published private(set) var conversationManagement: [ConversationManagement] = []
@@ -84,9 +79,9 @@ final class DeviceStore: ObservableObject {
 
     /// Accept independent user intentions immediately; serialization belongs
     /// to the device, and never locks navigation or another management action.
-    func manageConversations<T: Sendable>(source: String, ids: Set<String>, operation: @escaping () throws -> T, apply: @escaping (T) -> Void) {
+    func manageConversations<T: Sendable>(source: String, ids: Set<String>, deleting: Bool = false, operation: @escaping () throws -> T, apply: @escaping (T) -> Void) {
         guard !isShuttingDown else { return }
-        let request = ConversationManagement(id: UUID(), source: source, conversations: ids)
+        let request = ConversationManagement(id: UUID(), source: source, conversations: ids, deleting: deleting)
         conversationManagement.append(request)
         performOnQueue { [weak self] in
             DispatchQueue.main.async {
@@ -224,22 +219,8 @@ final class DeviceStore: ObservableObject {
     private var started = false
     private var authenticationPollPending = false
     private(set) var hasGateway = false
-    /// Unsent composer text by conversation. Deliberately not published: the
-    /// composer owns the text while editing and reads a draft when it switches.
-    private var composerDrafts: [String: String] = [:]
-    private var composerEditingStates: [String: SavedComposerDraft] = [:]
-    let composerDraftUpdates = PassthroughSubject<ComposerDraftUpdate, Never>()
     private(set) lazy var composerInputs = ComposerInputClient(device: self, transport: transport)
     let conversationRenamed = PassthroughSubject<(id: String, title: String), Never>()
-    func composerEditingState(for id: String) -> SavedComposerDraft? { composerEditingStates[id] }
-    func keepComposerEditingState(_ state: SavedComposerDraft, for id: String, sender: UUID) {
-        guard composerEditingStates[id] != state else { return }
-        composerEditingStates[id] = state
-        setDraft(state.text, for: id)
-        composerDraftUpdates.send(ComposerDraftUpdate(conversationID: id, sender: sender, state: state))
-    }
-    private var unsavedDrafts: [String: String] = [:]
-    private var draftSave: DispatchWorkItem?
     /// Next-turn choices per conversation; the core keeps them across restarts.
     private var conversationChoices: [String: ConversationChoices] = [:]
     /// Each runtime instance's last choices and what its new conversations
@@ -256,6 +237,8 @@ final class DeviceStore: ObservableObject {
     /// The tab whose window was key most recently; notifications open
     /// conversations there.
     weak var focusedConversation: ConversationStore?
+    /// The scene action survives the last conversation window closing.
+    var openConversationWindow: ((WindowSeed) -> Void)?
     /// Sample conversations shown instead of a core's.
     private(set) var previewSnapshots: [String: ConversationSnapshot] = [:]
 
@@ -295,7 +278,6 @@ final class DeviceStore: ObservableObject {
         guard !started else { return }; started = true
         guard !isPreview, let transport else { return }
         if NSApp.activationPolicy() != .prohibited { notifier = ConversationNotifier(application: self) }
-        loadDrafts(transport)
         loadComposerChoices(transport)
         composerInputs.poll(force: true)
         refreshConfiguration()
@@ -446,10 +428,8 @@ final class DeviceStore: ObservableObject {
     func noteDeleted(_ ids: Set<String>) {
         deletedConversationIDs.formUnion(ids)
         for id in ids { rememberedConversations[id] = nil; attemptedReadReceipts[id] = nil }
-        for id in ids { conversationChoices[id] = nil; composerDrafts[id] = nil; composerEditingStates[id] = nil; unsavedDrafts[id] = nil }
+        for id in ids { conversationChoices[id] = nil }
     }
-    /// A pending write must not recreate the draft of a conversation being deleted.
-    func dropUnsavedDraft(_ id: String) { unsavedDrafts[id] = nil }
     func resolveAgentURI(_ uri: String, completion: @escaping (Result<AgentUriResolution, Error>) -> Void) {
         guard let transport, !isShuttingDown else { completion(.failure(NSError(domain: "Velune", code: 1, userInfo: [NSLocalizedDescriptionKey: "核心尚未就绪"]))); return }
         performOnQueue {
@@ -486,76 +466,9 @@ final class DeviceStore: ObservableObject {
         enqueue({ try transport.setContextUsageDisplay(display) }) { [weak self] in self?.contextUsageDisplay = $0 }
     }
 
-    // MARK: - Drafts
-
-    func draft(for conversationID: String) -> String { composerDrafts[conversationID] ?? "" }
-    /// Records the composer text; persisted shortly after typing pauses. A new
-    /// conversation's draft lives only as long as that unsent conversation.
-    func setDraft(_ text: String, for conversationID: String) {
-        guard composerDrafts[conversationID, default: ""] != text else { return }
-        composerDrafts[conversationID] = text.isEmpty ? nil : text
-        guard !isPreview, !conversationID.hasPrefix(ConversationStore.draftConversationPrefix) else { return }
-        unsavedDrafts[conversationID] = text
-        draftSave?.cancel()
-        let work = DispatchWorkItem { [weak self] in self?.saveDrafts() }
-        draftSave = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: work)
-    }
-    func moveDraft(from old: String, to new: String) {
-        guard let text = composerDrafts.removeValue(forKey: old) else { return }
-        setDraft(text, for: new)
-    }
-    private func loadDrafts(_ transport: Transport) {
-        performOnQueue { [weak self] in
-            let result = Result { try transport.composerDrafts() }
-            DispatchQueue.main.async {
-                guard let self else { return }
-                switch result {
-                case .success(let drafts):
-                    for draft in drafts where self.composerDrafts[draft.conversationId] == nil { self.composerDrafts[draft.conversationId] = draft.text }
-                    self.objectWillChange.send()
-                case .failure(let failure): self.recordProblem(failure, source: "读取草稿")
-                }
-            }
-        }
-    }
-    /// Draft writes bypass the operation queue's loading state: typing never
-    /// waits for, or blocks, a conversation operation.
-    private func saveDrafts() {
-        draftSave?.cancel(); draftSave = nil
-        guard !unsavedDrafts.isEmpty, let transport else { return }
-        let pending = unsavedDrafts
-        unsavedDrafts = [:]
-        performOnQueue { [weak self] in
-            var failure: Error?
-            for (id, text) in pending {
-                do { try transport.setComposerDraft(conversationID: id, text: text) } catch { failure = error }
-            }
-            guard let failure else { return }
-            DispatchQueue.main.async { self?.recordProblem(failure, source: "保存草稿") }
-        }
-    }
-
     // MARK: - Composer choices
 
     func choices(of conversationID: String) -> ConversationChoices? { conversationChoices[conversationID] }
-    func keepChoices(_ value: ConversationChoices?, for conversationID: String) {
-        guard conversationChoices[conversationID] != value else { return }
-        conversationChoices[conversationID] = value
-        // An unsent conversation's choices live as long as it does.
-        guard !isPreview, !conversationID.hasPrefix(ConversationStore.draftConversationPrefix), let transport else { return }
-        let intent = NextTurnIntent(conversationId: conversationID, runtimeId: value?.runtimeID,
-                                    choices: (value?.choices ?? [:]).sorted { $0.key < $1.key }.map { RuntimeTurnChoice(runtimeId: $0.key, choice: $0.value) })
-        performOnQueue { [weak self] in
-            do { try transport.setNextTurnIntent(intent) }
-            catch { DispatchQueue.main.async { self?.recordProblem(error, source: "保存下一轮选择") } }
-        }
-    }
-    /// The choices of an unsent conversation become the created one's.
-    func moveChoices(from old: String, to new: String) {
-        let value = conversationChoices.removeValue(forKey: old)
-        keepChoices(value, for: new)
-    }
     func setRuntimeComposerChoices(_ choices: RuntimeComposerChoices) {
         guard runtimeComposerChoices[choices.runtimeId] != choices else { return }
         runtimeComposerChoices[choices.runtimeId] = choices
@@ -566,13 +479,9 @@ final class DeviceStore: ObservableObject {
         }
     }
     /// What a runtime's new conversations start with.
-    func newConversationChoice(for runtimeID: String) -> NewConversationChoice {
-        runtimeComposerChoices[runtimeID]?.newConversation ?? .lastChosen
-    }
-    func setNewConversationChoice(_ value: NewConversationChoice, for runtimeID: String) {
-        var choices = runtimeComposerChoices[runtimeID] ?? RuntimeComposerChoices(runtimeId: runtimeID, lastChosen: TurnChoice(), newConversation: .lastChosen)
-        choices.newConversation = value
-        setRuntimeComposerChoices(choices)
+    func newConversationChoice(for runtimeID: String) throws -> NewConversationChoice {
+        guard let runtime = runtimeInstances.first(where: { $0.id == runtimeID }) else { return .lastChosen }
+        return try runtimeNewConversationChoice(runtime: runtime)
     }
     private func loadComposerChoices(_ transport: Transport) {
         performOnQueue { [weak self] in
@@ -609,10 +518,25 @@ final class DeviceStore: ObservableObject {
         }
     }
     /// The user is looking at this conversation now.
-    func isShowingConversation(_ id: String) -> Bool { NSApp.isActive && focusedConversation?.loadedConversationID == id }
+    func isShowingConversation(_ id: String) -> Bool { isShowingConversation(id, keyWindow: NSApp.keyWindow, active: NSApp.isActive) }
+    func isShowingConversation(_ id: String, keyWindow: NSWindow?, active: Bool) -> Bool {
+        guard active, let keyWindow,
+              let owner = ConversationWindowModel.owning(window: keyWindow)
+                ?? ConversationWindowModel.owning(detached: keyWindow)
+                ?? keyWindow.sheetParent.flatMap({ ConversationWindowModel.owning(window: $0) }),
+              owner.application === self else { return false }
+        return owner.visibleConversation?.store.loadedConversationID == id
+    }
     func showConversation(_ id: String) {
-        guard let tab = focusedConversation else { return }
-        if tab.loadedConversationID != id { tab.selectConversation(id: id) }
+        if let window = ConversationWindowModel.openNotificationConversation(id, application: self) {
+            window.window?.deminiaturize(nil)
+            window.window?.makeKeyAndOrderFront(nil)
+            window.focusNotificationTarget(id)
+        } else if let openConversationWindow {
+            let seed = WindowSeed(conversationID: id)
+            WindowPresentation.notificationTargets.insert(seed.id)
+            openConversationWindow(seed)
+        }
     }
     /// Quota conditions the core raised since the last poll, announced by the notifier.
     private func pollQuotaAlerts() {
@@ -717,15 +641,14 @@ final class DeviceStore: ObservableObject {
     }
     /// Whether the runtime has side chats (see 侧聊 in the PRD).
     func hasSideChats(_ runtimeID: String) -> Bool {
-        guard let kind = runtimeInstances.first(where: { $0.id == runtimeID })?.typeId else { return false }
-        return [RuntimeKind.codex, .codex166, .claudeCode, .pi].contains(kind)
+        guard let instance = runtimeInstances.first(where: { $0.id == runtimeID }), instance.enabled else { return false }
+        return runtimeTypes.first(where: { $0.id == instance.typeId })?.canSideChat == true
     }
     func isStoppable(_ id: String) -> Bool { executionRuntimeIDs[id] != nil && !stoppingConversationIDs.contains(id) }
 
     func shutdown(stoppingWork: Bool = false, completion: @escaping (Bool) -> Void) {
         guard !isShuttingDown else { completion(false); return }
         guard !isPreview, let transport else { completion(true); return }
-        saveDrafts()
         windowWorkspaceJournal.flush()
         isShuttingDown = true
         timer?.invalidate(); timer = nil
@@ -735,18 +658,24 @@ final class DeviceStore: ObservableObject {
             self.windowWorkspaceJournal.flush()
             transport.beginClosing()
             self.performOnQueue { [weak self] in
-                let result = Result { try transport.close(stoppingWork: stoppingWork) }
+                // Apply earlier management results before closing the transport.
                 DispatchQueue.main.async {
                     guard let self else { completion(false); return }
-                    self.isShuttingDown = false
-                    switch result {
-                    case .success:
-                        self.started = false
-                        self.problemQueue.async { DispatchQueue.main.async { completion(true) } }
-                    case .failure(let failure):
-                        self.recordProblem(failure)
-                        self.schedulePolling()
-                        completion(false)
+                    self.performOnQueue { [weak self] in
+                        let result = Result { try transport.close(stoppingWork: stoppingWork) }
+                        DispatchQueue.main.async {
+                            guard let self else { completion(false); return }
+                            self.isShuttingDown = false
+                            switch result {
+                            case .success:
+                                self.started = false
+                                self.problemQueue.async { DispatchQueue.main.async { completion(true) } }
+                            case .failure(let failure):
+                                self.recordProblem(failure)
+                                self.schedulePolling()
+                                completion(false)
+                            }
+                        }
                     }
                 }
             }
@@ -1031,12 +960,15 @@ final class DeviceStore: ObservableObject {
     }
     /// Saves an instance; with `execution`, its location and HOME are replaced
     /// too, otherwise the saved ones are kept.
-    func saveRuntimeInstance(_ instance: RuntimeInstance, execution: RuntimeExecution? = nil, launch: AcpLaunch? = nil, onSaved: (() -> Void)? = nil) {
-        if isPreview { runtimeInstances.removeAll { $0.id == instance.id }; runtimeInstances.append(instance); onSaved?(); return }
+    func saveRuntimeInstance(_ instance: RuntimeInstance, execution: RuntimeExecution? = nil, launch: AcpLaunch? = nil, newConversation: NewConversationChoice? = nil, onSaved: (() -> Void)? = nil) {
+        let saved: RuntimeInstance
+        do { saved = try newConversation.map { try runtimeWithNewConversationChoice(runtime: instance, choice: $0) } ?? instance }
+        catch { recordProblem(error, source: "保存运行时的新会话策略"); return }
+        if isPreview { runtimeInstances.removeAll { $0.id == saved.id }; runtimeInstances.append(saved); onSaved?(); return }
         guard let transport else { recordProblem("本地核心未配置"); return }
         enqueue({
-            if let execution, let launch { return try transport.upsertRuntime(instance, execution: execution, launch: launch) }
-            return try execution.map { try transport.upsertRuntime(instance, execution: $0) } ?? transport.upsertRuntime(instance)
+            if let execution, let launch { return try transport.upsertRuntime(saved, execution: execution, launch: launch) }
+            return try execution.map { try transport.upsertRuntime(saved, execution: $0) } ?? transport.upsertRuntime(saved)
         }) { [weak self] data in
             guard let self else { return }
             runtimeInstances = data.runtimeInstances; runtimeTypes = data.runtimeTypes
@@ -1197,7 +1129,7 @@ final class DeviceStore: ObservableObject {
         gateway = GatewaySummary(id: "default", name: "默认网关", providers: [ProviderSummary(previewOf: ProviderDraft(id: "sample-provider", name: "示例 AI 服务", protocol: .chatCompletions, endpoint: "https://example.invalid/v1", executionBackend: .http, requestProfile: .native, authenticationSource: .apiKey, quotaSource: .none, models: [ProviderModel(recordKey: "sample-model", providerModelId: "external-example", nickname: "通用模型", contextWindow: 8192, maxOutputTokens: 4096)], quotaLimits: []))], routes: [])
         hasGateway = true
         protocols = [ProtocolDescriptor(id: .chatCompletions, name: "OpenAI Chat Completions v1", supported: true), ProtocolDescriptor(id: .responses, name: "OpenAI Responses v1", supported: true), ProtocolDescriptor(id: .messages, name: "Anthropic Messages v1", supported: true)]
-        runtimeTypes = [RuntimeTypeDescriptor(id: .pi, familyId: "sample", compatibleVersions: "", canRenameConversations: true, canDeleteConversations: true, launchOptions: false, agentInfo: false, sessionOptions: false, nativeAccountQuota: false, remoteResources: false, supportedProtocols: [.chatCompletions, .responses, .messages], supportedProviderProtocols: [.chatCompletions, .responses, .messages], name: "示例运行时", fields: [], permissionModes: [])]
+        runtimeTypes = [RuntimeTypeDescriptor(id: .pi, familyId: "sample", compatibleVersions: "", canRenameConversations: true, canDeleteConversations: true, canSideChat: true, launchOptions: false, agentInfo: false, sessionOptions: false, nativeAccountQuota: false, remoteResources: false, supportedProtocols: [.chatCompletions, .responses, .messages], supportedProviderProtocols: [.chatCompletions, .responses, .messages], name: "示例运行时", fields: [], permissionModes: [])]
         runtimeInstances = [RuntimeInstance(id: "sample-instance", name: "示例运行时", typeId: .pi, gatewayId: gateway.id, settings: [:]), RuntimeInstance(id: "sample-review", name: "另一个运行时", typeId: .pi, gatewayId: gateway.id, settings: [:])]
         selectedRuntimeInstanceID = runtimeInstances[0].id
         let topics = ["让设置页更安静", "整理一段代码", "下一步的项目计划"]
@@ -1216,8 +1148,8 @@ final class DeviceStore: ObservableObject {
             if running { history[history.count - 1].blocks = [.reasoning(summary: "Reading the settings view", text: .inline(text: "The sidebar and the detail pane share one split view.")), .reasoning(summary: "Inspecting the project layout", text: .inline(text: "")), .tool(toolId: "sample-progress", title: "整理项目计划", state: .running, output: .inline(text: "正在整理计划。"), linkedConversationId: nil)] }
             previewSnapshots[conversation.id] = ConversationSnapshot(revision: 1, conversation: conversation, contextRuntimeID: conversation.runtimeID, modelRecordKey: "sample-model", runState: running ? .running : .idle, messages: history,
                 transcriptTurns: [
-                    TranscriptTurn(id: "preview-work-" + conversation.id, userMessageId: history[0].id, workMessageIds: [history[1].id], lastMessageId: nil, replyStartBlock: 0, durationMs: nil, isRunning: false, outcome: .completed, settings: nil, usage: nil),
-                    TranscriptTurn(id: "preview-answer-" + conversation.id, userMessageId: history[2].id, workMessageIds: running ? [history[3].id] : [], lastMessageId: running ? nil : history[3].id, replyStartBlock: 0, durationMs: nil, isRunning: running, outcome: running ? nil : .completed, settings: nil, usage: nil)
+                    TranscriptTurn(id: "preview-work-" + conversation.id, userMessageId: history[0].id, workMessageIds: [history[1].id], lastMessageId: nil, replyStartBlock: 0, durationMs: nil, isRunning: false, canFork: false, outcome: .completed, settings: nil, usage: nil),
+                    TranscriptTurn(id: "preview-answer-" + conversation.id, userMessageId: history[2].id, workMessageIds: running ? [history[3].id] : [], lastMessageId: running ? nil : history[3].id, replyStartBlock: 0, durationMs: nil, isRunning: running, canFork: !running, outcome: running ? nil : .completed, settings: nil, usage: nil)
                 ],
                 transcriptItems: [.message(id: history[0].id, messageId: history[0].id), .work(turnId: "preview-work-" + conversation.id), .message(id: history[2].id, messageId: history[2].id)]
                     + (running ? [.work(turnId: "preview-answer-" + conversation.id)] : [.message(id: history[3].id, messageId: history[3].id)]) + history.dropFirst(4).map { .message(id: $0.id, messageId: $0.id) },

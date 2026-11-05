@@ -34,8 +34,21 @@ pub(super) fn runtime_context(runtime: &RuntimeInstance) -> String {
 /// from their files and read only when needed; other runtimes list read
 /// summaries directly.
 pub(super) struct HistoryListing {
-    runtime: RuntimeInstance,
+    source: runtime_source::RuntimeSourceKey,
     entries: Vec<IndexedConversation>,
+}
+
+/// Fallback projections retain the same provenance as ordinary indexes, including across client views.
+#[derive(Clone)]
+pub(super) struct CachedSource {
+    pub(super) source: runtime_source::RuntimeSourceKey,
+    pub(super) value: organization::ListedSource,
+}
+
+#[derive(Clone)]
+pub(super) struct HistoryArchive {
+    pub(super) source: runtime_source::RuntimeSourceKey,
+    pub(super) summaries: Vec<ConversationSummary>,
 }
 #[derive(Clone)]
 pub(super) struct IndexedConversation {
@@ -92,7 +105,16 @@ impl CoreRuntime {
         &self,
         runtime: &RuntimeInstance,
     ) -> Result<PiConfig, RuntimeError> {
-        let context = self.prepare_execution_context(runtime)?;
+        let config = self.pi_history_configuration(runtime)?;
+        self.prepare_execution_context(runtime)?;
+        Ok(config)
+    }
+
+    pub(super) fn pi_history_configuration(
+        &self,
+        runtime: &RuntimeInstance,
+    ) -> Result<PiConfig, RuntimeError> {
+        let context = self.execution_context(runtime)?;
         Ok(PiConfig {
             mcp_servers: Vec::new(),
             execution: context.target,
@@ -119,6 +141,7 @@ impl CoreRuntime {
     /// that did not change; the index is also the source-scoped membership
     /// used to open a conversation without listing again.
     pub(super) fn index_history(&self, runtime: &RuntimeInstance) -> Result<(), RuntimeError> {
+        let source = self.runtime_source_key(runtime)?;
         let read = |summaries: Vec<ConversationSummary>| {
             summaries
                 .into_iter()
@@ -130,11 +153,9 @@ impl CoreRuntime {
                 })
                 .collect::<Vec<_>>()
         };
-        let mut entries = match runtime.type_id {
+        let entries = match runtime.type_id {
             RuntimeKind::Acp => read(self.acp_summaries(runtime)?),
-            RuntimeKind::Codex | RuntimeKind::Codex166 => {
-                read(self.read_codex_projects(runtime, false)?)
-            }
+            RuntimeKind::Codex166 => read(self.read_codex_projects(runtime, false)?),
             RuntimeKind::Pi => history::list_pi(&self.pi_history_config(runtime)?, &[])
                 .map_err(|error| {
                     RuntimeError::context("Pi 历史无法读取；请检查实例路径与 SDK 配置后重试", error)
@@ -173,11 +194,22 @@ impl CoreRuntime {
                     .map_err(|error| self.history_failure(runtime, error))?,
             ),
         };
+        self.store_history_index(source, entries)
+    }
+
+    pub(super) fn store_history_index(
+        &self,
+        source: runtime_source::RuntimeSourceKey,
+        mut entries: Vec<IndexedConversation>,
+    ) -> Result<(), RuntimeError> {
+        if !source.is_current(self) {
+            return Err(RuntimeError::invalid("运行时历史来源已改变，请刷新后重试"));
+        }
         let previous = self
             .history_listings
             .borrow_mut()
-            .remove(&runtime.id)
-            .filter(|listing| listing.runtime == *runtime)
+            .remove(source.runtime_id())
+            .filter(|listing| listing.source == source)
             .map(|listing| {
                 listing
                     .entries
@@ -195,11 +227,8 @@ impl CoreRuntime {
             }
         }
         self.history_listings.borrow_mut().insert(
-            runtime.id.clone(),
-            HistoryListing {
-                runtime: runtime.clone(),
-                entries,
-            },
+            source.runtime_id().to_owned(),
+            HistoryListing { source, entries },
         );
         Ok(())
     }
@@ -217,7 +246,7 @@ impl CoreRuntime {
         self.history_listings
             .borrow()
             .get(&runtime.id)
-            .filter(|listing| listing.runtime == *runtime)
+            .filter(|listing| listing.source.matches(self, runtime))
             .map(|listing| listing.entries.clone())
             .unwrap_or_default()
     }
@@ -225,7 +254,7 @@ impl CoreRuntime {
         self.history_listings
             .borrow()
             .get(&runtime.id)
-            .filter(|listing| listing.runtime == *runtime)?
+            .filter(|listing| listing.source.matches(self, runtime))?
             .entries
             .iter()
             .find(|entry| entry.id == id)?
@@ -244,6 +273,7 @@ impl CoreRuntime {
         if !reads_lazily(runtime) || ids.is_empty() {
             return Ok(());
         }
+        let source = self.runtime_source_key(runtime)?;
         let prefix = format!("{}:", runtime.id);
         let natives: Vec<String> = ids
             .iter()
@@ -305,7 +335,7 @@ impl CoreRuntime {
         let mut listings = self.history_listings.borrow_mut();
         let Some(listing) = listings
             .get_mut(&runtime.id)
-            .filter(|listing| listing.runtime == *runtime)
+            .filter(|listing| listing.source == source && source.matches(self, runtime))
         else {
             return Ok(());
         };
@@ -337,7 +367,28 @@ impl CoreRuntime {
     }
     /// Drop a runtime's index, so a runtime that cannot be read lists nothing.
     pub(super) fn forget_index(&self, runtime: &RuntimeInstance) {
-        self.history_listings.borrow_mut().remove(&runtime.id);
+        let current = self
+            .runtime_instance(&runtime.id)
+            .ok()
+            .filter(|current| current.enabled)
+            .and_then(|current| self.runtime_source_key(current).ok());
+        if current.is_none()
+            || self
+                .runtime_source_key(runtime)
+                .is_ok_and(|source| Some(source) == current)
+        {
+            self.discard_runtime_source_caches(&runtime.id);
+        }
+    }
+
+    pub(super) fn discard_runtime_source_caches(&self, runtime_id: &str) {
+        *self.last_listed.borrow_mut() = organization::ListedProjection::default();
+        self.history_listings.borrow_mut().remove(runtime_id);
+        self.native_projects.borrow_mut().remove(runtime_id);
+        self.reached
+            .borrow_mut()
+            .retain(|_, cached| cached.source.runtime_id() != runtime_id);
+        self.archived_listing.borrow_mut().remove(runtime_id);
     }
     /// Read the native conversations continued ones are made of, so a
     /// continued conversation lists with its own title and activity.
@@ -395,10 +446,14 @@ impl CoreRuntime {
         runtime: &RuntimeInstance,
         id: &str,
     ) -> Option<ConversationSummary> {
+        let source = self.runtime_source_key(runtime).ok()?;
+        if !source.is_current(self) {
+            return None;
+        }
         self.history_listings
             .borrow()
             .get(&runtime.id)
-            .filter(|listing| listing.runtime == *runtime)
+            .filter(|listing| listing.source == source)
             .and_then(|listing| {
                 listing.entries.iter().find_map(|entry| match &entry.state {
                     EntryState::Read(summary) if entry.id == id => Some(summary.as_ref().clone()),
@@ -409,14 +464,17 @@ impl CoreRuntime {
                 // The runtime's own archive is listed apart from its history.
                 self.archived_listing
                     .borrow()
-                    .iter()
-                    .find(|summary| summary.id == id && summary.runtime_id == runtime.id)
+                    .get(&runtime.id)
+                    .filter(|archive| archive.source == source)
+                    .and_then(|archive| archive.summaries.iter().find(|summary| summary.id == id))
                     .cloned()
             })
             .or_else(|| {
                 self.reached
                     .borrow()
                     .get(id)
+                    .filter(|cached| cached.source == source)
+                    .map(|cached| &cached.value)
                     .filter(|source| source.summary.runtime_id == runtime.id)
                     .map(|source| source.summary.clone())
             })
@@ -472,7 +530,7 @@ impl CoreRuntime {
                     }
                 })?
                 .or_else(|| {
-                    matches!(runtime.type_id, RuntimeKind::Codex | RuntimeKind::Codex166)
+                    matches!(runtime.type_id, RuntimeKind::Codex166)
                         .then(|| self.reach(runtime, id))
                         .flatten()
                         .map(|source| source.summary)
@@ -718,6 +776,278 @@ impl CoreRuntime {
     }
 }
 
+#[cfg(test)]
+mod source_cache_tests {
+    use super::*;
+    use crate::config::NewConversationChoice;
+    use velune_agent_runtime::native::codex_projects::{
+        NativeProject, ProjectListing, ProjectRoot,
+    };
+
+    fn runtime(kind: RuntimeKind) -> RuntimeInstance {
+        RuntimeInstance {
+            enabled: true,
+            id: "synthetic".into(),
+            name: "Synthetic".into(),
+            type_id: kind,
+            gateway_id: "default".into(),
+            settings: BTreeMap::from([
+                ("binary".into(), "/synthetic/agent".into()),
+                ("nodeBinary".into(), "/synthetic/node".into()),
+                ("agentDir".into(), "/synthetic/state".into()),
+            ]),
+        }
+    }
+
+    fn summary(id: &str) -> ConversationSummary {
+        ConversationSummary {
+            id: id.into(),
+            runtime_id: "synthetic".into(),
+            title: velune_conversation::ConversationTitle::Untitled,
+            updated_at_unix_ms: None,
+            created_at_unix_ms: None,
+            cwd: Some("/synthetic/project".into()),
+            can_rename: false,
+            can_delete: false,
+            parent_conversation_id: None,
+            native_read_state: None,
+        }
+    }
+
+    fn entries() -> Vec<IndexedConversation> {
+        vec![IndexedConversation {
+            id: "synthetic:thread".into(),
+            identity: "unchanged-file".into(),
+            hint: ConversationHint::default(),
+            state: EntryState::Read(Box::new(summary("synthetic:thread"))),
+        }]
+    }
+
+    fn projects(name: &str) -> ProjectListing {
+        ProjectListing {
+            projects: vec![NativeProject {
+                id: "project".into(),
+                name: name.into(),
+                roots: vec![ProjectRoot {
+                    path: "/synthetic/project".into(),
+                }],
+            }],
+            assignments: BTreeMap::from([("synthetic:thread".into(), "project".into())]),
+            conversations: vec![summary("synthetic:thread")],
+        }
+    }
+
+    fn open() -> (crate::Application, PathBuf) {
+        let root =
+            std::env::temp_dir().join(format!("velune-source-cache-{}", crate::new_record_key()));
+        fs::create_dir(&root).unwrap();
+        let app = crate::Application::open(crate::Options {
+            home_directory: root.clone(),
+            resources_directory: root.clone(),
+        })
+        .unwrap();
+        (app, root)
+    }
+
+    #[test]
+    fn native_caches_keep_non_source_edits_and_reject_old_results_and_fallbacks() {
+        let (mut app, root) = open();
+        let core = &mut app.runtime;
+        let old = runtime(RuntimeKind::Codex166);
+        core.upsert_runtime(old.clone()).unwrap();
+        let source = core.runtime_source_key(&old).unwrap();
+        core.store_history_index(source.clone(), entries()).unwrap();
+        core.store_native_projects(source.clone(), projects("original"), false)
+            .unwrap();
+        let stale_archive = HistoryArchive {
+            source: source.clone(),
+            summaries: vec![summary("synthetic:archived")],
+        };
+        let stale_reached = CachedSource {
+            source: source.clone(),
+            value: organization::ListedSource {
+                summary: summary("synthetic:reached"),
+                archived_natively: true,
+                provisional: false,
+            },
+        };
+        core.archived_listing
+            .borrow_mut()
+            .insert(old.id.clone(), stale_archive.clone());
+        core.reached
+            .borrow_mut()
+            .insert("synthetic:reached".into(), stale_reached.clone());
+        core.gateways.push(GatewayConfig {
+            id: "other".into(),
+            name: "Other".into(),
+            providers: Vec::new(),
+            routes: Vec::new(),
+        });
+        let mut changed = old.clone();
+        changed.name = "Renamed".into();
+        changed.gateway_id = "other".into();
+        changed
+            .set_new_conversation_choice(NewConversationChoice::Chosen {
+                choice: Default::default(),
+            })
+            .unwrap();
+        core.upsert_runtime(changed.clone()).unwrap();
+        assert_eq!(core.indexed(&changed).len(), 1);
+        assert_eq!(core.native_project_keys().len(), 1);
+        assert!(
+            core.native_conversation_project(&changed.id, "synthetic:thread")
+                .is_some()
+        );
+        assert!(
+            core.listed_summary(&changed, "synthetic:archived")
+                .is_some()
+        );
+        core.gateways.iter_mut().find(|gateway| gateway.id == "other").unwrap()
+            .providers
+            .push(crate::config::ProviderDefinition {
+                id: "synthetic-provider".into(),
+                name: "Synthetic".into(),
+                protocol: Protocol::Responses,
+                endpoint: "http://127.0.0.1:1/v1".into(),
+                execution_backend: crate::config::ExecutionBackend::Http,
+                request_profile: crate::config::RequestProfile::Native,
+                quota_source: crate::config::ProviderQuotaSource::None,
+                authentication: Default::default(),
+                quota_authentication: Default::default(),
+                billing: Default::default(),
+                models: Vec::new(),
+                quota_limits: Vec::new(),
+            });
+        core.invalidate_gateway_execution("other").unwrap();
+        assert!(core.runtime_source_key(&changed).unwrap() == source);
+        assert_eq!(core.native_project_keys().len(), 1);
+        let mut new = changed.clone();
+        new.settings
+            .insert("agentDir".into(), "/synthetic/other-state".into());
+        core.upsert_runtime(new.clone()).unwrap();
+        assert!(core.history_listings.borrow().is_empty());
+        assert!(core.native_projects.borrow().is_empty());
+        assert!(core.reached.borrow().is_empty());
+        assert!(core.archived_listing.borrow().is_empty());
+        // A client view may restore an archive projection captured before the source edit.
+        core.archived_listing
+            .borrow_mut()
+            .insert(new.id.clone(), stale_archive);
+        core.reached
+            .borrow_mut()
+            .insert("synthetic:reached".into(), stale_reached);
+        assert!(core.cached_sources().is_empty());
+        assert!(core.listed_summary(&new, "synthetic:archived").is_none());
+        assert!(core.listed_summary(&new, "synthetic:reached").is_none());
+        let fresh = core.runtime_source_key(&new).unwrap();
+        core.store_history_index(fresh.clone(), entries()).unwrap();
+        core.store_native_projects(fresh.clone(), projects("fresh"), false)
+            .unwrap();
+        assert!(core.store_history_index(source.clone(), entries()).is_err());
+        assert!(
+            core.store_native_projects(source, projects("stale"), true)
+                .is_err()
+        );
+        core.forget_index(&old); // A delayed failure from the old source cannot remove fresh data.
+        assert_eq!(core.indexed(&new).len(), 1);
+        let project_key = core.native_project_keys().pop().unwrap();
+        assert_eq!(core.native_project(&project_key).unwrap().1.name, "fresh");
+        core.runtime_instances[0]
+            .settings
+            .insert("execution".into(), "broken".into());
+        core.forget_index(&core.runtime_instances[0]);
+        assert!(core.history_listings.borrow().is_empty());
+        assert!(core.native_projects.borrow().is_empty());
+        assert!(core.archived_listing.borrow().is_empty());
+        assert!(core.reached.borrow().is_empty());
+        drop(app);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn parked_client_listing_retains_its_source_provenance() {
+        let (mut app, root) = open();
+        let core = &mut app.runtime;
+        let mut runtime = runtime(RuntimeKind::Codex166);
+        core.upsert_runtime(runtime.clone()).unwrap();
+        let mut client = core.client_state();
+        core.enter_client_state(&mut client, false);
+        *core.last_listed.borrow_mut() = organization::ListedProjection {
+            sources: vec![core.runtime_source_key(&runtime).unwrap()],
+            entries: BTreeMap::from([(
+                "synthetic:thread".into(),
+                organization::ListedSource {
+                    summary: summary("synthetic:thread"),
+                    archived_natively: false,
+                    provisional: false,
+                },
+            )]),
+        };
+        core.leave_client_state(&mut client);
+        runtime.name = "Renamed".into();
+        core.upsert_runtime(runtime.clone()).unwrap();
+        core.enter_client_state(&mut client, false);
+        assert!(core.listed_sources().contains_key("synthetic:thread"));
+        core.leave_client_state(&mut client);
+        runtime.settings.insert("agentDir".into(), "/synthetic/other-state".into());
+        core.upsert_runtime(runtime).unwrap();
+        core.enter_client_state(&mut client, false);
+        assert!(core.listed_sources().is_empty());
+        core.leave_client_state(&mut client);
+        drop(app);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn reader_identity_uses_resolved_configs_and_keeps_execution_dependencies_separate() {
+        let (app, root) = open();
+        let core = &app.runtime;
+        let mut pi = runtime(RuntimeKind::Pi);
+        let source = core.runtime_source_key(&pi).unwrap();
+        let execution = pi.execution_configuration();
+        pi.settings.insert(
+            "sdkHelper".into(),
+            "/synthetic/custom-execution-helper.mjs".into(),
+        );
+        assert!(core.runtime_source_key(&pi).unwrap() == source);
+        assert_ne!(pi.execution_configuration(), execution);
+        pi.set_execution(crate::RuntimeExecution::default())
+            .unwrap();
+        assert!(core.runtime_source_key(&pi).unwrap() == source);
+        pi.settings
+            .insert("sessionDir".into(), "/synthetic/other-sessions".into());
+        assert!(core.runtime_source_key(&pi).unwrap() != source);
+        pi.set_execution(crate::RuntimeExecution {
+            transport: crate::RuntimeTransport::Ssh {
+                binary: "/usr/bin/ssh".into(),
+                destination: "synthetic.invalid".into(),
+                port: Some(2222),
+            },
+            home: crate::RuntimeHome::Managed {
+                remote_root: Some("/synthetic/homes".into()),
+            },
+            remote_resources_directory: Some("/synthetic/helpers".into()),
+        })
+        .unwrap();
+        let remote = core.runtime_source_key(&pi).unwrap();
+        pi.settings
+            .insert("agentDir".into(), "/ignored-with-managed-home".into());
+        assert!(core.runtime_source_key(&pi).unwrap() == remote);
+        let mut acp = runtime(RuntimeKind::Acp);
+        let plain = core.runtime_source_key(&acp).unwrap();
+        acp.set_acp_launch(crate::AcpLaunch {
+            args: vec!["--other-source".into()],
+            environment: BTreeMap::new(),
+        })
+        .unwrap();
+        assert!(core.runtime_source_key(&acp).unwrap() != plain);
+        // All identity construction above is pure, including SSH and managed HOME resolution.
+        assert!(!root.join("runtime-homes").exists());
+        drop(app);
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
 impl CoreRuntime {
     pub(super) fn keep_native_read_state(
         &mut self,
@@ -733,11 +1063,16 @@ impl CoreRuntime {
                 summary.native_read_state = Some(receipt.clone());
             }
         };
-        for source in self.last_listed.borrow_mut().values_mut() {
+        for source in self.last_listed.borrow_mut().entries.values_mut() {
             update(&mut source.summary);
         }
         for source in self.reached.borrow_mut().values_mut() {
-            update(&mut source.summary);
+            update(&mut source.value.summary);
+        }
+        for archive in self.archived_listing.borrow_mut().values_mut() {
+            for summary in &mut archive.summaries {
+                update(summary);
+            }
         }
         for listing in self.history_listings.borrow_mut().values_mut() {
             for entry in &mut listing.entries {

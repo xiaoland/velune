@@ -272,11 +272,11 @@ sealed partial class Conversation
         {
             return false;
         }
-        if (Running)
+        if (FollowUp is { CanQueue: true })
         {
             return await Queue(text);
         }
-        if (Working || activityRunning || Snapshot is { Actions.CanSend: false } || Interaction != null)
+        if (activityRunning || Snapshot is { Actions.CanSend: false })
         {
             return false;
         }
@@ -418,6 +418,9 @@ sealed partial class Conversation
         Next,
         Configuration.RuntimeType(Next),
         Configuration.Providers(Next),
+        Configuration.Runtime(Next) is { } runtime
+            ? VeluneBindingsMethods.RuntimeNewConversationChoice(runtime)
+            : new NewConversationChoice.LastChosen(),
         NextCatalog is { Loading: false, Failure: "" } read ? read.Models : null,
         Snapshot?.TranscriptTurns ?? [],
         Snapshot?.Conversation.RuntimeId,

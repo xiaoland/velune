@@ -104,7 +104,7 @@ pub fn list_codex_history(
     runtime_id: &str,
 ) -> Result<Vec<ConversationSummary>> {
     list_codex_history_at(
-        crate::version::RuntimeKind::Codex,
+        crate::version::RuntimeKind::Codex166,
         binary,
         home,
         runtime_id,
@@ -180,7 +180,7 @@ pub fn read_codex_history(
     id: &str,
 ) -> Result<History> {
     read_codex_history_at(
-        crate::version::RuntimeKind::Codex,
+        crate::version::RuntimeKind::Codex166,
         binary,
         home,
         runtime_id,
@@ -445,6 +445,27 @@ pub(super) fn add_resumed_usage(messages: &mut [Message], usage: Option<&TurnUsa
 #[cfg(test)]
 mod tests {
     #[test]
+    fn rollout_turn_context_records_the_speed_variant_as_its_model() {
+        let directory = std::env::temp_dir().join(format!("velune-rollout-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("rollout.jsonl");
+        std::fs::write(
+            &path,
+            concat!(
+                "{\"type\":\"turn_context\",\"payload\":{\"turn_id\":\"t1\",\"model\":\"gpt\",\"service_tier\":\"priority\"}}\n",
+                "{\"type\":\"turn_context\",\"payload\":{\"turn_id\":\"t2\",\"model\":\"gpt\"}}\n",
+            ),
+        )
+        .unwrap();
+        let turns = super::rollout_turns(&path);
+        std::fs::remove_dir_all(&directory).ok();
+        assert_eq!(
+            turns["t1"].settings.model.as_deref(),
+            Some(&velune_conversation::model_variant::codex_speed_model("gpt", "priority")[..])
+        );
+        assert_eq!(turns["t2"].settings.model.as_deref(), Some("gpt"));
+    }
+    #[test]
     fn thread_names_preserve_native_agent_identity_without_a_preview() {
         let thread = json!({"id":"child","name":"人工名称","agentNickname":"Kepler","agentRole":"explorer","preview":"任务首句"});
         assert_eq!(
@@ -675,9 +696,18 @@ pub(super) fn rollout_turns(path: &Path) -> HashMap<String, RolloutTurn> {
         let text = |value: &Value| value.as_str().filter(|v| !v.is_empty()).map(str::to_owned);
         match record["type"].as_str() {
             Some("turn_context") => {
+                // A tier the turn ran with belongs to the model it names:
+                // the variant's selection id, so rereads keep the speed.
+                let model =
+                    text(&payload["model"]).map(|model| match text(&payload["service_tier"]) {
+                        Some(tier) => {
+                            velune_conversation::model_variant::codex_speed_model(&model, &tier)
+                        }
+                        None => model,
+                    });
                 entry.settings = TurnSettings {
                     runtime_id: None,
-                    model: text(&payload["model"]),
+                    model,
                     effort: text(&payload["effort"]).or_else(|| {
                         text(&payload["collaboration_mode"]["settings"]["reasoning_effort"])
                     }),

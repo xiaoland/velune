@@ -266,6 +266,13 @@ impl Application {
                 )?;
                 Response::SetNextTurnIntent
             }
+            Command::ReadRuntimeStartChoice { runtime_id } => {
+                Response::ReadRuntimeStartChoice(application.runtime.serve(
+                    Focus::None,
+                    Login::Blocks,
+                    |core| core.runtime_start_choice(runtime_id),
+                )?)
+            }
             Command::SetRuntimeComposerChoices { choices } => {
                 application
                     .runtime

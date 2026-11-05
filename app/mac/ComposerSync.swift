@@ -322,7 +322,7 @@ private final class ComposerInputWorker: @unchecked Sendable {
             }
             return
         }
-        let seed = model.savedDraft ?? SavedComposerDraft(text: "", attachments: [])
+        let seed = model.savedDraft
         let id = model.id
         worker.queue.async { [weak self] in
             let result = Result {
@@ -385,8 +385,7 @@ private final class ComposerInputWorker: @unchecked Sendable {
         }
         failedBindings.remove(context)
         optimisticBindings[context] = .init(inputID: input.id, revision: state?.bindings.first(where: { $0.context == context })?.revision)
-        if let draft = input.savedDraft { saveNow(input.id, draft: draft) }
-        else { retryAssociations() }
+        saveNow(input.id, draft: input.savedDraft)
     }
     /// A sent first message consumes the global new-conversation input: the
     /// entry immediately takes the next empty input (choices kept), so a
@@ -397,14 +396,18 @@ private final class ComposerInputWorker: @unchecked Sendable {
     func consumeNewConversationInput(_ sent: ComposerModel) {
         let draftID = ConversationStore.draftConversationPrefix + "new-conversation"
         guard inputID(for: draftID) == sent.id else { return }
-        let fresh = ComposerModel(followsConversation: false)
+        let fresh = ComposerModel()
         bind(draftID, input: fresh)
     }
     /// A failed first send hands the consumed input back to the global new
     /// entry — only while the entry's fresh input is still untouched; with
     /// newer content in it, the consumed input stays kept (保留的输入)
     /// rather than replacing that work.
-    func restoreConsumedNewConversationInput(_ consumed: ComposerModel) {
+    func restoreConsumedNewConversationInput(_ consumed: ComposerModel, whileCreating store: ConversationStore) {
+        // Once native creation succeeds, failed dispatch belongs to that
+        // conversation. Check this submission's source, not historical
+        // creations: a content identity may be reused in a later new session.
+        guard store.isUnsentConversation else { return }
         let draftID = ConversationStore.draftConversationPrefix + "new-conversation"
         guard let current = inputID(for: draftID), current != consumed.id else { return }
         if let currentDraft = draft(current), !currentDraft.text.isEmpty || !currentDraft.attachments.isEmpty { return }
@@ -413,7 +416,7 @@ private final class ComposerInputWorker: @unchecked Sendable {
     func promote(_ model: ComposerModel, to conversationID: String, runtimeID: String) {
         guard worker != nil, ownerID != nil else { return }
         promotions[conversationID] = .init(inputID: model.id, runtimeID: runtimeID, choices: submittedTargets.removeValue(forKey: model.id))
-        if let draft = model.savedDraft { saveNow(model.id, draft: draft) }
+        saveNow(model.id, draft: model.savedDraft)
         retryAssociations()
     }
     private func retryAssociations() {

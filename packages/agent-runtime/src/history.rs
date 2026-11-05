@@ -79,6 +79,7 @@ impl HistoryError {
     }
 }
 
+#[derive(Clone, PartialEq, Eq)]
 pub struct HistoryConfig {
     pub kind: RuntimeKind,
     pub execution: crate::execution::ExecutionTarget,

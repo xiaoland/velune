@@ -84,7 +84,7 @@ pub use transcript_delivery::{
 };
 pub use velune_conversation as conversation;
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct Options {
     pub home_directory: PathBuf,
     pub resources_directory: PathBuf,

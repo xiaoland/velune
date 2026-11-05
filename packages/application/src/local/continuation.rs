@@ -587,7 +587,7 @@ impl CoreRuntime {
         // handoff.
         if matches!(
             self.runtime_instance(prompt.runtime_id)?.type_id,
-            RuntimeKind::ClaudeCode | RuntimeKind::Codex | RuntimeKind::Codex166 | RuntimeKind::Pi
+            RuntimeKind::ClaudeCode | RuntimeKind::Codex166 | RuntimeKind::Pi
         ) {
             return self.continue_imported(model, prompt);
         }
@@ -790,11 +790,7 @@ impl CoreRuntime {
                     context,
                 )
             }
-            _ => {
-                return Err(RuntimeError::invalid(
-                    "当前上下文运行时不支持写入翻译历史",
-                ))
-            }
+            _ => return Err(RuntimeError::invalid("当前上下文运行时不支持写入翻译历史")),
         };
         imported.map_err(|error| RuntimeError::context("翻译历史", error))
     }
@@ -871,7 +867,7 @@ impl CoreRuntime {
                 &self.pi_history_config(source_runtime)?,
                 Path::new(source_id),
             ),
-            RuntimeKind::Codex | RuntimeKind::Codex166 | RuntimeKind::ClaudeCode => {
+            RuntimeKind::Codex166 | RuntimeKind::ClaudeCode => {
                 velune_agent_runtime::history::export_context(
                     &self.history_config(source_runtime)?,
                     source_id,

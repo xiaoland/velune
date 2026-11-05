@@ -47,13 +47,12 @@ struct SavedComposerWorkspace: Codable, Equatable {
     private var synchronizedRevision: UInt64?
     private weak var device: DeviceStore?
     private var deviceWatch: AnyCancellable?
-    private var receiving = false
     private var restoredBindings: [String: SavedComposerBinding] = [:]
     private var restoredTargets: [String: SavedComposerTarget] = [:]
 
     init(device: DeviceStore) {
         self.device = device
-        shared = ComposerModel(followsConversation: false)
+        shared = ComposerModel()
         register(shared, name: "共享输入")
         deviceWatch = device.composerInputs.changes.sink { [weak self] in self?.synchronize() }
     }
@@ -62,9 +61,9 @@ struct SavedComposerWorkspace: Codable, Equatable {
         guard models[model.id] == nil else { return }
         models[model.id] = model; names[model.id] = name
         watches[model.id] = model.draftChanges.sink { [weak self, weak model] in
-            guard let self, let model, !receiving else { return }
+            guard let self, let model else { return }
             editedAt[model.id] = Date()
-            if let draft = model.savedDraft { device?.composerInputs.save(model.id, draft: draft) }
+            device?.composerInputs.save(model.id, draft: model.savedDraft)
             changes.send()
         }
     }
@@ -108,7 +107,7 @@ struct SavedComposerWorkspace: Codable, Equatable {
         let model: ComposerModel
         if let key, let kept = models[key] { model = kept }
         else {
-            model = ComposerModel(followsConversation: false, id: key ?? UUID())
+            model = ComposerModel(id: key ?? UUID())
             model.attach(tab.store)
             let state = key.flatMap { device?.composerInputs.draft($0) }
                 ?? SavedComposerDraft(text: "", attachments: [])
@@ -116,7 +115,7 @@ struct SavedComposerWorkspace: Codable, Equatable {
             register(model, name: tab.title + " 的输入")
         }
         conversations[id] = model.id
-        model.attach(tab.store); model.show(conversationID: tab.store.loadedConversationID)
+        model.attach(tab.store)
         if !id.hasPrefix("tab:"), !id.hasPrefix("side-chat:"), synced == nil, !resolving.contains(id), let device {
             resolving.insert(id)
             device.composerInputs.ensure(id, model: model) { [weak self, weak model] resolved in
@@ -146,7 +145,7 @@ struct SavedComposerWorkspace: Codable, Equatable {
             model = shared
         case .conversation(let id): model = conversation(id, tab: tab)
         }
-        model.attach(tab.store); model.show(conversationID: tab.store.loadedConversationID)
+        model.attach(tab.store)
         return model
     }
 
@@ -168,7 +167,6 @@ struct SavedComposerWorkspace: Codable, Equatable {
                 if state.bindings.contains(where: { $0.context == context && $0.inputId == creation.inputId }) { creations.send(creation) }
             }
         }
-        receiving = true
         var changedCursor = false
         for (id, model) in models {
             if let state = device.composerInputs.draft(id), state != model.savedDraft { model.receiveDraft(state) }
@@ -189,7 +187,6 @@ struct SavedComposerWorkspace: Codable, Equatable {
             keep(shared.id)
             shared = conversation(context, tab: tab)
         }
-        receiving = false
         if changedCursor { cursorChanges.send() }
         changes.send()
     }
@@ -211,7 +208,7 @@ struct SavedComposerWorkspace: Codable, Equatable {
             if !id.hasPrefix(ConversationStore.draftConversationPrefix) { device?.composerInputs.bind(id, input: model) }
         }
         retained.removeAll { $0 == model.id }
-        focus(tab); model.attach(tab.store); model.show(conversationID: tab.store.loadedConversationID)
+        focus(tab); model.attach(tab.store)
         changes.send()
     }
 
@@ -220,7 +217,7 @@ struct SavedComposerWorkspace: Codable, Equatable {
             let referenced = Set(state.bindings.map(\.inputId))
             for input in state.inputs where !referenced.contains(input.id) {
                 guard let id = UUID(uuidString: input.id), models[id] == nil, let saved = device?.composerInputs.draft(id), !saved.text.isEmpty || !saved.attachments.isEmpty else { continue }
-                let model = ComposerModel(followsConversation: false, id: id)
+                let model = ComposerModel(id: id)
                 model.restoreSavedDraft(saved); register(model, name: "保留的输入"); keep(id)
             }
         }
@@ -243,22 +240,46 @@ struct SavedComposerWorkspace: Codable, Equatable {
         case .conversation(let id): conversations[id] = model.id; device?.composerInputs.bind(id, input: model)
         }
         retained.removeAll { $0 == model.id }
-        focus(tab); model.attach(tab.store); model.show(conversationID: tab.store.loadedConversationID)
+        focus(tab); model.attach(tab.store)
         changes.send()
     }
     func newDraft(replacing current: ComposerModel, owner: Owner, tab: ConversationTab) {
-        select(ComposerModel(followsConversation: false), replacing: current, owner: owner, tab: tab)
+        select(ComposerModel(), replacing: current, owner: owner, tab: tab)
+    }
+    /// A cross-window handoff takes the native editor state with it. Any
+    /// source-window references keep the same content identity in a new local
+    /// editor, rather than sharing the departing model's text view and undo.
+    func releaseEditingModel(_ model: ComposerModel) -> ComposerModel? {
+        guard models[model.id] === model else { return nil }
+        let replacement = ComposerModel(id: model.id)
+        replacement.restoreSavedDraft(device?.composerInputs.draft(model.id) ?? model.savedDraft)
+        let name = names[model.id] ?? "会话输入"
+        watches[model.id] = nil
+        models[model.id] = nil
+        register(replacement, name: name)
+        if shared === model { shared = replacement }
+        cursorChanges.send(); changes.send()
+        return replacement
     }
     func adopt(_ model: ComposerModel, conversationID: String, tab: ConversationTab) {
+        // The shared client remains the content authority. An incoming editor
+        // keeps its undo only while it still represents that current content.
+        if let current = device?.composerInputs.draft(model.id), current != model.savedDraft { model.receiveDraft(current) }
+        if let previous = models[model.id], previous !== model {
+            watches[model.id] = nil
+            models[model.id] = nil
+            if shared === previous { shared = model }
+        }
         register(model, name: tab.title + " 的输入")
         conversations[conversationID] = model.id
         model.attach(tab.store)
+        cursorChanges.send(); changes.send()
     }
 
     var saved: SavedComposerWorkspace {
         let referenced = Set(conversations.values).union(retained).union([shared.id])
-        return SavedComposerWorkspace(drafts: models.values.filter { referenced.contains($0.id) }.compactMap { model in
-            model.savedDraft.map { .init(id: model.id, name: names[model.id] ?? "输入", state: $0, conversationID: conversations.first { $0.value == model.id }?.key, editedAt: editedAt[model.id], pending: device?.composerInputs.isDirty(model.id), revision: device?.composerInputs.revision(model.id)) }
+        return SavedComposerWorkspace(drafts: models.values.filter { referenced.contains($0.id) }.map { model in
+            .init(id: model.id, name: names[model.id] ?? "输入", state: model.savedDraft, conversationID: conversations.first { $0.value == model.id }?.key, editedAt: editedAt[model.id], pending: device?.composerInputs.isDirty(model.id), revision: device?.composerInputs.revision(model.id))
         }.sorted { $0.id.uuidString < $1.id.uuidString }, conversations: conversations, shared: shared.id, retained: retained, activeContext: activeContext, targetContext: targetContext,
             synchronizedRevision: synchronizedRevision, pendingBindings: conversations.reduce(into: restoredBindings) { if let input = device?.composerInputs.pendingBinding($1.key) { $0[$1.key] = input } }, pendingPromotions: device?.composerInputs.pendingPromotions, pendingTargets: restoredTargets.merging(device?.composerInputs.pendingTargets ?? [:]) { _, pending in pending })
     }
@@ -267,13 +288,13 @@ struct SavedComposerWorkspace: Codable, Equatable {
         models.removeAll(); names.removeAll(); watches.removeAll(); editedAt.removeAll()
         for draft in saved.drafts {
             if draft.pending == true { device?.composerInputs.restorePending(draft.id, draft: draft.state, revision: draft.revision) }
-            let model = ComposerModel(followsConversation: false, id: draft.id)
+            let model = ComposerModel(id: draft.id)
             model.restoreSavedDraft(device?.composerInputs.draft(draft.id) ?? draft.state)
             register(model, name: draft.name); editedAt[model.id] = draft.editedAt
         }
         conversations = saved.conversations.filter { models[$0.value] != nil }
         retained = saved.retained.filter { models[$0] != nil }
-        shared = models[saved.shared] ?? ComposerModel(followsConversation: false)
+        shared = models[saved.shared] ?? ComposerModel()
         sharedInitialized = true
         activeContext = saved.activeContext ?? conversations.first { $0.value == shared.id }?.key
         targetContext = saved.targetContext

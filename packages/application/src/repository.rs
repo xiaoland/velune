@@ -149,6 +149,7 @@ impl Repository {
                         gateway.validate().map_err(RuntimeError::invalid)?;
                     }
                     for runtime in &value.runtime_instances {
+                        runtime.new_conversation_choice()?;
                         if runtime.id.is_empty()
                             || runtime.name.is_empty()
                             || !value
@@ -199,15 +200,23 @@ impl Repository {
         )
     }
 
-    /// Next-turn and new-conversation choices live beside the drafts, for the
-    /// same reasons; a file of another schema starts afresh.
+    /// Remembered choices are adapter-scoped. Start policies live with runtime configuration.
     pub(crate) fn load_composer_choices(
         &self,
     ) -> Result<crate::config::ComposerChoices, RuntimeError> {
-        let value = match self.read_versioned("composer-choices.json")? {
-            Some(value) => value,
-            None => return Ok(Default::default()),
+        let bytes = match fs::read(self.home.join("composer-choices.json")) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(Default::default());
+            }
+            Err(error) => return Err(error.into()),
         };
+        let value: serde_json::Value = serde_json::from_slice(&bytes)?;
+        if value["schemaVersion"].as_u64() != Some(2) {
+            return Err(RuntimeError::invalid(
+                "运行时默认配置需要显式迁移；请先执行 scripts/run-migrations.py",
+            ));
+        }
         Ok(serde_json::from_value(value["choices"].clone())?)
     }
 
@@ -215,7 +224,7 @@ impl Repository {
         &self,
         choices: &crate::config::ComposerChoices,
     ) -> Result<(), RuntimeError> {
-        let value = serde_json::json!({"schemaVersion":1,"choices":choices});
+        let value = serde_json::json!({"schemaVersion":2,"choices":choices});
         commit(
             &self.home.join("composer-choices.json"),
             &serde_json::to_vec_pretty(&value)?,
@@ -538,7 +547,7 @@ fn resource_bytes_to_storage(templates: &mut serde_json::Value) -> Result<(), Ru
 }
 
 #[derive(Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 struct StoredTurnRequests {
     #[serde(rename = "conversationID")]
     conversation_id: String,

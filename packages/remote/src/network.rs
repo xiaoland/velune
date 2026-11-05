@@ -136,6 +136,11 @@ pub(crate) fn host_mdns_interfaces() -> std::collections::BTreeSet<std::net::Ipv
 /// A direct address outside this set was observed from outside (QAD or a port mapping).
 /// Behind a proxy that forwards UDP it can lead a peer's first packet back to this host
 /// stamped with the proxy's address, so the handshake answers the proxy and never completes.
+///
+/// Point-to-point interfaces are excluded like in `host_mdns_interfaces`: a VPN tunnel
+/// address (for example sing-box's well-known `172.16.0.1/30`) is not dialable by peers —
+/// every client of the same VPN scheme owns the same tunnel address — and advertising it
+/// only adds a blackhole or wrong-endpoint candidate to their dials.
 pub(crate) fn host_interface_ips() -> Option<std::collections::BTreeSet<IpAddr>> {
     #[cfg(target_os = "android")]
     return None;
@@ -143,7 +148,7 @@ pub(crate) fn host_interface_ips() -> Option<std::collections::BTreeSet<IpAddr>>
     Some(
         netdev::get_interfaces()
             .into_iter()
-            .filter(|interface| interface.is_up())
+            .filter(|interface| interface.is_up() && !interface.is_point_to_point())
             .flat_map(|interface| {
                 let v4 = interface
                     .ipv4

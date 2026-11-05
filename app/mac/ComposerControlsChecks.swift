@@ -26,7 +26,7 @@ import VeluneBindings
     // AppKit owns the real editor and its coordinator. Invoke the view directly;
     // no event enters the system event queue or the user's focused window.
     KeyboardShortcutSettings.shared.load(home: nil) { _ in preconditionFailure("隐藏检查不写快捷键配置") }
-    let model = ComposerModel(followsConversation: false)
+    let model = ComposerModel()
     model.restore("synthetic input", attachments: [])
     var sent = 0, steered = 0
     let editor = NSHostingView(rootView: ComposerEditor(model: model, placeholder: "", submit: { sent += 1 }, steer: { steered += 1 }))
@@ -56,6 +56,25 @@ import VeluneBindings
     text.keyDown(with: key(.command))
     precondition(sent == 2 && steered == 3, "禁用输入框不能提交")
     note("PASS native composer keys: Return/⌘Return/⌥⌘Return in both modes; marked text and disabled editor preserved")
+
+    // Keep native paste coverage after retiring the old two-owner UI check.
+    // A named pasteboard leaves the user's clipboard untouched.
+    let pasteStore = ConversationStore(device: DeviceStore(preview: true))
+    model.attach(pasteStore); text.isEditable = true
+    let beforePaste = model.submission
+    let board = NSPasteboard(name: .init("local.velune.composer-check.\(UUID())"))
+    defer { board.releaseGlobally() }
+    let image = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 2, pixelsHigh: 2, bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
+    image.bitmapData?.initialize(repeating: 0, count: image.bytesPerRow * image.pixelsHigh)
+    board.setData(image.representation(using: .png, properties: [:])!, forType: .png)
+    board.setString("image fallback", forType: .string)
+    precondition(text.readablePasteboardTypes.contains(.png) && text.readSelection(from: board, type: .png) && model.attachments.count == 1)
+    let file = directory.appendingPathComponent("synthetic-paste-\(UUID()).txt")
+    try! Data("synthetic attachment".utf8).write(to: file)
+    board.clearContents(); board.writeObjects([file as NSURL])
+    precondition(text.readSelection(from: board, type: .fileURL) && model.attachments.count == 2 && model.submission == beforePaste)
+    for attachment in model.attachments { try? FileManager.default.removeItem(at: attachment) }
+    note("PASS native PNG and Finder file paste use input attachments without replacing text or the user's clipboard")
 
     for phase in [ComposerSubmission.Phase.sending, .resuming, .stopping, .blocked] {
         let submission = ComposerSubmission(phase: phase, hasInput: true, isComposing: false, canSend: true, canQueue: true, canResume: true)

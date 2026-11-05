@@ -1,6 +1,6 @@
 //! What the user chose for coming turns, and Velune's record of what it sent.
 use super::*;
-use crate::config::{ComposerChoices, NewConversationChoice, RuntimeComposerChoices};
+use crate::config::{ComposerChoices, RuntimeComposerChoices};
 use crate::conversation::{ConversationSnapshot, MessageBlock, MessageRole, TurnSettings};
 use sha2::{Digest, Sha256};
 use velune_agent_runtime::transcript::TranscriptProjection;
@@ -9,7 +9,7 @@ use velune_agent_runtime::transcript::TranscriptProjection;
 /// user messages and a digest of its text: native histories name messages
 /// differently from a live run, so neither identity outlasts a reread.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct TurnKey {
     pub(crate) ordinal: usize,
     pub(crate) digest: String,
@@ -111,17 +111,33 @@ impl CoreRuntime {
         Ok(self.composer_choices.clone())
     }
 
+    pub(crate) fn runtime_start_choice(
+        &self,
+        runtime_id: String,
+    ) -> Result<crate::config::TurnChoice, RuntimeError> {
+        let runtime = self.runtime_instance(&runtime_id)?.clone();
+        velune_application_api::runtime_start_choice(
+            runtime,
+            self.composer_choices
+                .runtimes
+                .iter()
+                .find(|choices| choices.runtime_id == runtime_id)
+                .cloned(),
+        )
+        .map_err(Into::into)
+    }
+
     pub(crate) fn set_runtime_composer_choices(
         &mut self,
         choices: RuntimeComposerChoices,
     ) -> Result<(), RuntimeError> {
-        self.runtime_instance(&choices.runtime_id)?;
+        if self.runtime_instance(&choices.runtime_id)?.type_id != choices.runtime_type {
+            return Err(RuntimeError::invalid("运行时类型已改变，请刷新后重选"));
+        }
         let mut next = self.composer_choices.clone();
         next.runtimes
             .retain(|kept| kept.runtime_id != choices.runtime_id);
-        if !choices.last_chosen.is_empty()
-            || choices.new_conversation != NewConversationChoice::LastChosen
-        {
+        if !choices.last_chosen.is_empty() {
             next.runtimes.push(choices);
             next.runtimes
                 .sort_by(|a, b| a.runtime_id.cmp(&b.runtime_id));

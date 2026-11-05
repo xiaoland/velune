@@ -27,7 +27,8 @@ class MigrationTests(unittest.TestCase):
         self.addCleanup(self.temporary.cleanup)
         self.home = Path(self.temporary.name)
         self.write("generic-config.json", {"schemaVersion": 11, "gateways": [], "modelTemplates": [],
-                   "runtimeInstances": [{"id": "codex", "typeId": "codex-0.166"}]})
+                   "runtimeInstances": [{"id": "codex", "name": "Synthetic Codex", "enabled": False,
+                                         "typeId": "codex-0.166", "gatewayId": "default", "settings": {}}]})
         self.write("composer-inputs.json", {"schemaVersion": 1, "state": {
             "ownerId": OWNER, "revision": 9, "creations": [],
             "inputs": [{"id": INPUT, "revision": 4, "content": {
@@ -137,30 +138,48 @@ class MigrationTests(unittest.TestCase):
         self.assert_unchanged(original)
 
     @unittest.skipIf(os.name == "nt", "合成 CLI 使用 POSIX shell")
-    def test_codex_runner_keeps_supported_version_and_migrates_new_binary(self):
+    def test_retired_codex_identity_and_binary_conversion(self):
         binary = self.home / "codex"
         binary.write_text("#!/bin/sh\nprintf 'codex-cli 0.159.3\\n'\n")
         binary.chmod(0o700)
         config = self.read("generic-config.json")
-        config["runtimeInstances"][0].update(typeId="codex-0.159", settings={"binary": str(binary)})
+        settings = {"binary": str(binary), "agentDir": "/synthetic/codex", "untouched": "kept"}
+        config["runtimeInstances"][0].update(typeId="codex-0.159", settings=settings)
         self.write("generic-config.json", config)
-        original = (self.home / "generic-config.json").read_bytes()
-        # A matching old adapter must not block the full input upgrade.
-        self.invoke(SCRIPTS / "run-migrations.py")
-        self.assertEqual((self.home / "generic-config.json").read_bytes(), original)
-        self.assertEqual(self.read("composer-inputs.json")["schemaVersion"], 2)
-        result = subprocess.run([sys.executable, str(SCRIPTS / "migrations/codex-166.py"),
-                                 "--home", str(self.home), "--runtime", "codex", "--apply"],
-                                capture_output=True, text=True)
-        self.assertNotEqual(result.returncode, 0)
-        self.assertEqual((self.home / "generic-config.json").read_bytes(), original)
-        binary.write_text("#!/bin/sh\nprintf 'codex-cli 0.166.0-alpha.6\\n'\n")
+        self.write("conversation-links.json", {"schemaVersion": 1, "links": [{"id": "original", "segments": [
+            {"runtimeInstanceId": "codex", "runtimeTypeId": "codex-0.159", "nativeConversationId": "codex:original"},
+            {"runtimeInstanceId": "removed", "runtimeTypeId": "codex-0.159", "nativeConversationId": "removed:kept"}]}]})
+        original = self.sources()
+        import importlib.util
+        from unittest.mock import patch
+        spec = importlib.util.spec_from_file_location("retirement", SCRIPTS / "migrations/codex-166.py")
+        migration = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(migration)
+        command = [str(SCRIPTS / "migrations/codex-166.py"), "--home", str(self.home), "--binary", str(binary)]
+        def migrate(cli_version, apply=False):
+            with patch.object(migration, "version", return_value=cli_version), patch.object(sys, "argv", command + (["--apply"] if apply else [])):
+                migration.main()
+        with self.assertRaises(SystemExit):
+            migrate("codex-cli 0.159.3", apply=True)
+        self.assert_unchanged(original)
+        migrate("codex-cli 0.166.0-alpha.6")
+        self.assert_unchanged(original)
+        migrate("codex-cli 0.166.0-alpha.6", apply=True)
+        changed = self.read("generic-config.json")
+        self.assertEqual(changed["runtimeInstances"][0]["typeId"], "codex-0.166")
+        self.assertEqual(changed["runtimeInstances"][0]["id"], "codex")
+        self.assertEqual(changed["runtimeInstances"][0]["settings"], settings)
+        segments = self.read("conversation-links.json")["links"][0]["segments"]
+        self.assertTrue(all(s["runtimeTypeId"] == "codex-0.166" for s in segments))
+        self.assertEqual(segments[1]["nativeConversationId"], "removed:kept")
+        backup = next(self.home.glob("before-codex-166-*"))
+        self.assertEqual((backup / "generic-config.json").read_bytes(), original[self.home / "generic-config.json"])
+        self.assertEqual((backup / "generic-config.json").stat().st_mode & 0o777, 0o600)
+        converted = self.sources()
         self.invoke(SCRIPTS / "migrations/codex-166.py", apply=True)
-        self.assertEqual(self.read("generic-config.json")["runtimeInstances"][0]["typeId"], "codex-0.166")
-        binary.write_text("#!/bin/sh\nprintf 'codex-cli 0.159.3\\n'\n")
-        self.write("conversation-links.json", {"schemaVersion": 1, "links": [{"segments": [
-            {"runtimeInstanceId": "codex", "runtimeTypeId": "codex-0.159"}]}]})
-        self.invoke(SCRIPTS / "migrations/codex-166.py", apply=True, success=False)
+        self.assertEqual(self.sources(), converted)
+        self.invoke(SCRIPTS / "run-migrations.py")
+        self.assertEqual(self.read("composer-inputs.json")["schemaVersion"], 2)
 
     @unittest.skipIf(os.name == "nt", "此锁验证使用 POSIX flock")
     def test_live_runtime_lock_refuses_write(self):

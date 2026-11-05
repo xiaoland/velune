@@ -12,137 +12,14 @@ extension ConversationWindowModel {
         let a = first.model(for: owner, tab: tab), b = second.model(for: owner, tab: tab)
         a.restore("SHARED LOCAL DRAFT", attachments: [])
         precondition(b.submission == a.submission, "同一会话的不同编辑器必须同步输入与明确选择")
-        a.clear(submitted: a.submission, attachments: [], conversationID: nil)
+        a.clear(submitted: a.submission, attachments: [])
         precondition(b.isEmpty, "消费输入必须在其他编辑器中原子清空")
         a.restore("MOVED LOCAL DRAFT", attachments: [])
         first.move(a, to: .shared, tab: tab)
         precondition(first.shared === a && b.id == a.id && b.submission == a.submission, "移动保留同一输入身份")
-        a.clear(submitted: a.submission, attachments: [], conversationID: nil)
+        a.clear(submitted: a.submission, attachments: [])
         precondition(b.isEmpty, "消费后所有引用必须一同清空，不能留下独立副本")
         FileHandle.standardError.write(Data("CHECK composer-sharing: session editors share input + intent; atomic consumption; move leaves no duplicate PASSED\n".utf8))
-    }
-    /// Isolated development launch only: exercise native paste and both draft owners.
-    func checkComposerState(step: Int = 0, attempts: Int = 0, original: ConversationTab? = nil, pasted: [URL] = []) {
-        guard attempts < 120 else { return Self.composerCheckLog("step \(step) timed out") }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [self] in
-            let retry = { self.checkComposerState(step: step, attempts: attempts + 1, original: original, pasted: pasted) }
-            let next = { (step: Int, original: ConversationTab, pasted: [URL]) in self.checkComposerState(step: step, original: original, pasted: pasted) }
-            guard focused.store.loadedConversationID != nil, focused.store.nextTurnSettled else { return retry() }
-            composerContext().prepare()
-            switch step {
-            case 0:
-                sharedComposer.clear(submitted: sharedComposer.submission, attachments: sharedComposer.attachments, conversationID: nil)
-                guard let sourceID = focused.store.loadedConversationID else { return retry() }
-                tools.move(.composer, to: .builtIn)
-                focused.composer.attach(focused.store); focused.composer.show(conversationID: sourceID)
-                focused.composer.restore("SESSION DRAFT", attachments: [])
-                tools.move(.composer, to: .docked(.bottom))
-                next(1, focused, [])
-            case 1:
-                guard let original, let view = sharedComposer.textView, view.window != nil else { return retry() }
-                sharedComposer.restore("INDEPENDENT DRAFT", attachments: [])
-                if let runtime = application.enabledRuntimeInstances.last { composerContext(for: original).selectNextTurnRuntime(runtime.id) }
-                let board = NSPasteboard(name: .init("local.velune.composer-check.\(UUID())"))
-                defer { board.releaseGlobally() }
-                let image = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 2, pixelsHigh: 2, bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
-                image.bitmapData?.initialize(repeating: 0, count: image.bytesPerRow * image.pixelsHigh)
-                let png = image.representation(using: .png, properties: [:])!
-                board.setData(png, forType: .png); board.setString("image fallback", forType: .string)
-                guard view.readablePasteboardTypes.contains(.png), view.readSelection(from: board, type: .png), sharedComposer.attachments.count == 1 else { return Self.composerCheckLog("image paste failed") }
-                let file = FileManager.default.temporaryDirectory.appendingPathComponent("velune-paste-\(UUID()).txt")
-                try? Data("synthetic attachment".utf8).write(to: file)
-                board.clearContents(); board.writeObjects([file as NSURL])
-                guard view.readSelection(from: board, type: .fileURL), sharedComposer.attachments.count == 2, sharedComposer.submission == "INDEPENDENT DRAFT" else { return Self.composerCheckLog("Finder file paste failed") }
-                let attachments = sharedComposer.attachments
-                guard let target = application.conversations.first(where: { $0.id != original.store.loadedConversationID }) else { return Self.composerCheckLog("missing second synthetic conversation") }
-                if let selection = composerContext().modelChoices.first?.selection { composerContext().selectModel(selection) }
-                tools.collapse(.bottom)
-                openInNewTab(target.id)
-                focused.store.selectConversation(id: target.id)
-                next(2, original, attachments)
-            case 2:
-                guard let original, focused !== original else { return retry() }
-                guard sharedComposer.submission == "INDEPENDENT DRAFT", sharedComposer.attachments == pasted,
-                      composerContext().nextTurnRuntimeID != nil,
-                      original.composer.submission == "SESSION DRAFT", focused.composer.submission.isEmpty else { return Self.composerCheckLog("independent draft followed the session") }
-                let kept = focused.store.keptComposerChoices
-                guard let selection = composerContext().modelChoices.last?.selection, let item = paletteItems(.model).last else { return retry() }
-                item.run(false)
-                guard composerContext().chosenModel == selection, focused.store.keptComposerChoices == kept else { return Self.composerCheckLog("hidden palette wrote session intent") }
-                tools.showArea(.bottom)
-                tools.move(.composer, to: .floating)
-                next(3, original, pasted)
-            case 3:
-                guard let original, sharedComposer.textView?.window != nil else { return retry() }
-                guard sharedComposer.submission == "INDEPENDENT DRAFT", sharedComposer.attachments == pasted else { return Self.composerCheckLog("moving composer lost input") }
-                tools.move(.composer, to: .builtIn)
-                next(4, original, pasted)
-            case 4:
-                guard let original, focused.composer.textView?.window != nil else { return retry() }
-                guard focused.composer.submission.isEmpty else { return Self.composerCheckLog("session received independent draft") }
-                selectTab(original.id)
-                next(5, original, pasted)
-            case 5:
-                guard let original, focused === original, original.composer.textView?.window != nil else { return retry() }
-                guard original.composer.submission == "SESSION DRAFT", sharedComposer.submission == "INDEPENDENT DRAFT" else { return Self.composerCheckLog("session draft was overwritten") }
-                let failed = ComposerModel(followsConversation: false)
-                failed.restore("old submission", attachments: [])
-                failed.clear(submitted: failed.submission, attachments: [], conversationID: nil)
-                let cleared = failed.draftRevision(for: nil)
-                failed.restore("new editing", attachments: [])
-                failed.restoreFailed("old submission", attachments: [], for: nil, revision: cleared)
-                guard failed.submission == "new editing" else { return Self.composerCheckLog("late failure overwrote a newer edit") }
-                let scoped = ComposerModel()
-                scoped.attach(original.store); scoped.show(conversationID: "check-draft-A")
-                scoped.restore("failed A", attachments: [])
-                scoped.clear(submitted: scoped.submission, attachments: [], conversationID: "check-draft-A")
-                let revision = scoped.draftRevision(for: "check-draft-A")
-                scoped.show(conversationID: "check-draft-B"); scoped.restore("edited B", attachments: [])
-                scoped.restoreFailed("failed A", attachments: [], for: "check-draft-A", revision: revision)
-                guard scoped.submission == "edited B", original.store.draft(for: "check-draft-A") == "failed A" else { return Self.composerCheckLog("late failure crossed session drafts") }
-                guard let data = try? JSONEncoder().encode(savedLayout), let restored = try? JSONDecoder().decode(SavedWindowLayout.self, from: data), restored.isWhole else { return Self.composerCheckLog("window state encoding failed") }
-                let restoredComposer = ComposerModel(followsConversation: false)
-                restoredComposer.restoreSavedDraft(restored.composer)
-                guard restoredComposer.savedDraft == sharedComposer.savedDraft else { return Self.composerCheckLog("restored composer lost input or choices") }
-                if CommandLine.arguments.contains("--check-composer-recovery-write") {
-                    guard let view = sharedComposer.textView else {
-                        tools.move(.composer, to: .docked(.bottom)); return next(6, original, pasted)
-                    }
-                    view.setSelectedRange(NSRange(location: 0, length: (view.string as NSString).length))
-                    view.insertText("RESTORED DRAFT v1", replacementRange: view.selectedRange())
-                    view.insertText(" + edited", replacementRange: view.selectedRange())
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 1) { Self.composerCheckLog("recovery state written; quitting isolated app"); RunLoop.main.perform(inModes: [.common]) { NSApp.terminate(nil) } }
-                    return
-                }
-                for url in pasted { try? FileManager.default.removeItem(at: url) }
-                Self.composerCheckLog("native image + Finder paste; independent draft, attachment and choice isolation; dock/float/session + saved window restore passed")
-            case 6:
-                guard let original, let view = sharedComposer.textView else { return retry() }
-                view.setSelectedRange(NSRange(location: 0, length: (view.string as NSString).length))
-                view.insertText("RESTORED DRAFT v1", replacementRange: view.selectedRange())
-                view.insertText(" + edited", replacementRange: view.selectedRange())
-                guard sharedComposer.submission == "RESTORED DRAFT v1 + edited" else { return Self.composerCheckLog("semantic edits were not captured") }
-                let other = ConversationWindowModel(application: application, kind: .workspace)
-                other.sharedComposer.restore("OTHER WINDOW", attachments: [])
-                guard other.sharedComposer.submission != sharedComposer.submission else { return Self.composerCheckLog("windows share a buffer") }
-                Self.composerCheckLog("hidden palette, per-window intent and semantic edits passed for \(original.id)")
-                DispatchQueue.main.asyncAfter(deadline: .now() + 1) { Self.composerCheckLog("recovery state written; quitting isolated app"); RunLoop.main.perform(inModes: [.common]) { NSApp.terminate(nil) } }
-            default: break
-            }
-        }
-    }
-
-    func checkComposerRecovery(attempts: Int = 0) {
-        guard attempts < 60 else { return Self.composerCheckLog("recovery read timed out: \(sharedComposer.submission)") }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [self] in
-            guard sharedComposer.submission == "RESTORED DRAFT v1 + edited", sharedComposer.attachments.count == 2,
-                  composerContext().nextTurn != nil else { return checkComposerRecovery(attempts: attempts + 1) }
-            Self.composerCheckLog("real process restart restored edited text, attachment references and explicit choices")
-        }
-    }
-
-    private static func composerCheckLog(_ message: String) {
-        FileHandle.standardError.write(Data("CHECK composer-state: \(message)\n".utf8))
     }
 }
 
@@ -231,7 +108,7 @@ extension ConversationWindowModel {
     raceDevice.composerInputs.saveTarget(ConversationStore.draftConversationPrefix + "new-conversation", choices: .init(runtimeId: "synthetic-runtime", runtimeOwnerId: raceDevice.composerInputs.ownerID, choices: [], choiceEdited: true))
     wait { raceDevice.composerInputs.inputID(for: ConversationStore.draftConversationPrefix + "new-conversation") == sentInput.id }
     // The send consumes the input; the global new entry takes the next one.
-    sentInput.clear(submitted: sentInput.submission, attachments: [], conversationID: sending.store.loadedConversationID)
+    sentInput.clear(submitted: sentInput.submission, attachments: [])
     raceDevice.composerInputs.consumeNewConversationInput(sentInput)
     wait { !raceDevice.enabledRuntimeInstances.isEmpty }
     // A restored background tab holds its conversation's identity before it
@@ -252,22 +129,38 @@ extension ConversationWindowModel {
     wait { raceWindow.composer(for: blank).id != sentInput.id }
     let freshInput = raceWindow.composer(for: blank)
     precondition(freshInput.submission.isEmpty && raceDevice.composerInputs.targetChoices(for: ConversationStore.draftConversationPrefix + "new-conversation")?.runtimeId == "synthetic-runtime", "发送期间新建的标签应取到下一份空输入并保留选择")
-    _ = try! raceTransport.composerInputs(.promote(inputId: sentInput.id.uuidString.lowercased(), ownerId: raceDevice.composerInputs.ownerID!, conversationId: "synthetic-created-race", runtimeId: "synthetic-runtime"))
-    raceDevice.composerInputs.poll(force: true)
-    wait { raceDevice.composerInputs.state?.creations.contains(where: { $0.conversationId == "synthetic-created-race" }) == true }
-    precondition(blank.store.isUnsentConversation && blank.store.loadedConversationID == ConversationStore.draftConversationPrefix + "new-conversation", "发送期间新建的空白标签不得变成刚创建的会话")
-    // Failure path: the consumed input returns to the entry only while the
-    // fresh input is untouched; newer content in it is never replaced.
+    // A failure before native creation can return the consumed input while
+    // the replacement is still empty.
     let entryID = ConversationStore.draftConversationPrefix + "new-conversation"
-    raceDevice.composerInputs.restoreConsumedNewConversationInput(sentInput)
-    precondition(raceDevice.composerInputs.inputID(for: entryID) == sentInput.id, "新输入仍为空时发送失败应换回原输入")
+    raceDevice.composerInputs.restoreConsumedNewConversationInput(sentInput, whileCreating: sending.store)
+    precondition(raceDevice.composerInputs.inputID(for: entryID) == sentInput.id, "原生创建前失败应换回原输入")
     raceDevice.composerInputs.consumeNewConversationInput(sentInput)
     let fresh2 = raceDevice.composerInputs.inputID(for: entryID)!
     precondition(fresh2 != sentInput.id, "再次消费应换入另一份输入")
     wait { !raceDevice.composerInputs.isDirty(fresh2) }
     raceDevice.composerInputs.restorePending(fresh2, draft: SavedComposerDraft(text: "USER TYPED", attachments: []), revision: nil)
-    raceDevice.composerInputs.restoreConsumedNewConversationInput(sentInput)
+    raceDevice.composerInputs.restoreConsumedNewConversationInput(sentInput, whileCreating: sending.store)
     precondition(raceDevice.composerInputs.inputID(for: entryID) == fresh2, "新输入已有内容时发送失败不得顶替")
+    _ = try! raceTransport.composerInputs(.promote(inputId: sentInput.id.uuidString.lowercased(), ownerId: raceDevice.composerInputs.ownerID!, conversationId: "synthetic-created-race", runtimeId: "synthetic-runtime"))
+    raceDevice.composerInputs.poll(force: true)
+    wait { raceDevice.composerInputs.state?.creations.contains(where: { $0.conversationId == "synthetic-created-race" }) == true }
+    precondition(blank.store.isUnsentConversation && blank.store.loadedConversationID == ConversationStore.draftConversationPrefix + "new-conversation", "发送期间新建的空白标签不得变成刚创建的会话")
+    // Native creation commits ownership even when its first dispatch fails.
+    // Test an empty replacement too, so content protection cannot hide it.
+    let afterCreation = ComposerModel()
+    raceDevice.composerInputs.bind(entryID, input: afterCreation)
+    let creation = raceDevice.composerInputs.state!.creations.first { $0.conversationId == "synthetic-created-race" }!
+    sending.store.followComposerCreation(creation)
+    precondition(!sending.store.isUnsentConversation, "原生交接立即保留创建身份，不等待首次发送")
+    raceDevice.composerInputs.restoreConsumedNewConversationInput(sentInput, whileCreating: sending.store)
+    precondition(raceDevice.composerInputs.inputID(for: entryID) == afterCreation.id, "原生已创建后首发失败应留在已有会话，不得重新占用全局新建输入")
+    let reusedStore = ConversationStore(device: raceDevice)
+    reusedStore.restoreUnsentConversation(Conversation(id: entryID, title: "新会话", updatedAtUnixMs: nil, runtimeID: "synthetic-runtime", cwd: nil, canRename: false, canDelete: false))
+    raceDevice.composerInputs.bind(entryID, input: sentInput)
+    raceDevice.composerInputs.consumeNewConversationInput(sentInput)
+    precondition(raceDevice.composerInputs.inputID(for: entryID) != sentInput.id)
+    raceDevice.composerInputs.restoreConsumedNewConversationInput(sentInput, whileCreating: reusedStore)
+    precondition(raceDevice.composerInputs.inputID(for: entryID) == sentInput.id, "复用同一输入创建后续会话时，旧交接记录不能禁止当前创建失败恢复")
     note("PASS new conversation: own tab after the current one; source tab untouched; global input restored; group target applied; unavailable runtime is a no-op; unsent tab restored in place; restored background tabs keep titles; in-flight send does not capture a later blank tab; reopen closed tab restores conversations, drafts and skips deleted")
     exit(0)
     }

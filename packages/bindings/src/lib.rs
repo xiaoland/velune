@@ -143,6 +143,30 @@ pub fn provider_templates() -> Result<Vec<ProviderTemplate>, BindingError> {
     Ok(velune_application_api::provider_templates())
 }
 
+#[uniffi::export]
+pub fn runtime_new_conversation_choice(
+    runtime: RuntimeInstance,
+) -> Result<NewConversationChoice, BindingError> {
+    velune_application_api::runtime_new_conversation_choice(runtime).map_err(Into::into)
+}
+
+#[uniffi::export]
+pub fn runtime_with_new_conversation_choice(
+    runtime: RuntimeInstance,
+    choice: NewConversationChoice,
+) -> Result<RuntimeInstance, BindingError> {
+    velune_application_api::runtime_with_new_conversation_choice(runtime, choice)
+        .map_err(Into::into)
+}
+
+#[uniffi::export]
+pub fn runtime_start_choice(
+    runtime: RuntimeInstance,
+    last: Option<RuntimeComposerChoices>,
+) -> Result<TurnChoice, BindingError> {
+    velune_application_api::runtime_start_choice(runtime, last).map_err(Into::into)
+}
+
 /// Presentation metadata for a validated subscription composition. API providers return None.
 #[uniffi::export]
 pub fn provider_subscription_template(
@@ -616,6 +640,13 @@ impl VeluneApplication {
     }
     pub fn composer_choices(&self) -> Result<ComposerChoices, BindingError> {
         request!(self, "composer_choices", ReadComposerChoices)
+    }
+    pub fn runtime_start_choice(&self, runtime_id: String) -> Result<TurnChoice, BindingError> {
+        request!(
+            self,
+            "runtime_start_choice",
+            ReadRuntimeStartChoice { runtime_id }
+        )
     }
     /// An intent without choices or runtime removes the conversation's.
     pub fn set_next_turn_intent(&self, intent: NextTurnIntent) -> Result<(), BindingError> {

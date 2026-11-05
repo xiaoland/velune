@@ -12,7 +12,7 @@ sealed partial class RuntimesPage
     const string RuntimeDirectoryKey = "agentDir";
 
     // What an instance's editor reads before it opens.
-    sealed record Extras(RuntimeExecution Execution, AcpLaunch? Launch, RuntimeComposerChoices? Choices, string? ManagedHome);
+    sealed record Extras(RuntimeExecution Execution, AcpLaunch? Launch, NewConversationChoice Start, string? ManagedHome);
 
     static readonly RuntimeExecution LocalInherit = new(new RuntimeTransport.Local(), new RuntimeHome.Inherit(), null);
 
@@ -20,7 +20,7 @@ sealed partial class RuntimesPage
     {
         if (existing == null)
         {
-            return new Extras(LocalInherit, new AcpLaunch([], []), null, null);
+            return new Extras(LocalInherit, new AcpLaunch([], []), new NewConversationChoice.LastChosen(), null);
         }
         try
         {
@@ -29,9 +29,9 @@ sealed partial class RuntimesPage
                 var application = core.Local;
                 var execution = application.RuntimeExecution(existing.Id);
                 var launch = kind.LaunchOptions ? application.AcpLaunch(existing.Id) : null;
-                var choices = application.ComposerChoices().Runtimes.FirstOrDefault(choices => choices.RuntimeId == existing.Id);
+                var start = VeluneBindingsMethods.RuntimeNewConversationChoice(existing);
                 var home = execution.Home is RuntimeHome.Managed ? application.RuntimeHomeDirectory(existing.Id) : null;
-                return new Extras(execution, launch, choices, home);
+                return new Extras(execution, launch, start, home);
             });
         }
         catch (Exception problem)
@@ -239,7 +239,6 @@ sealed partial class RuntimesPage
         readonly Core core;
         readonly RuntimeInstance? runtime;
         readonly PermissionMode[] modes;
-        readonly NewConversationChoice? saved;
         readonly ComboBox choice = new() { Header = "新会话开始时", HorizontalAlignment = HorizontalAlignment.Stretch };
         readonly ComboBox model = new() { Header = "模型", HorizontalAlignment = HorizontalAlignment.Stretch };
         readonly ComboBox effort = new() { Header = "推理强度", HorizontalAlignment = HorizontalAlignment.Stretch };
@@ -252,17 +251,16 @@ sealed partial class RuntimesPage
 
         public Expander Element { get; }
 
-        public StartsSection(Core core, RuntimeInstance? runtime, RuntimeTypeDescriptor kind, RuntimeComposerChoices? choices)
+        public StartsSection(Core core, RuntimeInstance? runtime, RuntimeTypeDescriptor kind, NewConversationChoice? start)
         {
             this.core = core;
             this.runtime = runtime;
             modes = kind.PermissionModes;
-            saved = choices?.NewConversation;
             foreach (var name in names)
             {
                 choice.Items.Add(name);
             }
-            var set = saved as NewConversationChoice.Chosen;
+            var set = start as NewConversationChoice.Chosen;
             choice.SelectedIndex = set == null ? 0 : set.Choice is { Model: null, Effort: null, PermissionMode: null } ? 1 : 2;
             permission.Items.Add("运行时默认");
             foreach (var mode in modes)
@@ -373,8 +371,8 @@ sealed partial class RuntimesPage
             effort.Visibility = levels.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
         }
 
-        // Read is what to save, or null when nothing changed.
-        public NewConversationChoice? Read()
+        // The start policy is part of the same runtime configuration payload.
+        public NewConversationChoice Read()
         {
             NewConversationChoice chosen = choice.SelectedIndex switch
             {
@@ -385,13 +383,7 @@ sealed partial class RuntimesPage
                     permission.SelectedIndex > 0 ? modes[permission.SelectedIndex - 1].Id : null)),
                 _ => new NewConversationChoice.LastChosen(),
             };
-            var unchanged = (saved ?? new NewConversationChoice.LastChosen()) switch
-            {
-                NewConversationChoice.LastChosen => chosen is NewConversationChoice.LastChosen,
-                NewConversationChoice.Chosen before => chosen is NewConversationChoice.Chosen after && before.Choice == after.Choice,
-                _ => false,
-            };
-            return unchanged ? null : chosen;
+            return chosen;
         }
     }
 }

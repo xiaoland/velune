@@ -46,7 +46,7 @@ import VeluneBindings
         if let project = selectedWorkingProject, project.runtimeID != nextTurnRuntimeID { return "所选项目属于另一运行时，请重新选择项目或工作目录" }
         if let project = selectedWorkingProject, !workingDirectoryProjects.contains(where: { $0.project == project.key && $0.canSelectProject }) { return "所选项目已不可用，请刷新或重新选择工作区" }
         if !store.isSideChat, let key = targetID, let issue = store.device.composerInputs.targetIssue(for: key) { return issue }
-        if !model.followsConversation, let issue = store.device.composerInputs.issue(for: model.id) { return issue }
+        if !store.isSideChat, let issue = store.device.composerInputs.issue(for: model.id) { return issue }
         if model.attachments.contains(where: { !FileManager.default.isReadableFile(atPath: $0.path) }) { return "附件不可用，点击附件重试或移除" }
         return nil
     }
@@ -74,7 +74,7 @@ import VeluneBindings
     func selectNextTurnRuntime(_ id: String) {
         guard canSwitchModel, store.device.enabledRuntimeInstances.contains(where: { $0.id == id }) else { return }
         guard !store.isSideChat || store.device.hasSideChats(id) else { return }
-        if store.isSideChat { store.selectNextTurnRuntime(id); return }
+        if store.isSideChat { store.selectSideChatRuntime(id); return }
         guard let key = targetID, let owner = store.device.composerInputs.ownerID else { return }
         var choices = targetChoices ?? ComposerTargetChoices(runtimeId: nil, runtimeOwnerId: nil, choices: [], choiceEdited: false)
         choices.runtimeId = id; choices.runtimeOwnerId = owner; choices.choiceEdited = true
@@ -86,7 +86,7 @@ import VeluneBindings
     func selectPermissionMode(_ mode: String?) { change(.permissionMode(mode: mode)) }
     private func change(_ change: TurnChoiceChange) {
         guard canSwitchModel else { return }
-        if store.isSideChat { store.changeNextTurn(change); return }
+        if store.isSideChat { store.changeSideChatChoice(change); return }
         guard let nextTurn, let key = targetID, let owner = store.device.composerInputs.ownerID else { return }
         guard targetChoices?.runtimeOwnerId == nil || targetChoices?.runtimeOwnerId == owner else { return }
         guard let update = VeluneBindings.changeNextTurn(next: nextTurn, runtimeChoices: store.device.runtimeComposerChoices[nextTurn.runtimeId], change: change), var choices = capturedChoices() else { return }

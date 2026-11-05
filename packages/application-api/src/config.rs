@@ -122,6 +122,8 @@ pub struct RuntimeTypeDescriptor {
     pub compatible_versions: String,
     pub can_rename_conversations: bool,
     pub can_delete_conversations: bool,
+    /// The adapter can open a disposable side conversation without saving it.
+    pub can_side_chat: bool,
     /// Instances take launch arguments and environment (`acp_launch`,
     /// `upsert_acp_runtime`).
     pub launch_options: bool,
@@ -260,7 +262,7 @@ pub fn canonical_status_line(mut items: Vec<StatusLineItem>) -> Vec<StatusLineIt
 
 /// Unsent composer text of one conversation, keyed by its public identity.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, uniffi::Record)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct ComposerDraft {
     #[serde(rename = "conversationID")]
     pub conversation_id: String,
@@ -271,7 +273,7 @@ pub struct ComposerDraft {
 /// follows the conversation's current one, and without one the runtime's own
 /// default; Velune never names a default of its own.
 #[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq, uniffi::Record)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct TurnChoice {
     #[uniffi(default = None)]
     pub model: Option<crate::ModelSelection>,
@@ -288,7 +290,7 @@ impl TurnChoice {
 
 /// One runtime's choice in a conversation.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, uniffi::Record)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct RuntimeTurnChoice {
     #[serde(rename = "runtimeID")]
     pub runtime_id: String,
@@ -299,7 +301,7 @@ pub struct RuntimeTurnChoice {
 /// each runtime keeps its own, and an unsent conversation also the runtime
 /// chosen for it.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, uniffi::Record)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct NextTurnIntent {
     #[serde(rename = "conversationID")]
     pub conversation_id: String,
@@ -310,7 +312,7 @@ pub struct NextTurnIntent {
 
 /// What a runtime instance's new conversations start with.
 #[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq, uniffi::Enum)]
-#[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
+#[serde(tag = "kind", rename_all = "camelCase")]
 pub enum NewConversationChoice {
     /// The user's last choice on the runtime.
     #[default]
@@ -319,19 +321,19 @@ pub enum NewConversationChoice {
     Chosen { choice: TurnChoice },
 }
 
-/// A runtime instance's composer choices across conversations.
+/// The last choice on one instance and adapter type. Its start policy belongs to the instance.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, uniffi::Record)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct RuntimeComposerChoices {
     #[serde(rename = "runtimeID")]
     pub runtime_id: String,
+    pub runtime_type: RuntimeKind,
     /// The user's last choice of each part on the runtime.
     pub last_chosen: TurnChoice,
-    pub new_conversation: NewConversationChoice,
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq, uniffi::Record)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct ComposerChoices {
     pub conversations: Vec<NextTurnIntent>,
     pub runtimes: Vec<RuntimeComposerChoices>,
@@ -339,7 +341,7 @@ pub struct ComposerChoices {
 
 /// Application-owned sidebar choices; these never select an execution runtime.
 #[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq, uniffi::Record)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct ConversationBrowserPreferences {
     pub grouping: ConversationBrowserGrouping,
     pub sort: ConversationBrowserSort,

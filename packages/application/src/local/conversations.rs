@@ -129,30 +129,22 @@ impl CoreRuntime {
             self.session.model_record_key = source.model_record_key.clone();
             self.session.active_state = ActiveState::History(Box::new(source));
         }
-        self.require_input_access()?;
+        let admitted = self
+            .current_snapshot()
+            .ok_or_else(|| RuntimeError::invalid("conversation is not active"))?;
+        Self::check_input_access(admitted.actions.input_access)?;
         let snapshot = self
             .native_snapshot()
             .ok_or_else(|| RuntimeError::invalid("conversation is not active"))?;
-        if matches!(
-            snapshot.run_state,
-            RunState::Running | RunState::Stopping | RunState::Elsewhere
-        ) {
-            return Err(RuntimeError::invalid("请等待当前会话的执行结束"));
-        }
-        if snapshot.conversation.parent_conversation_id.is_some() {
-            return Err(RuntimeError::invalid(
-                "原生 sub-agent 会话由启动它的会话继续，不能直接发送",
-            ));
-        }
-        if matches!(self.session.active_state, ActiveState::History(_))
-            && !snapshot.actions.can_send
-        {
-            return Err(RuntimeError::invalid(
-                "当前原生上下文不可用，请修复来源后重新打开；未自动重发",
-            ));
-        }
-        if !snapshot.pending_interactions.is_empty() {
-            return Err(RuntimeError::invalid("请先处理当前运行时请求"));
+        // Consume the same final admission clients see, including a logical
+        // context that failed to project. Keep the native source only for
+        // preparation and, on rejection, its more specific error reason.
+        if !admitted.actions.can_send {
+            let reason = Self::submission_admission(&self.session, &snapshot)
+                .send
+                .err()
+                .unwrap_or("当前原生上下文不可用，请修复来源后重新打开；未自动重发");
+            return Err(RuntimeError::invalid(reason));
         }
         self.validate_model_selection(self.runtime_instance(runtime_id)?, selection.as_ref())?;
         if let Some(effort) = effort {
@@ -506,6 +498,7 @@ impl CoreRuntime {
         snapshot.sub_agents = self.sub_agents(&snapshot);
         snapshot.collaborators = self.collaborators(&snapshot);
         self.apply_read_input_access(&mut snapshot, control_target);
+        Self::apply_read_submission_admission(&mut snapshot);
         Ok(SnapshotResult {
             snapshot: Some(self.delivery.snapshot(snapshot)),
         })

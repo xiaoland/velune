@@ -15,13 +15,14 @@ import VeluneBindings
         precondition(ready(), "合成检查超时")
     }
     AppearancePreferences.shared.load(home: home) { fatalError($0) }
+    if CommandLine.arguments.contains("--experience-runtime-editor-only") { runtimeEditorChecks(home: home) }
     func stamp(_ date: Date) -> Int64 { Int64(date.timeIntervalSince1970 * 1000) }
     if CommandLine.arguments.contains("--experience-navigation-only") {
         ConversationStore.checkOpeningCatalogAdmission()
         navigationTranscriptChecks(home: home)
     }
     if CommandLine.arguments.contains("--experience-typography-only") {
-        let model = ComposerModel(followsConversation: false)
+        let model = ComposerModel()
         let editor = ComposerTextView()
         let coordinator = ComposerEditor.Coordinator(model: model)
         coordinator.view = editor; editor.delegate = coordinator
@@ -190,6 +191,7 @@ import VeluneBindings
 @MainActor private func navigationTranscriptChecks(home: URL) -> Never {
     func note(_ text: String) { FileHandle.standardError.write(Data((text + "\n").utf8)) }
     func descendants(_ root: NSView) -> [NSView] { [root] + root.subviews.flatMap(descendants) }
+    workspaceContinuityChecks(home: home)
     let device = DeviceStore(preview: true)
     let window = ConversationWindowModel(application: device, kind: .workspace)
     let original = window.focused

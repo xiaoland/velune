@@ -45,7 +45,7 @@ final class WindowWorkspaceJournal: @unchecked Sendable {
     }
     func flush() { queue.sync {} }
 
-    func restore(id: String, recoverLatest: Bool, kind: ConversationWindowKind = .workspace) -> SavedWindowLayout? {
+    func restore(id: String, recoverLatest: Bool, kind: ConversationWindowKind = .workspace, device: String? = nil) -> SavedWindowLayout? {
         guard let directory else { return nil }
         flush()
         do {
@@ -58,10 +58,13 @@ final class WindowWorkspaceJournal: @unchecked Sendable {
                     return (url.deletingPathExtension().lastPathComponent, try url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate ?? .distantPast, layout)
                 } catch { report("无法读取恢复点 \(url.lastPathComponent)：\(error.localizedDescription)"); return nil }
             }.sorted { $0.date < $1.date }
+            // Remote transports share this Mac's state directory. A local
+            // arrangement must never resolve remote IDs against another core.
+            let scope = SavedWindowLayout.ExecutionDevice(device)
             // An explicit old scene identity may still restore a pre-kind
             // snapshot. Unqualified recovery must never borrow another kind.
-            let chosen = snapshots.first { $0.id == id && ($0.layout.windowKind == nil || $0.layout.windowKind == kind) }
-                ?? (recoverLatest ? snapshots.last { $0.layout.windowKind == kind } : nil)
+            let chosen = snapshots.first { $0.id == id && ($0.layout.windowDevice == nil || $0.layout.windowDevice == scope) && ($0.layout.windowKind == nil || $0.layout.windowKind == kind) }
+                ?? (recoverLatest ? snapshots.last { $0.layout.windowDevice == scope && $0.layout.windowKind == kind } : nil)
             // Shared content is authoritative. A window snapshot restores its cursor
             // and any explicitly pending edit; never copy text between input identities.
             guard let layout = chosen?.layout, layout.isWhole else { return nil }

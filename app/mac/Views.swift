@@ -1195,7 +1195,9 @@ struct RuntimeEditor: View {
     @State private var typeID: RuntimeKind?
     @State private var settings: [String: String] = [:]
     @State private var draftID = UUID().uuidString
-    @State private var typeDrafts: [RuntimeKind?: [String: String]] = [:]
+    /// Type-specific edits belong to this form, while identity and execution stay shared.
+    @State private var typeDrafts: [RuntimeKind: TypeDraft] = [:]
+    var observeForCheck: ((RuntimeEditorCheckAccess) -> Void)? = nil
     @State private var executableDiscoveryRunning = false
     @State private var executableDiscoveryMessage: String?
     @State private var execution: ExecutionLoad = .loading
@@ -1213,6 +1215,46 @@ struct RuntimeEditor: View {
     /// How new conversations on the instance start; the runtime's default is
     /// a choice of nothing.
     private enum NewConversationMode: Hashable { case lastChosen, runtimeDefault, chosen }
+    private struct TypeDraft {
+        var settings: [String: String] = [:]
+        var arguments: [LaunchArgument] = []
+        var environment: [EnvironmentEntry] = []
+        var newConversation: NewConversationChoice = .lastChosen
+        var models: RuntimeModelCatalog?
+    }
+    private var executionReady: Bool { if case .ready = execution { return true }; return false }
+    private var typeSelection: Binding<RuntimeKind?> { Binding(get: { typeID }, set: selectType) }
+    private var newConversationSelection: NewConversationChoice {
+        switch newConversationMode {
+        case .lastChosen: .lastChosen
+        case .runtimeDefault: .chosen(choice: TurnChoice())
+        case .chosen: .chosen(choice: newConversationChoice)
+        }
+    }
+    private func restoreNewConversation(_ choice: NewConversationChoice) {
+        newConversationChoice = TurnChoice()
+        switch choice {
+        case .lastChosen: newConversationMode = .lastChosen
+        case .chosen(let choice) where choice == TurnChoice(): newConversationMode = .runtimeDefault
+        case .chosen(let choice): newConversationMode = .chosen; newConversationChoice = choice
+        }
+    }
+    private func selectType(_ selected: RuntimeKind?) {
+        guard let selected, selected != typeID else { return }
+        if let typeID {
+            typeDrafts[typeID] = TypeDraft(settings: settings, arguments: launchArguments, environment: environment,
+                                           newConversation: newConversationSelection, models: newConversationModels)
+        }
+        let draft = typeDrafts[selected] ?? TypeDraft()
+        typeID = selected
+        settings = draft.settings
+        launchArguments = draft.arguments
+        environment = draft.environment
+        restoreNewConversation(draft.newConversation)
+        newConversationModels = draft.models
+        executableDiscoveryMessage = nil
+        DispatchQueue.main.async { discoverExecutableIfNeeded() }
+    }
     private struct LaunchArgument: Identifiable { let id = UUID(); var value = "" }
     private struct EnvironmentEntry: Identifiable { let id = UUID(); var name = ""; var value = "" }
     private enum AgentLoad { case loading, failed(String), ready(AcpRuntimeInfo) }
@@ -1293,7 +1335,7 @@ struct RuntimeEditor: View {
         }
         return AcpLaunch(args: launchArguments.map(\.value).filter { !$0.isEmpty }, environment: variables)
     }
-    private var valid: Bool { (!enabled || settings["automaticNaming"] != "true" || store.gateway.providers.flatMap(\.models).contains { $0.recordKey == settings["automaticNamingModel"] }) && !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && descriptor != nil && homeExecution != nil && transportExecution != nil && remoteResourcesExecution != nil && (descriptor?.launchOptions != true || launch != nil) && (!enabled || fields.allSatisfy { field in
+    private var valid: Bool { executionReady && (!enabled || settings["automaticNaming"] != "true" || store.gateway.providers.flatMap(\.models).contains { $0.recordKey == settings["automaticNamingModel"] }) && !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && descriptor != nil && homeExecution != nil && transportExecution != nil && remoteResourcesExecution != nil && (descriptor?.launchOptions != true || launch != nil) && (!enabled || fields.allSatisfy { field in
         let value = settings[field.key] ?? field.value
         return (!field.required || !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) && MacPath.isValid(value, field: field, remote: remote)
     }) }
@@ -1308,7 +1350,8 @@ struct RuntimeEditor: View {
                 Section {
                     TextField("实例名称", text: $name)
                     Toggle("启用此运行时", isOn: $enabled).help("停用后不读取其历史，也不创建或执行新任务；原生会话数据保留。")
-                    Picker("类型", selection: $typeID) { ForEach(types) { type in Text(type.name).tag(Optional(type.id)) } }.disabled(instance != nil)
+                    Picker("类型", selection: typeSelection) { ForEach(types) { type in Text(type.name).tag(Optional(type.id)) } }
+                        .disabled(!executionReady).accessibilityIdentifier("runtime-editor-type")
                 }
                 Section("运行环境") { homeSection }
                 if descriptor != nil {
@@ -1329,7 +1372,7 @@ struct RuntimeEditor: View {
                     }
                 }
                 if descriptor?.launchOptions == true, case .ready = execution { launchSections }
-                if descriptor?.agentInfo == true, let instance { agentSection(instance) }
+                if descriptor?.agentInfo == true, let instance, typeID == instance.typeId { agentSection(instance) }
                 if descriptor?.fields.contains(where: { $0.key == "automaticNaming" }) == true { automaticNamingSection }
                 if let instance { newConversationSection(instance) }
             }.formStyle(.grouped)
@@ -1346,11 +1389,8 @@ struct RuntimeEditor: View {
             name = instance?.name ?? ""
             enabled = instance?.enabled ?? true
             if let instance {
-                switch store.newConversationChoice(for: instance.id) {
-                case .lastChosen: newConversationMode = .lastChosen
-                case .chosen(let choice) where choice == TurnChoice(): newConversationMode = .runtimeDefault
-                case .chosen(let choice): newConversationMode = .chosen; newConversationChoice = choice; loadNewConversationModels(instance)
-                }
+                do { restoreNewConversation(try store.newConversationChoice(for: instance.id)) }
+                catch { store.recordProblem(error, source: "读取运行时的新会话策略"); return }
             }
             typeID = instance?.typeId ?? types.first?.id
             if instance == nil { execution = .ready } else { loadExecution() }
@@ -1360,12 +1400,15 @@ struct RuntimeEditor: View {
                     if let value = settings[field.key] { settings[field.key] = MacPath.expanded(value) }
                 }
             }
+            if let instance, newConversationMode == .chosen { loadNewConversationModels(instance) }
             DispatchQueue.main.async { discoverExecutableIfNeeded() }
         }
-        .onChange(of: typeID) { old, new in
-            if instance == nil { typeDrafts[old] = settings; settings = typeDrafts[new] ?? [:] }
-            executableDiscoveryMessage = nil
-            DispatchQueue.main.async { discoverExecutableIfNeeded() }
+        .onChange(of: executionReady) { _, ready in
+            guard ready else { return }
+            observeForCheck?(RuntimeEditorCheckAccess(type: typeSelection, settings: $settings,
+                newConversation: Binding(get: { newConversationSelection }, set: restoreNewConversation),
+                execution: { homeExecution.flatMap { home in transportExecution.map { RuntimeExecution(transport: $0, home: home, remoteResourcesDirectory: remoteResourcesExecution ?? nil) } } },
+                launch: { launch }, save: commit))
         }
     }
 
@@ -1478,7 +1521,10 @@ struct RuntimeEditor: View {
                 Text("运行时默认").tag(NewConversationMode.runtimeDefault)
                 Text("指定").tag(NewConversationMode.chosen)
             }
-            if newConversationMode == .chosen { newConversationPickers }
+            if newConversationMode == .chosen {
+                newConversationPickers
+                if typeID != instance.typeId { Text("保存此类型后可读取它的模型目录。").uiFont(.caption).foregroundStyle(.secondary) }
+            }
         } header: { Text("新会话") } footer: {
             Text(newConversationFooter).uiFont(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         }
@@ -1536,18 +1582,15 @@ struct RuntimeEditor: View {
         }
     }
     private func loadNewConversationModels(_ instance: RuntimeInstance) {
+        // The core still knows the saved type until this form is committed.
+        guard typeID == instance.typeId else { return }
+        let readingType = instance.typeId
         newConversationModels = .loading
-        store.readModelCatalog(runtimeID: instance.id) { newConversationModels = $0 }
-    }
-    private func saveNewConversationChoice(_ instance: RuntimeInstance) {
-        let choice: NewConversationChoice = switch newConversationMode {
-        case .lastChosen: .lastChosen
-        case .runtimeDefault: .chosen(choice: TurnChoice())
-        case .chosen: .chosen(choice: newConversationChoice)
+        store.readModelCatalog(runtimeID: instance.id) { catalog in
+            if typeID == readingType { newConversationModels = catalog }
+            else { typeDrafts[readingType]?.models = catalog }
         }
-        store.setNewConversationChoice(choice, for: instance.id)
     }
-
     @ViewBuilder private func agentSection(_ instance: RuntimeInstance) -> some View {
         Section {
             switch agent {
@@ -1658,15 +1701,15 @@ struct RuntimeEditor: View {
     }
     private func commit() {
         guard valid, let descriptor, let typeID, let homeExecution, let transport = transportExecution, let remoteResources = remoteResourcesExecution, case .ready = execution else { return }
-        // Settings this form does not edit, such as an ACP launch, stay as saved.
-        var values = instance?.settings ?? [:]
+        // Only the selected type's draft is saved, including settings outside its visible fields.
+        var values = settings
         for field in descriptor.fields {
             values[field.key] = MacPath.normalized(settings[field.key] ?? field.value, field: field, remote: remote)
         }
         store.saveRuntimeInstance(RuntimeInstance(enabled: enabled, id: instance?.id ?? draftID, name: name.trimmingCharacters(in: .whitespacesAndNewlines), typeId: typeID, gatewayId: instance?.gatewayId ?? gatewayID, settings: values),
                                   execution: RuntimeExecution(transport: transport, home: homeExecution, remoteResourcesDirectory: remoteResources),
-                                  launch: descriptor.launchOptions ? launch : nil) { [instance] in
-            if let instance { saveNewConversationChoice(instance) }
+                                  launch: descriptor.launchOptions ? launch : nil,
+                                  newConversation: newConversationSelection) {
             dismiss()
         }
     }

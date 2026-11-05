@@ -6,6 +6,8 @@
 
 多个会话可以同时执行。每个打开的会话有自己的执行、模型选择、投影与协作票据；以会话 ID 寻址的操作（打开、发送、取消、回复交互、重命名、删除、snapshot）作用于该会话，每次操作都推进所有会话。每个会话同一时刻最多一个 turn；`cancel` 与 `reply_runtime_interaction` 需要会话 ID。重开正在执行的会话返回其运行中的视图，结束后再打开才重读原生历史。执行中或有待处理交互的会话保持打开，空闲会话按最近使用保留 8 个。同一运行时的并发执行各用一个 lane 目录（`runtime-projections/<运行时>/lane-<n>`）存放网关模型与选择文件。`conversation_activity(since)` 列出执行中或待处理交互的会话，并返回游标之后结束的 Velune turn 及其结果（完成、失败、用户停止；Pi 以错误结束模型响应也算失败），最近 64 个可补读，另列出打开的会话中当前可无新消息恢复的会话（资格同 snapshot 的 `can_resume`，恢复请求仍重新判定）；可频繁轮询。运行时保存、提供商、导入与登录配置在任一会话执行时拒绝变更。运行时删除只在依赖该实例的会话或后台任务执行时拒绝；其他实例执行不阻止删除失效实例，删除不改动 Harness 原生文件。并行会话手动验收 用隔离 Pi 1.0.2 与本机 loopback 上游检查同时执行、独立结束、取消与配置门禁。
 
+侧聊能力来自 agent-runtime 的 `RuntimeVariant.side_chat`，通过 `RuntimeTypeDescriptor.can_side_chat` 提供给客户端。打开与发送统一校验实例启用状态和该策略，原生实现按策略分派。
+
 侧聊（PRD [侧聊](../../docs/prd/conversations.md#侧聊)）是一个独立的打开会话：`open_side_chat` 对已首发、不是子 Agent 的 Claude Code／Codex／Pi 会话，以客户端给出的下一轮模型、推理强度与权限模式（与 `resume_turn` 一样校验）让运行时打开侧聊（见 [agent-runtime](../agent-runtime/README.md#侧聊)），返回以 `side-chat:<n>` 寻址的 snapshot，只含侧聊自己的问答。`send_side_chat` 提问，`cancel`、`reply_runtime_interaction` 与 snapshot 读取按此身份寻址，`close_side_chat` 结束其执行并丢弃它。侧聊打开期间保持执行（网关轮次结束不关闭运行时进程），不进入列表、活动、可恢复与结束的 turn，不跟随原生文件，不注入协作 MCP；网关、额度与分析照常记录其请求，以侧聊身份为会话标识。
 
 每个会话另有 Velune 的发送队列（`local/follow_up.rs`），只在应用运行期间保存：`send_queue` 加入（保存发送时的完整选择）、编辑正文、删除、移动与继续发送；turn 正常结束时推进会话即发出队首，各自成轮，停止或失败暂停，未被接受的一条留在队首并暂停、不自动重发；空闲时加入或继续发送立即发出。有排队消息的会话保持打开。快照的 `followUp` 给出队列、暂停原因、能否 steer 与能否继续（本会话上一轮停止或失败）。`steer_turn` 与队列操作 `Steer` 经运行时原生通道把消息插入正在运行的轮次（Pi `steer`、Codex `turn/steer`、Claude Code 轮次中的 stdin 用户消息），不另起一轮、不带下一轮选择；ACP 与 DSH 不提供。发送队列手动验收、steer 手动验收。
@@ -63,6 +65,8 @@ Codex 订阅由 application 自身管理，与 Harness 登录独立。保存提�
 公开模型目录的获取和来源解析归本 unit。当前支持用户显式读取 models.dev 的 provider-scoped API，以具名候选记录返回来源提供商、实际模型 ID 和已声明能力，供模板快填；候选不进入配置，用户保存时仍走现有模板用例。同步获取由平台工作队列调用，单次请求的 executor 随调用结束释放，不建立常驻 Host 或全局 subscriber。目录获取不使用提供商凭据，不读取本机运行时配置、不自动刷新或改变协议／地址；未知规格保持未知。
 
 会话列表汇总全部启用运行时，实例 disabled 不读取其历史来源，保留其配置与原生历史；enabled 默认 true 作为当前 schema 的增量配置。当前执行实例与浏览筛选分别管理，不按执行实例隐式限制列表。
+
+原生列表与项目缓存按同一 `RuntimeSourceKey` 校验，它直接来自真实 reader／ACP launch 的纯解析配置。名称、新会话策略和 Velune 网关／提供商变更可以复用历史缓存。归档及按身份查找的回退投影也保留来源，来源切换后拒绝旧结果与旧客户端视图。读取来源与执行配置各自表达依赖，例如 Pi 的 sdkHelper override 只参与执行配置。来源失败、清理与变更规则见[浏览与执行准备](../../docs/design/conversations.md#浏览与执行准备)。
 
 列表窗口由 `local/organization.rs` 计算：按浏览偏好筛选、分组（组按最近活动排序，置顶组在前、无项目在后）与排序，总数上限依次分给各组的首页，折叠组不读取，`load_more_conversations` 只为该组追加一页；改变分组、排序或筛选时清空追加页。`list()` 返回窗口内的会话（`ListedConversation`，含原生 ID、置顶、未读、归档、所属项目与组）以及仍打开但不在窗口内的会话（组为空）、组描述与项目清单。会话的项目以主文件夹标识（`local/projects.rs`）：工作目录是某个项目的文件夹时归该项目；否则若它是 Git worktree，归其所属仓库的项目（Claude Code 约定的 `.claude/worktrees/<名称>` 按路径判断，SSH 会话与已删除的 worktree 同样适用；本机会话另读 worktree 的 `.git` 文件与 `commondir`，每个目录读一次并缓存）；再否则工作目录自成项目。`set_project` 设定项目的名称、主文件夹与附加文件夹，一个文件夹只属于一个项目；并入的目录及原主文件夹上的移动记录、项目筛选与折叠分组改指新的主文件夹。运行时在没有项目时安排的位置不算项目、归入无项目组：文件系统根（应用自身不指定目录时的位置）、运行时看到的 HOME（SSH 继承 HOME 时探测一次并缓存），以及版本描述 `projectless_directories` 列出的 HOME 下目录（Codex 为 `Documents/Codex`，即 Codex 应用无项目聊天的默认目录）。Velune 的列表组织记录保存在 `conversation-organization.json`（schema 2）：置顶、Velune 归档、已读位置、手动未读、移到的项目（主文件夹），以及调整过的项目（主文件夹、名称、附加文件夹）；缺少文件或遇到旧 schema 时以当前时间为已读基线重新开始。窗口中未读且在本机的会话另读原生会话文件末尾判断最近结束的轮次是否失败（`failed`，按文件签名缓存；用户停止不算失败）。运行时有原生归档（版本描述 `can_archive_conversations`，当前为 Codex）时归档改用原生 `thread/archive`／`thread/unarchive`，归档视图另读其已归档列表；其余运行时只记录、不改原生会话。归档会取消置顶，向 Velune 归档的会话发送消息会取消归档，删除会话时移除其记录。Claude Code 与 Pi 按文件索引（`local/browsing.rs`）：未读会话以文件时间与会话头的工作目录参与分组、计数和窗口分配，`browse_read` 只读取窗口显示到的会话，读取后以原生时间重排至稳定；搜索读出全部未读会话，按 ID 查找只读该会话，协作工具读取全部。
 

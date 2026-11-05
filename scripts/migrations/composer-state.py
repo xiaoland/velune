@@ -50,7 +50,8 @@ def read_versioned(path, field, default):
     if not path.exists():
         return default
     value = json.loads(path.read_text())
-    if value["schemaVersion"] != 1:
+    allowed = (1, 2) if path.name == "composer-choices.json" else (1,)
+    if value["schemaVersion"] not in allowed:
         raise ValueError(f"不支持的旧格式：{path.name}")
     return value[field]
 
@@ -195,9 +196,13 @@ def migrate_combined(home, target, value, apply):
     if value.get("schemaVersion") == 2:
         # A prior interruption may have committed the catalog before caches.
         backup = home / "composer-inputs.schema1.backup.json"
-        if backup.exists():
-            windows_caches(home, json.loads(backup.read_text()), apply)
-            mac_workspaces(home, json.loads(backup.read_text()), apply)
+        # Older first-time imports did not preserve a combined catalog. Their
+        # cache choices are still recoverable, but their CAS baseline is unknown.
+        old = json.loads(backup.read_text()) if backup.exists() else {
+            "state": {"ownerId": value["state"]["ownerId"], "inputs": [], "bindings": []}
+        }
+        windows_caches(home, old, apply)
+        mac_workspaces(home, old, apply)
         print("composer-inputs.json 已为分离格式，未覆盖")
         return
     if value.get("schemaVersion") != 1:
@@ -245,10 +250,12 @@ def main():
         for path in sources:
             if path.exists() and not path.name.endswith(".backup.json") and has_old_tier(json.loads(path.read_text())):
                 parser.error("旧按轮档位尚未迁移；请先运行 python3 scripts/migrations/01-service-tier-model-variants.py --home <VELUNE_HOME> --apply，原文件保持不变")
-        if target.exists():
-            value = json.loads(target.read_text())
+        backup = home / "composer-inputs.schema1.backup.json"
+        if target.exists() or backup.exists():
+            # The checkpoint precedes the catalog commit. Reuse its identities
+            # when an interrupted first import has not written the catalog yet.
+            value = json.loads((target if target.exists() else backup).read_text())
             migrate_combined(home, target, value, args.apply)
-            backup = home / "composer-inputs.schema1.backup.json"
             source = value if value.get("schemaVersion") == 1 else json.loads(backup.read_text()) if backup.exists() else {}
             android_preferences(args.android_preferences, source, args.apply)
             return
@@ -381,12 +388,10 @@ def main():
             destination = directory / reference["name"]
             shutil.copyfile(source, destination)
             destination.chmod(0o600)
-        fd, name = tempfile.mkstemp(prefix=".composer-inputs-", dir=home)
-        with os.fdopen(fd, "w") as output:
-            json.dump(result, output, ensure_ascii=False, indent=2)
-            output.flush()
-            os.fsync(output.fileno())
-        os.replace(name, target)
+        # This is also the recovery input for unfinished platform-cache writes.
+        # All attachment copies must be complete before publishing it.
+        atomic_json(backup, combined)
+        atomic_json(target, result)
         android_preferences(args.android_preferences, combined, True)
         mac_workspaces(home, combined, True)
         windows_caches(home, combined, True)

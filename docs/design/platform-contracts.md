@@ -25,6 +25,6 @@
 
 ## Artifact 与编辑区文稿
 
-Mac 的 `EditorTab` 拥有标签身份及激活／关闭／拖动契约，`ConversationTab` 与 `ArtifactTab` 分别拥有会话和内容的生命周期。`Pane` 与窗口交接只处理编辑文稿，不要求每个标签都有运行时 store。Artifact 是携带内容类型、来源定位和源码快照的值；身份包含来源与内容摘要，sheet、标签和独立窗口复用同一 `ArtifactTab`，源码／图表选择随对象移动。已停靠内容加入既有布局日志，临时 sheet 不另建持久存储。
+Mac 的 `EditorTab` 拥有标签身份及激活／关闭／拖动契约，`ConversationTab` 与 `ArtifactTab` 分别拥有会话和内容的生命周期。`Pane` 与窗口交接只处理编辑文稿，不要求每个标签都有运行时 store；窗口保留所属执行设备，交接与布局恢复不能把另一设备的会话身份交给当前 core。Artifact 是携带内容类型、来源定位和源码快照的值；身份包含来源与内容摘要，sheet、标签和独立窗口复用同一 `ArtifactTab`，源码／图表选择随对象移动。重复查看会在同一执行设备的窗口中查找已有呈现，移到其他窗口不产生新对象。已停靠内容加入既有布局日志，临时 sheet 不另建持久存储。
 
 Markdown 代码块把识别出的 Mermaid 交给统一 Artifact 打开入口，不自行创建浏览器或窗口。`ArtifactView` 按类型选 renderer；Mermaid 使用打包的固定版本与本地 WKWebView，内容经参数传入。会话命令在没有会话目标时禁用，查看内容不取得会话控制权或执行生命周期。产品规则见[Artifact](../prd/conversation-view.md#artifact)。

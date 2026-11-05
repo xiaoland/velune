@@ -7,13 +7,27 @@ use serde_json::{Value, json};
 pub struct PiSession {
     config: Config,
     running: Option<Running>,
-    /// A turn or a compaction runs.
-    busy: bool,
 }
 
 struct Running {
     client: Client,
     projection: PiProjection,
+    /// A turn or a compaction runs, including an accepted prompt whose
+    /// agent_start has not arrived yet.
+    busy: bool,
+}
+
+impl Running {
+    fn apply_event(&mut self, event: &Value) {
+        self.projection.apply_event(event);
+        if self.projection.turn_ended() {
+            self.busy = false;
+        } else if event["type"] == "agent_start" {
+            // Extensions may start follow-up runs without a prompt from
+            // Velune, including while a history RPC is in flight.
+            self.busy = true;
+        }
+    }
 }
 
 impl PiSession {
@@ -22,7 +36,6 @@ impl PiSession {
         Self {
             config,
             running: None,
-            busy: false,
         }
     }
 
@@ -37,10 +50,14 @@ impl PiSession {
     /// Runs `client`, which was spawned from this session's configuration,
     /// shown through `projection`.
     pub fn start(&mut self, client: Client, projection: PiProjection) {
-        self.busy = projection.snapshot.as_ref().is_some_and(|snapshot| {
+        let busy = projection.snapshot.as_ref().is_some_and(|snapshot| {
             matches!(snapshot.run_state, RunState::Running | RunState::Stopping)
         });
-        self.running = Some(Running { client, projection });
+        self.running = Some(Running {
+            client,
+            projection,
+            busy,
+        });
     }
 
     /// Stop the process; the configuration stays, without its conversation.
@@ -52,7 +69,6 @@ impl PiSession {
     }
 
     pub fn shutdown(&mut self) -> Result<()> {
-        self.busy = false;
         match self.running.take() {
             Some(mut running) => running.client.shutdown(),
             None => Ok(()),
@@ -60,7 +76,7 @@ impl PiSession {
     }
 
     pub fn turn_running(&self) -> bool {
-        self.busy
+        self.running.as_ref().is_some_and(|running| running.busy)
     }
 
     pub fn snapshot(&self) -> Option<&ConversationSnapshot> {
@@ -111,14 +127,7 @@ impl PiSession {
             return;
         };
         for event in running.client.poll() {
-            running.projection.apply_event(&event);
-            if running.projection.turn_ended() {
-                self.busy = false;
-            } else if event["type"] == "agent_start" {
-                // Extensions may start follow-up runs without a prompt from
-                // Velune. They have the same steering/cancellation contract.
-                self.busy = true;
-            }
+            running.apply_event(&event);
         }
     }
 
@@ -131,19 +140,22 @@ impl PiSession {
         runtime_id: &str,
         model_record_key: Option<String>,
     ) -> Result<bool> {
-        let busy = self.busy;
-        let Some(Running { client, projection }) = &mut self.running else {
+        let Some(running) = &mut self.running else {
             return Ok(false);
         };
-        if busy || projection.history_synchronized() || !projection.can_sync_history() {
+        if running.busy
+            || running.projection.history_synchronized()
+            || !running.projection.can_sync_history()
+        {
             return Ok(false);
         }
-        let (state, messages) = client.state()?;
+        let (state, messages) = running.client.state()?;
         // Events received before get_messages' response are covered by that
         // authoritative context. Do not replay them after replacing history.
-        for event in client.take_buffered_events() {
-            projection.apply_event(&event);
+        for event in running.client.take_buffered_events() {
+            running.apply_event(&event);
         }
+        let projection = &mut running.projection;
         if let Some(path) = state["data"]["sessionFile"].as_str() {
             let previous = projection.snapshot.as_ref().map(|s| &s.conversation);
             projection.set_conversation(ConversationSummary {
@@ -165,8 +177,8 @@ impl PiSession {
         projection.replace_history(&messages);
         if let Some(snapshot) = projection.snapshot.as_mut() {
             snapshot.model_record_key = model_record_key;
-            snapshot.actions.can_send &= !busy;
-            snapshot.actions.can_cancel &= busy;
+            snapshot.actions.can_send &= !running.busy;
+            snapshot.actions.can_cancel &= running.busy;
         }
         Ok(true)
     }
@@ -187,7 +199,7 @@ impl PiSession {
         } else {
             running.projection.invalidate_history();
         }
-        self.busy = busy;
+        running.busy = busy;
         Ok(())
     }
 
@@ -204,7 +216,7 @@ impl PiSession {
         let running = self.running()?;
         let id = running.client.compact()?;
         running.projection.begin_compaction(id);
-        self.busy = true;
+        running.busy = true;
         Ok(())
     }
 
@@ -260,5 +272,88 @@ impl PiSession {
 
     fn request(&mut self, command: Value) -> Result<Value> {
         self.running()?.client.request(command)
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use crate::LiveConversation;
+
+    #[test]
+    fn extension_start_during_history_sync_keeps_steering_and_cancellation_available() {
+        let mut random = [0; 8];
+        getrandom::fill(&mut random).unwrap();
+        let root = std::env::temp_dir().join(format!(
+            "velune-pi-lifecycle-{:x}",
+            u64::from_le_bytes(random)
+        ));
+        std::fs::create_dir(&root).unwrap();
+        let helper = root.join("rpc.py");
+        std::fs::write(
+            &helper,
+            r#"
+import json, sys
+def emit(value):
+    print(json.dumps(value), flush=True)
+started = False
+for line in sys.stdin:
+    request = json.loads(line)
+    command = request['type']
+    data = {}
+    if command == 'prompt':
+        emit({'type':'extension_ui_request','method':'setStatus',
+              'statusKey':'velune.session-metadata',
+              'statusText':json.dumps({'messageIds':[], 'identityConfirmations':[]})})
+        data = {'disposition':'handled'}
+    elif command == 'get_state':
+        if not started:
+            emit({'type':'agent_start'})
+            started = True
+    elif command == 'get_messages':
+        data = {'messages':[]}
+    elif command == 'abort':
+        emit({'type':'agent_settled','aborted':True})
+    emit({'type':'response','id':request['id'],'command':command,'success':True,'data':data})
+"#,
+        )
+        .unwrap();
+        let config: Config = serde_json::from_value(json!({
+            "execution":{"kind":"local"}, "os_home":root,
+            "binary":"/usr/bin/python3", "node_binary":"/usr/bin/python3",
+            "rpc_entry":helper,
+        }))
+        .unwrap();
+        let client = Client::spawn(config.clone()).unwrap();
+        let mut session = PiSession::new(config);
+        session.start(
+            client,
+            PiProjection::new(ConversationSummary {
+                native_read_state: None,
+                id: "pi:synthetic".into(),
+                runtime_id: "pi".into(),
+                title: crate::conversation::conversation_title(None, None),
+                cwd: None,
+                created_at_unix_ms: None,
+                updated_at_unix_ms: None,
+                can_rename: false,
+                can_delete: false,
+                parent_conversation_id: None,
+            }),
+        );
+        assert!(session.sync_history("pi", None).unwrap());
+        assert!(session.turn_running());
+        assert!(session.can_steer());
+        let snapshot = session.snapshot().unwrap();
+        assert_eq!(snapshot.run_state, RunState::Running);
+        assert!(!snapshot.actions.can_send);
+        assert!(snapshot.actions.can_cancel);
+        session.cancel().unwrap();
+        session.poll();
+        assert!(!session.turn_running());
+        assert!(!session.can_steer());
+        assert!(session.snapshot().unwrap().actions.can_send);
+        session.shutdown().unwrap();
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

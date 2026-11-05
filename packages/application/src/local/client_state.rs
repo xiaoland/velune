@@ -14,8 +14,8 @@ pub(crate) struct ClientState {
     pub(super) status: Vec<crate::config::StatusLineItem>,
     choices: crate::config::ComposerChoices,
     runtime: Option<String>,
-    listed: BTreeMap<String, organization::ListedSource>,
-    archived: Vec<ConversationSummary>,
+    listed: organization::ListedProjection,
+    archived: BTreeMap<String, browsing::HistoryArchive>,
 }
 impl CoreRuntime {
     pub(crate) fn retain_private_runtime_settings(&self, runtime: &mut RuntimeInstance) {
@@ -44,7 +44,7 @@ impl CoreRuntime {
             choices: self.composer_choices.clone(),
             runtime: None,
             listed: Default::default(),
-            archived: Vec::new(),
+            archived: BTreeMap::new(),
         }
     }
     pub(crate) fn enter_client_state(&mut self, state: &mut ClientState, isolated: bool) {

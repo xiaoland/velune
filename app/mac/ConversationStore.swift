@@ -16,7 +16,6 @@ final class ConversationStore: ObservableObject {
     var isSideChat: Bool { sideChatContext != nil }
     var allowsAttachments: Bool { !isSideChat && draftEditable }
     private let sideChatLease: SideChatLease?
-    private var temporaryDraft = ""
     /// A temporary side chat owns its next-turn choices for its lifetime;
     /// neither its source conversation nor the shared composer directory does.
     private var temporaryChoices = ConversationChoices()
@@ -34,6 +33,7 @@ final class ConversationStore: ObservableObject {
     /// A conversation on its way to opening before its loading starts: while
     /// a new tab reads the list first, or one off the list is looked up.
     @Published private(set) var reachingConversationID: String?
+    private var linkedConversationRequest: UUID?
     /// The conversation is being opened, as loading shows.
     var isOpeningConversation: Bool { pendingConversationID != nil || reachingConversationID != nil || (isSideChat && snapshot == nil && openingFailure == nil) }
     @Published private(set) var projectionRuntimeID: String?
@@ -120,7 +120,6 @@ final class ConversationStore: ObservableObject {
         if isPreview {
             if let sideChat { nextTurnRuntimeID = sideChat.runtimeID; nextTurn = sideChat.nextTurn }
             apply(device.previewSnapshots["sample-0"])
-            if sideChat == nil { selectModel(.managed(modelRecordKey: "sample-model")) }
         }
     }
 
@@ -191,7 +190,7 @@ final class ConversationStore: ObservableObject {
     /// The core validates the selection again; an unread catalog does not block sending.
     var isStopping: Bool { stopRequested || snapshot?.runState == .stopping }
     private var activityBlocksSending: Bool {
-        snapshot?.runState == .elsewhere || loadedConversationID.map(device.isConversationRunning) == true
+        loadedConversationID.map(device.isConversationRunning) == true
     }
     var inputAccess: InputAccess { snapshot?.actions.inputAccess ?? .editable }
     var inputSubmissionAllowed: Bool { inputAccess == .editable }
@@ -201,7 +200,7 @@ final class ConversationStore: ObservableObject {
         return !isShuttingDown
     }
     var inputLockMessage: String? { inputAccess.message }
-    var canSend: Bool { inputSubmissionAllowed && !executionStarting && !device.authenticationRunning && !isLoading && !isGenerating && !isStopping && !activityBlocksSending && !isShuttingDown && (snapshot?.pendingInteractions.isEmpty ?? true) && (snapshot?.actions.canSend ?? false) }
+    var canSend: Bool { !executionStarting && !device.authenticationRunning && !isLoading && !isStopping && !activityBlocksSending && !isShuttingDown && (snapshot?.actions.canSend ?? false) }
     var canCancel: Bool { !isStopping && snapshot?.runState == .running && (snapshot?.actions.canCancel ?? false) }
     var followUp: FollowUp { snapshot?.followUp ?? FollowUp() }
     /// The loaded conversation's native sub-agents.
@@ -211,7 +210,7 @@ final class ConversationStore: ObservableObject {
     /// The loaded conversation has a parent, sub-agents or collaborators to list.
     var hasLinkedAgents: Bool { pendingConversationID == nil && (loadedParentConversationID != nil || !subAgents.isEmpty || !collaborators.isEmpty) }
     /// While a turn runs, a sent message waits in the conversation's queue.
-    var canQueue: Bool { inputSubmissionAllowed && !isSideChat && !followUp.isCompacting && !isPreview && snapshot?.runState == .running && !isStopping && !executionStarting && !isLoading && !isShuttingDown && !device.authenticationRunning && loadedConversationID != nil && snapshot?.conversation.parentConversationID == nil }
+    var canQueue: Bool { followUp.canQueue && !isPreview && !isStopping && !executionStarting && !isLoading && !isShuttingDown && !device.authenticationRunning }
     var canResume: Bool { canResume(next: nextTurn) }
     func canResume(next: NextTurn?) -> Bool { canSend && followUp.canResume && next?.runtimeId == snapshot?.contextRuntimeID }
     var canCompact: Bool { canCompact(next: nextTurn) }
@@ -248,36 +247,19 @@ final class ConversationStore: ObservableObject {
     var effectivePermissionMode: PermissionMode? { nextTurn?.permissionMode }
     var currentPermissionMode: PermissionMode? { nextTurn?.currentPermissionMode }
     var currentEffort: String? { nextTurn?.currentEffort }
-    func selectPermissionMode(_ mode: String?) { changeNextTurn(.permissionMode(mode: mode)) }
-    /// `nil` follows the conversation's current model, and where it has none
-    /// is the runtime's own default.
-    func selectModel(_ selection: ModelSelection?) {
-        guard canSwitchModel else { return }
-        changeNextTurn(.model(selection: selection))
-    }
-    func selectEffort(_ effort: String?) { changeNextTurn(.effort(level: effort)) }
-    /// Keeps the changed choice for this conversation on the next turn's
-    /// runtime and, as the core decides, as the runtime's last choice.
-    func changeNextTurn(_ change: TurnChoiceChange) {
-        guard let nextTurn, let update = VeluneBindings.changeNextTurn(next: nextTurn, runtimeChoices: device.runtimeComposerChoices[nextTurn.runtimeId], change: change) else { return }
+    /// Side chats keep their target choices for the lifetime of this temporary store.
+    /// Ordinary conversation choices are written through ComposerContext's shared target.
+    func changeSideChatChoice(_ change: TurnChoiceChange) {
+        guard isSideChat, let nextTurn,
+              let update = VeluneBindings.changeNextTurn(next: nextTurn, runtimeChoices: device.runtimeComposerChoices[nextTurn.runtimeId], change: change) else { return }
         if let choices = update.runtimeChoices { device.setRuntimeComposerChoices(choices) }
-        if isSideChat { temporaryChoices.choices[nextTurn.runtimeId] = update.choice }
-        else if let intentConversationID {
-            var kept = device.choices(of: intentConversationID) ?? ConversationChoices()
-            kept.choices[nextTurn.runtimeId] = update.choice
-            device.keepChoices(kept, for: intentConversationID)
-        }
+        temporaryChoices.choices[nextTurn.runtimeId] = update.choice
         refreshNextTurn()
     }
-    func selectNextTurnRuntime(_ id: String) {
-        guard !isShuttingDown, device.enabledRuntimeInstances.contains(where: { $0.id == id }), !isSideChat || device.hasSideChats(id) else { return }
+    func selectSideChatRuntime(_ id: String) {
+        guard isSideChat, !isShuttingDown, device.enabledRuntimeInstances.contains(where: { $0.id == id }), device.hasSideChats(id) else { return }
         hasInitializedNextTurnIntent = true
-        if isSideChat { temporaryChoices.runtimeID = id }
-        else if let intentConversationID {
-            var kept = device.choices(of: intentConversationID) ?? ConversationChoices()
-            kept.runtimeID = id
-            device.keepChoices(kept, for: intentConversationID)
-        }
+        temporaryChoices.runtimeID = id
         if nextTurnRuntimeID == id { refreshNextTurn() } else { nextTurnRuntimeID = id }
     }
     /// Once the kept choices are read, the open conversation comes back with its own.
@@ -332,24 +314,26 @@ final class ConversationStore: ObservableObject {
     /// conversation and the runtime's catalog.
     private func refreshNextTurn() {
         guard let runtimeID = nextTurnRuntimeID else { if nextTurn != nil { nextTurn = nil }; return }
+        guard let newConversation = try? device.newConversationChoice(for: runtimeID) else { nextTurn = nil; return }
         let typeID = device.runtimeInstances.first { $0.id == runtimeID }?.typeId
         let resolved = resolveNextTurn(input: NextTurnInput(
             runtimeId: runtimeID, runtimeType: device.runtimeTypes.first { $0.id == typeID }, providers: device.gateway.providers,
             catalog: modelCatalogs[runtimeID]?.models, turns: isDraft ? [] : snapshot?.transcriptTurns ?? [],
             conversationRuntimeId: snapshot?.conversation.runtimeID, modelRecordKey: snapshot?.modelRecordKey,
             kept: isSideChat ? temporaryChoices.choices[runtimeID] : intentConversationID.flatMap { device.choices(of: $0)?.choices[runtimeID] },
-            runtimeChoices: device.runtimeComposerChoices[runtimeID]))
+            runtimeChoices: device.runtimeComposerChoices[runtimeID], newConversation: newConversation))
         if nextTurn != resolved { nextTurn = resolved }
     }
     /// The core resolves independent intent against this target's facts; no mode is installed on the store.
     func resolve(kept: ConversationChoices) -> NextTurn? {
         guard let runtimeID = kept.runtimeID ?? nextTurnRuntimeID else { return nil }
+        guard let newConversation = try? device.newConversationChoice(for: runtimeID) else { return nil }
         let typeID = device.runtimeInstances.first { $0.id == runtimeID }?.typeId
         return VeluneBindings.resolveNextTurn(input: NextTurnInput(
             runtimeId: runtimeID, runtimeType: device.runtimeTypes.first { $0.id == typeID }, providers: device.gateway.providers,
             catalog: modelCatalogs[runtimeID]?.models, turns: isDraft ? [] : snapshot?.transcriptTurns ?? [],
             conversationRuntimeId: snapshot?.conversation.runtimeID, modelRecordKey: snapshot?.modelRecordKey,
-            kept: kept.choices[runtimeID], runtimeChoices: device.runtimeComposerChoices[runtimeID]))
+            kept: kept.choices[runtimeID], runtimeChoices: device.runtimeComposerChoices[runtimeID], newConversation: newConversation))
     }
     var keptComposerChoices: ConversationChoices {
         if isSideChat { return temporaryChoices }
@@ -496,7 +480,7 @@ final class ConversationStore: ObservableObject {
         }
     }
     /// The tab closes: it stops following its conversation.
-    func close() { started = false; if isSideChat { generation += 1 }; subscriptions.removeAll(); timer?.invalidate(); timer = nil; sideChatLease?.release() }
+    func close() { started = false; abandonLinkedConversationLookup(); if isSideChat { generation += 1 }; subscriptions.removeAll(); timer?.invalidate(); timer = nil; sideChatLease?.release() }
     /// Each tab follows the conversation it shows; the device follows the rest.
     private func schedulePolling() {
         timer?.invalidate()
@@ -572,13 +556,6 @@ final class ConversationStore: ObservableObject {
         }
     }
 
-    // MARK: - Drafts
-
-    func draft(for conversationID: String) -> String { isSideChat ? temporaryDraft : device.draft(for: conversationID) }
-    func setDraft(_ text: String, for conversationID: String) {
-        if isSideChat { temporaryDraft = text } else { device.setDraft(text, for: conversationID) }
-    }
-
     // MARK: - List
 
     /// Organization requests belong to the device queue, independently of
@@ -650,37 +627,45 @@ final class ConversationStore: ObservableObject {
     /// back to; an agent may have started it after the list was last read.
     func openLinkedConversation(id: String, move: NavigationMove = .new) {
         if conversation(id: id) != nil { selectConversation(id: id, move: move); return }
-        guard !isPreview, !isShuttingDown, let transport else { reachingConversationID = nil; return }
+        guard !isPreview, !isShuttingDown, let transport else { abandonLinkedConversationLookup(); return }
+        let request = UUID()
+        linkedConversationRequest = request
+        deferredSelection = nil
         reachingConversationID = id
         performOnQueue { [weak self] in
             let result = Result { try transport.findConversation(id) }
             DispatchQueue.main.async {
-                guard let self else { return }
-                if self.reachingConversationID == id { self.reachingConversationID = nil }
-                switch result {
-                case .success(let found?):
-                    let reached = BindingMapping.listed(found)
-                    self.offListConversations.removeAll { $0.id == reached.id }
-                    self.offListConversations.append(reached)
-                    self.selectConversation(id: id, move: move)
-                case .success(nil): self.recordProblem("找不到这个会话；它可能已被删除或其运行时已停用", source: "打开会话")
-                case .failure(let failure): self.recordProblem(failure, source: "打开会话")
-                }
+                self?.finishLinkedConversationLookup(result, id: id, move: move, request: request)
             }
         }
     }
+    private func abandonLinkedConversationLookup() { linkedConversationRequest = nil; reachingConversationID = nil }
+    private func finishLinkedConversationLookup(_ result: Result<ListedConversation?, Error>, id: String, move: NavigationMove, request: UUID) {
+        guard linkedConversationRequest == request else { return }
+        abandonLinkedConversationLookup()
+        switch result {
+        case .success(let found?):
+            let reached = BindingMapping.listed(found)
+            offListConversations.removeAll { $0.id == reached.id }
+            offListConversations.append(reached)
+            selectConversation(id: id, move: move)
+        case .success(nil): recordProblem("找不到这个会话；它可能已被删除或其运行时已停用", source: "打开会话")
+        case .failure(let failure): recordProblem(failure, source: "打开会话")
+        }
+    }
     func selectConversation(id: String, move: NavigationMove = .new) {
-        guard let conversation = conversation(id: id) else { reachingConversationID = nil; return }
+        abandonLinkedConversationLookup()
+        guard let conversation = conversation(id: id) else { return }
         // Chosen while another operation runs, it opens once that is done; the latest choice wins.
         guard !isLoading, !executionStarting else { deferredSelection = (id, move); return }
         deferredSelection = nil
-        reachingConversationID = nil
         selectedConversationIDs = [id]
         if isPreview { projectionRuntimeID = conversation.runtimeID; apply(device.previewSnapshots[id]); composerEvents.send(.conversation(id)); return }
         guard let transport else { recordProblem("本地核心未配置"); return }
         // The sidebar reflects user intent immediately. The old loaded transcript
         // is retained until success, but hidden while this destination is loading.
         let previousSelection = snapshot?.conversation.id
+        let previousWasDraft = isDraft
         // An unsent conversation is not one to go back to.
         let shown = isDraft ? nil : previousSelection
         isDraft = false
@@ -689,9 +674,12 @@ final class ConversationStore: ObservableObject {
         pendingConversationID = id
         composerEvents.send(.conversation(id))
         enqueue({ try transport.openConversation(runtimeID: conversation.runtimeID, conversationID: id) }, onFailure: { [weak self] _ in
-            self?.selectedConversationID = previousSelection
-            self?.selectedConversationIDs = Set([previousSelection].compactMap { $0 })
-            self?.finishConversationLoading()
+            guard let self else { return }
+            self.isDraft = previousWasDraft
+            self.selectedConversationID = previousSelection
+            self.selectedConversationIDs = Set([previousSelection].compactMap { $0 })
+            if let previousSelection { self.composerEvents.send(previousWasDraft ? .newConversation : .conversation(previousSelection)) }
+            self.finishConversationLoading()
         }) { [weak self] in
             if let shown, shown != id { self?.recordNavigation(from: shown, move) }
             self?.applySnapshotResult($0)
@@ -705,7 +693,7 @@ final class ConversationStore: ObservableObject {
     }
     private func finishConversationLoading() {
         pendingConversationID = nil
-        if !isShuttingDown { noteSeen(); loadModelCatalog() }
+        if !isShuttingDown, deferredSelection == nil { noteSeen(); loadModelCatalog() }
     }
 
     // MARK: - Managing conversations
@@ -747,12 +735,11 @@ final class ConversationStore: ObservableObject {
             return
         }
         guard let transport else { recordProblem("本地核心未配置"); return }
-        for target in targets { device.dropUnsavedDraft(target.id) }
         let loadedID = loadedConversationID
         let contextID = snapshot?.contextRuntimeID
         // Runtime-owned deletions are independent operations. Preserve each
         // success and report failures rather than promising a transaction.
-        device.manageConversations(source: "删除会话", ids: Set(targets.map(\.id)), operation: {
+        device.manageConversations(source: "删除会话", ids: Set(targets.map(\.id)), deleting: true, operation: {
             var latest: ConfigurationSnapshot?
             var deleted: Set<String> = []
             var failures: [AppProblem] = []
@@ -796,6 +783,7 @@ final class ConversationStore: ObservableObject {
         let enabled = device.enabledRuntimeInstances
         guard let runtimeID = requestedRuntimeID ?? enabled.first(where: { $0.id == nextTurnRuntimeID })?.id ?? enabled.first?.id,
               enabled.contains(where: { $0.id == runtimeID }) else { return false }
+        abandonLinkedConversationLookup()
         let id = Self.draftConversationPrefix + "new-conversation"
         let conversation = Conversation(id: id, title: "新会话", updatedAtUnixMs: isPreview ? Int64(Date().timeIntervalSince1970 * 1000) : nil, runtimeID: runtimeID, cwd: project?.directories.first ?? cwd, creationProject: project, canRename: isPreview, canDelete: isPreview)
         creationFailure = nil
@@ -899,10 +887,6 @@ final class ConversationStore: ObservableObject {
                         // Text typed while sending and the next-turn choice follow the created conversation.
                         if let id = created.snapshot?.conversation.id {
                             if let input { self.composerEvents.send(.created(previous: conversationID, id: id, runtimeID: created.snapshot!.conversation.runtimeId, input: input)) }
-                            else {
-                                self.device.moveDraft(from: conversationID, to: id)
-                                self.device.moveChoices(from: conversationID, to: id)
-                            }
                         }
                         self.applySnapshotResult(created)
                     }
@@ -993,7 +977,7 @@ final class ConversationStore: ObservableObject {
             self?.applySnapshotResult(value)
         }
     }
-    var canSteer: Bool { !isSideChat && canQueue && followUp.canSteer }
+    var canSteer: Bool { canQueue && followUp.canSteer }
     /// Into the running turn; the turn keeps its own choices.
     func steer(text: String, attachments: [String] = [], onFailure: (() -> Void)? = nil) {
         guard canSteer, let runtimeID = projectionRuntimeID, let conversationID = loadedConversationID, let transport else { onFailure?(); return }
@@ -1189,7 +1173,7 @@ final class ConversationStore: ObservableObject {
 
     // MARK: - Projection
 
-    private func resetProjection() { composerRequest = nil; stopRequested = false; executionStarting = false; intentConversationID = nil; loadedPayloads.removeAll(); isDraft = false; generation += 1; snapshot = nil; projectionRuntimeID = nil; selectedConversationID = nil; pendingConversationID = nil; reachingConversationID = nil; transcript.reset(); outgoing.reset(); activity = nil; sessionOptions = nil; sessionOptionsKey = nil }
+    private func resetProjection() { composerRequest = nil; stopRequested = false; executionStarting = false; intentConversationID = nil; loadedPayloads.removeAll(); isDraft = false; generation += 1; snapshot = nil; projectionRuntimeID = nil; selectedConversationID = nil; pendingConversationID = nil; abandonLinkedConversationLookup(); transcript.reset(); outgoing.reset(); activity = nil; sessionOptions = nil; sessionOptionsKey = nil }
     private func apply(_ value: ConversationSnapshot?, preserveSelection: Bool = false) {
         guard var value else { return }
         let conversationChanged = value.conversation.id != snapshot?.conversation.id
@@ -1385,10 +1369,87 @@ extension ConversationStore {
         precondition(store.modelCatalogs[targetRuntime] == nil, "打开会话前不应启动旧输入触发的模型目录")
         store.nextTurnRuntimeID = targetRuntime
         precondition(store.modelCatalogs[targetRuntime] == nil, "加载中的目标选择不应阻塞历史打开")
+        store.deferredSelection = ("synthetic-next-destination", .new)
+        store.finishConversationLoading()
+        precondition(store.modelCatalogs[targetRuntime] == nil, "已有更新导航时不能先排入旧目标模型目录")
+        store.deferredSelection = nil
         store.finishConversationLoading()
         guard case .ready? = store.modelCatalogs[targetRuntime] else {
             preconditionFailure("会话打开完成后应加载实际目标运行时的模型目录")
         }
         FileHandle.standardError.write(Data("PASS conversation opening: retained snapshot cannot start a catalog ahead of open; destination catalog loads after opening\n".utf8))
+        checkOpeningFailureRecovery()
+    }
+
+    private static func checkOpeningFailureRecovery() {
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent("velune-open-failure-\(UUID())", isDirectory: true)
+        let transport = Transport(stateDirectory: home, telemetry: .failure(TransportError.unavailable), remote: {
+            throw TransportError.rejected("synthetic opening failure")
+        })
+        let device = DeviceStore(transport: transport)
+        let window = ConversationWindowModel(application: device, kind: .workspace)
+        window.tools.move(.composer, to: .docked(.bottom))
+        let tab = window.focused
+        let store = tab.store
+        let destination = Conversation(id: "missing:destination", title: "Synthetic destination", updatedAtUnixMs: nil, runtimeID: "missing", cwd: nil, canRename: false, canDelete: false)
+        store.offListConversations = [destination]
+        func wait() {
+            let deadline = Date().addingTimeInterval(5)
+            while store.isLoading, Date() < deadline { RunLoop.main.run(until: Date().addingTimeInterval(0.01)) }
+            precondition(!store.isLoading, "合成打开失败检查超时")
+        }
+        func source(_ id: String, isDraft: Bool) {
+            store.isDraft = isDraft
+            store.apply(ConversationSnapshot(revision: 1, conversation: Conversation(id: id, title: "Synthetic source", updatedAtUnixMs: nil, runtimeID: "missing", cwd: nil, canRename: false, canDelete: false), contextRuntimeID: "missing", modelRecordKey: nil, runState: .idle, messages: [], actions: ConversationActions(inputAccess: .editable, canSend: true, canCancel: false, canSwitch: true)))
+            store.composerEvents.send(isDraft ? .newConversation : .conversation(id))
+        }
+        for isDraft in [false, true] {
+            let id = isDraft ? draftConversationPrefix + "new-conversation" : "missing:source"
+            source(id, isDraft: isDraft)
+            let input = window.composer(for: tab)
+            input.restoreSavedDraft(.init(text: isDraft ? "unsent source" : "existing source", attachments: []))
+            store.selectConversation(id: destination.id)
+            precondition(window.sharedComposer.id != input.id, "发起导航应切换目标输入")
+            wait()
+            precondition(store.selectedConversationID == id && store.loadedConversationID == id)
+            precondition(store.isUnsentConversation == isDraft, "打开失败必须恢复原草稿身份")
+            precondition(window.composer(for: tab).id == input.id && window.sharedComposer.submission == input.submission, "打开失败必须恢复原会话输入")
+        }
+        // A second navigation is deferred until the first settles; a failed
+        // opening must not prevent that newer intent from taking its turn.
+        let latest = Conversation(id: "missing:latest", title: "Latest destination", updatedAtUnixMs: nil, runtimeID: "missing", cwd: nil, canRename: false, canDelete: false)
+        store.offListConversations.append(latest)
+        var destinations: [String] = []
+        let watch = store.composerEvents.sink { event in if case .conversation(let id) = event { destinations.append(id) } }
+        store.selectConversation(id: destination.id)
+        store.selectConversation(id: latest.id)
+        wait()
+        precondition(destinations.contains(latest.id) && store.deferredSelection == nil, "较早失败不得吞掉之后的导航")
+        watch.cancel()
+        FileHandle.standardError.write(Data("PASS failed opening: source input and unsent identity restored; newer deferred navigation still executes\n".utf8))
+
+        let linkedID = "missing:linked"
+        let found = ListedConversation(conversation: ConversationSummary(id: linkedID, title: .native("Synthetic linked"), updatedAtUnixMs: nil, createdAtUnixMs: nil, runtimeId: "missing", cwd: nil, canRename: false, canDelete: false, parentConversationId: nil, nativeReadState: nil), nativeId: "synthetic-native", agentsUri: nil, pinned: false, unread: false, archived: false, project: nil, moved: false, failed: false, group: nil)
+        store.openLinkedConversation(id: linkedID)
+        let oldRequest = store.linkedConversationRequest!
+        store.selectConversation(id: latest.id)
+        store.finishLinkedConversationLookup(.success(found), id: linkedID, move: .new, request: oldRequest)
+        precondition(store.selectedConversationID == latest.id && store.deferredSelection == nil && store.conversation(id: linkedID) == nil,
+                     "已选择新目标后，旧离表查找成功也不能夺回导航")
+        wait()
+
+        // Choosing the same link again is a new request too; an older
+        // response cannot consume its intent or navigation-history move.
+        store.openLinkedConversation(id: linkedID, move: .back)
+        let firstRequest = store.linkedConversationRequest!
+        store.openLinkedConversation(id: linkedID)
+        let currentRequest = store.linkedConversationRequest!
+        precondition(firstRequest != currentRequest)
+        store.finishLinkedConversationLookup(.success(found), id: linkedID, move: .back, request: firstRequest)
+        precondition(store.linkedConversationRequest == currentRequest && store.conversation(id: linkedID) == nil)
+        store.finishLinkedConversationLookup(.success(found), id: linkedID, move: .new, request: currentRequest)
+        precondition(store.selectedConversationID == linkedID && store.linkedConversationRequest == nil)
+        wait()
+        FileHandle.standardError.write(Data("PASS linked navigation: stale lookup cannot replace a newer destination or consume a newer request for the same link\n".utf8))
     }
 }

@@ -260,6 +260,11 @@ struct ConversationWindow: View {
                     WindowPresentation.windowed.insert(seed.id)
                     openWindow(id: kind.sceneID, value: seed)
                 }
+                window.application.openConversationWindow = { [openWindow, device = window.device] seed in
+                    var seed = seed; seed.device = device
+                    WindowPresentation.windowed.insert(seed.id)
+                    openWindow(id: ConversationWindowKind.workspace.sceneID, value: seed)
+                }
                 DispatchQueue.main.async {
                     if startsWindowed, window.window?.isKeyWindow == true { startsWindowed = false }
                 }
@@ -272,9 +277,7 @@ struct ConversationWindow: View {
                 if CommandLine.arguments.contains("--check-edit-message") { window.focused.checkEditMessage() }
                 if CommandLine.arguments.contains("--check-list-actions") { window.checkListActions() }
                 if CommandLine.arguments.contains("--check-side-chat") { window.checkSideChat() }
-                if CommandLine.arguments.contains("--check-composer-state") { window.checkComposerState() }
                 if CommandLine.arguments.contains("--check-group-creation") { window.checkGroupCreation() }
-                if CommandLine.arguments.contains("--check-composer-recovery-read") { window.checkComposerRecovery() }
                 if CommandLine.arguments.contains("--check-dock-areas") { window.tools.move(.outline, to: .docked(.left)); window.tools.move(.list, to: .docked(.right)); window.tools.move(.composer, to: .docked(.bottom)) }
                 if window.application.isPreview, CommandLine.arguments.contains("--check-composer-minimum") {
                     window.tools.bottomHeight = Double(ComposerTextView.minimumHeight + 54)
@@ -294,8 +297,10 @@ struct ConversationWindow: View {
                 if let data = try? JSONEncoder().encode(window.savedLayout), let text = String(data: data, encoding: .utf8) { savedLayout = text }
             }
             .onReceive(NotificationCenter.default.publisher(for: NSWindow.willCloseNotification)) { note in
-                if let closed = note.object as? NSWindow, closed === window.window,
-                   let data = try? JSONEncoder().encode(window.savedLayout), let text = String(data: data, encoding: .utf8) { savedLayout = text; window.persistWorkspace() }
+                if let closed = note.object as? NSWindow, closed === window.window {
+                    if let data = try? JSONEncoder().encode(window.savedLayout), let text = String(data: data, encoding: .utf8) { savedLayout = text; window.persistWorkspace() }
+                    window.noteWindowClosed()
+                }
             }
             .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
                 if let data = try? JSONEncoder().encode(window.savedLayout), let text = String(data: data, encoding: .utf8) { savedLayout = text }
@@ -360,6 +365,11 @@ struct VeluneApp: App {
     private let previewSettings: Bool
 
     init() {
+        let retiredComposerChecks: Set<String> = ["--check-composer-state", "--check-composer-recovery-write", "--check-composer-recovery-read"]
+        if !retiredComposerChecks.isDisjoint(with: CommandLine.arguments) {
+            FileHandle.standardError.write(Data("旧 Composer 双所有权检查已退役；请使用 --check-composer-ownership --composer-check-content-target 与 --check-composer-controls。\n".utf8))
+            exit(2)
+        }
         if CommandLine.arguments.contains("--check-composer-ownership") { composerOwnershipCheck() }
         if CommandLine.arguments.contains("--check-new-tab") { composerOwnershipCheck() }
         if CommandLine.arguments.contains("--check-composer-controls") { composerControlsCheck() }

@@ -31,7 +31,7 @@ impl SessionFormat {
     pub fn for_runtime(kind: crate::version::RuntimeKind) -> Option<Self> {
         use crate::version::RuntimeKind;
         match kind {
-            RuntimeKind::Codex | RuntimeKind::Codex166 => Some(Self::Codex),
+            RuntimeKind::Codex166 => Some(Self::Codex),
             RuntimeKind::ClaudeCode => Some(Self::ClaudeCode),
             RuntimeKind::Pi => Some(Self::Pi),
             RuntimeKind::DeepSeek | RuntimeKind::Acp => None,
@@ -218,7 +218,7 @@ impl SessionStore {
             .join(format!("{thread_id}.lock"))
     }
 
-    /// Threads whose writer lock a Codex process holds. Codex 0.159.3 holds
+    /// Threads whose writer lock a Codex process holds. Codex holds
     /// `thread-writer-locks/<thread id>.lock` while a thread is loaded,
     /// running or not, and leaves the file behind when it exits.
     fn codex_writers(&self) -> Vec<String> {
@@ -503,7 +503,7 @@ fn unfinished(format: SessionFormat, path: &Path) -> bool {
 }
 
 /// Whether the session's latest ended turn failed, as the Harness recorded
-/// it: Codex 0.159.3 ends it with `task_complete` carrying an `error`, Claude
+/// it: Codex ends it with `task_complete` carrying an `error`, Claude
 /// Code 2.1.286 records the failure as an assistant message with
 /// `isApiErrorMessage`, and Pi 1.0.2 as an assistant message whose
 /// `stopReason` is `error`. A turn the user stopped did not fail.
@@ -558,7 +558,7 @@ fn codex_boundary(records: impl Iterator<Item = Value>) -> Option<bool> {
     records
         .filter(|record| record["type"] == "event_msg")
         .find_map(|record| match record["payload"]["type"].as_str()? {
-            // Codex 0.159.3 names these turn events with both spellings.
+            // Native rollouts name these turn events with both spellings.
             "task_started" | "turn_started" => Some(true),
             "task_complete" | "turn_complete" | "turn_aborted" => Some(false),
             _ => None,

@@ -70,7 +70,7 @@ private object Sample {
 
     private val runtimes = listOf(
         RuntimeInstance(true, "claude", "Claude Code", RuntimeKind.CLAUDE_CODE, "gateway", emptyMap()),
-        RuntimeInstance(true, "codex", "Codex", RuntimeKind.CODEX, "gateway", emptyMap()),
+        RuntimeInstance(true, "codex", "Codex", RuntimeKind.CODEX166, "gateway", emptyMap()),
         RuntimeInstance(true, "pi", "Pi", RuntimeKind.PI, "gateway", emptyMap()),
     )
 
@@ -153,7 +153,7 @@ private object Sample {
         ),
     )
 
-    private val turn = TranscriptTurn("turn1", "u1", listOf("a1"), "a1", 5u, 83_000uL, false, null, null, null)
+    private val turn = TranscriptTurn("turn1", "u1", listOf("a1"), "a1", 5u, 83_000uL, false, false, null, null, null)
     private val items = listOf(TranscriptItem.Message("u1", "u1"), TranscriptItem.Work("turn1"), TranscriptItem.Message("reply:a1", "a1"))
     private val byId = messages.associateBy { it.id }
 
@@ -167,7 +167,7 @@ private object Sample {
         DeliveredBlock.Tool("t5", "Bash scripts/build-android.sh --skip-native", ToolState.RUNNING, null, null),
     )
     private val runningById = runningMessages.associateBy { it.id }
-    private val runningTurns = listOf(turn, TranscriptTurn("turn2", "u2", listOf("a2"), null, 0u, null, true, null, null, null))
+    private val runningTurns = listOf(turn, TranscriptTurn("turn2", "u2", listOf("a2"), null, 0u, null, true, false, null, null, null))
     private val runningItems = items + listOf(TranscriptItem.Message("u2", "u2"), TranscriptItem.Work("turn2"))
 
     val running = finished.copy(

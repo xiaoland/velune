@@ -4,6 +4,15 @@
 use super::*;
 use crate::conversation::ConversationSnapshot;
 use session::SideChat;
+use velune_agent_runtime::version::{SideChatStrategy, variant};
+
+fn require_side_chat(runtime: &RuntimeInstance) -> Result<(), RuntimeError> {
+    if runtime.enabled && variant(runtime.type_id).side_chat.is_supported() {
+        Ok(())
+    } else {
+        Err(RuntimeError::invalid("此运行时不提供侧聊"))
+    }
+}
 
 /// A side chat's view: its own identity, without what the copy inherited.
 pub(super) fn shown(side: &SideChat, mut snapshot: ConversationSnapshot) -> ConversationSnapshot {
@@ -76,16 +85,11 @@ impl CoreRuntime {
         effort: Option<String>,
         permission_mode: Option<String>,
     ) -> Result<crate::SnapshotResult, RuntimeError> {
+        let runtime = self.runtime_instance(runtime_id)?.clone();
+        require_side_chat(&runtime)?;
         let parent = self
             .queried_snapshot(runtime_id, conversation_id)?
             .ok_or_else(|| RuntimeError::invalid("此会话不可用"))?;
-        let runtime = self.runtime_instance(runtime_id)?.clone();
-        if !matches!(
-            runtime.type_id,
-            RuntimeKind::Codex | RuntimeKind::Codex166 | RuntimeKind::ClaudeCode | RuntimeKind::Pi
-        ) {
-            return Err(RuntimeError::invalid("此运行时不提供侧聊"));
-        }
         if self.session.side.is_some() || parent.conversation.parent_conversation_id.is_some() {
             return Err(RuntimeError::invalid("此会话不提供侧聊"));
         }
@@ -169,18 +173,14 @@ impl CoreRuntime {
         }
         self.drain_runtime()?;
         self.ensure_work_ended()?;
+        let snapshot = self
+            .native_snapshot()
+            .ok_or_else(|| RuntimeError::invalid("侧聊上下文不可用"))?;
+        Self::submission_admission(&self.session, &snapshot)
+            .send
+            .map_err(RuntimeError::invalid)?;
         let runtime = self.runtime_instance(target_runtime_id)?.clone();
-        if !runtime.enabled
-            || !matches!(
-                runtime.type_id,
-                RuntimeKind::Codex
-                    | RuntimeKind::Codex166
-                    | RuntimeKind::ClaudeCode
-                    | RuntimeKind::Pi
-            )
-        {
-            return Err(RuntimeError::invalid("此运行时不提供侧聊"));
-        }
+        require_side_chat(&runtime)?;
         self.validate_model_selection(&runtime, selection.as_ref())?;
         if let Some(effort) = &turn.effort {
             self.validate_effort(&runtime, selection.as_ref(), effort)?;
@@ -216,7 +216,9 @@ impl CoreRuntime {
         }
         let side = self.session.side.as_ref().expect("checked side");
         let input = pi::TurnInput {
-            text: if runtime.type_id == RuntimeKind::Pi && side.context_pending {
+            text: if variant(runtime.type_id).side_chat == SideChatStrategy::PiInMemory
+                && side.context_pending
+            {
                 format!("{}{}", side.context, turn.text)
             } else {
                 turn.text
@@ -269,5 +271,29 @@ impl CoreRuntime {
         let result = self.shutdown_active();
         self.session = Default::default();
         result
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn side_chat_admission_and_descriptor_follow_adapter_strategy() {
+        for descriptor in runtime_types() {
+            let strategy = variant(descriptor.id).side_chat;
+            assert_eq!(descriptor.can_side_chat, strategy.is_supported());
+            let mut runtime = RuntimeInstance {
+                enabled: true,
+                id: "synthetic-runtime".into(),
+                name: String::new(),
+                type_id: descriptor.id,
+                gateway_id: String::new(),
+                settings: Default::default(),
+            };
+            assert_eq!(require_side_chat(&runtime).is_ok(), descriptor.can_side_chat);
+            runtime.enabled = false;
+            assert!(require_side_chat(&runtime).is_err());
+        }
     }
 }

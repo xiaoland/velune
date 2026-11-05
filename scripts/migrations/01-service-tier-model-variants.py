@@ -140,7 +140,7 @@ def validate_schema(path, value):
     if not isinstance(value, dict):
         raise ValueError(f"{path.name} 不是已知配置结构，原文件未修改")
     if path.name in {"composer-inputs.json", "composer-choices.json", "turn-requests.json"}:
-        allowed = {1, 2} if path.name == "composer-inputs.json" else {1}
+        allowed = {1, 2} if path.name in {"composer-inputs.json", "composer-choices.json"} else {1}
         version = value.get("schemaVersion")
         if type(version) is not int or version not in allowed:
             raise ValueError(f"{path.name} 不是已知 schema，原文件未修改")

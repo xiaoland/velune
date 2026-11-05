@@ -165,7 +165,7 @@ final class ConversationModel: ObservableObject {
         let needsDefault = isNew && choices[runtime] == nil
         do {
             let result = try await client.application(peer, operation: .configurationRead) {
-                (try $0.runtimeModels(runtimeId: runtime), needsDefault ? try $0.composerChoices() : nil)
+                (try $0.runtimeModels(runtimeId: runtime), needsDefault ? try $0.runtimeStartChoice(runtimeId: runtime) : nil)
             }
             guard runtimeID == runtime, !Task.isCancelled else { return }
             runtimeAvailable = true
@@ -173,12 +173,7 @@ final class ConversationModel: ObservableObject {
             if needsDefault, choices[runtime] == nil, sharedTarget?.choices.runtimeOwnerId == nil {
                 restoringSelection = true
                 defer { restoringSelection = false }
-                if let defaults = result.1?.runtimes.first(where: { $0.runtimeId == runtime }) {
-                    switch defaults.newConversation {
-                    case .lastChosen: selection = defaults.lastChosen.model
-                    case .chosen(let choice): selection = choice.model
-                    }
-                } else { selection = nil }
+                selection = result.1?.model
             }
         } catch {
             guard runtimeID == runtime, !Task.isCancelled else { return }

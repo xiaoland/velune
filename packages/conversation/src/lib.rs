@@ -8,6 +8,8 @@ pub mod resources;
 mod runtime_kind;
 pub use runtime_kind::RuntimeKind;
 
+pub mod model_variant;
+
 mod execution;
 pub use execution::*;
 
@@ -146,6 +148,10 @@ pub struct FollowUp {
     /// process; the user may stop them.
     #[serde(default)]
     pub can_stop_sub_agents: bool,
+    /// A running normal conversation offers new messages to its send queue.
+    /// Already dispatched queue requests may also be accepted after it ends.
+    #[serde(default)]
+    pub can_queue: bool,
     /// The runtime takes a message into the running turn.
     pub can_steer: bool,
     /// The stopped or failed context can continue using its runtime's declared strategy.

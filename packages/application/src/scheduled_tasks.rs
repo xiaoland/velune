@@ -246,6 +246,39 @@ impl Store {
             .map_err(db)?;
         Ok(())
     }
+    /// Keep one future invocation behind the invocation already executing. A
+    /// multi-directory invocation can still have waiting slots of its own.
+    pub(crate) fn claim_due(
+        &mut self,
+        task: &ScheduledTask,
+        due: i64,
+        next: Option<i64>,
+    ) -> Result<(), Error> {
+        let runs = self.runs()?;
+        let executing = runs
+            .iter()
+            .filter(|run| {
+                run.task_id == task.id
+                    && matches!(
+                        run.phase,
+                        ScheduledRunPhase::Dispatching | ScheduledRunPhase::Running
+                    )
+            })
+            .map(|run| run.due_at_unix_ms)
+            .collect::<std::collections::BTreeSet<_>>();
+        let queued = runs.iter().any(|run| {
+            run.task_id == task.id
+                && run.phase == ScheduledRunPhase::Waiting
+                && !executing.contains(&run.due_at_unix_ms)
+        });
+        if queued {
+            let mut task = task.clone();
+            task.next_run_at_unix_ms = next;
+            self.put_task(&task)
+        } else {
+            self.claim(task, due, next)
+        }
+    }
     /// Transactionally claim every project's slot and advance the cursor.
     pub(crate) fn claim(
         &mut self,
@@ -375,6 +408,72 @@ mod tests {
         let restored = &store.tasks().unwrap()[0];
         assert_eq!(restored.status, ScheduledTaskStatus::Active);
         assert!(restored.next_run_at_unix_ms.unwrap() > now());
+        drop(store);
+        std::fs::remove_dir_all(home).unwrap();
+    }
+    #[test]
+    fn running_invocation_keeps_one_pending_trigger_across_project_slots() {
+        let home = home();
+        let mut store = Store::open(&home).unwrap();
+        let mut definition = task();
+        definition.target = ScheduledTarget::NewConversation {
+            runtime_id: "synthetic".into(),
+            working_directories: vec!["/synthetic/a".into(), "/synthetic/b".into()],
+            worktree: false,
+        };
+        store.save(definition).unwrap();
+        let task = store.tasks().unwrap().remove(0);
+        store.claim_due(&task, 1000, Some(2000)).unwrap();
+        let mut running = store.runs().unwrap().remove(0);
+        running.phase = ScheduledRunPhase::Running;
+        store.put_run(&running).unwrap();
+        store.claim_due(&task, 2000, Some(3000)).unwrap();
+        assert_eq!(
+            store.runs().unwrap().len(),
+            4,
+            "one future trigger must survive while the previous trigger runs"
+        );
+        store.claim_due(&task, 3000, Some(4000)).unwrap();
+        assert_eq!(
+            store.runs().unwrap().len(),
+            4,
+            "later ticks must not accumulate prompts"
+        );
+        assert_eq!(store.tasks().unwrap()[0].next_run_at_unix_ms, Some(4000));
+        for mut run in store.runs().unwrap() {
+            if run.due_at_unix_ms == 1000 {
+                run.phase = ScheduledRunPhase::Completed;
+                store.put_run(&run).unwrap();
+            }
+        }
+        let mut next_running = store
+            .runs()
+            .unwrap()
+            .into_iter()
+            .find(|run| run.due_at_unix_ms == 2000)
+            .unwrap();
+        next_running.phase = ScheduledRunPhase::Running;
+        store.put_run(&next_running).unwrap();
+        store.claim_due(&task, 4000, Some(5000)).unwrap();
+        assert_eq!(
+            store.runs().unwrap().len(),
+            6,
+            "finishing the first invocation makes room for one new pending trigger"
+        );
+        drop(store);
+        std::fs::remove_dir_all(home).unwrap();
+    }
+    #[test]
+    fn busy_waiting_invocation_does_not_accumulate_future_triggers() {
+        let home = home();
+        let mut store = Store::open(&home).unwrap();
+        store.save(task()).unwrap();
+        let task = store.tasks().unwrap().remove(0);
+        store.claim_due(&task, 1000, Some(2000)).unwrap();
+        store.claim_due(&task, 2000, Some(3000)).unwrap();
+        assert_eq!(store.runs().unwrap().len(), 1);
+        assert_eq!(store.runs().unwrap()[0].due_at_unix_ms, 1000);
+        assert_eq!(store.tasks().unwrap()[0].next_run_at_unix_ms, Some(3000));
         drop(store);
         std::fs::remove_dir_all(home).unwrap();
     }

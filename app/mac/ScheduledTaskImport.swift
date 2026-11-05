@@ -30,7 +30,7 @@ struct ScheduledTaskImport: View {
             HStack {
                 Picker("对应运行时", selection: $runtime) {
                     Text("请选择").tag("")
-                    ForEach(store.runtimeInstances.filter { [RuntimeKind.codex, .codex166].contains($0.typeId) }, id: \.id) { Text($0.name).tag($0.id) }
+                    ForEach(store.runtimeInstances.filter { $0.typeId == .codex166 }, id: \.id) { Text($0.name).tag($0.id) }
                 }
                 ScheduledTimeZonePicker(zone: $zone)
                 Button("预览") { load() }.disabled(model.busy || runtime.isEmpty || directory.isEmpty)
