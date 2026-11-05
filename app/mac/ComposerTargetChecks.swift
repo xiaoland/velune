@@ -166,7 +166,6 @@ import VeluneBindings
     let durableIDs = Set(window.composerDrafts.saved.drafts.map(\.id))
     precondition(window.composerOwner(for: sideTab) == nil && !durableIDs.contains(sideInput.id))
     precondition(device.composerInputs.draft(sideInput.id) == nil)
-    ComposerContext(tab: sideTab, model: sideInput).prepare()
     let native = ModelSelection.native(providerId: "sample", modelId: "sample-native")
     ComposerContext(tab: sideTab, model: sideInput).selectModel(native)
     precondition(ComposerContext(tab: sideTab, model: sideInput).chosenModel == native)
@@ -222,7 +221,8 @@ import VeluneBindings
     retry.restoreFailed("failed Pi turn", attachments: [], revision: cleared)
     retry.restoreSavedDraft(.init(text: "retry", attachments: []))
     precondition(ComposerContext(tab: delayedTab, model: retry).nextTurnRuntimeID == "sample-review")
-    precondition(delayed.composerInputs.targetChoices(for: "sample-2")?.runtimeId == "sample-review")
+    precondition(delayed.composerInputs.targetChoices(for: "sample-2")?.runtimeId == nil
+                 && delayed.composerInputs.targetChoices(for: "sample-2")?.choiceEdited == false)
     retry.restoreSavedDraft(.init(text: "new edit", attachments: []))
     retry.restoreFailed("late failed turn", attachments: [], revision: cleared)
     precondition(retry.submission == "new edit")
@@ -249,42 +249,43 @@ import VeluneBindings
     let owner = first.composerInputs.ownerID!
     let draftID = ConversationStore.draftConversationPrefix + "new-conversation"
     let contentID = first.composerInputs.inputID(for: draftID)!
+    let targetContext = ComposerContextKey.newConversation
+    let targetRevision = first.composerInputs.state!.targets.first { $0.context == targetContext }!.revision
     first.composerInputs.save(contentID, draft: .init(text: "synchronized body", attachments: [attachment]))
-    first.composerInputs.saveTarget("target-pi", choices: .init(runtimeId: "pi", runtimeOwnerId: owner, choices: [], choiceEdited: true))
-    wait { first.composerInputs.state?.targets.contains(where: { $0.context == .conversation(ownerId: owner, conversationId: "target-pi") }) == true && !first.composerInputs.isDirty(contentID) }
+    first.composerInputs.saveTarget(draftID, choices: .init(runtimeId: "pi", runtimeOwnerId: owner, choices: [], choiceEdited: true))
+    wait { first.composerInputs.state?.targets.first(where: { $0.context == targetContext })?.revision == targetRevision + 1 && !first.composerInputs.isDirty(contentID) }
     second.composerInputs.poll(force: true)
-    wait { second.composerInputs.draft(contentID)?.text == "synchronized body" && second.composerInputs.targetChoices(for: "target-pi")?.runtimeId == "pi" }
+    wait { second.composerInputs.draft(contentID)?.text == "synchronized body" && second.composerInputs.targetChoices(for: draftID)?.runtimeId == "pi" }
     precondition(second.composerInputs.draft(contentID)?.attachments.count == 1)
     let contentRevision = first.composerInputs.state!.inputs.first { $0.id == contentID.uuidString.lowercased() }!.revision
-    first.composerInputs.saveTarget("target-pi", choices: .init(runtimeId: "pi", runtimeOwnerId: owner, choices: [.init(ownerId: owner, runtimeId: "pi", choice: .init(model: nil, effort: "high", permissionMode: nil))], choiceEdited: true))
-    wait { first.composerInputs.state?.targets.first(where: { $0.context == .conversation(ownerId: owner, conversationId: "target-pi") })?.revision == 2 }
+    first.composerInputs.saveTarget(draftID, choices: .init(runtimeId: "pi", runtimeOwnerId: owner, choices: [.init(ownerId: owner, runtimeId: "pi", choice: .init(model: nil, effort: "high", permissionMode: nil))], choiceEdited: true))
+    wait { first.composerInputs.state?.targets.first(where: { $0.context == targetContext })?.revision == targetRevision + 2 }
     precondition(first.composerInputs.state!.inputs.first { $0.id == contentID.uuidString.lowercased() }!.revision == contentRevision)
     second.composerInputs.poll(force: true)
-    wait { second.composerInputs.targetChoices(for: "target-pi")?.choices.first?.choice.effort == "high" }
+    wait { second.composerInputs.targetChoices(for: draftID)?.choices.first?.choice.effort == "high" }
     precondition(second.composerInputs.inputID(for: draftID) == contentID)
     note("PASS actual application clients synchronize content+attachment bytes and target choices separately; changing choices leaves content revision and global new input identity unchanged")
-    let localChoices = first.composerInputs.targetChoices(for: "target-pi")!
-    second.composerInputs.saveTarget("target-pi", choices: .init(runtimeId: "pi", runtimeOwnerId: owner, choices: [.init(ownerId: owner, runtimeId: "pi", choice: .init(model: nil, effort: "low", permissionMode: nil))], choiceEdited: true))
-    wait { second.composerInputs.state?.targets.first(where: { $0.context == .conversation(ownerId: owner, conversationId: "target-pi") })?.revision == 3 }
-    first.composerInputs.restoreTarget("target-pi", value: .init(choices: localChoices, revision: 2))
-    wait { first.composerInputs.targetIssue(for: "target-pi")?.contains("重新选择") == true }
+    let localChoices = first.composerInputs.targetChoices(for: draftID)!
+    second.composerInputs.saveTarget(draftID, choices: .init(runtimeId: "pi", runtimeOwnerId: owner, choices: [.init(ownerId: owner, runtimeId: "pi", choice: .init(model: nil, effort: "low", permissionMode: nil))], choiceEdited: true))
+    wait { second.composerInputs.state?.targets.first(where: { $0.context == targetContext })?.revision == targetRevision + 3 }
+    first.composerInputs.restoreTarget(draftID, value: .init(choices: localChoices, revision: targetRevision + 2))
+    wait { first.composerInputs.targetIssue(for: draftID)?.contains("重新选择") == true }
     first.composerInputs.poll(force: true)
-    wait { first.composerInputs.state?.targets.first(where: { $0.context == .conversation(ownerId: owner, conversationId: "target-pi") })?.revision == 3 }
-    precondition(first.composerInputs.targetChoices(for: "target-pi") == localChoices, "后台读取保留冲突选择且不得重基线")
+    wait { first.composerInputs.state?.targets.first(where: { $0.context == targetContext })?.revision == targetRevision + 3 }
+    precondition(first.composerInputs.targetChoices(for: draftID) == localChoices, "后台读取保留冲突选择且不得重基线")
     let conflictStore = ConversationStore(device: first)
-    conflictStore.restoreUnsentConversation(Conversation(id: "target-pi", title: "synthetic target", updatedAtUnixMs: nil, runtimeID: "pi", cwd: nil, canRename: false, canDelete: false))
+    conflictStore.restoreUnsentConversation(Conversation(id: draftID, title: "synthetic target", updatedAtUnixMs: nil, runtimeID: "pi", cwd: nil, canRename: false, canDelete: false))
     let conflictTab = ConversationTab(store: conflictStore, start: {})
     let conflictInput = ComposerModel(id: contentID)
     conflictInput.attach(conflictStore); conflictInput.restoreSavedDraft(first.composerInputs.draft(contentID))
-    ComposerContext(tab: conflictTab, model: conflictInput).prepare()
     wait { ComposerContext(tab: conflictTab, model: conflictInput).nextTurn != nil && ComposerContext(tab: conflictTab, model: conflictInput).nextTurnSettled }
     let reselect = ComposerContext(tab: conflictTab, model: conflictInput)
     precondition(reselect.chosenModel == nil)
     reselect.selectModel(nil) // The same visible value is an explicit choice.
-    wait { first.composerInputs.targetIssue(for: "target-pi") == nil && first.composerInputs.state?.targets.first(where: { $0.context == .conversation(ownerId: owner, conversationId: "target-pi") })?.revision == 4 }
+    wait { first.composerInputs.targetIssue(for: draftID) == nil && first.composerInputs.state?.targets.first(where: { $0.context == targetContext })?.revision == targetRevision + 4 }
     precondition(first.composerInputs.state!.inputs.first { $0.id == contentID.uuidString.lowercased() }!.revision == contentRevision)
     second.composerInputs.poll(force: true)
-    wait { second.composerInputs.targetChoices(for: "target-pi")?.choices.first?.choice.effort == "high" }
+    wait { second.composerInputs.targetChoices(for: draftID)?.choices.first?.choice.effort == "high" }
     conflictStore.close()
     note("PASS real two-client target CAS conflict preserves local choices; background poll does not overwrite/rebase; explicitly reselecting the same model accepts the latest revision and recovers without editing content")
     composerNativeTargetRetryCheck()
@@ -324,7 +325,6 @@ import VeluneBindings
     wait { store.loadedConversationID == pi && !store.isLoading }
     wait {
         let context = ComposerContext(tab: tab, model: input)
-        context.prepare()
         return context.nextTurnRuntimeID == "pi" && context.nextTurnSettled && context.inputIssue == nil && store.canSend
     }
     input.restore("retry", attachments: [])
@@ -334,7 +334,8 @@ import VeluneBindings
     context.send()
     wait { store.acceptedSubmissions > before && store.canSend && !store.isGenerating }
     precondition(ComposerContext(tab: tab, model: input).nextTurnRuntimeID == "pi")
-    precondition(device.composerInputs.targetChoices(for: pi)?.runtimeId == "pi")
-    FileHandle.standardError.write(Data("PASS native Codex → delayed Pi open → existing 429 failure → typed retry dispatched to Pi and completed; target choices remain Pi\n".utf8))
+    precondition(device.composerInputs.targetChoices(for: pi)?.runtimeId == nil
+                 && device.composerInputs.targetChoices(for: pi)?.choiceEdited == false)
+    FileHandle.standardError.write(Data("PASS native Codex → delayed Pi open → existing 429 failure → typed retry dispatched to Pi and completed; raw intent inherits and effective target remains Pi\n".utf8))
     store.close()
 }

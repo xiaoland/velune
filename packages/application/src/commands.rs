@@ -65,6 +65,35 @@ impl Application {
             Command::ReadComposerOwner => {
                 Response::ReadComposerOwner(application.composer.owner_id())
             }
+            Command::ReadComposerTarget { context } => {
+                Response::ReadComposerTarget(application.composer.target(&context))
+            }
+            Command::ReadComposerTargetIdentity { request } => {
+                let owner_id = application.composer.owner_id();
+                let focus = request
+                    .conversation_id
+                    .as_ref()
+                    .map(|id| Focus::Conversation(id.clone()))
+                    .unwrap_or(Focus::None);
+                Response::ReadComposerTargetIdentity(application.runtime.serve(
+                    focus,
+                    Login::Allows,
+                    |core| core.composer_target_identity(request, owner_id),
+                )?)
+            }
+            Command::ReadComposerTargetBasis { request, choices } => {
+                let owner_id = application.composer.owner_id();
+                let focus = request
+                    .conversation_id
+                    .as_ref()
+                    .map(|id| Focus::Conversation(id.clone()))
+                    .unwrap_or(Focus::None);
+                Response::ReadComposerTargetBasis(application.runtime.serve(
+                    focus,
+                    Login::Allows,
+                    |core| core.composer_target_basis(request, owner_id, choices),
+                )?)
+            }
             Command::ManageComposerInputs { operation } => {
                 Response::ManageComposerInputs(application.composer.update(operation)?)
             }

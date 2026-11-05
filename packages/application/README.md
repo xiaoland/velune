@@ -187,6 +187,10 @@ Claude Code 的 SDK 中断标记复用原输入的 `promptId`，且没有输入�
 
 停止／失败的原因保留到下一轮被接纳；空队列收到迟到的 Add 时据此暂停，防止停止刚完成就被排队请求重新启动。已有非空队列保留用户的暂停／恢复决定，删除最后一项不会清除本轮停止原因。
 
+## Composer 目标准备
+
+application 提供目标的规范身份、当前会话默认依据与 NextTurn 解析输入，bindings facade 组合执行端及明确输入保存端的完整准备。未手选项作为空意图继承默认，`EnsureTarget`／`SaveTarget` 统一规范化该语义，手选值逐字段覆盖继承值。客户端通过 `PreparedComposerTarget` 的实际记录和共享 resolver 消费结果，原生模型目录仍按原加载策略取得。平台继续负责导航及请求观察寿命，跨端规则见[目标准备用例](../../docs/design/composer-state.md#目标准备用例)。
+
 ## Composer 额度投影
 
 `composer_quota(context, refresh)` 接受明确的下一轮运行时、模型选择和可选会话引用，返回 `ComposerQuotaEntry`。application 展开全部路由成员、按提供商去重并合并模型范围，筛选适用窗口；原生与默认选择从运行时来源解析边界取得登录观测。结果只携带来源 ID、名称、来源语义、中性观测及适用上限，不把完整认证或配置对象交给展示层。

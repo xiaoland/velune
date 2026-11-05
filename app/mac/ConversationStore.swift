@@ -3,10 +3,9 @@ import Foundation
 import AppKit
 import VeluneBindings
 
-/// One conversation tab, or a window's list: the conversation it shows, its
-/// composer and next turn, navigation, search and selection. What is the
-/// device's (configuration, the list, login, problems, drafts, kept choices)
-/// it reads from `device`.
+/// One tab's execution target and its observed projection. This owns target
+/// preparation, refresh and request lifetime; windows pair it with independent
+/// input content. Device configuration and shared input state come from `device`.
 @MainActor
 final class ConversationStore: ObservableObject {
     enum ComposerEvent { case conversation(String), newConversation, creationTargetChanged, created(previous: String, id: String, runtimeID: String, input: ComposerModel) }
@@ -37,10 +36,17 @@ final class ConversationStore: ObservableObject {
     /// The conversation is being opened, as loading shows.
     var isOpeningConversation: Bool { pendingConversationID != nil || reachingConversationID != nil || (isSideChat && snapshot == nil && openingFailure == nil) }
     @Published private(set) var projectionRuntimeID: String?
-    @Published private(set) var nextTurnRuntimeID: String? { didSet { if oldValue != nextTurnRuntimeID { loadModelCatalog() } } }
-    /// The next turn's options and effective choice, as the core resolves
-    /// them from the kept choices and the runtime's catalog.
+    @Published private(set) var nextTurnRuntimeID: String? { didSet { if isSideChat, oldValue != nextTurnRuntimeID { loadModelCatalog() } } }
+    /// The shared target facade's effective choice, resolved again with local
+    /// pending intent and catalog arrivals through the same shared rules.
     @Published private(set) var nextTurn: NextTurn?
+    @Published private(set) var composerTargetFailure: String?
+    private var preparedComposerTarget: PreparedComposerTarget?
+    private var composerTargetRequestID: UUID?
+    private var composerTargetNeedsRefresh = false
+    private var composerTargetClosed = false
+    /// An explicit runtime action may arrive before the first authority read.
+    private var pendingComposerRuntime: (target: ComposerTargetRequest, runtimeID: String)?
     /// Model catalogs by runtime instance, read from the runtime and Velune's
     /// gateway; configuration changes discard them.
     @Published private(set) var modelCatalogs: [String: RuntimeModelCatalog] = [:]
@@ -58,7 +64,9 @@ final class ConversationStore: ObservableObject {
         let failure: String?
     }
     @Published private var composerQuotaResults: [QuotaResult] = []
-    @Published private(set) var isLoading = false
+    @Published private(set) var isLoading = false {
+        didSet { if oldValue && !isLoading { refreshNextTurn() } }
+    }
     @Published private(set) var activity: TranscriptActivity?
     @Published private var snapshot: ConversationSnapshot?
     @Published private var executionStarting = false
@@ -83,9 +91,6 @@ final class ConversationStore: ObservableObject {
     private var payloadRequests: Set<PayloadKey> = []
     /// Complete messages read on demand, by message identifier.
     private var loadedPayloads: [String: DeliveredMessage] = [:]
-    private var hasInitializedNextTurnIntent = false
-    /// The conversation whose kept choices the next turn follows.
-    private var intentConversationID: String?
     static let draftConversationPrefix = "draft:"
 
     init(device: DeviceStore, sideChat: SideChatTarget? = nil) {
@@ -111,6 +116,9 @@ final class ConversationStore: ObservableObject {
                 self.deviceUpdateScheduled = false
                 self.deviceChanged()
             }
+        }.store(in: &subscriptions)
+        device.composerInputs.changes.sink { [weak self] in
+            self?.composerInputStateChanged()
         }.store(in: &subscriptions)
         device.conversationRenamed.sink { [weak self] change in
             guard let self, snapshot?.conversation.id == change.id else { return }
@@ -146,15 +154,15 @@ final class ConversationStore: ObservableObject {
             if searchResults != nil { refreshSearch() }
             let selected = selectedConversationIDs.filter { conversation(id: $0) != nil }
             if selected != selectedConversationIDs { selectedConversationIDs = selected }
-            if !hasInitializedNextTurnIntent, nextTurnRuntimeID != device.selectedRuntimeInstanceID { nextTurnRuntimeID = device.selectedRuntimeInstanceID }
         }
-        if device.configurationRevision != seenConfigurationRevision {
-            seenConfigurationRevision = device.configurationRevision
-            invalidateModelCatalogs()
-        }
-        takeUpComposerChoices()
+        let configurationChanged = device.configurationRevision != seenConfigurationRevision
+        let defaultsChanged = device.composerChoicesRevision != seenComposerChoicesRevision
+        seenConfigurationRevision = device.configurationRevision
+        seenComposerChoicesRevision = device.composerChoicesRevision
+        if configurationChanged { modelCatalogs.removeAll(); modelCatalogRequests.removeAll() }
         noteSeen()
-        reconcileNextTurnIntent()
+        if configurationChanged || defaultsChanged { requestComposerTarget(refreshFacts: true) }
+        else { refreshNextTurn() }
     }
 
     /// Some conversation executes, in any window. Configuration its execution
@@ -248,7 +256,7 @@ final class ConversationStore: ObservableObject {
     var currentPermissionMode: PermissionMode? { nextTurn?.currentPermissionMode }
     var currentEffort: String? { nextTurn?.currentEffort }
     /// Side chats keep their target choices for the lifetime of this temporary store.
-    /// Ordinary conversation choices are written through ComposerContext's shared target.
+    /// Ordinary target commands below persist raw intent through the shared client.
     func changeSideChatChoice(_ change: TurnChoiceChange) {
         guard isSideChat, let nextTurn,
               let update = VeluneBindings.changeNextTurn(next: nextTurn, runtimeChoices: device.runtimeComposerChoices[nextTurn.runtimeId], change: change) else { return }
@@ -258,17 +266,8 @@ final class ConversationStore: ObservableObject {
     }
     func selectSideChatRuntime(_ id: String) {
         guard isSideChat, !isShuttingDown, device.enabledRuntimeInstances.contains(where: { $0.id == id }), device.hasSideChats(id) else { return }
-        hasInitializedNextTurnIntent = true
         temporaryChoices.runtimeID = id
         if nextTurnRuntimeID == id { refreshNextTurn() } else { nextTurnRuntimeID = id }
-    }
-    /// Once the kept choices are read, the open conversation comes back with its own.
-    private func takeUpComposerChoices() {
-        guard device.composerChoicesRevision != seenComposerChoicesRevision else { return }
-        seenComposerChoicesRevision = device.composerChoicesRevision
-        guard let snapshot else { return }
-        intentConversationID = nil
-        restoreNextTurnIntent(for: snapshot)
     }
     /// Reads the next-turn runtime's catalog again, e.g. after its native
     /// configuration or session changed outside Velune's settings.
@@ -310,58 +309,206 @@ final class ConversationStore: ObservableObject {
             }
         }
     }
-    /// Resolves the next turn again from the kept choices, the open
-    /// conversation and the runtime's catalog.
+    /// A target's execution projection is owned by this Store, independently
+    /// of which window input or editor currently addresses it.
+    private var composerTargetRequest: ComposerTargetRequest? {
+        guard !isSideChat, !composerTargetClosed, !isShuttingDown, !isLoading,
+              !isOpeningConversation, let snapshot,
+              selectedConversationID == nil || selectedConversationID == snapshot.conversation.id else { return nil }
+        let unsent = isDraft || snapshot.conversation.id.hasPrefix(Self.draftConversationPrefix)
+        return ComposerTargetRequest(runtimeId: unsent ? snapshot.contextRuntimeID : snapshot.conversation.runtimeID,
+                                     conversationId: unsent ? nil : snapshot.conversation.id)
+    }
+    private var composerTargetID: String? { selectedConversationID ?? loadedConversationID }
+    var composerTargetChoices: ComposerTargetChoices? {
+        guard !isSideChat else { return nil }
+        return composerTargetID.flatMap { device.composerInputs.targetChoices(for: $0) }
+    }
+    var composerTargetIssue: String? {
+        guard !isSideChat else { return nil }
+        guard let request = composerTargetRequest else { return "正在打开目标会话" }
+        if composerTargetRequestID != nil { return "正在刷新目标执行配置" }
+        if let failure = composerTargetFailure { return failure }
+        guard preparedComposerTarget?.request == request, nextTurn != nil else { return "正在准备目标执行配置" }
+        return nil
+    }
+    private func composerInputStateChanged() {
+        if let pending = pendingComposerRuntime {
+            if pending.target != composerTargetRequest { pendingComposerRuntime = nil }
+            else if device.composerInputs.ownerID != nil {
+                pendingComposerRuntime = nil
+                selectComposerRuntime(pending.runtimeID)
+            }
+        }
+        refreshNextTurn()
+    }
+    func selectComposerRuntime(_ id: String) {
+        guard !isSideChat, let request = composerTargetRequest,
+              device.enabledRuntimeInstances.contains(where: { $0.id == id }) else { return }
+        guard let owner = device.composerInputs.ownerID, let targetID = composerTargetID else {
+            pendingComposerRuntime = (request, id)
+            device.composerInputs.poll(force: true)
+            return
+        }
+        var choices = normalizeComposerTargetChoices(choices: composerTargetChoices ?? ComposerTargetChoices(runtimeId: nil, runtimeOwnerId: nil, choices: [], choiceEdited: false))
+        choices.runtimeId = id; choices.runtimeOwnerId = owner; choices.choiceEdited = true
+        device.composerInputs.saveTarget(targetID, choices: choices, userEdit: true)
+        refreshNextTurn()
+    }
+    func changeComposerChoice(_ change: TurnChoiceChange) {
+        if isSideChat { changeSideChatChoice(change); return }
+        guard let nextTurn, let targetID = composerTargetID, let owner = device.composerInputs.ownerID,
+              composerTargetRequest != nil else { return }
+        let raw = composerTargetChoices ?? ComposerTargetChoices(runtimeId: nil, runtimeOwnerId: nil, choices: [], choiceEdited: false)
+        guard raw.runtimeOwnerId == nil || raw.runtimeOwnerId == owner,
+              let update = changeComposerTarget(next: nextTurn, targetChoices: raw, ownerId: owner,
+                                                runtimeChoices: device.runtimeComposerChoices[nextTurn.runtimeId], change: change) else { return }
+        if let defaults = update.runtimeChoices { device.setRuntimeComposerChoices(defaults) }
+        device.composerInputs.saveTarget(targetID, choices: update.choices, userEdit: true)
+        refreshNextTurn()
+    }
+    func captureComposerTarget(_ inputID: UUID) {
+        guard isUnsentConversation else { return }
+        let raw = normalizeComposerTargetChoices(choices: composerTargetChoices ?? ComposerTargetChoices(runtimeId: nil, runtimeOwnerId: nil, choices: [], choiceEdited: false))
+        device.composerInputs.captureTarget(inputID, choices: raw)
+    }
     private func refreshNextTurn() {
+        if isSideChat { refreshSideChatNextTurn(); return }
+        guard let request = composerTargetRequest else {
+            if nextTurn != nil { nextTurn = nil }
+            return
+        }
+        guard let prepared = preparedComposerTarget, prepared.request == request,
+              let resolved = resolveComposerTarget(prepared: prepared, choices: composerTargetChoices,
+                                                   catalog: modelCatalogs[prepared.basis.runtimeId]?.models) else {
+            if nextTurn != nil { nextTurn = nil }
+            requestComposerTarget()
+            return
+        }
+        if nextTurn != resolved { nextTurn = resolved }
+        if nextTurnRuntimeID != resolved.runtimeId { nextTurnRuntimeID = resolved.runtimeId }
+        if modelCatalogs[resolved.runtimeId] == nil, device.enabledRuntimeInstances.contains(where: { $0.id == resolved.runtimeId }) {
+            loadModelCatalog(runtimeID: resolved.runtimeId)
+        }
+    }
+    private func requestComposerTarget(refreshFacts: Bool = false) {
+        guard !isSideChat, let request = composerTargetRequest else { return }
+        if composerTargetRequestID != nil {
+            if refreshFacts { composerTargetNeedsRefresh = true }
+            return
+        }
+        if isPreview { preparePreviewComposerTarget(request); return }
+        let client = device.composerInputs
+        guard client.state != nil, client.ownerID != nil else { client.poll(); return }
+        guard let transport, let targetID = composerTargetID else { return }
+        let requestID = UUID(), currentGeneration = generation
+        let configurationRevision = device.configurationRevision
+        let defaultsRevision = device.composerChoicesRevision
+        let overlay = client.pendingTarget(for: targetID)?.choices
+        let requestedChoices = normalizeComposerTargetChoices(choices: client.targetChoices(for: targetID)
+            ?? ComposerTargetChoices(runtimeId: nil, runtimeOwnerId: nil, choices: [], choiceEdited: false))
+        composerTargetRequestID = requestID
+        composerTargetNeedsRefresh = false
+        objectWillChange.send()
+        performOnQueue { [weak self] in
+            let result = Result { try transport.prepareComposerTarget(request, overlayChoices: overlay) }
+            DispatchQueue.main.async {
+                guard let self, self.composerTargetRequestID == requestID else { return }
+                self.composerTargetRequestID = nil
+                let refreshAgain = self.composerTargetNeedsRefresh
+                self.composerTargetNeedsRefresh = false
+                guard self.generation == currentGeneration, self.composerTargetRequest == request,
+                      self.device.configurationRevision == configurationRevision,
+                      self.device.composerChoicesRevision == defaultsRevision else {
+                    self.requestComposerTarget()
+                    return
+                }
+                let choicesChanged = requestedChoices != normalizeComposerTargetChoices(choices: client.targetChoices(for: targetID)
+                    ?? ComposerTargetChoices(runtimeId: nil, runtimeOwnerId: nil, choices: [], choiceEdited: false))
+                switch result {
+                case .success(let prepared):
+                    guard prepared.request == request, prepared.ownerId == client.ownerID,
+                          prepared.context == client.context(targetID) else {
+                        self.composerTargetFailure = "执行端身份已变化，请重新连接设备"
+                        self.objectWillChange.send()
+                        return
+                    }
+                    self.preparedComposerTarget = prepared
+                    self.composerTargetFailure = nil
+                    client.observePreparedTarget(prepared)
+                    self.refreshNextTurn()
+                case .failure(let error):
+                    let detail = AppProblem.failure(error, source: "准备输入目标").detail
+                    if self.composerTargetFailure != detail {
+                        self.composerTargetFailure = detail
+                        self.device.recordProblem(error, source: "准备输入目标")
+                    }
+                }
+                self.objectWillChange.send()
+                if refreshAgain || choicesChanged, self.composerTargetRequestID == nil { self.requestComposerTarget(refreshFacts: true) }
+            }
+        }
+    }
+    /// Preview supplies synthetic execution facts to the same shared resolver;
+    /// it does not turn observed defaults into explicit user choices.
+    private func preparePreviewComposerTarget(_ request: ComposerTargetRequest) {
+        guard let owner = device.composerInputs.ownerID, let targetID = composerTargetID,
+              let context = device.composerInputs.context(targetID), let snapshot else { return }
+        let raw = normalizeComposerTargetChoices(choices: composerTargetChoices ?? ComposerTargetChoices(runtimeId: nil, runtimeOwnerId: nil, choices: [], choiceEdited: false))
+        guard raw.runtimeOwnerId == nil || raw.runtimeOwnerId == owner else {
+            composerTargetFailure = "所选运行时位于另一设备，输入已保留"
+            nextTurn = nil
+            return
+        }
+        let runtimeID = raw.runtimeId ?? snapshot.contextRuntimeID
+        guard device.enabledRuntimeInstances.contains(where: { $0.id == runtimeID }) else {
+            composerTargetFailure = "所选运行时在此设备不可用"
+            nextTurn = nil
+            return
+        }
+        guard let policy = try? device.newConversationChoice(for: runtimeID) else { nextTurn = nil; return }
+        let typeID = device.runtimeInstances.first { $0.id == runtimeID }?.typeId
+        let basis = NextTurnInput(runtimeId: runtimeID, runtimeType: device.runtimeTypes.first { $0.id == typeID },
+                                 providers: device.gateway.providers, catalog: nil,
+                                 turnSettings: request.conversationId == nil ? [] : snapshot.transcriptTurns.compactMap(\.settings),
+                                 conversationRuntimeId: snapshot.conversation.runtimeID, modelRecordKey: snapshot.modelRecordKey,
+                                 kept: nil, runtimeChoices: device.runtimeComposerChoices[runtimeID], newConversation: policy)
+        let target = device.composerInputs.targetRecord(for: targetID)
+            ?? ComposerTarget(context: context, revision: 1, choices: ComposerTargetChoices(runtimeId: nil, runtimeOwnerId: nil, choices: [], choiceEdited: false))
+        let prepared = PreparedComposerTarget(request: request, ownerId: owner, context: context, target: target,
+                                              defaultRuntimeId: snapshot.contextRuntimeID, basis: basis, nextTurn: resolveNextTurn(input: basis))
+        preparedComposerTarget = prepared
+        device.composerInputs.observePreparedTarget(prepared)
+        composerTargetFailure = nil
+        refreshNextTurn()
+    }
+    private func refreshSideChatNextTurn() {
         guard let runtimeID = nextTurnRuntimeID else { if nextTurn != nil { nextTurn = nil }; return }
         guard let newConversation = try? device.newConversationChoice(for: runtimeID) else { nextTurn = nil; return }
         let typeID = device.runtimeInstances.first { $0.id == runtimeID }?.typeId
         let resolved = resolveNextTurn(input: NextTurnInput(
             runtimeId: runtimeID, runtimeType: device.runtimeTypes.first { $0.id == typeID }, providers: device.gateway.providers,
-            catalog: modelCatalogs[runtimeID]?.models, turns: isDraft ? [] : snapshot?.transcriptTurns ?? [],
+            catalog: modelCatalogs[runtimeID]?.models, turnSettings: snapshot?.transcriptTurns.compactMap(\.settings) ?? [],
             conversationRuntimeId: snapshot?.conversation.runtimeID, modelRecordKey: snapshot?.modelRecordKey,
-            kept: isSideChat ? temporaryChoices.choices[runtimeID] : intentConversationID.flatMap { device.choices(of: $0)?.choices[runtimeID] },
-            runtimeChoices: device.runtimeComposerChoices[runtimeID], newConversation: newConversation))
+            kept: temporaryChoices.choices[runtimeID], runtimeChoices: device.runtimeComposerChoices[runtimeID], newConversation: newConversation))
         if nextTurn != resolved { nextTurn = resolved }
     }
-    /// The core resolves independent intent against this target's facts; no mode is installed on the store.
+    /// Message editing addresses the current native context rather than the
+    /// composer's selected execution target. Its existing caller owns that path.
     func resolve(kept: ConversationChoices) -> NextTurn? {
-        guard let runtimeID = kept.runtimeID ?? nextTurnRuntimeID else { return nil }
-        guard let newConversation = try? device.newConversationChoice(for: runtimeID) else { return nil }
+        guard let runtimeID = kept.runtimeID ?? nextTurnRuntimeID,
+              let policy = try? device.newConversationChoice(for: runtimeID) else { return nil }
         let typeID = device.runtimeInstances.first { $0.id == runtimeID }?.typeId
-        return VeluneBindings.resolveNextTurn(input: NextTurnInput(
+        return resolveNextTurn(input: NextTurnInput(
             runtimeId: runtimeID, runtimeType: device.runtimeTypes.first { $0.id == typeID }, providers: device.gateway.providers,
-            catalog: modelCatalogs[runtimeID]?.models, turns: isDraft ? [] : snapshot?.transcriptTurns ?? [],
+            catalog: modelCatalogs[runtimeID]?.models, turnSettings: isDraft ? [] : snapshot?.transcriptTurns.compactMap(\.settings) ?? [],
             conversationRuntimeId: snapshot?.conversation.runtimeID, modelRecordKey: snapshot?.modelRecordKey,
-            kept: kept.choices[runtimeID], runtimeChoices: device.runtimeComposerChoices[runtimeID], newConversation: newConversation))
+            kept: kept.choices[runtimeID], runtimeChoices: device.runtimeComposerChoices[runtimeID], newConversation: policy))
     }
     var keptComposerChoices: ConversationChoices {
         if isSideChat { return temporaryChoices }
-        return intentConversationID.flatMap { device.choices(of: $0) } ?? ConversationChoices()
-    }
-    /// A conversation comes back on its current runtime (one not sent yet on
-    /// the runtime chosen for it), with that runtime's choices in it.
-    private func restoreNextTurnIntent(for value: ConversationSnapshot) {
-        guard !isSideChat else { return }
-        guard value.conversation.id != intentConversationID else { return }
-        intentConversationID = value.conversation.id
-        let kept = isDraft ? device.choices(of: value.conversation.id)?.runtimeID : nil
-        let runtimeID = [kept, value.contextRuntimeID].compactMap { $0 }.first { id in device.enabledRuntimeInstances.contains { $0.id == id } }
-        if runtimeID != nil { hasInitializedNextTurnIntent = true }
-        if let id = runtimeID, id != nextTurnRuntimeID { nextTurnRuntimeID = id } else { loadModelCatalog() }
-    }
-    private func reconcileNextTurnIntent() {
-        guard !isSideChat else { return }
-        let enabled = device.enabledRuntimeInstances
-        if !hasInitializedNextTurnIntent {
-            let id = enabled.first(where: { $0.id == nextTurnRuntimeID })?.id ?? enabled.first?.id
-            if nextTurnRuntimeID != id { nextTurnRuntimeID = id }
-            // A tab can see the configuration before it has loaded; it chooses once there is a runtime.
-            hasInitializedNextTurnIntent = nextTurnRuntimeID != nil
-        } else if let nextTurnRuntimeID, !enabled.contains(where: { $0.id == nextTurnRuntimeID }) {
-            self.nextTurnRuntimeID = nil
-        }
-        refreshNextTurn()
+        guard let raw = composerTargetChoices, let owner = device.composerInputs.ownerID else { return ConversationChoices() }
+        return ConversationChoices(runtimeID: raw.runtimeId, choices: Dictionary(uniqueKeysWithValues: raw.choices.filter { $0.ownerId == owner }.map { ($0.runtimeId, $0.choice) }))
     }
     /// Where the open conversation's files are: its runtime's machine.
     var loadedConversationLocation: RuntimeTransport { device.location(of: snapshot?.conversation.runtimeID) }
@@ -436,7 +583,7 @@ final class ConversationStore: ObservableObject {
     /// else the list's first conversation, or an unsent one when asked for
     /// (`newConversation`) or when the list is empty.
     func start(loadFirstConversation: Bool = true, newConversation: Bool = false, opening conversationID: String? = nil) {
-        guard !started else { return }; started = true
+        guard !started else { return }; started = true; composerTargetClosed = false
         if let target = sideChatContext, let transport, let lease = sideChatLease {
             nextTurnRuntimeID = target.runtimeID
             nextTurn = target.nextTurn
@@ -480,12 +627,15 @@ final class ConversationStore: ObservableObject {
         }
     }
     /// The tab closes: it stops following its conversation.
-    func close() { started = false; abandonLinkedConversationLookup(); if isSideChat { generation += 1 }; subscriptions.removeAll(); timer?.invalidate(); timer = nil; sideChatLease?.release() }
+    func close() { started = false; composerTargetClosed = true; composerTargetRequestID = nil; pendingComposerRuntime = nil; abandonLinkedConversationLookup(); if isSideChat { generation += 1 }; subscriptions.removeAll(); timer?.invalidate(); timer = nil; sideChatLease?.release() }
     /// Each tab follows the conversation it shows; the device follows the rest.
     private func schedulePolling() {
         timer?.invalidate()
         timer = Timer.scheduledTimer(withTimeInterval: 0.6, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.poll() }
+            Task { @MainActor in
+                if self?.composerTargetFailure != nil { self?.requestComposerTarget() }
+                self?.poll()
+            }
         }
     }
     func noteFocused() {
@@ -693,7 +843,7 @@ final class ConversationStore: ObservableObject {
     }
     private func finishConversationLoading() {
         pendingConversationID = nil
-        if !isShuttingDown, deferredSelection == nil { noteSeen(); loadModelCatalog() }
+        if !isShuttingDown, deferredSelection == nil { noteSeen(); requestComposerTarget(refreshFacts: true) }
     }
 
     // MARK: - Managing conversations
@@ -1173,10 +1323,14 @@ final class ConversationStore: ObservableObject {
 
     // MARK: - Projection
 
-    private func resetProjection() { composerRequest = nil; stopRequested = false; executionStarting = false; intentConversationID = nil; loadedPayloads.removeAll(); isDraft = false; generation += 1; snapshot = nil; projectionRuntimeID = nil; selectedConversationID = nil; pendingConversationID = nil; abandonLinkedConversationLookup(); transcript.reset(); outgoing.reset(); activity = nil; sessionOptions = nil; sessionOptionsKey = nil }
+    private func resetProjection() { composerRequest = nil; stopRequested = false; executionStarting = false; preparedComposerTarget = nil; composerTargetRequestID = nil; nextTurn = nil; nextTurnRuntimeID = nil; loadedPayloads.removeAll(); isDraft = false; generation += 1; snapshot = nil; projectionRuntimeID = nil; selectedConversationID = nil; pendingConversationID = nil; abandonLinkedConversationLookup(); transcript.reset(); outgoing.reset(); activity = nil; sessionOptions = nil; sessionOptionsKey = nil }
     private func apply(_ value: ConversationSnapshot?, preserveSelection: Bool = false) {
         guard var value else { return }
         let conversationChanged = value.conversation.id != snapshot?.conversation.id
+        let targetFactsChanged = conversationChanged
+            || value.contextRuntimeID != snapshot?.contextRuntimeID
+            || value.modelRecordKey != snapshot?.modelRecordKey
+            || value.transcriptTurns.compactMap(\.settings) != snapshot?.transcriptTurns.compactMap(\.settings)
         if conversationChanged { creationFailure = nil }
         if value.conversation.id != snapshot?.conversation.id || (value.runState != .running && value.runState != .stopping) { stopRequested = false }
         if value.conversation.id != snapshot?.conversation.id || value.contextRuntimeID != snapshot?.contextRuntimeID { loadedPayloads.removeAll() }
@@ -1185,7 +1339,11 @@ final class ConversationStore: ObservableObject {
         guard snapshot != value else { return }
         snapshot = value; projectionRuntimeID = value.contextRuntimeID; selectedConversationID = value.conversation.id
         if !isSideChat && !isDraft { device.rememberConversationTitle(value.conversation) }
-        restoreNextTurnIntent(for: value); refreshNextTurn()
+        if isSideChat {
+            refreshSideChatNextTurn()
+            if let runtime = nextTurnRuntimeID, modelCatalogs[runtime] == nil { loadModelCatalog(runtimeID: runtime) }
+        } else if targetFactsChanged { requestComposerTarget(refreshFacts: true) }
+        else { refreshNextTurn() }
         if !preserveSelection && conversationChanged && selectedConversationIDs.count <= 1 { selectedConversationIDs = [value.conversation.id] }
         // A fork held while a turn ran goes by itself once the turn ends.
         if conversationChanged { heldFork = nil; heldEditFork = nil; heldForkNotice = nil }

@@ -90,7 +90,6 @@ import VeluneBindings
     let input = workspace.composer(for: workspace.focused)
     let beforeSelection = ModelSelection.managed(modelRecordKey: "sample-model")
     var target = ComposerContext(tab: workspace.focused, model: input)
-    target.prepare()
     target.selectModel(beforeSelection)
     target = ComposerContext(tab: workspace.focused, model: input)
     let beforeRequest = target.composerQuotaRequest

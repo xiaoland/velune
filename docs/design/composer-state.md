@@ -24,6 +24,16 @@
 
 这个边界也约束迟到结果：从Codex打开Pi尚未完成时，旧画面的配置不能初始化Pi；首次创建尚未返回时，新建页后来选择的模型不能改写已提交会话。共享层负责各自修订与提交身份，窗口负责导航，运行时负责已开始执行的配置快照。侧聊继续使用其专属会话 store 的执行选择与能力限制。其临时输入随侧聊 Tab 存活，移动到 sheet 或分屏不会改变寿命，关闭后结束；它不注册共享输入、关联或目标配置，也不借用普通会话的持久 InputID。平台编辑模型只拥有一份正文、附件、修订和撤销状态，导航通过选择另一个模型实现；模型不再根据当前会话自行加载或写入正文。普通输入只有共享目录这一条持久写入通道。
 
+## 目标准备用例
+
+共享记录保存用户明确意图。未手选的运行时、模型、推理与权限继续沿用当前会话或运行时默认，手选后才固定。选择某一字段只修改该字段，解析后的其他有效值不随同写成明确选择。当前轮使用提交时捕获的有效配置。
+
+`VeluneApplication.prepare_composer_target` 是普通输入目标的完整准备入口。请求说明读取来源运行时及会话，空会话表示唯一新建目标。application 确定规范目标身份、默认依据与解析规则，bindings 在既有 execution／composer authority 边界组合读取和初始化，返回执行 owner、实际保存记录及 revision、核心解析依据和有效 NextTurn。
+
+首次记录采用空明确意图，已有记录优先。执行端与保存端可以分离，结果以保存端实际返回的记录为准。初始化已提交而后续解析失败时，记录保留，下一次读取继续；重试复用幂等 ensure 和既有 CAS。准备过程复用会话事实，原生目录按既有缓存和加载寿命到达后，用共享 `resolve_composer_target` 重解。
+
+平台会话模型拥有准备请求和观察寿命，按目标身份拒收迟到结果。本地未同步明确选择作为只读 overlay 参与解析，保存仍使用原修订基线。`change_composer_target` 从 raw intent 更新被选择的字段。窗口拥有内容与目标的配对，视图、菜单及补全消费投影并表达操作，读取资格不承担准备或编辑器绑定。正文恢复与目标准备分别推进，目标失效时正文继续可编辑。
+
 ## 共享存储与修订
 
 application 在 `ClientState` 之外持有 `VELUNE_HOME/composer-inputs.json`（schema 2）。`inputs` 保存正文／附件和内容 revision；`bindings` 保存恢复关联及其 revision；`targets` 保存 ContextKey、选择及独立 revision。内容、关联与目标配置分别 CAS，目录 revision 用于条件读取；编辑正文不会覆盖刚在另一端改变的模型。旧正文／会话选择 API 分别桥接对应记录。实例的新会话策略归 `generic-config.json` 的 `settings.newConversation`，由 typed codec 与执行环境、ACP launch 一次提交。`composer-choices.json`（schema 2）只管理带 Adapter Type 的 `lastChosen`，不成为目标选择的另一份权威存储；类型不匹配的记录不参与默认。改变新会话策略不使已准备的执行或原生历史失效。
@@ -53,8 +63,10 @@ application 在 `ClientState` 之外持有 `VELUNE_HOME/composer-inputs.json`（
 退出使用该 HOME 的 Velune 后，按[手动迁移规则](../development/migrations.md)预览并执行：
 
 ```sh
+python3 scripts/migrations/target-intent.py --home /absolute/VELUNE_HOME
 python3 scripts/run-migrations.py --home /absolute/VELUNE_HOME
-python3 scripts/run-migrations.py --home /absolute/VELUNE_HOME --apply
 ```
 
 脚本获取运行时排他锁，保留原数据并幂等；缺失附件保留引用并报告。各平台窗口缓存中的旧选择需显式接入目标记录，不能用迟到旧缓存重写新的共享目录。真实 HOME 的迁移是否执行由任务包单独记录，合成验证不代表已迁移用户数据。
+
+旧 `choiceEdited=false` 记录可能包含平台自动固化的值。显式 `target-intent.py` 迁移把它们归为空意图，推进修改记录的修订并完整备份，同时移出平台缓存中的自动初始化待写项。`choiceEdited=true` 保留，历史上被顺带固定的字段无法可靠反推。

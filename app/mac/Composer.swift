@@ -91,7 +91,6 @@ struct SavedComposerDraft: Codable, Equatable {
 
     func attach(_ store: ConversationStore) {
         self.store = store
-        updateCompletion()
     }
 
     /// Adds regular files; folders and files already attached are skipped.
@@ -263,6 +262,9 @@ struct ComposerEditor: NSViewRepresentable {
     var steer: () -> Void = {}
     /// Added to the text's context menu: the composer's places.
     var placeMenu: () -> NSMenuItem? = { nil }
+    /// The displayed editor supplies its target only at editing/action edges.
+    var bindTarget: () -> Void = {}
+    var focused: () -> Void = {}
 
     func makeCoordinator() -> Coordinator { Coordinator(model: model) }
 
@@ -277,7 +279,9 @@ struct ComposerEditor: NSViewRepresentable {
         scroll.documentView = view
         context.coordinator.view = view
         context.coordinator.placeMenu = placeMenu
-        model.attach(view)
+        context.coordinator.bindTarget = bindTarget
+        context.coordinator.focused = focused
+        if model.textView == nil { model.attach(view) }
         context.coordinator.update(placeholder: placeholder, submit: submit, steer: steer)
         return scroll
     }
@@ -287,9 +291,11 @@ struct ComposerEditor: NSViewRepresentable {
         if !editable, model.completion != nil { model.completion = nil }
         let previous = context.coordinator.model
         context.coordinator.model = model
+        context.coordinator.bindTarget = bindTarget
+        context.coordinator.focused = focused
         if previous !== model, let view = context.coordinator.view {
             previous.detach(view)
-            model.attach(view)
+            if model.textView == nil || view.window?.firstResponder === view { model.attach(view) }
             model.shown(view)
         }
         if let view = context.coordinator.view {
@@ -306,6 +312,8 @@ struct ComposerEditor: NSViewRepresentable {
         fileprivate var submit: () -> Void = {}
         fileprivate var steer: () -> Void = {}
         var placeMenu: () -> NSMenuItem? = { nil }
+        var bindTarget: () -> Void = {}
+        var focused: () -> Void = {}
         init(model: ComposerModel) { self.model = model }
 
         func update(placeholder: String, submit: @escaping () -> Void, steer: @escaping () -> Void) {
@@ -316,13 +324,20 @@ struct ComposerEditor: NSViewRepresentable {
         }
         func textDidChange(_ notification: Notification) {
             guard let view else { return }
+            if view.window?.firstResponder === view { bindTarget() }
             model.updateComposition()
             model.edited(view.string)
             view.fitHeight()
         }
         func undoManager(for view: NSTextView) -> UndoManager? { model.undoManager(for: view) }
         /// Moving the caret into or out of an `@` path opens or closes its list.
-        func textViewDidChangeSelection(_ notification: Notification) { model.updateComposition(); model.updateCompletion() }
+        func textViewDidChangeSelection(_ notification: Notification) {
+            guard let view, view.window?.firstResponder === view else { return }
+            model.attach(view)
+            bindTarget()
+            model.updateComposition()
+            model.updateCompletion()
+        }
         fileprivate func heightChanged(_ value: CGFloat) {
             // Reported after layout; SwiftUI resizes the editor in the next pass.
             DispatchQueue.main.async { [model] in if model.height != value { model.height = value } }
@@ -438,6 +453,7 @@ struct ComposerEditor: NSViewRepresentable {
     }
     override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
         guard isEditable else { return false }
+        coordinator?.bindTarget()
         let urls = Self.fileURLs(sender.draggingPasteboard)
         guard !urls.isEmpty else { return super.performDragOperation(sender) }
         coordinator?.model.addAttachments(urls)
@@ -461,6 +477,7 @@ struct ComposerEditor: NSViewRepresentable {
 
     /// Also handles Finder's file URLs and image representations accompanied by text.
     func pasteAttachments(from board: NSPasteboard) -> Bool {
+        coordinator?.bindTarget()
         guard let model = coordinator?.model, model.store?.allowsAttachments == true else { return false }
         let urls = Self.fileURLs(board)
         if !urls.isEmpty { model.addAttachments(urls); return true }
@@ -481,6 +498,7 @@ struct ComposerEditor: NSViewRepresentable {
     /// Composition owns every key until it is committed.
     override func keyDown(with event: NSEvent) {
         guard isEditable, !hasMarkedText(), let coordinator else { return super.keyDown(with: event) }
+        coordinator.bindTarget()
         if coordinator.model.completionKey(event) { return }
         let modifiers = event.modifierFlags.intersection([.command, .shift, .option, .control])
         switch event.keyCode {
@@ -499,6 +517,7 @@ struct ComposerEditor: NSViewRepresentable {
 
     override func becomeFirstResponder() -> Bool {
         let accepted = super.becomeFirstResponder()
+        if accepted { coordinator?.model.attach(self); coordinator?.bindTarget(); coordinator?.focused() }
         if accepted { coordinator?.model.focusChanged(true) }
         return accepted
     }
@@ -667,7 +686,7 @@ struct ComposerView: View {
             for provider in providers {
                 _ = provider.loadObject(ofClass: NSURL.self) { url, _ in
                     guard let url = url as? URL else { return }
-                    Task { @MainActor in model.addAttachments([url]) }
+                    Task { @MainActor in model.attach(store); model.addAttachments([url]) }
                 }
             }
             return !providers.isEmpty
@@ -683,19 +702,31 @@ struct ComposerView: View {
         .onChange(of: minimumHeight, initial: true) { _, value in
             if fillsHeight, layout.composerMinimumHeight != value { layout.composerMinimumHeight = value }
         }
-        .onChange(of: model.isFocused) { _, focused in
-            if focused { layout.focusConversation(layout.conversationTab(for: store)) }
-        }
         .onChange(of: [ObjectIdentifier(store), ObjectIdentifier(model)], initial: true) { _, _ in
-            model.attach(store); context.prepare()
-            model.perform = { [weak layout, weak store] command in layout?.perform(command, for: store) }
-            model.canPerform = { [weak layout, weak store] command in layout?.canPerform(command, composerCommand: true, for: store) ?? false }
+            refreshActiveCompletion()
             if model.firstShown() { DispatchQueue.main.async { model.focus() } }
         }
         .onChange(of: store.loadedConversationID) { _, _ in
-            model.attach(store); context.prepare()
+            refreshActiveCompletion()
             if store.isUnsentConversation { DispatchQueue.main.async { model.focus() } }
         }
+        .onChange(of: store.nextTurn) { _, _ in
+            refreshActiveCompletion()
+        }
+        .onReceive(store.device.composerInputs.changes) { _ in
+            refreshActiveCompletion()
+        }
+    }
+
+    private func refreshActiveCompletion() {
+        guard model.store === store, let view = model.textView, view.window?.firstResponder === view else { return }
+        model.updateCompletion()
+    }
+
+    private func bindEditorContext() {
+        model.attach(store)
+        model.perform = { [weak layout, weak store] command in layout?.perform(command, for: store) }
+        model.canPerform = { [weak layout, weak store] command in layout?.canPerform(command, composerCommand: true, for: store) ?? false }
     }
 
     private var editorColumn: some View {
@@ -712,7 +743,9 @@ struct ComposerView: View {
                 else { accessories }
             }
             ComposerEditor(model: model, placeholder: placeholder, editable: store.draftEditable, submit: send, steer: steer,
-                           placeMenu: { [layout] in layout.placeMenuItem(for: .composer) })
+                           placeMenu: { [layout] in layout.placeMenuItem(for: .composer) },
+                           bindTarget: bindEditorContext,
+                           focused: { layout.focusConversation(layout.conversationTab(for: store)) })
                 .frame(height: fillsHeight ? nil : model.height)
                 .frame(minHeight: fillsHeight ? ComposerTextView.minimumHeight : nil, maxHeight: fillsHeight ? .infinity : nil)
                 // The text view sits in a clipping scroll view, which hides its
@@ -823,7 +856,7 @@ struct ComposerView: View {
     private func nextTurnControls(compact: Bool) -> some View {
         HStack(spacing: 10) {
             if store.allowsAttachments {
-                Button(action: model.chooseAttachments) { Image(systemName: "paperclip") }
+                Button(action: context.chooseAttachments) { Image(systemName: "paperclip") }
                     .buttonStyle(.borderless)
                     .accessibilityLabel("添加附件")
                     .help(KeyboardShortcutSettings.shared.help("添加附件：图片随消息发送，其他文件以路径告知 Agent", .attach))

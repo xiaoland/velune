@@ -96,7 +96,6 @@ struct SavedComposerWorkspace: Codable, Equatable {
         if sharedInput { shared = model; activeContext = id; sharedInitialized = true }
         focus(tab)
         targetContext = id
-        model.attach(tab.store)
         changes.send()
     }
 
@@ -108,14 +107,12 @@ struct SavedComposerWorkspace: Codable, Equatable {
         if let key, let kept = models[key] { model = kept }
         else {
             model = ComposerModel(id: key ?? UUID())
-            model.attach(tab.store)
             let state = key.flatMap { device?.composerInputs.draft($0) }
                 ?? SavedComposerDraft(text: "", attachments: [])
             model.restoreSavedDraft(state)
             register(model, name: tab.title + " 的输入")
         }
         conversations[id] = model.id
-        model.attach(tab.store)
         if !id.hasPrefix("tab:"), !id.hasPrefix("side-chat:"), synced == nil, !resolving.contains(id), let device {
             resolving.insert(id)
             device.composerInputs.ensure(id, model: model) { [weak self, weak model] resolved in
@@ -145,8 +142,14 @@ struct SavedComposerWorkspace: Codable, Equatable {
             model = shared
         case .conversation(let id): model = conversation(id, tab: tab)
         }
-        model.attach(tab.store)
         return model
+    }
+
+    func existingModel(for owner: Owner) -> ComposerModel? {
+        switch owner {
+        case .shared: sharedInitialized ? shared : nil
+        case .conversation(let id): conversations[id].flatMap { models[$0] }
+        }
     }
 
     private func synchronize() {
@@ -208,7 +211,7 @@ struct SavedComposerWorkspace: Codable, Equatable {
             if !id.hasPrefix(ConversationStore.draftConversationPrefix) { device?.composerInputs.bind(id, input: model) }
         }
         retained.removeAll { $0 == model.id }
-        focus(tab); model.attach(tab.store)
+        focus(tab)
         changes.send()
     }
 
@@ -240,7 +243,7 @@ struct SavedComposerWorkspace: Codable, Equatable {
         case .conversation(let id): conversations[id] = model.id; device?.composerInputs.bind(id, input: model)
         }
         retained.removeAll { $0 == model.id }
-        focus(tab); model.attach(tab.store)
+        focus(tab)
         changes.send()
     }
     func newDraft(replacing current: ComposerModel, owner: Owner, tab: ConversationTab) {
@@ -272,7 +275,6 @@ struct SavedComposerWorkspace: Codable, Equatable {
         }
         register(model, name: tab.title + " 的输入")
         conversations[conversationID] = model.id
-        model.attach(tab.store)
         cursorChanges.send(); changes.send()
     }
 

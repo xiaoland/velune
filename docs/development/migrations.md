@@ -50,3 +50,9 @@ python3 scripts/migrations/codex-166.py --home <VELUNE_HOME> --binary <Codex-0.1
 `SavedWindowLayout.windowDevice` 与 `windowKind` 定义恢复点的执行设备和窗口类型。更早的恢复点只能凭原 scene UUID 读取。版本切换若失去 SceneStorage 身份，应在部署时显式确认旧窗口的设备归属并迁移恢复点，确保其进入对应设备及类型的恢复候选。
 
 修复已有缺口时，先正常退出并取得状态目录排他锁，完整备份旧恢复点和当前 scene 恢复点。确认原窗口布局完整、会话来源属于目标执行设备后，为它标注设备和窗口类型，再以同一份布局恢复当前 scene 的 journal。保留原有分组、Tab UUID、顺序、焦点及输入身份，启动后核对应用重新保存的结构。来源不明的旧恢复点继续保留，交由明确映射处理。
+
+## Composer 未手选默认
+
+`target-intent.py` 在既有 schema 2 上清理 `choiceEdited=false` 记录中的旧自动 seed，让运行时、owner 与各字段重新继承实际目标事实。修改的目标 revision 加一，目录 revision 每批加一。脚本同时移出 Mac 恢复点和 Windows 缓存中的自动初始化待写记录，完整私有备份先于任何修改。正文、附件及绑定保留。`choiceEdited=true` 原样保留，不能可靠反推旧客户端曾随手选项一并固化了哪些默认值。
+
+退出占用状态目录的应用后，用 `python3 scripts/migrations/target-intent.py --home <VELUNE_HOME>` 预览，加 `--apply` 写入；完整迁移入口按文件名顺序执行本步骤，重跑继续尚未完成的文件。应用不在启动时自动猜测旧选择。

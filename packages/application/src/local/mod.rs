@@ -245,6 +245,7 @@ mod authentication_coordination;
 mod browsing;
 mod collaboration;
 mod composer_choices;
+mod composer_target;
 pub(crate) use composer_choices::{TurnKey, TurnRequests};
 mod compaction;
 mod configuration;

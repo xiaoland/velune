@@ -108,6 +108,7 @@
 - <a id="s63"></a>[S63 · 显式手动迁移](sources/development.md#s63)
 - <a id="s79"></a>[S79 · 必要迁移的持续授权](sources/development.md#s79)
 - <a id="s80"></a>[S80 · Adapter Type 独立且可编辑](sources/development.md#s80)
+- <a id="s81"></a>[S81 · 目标准备用例与未手选项继承](sources/development.md#s81)
 
 ## 综合使用反馈与修复要求
 

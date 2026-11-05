@@ -39,6 +39,15 @@ fn identity() -> String {
 }
 
 impl ComposerInputs {
+    pub(crate) fn target(&self, context: &ComposerContextKey) -> Option<ComposerTarget> {
+        self.stored
+            .state
+            .targets
+            .iter()
+            .find(|target| &target.context == context)
+            .cloned()
+    }
+
     // Older platform views use field-specific commands. They share the same
     // records; editing text must preserve attachments and execution choices.
     pub(crate) fn legacy_drafts(&self) -> Vec<ComposerDraft> {
@@ -379,6 +388,7 @@ impl ComposerInputs {
             Op::EnsureTarget { context, seed } => {
                 validate_context(&context)?;
                 validate_choices(&seed)?;
+                let seed = normalize_composer_target_choices(seed);
                 if let Some(target) = next
                     .state
                     .targets
@@ -407,6 +417,7 @@ impl ComposerInputs {
             } => {
                 validate_context(&context)?;
                 validate_choices(&choices)?;
+                let choices = normalize_composer_target_choices(choices);
                 match next
                     .state
                     .targets

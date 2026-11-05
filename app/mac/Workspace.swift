@@ -552,8 +552,7 @@ struct WindowSeed: Codable, Hashable {
     @Published private(set) var recentlyClosed: [String?] = []
     /// Bumped when a pane's tabs change, for the layout the window restores.
     @Published private(set) var tabsRevision = 0
-    private var subscriptions: [UUID: AnyCancellable] = [:]
-    private var composerEventSubscriptions: [UUID: AnyCancellable] = [:]
+    private var subscriptions: [UUID: Set<AnyCancellable>] = [:]
     private var preservingComposerLayout = false
     private var paneSubscriptions: [UUID: AnyCancellable] = [:]
     private var started = false
@@ -584,7 +583,6 @@ struct WindowSeed: Codable, Hashable {
         if activeConversationID != tab.id { activeConversationID = tab.id }
         if let pane = pane(holding: tab.id) { focus(pane.id) }
         noteSelected(tab)
-        composerContext(for: tab).prepare()
     }
     var conversationTabs: [ConversationTab] {
         allTabs.compactMap { $0 as? ConversationTab } + [sheetTab, composerSheetTab].compactMap { $0 }
@@ -613,10 +611,14 @@ struct WindowSeed: Codable, Hashable {
         }
     }
     func composer(for tab: ConversationTab) -> ComposerModel {
-        guard let owner = composerOwner(for: tab) else { tab.composer.attach(tab.store); return tab.composer }
+        guard let owner = composerOwner(for: tab) else { return tab.composer }
         let model = composerDrafts.model(for: owner, tab: tab)
         if case .conversation = owner { tab.composer = model }
         return model
+    }
+    func existingComposer(for tab: ConversationTab) -> ComposerModel? {
+        guard let owner = composerOwner(for: tab) else { return tab.composer }
+        return composerDrafts.existingModel(for: owner)
     }
     func selectComposerDraft(_ model: ComposerModel, for tab: ConversationTab) {
         guard let owner = composerOwner(for: tab) else { return }
@@ -822,7 +824,6 @@ struct WindowSeed: Codable, Hashable {
         lastConversation = tab
         if composerOwner(for: tab) != nil { composerDrafts.focus(tab) }
         tab.store.noteFocused()
-        composerContext(for: tab).prepare()
     }
     var isSplit: Bool { panes.count > 1 }
     var orderedPanes: [Pane] { layout.paneIDs.compactMap { panes[$0] } }
@@ -931,7 +932,6 @@ struct WindowSeed: Codable, Hashable {
     private func replacePanes(with replacement: [Pane], layout: PaneLayout?) {
         for tab in allTabs { tab.close() }
         subscriptions = [:]
-        composerEventSubscriptions = [:]
         paneSubscriptions = [:]
         panes = Dictionary(uniqueKeysWithValues: replacement.map { ($0.id, $0) })
         self.layout = layout ?? .pane(replacement[0].id)
@@ -1476,7 +1476,11 @@ struct WindowSeed: Codable, Hashable {
     /// Close a pane with all its tabs.
     func closePane(_ id: UUID) {
         guard isSplit, let pane = panes[id] else { return }
-        for tab in pane.tabs { closeSideChats(from: tab.id); tab.close() }
+        for tab in pane.tabs {
+            closeSideChats(from: tab.id)
+            forgetTab(tab.id)
+            tab.close()
+        }
         removePane(id)
     }
 
@@ -1519,11 +1523,14 @@ struct WindowSeed: Codable, Hashable {
             case .close, .leave: window?.close()
             }
         }
-        subscriptions[id] = nil
-        composerEventSubscriptions[id] = nil
-        tabConversations[id] = nil
+        forgetTab(id)
         tabsRevision &+= 1
         return tab
+    }
+
+    private func forgetTab(_ id: UUID) {
+        subscriptions[id] = nil
+        tabConversations[id] = nil
     }
 
     private func removePane(_ id: UUID) {
@@ -1741,7 +1748,8 @@ struct WindowSeed: Codable, Hashable {
 
     private func follow(_ editor: EditorTab) {
         guard let tab = editor as? ConversationTab, !tab.store.isSideChat else { return }
-        composerEventSubscriptions[tab.id] = tab.store.composerEvents.sink { [weak self, weak tab] navigation in
+        var watches = Set<AnyCancellable>()
+        tab.store.composerEvents.sink { [weak self, weak tab] navigation in
             guard let self, let tab else { return }
             if case let .created(previous, id, runtimeID, input) = navigation {
                 self.composerDrafts.reassociate(input, from: previous, to: id, runtimeID: runtimeID, targetTab: tab)
@@ -1758,8 +1766,8 @@ struct WindowSeed: Codable, Hashable {
             }
             self.navigateComposer(to: id, tab: tab)
             self.objectWillChange.send()
-        }
-        subscriptions[tab.id] = tab.store.$selectedConversationID.sink { [weak self] id in
+        }.store(in: &watches)
+        tab.store.$selectedConversationID.sink { [weak self] id in
             guard let self else { return }
             if id != nil { self.restoredCreationTargets[tab.id] = nil }
             DispatchQueue.main.async { [weak self, weak tab] in
@@ -1769,13 +1777,13 @@ struct WindowSeed: Codable, Hashable {
                     self.restoredComposerDraft = nil
                     if let owner = self.composerOwner(for: tab) { self.composerDrafts.move(restored, to: owner, tab: tab) }
                 }
-                if tab === self.focused { self.composerContext(for: tab).prepare() }
             }
             if self.tabConversations[tab.id] != id {
                 self.closeSideChats(from: tab.id)
                 self.tabConversations[tab.id] = id
             }
-        }
+        }.store(in: &watches)
+        subscriptions[tab.id] = watches
     }
 
     private func noteClick(_ event: NSEvent) {

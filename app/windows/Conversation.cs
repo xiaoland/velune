@@ -29,6 +29,7 @@ sealed partial class Conversation
         {
             configuration = value;
             nextTurn = null;
+            if (composerLoaded) _ = PollComposer();
         }
     }
     Configuration configuration;
@@ -397,11 +398,7 @@ sealed partial class Conversation
     // conversation last ran on.
     void FollowCurrentRuntime()
     {
-        var next = Snapshot!.ContextRuntimeId;
-        if (Snapshot.TranscriptTurns.LastOrDefault()?.Settings?.RuntimeId is { } last && Configuration.Runtime(last) != null)
-        {
-            next = last;
-        }
+        var next = preparedComposerTarget?.DefaultRuntimeId ?? Snapshot!.ContextRuntimeId;
         if (next != Next)
         {
             Next = next;
@@ -414,7 +411,7 @@ sealed partial class Conversation
     // NextTurn is what the next turn goes with and what the composer offers
     // for it, as the core resolves them from this conversation's choices and
     // the runtime's catalog. It is resolved again after any change.
-    public NextTurn NextTurn => nextTurn ??= VeluneApplicationApiMethods.ResolveNextTurn(new NextTurnInput(
+    public NextTurn NextTurn => nextTurn ??= PreparedNextTurn() ?? VeluneApplicationApiMethods.ResolveNextTurn(new NextTurnInput(
         Next,
         Configuration.RuntimeType(Next),
         Configuration.Providers(Next),
@@ -422,7 +419,7 @@ sealed partial class Conversation
             ? VeluneBindingsMethods.RuntimeNewConversationChoice(runtime)
             : new NewConversationChoice.LastChosen(),
         NextCatalog is { Loading: false, Failure: "" } read ? read.Models : null,
-        Snapshot?.TranscriptTurns ?? [],
+        Snapshot?.TranscriptTurns.Select(turn => turn.Settings).OfType<TurnSettings>().ToArray() ?? [],
         Snapshot?.Conversation.RuntimeId,
         Snapshot?.ModelRecordKey,
         intent.TryGetValue(Next, out var kept) ? kept : null,
@@ -436,11 +433,11 @@ sealed partial class Conversation
     // offers first next time.
     public void Choose(TurnChoiceChange change)
     {
-        if (VeluneApplicationApiMethods.ChangeNextTurn(NextTurn, runtimeChoices.GetValueOrDefault(Next), change) is not { } update)
+        if (VeluneApplicationApiMethods.ChangeComposerTarget(NextTurn, ComposerTargetContent(), composerOwner ?? "", runtimeChoices.GetValueOrDefault(Next), change) is not { } update)
         {
             return;
         }
-        intent[Next] = update.Choice;
+        ReceiveTargetChoices(update.Choices);
         SaveIntent();
         if (update.RuntimeChoices is { } choices)
         {

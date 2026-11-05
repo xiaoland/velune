@@ -50,6 +50,9 @@ pub enum DeliveryClass {
 #[serde(rename_all = "camelCase")]
 pub enum CommandKind {
     ReadComposerOwner,
+    ReadComposerTarget,
+    ReadComposerTargetIdentity,
+    ReadComposerTargetBasis,
     ManageComposerInputs,
     UploadComposerAttachment,
     ReadComposerAttachment,
@@ -172,6 +175,16 @@ pub enum CommandKind {
 #[allow(clippy::large_enum_variant)]
 pub enum Command {
     ReadComposerOwner,
+    ReadComposerTarget {
+        context: crate::ComposerContextKey,
+    },
+    ReadComposerTargetIdentity {
+        request: crate::ComposerTargetRequest,
+    },
+    ReadComposerTargetBasis {
+        request: crate::ComposerTargetRequest,
+        choices: Option<crate::ComposerTargetChoices>,
+    },
     ManageComposerInputs {
         operation: crate::ComposerInputOperation,
     },
@@ -601,6 +614,9 @@ pub enum Command {
 #[serde(tag = "response", content = "value", rename_all = "camelCase")]
 pub enum Response {
     ReadComposerOwner(String),
+    ReadComposerTarget(Option<crate::ComposerTarget>),
+    ReadComposerTargetIdentity(crate::ComposerTargetIdentity),
+    ReadComposerTargetBasis(crate::ComposerTargetBasis),
     ManageComposerInputs(crate::ComposerInputUpdate),
     UploadComposerAttachment(crate::ComposerAttachment),
     ReadComposerAttachment(crate::ComposerAttachmentContent),
@@ -730,9 +746,11 @@ impl Command {
                 crate::ComposerInputOperation::Read { .. } => DeliveryClass::Observation,
                 _ => DeliveryClass::Effect,
             },
-            Self::ReadComposerOwner | Self::ReadComposerAttachment { .. } => {
-                DeliveryClass::Observation
-            }
+            Self::ReadComposerOwner
+            | Self::ReadComposerTarget { .. }
+            | Self::ReadComposerTargetIdentity { .. }
+            | Self::ReadComposerAttachment { .. }
+            | Self::ReadComposerTargetBasis { .. } => DeliveryClass::Observation,
             Self::UploadComposerAttachment { .. } => DeliveryClass::Effect,
             Self::ManageScheduledTasks { operation } => match operation {
                 crate::ScheduledTasksOperation::List
@@ -848,6 +866,9 @@ impl Command {
     pub fn kind(&self) -> CommandKind {
         match self {
             Self::ReadComposerOwner => CommandKind::ReadComposerOwner,
+            Self::ReadComposerTarget { .. } => CommandKind::ReadComposerTarget,
+            Self::ReadComposerTargetIdentity { .. } => CommandKind::ReadComposerTargetIdentity,
+            Self::ReadComposerTargetBasis { .. } => CommandKind::ReadComposerTargetBasis,
             Self::ManageComposerInputs { .. } => CommandKind::ManageComposerInputs,
             Self::UploadComposerAttachment { .. } => CommandKind::UploadComposerAttachment,
             Self::ReadComposerAttachment { .. } => CommandKind::ReadComposerAttachment,

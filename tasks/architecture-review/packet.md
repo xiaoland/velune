@@ -2,7 +2,7 @@
 
 ## 目标与当前状态
 
-用户要求整理已修正／改进的清单，核查治标不治本与架构腐坏，并纠正。随后明确要求继续收敛已识别的能力投影与缓存依赖。源码实现及关键验收已完成。2026-11-05 已按用户授权提交 073cbee。用户随后更正重装失败，当前继续处理退出死锁并完成重装。
+用户要求核查整条任务链的治标与结构问题并纠正，已提交首次结构收敛、退出死锁与恢复候选修复。20:30 补全崩溃后，按用户“架构上的上游”重新审查，确认四端缺少统一目标准备用例及未手选语义。这一轮共享用例及四端集成已经完成；用户已确认未手选继续继承默认、手选后只固定该项。源码与验收状态见文末及 [Composer 用例边界](composer-target-use-case.md)。部署和真实两组七 Tab 恢复继续等待用户稍后统一重启。
 
 ## 结果导航
 
@@ -66,3 +66,29 @@ Mac Swift／资源／严格签名构建通过，日志 `reinstall-hang/workspace
 正常退出脚本已发出请求，但超时返回，日常 PID 35118 继续运行。用户随后明确要求“别退出，我在用，稍后我一起重启”。当前禁止再次请求退出、强制结束或部署，直到用户明确恢复该步骤。shell 使用 set -e，布局迁移与重装均未执行，真实 journal 未改写。
 
 已准备的一次性人工恢复工具在 `target/verification/architecture-review-20261105/reinstall-hang/restore-workspace.py`，尚未执行。它在应用退出后获取 runtime.lock，核验旧两组七 Tab 的结构与本机来源，完整私有备份原恢复点和当前 scene 恢复点，再写入确认的 local／conversation 身份及原布局。源 snapshot 为 EF954EDE-D0DF-4E16-84D3-ECA8A55D229E，当前 scene 为 B29D05CB-9872-4B55-B693-FD0B5A109BA1。届时须重新核对当前 scene 和旧快照，正常退出后应用恢复、安装已验证构建、启动并核对实际重新保存的两组七 Tab。单纯重新打开当前已安装版本尚不会执行这项人工映射。
+
+## 20:30 输入补全崩溃的上游复核
+
+实际崩溃报告 PID 35118，主线程反复经过 attach → updateCompletion → canPerform → composerContext → model lookup → attach，最终栈耗尽。历史对照确认，073cbee 前 attach 只绑定 Store，show(false) 在会话目标变化后刷新并先记录目标；结构重构删除 show 后将刷新搬入每次 attach，丢失了原来的时序前提。用户要求继续追上游，并反对新增这类专用回归检查，本轮不新增测试入口或深度计数检查。
+
+局部复核先拆开内容目录、编辑器绑定和补全刷新。随后宏观复核推翻了仍由 Context.prepare、Window 和 View 各推进准备的安排，最终责任见下一节。保留的修正是：资格查询读取已有模型，attach 只绑定 Store，原生焦点与编辑动作维护编辑器归属；Tab 观察统一释放。未新增递归深度检查或专项测试入口。
+
+工作树同时有另一任务的模型表单、消息编辑和 Pi 图片投影改动，保留并单独提交本轮文件。应用当前已崩溃退出。此前用户要求稍后统一重启，当前只实现和验证源码，部署及两组七 Tab 的实际迁移继续等待用户恢复该步骤。
+
+## 当前宏观收敛阶段
+
+用户澄清“上游”指架构宏观层级。已重审共享用例边界并确认跨端初始化语义分叉。用户选择“未手选继续继承默认，手选后才固定”。实施判断、责任及终态验收见[Composer 用例边界](composer-target-use-case.md)。当前局部安全修改保留为一部分，尚未认定共享架构收敛完成。
+
+shared_composer_target 负责共享 API／application／bindings 用例和逐字段规则。structural_input 负责 Mac 会话模型生命周期与纯投影消费。target_client_consumers 负责其余三端。root 负责显式迁移、文档、最终集成与分层验收。其他会话的模型表单和消息编辑 dirty 改动继续保留，不在本任务中回退或自动提交。实际应用已崩溃退出，仍遵守用户“稍后统一重启”的部署暂停决定。
+
+### 宏观实现与已取得的证据
+
+共享 facade 统一规范身份、authority 单目标读取、空意图首次保存及有效配置解析；薄 DTO 只返回身份和轮次配置，不通过目标准备传输会话正文。四端普通打开退出本地 seed 路径，Mac Store 拥有请求及观察寿命，窗口负责内容与目标配对，View／Context／菜单／补全消费投影。配置失败不阻断正文编辑与保存。
+
+`composer-use-case/public-target-probe.log` 7 组公开 API 合成验证通过，包含普通 Claude 历史身份、执行端与保存端分离、动态默认、逐字段明确选择、只读 overlay、foreign owner 拒绝、失败保留、CAS 和 authority 重开。`migration.log` 证明预览无写、明确选择与正文／附件／绑定保留、私有备份、修订推进和幂等。真实 target-intent 迁移未执行。
+
+`native-final-build.log`、`macos-final-build.log` 与仅修正旧夹具后的 `macos-fixture-build.log` 通过，`clippy-final.log` 严格检查通过，`next-turn-final.log` 既有 12 项 resolver 检查通过。`native-controls.log` 现有 6 组原生输入检查通过，`native-content-target-fixture.log` 现有 8 组内容／目标检查通过，涵盖原生撤销、跨窗口移动、迟到失败及实际双 client CAS 恢复。旧 CAS 尾段用不存在的普通会话伪装新建目标，现按真实全局新建身份和实际修订基线修正；未绕过共享准备。此前两次参数／临时目录错误和该旧夹具失败不作为产品通过证据。
+
+`platforms/{ios,android,windows}-build.log` 均通过，覆盖新 native、三种语言绑定及各应用构建；Android 包含 lint，Windows 包含资源打包，未启动 Windows UI。Mac 检查窗口未显示，无前台激活、鼠标键盘注入或真实模型调用。真实已安装应用的完整可视菜单／补全旅程、实际跨网络中断，以及部署后的两组七 Tab 恢复未验收。它们不被此次构建或合成检查替代。源码提交后按用户暂停决定保留部署义务。
+
+构建证据来自当前集成工作树。其它并行会话的模型表单、消息编辑及 Pi 图片投影改动未纳入本轮提交，也未回退；本轮没有声称已单独验收这些功能。

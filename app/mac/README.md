@@ -145,3 +145,11 @@ iPad 构建要求见 [iOS README](../ios/README.md#构建)。
 
 
 运行时编辑器允许编辑已有实例的 Adapter Type。实例身份、名称、HOME与SSH执行环境保留；表单按类型暂存专属字段、ACP启动参数和新会话默认选择，切回恢复当前编辑，保存只提交选中类型的数据。新类型不查询旧类型的Agent信息或模型目录；类型变更后不沿用旧类型LastChosen。没有类型升级关系，普通配置保存不重写历史来源。窄验入口为 `--check-message-experience --experience-runtime-editor-only`，使用显式 `VELUNE_EXPERIENCE_CHECK_HOME` 合成目录，无前台窗口和输入注入。
+
+### 输入、目标与命令的运行期职责
+
+ComposerDrafts 管理 InputID、正文、附件与编辑对象；窗口负责 Tab／group 导航和内容与目标的配对。读取已有模型不绑定编辑器，命令可用性读取当前投影。原生编辑器的实际焦点和编辑动作决定绑定；输入、光标及明确目标变化驱动补全，attach 本身只记录 Store。
+
+ConversationStore 拥有目标准备请求、事实观察、配置刷新及迟到结果拒收，普通会话通过共享 `prepare_composer_target` 获取保存端实际记录与有效下一轮。ComposerContext、View、菜单和补全消费该投影并转发操作。原生模型目录到达后仍使用共享 resolver，不将观测到的默认值保存成手选配置。未手选项持续继承，选择某一项只固定该项；正文恢复和编辑独立于目标准备失败。
+
+目标读取结果只合并对应记录，不确认其它待同步修改或重置 CAS 基线。Tab 的观察共同归一组 cancellables，移出标签和关闭整组共用释放入口。显式旧数据迁移见[迁移说明](../../docs/development/migrations.md#composer-未手选默认)。

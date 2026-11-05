@@ -122,6 +122,9 @@ final class Transport: @unchecked Sendable {
         let reading: Bool = if case .read = operation { true } else { false }
         return try withApplication("composerInputs", reading ? .reads : .writes, reading ? .conversationRead : .conversationWrite) { try $0.manageComposerInputs(operation: operation) }
     }
+    func prepareComposerTarget(_ request: ComposerTargetRequest, overlayChoices: ComposerTargetChoices?) throws -> PreparedComposerTarget {
+        try withApplication("prepareComposerTarget", .writes, .conversationRead) { try $0.prepareComposerTarget(request: request, overlayChoices: overlayChoices) }
+    }
     func composerOwnerID() throws -> String { try withApplication("composerOwnerID", .reads, .conversationRead) { try $0.composerOwnerId() } }
     func uploadComposerAttachment(name: String, bytes: Data) throws -> ComposerAttachment { try withApplication("uploadComposerAttachment", .writes, .conversationWrite) { try $0.uploadComposerAttachment(name: name, bytes: bytes) } }
     func readComposerAttachment(_ id: String) throws -> Data { try withApplication("readComposerAttachment", .reads, .conversationRead) { try $0.readComposerAttachment(attachmentId: id).bytes } }

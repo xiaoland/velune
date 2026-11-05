@@ -63,3 +63,5 @@ Windows 按共享契约分别同步正文／附件的 InputID 与目标上下文
 2026-11-05：现有运行时实例的类型选择与 Mac 一样可编辑；各类型的字段与新会话表单草稿分别保留，保存保留实例身份和 HOME／SSH，清空旧类型的上次选择。此次没有启动 Windows UI，原生运行验收未覆盖这条新路径。
 
 2026-11-05：发送、排队和插入本轮改为消费共享核心的准入结果（`actions.can_send`、`follow_up.can_queue`、`follow_up.can_steer`），Windows 不再按父会话、待答交互或压缩状态重算规则。输入法、上传、请求在途及目标运行时匹配仍由本地入口处理。本轮已在隔离工作树通过 Rust release、C# 绑定生成、应用 publish 与资源打包；未执行 Windows 原生 UI 验收。
+
+执行目标准备已改用共享用例，目录、配置和窗口查询只消费已有投影。默认配置继续继承，用户明确改选由共享 helper 仅更新所选字段。Windows 运行时菜单保留准备失败时的修复入口。本轮隔离 Rust release、C# 绑定生成、dotnet publish 与资源打包均通过；未启动 Windows UI。
