@@ -319,15 +319,10 @@ struct ConversationListView: View {
         }
         // Dragged over another group, its header or its rows, a group takes its place.
         .onDrag {
-            let provider = NSItemProvider()
-            guard canOrder(section.id) else { draggedGroup = nil; return provider }
+            guard canOrder(section.id) else { draggedGroup = nil; return NSItemProvider() }
             draggedGroup = section.id
             watchGroupDrag(section.id)
-            provider.registerDataRepresentation(forTypeIdentifier: ConversationLink.groupDragType.identifier, visibility: .ownProcess) { done in
-                DispatchQueue.main.async { done(Data(), nil) }
-                return nil
-            }
-            return provider
+            return ConversationLink.groupItemProvider()
         }
         .groupDrop(groupDropDelegate(section, .header), line: groupLines(section, .header))
         .opacity(draggingGroup == section.id ? 0.4 : 1)

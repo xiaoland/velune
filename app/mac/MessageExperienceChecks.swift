@@ -14,6 +14,7 @@ import VeluneBindings
         while !ready(), Date() < end { RunLoop.main.run(until: Date().addingTimeInterval(0.02)) }
         precondition(ready(), "合成检查超时")
     }
+    if CommandLine.arguments.contains("--experience-drag-provider-only") { dragProviderChecks() }
     AppearancePreferences.shared.load(home: home) { fatalError($0) }
     if CommandLine.arguments.contains("--experience-runtime-editor-only") { runtimeEditorChecks(home: home) }
     func stamp(_ date: Date) -> Int64 { Int64(date.timeIntervalSince1970 * 1000) }
