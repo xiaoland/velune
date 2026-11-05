@@ -16,7 +16,6 @@ const MAX_PENDING: usize = 256;
 const MAX_STATE_BYTES: usize = 1024 * 1024;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, uniffi::Record)]
-#[serde(deny_unknown_fields)]
 pub struct DeviceLocator {
     pub relay_urls: Vec<String>,
     pub direct_addresses: Vec<std::net::SocketAddr>,
@@ -61,7 +60,6 @@ pub enum LocatorSource {
     AuthenticatedPeer,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
-#[serde(deny_unknown_fields)]
 pub struct DeviceContact {
     pub peer_id: String,
     pub name: String,
@@ -73,7 +71,6 @@ pub struct DeviceContact {
     pub pairing_permission: PairingPermission,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
-#[serde(deny_unknown_fields)]
 pub struct IncomingControlGrant {
     pub peer_id: String,
     pub name: String,
@@ -93,7 +90,6 @@ pub enum PendingStatus {
     ServerRestarted,
 }
 #[derive(Clone, Serialize, Deserialize, uniffi::Record)]
-#[serde(deny_unknown_fields)]
 pub struct PendingOperation {
     pub peer_id: String,
     pub request_id: RequestId,
@@ -107,13 +103,11 @@ pub struct PendingOperation {
     pub status: PendingStatus,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
-#[serde(deny_unknown_fields)]
 pub struct ConfigurationResetNotice {
     pub id: String,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 struct StoredState {
     version: u16,
     contacts: BTreeMap<String, DeviceContact>,
@@ -139,7 +133,6 @@ impl Default for StoredState {
     }
 }
 #[derive(Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub(crate) struct PendingPairing {
     pub attempt_id: String,
     pub permission: PairingPermission,

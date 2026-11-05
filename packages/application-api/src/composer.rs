@@ -6,8 +6,7 @@ use serde::{Deserialize, Serialize};
 #[serde(
     tag = "kind",
     rename_all = "camelCase",
-    rename_all_fields = "camelCase",
-    deny_unknown_fields
+    rename_all_fields = "camelCase"
 )]
 pub enum ComposerContextKey {
     Conversation {
@@ -18,7 +17,7 @@ pub enum ComposerContextKey {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, uniffi::Record)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct ComposerAttachment {
     pub id: String,
     pub name: String,
@@ -26,7 +25,7 @@ pub struct ComposerAttachment {
 }
 
 #[derive(Clone, Serialize, Deserialize, uniffi::Record)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct ComposerAttachmentContent {
     pub attachment: ComposerAttachment,
     #[serde(with = "crate::bytes")]
@@ -34,7 +33,7 @@ pub struct ComposerAttachmentContent {
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize, uniffi::Record)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct ComposerRuntimeChoice {
     pub owner_id: String,
     pub runtime_id: String,
@@ -42,7 +41,7 @@ pub struct ComposerRuntimeChoice {
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize, uniffi::Record)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct ComposerInputContent {
     pub text: String,
     pub attachments: Vec<ComposerAttachment>,
@@ -50,7 +49,7 @@ pub struct ComposerInputContent {
 
 /// Execution choices belong to a target, independently of borrowed input content.
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize, uniffi::Record)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct ComposerTargetChoices {
     pub runtime_id: Option<String>,
     pub runtime_owner_id: Option<String>,
@@ -59,7 +58,7 @@ pub struct ComposerTargetChoices {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, uniffi::Record)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct ComposerTarget {
     pub context: ComposerContextKey,
     pub revision: u64,
@@ -67,7 +66,7 @@ pub struct ComposerTarget {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, uniffi::Record)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct ComposerInput {
     pub id: String,
     pub revision: u64,
@@ -75,7 +74,7 @@ pub struct ComposerInput {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, uniffi::Record)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct ComposerInputBinding {
     pub context: ComposerContextKey,
     pub input_id: String,
@@ -83,7 +82,7 @@ pub struct ComposerInputBinding {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, uniffi::Record)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct ComposerCreation {
     pub input_id: String,
     pub owner_id: String,
@@ -93,7 +92,7 @@ pub struct ComposerCreation {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, uniffi::Record)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct ComposerInputState {
     /// Stable execution-application identity, independent of the viewing client.
     pub owner_id: String,
@@ -106,7 +105,7 @@ pub struct ComposerInputState {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, uniffi::Record)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct ComposerInputUpdate {
     pub revision: u64,
     /// None means the caller already has this exact directory revision.
@@ -118,8 +117,7 @@ pub struct ComposerInputUpdate {
     tag = "operation",
     content = "parameters",
     rename_all = "camelCase",
-    rename_all_fields = "camelCase",
-    deny_unknown_fields
+    rename_all_fields = "camelCase"
 )]
 pub enum ComposerInputOperation {
     Read {

@@ -9,7 +9,7 @@ use std::{
 use velune_application_api::*;
 
 #[derive(Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 struct Stored {
     schema_version: u32,
     state: ComposerInputState,
@@ -641,6 +641,7 @@ impl ComposerInputs {
             .ok_or_else(|| Error::invalid("composer attachment does not exist"))?;
         Ok(self.attachments.join(id).join(&attachment.name))
     }
+
     pub(crate) fn owner_id(&self) -> String {
         self.stored.state.owner_id.clone()
     }
