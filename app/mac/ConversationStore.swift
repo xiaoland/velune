@@ -1008,7 +1008,7 @@ final class ConversationStore: ObservableObject {
     /// Whether the user message may be edited now, and how. The edit goes to
     /// the conversation's own runtime with the next turn's choices.
     func editability(of messageID: String) -> EditableMessage? {
-        guard !isPreview, !isDraft, canSend else { return nil }
+        guard !isPreview, !isDraft else { return nil }
         return followUp.editable.first { $0.messageId == messageID }
     }
     func message(id: String) -> DeliveredMessage? { snapshot?.messages.first { $0.id == id } }
@@ -1021,13 +1021,26 @@ final class ConversationStore: ObservableObject {
         return recovery
     }
     /// Whether a turn's closing reply may fork the conversation now.
-    var canFork: Bool { !isPreview && !isDraft && followUp.canFork }
+    var canFork: Bool { !isPreview && !isDraft }
+    /// A fork asked while the conversation ran, waiting for the turn to end.
+    @Published private(set) var heldForkNotice: String?
+    private var heldFork: (messageID: String, open: (SnapshotResult) -> Void)?
+    private var heldEditFork: (messageID: String, text: String, attachments: [String], open: (SnapshotResult) -> Void)?
     var messageEditingRuntimeName: String? { snapshot.flatMap { value in device.runtimeInstances.first { $0.id == value.contextRuntimeID }?.name } }
     func isLastUserMessage(_ messageID: String) -> Bool { snapshot?.messages.last { $0.role == .user }?.id == messageID }
     /// Send `text` in place of a user message. In place the conversation
     /// shows the new turn here; a fork's new conversation goes to `forked`.
+    /// A fork asked while a turn runs waits for the turn to end; in place
+    /// stops the turn first, as the user confirmed in the editor.
     func editMessage(_ messageID: String, placement: EditPlacement, text: String, attachments: [String], forked: @escaping (SnapshotResult) -> Void, accepted: @escaping () -> Void) {
         guard editability(of: messageID) != nil, let runtimeID = snapshot?.conversation.runtimeID, let conversationID = loadedConversationID else { return }
+        if placement == .fork && !forkReady {
+            heldEditFork = (messageID, text, attachments, forked)
+            heldForkNotice = "已安排：当前 turn 结束后自动分叉"
+            accepted()
+            return
+        }
+        heldEditFork = nil
         var kept = keptComposerChoices
         kept.runtimeID = snapshot?.contextRuntimeID ?? runtimeID
         let editNext = resolve(kept: kept)
@@ -1043,14 +1056,49 @@ final class ConversationStore: ObservableObject {
             accepted()
         }
     }
+    /// Whether the conversation can take a fork now; otherwise the request
+    /// waits for the running turn to end.
+    private var forkReady: Bool { !isGenerating && snapshot?.runState != .elsewhere && !isLoading }
+
     /// Fork the conversation through the turn `messageID` starts; the new
-    /// conversation goes to `forked`, this one stays as it is.
+    /// conversation goes to `forked`, this one stays as it is. While a turn
+    /// runs the fork waits for it to end, then goes by itself.
     func forkConversation(through messageID: String, forked: @escaping (SnapshotResult) -> Void) {
         guard canFork, let runtimeID = snapshot?.conversation.runtimeID, let conversationID = loadedConversationID, let transport else { return }
-        enqueue({ try transport.forkConversation(runtimeID: runtimeID, conversationID: conversationID, messageID: messageID) }) { [weak self] value in
+        guard forkReady else {
+            heldFork = (messageID, forked)
+            heldForkNotice = "已安排：当前 turn 结束后自动分叉"
+            return
+        }
+        heldFork = nil; heldForkNotice = nil
+        enqueue({ try transport.forkConversation(runtimeID: runtimeID, conversationID: conversationID, messageID: messageID) },
+                onFailure: { [weak self] error in
+                    // The turn may have restarted between the idle check and
+                    // this request; hold again instead of dropping the fork.
+                    guard let self, Self.isBusy(error) else { return }
+                    self.heldFork = (messageID, forked)
+                    self.heldForkNotice = "已安排：当前 turn 结束后自动分叉"
+                }) { [weak self] value in
             guard let self else { return }
             forked(value)
             self.device.refreshConversations()
+        }
+    }
+
+    /// The core refused because the conversation's turn runs (code "busy").
+    private static func isBusy(_ error: Error) -> Bool {
+        AppProblem.failure(error).code == "busy"
+    }
+
+    /// A held fork or edit-fork fires once the conversation is ready again.
+    private func fireHeldForkIfReady() {
+        guard forkReady, !isShuttingDown else { return }
+        if let held = heldFork {
+            heldFork = nil; heldForkNotice = nil
+            forkConversation(through: held.messageID, forked: held.open)
+        } else if let held = heldEditFork {
+            heldEditFork = nil; heldForkNotice = nil
+            editMessage(held.messageID, placement: .fork, text: held.text, attachments: held.attachments, forked: held.open, accepted: {})
         }
     }
     /// Show a conversation the core has already opened, as `result` gives it.
@@ -1155,8 +1203,11 @@ final class ConversationStore: ObservableObject {
         if !isSideChat && !isDraft { device.rememberConversationTitle(value.conversation) }
         restoreNextTurnIntent(for: value); refreshNextTurn()
         if !preserveSelection && conversationChanged && selectedConversationIDs.count <= 1 { selectedConversationIDs = [value.conversation.id] }
-        let editable = !isPreview && !isDraft && canSend ? Set(value.followUp.editable.map(\.messageId)) : []
-        transcript.apply(value.messages, turns: value.transcriptTurns, items: value.transcriptItems, outline: value.transcriptOutline, identities: value.transcriptMessageIdentities, canFork: canFork, editable: editable)
+        // A fork held while a turn ran goes by itself once the turn ends.
+        if conversationChanged { heldFork = nil; heldEditFork = nil; heldForkNotice = nil }
+        else { fireHeldForkIfReady() }
+        let editable = !isPreview && !isDraft ? Set(value.followUp.editable.map(\.messageId)) : []
+        transcript.apply(value.messages, turns: value.transcriptTurns, items: value.transcriptItems, outline: value.transcriptOutline, identities: value.transcriptMessageIdentities, editable: editable)
         activity = switch value.runState {
         // A turn that a Harness process outside this execution runs reads the same.
         case .running, .elsewhere: TranscriptActivity(text: Self.currentWork(value.messages.last), isLive: true)
@@ -1320,6 +1371,9 @@ extension ConversationStore {
     /// Hidden native check of the production navigation/catalog admission path.
     /// A retained source snapshot must not launch any catalog before open finishes.
     static func checkOpeningCatalogAdmission() {
+        let busy = TransportError.operation("fork", .diagnostic(kind: "busy", detail: "synthetic", code: "busy", phase: "application", operationID: "synthetic"))
+        precondition(isBusy(busy), "操作包装不能丢失可稍后执行的 busy 状态")
+        precondition(!isBusy(TransportError.rejected("busy")), "错误正文不能充当类型化准入")
         let device = DeviceStore(preview: true)
         let store = ConversationStore(device: device)
         let source = device.previewSnapshots["sample-0"]!

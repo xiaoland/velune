@@ -125,6 +125,10 @@ pub enum Error {
     /// or background tasks still run.
     #[error("子 Agent 仍在运行；请等待其结束，或先停止子 Agent")]
     OutstandingWork,
+    /// The conversation's own turn runs; the asked branch would disturb it.
+    /// Fork requests hold for the turn to end instead of interrupting it.
+    #[error("会话正在运行；请等当前 turn 结束后重试")]
+    Busy,
     #[error("application I/O failed: {0}")]
     Io(#[from] std::io::Error),
     #[error("application JSON failed: {0}")]
@@ -206,6 +210,14 @@ impl From<Error> for Failure {
                 Kind::OutstandingWork,
                 "子 Agent 仍在运行；请等待其结束，或先停止子 Agent",
             ),
+            Error::Busy => {
+                let mut failure = Failure::new(
+                    Kind::Invalid,
+                    "会话正在运行；请等当前 turn 结束后重试".to_owned(),
+                );
+                failure.code = "busy".into();
+                failure
+            }
             Error::Io(error) => Failure::new(Kind::Io, error.to_string()),
             Error::Json(error) => Failure::new(Kind::Contract, error.to_string()),
             Error::History(error) => {

@@ -228,9 +228,9 @@ import VeluneBindings
         ]),
         .init(id: "answer", role: .assistant, timestampUnixMs: now, blocks: [.text(text: "结果 Needle\n\n```swift\nlet needle = true\n```")])
     ]
-    let turn = TranscriptTurn(id: "turn", userMessageId: "user", workMessageIds: ["work", "deferred"], lastMessageId: "answer", replyStartBlock: 0, durationMs: 1200, isRunning: false, outcome: .completed, settings: nil, usage: nil)
+    let turn = TranscriptTurn(id: "turn", userMessageId: "user", workMessageIds: ["work", "deferred"], lastMessageId: "answer", replyStartBlock: 0, durationMs: 1200, isRunning: false, canFork: true, outcome: .completed, settings: nil, usage: nil)
     let model = TranscriptModel()
-    model.apply(messages, turns: [turn], items: [.message(id: "user", messageId: "user"), .work(turnId: "turn"), .message(id: "answer", messageId: "answer")], outline: [.init(id: "user", messageId: "user")], identities: messages.map { .init(id: $0.id, messageId: $0.id) }, canFork: true, editable: ["user"])
+    model.apply(messages, turns: [turn], items: [.message(id: "user", messageId: "user"), .work(turnId: "turn"), .message(id: "answer", messageId: "answer")], outline: [.init(id: "user", messageId: "user")], identities: messages.map { .init(id: $0.id, messageId: $0.id) }, editable: ["user"])
     let find = TranscriptFind()
     let controller = TranscriptTableController()
     controller.observeFind(find)

@@ -685,6 +685,10 @@ pub struct TranscriptTurn {
     /// Observed execution elapsed time. None for history without lifecycle evidence.
     pub duration_ms: Option<u64>,
     pub is_running: bool,
+    /// A fork may start a new conversation from this turn's end, even while
+    /// a later turn runs; false on the unfinished turn itself.
+    #[serde(default)]
+    pub can_fork: bool,
     #[serde(default)]
     #[uniffi(default = None)]
     pub outcome: Option<TurnOutcome>,

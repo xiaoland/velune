@@ -499,6 +499,7 @@ impl CoreRuntime {
         transcript.apply(TranscriptEvent::ExecutionState(snapshot.run_state.clone()));
         snapshot.transcript_turns = transcript.turns();
         self.name_turn_models(&mut snapshot.transcript_turns);
+        self.stamp_forkable_turns(&mut snapshot);
         snapshot.transcript_items = transcript.items();
         snapshot.transcript_outline = transcript.outline();
         snapshot.transcript_message_identities = transcript.message_identities();

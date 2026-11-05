@@ -232,6 +232,7 @@ mod tests {
             reply_start_block: 0,
             duration_ms: None,
             is_running: running,
+            can_fork: false,
             outcome: None,
             settings: None,
             usage,

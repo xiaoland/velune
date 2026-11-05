@@ -529,6 +529,7 @@ impl CoreRuntime {
         self.keep_turn_requests(&snapshot);
         snapshot.transcript_turns = self.session.transcript_projection.turns();
         self.name_turn_models(&mut snapshot.transcript_turns);
+        self.stamp_forkable_turns(&mut snapshot);
         snapshot.transcript_items = self.session.transcript_projection.items();
         snapshot.transcript_outline = self.session.transcript_projection.outline();
         snapshot.transcript_message_identities =

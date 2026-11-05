@@ -712,6 +712,93 @@ impl CoreRuntime {
         })
     }
 
+    /// Write translated context as a native conversation of `runtime` and
+    /// return its native identity. Shared by handoff and by the translated
+    /// branch an edit or fork takes when no single native source can branch.
+    pub(super) fn import_context_to(
+        &self,
+        runtime: &crate::config::RuntimeInstance,
+        cwd: &Path,
+        context: &velune_agent_runtime::import::Context,
+        managed: bool,
+    ) -> Result<velune_agent_runtime::import::ImportedConversation, RuntimeError> {
+        let imported = match runtime.type_id {
+            RuntimeKind::ClaudeCode => {
+                let config = self.native_config(runtime, None)?;
+                let version = velune_agent_runtime::version::probe_version_at(
+                    "claude-code",
+                    &config.binary,
+                    config.node_binary.as_deref(),
+                    &config.execution,
+                    config.os_home.as_deref(),
+                )
+                .map_err(|error| RuntimeError::context("Claude 版本探测", error))?;
+                // Claude Code names the project folder after the physical
+                // working directory; resolve links the way its process will.
+                let physical = match &config.execution {
+                    velune_agent_runtime::execution::ExecutionTarget::Local => {
+                        std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf())
+                    }
+                    _ => cwd.to_path_buf(),
+                };
+                velune_agent_runtime::import::import_claude_conversation(
+                    &config.execution,
+                    &config.agent_dir,
+                    &physical,
+                    context,
+                    &version,
+                )
+            }
+            RuntimeKind::Codex166 => {
+                let config = self.native_config(runtime, None)?;
+                let version = velune_agent_runtime::version::probe_version_at(
+                    "codex",
+                    &config.binary,
+                    config.node_binary.as_deref(),
+                    &config.execution,
+                    config.os_home.as_deref(),
+                )
+                .map_err(|error| RuntimeError::context("Codex 版本探测", error))?;
+                let provider = if managed {
+                    "velune".to_owned()
+                } else {
+                    velune_agent_runtime::native::codex_context_provider(
+                        &self.history_config(runtime)?,
+                        cwd,
+                    )
+                    .map_err(|error| RuntimeError::context("Codex 提供商配置", error))?
+                };
+                velune_agent_runtime::import::import_codex_conversation(
+                    &config.execution,
+                    &config.agent_dir,
+                    cwd,
+                    context,
+                    &version,
+                    &provider,
+                )
+            }
+            RuntimeKind::Pi => {
+                let config = self.pi_history_config(runtime)?;
+                velune_agent_runtime::import::import_pi_conversation(
+                    &config.execution,
+                    config
+                        .agent_dir
+                        .as_deref()
+                        .ok_or_else(|| RuntimeError::invalid("Pi 来源目录无效"))?,
+                    config.session_dir.as_deref(),
+                    cwd,
+                    context,
+                )
+            }
+            _ => {
+                return Err(RuntimeError::invalid(
+                    "当前上下文运行时不支持写入翻译历史",
+                ))
+            }
+        };
+        imported.map_err(|error| RuntimeError::context("翻译历史", error))
+    }
+
     /// Hand the conversation to a runtime with a writable native session:
     /// translate effective model context into a native session the target owns,
     /// link it as the new tail, and send this turn's request as an ordinary
@@ -803,77 +890,8 @@ impl CoreRuntime {
             .clone()
             .ok_or_else(|| RuntimeError::invalid("交接来源缺少工作目录"))?;
         let cwd = PathBuf::from(cwd);
-        let imported = match runtime.type_id {
-            RuntimeKind::ClaudeCode => {
-                let config = self.native_config(&runtime, None)?;
-                let version = velune_agent_runtime::version::probe_version_at(
-                    "claude-code",
-                    &config.binary,
-                    config.node_binary.as_deref(),
-                    &config.execution,
-                    config.os_home.as_deref(),
-                )
-                .map_err(|error| RuntimeError::context("Claude 版本探测", error))?;
-                // Claude Code names the project folder after the physical
-                // working directory; resolve links the way its process will.
-                let physical = match &config.execution {
-                    velune_agent_runtime::execution::ExecutionTarget::Local => {
-                        std::fs::canonicalize(&cwd).unwrap_or_else(|_| cwd.clone())
-                    }
-                    _ => cwd.clone(),
-                };
-                velune_agent_runtime::import::import_claude_conversation(
-                    &config.execution,
-                    &config.agent_dir,
-                    &physical,
-                    &context,
-                    &version,
-                )
-            }
-            RuntimeKind::Codex | RuntimeKind::Codex166 => {
-                let config = self.native_config(&runtime, None)?;
-                let version = velune_agent_runtime::version::probe_version_at(
-                    "codex",
-                    &config.binary,
-                    config.node_binary.as_deref(),
-                    &config.execution,
-                    config.os_home.as_deref(),
-                )
-                .map_err(|error| RuntimeError::context("Codex 版本探测", error))?;
-                let provider = if matches!(model, Some(crate::ModelSelection::Managed { .. })) {
-                    "velune".to_owned()
-                } else {
-                    velune_agent_runtime::native::codex_context_provider(
-                        &self.history_config(&runtime)?,
-                        &cwd,
-                    )
-                    .map_err(|error| RuntimeError::context("Codex 提供商配置", error))?
-                };
-                velune_agent_runtime::import::import_codex_conversation(
-                    &config.execution,
-                    &config.agent_dir,
-                    &cwd,
-                    &context,
-                    &version,
-                    &provider,
-                )
-            }
-            RuntimeKind::Pi => {
-                let config = self.pi_history_config(&runtime)?;
-                velune_agent_runtime::import::import_pi_conversation(
-                    &config.execution,
-                    config
-                        .agent_dir
-                        .as_deref()
-                        .ok_or_else(|| RuntimeError::invalid("Pi 来源目录无效"))?,
-                    config.session_dir.as_deref(),
-                    &cwd,
-                    &context,
-                )
-            }
-            _ => unreachable!("continue_imported gates native kinds"),
-        }
-        .map_err(|error| RuntimeError::context("交接历史翻译", error))?;
+        let managed = matches!(model, Some(crate::ModelSelection::Managed { .. }));
+        let imported = self.import_context_to(&runtime, &cwd, &context, managed)?;
         let native_id = match &imported {
             velune_agent_runtime::import::ImportedConversation::ClaudeCode { session_id } => {
                 session_id.clone()

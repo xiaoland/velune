@@ -11,8 +11,7 @@ mod context;
 mod pi;
 pub use claude::import_claude_conversation;
 pub use codex::import_codex_conversation;
-pub use context::Context;
-use context::{Block, Role};
+pub use context::{Block, Context, ContextMessage, Role};
 pub use pi::import_pi_conversation;
 
 #[derive(Debug, Clone, PartialEq, Eq)]

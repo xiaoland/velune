@@ -398,6 +398,7 @@ mod tests {
             reply_start_block: 0,
             duration_ms: None,
             is_running: false,
+            can_fork: false,
             outcome: None,
             settings: Some(settings),
             usage: None,

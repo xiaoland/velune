@@ -197,7 +197,8 @@ struct TabContentView: View {
                        forkConversation: { [store, window] id in store.forkConversation(through: id, forked: window.openInNewTab(adopting:)) },
                        describeSettings: { [store] in store.describe($0) },
                        recovery: store.runtimeRecovery, stoppingRecovery: store.isStopping,
-                       canStopRecovery: store.canCancel, stopRecovery: store.cancel)
+                       canStopRecovery: store.canCancel, stopRecovery: store.cancel,
+                       heldForkNotice: store.heldForkNotice)
     }
 }
 
