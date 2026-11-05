@@ -863,8 +863,12 @@ struct WindowSeed: Codable, Hashable {
         guard !started else { return }
         started = true
         self.persistenceID = persistenceID
-        let saved = persistenceID.flatMap { application.windowWorkspaceJournal.restore(id: $0, recoverLatest: seed == nil && saved == nil && kind == .workspace, kind: kind, device: device) }
-            ?? saved.flatMap { $0.windowDevice == nil || $0.windowDevice == SavedWindowLayout.ExecutionDevice(device) ? $0 : nil }
+        let sceneSaved = saved.flatMap {
+            $0.isWhole && ($0.windowKind == nil || $0.windowKind == kind)
+                && ($0.windowDevice == nil || $0.windowDevice == SavedWindowLayout.ExecutionDevice(device)) ? $0 : nil
+        }
+        let saved = persistenceID.flatMap { application.windowWorkspaceJournal.restore(id: $0, recoverLatest: seed == nil && sceneSaved == nil && kind == .workspace, kind: kind, device: device) }
+            ?? sceneSaved
         list.start(loadFirstConversation: false)
         // A layout the system restores below replaces this one.
         switch kind {

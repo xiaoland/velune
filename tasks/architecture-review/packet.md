@@ -52,3 +52,17 @@ Windows 临时 worktree 与上传文件已清理，解除 junction 后保留共�
 按用户明确批准，验证后强制结束卡在退出阶段的 PID 75887，当时没有子进程。首轮真实迁移发现 3 条已删除运行时的孤立默认选择，已确认无重复 ID。完整原选择与三条孤立记录先私有备份到 `before-orphan-runtime-choice-review-f1jqyu2g`，仅从当前运行时默认集合移出孤立项，历史目标与输入记录保留。随后完整重装脚本 skip-build 成功，所有迁移完成，策略备份为 `before-runtime-start-policy-m8sg0td4`。Codex 退役备份为 `before-codex-166-ir_736h0`。
 
 最终日志 `reinstall-hang/reinstall-final.log` exit 0。新版 PID 35118 已启动，实际安装二进制和验证产物 SHA-256 一致，严格签名通过。现场新采样 `installed-sample.txt` 显示主线程正常处理事件，启动 error 级统一日志查询仅有表头。源码关键检查、实际安装和迁移已完成，继续由用户 dogfood 观察真实拖动后的退出体验。
+
+## 重装后的工作区恢复
+
+用户反馈原先 Tabs 未恢复。只读核对窗口元数据后确认，19:08:37 的退出恢复点仍有两组七个 Tab，七个会话来源均为本机已配置实例。该旧快照缺少 windowDevice，重装后 scene 身份丢失，严格的同设备 latest 筛选拒绝它，新版创建了一组一个 Tab 的新恢复点。此前仅验证了旧无归属快照被排除，遗漏了该真实版本切换的显式数据迁移。
+
+root 负责备份并显式将已确认的旧工作区映射为 local，恢复到当前 scene 的 journal 身份，正常重启核对实际恢复。当前窗口也先完整备份，保留撤回能力。structural_input 负责两个独立入口缺陷及合成反例，无效 SceneStorage 不得抑制有效 journal 回退，最新不完整 journal 不得遮住更早完整候选。继续保留设备隔离及既有 seed 语义。
+
+### 本次恢复修复的验收与部署暂停点
+
+Mac Swift／资源／严格签名构建通过，日志 `reinstall-hang/workspace-build.log`。合成隔离入口 `--experience-workspace-only` exit 0，共三组检查通过，覆盖设备／legacy 边界、无效最新及 exact 快照、实际 window.start 对 SceneStorage 合法性与 seed 的选择。
+
+正常退出脚本已发出请求，但超时返回，日常 PID 35118 继续运行。用户随后明确要求“别退出，我在用，稍后我一起重启”。当前禁止再次请求退出、强制结束或部署，直到用户明确恢复该步骤。shell 使用 set -e，布局迁移与重装均未执行，真实 journal 未改写。
+
+已准备的一次性人工恢复工具在 `target/verification/architecture-review-20261105/reinstall-hang/restore-workspace.py`，尚未执行。它在应用退出后获取 runtime.lock，核验旧两组七 Tab 的结构与本机来源，完整私有备份原恢复点和当前 scene 恢复点，再写入确认的 local／conversation 身份及原布局。源 snapshot 为 EF954EDE-D0DF-4E16-84D3-ECA8A55D229E，当前 scene 为 B29D05CB-9872-4B55-B693-FD0B5A109BA1。届时须重新核对当前 scene 和旧快照，正常退出后应用恢复、安装已验证构建、启动并核对实际重新保存的两组七 Tab。单纯重新打开当前已安装版本尚不会执行这项人工映射。

@@ -1,6 +1,88 @@
 import AppKit
 import Foundation
 
+/// Exercises journal selection and the real window-start candidate ordering.
+/// All state stays in the caller's synthetic home; no windows are created.
+@MainActor func workspaceRecoveryChecks(home: URL) {
+    func note(_ text: String) { FileHandle.standardError.write(Data((text + "\n").utf8)) }
+    let device = DeviceStore(preview: true)
+    let local = ConversationWindowModel(application: device, kind: .workspace)
+    let source = ConversationWindowModel(application: device, kind: .workspace, device: "synthetic-peer")
+    let directory = home.appendingPathComponent("workspace-device-check", isDirectory: true)
+    let journal = WindowWorkspaceJournal(directory: directory) { fatalError($0) }
+    let localID = UUID().uuidString, remoteID = UUID().uuidString
+    let localLayout = local.savedLayout, remoteLayout = source.savedLayout
+    journal.save(localLayout, id: localID)
+    journal.save(remoteLayout, id: remoteID)
+    journal.flush()
+    let snapshots = directory.appendingPathComponent("mac-window-workspaces", isDirectory: true)
+    try! FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSince1970: 1)], ofItemAtPath: snapshots.appendingPathComponent(localID + ".json").path)
+    try! FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSince1970: 2)], ofItemAtPath: snapshots.appendingPathComponent(remoteID + ".json").path)
+    precondition(journal.restore(id: UUID().uuidString, recoverLatest: true) == localLayout,
+                 "本机回退不能读取更新的远端窗口布局")
+    precondition(journal.restore(id: localID, recoverLatest: false) == localLayout)
+    precondition(journal.restore(id: remoteID, recoverLatest: false) == nil)
+    precondition(journal.restore(id: remoteID, recoverLatest: false, device: "synthetic-peer") == remoteLayout)
+    precondition(journal.restore(id: UUID().uuidString, recoverLatest: true, device: "another-peer") == nil)
+    var legacyLayout = remoteLayout
+    legacyLayout.windowDevice = nil
+    let legacyID = UUID().uuidString
+    journal.save(legacyLayout, id: legacyID)
+    journal.flush()
+    try! FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSince1970: 3)], ofItemAtPath: snapshots.appendingPathComponent(legacyID + ".json").path)
+    precondition(journal.restore(id: UUID().uuidString, recoverLatest: true) == localLayout,
+                 "旧快照缺设备身份时不能猜作本机latest")
+    precondition(journal.restore(id: legacyID, recoverLatest: false, device: "synthetic-peer") == legacyLayout,
+                 "旧快照保留显式scene身份恢复入口")
+    note("PASS workspace journal: exact and latest recovery stay within the execution device; unscoped legacy snapshots require an explicit scene identity")
+
+
+    // A structurally invalid newest or exact snapshot cannot hide a valid
+    // older candidate; a valid empty layout remains an ordinary candidate.
+    var invalidLayout = localLayout
+    invalidLayout.focused = UUID()
+    let invalidID = UUID().uuidString
+    journal.save(invalidLayout, id: invalidID)
+    journal.flush()
+    try! FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSince1970: 4)], ofItemAtPath: snapshots.appendingPathComponent(invalidID + ".json").path)
+    let tolerantJournal = WindowWorkspaceJournal(directory: directory) { _ in }
+    precondition(tolerantJournal.restore(id: UUID().uuidString, recoverLatest: true) == localLayout)
+    precondition(tolerantJournal.restore(id: invalidID, recoverLatest: true) == localLayout)
+    precondition(tolerantJournal.restore(id: invalidID, recoverLatest: false) == nil)
+    precondition(tolerantJournal.restore(id: UUID().uuidString, recoverLatest: true, device: "synthetic-peer") == remoteLayout)
+    note("PASS workspace journal filters incomplete layouts before exact/latest selection and keeps device isolation")
+
+    let startHome = home.appendingPathComponent("workspace-start-check", isDirectory: true)
+    let transport = Transport(stateDirectory: startHome, resourcesDirectory: Bundle.main.resourceURL!)
+    let startDevice = DeviceStore(transport: transport)
+    startDevice.windowWorkspaceJournal.save(localLayout, id: UUID().uuidString)
+    startDevice.windowWorkspaceJournal.flush()
+    var wrongKind = localLayout
+    wrongKind.windowKind = .single
+    for rejectedScene in [remoteLayout, wrongKind, invalidLayout] {
+        let restored = ConversationWindowModel(application: startDevice, kind: .workspace)
+        restored.start(restoring: rejectedScene, seed: nil, persistenceID: UUID().uuidString)
+        precondition(restored.savedLayout.layout == localLayout.layout && restored.savedLayout.panes == localLayout.panes,
+                     "无效SceneStorage不能阻止同设备同kind有效journal回退")
+    }
+    var validScene = remoteLayout
+    validScene.windowDevice = .local
+    let sceneWindow = ConversationWindowModel(application: startDevice, kind: .workspace)
+    sceneWindow.start(restoring: validScene, seed: nil, persistenceID: UUID().uuidString)
+    precondition(sceneWindow.savedLayout.layout == validScene.layout && sceneWindow.savedLayout.panes == validScene.panes,
+                 "有效本scene布局仍优先于无关latest恢复点")
+    let seeded = ConversationWindowModel(application: startDevice, kind: .workspace)
+    seeded.start(restoring: remoteLayout, seed: WindowSeed(conversationID: "synthetic:explicit"), persistenceID: UUID().uuidString)
+    precondition(seeded.focused.store.reachingConversationID == "synthetic:explicit" && seeded.savedLayout.panes != localLayout.panes,
+                 "明确seed在无有效scene时导航，不套用无关latest")
+    let restoredSeed = ConversationWindowModel(application: startDevice, kind: .workspace)
+    restoredSeed.start(restoring: validScene, seed: WindowSeed(conversationID: "synthetic:original"), persistenceID: UUID().uuidString)
+    precondition(restoredSeed.savedLayout.panes == validScene.panes,
+                 "系统重开的seeded窗口仍恢复有效scene，不退回最初导航")
+    precondition(!NSApp.isActive && NSApp.activationPolicy() == .prohibited)
+    note("PASS actual window start validates scene device/kind/structure before latest fallback; valid scenes and seeded-window recovery retain precedence")
+}
+
 /// Model checks for presentation ownership; no windows are shown or activated.
 @MainActor func workspaceContinuityChecks(home: URL) {
     func note(_ text: String) { FileHandle.standardError.write(Data((text + "\n").utf8)) }
@@ -36,33 +118,7 @@ import Foundation
                  "不同执行设备中相同消息 ID 不代表同一个 Artifact")
     note("PASS window ownership: remote seeds preserve device; Artifact reuse survives window handoff and source selection; foreign-device drops preserve both windows")
 
-    let directory = home.appendingPathComponent("workspace-device-check", isDirectory: true)
-    let journal = WindowWorkspaceJournal(directory: directory) { fatalError($0) }
-    let localID = UUID().uuidString, remoteID = UUID().uuidString
-    let localLayout = local.savedLayout, remoteLayout = source.savedLayout
-    journal.save(localLayout, id: localID)
-    journal.save(remoteLayout, id: remoteID)
-    journal.flush()
-    let snapshots = directory.appendingPathComponent("mac-window-workspaces", isDirectory: true)
-    try! FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSince1970: 1)], ofItemAtPath: snapshots.appendingPathComponent(localID + ".json").path)
-    try! FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSince1970: 2)], ofItemAtPath: snapshots.appendingPathComponent(remoteID + ".json").path)
-    precondition(journal.restore(id: UUID().uuidString, recoverLatest: true) == localLayout,
-                 "本机回退不能读取更新的远端窗口布局")
-    precondition(journal.restore(id: localID, recoverLatest: false) == localLayout)
-    precondition(journal.restore(id: remoteID, recoverLatest: false) == nil)
-    precondition(journal.restore(id: remoteID, recoverLatest: false, device: "synthetic-peer") == remoteLayout)
-    precondition(journal.restore(id: UUID().uuidString, recoverLatest: true, device: "another-peer") == nil)
-    var legacyLayout = remoteLayout
-    legacyLayout.windowDevice = nil
-    let legacyID = UUID().uuidString
-    journal.save(legacyLayout, id: legacyID)
-    journal.flush()
-    try! FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSince1970: 3)], ofItemAtPath: snapshots.appendingPathComponent(legacyID + ".json").path)
-    precondition(journal.restore(id: UUID().uuidString, recoverLatest: true) == localLayout,
-                 "旧快照缺设备身份时不能猜作本机latest")
-    precondition(journal.restore(id: legacyID, recoverLatest: false, device: "synthetic-peer") == legacyLayout,
-                 "旧快照保留显式scene身份恢复入口")
-    note("PASS workspace journal: exact and latest recovery stay within the execution device; unscoped legacy snapshots require an explicit scene identity")
+    workspaceRecoveryChecks(home: home)
 
     let notifiedDevice = DeviceStore(preview: true)
     var openings: [WindowSeed] = []

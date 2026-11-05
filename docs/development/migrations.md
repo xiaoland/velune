@@ -44,3 +44,9 @@ python3 scripts/migrations/codex-166.py --home <VELUNE_HOME> --binary <Codex-0.1
 `runtime-start-policy.py` 在既有 Codex 类型和 composer 内容迁移之后执行。它把 `composer-choices.json` schema 1 中每个实例的 `newConversation` 搬到 `generic-config.json` 的实例 `settings.newConversation`；普通配置仍为 schema 11。策略经共享核心的 typed codec 读写，与实例字段、执行位置／HOME 和 ACP launch 一次提交。`composer-choices.json` 改为 schema 2，只保留带 `runtimeType` 的 `lastChosen` 与原有历史意图；旧类型的上次选择不参与新类型默认，不清空会话目标的明确选择、正文或附件。
 
 退出占用状态目录的 Velune 后，可先用 `python3 scripts/migrations/runtime-start-policy.py --home <VELUNE_HOME>` 预览，再加 `--apply` 写入；完整 runner 已包含此步骤。原文件以 `0600` 权限保存在 `before-runtime-start-policy-*`。先提交普通配置，再提交 composer；两次提交之间中断时，旧 composer 仍是恢复源，重跑仅接受与源相同的已写策略，不覆盖原备份。重复／孤立的实例选择、未知类型或冲突策略整批拒绝，需人工核对。应用只读取新 composer schema，不自动转换或继续双写旧归属。
+
+## Mac 窗口恢复身份
+
+`SavedWindowLayout.windowDevice` 与 `windowKind` 定义恢复点的执行设备和窗口类型。更早的恢复点只能凭原 scene UUID 读取。版本切换若失去 SceneStorage 身份，应在部署时显式确认旧窗口的设备归属并迁移恢复点，确保其进入对应设备及类型的恢复候选。
+
+修复已有缺口时，先正常退出并取得状态目录排他锁，完整备份旧恢复点和当前 scene 恢复点。确认原窗口布局完整、会话来源属于目标执行设备后，为它标注设备和窗口类型，再以同一份布局恢复当前 scene 的 journal。保留原有分组、Tab UUID、顺序、焦点及输入身份，启动后核对应用重新保存的结构。来源不明的旧恢复点继续保留，交由明确映射处理。

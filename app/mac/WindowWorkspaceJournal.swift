@@ -55,6 +55,7 @@ final class WindowWorkspaceJournal: @unchecked Sendable {
             let snapshots = files.compactMap { url -> (id: String, date: Date, layout: SavedWindowLayout)? in
                 do {
                     let layout = try JSONDecoder().decode(SavedWindowLayout.self, from: Data(contentsOf: url))
+                    guard layout.isWhole else { report("恢复点 \(url.lastPathComponent) 的窗口布局不完整"); return nil }
                     return (url.deletingPathExtension().lastPathComponent, try url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate ?? .distantPast, layout)
                 } catch { report("无法读取恢复点 \(url.lastPathComponent)：\(error.localizedDescription)"); return nil }
             }.sorted { $0.date < $1.date }
@@ -67,8 +68,7 @@ final class WindowWorkspaceJournal: @unchecked Sendable {
                 ?? (recoverLatest ? snapshots.last { $0.layout.windowDevice == scope && $0.layout.windowKind == kind } : nil)
             // Shared content is authoritative. A window snapshot restores its cursor
             // and any explicitly pending edit; never copy text between input identities.
-            guard let layout = chosen?.layout, layout.isWhole else { return nil }
-            return layout
+            return chosen?.layout
         } catch { report(error.localizedDescription); return nil }
     }
 }
