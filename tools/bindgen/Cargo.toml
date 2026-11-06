@@ -1,0 +1,12 @@
+[package]
+name = "velune-build-tools"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[[bin]]
+name = "velune-bindgen"
+path = "src/main.rs"
+
+[dependencies]
+uniffi = { version = "=0.32.2", features = ["cli"] }

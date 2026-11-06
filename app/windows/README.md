@@ -68,11 +68,18 @@ Windows 的完整端：在本机运行 Agent、Harness 与网关，也能控制�
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\install-xurl.ps1
+# 开发构建（Rust dev、.NET Debug）：
 powershell -ExecutionPolicy Bypass -File scripts\build-windows.ps1
-target\windows\Velune\Velune.exe
+target\windows-dev\Velune\Velune.exe
+# 交付／性能验证：
+powershell -ExecutionPolicy Bypass -File scripts\build-windows.ps1 -Profile release
 ```
 
-脚本输出 `target\windows\Velune`：先构建 `velune_bindings.dll`，再用固定提交的 `uniffi-bindgen-cs`（安装在 `target\tools`）从中生成 C# 绑定到 `target\bindings\cs`（生成物不入库），最后 `dotnet publish` 出自包含的 `Velune.exe`。输出目录包括 .NET 与 Windows App SDK 运行时、两个 DLL，以及 Harness 辅助脚本、`node_modules`、官方 `xurl/bin/xurl.exe` 和第三方许可组成的 `resources`；整个目录可以移动，但各部分必须放在一起，Windows 从 exe 所在目录解析 DLL 依赖。生成绑定后也可以只用 `dotnet build app\windows\Velune.csproj` 编译。
+开发产物在 `target\windows-dev\Velune`，release 在 `target\windows\Velune`，两者都不安装或启动应用。Rust 使用独立的 `target\host-rust` 热缓存，开发配置保留增量并使用有限调试信息；完整原生变量调试按需使用显式配置，release 不作为日常编辑循环。
+
+脚本先确认 native 库，再从该库生成配套 C# 到 `target\bindings\cs`，随后运行 `dotnet publish`。固定提交的 `uniffi-bindgen-cs` 作为 host 工具保存在 `target\tools`；首次核验 Cargo 的安装记录或准备正确版本后写入工具身份，日常构建直接复用，不再每次进入远端安装。生成内容相同时保留文件和修改时间，publish 与资源输出也按变化同步，避免破坏 MSBuild 的增量判断。脚本经共享构建入口串行保护 Windows 输出，记录输入来源；构建期间源码变化会将本次结果标为过期，不冒充最新源码的验收。
+
+输出目录包括自包含的 .NET 与 Windows App SDK、两个 DLL，以及 Harness 辅助脚本、`node_modules`、官方 xURL 和第三方许可组成的 `resources`。整个目录可以移动，各部分须保持配套，Windows 从 exe 所在目录解析 DLL。生成绑定后也可以只用 `dotnet build app\windows\Velune.csproj` 编译；这种直接入口不会重新准备 native 库，不能用于确认新的跨语言接口。构建复用和缓存维护规则见[开发环境](../../docs/development/environment.md)。
 
 ## 数据与 Harness
 

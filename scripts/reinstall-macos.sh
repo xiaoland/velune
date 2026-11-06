@@ -19,7 +19,7 @@ done
 # signature check must not interrupt the conversation it is hosting.
 if "$build"; then
   echo '重装阶段：构建新版'
-  bash scripts/build-macos.sh --build-only
+  bash scripts/build-macos.sh --profile release --build-only
 fi
 app="$PWD/target/macos/Velune.app"
 echo '重装阶段：验证新版签名'

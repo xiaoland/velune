@@ -1,10 +1,24 @@
-# Builds Velune for Windows into target\windows\Velune: Velune.exe (WinUI 3,
-# self-contained), the bindings and RelayKit DLLs it loads, and the runtime
-# helper resources.
+﻿# Development defaults to Rust dev / .NET Debug. Release remains an explicit
+# delivery build, and neither mode installs or launches the application.
+param(
+    [Alias('Profile')] [ValidateSet('dev', 'release')] [string] $BuildProfile = 'dev'
+)
 $ErrorActionPreference = 'Stop'
 Set-Location (Split-Path $PSScriptRoot -Parent)
+$python = (Get-Command python).Source
 if (-not $env:GO) { $env:GO = (Get-Command go).Source }
 if (-not $env:VELUNE_RELAYKIT_CC) { $env:VELUNE_RELAYKIT_CC = (Get-Command x86_64-w64-mingw32-clang).Source }
+# PowerShell 5 otherwise sends ASCII to a native process's stdin.
+$OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+if ($env:VELUNE_BUILD_MANAGED -ne 'windows') {
+    & $python -I scripts/build-support.py run --platform windows --profile $BuildProfile -- `
+        powershell -NoProfile -ExecutionPolicy Bypass -File $PSCommandPath -Profile $BuildProfile
+    exit $LASTEXITCODE
+}
+function Invoke-BuildSupport {
+    & $python -I scripts/build-support.py @args
+    if ($LASTEXITCODE -ne 0) { throw "build-support failed: $args" }
+}
 $support = 'target\runtime-support'
 if (-not (Test-Path "$support\node_modules\huihua") -or -not (Test-Path "$support\THIRD_PARTY_NOTICES.md")) {
     throw 'Runtime support is missing; install it as docs/development.md describes.'
@@ -12,42 +26,74 @@ if (-not (Test-Path "$support\node_modules\huihua") -or -not (Test-Path "$suppor
 foreach ($file in 'bin\xurl.exe', 'LICENSE', 'REVISION') {
     if (-not (Test-Path "$support\xurl\$file")) { throw '缺少 xURL；请先运行 scripts\install-xurl.ps1。' }
 }
-cargo build --locked --release -p velune-bindings
+$nativeProfile = if ($BuildProfile -eq 'dev') { 'debug' } else { 'release' }
+$configuration = if ($BuildProfile -eq 'dev') { 'Debug' } else { 'Release' }
+$app = if ($BuildProfile -eq 'dev') { 'target\windows-dev\Velune' } else { 'target\windows\Velune' }
+$native = "target\host-rust\$nativeProfile"
+cargo build --locked --profile $BuildProfile --target-dir target/host-rust -p velune-bindings --lib
 if ($LASTEXITCODE -ne 0) { throw 'cargo build failed' }
 
-# The C# bindings are generated from the metadata in the library just built,
-# by uniffi-bindgen-cs at the commit that supports UniFFI 0.32 (NordSecurity
-# PR #176); cargo keeps an installed copy at the same commit.
+# An installed generator is a fixed host tool, independent of application source.
+# Adopt Cargo's exact installation receipt once; normal builds need no git fetch.
+$revision = 'cf0aa7a8fb59358a846708730a58a02bf206ac05'
 $generator = 'target\tools\uniffi-bindgen-cs'
-cargo install uniffi-bindgen-cs --locked --quiet --root $generator `
-    --git https://github.com/NordSecurity/uniffi-bindgen-cs --rev cf0aa7a8fb59358a846708730a58a02bf206ac05
-if ($LASTEXITCODE -ne 0) { throw 'installing uniffi-bindgen-cs failed' }
-# The generator runs `cargo metadata`; outside cargo it finds cargo only by CARGO.
+$generatorBinary = "$generator\bin\uniffi-bindgen-cs.exe"
+$generatorMarker = "$generator\.velune-generator.json"
+$generatorReady = $false
+if (Test-Path $generatorBinary) {
+    $binaryHash = (Get-FileHash -Algorithm SHA256 $generatorBinary).Hash.ToLowerInvariant()
+    if (Test-Path $generatorMarker) {
+        $installed = Get-Content -Raw -Encoding UTF8 $generatorMarker | ConvertFrom-Json
+        $generatorReady = $installed.revision -eq $revision -and $installed.sha256 -eq $binaryHash
+    }
+    if (-not $generatorReady -and (Test-Path "$generator\.crates2.json")) {
+        $receipt = Get-Content -Raw -Encoding UTF8 "$generator\.crates2.json" | ConvertFrom-Json
+        $source = "^uniffi-bindgen-cs [^ ]+ \(git\+https://github\.com/NordSecurity/uniffi-bindgen-cs\?rev=$revision#$revision\)$"
+        $generatorReady = @($receipt.installs.PSObject.Properties | Where-Object { $_.Name -match $source -and $_.Value.bins -contains 'uniffi-bindgen-cs.exe' }).Count -gt 0
+    }
+}
+if (-not $generatorReady) {
+    cargo install uniffi-bindgen-cs --locked --quiet --root $generator `
+        --git https://github.com/NordSecurity/uniffi-bindgen-cs --rev $revision
+    if ($LASTEXITCODE -ne 0) { throw 'installing uniffi-bindgen-cs failed' }
+    $binaryHash = (Get-FileHash -Algorithm SHA256 $generatorBinary).Hash.ToLowerInvariant()
+}
+@{ revision = $revision; sha256 = $binaryHash } | ConvertTo-Json -Compress |
+    & $python -I scripts/build-support.py write $generatorMarker
+if ($LASTEXITCODE -ne 0) { throw 'recording uniffi-bindgen-cs identity failed' }
+# The generator runs cargo metadata. Each crate retains its own namespace config.
 $env:CARGO = (Get-Command cargo).Source
-# Each contract crate's own uniffi.toml sets its namespace; a --config here
-# would override them all and merge the files' internal helpers.
-Remove-Item -Recurse -Force target\bindings\cs -ErrorAction SilentlyContinue
-& "$generator\bin\uniffi-bindgen-cs.exe" --library target\release\velune_bindings.dll `
-    --out-dir target\bindings\cs --no-format
-if ($LASTEXITCODE -ne 0) { throw 'uniffi-bindgen-cs failed' }
+Invoke-BuildSupport bindgen --library "$native\velune_bindings.dll" --language cs `
+    --generator $generatorBinary --out-dir target/bindings/cs
 
-$app = 'target\windows\Velune'
-Remove-Item -Recurse -Force $app -ErrorAction SilentlyContinue
-dotnet publish app\windows\Velune.csproj --configuration Release --output $app
+# MSBuild retains its normal input tracking; generated C# timestamps only change
+# when its contents do. The publish tree is not deleted between invocations.
+dotnet publish app\windows\Velune.csproj --configuration $configuration --output $app
 if ($LASTEXITCODE -ne 0) { throw 'dotnet publish failed' }
-Copy-Item target\release\velune_bindings.dll, target\release\velune_relaykit.dll $app
+Invoke-BuildSupport copy "$native\velune_bindings.dll" "$app\velune_bindings.dll"
+Invoke-BuildSupport copy "$native\velune_relaykit.dll" "$app\velune_relaykit.dll"
 
 $resources = "$app\resources"
-New-Item -ItemType Directory -Force "$resources\ThirdParty" | Out-Null
 $scripts = 'pi_sdk', 'pi_sessions', 'pi_rpc', 'pi_virtual_model', 'pi_auth', 'pi_provider_import', 'huihua_sessions'
-foreach ($script in $scripts) { Copy-Item "packages\agent-runtime\resources\$script.mjs" $resources }
-Copy-Item -Recurse "$support\node_modules" "$resources\node_modules"
-Copy-Item packages\agent-runtime\runtime-support\THIRD_PARTY_NOTICES.md "$resources\ThirdParty"
-New-Item -ItemType Directory -Force "$resources\xurl\bin", "$resources\ThirdParty\xurl" | Out-Null
-Copy-Item "$support\xurl\bin\xurl.exe" "$resources\xurl\bin"
-Copy-Item "$support\xurl\LICENSE", "$support\xurl\REVISION" "$resources\xurl"
-Copy-Item "$support\xurl\LICENSE", "$support\xurl\REVISION" "$resources\ThirdParty\xurl"
-Add-Content -Encoding UTF8 "$resources\ThirdParty\THIRD_PARTY_NOTICES.md" @'
+foreach ($script in $scripts) { Invoke-BuildSupport copy "packages\agent-runtime\resources\$script.mjs" "$resources\$script.mjs" }
+if (Test-Path $resources) {
+    Get-ChildItem $resources -Filter '*.mjs' -File | Where-Object { $_.BaseName -notin $scripts } | Remove-Item
+}
+Invoke-BuildSupport sync "$support\node_modules" "$resources\node_modules" --prune
+Invoke-BuildSupport sync "$support\xurl" "$resources\xurl" --prune --include 'bin/*' --include LICENSE --include REVISION
+Remove-Item "$resources\xurl\.crates.toml", "$resources\xurl\.crates2.json" -ErrorAction SilentlyContinue
+Invoke-BuildSupport sync packages/agent-runtime/runtime-support/licenses "$resources\ThirdParty\licenses" --prune
+Invoke-BuildSupport copy packages/agent-runtime/runtime-support/package-lock.json "$resources\ThirdParty\runtime-support-package-lock.json"
+Invoke-BuildSupport sync app/mac/Licenses/RelayKit "$resources\ThirdParty\RelayKit" --prune --include '*.txt' --include '*.md'
+foreach ($file in 'go.mod', 'go.sum') {
+    Invoke-BuildSupport copy "packages\ai-provider\relaykit-bridge\$file" "$resources\ThirdParty\RelayKit\$file"
+}
+foreach ($file in 'LICENSE', 'REVISION') {
+    Invoke-BuildSupport copy "$support\xurl\$file" "$resources\ThirdParty\xurl\$file"
+}
+# An incrementally assembled notice must not append a second copy on every run.
+$notice = (Get-Content -Raw -Encoding UTF8 packages/agent-runtime/runtime-support/THIRD_PARTY_NOTICES.md).TrimEnd() + @'
+
 
 ## xURL
 
@@ -55,12 +101,12 @@ Add-Content -Encoding UTF8 "$resources\ThirdParty\THIRD_PARTY_NOTICES.md" @'
 来源：https://github.com/Xuanwo/xurl
 许可证：Apache-2.0。完整许可证与固定源码提交见 xurl/。
 '@
-Copy-Item -Recurse packages\agent-runtime\runtime-support\licenses "$resources\ThirdParty\licenses"
-Copy-Item packages\agent-runtime\runtime-support\package-lock.json "$resources\ThirdParty\runtime-support-package-lock.json"
-Copy-Item -Recurse app\mac\Licenses\RelayKit "$resources\ThirdParty\RelayKit"
-Copy-Item packages\ai-provider\relaykit-bridge\go.mod, packages\ai-provider\relaykit-bridge\go.sum "$resources\ThirdParty\RelayKit"
-New-Item -ItemType Directory -Force "$resources\ThirdParty\OpenTelemetry" | Out-Null
-Copy-Item app\windows\Licenses\OpenTelemetry-* "$resources\ThirdParty\OpenTelemetry"
-python -I scripts/android-licenses.py local-runtime,remote "$resources\ThirdParty\rust-licenses.txt" x86_64-pc-windows-msvc
+$notice | & $python -I scripts/build-support.py write "$resources\ThirdParty\THIRD_PARTY_NOTICES.md"
+if ($LASTEXITCODE -ne 0) { throw 'writing third-party notice failed' }
+Invoke-BuildSupport sync app/windows/Licenses "$resources\ThirdParty\OpenTelemetry" --prune --include 'OpenTelemetry-*'
+$licensePending = "$resources\ThirdParty\rust-licenses.txt.pending"
+& $python -I scripts/android-licenses.py local-runtime,remote $licensePending x86_64-pc-windows-msvc
 if ($LASTEXITCODE -ne 0) { throw 'collecting Rust licence notices failed' }
-Write-Output "Built $((Resolve-Path $app).Path)"
+Invoke-BuildSupport copy $licensePending "$resources\ThirdParty\rust-licenses.txt"
+Remove-Item $licensePending
+Write-Output "Built $((Resolve-Path $app).Path) ($BuildProfile)"

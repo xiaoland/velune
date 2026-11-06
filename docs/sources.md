@@ -109,6 +109,7 @@
 - <a id="s79"></a>[S79 · 必要迁移的持续授权](sources/development.md#s79)
 - <a id="s80"></a>[S80 · Adapter Type 独立且可编辑](sources/development.md#s80)
 - <a id="s81"></a>[S81 · 目标准备用例与未手选项继承](sources/development.md#s81)
+- <a id="s82"></a>[S82 · 开发构建复用与空间治理](sources/development.md#s82)
 
 ## 综合使用反馈与修复要求
 

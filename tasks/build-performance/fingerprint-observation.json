@@ -1,0 +1,21 @@
+{
+  "records": 435,
+  "rustc_variants": 1,
+  "profiles": {
+    "258017997941363226": 233,
+    "3463084908632292836": 90,
+    "5964164100107276443": 87,
+    "11751664268911691724": 21,
+    "9469513639638652478": 2,
+    "76744474993600644": 2
+  },
+  "features": {
+    "[\"default\", \"local-runtime\"]": 153,
+    "[]": 202,
+    "[\"local-runtime\"]": 80
+  },
+  "rustflags_variants": 1,
+  "config_variants": 1,
+  "path_variants": 6,
+  "dependency_graph_variants": 311
+}

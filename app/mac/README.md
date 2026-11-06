@@ -4,7 +4,7 @@
 
 app 通过生成的 UniFFI 接口消费 application 的完整用例，不解析 Pi RPC，不自行启动网关，也不承担跨包失败补偿。应用配置根为 `VELUNE_HOME`，默认 `~/.velune`；提供商 API key 由 application 私有配置保存，OAuth 保留原来源刷新。各 Harness 拥有真实会话持久化。
 
-使用 `svc run build-macos` 构建，使用 `svc run reinstall-macos` 构建、正常退出旧版、安装并在后台重开；重装命令由用户在 Velune 外执行。SVC Dev 中同样可操作 `macos-app` 的 `build`／`reinstall`。底层复用 [build-macos.sh](../../scripts/build-macos.sh) 和 [reinstall-macos.sh](../../scripts/reinstall-macos.sh)，本机签名身份在 `svc.local.json` 配置。真实登录、提供商调用和体验由用户验收；静态检查与隔离合成验证归 [开发说明](../../docs/development.md)。
+`svc run build-macos` 执行开发构建，输出至独立的 `target/macos-dev/Velune.app`，不安装日常应用。发布 profile 输出 `target/macos/Velune.app`；安装与重开只由 `svc run reinstall-macos` 执行。SVC Dev 中同样可操作 `macos-app` 的 `build`／`reinstall`。底层复用 [build-macos.sh](../../scripts/build-macos.sh) 和 [reinstall-macos.sh](../../scripts/reinstall-macos.sh)，本机签名身份在 `svc.local.json` 配置。Rust、UniFFI生成、Swift与资源按输入是否变化复用；dev使用Swift debug、限并行度2，release使用优化配置。真实登录、提供商调用和体验由用户验收；静态检查与隔离合成验证归 [开发说明](../../docs/development.md)。
 
 运行时设置展示 family、精确版本类型与配置实例，当前提供 Pi 1.4.0、Codex 0.166、Claude Code 2.1、DeepSeek Harness 0.2.0-rc.2 与通用 ACP。同类型可保存多个实例，工作目录属于具体会话。App 只消费通用消息与类型化权限／回答交互，不解析 ACP 或 app-server envelope；选择、回答和取消通过生成接口交给 adapter。运行时要求外部 Node 22.19+ 的绝对路径；Pi、Codex 与 DSH CLI 均由用户外部安装并配置。添加实例后即可浏览会话，新建表单选择实例／模型，目录可选；Mac首次发送才准备运行时并创建原生会话，继续历史时自动准备。恢复 Codex／DSH 缺少提供商身份的模型选择须明确指定，不宣称恢复上次 Velune 路由。编辑实例时可在“运行环境”中选择 HOME：继承当前用户、指定目录，或由 Velune 管理。Velune 管理时“运行时目录”隐去，由 core 在该 HOME 中推出；已保存实例显示 core 解析出的位置，可在 Finder 中显示（首次使用时创建）。“运行位置”可选本机或 SSH：SSH 填本机 OpenSSH 程序、主机（名或 ~/.ssh/config 别名，须预先完成非交互认证与主机信任）、可选端口，以及类型描述声明 `remoteResources` 时必填的远端辅助目录；远端实例的路径字段是执行机器上的绝对路径，不提供本机选择面板、`~` 展开或可执行文件自动发现，远端 managed HOME 需远端根目录。保存经 `upsert_runtime_with_execution`，保留表单不编辑的其他设置；设置列表在类型后标注“SSH 主机”。Store 按实例读取已保存的运行位置。类型描述声明 `launchOptions` 时（当前为通用 ACP），编辑器另有“启动参数”（逐个传给入口，不经 shell）与“环境变量”，经 `upsert_acp_runtime` 一并保存；声明 `agentInfo` 时，已保存实例可“读取 Agent 信息”：启动一次 Agent，展示名称、版本、会话能力与其报告的登录方式（登录由 Agent 自身完成）。
 
@@ -12,7 +12,7 @@ app 通过生成的 UniFFI 接口消费 application 的完整用例，不解析 
 
 会话内容消费 Rust 的类型权威，Mac 只派生展示行与展开、滚动状态。用户内容在右侧气泡，assistant 正文及工具左对齐；客户端扩展通知同样在右侧，运行时状态在左侧，工具输出不按 LLM Markdown 解析。Markdown 由固定 SwiftPM 依赖 swift-markdown 解析，许可证随应用分发；不恢复手写 fence 解析。虚拟列表使用稳定行身份，打开／发送到底，阅读历史时暂停流式跟随。
 
-Mac 最低支持macOS15，由根目录 [Package.swift](../../Package.swift) 定义独立 SwiftPM 产品，依赖固定 swift-markdown 0.9.0；[Package.resolved](../../Package.resolved) 锁传递依赖 swift-cmark。build-macos 先生成 UniFFI 模块，再以SwiftPM的Xcode后端构建本机架构release产品，应用与生成绑定目标各自启用warnings-as-errors，并打包`app/mac/Licenses`与解析锁文件。依赖保持各自声明的Swift语言模式；当前依赖没有资源bundle。Swift 包不依赖领域 Rust 包源码，只链接对应生成绑定与库。
+Mac 最低支持macOS15，由根目录 [Package.swift](../../Package.swift) 定义独立 SwiftPM 产品，依赖固定 swift-markdown 0.9.0；[Package.resolved](../../Package.resolved) 锁传递依赖 swift-cmark。build-macos 先生成 UniFFI 模块，再以SwiftPM的Xcode后端构建本机架构产品，dev为debug并限制jobs为2，release为优化构建。应用与生成绑定目标各自启用warnings-as-errors，并打包`app/mac/Licenses`与解析锁文件。依赖保持各自声明的Swift语言模式；当前依赖没有资源bundle。Swift 包不依赖领域 Rust 包源码，只链接对应profile生成绑定与库。
 
 新标签复用 DeviceStore 当前列表后直接读目标；不因打开标签先扫描所有运行时。显式 openWindow 请求以临时 seed 集合标记首次展示为普通窗口，展示后恢复全屏交互，系统恢复不消费这个临时意图；全屏源窗口的新开窗口沿用正常默认尺寸。列表拖放目标在异步读取 provider 前取消 ListDragWatch 的拖出后备动作，避免重复新窗口。
 

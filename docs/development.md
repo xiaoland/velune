@@ -22,6 +22,10 @@
 
 [开发环境与重装](development/environment.md)：SVC 资源、构建／重装入口、开发通道与本机覆盖。日常重装由用户在 Velune 外执行，会退出正在使用的应用。
 
+## 开发构建与缓存
+
+[开发构建与缓存](development/builds.md)：四端dev／release入口、同工作树请求复用、配套生成、来源记录与空闲缓存维护。
+
 ## 平台构建
 
 ### Mac 构建

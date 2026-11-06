@@ -1,0 +1,23 @@
+{
+  "measured_date": "2026-11-05",
+  "unit": "KiB, allocated blocks reported by du",
+  "directories": {
+    "target/debug": 221322632,
+    "target/debug/incremental": 144898152,
+    "target/debug/deps": 74452184,
+    "target/debug/build": 396620,
+    "target/release": 6484596,
+    "target/ios-rust": 31386748,
+    "target/ios-bindgen": 4992336,
+    "target/android-bindgen": 4916860,
+    "target/aarch64-linux-android": 2146800,
+    ".build": 6355540,
+    "target/ios": 3060612,
+    "/Volumes/WorkSSD/.dev-cache/cargo": 2332644,
+    "target/verification": 336236,
+    "app/android/app/build": 396676,
+    "target/macos": 145980
+  },
+  "incremental_crate_hash_directories": 2161,
+  "limitations": "Partial tree inventory; nested directories are not additive; APFS shared extents make physical reclaim uncertain."
+}

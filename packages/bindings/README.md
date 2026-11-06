@@ -61,8 +61,8 @@ Running、Unknown、ResultExpired、ServerRestarted 与传输不明保留 pendin
 
 ```sh
 cargo build --locked -p velune-bindings
-cargo run --locked -p velune-bindings --features cli --bin velune-bindgen -- \
-  generate --library target/debug/libvelune_bindings.dylib \
+cargo run --locked --target-dir target/build-tools -p velune-build-tools --bin velune-bindgen -- \
+  generate --library target/host-rust/debug/libvelune_bindings.dylib \
   --language swift --language kotlin --language python \
   --out-dir target/bindings
 ```

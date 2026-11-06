@@ -6,7 +6,7 @@
 
 | 资源 | 能力与启动依赖 |
 | --- | --- |
-| `macos-app` | `build` 只构建；`reinstall` 构建、正常退出旧版、安装并在后台启动。host scope 串行协调各工作树对日常安装的操作 |
+| `macos-app` | `reinstall` 以 release 构建、正常退出旧版、安装并在后台启动。host scope 只协调日常安装；开发编译走独立 run 入口 |
 | `lgtm` | sfp7 上已有的 Docker Compose 接收端，停止保留数据卷 |
 | `telemetry` | sfp7→本机的 Grafana 30300 与 OTLP/gRPC 34317；先确保 `lgtm` 就绪 |
 | `telemetry-windows` | 本机→Windows 的相同回环端口；先确保 `telemetry` 就绪 |
@@ -18,8 +18,7 @@ svc dev list
 svc run build-macos
 # 在 Velune 外的终端或 SVC Dev 中执行，会退出正在使用的 Velune：
 svc run reinstall-macos
-# 与两个 run 入口调用相同的动作：
-svc dev act macos-app build
+# 与重装入口调用相同的动作：
 svc dev act macos-app reinstall
 svc dev status telemetry
 svc dev act lgtm ensure
@@ -29,6 +28,8 @@ svc dev act telemetry-android ensure
 svc dev act telemetry-android stop
 svc dev act telemetry-windows stop
 ```
+
+开发默认dev、在途构建复用、配套输出与空间维护归[开发构建与缓存](builds.md)。
 
 ## Mac 重装
 
@@ -40,20 +41,17 @@ SSH 和 ADB 继续承担实际传输；[服务动作](../../scripts/dev_services
 
 共享配置使用已有 SSH 别名 `sfp7-ws.localhost`、`win-ws.localhost`，Android 默认选择唯一 USB 设备。需要不同主机或指定设备时，在被 Git 忽略的 `svc.local.json` 中用 schema 5 稀疏覆盖相应资源的 `observations.ready.probe.argv`、`actions.ensure.argv` 和 `actions.stop.argv`；设备参数为 `--device <serial>`，ADB 路径可用 `--adb` 指定。切换物理目标前先停止旧目标，并修改 `host_key`，避免与另一设备共享协调身份。认证仍由 SSH 和远端私有文件管理，不写入这些声明。
 
-`macos-app.actions.build.env` 与 `macos-app.actions.reinstall.env` 可在本机覆盖 `VELUNE_CODESIGN_IDENTITY` 和 `CARGO_HOME`，两个 run 入口会采用同一资源动作的有效环境。例如（签名名称和缓存目录按本机填写）：
+开发构建的本机环境放在 `run.<entry>.env`；重装仍放在 `dev.resources.macos-app.actions.reinstall.env`。CARGO_HOME须使用缓存真实路径，签名配置仍只保存在本机。旧的 `macos-app.actions.build.env` 覆盖需显式搬到两个Mac构建入口；本次工作区已完成此项本机配置调整，不由应用自动迁移。
 
 ```json
 {
   "schema_version": 5,
-  "dev": {
-    "resources": {
-      "macos-app": {
-        "actions": {
-          "build": {"env": {"VELUNE_CODESIGN_IDENTITY": "Apple Development: …", "CARGO_HOME": "/absolute/cargo-cache"}},
-          "reinstall": {"env": {"VELUNE_CODESIGN_IDENTITY": "Apple Development: …", "CARGO_HOME": "/absolute/cargo-cache"}}
-        }
-      }
-    }
-  }
+  "run": {
+    "build-macos": {"env": {"VELUNE_CODESIGN_IDENTITY": "Apple Development: …", "CARGO_HOME": "/absolute/cargo-cache"}},
+    "build-macos-release": {"env": {"VELUNE_CODESIGN_IDENTITY": "Apple Development: …", "CARGO_HOME": "/absolute/cargo-cache"}}
+  },
+  "dev": {"resources": {"macos-app": {"actions": {
+    "reinstall": {"env": {"VELUNE_CODESIGN_IDENTITY": "Apple Development: …", "CARGO_HOME": "/absolute/cargo-cache"}}
+  }}}}
 }
 ```

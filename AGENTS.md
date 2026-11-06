@@ -7,6 +7,7 @@
 - **产品行为与范围**：[`docs/prd/index.md`](docs/prd/index.md)，按其中“能力”索引进入对应分册。
 - **核心与平台分工、跨 unit 契约**：[`docs/product-tdd/index.md`](docs/product-tdd/index.md)；跨单元方案见 [`docs/design/`](docs/design/)。
 - **界面原则与平台约束**：[`DESIGN.md`](DESIGN.md)；平台实现细节见对应子树的 `AGENTS.md`、README 或 TDD。
+- **开发构建复用与缓存**：[`docs/development/builds.md`](docs/development/builds.md)。同工作树用具名SVC入口共享在途构建，按影响层验收并复用最终证据。
 - **构建、运行与验证**：[`docs/development.md`](docs/development.md) 和对应 unit 的说明。
 - **当前任务、临时证据与未决事项**：任务对应的 `tasks/<name>/packet.md`。
 - **需要追溯用户决定时**：[`docs/sources.md`](docs/sources.md)。

@@ -29,10 +29,14 @@ adb shell am start -n app.velune.android/.GalleryActivity --es screen conversati
 
 ```sh
 rustup target add aarch64-linux-android
-scripts/build-android.sh
+svc run build-android
 adb install -r app/android/app/build/outputs/apk/debug/app-debug.apk
 adb shell am start -n app.velune.android/.MainActivity
 ```
+
+开发入口默认使用 Rust dev（有限调试信息与增量缓存）和 debug APK；`scripts/build-android.sh --profile release` 显式构建 Rust release 与未签名 release APK，发布签名仍由分发流程负责。`--diagnostics` 可选择诊断特性。SVC 合并同工作树的在途请求；移动端共用 `target/cross-rust` 中按 triple 区分的 Rust 缓存，以及 `target/build-tools` 中的一份 host 生成器。Kotlin 绑定和 so 位于稳定的 `target/android-bindings`、`target/android-native`，内容未变时不更新文件，保持 Gradle 增量输入稳定。
+
+只修改 Kotlin 时可用 `scripts/build-android.sh --skip-native`；此入口先检查所选 profile 的 native 库与已生成绑定的摘要和配置是否配套。缺少或不匹配时失败，需先执行正常构建。跳过编译不证明 native 库已包含此后修改的 Rust 源码。开发构建不安装或启动应用。
 
 `scripts/build-android-native.sh` 同时运行 `scripts/android-licenses.py`，按实际链接的 Rust crate 生成 `target/android-licenses/rust-licenses.txt`；它与 [licenses](licenses) 下的 NOTICE 和许可全文一起作为 assets 打包，在“关于”中显示。新增 Java／Kotlin 依赖时同步更新 NOTICE。
 

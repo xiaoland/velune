@@ -4984,6 +4984,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "velune-build-tools"
+version = "0.1.0"
+dependencies = [
+ "uniffi",
+]
+
+[[package]]
 name = "velune-conversation"
 version = "0.1.0"
 dependencies = [

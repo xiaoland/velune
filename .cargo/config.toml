@@ -1,0 +1,5 @@
+# Ordinary cargo check/test/build commands share the same host development
+# domain. Mobile builds and the small host tool choose their domains explicitly.
+[build]
+target-dir = "target/host-rust"
+jobs = 2

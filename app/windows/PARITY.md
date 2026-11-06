@@ -65,3 +65,8 @@ Windows 按共享契约分别同步正文／附件的 InputID 与目标上下文
 2026-11-05：发送、排队和插入本轮改为消费共享核心的准入结果（`actions.can_send`、`follow_up.can_queue`、`follow_up.can_steer`），Windows 不再按父会话、待答交互或压缩状态重算规则。输入法、上传、请求在途及目标运行时匹配仍由本地入口处理。本轮已在隔离工作树通过 Rust release、C# 绑定生成、应用 publish 与资源打包；未执行 Windows 原生 UI 验收。
 
 执行目标准备已改用共享用例，目录、配置和窗口查询只消费已有投影。默认配置继续继承，用户明确改选由共享 helper 仅更新所选字段。Windows 运行时菜单保留准备失败时的修复入口。本轮隔离 Rust release、C# 绑定生成、dotnet publish 与资源打包均通过；未启动 Windows UI。
+
+
+### 开发构建与缓存（2026-11-06）
+
+Windows 构建采用共享输入来源和输出保护契约，默认 Rust dev／.NET Debug，release 显式选择。生成绑定及资源仅在内容变化时写入，固定 C# 生成器按身份复用；开发与交付包分别输出，安装仍独立。此次只改变构建链，不改变界面或业务能力；隔离开发构建与无变化复用通过，最终来源记录在独立合成 Git 目录中通过正常返回、临时修改后恢复的拒收及上次成功记录保留检查。本轮证据由[任务记录](../../tasks/build-performance/packet.md)维护，未启动 Windows UI。
