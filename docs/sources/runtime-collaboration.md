@@ -35,3 +35,7 @@
 ## S44
 
 2026-10-21 Windows 上 ChatGPT 桌面应用带的 Codex 为 0.163.0-alpha.10.2，超出 `codex-0.159` 的区间。用户问：“codex需要新的适配器？为什么？0.155不必支持了呀？还是说 0.163 又太新了”，随后决定：“先进行实测，如果真的不支持，再增加新的 adapter type；并且可以支持 alpha, beta ，这是无所谓的。”即先以实际 CLI 验证，确有破坏性变化才另建 adapter；预发布版本按其正式版计入区间。实测与区间调整见 版本区间任务（git 历史：tasks/adapter-version-ranges）。
+
+## S83
+
+2026-11-06 ChatGPT 桌面应用自带的 Codex app-server 更新到 0.167.0-alpha.3.2，超出 `codex-0.166` 的区间（≥0.166.0，<0.167.0），项目读取被拒。开发方按 S44 流程先以真实 CLI 实测：协议面静态核查（0.167 二进制中 adapter 依赖的全部 RPC 方法、事件与参数取值仍在），随后用 bundled 0.167 CLI 加合成回环上游跑通会话创建、原生目录（model/list 档位）、首轮、权限预设轮、原生恢复与分页历史、就地编辑（thread/revert）、分叉编辑（thread/fork 含继承）与会话列表。无破坏性变化，用户确认后直接抬高 `codex-0.166` 上限到 <0.168.0，保留 adapter 与 variant ID。实测与区间调整见 任务记录（git 历史：tasks/codex-167-range）。

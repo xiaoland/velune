@@ -43,7 +43,7 @@ Pi 固定版本及协议边界见 [开发说明](../../docs/development.md)。SD
 
 ## 版本与原生控制
 
-运行时类型是 versioned variant，family 仅用于展示分组，不作为派发键。四个专用 variant 为 `pi-1.0`（family `pi`）、`codex-0.166`（family `codex`）、`dsh-acp-0.2`（family `deepseek-harness`）、`claude-code-2.1`（family `claude-code`）。各自声明已验证的兼容区间（`Versions::Cli`，语义化版本比较）：≥1.0.2 <1.5.0、≥0.166.0 <0.167.0、≥0.2.0-rc.2 <0.3.0、≥2.1.286 <2.2.0；下限是以实际 CLI 验证过的版本，上限不含。比较只看 major.minor.patch，alpha、beta 等预发布版本按其正式版计入。Pi 1.4.0 保留了本适配器消费的 SDK／RPC／会话接口，因此沿用 `pi-1.0` 实例身份，并消费 1.1 起的 `agent_settled.aborted` 取消证据。较新的 CLI 经实际验证没有破坏性变化时提高上限（Codex 0.163.0-alpha.10.2 已于 2026-10-21 验证）。专用适配器启动前探测配置的 CLI 版本；协议握手继续检查所需能力。区间内的版本照常使用；出现破坏性变化才增加独立 variant 与 adapter，未经实际 CLI 验证不扩大区间；多个 variant 与同 variant 的多个实例可并存。
+运行时类型是 versioned variant，family 仅用于展示分组，不作为派发键。四个专用 variant 为 `pi-1.0`（family `pi`）、`codex-0.166`（family `codex`）、`dsh-acp-0.2`（family `deepseek-harness`）、`claude-code-2.1`（family `claude-code`）。各自声明已验证的兼容区间（`Versions::Cli`，语义化版本比较）：≥1.0.2 <1.5.0、≥0.166.0 <0.168.0、≥0.2.0-rc.2 <0.3.0、≥2.1.286 <2.2.0；下限是以实际 CLI 验证过的版本，上限不含。比较只看 major.minor.patch，alpha、beta 等预发布版本按其正式版计入。Pi 1.4.0 保留了本适配器消费的 SDK／RPC／会话接口，因此沿用 `pi-1.0` 实例身份，并消费 1.1 起的 `agent_settled.aborted` 取消证据。较新的 CLI 经实际验证没有破坏性变化时提高上限（Codex 0.163.0-alpha.10.2 已于 2026-10-21 验证，Codex 0.167.0-alpha.3.2 已于 2026-11-06 验证）。专用适配器启动前探测配置的 CLI 版本；协议握手继续检查所需能力。区间内的版本照常使用；出现破坏性变化才增加独立 variant 与 adapter，未经实际 CLI 验证不扩大区间；多个 variant 与同 variant 的多个实例可并存。
 
 Codex 0.166 的 `load_for_resume` 同时核对保存的 provider、请求 provider 与启动配置，`turn/start` 再检查当前 provider；旧适配器仅在请求中注入 `velune` 不再成立。新类型在子进程启动参数中注入自己的 gateway provider。原生与托管 provider 之间切换由 application 的既有逻辑会话接续处理；同 provider 恢复仍用原生 thread/resume。0.166 不改写原生 provider，不覆盖原 provider 的定义或凭据。历史、管理、控制探测与原生执行均保留具体 variant，不将 0.166 折回旧类型。
 

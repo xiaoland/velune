@@ -51,6 +51,7 @@
 - <a id="s34"></a>[S34 · 运行时版本兼容区间](sources/runtime-collaboration.md#s34)
 - <a id="s36"></a>[S36 · 关联 Agent 与打开方式](sources/runtime-collaboration.md#s36)
 - <a id="s44"></a>[S44 · 预发布版本兼容验证](sources/runtime-collaboration.md#s44)
+- <a id="s83"></a>[S83 · Codex 0.167 区间扩展](sources/runtime-collaboration.md#s83)
 
 ## 会话管理与侧聊
 

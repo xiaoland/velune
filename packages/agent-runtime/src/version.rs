@@ -224,7 +224,7 @@ const VARIANTS: &[RuntimeVariant] = &[
         name: "Codex 0.166",
         versions: Versions::Cli {
             minimum: "0.166.0",
-            below: "0.167.0",
+            below: "0.168.0",
         },
         can_rename_conversations: true,
         can_delete_conversations: true,
