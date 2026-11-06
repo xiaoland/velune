@@ -21,4 +21,4 @@ Pi 会话中 `read` 等工具返回的 `toolResult` 带 `type:"image"` content �
 
 ## 当前状态
 
-实现完成（`projection.rs`：新增 `image_blocks`/`attach_tool_images`，`apply_tool_result` 挂 Image 块并按内容去重保证 start/end 双事件幂等）。3 个新测试已写；编译中，等待 `cargo test -p velune-agent-runtime projection` 结果。已确认其他投影消费方（transcript/collaborators/sub_agents/delivery）按块类型匹配，附加 Image 块无副作用。
+已提交（898748c）。实现见 `projection.rs`：`image_blocks`/`attach_tool_images`，`apply_tool_result` 挂 Image 块并按内容去重保证 start/end 双事件幂等。3 个新测试通过（历史替换路径附图、start/end 双事件幂等、无调用方时独立 Tool 消息），用户在 Mac 原生关键路径验证图片正常显示。已确认其他投影消费方（transcript/collaborators/sub_agents/delivery）按块类型匹配，附加 Image 块无副作用。
