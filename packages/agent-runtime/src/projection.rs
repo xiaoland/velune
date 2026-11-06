@@ -832,6 +832,23 @@ fn update_tool(
     }
     false
 }
+/// Pi tool results carry images the tool read as content blocks next to the
+/// text; a block without data has nothing to show.
+fn image_blocks(content: &Value) -> Vec<MessageBlock> {
+    content
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|block| block["type"] == "image")
+        .map(|block| match block["data"].as_str() {
+            Some(data) => MessageBlock::Image {
+                media_type: block["mimeType"].as_str().map(str::to_owned),
+                source: crate::conversation::ImageSource::Data { data: data.into() },
+            },
+            None => MessageBlock::Notice { text: "图片".into() },
+        })
+        .collect()
+}
 fn apply_tool_result(messages: &mut Vec<Message>, native: &Value, identity: Option<&str>) {
     let id = native["toolCallId"].as_str();
     let state = if native["isError"] == true {
@@ -840,7 +857,16 @@ fn apply_tool_result(messages: &mut Vec<Message>, native: &Value, identity: Opti
         ToolState::Completed
     };
     let output = text_content(&native["content"]);
+    let images = image_blocks(&native["content"]);
     if !update_tool(messages, id, state.clone(), output.clone()) {
+        let mut blocks = vec![MessageBlock::Tool {
+            tool_id: id.map(str::to_owned),
+            title: native["toolName"].as_str().unwrap_or("工具").into(),
+            state,
+            output,
+            conversation_id: None,
+        }];
+        blocks.extend(images);
         messages.push(Message {
             turn_settings: None,
             turn_usage: None,
@@ -851,14 +877,37 @@ fn apply_tool_result(messages: &mut Vec<Message>, native: &Value, identity: Opti
                 .unwrap_or_else(|| format!("tool-result-{}", messages.len())),
             role: MessageRole::Tool,
             timestamp_unix_ms: native["timestamp"].as_i64(),
-            blocks: vec![MessageBlock::Tool {
-                tool_id: id.map(str::to_owned),
-                title: native["toolName"].as_str().unwrap_or("工具").into(),
-                state,
-                output,
-                conversation_id: None,
-            }],
+            blocks,
         });
+    } else {
+        attach_tool_images(messages, id, &images);
+    }
+}
+/// A tool result can arrive twice for one call (message start and end); adding
+/// an image again must not duplicate it. Images only ever attach to the
+/// message holding the matching tool call, which may carry other calls' blocks.
+fn attach_tool_images(messages: &mut [Message], id: Option<&str>, images: &[MessageBlock]) {
+    let Some(id) = id else { return };
+    if images.is_empty() {
+        return;
+    }
+    for message in messages.iter_mut().rev() {
+        let owns_call = message.blocks.iter().any(|block| {
+            matches!(block, MessageBlock::Tool { tool_id, .. } if tool_id.as_deref() == Some(id))
+        });
+        if !owns_call {
+            continue;
+        }
+        for image in images {
+            let duplicate = message
+                .blocks
+                .iter()
+                .any(|existing| existing == image);
+            if !duplicate {
+                message.blocks.push(image.clone());
+            }
+        }
+        return;
     }
 }
 fn message_from_pi(message: &Value, fallback_id: String) -> Option<Message> {
@@ -1257,6 +1306,86 @@ mod tests {
                 .any(|m| m.id == "pi-auto-retry")
         );
         assert!(p.turn_ended() && !p.can_sync_history());
+    }
+
+    #[test]
+    fn tool_result_images_attach_to_the_tool_call_message() {
+        let mut p = projection();
+        p.replace_history(&json!({"messages":[
+            {"id":"prompt","role":"user","content":"看看这张图"},
+            {"id":"caller","role":"assistant","content":[
+                {"type":"toolCall","id":"call-1","name":"read","arguments":{"path":"/tmp/photo.jpg"}}]},
+            {"id":"result","role":"toolResult","toolCallId":"call-1","toolName":"read",
+             "content":[
+                {"type":"text","text":"Read image file [image/jpeg]"},
+                {"type":"image","mimeType":"image/jpeg","data":"aGVsbG8="}]}
+        ]}));
+        let snapshot = p.snapshot.as_ref().unwrap();
+        assert_eq!(snapshot.messages.len(), 2);
+        let caller = &snapshot.messages[1];
+        assert_eq!(caller.role, MessageRole::Assistant);
+        assert!(matches!(
+            &caller.blocks[0],
+            MessageBlock::Tool { tool_id, state: ToolState::Completed, .. } if tool_id.as_deref() == Some("call-1")
+        ));
+        assert_eq!(
+            caller.blocks[1..],
+            [MessageBlock::Image {
+                media_type: Some("image/jpeg".into()),
+                source: crate::conversation::ImageSource::Data { data: "aGVsbG8=".into() },
+            }]
+        );
+    }
+
+    #[test]
+    fn tool_result_images_do_not_duplicate_across_start_and_end() {
+        let mut p = projection();
+        let call = json!({"id":"caller","role":"assistant","content":[
+            {"type":"toolCall","id":"call-1","name":"read","arguments":{"path":"/tmp/photo.jpg"}}]});
+        let result = json!({"id":"result","role":"toolResult","toolCallId":"call-1","toolName":"read",
+            "content":[
+                {"type":"text","text":"Read image file [image/jpeg]"},
+                {"type":"image","mimeType":"image/jpeg","data":"aGVsbG8="}]});
+        for event in ["message_start", "message_end"] {
+            p.apply_event(&json!({"type":event,"message":call}));
+            p.apply_event(&json!({"type":event,"message":result}));
+        }
+        let snapshot = p.snapshot.as_ref().unwrap();
+        let caller = snapshot
+            .messages
+            .iter()
+            .find(|message| message.id == "caller")
+            .unwrap();
+        assert_eq!(
+            caller
+                .blocks
+                .iter()
+                .filter(|block| matches!(block, MessageBlock::Image { .. }))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn tool_result_images_standalone_when_the_call_is_not_projected() {
+        let mut p = projection();
+        p.apply_event(&json!({"type":"message_start","message":{"id":"result","role":"toolResult","toolCallId":"call-1","toolName":"read","content":[{"type":"image","mimeType":"image/png","data":"aGVsbG8="}]}}));
+        p.apply_event(&json!({"type":"message_end","message":{"id":"result","role":"toolResult","toolCallId":"call-1","toolName":"read","content":[{"type":"image","mimeType":"image/png","data":"aGVsbG8="}]}}));
+        let snapshot = p.snapshot.as_ref().unwrap();
+        let message = snapshot
+            .messages
+            .iter()
+            .find(|message| message.role == MessageRole::Tool)
+            .unwrap();
+        assert_eq!(message.role, MessageRole::Tool);
+        assert!(matches!(message.blocks[0], MessageBlock::Tool { .. }));
+        assert_eq!(
+            message.blocks[1..],
+            [MessageBlock::Image {
+                media_type: Some("image/png".into()),
+                source: crate::conversation::ImageSource::Data { data: "aGVsbG8=".into() },
+            }]
+        );
     }
 }
 
