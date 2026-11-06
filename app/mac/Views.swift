@@ -654,7 +654,7 @@ struct ProviderSettingsView: View {
 }
 
 private struct ProviderModelDraft: Identifiable {
-    let id = UUID()
+    var id = UUID()
     var recordKey = ""
     var providerModelID = ""
     var nickname = ""
@@ -693,17 +693,26 @@ private struct ProviderModelDraft: Identifiable {
         let effortsSummary = efforts.map { $0.isEmpty ? "不支持推理 effort" : "支持 effort：" + $0.joined(separator: "、") } ?? "推理 effort 未知"
         return effortsSummary + (contextWindow.isEmpty ? "" : " · 上下文 \(TokenCount.parse(contextWindow).map { TokenCount.format($0) } ?? contextWindow)") + (maxOutputTokens.isEmpty ? "" : " · 输出 \(TokenCount.parse(maxOutputTokens).map { TokenCount.format($0) } ?? maxOutputTokens)")
     }
+    var parametersSummary: String { parameters.map { $0.isEmpty ? "未设置" : "\($0.count) 项参数：" + $0.keys.sorted().joined(separator: "、") } ?? "未设置" }
     var definition: ProviderModel { ProviderModel(recordKey: recordKey, providerModelId: providerModelID, nickname: nickname, icon: icon.isEmpty ? nil : icon, contextWindow: TokenCount.parse(contextWindow), maxOutputTokens: TokenCount.parse(maxOutputTokens), reasoningLevels: efforts, requestParameters: parameters) }
 }
 
 private struct ProviderModelFields: View {
     @Binding var draft: ProviderModelDraft
     var modelIDFocused: FocusState<Bool>.Binding
+    @State private var parametersExpanded: Bool
+    init(draft: Binding<ProviderModelDraft>, modelIDFocused: FocusState<Bool>.Binding) {
+        _draft = draft
+        self.modelIDFocused = modelIDFocused
+        // A model with parameters opens with them visible; others stay clean.
+        _parametersExpanded = State(initialValue: draft.wrappedValue.parameters != nil)
+    }
     var body: some View {
         Section("模型") {
             TextField("模型 ID", text: $draft.providerModelID, prompt: Text("提供商 API 规定的标识"))
                 .focused(modelIDFocused)
             TextField("显示名称", text: $draft.nickname, prompt: Text("可选"))
+            TextField("图标", text: $draft.icon, prompt: Text("可选的 SF Symbol 名称"))
         }
         Section {
             ImmediateDisclosureGroup {
@@ -715,16 +724,45 @@ private struct ProviderModelFields: View {
                     if draft.declaresReasoning {
                         TextField("支持的 effort", text: $draft.reasoningLevels, prompt: Text("逗号分隔，空白表示不支持"))
                     }
-                    TextField("额外请求参数", text: $draft.requestParameters, prompt: Text("逗号分隔的 key=value，如 service_tier=priority"))
-                    if !draft.validParameters { Text("每对参数写为 key=value").uiFont(.caption).foregroundStyle(.red) }
-                    Text("随每个上游请求发送，覆盖适配器的同名字段；提供商不认识的参数会以它自己的错误失败。速度变体声明为独立模型，例如同一模型 ID 加 service_tier=priority。").uiFont(.caption).foregroundStyle(.secondary)
-                    Text("以提供商协议为准；此处声明可用能力，不改变会话当前选择的 effort。").uiFont(.caption).foregroundStyle(.secondary)
-                    TextField("图标", text: $draft.icon, prompt: Text("可选的 SF Symbol 名称"))
                 }.frame(maxWidth: .infinity, alignment: .leading).padding(.top, 8)
             } label: {
-                VStack(alignment: .leading, spacing: 3) { Text("能力与 reasoning effort"); Text(draft.capabilitySummary).uiFont(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }
+                HStack {
+                    VStack(alignment: .leading, spacing: 3) { Text("能力与 reasoning effort"); Text(draft.capabilitySummary).uiFont(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }
+                    Spacer()
+                    FormInfoButton("以提供商协议为准；此处声明可用能力，不改变会话当前选择的 effort。")
+                }
             }
         }
+        Section {
+            ImmediateDisclosureGroup(isExpanded: $parametersExpanded) {
+                VStack(alignment: .leading, spacing: 12) {
+                    TextField("参数", text: $draft.requestParameters, prompt: Text("逗号分隔的 key=value，如 service_tier=priority"))
+                    if !draft.validParameters { Text("每对参数写为 key=value").uiFont(.caption).foregroundStyle(.red) }
+                }.frame(maxWidth: .infinity, alignment: .leading).padding(.top, 8)
+            } label: {
+                HStack {
+                    VStack(alignment: .leading, spacing: 3) { Text("额外请求参数"); Text(draft.parametersSummary).uiFont(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }
+                    Spacer()
+                    FormInfoButton("随每个上游请求发送，覆盖适配器的同名字段；提供商不认识的参数以它自己的错误失败。速度档位是一条带参数的独立模型，例如同一模型 ID 加 service_tier=priority。")
+                }
+            }
+        }
+    }
+}
+
+/// A section label's explanation, out of the way until asked.
+private struct FormInfoButton: View {
+    let text: String
+    @State private var showing = false
+    init(_ text: String) { self.text = text }
+    var body: some View {
+        Button { showing = true } label: { Image(systemName: "info.circle") }
+            .buttonStyle(.borderless).foregroundStyle(.secondary)
+            .accessibilityLabel("说明")
+            .popover(isPresented: $showing) {
+                Text(text).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                    .padding(16).frame(width: 300, alignment: .leading)
+            }
     }
 }
 
@@ -806,7 +844,13 @@ struct ProviderEditor: View {
                             ForEach(models) { model in VStack(alignment: .leading, spacing: 3) { Text(model.displayName).lineLimit(1); if !model.providerModelID.isEmpty { Text(model.providerModelID).uiFont(.caption).foregroundStyle(.secondary).lineLimit(1) } }.tag(ProviderEditorSelection.model(model.id)) }
                         }
                     }.contextMenu(forSelectionType: ProviderEditorSelection.self) { ids in
-                        if ids.count == 1, let target = ids.first { Button("编辑") { editSelection(target) } }
+                        if ids.count == 1, let target = ids.first {
+                            Button("编辑") { editSelection(target) }
+                            if case .model(let id) = target, let source = models.first(where: { $0.id == id }) {
+                                // A serving variant starts as a copy: same model ID, its own parameters.
+                                Button("复制为变体") { var copy = source; copy.id = UUID(); copy.recordKey = ""; addModel(copy) }
+                            }
+                        }
                     } primaryAction: { ids in if ids.count == 1, let target = ids.first { editSelection(target) } }
                     .listStyle(.sidebar)
                     HStack {
@@ -822,6 +866,7 @@ struct ProviderEditor: View {
                     if let index = modelIndex {
                         Form {
                             ProviderModelFields(draft: $models[index], modelIDFocused: $modelIDFocused)
+                                .id(models[index].id)
                             Section { Button("保存为模型模板…") { let model = models[index].definition; templateDraft = ModelTemplate(id: "", name: model.displayName, suggestedProviderModelId: model.providerModelId, nickname: model.nickname, icon: model.icon, contextWindow: model.contextWindow, maxOutputTokens: model.maxOutputTokens, reasoningLevels: model.reasoningLevels) }.disabled(!models[index].valid) }
                         }
                     } else if selection == .quota && showsQuota {

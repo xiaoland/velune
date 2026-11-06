@@ -49,7 +49,7 @@ extension ProviderModel: Identifiable {
 extension ModelTemplate: Identifiable {
     var model: ProviderModel {
         ProviderModel(recordKey: "", providerModelId: suggestedProviderModelId, nickname: nickname, icon: icon, contextWindow: contextWindow,
-                      maxOutputTokens: maxOutputTokens, reasoningLevels: reasoningLevels)
+                      maxOutputTokens: maxOutputTokens, reasoningLevels: reasoningLevels, requestParameters: nil)
     }
 }
 
