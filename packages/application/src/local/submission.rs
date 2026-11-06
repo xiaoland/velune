@@ -74,7 +74,11 @@ impl SubmissionAdmission {
         snapshot.follow_up.can_resume &= self.send.is_ok();
         snapshot.follow_up.can_compact &= self.send.is_ok();
         if snapshot.actions.input_access != InputAccess::Editable {
-            snapshot.follow_up.editable.clear();
+            // Editing survives a read-only view: only the in-place
+            // replacement is lost; continuing in a fork sends elsewhere.
+            for editable in &mut snapshot.follow_up.editable {
+                editable.in_place = false;
+            }
             snapshot.follow_up.can_fork = false;
             for turn in &mut snapshot.transcript_turns {
                 turn.can_fork = false;
@@ -276,19 +280,38 @@ mod tests {
     }
 
     #[test]
-    fn control_projection_disables_all_writers_without_changing_the_source() {
-        let mut source = snapshot(RunState::Idle);
-        source.actions.input_access = InputAccess::ExternalController;
-        source.follow_up.can_resume = true;
-        source.follow_up.can_compact = true;
-        source.follow_up.can_fork = true;
-        let mut delivered = source.clone();
-        CoreRuntime::apply_read_submission_admission(&mut delivered);
-        assert!(!delivered.actions.can_send);
-        assert!(!delivered.follow_up.can_queue && !delivered.follow_up.can_steer);
-        assert!(!delivered.follow_up.can_resume && !delivered.follow_up.can_compact);
-        assert!(!delivered.follow_up.can_fork);
-        assert!(source.actions.can_send && source.follow_up.can_resume);
+    fn control_projection_preserves_fork_only_edits_without_changing_the_source() {
+        for access in [
+            InputAccess::CheckingControl,
+            InputAccess::ExternalController,
+            InputAccess::ControlUnavailable,
+            InputAccess::ExternalExecution,
+            InputAccess::ReadOnly,
+        ] {
+            let mut source = snapshot(RunState::Idle);
+            source.actions.input_access = access;
+            source.follow_up.can_resume = true;
+            source.follow_up.can_compact = true;
+            source.follow_up.can_fork = true;
+            source
+                .follow_up
+                .editable
+                .push(crate::conversation::EditableMessage {
+                    message_id: "user-message".into(),
+                    in_place: true,
+                });
+            let mut delivered = source.clone();
+            CoreRuntime::apply_read_submission_admission(&mut delivered);
+            assert!(!delivered.actions.can_send);
+            assert!(!delivered.follow_up.can_queue && !delivered.follow_up.can_steer);
+            assert!(!delivered.follow_up.can_resume && !delivered.follow_up.can_compact);
+            assert!(!delivered.follow_up.can_fork);
+            assert_eq!(delivered.follow_up.editable.len(), 1);
+            assert_eq!(delivered.follow_up.editable[0].message_id, "user-message");
+            assert!(!delivered.follow_up.editable[0].in_place);
+            assert!(source.actions.can_send && source.follow_up.can_resume);
+            assert!(source.follow_up.editable[0].in_place);
+        }
     }
 
     #[test]

@@ -92,6 +92,13 @@ impl CoreRuntime {
             // A native sub-agent's conversation is continued by its parent's agent.
             return Vec::new();
         }
+        // An in-place replacement sends into this conversation; a locked or
+        // read-only one cannot take it, but editing may still continue in a
+        // fork, which sends in its own new conversation. can_send also
+        // reflects transient admission (for example a running turn); it is
+        // not the authority for this operation's control access.
+        let replaceable =
+            snapshot.actions.input_access == crate::conversation::InputAccess::Editable;
         let simple_source = self.simple_source(&snapshot.conversation.id);
         let branching = self
             .runtime_instance(&snapshot.conversation.runtime_id)
@@ -127,7 +134,9 @@ impl CoreRuntime {
                     native,
                     public: EditableMessage {
                         message_id: message.id.clone(),
-                        in_place: native && (branching != Some(Branching::Claude) || ordinal > 0),
+                        in_place: replaceable
+                            && native
+                            && (branching != Some(Branching::Claude) || ordinal > 0),
                     },
                 }
             })
@@ -135,9 +144,9 @@ impl CoreRuntime {
             .collect()
     }
 
-    /// Whether a linked conversation's prefix can be translated for editing
-    /// or forking: every segment exports its effective context, and the
-    /// conversation's current context runtime writes translated history.
+    /// Whether a linked conversation can be translated at any edit/fork
+    /// boundary: its segments can export effective context, and the current
+    /// context runtime can write translated history.
     fn translatable(&self, snapshot: &ConversationSnapshot) -> bool {
         let Some(link) = self.link_of(&snapshot.conversation.id) else {
             return false;
@@ -532,11 +541,11 @@ impl CoreRuntime {
 
     /// Continue through the user message `message_id` in a conversation whose
     /// history spans native segments (or whose runtime cannot branch there):
-    /// translate every segment's effective model context into a new native
-    /// conversation of the conversation's current context runtime, cut at the
-    /// boundary, and send `turn` there — or, for a fork with no turn, leave
-    /// the copy waiting for its next message. The original conversation and
-    /// its association graph are never rewritten.
+    /// translate the boundary segment's effective model context into a new
+    /// native conversation of the current context runtime, cut at the boundary,
+    /// and send `turn` there — or, for a fork with no turn, leave the copy
+    /// waiting for its next message. The original conversation and its
+    /// association graph are never rewritten.
     fn translated_branch(
         &mut self,
         current: &ConversationSnapshot,
@@ -593,37 +602,35 @@ impl CoreRuntime {
         if boundary_segment > tail_index {
             return Err(RuntimeError::invalid("分叉边界已不在当前会话中"));
         }
-        // Export each segment up to the boundary and translate the whole
-        // prefix into one native conversation of the context runtime.
-        let mut translated = Vec::new();
-        for (index, segment) in link.segments.iter().enumerate() {
-            if index > boundary_segment {
-                break;
+        // Export the segment holding the boundary, cut at the message. Each
+        // segment's export is its own effective context; earlier sealed
+        // segments are display-only history, and a legacy segment may still
+        // carry an unmigratable quoted handoff the model never replayed.
+        let segment = link
+            .segments
+            .get(boundary_segment)
+            .ok_or_else(|| RuntimeError::invalid("分叉边界已不在当前会话中"))?;
+        let runtime = self.runtime_instance(&segment.runtime_instance_id)?;
+        let native_id = segment
+            .native_conversation_id
+            .strip_prefix(&format!("{}:", runtime.id))
+            .ok_or_else(|| RuntimeError::invalid("关联段的原生身份无效"))?;
+        let mut export = match runtime.type_id {
+            RuntimeKind::Pi => velune_agent_runtime::history::export_pi_context(
+                &self.pi_history_config(runtime)?,
+                std::path::Path::new(native_id),
+            ),
+            RuntimeKind::Codex166 | RuntimeKind::ClaudeCode => {
+                velune_agent_runtime::history::export_context(
+                    &self.history_config(runtime)?,
+                    native_id,
+                )
             }
-            let runtime = self.runtime_instance(&segment.runtime_instance_id)?;
-            let native_id = segment
-                .native_conversation_id
-                .strip_prefix(&format!("{}:", runtime.id))
-                .ok_or_else(|| RuntimeError::invalid("关联段的原生身份无效"))?;
-            let mut export = match runtime.type_id {
-                RuntimeKind::Pi => velune_agent_runtime::history::export_pi_context(
-                    &self.pi_history_config(runtime)?,
-                    std::path::Path::new(native_id),
-                ),
-                RuntimeKind::Codex166 | RuntimeKind::ClaudeCode => {
-                    velune_agent_runtime::history::export_context(
-                        &self.history_config(runtime)?,
-                        native_id,
-                    )
-                }
-                _ => return Err(RuntimeError::invalid("关联段的运行时不支持导出上下文")),
-            }
-            .map_err(|error| RuntimeError::context("导出原生上下文", error))?;
-            if index == boundary_segment {
-                truncate_context(&mut export, &boundary_text)?;
-            }
-            translated.extend(export.messages);
+            _ => return Err(RuntimeError::invalid("关联段的运行时不支持导出上下文")),
         }
+        .map_err(|error| RuntimeError::context("导出原生上下文", error))?;
+        truncate_context(&mut export, &boundary_text)?;
+        let translated = export.messages;
         if translated.is_empty() {
             return Err(RuntimeError::invalid("分叉边界之前没有可翻译的内容"));
         }
@@ -806,6 +813,24 @@ for line in sys.stdin:
         core.session.active_state = ActiveState::Pi(Box::new(session));
         core.session.execution_runtime_id = Some("pi".into());
         let source_key = core.session.key;
+        let mut view = core.current_snapshot().unwrap();
+        assert!(!view.actions.can_send);
+        assert!(
+            core.editable_messages(&view)
+                .iter()
+                .all(|edit| edit.in_place)
+        );
+        for access in [
+            crate::conversation::InputAccess::ExternalController,
+            crate::conversation::InputAccess::ReadOnly,
+        ] {
+            view.actions.input_access = access;
+            let editable = core.editable_messages(&view);
+            assert_eq!(editable.len(), 2);
+            assert!(editable.iter().all(|edit| !edit.in_place));
+        }
+        view.conversation.parent_conversation_id = Some("parent".into());
+        assert!(core.editable_messages(&view).is_empty());
         let missing = root.join("missing.txt").to_string_lossy().into_owned();
         let error = core
             .edit_message(
