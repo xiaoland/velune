@@ -1,6 +1,6 @@
 # Changelog
 
-## [0.1.0-beta.1](https://github.com/xiaoland/velune/compare/v0.1.0-beta.0...v0.1.0-beta.1) (2026-11-07)
+## [0.1.0-beta.1](https://github.com/xiaoland/velune/releases/tag/v0.1.0-beta.1) (2026-11-07)
 
 
 ### ⚠ BREAKING CHANGES
