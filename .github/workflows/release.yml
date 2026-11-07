@@ -425,8 +425,8 @@ jobs:
           for expected in \
             "Velune-$TAG-macOS-arm64.zip" \
             "Velune-$TAG-macOS-x86_64.zip" \
-            "Velune-Setup.exe" \
-            "Velune-$VERSION-full.nupkg" \
+            "Velune-win-x64-beta-Setup.exe" \
+            "Velune-$VERSION-win-x64-beta-full.nupkg" \
             "releases.win-x64-beta.json" \
             "Velune-$TAG-android-arm64.apk" \
             "velune-$TAG-source.tar.gz"; do
@@ -453,7 +453,7 @@ jobs:
           expected={
               f'Velune-{tag}-macOS-arm64.zip':('macos','arm64'),
               f'Velune-{tag}-macOS-x86_64.zip':('macos','x86_64'),
-              'Velune-Setup.exe':('windows','x64'),
+              'Velune-win-x64-beta-Setup.exe':('windows','x64'),
               f'Velune-{tag}-android-arm64.apk':('android','arm64'),
               f'velune-{tag}-source.tar.gz':('source','all'),
           }
@@ -479,8 +479,8 @@ jobs:
                   by_role={asset['role']:asset for asset in value['assets']}
                   assert len(by_role)==len(value['assets'])==3
                   assert set(by_role)=={'installer','full_package','update_feed'}
-                  assert by_role['installer']['name']=='Velune-Setup.exe'
-                  assert by_role['full_package']['name']==f'Velune-{version}-full.nupkg'
+                  assert by_role['installer']['name']=='Velune-win-x64-beta-Setup.exe'
+                  assert by_role['full_package']['name']==f'Velune-{version}-win-x64-beta-full.nupkg'
                   assert by_role['update_feed']['name']=='releases.win-x64-beta.json'
                   assert by_role['installer']['sha256']==digest(root/by_role['installer']['name'])
                   assert by_role['full_package']['sha256']==digest(root/by_role['full_package']['name'])
@@ -503,7 +503,7 @@ jobs:
               if value['platform']=='android':
                   assert value['certificate_sha256']=='babd7b659b691b52ca5a7412c68f2e52abed05d0b0aeb1c56e203d548dbda4bb'
           assert found==set(expected)
-          assert companion_assets=={f'Velune-{version}-full.nupkg','releases.win-x64-beta.json'}
+          assert companion_assets=={f'Velune-{version}-win-x64-beta-full.nupkg','releases.win-x64-beta.json'}
           expected_platforms={platform for platform,architecture in expected.values() if platform!='source'}
           assert actual_platforms==expected_platforms
           assert source_platforms==actual_platforms

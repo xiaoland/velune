@@ -271,9 +271,9 @@ def package(args: argparse.Namespace) -> Path:
         channel = args.channel
         if channel != "win-x64-beta":
             raise ValueError("Windows release channel must remain win-x64-beta")
-        package_name = f"Velune-{version}-full.nupkg"
+        package_name = f"Velune-{version}-{channel}-full.nupkg"
         feed_name = f"releases.{channel}.json"
-        setup_name = "Velune-Setup.exe"
+        setup_name = f"Velune-{channel}-Setup.exe"
         package_source = vpk_dir / package_name
         feed_source = vpk_dir / feed_name
         setup_source = vpk_dir / setup_name
@@ -295,7 +295,7 @@ def package(args: argparse.Namespace) -> Path:
         signing = "APK v1/v2/v3 signature; certificate SHA-256 " + args.certificate_sha256
 
     prefix = "velune" if args.kind == "source" else "Velune"
-    name = "Velune-Setup.exe" if args.kind == "windows" else f"{prefix}-{args.tag}-{suffix}"
+    name = f"Velune-{args.channel}-Setup.exe" if args.kind == "windows" else f"{prefix}-{args.tag}-{suffix}"
     artifact = output_dir / name
     if args.kind == "macos":
         subprocess.run(
