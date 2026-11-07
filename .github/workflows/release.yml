@@ -315,10 +315,22 @@ jobs:
           bash scripts/build-android.sh --profile release
           apk=app/android/app/build/outputs/apk/release/app-release.apk
           test -s "$apk"
-          apksigner=$(find "$ANDROID_HOME/build-tools" -name apksigner -type f | sort -V | tail -n 1)
-          test -x "$apksigner"
-          cert=$($apksigner verify --verbose --print-certs "$apk" | sed -n 's/^Signer #1 certificate SHA-256 digest: //p' | head -n 1 | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')
-          [[ "$cert" == babd7b659b691b52ca5a7412c68f2e52abed05d0b0aeb1c56e203d548dbda4bb ]]
+          apksigner="$ANDROID_HOME/build-tools/36.0.0/apksigner"
+          export VELUNE_AAPT="$ANDROID_HOME/build-tools/36.0.0/aapt"
+          [[ -x "$apksigner" ]] || { echo "Missing pinned verifier: $apksigner" >&2; exit 1; }
+          mkdir -p target
+          verification=target/android-apk-verification.txt
+          if ! "$apksigner" verify --verbose --print-certs "$apk" > "$verification" 2>&1; then
+            cat "$verification" >&2
+            echo 'Android APK signature verification failed' >&2
+            exit 1
+          fi
+          cat "$verification"
+          cert=$(sed -n 's/^Signer #1 certificate SHA-256 digest: //p' "$verification" | head -n 1 | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')
+          if [[ "$cert" != babd7b659b691b52ca5a7412c68f2e52abed05d0b0aeb1c56e203d548dbda4bb ]]; then
+            echo "Unexpected Android signing certificate SHA-256: ${cert:-missing}" >&2
+            exit 1
+          fi
           python3 scripts/package-release.py android --input "$apk" --output-dir target/release \
             --tag "$TAG" --version "$VERSION" --commit "$SHA" --build-number "$VELUNE_BUILD_NUMBER" --arch arm64 \
             --certificate-sha256 "$cert"
@@ -326,6 +338,16 @@ jobs:
         if: always() && matrix.platform == 'android'
         shell: bash
         run: rm -f "${RUNNER_TEMP:-/tmp}/velune-release.p12"
+      - name: Preserve Android packaging failure evidence
+        if: failure() && matrix.platform == 'android'
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-packaging-diagnostics
+          path: |
+            target/android-apk-verification.txt
+            app/android/app/build/outputs/apk/release/app-release.apk
+          if-no-files-found: ignore
+          retention-days: 2
       - uses: actions/upload-artifact@v4
         with:
           name: release-${{ matrix.name }}
