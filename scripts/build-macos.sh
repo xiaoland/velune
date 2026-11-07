@@ -2,26 +2,36 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 profile=dev
+purpose=development
 build_only=false
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --profile)
       [[ $# -ge 2 ]] || { echo '缺少 --profile 的值' >&2; exit 2; }
       profile="$2"; shift 2 ;;
+    --purpose)
+      [[ $# -ge 2 ]] || { echo '缺少 --purpose 的值' >&2; exit 2; }
+      purpose="$2"; shift 2 ;;
     --build-only) build_only=true; shift ;;
-    *) echo '用法：scripts/build-macos.sh [--profile dev|release] [--build-only]' >&2; exit 2 ;;
+    *) echo '用法：scripts/build-macos.sh [--profile dev|release] [--purpose development|daily] [--build-only]' >&2; exit 2 ;;
   esac
 done
 [[ "$profile" == dev || "$profile" == release ]] || { echo 'profile 必须是 dev 或 release' >&2; exit 2; }
+[[ "$purpose" == development || "$purpose" == daily ]] || { echo 'purpose 必须是 development 或 daily' >&2; exit 2; }
 [[ "$(uname -s)" == Darwin ]] || { echo 'This script requires macOS + Xcode Command Line Tools.' >&2; exit 1; }
 command -v cargo >/dev/null
 command -v go >/dev/null
 xcrun --find swiftc >/dev/null
 if [[ "${VELUNE_BUILD_MANAGED:-}" != macos ]]; then
-  args=(--profile "$profile")
+  args=(--profile "$profile" --purpose "$purpose")
   [[ "$build_only" == true ]] && args+=(--build-only)
-  exec python3 scripts/build-support.py run --platform macos --profile "$profile" -- bash "$0" "${args[@]}"
+  exec python3 scripts/build-support.py run --platform macos --profile "$profile" --purpose "$purpose" -- bash "$0" "${args[@]}"
 fi
+identity_json=$(python3 scripts/macos_identity.py describe --purpose "$purpose" --profile "$profile" --root "$PWD")
+app=$(printf '%s' "$identity_json" | python3 -c 'import json,sys; print(json.load(sys.stdin)["bundlePath"])')
+executable=$(printf '%s' "$identity_json" | python3 -c 'import json,sys; print(json.load(sys.stdin)["executableName"])')
+IFS=$'\t' read -r product_version version_core build_number < <(python3 scripts/version.py --format build-info)
+app_base=$(dirname "$app")
 [[ -d target/runtime-support/node_modules/huihua && -f target/runtime-support/THIRD_PARTY_NOTICES.md ]] || {
   echo 'Runtime support is missing; run ./scripts/install-runtime-support.sh first.' >&2
   exit 1
@@ -37,23 +47,15 @@ native_configuration=debug
 [[ "$profile" == release ]] && native_configuration=release
 native_library="target/host-rust/$native_configuration/libvelune_bindings.dylib"
 python3 scripts/build-support.py bindgen --library "$native_library" --language swift --out-dir "$bindings"
-app_base=target/macos
-[[ "$profile" == dev ]] && app_base=target/macos-dev
-app="$PWD/$app_base/Velune.app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources" "$app/Contents/Frameworks"
-# The bundle identity goes first: a build failing later still leaves a
-# launchable app (direct execution needs it, e.g. UNUserNotificationCenter).
-cat <<'PLIST' | python3 scripts/build-support.py write "$app/Contents/Info.plist"
+# Identity and URL registration come from the shared execution-context owner;
+# the signed bundle then carries the same contract as the application entry.
+cat <<'PLIST' | python3 scripts/macos_identity.py stamp --purpose "$purpose" --root "$PWD" | python3 scripts/build-support.py write "$app/Contents/Info.plist"
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
-<key>CFBundleExecutable</key><string>Velune</string>
-<key>CFBundleIdentifier</key><string>local.velune.prototype</string>
-<key>CFBundleName</key><string>Velune</string>
 <key>CFBundleIconFile</key><string>Velune</string>
 <key>LSMinimumSystemVersion</key><string>15.0</string>
-<key>CFBundleVersion</key><string>1</string>
-<key>CFBundleShortVersionString</key><string>0.1</string>
 <key>NSHighResolutionCapable</key><true/>
 <key>UTExportedTypeDeclarations</key><array><dict>
 <key>UTTypeIdentifier</key><string>local.velune.conversation-link</string>
@@ -63,10 +65,6 @@ cat <<'PLIST' | python3 scripts/build-support.py write "$app/Contents/Info.plist
 <key>UTTypeIdentifier</key><string>local.velune.conversation-group</string>
 <key>UTTypeDescription</key><string>Velune conversation list group</string>
 <key>UTTypeConformsTo</key><array><string>public.data</string></array>
-</dict></array>
-<key>CFBundleURLTypes</key><array><dict>
-<key>CFBundleURLName</key><string>local.velune.conversation</string>
-<key>CFBundleURLSchemes</key><array><string>velune</string><string>agents</string></array>
 </dict></array>
 </dict></plist>
 PLIST
@@ -120,13 +118,14 @@ python3 scripts/build-support.py sync "$bindings" target/swift-ffi --include '*.
 configuration=debug
 if [[ "$profile" == release ]]; then configuration=release; fi
 swift build --build-system xcode --arch "$(uname -m)" --configuration "$configuration" --product VeluneMac -j "${CARGO_BUILD_JOBS:-2}" --force-resolved-versions \
-  -Xlinker -L -Xlinker "$app/Contents/Frameworks" \
+  -Xlinker -L -Xlinker "$(dirname "$prepared")" \
   -Xlinker -lvelune_bindings -Xlinker -rpath -Xlinker '@executable_path/../Frameworks'
 swift_binary_directory=$(swift build --build-system xcode --arch "$(uname -m)" --configuration "$configuration" --product VeluneMac --show-bin-path)
-python3 scripts/build-support.py copy "$swift_binary_directory/VeluneMac" "$app/Contents/MacOS/Velune"
+python3 scripts/build-support.py copy "$swift_binary_directory/VeluneMac" "$app/Contents/MacOS/$executable"
 # JavaScript is a sealed resource, not a nested macOS executable.
 resources="$app/Contents/Resources"
-for script in pi_sdk pi_sessions pi_rpc pi_virtual_model pi_auth pi_provider_import huihua_sessions; do
+python3 scripts/build-support.py copy LICENSE "$resources/ThirdParty/LICENSE"
+for script in pi_sdk pi_sessions pi_rpc pi_virtual_model pi_background_work pi_auth pi_provider_import huihua_sessions; do
   python3 scripts/build-support.py copy "packages/agent-runtime/resources/$script.mjs" "$resources/$script.mjs"
 done
 python3 scripts/build-support.py sync target/runtime-support/node_modules "$resources/node_modules" --include '*' --prune
@@ -137,7 +136,9 @@ python3 scripts/build-support.py copy target/runtime-support/xurl/LICENSE "$reso
 python3 scripts/build-support.py copy target/runtime-support/xurl/REVISION "$resources/ThirdParty/xurl/REVISION"
 python3 - <<'PY' | python3 scripts/build-support.py write "$resources/ThirdParty/THIRD_PARTY_NOTICES.md"
 from pathlib import Path
-value = Path('packages/agent-runtime/runtime-support/THIRD_PARTY_NOTICES.md').read_text()
+value = Path('THIRD_PARTY_NOTICES.md').read_text()
+value += '\n\n## Runtime-support JavaScript dependencies\n\n'
+value += Path('packages/agent-runtime/runtime-support/THIRD_PARTY_NOTICES.md').read_text()
 value += '''\n
 ## xURL
 
@@ -173,23 +174,27 @@ if [[ "$(cat "$icon_stamp" 2>/dev/null || true)" != "$icon_inputs" || ! -f "$ico
   printf '%s\n' "$icon_inputs" | python3 scripts/build-support.py write "$icon_stamp"
 fi
 python3 scripts/build-support.py copy "$icon" "$resources/Velune.icns"
-python3 - "$app/Contents/Info.plist" <<'PY' | python3 scripts/build-support.py write "$app/Contents/Info.plist"
+python3 - "$app/Contents/Info.plist" "$product_version" "$version_core" "$build_number" <<'PY' | python3 scripts/build-support.py write "$app/Contents/Info.plist"
 import plistlib,sys
 from pathlib import Path
 plist=plistlib.loads(Path(sys.argv[1]).read_bytes())
-version=Path('VERSION').read_text().strip()
+version,version_core,build_number=sys.argv[2:]
+plist['CFBundleVersion']=build_number
+plist['CFBundleShortVersionString']=version_core
 plist['VeluneDisplayVersion']=version
 plist['CFBundleGetInfoString']=version
 sys.stdout.buffer.write(plistlib.dumps(plist))
 PY
-python3 - "$profile" <<'PY' | python3 scripts/build-support.py write "$resources/build-manifest.json"
+python3 - "$profile" "$purpose" "$app/Contents/Info.plist" "$product_version" <<'PY' | python3 scripts/build-support.py write "$resources/build-manifest.json"
 import hashlib,json,platform,plistlib,re,subprocess,sys
 from pathlib import Path
 def cmd(*args): return subprocess.check_output(args,text=True).strip()
-profile=sys.argv[1]
-version=Path('VERSION').read_text().strip()
+profile,purpose=sys.argv[1:3]
+context=plistlib.loads(Path(sys.argv[3]).read_bytes())['VeluneExecutionContext']
+version=sys.argv[4]
+provenance=json.loads(cmd('python3','scripts/build-support.py','source-provenance'))
 schema=int(re.search(r'const CURRENT_SCHEMA_VERSION: u32 = (\d+);', Path('packages/application/src/repository.rs').read_text()).group(1))
-manifest={'source_commit':cmd('git','rev-parse','HEAD'),'dirty':bool(cmd('git','status','--porcelain')),'lock_sha256':hashlib.sha256(Path('Cargo.lock').read_bytes()).hexdigest(),'bindings_version':'0.1.0','uniffi_version':'0.32.2','ui_version':version,'simulation':False,'control_transport':'uniffi','language_contract':'typed','config_schema_version':schema,'supported_modes':['conversation_projection','llm_gateway','runtime_instances','synthetic_preview'],'native_verified':False,'rust':cmd('rustc','--version'),'swift':cmd('xcrun','swiftc','--version'),'xcode':cmd('xcodebuild','-version'),'architecture':platform.machine(),'macos':platform.mac_ver()[0],'build_command':f'bash scripts/build-macos.sh --profile {profile}'}
+manifest={'source_commit':provenance['source_commit'],'dirty':provenance['dirty'],'lock_sha256':hashlib.sha256(Path('Cargo.lock').read_bytes()).hexdigest(),'bindings_version':'0.1.0','uniffi_version':'0.32.2','ui_version':version,'simulation':False,'control_transport':'uniffi','language_contract':'typed','config_schema_version':schema,'supported_modes':['conversation_projection','llm_gateway','runtime_instances','synthetic_preview'],'native_verified':False,'rust':cmd('rustc','--version'),'swift':cmd('xcrun','swiftc','--version'),'xcode':cmd('xcodebuild','-version'),'architecture':platform.machine(),'macos':platform.mac_ver()[0],'build_command':f'bash scripts/build-macos.sh --profile {profile} --purpose {purpose}','profile':profile,'purpose':purpose,'execution_context':context}
 manifest['go']=cmd('go','version')
 manifest['xurl_revision']=Path('target/runtime-support/xurl/REVISION').read_text().strip()
 manifest['relaykit_go_mod_sha256']=hashlib.sha256(Path('packages/ai-provider/relaykit-bridge/go.mod').read_bytes()).hexdigest()
@@ -203,5 +208,5 @@ PY
 codesign --force --sign "$identity" "$app/Contents/Resources/xurl/bin/xurl"
 codesign --force --sign "$identity" "$app"
 codesign --verify --deep --strict "$app"
-shasum -a 256 "$app/Contents/MacOS/Velune" "$app/Contents/Frameworks/libvelune_bindings.dylib" | python3 scripts/build-support.py write "$app_base/binary-sha256.txt"
+shasum -a 256 "$app/Contents/MacOS/$executable" "$app/Contents/Frameworks/libvelune_bindings.dylib" | python3 scripts/build-support.py write "$app_base/binary-sha256.txt"
 printf '已构建：%s\n' "$app"

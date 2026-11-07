@@ -91,7 +91,9 @@ pub(super) fn display_segment(
             if digest(text.as_bytes()) == handoff.payload_digest
                 && let Some(payload) = text
                     .strip_prefix(&format!("<velune-context:{}>\n", handoff.marker))
-                    .and_then(|s| s.strip_suffix(&format!("\n</velune-context:{}>", handoff.marker)))
+                    .and_then(|s| {
+                        s.strip_suffix(&format!("\n</velune-context:{}>", handoff.marker))
+                    })
                 && let Ok(payload) = serde_json::from_str::<Value>(payload)
                 && let Some(request) = payload["request"].as_str()
             {
@@ -411,18 +413,20 @@ impl CoreRuntime {
         }
         let tail = tail.ok_or_else(|| RuntimeError::invalid("关联会话没有可读取的当前原生段"))?;
         let mut origin = origin
-            .or_else(|| link.segments.first().map(|s| ConversationSummary {
-                id: s.native_conversation_id.clone(),
-                runtime_id: s.runtime_instance_id.clone(),
-                title: velune_conversation::ConversationTitle::Untitled,
-                cwd: None,
-                created_at_unix_ms: None,
-                updated_at_unix_ms: None,
-                can_rename: false,
-                can_delete: false,
-                parent_conversation_id: None,
-                native_read_state: None,
-            }))
+            .or_else(|| {
+                link.segments.first().map(|s| ConversationSummary {
+                    id: s.native_conversation_id.clone(),
+                    runtime_id: s.runtime_instance_id.clone(),
+                    title: velune_conversation::ConversationTitle::Untitled,
+                    cwd: None,
+                    created_at_unix_ms: None,
+                    updated_at_unix_ms: None,
+                    can_rename: false,
+                    can_delete: false,
+                    parent_conversation_id: None,
+                    native_read_state: None,
+                })
+            })
             .ok_or_else(|| RuntimeError::invalid("关联会话缺少来源"))?;
         origin.id = link.id.clone();
         self.set_management_capabilities(&mut origin);

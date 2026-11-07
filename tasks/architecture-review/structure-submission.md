@@ -17,7 +17,7 @@
 - 队列接受之后的暂停、等待、调度和错误恢复仍归 `follow_up.rs`，本轮没有重写队列寿命。编辑／fork 的原生边界、定时领取、创建与首发交接也没有统一成一个生命周期。
 - iOS／Android 当前只消费 `actions.can_send` 的既有入口直接获得新判定；没有借此次契约增加尚未实现的移动端队列界面。iOS 的 FollowUp fixture 已同步字段。
 
-跨 unit 语义已回填[会话输入准入契约](../../docs/design/conversations.md#会话输入准入与调度)，应用内部顺序见 [README](../../packages/application/README.md)，Windows 验收边界见[对齐记录](../../app/windows/PARITY.md)。
+跨 unit 语义已回填[会话输入准入契约](../../docs/product-tdd/conversations.md#会话输入准入与调度)，应用内部顺序见 [README](../../packages/application/README.md)，Windows 验收边界见[对齐记录](../../app/windows/PARITY.md)。
 
 ## 证据
 

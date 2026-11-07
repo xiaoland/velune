@@ -109,17 +109,6 @@ impl CoreRuntime {
         }
     }
 
-    pub(super) fn ensure_gateway_idle(&mut self, gateway_id: &str) -> Result<(), RuntimeError> {
-        self.for_each_session(|core| {
-            if core.session.executing() && core.session_uses_gateway(gateway_id) {
-                return Err(RuntimeError::invalid(
-                    "此网关仍有会话或后台任务正在使用，请停止后再修改提供商、模型或认证",
-                ));
-            }
-            Ok(())
-        })
-    }
-
     pub(super) fn invalidate_gateway_execution(
         &mut self,
         gateway_id: &str,
@@ -255,7 +244,6 @@ impl CoreRuntime {
         gateway_id: String,
         provider_id: String,
     ) -> Result<crate::GatewayUpdate, RuntimeError> {
-        self.ensure_gateway_idle(&gateway_id)?;
         self.edit_gateway(&gateway_id, ProviderEdit::Delete { provider_id })
     }
 

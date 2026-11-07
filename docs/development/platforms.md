@@ -18,16 +18,16 @@ svc run reinstall-macos
 
 RelayKit 接入还需要 Go 工具链，桥接模块版本及依赖由 `packages/ai-provider/relaykit-bridge/go.mod` 与 `go.sum` 固定，Go 最低版本以该模块声明为准。Go 转换库作为同进程依赖链接，不启动独立网关后台。bundle 的 `ThirdParty/RelayKit` 保留上游、Go runtime 和传递依赖许可证以及模块锁文件；构建 manifest 记录 Go 版本、两个模块文件的摘要、源码提交、UniFFI 版本、类型接口和配置 schema。
 
-构建脚本默认dev且只构建，不安装；release用 `svc run build-macos-release`。安装单独用 `svc run reinstall-macos`。开发循环与缓存归[开发构建](builds.md)。安装器不覆盖尚未退出的应用：先正常退出 Velune，应用拒绝退出时可终止已确认的 Velune 进程后安装。产品显示版本来自仓库 `VERSION`，“关于 Velune”面板读取同一版本。
+构建脚本默认dev优化的开发用途且只构建，不安装；优化开发用 `svc run build-macos-release`，日常分发产物用 `svc run package-macos`。安装单独用 `svc run reinstall-macos`。开发循环与缓存归[开发构建](builds.md)。安装器不覆盖尚未退出的应用：只请求准确日常实例正常退出，取消或超时则停止安装，不强杀。开发启动／停止使用[隔离入口](environment.md#mac-开发实例)。产品显示版本来自仓库 `version.txt`，“关于 Velune”面板读取同一版本。
 
 签名默认为 ad-hoc。macOS 隐私权限（如“可移除宗卷上的文件”）按签名记住，ad-hoc 签名每次构建都不同，系统因此在每次重装后重新询问，回答之前对应位置的读取一直阻塞。设置 `VELUNE_CODESIGN_IDENTITY` 为钥匙串中的代码签名身份（如 Apple Development 证书，`security find-identity -v -p codesigning` 列出名称或 SHA-1）则以它签名，授权跨构建保留。这只是本机签名，不是公证或分发签名。
 
 若 UniFFI 模板宏报告 `askama.toml` 不存在而该文件实际存在，原因是 Cargo registry 经符号链接放到了其他卷，Askama 计算出无效的模板相对路径；把构建命令的 `CARGO_HOME` 指向缓存的真实目录即可，不需要修改 registry 或第三方源码。xURL 的构建同样适用。
 
-应用根目录由启动进程的 `VELUNE_HOME` 指定，未设置或留空时为 `~/.velune`，非空值必须是绝对目录路径；平台将该路径显式传给 Application，库不自行读取环境。Finder 启动通常不继承 shell 配置，隔离开发直接带环境运行 bundle 内可执行文件：
+日常用途默认 `~/.velune`，开发用途默认 `~/.velune-dev/<scope>`。路径策略在应用入口执行，平台再显式传给 Application；库不自行猜测用途或读取环境。临时合成目录由开发启动器准备归属标记，不通过裸执行日常产物实现隔离：
 
 ```sh
-VELUNE_HOME=/absolute/path/to/isolated-home /Applications/Velune.app/Contents/MacOS/Velune
+python3 scripts/macos-dev.py start --home /absolute/path/to/new-isolated-home
 ```
 
 隔离视觉预览使用 `--preview`（合成多轮会话）或 `--preview-empty`。预览 Store 无 Transport，不打开 Application、不访问真实配置、Keychain 或会话、不调用模型，因此不能证明真实循环。

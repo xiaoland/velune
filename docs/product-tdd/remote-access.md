@@ -58,9 +58,9 @@ Rust 是身份、联系人 pin、入站 grant、配对事务、未决请求、�
 
 未决记录保留至平台处理结果并明确确认；确认落盘失败则保留。网络或控制进程恢复只查询原 ID；新进程可为新操作使用新 ClientSession，但旧记录的世代、client 和 sequence 不改。Unknown、ResultExpired、ServerRestarted 均不触发自动重发，先刷新业务快照；安全的观察请求可以重新发起。执行世代只采用认证 Hello 返回值，不使用联系人缓存中的 incarnation。
 
-普通接入状态当前为 schema 4（[`store.rs`](../../packages/remote/src/store.rs)）；加载器识别旧 schema 后原子初始化当前空状态，不迁移旧双向 trust 或旧 pending，也不保留旧文件备份，未来格式报错且不覆写。identity 继续 schema 1，wire／邀请当前为 v3（[`protocol.rs`](../../packages/remote/src/protocol.rs)），三者是独立的版本边界。网络设置及每代凭据存于独立原子私有文件，普通状态只保留安全摘要；公开快照不返回 token。独立身份损坏时阻止启动，不重新生成私钥；打开文件前检查身份、普通状态和派生网络私有文件的路径冲突，含身份秘密标记的文件不能当作旧普通 schema 重置。重置产生可确认且跨冷启保留的通知：“远控配置已更新，请重新添加设备。此前任务或结果未知的操作仍可能在执行，请检查会话；应用不会自动重发。”这项重置不作用于 Harness 文件、真实会话或平台秘密。
+普通接入状态当前为 schema 4（[`store.rs`](../../packages/remote/src/store.rs)）；首次公开 beta 对已知 schema 3 在写入前保留逐字节私有备份，迁移联系人、pins、控制 grants、pending 操作、重置通知与历史标记；schema 4 新增 profile grants 与 pending pairings，初始为空。未来或未知格式报错并保留原文件，不初始化空状态覆盖。identity 继续 schema 1，wire／邀请当前为 v3（[`protocol.rs`](../../packages/remote/src/protocol.rs)），三者是独立的版本边界。网络设置及每代凭据存于独立原子私有文件，普通状态只保留安全摘要；公开快照不返回 token。独立身份损坏时阻止启动，不重新生成私钥；打开文件前检查身份、普通状态和派生网络私有文件的路径冲突，含身份秘密标记的文件不能当作旧普通 schema 重置。用户显式重置仍产生可确认且跨冷启保留的通知：“远控配置已更新，请重新添加设备。此前任务或结果未知的操作仍可能在执行，请检查会话；应用不会自动重发。”这项显式重置不作用于 Harness 文件、真实会话或平台秘密。
 
-涉及上述持久化状态的版本切换，同样必须先完成[显式手动迁移](../development/migrations.md)。加载器的旧格式重置行为不代表可以省略迁移；应用不建立自动迁移机制。
+schema 3→4 的 beta 转换由应用 owner 自动备份并迁移；更早格式或未知格式必须保留原件并按迁移说明恢复，不以重置代替迁移。
 
 ## 寻址与统一连接
 

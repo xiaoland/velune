@@ -42,7 +42,7 @@ Mac 普通会话的配置编辑原本已经走 ComposerContext 的目标 CAS，�
 
 列表、项目与回退投影共用 `RuntimeSourceKey`。它由实际 reader／ACP launch builder 的纯解析配置构造，生产、查询及失效使用同一来源身份。名称、默认策略及 Velune 网关／提供商变化可以复用历史缓存。归档按来源分组，每组校验一次，按身份查找的回退共享来源标记。来源切换后拒绝迟到结果和旧客户端归档，读取失败统一清理对应索引、项目与回退。客户端上次列表由 `ListedProjection` 一起持有条目和来源，查找、管理及关联会话标题等消费者经同一访问入口校验，关闭了旧客户端列表绕过来源约束的路径。
 
-执行配置具有独立的 `execution_configuration`。核对实际执行 builder 发现，Pi 的 `sdkHelper` override 只参与执行配置，历史 reader 使用随应用提供的 helper。这一现有差异要求两个身份各自表达依赖。执行配置与网关失效分别负责在途快照和后续准备。完整契约见[浏览与执行准备](../../docs/design/conversations.md#浏览与执行准备)。
+执行配置具有独立的 `execution_configuration`。核对实际执行 builder 发现，Pi 的 `sdkHelper` override 只参与执行配置，历史 reader 使用随应用提供的 helper。这一现有差异要求两个身份各自表达依赖。执行配置与网关失效分别负责在途快照和后续准备。完整契约见[浏览与执行准备](../../docs/product-tdd/conversations.md#浏览与执行准备)。
 
 开发约束已在[结构变化的验收](../../docs/development/validation.md#结构变化的验收)补充。今后涉及状态归属的改动，既要证明行为，也要说明旧写入与协调的退出；用一个真实的后续变化检验需要共同修改的责任。类型、可见性与少量不变量检查承担可执行约束，文档维护跨单元承诺。不会通过持续增加任务报告或扫描禁用字符串替代代码边界。
 

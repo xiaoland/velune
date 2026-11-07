@@ -23,7 +23,7 @@ Velune 是 coding agent 的统一控制界面与协调层，让多个订阅、AI
 | 协作 | [Agent 协作与跨 Harness 接续](collaboration.md)：原生子 Agent、A2A 与换 Harness 继续 |
 | 会话 | [会话与会话列表](conversations.md)：来源、项目、列表管理、侧聊与命名 |
 | 阅读 | [消息展示](conversation-view.md)：Markdown、Artifact、工作过程与大纲 |
-| 输入与提交 | [输入区](composer.md)：输入身份、下一轮选择、额度、队列、编辑与恢复 |
+| 输入与提交 | [内容与导航](composer-input.md)、[选择与状态](composer-choices.md)、[提交与恢复](composer-actions.md) |
 | 工作区 | [多窗口、标签与布局](workspace-layout.md)：分屏、停靠、工具窗口与恢复 |
 | 键盘 | [键盘操作](keyboard.md)：命令、发送、审批和默认快捷键 |
 | 调度 | [本地定时任务](scheduled-tasks.md)：执行宿主、接管和应用启停边界 |
@@ -37,22 +37,3 @@ Velune 是 coding agent 的统一控制界面与协调层，让多个订阅、AI
 - [核心与平台契约](../product-tdd/index.md)：状态归属、架构和跨 unit 设计。
 - [界面与交互原则](../../DESIGN.md)：平台原生体验及通用交互。
 - [开发与复验](../development.md)：合成数据、构建、迁移及真实资源授权边界。
-
-<a id="目的与动因"></a>
-<a id="已确认的优先级"></a>
-<a id="已确认的产品结构与质量方向"></a>
-<a id="范围与约束"></a>
-<a id="稳定术语"></a>
-<a id="已确认的架构与技术方向"></a>
-<a id="共享库与平台装配"></a>
-<a id="应用配置"></a>
-原总览中的目标、限制和术语现归[范围与术语](scope.md)；技术装配归[架构](../design/architecture.md)。
-
-<a id="尚未批准或验证的事项"></a>
-<a id="验收边界"></a>
-未决与未验证项见[任务记录](../../tasks/open-items/packet.md)，不从产品目标推定已实现或已授权真实账户测试。
-
-<a id="早期切片"></a>
-<a id="2026-10-02-实施与反馈要求"></a>
-<a id="pi-与-mac-首循环"></a>
-早期原型与 Pi／Mac 首循环要求保留在 [S11](../sources/foundations.md#s11)、[S15](../sources/first-loop.md#s15)，仅用于追溯当时切片。

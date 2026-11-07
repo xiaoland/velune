@@ -100,8 +100,11 @@ impl Store {
             .busy_timeout(std::time::Duration::from_secs(2))
             .map_err(db)?;
         connection.execute_batch("PRAGMA journal_mode=WAL;
+            BEGIN IMMEDIATE;
             CREATE TABLE IF NOT EXISTS tasks(id TEXT PRIMARY KEY, definition TEXT NOT NULL);
-            CREATE TABLE IF NOT EXISTS runs(id TEXT PRIMARY KEY, task_id TEXT NOT NULL, due INTEGER NOT NULL, slot TEXT NOT NULL, phase TEXT NOT NULL, body TEXT NOT NULL, UNIQUE(task_id,due,slot));").map_err(db)?;
+            CREATE TABLE IF NOT EXISTS runs(id TEXT PRIMARY KEY, task_id TEXT NOT NULL, due INTEGER NOT NULL, slot TEXT NOT NULL, phase TEXT NOT NULL, body TEXT NOT NULL, UNIQUE(task_id,due,slot));
+            PRAGMA user_version=1;
+            COMMIT;").map_err(db)?;
         let mut store = Self { connection };
         // A prior owner may have crossed the native acceptance boundary. Never
         // replay it, even when the process died before recording its reply.

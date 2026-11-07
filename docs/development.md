@@ -10,9 +10,11 @@
 
 [验证方式与实现约束](development/validation.md)：类型与静态检查优先、少量不变量测试、平台构建及临时端到端验证。
 
-## 破坏性变更与手动迁移
+<a id="破坏性变更与手动迁移"></a>
 
-[手动迁移](development/migrations.md)：升级前的迁移义务、一次性脚本接口、锁与失败处理。原有数据和配置不得用重置代替迁移交付。
+## 数据迁移与恢复
+
+[数据迁移](development/migrations.md)规定启动前的自动备份、已知格式转换、未来格式拒写及开发期显式过渡步骤。持久格式变化需交付迁移和恢复路径。
 
 ### Codex 0.166 实例迁移
 
@@ -58,7 +60,7 @@ Mac 使用 `OSLog.Logger`，subsystem 为 `local.velune`，系统 Console 可按
 
 失败信息带诊断编号；用它查找日志中的 `operation_id`，可定位操作、错误代码、阶段、耗时与底层原因。Swift 的本地操作编号另行命名，不是 Rust trace ID。常规 snapshot 和认证轮询不产生成功日志。诊断保存实际错误链、helper stderr 与失败上下文，默认不采集请求、配置或会话正文；显式启用的 OTLP 只导出批准的操作元数据。
 
-网关请求另有 `gateway_request` span 的 `request_id`，与建立执行准备时的 `operation_id` 不同；入口、路由、单次派发与结束事件的含义见 [AI 服务](design/ai-service.md)。运行时 stderr 持续排空并在有界缓存中保留用于失败诊断，超出时明确标记截断。
+网关请求另有 `gateway_request` span 的 `request_id`，与建立执行准备时的 `operation_id` 不同；入口、路由、单次派发与结束事件的含义见 [AI 服务](product-tdd/ai-service.md)。运行时 stderr 持续排空并在有界缓存中保留用于失败诊断，超出时明确标记截断。
 
 ## 开发遥测
 

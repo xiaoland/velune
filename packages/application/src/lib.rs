@@ -48,6 +48,7 @@ pub mod config;
 mod local;
 pub mod model_catalog;
 mod native_provider_import;
+mod persistence_migrations;
 mod provider_configuration;
 mod provider_import;
 mod repository;
@@ -155,6 +156,8 @@ pub struct Application {
 impl Application {
     pub fn open(options: Options) -> Result<Self, Error> {
         options.validate()?;
+        let home_lock = repository::Repository::lock_home(&options.home_directory)?;
+        persistence_migrations::prepare(&options.home_directory)?;
         let analytics = std::sync::Arc::new(
             analytics::AnalyticsStore::open(&options.home_directory).unwrap_or_else(|error| {
                 analytics::AnalyticsStore::unavailable(&options.home_directory, error)
@@ -162,7 +165,7 @@ impl Application {
         );
         let attachment_directory = options.home_directory.join("remote-attachments");
         let composer_home = options.home_directory.clone();
-        let runtime = local::CoreRuntime::open(options, analytics.clone())?;
+        let runtime = local::CoreRuntime::open(options, analytics.clone(), home_lock)?;
         let composer = composer::ComposerInputs::open(&composer_home)?;
         Ok(Self {
             composer,

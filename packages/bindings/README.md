@@ -53,7 +53,7 @@ Running、Unknown、ResultExpired、ServerRestarted 与传输不明保留 pendin
 
 `prepare_composer_target(request, overlay_choices)` 在现有执行端与 composer authority 路由上组合完整用例。已有会话先验证来源身份，再读取保存端目标，缺失时以空意图初始化，最后使用实际保存记录或只读的本地 pending overlay 在执行端解析。回复包含 owner、ContextKey、真实目标 revision、核心依据及有效 NextTurn，保持 InputID 独立。后续目录使用共享纯 helper 重解，明确选择用 raw intent 逐字段更新。保存成功后解析失败保留记录，再次调用重读恢复。
 
-内容同步继续使用既有目录、附件和 CAS。目标准备失败应保留内容编辑和目标修复入口。各端的正常路径消费此 facade，共同规则归[Composer 契约](../../docs/design/composer-state.md#目标准备用例)。
+内容同步继续使用既有目录、附件和 CAS。目标准备失败应保留内容编辑和目标修复入口。各端的正常路径消费此 facade，共同规则归[Composer 契约](../../docs/product-tdd/composer-state.md#目标准备用例)。
 
 ## 生成绑定
 
@@ -123,4 +123,4 @@ ARK 查询认证通过 save_provider 的可选参数 quota_authentication_edit�
 
 `composer_quota(ComposerQuotaContext, refresh)` 是状态栏额度的统一入口：上下文传明确的运行时、模型选择和会话引用，结果为 `ComposerQuotaEntry` 列表。平台不展开模型路由、不按运行时能力切换额度服务，也不从历史 rateLimits 猜测当前账户。`QuotaOrigin` 保留 Provider／RuntimeLogin／ConversationRecord 的语义；中性窗口、节奏与余额类型使用 `QuotaWindowObservation`、`QuotaPaceObservation`、`QuotaBalanceObservation`。窗口观测时间和有效期允许缺失，以表达没有时间戳的历史记录。提供商调度仍只消费其已验证的观测，不接收历史或原生登录展示结果。
 
-`provider_billing_service(endpoint)` 识别可配置组织报表的官方 HTTPS 主机；`provider_billing(gateway_id, provider_id, refresh)` 非阻塞读取／请求刷新，`save_provider_billing` 独立保存配置与认证编辑。两者通过共享 command 契约用于本机与远程，`BillingReport` 明确区分用量、费用、月支出限额和速率配置；查询秘密只写不读。语义见 [组织用量与账单](../../docs/design/ai-service.md#组织用量与账单)。
+`provider_billing_service(endpoint)` 识别可配置组织报表的官方 HTTPS 主机；`provider_billing(gateway_id, provider_id, refresh)` 非阻塞读取／请求刷新，`save_provider_billing` 独立保存配置与认证编辑。两者通过共享 command 契约用于本机与远程，`BillingReport` 明确区分用量、费用、月支出限额和速率配置；查询秘密只写不读。语义见 [组织用量与账单](../../docs/product-tdd/ai-service.md#组织用量与账单)。

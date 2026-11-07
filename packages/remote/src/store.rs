@@ -1,6 +1,6 @@
 //! One atomic ordinary-state file. Identity and business data have independent lifetimes.
 use crate::{
-    identity::{atomic_write, random_id, read_private, validate_name},
+    identity::{atomic_write, read_private, validate_name},
     *,
 };
 use serde::{Deserialize, Serialize};
@@ -16,6 +16,7 @@ const MAX_PENDING: usize = 256;
 const MAX_STATE_BYTES: usize = 1024 * 1024;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, uniffi::Record)]
+#[serde(deny_unknown_fields)]
 pub struct DeviceLocator {
     pub relay_urls: Vec<String>,
     pub direct_addresses: Vec<std::net::SocketAddr>,
@@ -48,18 +49,19 @@ impl DeviceLocator {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, uniffi::Enum)]
-#[serde(tag = "state", rename_all = "camelCase")]
+#[serde(tag = "state", rename_all = "camelCase", deny_unknown_fields)]
 pub enum ContactConfirmation {
     Pending { attempt_id: String },
     Confirmed { attempt_id: String },
 }
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, uniffi::Enum)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub enum LocatorSource {
     PairingOffer,
     AuthenticatedPeer,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[serde(deny_unknown_fields)]
 pub struct DeviceContact {
     pub peer_id: String,
     pub name: String,
@@ -71,6 +73,7 @@ pub struct DeviceContact {
     pub pairing_permission: PairingPermission,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[serde(deny_unknown_fields)]
 pub struct IncomingControlGrant {
     pub peer_id: String,
     pub name: String,
@@ -90,6 +93,7 @@ pub enum PendingStatus {
     ServerRestarted,
 }
 #[derive(Clone, Serialize, Deserialize, uniffi::Record)]
+#[serde(deny_unknown_fields)]
 pub struct PendingOperation {
     pub peer_id: String,
     pub request_id: RequestId,
@@ -103,11 +107,13 @@ pub struct PendingOperation {
     pub status: PendingStatus,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[serde(deny_unknown_fields)]
 pub struct ConfigurationResetNotice {
     pub id: String,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct StoredState {
     version: u16,
     contacts: BTreeMap<String, DeviceContact>,
@@ -133,6 +139,7 @@ impl Default for StoredState {
     }
 }
 #[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct PendingPairing {
     pub attempt_id: String,
     pub permission: PairingPermission,
@@ -164,25 +171,38 @@ impl DeviceStore {
     pub fn open(path: &Path) -> Result<Self> {
         let (state, write) = match read_private(path) {
             Ok(bytes) => {
-                let json: serde_json::Value =
+                let mut json: serde_json::Value =
                     serde_json::from_slice(&bytes).map_err(|_| RemoteError::StateStorage)?;
                 // An independent identity is never an obsolete ordinary-state schema.
                 if json.get("secret_key").is_some() {
                     return Err(RemoteError::StateStorage);
                 }
                 let version = json.get("version").and_then(serde_json::Value::as_u64);
-                if version.is_some_and(|v| v > 4) {
-                    return Err(RemoteError::StateStorage);
-                }
-                if version != Some(4) {
+                if version == Some(3) {
+                    // v3 already contains pins and control grants. Preserve those
+                    // decisions; v4 adds separate profile grants and pairing state.
+                    let contacts = json
+                        .get_mut("contacts")
+                        .and_then(serde_json::Value::as_object_mut)
+                        .ok_or(RemoteError::StateStorage)?;
+                    for contact in contacts.values_mut() {
+                        let contact = contact.as_object_mut().ok_or(RemoteError::StateStorage)?;
+                        contact.insert("control_authorized".into(), serde_json::Value::Bool(true));
+                        contact.insert(
+                            "pairing_permission".into(),
+                            serde_json::Value::String("control".into()),
+                        );
+                    }
+                    json["version"] = serde_json::json!(4);
+                    json["profile_grants"] = serde_json::json!({});
+                    json["pending_pairings"] = serde_json::json!({});
+                    backup_legacy_state(path, &bytes)?;
                     (
-                        StoredState {
-                            reset_notice: Some(ConfigurationResetNotice { id: random_id()? }),
-                            legacy_reset_recorded: true,
-                            ..Default::default()
-                        },
+                        serde_json::from_value(json).map_err(|_| RemoteError::StateStorage)?,
                         true,
                     )
+                } else if version != Some(4) {
+                    return Err(RemoteError::StateStorage);
                 } else {
                     (
                         serde_json::from_value(json).map_err(|_| RemoteError::StateStorage)?,
@@ -505,6 +525,30 @@ impl DeviceStore {
         })
     }
 }
+fn backup_legacy_state(path: &Path, bytes: &[u8]) -> Result<()> {
+    use std::io::Write;
+    let backup = path.with_file_name("remote-state.before-beta-v3.json");
+    if backup.exists() {
+        if matches!(read_private(&backup), Ok(existing) if existing == bytes) {
+            return Ok(());
+        }
+        return Err(RemoteError::StateStorage);
+    }
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options
+        .open(&backup)
+        .map_err(|_| RemoteError::StateStorage)?;
+    file.write_all(bytes)
+        .map_err(|_| RemoteError::StateStorage)?;
+    file.sync_all().map_err(|_| RemoteError::StateStorage)?;
+    Ok(())
+}
 pub(crate) fn parse_peer(peer: &str) -> Result<iroh::EndpointId> {
     {
         let key: iroh::EndpointId = peer.parse().map_err(|_| RemoteError::Configuration)?;
@@ -569,13 +613,114 @@ fn validate_state(state: &StoredState) -> Result<()> {
 #[cfg(test)]
 mod version_tests {
     use super::*;
-    #[test]
-    fn unknown_future_version_is_not_reset_or_overwritten() {
+
+    fn state_path() -> (tempfile::TempDir, PathBuf) {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("remote-state.json");
+        (directory, path)
+    }
+
+    #[test]
+    fn unknown_future_version_is_not_reset_or_overwritten() {
+        let (_directory, path) = state_path();
         let bytes = br#"{"version":99,"synthetic":"preserve"}"#;
         atomic_write(&path, bytes).unwrap();
         assert!(DeviceStore::open(&path).is_err());
         assert_eq!(std::fs::read(path).unwrap(), bytes);
+    }
+
+    #[test]
+    fn malformed_or_unknown_state_is_rejected_without_rewrite() {
+        for bytes in [
+            br#"{"version":4,"contacts":[]"#.as_slice(),
+            br#"{"version":4,"contacts":{},"future":"preserve"}"#,
+        ] {
+            let (_directory, path) = state_path();
+            atomic_write(&path, bytes).unwrap();
+            assert!(DeviceStore::open(&path).is_err());
+            assert_eq!(std::fs::read(path).unwrap(), bytes);
+        }
+    }
+
+    #[test]
+    fn known_v3_state_is_backed_up_and_migrated() {
+        let (_directory, path) = state_path();
+        let peer = crate::identity::DeviceIdentity::generate("Synthetic Peer".into())
+            .unwrap()
+            .id();
+        let incarnation = "1".repeat(32);
+        let source = serde_json::to_vec(&serde_json::json!({
+            "version":3,
+            "contacts":{
+                peer.clone(): {
+                    "peer_id":peer,
+                    "name":"Synthetic Peer",
+                    "locator":{"relay_urls":[],"direct_addresses":[],"lookup_urls":[]},
+                    "confirmation":{"state":"confirmed","attempt_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+                    "paused":false,
+                    "locator_source":"pairingOffer"
+                }
+            },
+            "grants":{
+                peer.clone():{"peer_id":peer.clone(),"name":"Synthetic Peer","attempt_id":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}
+            },
+            "pending":[{
+                "peer_id":peer.clone(),
+                "request_id":{"incarnation":incarnation,"client":"cccccccccccccccccccccccccccccccc","sequence":1},
+                "view":"synthetic-view","execution":{"expected_revision":null},"kind":"readComposerOwner",
+                "runtime_id":null,"conversation_id":null,"status":"recorded"
+            }],
+            "reset_notice":{"id":"dddddddddddddddddddddddddddddddd"},
+            "legacy_reset_recorded":true
+        }))
+        .unwrap();
+        atomic_write(&path, &source).unwrap();
+        let store = DeviceStore::open(&path).unwrap();
+        let snapshot = store.snapshot().unwrap();
+        assert_eq!(snapshot.contacts.len(), 1);
+        assert!(snapshot.contacts[0].control_authorized);
+        assert_eq!(
+            snapshot.contacts[0].pairing_permission,
+            PairingPermission::Control
+        );
+        assert_eq!(snapshot.incoming_grants.len(), 1);
+        assert_eq!(snapshot.pending.len(), 1);
+        assert_eq!(
+            snapshot.reset_notice.as_ref().unwrap().id,
+            "dddddddddddddddddddddddddddddddd"
+        );
+        drop(store);
+        assert_eq!(
+            std::fs::read(path.with_file_name("remote-state.before-beta-v3.json")).unwrap(),
+            source
+        );
+        let migrated_bytes = std::fs::read(&path).unwrap();
+        let migrated: StoredState = serde_json::from_slice(&migrated_bytes).unwrap();
+        assert_eq!(migrated.version, 4);
+        assert_eq!(migrated.contacts.len(), 1);
+        assert_eq!(migrated.grants.len(), 1);
+        assert_eq!(migrated.pending.len(), 1);
+        assert!(migrated.pending_pairings.is_empty());
+        assert!(migrated.profile_grants.is_empty());
+        drop(DeviceStore::open(&path).unwrap());
+        assert_eq!(std::fs::read(&path).unwrap(), migrated_bytes);
+    }
+
+    #[test]
+    fn current_state_is_read_without_rewrite_and_missing_state_initializes() {
+        let (_directory, path) = state_path();
+        let bytes = serde_json::to_vec(&StoredState::default()).unwrap();
+        atomic_write(&path, &bytes).unwrap();
+        let store = DeviceStore::open(&path).unwrap();
+        assert!(store.snapshot().unwrap().contacts.is_empty());
+        drop(store);
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+
+        let (_directory, path) = state_path();
+        let store = DeviceStore::open(&path).unwrap();
+        assert!(store.snapshot().unwrap().contacts.is_empty());
+        let initialized: StoredState =
+            serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        assert_eq!(initialized.version, 4);
     }
 }

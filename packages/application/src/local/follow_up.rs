@@ -350,7 +350,7 @@ impl CoreRuntime {
                             velune_agent_runtime::version::ResumeStrategy::Unsupported
                         )
                 })
-            && session.work().is_empty()
+            && session.work_settled()
             && snapshot
                 .messages
                 .iter()
@@ -402,7 +402,7 @@ impl CoreRuntime {
                         runtime.enabled
                             && velune_agent_runtime::version::variant(runtime.type_id).can_compact
                     })
-                && self.session.work().is_empty()
+                && self.session.work_settled()
                 && !snapshot.messages.is_empty(),
             editable: self.editable_messages(snapshot),
             can_fork: self.forkable(snapshot),

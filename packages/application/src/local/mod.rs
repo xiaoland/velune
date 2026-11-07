@@ -284,9 +284,11 @@ impl CoreRuntime {
     pub fn open(
         options: RuntimeOptions,
         analytics: Arc<crate::analytics::AnalyticsStore>,
+        home_lock: std::fs::File,
     ) -> Result<Self, RuntimeError> {
         options.validate()?;
-        let (repository, persisted) = crate::repository::Repository::open(&options.home_directory)?;
+        let (repository, persisted) =
+            crate::repository::Repository::open_with_lock(&options.home_directory, home_lock)?;
         let conversation_links = repository.load_conversation_links()?;
         let composer_choices = repository.load_composer_choices()?;
         let turn_requests = repository.load_turn_requests()?;

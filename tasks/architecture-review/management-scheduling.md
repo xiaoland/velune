@@ -14,7 +14,7 @@
 | 来源交接 | 只读解析选定 automation.toml、以 canonical source path 与指纹复用导入项；始终暂停导入；内容／来源宿主停用／已知数据库 IN_PROGRESS 状态复核，再由用户确认交接。 | 不具备两宿主共享原子租约；来源重新启用的竞争边界已在 PRD 说明；不操作真实来源。 |
 | Adapter Type 表单 | Mac 按类型暂存 settings、ACP launch、新建默认；executionReady 前禁用类型切换；异步保存捕获提交时 type 与新建默认。Windows 在 await 前捕获 payload，各类型的 settings／starts 分开，ACP launch 只对 ACP 提交。 | 普通类型编辑不改写历史归属。已有 UI 窄验、实际在途快照与新类型后续执行证据复用；本轮不跑 Windows UI。 |
 
-以上责任与 [调度 PRD](../../docs/prd/scheduled-tasks.md)、[类型编辑 PRD](../../docs/prd/agent-runtimes.md#编辑-adapter-type)、[本地问题历史](../../docs/design/telemetry.md#本地问题历史) 一致。历史任务证据见 [会话控制与调度](../session-control-and-scheduling/packet.md)、[会话管理与恢复](../reliability-and-codex-166/packet.md)、[类型编辑](../adapter-type-editing/packet.md)。
+以上责任与 [调度 PRD](../../docs/prd/scheduled-tasks.md)、[类型编辑 PRD](../../docs/prd/agent-runtimes.md#编辑-adapter-type)、[本地问题历史](../../docs/product-tdd/telemetry.md#本地问题历史) 一致。历史任务证据见 [会话控制与调度](../session-control-and-scheduling/packet.md)、[会话管理与恢复](../reliability-and-codex-166/packet.md)、[类型编辑](../adapter-type-editing/packet.md)。
 
 ## 修复及反例
 

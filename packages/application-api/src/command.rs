@@ -13,6 +13,7 @@ uniffi::custom_newtype!(Revision, u64);
 
 /// A revision is mandatory for configuration and destructive edits over remote connections.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, uniffi::Record)]
+#[serde(deny_unknown_fields)]
 pub struct ExecutionContext {
     pub expected_revision: Option<Revision>,
 }

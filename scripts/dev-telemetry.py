@@ -2,6 +2,7 @@
 """Launch an isolated client with a private, temporary OTLP development profile."""
 import argparse
 import http.client
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -59,7 +60,20 @@ def ready():
     backend_ready()
 
 
+def mac_launcher():
+    spec = importlib.util.spec_from_file_location("velune_macos_dev_launcher", ROOT / "scripts/macos-dev.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def launch(args):
+    # A daily or unsealed bundle is rejected before optional telemetry setup.
+    if args.platform == "macos":
+        from macos_identity import validate_bundle
+        supplied = args.app
+        bundle = supplied if supplied.suffix == ".app" else supplied.parents[2]
+        validate_bundle(bundle, "development")
     run_id = "dev-" + uuid.uuid4().hex
     directory = BASE / run_id
     directory.mkdir(parents=True, mode=0o700)
@@ -88,8 +102,15 @@ def launch(args):
     environment["VELUNE_RUN_ID"] = run_id
     # A missing explicit profile is observable as development_configuration_unavailable.
     environment["VELUNE_TELEMETRY_PROFILE"] = str(local_profile)
-    if args.platform in ("macos", "windows"):
-        # Remote control has a Unix socket; checkout/run-id paths exceed sun_path on macOS.
+    if args.platform == "macos":
+        home = Path(tempfile.mkdtemp(prefix="velune-dev-"))
+        started = mac_launcher().start(workspace=ROOT, app=bundle, home=home,
+            extra_environment={"VELUNE_RUN_ID": run_id, "VELUNE_TELEMETRY_PROFILE": str(local_profile)})
+        application = started
+        manifest.update(appPath=application["bundlePath"], processId=application["pid"],
+                        statusPath=str(home / "telemetry/status.json"), homeDirectory=str(home))
+    elif args.platform == "windows":
+        # Remote control has a Unix socket; keep run directories short.
         home = Path(tempfile.mkdtemp(prefix="velune-dev-"))
         os_home = home / "os-home"
         os_home.mkdir()
@@ -179,7 +200,7 @@ def main():
     commands = parser.add_subparsers(dest="command", required=True)
     launch_parser = commands.add_parser("launch")
     launch_parser.add_argument("platform", choices=("macos", "windows", "android", "ios-simulator"))
-    launch_parser.add_argument("--app", type=Path, help="桌面可执行文件；移动端省略则使用已安装应用")
+    launch_parser.add_argument("--app", type=Path, help="Mac开发bundle（也接受其可执行文件）；Windows可执行文件；移动端省略则使用已安装应用")
     launch_parser.add_argument("--device", help="已启动且专用于合成验收的 Android / Simulator 设备")
     launch_parser.add_argument("--package", help="已安装移动应用的 bundle/application ID")
     for command in (launch_parser, commands.add_parser("status")):

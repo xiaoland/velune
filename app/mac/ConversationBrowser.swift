@@ -110,9 +110,9 @@ struct ConversationBrowser {
     }
 }
 
-/// Velune's link to a conversation: `velune://conversation?runtime=…&id=…`.
+/// A conversation link belongs to this application purpose and development scope.
 enum ConversationLink {
-    static let scheme = "velune"
+    static var scheme: String { MacExecutionContext.admitted.conversationScheme }
     static func url(runtimeID: String, conversationID: String) -> URL {
         var components = URLComponents()
         components.scheme = scheme; components.host = "conversation"

@@ -2,7 +2,7 @@
 
 Velune 是外部 Agent 运行时（Harness）的 control surface：UI、AI 网关与协调层服务于这些运行时，不生成代表 Velune 自身的 Agent 人格。共享能力是一组 Rust libs，由各平台 app 通过 UniFFI 生成的类型接口在同一进程内嵌入，不另启常驻 Host。Harness 是会话历史的权威，Velune 只投影，不建立第二份会话数据库。
 
-需求见 [PRD](../prd/index.md)，跨 unit 契约入口见 [Product TDD](../product-tdd/index.md)。本页只维护 unit 拆分、装配与执行 owner；运行时及会话细节按下文链接读取。AI 服务与网关见 [AI 服务设计](ai-service.md)，设备与远控见 [远程访问](remote-access.md)，遥测见 [遥测装配](telemetry.md)。
+需求见 [PRD](../prd/index.md)，跨 unit 契约入口见 [Product TDD](index.md)。本页只维护 unit 拆分、装配与执行 owner；运行时及会话细节按下文链接读取。AI 服务与网关见 [AI 服务设计](ai-service.md)，设备与远控见 [远程访问](remote-access.md)，遥测见 [遥测装配](telemetry.md)。
 
 ## 设计原则
 
@@ -82,40 +82,3 @@ A2A 与原生子 Agent 的身份、权限和生命周期见[协作契约](conver
 - **Android**：Kotlin＋Jetpack Compose 控制端，经 remote-only UniFFI／JNA 嵌入，不携带 Harness 或 AI 执行栈。见 [Android README](../../app/android/README.md)。
 
 各平台遵循自己的原生视觉与交互习惯，跨平台共享领域契约而不共享视觉布局；原则见 [DESIGN.md](../../DESIGN.md)。产品显示版本、ABI、配置 schema 与源码提交分开记录；签名、公证与商店分发不在当前范围。
-
-## 原章节直达
-
-以下入口保留既有深链接，正文由对应主题维护。
-
-<a id="执行位置home-与模型来源"></a>
-[执行位置、HOME 与模型来源](runtime-execution.md#执行位置home-与模型来源)。
-
-<a id="运行时工作的生命周期"></a>
-[运行时工作的生命周期](runtime-execution.md#运行时工作的生命周期)。
-
-<a id="通用-acp"></a>
-[通用 ACP](runtime-execution.md#通用-acp)。
-
-<a id="原生资源管理"></a>
-[原生资源管理](runtime-execution.md#原生资源管理)。
-
-<a id="会话权威与展示投影"></a>
-[会话权威与展示投影](conversations.md#会话权威与展示投影)。
-
-<a id="浏览与执行准备"></a>
-[浏览与执行准备](conversations.md#浏览与执行准备)。
-
-<a id="下一轮选择与跨-harness-接续"></a>
-[下一轮选择与跨 Harness 接续](conversations.md#下一轮选择与跨-harness-接续)。
-
-<a id="原生会话管理"></a>
-[原生会话管理](conversations.md#原生会话管理)。
-
-<a id="会话数据通路"></a>
-[会话数据通路](conversations.md#会话数据通路)。
-
-<a id="agent-间协作"></a>
-[Agent 间协作](conversations.md#agent-间协作)。
-
-<a id="原生子-agent"></a>
-[原生子 Agent](conversations.md#原生子-agent)。

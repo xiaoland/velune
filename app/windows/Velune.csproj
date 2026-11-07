@@ -9,8 +9,10 @@
     <RootNamespace>Velune</RootNamespace>
     <AssemblyName>Velune</AssemblyName>
     <Product>Velune</Product>
-    <Version>0.1.0</Version>
-    <InformationalVersion>0.1 beta.1</InformationalVersion>
+    <VeluneProductVersion>$([System.IO.File]::ReadAllText('$(MSBuildProjectDirectory)\..\..\version.txt').Trim())</VeluneProductVersion>
+    <Version>$(VeluneProductVersion)</Version>
+    <InformationalVersion>$(VeluneProductVersion)</InformationalVersion>
+    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <Platforms>x64</Platforms>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>

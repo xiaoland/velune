@@ -24,6 +24,23 @@ import Foundation
     precondition(journal.restore(id: remoteID, recoverLatest: false) == nil)
     precondition(journal.restore(id: remoteID, recoverLatest: false, device: "synthetic-peer") == remoteLayout)
     precondition(journal.restore(id: UUID().uuidString, recoverLatest: true, device: "another-peer") == nil)
+    let leftPane = UUID(), rightPane = UUID()
+    let leftTab = UUID(), rightTabs = [UUID(), UUID()]
+    var multiPane = localLayout
+    multiPane.layout = .split(PaneSplit(axis: .horizontal, children: [.pane(leftPane), .pane(rightPane)], fractions: [0.5, 0.5]))
+    multiPane.panes = [
+        leftPane: .init(tabs: [leftTab], selected: leftTab),
+        rightPane: .init(tabs: rightTabs, selected: rightTabs[0]),
+    ]
+    multiPane.conversations = [leftTab: "synthetic-left", rightTabs[0]: "synthetic-right-a", rightTabs[1]: "synthetic-right-b"]
+    multiPane.focused = rightPane
+    let multiPaneID = UUID().uuidString
+    let multiPaneDirectory = home.appendingPathComponent("workspace-multipane-check", isDirectory: true)
+    let multiPaneJournal = WindowWorkspaceJournal(directory: multiPaneDirectory) { fatalError($0) }
+    multiPaneJournal.save(multiPane, id: multiPaneID)
+    multiPaneJournal.flush()
+    precondition(multiPaneJournal.restore(id: multiPaneID, recoverLatest: false) == multiPane,
+                 "不同标签数的多 pane UUID 字典经真实 journal 重开后仍保持身份与顺序")
     var legacyLayout = remoteLayout
     legacyLayout.windowDevice = nil
     let legacyID = UUID().uuidString
@@ -34,6 +51,18 @@ import Foundation
                  "旧快照缺设备身份时不能猜作本机latest")
     precondition(journal.restore(id: legacyID, recoverLatest: false, device: "synthetic-peer") == legacyLayout,
                  "旧快照保留显式scene身份恢复入口")
+    let legacyFormatID = UUID().uuidString
+    var legacyFormat = try! JSONSerialization.jsonObject(with: JSONEncoder().encode(localLayout)) as! [String: Any]
+    legacyFormat.removeValue(forKey: "schemaVersion")
+    let legacyBytes = try! JSONSerialization.data(withJSONObject: legacyFormat, options: [.sortedKeys])
+    let legacyFile = snapshots.appendingPathComponent(legacyFormatID + ".json")
+    try! legacyBytes.write(to: legacyFile)
+    precondition(journal.restore(id: legacyFormatID, recoverLatest: false) == localLayout,
+                 "已知未版本化恢复点仍可恢复")
+    precondition(try! Data(contentsOf: snapshots.appendingPathComponent(legacyFormatID + ".json.before-beta.bak")) == legacyBytes,
+                 "恢复点升级前保留逐字节副本")
+    let migrated = try! JSONSerialization.jsonObject(with: Data(contentsOf: legacyFile)) as! [String: Any]
+    precondition((migrated["schemaVersion"] as? Int) == 1)
     note("PASS workspace journal: exact and latest recovery stay within the execution device; unscoped legacy snapshots require an explicit scene identity")
 
 
@@ -50,10 +79,50 @@ import Foundation
     precondition(tolerantJournal.restore(id: invalidID, recoverLatest: true) == localLayout)
     precondition(tolerantJournal.restore(id: invalidID, recoverLatest: false) == nil)
     precondition(tolerantJournal.restore(id: UUID().uuidString, recoverLatest: true, device: "synthetic-peer") == remoteLayout)
+    let futureID = UUID().uuidString
+    var future = try! JSONSerialization.jsonObject(with: JSONEncoder().encode(localLayout)) as! [String: Any]
+    future["futureField"] = ["preserve": true]
+    let futureBytes = try! JSONSerialization.data(withJSONObject: future, options: [.sortedKeys])
+    let futureFile = snapshots.appendingPathComponent(futureID + ".json")
+    try! futureBytes.write(to: futureFile)
+    precondition(tolerantJournal.restore(id: futureID, recoverLatest: false) == nil)
+    tolerantJournal.save(localLayout, id: futureID)
+    tolerantJournal.flush()
+    precondition((try! Data(contentsOf: futureFile)) == futureBytes,
+                 "未来恢复点在读取失败后仍保持原始字节，写回不会覆盖")
     note("PASS workspace journal filters incomplete layouts before exact/latest selection and keeps device isolation")
+
+    let orderedDirectory = home.appendingPathComponent("workspace-legacy-order-check", isDirectory: true)
+    let orderedJournal = WindowWorkspaceJournal(directory: orderedDirectory) { fatalError($0) }
+    let orderedSnapshots = orderedDirectory.appendingPathComponent("mac-window-workspaces", isDirectory: true)
+    try! FileManager.default.createDirectory(at: orderedSnapshots, withIntermediateDirectories: true)
+    var olderLayout = localLayout
+    olderLayout.pinned = false
+    var newerLayout = localLayout
+    newerLayout.pinned = true
+    let olderID = UUID().uuidString, newerID = UUID().uuidString
+    for (id, layout, timestamp) in [(olderID, olderLayout, 10.0), (newerID, newerLayout, 20.0)] {
+        var raw = try! JSONSerialization.jsonObject(with: JSONEncoder().encode(layout)) as! [String: Any]
+        raw.removeValue(forKey: "schemaVersion")
+        let bytes = try! JSONSerialization.data(withJSONObject: raw, options: [.sortedKeys])
+        try! bytes.write(to: orderedSnapshots.appendingPathComponent(id + ".json"))
+        try! FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSince1970: timestamp)],
+                                               ofItemAtPath: orderedSnapshots.appendingPathComponent(id + ".json").path)
+    }
+    let expectedDate = Date(timeIntervalSince1970: 20.0)
+    precondition(orderedJournal.restore(id: UUID().uuidString, recoverLatest: true) == newerLayout,
+                 "未版本化快照首次恢复按原始修改时间选最新窗口")
+    precondition(orderedJournal.restore(id: UUID().uuidString, recoverLatest: true) == newerLayout,
+                 "迁移后的第二次恢复仍选原始最新窗口")
+    let actualDate = try! orderedSnapshots.appendingPathComponent(newerID + ".json")
+        .resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
+    precondition(actualDate == expectedDate, "schema 标记不改变恢复点的原始排序时间")
+    note("PASS legacy snapshot migration preserves mtime and latest-window selection")
 
     let startHome = home.appendingPathComponent("workspace-start-check", isDirectory: true)
     let transport = Transport(stateDirectory: startHome, resourcesDirectory: Bundle.main.resourceURL!)
+    try! transport.prepareForLaunch()
+    MacNativePersistenceGate.open()
     let startDevice = DeviceStore(transport: transport)
     startDevice.windowWorkspaceJournal.save(localLayout, id: UUID().uuidString)
     startDevice.windowWorkspaceJournal.flush()

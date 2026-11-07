@@ -10,6 +10,8 @@ Velune 已取代 Factory26 的继续推进；Beluna 是独立的非 Coding 通�
 
 完整体验应稳定、可恢复，不以单一路径演示作为完成。供应商和 Harness 依赖应清楚可辨。各平台遵循自身原生视觉与交互，品牌体现在图标、内容与少量细节，不覆盖系统整体风格（[S15](../sources/first-loop.md#s15)）。
 
+公开 beta 起，升级必须保留用户已有数据，不能以版本或格式变化为理由清空正文、附件、配置、任务、授权及偏好。无法安全迁移时保留原数据并明确停止写入；降级遇到更高版本格式也不能重建为空值。分发版本及对应源码应可追溯到同一发布提交，用户无需自行编译即可从 GitHub Releases 获取已声明平台的安装产物（[S84](../sources/development.md#s84)）。
+
 ## Harness 与认证边界
 
 首批固定目标为 Codex、Claude Code、Pi；“Cloud Code”在早期讨论中指 Claude Code。三者都要调查路由与协作接入，不能因兼容性差异删除目标。后续 DeepSeek Harness、通用 ACP 与版本化类型的决定见[运行时](agent-runtimes.md)，GitHub Copilot 明确排除（[S6](../sources/foundations.md#s6)、[S9](../sources/foundations.md#s9)）。
@@ -22,12 +24,12 @@ Velune 已取代 Factory26 的继续推进；Beluna 是独立的非 Coding 通�
 
 Rust 是共享产品核心，SQLite 是已认可的存储技术；具体配置可用 JSON／TOML 或 SQLite，不意味着所有状态必须进同一个数据库。共享领域能力与平台 app 分离，平台通过 UniFFI 类型绑定在进程内消费共享库；不保留手写 JSON／C ABI 产品入口。MCP 提供协作工具，ACP 是可替换接入方式（[S10](../sources/foundations.md#s10)、[S17](../sources/early-integration.md#s17)）。
 
-UI 使用原生技术，不采用 Web 前端。当前 Apple、Windows 与 Android 的框架及覆盖范围见[平台与界面](platforms.md)，不再用早期“Apple-universal 待定”描述后续已明确的平台。每个 package 和平台 app 有自己的契约与知识归属；内部模块不必独立成 unit，unit、语言 SDK 与二进制产物不要求一一对应。装配细节归[架构](../design/architecture.md)。
+UI 使用原生技术，不采用 Web 前端。当前 Apple、Windows 与 Android 的框架及覆盖范围见[平台与界面](platforms.md)，不再用早期“Apple-universal 待定”描述后续已明确的平台。每个 package 和平台 app 有自己的契约与知识归属；内部模块不必独立成 unit，unit、语言 SDK 与二进制产物不要求一一对应。装配细节归[架构](../product-tdd/architecture.md)。
 
 ## 参考项目
 
 - HAPI、Lody 用于解释想法，通常不要求复制功能或实现；Android 布局与交互的明确参考要求见[平台与界面](platforms.md)，保留声明、遵守许可，不复制 AGPL 源码（[S46](../sources/remote-platforms.md#s46)）。
-- 可以研究参考项目的 Claude Code 订阅认证思路，但仍须用官方限制与实际证据判断。早期“原生 runtime＋官方登录＋隔离配置”是当时的待验证想法，不用它替代[AI 服务设计](../design/ai-service.md#认证)的现行契约。
+- 可以研究参考项目的 Claude Code 订阅认证思路，但仍须用官方限制与实际证据判断。早期“原生 runtime＋官方登录＋隔离配置”是当时的待验证想法，不用它替代[AI 服务设计](../product-tdd/ai-service.md#认证)的现行契约。
 - 跨 Harness 通信可参考 `lexoliu/acpsub`（2026-10-10 更正早期 acphub 拼写），允许其他方案，不构成强制技术依赖。
 
 参考边界见 [S4](../sources/foundations.md#s4)、[S5](../sources/foundations.md#s5)、[S9](../sources/foundations.md#s9)。

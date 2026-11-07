@@ -43,7 +43,7 @@ public sealed partial class SettingsWindow : Window
         ShowMark();
         Root.ActualThemeChanged += (_, _) => ShowMark();
 
-        general = new GeneralPage(core, commands);
+        general = new GeneralPage(core, commands, this);
         providers = new ProvidersPage(core, this);
         routes = new RoutesPage(core, this, EditProvider);
         runtimes = new RuntimesPage(core, this, openLibrary);

@@ -21,7 +21,7 @@
 
 运行时进程与一轮的临时网关覆盖持续到该轮工作全部结束；原生子 Agent 与后台任务也算工作（[PRD](../prd/agent-runtimes.md)）。检测归 adapter，寿命策略归 application：
 
-- agent-runtime 的 `NativeSession` 以 `turn_running()` 与 `work()` 区分轮次与轮次外工作。Codex 跟踪同一 app-server 中其他线程的状态与轮次，Claude Code 取未结束的任务；ACP、DSH 与 Pi 暂无轮次外工作。
+- agent-runtime 的 `LiveConversation` 以 `turn_running()`、`work()` 与 `work_settled()` 区分父轮次、已知后台任务及工作／通知交接是否已结束。Codex 跟踪同一 app-server 中其他线程，Claude Code 取未结束的任务；Pi 消费 `pi-background-tasks` 的公开 Host EventBus v1，ACP、DSH 暂无轮次外工作。后台任务不一定具有可独立打开的会话身份，没有时活动属于父会话。查询尚未确认或通知仍在交接时，空任务列表不授权重准备或收尾；尽力元数据请求另行保留连接，不阻止重准备。
 - application 以“轮次运行或仍有工作”判定会话执行中。经网关的轮次在两者都结束时才结束进程；Codex 随后以短生命周期 app-server 把该进程运行过的线程用原生提供商 `thread/resume` 一次，使线程回到原生提供商，再释放 runner 与隧道。回收、退出、跟随来源、删除、归档与编辑都把这种会话视为执行中。
 - 下一轮能复用进程时照常发送。需要另起进程（选择、提供商或会话变化；Claude Code 每轮都是）时，`restart_needed` 与 `ensure_work_ended` 以 `Error::OutstandingWork` 拒绝，不结束子 Agent；消息进入发送队列并标记 `FollowUp.waiting = SubAgents`，工作结束后自动发出。
 - 停止父会话同时中断其子 Agent；`stop_sub_agents` 只停止子 Agent。退出时若有轮次或子 Agent 在 Velune 的进程中运行，平台先确认，再以 `shutdown_stopping_work` 结束它们。

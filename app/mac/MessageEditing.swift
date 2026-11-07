@@ -74,9 +74,13 @@ struct MessageEditorSheet: View {
             if request.inPlace { Button(store.isGenerating ? "在原会话中继续（先停止当前 turn）" : "在原会话中继续", role: .destructive) { send(.inPlace) } }
             Button("取消", role: .cancel) {}
         } message: {
-            Text(request.inPlace
-                 ? "在原会话中继续会替换这条消息及其后的全部内容\(store.isGenerating ? "，并先停止当前运行的 turn" : "")；在新会话中继续则保留当前会话，新会话包含这条消息之前的内容。"
-                 : "这条消息只能在新会话中继续。此前可取得的内容会保留为上下文参考，当前会话保持不变。")
+            if !request.inPlace, store.inputAccess != .editable {
+                Text("当前会话处于只读（可能被其他客户端锁定），编辑只能在新会话中继续；当前会话保持不变。")
+            } else {
+                Text(request.inPlace
+                     ? "在原会话中继续会替换这条消息及其后的全部内容\(store.isGenerating ? "，并先停止当前运行的 turn" : "")；在新会话中继续则保留当前会话，新会话包含这条消息之前的内容。"
+                     : "这条消息只能在新会话中继续。此前可取得的内容会保留为上下文参考，当前会话保持不变。")
+            }
         }
     }
 

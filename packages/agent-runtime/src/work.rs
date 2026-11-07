@@ -3,10 +3,11 @@
 //! outlive it. Adapters report what their protocol tells; how long the
 //! process and its turn's settings must then last is the host's decision.
 
-/// One piece of outstanding work, named by the conversation it runs in.
+/// One piece of outstanding work. Some tasks run inside the owning session
+/// rather than in a separately addressable conversation.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BackgroundTask {
-    pub conversation_id: String,
+    pub conversation_id: Option<String>,
     pub state: BackgroundState,
 }
 

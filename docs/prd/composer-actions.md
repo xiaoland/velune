@@ -1,6 +1,6 @@
 # Composer 提交、队列与恢复
 
-本页拥有发送、steer、继续、编辑、压缩、失败恢复及控制权的行为。内容归属见[内容与导航](composer-input.md)，执行选择见[下一轮选择](composer-choices.md)。返回[输入区入口](composer.md)。
+本页拥有发送、steer、继续、编辑、压缩、失败恢复及控制权的行为。内容归属见[内容与导航](composer-input.md)，执行选择见[下一轮选择](composer-choices.md)。返回[产品能力索引](index.md#能力)。
 
 ## 提交主按钮与即时反馈
 

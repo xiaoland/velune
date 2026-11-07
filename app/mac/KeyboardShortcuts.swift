@@ -337,7 +337,7 @@ enum ShortcutCommand: String, CaseIterable, Identifiable {
 
 /// The shortcuts of Velune's commands, those the user changed kept in
 /// `VELUNE_HOME/mac-shortcuts.json`. Any other schema or an unreadable file
-/// starts from the standard ones and is replaced on the next change.
+/// starts from the standard ones without permitting a write.
 @MainActor final class KeyboardShortcutSettings: ObservableObject {
     static let shared = KeyboardShortcutSettings()
 
@@ -365,13 +365,23 @@ enum ShortcutCommand: String, CaseIterable, Identifiable {
     @Published private(set) var sendMode = SendMode.returnSends
     private var url: URL?
     private var failed: ((Error) -> Void)?
+    private var canWrite = true
 
     /// Reads the user's changes from `home`; without one they stay for this run.
     func load(home: URL?, failed: @escaping (Error) -> Void) {
         url = home?.appendingPathComponent("mac-shortcuts.json")
         self.failed = failed
-        let file = url.flatMap { try? Data(contentsOf: $0) }.flatMap { try? JSONDecoder().decode(File.self, from: $0) }
-        guard let file, file.schema == File.schema else { return }
+        guard let url, FileManager.default.fileExists(atPath: url.path) else { canWrite = true; return }
+        guard let data = try? Data(contentsOf: url),
+              let file = try? JSONDecoder().decode(File.self, from: data), file.schema == File.schema,
+              let source = try? JSONSerialization.jsonObject(with: data),
+              let encoded = try? JSONSerialization.jsonObject(with: JSONEncoder().encode(file)),
+              file.shortcuts.keys.allSatisfy({ ShortcutCommand(rawValue: $0) != nil }),
+              SavedWindowLayout.hasOnlyEncodedKeys(source, encoded: encoded) else {
+            canWrite = false
+            failed(NSError(domain: "VelunePersistence", code: 1, userInfo: [NSLocalizedDescriptionKey: "mac-shortcuts.json 格式不受支持；保留原文件，快捷键更改不会写入。请升级到支持该格式的版本后重试。"]))
+            return
+        }
         sendMode = file.sendMode ?? .returnSends
         changed = Dictionary(uniqueKeysWithValues: file.shortcuts.compactMap { name, shortcut in
             ShortcutCommand(rawValue: name).map { ($0, shortcut) }
@@ -417,7 +427,7 @@ enum ShortcutCommand: String, CaseIterable, Identifiable {
     }
 
     private func write() {
-        guard let url else { return }
+        guard canWrite, let url else { return }
         do {
             try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
             let file = File(shortcuts: Dictionary(uniqueKeysWithValues: changed.map { ($0.key.rawValue, $0.value) }), sendMode: sendMode)

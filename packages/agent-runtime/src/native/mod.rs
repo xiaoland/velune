@@ -1062,7 +1062,7 @@ impl NativeSession {
                     .threads
                     .iter()
                     .map(|(thread, entry)| BackgroundTask {
-                        conversation_id: format!("{runtime_id}:{thread}"),
+                        conversation_id: Some(format!("{runtime_id}:{thread}")),
                         state: entry.state,
                     })
                     .collect()
@@ -1071,7 +1071,7 @@ impl NativeSession {
                 .claude_running_sub_agents()
                 .into_iter()
                 .map(|conversation_id| BackgroundTask {
-                    conversation_id,
+                    conversation_id: Some(conversation_id),
                     state: BackgroundState::Running,
                 })
                 .collect(),

@@ -57,7 +57,8 @@ impl CoreRuntime {
     /// The conversation a native sub-agent belongs to, as listed or as linked
     /// from an open conversation's transcript.
     pub(super) fn sub_agent_parent(&self, id: &str) -> Option<String> {
-        if let Some(parent) = self.listed_sources()
+        if let Some(parent) = self
+            .listed_sources()
             .get(id)
             .and_then(|source| source.summary.parent_conversation_id.clone())
         {

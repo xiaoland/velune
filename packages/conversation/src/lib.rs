@@ -250,7 +250,7 @@ pub struct Message {
 /// What a turn ran with, as far as it is known; each part is absent when
 /// neither the native record nor Velune's own request says.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, uniffi::Record)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TurnSettings {
     /// The runtime instance that ran the turn.
     #[uniffi(default = None)]

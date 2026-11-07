@@ -403,7 +403,9 @@ impl CoreRuntime {
                 .into_iter()
                 .map(|source| (source.summary.id.clone(), source))
                 .collect(),
-            sources: self.runtime_instances.iter()
+            sources: self
+                .runtime_instances
+                .iter()
                 .filter(|runtime| runtime.enabled)
                 .filter_map(|runtime| self.runtime_source_key(runtime).ok())
                 .collect(),
@@ -720,7 +722,8 @@ impl CoreRuntime {
         conversation_id: String,
     ) -> Result<Option<ListedConversation>, RuntimeError> {
         let id = conversation_id.as_str();
-        if let Some(source) = self.listed_sources()
+        if let Some(source) = self
+            .listed_sources()
             .get(id)
             .filter(|source| !source.provisional)
         {
@@ -827,7 +830,8 @@ impl CoreRuntime {
         for reference in &references {
             // Open archived threads remain manageable even when the ordinary
             // browser no longer includes them. Resolve within their native owner.
-            let source = self.listed_sources()
+            let source = self
+                .listed_sources()
                 .get(&reference.conversation_id)
                 .cloned()
                 .or_else(|| {

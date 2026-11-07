@@ -1,4 +1,5 @@
 import SwiftUI
+import Combine
 import VeluneBindings
 import AppKit
 
@@ -78,7 +79,8 @@ struct TranscriptView: View {
                         .background(.bar)
                 }
             }
-            .onReceive(NotificationCenter.default.publisher(for: NSScroller.preferredScrollerStyleDidChangeNotification)) { _ in
+            .onReceive(NotificationCenter.default.publisher(for: NSScroller.preferredScrollerStyleDidChangeNotification)
+                .receive(on: DispatchQueue.main)) { _ in
                 scrollerStyle = NSScroller.preferredScrollerStyle
             }
             .onChange(of: conversationID) { _, _ in reading.following = reading.table.isFollowing; reading.outlineAnchorID = nil }

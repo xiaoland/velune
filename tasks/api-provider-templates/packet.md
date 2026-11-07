@@ -65,7 +65,7 @@
 
 共享契约、私有查询凭据、官方采集与缓存、Mac／Windows 独立面板均已实现。授权范围内的核心与平台验证已完成，未提交、未重装；完整 Mac 入口与真实账户的证据边界见下文。
 
-- 结果契约与 Mermaid 已整合至 [AI 服务设计](../../docs/design/ai-service.md#组织用量与账单)，产品语义归 [PRD](../../docs/prd/ai-providers.md#组织用量与账单)。查询凭据不进入模型调用，报表不进入准入。
+- 结果契约与 Mermaid 已整合至 [AI 服务设计](../../docs/product-tdd/ai-service.md#组织用量与账单)，产品语义归 [PRD](../../docs/prd/ai-providers.md#组织用量与账单)。查询凭据不进入模型调用，报表不进入准入。
 - 配置 schema 从 10 升至 11：查询秘密统一为有类型的 API key／AK-SK。此前按旧约定交付为“旧普通配置重置、不迁移”；用户随后要求必须显式手动迁移，该交付结论已修订。本次版本切换前须完成 10→11 的手动迁移与核验，当前尚未执行；原 Harness 会话与认证不在重置范围内。
 - Rust 核心／绑定 all-targets 检查与严格 clippy 通过；纯 remote 绑定严格 clippy 通过。4 项不变量检查通过：官方金额单位与缓存 token 语义、过滤／分页、失败／重复游标／重定向不发布部分总额、缓存权限／scope／月份隔离，以及取消后同身份重建时旧结果拒收。日志 `/tmp/velune-billing-tests-final.log`、`/tmp/velune-billing-clippy-final.log` 与 `/tmp/velune-billing-remote.log`。
 - 真实 release 绑定＋临时 HOME＋本机拒绝 CONNECT 的合成代理验证保存 rollback、模型／查询认证分离、重开、换模型 Key 失效、切换非官方目标清除、关闭／删除查询秘密；没有连接公网账单服务。日志 `/tmp/velune-billing-behavior.log`，最终数据 `/var/folders/rk/8_krr0y14p9g5plk8n77lgyr0000gn/T/velune-billing-behavior-xs5ijyr7`。

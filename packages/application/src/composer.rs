@@ -9,11 +9,17 @@ use std::{
 use velune_application_api::*;
 
 #[derive(Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct Stored {
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct Stored {
     schema_version: u32,
     state: ComposerInputState,
     attachments: Vec<ComposerAttachment>,
+}
+
+pub(crate) fn validate_migrated(value: &serde_json::Value) -> Result<serde_json::Value, Error> {
+    let stored: Stored = serde_json::from_value(value.clone())?;
+    validate_state(&stored)?;
+    Ok(serde_json::to_value(stored)?)
 }
 
 pub(crate) struct ComposerInputs {
@@ -214,11 +220,16 @@ impl ComposerInputs {
                 if value.get("schemaVersion").and_then(|value| value.as_u64()) == Some(1) {
                     return Err(Error::Invalid("输入存储需要显式迁移：请退出 Velune 后执行 python3 scripts/migrations/composer-state.py --home <VELUNE_HOME> --apply；现有输入保持原样".into()));
                 }
-                let stored: Stored = serde_json::from_value(value)?;
+                let stored: Stored = serde_json::from_value(value.clone())?;
                 if stored.schema_version != 2 {
                     return Err(Error::invalid("composer input schema version"));
                 }
                 validate_state(&stored)?;
+                if serde_json::to_value(&stored)? != value {
+                    return Err(Error::invalid(
+                        "composer input 含当前 schema 未知字段；原文件保留",
+                    ));
+                }
                 stored
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -991,6 +1002,22 @@ mod tests {
                     || draft.conversation_id == "created-from-X")
                 .all(|draft| draft.text.is_empty())
         );
+        fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn current_schema_unknown_nested_input_is_rejected_without_rewrite() {
+        let home = std::env::temp_dir().join(format!("velune-composer-{}", identity()));
+        fs::create_dir_all(&home).unwrap();
+        ComposerInputs::open(&home).unwrap();
+        let path = home.join("composer-inputs.json");
+        let mut value: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        value["state"]["inputs"][0]["content"]["future"] = serde_json::json!("retain");
+        let bytes = serde_json::to_vec_pretty(&value).unwrap();
+        fs::write(&path, &bytes).unwrap();
+        assert!(ComposerInputs::open(&home).is_err());
+        assert_eq!(fs::read(&path).unwrap(), bytes);
         fs::remove_dir_all(home).unwrap();
     }
 

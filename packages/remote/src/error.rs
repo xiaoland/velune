@@ -10,7 +10,7 @@ pub enum RemoteError {
     ConfigurationConflict,
     #[error("无法读取或安全保存设备身份")]
     IdentityStorage,
-    #[error("无法读取或原子保存远控状态")]
+    #[error("远控状态无法读取或保存；不兼容格式需要显式迁移，应用不会自动清空旧状态")]
     StateStorage,
     #[error("配对事务未授权、已失效或不可查询")]
     PairingUnavailable,

@@ -71,3 +71,15 @@
 - 独立记录器7项窄验＋新增TCP/UDP mbuf解析窄验通过；涵盖进程身份/重挂、异常ABI、隐私、滚动权限/fsync、锁、到期、stale、SIGTERM和模拟安装卸载。新增实际采样wall0.114s、CPU0.105s、峰值21MB；所有上游请求与进程证明均为合成回环。
 - **2026-11-04 22:06（Asia/Shanghai）已部署并启动**用户LaunchAgent `app.velune.network-flight-recorder`，60秒资源样本／300秒流量，128MiB，11月11日约22:06到期。首个实际样本TCP、UDP、mbuf、接口、kctl与TCP/UDP socket mbuf均observed；status披露208个系统进程秒级时间回退、28个socket关联身份不可用/变化，不能将这些缺口视为无活动。记录独立于Velune、无公网发送，脚本复制到用户Application Support，未修改系统网络。
 - 持续诊断立即生效；应用资源修复需要包含本次源码的构建。记录最多约22小时（当前样本大小估算），不是七天历史保证。正常退出/崩溃/主动脱组仍需依据实际进程记录区分。网络资源最终归属仍开放，下一次能直接对照socket mbuf持有层与退出／扩展重启时间线。
+
+## 11月6日复发：已保全证据，继续归因
+
+用户再次因全机断网重启（10:21:20），要求判断这次能否定位根因。本轮继续既有只读系统诊断授权；不改系统网络，不结束日常应用或代理，不作资源耗尽压力实验。
+
+- 独立记录器正常跨重启运行。已冻结16份滚动文件，共1302条可解析样本，含旧boot的1251条（11月5日13:30至11月6日10:20），放在 `target/verification/network-recurrence-20261106/recorder-frozen/`，防止分析期间覆盖。
+- 重启前2KB clusters为85775/86016、4KB为43008/43008、16KB为5462/5462；网络池使用99.8%，累计分配拒绝150802707。
+- TCP socket mbuf记账最大持有者为node PID96648（峰约263MiB）；另有已退出node PID92310的177条FIN_WAIT_1与PID96366的87条FIN_WAIT_1长时间滞留。记账可能共享底层cluster，不能将其直接当独占物理字节与全局pool相加。
+- 96648的esbuild子进程实际路径位于bl-gallery，父树具备前端Vite／后端Node／Python分支。零点Velune崩溃后直到重启无已识别Velune后代；该服务树继续持有socket。重启后同类bl-gallery服务再次积压，瞬时端点仅在内存配对（不保存地址）：Vite接收队列来自其本机API。
+- 使用实际Node24.22.1／Vite5.4.21，六个回环合成请求（每个≤128KiB）确认头前取消竞态：完整GET不触发req.aborted，proxyRes才监听res.close会错过已发生的关闭事件；上游正常end也留下未销毁响应／连接。正常完成、头后取消与隔离的res.destroyed检查均释放，合成socket最终清零。未做全机耗尽实验。
+- 实际重启后11:22，bl-gallery的Vite有24条从API来的积压接收连接、约13.6MB未读数据；其API→Python也排队。旧节点的esbuild与Python二进制路径和当前cwd支持该服务树关联。portraits代理没有将传入AbortSignal接到上游native request，其timeout也未接destroy。修复位置是bl-gallery代理链的完整取消生命周期。
+- 已定位主要持有层并复现吻合的应用级缺陷；旧HTTP时序与准确服务退出／修复后的资源回落仍未观察，故不将历史每条连接归同一原因，不以零点无Velune绝对排除先前触发。本轮没有修改bl-gallery或Velune产品源码、停止真实服务、改网络、构建或重装。完整取证和修复方向见 `target/verification/network-recurrence-20261106/findings.md`。

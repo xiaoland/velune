@@ -765,8 +765,12 @@ mod tests {
 import json, pathlib, sys
 for line in sys.stdin:
     request = json.loads(line)
-    with pathlib.Path(__file__).with_name('control.log').open('a') as log:
-        log.write(request['type'] + '\n')
+    mutating = request['type'] in ('abort', 'fork', 'clone', 'new_session', 'switch_session') or (
+        request['type'] == 'prompt' and request.get('message', '').startswith('/velune-rewind ')
+    )
+    if mutating:
+        with pathlib.Path(__file__).with_name('control.log').open('a') as log:
+            log.write(request['type'] + '\n')
     print(json.dumps({'type':'response','id':request['id'],'command':request['type'],'success':True,'data':{}}), flush=True)
 "#).unwrap();
         let mut application = crate::Application::open(crate::Options {

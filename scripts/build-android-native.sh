@@ -62,6 +62,7 @@ python3 scripts/build-support.py copy "$workspace/libvelune_bindings.so" "$nativ
 # Licence content changes are propagated; a no-op run leaves the APK input alone.
 python3 -I scripts/android-licenses.py "$features" "$workspace/rust-licenses.txt"
 python3 scripts/build-support.py copy "$workspace/rust-licenses.txt" target/android-licenses/rust-licenses.txt
+python3 scripts/build-support.py copy LICENSE target/android-licenses/LICENSE
 
 # The Kotlin verifier must match Cargo.lock; its official Maven artifact is hash-pinned.
 verifier_version=$(awk '/name = "rustls-platform-verifier-android"/ { getline; gsub(/"/, "", $3); print $3 }' Cargo.lock)

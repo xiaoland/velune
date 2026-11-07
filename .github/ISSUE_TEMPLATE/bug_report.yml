@@ -1,0 +1,76 @@
+name: Bug report
+description: Report a reproducible problem in Velune.
+title: "[Bug] "
+body:
+  - type: markdown
+    attributes:
+      value: >
+        Do not include credentials, API keys, real conversation history, or raw
+        diagnostics. Redact personal data from any excerpt you choose to share.
+        For a suspected security vulnerability, use the private route in
+        [private vulnerability report](https://github.com/xiaoland/velune/security/advisories/new).
+  - type: input
+    id: version
+    attributes:
+      label: Velune version or commit
+      description: Include the release version or commit identifier, if known.
+      placeholder: e.g. 0.1.0-beta.1, a commit SHA, or "unknown"
+    validations:
+      required: true
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options:
+        - macOS
+        - Windows
+        - Android
+        - iPadOS
+        - iOS
+        - Other
+    validations:
+      required: true
+  - type: dropdown
+    id: architecture
+    attributes:
+      label: Device architecture
+      options:
+        - arm64 / Apple silicon
+        - x86_64 / Intel or AMD 64-bit
+        - Other
+        - Not sure
+    validations:
+      required: false
+  - type: input
+    id: runtime_versions
+    attributes:
+      label: Relevant Harness or runtime versions
+      description: List only the runtimes involved in this problem, if any.
+      placeholder: e.g. Codex 0.166, Claude Code 2.1
+    validations:
+      required: false
+  - type: textarea
+    id: problem
+    attributes:
+      label: What happened?
+      description: Describe the problem, where you encountered it, and what you expected.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: If the problem is intermittent or you cannot reproduce it, say so.
+      placeholder: 1. ...
+    validations:
+      required: false
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Optional sanitized diagnostics
+      description: >
+        Share only a short excerpt needed to explain the issue. Remove secrets,
+        session content, local paths, and personal data first. Never upload a
+        raw log or session file.
+    validations:
+      required: false

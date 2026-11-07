@@ -1,72 +1,32 @@
 # Windows 与 Mac 的对齐
 
-新功能与行为改变尽可能先在 Mac 落地，Windows 按 [PRD](../../docs/prd/index.md) 跟进（规则见 [本地指引](AGENTS.md)）。本表按 PRD 分册记录 Windows 的现状，只写与 Mac 的差距与原因；Windows 的具体呈现见 [README](README.md)。平台改动后更新对应行和下方的核对基线。
+Windows 按 [PRD](../../docs/prd/index.md) 跟进完整端能力，规则见[本地指引](AGENTS.md)。本表维护现行差距与验证范围；具体呈现与构建见 [README](README.md)，内部布局设计见 [Unit TDD](TDD.md)。平台改动后更新对应行，实施过程和验证证据保留在任务包。
 
-核对基线：main `2b89eac`（2026-10-21）；Windows 截至 2026-10-22；xURL 深链于 2026-10-23 对齐，拷贝子菜单与 xURL 导出于 2026-10-26 对齐；token 单位显示与输入于 2026-10-26 对齐；额度节奏、金额、历史、提醒与账户额度开关于 2026-10-27 对齐。
+本表于 2026-11-06 汇总既有记录，未重新执行原生界面验收；各行的“已接入”或“已实现”不扩大已有验证结论。
 
-| PRD 分册 | Windows 现状 | 与 Mac 的差距 |
+| 能力 | Windows 现状 | 与 Mac 的差距及验证限制 |
 | --- | --- | --- |
-| [会话](../../docs/prd/conversations.md) | 已实现 | Windows 未注册 `velune://`；xURL 支持 `agents://` 系统深链与会话正文点击，唯一匹配自动打开 |
-| [会话视图](../../docs/prd/conversation-view.md) | 已实现 | 长转录的性能未在真机验收 |
-| [输入区](../../docs/prd/composer.md) | 已实现；消费共享控制权锁定与原因 | 模型目录读取中或失败时只说明状态，不像 Mac 先列出可达的 managed 模型；中文输入法未在真机验收；状态弹层尚未接入所选模型或路由的提供商额度，也未接入核心的原生 Claude 登录额度查询，只显示原生轮次的限额 |
-| [工作区布局](../../docs/prd/workspace-layout.md) | 已实现（[Unit TDD](TDD.md)） | 未在真机逐项操作验收 |
-| [键盘操作](../../docs/prd/keyboard.md) | 已实现 | win-ws 构建通过；浅色与深色界面检查及真机验收待做 |
-| [协作](../../docs/prd/collaboration.md) | 关联 Agent、xURL MCP 工具与随包官方 CLI 已实现 | — |
-| [Agent 运行时](../../docs/prd/agent-runtimes.md) | 本机运行时已实现 | 经 SSH 的运行时只能在 Mac 上设置：Windows 宿主没有 OpenSSH ControlMaster 所需的 Unix socket |
-| [AI 提供商](../../docs/prd/ai-providers.md) | 已实现；官方 API 模板与订阅识别复用共享目录；已接入独立组织账单面板 | 本次官方 API 编辑器与账单入口已通过构建、浅／深色原生 UIAutomation 和正常退出检查；额度窗口名称由 Windows 按核心的窗口 ID 拼出，核心尚未提供显示名；额度历史为对话框中的自绘柱条，悬停提示代替 Mac 的选中读数 |
-| [模型路由](../../docs/prd/model-routing.md) | 已实现 | 成员顺序用上移、下移，不用拖动（WinUI 拖动重排的单一父元素问题） |
-| [资源库](../../docs/prd/resource-library.md) | 已实现，本机核心 | 技能只编辑 SKILL.md；Windows 没有执行位，技能文件的执行属性不写入 |
-| [定时任务](../../docs/prd/scheduled-tasks.md) | 共享调度业务 API 与执行 owner 已接入 | 原生任务管理与来源交接窗口尚未实现；Mac 已有入口 |
-| [分析](../../docs/prd/analytics.md) | 已实现，本机核心 | — |
-| [问题与诊断](../../docs/prd/diagnostics.md) | 已实现 | 系统通知横幅与点按打开未目视验收 |
-| [远程访问](../../docs/prd/remote-access.md) | 完整端：配对、控制请求、切换目标设备 | — |
-| [平台](../../docs/prd/platforms.md) | 未打包的 WinUI 3 应用 | xURL 深链主路径已在 Windows 与 Mac 验收；其他界面不据此扩大验收结论 |
+| [会话](../../docs/prd/conversations.md) | 会话列表、管理、Codex 原生已读 receipt 与 xURL 已接入；菜单消费核心 `can_rename` | 未注册 `velune://`；“跟随当前运行时”仍取最后一轮的运行时，Mac 取上下文运行时；最近项目与运行状态文字仍由平台计算；自动命名没有 Mac 的专门模型 Picker。运行中重命名的共享核心变更未做 Windows 原生复验 |
+| [会话视图](../../docs/prd/conversation-view.md) | client 内容右对齐、运行时状态左对齐；工作过程与正文分开呈现 | 未接入统一 Artifact、即时提交占位与消息操作行时间；长转录性能未在真机验收 |
+| [输入内容与导航](../../docs/prd/composer-input.md) | 已接入共享 InputID、目标配置、CAS、本机未同步缓存与原生创建交接 | 仍按每 Tab 呈现输入；共享 drawer 的导航／聚焦体验、冲突输入恢复、侧聊下一轮改选与一行 drawer 尚未跟进 Mac。旧 Schema 1 缓存保留并要求显式迁移；中文输入法未在真机验收 |
+| [下一轮选择与额度](../../docs/prd/composer-choices.md) | 已接入共享目标准备用例与 resolver；运行时菜单保留准备失败时的修复入口 | 模型目录读取中或失败时未先列出可达的 managed 模型；状态弹层未接入所选模型／路由的提供商额度和原生 Claude 登录额度查询，仍只显示轮次记录限额。共享目标准备尚未做 Windows 原生 UI 验收 |
+| [提交与恢复](../../docs/prd/composer-actions.md) | 发送／排队／插入消费核心准入；文本、粘贴与附件编辑资格独立于提交；发送／排队／继续共用主按钮，停止独立 | 主动压缩已有输入区、更多菜单和快捷键入口，未提供 Mac 的会话菜单、命令面板与 `/compact` 入口。最新准入接入仅完成隔离构建与打包，未做 Windows 原生 UI 验收 |
+| [工作区布局](../../docs/prd/workspace-layout.md) | 窗口、分屏、标签与工具布局已实现（[Unit TDD](TDD.md)） | Mac 的会话 Tab 菜单与未读／失败呈现、会话详情中的发送队列、窗口工具栏中的管理进度、独立窗口默认 composer、完整输入恢复点与 editor journal 尚未跟进；布局未在真机逐项验收 |
+| [键盘操作](../../docs/prd/keyboard.md) | 命令表与可配置快捷键已实现 | 完整键盘路径、浅／深色界面及真机操作验收待做；局部入口检查不代替整体验收 |
+| [协作](../../docs/prd/collaboration.md) | 关联 Agent、xURL MCP 工具与随包官方 CLI 已实现 | xURL 深链主路径已在 Windows 与 Mac 验收，其他协作界面不据此扩大验收结论 |
+| [Agent 运行时](../../docs/prd/agent-runtimes.md) | 本机运行时及已有实例类型编辑已接入 | 经 SSH 的运行时只能在 Mac 上设置：Windows 宿主没有 OpenSSH ControlMaster 所需的 Unix socket；类型编辑尚未做 Windows 原生 UI 验收 |
+| [AI 提供商](../../docs/prd/ai-providers.md) | 官方 API 模板、订阅识别、独立组织账单、额度节奏／金额／历史与提醒已接入；设置没有额外的全局运行中禁用 | 额度窗口名称仍由窗口 ID 拼出；历史使用自绘柱条与悬停提示，Mac 使用选中读数。官方 API 编辑器与账单入口已通过构建、浅／深色原生 UIAutomation 和正常退出检查，尚未用真实账户联调；按依赖判断忙时资格的共享核心变更未做 Windows 原生复验 |
+| [模型路由](../../docs/prd/model-routing.md) | 已实现；额外请求参数可编辑，模型速度以目录变体呈现 | 成员顺序用上移／下移，不用拖动；模型编辑器后续改动仅有隔离源码构建证据 |
+| [资源库](../../docs/prd/resource-library.md) | 本机核心已接入，界面没有额外的全局运行中禁用 | 技能只编辑 SKILL.md；Windows 不写技能执行属性。按依赖判断同步资格的共享核心变更未做 Windows 原生复验 |
+| [定时任务](../../docs/prd/scheduled-tasks.md) | 共享调度业务 API 与执行 owner 已接入 | 原生任务管理与来源交接窗口尚未实现 |
+| [分析](../../docs/prd/analytics.md) | 本机核心已接入 | — |
+| [问题与诊断](../../docs/prd/diagnostics.md) | 问题面板、本机遥测设置、双 SDK、显式 OTLP 测试与独立配置分享已接入 | Mac 的问题历史读回尚未移植；系统通知横幅与点按打开未目视验收。标准遥测语义归[共享契约](../../docs/product-tdd/telemetry.md) |
+| [远程访问](../../docs/prd/remote-access.md) | 配对、控制请求与目标设备切换已接入 | — |
+| [平台与外观](../../docs/prd/platforms.md) | 未打包的 WinUI 3 应用 | 独立字号／密度设置尚未跟进 Mac；局部浅／深色检查不代表整个平台已完成原生验收 |
 
-补充说明：
+验证范围与证据入口：
 
-- 2026-11-02 控制权只限制提交，各端保留本地草稿编辑；Windows 的文本、粘贴与附件准入与提交资格分离。Mac 本轮进一步实现输入状态随导航／共享工作空间转换、冲突草稿恢复、侧聊下一轮改选和一行 drawer，Windows 尚未跟进这些界面能力；频率限制恢复由共享核心处理。本轮 Windows 构建与原生视觉结果以任务验证记录为准。
-
-- 2026-11-02 运行时保存、提供商操作与资源同步的忙时判断已在共享核心改为按依赖检查，Mac 去掉全局运行中禁用；Windows 设置与资源库没有同类全局界面禁用。本轮行为与构建验证在 Mac 完成，Windows 未重新构建／真机复验。
-- 同日共享核心将重命名与删除拆开：支持的原生运行时可在运行中改标题并保留执行。Mac 移除额外的运行中禁用；Windows 原有菜单按核心 `can_rename` 消费，没有额外运行状态限制，本轮未重新构建／真机复验。
-- 通用设置分别选择额度与上下文按占用或剩余显示，状态栏消费两个核心偏好。原生 Codex 项目按独立身份列出，可在编辑对话框修改原生名称与有序文件夹（含空列表）；目录建议使用 `PrimaryFolder`，不使用项目身份键。
-- 发送／排队／继续是一个主按钮，停止独立，与 Mac 相同：实时正文与附件使继续和发送互斥，发送键不触发空输入恢复，组词、停止或请求在途时禁止提交。
-- 主动上下文压缩有输入区按钮、更多菜单与可配置快捷键命令，支持 Codex、Claude Code 与 Pi；Mac 另有会话菜单、命令面板与 `/compact`。
-- 额度：智能策略说明与核心的重置节奏排序一致；金额以文字显示；有预计用尽提示（注意色）、路由成员的金额、编辑器的“读取 … 账户额度”开关、“历史…”对话框与额度提醒通知。
-- 与 Mac 的已知差别：状态行的账户限额来自轮次记录，Mac 来自输入区额度查询；“跟随当前运行时”取最后一轮的运行时，Mac 取上下文运行时；最近项目与运行中状态文字各自计算。
-- 遥测：本机设置、双 SDK 代际、显式 OTLP 测试、独立分享邀请／授权／撤销与一次性复制已接入，使用官方 .NET SDK。调用使用显式 NativeOperation 类别，与 Apple／Android 的同类操作一致，不依赖 CallerMemberName；标准事件名、字段与结果含义归[遥测契约](../../docs/design/telemetry.md)。
-
-组织用量与账单与 Mac 使用同一核心契约：独立查询认证、组织／Project／Workspace／Key 范围、本月 UTC 报表、部分失败／过期状态；费用、支出限额与速率配置分别展示，不参与准入。源码构建与浅／深色原生入口、必填校验、轮询和正常退出检查通过；验证范围与证据由 [任务记录](../../tasks/api-provider-templates/packet.md#组织账单改造实施2026-11-02)保留，尚未以真实账户联调。
-
-
-2026-11-03：共享契约已接入 Codex 0.166 原生已读 receipt，列表动作回传所见版本，自动确认按正文 receipt 去重并避免冲突重试。Mac 新增的问题历史读回、完整输入的窗口恢复点及管理请求队列尚未移植到 Windows；此轮未做 Windows 原生运行验收。
-
-
-### 2026-11-03 后续 Mac 呈现差异
-
-Mac 新增统一 Artifact（Mermaid 查看、sheet／Tab／独立窗口）及通用编辑文稿承载，Windows 尚未接入。Mac 会话 Tab 复用列表菜单并显示未读／失败，发送队列移入各会话详情，跨会话管理进度放窗口 toolbar；Windows 仍需同步这些呈现调整。核心的 Pi cwd／虚拟模型能力／steering、控制权等待和自动命名兜底规则共享；Windows 自动命名尚无 Mac 的专门模型 Picker。本批未进行 Windows 原生 UI 验收。
-
-
-### Composer 状态同步（2026-11-03）
-
-Windows 接入共享 InputID、全局新建输入、完整正文／持久附件／执行选择、输入 CAS 与本机未同步基线；运行时选择包含执行来源。已知原生身份先保存待完成交接，再派发首条消息；读取共享创建记录后，正在编辑同一新建输入的视图接续原生会话。`Conversation.ComposerSync.cs` 拥有目录与缓存，view 只同步原生文本控件。Windows 仍按自身现有每 Tab 输入呈现；Mac 的共享 drawer 导航／聚焦体验不因此宣称已整体移植。验证证据与限制见[任务记录](../../tasks/composer-state-ownership/packet.md)。
-
-
-### 消息与工作区改进（2026-11-04）
-
-共享核心已支持 Pi 的 `continue` 文本兜底及独立 Client 通知；Windows 将 client 内容右对齐、运行时状态左对齐。模型速度表达为目录中的独立模型条目：managed 模型记录在编辑器中携带额外请求参数，Codex 原生目录的档位由 adapter 摊平为变体模型；Windows 模型编辑器支持编辑额外请求参数。Windows 隔离源码构建通过，本轮未启动 UI。Mac 的即时提交占位、消息操作行时间、独立窗口默认 composer、editor journal 恢复及独立字号／密度设置尚未移植到 Windows。
-
-
-### Composer 正文与目标配置分离（2026-11-04）
-
-Windows 按共享契约分别同步正文／附件的 InputID 与目标上下文的运行时／模型／推理强度／权限选择，配置采用独立 revision、CAS 与离线待同步缓存。正文恢复不再改写发送配置，配置恢复也不替换正文。既有会话读取实际 snapshot 后才初始化目标；新建目标全局唯一，原生创建前捕获配置，交接时为实际会话单独初始化。旧缓存 Schema 1 保留并要求显式迁移；待同步冲突保留本地编辑并限制提交。Windows 仍沿用每 Tab 输入呈现。本轮 Windows 隔离源码构建通过，未进行 Windows UI 验收。
-
-2026-11-05：现有运行时实例的类型选择与 Mac 一样可编辑；各类型的字段与新会话表单草稿分别保留，保存保留实例身份和 HOME／SSH，清空旧类型的上次选择。此次没有启动 Windows UI，原生运行验收未覆盖这条新路径。
-
-2026-11-05：发送、排队和插入本轮改为消费共享核心的准入结果（`actions.can_send`、`follow_up.can_queue`、`follow_up.can_steer`），Windows 不再按父会话、待答交互或压缩状态重算规则。输入法、上传、请求在途及目标运行时匹配仍由本地入口处理。本轮已在隔离工作树通过 Rust release、C# 绑定生成、应用 publish 与资源打包；未执行 Windows 原生 UI 验收。
-
-执行目标准备已改用共享用例，目录、配置和窗口查询只消费已有投影。默认配置继续继承，用户明确改选由共享 helper 仅更新所选字段。Windows 运行时菜单保留准备失败时的修复入口。本轮隔离 Rust release、C# 绑定生成、dotnet publish 与资源打包均通过；未启动 Windows UI。
-
-
-### 开发构建与缓存（2026-11-06）
-
-Windows 构建采用共享输入来源和输出保护契约，默认 Rust dev／.NET Debug，release 显式选择。生成绑定及资源仅在内容变化时写入，固定 C# 生成器按身份复用；开发与交付包分别输出，安装仍独立。此次只改变构建链，不改变界面或业务能力；隔离开发构建与无变化复用通过，最终来源记录在独立合成 Git 目录中通过正常返回、临时修改后恢复的拒收及上次成功记录保留检查。本轮证据由[任务记录](../../tasks/build-performance/packet.md)维护，未启动 Windows UI。
+- [Composer 状态归属](../../tasks/composer-state-ownership/packet.md)：共享输入、配置分离、修订与交接的实施和验证范围；不代表 Mac 的共享 drawer 体验已移植。
+- [组织用量与账单](../../tasks/api-provider-templates/packet.md#组织账单改造实施2026-11-02)：官方 API 编辑器、账单入口与原生检查，尚未进行真实账户联调。
+- [消息与工作区改进](../../tasks/messaging-and-workspace-polish/packet.md)和[后续输入／导航改进](../../tasks/post-dogfood-ux/packet.md)：Mac 呈现变化及各端构建范围，平台差距以本表对应行维护。
+- [开发构建与缓存](../../tasks/build-performance/packet.md)：隔离开发构建、无变化复用与来源保护检查；未启动 Windows UI。构建行为归[开发构建说明](../../docs/development/builds.md)。

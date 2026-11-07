@@ -878,13 +878,10 @@ impl CoreRuntime {
     pub(super) fn backend_session_identity(
         &self,
     ) -> Option<(String, velune_gateway::SessionIdentity)> {
-        let runtime = &self.session.execution_configuration.as_ref()?.runtime;
+        let configuration = self.session.execution_configuration.as_ref()?;
         Some((
-            runtime.gateway_id.clone(),
-            velune_gateway::SessionIdentity {
-                namespace: "velune.conversation".into(),
-                id: self.session.conversation_id()?.into(),
-            },
+            configuration.runtime.gateway_id.clone(),
+            configuration.gateway_session.clone()?,
         ))
     }
 
@@ -902,7 +899,7 @@ impl CoreRuntime {
             .map_err(|error| RuntimeError::context("message cancel", error))?;
         self.session.cancel_requested = true;
         // Stopping the turn stops the sub-agents it started too.
-        if let ActiveState::Native(session) = &mut self.session.active_state {
+        if let Some(session) = self.session.active_state.live_mut() {
             session
                 .stop_background()
                 .map_err(|error| RuntimeError::context("message cancel", error))?;
@@ -918,7 +915,7 @@ impl CoreRuntime {
         runtime_id: &str,
     ) -> Result<SnapshotResult, RuntimeError> {
         self.ensure_active(runtime_id)?;
-        if let ActiveState::Native(session) = &mut self.session.active_state {
+        if let Some(session) = self.session.active_state.live_mut() {
             session
                 .stop_background()
                 .map_err(|error| RuntimeError::context("子 Agent 停止", error))?;

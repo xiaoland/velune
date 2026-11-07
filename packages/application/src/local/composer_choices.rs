@@ -9,7 +9,7 @@ use velune_agent_runtime::transcript::TranscriptProjection;
 /// user messages and a digest of its text: native histories name messages
 /// differently from a live run, so neither identity outlasts a reread.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct TurnKey {
     pub(crate) ordinal: usize,
     pub(crate) digest: String,

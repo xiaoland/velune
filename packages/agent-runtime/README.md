@@ -191,7 +191,7 @@ Codex 使用 `thread/compact/start` 并消费独立 turn 与 `contextCompaction`
 
 ## 跨运行时历史导入
 
-`import` 模块接收独立于展示消息的 `Context`。`history::export_context` 由来源 adapter 还原有效分支：Pi 使用 SDK `buildSessionContext` 和 `convertToLlm`，Claude 保留 compact summary 与 retained segment，Codex 消费 rollout 的 replacement history。未知记录、无法配对的工具调用、旧引用载荷以及尚不能解析的继承／回滚历史明确失败，不静默删除上下文。目标写入器分别生成 Claude JSONL、Codex rollout、Pi v3 session；保留文本、内嵌图片、工具参数／结果，丢弃不能迁移的推理签名。Claude 的项目目录使用进程的物理 cwd。应用负责展示转录与导入上下文的边界，见 [architecture](../../docs/design/architecture.md#下一轮选择与跨-harness-接续)。实际版本与验证范围记录在对应任务包。
+`import` 模块接收独立于展示消息的 `Context`。`history::export_context` 由来源 adapter 还原有效分支：Pi 使用 SDK `buildSessionContext` 和 `convertToLlm`，Claude 保留 compact summary 与 retained segment，Codex 消费 rollout 的 replacement history。未知记录、无法配对的工具调用、旧引用载荷以及尚不能解析的继承／回滚历史明确失败，不静默删除上下文。目标写入器分别生成 Claude JSONL、Codex rollout、Pi v3 session；保留文本、内嵌图片、工具参数／结果，丢弃不能迁移的推理签名。Claude 的项目目录使用进程的物理 cwd。应用负责展示转录与导入上下文的边界，见 [architecture](../../docs/product-tdd/conversations.md#下一轮选择与跨-harness-接续)。实际版本与验证范围记录在对应任务包。
 
 ## 侧聊
 
@@ -220,6 +220,8 @@ Codex 使用 `thread/compact/start` 并消费独立 turn 与 `contextCompaction`
 Pi 的工作目录来自 SessionManager／进程 cwd，不能把“无工作区”实现成继承 GUI 宿主的 `/`；application 为新会话提供执行机器的 `~/Documents/Velune`。既有原生记录仍保留它们实际记录的 cwd。
 
 应用注入的 `velune/auto` 虚拟模型在扩展准入前就暴露所选物理模型的 contextWindow／maxTokens；不能使用 Pi 的未知默认值 0 代替已知规格。未知容量继续保持未知，由需要该能力的扩展明确拒绝，不伪造默认容量。应用模型切换重新准备对应目录及虚拟模型。Pi 扩展自行发起的 agent_start 与应用 prompt 拥有相同的运行／steering／停止生命周期。
+
+Pi 后台任务通过可选 `pi-background-tasks` 的公开 Host EventBus API v1 接入，不从插件的 TUI 状态文字推断。Velune 自有扩展桥接结构化订阅、任务查询与精确停止；`PiSession` 将任务及观察／通知交接状态投影到通用 `LiveConversation` 工作契约。后台任务不伪造独立会话。父轮次结束不代表可关闭进程或网关；任务终态也不代表完成通知已交给 Pi，须保留接收者直到交接及其自动后续轮次结束。此能力不安装插件、不修改其配置，也不承诺支持未提供该协议的任意扩展。
 
 Claude 只读历史 helper 将原生 end_turn／stop_sequence、API failure 和明确中断投影为 executions 的终态。工具阶段或单个文本块完成不作为用户轮次的正常完成证据。
 

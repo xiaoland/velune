@@ -1,0 +1,10 @@
+{
+  "package": "mermaid",
+  "version": "11.12.0",
+  "source_url": "https://registry.npmjs.org/mermaid/-/mermaid-11.12.0.tgz",
+  "integrity": "sha512-ZudVx73BwrMJfCFmSSJT84y6u5brEoV8DOItdHomNLz32uBjNrelm7mg95X7g+C6UoQH/W6mBLGDEDv73JdxBg==",
+  "bundled_file": "app/mac/Assets/Artifacts/mermaid.min.js",
+  "bundled_file_sha256": "07e37dfa97b337ccc85365d57eddf99b9706f09db3b59b260d0333b23b343c4b",
+  "source_map_path": "package/dist/mermaid.min.js.map",
+  "source_map_sha256": "d40abef65d402fd67e99d383970bec292a1fa0c1e70d6a5f3bc55edf20021881"
+}

@@ -2,7 +2,7 @@
 
 `velune-application` 是平台 app 共用的应用用例 unit。公开 DTO 与具名 `Command`／`Response` 归 [application-api](../application-api/README.md)，本 unit 实现用例。`ApplicationService` 为平台和远控入口持有唯一执行 owner；原有 `Application` 类型化方法保留为同一用例实现。平台不自行协调文件提交、子进程状态与投影失败清理。
 
-提交状态政策归 [`local/submission.rs`](src/local/submission.rs)。快照先保留原生 `can_send` 能力并观察一次控制权，再派生 follow-up，最后写入公开准入；已交付的 `can_send` 不作为原生能力回灌重算。普通发送使用本次最终投影，队列与 steer 的命令和展示共用纯政策；队列分别计算当前可提供的 `offer_queue` 和允许迟到请求的 `accept_queue`，由前者投影 `FollowUp.can_queue`。跨端消费边界与停止后迟到请求的语义归[会话输入准入契约](../../docs/design/conversations.md#会话输入准入与调度)，此处不维护第二份状态表。原生自动重试、目标模型／推理／权限校验和继续策略仍各有其实际执行 owner。
+提交状态政策归 [`local/submission.rs`](src/local/submission.rs)。快照先保留原生 `can_send` 能力并观察一次控制权，再派生 follow-up，最后写入公开准入；已交付的 `can_send` 不作为原生能力回灌重算。普通发送使用本次最终投影，队列与 steer 的命令和展示共用纯政策；队列分别计算当前可提供的 `offer_queue` 和允许迟到请求的 `accept_queue`，由前者投影 `FollowUp.can_queue`。跨端消费边界与停止后迟到请求的语义归[会话输入准入契约](../../docs/product-tdd/conversations.md#会话输入准入与调度)，此处不维护第二份状态表。原生自动重试、目标模型／推理／权限校验和继续策略仍各有其实际执行 owner。
 
 多个会话可以同时执行。每个打开的会话有自己的执行、模型选择、投影与协作票据；以会话 ID 寻址的操作（打开、发送、取消、回复交互、重命名、删除、snapshot）作用于该会话，每次操作都推进所有会话。每个会话同一时刻最多一个 turn；`cancel` 与 `reply_runtime_interaction` 需要会话 ID。重开正在执行的会话返回其运行中的视图，结束后再打开才重读原生历史。执行中或有待处理交互的会话保持打开，空闲会话按最近使用保留 8 个。同一运行时的并发执行各用一个 lane 目录（`runtime-projections/<运行时>/lane-<n>`）存放网关模型与选择文件。`conversation_activity(since)` 列出执行中或待处理交互的会话，并返回游标之后结束的 Velune turn 及其结果（完成、失败、用户停止；Pi 以错误结束模型响应也算失败），最近 64 个可补读，另列出打开的会话中当前可无新消息恢复的会话（资格同 snapshot 的 `can_resume`，恢复请求仍重新判定）；可频繁轮询。运行时保存、提供商、导入与登录配置在任一会话执行时拒绝变更。运行时删除只在依赖该实例的会话或后台任务执行时拒绝；其他实例执行不阻止删除失效实例，删除不改动 Harness 原生文件。并行会话手动验收 用隔离 Pi 1.0.2 与本机 loopback 上游检查同时执行、独立结束、取消与配置门禁。
 
@@ -66,7 +66,7 @@ Codex 订阅由 application 自身管理，与 Harness 登录独立。保存提�
 
 会话列表汇总全部启用运行时，实例 disabled 不读取其历史来源，保留其配置与原生历史；enabled 默认 true 作为当前 schema 的增量配置。当前执行实例与浏览筛选分别管理，不按执行实例隐式限制列表。
 
-原生列表与项目缓存按同一 `RuntimeSourceKey` 校验，它直接来自真实 reader／ACP launch 的纯解析配置。名称、新会话策略和 Velune 网关／提供商变更可以复用历史缓存。归档及按身份查找的回退投影也保留来源，来源切换后拒绝旧结果与旧客户端视图。读取来源与执行配置各自表达依赖，例如 Pi 的 sdkHelper override 只参与执行配置。来源失败、清理与变更规则见[浏览与执行准备](../../docs/design/conversations.md#浏览与执行准备)。
+原生列表与项目缓存按同一 `RuntimeSourceKey` 校验，它直接来自真实 reader／ACP launch 的纯解析配置。名称、新会话策略和 Velune 网关／提供商变更可以复用历史缓存。归档及按身份查找的回退投影也保留来源，来源切换后拒绝旧结果与旧客户端视图。读取来源与执行配置各自表达依赖，例如 Pi 的 sdkHelper override 只参与执行配置。来源失败、清理与变更规则见[浏览与执行准备](../../docs/product-tdd/conversations.md#浏览与执行准备)。
 
 列表窗口由 `local/organization.rs` 计算：按浏览偏好筛选、分组（组按最近活动排序，置顶组在前、无项目在后）与排序，总数上限依次分给各组的首页，折叠组不读取，`load_more_conversations` 只为该组追加一页；改变分组、排序或筛选时清空追加页。`list()` 返回窗口内的会话（`ListedConversation`，含原生 ID、置顶、未读、归档、所属项目与组）以及仍打开但不在窗口内的会话（组为空）、组描述与项目清单。会话的项目以主文件夹标识（`local/projects.rs`）：工作目录是某个项目的文件夹时归该项目；否则若它是 Git worktree，归其所属仓库的项目（Claude Code 约定的 `.claude/worktrees/<名称>` 按路径判断，SSH 会话与已删除的 worktree 同样适用；本机会话另读 worktree 的 `.git` 文件与 `commondir`，每个目录读一次并缓存）；再否则工作目录自成项目。`set_project` 设定项目的名称、主文件夹与附加文件夹，一个文件夹只属于一个项目；并入的目录及原主文件夹上的移动记录、项目筛选与折叠分组改指新的主文件夹。运行时在没有项目时安排的位置不算项目、归入无项目组：文件系统根（应用自身不指定目录时的位置）、运行时看到的 HOME（SSH 继承 HOME 时探测一次并缓存），以及版本描述 `projectless_directories` 列出的 HOME 下目录（Codex 为 `Documents/Codex`，即 Codex 应用无项目聊天的默认目录）。Velune 的列表组织记录保存在 `conversation-organization.json`（schema 2）：置顶、Velune 归档、已读位置、手动未读、移到的项目（主文件夹），以及调整过的项目（主文件夹、名称、附加文件夹）；缺少文件或遇到旧 schema 时以当前时间为已读基线重新开始。窗口中未读且在本机的会话另读原生会话文件末尾判断最近结束的轮次是否失败（`failed`，按文件签名缓存；用户停止不算失败）。运行时有原生归档（版本描述 `can_archive_conversations`，当前为 Codex）时归档改用原生 `thread/archive`／`thread/unarchive`，归档视图另读其已归档列表；其余运行时只记录、不改原生会话。归档会取消置顶，向 Velune 归档的会话发送消息会取消归档，删除会话时移除其记录。Claude Code 与 Pi 按文件索引（`local/browsing.rs`）：未读会话以文件时间与会话头的工作目录参与分组、计数和窗口分配，`browse_read` 只读取窗口显示到的会话，读取后以原生时间重排至稳定；搜索读出全部未读会话，按 ID 查找只读该会话，协作工具读取全部。
 
@@ -74,7 +74,7 @@ Codex 订阅由 application 自身管理，与 Harness 登录独立。保存提�
 
 首次 snapshot／snapshot update 或侧聊创建即使尚无载入的 session，也按关联最后一段的 `context_runtime_id` 校验并载入当前上下文。列表的只读打开不建立 session，不能用它是否曾展示过来假定上下文已载入。按列表来源打开、发送与管理会话仍校验第一段的来源实例；不把来源实例与当前上下文互相替代。
 
-`conversation-links.json` 是 schema 1 的关联文件，独立于 schema 11 普通配置，只保存原生引用、截止位置及交接记录定位，不保存消息或凭据。公开身份可以是单目标别名；后续交接继续向同一关联追加原生段。目标导入和准备成功后原子保存关联，再发送；未知发送结果不自动重试。重开以各原生历史重建展示，不递归复制交接包。工具执行、审批和签名推理状态不重放。ACP／DeepSeek 目标仍使用既有引用路径；旧引用载荷、无法完整解析的 Codex 继承／回滚上下文明确拒绝原生翻译，不能静默丢失内容。composer 的完整输入持久化与同步见[状态设计](../../docs/design/composer-state.md)，旧文字文件由显式脚本迁移。
+`conversation-links.json` 是 schema 1 的关联文件，独立于 schema 11 普通配置，只保存原生引用、截止位置及交接记录定位，不保存消息或凭据。公开身份可以是单目标别名；后续交接继续向同一关联追加原生段。目标导入和准备成功后原子保存关联，再发送；未知发送结果不自动重试。重开以各原生历史重建展示，不递归复制交接包。工具执行、审批和签名推理状态不重放。ACP／DeepSeek 目标仍使用既有引用路径；旧引用载荷、无法完整解析的 Codex 继承／回滚上下文明确拒绝原生翻译，不能静默丢失内容。composer 的完整输入持久化与同步见[状态设计](../../docs/product-tdd/composer-state.md)，旧文字文件由显式脚本迁移。
 
 当前进程成功新建的 Codex、Claude Code 和 Pi 草稿，在首次发送前切换模型或实例时可以重建实际目标，并以单目标关联保留公开身份。该资格来自明确的新建生命周期，不能从空消息或历史缺失推断。目标创建及关联原子提交成功后才发送；创建失败保留草稿身份供显式重试，关联提交失败保留已创建的活动目标而不发送。第一次发送调用即消耗草稿资格，失败或断连不自动重建或重发。重启后目标尚无原生历史时显示不可发送状态；确认目标不存在后，显式删除可撤除这条单目标关联。未提交且未关联的内存草稿不保证跨重启保留。DSH 新建时已有原生记录，继续使用普通历史接续。
 
@@ -82,7 +82,7 @@ Pi 草稿的原生重命名可能尚未落盘，因此重命名不消耗未提�
 
 摘要的 `can_rename`／`can_delete` 是 application 装配的原生管理能力。逻辑重命名作用于首段标题；删除逐段执行，确认全部完成后移除关联，部分失败记录已完成项并保留未完成关系。缺少原生删除能力时不以本地隐藏替代。当前尾段不可读取时保留已校验的来源正文并关闭发送，修复原生来源后重新打开；不存在自动重发或伪造 resume。
 
-分析记录由 application 在配置根目录的 `analytics.sqlite` 独立维护，后台有界写入与应用生命周期共同关闭。`analytics_query` 接收明确 UTC 区间及平台自然日边界，返回具名概览、趋势、提供商／模型拆分与有界请求页。明细页不截断概览人口，未知计量和存储告警明确返回；统计不可用不阻止应用配置与执行。具体口径归 [AI 服务设计](../../docs/design/ai-service.md#用量与性能分析契约)。
+分析记录由 application 在配置根目录的 `analytics.sqlite` 独立维护，后台有界写入与应用生命周期共同关闭。`analytics_query` 接收明确 UTC 区间及平台自然日边界，返回具名概览、趋势、提供商／模型拆分与有界请求页。明细页不截断概览人口，未知计量和存储告警明确返回；统计不可用不阻止应用配置与执行。具体口径归 [AI 服务设计](../../docs/product-tdd/ai-service.md#用量与性能分析契约)。
 
 会话阅读与执行身份分开：`read_conversation`只读指定来源的原生历史／关联投影，不切换活跃runner；相同活动身份返回当前投影。`snapshot`同时接收上下文运行时和会话ID，非当前活动身份返回None。快照结果是交付形式 `DeliveredSnapshot`：思考块交付为摘要与其下的正文（`DeliveredBlock::Reasoning{summary, text}`），没有摘要的思考块不交付；超过 2KB 的推理与工具输出只携带字节数，由 `message_payloads` 按消息读取；图片内容同样延迟，路径图片只交付路径；用户正文末尾的“附件：”路径列表交付为文件块（`DeliveredBlock::File`），不作为正文；Agent 间消息末尾的来源行交付为正文前的 `DeliveredBlock::AgentSender`；工具块的 `linked_conversation_id` 取 adapter 记录的原生子 Agent 会话，否则取 Velune 协作工具返回的状态对象；带 `parent_conversation_id` 的原生子 Agent 会话打开后不可发送，`send_turn` 明确拒绝；`snapshot_update(since)` 依据上次交付游标返回未变化或只含变化消息的快照，供展示客户端轮询。`send_turn`接收来源运行时／会话ID、目标运行时／模型和文本，在同一个核心操作中激活指定来源再派发，不能用全局最后打开的会话代替发送来源。调用方可为多个工作区保存阅读投影，但共享核心仍只有一个活跃执行。
 
@@ -125,7 +125,7 @@ ACP 的列表能力缺失与空列表不同；汇总列表通过 `history_failur
 
 ## 组织用量与账单
 
-`provider_billing`／`save_provider_billing` 管理已保存官方 API 提供商下的可选报表；查询 Key 与模型认证分开，公开状态不含秘密。范围、货币、统计周期与新鲜度由共享 DTO 表达，部分失败不发布不完整总额，报表不进入网关准入。配置、缓存身份、取消与官方适配的权威契约及 Mermaid 见 [AI 服务设计](../../docs/design/ai-service.md#组织用量与账单)。
+`provider_billing`／`save_provider_billing` 管理已保存官方 API 提供商下的可选报表；查询 Key 与模型认证分开，公开状态不含秘密。范围、货币、统计周期与新鲜度由共享 DTO 表达，部分失败不发布不完整总额，报表不进入网关准入。配置、缓存身份、取消与官方适配的权威契约及 Mermaid 见 [AI 服务设计](../../docs/product-tdd/ai-service.md#组织用量与账单)。
 
 ## 提供商能力组合与 Claude CLI
 
@@ -160,7 +160,7 @@ Claude 认证失败的公开 `AuthenticationEvent::Finished` 的 `error` 只包�
 
 每个 view 分别保留所选会话、列表筛选／分组排序／归档／分页、outline／关联会话打开方式／用量显示方式／状态栏。远程这些呈现选择不写入执行设备的默认界面配置；会话、项目组织和实际配置仍共享。`ReleaseView` 释放临时状态，不取消会话、不删除历史或已上传文件；最多保留 128 个 view，超出时回收最久未访问者的临时状态，所以长期 headless 运行不因累计窗口耗尽视图。会话按自身运行／审批／队列与空闲保留规则管理，视图回收不会改变工作寿命。
 
-未发送正文／附件、目标明确选择与恢复关联由 `ComposerInputs` 在 `ClientState` 之外共享持有；内容按稳定 InputID，选择按 ContextKey，二者及恢复关联各自 CAS，目录提供条件修订。全局新建只有一份内容关联和一套选择。原生身份交接记录同时服务幂等恢复和其他编辑视图接续，详见 [Composer 契约](../../docs/design/composer-state.md)。
+未发送正文／附件、目标明确选择与恢复关联由 `ComposerInputs` 在 `ClientState` 之外共享持有；内容按稳定 InputID，选择按 ContextKey，二者及恢复关联各自 CAS，目录提供条件修订。全局新建只有一份内容关联和一套选择。原生身份交接记录同时服务幂等恢复和其他编辑视图接续，详见 [Composer 契约](../../docs/product-tdd/composer-state.md)。
 
 新 view 继承最近一次本地成功保存的完整浏览偏好、分页上限、outline、关联会话打开方式、用量显示方式和状态栏。local-runtime 与 portable 都在配置原子保存成功后记录这六项的实际提交快照，离开本地调用时更新默认值；已存在的远程 view 保留自己的选择。远程保存共享配置时保留这些本地默认值，保存失败不推进默认值，保存后的响应失败也不撤销已提交的默认值。所选会话、执行状态和草稿不参与该快照。
 
@@ -189,7 +189,7 @@ Claude Code 的 SDK 中断标记复用原输入的 `promptId`，且没有输入�
 
 ## Composer 目标准备
 
-application 提供目标的规范身份、当前会话默认依据与 NextTurn 解析输入，bindings facade 组合执行端及明确输入保存端的完整准备。未手选项作为空意图继承默认，`EnsureTarget`／`SaveTarget` 统一规范化该语义，手选值逐字段覆盖继承值。客户端通过 `PreparedComposerTarget` 的实际记录和共享 resolver 消费结果，原生模型目录仍按原加载策略取得。平台继续负责导航及请求观察寿命，跨端规则见[目标准备用例](../../docs/design/composer-state.md#目标准备用例)。
+application 提供目标的规范身份、当前会话默认依据与 NextTurn 解析输入，bindings facade 组合执行端及明确输入保存端的完整准备。未手选项作为空意图继承默认，`EnsureTarget`／`SaveTarget` 统一规范化该语义，手选值逐字段覆盖继承值。客户端通过 `PreparedComposerTarget` 的实际记录和共享 resolver 消费结果，原生模型目录仍按原加载策略取得。平台继续负责导航及请求观察寿命，跨端规则见[目标准备用例](../../docs/product-tdd/composer-state.md#目标准备用例)。
 
 ## Composer 额度投影
 

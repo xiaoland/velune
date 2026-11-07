@@ -345,6 +345,27 @@
         "CARGO_BUILD_JOBS": "2"
       }
     },
+    "start-macos-dev": {
+      "argv": [
+        "python3",
+        "scripts/macos-dev.py",
+        "start"
+      ]
+    },
+    "status-macos-dev": {
+      "argv": [
+        "python3",
+        "scripts/macos-dev.py",
+        "status"
+      ]
+    },
+    "stop-macos-dev": {
+      "argv": [
+        "python3",
+        "scripts/macos-dev.py",
+        "stop"
+      ]
+    },
     "reinstall-macos": {
       "argv": [
         "svc",
@@ -360,6 +381,29 @@
         "scripts/build-macos.sh",
         "--profile",
         "release",
+        "--build-only"
+      ],
+      "env": {
+        "CARGO_BUILD_JOBS": "2"
+      }
+    },
+    "start-macos-dev-release": {
+      "argv": [
+        "python3",
+        "scripts/macos-dev.py",
+        "start",
+        "--profile",
+        "release"
+      ]
+    },
+    "package-macos": {
+      "argv": [
+        "bash",
+        "scripts/build-macos.sh",
+        "--profile",
+        "release",
+        "--purpose",
+        "daily",
         "--build-only"
       ],
       "env": {

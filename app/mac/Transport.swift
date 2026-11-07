@@ -3,6 +3,12 @@ import OSLog
 import Combine
 import VeluneBindings
 
+@MainActor enum MacNativePersistenceGate {
+    private(set) static var isEnabled = false
+    static func close() { isEnabled = false }
+    static func open() { isEnabled = true }
+}
+
 enum TransportError: LocalizedError {
     indirect case operation(String, TransportError)
     case unavailable
@@ -98,18 +104,15 @@ final class Transport: @unchecked Sendable {
     }
 
     static func applicationDefault() throws -> Transport {
-        let configuredHome = getenv("VELUNE_HOME").map { String(cString: $0) }
-        let home = try applicationHome(configuredHome, userHome: FileManager.default.homeDirectoryForCurrentUser)
+        let context = try MacExecutionContext.application()
         guard let resources = Bundle.main.resourceURL else { throw TransportError.unavailable }
-        return Transport(stateDirectory: home, resourcesDirectory: resources)
+        return Transport(stateDirectory: context.stateDirectory, resourcesDirectory: resources)
     }
 
-    static func applicationHome(_ configured: String?, userHome: URL) throws -> URL {
-        guard let configured, !configured.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            return userHome.appendingPathComponent(".velune", isDirectory: true)
-        }
-        guard configured.hasPrefix("/"), !configured.contains("\u{0}") else { throw TransportError.invalidHome }
-        return URL(fileURLWithPath: configured, isDirectory: true).standardizedFileURL
+    /// Open the local core before native preference and scene restoration reads.
+    /// Application::open acquires and retains the same home lock used by later calls.
+    func prepareForLaunch() throws {
+        try withApplication("prepareForLaunch", .reads, .read) { _ in () }
     }
 
     func setConversationBrowserPreferences(_ preferences: ConversationBrowserPreferences) throws -> ConfigurationSnapshot { try withApplication("setConversationBrowserPreferences", .writes, .configurationWrite) { try $0.setConversationBrowserPreferences(preferences: preferences) } }

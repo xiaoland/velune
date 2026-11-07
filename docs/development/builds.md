@@ -14,9 +14,37 @@ svc run build-windows
 
 四个入口默认 dev：Rust dev、Swift／.NET Debug、Android debug APK。Rust dev／test 默认 `debug=1`、保留增量与断言；需要变量级原生调试时显式用 `CARGO_PROFILE_DEV_DEBUG=2`，完成后恢复默认。不要为每次任务创建自定义 profile、RUSTFLAGS 或独立 target-dir。运行性能和发布质量仍使用显式 release。
 
-对应 `build-macos-release`、`build-ios-release`、`build-android-release`、`build-windows-release` 选择优化构建。Android release 产生未签名 APK，分发签名另行处理。Mac 开发 bundle 在 `target/macos-dev/Velune.app`，release 在 `target/macos/Velune.app`；Windows分别是 `target/windows-dev/Velune` 和 `target/windows/Velune`。构建不会安装或退出正在使用的应用。Mac 日常重装仍通过 `svc run reinstall-macos`，明确构建 release 后再安装、迁移和后台启动。
+对应 `build-macos-release`、`build-ios-release`、`build-android-release`、`build-windows-release` 选择优化构建。Android release 产生未签名 APK，分发签名另行处理。Mac 普通／优化开发 bundle 分别在 `target/macos-dev/Velune Dev.app`、`target/macos-dev-release/Velune Dev.app`；日常用途只由 `package-macos` 或重装入口显式生成至 `target/macos/Velune.app`。运行用途与优化 profile 独立；Windows分别是 `target/windows-dev/Velune` 和 `target/windows/Velune`。构建不会安装或退出正在使用的应用。Mac 日常重装仍通过 `svc run reinstall-macos`，明确构建 release 优化的 daily 用途后再安装、迁移和后台启动。开发启动与停止归[实例隔离](environment.md#mac-开发实例)。
 
 每个脚本也接受显式 profile；Mac 的旧 `--build-only` 参数保留为兼容的无操作标志。需要 SDK、设备或 Gradle 参数时看平台 README。直接 Xcode 与 CLI 在同工作树并行使用的边界见[iOS说明](../../app/ios/README.md#构建)。
+
+## 产品版本与构建号
+
+根 `version.txt` 是产品完整 SemVer 的唯一来源。`scripts/version.py` 校验并提供完整版本、数字核心版本和发布构建号。Mac、Windows、Android 和 iOS 的用户可见版本读取该来源。Apple 平台的 ShortVersion 使用数字核心，显示字段保留 beta 标识。release-please 的 manifest 仅记录它上次发布的基线。Rust 内部 crate 版本独立，不按产品 beta 逐包修改。
+
+`VELUNE_BUILD_NUMBER` 是共享的正整数发布序号，本地开发缺省为 1。Apple BundleVersion 和 Android versionCode 消费它。正式发行由唯一的 release workflow run 建立序号并写入草稿 Release 元数据，tag 的补跑沿用该序号。版本 helper 和该环境变量都纳入构建来源，不能把不同序号当作同一输入。可先用 `python3 scripts/version.py --format build-info` 查看，不需要构建 App。
+
+直接 Xcode 和 iOS 构建入口复用现有首个 native phase，由根版本和模板生成 `target/ios-generated/Info.plist`。不改写已跟踪的模板，重复相同内容保留输出时间戳。
+
+## 正式 Beta 发行
+
+仓库已启用 GitHub release immutability。草稿阶段补齐全部资产，公开后由 GitHub 锁定资产及关联 tag。[不可变发布](https://docs.github.com/en/code-security/concepts/supply-chain-security/immutable-releases)
+
+发行权威是 `main`。日常集成继续在默认分支 `develop`。发行顺序为 develop → main 提升 PR → release-please 版本 PR → main 合并产生的草稿 tag/Release → 固定 tag SHA 的三端四构建 → 所有资产、对应源码和校验清单齐备后公开 prerelease → main → develop 回流 PR。热修复也从 main 开 PR，按相同流程形成新 beta。Release Please 的 manifest 记录工具上一次发布版本，产品版本仍只由根 `version.txt` 提供。
+
+release-please PR 和回流 PR 由 `GITHUB_TOKEN` 创建。GitHub 会将 bot 创建 PR 的 `pull_request` 检查置于待维护者批准状态。维护者须在 Actions 中选择 **Approve workflows to run**，让 `PR checks / validate` 对该 PR head SHA 运行并通过后再合并。检查由真实 `pull_request` 事件触发，因此也满足 main 规则集的必需检查。工作流不另行派发诊断检查。Release workflow 用第一个 tag 构建 run 的 `run_number` 作为 `VELUNE_BUILD_NUMBER`，并先写入草稿 Release 的 `release-build.json`。同 tag 的 `workflow_dispatch` 补跑从该文件恢复同一序号和 SHA。补跑只接受仍为草稿的 tag。不能为补跑另起序号、移动 tag 或替换已公开资产。
+
+PR 检查先验证版本、Release Please manifest、脚本语法和差异空白。包含 Rust 源码或 Cargo 输入的 PR 才在 Linux 安装固定 Go 工具链并构建 `velune-bindings`，以检查共享 core／bindings 与 Linux RelayKit 链接边界。持久化文件变化再运行对应 repository、analytics、迁移或 remote 存储窄测。网关执行或配置文件变化运行其回环配置快照检查。纯文档改动不触发 Rust 构建，也不因本地未关联的全仓格式问题阻塞。
+
+Release workflow 使用 GitHub-hosted `macos-15` arm64、`macos-15-intel` x86_64、`windows-2025` x64 和 `ubuntu-24.04` Android arm64 runner。macOS runner 默认 Xcode 16.4，因此工作流显式选择镜像内的 Xcode 26.3（Swift 6.2），满足项目 SwiftPM 依赖。runner image 更新时需确认该选择仍存在。缓存只复用 Rust／Swift／Gradle 的构建输入产物。最终资产从固定 tag 的干净 checkout 生产。历史读取 runtime-support 的 `package.json` 要求 Node.js 22.18+，工作流固定 Node 22.18.0。
+
+Android 发行采用固定 keystore，由以下 GitHub repository secrets 提供材料。 `ANDROID_RELEASE_KEYSTORE_BASE64`、`ANDROID_RELEASE_STORE_PASSWORD`、`ANDROID_RELEASE_KEY_ALIAS`、`ANDROID_RELEASE_KEY_PASSWORD`。CI 要求四项齐全、APK 签名验证通过，且证书 SHA-256 与已保管发行公钥相符。不提供无签名发布回退。不要打印或提交密钥材料。
+
+Mac 包分别为 arm64、x86_64 zip，使用 ad-hoc 签名且未公证。macOS 首次拦截时可在“系统设置 → 隐私与安全性 → 仍要打开”针对 Velune 放行，应保持 Gatekeeper 开启。Windows 是自包含 x64 zip，没有 Authenticode 签名，SmartScreen 可能显示未知发布者。Android beta 使用固定发行签名。现有 pre-beta/debug APK 密钥不同，Android 不会允许原地覆盖安装。卸载会删除该应用私有数据，当前没有跨签名导出／导入通道。有重要旧数据的设备须保留原安装，在数据转移方案确定前不要切换到发行 APK。
+
+正式包封装会读取实际二进制版本：macOS 核对 Info.plist 的 SemVer／数字核心／构建号及 daily manifest，并用 `lipo` 核对架构；Android 用 SDK `aapt` 核对 APK 的 applicationId、versionName、versionCode 与 arm64 ABI；Windows 从 `Velune.dll` 读取 ProductVersion。任一值和根 `version.txt` 或发布身份不符，封装失败。Android 构建回执根据 Gradle `output-metadata.json` 选择当前签名模式的 APK，不依赖旧文件路径猜测。
+
+GitHub Release 中每个平台包都有 build metadata（源码 SHA、完整 SemVer、构建号、架构、签名状态及包摘要），发布前会将五个 metadata 与各自实际包逐一比对并核验摘要。另附全资产 `SHA256SUMS.txt` 和精确 tag 的 `velune-<tag>-source.tar.gz`（含 vendored RelayKit 源码）。构建失败时修复后对原来的 workflow run 重跑失败 job。需要新 run 时使用仍为草稿的 tag dispatch 重试，保持原 `release-build.json` 的构建号。全部资产成功后才解除草稿状态并建立回流 PR。首轮 promotion merge commit 的 body 须保留一次性 `Release-As: 0.1.0-beta.1` trailer（建议 subject 为 `chore(release): 提升首个公开 beta 源码至 main`，trailer 单独成行），以固定目标首版号。仅写在 PR 描述里不一定进入提交。此覆盖只用于首个候选。后续 beta 由 prerelease 策略按已合并的 Conventional Commits 递增，0.x breaking 变更按 release-please pre-major 策略递增 minor。
 
 ## 多 Agent 复用与结果来源
 
@@ -24,7 +52,7 @@ svc run build-windows
 
 项目脚本对同平台的共享生成／App输出加文件锁，dev／release也不会同时覆盖它们。跨平台保留各自输出；Cargo管理共享工具和cross域中的编译锁。安装使用独立host范围资源，不把独立worktree编译串在日常安装资源之后。没有额外的项目构建守护进程或队列。
 
-`target/build-state/results/<platform>-<profile>.json` 记录命令、输入前后身份、变化路径、产物摘要、耗时与退出码；成功时另存 `*-success.json`。输入身份覆盖相关源码／资源、编译配置和选择的环境摘要，并包含mtime／inode来识别构建期间临时修改后还原的情况。它是工作区本地来源记录，不是跨机器源码版本号，也不替代编译器的依赖判断。若输入变化，返回3、保留产物与此前成功记录；本次不得作为当前源码的通过证据，下一次请求使用现有增量缓存继续。
+`target/build-state/results/<platform>-<profile>.json`（Mac 为 `macos-<profile>-<purpose>.json`） 记录命令、输入前后身份、变化路径、产物摘要、耗时与退出码；成功时另存 `*-success.json`。输入身份覆盖相关源码／资源、编译配置和选择的环境摘要，并包含mtime／inode来识别构建期间临时修改后还原的情况。它是工作区本地来源记录，不是跨机器源码版本号，也不替代编译器的依赖判断。若输入变化，返回3、保留产物与此前成功记录；本次不得作为当前源码的通过证据，下一次请求使用现有增量缓存继续。
 
 多 Agent 各验证自己影响的层，稳定集成后由一个owner取得共同构建；其它Agent复用这次证据。仅改UI先验证对应App；共享ABI变化才编译所有受影响消费者。不要把每个Agent的完成都变成一次全平台完整构建。
 

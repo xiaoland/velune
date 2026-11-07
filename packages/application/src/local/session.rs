@@ -98,18 +98,27 @@ impl Session {
     /// native sub-agents the turn started. The process, and the gateway a
     /// turn used, last until it has ended too.
     pub(super) fn work(&self) -> Vec<velune_agent_runtime::work::BackgroundTask> {
-        match &self.active_state {
-            ActiveState::Native(session) => session.work(),
-            _ => Vec::new(),
-        }
+        self.active_state
+            .live()
+            .map(LiveConversation::work)
+            .unwrap_or_default()
+    }
+
+    pub(super) fn work_settled(&self) -> bool {
+        self.active_state
+            .live()
+            .is_none_or(LiveConversation::work_settled)
     }
 
     /// Its runtime connection is still needed by execution or metadata;
     /// visible activity remains the user turn and native background work.
     pub(super) fn executing(&self) -> bool {
         self.turn_running()
-            || !self.work().is_empty()
-            || matches!(&self.active_state, ActiveState::Native(session) if session.has_pending_metadata())
+            || !self.work_settled()
+            || self
+                .active_state
+                .live()
+                .is_some_and(LiveConversation::has_pending_metadata)
     }
 
     /// Editing or removing a source also invalidates a continued conversation's projection.
@@ -296,7 +305,7 @@ impl CoreRuntime {
     /// Refuses what would end the addressed session's runtime process while
     /// work besides its turn still runs there.
     pub(super) fn ensure_work_ended(&self) -> Result<(), RuntimeError> {
-        if self.session.work().is_empty() {
+        if self.session.work_settled() {
             Ok(())
         } else {
             Err(RuntimeError::OutstandingWork)
@@ -444,34 +453,45 @@ impl CoreRuntime {
             };
             let id = session.conversation_id().unwrap_or_default();
             let pending = view.pending_interactions.len();
-            if session.turn_running() || pending > 0 {
+            let work = session.work();
+            let local_work = work.iter().any(|task| task.conversation_id.is_none())
+                || (work.is_empty() && !session.work_settled());
+            if session.turn_running() || pending > 0 || local_work {
                 active.push(crate::ActiveConversation {
                     context_runtime_id: view.conversation.runtime_id.clone(),
                     conversation_id: id.into(),
-                    run_state: view.run_state.clone(),
+                    run_state: if local_work && !session.turn_running() {
+                        if !work.is_empty()
+                            && work.iter().all(|task| {
+                                task.state == velune_agent_runtime::work::BackgroundState::Stopping
+                            })
+                        {
+                            RunState::Stopping
+                        } else {
+                            RunState::Running
+                        }
+                    } else {
+                        view.run_state.clone()
+                    },
                     pending_interactions: pending as u32,
                     parent_conversation_id: None,
                 });
             }
-            if let ActiveState::Native(native) = &session.active_state {
-                active.extend(
-                    native
-                        .work()
-                        .into_iter()
-                        .map(|task| crate::ActiveConversation {
-                            context_runtime_id: view.conversation.runtime_id.clone(),
-                            conversation_id: task.conversation_id,
-                            run_state: match task.state {
-                                velune_agent_runtime::work::BackgroundState::Stopping => {
-                                    RunState::Stopping
-                                }
-                                _ => RunState::Running,
-                            },
-                            pending_interactions: 0,
-                            parent_conversation_id: Some(id.into()),
-                        }),
-                );
-            }
+            active.extend(work.into_iter().filter_map(|task| {
+                task.conversation_id
+                    .map(|conversation_id| crate::ActiveConversation {
+                        context_runtime_id: view.conversation.runtime_id.clone(),
+                        conversation_id,
+                        run_state: match task.state {
+                            velune_agent_runtime::work::BackgroundState::Stopping => {
+                                RunState::Stopping
+                            }
+                            _ => RunState::Running,
+                        },
+                        pending_interactions: 0,
+                        parent_conversation_id: Some(id.into()),
+                    })
+            }));
         }
         for mut item in self.elsewhere_conversations() {
             if !active

@@ -902,7 +902,10 @@ mod source_cache_tests {
             core.listed_summary(&changed, "synthetic:archived")
                 .is_some()
         );
-        core.gateways.iter_mut().find(|gateway| gateway.id == "other").unwrap()
+        core.gateways
+            .iter_mut()
+            .find(|gateway| gateway.id == "other")
+            .unwrap()
             .providers
             .push(crate::config::ProviderDefinition {
                 id: "synthetic-provider".into(),
@@ -989,7 +992,9 @@ mod source_cache_tests {
         core.enter_client_state(&mut client, false);
         assert!(core.listed_sources().contains_key("synthetic:thread"));
         core.leave_client_state(&mut client);
-        runtime.settings.insert("agentDir".into(), "/synthetic/other-state".into());
+        runtime
+            .settings
+            .insert("agentDir".into(), "/synthetic/other-state".into());
         core.upsert_runtime(runtime).unwrap();
         core.enter_client_state(&mut client, false);
         assert!(core.listed_sources().is_empty());

@@ -18,7 +18,7 @@ obelisk 全量会话索引取证：风暴（11-04 10:37 本地）前最后一条
 4. 重装处理迁移：新增 `scripts/run-migrations.py` 与 `scripts/migrations/` 约定（`--home` 必填、`--apply` 写入、自检幂等、无事退出 0、自行 flock），两个既有迁移脚本迁入并支持无参数自检；reinstall 在安装后、启动前执行。
 5. 顺带：`repository.rs` 锁冲突文案改为可行动的中文指引。
 
-验证：`cargo check/clippy`（application、bindings）；`build-macos.sh --build-only`；迁移 runner 合成验证（空 home、锁占用、composer 旧数据、codex-166 合成配置）；`git diff --check`。文档更新 `docs/development.md`（迁移约定、重装步骤）与 `docs/design/composer-state.md` 的脚本路径。
+验证：`cargo check/clippy`（application、bindings）；`build-macos.sh --build-only`；迁移 runner 合成验证（空 home、锁占用、composer 旧数据、codex-166 合成配置）；`git diff --check`。文档更新 `docs/development.md`（迁移约定、重装步骤）与 `docs/product-tdd/composer-state.md` 的脚本路径。
 
 ## 关键事实
 

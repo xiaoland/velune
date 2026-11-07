@@ -6,6 +6,8 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import plistlib
+import re
 import shutil
 import subprocess
 import sys
@@ -122,6 +124,14 @@ def generated_valid(directory, stamp):
             and all(Path(name).is_file() and digest(name) == value for name, value in stamp.get("artifacts", {}).items()))
 
 
+def is_git_checkout():
+    result = subprocess.run(
+        ["git", "rev-parse", "--show-toplevel"], cwd=ROOT,
+        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+    )
+    return result.returncode == 0 and Path(result.stdout.strip()).resolve() == ROOT.resolve()
+
+
 def load_stamp(directory):
     try:
         value = json.loads((directory / ".velune-bindings.json").read_text())
@@ -175,24 +185,41 @@ def bindings(args, verify=False):
 
 
 def source_snapshot(platform):
-    paths = ["Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "VERSION", ".cargo", "packages", "tools", "third-party", f"app/{platform}",
-             "scripts/build-support.py", "scripts/build_lock.py", "scripts/android-licenses.py"]
+    paths = ["Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "version.txt", ".cargo", "packages", "tools", "third-party", f"app/{platform}",
+             "scripts/build-support.py", "scripts/build_lock.py", "scripts/android-licenses.py", "scripts/version.py"]
     if platform == "macos":
         paths = ["app/mac" if p == "app/macos" else p for p in paths]
-        paths += ["Package.swift", "Package.resolved", "assets", "scripts/build-macos.sh", "scripts/render-app-icon.swift"]
+        paths += ["Package.swift", "Package.resolved", "assets", "scripts/build-macos.sh", "scripts/macos_identity.py", "scripts/render-app-icon.swift"]
     elif platform == "windows":
         paths += ["assets", "app/mac/Licenses", "scripts/build-windows.ps1"]
     elif platform == "ios":
         paths += ["app/mac/Licenses", "app/mac/ClientTelemetry.swift", "app/mac/TelemetryExporters.swift", "app/mac/TelemetrySettings.swift", "scripts/build-ios.sh", "scripts/build-ios-native.sh"]
     elif platform == "android":
         paths += ["scripts/build-android.sh", "scripts/build-android-native.sh"]
-    output = subprocess.check_output(["git", "ls-files", "--cached", "--others", "--exclude-standard", "-z", "--", *paths], cwd=ROOT)
+    if is_git_checkout():
+        output = subprocess.check_output(["git", "ls-files", "--cached", "--others", "--exclude-standard", "-z", "--", *paths], cwd=ROOT)
+        selected = [os.fsdecode(name) for name in sorted(set(output.split(b"\0")) - {b""})]
+    else:
+        paths += ["SOURCE-ARCHIVE.json", "android-sources", "swift-sources", "npm-sources"]
+        selected = []
+        for entry in paths:
+            path = ROOT / entry
+            if path.is_symlink() or path.is_file():
+                selected.append(entry)
+            elif path.is_dir():
+                for directory, folders, files in os.walk(path, followlinks=False):
+                    base = Path(directory)
+                    relative_base = base.relative_to(ROOT).as_posix()
+                    prefix = "" if relative_base == "." else relative_base + "/"
+                    folders[:] = [name for name in folders if not ignored_source_path(prefix + name)]
+                    links = [name for name in folders if (base / name).is_symlink()]
+                    folders[:] = [name for name in folders if name not in links]
+                    selected.extend((base / name).relative_to(ROOT).as_posix() for name in files + links)
     snapshot = {}
-    for name in sorted(set(output.split(b"\0")) - {b""}):
-        path = ROOT / os.fsdecode(name)
+    for key in sorted(set(selected)):
+        path = ROOT / key
         if path.name in ("README.md", "AGENTS.md", "AGENTS.local.md"):
             continue
-        key = os.fsdecode(name)
         if path.is_symlink():
             info = path.lstat()
             snapshot[key] = [os.readlink(path), info.st_mtime_ns, info.st_ino]
@@ -203,9 +230,74 @@ def source_snapshot(platform):
         else:
             snapshot[key] = ["missing"]
     # Provenance includes relevant effective compiler settings, never secrets.
-    for key in ("RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS", "RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER", "CARGO_PROFILE_DEV_DEBUG", "CARGO_PROFILE_DEV_OPT_LEVEL", "CARGO_PROFILE_DEV_INCREMENTAL", "GO", "CC", "SDKROOT", "MACOSX_DEPLOYMENT_TARGET", "IPHONEOS_DEPLOYMENT_TARGET", "ANDROID_NDK_HOME", "VELUNE_RELAYKIT_CC"):
+    for key in ("RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS", "RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER", "CARGO_PROFILE_DEV_DEBUG", "CARGO_PROFILE_DEV_OPT_LEVEL", "CARGO_PROFILE_DEV_INCREMENTAL", "GO", "CC", "SDKROOT", "MACOSX_DEPLOYMENT_TARGET", "IPHONEOS_DEPLOYMENT_TARGET", "ANDROID_NDK_HOME", "VELUNE_RELAYKIT_CC", "VELUNE_BUILD_NUMBER", "VELUNE_REQUIRE_ANDROID_RELEASE_SIGNING"):
         snapshot["env:" + key] = hashlib.sha256(os.environ.get(key, "").encode()).hexdigest()
+    signing_names = ("ANDROID_RELEASE_KEYSTORE_PATH", "ANDROID_RELEASE_STORE_PASSWORD", "ANDROID_RELEASE_KEY_ALIAS", "ANDROID_RELEASE_KEY_PASSWORD")
+    signing_active = all(os.environ.get(name) for name in signing_names)
+    snapshot["env:ANDROID_RELEASE_SIGNING_ACTIVE"] = hashlib.sha256(str(signing_active).lower().encode()).hexdigest()
     return snapshot
+
+
+SOURCE_OUTPUT_PATHS = (
+    ".git", "target", ".build", ".swiftpm", "DerivedData", "dist",
+    "app/android/.gradle", "app/android/build", "app/android/.kotlin", "app/android/app/build",
+    "app/windows/bin", "app/windows/obj",
+    "app/ios/xcuserdata", "app/ios/Velune.xcodeproj/xcuserdata",
+    "app/ios/Velune.xcodeproj/project.xcworkspace/xcuserdata",
+    "packages/agent-runtime/runtime-support/node_modules",
+)
+
+
+def ignored_source_path(relative):
+    return any(relative == path or relative.startswith(path + "/") for path in SOURCE_OUTPUT_PATHS)
+
+
+def archive_source_tree_digest(root=ROOT):
+    value = hashlib.sha256()
+    root = Path(root)
+    paths = []
+    for directory, folders, files in os.walk(root, topdown=True, followlinks=False):
+        base = Path(directory)
+        relative_base = base.relative_to(root).as_posix()
+        prefix = "" if relative_base == "." else relative_base + "/"
+        links = [name for name in folders if (base / name).is_symlink()]
+        folders[:] = [name for name in folders if not ignored_source_path(prefix + name) and name not in links]
+        paths.extend(base / name for name in links + folders + files)
+    for path in sorted(paths, key=lambda item: item.relative_to(root).as_posix()):
+        relative = path.relative_to(root).as_posix()
+        if relative == "SOURCE-ARCHIVE.json" or ignored_source_path(relative):
+            continue
+        value.update(relative.encode() + b"\0")
+        if path.is_symlink():
+            value.update(b"L" + os.readlink(path).encode())
+        elif path.is_file():
+            value.update(b"F")
+            with path.open("rb") as source:
+                for block in iter(lambda: source.read(1024 * 1024), b""):
+                    value.update(block)
+        elif path.is_dir():
+            value.update(b"D")
+    return value.hexdigest()
+
+
+def source_provenance():
+    if is_git_checkout():
+        return {
+            "source_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip(),
+            "dirty": bool(subprocess.check_output(["git", "status", "--porcelain"], cwd=ROOT, text=True)),
+            "source_tag": None,
+        }
+    try:
+        metadata = json.loads((ROOT / "SOURCE-ARCHIVE.json").read_text())
+        commit = metadata["source_commit"]
+        expected_tree = metadata["source_tree_sha256"]
+    except (OSError, KeyError, TypeError, json.JSONDecodeError) as error:
+        raise ValueError("source provenance requires a Git checkout or a complete SOURCE-ARCHIVE.json") from error
+    if not isinstance(commit, str) or not re.fullmatch(r"[0-9a-f]{40}", commit):
+        raise ValueError("SOURCE-ARCHIVE.json contains an invalid source_commit")
+    if not isinstance(expected_tree, str) or not re.fullmatch(r"[0-9a-f]{64}", expected_tree):
+        raise ValueError("SOURCE-ARCHIVE.json contains an invalid source_tree_sha256")
+    return {"source_commit": commit, "dirty": archive_source_tree_digest() != expected_tree, "source_tag": metadata.get("source_tag")}
 
 
 def snapshot_identity(snapshot):
@@ -216,22 +308,71 @@ def source_identity(platform):
     return snapshot_identity(source_snapshot(platform))
 
 
-def artifact_identity(platform, profile, command):
+def artifact_identity(platform, profile, command, purpose="development"):
     native_profile = "debug" if profile == "dev" else "release"
     ios_sdk = "iphoneos" if "iphoneos" in command or os.environ.get("PLATFORM_NAME") == "iphoneos" else "iphonesimulator"
     ios_target = "aarch64-apple-ios" if ios_sdk == "iphoneos" else "aarch64-apple-ios-sim"
     configuration = "Debug" if profile == "dev" else "Release"
-    paths = {
-        "macos": [f"target/host-rust/{native_profile}/libvelune_bindings.dylib", f"target/{'macos-dev' if profile == 'dev' else 'macos'}/Velune.app/Contents/MacOS/Velune"],
-        "windows": [f"target/host-rust/{native_profile}/velune_bindings.dll", f"target/{'windows-dev' if profile == 'dev' else 'windows'}/Velune/Velune.exe"],
-        "ios": [f"target/cross-rust/{ios_target}/{native_profile}/libvelune_bindings.a", f"target/ios/Build/Products/{configuration}-{ios_sdk}/Velune.app/Velune"],
-        "android": ["target/android-native/arm64-v8a/libvelune_bindings.so", f"app/android/app/build/outputs/apk/{'debug/app-debug.apk' if profile == 'dev' else 'release/app-release-unsigned.apk'}"],
-    }[platform]
+    if platform == "macos":
+        from macos_identity import app_bundle_path
+        bundle = app_bundle_path(ROOT, profile, purpose)
+        info_path = bundle / "Contents/Info.plist"
+        paths = [f"target/host-rust/{native_profile}/libvelune_bindings.dylib",
+                 str(info_path.relative_to(ROOT)),
+                 str((bundle / "Contents/Resources/build-manifest.json").relative_to(ROOT))]
+        if info_path.is_file():
+            executable = plistlib.loads(info_path.read_bytes()).get("CFBundleExecutable")
+            if isinstance(executable, str) and executable and Path(executable).name == executable:
+                paths.append(str((bundle / "Contents/MacOS" / executable).relative_to(ROOT)))
+    elif platform == "android":
+        apk, output_metadata = android_apk_output(profile)
+        paths = ["target/android-native/arm64-v8a/libvelune_bindings.so", str(apk.relative_to(ROOT)), str(output_metadata.relative_to(ROOT))]
+    else:
+        paths = {
+            "windows": [f"target/host-rust/{native_profile}/velune_bindings.dll", f"target/{'windows-dev' if profile == 'dev' else 'windows'}/Velune/Velune.exe"],
+            "ios": [f"target/cross-rust/{ios_target}/{native_profile}/libvelune_bindings.a", f"target/ios/Build/Products/{configuration}-{ios_sdk}/Velune.app/Velune"],
+        }[platform]
     return {p: digest(ROOT / p) for p in paths if (ROOT / p).is_file()}
+
+
+def android_apk_output(profile, root=None, require_signing=None):
+    if profile not in ("dev", "release"):
+        raise ValueError("Android APK output profile must be dev or release")
+    root = ROOT if root is None else Path(root)
+    if require_signing is None:
+        signing_names = ("ANDROID_RELEASE_KEYSTORE_PATH", "ANDROID_RELEASE_STORE_PASSWORD", "ANDROID_RELEASE_KEY_ALIAS", "ANDROID_RELEASE_KEY_PASSWORD")
+        release_signing = (os.environ.get("VELUNE_REQUIRE_ANDROID_RELEASE_SIGNING") == "true"
+                           or all(os.environ.get(name) for name in signing_names))
+    else:
+        release_signing = require_signing
+    variant = "debug" if profile == "dev" else "release"
+    output_metadata = root / "app/android/app/build/outputs/apk" / variant / "output-metadata.json"
+    try:
+        metadata = json.loads(output_metadata.read_text())
+        elements = metadata["elements"]
+        if metadata.get("variantName") != variant or len(elements) != 1:
+            raise ValueError("Android output-metadata must describe exactly one expected variant output")
+        output_name = elements[0]["outputFile"]
+    except (OSError, KeyError, TypeError, json.JSONDecodeError) as error:
+        raise ValueError(f"missing or invalid Android output metadata: {output_metadata}") from error
+    expected_name = "app-debug.apk" if profile == "dev" else (
+        "app-release.apk" if release_signing else "app-release-unsigned.apk"
+    )
+    if output_name != expected_name:
+        raise ValueError(
+            f"Android output metadata names {output_name!r}, expected {expected_name!r} "
+            "for the active signing mode"
+        )
+    apk = output_metadata.parent / output_name
+    if not apk.is_file() or not apk.stat().st_size:
+        raise ValueError(f"Android output metadata points to a missing or empty APK: {apk}")
+    return apk, output_metadata
 
 
 def run(args):
     from build_lock import FileLock
+    if args.purpose != "development" and args.platform != "macos":
+        raise ValueError("--purpose 仅用于 Mac 构建")
     command = args.command
     if command and command[0] == "--":
         command = command[1:]
@@ -253,10 +394,14 @@ def run(args):
         record = {"platform": args.platform, "profile": args.profile, "command": command,
                   "input_before": before, "input_after": after, "current": before == after,
                   "exit_code": code, "duration_seconds": round(time.time() - started, 3),
-                  "artifacts": artifact_identity(args.platform, args.profile, command),
+                  "artifacts": artifact_identity(args.platform, args.profile, command, args.purpose),
                   "changed_inputs": sorted(name for name in before_snapshot.keys() | after_snapshot.keys() if before_snapshot.get(name) != after_snapshot.get(name))}
+        purpose_suffix = ""
+        if args.platform == "macos":
+            record["purpose"] = args.purpose
+            purpose_suffix = "-" + args.purpose
         data = (json.dumps(record, indent=2, ensure_ascii=False) + "\n").encode()
-        path = STATE / "results" / f"{args.platform}-{args.profile}.json"
+        path = STATE / "results" / f"{args.platform}-{args.profile}{purpose_suffix}.json"
         write(path, data)
         if code == 0:
             write(path.with_name(path.stem + "-success.json"), data)
@@ -269,14 +414,16 @@ def main():
     p = actions.add_parser("copy"); p.add_argument("source"); p.add_argument("destination")
     p = actions.add_parser("sync"); p.add_argument("source"); p.add_argument("destination"); p.add_argument("--prune", action="store_true"); p.add_argument("--include", action="append", default=[])
     p = actions.add_parser("write"); p.add_argument("path")
+    actions.add_parser("source-provenance")
     for name in ("bindgen", "verify-bindings"):
         p = actions.add_parser(name); p.add_argument("--library", required=True); p.add_argument("--language", choices=("swift", "kotlin", "cs"), required=True); p.add_argument("--generator"); p.add_argument("--out-dir", required=True); p.add_argument("--artifact", action="append")
-    p = actions.add_parser("run"); p.add_argument("--platform", choices=("macos", "ios", "android", "windows"), required=True); p.add_argument("--profile", choices=("dev", "release"), required=True); p.add_argument("command", nargs=argparse.REMAINDER)
+    p = actions.add_parser("run"); p.add_argument("--platform", choices=("macos", "ios", "android", "windows"), required=True); p.add_argument("--profile", choices=("dev", "release"), required=True); p.add_argument("--purpose", choices=("development", "daily"), default="development"); p.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args()
     try:
         if args.action == "copy": copy(args.source, args.destination)
         elif args.action == "sync": sync(args.source, args.destination, args.prune, args.include)
         elif args.action == "write": write(args.path, sys.stdin.buffer.read())
+        elif args.action == "source-provenance": print(json.dumps(source_provenance(), sort_keys=True))
         elif args.action in ("bindgen", "verify-bindings"): bindings(args, args.action == "verify-bindings")
         elif args.action == "run": return run(args)
     except (OSError, ValueError, subprocess.CalledProcessError) as error:

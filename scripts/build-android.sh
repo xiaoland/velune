@@ -21,12 +21,23 @@ case "$profile" in
   release) output_profile=release; variant=Release; apk=release/app-release-unsigned.apk ;;
   *) echo '--profile 需要 dev 或 release。' >&2; exit 1 ;;
 esac
+if [[ "$profile" == release ]]; then
+  signing_material=true
+  for name in ANDROID_RELEASE_KEYSTORE_PATH ANDROID_RELEASE_STORE_PASSWORD ANDROID_RELEASE_KEY_ALIAS ANDROID_RELEASE_KEY_PASSWORD; do
+    [[ -n "${!name:-}" ]] || signing_material=false
+  done
+  if [[ "${VELUNE_REQUIRE_ANDROID_RELEASE_SIGNING:-}" == true || "$signing_material" == true ]]; then
+    apk=release/app-release.apk
+  fi
+fi
 if [[ "${VELUNE_BUILD_MANAGED:-}" != android ]]; then
   arguments=(--profile "$profile")
   [[ "$skip_native" == false ]] || arguments+=(--skip-native)
   [[ "$diagnostics" == false ]] || arguments+=(--diagnostics)
   exec python3 scripts/build-support.py run --platform android --profile "$profile" -- bash "$0" "${arguments[@]}"
 fi
+# Fail before native compilation if the product version or CI release sequence is invalid.
+python3 scripts/version.py --format build-info >/dev/null
 if [[ -z "${JAVA_HOME:-}" && "$(uname -s)" == Darwin ]]; then
   export JAVA_HOME
   JAVA_HOME=$(/usr/libexec/java_home -v 17)
@@ -56,4 +67,5 @@ for artifact in target/android-bindings/app/velune/bindings/velune_bindings.kt t
   [[ -f "$artifact" ]] || { echo "缺少构建产物：$artifact；请先运行 scripts/build-android-native.sh。" >&2; exit 1; }
 done
 app/android/gradlew -p app/android ":app:assemble$variant" ":app:lint$variant" --console=plain --max-workers="${VELUNE_BUILD_JOBS:-2}"
+[[ -s "app/android/app/build/outputs/apk/$apk" ]] || { echo "缺少当前变体 APK：app/android/app/build/outputs/apk/$apk" >&2; exit 1; }
 printf '已构建：%s/app/android/app/build/outputs/apk/%s\n' "$PWD" "$apk"

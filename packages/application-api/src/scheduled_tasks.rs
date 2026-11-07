@@ -6,7 +6,8 @@ use serde::{Deserialize, Serialize};
 #[serde(
     tag = "kind",
     rename_all = "camelCase",
-    rename_all_fields = "camelCase"
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
 )]
 pub enum ScheduledTarget {
     NewConversation {
@@ -38,7 +39,7 @@ pub enum ScheduledTaskStatus {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, uniffi::Record)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ScheduledTask {
     /// Empty only when creating. Updates require the current definition revision.
     #[serde(default)]
@@ -63,7 +64,7 @@ pub struct ScheduledTask {
     pub issue: Option<String>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, uniffi::Record)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ScheduledTaskSource {
     pub path: String,
     pub fingerprint: String,
@@ -86,7 +87,7 @@ pub enum ScheduledRunPhase {
     Skipped,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, uniffi::Record)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ScheduledRun {
     pub id: String,
     pub task_id: String,

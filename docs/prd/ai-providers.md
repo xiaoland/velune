@@ -1,6 +1,6 @@
 # AI 服务、提供商与模型
 
-AI 服务与 LLM 网关的职责，提供商、模型与模板，协议及转换，提供商导入与来源。技术契约见 [AI 服务设计](../design/ai-service.md)。
+AI 服务与 LLM 网关的职责，提供商、模型与模板，协议及转换，提供商导入与来源。技术契约见 [AI 服务设计](../product-tdd/ai-service.md)。
 
 本页维护当前规则；来源链接用于追溯决定，历史表述不单独构成当前要求。产品入口见[产品定义](index.md)。
 
@@ -14,7 +14,7 @@ Harness 与 AI 服务保持独立；读取 Harness 提供商配置属于装配�
 
 提供商拥有认证配置，不要求独立中央认证建档。API key 可在 application 私有文件保存并显式查看编辑，公开摘要与日志不含秘密；OAuth 保留来源登录／刷新，不复制 refresh credential。Pi 等运行时只是来源，不是认证方式。解析与目标校验归 application，gateway 仅消费中立异步解析接口；解析失败不回退环境或其它认证。
 
-统一配置中心持久化，app main 装配；AI lib 不自行读全局配置／环境／文件或保存配置；一次已开始调用保持运行配置稳定。具体归属见 [AI service 设计](../design/ai-service.md)，决定来源见 [S13](../sources/first-loop.md#s13)。验收方案、真实接入与 fixture 证据归对应任务记录，不把静态检查等同运行验收。
+统一配置中心持久化，app main 装配；AI lib 不自行读全局配置／环境／文件或保存配置；一次已开始调用保持运行配置稳定。具体归属见 [AI service 设计](../product-tdd/ai-service.md)，决定来源见 [S13](../sources/first-loop.md#s13)。验收方案、真实接入与 fixture 证据归对应任务记录，不把静态检查等同运行验收。
 
 网关接管只作用于选择 Velune 模型的轮次，保留 Harness 原生提供商与模型能力。稳定模型入口和认证委托由各适配器实现；读取既有提供商配置的范围见[提供商模板与来源](#提供商模板与来源)，执行边界见[Agent 运行时](agent-runtimes.md#原生提供商网关轮次与执行位置)。开发验证遵守[真实数据边界](../development.md)。
 

@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Questions and early product ideas
+    url: https://github.com/xiaoland/velune/discussions
+    about: Ask a question or discuss a user problem before proposing implementation.
+  - name: Report a security vulnerability privately
+    url: https://github.com/xiaoland/velune/security/advisories/new
+    about: Do not report unpatched vulnerabilities in a public issue.

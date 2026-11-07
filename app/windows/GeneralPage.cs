@@ -22,6 +22,7 @@ sealed class GeneralPage : UserControl
     ];
 
     readonly Core core;
+    readonly SettingsWindow window;
     readonly ComboBox usage = new() { Items = { "占用", "剩余" }, MinWidth = 120 };
     readonly ComboBox contextUsage = new() { Items = { "占用", "剩余" }, MinWidth = 120 };
     readonly NumberBox page = new() { Minimum = 1, Maximum = 500, SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Compact, MinWidth = 120 };
@@ -42,10 +43,11 @@ sealed class GeneralPage : UserControl
     // Set while the page shows what the device keeps, which is no change.
     bool showing;
 
-    internal GeneralPage(Core core, Commands commands)
+    internal GeneralPage(Core core, Commands commands, SettingsWindow window)
     {
         this.core = core;
         this.commands = commands;
+        this.window = window;
         var panel = new StackPanel { Spacing = 4, Padding = new Thickness(24, 12, 24, 20), MaxWidth = 760, HorizontalAlignment = HorizontalAlignment.Left };
         panel.Children.Add(Ui.Text("通用", "SubtitleTextBlockStyle"));
 
@@ -84,6 +86,44 @@ sealed class GeneralPage : UserControl
         panel.Children.Add(Ui.Muted("点按快捷键后按下新的组合即可更改，Backspace 移除，Esc 取消。输入框的发送、换行与插入本轮见上方“发送方式”。全局命令在其他应用中也有效，默认不设。"));
         panel.Children.Add(Shortcuts());
 
+        var version = typeof(App).Assembly
+            .GetCustomAttributes(typeof(System.Reflection.AssemblyInformationalVersionAttribute), false)
+            .OfType<System.Reflection.AssemblyInformationalVersionAttribute>()
+            .FirstOrDefault()?.InformationalVersion ?? "development";
+        var releaseTag = $"v{version.Split('+')[0]}";
+        panel.Children.Add(Ui.Heading("关于"));
+        panel.Children.Add(Ui.Card(Ui.TwoLines("Velune", $"版本 {version}", true)));
+        var relayKitCredit = new StackPanel { Spacing = 6 };
+        relayKitCredit.Children.Add(Ui.Text("Velune includes the New API RelayKit module for protocol conversion."));
+        relayKitCredit.Children.Add(Ui.Text("Frontend design and development by New API contributors."));
+        relayKitCredit.Children.Add(new HyperlinkButton
+        {
+            Content = "New API project",
+            NavigateUri = new Uri("https://github.com/QuantumNous/new-api"),
+            HorizontalAlignment = HorizontalAlignment.Left,
+        });
+        relayKitCredit.Children.Add(new HyperlinkButton
+        {
+            Content = "Corresponding Velune source archive",
+            NavigateUri = new Uri($"https://github.com/xiaoland/velune/releases/download/{releaseTag}/velune-{releaseTag}-source.tar.gz"),
+            HorizontalAlignment = HorizontalAlignment.Left,
+        });
+        panel.Children.Add(Ui.Card(relayKitCredit));
+        var legalActions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+        var thirdParty = new Button { Content = "Third-party notices…" };
+        thirdParty.Click += (_, _) => ShowLegalDocument("Open-source notices", "THIRD_PARTY_NOTICES.md", markdown: true);
+        legalActions.Children.Add(thirdParty);
+        var projectLicense = new Button { Content = "AGPL-3.0 license…" };
+        projectLicense.Click += (_, _) => ShowLegalDocument("GNU AGPL-3.0-only", "LICENSE", markdown: false);
+        legalActions.Children.Add(projectLicense);
+        var relayKitLicense = new Button { Content = "RelayKit license and notice…" };
+        relayKitLicense.Click += (_, _) => ShowLegalDocument("New API RelayKit license", Path.Combine("RelayKit", "new-api-LICENSE.txt"), markdown: false);
+        legalActions.Children.Add(relayKitLicense);
+        var relayKitNotice = new Button { Content = "RelayKit upstream notice…" };
+        relayKitNotice.Click += (_, _) => ShowLegalDocument("New API RelayKit notice", Path.Combine("RelayKit", "new-api-NOTICE.txt"), markdown: false);
+        legalActions.Children.Add(relayKitNotice);
+        panel.Children.Add(legalActions);
+
         Content = new ScrollViewer { Content = panel };
         usage.SelectionChanged += (_, _) => Save(application => application.SetUsageDisplay(usage.SelectedIndex == 1 ? UsageDisplay.Remaining : UsageDisplay.Used));
         contextUsage.SelectionChanged += (_, _) => Save(application => application.SetContextUsageDisplay(contextUsage.SelectedIndex == 1 ? UsageDisplay.Remaining : UsageDisplay.Used));
@@ -99,6 +139,35 @@ sealed class GeneralPage : UserControl
         page.ValueChanged += (_, _) => SaveLimits();
         total.ValueChanged += (_, _) => SaveLimits();
         Load();
+    }
+
+    async void ShowLegalDocument(string title, string relativePath, bool markdown)
+    {
+        try
+        {
+            var path = Path.Combine(AppContext.BaseDirectory, "resources", "ThirdParty", relativePath);
+            var text = await File.ReadAllTextAsync(path);
+            UIElement content = markdown
+                ? Markdown.View(text)
+                : new TextBlock
+                {
+                    Text = text,
+                    FontFamily = (Microsoft.UI.Xaml.Media.FontFamily)Application.Current.Resources["MonoFont"],
+                    TextWrapping = TextWrapping.Wrap,
+                    IsTextSelectionEnabled = true,
+                };
+            await window.ShowDialog(new ContentDialog
+            {
+                Title = title,
+                Content = new ScrollViewer { Content = content, MaxHeight = 560, MaxWidth = 860 },
+                CloseButtonText = "关闭",
+                DefaultButton = ContentDialogButton.None,
+            });
+        }
+        catch (Exception problem)
+        {
+            Problems.Report("读取开源许可", problem);
+        }
     }
 
     async void Load()

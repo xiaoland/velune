@@ -15,6 +15,9 @@ if ($env:VELUNE_BUILD_MANAGED -ne 'windows') {
         powershell -NoProfile -ExecutionPolicy Bypass -File $PSCommandPath -Profile $BuildProfile
     exit $LASTEXITCODE
 }
+$versionInfo = & $python -I scripts/version.py --format build-info
+if ($LASTEXITCODE -ne 0) { throw 'product version or VELUNE_BUILD_NUMBER is invalid' }
+if (-not $versionInfo -or $versionInfo.Split("`t").Count -ne 3) { throw 'scripts/version.py returned invalid build metadata' }
 function Invoke-BuildSupport {
     & $python -I scripts/build-support.py @args
     if ($LASTEXITCODE -ne 0) { throw "build-support failed: $args" }
@@ -66,15 +69,20 @@ $env:CARGO = (Get-Command cargo).Source
 Invoke-BuildSupport bindgen --library "$native\velune_bindings.dll" --language cs `
     --generator $generatorBinary --out-dir target/bindings/cs
 
+# Restore from the checked-in dependency graph, then prevent publish from
+# resolving a different graph after the lock has been checked.
+dotnet restore app\windows\Velune.csproj --locked-mode --runtime win-x64
+if ($LASTEXITCODE -ne 0) { throw 'dotnet locked restore failed' }
 # MSBuild retains its normal input tracking; generated C# timestamps only change
 # when its contents do. The publish tree is not deleted between invocations.
-dotnet publish app\windows\Velune.csproj --configuration $configuration --output $app
+dotnet publish app\windows\Velune.csproj --configuration $configuration --output $app --no-restore
 if ($LASTEXITCODE -ne 0) { throw 'dotnet publish failed' }
 Invoke-BuildSupport copy "$native\velune_bindings.dll" "$app\velune_bindings.dll"
 Invoke-BuildSupport copy "$native\velune_relaykit.dll" "$app\velune_relaykit.dll"
 
 $resources = "$app\resources"
-$scripts = 'pi_sdk', 'pi_sessions', 'pi_rpc', 'pi_virtual_model', 'pi_auth', 'pi_provider_import', 'huihua_sessions'
+Invoke-BuildSupport copy LICENSE "$resources\ThirdParty\LICENSE"
+$scripts = 'pi_sdk', 'pi_sessions', 'pi_rpc', 'pi_virtual_model', 'pi_background_work', 'pi_auth', 'pi_provider_import', 'huihua_sessions'
 foreach ($script in $scripts) { Invoke-BuildSupport copy "packages\agent-runtime\resources\$script.mjs" "$resources\$script.mjs" }
 if (Test-Path $resources) {
     Get-ChildItem $resources -Filter '*.mjs' -File | Where-Object { $_.BaseName -notin $scripts } | Remove-Item
@@ -92,7 +100,7 @@ foreach ($file in 'LICENSE', 'REVISION') {
     Invoke-BuildSupport copy "$support\xurl\$file" "$resources\ThirdParty\xurl\$file"
 }
 # An incrementally assembled notice must not append a second copy on every run.
-$notice = (Get-Content -Raw -Encoding UTF8 packages/agent-runtime/runtime-support/THIRD_PARTY_NOTICES.md).TrimEnd() + @'
+$notice = (Get-Content -Raw -Encoding UTF8 THIRD_PARTY_NOTICES.md).TrimEnd() + "`n`n## Runtime-support JavaScript dependencies`n`n" + (Get-Content -Raw -Encoding UTF8 packages/agent-runtime/runtime-support/THIRD_PARTY_NOTICES.md).TrimEnd() + @'
 
 
 ## xURL
@@ -104,6 +112,10 @@ $notice = (Get-Content -Raw -Encoding UTF8 packages/agent-runtime/runtime-suppor
 $notice | & $python -I scripts/build-support.py write "$resources\ThirdParty\THIRD_PARTY_NOTICES.md"
 if ($LASTEXITCODE -ne 0) { throw 'writing third-party notice failed' }
 Invoke-BuildSupport sync app/windows/Licenses "$resources\ThirdParty\OpenTelemetry" --prune --include 'OpenTelemetry-*'
+$nugetNotices = "$resources\ThirdParty\NuGet"
+& $python -I scripts/dotnet-licenses.py app/windows/obj/project.assets.json $nugetNotices
+if ($LASTEXITCODE -ne 0) { throw 'collecting NuGet licence notices failed' }
+Invoke-BuildSupport copy app/windows/packages.lock.json "$nugetNotices\packages.lock.json"
 $licensePending = "$resources\ThirdParty\rust-licenses.txt.pending"
 & $python -I scripts/android-licenses.py local-runtime,remote $licensePending x86_64-pc-windows-msvc
 if ($LASTEXITCODE -ne 0) { throw 'collecting Rust licence notices failed' }

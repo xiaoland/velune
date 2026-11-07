@@ -1,0 +1,445 @@
+{
+  "modules": [
+    {
+      "name": "@braintree/sanitize-url",
+      "version": "7.1.1",
+      "source_map_group": "@braintree+sanitize-url@7.1.1",
+      "source_count": 2
+    },
+    {
+      "name": "@chevrotain/cst-dts-gen",
+      "version": "11.0.3",
+      "source_map_group": "@chevrotain+cst-dts-gen@11.0.3",
+      "source_count": 3
+    },
+    {
+      "name": "@chevrotain/gast",
+      "version": "11.0.3",
+      "source_map_group": "@chevrotain+gast@11.0.3",
+      "source_count": 4
+    },
+    {
+      "name": "@chevrotain/regexp-to-ast",
+      "version": "11.0.3",
+      "source_map_group": "@chevrotain+regexp-to-ast@11.0.3",
+      "source_count": 5
+    },
+    {
+      "name": "@chevrotain/utils",
+      "version": "11.0.3",
+      "source_map_group": "@chevrotain+utils@11.0.3",
+      "source_count": 4
+    },
+    {
+      "name": "@iconify/utils",
+      "version": "3.0.2",
+      "source_map_group": "@iconify+utils@3.0.2",
+      "source_count": 13
+    },
+    {
+      "name": "chevrotain-allstar",
+      "version": "0.3.1",
+      "source_map_group": "chevrotain-allstar@0.3.1_chevrotain@11.0.3",
+      "source_count": 4
+    },
+    {
+      "name": "chevrotain",
+      "version": "11.0.3",
+      "source_map_group": "chevrotain@11.0.3",
+      "source_count": 38
+    },
+    {
+      "name": "cose-base",
+      "version": "1.0.3",
+      "source_map_group": "cose-base@1.0.3",
+      "source_count": 1
+    },
+    {
+      "name": "cose-base",
+      "version": "2.2.0",
+      "source_map_group": "cose-base@2.2.0",
+      "source_count": 1
+    },
+    {
+      "name": "cytoscape-cose-bilkent",
+      "version": "4.1.0",
+      "source_map_group": "cytoscape-cose-bilkent@4.1.0_cytoscape@3.33.1",
+      "source_count": 1
+    },
+    {
+      "name": "cytoscape-fcose",
+      "version": "2.2.0",
+      "source_map_group": "cytoscape-fcose@2.2.0_cytoscape@3.33.1",
+      "source_count": 1
+    },
+    {
+      "name": "cytoscape",
+      "version": "3.33.1",
+      "source_map_group": "cytoscape@3.33.1",
+      "source_count": 1
+    },
+    {
+      "name": "d3-array",
+      "version": "2.12.1",
+      "source_map_group": "d3-array@2.12.1",
+      "source_count": 4
+    },
+    {
+      "name": "d3-array",
+      "version": "3.2.4",
+      "source_map_group": "d3-array@3.2.4",
+      "source_count": 10
+    },
+    {
+      "name": "d3-axis",
+      "version": "3.0.0",
+      "source_map_group": "d3-axis@3.0.0",
+      "source_count": 3
+    },
+    {
+      "name": "d3-brush",
+      "version": "3.0.0",
+      "source_map_group": "d3-brush@3.0.0",
+      "source_count": 5
+    },
+    {
+      "name": "d3-chord",
+      "version": "3.0.1",
+      "source_map_group": "d3-chord@3.0.1",
+      "source_count": 1
+    },
+    {
+      "name": "d3-color",
+      "version": "3.1.0",
+      "source_map_group": "d3-color@3.1.0",
+      "source_count": 5
+    },
+    {
+      "name": "d3-contour",
+      "version": "4.0.2",
+      "source_map_group": "d3-contour@4.0.2",
+      "source_count": 1
+    },
+    {
+      "name": "d3-delaunay",
+      "version": "6.0.4",
+      "source_map_group": "d3-delaunay@6.0.4",
+      "source_count": 1
+    },
+    {
+      "name": "d3-dispatch",
+      "version": "3.0.1",
+      "source_map_group": "d3-dispatch@3.0.1",
+      "source_count": 2
+    },
+    {
+      "name": "d3-drag",
+      "version": "3.0.0",
+      "source_map_group": "d3-drag@3.0.0",
+      "source_count": 1
+    },
+    {
+      "name": "d3-dsv",
+      "version": "3.0.1",
+      "source_map_group": "d3-dsv@3.0.1",
+      "source_count": 1
+    },
+    {
+      "name": "d3-ease",
+      "version": "3.0.1",
+      "source_map_group": "d3-ease@3.0.1",
+      "source_count": 2
+    },
+    {
+      "name": "d3-fetch",
+      "version": "3.0.1",
+      "source_map_group": "d3-fetch@3.0.1",
+      "source_count": 1
+    },
+    {
+      "name": "d3-force",
+      "version": "3.0.0",
+      "source_map_group": "d3-force@3.0.0",
+      "source_count": 1
+    },
+    {
+      "name": "d3-format",
+      "version": "3.1.0",
+      "source_map_group": "d3-format@3.1.0",
+      "source_count": 16
+    },
+    {
+      "name": "d3-geo",
+      "version": "3.1.1",
+      "source_map_group": "d3-geo@3.1.1",
+      "source_count": 1
+    },
+    {
+      "name": "d3-hierarchy",
+      "version": "3.1.2",
+      "source_map_group": "d3-hierarchy@3.1.2",
+      "source_count": 22
+    },
+    {
+      "name": "d3-interpolate",
+      "version": "3.0.1",
+      "source_map_group": "d3-interpolate@3.0.1",
+      "source_count": 18
+    },
+    {
+      "name": "d3-path",
+      "version": "1.0.9",
+      "source_map_group": "d3-path@1.0.9",
+      "source_count": 2
+    },
+    {
+      "name": "d3-path",
+      "version": "3.1.0",
+      "source_map_group": "d3-path@3.1.0",
+      "source_count": 2
+    },
+    {
+      "name": "d3-polygon",
+      "version": "3.0.1",
+      "source_map_group": "d3-polygon@3.0.1",
+      "source_count": 1
+    },
+    {
+      "name": "d3-quadtree",
+      "version": "3.0.1",
+      "source_map_group": "d3-quadtree@3.0.1",
+      "source_count": 1
+    },
+    {
+      "name": "d3-random",
+      "version": "3.0.1",
+      "source_map_group": "d3-random@3.0.1",
+      "source_count": 1
+    },
+    {
+      "name": "d3-sankey",
+      "version": "0.12.3",
+      "source_map_group": "d3-sankey@0.12.3",
+      "source_count": 5
+    },
+    {
+      "name": "d3-scale-chromatic",
+      "version": "3.1.0",
+      "source_map_group": "d3-scale-chromatic@3.1.0",
+      "source_count": 3
+    },
+    {
+      "name": "d3-scale",
+      "version": "4.0.2",
+      "source_map_group": "d3-scale@4.0.2",
+      "source_count": 11
+    },
+    {
+      "name": "d3-selection",
+      "version": "3.0.0",
+      "source_map_group": "d3-selection@3.0.0",
+      "source_count": 47
+    },
+    {
+      "name": "d3-shape",
+      "version": "1.3.7",
+      "source_map_group": "d3-shape@1.3.7",
+      "source_count": 5
+    },
+    {
+      "name": "d3-shape",
+      "version": "3.2.0",
+      "source_map_group": "d3-shape@3.2.0",
+      "source_count": 28
+    },
+    {
+      "name": "d3-time-format",
+      "version": "4.1.0",
+      "source_map_group": "d3-time-format@4.1.0",
+      "source_count": 3
+    },
+    {
+      "name": "d3-time",
+      "version": "3.1.0",
+      "source_map_group": "d3-time@3.1.0",
+      "source_count": 11
+    },
+    {
+      "name": "d3-timer",
+      "version": "3.0.1",
+      "source_map_group": "d3-timer@3.0.1",
+      "source_count": 3
+    },
+    {
+      "name": "d3-transition",
+      "version": "3.0.1",
+      "source_map_group": "d3-transition@3.0.1_d3-selection@3.0.0",
+      "source_count": 28
+    },
+    {
+      "name": "d3-zoom",
+      "version": "3.0.0",
+      "source_map_group": "d3-zoom@3.0.0",
+      "source_count": 6
+    },
+    {
+      "name": "d3",
+      "version": "7.9.0",
+      "source_map_group": "d3@7.9.0",
+      "source_count": 1
+    },
+    {
+      "name": "dagre-d3-es",
+      "version": "7.0.11",
+      "source_map_group": "dagre-d3-es@7.0.11",
+      "source_count": 43
+    },
+    {
+      "name": "dayjs",
+      "version": "1.11.18",
+      "source_map_group": "dayjs@1.11.18",
+      "source_count": 4
+    },
+    {
+      "name": "dompurify",
+      "version": "3.2.6",
+      "source_map_group": "dompurify@3.2.6",
+      "source_count": 5
+    },
+    {
+      "name": "internmap",
+      "version": "2.0.3",
+      "source_map_group": "internmap@2.0.3",
+      "source_count": 1
+    },
+    {
+      "name": "js-yaml",
+      "version": "4.1.0",
+      "source_map_group": "js-yaml@4.1.0",
+      "source_count": 1
+    },
+    {
+      "name": "katex",
+      "version": "0.16.22",
+      "source_map_group": "katex@0.16.22",
+      "source_count": 1
+    },
+    {
+      "name": "khroma",
+      "version": "2.1.0",
+      "source_map_group": "khroma@2.1.0",
+      "source_count": 27
+    },
+    {
+      "name": "langium",
+      "version": "3.3.1",
+      "source_map_group": "langium@3.3.1",
+      "source_count": 64
+    },
+    {
+      "name": "layout-base",
+      "version": "1.0.2",
+      "source_map_group": "layout-base@1.0.2",
+      "source_count": 1
+    },
+    {
+      "name": "layout-base",
+      "version": "2.0.1",
+      "source_map_group": "layout-base@2.0.1",
+      "source_count": 1
+    },
+    {
+      "name": "lodash-es",
+      "version": "4.17.21",
+      "source_map_group": "lodash-es@4.17.21",
+      "source_count": 269
+    },
+    {
+      "name": "marked",
+      "version": "16.3.0",
+      "source_map_group": "marked@16.3.0",
+      "source_count": 11
+    },
+    {
+      "name": "roughjs",
+      "version": "4.6.6",
+      "source_map_group": "roughjs@4.6.6_patch_hash=3543d47108cb41b68ec6a671c0e1f9d0cfe2ce524fea5b0992511ae84c3c6b64",
+      "source_count": 1
+    },
+    {
+      "name": "stylis",
+      "version": "4.3.6",
+      "source_map_group": "stylis@4.3.6",
+      "source_count": 5
+    },
+    {
+      "name": "ts-dedent",
+      "version": "2.2.0",
+      "source_map_group": "ts-dedent@2.2.0",
+      "source_count": 1
+    },
+    {
+      "name": "uuid",
+      "version": "11.1.0",
+      "source_map_group": "uuid@11.1.0",
+      "source_count": 5
+    },
+    {
+      "name": "vscode-jsonrpc",
+      "version": "8.2.0",
+      "source_map_group": "vscode-jsonrpc@8.2.0",
+      "source_count": 4
+    },
+    {
+      "name": "vscode-languageserver-textdocument",
+      "version": "1.0.12",
+      "source_map_group": "vscode-languageserver-textdocument@1.0.12",
+      "source_count": 1
+    },
+    {
+      "name": "vscode-languageserver-types",
+      "version": "3.17.5",
+      "source_map_group": "vscode-languageserver-types@3.17.5",
+      "source_count": 1
+    },
+    {
+      "name": "mermaid",
+      "version": "11.12.0"
+    },
+    {
+      "name": "@mermaid-js/parser",
+      "version": "0.6.2"
+    },
+    {
+      "name": "vscode-uri",
+      "version": "3.0.8",
+      "basis": "nested webpack sources and langium locked runtime dependency"
+    },
+    {
+      "name": "path-browserify",
+      "version": "1.0.1",
+      "basis": "nested webpack source and Mermaid pnpm lock"
+    },
+    {
+      "name": "hachure-fill",
+      "version": "0.5.2",
+      "basis": "bundled inside roughjs 4.6.6, exact Mermaid pnpm lock"
+    },
+    {
+      "name": "path-data-parser",
+      "version": "0.1.0",
+      "basis": "bundled inside roughjs 4.6.6, exact Mermaid pnpm lock"
+    },
+    {
+      "name": "points-on-curve",
+      "version": "0.2.0",
+      "basis": "bundled inside roughjs 4.6.6, exact Mermaid pnpm lock"
+    },
+    {
+      "name": "points-on-path",
+      "version": "0.2.1",
+      "basis": "bundled inside roughjs 4.6.6, exact Mermaid pnpm lock"
+    }
+  ],
+  "qualification": "source-map referenced modules are a conservative inclusion set; some index modules may be tree-shaken"
+}

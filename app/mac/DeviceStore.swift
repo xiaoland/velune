@@ -157,7 +157,7 @@ final class DeviceStore: ObservableObject {
     private var dismissedProblemIDs: Set<UUID> = []
     private var recoveredActivityKeys: Set<String> = []
     private var historyFailures: Set<String>?
-    private(set) lazy var windowWorkspaceJournal = WindowWorkspaceJournal(directory: isPreview ? nil : transport?.stateDirectory) { [weak self] message in
+    private(set) lazy var windowWorkspaceJournal = WindowWorkspaceJournal(directory: isPreview || !MacNativePersistenceGate.isEnabled ? nil : transport?.stateDirectory) { [weak self] message in
         DispatchQueue.main.async { self?.recordProblem(message, source: "保存输入与窗口恢复点") }
     }
     private func problemJournal(_ operation: @escaping (VeluneTelemetry, String) throws -> Void) {
@@ -210,7 +210,7 @@ final class DeviceStore: ObservableObject {
     let transport: Transport?
     let isPreview: Bool
     /// The tool windows as last arranged, for windows without a layout of their own.
-    private(set) lazy var rememberedToolLayout = RememberedToolLayout(home: transport?.stateDirectory) { [weak self] in
+    private(set) lazy var rememberedToolLayout = RememberedToolLayout(home: isPreview || !MacNativePersistenceGate.isEnabled ? nil : transport?.stateDirectory) { [weak self] in
         self?.recordProblem($0, source: "保存布局")
     }
     private var subscriptions: Set<AnyCancellable> = []

@@ -52,9 +52,8 @@ struct RuntimeDiscoveryView: View {
     private func discover() {
         guard active, !discovering, !store.isBusy else { return }
         discovering = true; selectedIDs.removeAll(); candidates = []; status = "正在发现运行时…"
-        var overrides: [String: String] = [:]
-        for key in ["PI_CODING_AGENT_DIR", "CODEX_HOME", "DSH_HOME"] { if let pointer = getenv(key) { overrides[key] = String(cString: pointer) } }
-        store.runtimeDiscoveryHints(userHome: FileManager.default.homeDirectoryForCurrentUser.path, overrides: overrides, onFailure: { discovering = false; status = "" }) { hints in
+        let discovery = MacExecutionContext.admitted.runtimeDiscovery
+        store.runtimeDiscoveryHints(userHome: discovery.userHome, overrides: discovery.overrides, onFailure: { discovering = false; status = "" }) { hints in
             guard active else { return }
             guard let node = store.runtimeTypes.flatMap(\.fields).first(where: { $0.key == "nodeBinary" })?.executableDiscovery else { discovering = false; status = ""; store.recordProblem("没有可用的 Node 发现配置。", source: "发现 Agent 运行时"); return }
             MacExecutableDiscovery.discover(node) { result in

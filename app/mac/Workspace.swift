@@ -432,6 +432,8 @@ struct PaneSplit: Codable, Equatable {
 /// What a window restores: its arrangement, each pane's tabs, each tab's
 /// conversation, the focused pane and the tool windows.
 struct SavedWindowLayout: Codable, Equatable {
+    /// Public beta format baseline. Zero is reserved for the known unversioned pre-beta shape.
+    var schemaVersion = 1
     enum ExecutionDevice: Codable, Equatable {
         case local, remote(String)
         init(_ peerID: String?) { self = peerID.map(Self.remote) ?? .local }
@@ -457,6 +459,96 @@ struct SavedWindowLayout: Codable, Equatable {
     var windowKind: ConversationWindowKind? = nil
     /// Absent only in legacy snapshots whose execution device is unknown.
     var windowDevice: ExecutionDevice? = nil
+
+    private enum CodingKeys: String, CodingKey {
+        case schemaVersion, layout, panes, conversations, focused, tools, pinned, composer, composerWorkspace, artifacts, unsentConversations, creationTargets, windowKind, windowDevice
+    }
+
+    init(schemaVersion: Int = 1, layout: PaneLayout, panes: [UUID: SavedPane], conversations: [UUID: String], focused: UUID, tools: ToolWindowLayout, pinned: Bool, composer: SavedComposerDraft? = nil, composerWorkspace: SavedComposerWorkspace? = nil, artifacts: [UUID: ArtifactDocument]? = nil, unsentConversations: [String: Conversation]? = nil, creationTargets: [UUID: Conversation]? = nil, windowKind: ConversationWindowKind? = nil, windowDevice: ExecutionDevice? = nil) {
+        self.schemaVersion = schemaVersion
+        self.layout = layout
+        self.panes = panes
+        self.conversations = conversations
+        self.focused = focused
+        self.tools = tools
+        self.pinned = pinned
+        self.composer = composer
+        self.composerWorkspace = composerWorkspace
+        self.artifacts = artifacts
+        self.unsentConversations = unsentConversations
+        self.creationTargets = creationTargets
+        self.windowKind = windowKind
+        self.windowDevice = windowDevice
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try values.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 0
+        layout = try values.decode(PaneLayout.self, forKey: .layout)
+        panes = try values.decode([UUID: SavedPane].self, forKey: .panes)
+        conversations = try values.decode([UUID: String].self, forKey: .conversations)
+        focused = try values.decode(UUID.self, forKey: .focused)
+        tools = try values.decode(ToolWindowLayout.self, forKey: .tools)
+        pinned = try values.decode(Bool.self, forKey: .pinned)
+        composer = try values.decodeIfPresent(SavedComposerDraft.self, forKey: .composer)
+        composerWorkspace = try values.decodeIfPresent(SavedComposerWorkspace.self, forKey: .composerWorkspace)
+        artifacts = try values.decodeIfPresent([UUID: ArtifactDocument].self, forKey: .artifacts)
+        unsentConversations = try values.decodeIfPresent([String: Conversation].self, forKey: .unsentConversations)
+        creationTargets = try values.decodeIfPresent([UUID: Conversation].self, forKey: .creationTargets)
+        windowKind = try values.decodeIfPresent(ConversationWindowKind.self, forKey: .windowKind)
+        windowDevice = try values.decodeIfPresent(ExecutionDevice.self, forKey: .windowDevice)
+    }
+
+    static func decodeKnown(_ data: Data) throws -> SavedWindowLayout {
+        let raw = try JSONSerialization.jsonObject(with: data)
+        let layout = try JSONDecoder().decode(SavedWindowLayout.self, from: data)
+        guard layout.schemaVersion == 0 || layout.schemaVersion == 1 else {
+            throw NSError(domain: "VelunePersistence", code: 20, userInfo: [NSLocalizedDescriptionKey: "窗口恢复点 schema 不受支持"])
+        }
+        let current = try JSONSerialization.jsonObject(with: JSONEncoder().encode(layout))
+        guard hasOnlyEncodedKeys(raw, encoded: current) else {
+            throw NSError(domain: "VelunePersistence", code: 21, userInfo: [NSLocalizedDescriptionKey: "窗口恢复点含未知字段"])
+        }
+        return layout
+    }
+
+    static func hasOnlyEncodedKeys(_ source: Any, encoded: Any) -> Bool {
+        hasOnlyEncodedKeys(source, encoded: encoded, field: nil)
+    }
+
+    private static func hasOnlyEncodedKeys(_ source: Any, encoded: Any, field: String?) -> Bool {
+        if let source = source as? [String: Any], let encoded = encoded as? [String: Any] {
+            return source.keys.allSatisfy { key in
+                guard let current = encoded[key] else { return source[key] is NSNull }
+                return hasOnlyEncodedKeys(source[key]!, encoded: current, field: key)
+            }
+        }
+        if let source = source as? [Any], let encoded = encoded as? [Any] {
+            if ["panes", "artifacts", "creationTargets"].contains(field ?? "") {
+                guard let sourceMap = uuidDictionaryEntries(source),
+                      let encodedMap = uuidDictionaryEntries(encoded),
+                      Set(sourceMap.keys) == Set(encodedMap.keys) else { return false }
+                return sourceMap.allSatisfy { entry in
+                    let (key, value) = entry
+                    guard let other = encodedMap[key] else { return false }
+                    return hasOnlyEncodedKeys(value, encoded: other, field: nil)
+                }
+            }
+            return source.count == encoded.count && zip(source, encoded).allSatisfy { hasOnlyEncodedKeys($0.0, encoded: $0.1) }
+        }
+        return true
+    }
+
+    private static func uuidDictionaryEntries(_ values: [Any]) -> [String: Any]? {
+        guard values.count.isMultiple(of: 2) else { return nil }
+        var result: [String: Any] = [:]
+        for pair in stride(from: 0, to: values.count, by: 2) {
+            guard let key = values[pair] as? String, UUID(uuidString: key) != nil,
+                  result[key] == nil else { return nil }
+            result[key] = values[pair + 1]
+        }
+        return result
+    }
 
     /// Every pane and tab named once, the focused pane among them.
     var isWhole: Bool {

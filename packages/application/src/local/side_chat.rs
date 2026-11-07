@@ -291,7 +291,10 @@ mod tests {
                 gateway_id: String::new(),
                 settings: Default::default(),
             };
-            assert_eq!(require_side_chat(&runtime).is_ok(), descriptor.can_side_chat);
+            assert_eq!(
+                require_side_chat(&runtime).is_ok(),
+                descriptor.can_side_chat
+            );
             runtime.enabled = false;
             assert!(require_side_chat(&runtime).is_err());
         }

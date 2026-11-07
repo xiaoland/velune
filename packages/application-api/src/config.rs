@@ -273,7 +273,7 @@ pub struct ComposerDraft {
 /// follows the conversation's current one, and without one the runtime's own
 /// default; Velune never names a default of its own.
 #[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq, uniffi::Record)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TurnChoice {
     #[uniffi(default = None)]
     pub model: Option<crate::ModelSelection>,
@@ -290,7 +290,7 @@ impl TurnChoice {
 
 /// One runtime's choice in a conversation.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, uniffi::Record)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RuntimeTurnChoice {
     #[serde(rename = "runtimeID")]
     pub runtime_id: String,
@@ -301,7 +301,7 @@ pub struct RuntimeTurnChoice {
 /// each runtime keeps its own, and an unsent conversation also the runtime
 /// chosen for it.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, uniffi::Record)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct NextTurnIntent {
     #[serde(rename = "conversationID")]
     pub conversation_id: String,
@@ -312,7 +312,7 @@ pub struct NextTurnIntent {
 
 /// What a runtime instance's new conversations start with.
 #[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq, uniffi::Enum)]
-#[serde(tag = "kind", rename_all = "camelCase")]
+#[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
 pub enum NewConversationChoice {
     /// The user's last choice on the runtime.
     #[default]
@@ -323,7 +323,7 @@ pub enum NewConversationChoice {
 
 /// The last choice on one instance and adapter type. Its start policy belongs to the instance.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, uniffi::Record)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RuntimeComposerChoices {
     #[serde(rename = "runtimeID")]
     pub runtime_id: String,
@@ -333,7 +333,7 @@ pub struct RuntimeComposerChoices {
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq, uniffi::Record)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ComposerChoices {
     pub conversations: Vec<NextTurnIntent>,
     pub runtimes: Vec<RuntimeComposerChoices>,

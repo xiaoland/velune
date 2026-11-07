@@ -38,7 +38,7 @@ adb shell am start -n app.velune.android/.MainActivity
 
 只修改 Kotlin 时可用 `scripts/build-android.sh --skip-native`；此入口先检查所选 profile 的 native 库与已生成绑定的摘要和配置是否配套。缺少或不匹配时失败，需先执行正常构建。跳过编译不证明 native 库已包含此后修改的 Rust 源码。开发构建不安装或启动应用。
 
-`scripts/build-android-native.sh` 同时运行 `scripts/android-licenses.py`，按实际链接的 Rust crate 生成 `target/android-licenses/rust-licenses.txt`；它与 [licenses](licenses) 下的 NOTICE 和许可全文一起作为 assets 打包，在“关于”中显示。新增 Java／Kotlin 依赖时同步更新 NOTICE。
+`scripts/build-android-native.sh` 同时运行 `scripts/android-licenses.py`，按实际链接的 Rust crate 生成 `target/android-licenses/rust-licenses.txt`，并将仓库根目录的 Velune `LICENSE` 一起作为 assets 打包；它们与 [licenses](licenses) 下的 NOTICE 和第三方许可全文一起在“关于”中显示。“关于”还按应用版本链接到对应 GitHub release 源码归档。新增 Java／Kotlin 依赖时同步更新 NOTICE。
 
 `VeluneAndroid.onCreate` 先装载 so 并调用 `NativePlatform.initialize(applicationContext)`，为 iroh 提供 Android DNS 和系统证书验证所需的 JNI context；只靠 JNA 装载不够。生成的 Kotlin 绑定与 so 都是构建产物，不入库。
 
@@ -55,7 +55,7 @@ Debug 应用还提供[本地配对 CLI](../../docs/development.md#本地配对-c
 
 遥测设置属于当前客户端，默认未配置且关闭；更换被控设备不改变本机出口。设置页支持 OTLP/gRPC 地址、认证、trace 采样、两侧生效状态和显式测试，以及独立授权的一次性配置复制。保存/复制保留本机开关；分享授权与控制授权分别核对和撤销。手机在前台可提供配置分享，不增加本地执行能力或后台保活，也不保证后台仍可读取。
 
-使用官方原生 SDK 与 Rust SDK，共用实例身份与配置修订。原始会话、路径、认证和底层错误链不外传，本地问题详情保留。接收回执不等于后台查询已可见，未提供的 SDK 丢弃计数为未知。开发启动与隔离验收见[开发遥测](../../docs/development.md#开发遥测)，跨单元契约见[遥测装配](../../docs/design/telemetry.md)。
+使用官方原生 SDK 与 Rust SDK，共用实例身份与配置修订。原始会话、路径、认证和底层错误链不外传，本地问题详情保留。接收回执不等于后台查询已可见，未提供的 SDK 丢弃计数为未知。开发启动与隔离验收见[开发遥测](../../docs/development.md#开发遥测)，跨单元契约见[遥测装配](../../docs/product-tdd/telemetry.md)。
 
 ## 执行目标准备
 
