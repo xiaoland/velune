@@ -16,6 +16,7 @@ sealed class Shell
     public Hub Hub { get; }
     public Listings Listings { get; }
     public Commands Commands { get; }
+    public Updates Updates { get; }
     readonly LayoutStore store;
     readonly SavedLayout saved;
     readonly List<WorkspaceWindow> windows = [];
@@ -35,6 +36,7 @@ sealed class Shell
     readonly HashSet<string> prompted = [];
     bool approving;
     bool quitting;
+    bool askingUpdate;
 
     public Shell(Core core, DispatcherQueue dispatcher)
     {
@@ -46,6 +48,7 @@ sealed class Shell
         Listings = new Listings(core);
         Listings.Polled += notifier.Polled;
         Commands = new Commands(core.Home);
+        Updates = new Updates(dispatcher);
         store = new LayoutStore(core.Home, dispatcher);
         saved = store.Read();
         Hub.Changed += HubChanged;
@@ -69,6 +72,7 @@ sealed class Shell
         }
         Commands.Changed += SyncHotKeys;
         SyncHotKeys();
+        Updates.Start();
     }
 
     // SyncHotKeys registers the global shortcuts as set, on a workspace
@@ -184,10 +188,14 @@ sealed class Shell
             return;
         }
         // The last window keeps its place in the saved layout, to reopen.
-        quitting = true;
-        var last = window.Save();
-        store.Save(() => new SavedLayout { Tools = saved.Tools, Windows = [last] });
-        store.Flush();
+        if (!quitting)
+        {
+            quitting = true;
+            var last = window.Save();
+            store.Save(() => new SavedLayout { Tools = saved.Tools, Windows = [last] });
+            store.Flush();
+        }
+        Updates.Stop();
         settings?.Close();
         problems?.Close();
         analytics?.Close();
@@ -238,7 +246,7 @@ sealed class Shell
     {
         if (settings == null)
         {
-            settings = new SettingsWindow(Core, Hub, Commands, OpenProblems, OpenLibrary, opened =>
+            settings = new SettingsWindow(Core, Hub, Commands, Updates, InstallUpdateAsync, OpenProblems, OpenLibrary, opened =>
             {
                 // Opening a device shows it in the window used last.
                 if (latest != null)
@@ -254,6 +262,64 @@ sealed class Shell
 
     static void KeepLocal()
     {
+    }
+
+    async Task InstallUpdateAsync()
+    {
+        if (askingUpdate || quitting || !Updates.CanApply || settings is not { } host) return;
+        askingUpdate = true;
+        try
+        {
+            if (Library.Unsaved.Count > 0)
+            {
+                if (await host.ShowDialog(new ContentDialog
+                {
+                    Title = "请先保存资源库中的修改",
+                    Content = Ui.Text("未保存：" + string.Join("、", Library.Unsaved) + "。保存后再退出并更新。"),
+                    PrimaryButtonText = "打开资源库",
+                    CloseButtonText = "稍后更新",
+                    DefaultButton = ContentDialogButton.Primary,
+                }) == ContentDialogResult.Primary) OpenLibrary();
+                return;
+            }
+            var result = await host.ShowDialog(new ContentDialog
+            {
+                Title = $"退出并更新到 {Updates.Version}？",
+                Content = Ui.Text("退出会保存窗口布局与输入草稿，并停止这台电脑上正在运行的 Agent。更新完成后会重新打开 Velune。请在合适的时机更新。"),
+                PrimaryButtonText = "退出并更新",
+                CloseButtonText = "稍后更新",
+                DefaultButton = ContentDialogButton.Close,
+            });
+            if (result != ContentDialogResult.Primary || quitting || !ReferenceEquals(settings, host)
+                || windows.Count == 0 || Library.Unsaved.Count > 0 || !Updates.CanApply) return;
+
+            // Capture all workspaces before closing any. The ordinary last-window
+            // path saves only that last window, whereas an update reopens them all.
+            var draftsSaved = true;
+            foreach (var window in windows)
+            {
+                if (!window.Editor.FlushDrafts()) draftsSaved = false;
+            }
+            if (!draftsSaved)
+            {
+                Updates.Fail(new IOException("输入草稿未能保存，窗口保持打开。请查看“问题”并重试。"));
+                return;
+            }
+            var layout = new SavedLayout { Tools = saved.Tools, Windows = [.. windows.Select(window => window.Save())] };
+            store.Save(() => layout);
+            if (!store.Flush())
+            {
+                Updates.Fail(new IOException("工作区布局未能保存，窗口保持打开。请查看“问题”并重试。"));
+                return;
+            }
+            if (!Updates.WaitForExitAndRestart()) return;
+            quitting = true;
+            foreach (var window in windows.ToArray()) window.Close();
+        }
+        finally
+        {
+            askingUpdate = false;
+        }
     }
 
     // Flash asks for attention on the window used last.
@@ -341,7 +407,7 @@ sealed class Shell
     // window itself if the user discards them.
     bool MayClose(WorkspaceWindow window)
     {
-        if (discardDrafts || windows.Count > 1 || Library.Unsaved.Count == 0)
+        if (quitting || discardDrafts || windows.Count > 1 || Library.Unsaved.Count == 0)
         {
             return true;
         }

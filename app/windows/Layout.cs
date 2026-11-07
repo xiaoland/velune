@@ -145,8 +145,8 @@ sealed class SavedLayout
 }
 
 // LayoutStore keeps the layout in VELUNE_HOME/windows-layout.json. A file of
-// another schema, or one that does not read, gives the defaults, and the next
-// change overwrites it.
+// another schema, or one that does not read, gives the defaults and blocks
+// subsequent writes so the original can be recovered.
 sealed class LayoutStore(string home, DispatcherQueue dispatcher)
 {
     public static readonly JsonSerializerOptions Options = new()
@@ -227,24 +227,30 @@ sealed class LayoutStore(string home, DispatcherQueue dispatcher)
     Func<SavedLayout>? pending;
 
     // Flush writes a pending change now, as the app quits.
-    public void Flush()
+    public bool Flush()
     {
-        if (!canWrite) return;
+        if (!canWrite)
+        {
+            Problems.Report("保存窗口布局", new InvalidOperationException("窗口布局文件无法识别，原文件已保留，请先恢复布局。"));
+            return false;
+        }
         if (pending is not { } layout)
         {
-            return;
+            return true;
         }
-        pending = null;
         try
         {
             Directory.CreateDirectory(home);
             var temporary = path + ".tmp";
             File.WriteAllText(temporary, JsonSerializer.Serialize(layout(), Options));
             File.Move(temporary, path, true);
+            pending = null;
+            return true;
         }
-        catch (Exception failure) when (failure is IOException or UnauthorizedAccessException)
+        catch (Exception failure) when (failure is IOException or UnauthorizedAccessException or JsonException or NotSupportedException)
         {
-            // The layout is a convenience; the next change tries again.
+            Problems.Report("保存窗口布局", failure);
+            return false;
         }
     }
 }

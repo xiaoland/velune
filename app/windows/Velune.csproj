@@ -17,6 +17,7 @@
     <Platforms>x64</Platforms>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
     <UseWinUI>true</UseWinUI>
+    <DefineConstants>$(DefineConstants);DISABLE_XAML_GENERATED_MAIN</DefineConstants>
     <WindowsPackageType>None</WindowsPackageType>
     <!-- Builds Velune.pri, which holds the compiled XAML, also when unpackaged. -->
     <EnableMsixTooling>true</EnableMsixTooling>
@@ -46,6 +47,7 @@
     <PackageReference Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.28000.2705" />
     <PackageReference Include="Markdig" Version="1.4.2" />
     <PackageReference Include="QRCoder" Version="1.8.1" />
+    <PackageReference Include="Velopack" Version="1.2.161" />
   </ItemGroup>
 
   <ItemGroup>

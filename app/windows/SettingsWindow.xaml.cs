@@ -22,7 +22,7 @@ public sealed partial class SettingsWindow : Window
     readonly TelemetryPage telemetry;
     readonly SemaphoreSlim dialogs = new(1, 1);
 
-    internal SettingsWindow(Core core, Hub hub, Commands commands, Action openProblems, Action openLibrary, Action<Device> open)
+    internal SettingsWindow(Core core, Hub hub, Commands commands, Updates updates, Func<Task> installUpdate, Action openProblems, Action openLibrary, Action<Device> open)
     {
         InitializeComponent();
         // Settings' failures go to 问题, which the title bar opens.
@@ -43,7 +43,7 @@ public sealed partial class SettingsWindow : Window
         ShowMark();
         Root.ActualThemeChanged += (_, _) => ShowMark();
 
-        general = new GeneralPage(core, commands, this);
+        general = new GeneralPage(core, commands, this, updates, installUpdate);
         providers = new ProvidersPage(core, this);
         routes = new RoutesPage(core, this, EditProvider);
         runtimes = new RuntimesPage(core, this, openLibrary);
