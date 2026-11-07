@@ -152,7 +152,7 @@ jobs:
           VERSION: ${{ needs.release.outputs.version }}
         run: |
           set -euo pipefail
-          python3 scripts/create-source-bundle.py --tag "$TAG" --commit "$SHA" --platforms macos windows android --output-dir target/source
+          python3 scripts/create-source-bundle.py --tag "$TAG" --commit "$SHA" --platforms macos android --output-dir target/source
           archive=$(find target/source -maxdepth 1 -name "velune-$TAG-source.tar.gz" -print -quit)
           test -n "$archive"
           python3 scripts/package-release.py source --input "$archive" --output-dir target/release \
@@ -179,10 +179,6 @@ jobs:
             platform: macos
             runner: macos-15-intel
             architecture: x86_64
-          - name: windows-x64
-            platform: windows
-            runner: windows-2025
-            architecture: x64
           - name: android-arm64
             platform: android
             runner: ubuntu-24.04
@@ -226,7 +222,7 @@ jobs:
             ~/.gradle/caches
           key: velune-${{ matrix.name }}-${{ hashFiles('Cargo.lock', 'Package.resolved', 'app/android/gradle/libs.versions.toml', 'app/android/gradle/wrapper/gradle-wrapper.properties') }}
       - name: Set up Node.js
-        if: matrix.platform == 'macos' || matrix.platform == 'windows'
+        if: matrix.platform == 'macos'
         uses: actions/setup-node@v4
         with:
           node-version: '22.18.0'
@@ -240,15 +236,10 @@ jobs:
           sudo xcode-select -s /Applications/Xcode_26.3.app
           xcodebuild -version | grep -q 'Xcode 26.3'
       - name: Set up Go
-        if: matrix.platform == 'macos' || matrix.platform == 'windows'
+        if: matrix.platform == 'macos'
         uses: actions/setup-go@v5
         with:
           go-version: '1.25.1'
-      - name: Set up .NET 10
-        if: matrix.platform == 'windows'
-        uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: '10.0.x'
       - name: Set up Java 17
         if: matrix.platform == 'android'
         uses: actions/setup-java@v4
@@ -270,21 +261,6 @@ jobs:
       - name: Set up Rust Android target
         if: matrix.platform == 'android'
         run: rustup target add aarch64-linux-android
-      - name: Install Windows LLVM-MinGW
-        if: matrix.platform == 'windows'
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $archive = Join-Path $env:RUNNER_TEMP 'llvm-mingw.zip'
-          $url = 'https://github.com/mstorsjo/llvm-mingw/releases/download/20261104/llvm-mingw-20261104-ucrt-x86_64.zip'
-          Invoke-WebRequest -Uri $url -OutFile $archive
-          $actual = (Get-FileHash -Algorithm SHA256 $archive).Hash.ToLowerInvariant()
-          if ($actual -ne '552191b5754c49a5a20723276a6fc56541ea1922c4c50b7b669022333fc1b40f') { throw 'llvm-mingw SHA-256 mismatch' }
-          $root = Join-Path $env:RUNNER_TEMP 'llvm-mingw'
-          Expand-Archive -Path $archive -DestinationPath $root
-          $clang = Get-ChildItem $root -Filter 'x86_64-w64-mingw32-clang.exe' -Recurse | Select-Object -First 1
-          if (-not $clang) { throw 'x86_64-w64-mingw32-clang was not found in the pinned archive' }
-          "VELUNE_RELAYKIT_CC=$($clang.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
       - name: Install runtime support and xURL
         if: matrix.platform == 'macos'
         shell: bash
@@ -292,18 +268,6 @@ jobs:
           set -euo pipefail
           bash scripts/install-runtime-support.sh
           bash scripts/install-xurl.sh
-      - name: Install Windows runtime support and xURL
-        if: matrix.platform == 'windows'
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $runtime = 'target/runtime-support'
-          New-Item -ItemType Directory -Force $runtime | Out-Null
-          Copy-Item packages/agent-runtime/runtime-support/package.json,packages/agent-runtime/runtime-support/package-lock.json $runtime
-          npm ci --prefix $runtime --ignore-scripts --omit=dev --no-audit --no-fund
-          Copy-Item -Recurse -Force packages/agent-runtime/runtime-support/licenses $runtime
-          Copy-Item packages/agent-runtime/runtime-support/THIRD_PARTY_NOTICES.md $runtime
-          & scripts/install-xurl.ps1
       - name: Build and package macOS app
         if: matrix.platform == 'macos'
         env:
@@ -317,18 +281,6 @@ jobs:
           bash scripts/build-macos.sh --profile release --purpose daily --build-only
           python3 scripts/package-release.py macos --input target/macos/Velune.app --output-dir target/release \
             --tag "$TAG" --version "$VERSION" --commit "$SHA" --build-number "$VELUNE_BUILD_NUMBER" --arch '${{ matrix.architecture }}'
-      - name: Build and package Windows app
-        if: matrix.platform == 'windows'
-        env:
-          TAG: ${{ needs.release.outputs.tag }}
-          SHA: ${{ needs.release.outputs.sha }}
-          VERSION: ${{ needs.release.outputs.version }}
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          ./scripts/build-windows.ps1 -Profile release
-          python scripts/package-release.py windows --input target/windows/Velune --output-dir target/release `
-            --tag $env:TAG --version $env:VERSION --commit $env:SHA --build-number $env:VELUNE_BUILD_NUMBER --arch x64
       - name: Prepare fixed Android release keystore
         if: matrix.platform == 'android'
         env:
@@ -415,7 +367,6 @@ jobs:
           for expected in \
             "Velune-$TAG-macOS-arm64.zip" \
             "Velune-$TAG-macOS-x86_64.zip" \
-            "Velune-$TAG-windows-x64.zip" \
             "Velune-$TAG-android-arm64.apk" \
             "velune-$TAG-source.tar.gz"; do
             test -s "target/release/$expected"
@@ -435,7 +386,6 @@ jobs:
           expected={
               f'Velune-{tag}-macOS-arm64.zip':('macos','arm64'),
               f'Velune-{tag}-macOS-x86_64.zip':('macos','x86_64'),
-              f'Velune-{tag}-windows-x64.zip':('windows','x64'),
               f'Velune-{tag}-android-arm64.apk':('android','arm64'),
               f'velune-{tag}-source.tar.gz':('source','all'),
           }

@@ -17,6 +17,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import tomllib
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -601,6 +602,227 @@ def vendor_preferred_js_sources(source_root: Path) -> dict[str, object]:
     }
 
 
+def vendor_windows_sources(source_root: Path) -> dict[str, object]:
+    """Archive exact NuGet source snapshots and the Velopack Windows helper graph."""
+    metadata_path = source_root / "app/windows/Licenses/NUGET-SOURCES.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    unresolved = metadata.get("unresolved_platform_components", [])
+    if unresolved:
+        names = ", ".join(f"{item['package']} {item['version']}" for item in unresolved)
+        raise BundleError(
+            "Windows corresponding source is unresolved for bundled platform components: " + names
+        )
+
+    lock_path = source_root / metadata["lockfile"]
+    if not lock_path.is_file():
+        raise BundleError(f"Windows NuGet lock file is missing: {metadata['lockfile']}")
+    lock = json.loads(lock_path.read_text(encoding="utf-8"))
+    locked = {
+        (package.casefold(), entry["resolved"])
+        for target in lock.get("dependencies", {}).values()
+        for package, entry in target.items()
+        if isinstance(entry, dict) and entry.get("resolved")
+    }
+    manifest_packages = {
+        (entry["package"].casefold(), entry["version"])
+        for entry in metadata.get("runtime_packages", [])
+    }
+    unresolved_packages = {
+        (entry["package"].casefold(), entry["version"])
+        for entry in metadata.get("unresolved_platform_components", [])
+    }
+    build_only_packages = {
+        (entry["package"].casefold(), entry["version"])
+        for entry in metadata.get("build_only_packages", [])
+    }
+    classified = manifest_packages | unresolved_packages | build_only_packages
+    if classified != locked:
+        missing = sorted(locked - classified)
+        stale = sorted(classified - locked)
+        raise BundleError(
+            f"Windows NuGet source manifest classification differs from packages.lock.json; "
+            f"unclassified={missing}, stale={stale}"
+        )
+
+    snapshots: dict[tuple[str, str], set[str]] = {}
+    for entry in metadata.get("runtime_packages", []):
+        repo = entry["repository"]
+        revision = entry["revision"]
+        source_path = entry.get("source_path", "")
+        if not repo.startswith("https://github.com/") or not re.fullmatch(r"[0-9a-f]{40}", revision):
+            raise BundleError(f"Windows NuGet source is not a fixed GitHub commit: {entry['package']}")
+        if source_path and (PurePosixPath(source_path).is_absolute() or ".." in PurePosixPath(source_path).parts):
+            raise BundleError(f"Unsafe source path for Windows package {entry['package']}")
+        snapshots.setdefault((repo.removesuffix(".git"), revision), set()).add(source_path)
+        license_path = entry.get("repository_license_path")
+        if license_path:
+            license_relative = PurePosixPath(license_path)
+            if license_relative.is_absolute() or ".." in license_relative.parts:
+                raise BundleError(f"Unsafe repository license path for Windows package {entry['package']}")
+            snapshots[(repo.removesuffix(".git"), revision)].add(license_path)
+
+    velopack = metadata.get("velopack_source", {})
+    velopack_repo = velopack.get("repository", "")
+    velopack_revision = velopack.get("revision", "")
+    if not velopack_repo.startswith("https://github.com/") or not re.fullmatch(r"[0-9a-f]{40}", velopack_revision):
+        raise BundleError("Velopack source is not pinned to a full GitHub commit")
+    roots = set(velopack.get("source_content_roots", []))
+    if not {"Cargo.lock", "Cargo.toml", "LICENSE", "src/"}.issubset(roots):
+        raise BundleError("Velopack source roots must include its Rust lock, project, license, and helpers")
+    snapshots.setdefault((velopack_repo.removesuffix(".git"), velopack_revision), set()).update(roots)
+
+    destination_root = source_root / "windows-sources"
+    snapshot_entries: list[dict[str, object]] = []
+    for (repository, revision), paths in sorted(snapshots.items()):
+        selected_paths: list[str] = []
+        for path in sorted(paths, key=lambda value: (len(PurePosixPath(value.rstrip("/")).parts), value)):
+            if any(path.rstrip("/").startswith(parent.rstrip("/") + "/") for parent in selected_paths):
+                continue
+            selected_paths.append(path)
+        slug = repository.removeprefix("https://github.com/").replace("/", "--")
+        destination = destination_root / f"{slug}-{revision}"
+        with tempfile.TemporaryDirectory(prefix=".windows-source-", dir=destination_root.parent) as temp:
+            checkout = Path(temp) / "checkout"
+            checkout.mkdir()
+            run("git", "init", str(checkout))
+            run("git", "-C", str(checkout), "remote", "add", "origin", repository + ".git")
+            run("git", "-C", str(checkout), "config", "core.sparseCheckout", "true")
+            run("git", "-C", str(checkout), "config", "core.sparseCheckoutCone", "false")
+            sparse_rules = []
+            for path in selected_paths:
+                normalized = path.rstrip("/")
+                sparse_rules.extend((f"/{normalized}", f"/{normalized}/"))
+            (checkout / ".git/info/sparse-checkout").write_text("\n".join(sparse_rules) + "\n")
+            run("git", "-C", str(checkout), "fetch", "--depth=1", "--filter=blob:none", "origin", revision)
+            run("git", "-C", str(checkout), "checkout", "--detach", "FETCH_HEAD")
+            actual_revision = run("git", "-C", str(checkout), "rev-parse", "HEAD")
+            if actual_revision != revision:
+                raise BundleError(f"Source checkout resolved to {actual_revision}, expected {revision}")
+            if destination.exists():
+                raise BundleError(f"Duplicate Windows source destination: {destination}")
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            for path in selected_paths:
+                relative = Path(path.rstrip("/"))
+                selected = checkout / relative
+                if not selected.exists():
+                    raise BundleError(f"Pinned Windows source path is missing: {repository}@{revision}:{path}")
+                target = destination / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                if selected.is_dir():
+                    shutil.copytree(selected, target, symlinks=True)
+                else:
+                    shutil.copy2(selected, target)
+        snapshot_entries.append({
+            "repository": repository,
+            "revision": revision,
+            "paths": selected_paths,
+            "archive_path": destination.relative_to(source_root).as_posix(),
+            "sha256": tree_digest(destination),
+        })
+
+    rust_snapshot = next(
+        (source_root / entry["archive_path"] for entry in snapshot_entries
+         if entry["repository"] == velopack_repo and entry["revision"] == velopack_revision),
+        None,
+    )
+    if rust_snapshot is None:
+        raise BundleError("Pinned Velopack source snapshot is missing from Windows source archive")
+    rust_sources = vendor_velopack_rust_sources(rust_snapshot, source_root / "windows-sources/velopack-rust")
+    manifest = {
+        "lockfile": metadata["lockfile"],
+        "nuget_source_packages": len(metadata.get("runtime_packages", [])),
+        "repository_snapshots": snapshot_entries,
+        "velopack_rust": rust_sources,
+        "unresolved_platform_components": [],
+    }
+    manifest_path = source_root / "WINDOWS-SOURCES.json"
+    manifest_path.write_text(json.dumps(manifest, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+    return {
+        "nuget_source_packages": manifest["nuget_source_packages"],
+        "repository_snapshots": len(snapshot_entries),
+        "velopack_rust_packages": rust_sources["package_count"],
+        "manifest_sha256": hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
+    }
+
+
+def vendor_velopack_rust_sources(velopack_root: Path, output_root: Path) -> dict[str, object]:
+    """Copy only the locked, non-dev Windows helper dependency closure from Velopack."""
+    manifest = velopack_root / "src/bins/Cargo.toml"
+    if not manifest.is_file():
+        raise BundleError("Velopack source snapshot lacks src/bins/Cargo.toml")
+    lock = velopack_root / "Cargo.lock"
+    if not lock.is_file():
+        raise BundleError("Velopack helper source snapshot lacks its tracked Cargo.lock")
+    tree = run(
+        "cargo", "tree", "--locked", "--manifest-path", str(manifest), "-p", "velopack_bins",
+        "--target", "x86_64-pc-windows-msvc", "--edges", "normal,build", "--prefix", "none",
+        "--format", "{p}", cwd=velopack_root,
+    )
+    names_versions: set[tuple[str, str]] = set()
+    for line in tree.splitlines():
+        match = re.match(r"^([^\s]+) v([^\s]+)", line.strip())
+        if match:
+            names_versions.add((match.group(1), match.group(2)))
+    if not names_versions:
+        raise BundleError("Could not resolve the Velopack Windows helper Cargo dependency closure")
+
+    cargo_lock = lock.read_bytes()
+    lock_data = tomllib.loads(cargo_lock.decode("utf-8"))
+    lock_records = {
+        (package["name"], package["version"]): package
+        for package in lock_data.get("package", [])
+    }
+    copied: list[dict[str, str]] = []
+    output_root.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix=".velopack-cargo-vendor-") as vendor_temp:
+        complete_vendor = Path(vendor_temp) / "vendor"
+        run(
+            "cargo", "vendor", "--locked", "--versioned-dirs", "--manifest-path", str(manifest),
+            str(complete_vendor), cwd=velopack_root,
+        )
+        for name, version in sorted(names_versions):
+            package = lock_records.get((name, version))
+            if package is None:
+                raise BundleError(f"Velopack Cargo.lock lacks resolved helper package {name} {version}")
+            if not package.get("source", ""):
+                continue
+            if not package["source"].startswith("registry+"):
+                raise BundleError(f"Unsupported non-registry Velopack helper dependency: {name} {version}")
+            candidates = sorted(complete_vendor.glob(f"{name}-{version}*"))
+            if len(candidates) != 1 or not candidates[0].is_dir():
+                raise BundleError(f"Expected one vendored Cargo source for Velopack helper dependency {name} {version}")
+            checksum_path = candidates[0] / ".cargo-checksum.json"
+            if not checksum_path.is_file():
+                raise BundleError(f"Vendored Cargo source lacks checksum metadata: {name} {version}")
+            checksum = json.loads(checksum_path.read_text(encoding="utf-8"))
+            expected_checksum = package.get("checksum")
+            if expected_checksum and checksum.get("package") != expected_checksum:
+                raise BundleError(f"Cargo registry checksum mismatch for {name} {version}")
+            target = output_root / f"{name}-{version}"
+            if target.exists():
+                raise BundleError(f"Duplicate Velopack helper source directory: {target}")
+            shutil.copytree(candidates[0], target)
+            copied.append({"name": name, "version": version, "sha256": tree_digest(target)})
+
+    config = velopack_root / ".cargo/config.toml"
+    config_text = config.read_text(encoding="utf-8") if config.is_file() else ""
+    config_text += (
+        "\n[source.crates-io]\nreplace-with = \"velopack-locked-vendor\"\n"
+        "[source.velopack-locked-vendor]\ndirectory = \"../velopack-rust\"\n"
+    )
+    (velopack_root / ".cargo/config.toml").write_text(config_text, encoding="utf-8")
+    (output_root.parent / "VELOPPAK-RUST-SOURCES.json").write_text(
+        json.dumps({"target": "x86_64-pc-windows-msvc", "lockfile": "Cargo.lock", "packages": copied}, sort_keys=True, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    return {
+        "target": "x86_64-pc-windows-msvc",
+        "package_count": len(copied),
+        "source_tree_sha256": tree_digest(output_root),
+        "cargo_lock_sha256": hashlib.sha256(cargo_lock).hexdigest(),
+    }
+
+
 def normalized_tar_info(info: tarfile.TarInfo, epoch: int) -> tarfile.TarInfo:
     info.uid = 0
     info.gid = 0
@@ -641,12 +863,6 @@ def main() -> int:
     args = parser.parse_args()
 
     platforms = sorted(set(args.platforms))
-    if "windows" in platforms:
-        raise BundleError(
-            "Windows source coverage is unresolved: the locked WindowsAppSDK NuGet packages "
-            "do not identify an exact corresponding source commit"
-        )
-
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+-]*", args.tag):
         raise BundleError("Tag must be a single safe ref name")
     if not re.fullmatch(r"[0-9a-fA-F]{40}", args.commit):
@@ -688,6 +904,8 @@ def main() -> int:
         run("git", "archive", "--format=tar", f"--prefix={root_name}/", "--output", str(git_archive), commit)
         source_root = safe_extract_git_archive(git_archive, temporary_root, root_name)
 
+        windows_sources = vendor_windows_sources(source_root) if "windows" in platforms else None
+
         cargo_vendor_sha256 = vendor_cargo_sources(source_root)
         cargo_output = run("cargo", "--version", cwd=source_root)
         android_sources = vendor_android_sources(source_root)
@@ -717,6 +935,7 @@ def main() -> int:
             "npm_sources": npm_sources,
             "mermaid_sources": mermaid_sources,
             "preferred_js_sources": preferred_js_sources,
+            "windows_sources": windows_sources,
             "go_version": go_output,
             "cargo_vendor_sha256": cargo_vendor_sha256,
             "source_tree_sha256": source_tree_digest(source_root),
