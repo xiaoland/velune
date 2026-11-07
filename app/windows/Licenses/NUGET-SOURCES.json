@@ -1,0 +1,339 @@
+{
+  "build_only_tool": {
+    "distribution": "CI-only CLI, not copied into the app installation or Windows release payload; its Setup.exe/Update.exe helpers in the generated release do have source below.",
+    "name": "vpk",
+    "version": "1.2.161"
+  },
+  "build_only_packages": [
+    {
+      "distribution": "Windows SDK compiler and packaging tools; not included in the application runtime payload",
+      "package": "Microsoft.Windows.SDK.BuildTools",
+      "version": "10.0.28000.2705"
+    },
+    {
+      "distribution": "Windows SDK compiler and packaging tools; not included in the application runtime payload",
+      "package": "Microsoft.Windows.SDK.BuildTools.MSIX",
+      "version": "1.7.251221100"
+    }
+  ],
+  "lockfile": "app/windows/packages.lock.json",
+  "purpose": "Pinned source and license locations for Windows NuGet packages used by the runtime/package graph. Windows release coverage remains gated while source/license questions for platform components are unresolved.",
+  "runtime_packages": [
+    {
+      "license": "BSD-2-Clause",
+      "license_file": "app/windows/Licenses/SourceLicenses/xoofx--markdig/license.txt",
+      "license_file_sha256": "a679c01378f71b9c1016d83df6f43b4689364e7fafe1f70e1cf4caf571b4ee5a",
+      "package": "Markdig",
+      "repository": "https://github.com/xoofx/markdig",
+      "repository_license_path": "license.txt",
+      "revision": "6a410393ba74c5da30e21202a3a4ea463216829d",
+      "source_path": "src/Markdig",
+      "source_url": "https://github.com/xoofx/markdig/tree/6a410393ba74c5da30e21202a3a4ea463216829d/src/Markdig",
+      "version": "1.4.2"
+    },
+    {
+      "license": "MIT",
+      "license_file": "app/windows/Licenses/SourceLicenses/dotnet--dotnet/LICENSE.TXT",
+      "license_file_sha256": "ae48df11a335dc1a615f4f938b69cba73bcf4485c4f97af49b38efb0f216353b",
+      "package": "Microsoft.Extensions.Configuration",
+      "repository": "https://github.com/dotnet/dotnet",
+      "repository_license_path": "LICENSE.TXT",
+      "revision": "b0f34d51fccc69fd334253924abd8d6853fad7aa",
+      "source_path": "src/runtime/src/libraries/Microsoft.Extensions.Configuration",
+      "source_url": "https://github.com/dotnet/dotnet/tree/b0f34d51fccc69fd334253924abd8d6853fad7aa/src/runtime/src/libraries/Microsoft.Extensions.Configuration",
+      "version": "10.0.0"
+    },
+    {
+      "license": "MIT",
+      "license_file": "app/windows/Licenses/SourceLicenses/dotnet--dotnet/LICENSE.TXT",
+      "license_file_sha256": "ae48df11a335dc1a615f4f938b69cba73bcf4485c4f97af49b38efb0f216353b",
+      "package": "Microsoft.Extensions.Configuration.Abstractions",
+      "repository": "https://github.com/dotnet/dotnet",
+      "repository_license_path": "LICENSE.TXT",
+      "revision": "b0f34d51fccc69fd334253924abd8d6853fad7aa",
+      "source_path": "src/runtime/src/libraries/Microsoft.Extensions.Configuration.Abstractions",
+      "source_url": "https://github.com/dotnet/dotnet/tree/b0f34d51fccc69fd334253924abd8d6853fad7aa/src/runtime/src/libraries/Microsoft.Extensions.Configuration.Abstractions",
+      "version": "10.0.0"
+    },
+    {
+      "license": "MIT",
+      "license_file": "app/windows/Licenses/SourceLicenses/dotnet--dotnet/LICENSE.TXT",
+      "license_file_sha256": "ae48df11a335dc1a615f4f938b69cba73bcf4485c4f97af49b38efb0f216353b",
+      "package": "Microsoft.Extensions.Configuration.Binder",
+      "repository": "https://github.com/dotnet/dotnet",
+      "repository_license_path": "LICENSE.TXT",
+      "revision": "b0f34d51fccc69fd334253924abd8d6853fad7aa",
+      "source_path": "src/runtime/src/libraries/Microsoft.Extensions.Configuration.Binder",
+      "source_url": "https://github.com/dotnet/dotnet/tree/b0f34d51fccc69fd334253924abd8d6853fad7aa/src/runtime/src/libraries/Microsoft.Extensions.Configuration.Binder",
+      "version": "10.0.0"
+    },
+    {
+      "license": "MIT",
+      "license_file": "app/windows/Licenses/SourceLicenses/dotnet--dotnet/LICENSE.TXT",
+      "license_file_sha256": "ae48df11a335dc1a615f4f938b69cba73bcf4485c4f97af49b38efb0f216353b",
+      "package": "Microsoft.Extensions.Configuration.EnvironmentVariables",
+      "repository": "https://github.com/dotnet/dotnet",
+      "repository_license_path": "LICENSE.TXT",
+      "revision": "b0f34d51fccc69fd334253924abd8d6853fad7aa",
+      "source_path": "src/runtime/src/libraries/Microsoft.Extensions.Configuration.EnvironmentVariables",
+      "source_url": "https://github.com/dotnet/dotnet/tree/b0f34d51fccc69fd334253924abd8d6853fad7aa/src/runtime/src/libraries/Microsoft.Extensions.Configuration.EnvironmentVariables",
+      "version": "10.0.0"
+    },
+    {
+      "license": "MIT",
+      "license_file": "app/windows/Licenses/SourceLicenses/dotnet--dotnet/LICENSE.TXT",
+      "license_file_sha256": "ae48df11a335dc1a615f4f938b69cba73bcf4485c4f97af49b38efb0f216353b",
+      "package": "Microsoft.Extensions.DependencyInjection",
+      "repository": "https://github.com/dotnet/dotnet",
+      "repository_license_path": "LICENSE.TXT",
+      "revision": "b0f34d51fccc69fd334253924abd8d6853fad7aa",
+      "source_path": "src/runtime/src/libraries/Microsoft.Extensions.DependencyInjection",
+      "source_url": "https://github.com/dotnet/dotnet/tree/b0f34d51fccc69fd334253924abd8d6853fad7aa/src/runtime/src/libraries/Microsoft.Extensions.DependencyInjection",
+      "version": "10.0.0"
+    },
+    {
+      "license": "MIT",
+      "license_file": "app/windows/Licenses/SourceLicenses/dotnet--dotnet/LICENSE.TXT",
+      "license_file_sha256": "ae48df11a335dc1a615f4f938b69cba73bcf4485c4f97af49b38efb0f216353b",
+      "package": "Microsoft.Extensions.DependencyInjection.Abstractions",
+      "repository": "https://github.com/dotnet/dotnet",
+      "repository_license_path": "LICENSE.TXT",
+      "revision": "b0f34d51fccc69fd334253924abd8d6853fad7aa",
+      "source_path": "src/runtime/src/libraries/Microsoft.Extensions.DependencyInjection.Abstractions",
+      "source_url": "https://github.com/dotnet/dotnet/tree/b0f34d51fccc69fd334253924abd8d6853fad7aa/src/runtime/src/libraries/Microsoft.Extensions.DependencyInjection.Abstractions",
+      "version": "10.0.0"
+    },
+    {
+      "license": "MIT",
+      "license_file": "app/windows/Licenses/SourceLicenses/dotnet--dotnet/LICENSE.TXT",
+      "license_file_sha256": "ae48df11a335dc1a615f4f938b69cba73bcf4485c4f97af49b38efb0f216353b",
+      "package": "Microsoft.Extensions.Diagnostics.Abstractions",
+      "repository": "https://github.com/dotnet/dotnet",
+      "repository_license_path": "LICENSE.TXT",
+      "revision": "b0f34d51fccc69fd334253924abd8d6853fad7aa",
+      "source_path": "src/runtime/src/libraries/Microsoft.Extensions.Diagnostics.Abstractions",
+      "source_url": "https://github.com/dotnet/dotnet/tree/b0f34d51fccc69fd334253924abd8d6853fad7aa/src/runtime/src/libraries/Microsoft.Extensions.Diagnostics.Abstractions",
+      "version": "10.0.0"
+    },
+    {
+      "license": "MIT",
+      "license_file": "app/windows/Licenses/SourceLicenses/dotnet--dotnet/LICENSE.TXT",
+      "license_file_sha256": "ae48df11a335dc1a615f4f938b69cba73bcf4485c4f97af49b38efb0f216353b",
+      "package": "Microsoft.Extensions.Logging",
+      "repository": "https://github.com/dotnet/dotnet",
+      "repository_license_path": "LICENSE.TXT",
+      "revision": "b0f34d51fccc69fd334253924abd8d6853fad7aa",
+      "source_path": "src/runtime/src/libraries/Microsoft.Extensions.Logging",
+      "source_url": "https://github.com/dotnet/dotnet/tree/b0f34d51fccc69fd334253924abd8d6853fad7aa/src/runtime/src/libraries/Microsoft.Extensions.Logging",
+      "version": "10.0.0"
+    },
+    {
+      "license": "MIT",
+      "license_file": "app/windows/Licenses/SourceLicenses/dotnet--dotnet/LICENSE.TXT",
+      "license_file_sha256": "ae48df11a335dc1a615f4f938b69cba73bcf4485c4f97af49b38efb0f216353b",
+      "package": "Microsoft.Extensions.Logging.Abstractions",
+      "repository": "https://github.com/dotnet/dotnet",
+      "repository_license_path": "LICENSE.TXT",
+      "revision": "b0f34d51fccc69fd334253924abd8d6853fad7aa",
+      "source_path": "src/runtime/src/libraries/Microsoft.Extensions.Logging.Abstractions",
+      "source_url": "https://github.com/dotnet/dotnet/tree/b0f34d51fccc69fd334253924abd8d6853fad7aa/src/runtime/src/libraries/Microsoft.Extensions.Logging.Abstractions",
+      "version": "10.0.0"
+    },
+    {
+      "license": "MIT",
+      "license_file": "app/windows/Licenses/SourceLicenses/dotnet--dotnet/LICENSE.TXT",
+      "license_file_sha256": "ae48df11a335dc1a615f4f938b69cba73bcf4485c4f97af49b38efb0f216353b",
+      "package": "Microsoft.Extensions.Logging.Configuration",
+      "repository": "https://github.com/dotnet/dotnet",
+      "repository_license_path": "LICENSE.TXT",
+      "revision": "b0f34d51fccc69fd334253924abd8d6853fad7aa",
+      "source_path": "src/runtime/src/libraries/Microsoft.Extensions.Logging.Configuration",
+      "source_url": "https://github.com/dotnet/dotnet/tree/b0f34d51fccc69fd334253924abd8d6853fad7aa/src/runtime/src/libraries/Microsoft.Extensions.Logging.Configuration",
+      "version": "10.0.0"
+    },
+    {
+      "license": "MIT",
+      "license_file": "app/windows/Licenses/SourceLicenses/dotnet--dotnet/LICENSE.TXT",
+      "license_file_sha256": "ae48df11a335dc1a615f4f938b69cba73bcf4485c4f97af49b38efb0f216353b",
+      "package": "Microsoft.Extensions.Options",
+      "repository": "https://github.com/dotnet/dotnet",
+      "repository_license_path": "LICENSE.TXT",
+      "revision": "b0f34d51fccc69fd334253924abd8d6853fad7aa",
+      "source_path": "src/runtime/src/libraries/Microsoft.Extensions.Options",
+      "source_url": "https://github.com/dotnet/dotnet/tree/b0f34d51fccc69fd334253924abd8d6853fad7aa/src/runtime/src/libraries/Microsoft.Extensions.Options",
+      "version": "10.0.0"
+    },
+    {
+      "license": "MIT",
+      "license_file": "app/windows/Licenses/SourceLicenses/dotnet--dotnet/LICENSE.TXT",
+      "license_file_sha256": "ae48df11a335dc1a615f4f938b69cba73bcf4485c4f97af49b38efb0f216353b",
+      "package": "Microsoft.Extensions.Options.ConfigurationExtensions",
+      "repository": "https://github.com/dotnet/dotnet",
+      "repository_license_path": "LICENSE.TXT",
+      "revision": "b0f34d51fccc69fd334253924abd8d6853fad7aa",
+      "source_path": "src/runtime/src/libraries/Microsoft.Extensions.Options.ConfigurationExtensions",
+      "source_url": "https://github.com/dotnet/dotnet/tree/b0f34d51fccc69fd334253924abd8d6853fad7aa/src/runtime/src/libraries/Microsoft.Extensions.Options.ConfigurationExtensions",
+      "version": "10.0.0"
+    },
+    {
+      "license": "MIT",
+      "license_file": "app/windows/Licenses/SourceLicenses/dotnet--dotnet/LICENSE.TXT",
+      "license_file_sha256": "ae48df11a335dc1a615f4f938b69cba73bcf4485c4f97af49b38efb0f216353b",
+      "package": "Microsoft.Extensions.Primitives",
+      "repository": "https://github.com/dotnet/dotnet",
+      "repository_license_path": "LICENSE.TXT",
+      "revision": "b0f34d51fccc69fd334253924abd8d6853fad7aa",
+      "source_path": "src/runtime/src/libraries/Microsoft.Extensions.Primitives",
+      "source_url": "https://github.com/dotnet/dotnet/tree/b0f34d51fccc69fd334253924abd8d6853fad7aa/src/runtime/src/libraries/Microsoft.Extensions.Primitives",
+      "version": "10.0.0"
+    },
+    {
+      "license": "MIT",
+      "license_file": "app/windows/Licenses/SourceLicenses/dotnet--runtime/LICENSE.TXT",
+      "license_file_sha256": "cfc21f5e8bd655ae997eec916138b707b1d290b83272c02a95c9f821b8c87310",
+      "package": "Microsoft.Win32.SystemEvents",
+      "repository": "https://github.com/dotnet/runtime",
+      "repository_license_path": "LICENSE.TXT",
+      "revision": "4822e3c3aa77eb82b2fb33c9321f923cf11ddde6",
+      "source_path": "src/libraries/Microsoft.Win32.SystemEvents",
+      "source_url": "https://github.com/dotnet/runtime/tree/4822e3c3aa77eb82b2fb33c9321f923cf11ddde6/src/libraries/Microsoft.Win32.SystemEvents",
+      "version": "6.0.0"
+    },
+    {
+      "license": "MIT",
+      "license_file": "app/windows/Licenses/SourceLicenses/dotnet--runtime/LICENSE.TXT",
+      "license_file_sha256": "cfc21f5e8bd655ae997eec916138b707b1d290b83272c02a95c9f821b8c87310",
+      "package": "System.Drawing.Common",
+      "repository": "https://github.com/dotnet/runtime",
+      "repository_license_path": "LICENSE.TXT",
+      "revision": "4822e3c3aa77eb82b2fb33c9321f923cf11ddde6",
+      "source_path": "src/libraries/System.Drawing.Common",
+      "source_url": "https://github.com/dotnet/runtime/tree/4822e3c3aa77eb82b2fb33c9321f923cf11ddde6/src/libraries/System.Drawing.Common",
+      "version": "6.0.0"
+    },
+    {
+      "license": "Apache-2.0",
+      "license_file": "app/windows/Licenses/SourceLicenses/open-telemetry--opentelemetry-dotnet/LICENSE.TXT",
+      "license_file_sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+      "package": "OpenTelemetry.Api.ProviderBuilderExtensions",
+      "repository": "https://github.com/open-telemetry/opentelemetry-dotnet",
+      "repository_license_path": "LICENSE.TXT",
+      "revision": "0bfd4c350f670dbc819b39bd57fac4c3ad5ba238",
+      "source_path": "src/OpenTelemetry.Api.ProviderBuilderExtensions",
+      "source_url": "https://github.com/open-telemetry/opentelemetry-dotnet/tree/0bfd4c350f670dbc819b39bd57fac4c3ad5ba238/src/OpenTelemetry.Api.ProviderBuilderExtensions",
+      "version": "1.20.1"
+    },
+    {
+      "license": "Apache-2.0",
+      "license_file": "app/windows/Licenses/SourceLicenses/open-telemetry--opentelemetry-dotnet/LICENSE.TXT",
+      "license_file_sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+      "package": "OpenTelemetry.Api",
+      "repository": "https://github.com/open-telemetry/opentelemetry-dotnet",
+      "repository_license_path": "LICENSE.TXT",
+      "revision": "0bfd4c350f670dbc819b39bd57fac4c3ad5ba238",
+      "source_path": "src/OpenTelemetry.Api",
+      "source_url": "https://github.com/open-telemetry/opentelemetry-dotnet/tree/0bfd4c350f670dbc819b39bd57fac4c3ad5ba238/src/OpenTelemetry.Api",
+      "version": "1.20.1"
+    },
+    {
+      "license": "Apache-2.0",
+      "license_file": "app/windows/Licenses/SourceLicenses/open-telemetry--opentelemetry-dotnet/LICENSE.TXT",
+      "license_file_sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+      "package": "OpenTelemetry.Exporter.OpenTelemetryProtocol",
+      "repository": "https://github.com/open-telemetry/opentelemetry-dotnet",
+      "repository_license_path": "LICENSE.TXT",
+      "revision": "0bfd4c350f670dbc819b39bd57fac4c3ad5ba238",
+      "source_path": "src/OpenTelemetry.Exporter.OpenTelemetryProtocol",
+      "source_url": "https://github.com/open-telemetry/opentelemetry-dotnet/tree/0bfd4c350f670dbc819b39bd57fac4c3ad5ba238/src/OpenTelemetry.Exporter.OpenTelemetryProtocol",
+      "version": "1.20.1"
+    },
+    {
+      "license": "Apache-2.0",
+      "license_file": "app/windows/Licenses/SourceLicenses/open-telemetry--opentelemetry-dotnet/LICENSE.TXT",
+      "license_file_sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+      "package": "OpenTelemetry",
+      "repository": "https://github.com/open-telemetry/opentelemetry-dotnet",
+      "repository_license_path": "LICENSE.TXT",
+      "revision": "0bfd4c350f670dbc819b39bd57fac4c3ad5ba238",
+      "source_path": "src/OpenTelemetry",
+      "source_url": "https://github.com/open-telemetry/opentelemetry-dotnet/tree/0bfd4c350f670dbc819b39bd57fac4c3ad5ba238/src/OpenTelemetry",
+      "version": "1.20.1"
+    },
+    {
+      "license": "MIT",
+      "license_file": "app/windows/Licenses/SourceLicenses/Shane32--QRCoder/LICENSE.txt",
+      "license_file_sha256": "22e4c25e35c416b15f655a62378d964597c15c6c27fe2ff123444491eec0649b",
+      "package": "QRCoder",
+      "repository": "https://github.com/Shane32/QRCoder",
+      "repository_license_path": "LICENSE.txt",
+      "revision": "d050cc7c0bc986f14cfedf24b947e0ec5c1a7736",
+      "source_path": "QRCoder",
+      "source_url": "https://github.com/Shane32/QRCoder/tree/d050cc7c0bc986f14cfedf24b947e0ec5c1a7736/QRCoder",
+      "version": "1.8.1"
+    },
+    {
+      "bundled_helper_archive_path": "windows-nuget-sources/velopack",
+      "bundled_helper_source_roots": [
+        "Cargo.toml",
+        "Cargo.lock",
+        ".cargo/config.toml",
+        "LICENSE",
+        "src/"
+      ],
+      "license": "MIT",
+      "package": "Velopack",
+      "repository": "https://github.com/velopack/velopack",
+      "revision": "92d6a1c91716729d449034df5c50307dcce39493",
+      "source_path": "src/lib-csharp",
+      "source_url": "https://github.com/velopack/velopack/tree/92d6a1c91716729d449034df5c50307dcce39493/src/lib-csharp",
+      "version": "1.2.161"
+    }
+  ],
+  "schema": 1,
+  "unresolved_platform_components": [
+    {
+      "asset": "runtimes/win-x64/native/WebView2Loader.dll",
+      "license_text": "app/windows/obj/project.assets.json package cache license.txt and NOTICE.txt are collected by scripts/dotnet-licenses.py",
+      "package": "Microsoft.Web.WebView2",
+      "reason": "The NuGet package contains no repository commit. Microsoft deployment documentation confirms that WebView2Loader code must ship with the app; exact corresponding source location is not yet pinned.",
+      "version": "1.0.3719.77"
+    },
+    {
+      "package": "Microsoft.WindowsAppSDK.Base",
+      "reason": "The lock entry has no NuGet repository commit; the source/location and AGPL system-library treatment remain under review.",
+      "version": "2.0.4"
+    },
+    {
+      "package": "Microsoft.WindowsAppSDK.Foundation",
+      "reason": "The lock entry has no NuGet repository commit; the source/location and AGPL system-library treatment remain under review.",
+      "version": "2.3.12"
+    },
+    {
+      "package": "Microsoft.WindowsAppSDK.InteractiveExperiences",
+      "reason": "The lock entry has no NuGet repository commit; the source/location and AGPL system-library treatment remain under review.",
+      "version": "2.1.9"
+    },
+    {
+      "package": "Microsoft.WindowsAppSDK.WinUI",
+      "reason": "The lock entry has no NuGet repository commit; the source/location and AGPL system-library treatment remain under review.",
+      "version": "2.3.9"
+    }
+  ],
+  "velopack_source": {
+    "license_file": "app/windows/Licenses/Velopack/LICENSE",
+    "license_file_sha256": "91845db83551c877ebbb1118e0fb92e4e527290d23b995c55dcd438b3293943f",
+    "notes": "The app uses the net10.0 Velopack managed library; the generated Velopack release package also contains Update.exe and Setup.exe helpers built from this repository Rust workspace. The exact tracked Cargo.lock is included. The helper snapshot uses the source commit and locked Rust dependency graph.",
+    "package": "Velopack",
+    "release_nuspec_repository_binding": "app/windows/obj/project.assets.json Velopack.nuspec repository.commit",
+    "repository": "https://github.com/velopack/velopack",
+    "revision": "92d6a1c91716729d449034df5c50307dcce39493",
+    "source_content_roots": [
+      "LICENSE",
+      "Cargo.toml",
+      "Cargo.lock",
+      ".cargo/config.toml",
+      "src/"
+    ],
+    "version": "1.2.161"
+  }
+}

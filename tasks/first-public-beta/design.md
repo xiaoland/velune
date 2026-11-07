@@ -1,6 +1,6 @@
 # 首个公开 Beta：发布方案
 
-用户已确认自动备份迁移、AGPL-3.0和英文主页配完整中文，现进入实现。用户没有发布材料，首beta准备固定密钥签名的Android APK、ad-hoc签名且未公证的macOS包和未做发布者签名的Windows包，发布说明列明安装步骤。本文件不代表已成功发布。
+用户已确认自动备份迁移、AGPL-3.0和英文主页配完整中文。首 beta 分发固定密钥签名的 Android APK、ad-hoc 签名且未公证的 macOS 包。用户最终选择保留现有依赖和许可，Windows 发行暂缓，保留已完成的安装更新代码。发布说明列明安装步骤，实际发布状态归 packet。
 
 ## 首次发布的边界
 
@@ -11,7 +11,7 @@
 | 产物 | 首批目标 | 公开前的必要条件 |
 | --- | --- | --- |
 | macOS App | macOS 15+，arm64 / x64 两份 | 首beta为嵌套代码ad-hoc签名，未公证；发布页说明系统信任限制与手动打开步骤 |
-| Windows App | x64，自包含完整目录 zip | 包含全部 DLL／resources，解压可运行；如未做 Authenticode，须在下载页明确说明 |
+| Windows App | 首版暂缓，保留 x64 安装器准备 | 继续保留跨协议功能和现有依赖／许可，后续先闭合对应源码与分发义务 |
 | Android APK | Android 9+，arm64 | 正式、持续保管的签名密钥，apksigner 验证，可覆盖升级同签名版本 |
 | 源码与声明 | 对应同一 tag | 项目许可、对应源码及上游声明可获取，不遗漏桌面 RelayKit 义务 |
 | 发布元数据 | 与全部资产一起 | SHA-256、源码 SHA、产品版本、平台构建号、架构、工具链及数据格式基线 |
@@ -22,7 +22,7 @@ GitHub 当前公开 runner 明确提供 `macos-15` arm64、`macos-15-intel` x64�
 
 Windows 的固定 WinAppSDK 预编译包适用 Microsoft 分发条款。独立复核认为，self-contained 部署本身不能决定 AGPL 的 System Libraries 资格，Microsoft 条款也不能被概括成禁止一切 AGPL 应用。当前尚未确定该固定组合满足系统库例外的依据，NuGet 包也没有精确对应源码的 commit 映射。公开 Windows 资产的许可准备仍未验收，构建源码继续保留。[AGPL 本文](../../LICENSE) · [Windows App SDK 部署说明](https://learn.microsoft.com/en-us/windows/apps/package-and-deploy/deploy-overview)
 
-已请用户选择先发布 Mac／Android、Windows 待路径明确后补发，或保持三平台同时首发并整体等待。实现保留当前三平台要求，source helper 在 Windows 覆盖未闭合时失败，平台构建依赖此 gate，发布器再次核对源码覆盖与二进制平台集合。发布范围变更由用户决定。
+用户已最终选择保留现有依赖和许可、Windows 发行暂缓。正式 workflow 仅调度 Mac 两个架构和 Android，source helper 覆盖 macos／android，发布器核对四组资产和 metadata。Windows 手动源码请求保持失败关闭，安装与更新代码保留供后续发行。
 
 Android 的固定发行密钥与旧 debug 包签名不同。旧包的设备身份、配对及未发送内容位于禁用系统备份的私有目录，现无跨签名恢复入口。用户已确认首版面向新安装，旧调试版保留原安装等待数据转移入口。后续发行 APK 保持同一发行密钥和应用身份，以支持覆盖升级。
 
@@ -40,7 +40,7 @@ Android 的固定发行密钥与旧 debug 包签名不同。旧包的设备身�
 
 当前包的微软条款确实允许 NuGet 随应用部署的文件再分发。剩余问题是这一具体依赖组合在 AGPL 下的义务，安装器和付费签名分别处理。继续调查应针对这几个实际组件或可接受的功能／许可取舍，停止泛查“Windows 能否分发”和无限追逐 WinUI SourceLink。[当前包许可](https://www.nuget.org/packages/Microsoft.WindowsAppSDK.WinUI/2.3.9/License)
 
-用户明确拒绝 Windows 仅同协议调用的首版范围，要求保留跨协议并继续寻找兼容实现。Bifrost Apache-2.0 公开转换 API 已成为隔离验证候选，可在进程内替换转换引擎，Rust 继续拥有 HTTP、认证和取消。候选须先实际通过现有三协议六向请求、JSON 和 SSE，以及 custom 工具、usage 存在性与终态规则的验证，才能采纳。当前尚未修改 RelayKit 产品实现或自有代码许可。
+用户明确拒绝 Windows 仅同协议调用的首版范围。Bifrost Apache-2.0 公开 API 隔离验证通过后，用户仍选择保持现有依赖和许可并暂缓 Windows 发行。该候选保留为任务证据，本轮不进入产品，不修改 RelayKit 或自有代码许可。
 
 ## 版本与分支的权威
 

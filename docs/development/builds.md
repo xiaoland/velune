@@ -30,21 +30,23 @@ svc run build-windows
 
 仓库已启用 GitHub release immutability。草稿阶段补齐全部资产，公开后由 GitHub 锁定资产及关联 tag。[不可变发布](https://docs.github.com/en/code-security/concepts/supply-chain-security/immutable-releases)
 
-发行权威是 `main`。日常集成继续在默认分支 `develop`。发行顺序为 develop → main 提升 PR → release-please 版本 PR → main 合并产生的草稿 tag/Release → 固定 tag SHA 的三端四构建 → 所有资产、对应源码和校验清单齐备后公开 prerelease → main → develop 回流 PR。热修复也从 main 开 PR，按相同流程形成新 beta。Release Please 的 manifest 记录工具上一次发布版本，产品版本仍只由根 `version.txt` 提供。
+发行权威是 `main`。日常集成继续在默认分支 `develop`。发行顺序为 develop → main 提升 PR → release-please 版本 PR → main 合并产生的草稿 tag/Release → 固定 tag SHA 的目标平台构建 → 所有资产、对应源码和校验清单齐备后公开 prerelease → main → develop 回流 PR。热修复也从 main 开 PR，按相同流程形成新 beta。Release Please 的 manifest 记录工具上一次发布版本，产品版本仍只由根 `version.txt` 提供。
 
 release-please PR 和回流 PR 由 `GITHUB_TOKEN` 创建。GitHub 会将 bot 创建 PR 的 `pull_request` 检查置于待维护者批准状态。维护者须在 Actions 中选择 **Approve workflows to run**，让 `PR checks / validate` 对该 PR head SHA 运行并通过后再合并。检查由真实 `pull_request` 事件触发，因此也满足 main 规则集的必需检查。工作流不另行派发诊断检查。Release workflow 用第一个 tag 构建 run 的 `run_number` 作为 `VELUNE_BUILD_NUMBER`，并先写入草稿 Release 的 `release-build.json`。同 tag 的 `workflow_dispatch` 补跑从该文件恢复同一序号和 SHA。补跑只接受仍为草稿的 tag。不能为补跑另起序号、移动 tag 或替换已公开资产。
 
 PR 检查先验证版本、Release Please manifest、脚本语法和差异空白。包含 Rust 源码或 Cargo 输入的 PR 才在 Linux 安装固定 Go 工具链并构建 `velune-bindings`，以检查共享 core／bindings 与 Linux RelayKit 链接边界。持久化文件变化再运行对应 repository、analytics、迁移或 remote 存储窄测。网关执行或配置文件变化运行其回环配置快照检查。纯文档改动不触发 Rust 构建，也不因本地未关联的全仓格式问题阻塞。
 
-Release workflow 使用 GitHub-hosted `macos-15` arm64、`macos-15-intel` x86_64、`windows-2025` x64 和 `ubuntu-24.04` Android arm64 runner。macOS runner 默认 Xcode 16.4，因此工作流显式选择镜像内的 Xcode 26.3（Swift 6.2），满足项目 SwiftPM 依赖。runner image 更新时需确认该选择仍存在。缓存只复用 Rust／Swift／Gradle 的构建输入产物。最终资产从固定 tag 的干净 checkout 生产。历史读取 runtime-support 的 `package.json` 要求 Node.js 22.18+，工作流固定 Node 22.18.0。
+首 beta 的 Release workflow 使用 GitHub-hosted `macos-15` arm64、`macos-15-intel` x86_64 和 `ubuntu-24.04` Android arm64 runner，Windows 发行暂缓。macOS 工作流显式选择镜像内的 Xcode 26.3（Swift 6.2），满足项目 SwiftPM 依赖。runner image 更新时需确认该选择仍存在。缓存只复用 Rust／Swift／Gradle 的构建输入产物。最终资产从固定 tag 的干净 checkout 生产。历史读取 runtime-support 的 `package.json` 要求 Node.js 22.18+，工作流固定 Node 22.18.0。
 
 Android 发行采用固定 keystore，由以下 GitHub repository secrets 提供材料。 `ANDROID_RELEASE_KEYSTORE_BASE64`、`ANDROID_RELEASE_STORE_PASSWORD`、`ANDROID_RELEASE_KEY_ALIAS`、`ANDROID_RELEASE_KEY_PASSWORD`。CI 要求四项齐全、APK 签名验证通过，且证书 SHA-256 与已保管发行公钥相符。不提供无签名发布回退。不要打印或提交密钥材料。
 
-Mac 包分别为 arm64、x86_64 zip，使用 ad-hoc 签名且未公证。macOS 首次拦截时可在“系统设置 → 隐私与安全性 → 仍要打开”针对 Velune 放行，应保持 Gatekeeper 开启。Windows 是自包含 x64 zip，没有 Authenticode 签名，SmartScreen 可能显示未知发布者。Android beta 使用固定发行签名。现有 pre-beta/debug APK 密钥不同，Android 不会允许原地覆盖安装。卸载会删除该应用私有数据，当前没有跨签名导出／导入通道。有重要旧数据的设备须保留原安装，在数据转移方案确定前不要切换到发行 APK。
+Mac 包分别为 arm64、x86_64 zip，使用 ad-hoc 签名且未公证。macOS 首次拦截时可在“系统设置 → 隐私与安全性 → 仍要打开”针对 Velune 放行，应保持 Gatekeeper 开启。Android beta 使用固定发行签名，首版面向新安装。现有 pre-beta/debug APK 密钥不同，无法原地覆盖，旧安装继续保留等待数据转移入口；卸载会删除私有数据。
+
+Windows 已准备每用户 Velopack 安装器、GitHub 更新源和原生 feed，固定 CLI／SDK 为 1.2.161，应用身份为 Velune，渠道为 win-x64-beta。实际产物名称包含渠道，安装器为 `Velune-win-x64-beta-Setup.exe`，完整包为 `Velune-<version>-win-x64-beta-full.nupkg`，feed 为 `releases.win-x64-beta.json`。`scripts/package-windows-velopack.ps1` 对已构建目录打包，`scripts/package-release.py windows` 核验实际包内容和三个资产的摘要。当前正式 workflow 不调度 Windows 构建或公开这些资产，依赖与 AGPL 许可保持，跨协议能力保留。后续重新启用需先闭合 Windows 对应源码／许可门禁。应用更新入口及持久数据目录见 [Windows 说明](../../app/windows/README.md#安装与更新)。
 
 正式包封装会读取实际二进制版本：macOS 核对 Info.plist 的 SemVer／数字核心／构建号及 daily manifest，并用 `lipo` 核对架构；Android 用 SDK `aapt` 核对 APK 的 applicationId、versionName、versionCode 与 arm64 ABI；Windows 从 `Velune.dll` 读取 ProductVersion。任一值和根 `version.txt` 或发布身份不符，封装失败。Android 构建回执根据 Gradle `output-metadata.json` 选择当前签名模式的 APK，不依赖旧文件路径猜测。
 
-GitHub Release 中每个平台包都有 build metadata（源码 SHA、完整 SemVer、构建号、架构、签名状态及包摘要），发布前会将五个 metadata 与各自实际包逐一比对并核验摘要。另附全资产 `SHA256SUMS.txt` 和精确 tag 的 `velune-<tag>-source.tar.gz`（含 vendored RelayKit 源码）。构建失败时修复后对原来的 workflow run 重跑失败 job。需要新 run 时使用仍为草稿的 tag dispatch 重试，保持原 `release-build.json` 的构建号。全部资产成功后才解除草稿状态并建立回流 PR。首轮 promotion merge commit 的 body 须保留一次性 `Release-As: 0.1.0-beta.1` trailer（建议 subject 为 `chore(release): 提升首个公开 beta 源码至 main`，trailer 单独成行），以固定目标首版号。仅写在 PR 描述里不一定进入提交。此覆盖只用于首个候选。后续 beta 由 prerelease 策略按已合并的 Conventional Commits 递增，0.x breaking 变更按 release-please pre-major 策略递增 minor。
+GitHub Release 中每个平台包都有 build metadata（源码 SHA、完整 SemVer、构建号、架构、签名状态及包摘要），发布前逐一比对预定清单中的实际包并核验摘要。另附全资产 `SHA256SUMS.txt` 和精确 tag 的 `velune-<tag>-source.tar.gz`（含 vendored RelayKit 源码）。首 beta 要求 Mac 两个架构、Android 和源码的四份 metadata，源码平台集合恰为 macos／android。构建失败时修复后对原来的 workflow run 重跑失败 job。需要新 run 时使用仍为草稿的 tag dispatch 重试，保持原 `release-build.json` 的构建号。全部资产成功后才解除草稿状态并建立回流 PR。首轮 promotion merge commit 的 body 须保留一次性 `Release-As: 0.1.0-beta.1` trailer（建议 subject 为 `chore(release): 提升首个公开 beta 源码至 main`，trailer 单独成行），以固定目标首版号。仅写在 PR 描述里不一定进入提交。此覆盖只用于首个候选。后续 beta 由 prerelease 策略按已合并的 Conventional Commits 递增，0.x breaking 变更按 release-please pre-major 策略递增 minor。
 
 ## 多 Agent 复用与结果来源
 

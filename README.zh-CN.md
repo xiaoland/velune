@@ -49,12 +49,12 @@ Harness 执行代码、调用工具并保存原生历史。Velune 提供围绕�
 | 平台 | 角色 | 获取方式 |
 | --- | --- | --- |
 | macOS | 桌面完整端，本机执行与远程控制 | [发布资产](https://github.com/xiaoland/velune/releases)／源码构建 |
-| Windows | 桌面完整端，本机执行与远程控制 | [安装器与应用内更新](https://github.com/xiaoland/velune/releases)／源码构建 |
+| Windows | 桌面完整端，本机执行与远程控制 | 源码构建 |
 | Android | 远程控制端 | [发布的签名 APK](https://github.com/xiaoland/velune/releases)／源码构建 |
 | iPad | 远程控制端 | 从 Mac 应用使用自己的签名安装 |
 | iPhone | 远程控制端 | 源码构建 |
 
-首个公开 beta 正在准备。首批目标为 macOS 15+（Apple Silicon / Intel）、Windows x64 和 Android 9+ arm64。macOS 包采用 ad-hoc 签名且尚未公证，Windows 包尚无发布者签名，安装步骤见发布说明。可下载资产以发布页实际列出的内容为准。各端能力有差异，可先查看 [Windows 覆盖情况](app/windows/PARITY.md)和 [Android 范围](app/android/README.md)。
+首个公开 beta 面向 macOS 15+（Apple Silicon / Intel）和 Android 9+ arm64。macOS 包采用 ad-hoc 签名且尚未公证。Windows 安装器待依赖许可问题解决后发布。安装步骤与可下载资产见[发布页](https://github.com/xiaoland/velune/releases)。各端能力有差异，可先查看 [Windows 覆盖情况](app/windows/PARITY.md)和 [Android 范围](app/android/README.md)。
 
 ## 开始使用
 

@@ -33,7 +33,7 @@ New-Item -ItemType Directory -Path $OutputDirectory -Force | Out-Null
     --runtime win-x64 `
     --channel win-x64-beta `
     --outputDir $OutputDirectory `
-    --delta Disable `
+    --delta None `
     --noPortable
 if ($LASTEXITCODE -ne 0) {
     throw "Velopack packaging failed with exit code $LASTEXITCODE."

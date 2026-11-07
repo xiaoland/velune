@@ -49,12 +49,12 @@ The product documentation covers supported behavior and current boundaries. Most
 | Platform | Role | First beta target |
 | --- | --- | --- |
 | macOS | Desktop host and remote client | macOS 15+, Apple Silicon / Intel |
-| Windows | Desktop host and remote client | x64 installer with in-app updates |
+| Windows | Desktop host and remote client | Source builds |
 | Android | Remote client | Android 9+, arm64 signed APK |
 | iPad | Remote client | Sign and install from the Mac app |
 | iPhone | Remote client | Build from source |
 
-The first public beta is being prepared. Available downloads follow the assets listed on each release. The initial macOS builds use ad-hoc signing and have no Apple notarization, and Windows builds have no publisher signature. Follow the installation steps and known limitations on the release page. [Releases](https://github.com/xiaoland/velune/releases)
+The first public beta targets macOS and Android. macOS builds use ad-hoc signing and have no Apple notarization. Windows installer publication is deferred while dependency licensing is resolved. Follow the installation steps and available assets on the release page. [Releases](https://github.com/xiaoland/velune/releases)
 
 Feature coverage differs by platform. [Windows coverage](app/windows/PARITY.md) · [Android scope](app/android/README.md)
 

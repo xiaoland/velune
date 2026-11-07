@@ -17,17 +17,21 @@
 - 机器人 PR 的原生 pull_request workflow 起初为 action_required。核对仓库、PR、head 和 workflow 后，使用登录维护者的 workflow approval API 成功批准。[实际 validate](https://github.com/xiaoland/velune/actions/runs/42383076285) 已通过，PR mergeStateStatus 为 CLEAN。
 - 版本 PR 保持待合并。当前没有公开 tag／Release，最终发行包仍待正式 tag 构建及验证。
 
-## 当前发布范围与待收敛方案
+## 已确认的首发范围
 
 用户已确认 Android 首版仅面向新安装，旧调试版保留，跨签名数据转移不阻塞首版。发行说明已据此更新，后续发行 APK 沿用固定密钥覆盖升级。
 
 用户希望保留 Windows 预构建安装器，长期不以购买商业许可或签名材料为前提，目标是快速安装与低负担升级。已确认采用 Velopack，另要求 README 说明 Mac 应用使用自己的签名一键安装 iPad。
 
-Windows 应用和发布侧已接入 Velopack 1.2.161，packId 为 Velune，渠道为 win-x64-beta。应用提供检查、下载和用户选择正常退出后安装，禁用启动自动应用。发布包含 Setup.exe、完整 nupkg 和原生 feed，并核对包内程序集／Rust DLL／转换 DLL 与已验收 publish 内容一致。真实 SDK 的 21 项隔离逻辑检查、locked restore 和发布层合成检查已通过。Root 审阅发现持久化失败被原 owner 吞掉时更新仍会继续，app owner 正补保存结果传播；随后统一隔离 Windows 构建和实际 VPK 打包。
+Windows 应用和发布侧已接入 Velopack 1.2.161，packId 为 Velune，渠道为 win-x64-beta。应用提供检查、下载和用户选择正常退出后安装，禁用启动自动应用。安装器、完整 nupkg 和原生 feed 会核对包内程序集／Rust DLL／转换 DLL 与 publish 内容一致。真实 SDK 的 21 项逻辑检查、18 项持久化检查和 Windows 完整 dev 构建已通过。实际 VPK 打包通过，Setup 为 115175053 字节、full 包为 107660941 字节，feed 与 payload 摘要核验通过，未安装或运行 GUI。依工具实际行为修正了渠道后缀与 delta 参数。相关提交 21e34db、c9df212 已推送至 [PR #4](https://github.com/xiaoland/velune/pull/4)，当前 CI 通过。
 
-Windows 固定 WinAppSDK NuGet 的 System Libraries 资格及对应源码范围仍未验收。补查定位到 WinUI 真实必需的 FrameworkUdk／Windowing 运行库，官方自建 WinUI 也消费预编译组件，仅找 WinUI commit 不能闭合。用户已明确拒绝 Windows 同协议降级，要求保留六向转换，继续找兼容实现。Bifrost Apache-2.0 公共转换 API 是当前首选候选，CLIProxyAPI MIT 为备选；前者需 Go 1.27.3，并有 custom 工具、max_tokens 权威和 usage／终态适配差额。当前隔离 probe 验证六向请求、JSON／SSE，未改产品转换实现或自有代码许可。Velopack／常规 NuGet 源码 owner 并行闭合依赖材料。iPad 入口已按源码核对并补入双语 README、发行说明及 iOS 安装步骤，文档路径和差异检查通过。
+Windows 固定 WinAppSDK NuGet 的 System Libraries 资格及对应源码范围仍未验收。补查定位到 WinUI 真实必需的 FrameworkUdk／Windowing 运行库，官方自建 WinUI 也消费预编译组件，仅找 WinUI commit 不能闭合。用户已明确拒绝 Windows 同协议降级，要求保留六向转换，继续找兼容实现。
 
-现有 source helper 在要求 windows 覆盖时失败，平台构建依赖 source gate，发布器核对对应源码的平台集合与二进制集合。这一门禁在范围确定后调整。
+Bifrost Apache-2.0 固定提交 `6e640279b36337820f2088fb85f6e78f339063c3` 的隔离原型已实际通过 16 组／69 个语义条件及 12 条 C ABI 往返，包含六向请求、JSON／SSE、工具／图片／思考、数字保真、usage 存在性和终态。需 Go 1.27.3，原型由自有兼容层修复上游 usage／custom／schema 差额，共约 844 行。证据位于 `bifrost-probe/README.md`。尚未改产品转换实现或自有代码许可。
+
+用户最终明确选择“保持现有依赖和许可，Windows 发行暂缓”。本轮不采纳 Bifrost，不改变 RelayKit／AGPL，保留 Windows 跨协议能力和安装更新准备代码。首 beta 发布 Mac arm64／x86_64、Android arm64 及对应源码。当前无需额外用户决定。
+
+正式 workflow 已移除 Windows runner 与相关发行步骤，要求四组资产／metadata，源码覆盖恰为 macos／android。源码 helper 请求 Windows 时仍失败关闭，已收集的 22 组 NuGet／Velo 固定源码与 227 个 Windows helper Rust crate 保留供未来发行。来源 collector 已实际生成 27 个包条目和 38 份许可／notice。
 
 ## 已实现与验收
 
@@ -40,7 +44,7 @@ Windows 固定 WinAppSDK NuGet 的 System Libraries 资格及对应源码范围�
 - 候选修复包含 Pi 后台任务进程寿命、Mac 日常／开发用途隔离、午夜通知主线程调度及网关执行配置快照。复用所属任务的实际关键路径证据。网关移除捕获首个调用者身份的全局 Runner 缓存，执行使用独占 Runner 与快照、延期凭据失效和串行额度写入。
 - [PR #1 CI](https://github.com/xiaoland/velune/actions/runs/42381265545) 从干净提交完成 Linux 共享 core／bindings 链接、迁移与网关窄检查。[PR #2 CI](https://github.com/xiaoland/velune/actions/runs/42382182992) 通过并实际满足 main 门禁。版本 PR 的原生审批及检查链路也已走通。
 - AGPL 文本、署名、社区模板、双语 README 与真实原生合成截图已整合。两张截图经实际目视检查，使用私有内容，无前台激活。
-- Mac／Android／iOS 对应源码实际合成 tag 归档为 225.3 MB，包含 Cargo 524 crates、Go vendor、Swift 30 revisions、Android 134 sources JAR、npm 5 个固定包及 28 组 preferred-source 补充。归档摘要为 `50227d8a956cc75fc4bd0fe25b138756f15720a8649278de760c137572d85bbe`。Windows 范围仍待前述选择。
+- Mac／Android／iOS 对应源码实际合成 tag 归档为 225.3 MB，包含 Cargo 524 crates、Go vendor、Swift 30 revisions、Android 134 sources JAR、npm 5 个固定包及 28 组 preferred-source 补充。归档摘要为 `50227d8a956cc75fc4bd0fe25b138756f15720a8649278de760c137572d85bbe`。Windows 二进制范围按用户决定暂缓。
 - 文档 150 份、1035 个本地路径与锚点检查通过。候选 staged whitespace 检查通过。
 
 ## GitHub 与发布材料
@@ -53,4 +57,6 @@ Windows 固定 WinAppSDK NuGet 的 System Libraries 资格及对应源码范围�
 
 当前分支 feat/windows-beta-delivery，从 develop 创建。保留另一条调试会话的 8 个未提交路径，未纳入候选。路径清单见证据 `candidate-paths.json`。包含 Cargo.lock、Android AddDeviceScreen、bindings remote 和 remote crate 的 URL／subscriber 调试改动。不得恢复或混入发布资产。
 
-下一步收敛 Windows 安装／更新方案和依赖分发依据，通过 develop PR 提升 main，更新版本 PR。随后合并版本 PR，跟随固定 tag 的发行构建，验证最终包和安装入口，公开 prerelease 并回流 develop。当前工作包的状态与 Android 发行说明更新保留于工作树，待下一次任务提交一并纳入。
+Windows 构建从干净提交 21e34db 建立私有 worktree `F:\CODING\.worktrees\windows-beta-delivery-20261108\velune`，仅 target/host-rust、tools、runtime-support junction 复用已有缓存。前两次尝试停在工具准备，未进入编译，旧 SVC 16 不支持 schema 5，PyPI 没有 18.3；已把 Mac 当前使用的确切 18.3 wheel 安装至本任务私有 venv，未改 Windows 全局工具。实际 execution 53f67574-e40c-4e8e-8098-ac12d980d416 用时 275 秒，`windows-build-3.log` 记录成功。打包验证复用相同编译输入，未重编 App。远端临时 bundle、ps1、wheel 位于 `F:\CODING` 对应命名，结束后先用 cmd rmdir（不加 /S）解除三个 junction，再移除本任务 worktree 和 parent；保留其它既有 worktree。
+
+下一步将最终 Mac／Android 范围及源材料收尾提交至 PR #4，集成 develop 并提升 main，更新现有版本 PR #3。随后合并版本 PR，跟随固定 tag 的发行构建，验证最终包和安装入口，公开 prerelease 并回流 develop。
