@@ -655,6 +655,16 @@ sealed class Editor
         }
     }
 
+    public bool FlushDrafts()
+    {
+        var saved = true;
+        foreach (var tab in Tabs())
+        {
+            if (tab.View is { } view && !view.FlushDraft()) saved = false;
+        }
+        return saved;
+    }
+
     public void CloseAll()
     {
         foreach (var tab in Tabs().ToList())

@@ -24,7 +24,23 @@ Windows 的固定 WinAppSDK 预编译包适用 Microsoft 分发条款。独立�
 
 已请用户选择先发布 Mac／Android、Windows 待路径明确后补发，或保持三平台同时首发并整体等待。实现保留当前三平台要求，source helper 在 Windows 覆盖未闭合时失败，平台构建依赖此 gate，发布器再次核对源码覆盖与二进制平台集合。发布范围变更由用户决定。
 
-Android 的固定发行密钥与旧 debug 包签名不同。旧包的设备身份、配对及未发送内容位于禁用系统备份的私有目录，现无跨签名恢复入口。已请用户选择补齐加密导出／导入后发布，或新安装先行、旧调试版保留原安装等待转移。此决定也待答。
+Android 的固定发行密钥与旧 debug 包签名不同。旧包的设备身份、配对及未发送内容位于禁用系统备份的私有目录，现无跨签名恢复入口。用户已确认首版面向新安装，旧调试版保留原安装等待数据转移入口。后续发行 APK 保持同一发行密钥和应用身份，以支持覆盖升级。
+
+用户进一步要求 Windows 通过 GitHub Releases 提供预构建安装器，长期不以购买商业许可或签名材料为前提。随后明确同意以下安装／更新方案，并要求补充 Mac 应用使用自己签名一键安装 iPad 的说明。评判依据为首次安装步骤少、后续保留数据及配置、运行中更新能正常协调退出，采用可持续维护的免费工具。具体 WinAppSDK 依赖义务与安装器签名分别核定。
+
+### Windows 安装与升级
+
+建议采用 Velopack 的每用户 Setup.exe 和 GitHub Releases 更新源。工具使用 MIT 许可，支持未签名 Windows 包和 prerelease 更新。固定 packId、快捷方式入口和 beta 渠道，从首版保持安装身份。现有数据默认位于用户目录 `.velune`，继续与应用二进制分开。新版安装器可以承担手动覆盖升级，应用内提供检查、下载和明确的更新时机。[工具许可](https://github.com/velopack/velopack/blob/1.2.110-ge826545/LICENSE) · [Windows 安装行为](https://docs.velopack.io/packaging/operating-systems/windows) · [GitHub 更新源](https://docs.velopack.io/integrating/update-sources)
+
+更新前由 Velune 完成保存和正常退出，有在途工作时等待用户安排。接入需关闭 SDK 在实例判断前自动应用下载包的默认行为，并协调现有单实例及 Shutdown 路径。发布流水线同时校验 Setup.exe、完整更新包和渠道 feed，保留固定 tag、草稿齐备后公开的既有流程。需实际验证合成旧版到新版的数据保持、工作期间延后和失败后旧版可启动。实现与实际验收状态归 packet。
+
+### 许可补查的具体缺口
+
+固定 WinUI 2.3.9 的 PE 导入必需 InteractiveExperiences 2.1.9 中的 FrameworkUdk／Windowing 组件。WinUI 官方外部源码构建也消费预编译 Foundation／InteractiveExperiences；公开 WinAppSDK 产品清单将相关源定位至 Microsoft 的 DCPP 仓库。因此只补 WinUI commit 或自建 WinUI，仍不能闭合当前所需运行库的公开源码。此事实没有决定这些库的 System Libraries 资格，也没有证明存在可购买的商业授权路线。[WinUI 构建依赖](https://raw.githubusercontent.com/microsoft/microsoft-ui-xaml/main/eng/Versions.props) · [产品依赖清单](https://raw.githubusercontent.com/microsoft/WindowsAppSDK/v2.5.1/eng/Version.Details.xml)
+
+当前包的微软条款确实允许 NuGet 随应用部署的文件再分发。剩余问题是这一具体依赖组合在 AGPL 下的义务，安装器和付费签名分别处理。继续调查应针对这几个实际组件或可接受的功能／许可取舍，停止泛查“Windows 能否分发”和无限追逐 WinUI SourceLink。[当前包许可](https://www.nuget.org/packages/Microsoft.WindowsAppSDK.WinUI/2.3.9/License)
+
+用户明确拒绝 Windows 仅同协议调用的首版范围，要求保留跨协议并继续寻找兼容实现。Bifrost Apache-2.0 公开转换 API 已成为隔离验证候选，可在进程内替换转换引擎，Rust 继续拥有 HTTP、认证和取消。候选须先实际通过现有三协议六向请求、JSON 和 SSE，以及 custom 工具、usage 存在性与终态规则的验证，才能采纳。当前尚未修改 RelayKit 产品实现或自有代码许可。
 
 ## 版本与分支的权威
 

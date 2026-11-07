@@ -81,6 +81,14 @@ powershell -ExecutionPolicy Bypass -File scripts\build-windows.ps1 -Profile rele
 
 输出目录包括自包含的 .NET 与 Windows App SDK、两个 DLL，以及 Harness 辅助脚本、`node_modules`、官方 xURL 和第三方许可组成的 `resources`。整个目录可以移动，各部分须保持配套，Windows 从 exe 所在目录解析 DLL。生成绑定后也可以只用 `dotnet build app\windows\Velune.csproj` 编译；这种直接入口不会重新准备 native 库，不能用于确认新的跨语言接口。构建复用和缓存维护规则见[开发环境](../../docs/development/environment.md)。
 
+## 安装与更新
+
+Windows 发行使用 GitHub Releases 上的每用户 `Setup.exe`，安装身份固定为 `Velune`，默认安装在 `%LOCALAPPDATA%\Velune`。快捷方式与 `agents:` 协议指向安装根的稳定 `Velune.exe` 启动入口。构建固定使用 MIT 许可的 Velopack 1.2.161，Windows x64 beta 更新频道为 `win-x64-beta`，更新源为 `xiaoland/velune` 的 GitHub Releases，包含 prerelease。[Velopack Windows 目录结构](https://docs.velopack.io/packaging/operating-systems/windows)
+
+“设置 → 通用 → 关于”提供检查、下载进度、就绪、失败与重试操作。启动后及每 12 小时只检查新版本，下载由用户发起。下载完成后，用户选择“退出并更新”并确认时机。应用先保留全部工作区布局并刷新输入草稿，再让更新程序等待本次准确进程退出，各窗口沿用正常关闭路径，最后执行 `Core.Shutdown()`。任一必要保存失败时保留窗口，在“问题”及更新状态中显示原因，修复后可重试。本机运行中的 Agent 会随退出停止，资源库有未保存修改时要求先保存。更新完成后重新打开应用。[Velopack 正常退出更新 API](https://docs.velopack.io/reference/cs/Velopack/UpdateManager)
+
+入口 `Program.Main` 在 WinUI、单实例注册与核心初始化之前处理安装／更新 hooks，禁用 SDK 默认的启动自动应用更新。原始 publish 目录、便携包和设置了 `VELUNE_HOME` 的隔离实例仅提供 Releases 下载链接。应用持久数据继续使用下述独立数据目录，升级替换安装文件，卸载保留这些数据。
+
 ## 数据与 Harness
 
 应用数据位于 `VELUNE_HOME`，缺省为 `%USERPROFILE%\.velune`；远控身份与状态在其中的 `remote` 目录，设备名取自 `COMPUTERNAME`。未处理的异常记录在 `%TEMP%\Velune\crash.log`：WinUI 结束进程时只留下 stowed exception 代码（0xC000027B）。

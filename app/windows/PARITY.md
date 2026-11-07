@@ -22,7 +22,7 @@ Windows 按 [PRD](../../docs/prd/index.md) 跟进完整端能力，规则见[本
 | [分析](../../docs/prd/analytics.md) | 本机核心已接入 | — |
 | [问题与诊断](../../docs/prd/diagnostics.md) | 问题面板、本机遥测设置、双 SDK、显式 OTLP 测试与独立配置分享已接入 | Mac 的问题历史读回尚未移植；系统通知横幅与点按打开未目视验收。标准遥测语义归[共享契约](../../docs/product-tdd/telemetry.md) |
 | [远程访问](../../docs/prd/remote-access.md) | 配对、控制请求与目标设备切换已接入 | — |
-| [平台与外观](../../docs/prd/platforms.md) | 未打包的 WinUI 3 应用 | 独立字号／密度设置尚未跟进 Mac；局部浅／深色检查不代表整个平台已完成原生验收 |
+| [平台与外观](../../docs/prd/platforms.md) | 未打包的 WinUI 3 应用，已接入 Velopack 每用户安装与 GitHub Releases beta 更新；用户确认后正常退出再升级 | 更新状态与进程等待仅做所属层逻辑检查，安装、浅／深色界面与实际升级待统一 Windows 验收；独立字号／密度设置尚未跟进 Mac；局部浅／深色检查不代表整个平台已完成原生验收 |
 
 验证范围与证据入口：
 

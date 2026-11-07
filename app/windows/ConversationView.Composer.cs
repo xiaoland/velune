@@ -63,14 +63,16 @@ public sealed partial class ConversationView
         RestoreDraft();
     }
 
-    // FlushDraft saves a draft edit still waiting for the timer.
-    void FlushDraft()
+    // FlushDraft also retries an earlier failed cache write after the timer
+    // stopped. A successful return means the current input is saved locally.
+    internal bool FlushDraft()
     {
         if (draftTimer.IsEnabled)
         {
             draftTimer.Stop();
-            Model.SaveDraft(Input.Text);
+            return Model.SaveDraft(Input.Text);
         }
+        return Model.FlushComposerCache();
     }
 
     async void RestoreDraft()

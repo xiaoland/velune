@@ -23,6 +23,12 @@ sealed class GeneralPage : UserControl
 
     readonly Core core;
     readonly SettingsWindow window;
+    readonly Updates updates;
+    readonly Func<Task> installUpdate;
+    readonly TextBlock updateStatus = new() { TextWrapping = TextWrapping.Wrap, IsTextSelectionEnabled = true };
+    readonly ProgressBar updateProgress = new() { Minimum = 0, Maximum = 100, Visibility = Visibility.Collapsed };
+    readonly Button updateButton = new();
+    bool updateAction;
     readonly ComboBox usage = new() { Items = { "占用", "剩余" }, MinWidth = 120 };
     readonly ComboBox contextUsage = new() { Items = { "占用", "剩余" }, MinWidth = 120 };
     readonly NumberBox page = new() { Minimum = 1, Maximum = 500, SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Compact, MinWidth = 120 };
@@ -43,11 +49,13 @@ sealed class GeneralPage : UserControl
     // Set while the page shows what the device keeps, which is no change.
     bool showing;
 
-    internal GeneralPage(Core core, Commands commands, SettingsWindow window)
+    internal GeneralPage(Core core, Commands commands, SettingsWindow window, Updates updates, Func<Task> installUpdate)
     {
         this.core = core;
         this.commands = commands;
         this.window = window;
+        this.updates = updates;
+        this.installUpdate = installUpdate;
         var panel = new StackPanel { Spacing = 4, Padding = new Thickness(24, 12, 24, 20), MaxWidth = 760, HorizontalAlignment = HorizontalAlignment.Left };
         panel.Children.Add(Ui.Text("通用", "SubtitleTextBlockStyle"));
 
@@ -93,6 +101,21 @@ sealed class GeneralPage : UserControl
         var releaseTag = $"v{version.Split('+')[0]}";
         panel.Children.Add(Ui.Heading("关于"));
         panel.Children.Add(Ui.Card(Ui.TwoLines("Velune", $"版本 {version}", true)));
+        var updatePanel = new StackPanel { Spacing = 8 };
+        updatePanel.Children.Add(updateStatus);
+        updatePanel.Children.Add(updateProgress);
+        updatePanel.Children.Add(updateButton);
+        updatePanel.Children.Add(new HyperlinkButton
+        {
+            Content = "在 GitHub Releases 查看版本与下载安装器",
+            NavigateUri = new Uri(Updates.ReleasesUrl),
+            HorizontalAlignment = HorizontalAlignment.Left,
+        });
+        panel.Children.Add(Ui.Card(updatePanel));
+        updateButton.Click += UpdateClicked;
+        Loaded += (_, _) => { updates.Changed += ShowUpdate; ShowUpdate(); };
+        Unloaded += (_, _) => updates.Changed -= ShowUpdate;
+        ShowUpdate();
         var relayKitCredit = new StackPanel { Spacing = 6 };
         relayKitCredit.Children.Add(Ui.Text("Velune includes the New API RelayKit module for protocol conversion."));
         relayKitCredit.Children.Add(Ui.Text("Frontend design and development by New API contributors."));
@@ -139,6 +162,58 @@ sealed class GeneralPage : UserControl
         page.ValueChanged += (_, _) => SaveLimits();
         total.ValueChanged += (_, _) => SaveLimits();
         Load();
+    }
+
+    void ShowUpdate()
+    {
+        updateStatus.Text = updates.State switch
+        {
+            UpdateState.Unavailable => "此实例使用开发目录、便携包或隔离数据目录。请下载安装器以启用应用内更新。",
+            UpdateState.Idle => "当前没有可用的新版本。应用每 12 小时检查一次，也可手动检查。",
+            UpdateState.Checking => "正在检查新版本…",
+            UpdateState.Available => $"发现新版本 {updates.Version}。下载期间可以继续工作。",
+            UpdateState.Downloading => $"正在下载 {updates.Version}，已完成 {updates.Progress}%。可以继续工作。",
+            UpdateState.Ready => $"{updates.Version} 已下载。由你选择退出并更新的时机。",
+            UpdateState.Failed => "更新失败：" + updates.Failure + "。可以重试或从 GitHub Releases 下载安装器。",
+            _ => "正在保存并退出，更新后会重新打开 Velune…",
+        };
+        updateProgress.Visibility = updates.State is UpdateState.Checking or UpdateState.Downloading ? Visibility.Visible : Visibility.Collapsed;
+        updateProgress.IsIndeterminate = updates.State == UpdateState.Checking;
+        updateProgress.Value = updates.Progress;
+        updateButton.Content = updates.State switch
+        {
+            UpdateState.Available => "下载更新",
+            UpdateState.Ready => "退出并更新…",
+            UpdateState.Failed when updates.CanApply => "重试退出并更新…",
+            UpdateState.Failed when updates.CanRetryDownload => "重试下载",
+            UpdateState.Failed => "重试检查",
+            _ => "检查更新",
+        };
+        updateButton.Visibility = updates.State == UpdateState.Unavailable ? Visibility.Collapsed : Visibility.Visible;
+        updateButton.IsEnabled = !updateAction && updates.State is (UpdateState.Idle or UpdateState.Available or UpdateState.Ready or UpdateState.Failed);
+    }
+
+    async void UpdateClicked(object sender, RoutedEventArgs args)
+    {
+        if (updateAction) return;
+        updateAction = true;
+        ShowUpdate();
+        try
+        {
+            if (updates.CanApply) await installUpdate();
+            else if (updates.CanRetryDownload) await updates.DownloadAsync();
+            else await updates.CheckAsync();
+        }
+        catch (Exception failure)
+        {
+            updates.Fail(failure);
+            Problems.Report("安装更新", failure);
+        }
+        finally
+        {
+            updateAction = false;
+            if (IsLoaded) ShowUpdate();
+        }
     }
 
     async void ShowLegalDocument(string title, string relativePath, bool markdown)

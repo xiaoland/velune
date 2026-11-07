@@ -15,6 +15,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import xml.etree.ElementTree as ET
 import zipfile
 from pathlib import PurePosixPath
 
@@ -25,6 +26,14 @@ from version import read_build_number, read_version  # noqa: E402
 
 def sha256(path: Path) -> str:
     value = hashlib.sha256()
+    with path.open("rb") as source:
+        for block in iter(lambda: source.read(1024 * 1024), b""):
+            value.update(block)
+    return value.hexdigest()
+
+
+def digest(path: Path, algorithm: str) -> str:
+    value = hashlib.new(algorithm)
     with path.open("rb") as source:
         for block in iter(lambda: source.read(1024 * 1024), b""):
             value.update(block)
@@ -136,6 +145,83 @@ def windows_product_version(assembly: Path) -> str:
     return subprocess.check_output([shell, "-NoProfile", "-NonInteractive", "-Command", script], env=env, text=True).strip()
 
 
+def validate_velopack_feed(feed: Path, package: Path, version: str) -> None:
+    metadata = json.loads(feed.read_text())
+    assets = metadata.get("Assets")
+    if not isinstance(assets, list):
+        raise ValueError("Velopack channel feed must contain an Assets list")
+    matching = [
+        item for item in assets
+        if isinstance(item, dict) and item.get("PackageId") == "Velune"
+        and item.get("Version") == version and item.get("Type") == "Full"
+    ]
+    if len(matching) != 1:
+        raise ValueError("Velopack feed must contain exactly one full package for this version")
+    item = matching[0]
+    if (item.get("FileName") != package.name or item.get("Size") != package.stat().st_size
+            or item.get("SHA1", "").lower() != digest(package, "sha1")):
+        raise ValueError("Velopack feed package filename, size, or SHA-1 does not match the full package")
+
+
+def zip_member_sha256(package: zipfile.ZipFile, member: zipfile.ZipInfo) -> str:
+    value = hashlib.sha256()
+    with package.open(member) as source:
+        for block in iter(lambda: source.read(1024 * 1024), b""):
+            value.update(block)
+    return value.hexdigest()
+
+
+def unique_package_member(package: zipfile.ZipFile, basename: str) -> zipfile.ZipInfo:
+    matches = [
+        member for member in package.infolist()
+        if not member.is_dir() and PurePosixPath(member.filename).name.casefold() == basename.casefold()
+    ]
+    if len(matches) != 1:
+        raise ValueError(f"Velopack full package must contain exactly one {basename}")
+    return matches[0]
+
+
+def validate_velopack_package(package_path: Path, publish_dir: Path, version: str) -> list[dict[str, str]]:
+    """Bind the Velopack payload and nuspec identity to the already-validated publish tree."""
+    with zipfile.ZipFile(package_path) as package:
+        nuspecs = [
+            member for member in package.infolist()
+            if not member.is_dir() and PurePosixPath(member.filename).suffix.casefold() == ".nuspec"
+        ]
+        if len(nuspecs) != 1:
+            raise ValueError("Velopack full package must contain exactly one nuspec")
+        root = ET.fromstring(package.read(nuspecs[0]))
+        metadata_nodes = [node for node in root if node.tag.rsplit("}", 1)[-1].casefold() == "metadata"]
+        if len(metadata_nodes) != 1:
+            raise ValueError("Velopack nuspec must contain exactly one metadata element")
+        metadata = metadata_nodes[0]
+
+        def field(name: str) -> str:
+            values = [
+                node.text.strip() for node in metadata
+                if node.tag.rsplit("}", 1)[-1].casefold() == name.casefold() and node.text and node.text.strip()
+            ]
+            if len(values) != 1:
+                raise ValueError(f"Velopack nuspec must contain exactly one {name}")
+            return values[0]
+
+        if field("id").casefold() != "velune" or field("version") != version:
+            raise ValueError("Velopack nuspec ID/version do not match Velune and version.txt")
+
+        verified = []
+        for basename in ("Velune.dll", "velune_bindings.dll", "velune_relaykit.dll"):
+            source = publish_dir / basename
+            if not source.is_file():
+                raise ValueError(f"validated Windows publish directory is missing {basename}")
+            member = unique_package_member(package, basename)
+            source_hash = sha256(source)
+            package_hash = zip_member_sha256(package, member)
+            if package_hash != source_hash:
+                raise ValueError(f"Velopack package {basename} differs from the validated Windows publish tree")
+            verified.append({"file": basename, "sha256": source_hash})
+        return verified
+
+
 def package(args: argparse.Namespace) -> Path:
     source = Path(args.input).resolve()
     output_dir = Path(args.output_dir).resolve()
@@ -156,6 +242,7 @@ def package(args: argparse.Namespace) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
     build_number = read_build_number(args.build_number)
     binary_version = None
+    verified_package_payloads = None
     if args.kind == "source":
         if not source.is_file() or source.suffixes[-2:] != [".tar", ".gz"]:
             raise ValueError("source input must be the verified .tar.gz bundle")
@@ -170,6 +257,8 @@ def package(args: argparse.Namespace) -> Path:
         suffix = f"macOS-{args.arch}.zip"
         signing = "ad-hoc; not notarized"
     elif args.kind == "windows":
+        if not args.velopack_dir:
+            raise ValueError("Windows packaging requires the output directory from vpk pack")
         if args.arch != "x64" or not source.is_dir():
             raise ValueError("Windows input must be the self-contained x64 publish directory")
         assembly = source / "Velune.dll"
@@ -178,7 +267,22 @@ def package(args: argparse.Namespace) -> Path:
         binary_version = windows_product_version(assembly)
         if binary_version != version:
             raise ValueError(f"Windows assembly ProductVersion {binary_version!r} does not match {version}")
-        suffix = "windows-x64.zip"
+        vpk_dir = Path(args.velopack_dir).resolve()
+        channel = args.channel
+        if channel != "win-x64-beta":
+            raise ValueError("Windows release channel must remain win-x64-beta")
+        package_name = f"Velune-{version}-full.nupkg"
+        feed_name = f"releases.{channel}.json"
+        setup_name = "Velune-Setup.exe"
+        package_source = vpk_dir / package_name
+        feed_source = vpk_dir / feed_name
+        setup_source = vpk_dir / setup_name
+        for required in (package_source, feed_source, setup_source):
+            if not required.is_file() or required.stat().st_size == 0:
+                raise ValueError(f"Velopack output is missing or empty: {required.name}")
+        validate_velopack_feed(feed_source, package_source, version)
+        verified_package_payloads = validate_velopack_package(package_source, source, version)
+        suffix = "windows-x64-setup.exe"
         signing = "unsigned; no Authenticode signature"
     elif args.kind == "android":
         if args.arch != "arm64" or not source.is_file() or source.suffix.lower() != ".apk":
@@ -191,7 +295,7 @@ def package(args: argparse.Namespace) -> Path:
         signing = "APK v1/v2/v3 signature; certificate SHA-256 " + args.certificate_sha256
 
     prefix = "velune" if args.kind == "source" else "Velune"
-    name = f"{prefix}-{args.tag}-{suffix}"
+    name = "Velune-Setup.exe" if args.kind == "windows" else f"{prefix}-{args.tag}-{suffix}"
     artifact = output_dir / name
     if args.kind == "macos":
         subprocess.run(
@@ -199,12 +303,15 @@ def package(args: argparse.Namespace) -> Path:
             check=True,
         )
     elif args.kind == "windows":
-        import zipfile
-
-        with zipfile.ZipFile(artifact, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
-            for path in sorted(source.rglob("*")):
-                if path.is_file():
-                    archive.write(path, Path("Velune") / path.relative_to(source))
+        assets = []
+        for role, vpk_source, target_name in (
+            ("installer", setup_source, name),
+            ("full_package", package_source, package_name),
+            ("update_feed", feed_source, feed_name),
+        ):
+            target = output_dir / target_name
+            shutil.copyfile(vpk_source, target)
+            assets.append({"role": role, "name": target.name, "sha256": sha256(target)})
     else:
         shutil.copyfile(source, artifact)
 
@@ -224,6 +331,10 @@ def package(args: argparse.Namespace) -> Path:
         "certificate_sha256": args.certificate_sha256 if args.kind == "android" else None,
         "corresponding_platforms": covered_platforms,
     }
+    if args.kind == "windows":
+        metadata["channel"] = args.channel
+        metadata["assets"] = assets
+        metadata["verified_package_payloads"] = verified_package_payloads
     (output_dir / f"{name}.build.json").write_text(json.dumps(metadata, indent=2) + "\n")
     print(artifact)
     return artifact
@@ -240,10 +351,12 @@ def main() -> int:
     parser.add_argument("--build-number", required=True)
     parser.add_argument("--arch", required=True)
     parser.add_argument("--certificate-sha256")
+    parser.add_argument("--velopack-dir")
+    parser.add_argument("--channel")
     args = parser.parse_args()
     try:
         package(args)
-    except (OSError, ValueError, subprocess.CalledProcessError) as error:
+    except (OSError, ValueError, subprocess.CalledProcessError, zipfile.BadZipFile, ET.ParseError) as error:
         print(f"release package: {error}", file=sys.stderr)
         return 2
     return 0

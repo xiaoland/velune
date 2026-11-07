@@ -62,7 +62,7 @@ public partial class App : Application
             // An isolated home must not replace the user's system URL handler.
             if (string.IsNullOrEmpty(Environment.GetEnvironmentVariable("VELUNE_HOME")))
             {
-                try { ActivationRegistrationManager.RegisterForProtocolActivation("agents", "", "Velune", Environment.ProcessPath!); }
+                try { ActivationRegistrationManager.RegisterForProtocolActivation("agents", "", "Velune", Updates.LaunchPath()); }
                 catch (Exception failure) { Problems.Report("注册 xURL 地址", failure); }
             }
             Activate(activation);

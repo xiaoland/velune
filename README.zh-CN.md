@@ -49,9 +49,10 @@ Harness 执行代码、调用工具并保存原生历史。Velune 提供围绕�
 | 平台 | 角色 | 获取方式 |
 | --- | --- | --- |
 | macOS | 桌面完整端，本机执行与远程控制 | [发布资产](https://github.com/xiaoland/velune/releases)／源码构建 |
-| Windows | 桌面完整端，本机执行与远程控制 | [发布资产](https://github.com/xiaoland/velune/releases)／源码构建 |
+| Windows | 桌面完整端，本机执行与远程控制 | [安装器与应用内更新](https://github.com/xiaoland/velune/releases)／源码构建 |
 | Android | 远程控制端 | [发布的签名 APK](https://github.com/xiaoland/velune/releases)／源码构建 |
-| iPad / iPhone | 远程控制端 | 源码构建 |
+| iPad | 远程控制端 | 从 Mac 应用使用自己的签名安装 |
+| iPhone | 远程控制端 | 源码构建 |
 
 首个公开 beta 正在准备。首批目标为 macOS 15+（Apple Silicon / Intel）、Windows x64 和 Android 9+ arm64。macOS 包采用 ad-hoc 签名且尚未公证，Windows 包尚无发布者签名，安装步骤见发布说明。可下载资产以发布页实际列出的内容为准。各端能力有差异，可先查看 [Windows 覆盖情况](app/windows/PARITY.md)和 [Android 范围](app/android/README.md)。
 
@@ -65,9 +66,11 @@ Harness 执行代码、调用工具并保存原生历史。Velune 提供围绕�
 
 支持的 Adapter 版本、执行位置与模型连接见[运行时指南](docs/prd/agent-runtimes.md)。
 
-### 手机端
+### 手机与 iPad
 
 安装 Android 构建，保持桌面完整端运行，再从设备页面配对并由桌面批准。手机端控制桌面会话，本机不运行 Coding Agent。连接和权限边界见[远程访问](docs/prd/remote-access.md)。
+
+iPad 可以在 Mac 应用的“设置 → 设备 → 安装到 iPad…”中，使用自己的 Apple 签名团队一键构建、签名和安装。首次准备 Xcode、Rust 工具链及对应版本的 Velune 源码，选择签名团队和已连接的 iPad，并在 iPad 上信任此 Mac、开启开发者模式。详见 [iPad 安装步骤](app/ios/README.md#从-mac-应用安装到-ipad)。
 
 ## 构建与贡献
 

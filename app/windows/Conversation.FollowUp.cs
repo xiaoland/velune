@@ -27,7 +27,13 @@ sealed partial class Conversation
     // Draft is the text the device keeps for this conversation's composer;
     // an unsent conversation keeps none.
     public async Task<string> Draft() { await PollComposer(); return composerText; }
-    public void SaveDraft(string text) { composerText = text; ComposerChanged(); _ = PollComposer(); }
+    public bool SaveDraft(string text)
+    {
+        composerText = text;
+        var saved = ComposerChanged();
+        _ = PollComposer();
+        return saved;
+    }
 
     // Attach uploads a file to the device that runs the conversation.
     public async Task Attach(string name, byte[] bytes)

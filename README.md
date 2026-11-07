@@ -49,9 +49,10 @@ The product documentation covers supported behavior and current boundaries. Most
 | Platform | Role | First beta target |
 | --- | --- | --- |
 | macOS | Desktop host and remote client | macOS 15+, Apple Silicon / Intel |
-| Windows | Desktop host and remote client | x64, self-contained ZIP |
+| Windows | Desktop host and remote client | x64 installer with in-app updates |
 | Android | Remote client | Android 9+, arm64 signed APK |
-| iPhone / iPad | Remote client | Build from source |
+| iPad | Remote client | Sign and install from the Mac app |
+| iPhone | Remote client | Build from source |
 
 The first public beta is being prepared. Available downloads follow the assets listed on each release. The initial macOS builds use ad-hoc signing and have no Apple notarization, and Windows builds have no publisher signature. Follow the installation steps and known limitations on the release page. [Releases](https://github.com/xiaoland/velune/releases)
 
@@ -67,9 +68,11 @@ Feature coverage differs by platform. [Windows coverage](app/windows/PARITY.md) 
 
 Supported adapter versions, execution locations and model connections are documented in the runtime guide. [Agent runtimes](docs/prd/agent-runtimes.md)
 
-### On your phone
+### On your phone or iPad
 
 Install the Android APK, keep a desktop host running, and pair with it from the device page. The host approves access and continues running your agents. See the remote-access guide for connection options and permissions. [Remote access](docs/prd/remote-access.md)
+
+For iPad, the Mac app's **Settings → Devices → Install on iPad…** builds, signs and installs with your own Apple signing team in one action after setup. Prepare Xcode, the Rust toolchain and the matching Velune source version, then select your team and connected iPad. Device trust and Developer Mode must be enabled. [iPad installation](app/ios/README.md#从-mac-应用安装到-ipad)
 
 ## Build and contribute
 

@@ -19,6 +19,7 @@ sealed partial class Conversation
     ulong? composerTargetRevision, composerTargetBaseline;
     ulong composerTargetVersion;
     bool composerTargetDirty, composerTargetLoaded, composerCacheBlocked;
+    bool composerCacheSaved = true;
     bool composerReadRequired = true;
     bool composerLoaded, composerDirty, composerSaving, composerPolling, receivingComposer, composerUnbound, composerRestored;
     ulong? composerBindingRevision, composerBindingBaseline;
@@ -76,6 +77,13 @@ sealed partial class Conversation
     }
     void CacheComposer()
     {
+        composerCacheSaved = false;
+        if (composerDirty && composerInput == null)
+        {
+            composerInput = new(Guid.NewGuid().ToString(), 0, ComposerContent());
+            composerUnbound = true;
+            composerBindingBaseline = composerBindingRevision;
+        }
         if (composerCacheBlocked) throw new InvalidOperationException("本机输入需要显式迁移，原文件已保留");
         Directory.CreateDirectory(Path.GetDirectoryName(ComposerCachePath)!);
         var temporary = ComposerCachePath + ".tmp";
@@ -83,6 +91,26 @@ sealed partial class Conversation
         var saved = new CachedComposer(2, input, composerDirty, composerBaseline, composerOwner, composerDirectoryRevision, pendingCreation, composerUnbound, composerBindingRevision, composerBindingBaseline, ComposerTargetContent(), composerTargetRevision, composerTargetDirty, composerTargetBaseline);
         File.WriteAllText(temporary, JsonSerializer.Serialize(saved, ComposerJson));
         File.Move(temporary, ComposerCachePath, true);
+        composerCacheSaved = true;
+    }
+
+    // A previous cache write may have failed after its debounce timer stopped.
+    // Retry that same write before a caller relies on the local copy at exit.
+    public bool FlushComposerCache() => composerCacheSaved || TryCacheComposer("保存输入");
+
+    bool TryCacheComposer(string operation)
+    {
+        try
+        {
+            CacheComposer();
+            return true;
+        }
+        catch (Exception failure)
+        {
+            composerFailure = Core.Describe(failure);
+            Problems.Report(operation, failure, Device);
+            return false;
+        }
     }
     ComposerInputContent ComposerContent() => new(composerText,
         [.. Attached.Select(attachment => attachment.Content ?? throw new InvalidOperationException("附件尚未同步，请重新添加该附件"))]);
@@ -137,17 +165,12 @@ sealed partial class Conversation
         return VeluneApplicationApiMethods.ResolveComposerTarget(prepared, ComposerTargetContent(),
             NextCatalog is { Loading: false, Failure: "" } catalog ? catalog.Models : null);
     }
-    void ComposerChanged()
+    bool ComposerChanged()
     {
-        if (receivingComposer) return;
+        if (receivingComposer) return true;
         if (!composerDirty) composerBaseline = composerInput?.Revision;
         composerDirty = true;
-        try
-        {
-            if (composerInput == null) { composerInput = new(Guid.NewGuid().ToString(), 0, ComposerContent()); composerUnbound = true; composerBindingBaseline = composerBindingRevision; }
-            CacheComposer();
-        }
-        catch (Exception failure) { composerFailure = Core.Describe(failure); Problems.Report("保存输入", failure, Device); }
+        return TryCacheComposer("保存输入");
     }
     void ComposerTargetChanged()
     {
@@ -157,8 +180,7 @@ sealed partial class Conversation
         composerTargetDirty = true;
         composerTargetChoices = (composerTargetChoices ?? new(null, null, [], false)) with { ChoiceEdited = true };
         composerTargetChoices = ComposerTargetContent();
-        try { CacheComposer(); }
-        catch (Exception failure) { composerFailure = Core.Describe(failure); Problems.Report("保存发送目标", failure, Device); }
+        TryCacheComposer("保存发送目标");
     }
     async Task<bool> PrepareComposerSubmission()
     {
