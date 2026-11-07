@@ -2,7 +2,7 @@
 
 本 unit 实现 AI 契约的具体协议执行：`NativeHttp` 以一个 HTTP adapter 执行三种原生协议，`claude_code::ClaudeCode` 是 Messages 的本机执行后端。原生协议只替换路由所需的外部模型标识，保留请求字段、请求 headers、响应状态、响应 headers 和响应／SSE body。它接受构造时传入的 `HttpTarget`（协议、端点与 request profile）和一次性 `ResolvedCredential`，不读取应用配置、认证来源或 Harness 状态。
 
-它依赖 [ai](../ai/README.md)，不拥有应用路由、自动重试或 fail-over 策略。网关组合协议执行；Claude Code 后端仅承担已明确授权的本机执行与工具桥接，不代替其他 Harness adapter。协议限制见 [AI service](../../docs/design/ai-service.md)。
+它依赖 [ai](../ai/README.md)，不拥有应用路由、自动重试或 fail-over 策略。网关组合协议执行；Claude Code 后端仅承担已明确授权的本机执行与工具桥接，不代替其他 Harness adapter。协议限制见 [AI service](../../docs/product-tdd/ai-service.md)。
 
 原生操作收到已经解析的精确 `ProviderModelId`；本包不维护 Velune 记录到提供商型号的映射，不接受旧 `ModelMapping` 或 `ChatCompletionsOutputLimitField`。请求输出限制与推理字段由原生协议 body 决定。
 

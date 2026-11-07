@@ -25,7 +25,7 @@ fn uuid(value: &str) -> bool {
 
 pub(super) fn provider(kind: RuntimeKind) -> Option<&'static str> {
     match kind {
-        RuntimeKind::Codex | RuntimeKind::Codex166 => Some("codex"),
+        RuntimeKind::Codex166 => Some("codex"),
         RuntimeKind::ClaudeCode => Some("claude"),
         RuntimeKind::Pi => Some("pi"),
         RuntimeKind::DeepSeek | RuntimeKind::Acp => None,
@@ -184,15 +184,33 @@ impl CoreRuntime {
         };
         let places = self.projectless_places();
         for runtime in runtimes {
+            let source_key = match self.runtime_source_key(runtime) {
+                Ok(source) => source,
+                Err(error) => {
+                    result.failures.push(HistoryFailure {
+                        runtime_id: runtime.id.clone(),
+                        detail: error.to_string(),
+                    });
+                    continue;
+                }
+            };
             match self.resolve_agent_uri_in(&uri, runtime) {
-                Ok(sources) => {
+                Ok(sources) if source_key.is_current(self) => {
                     for source in sources {
-                        self.reached
-                            .borrow_mut()
-                            .insert(source.summary.id.clone(), source.clone());
+                        self.reached.borrow_mut().insert(
+                            source.summary.id.clone(),
+                            browsing::CachedSource {
+                                source: source_key.clone(),
+                                value: source.clone(),
+                            },
+                        );
                         result.conversations.push(self.listed(&source, &places));
                     }
                 }
+                Ok(_) => result.failures.push(HistoryFailure {
+                    runtime_id: runtime.id.clone(),
+                    detail: "运行时历史来源已改变，请刷新后重试".into(),
+                }),
                 Err(error) => result.failures.push(HistoryFailure {
                     runtime_id: runtime.id.clone(),
                     detail: error.to_string(),

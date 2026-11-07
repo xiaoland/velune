@@ -7,7 +7,7 @@ use std::{
     fs::{self, OpenOptions},
     io::{Read, Write},
     path::{Path, PathBuf},
-    process::{Child, Command, Stdio},
+    process::{Command, Stdio},
     sync::{Arc, Mutex},
     thread,
     time::{Duration, Instant},
@@ -325,6 +325,7 @@ pub fn install_resources(target: &ExecutionTarget, local: &Path, remote: &Path) 
         "pi_sessions.mjs",
         "pi_rpc.mjs",
         "pi_virtual_model.mjs",
+        "pi_background_work.mjs",
         "pi_auth.mjs",
         "pi_provider_import.mjs",
         "huihua_sessions.mjs",
@@ -368,7 +369,7 @@ fn collect_resource(local: &Path, remote: &Path, files: &mut Vec<Value>) -> Resu
 /// Holds the forwarding connection for as long as a remote runtime can use it.
 pub struct LoopbackTunnel {
     endpoint: String,
-    master: Option<Child>,
+    master: Option<crate::process_tree::ProcessTree>,
     directory: Option<PathBuf>,
 }
 
@@ -403,7 +404,7 @@ impl LoopbackTunnel {
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::piped());
-        let mut child = match command.spawn() {
+        let mut child = match crate::process_tree::ProcessTree::spawn(&mut command) {
             Ok(child) => child,
             Err(error) => {
                 let _ = fs::remove_dir_all(&directory);
@@ -412,7 +413,7 @@ impl LoopbackTunnel {
         };
         let diagnostic = Arc::new(Mutex::new(Vec::new()));
         let capture = Arc::clone(&diagnostic);
-        let mut stderr = child.stderr.take().expect("SSH stderr is piped");
+        let mut stderr = child.take_stderr().expect("SSH stderr is piped");
         thread::spawn(move || {
             let mut chunk = [0; 4096];
             while let Ok(count) = stderr.read(&mut chunk) {
@@ -477,8 +478,7 @@ impl LoopbackTunnel {
 impl Drop for LoopbackTunnel {
     fn drop(&mut self) {
         if let Some(child) = &mut self.master {
-            let _ = child.kill();
-            let _ = child.wait();
+            child.stop();
         }
         if let Some(directory) = &self.directory {
             let _ = fs::remove_dir_all(directory);
@@ -584,4 +584,73 @@ fn utf8(value: &OsStr) -> Result<&str> {
 }
 fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn dropping_tunnel_stops_ssh_helpers_without_opening_network_connections() {
+        let root = std::env::temp_dir().join(format!("velune-tunnel-{}", unique_name().unwrap()));
+        fs::create_dir(&root).unwrap();
+        let binary = root.join("ssh");
+        fs::write(
+            &binary,
+            r#"#!/bin/sh
+mode=verify
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -M) mode=master ;;
+    -O) mode=forward ;;
+    -S) shift; socket=$1 ;;
+  esac
+  shift
+done
+case "$mode" in
+  master)
+    (trap '' TERM; exec /bin/sleep 60) &
+    echo $! > "${0%/*}/descendant"
+    touch "$socket"
+    wait ;;
+  forward) echo 32123 ;;
+  verify) cat > /dev/null ;;
+esac
+"#,
+        )
+        .unwrap();
+        fs::set_permissions(&binary, fs::Permissions::from_mode(0o700)).unwrap();
+        let target = ExecutionTarget::Ssh(SshTarget {
+            binary,
+            destination: "synthetic".into(),
+            port: None,
+        });
+        let tunnel = LoopbackTunnel::open(&target, "http://127.0.0.1:12345/v1").unwrap();
+        assert_eq!(tunnel.endpoint(), "http://127.0.0.1:32123/v1");
+        let descendant: u32 = fs::read_to_string(root.join("descendant"))
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        drop(tunnel);
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            let output = crate::process_tree::command("ps")
+                .args(["-p", &descendant.to_string(), "-o", "stat="])
+                .output()
+                .unwrap();
+            let state = String::from_utf8_lossy(&output.stdout);
+            if !output.status.success() || state.trim().is_empty() || state.trim().starts_with('Z')
+            {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "SSH helper remained active after tunnel drop"
+            );
+            thread::sleep(Duration::from_millis(20));
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
 }

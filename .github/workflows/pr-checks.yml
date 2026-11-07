@@ -1,0 +1,121 @@
+name: PR checks
+
+on:
+  pull_request:
+    branches: [main, develop]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  validate:
+    name: validate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out pull request head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+      - name: Detect changed Rust owners
+        id: changes
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin "$BASE_REF"
+          git diff --check "$BASE_SHA...HEAD"
+          python3 - "$BASE_SHA" "$GITHUB_OUTPUT" <<'PY'
+          import subprocess,sys
+          base,output=sys.argv[1:]
+          names=subprocess.check_output(['git','diff','--name-only',f'{base}...HEAD'],text=True).splitlines()
+          data=any(name in {
+              'packages/application/src/repository.rs',
+              'packages/application/src/persistence_migrations.rs',
+              'packages/application/src/analytics.rs',
+              'packages/remote/src/store.rs',
+          } for name in names)
+          gateway=any(name in {
+              'packages/application/src/local/execution.rs',
+              'packages/application/src/local/authentication_coordination.rs',
+              'packages/application/src/local/conversations.rs',
+              'packages/application/src/provider_configuration.rs',
+              'packages/application/src/local/provider_management.rs',
+              'packages/application/src/subscription_quota.rs',
+              'packages/application/src/quota_history.rs',
+          } for name in names)
+          rust=any(name.endswith('.rs') or name in {'Cargo.toml','Cargo.lock','rust-toolchain.toml'} for name in names)
+          with open(output,'a') as stream:
+              stream.write(f'rust={str(rust).lower()}\n')
+              stream.write(f'data={str(data).lower()}\n')
+              stream.write(f'gateway={str(gateway).lower()}\n')
+          PY
+      - name: Validate release metadata
+        run: |
+          set -euo pipefail
+          python3 scripts/version.py --format build-info
+          python3 -m py_compile scripts/version.py scripts/package-release.py scripts/release-run.py scripts/release-notes.py
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          config = json.loads(Path('release-please-config.json').read_text())
+          manifest = json.loads(Path('.release-please-manifest.json').read_text())
+          package = config['packages']['.']
+          assert package['release-type'] == 'simple'
+          assert package['versioning'] == 'prerelease'
+          assert package['prerelease'] is True and package['draft'] is True
+          assert package['bump-minor-pre-major'] is True
+          assert package['force-tag-creation'] is True
+          assert isinstance(manifest['.'], str) and manifest['.']
+          PY
+      - name: Check shell syntax and whitespace
+        run: |
+          set -euo pipefail
+          bash -n scripts/build-macos.sh scripts/build-ios.sh scripts/build-ios-native.sh scripts/build-android.sh scripts/build-android-native.sh
+      - name: Set up Go for the Linux RelayKit link prerequisite
+        if: steps.changes.outputs.rust == 'true'
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.1'
+      - name: Cache Linux Rust build inputs
+        if: steps.changes.outputs.rust == 'true'
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/host-rust
+          key: pr-linux-rust-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+      - name: Link the shared Rust core and bindings on Linux
+        if: steps.changes.outputs.rust == 'true'
+        run: cargo build --locked --package velune-bindings --lib
+      - name: Run persistence migration contract checks
+        if: steps.changes.outputs.data == 'true'
+        run: |
+          set -euo pipefail
+          changed=$(git diff --name-only "${{ github.event.pull_request.base.sha }}...HEAD")
+          if grep -qx 'packages/application/src/persistence_migrations.rs' <<<"$changed"; then
+            cargo test --locked -p velune-application --lib persistence_migrations::tests
+          fi
+          if grep -qx 'packages/application/src/repository.rs' <<<"$changed"; then
+            cargo test --locked -p velune-application --lib repository::persistence_version_tests
+          fi
+          if grep -qx 'packages/application/src/analytics.rs' <<<"$changed"; then
+            cargo test --locked -p velune-application --lib analytics::schema_tests
+          fi
+          if grep -qx 'packages/remote/src/store.rs' <<<"$changed"; then
+            cargo test --locked -p velune-remote --lib store::version_tests
+          fi
+      - name: Run gateway configuration snapshot checks
+        if: steps.changes.outputs.gateway == 'true'
+        run: |
+          set -euo pipefail
+          changed=$(git diff --name-only "${{ github.event.pull_request.base.sha }}...HEAD")
+          if grep -E -qx 'packages/application/src/local/(execution|authentication_coordination|conversations)\.rs' <<<"$changed"; then
+            cargo test --locked -p velune-application --lib gateway_execution_tests -- --nocapture
+          fi
+          if grep -E -qx 'packages/application/src/(provider_configuration|subscription_quota|quota_history)\.rs|packages/application/src/local/provider_management\.rs' <<<"$changed"; then
+            cargo test --locked -p velune-application --lib configuration_tests -- --nocapture
+          fi

@@ -97,7 +97,7 @@ impl CoreRuntime {
             return;
         };
         // Codex's existing native naming lifecycle already owns this work.
-        if matches!(runtime.type_id, RuntimeKind::Codex | RuntimeKind::Codex166)
+        if matches!(runtime.type_id, RuntimeKind::Codex166)
             || runtime
                 .settings
                 .get("automaticNaming")

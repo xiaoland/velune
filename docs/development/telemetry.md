@@ -4,10 +4,10 @@
 
 普通启动与 Debug 构建默认不启用遥测。使用 `scripts/dev-telemetry.py launch` 显式启动隔离实例时，工具通过[开发环境](environment.md)中的 SVC 入口准备通道并检查 Grafana 与 OTLP 就绪，生成私有临时 profile 和 run manifest。它不修改日常偏好或全局 `OTEL_*`，也不重建／清空 LGTM。业务 home 与 OS home 使用本次运行的独立临时目录，避免长仓库路径超过 Mac 的 Unix socket 长度限制。接收端不可用时继续启动业务并报告未接入；端口冲突不停止无关进程。
 
-先按[平台构建说明](platforms.md)生成产物，然后在仓库运行以下入口。桌面 `--app` 必须是已安装或已构建产物的绝对路径；Mac 指向 bundle 内可执行文件，Windows 指向 `Velune.exe`。移动端省略 `--app` 直接使用已安装应用；只有明确传入 APK／bundle 才执行覆盖安装。设备必须已启动；入口会重新启动指定应用，以便读取本次临时配置。
+先按[平台构建说明](platforms.md)生成产物，然后在仓库运行以下入口。桌面 `--app` 必须是已安装或已构建产物的绝对路径；Mac 只接受带开发身份的 bundle（也接受其可执行文件路径），并复用开发启动器的身份校验与LaunchServices；Windows 指向 `Velune.exe`。移动端省略 `--app` 直接使用已安装应用；只有明确传入 APK／bundle 才执行覆盖安装。设备必须已启动；移动入口会重新启动指定应用，以便读取本次临时配置。Mac已有不同目录的开发实例时会拒绝复用，不自动退出它；先用其scope的停止入口正常退出。
 
 ```sh
-python3 scripts/dev-telemetry.py launch macos --app /absolute/path/Velune.app/Contents/MacOS/Velune
+python3 scripts/dev-telemetry.py launch macos --app "/absolute/path/Velune Dev.app"
 python3 scripts/dev-telemetry.py launch windows --app C:/absolute/path/Velune.exe
 python3 scripts/dev-telemetry.py launch ios-simulator --device <Simulator UUID> --package app.velune.ios
 python3 scripts/dev-telemetry.py launch android --device <ADB serial> --package app.velune.android.telemetry
@@ -28,4 +28,4 @@ python3 scripts/dev-telemetry.py query /absolute/path/run.json metrics
 
 查询默认选择 `velune.telemetry.schema.version="2"`。历史数据使用 `python3 scripts/dev-telemetry.py query <manifest> traces --schema-version legacy`，混合版本用 `--schema-version all`；logs 和 metrics 支持同一选项。旧属性 operation／operation_id／outcome 与 v2 的 velune.operation／velune.operation.id／velune.outcome 分开解释，不能把新查询无结果理解为旧记录消失。trace 可能跨版本，查看详细记录时按各自 resource 判断。legacy trace 的缺属性条件使用 Tempo 的 `= nil`，接收端需支持该语法。
 
-语义与扩展范例归[遥测契约](../design/telemetry.md#扩展埋点与读取范例)。先限定 run、实例、时间和版本，再沿 trace、operation ID、RequestId 检查受理与执行。Loki 中点号属性会按其映射显示为下划线名称；查询应使用接收端实际字段，不解析日志 body。指标按操作层分别统计，不能将 UI、bindings 与 RPC 次数相加。Gateway 本地诊断的 transport_completed 仍表示传输结束，OTLP 的 outcome 则同时考虑 HTTP 结果；返回完整 503 在 OTLP 中是 failure。
+语义与扩展范例归[遥测契约](../product-tdd/telemetry.md#扩展埋点与读取范例)。先限定 run、实例、时间和版本，再沿 trace、operation ID、RequestId 检查受理与执行。Loki 中点号属性会按其映射显示为下划线名称；查询应使用接收端实际字段，不解析日志 body。指标按操作层分别统计，不能将 UI、bindings 与 RPC 次数相加。Gateway 本地诊断的 transport_completed 仍表示传输结束，OTLP 的 outcome 则同时考虑 HTTP 结果；返回完整 503 在 OTLP 中是 failure。

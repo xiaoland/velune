@@ -10,59 +10,46 @@ struct SavedComposerDraft: Codable, Equatable {
     var attachments: [URL]
 }
 
-/// Editing state of the composer in one window. The text view owns the text
-/// while editing; each conversation keeps its draft (persisted by the store)
-/// and its own undo history.
+/// One input's editing state in a window. Navigation selects another model;
+/// changing the execution target never loads or saves different content here.
 @MainActor final class ComposerModel: ObservableObject {
     let id: UUID
-    let followsConversation: Bool
-    init(followsConversation: Bool = true, id: UUID = UUID()) {
-        self.id = id
-        self.followsConversation = followsConversation
-    }
+    init(id: UUID = UUID()) { self.id = id }
     @Published private(set) var isEmpty = true
     @Published private(set) var isFocused = false
     @Published fileprivate(set) var height = ComposerTextView.minimumHeight
-    /// Files attached to the next turn of the shown conversation.
+    /// Files owned by this input, independently of its next execution target.
     @Published private(set) var attachments: [URL] = [] { didSet { if attachments != oldValue { draftChanged() } } }
-    private var attachmentsByConversation: [String: [URL]] = [:]
-    private(set) var conversationID: String?
     private(set) weak var textView: ComposerTextView?
     private var pendingFocus = false
     private var shownBefore = false
     let draftChanges = PassthroughSubject<Void, Never>()
     private(set) var revision: UInt64 = 0
-    var hasUnfinishedInput: Bool { !text.isEmpty || !attachments.isEmpty || undoManagers.values.contains { $0.canUndo } }
+    var hasUnfinishedInput: Bool { !text.isEmpty || !attachments.isEmpty || undo.canUndo }
     private var selection = NSRange(location: 0, length: 0)
     private var scrollOrigin = NSPoint.zero
-    private var conversationRevisions: [String: UInt64] = [:]
     private var changingDraft = false
     private var changedDraft = false
-    func draftChanged() {
+    private func draftChanged(publishEdit: Bool = true) {
         if changingDraft { changedDraft = true; return }
         revision &+= 1
-        if followsConversation, let conversationID { conversationRevisions[conversationID] = revision }
-        draftChanges.send(); objectWillChange.send()
+        if publishEdit { draftChanges.send() }
+        objectWillChange.send()
     }
     /// Publish complete semantic edits, so other editors never receive a
     /// half-cleared input while its attachments are being updated.
-    private func changeDraft(_ edit: () -> Void) {
+    private func changeDraft(publishEdit: Bool = true, _ edit: () -> Void) {
         changingDraft = true
         edit()
         changingDraft = false
-        if changedDraft { changedDraft = false; draftChanged() }
+        if changedDraft { changedDraft = false; draftChanged(publishEdit: publishEdit) }
     }
-    func draftRevision(for id: String?) -> UInt64 { followsConversation ? id.flatMap { conversationRevisions[$0] } ?? 0 : revision }
-    func restoreFailed(_ text: String, attachments: [URL], for id: String?, revision expected: UInt64?) {
-        guard let expected, draftRevision(for: id) == expected else { return }
-        if followsConversation, let id, conversationID != id {
-            guard let store, store.draft(for: id).isEmpty else { return }
-            store.setDraft(text, for: id)
-            attachmentsByConversation[id] = attachments
-        } else { restore(text, attachments: attachments) }
+    func restoreFailed(_ text: String, attachments: [URL], revision expected: UInt64?) {
+        guard let expected, revision == expected else { return }
+        restore(text, attachments: attachments)
     }
     private(set) var text = "" { didSet { if text != oldValue { draftChanged() } } }
-    private var undoManagers: [String: UndoManager] = [:]
+    private let undo = UndoManager()
     private(set) weak var store: ConversationStore?
     /// The `/` command or `@` path list over the text (see `ComposerCompletion`).
     @Published var completion: ComposerCompletion? { didSet { if completion != oldValue { showCompletion() } } }
@@ -78,19 +65,22 @@ struct SavedComposerDraft: Codable, Equatable {
     @Published var queueEditRequest: QueuedMessage?
 
     var submission: String { text }
-    var savedDraft: SavedComposerDraft? {
-        followsConversation ? nil : SavedComposerDraft(text: text, attachments: attachments)
-    }
+    var savedDraft: SavedComposerDraft { SavedComposerDraft(text: text, attachments: attachments) }
     func restoreSavedDraft(_ saved: SavedComposerDraft?) {
-        guard !followsConversation, let saved else { return }
+        guard let saved else { return }
         changeDraft {
             replace(with: saved.text)
             setAttachments(saved.attachments)
         }
     }
     func receiveDraft(_ saved: SavedComposerDraft) {
-        if saved.text != text { undoManagers.removeAll() }
-        restoreSavedDraft(saved)
+        if saved.text != text { undo.removeAllActions() }
+        // A synchronized projection invalidates an older failure snapshot,
+        // but is never a new local edit to save back through another window.
+        changeDraft(publishEdit: false) {
+            replace(with: saved.text)
+            setAttachments(saved.attachments)
+        }
     }
     /// Input-method composition owns Return and ⌘Return until it is committed.
     @Published private(set) var isComposing = false
@@ -99,15 +89,8 @@ struct SavedComposerDraft: Codable, Equatable {
         if isComposing != value { isComposing = value }
     }
 
-    func attach(_ store: ConversationStore) { self.store = store }
-
-    /// Shows the draft of `conversationID`; the previous one is already saved.
-    func show(conversationID: String?) {
-        guard conversationID != self.conversationID else { return }
-        self.conversationID = conversationID
-        guard followsConversation else { updateCompletion(); return }
-        replace(with: conversationID.flatMap { store?.draft(for: $0) } ?? "")
-        attachments = conversationID.flatMap { attachmentsByConversation[$0] } ?? []
+    func attach(_ store: ConversationStore) {
+        self.store = store
     }
 
     /// Adds regular files; folders and files already attached are skipped.
@@ -161,36 +144,20 @@ struct SavedComposerDraft: Codable, Equatable {
     private func setAttachments(_ value: [URL]) {
         guard attachments != value else { return }
         attachments = value
-        if followsConversation, let conversationID { attachmentsByConversation[conversationID] = value.isEmpty ? nil : value }
     }
 
     /// Clears a sent draft unless it was edited while the send was accepted.
-    func clear(submitted: String, attachments sent: [URL], conversationID: String?) {
-        if followsConversation, let conversationID, conversationID != self.conversationID {
-            if store?.draft(for: conversationID) == submitted { store?.setDraft("", for: conversationID) }
-            if attachmentsByConversation[conversationID] == sent { attachmentsByConversation[conversationID] = nil }
-            return
-        }
+    func clear(submitted: String, attachments sent: [URL]) {
         guard text == submitted, attachments == sent else { return }
-        if let conversationID, followsConversation { undoManagers[conversationID] = nil }
-        else { undoManagers.removeAll() }
+        undo.removeAllActions()
         changeDraft { setAttachments([]); replace(with: "") }
-        if followsConversation, let conversationID { store?.setDraft("", for: conversationID) }
     }
 
-    /// Shows the shown conversation's draft as it is kept now, after another
-    /// composer (the send sheet) changed it; the text being edited here stays.
-    func reloadDraft() {
-        guard followsConversation, let conversationID, !(textView?.window?.firstResponder === textView), let kept = store?.draft(for: conversationID), kept != text else { return }
-        replace(with: kept)
-    }
-
-    /// Puts an unsent message back, unless the shown conversation has a new draft.
+    /// Puts an unsent message back unless this input has gained new content.
     func restore(_ value: String, attachments sent: [URL]) {
         guard text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, attachments.isEmpty else { return }
         changeDraft {
             replace(with: value)
-            if followsConversation, let conversationID { store?.setDraft(value, for: conversationID) }
             setAttachments(sent)
         }
     }
@@ -229,11 +196,7 @@ struct SavedComposerDraft: Codable, Equatable {
     }
 
     fileprivate func undoManager(for view: NSTextView) -> UndoManager? {
-        guard let conversationID = followsConversation ? conversationID : "independent-composer" else { return view.window?.undoManager }
-        if let manager = undoManagers[conversationID] { return manager }
-        let manager = UndoManager()
-        undoManagers[conversationID] = manager
-        return manager
+        undo
     }
 
     fileprivate func focusChanged(_ value: Bool) {
@@ -249,7 +212,6 @@ struct SavedComposerDraft: Codable, Equatable {
     fileprivate func edited(_ value: String) {
         text = value
         updateEmpty()
-        if followsConversation, let conversationID { store?.setDraft(value, for: conversationID) }
         updateCompletion()
     }
 
@@ -300,6 +262,9 @@ struct ComposerEditor: NSViewRepresentable {
     var steer: () -> Void = {}
     /// Added to the text's context menu: the composer's places.
     var placeMenu: () -> NSMenuItem? = { nil }
+    /// The displayed editor supplies its target only at editing/action edges.
+    var bindTarget: () -> Void = {}
+    var focused: () -> Void = {}
 
     func makeCoordinator() -> Coordinator { Coordinator(model: model) }
 
@@ -314,7 +279,9 @@ struct ComposerEditor: NSViewRepresentable {
         scroll.documentView = view
         context.coordinator.view = view
         context.coordinator.placeMenu = placeMenu
-        model.attach(view)
+        context.coordinator.bindTarget = bindTarget
+        context.coordinator.focused = focused
+        if model.textView == nil { model.attach(view) }
         context.coordinator.update(placeholder: placeholder, submit: submit, steer: steer)
         return scroll
     }
@@ -324,9 +291,11 @@ struct ComposerEditor: NSViewRepresentable {
         if !editable, model.completion != nil { model.completion = nil }
         let previous = context.coordinator.model
         context.coordinator.model = model
+        context.coordinator.bindTarget = bindTarget
+        context.coordinator.focused = focused
         if previous !== model, let view = context.coordinator.view {
             previous.detach(view)
-            model.attach(view)
+            if model.textView == nil || view.window?.firstResponder === view { model.attach(view) }
             model.shown(view)
         }
         if let view = context.coordinator.view {
@@ -343,6 +312,8 @@ struct ComposerEditor: NSViewRepresentable {
         fileprivate var submit: () -> Void = {}
         fileprivate var steer: () -> Void = {}
         var placeMenu: () -> NSMenuItem? = { nil }
+        var bindTarget: () -> Void = {}
+        var focused: () -> Void = {}
         init(model: ComposerModel) { self.model = model }
 
         func update(placeholder: String, submit: @escaping () -> Void, steer: @escaping () -> Void) {
@@ -353,13 +324,20 @@ struct ComposerEditor: NSViewRepresentable {
         }
         func textDidChange(_ notification: Notification) {
             guard let view else { return }
+            if view.window?.firstResponder === view { bindTarget() }
             model.updateComposition()
             model.edited(view.string)
             view.fitHeight()
         }
         func undoManager(for view: NSTextView) -> UndoManager? { model.undoManager(for: view) }
         /// Moving the caret into or out of an `@` path opens or closes its list.
-        func textViewDidChangeSelection(_ notification: Notification) { model.updateComposition(); model.updateCompletion() }
+        func textViewDidChangeSelection(_ notification: Notification) {
+            guard let view, view.window?.firstResponder === view else { return }
+            model.attach(view)
+            bindTarget()
+            model.updateComposition()
+            model.updateCompletion()
+        }
         fileprivate func heightChanged(_ value: CGFloat) {
             // Reported after layout; SwiftUI resizes the editor in the next pass.
             DispatchQueue.main.async { [model] in if model.height != value { model.height = value } }
@@ -475,6 +453,7 @@ struct ComposerEditor: NSViewRepresentable {
     }
     override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
         guard isEditable else { return false }
+        coordinator?.bindTarget()
         let urls = Self.fileURLs(sender.draggingPasteboard)
         guard !urls.isEmpty else { return super.performDragOperation(sender) }
         coordinator?.model.addAttachments(urls)
@@ -498,6 +477,7 @@ struct ComposerEditor: NSViewRepresentable {
 
     /// Also handles Finder's file URLs and image representations accompanied by text.
     func pasteAttachments(from board: NSPasteboard) -> Bool {
+        coordinator?.bindTarget()
         guard let model = coordinator?.model, model.store?.allowsAttachments == true else { return false }
         let urls = Self.fileURLs(board)
         if !urls.isEmpty { model.addAttachments(urls); return true }
@@ -518,6 +498,7 @@ struct ComposerEditor: NSViewRepresentable {
     /// Composition owns every key until it is committed.
     override func keyDown(with event: NSEvent) {
         guard isEditable, !hasMarkedText(), let coordinator else { return super.keyDown(with: event) }
+        coordinator.bindTarget()
         if coordinator.model.completionKey(event) { return }
         let modifiers = event.modifierFlags.intersection([.command, .shift, .option, .control])
         switch event.keyCode {
@@ -536,6 +517,7 @@ struct ComposerEditor: NSViewRepresentable {
 
     override func becomeFirstResponder() -> Bool {
         let accepted = super.becomeFirstResponder()
+        if accepted { coordinator?.model.attach(self); coordinator?.bindTarget(); coordinator?.focused() }
         if accepted { coordinator?.model.focusChanged(true) }
         return accepted
     }
@@ -704,7 +686,7 @@ struct ComposerView: View {
             for provider in providers {
                 _ = provider.loadObject(ofClass: NSURL.self) { url, _ in
                     guard let url = url as? URL else { return }
-                    Task { @MainActor in model.addAttachments([url]) }
+                    Task { @MainActor in model.attach(store); model.addAttachments([url]) }
                 }
             }
             return !providers.isEmpty
@@ -720,20 +702,31 @@ struct ComposerView: View {
         .onChange(of: minimumHeight, initial: true) { _, value in
             if fillsHeight, layout.composerMinimumHeight != value { layout.composerMinimumHeight = value }
         }
-        .onChange(of: model.isFocused) { _, focused in
-            if focused { layout.focusConversation(layout.conversationTab(for: store)) }
-        }
-        .onChange(of: ObjectIdentifier(store), initial: true) { _, _ in
-            model.attach(store); model.show(conversationID: store.loadedConversationID); context.prepare()
-            let followsConversation = model.followsConversation
-            model.perform = { [weak layout, weak store] command in layout?.perform(command, for: followsConversation ? store : nil) }
-            model.canPerform = { [weak layout, weak store] command in layout?.canPerform(command, composerCommand: true, for: followsConversation ? store : nil) ?? false }
+        .onChange(of: [ObjectIdentifier(store), ObjectIdentifier(model)], initial: true) { _, _ in
+            refreshActiveCompletion()
             if model.firstShown() { DispatchQueue.main.async { model.focus() } }
         }
-        .onChange(of: store.loadedConversationID) { _, id in
-            model.show(conversationID: id); context.prepare()
+        .onChange(of: store.loadedConversationID) { _, _ in
+            refreshActiveCompletion()
             if store.isUnsentConversation { DispatchQueue.main.async { model.focus() } }
         }
+        .onChange(of: store.nextTurn) { _, _ in
+            refreshActiveCompletion()
+        }
+        .onReceive(store.device.composerInputs.changes) { _ in
+            refreshActiveCompletion()
+        }
+    }
+
+    private func refreshActiveCompletion() {
+        guard model.store === store, let view = model.textView, view.window?.firstResponder === view else { return }
+        model.updateCompletion()
+    }
+
+    private func bindEditorContext() {
+        model.attach(store)
+        model.perform = { [weak layout, weak store] command in layout?.perform(command, for: store) }
+        model.canPerform = { [weak layout, weak store] command in layout?.canPerform(command, composerCommand: true, for: store) ?? false }
     }
 
     private var editorColumn: some View {
@@ -750,7 +743,9 @@ struct ComposerView: View {
                 else { accessories }
             }
             ComposerEditor(model: model, placeholder: placeholder, editable: store.draftEditable, submit: send, steer: steer,
-                           placeMenu: { [layout] in layout.placeMenuItem(for: .composer) })
+                           placeMenu: { [layout] in layout.placeMenuItem(for: .composer) },
+                           bindTarget: bindEditorContext,
+                           focused: { layout.focusConversation(layout.conversationTab(for: store)) })
                 .frame(height: fillsHeight ? nil : model.height)
                 .frame(minHeight: fillsHeight ? ComposerTextView.minimumHeight : nil, maxHeight: fillsHeight ? .infinity : nil)
                 // The text view sits in a clipping scroll view, which hides its
@@ -861,7 +856,7 @@ struct ComposerView: View {
     private func nextTurnControls(compact: Bool) -> some View {
         HStack(spacing: 10) {
             if store.allowsAttachments {
-                Button(action: model.chooseAttachments) { Image(systemName: "paperclip") }
+                Button(action: context.chooseAttachments) { Image(systemName: "paperclip") }
                     .buttonStyle(.borderless)
                     .accessibilityLabel("添加附件")
                     .help(KeyboardShortcutSettings.shared.help("添加附件：图片随消息发送，其他文件以路径告知 Agent", .attach))
@@ -1101,13 +1096,15 @@ struct PreservedInputMenu: View {
     let tab: ConversationTab
     @ObservedObject var model: ComposerModel
     var body: some View {
-        Menu("保留的输入") {
-            Button("另写一份输入") { window.newComposerDraft(for: tab) }
-            let alternatives = window.composerDrafts.alternatives(to: model)
-            if !alternatives.isEmpty {
-                Divider()
-                ForEach(alternatives, id: \.model.id) { item in
-                    Button(item.name) { window.selectComposerDraft(item.model, for: tab) }
+        if !tab.store.isSideChat {
+            Menu("保留的输入") {
+                Button("另写一份输入") { window.newComposerDraft(for: tab) }
+                let alternatives = window.composerDrafts.alternatives(to: model)
+                if !alternatives.isEmpty {
+                    Divider()
+                    ForEach(alternatives, id: \.model.id) { item in
+                        Button(item.name) { window.selectComposerDraft(item.model, for: tab) }
+                    }
                 }
             }
         }

@@ -134,6 +134,7 @@ struct TranscriptTable: NSViewRepresentable {
 
     private var parent: TranscriptTable?
     private var findChanges: AnyCancellable?
+    private var dateEnvironmentChanges: AnyCancellable?
     private var findQuery = ""
 
     /// Search belongs to the tab, while highlights and disclosure geometry
@@ -268,7 +269,16 @@ struct TranscriptTable: NSViewRepresentable {
         NotificationCenter.default.addObserver(self, selector: #selector(clipFrameChanged), name: NSView.frameDidChangeNotification, object: clip)
         NotificationCenter.default.addObserver(self, selector: #selector(liveResizeEnded), name: NSWindow.didEndLiveResizeNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(typographyChanged), name: .veluneAppearanceChanged, object: nil)
-        NotificationCenter.default.addObserver(self, selector: #selector(typographyChanged), name: .NSCalendarDayChanged, object: nil)
+        // Foundation posts these on the producer's thread, including midnight
+        // on a worker queue. A MainActor class does not move ObjC selectors.
+        dateEnvironmentChanges = Publishers.MergeMany([
+            Notification.Name.NSCalendarDayChanged,
+            .NSSystemTimeZoneDidChange,
+            .NSSystemClockDidChange,
+            NSLocale.currentLocaleDidChangeNotification,
+        ].map { NotificationCenter.default.publisher(for: $0) })
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.dateEnvironmentChanged() }
         return scroll
     }
 
@@ -287,6 +297,18 @@ struct TranscriptTable: NSViewRepresentable {
         rendered.removeAll(); measured.removeAll(); lastKnown.removeAll()
         for cell in visibleCells.values { cell.configurationToken = nil }
         rebuildEntries()
+    }
+
+    /// Relative dates can change their labels and widths, while the message
+    /// text, fonts, disclosures and reading position remain the same.
+    private func dateEnvironmentChanged() {
+        finishTransition()
+        measureToken?.cancel()
+        measured.removeAll()
+        for cell in visibleCells.values { cell.configurationToken = nil }
+        // Hidden tabs keep their rendered text; the next update lazily lays
+        // out their action rows against the new date environment.
+        if parent != nil { rebuildEntries() }
     }
 
     func update(_ input: TranscriptTable) {

@@ -9,6 +9,37 @@ import socket
 import subprocess
 import select
 import time
+import ctypes
+import errno
+
+
+class DarwinSiginfo(ctypes.Structure):
+    # macOS Python omits os.waitid, although Darwin provides POSIX waitid.
+    # Layout: sys/signal.h siginfo_t (both arm64 and x86_64).
+    _fields_ = [(name, ctypes.c_int) for name in
+                ("si_signo", "si_errno", "si_code", "si_pid")] + [
+        ("si_uid", ctypes.c_uint), ("si_status", ctypes.c_int),
+        ("si_addr", ctypes.c_void_p), ("si_value", ctypes.c_void_p),
+        ("si_band", ctypes.c_long), ("reserved", ctypes.c_ulong * 7)]
+
+
+def child_exited(child):
+    # Pin the leader's PID/PGID until terminate_group has sent its last signal.
+    # Popen.poll()/wait() would reap it, allowing an unrelated group to reuse it.
+    if hasattr(os, "waitid"):
+        return os.waitid(os.P_PID, child.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT) is not None
+    if sys.platform != "darwin":
+        raise RuntimeError("non-reaping child observation unavailable")
+    status = DarwinSiginfo()
+    libc = ctypes.CDLL(None, use_errno=True)
+    waitid = libc.waitid
+    waitid.argtypes = [ctypes.c_uint, ctypes.c_uint, ctypes.POINTER(DarwinSiginfo), ctypes.c_int]
+    waitid.restype = ctypes.c_int
+    while waitid(os.P_PID, child.pid, ctypes.byref(status), os.WEXITED | os.WNOHANG | os.WNOWAIT):
+        code = ctypes.get_errno()
+        if code != errno.EINTR:
+            raise OSError(code, "waitid failed")
+    return status.si_pid != 0
 
 
 def receive():
@@ -69,11 +100,11 @@ def terminate_group(child):
     try:
         os.killpg(child.pid, signal.SIGTERM)
     except ProcessLookupError:
+        child.wait()
         return
-    try:
-        child.wait(timeout=1)
-    except subprocess.TimeoutExpired:
-        pass
+    deadline = time.monotonic() + 1
+    while not child_exited(child) and time.monotonic() < deadline:
+        time.sleep(0.02)
     try:
         os.killpg(child.pid, signal.SIGKILL)
     except ProcessLookupError:
@@ -101,7 +132,7 @@ def launch(request):
     pending = bytearray()
     os.set_blocking(child.stdin.fileno(), False)
     try:
-        while child.poll() is None:
+        while not child_exited(child):
             if not interactive and time.monotonic() >= deadline:
                 raise TimeoutError("runtime helper exceeded 15 seconds")
             if not input_open and not pending:
@@ -116,10 +147,9 @@ def launch(request):
                     input_open = False
                     if interactive:
                         child.stdin.close()
-                        try:
-                            child.wait(timeout=1)
-                        except subprocess.TimeoutExpired:
-                            pass
+                        grace = time.monotonic() + 1
+                        while not child_exited(child) and time.monotonic() < grace:
+                            time.sleep(0.02)
                         break
                 else:
                     pending.extend(data)

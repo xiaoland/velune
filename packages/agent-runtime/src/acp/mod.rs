@@ -14,7 +14,7 @@ mod projection;
 pub use config::{ConfigChoice, ConfigOption, ConfigValue};
 
 /// Arguments and environment belong to the execution target. Environment values may be secrets.
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct Config {
     pub binary: PathBuf,
     pub args: Vec<String>,

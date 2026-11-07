@@ -8,6 +8,15 @@ fn main() {
     ] {
         println!("cargo:rerun-if-changed={path}");
     }
+    let manifest_dir =
+        PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").expect("Cargo package directory"));
+    let bridge_dir = manifest_dir.join("relaykit-bridge");
+    let module_mode = if bridge_dir.join("vendor/modules.txt").is_file() {
+        println!("cargo:rerun-if-changed=relaykit-bridge/vendor");
+        "vendor"
+    } else {
+        "readonly"
+    };
     for key in [
         "GO",
         "CC",
@@ -55,13 +64,14 @@ fn main() {
             .unwrap_or_else(|| format!("{arch}-w64-mingw32-clang").into());
         command.env("CC", compiler);
     }
+    let module_arg = format!("-mod={module_mode}");
     let status = command
-        .current_dir("relaykit-bridge")
+        .current_dir(&bridge_dir)
         .env("GOWORK", "off")
         .env("CGO_ENABLED", "1")
         .env("GOOS", go_os)
         .env("GOARCH", go_arch)
-        .args(["build", "-mod=readonly", "-trimpath", mode, "-o"])
+        .args(["build", module_arg.as_str(), "-trimpath", mode, "-o"])
         .arg(out.join(artifact))
         .arg(".")
         .status()

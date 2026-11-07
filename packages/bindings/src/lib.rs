@@ -143,6 +143,30 @@ pub fn provider_templates() -> Result<Vec<ProviderTemplate>, BindingError> {
     Ok(velune_application_api::provider_templates())
 }
 
+#[uniffi::export]
+pub fn runtime_new_conversation_choice(
+    runtime: RuntimeInstance,
+) -> Result<NewConversationChoice, BindingError> {
+    velune_application_api::runtime_new_conversation_choice(runtime).map_err(Into::into)
+}
+
+#[uniffi::export]
+pub fn runtime_with_new_conversation_choice(
+    runtime: RuntimeInstance,
+    choice: NewConversationChoice,
+) -> Result<RuntimeInstance, BindingError> {
+    velune_application_api::runtime_with_new_conversation_choice(runtime, choice)
+        .map_err(Into::into)
+}
+
+#[uniffi::export]
+pub fn runtime_start_choice(
+    runtime: RuntimeInstance,
+    last: Option<RuntimeComposerChoices>,
+) -> Result<TurnChoice, BindingError> {
+    velune_application_api::runtime_start_choice(runtime, last).map_err(Into::into)
+}
+
 /// Presentation metadata for a validated subscription composition. API providers return None.
 #[uniffi::export]
 pub fn provider_subscription_template(
@@ -197,6 +221,29 @@ pub struct VeluneApplication {
 }
 
 impl VeluneApplication {
+    fn composer_target_identity(
+        &self,
+        request: ComposerTargetRequest,
+    ) -> Result<ComposerTargetIdentity, BindingError> {
+        request!(
+            self,
+            "composer_target_identity",
+            ReadComposerTargetIdentity { request }
+        )
+    }
+
+    fn composer_target_basis(
+        &self,
+        request: ComposerTargetRequest,
+        choices: Option<ComposerTargetChoices>,
+    ) -> Result<ComposerTargetBasis, BindingError> {
+        request!(
+            self,
+            "composer_target_basis",
+            ReadComposerTargetBasis { request, choices }
+        )
+    }
+
     fn lock(&self) -> Result<MutexGuard<'_, Option<Backend>>, BindingError> {
         self.application
             .lock()
@@ -207,6 +254,7 @@ impl VeluneApplication {
         if matches!(
             command,
             Command::ManageComposerInputs { .. }
+                | Command::ReadComposerTarget { .. }
                 | Command::UploadComposerAttachment { .. }
                 | Command::ReadComposerAttachment { .. }
         ) && let Some(authority) = &self.composer_authority
@@ -583,6 +631,64 @@ impl VeluneApplication {
     pub fn composer_owner_id(&self) -> Result<String, BindingError> {
         request!(self, "composer_owner_id", ReadComposerOwner)
     }
+    pub fn read_composer_target(
+        &self,
+        context: ComposerContextKey,
+    ) -> Result<Option<ComposerTarget>, BindingError> {
+        request!(self, "read_composer_target", ReadComposerTarget { context })
+    }
+    pub fn prepare_composer_target(
+        &self,
+        request: ComposerTargetRequest,
+        overlay_choices: Option<ComposerTargetChoices>,
+    ) -> Result<PreparedComposerTarget, BindingError> {
+        let identity = self.composer_target_identity(request.clone())?;
+        let ComposerTargetIdentity {
+            owner_id,
+            context,
+            default_runtime_id,
+        } = identity;
+        let mut target = self.read_composer_target(context.clone())?;
+        if target.is_none() {
+            let ensured = self.manage_composer_inputs(ComposerInputOperation::EnsureTarget {
+                context: context.clone(),
+                seed: ComposerTargetChoices::default(),
+            })?;
+            target = ensured
+                .state
+                .as_ref()
+                .and_then(|state| {
+                    state
+                        .targets
+                        .iter()
+                        .find(|target| target.context == context)
+                })
+                .cloned();
+        }
+        let target = target.ok_or_else(|| BindingError::Contract {
+            detail: "输入保存端没有返回已准备的目标".into(),
+        })?;
+        let choices = overlay_choices.unwrap_or_else(|| target.choices.clone());
+        let basis = self.composer_target_basis(request.clone(), Some(choices))?;
+        if basis.owner_id != owner_id
+            || basis.context != context
+            || basis.default_runtime_id != default_runtime_id
+        {
+            return Err(BindingError::Contract {
+                detail: "准备期间目标执行身份发生变化，请重试".into(),
+            });
+        }
+        let next_turn = resolve_next_turn(basis.input.clone());
+        Ok(PreparedComposerTarget {
+            request,
+            owner_id: basis.owner_id,
+            context: basis.context,
+            target,
+            default_runtime_id: basis.default_runtime_id,
+            basis: basis.input,
+            next_turn,
+        })
+    }
     pub fn manage_composer_inputs(
         &self,
         operation: ComposerInputOperation,
@@ -616,6 +722,13 @@ impl VeluneApplication {
     }
     pub fn composer_choices(&self) -> Result<ComposerChoices, BindingError> {
         request!(self, "composer_choices", ReadComposerChoices)
+    }
+    pub fn runtime_start_choice(&self, runtime_id: String) -> Result<TurnChoice, BindingError> {
+        request!(
+            self,
+            "runtime_start_choice",
+            ReadRuntimeStartChoice { runtime_id }
+        )
     }
     /// An intent without choices or runtime removes the conversation's.
     pub fn set_next_turn_intent(&self, intent: NextTurnIntent) -> Result<(), BindingError> {

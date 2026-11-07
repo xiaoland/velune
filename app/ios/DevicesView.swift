@@ -182,19 +182,36 @@ private struct QRScanner: UIViewControllerRepresentable {
 
 private struct AboutView: View {
     @State private var licenses = ""
+    @State private var projectLicense = ""
+    private var version: String {
+        Bundle.main.infoDictionary?["VeluneDisplayVersion"] as? String
+            ?? Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String
+            ?? ""
+    }
+    private var sourceArchiveURL: URL? {
+        let tag = "v\(version)"
+        return URL(string: "https://github.com/xiaoland/velune/releases/download/\(tag)/velune-\(tag)-source.tar.gz")
+    }
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
-                Text("Velune \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "")").font(.title2)
+                Text("Velune \(version)").font(.title2)
                 Text("iPad 与 iPhone 远程控制端")
+                Text("Velune 按 GNU AGPL-3.0-only 发布。对应源码归档可从 GitHub 获取。")
+                if let sourceArchiveURL {
+                    Link("下载此版本对应源码", destination: sourceArchiveURL)
+                }
+                Text(projectLicense).font(.caption).textSelection(.enabled)
                 Text(licenses).font(.caption).textSelection(.enabled)
             }.padding()
         }.navigationTitle("关于与开源许可").task {
             do {
+                guard let licenseURL = Bundle.main.url(forResource: "project-license", withExtension: "txt") else { throw CocoaError(.fileNoSuchFile) }
+                projectLicense = try String(contentsOf: licenseURL, encoding: .utf8)
                 guard let url = Bundle.main.url(forResource: "rust-licenses", withExtension: "txt") else { throw CocoaError(.fileNoSuchFile) }
                 licenses = try String(contentsOf: url, encoding: .utf8)
                 if let swift = Bundle.main.url(forResource: "swift-licenses", withExtension: "txt") { licenses += "\n\n" + (try String(contentsOf: swift, encoding: .utf8)) }
-            } catch { licenses = mobileError(error) }
+            } catch { projectLicense = mobileError(error) }
         }
     }
 }

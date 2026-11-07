@@ -14,14 +14,17 @@ import VeluneBindings
         while !ready(), Date() < end { RunLoop.main.run(until: Date().addingTimeInterval(0.02)) }
         precondition(ready(), "合成检查超时")
     }
+    if CommandLine.arguments.contains("--experience-drag-provider-only") { dragProviderChecks() }
+    if CommandLine.arguments.contains("--experience-workspace-only") { workspaceRecoveryChecks(home: home); exit(0) }
     AppearancePreferences.shared.load(home: home) { fatalError($0) }
+    if CommandLine.arguments.contains("--experience-runtime-editor-only") { runtimeEditorChecks(home: home) }
     func stamp(_ date: Date) -> Int64 { Int64(date.timeIntervalSince1970 * 1000) }
     if CommandLine.arguments.contains("--experience-navigation-only") {
         ConversationStore.checkOpeningCatalogAdmission()
         navigationTranscriptChecks(home: home)
     }
     if CommandLine.arguments.contains("--experience-typography-only") {
-        let model = ComposerModel(followsConversation: false)
+        let model = ComposerModel()
         let editor = ComposerTextView()
         let coordinator = ComposerEditor.Coordinator(model: model)
         coordinator.view = editor; editor.delegate = coordinator
@@ -190,6 +193,7 @@ import VeluneBindings
 @MainActor private func navigationTranscriptChecks(home: URL) -> Never {
     func note(_ text: String) { FileHandle.standardError.write(Data((text + "\n").utf8)) }
     func descendants(_ root: NSView) -> [NSView] { [root] + root.subviews.flatMap(descendants) }
+    workspaceContinuityChecks(home: home)
     let device = DeviceStore(preview: true)
     let window = ConversationWindowModel(application: device, kind: .workspace)
     let original = window.focused
@@ -228,9 +232,9 @@ import VeluneBindings
         ]),
         .init(id: "answer", role: .assistant, timestampUnixMs: now, blocks: [.text(text: "结果 Needle\n\n```swift\nlet needle = true\n```")])
     ]
-    let turn = TranscriptTurn(id: "turn", userMessageId: "user", workMessageIds: ["work", "deferred"], lastMessageId: "answer", replyStartBlock: 0, durationMs: 1200, isRunning: false, outcome: .completed, settings: nil, usage: nil)
+    let turn = TranscriptTurn(id: "turn", userMessageId: "user", workMessageIds: ["work", "deferred"], lastMessageId: "answer", replyStartBlock: 0, durationMs: 1200, isRunning: false, canFork: true, outcome: .completed, settings: nil, usage: nil)
     let model = TranscriptModel()
-    model.apply(messages, turns: [turn], items: [.message(id: "user", messageId: "user"), .work(turnId: "turn"), .message(id: "answer", messageId: "answer")], outline: [.init(id: "user", messageId: "user")], identities: messages.map { .init(id: $0.id, messageId: $0.id) }, canFork: true, editable: ["user"])
+    model.apply(messages, turns: [turn], items: [.message(id: "user", messageId: "user"), .work(turnId: "turn"), .message(id: "answer", messageId: "answer")], outline: [.init(id: "user", messageId: "user")], identities: messages.map { .init(id: $0.id, messageId: $0.id) }, editable: ["user"])
     let find = TranscriptFind()
     let controller = TranscriptTableController()
     controller.observeFind(find)

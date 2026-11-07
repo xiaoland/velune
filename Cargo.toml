@@ -3,9 +3,21 @@ members = [
     "packages/ai", "packages/ai-provider", "packages/conversation",
     "packages/agent-runtime", "packages/gateway", "packages/application",
     "packages/bindings", "packages/telemetry", "packages/application-api", "packages/remote",
+    "tools/bindgen",
 ]
 exclude = ["third-party/iroh-mdns-address-lookup", "third-party/iroh"]
 resolver = "3"
 
 [patch.crates-io]
 iroh = { path = "third-party/iroh" }
+
+# Development builds keep useful backtraces without retaining full type/variable
+# debug information in every historical compilation unit. Full debugging is an
+# explicit CARGO_PROFILE_DEV_DEBUG=2 invocation, not another permanent profile.
+[profile.dev]
+debug = 1
+incremental = true
+
+[profile.test]
+debug = 1
+incremental = true

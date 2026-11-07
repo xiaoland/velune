@@ -46,7 +46,7 @@ relay／lookup 地址拒绝用户名、密码、query 和 fragment；relay 凭�
 
 控制端原子保存目的设备 pin 和待确认 attempt 后才发送 Ready。执行端本地 API `approve_pairing(attempt, expected_peer)` 只允许 AwaitingApproval，原子提交入站 grant 与 completed attempt 后才开放业务；`reject_pairing` 返回实际已提交或未授权状态。批准不是远程业务 Command，GUI/headless 使用相同的可信本地 API。已提交结果可在新连接及执行服务重启后按原 attempt 查询；取消不撤销已提交 grant。`revoke_control` 先持久撤销，再拒绝接纳／查询并关闭该方向的既有访问；旧事务不能重新授信，先前已接纳工作继续完成。
 
-遥测配置读取使用独立的 `TelemetryProfileRead` 邀请、核对码和授权，手机无需业务 Handler 也能在前台分享已保存的配置。它不隐含控制权限；旧控制 grant 不授权读取认证。读取通过一条受信加密 RPC 返回有界 profile，不进入业务账本、snapshot 或持久重试缓存。目的端的开关、身份和临时开发覆盖保持独立。完整配置与 SDK 契约见[遥测装配](../../docs/design/telemetry.md)。
+遥测配置读取使用独立的 `TelemetryProfileRead` 邀请、核对码和授权，手机无需业务 Handler 也能在前台分享已保存的配置。它不隐含控制权限；旧控制 grant 不授权读取认证。读取通过一条受信加密 RPC 返回有界 profile，不进入业务账本、snapshot 或持久重试缓存。目的端的开关、身份和临时开发覆盖保持独立。完整配置与 SDK 契约见[遥测装配](../../docs/product-tdd/telemetry.md)。
 
 目的设备联系人 pin 与本机授予对端的 incoming grant 分开保存。B 扫 A 并获 A 批准，只允许 B 控制 A；A 不会同时取得控制 B 的权限。名称只是标签，公钥来自已完成握手的真实 peer。`connect` 使用保存的 pin/locator，认证 Hello 给出本次 incarnation；联系人不保存 incarnation，也不因地址或 relay 改变而换身份。
 

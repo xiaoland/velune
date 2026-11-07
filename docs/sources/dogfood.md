@@ -54,4 +54,4 @@
 
 2026-11-04 用户追加 dogfood 改进：系统通知打开新Tab；composer状态详情及时显示当前提供商额度；改善会话打开延迟；调查429后Pi转Codex的异常（用户后来澄清可能发送过retry，但没有手动切运行时，不将其记录为已证实自动跨运行时）；在途执行期间允许保存提供商与运行时配置，不以字段白名单限制编辑；核实Codex多文件夹项目、项目选择与模型目录感知；搜索高亮及工作过程按需展开；⌘Return插入本轮；创建时间从工作过程尾部移除，与copy／fork／edit组成只在悬停时显示的message hover bar；composer宽度改为相对比例。
 
-同轮用户明确确认：跨group移动焦点时“正文和附件保留；运行时、模型、推理与权限跟随目标会话”。这修订S71中整份输入共用身份的边界；内容和目标配置分别持久化与跨设备同步，全局唯一新建状态和同group换Tab规则继续成立。行为归[输入区](../prd/composer-input.md#内容与目标的归属)、[会话视图](../prd/conversation-view.md#消息操作行)、[运行时](../prd/agent-runtimes.md#类型与实例)及[状态设计](../design/composer-state.md)。
+同轮用户明确确认：跨group移动焦点时“正文和附件保留；运行时、模型、推理与权限跟随目标会话”。这修订S71中整份输入共用身份的边界；内容和目标配置分别持久化与跨设备同步，全局唯一新建状态和同group换Tab规则继续成立。行为归[输入区](../prd/composer-input.md#内容与目标的归属)、[会话视图](../prd/conversation-view.md#消息操作行)、[运行时](../prd/agent-runtimes.md#类型与实例)及[状态设计](../product-tdd/composer-state.md)。

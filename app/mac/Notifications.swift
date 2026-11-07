@@ -105,10 +105,7 @@ final class ConversationNotifier: NSObject, UNUserNotificationCenterDelegate {
         guard let conversationID = response.notification.request.content.userInfo["conversationID"] as? String else { return }
         await MainActor.run {
             NSApp.activate()
-            guard let application, let window = ConversationWindowModel.openNotificationConversation(conversationID, application: application) else { return }
-            window.window?.makeKeyAndOrderFront(nil)
-            // The keyboard goes where the notification points: the request waiting, else the composer.
-            if application.waitingConversationIDs.contains(conversationID) { window.focused.focusInteraction() } else { window.composer(for: window.focused).focusWhenShown() }
+            application?.showConversation(conversationID)
         }
     }
 }

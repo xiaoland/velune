@@ -1,6 +1,6 @@
 # OpenAI／Anthropic 账户查询：接口调研与架构建议
 
-核对日期：2026-11-02。本文件保留最初的接口调研。用户随后已授权实施；当前契约和 Mermaid 由 [AI 服务设计](../../docs/design/ai-service.md#组织用量与账单)维护，进度与验证见 [任务入口](packet.md#组织账单改造实施2026-11-02)。调研和实现验证均未使用真实账户或凭据。
+核对日期：2026-11-02。本文件保留最初的接口调研。用户随后已授权实施；当前契约和 Mermaid 由 [AI 服务设计](../../docs/product-tdd/ai-service.md#组织用量与账单)维护，进度与验证见 [任务入口](packet.md#组织账单改造实施2026-11-02)。调研和实现验证均未使用真实账户或凭据。
 
 ## 能查询什么
 
@@ -23,7 +23,7 @@ OpenAI 的 Admin Key 与 Anthropic 的 Admin API 凭据均具有组织级权限�
 
 ## 架构归属
 
-批准后的实现与 Mermaid 已整合到 [AI 服务设计](../../docs/design/ai-service.md#组织用量与账单)，产品语义归 [组织用量与账单 PRD](../../docs/prd/ai-providers.md#组织用量与账单)。以下保留当时的最小演进建议，当前源码与权威文档优先。
+批准后的实现与 Mermaid 已整合到 [AI 服务设计](../../docs/product-tdd/ai-service.md#组织用量与账单)，产品语义归 [组织用量与账单 PRD](../../docs/prd/ai-providers.md#组织用量与账单)。以下保留当时的最小演进建议，当前源码与权威文档优先。
 
 ## 建议的最小演进
 

@@ -168,14 +168,6 @@ impl CoreRuntime {
             access = InputAccess::ReadOnly;
         }
         snapshot.actions.input_access = access;
-        if access != InputAccess::Editable {
-            snapshot.actions.can_send = false;
-            snapshot.follow_up.can_steer = false;
-            snapshot.follow_up.can_resume = false;
-            snapshot.follow_up.can_compact = false;
-            snapshot.follow_up.editable.clear();
-            snapshot.follow_up.can_fork = false;
-        }
     }
     pub(super) fn control_held_elsewhere(&mut self) {
         if let Ok(Some(target)) = self.control_target() {
@@ -190,7 +182,11 @@ impl CoreRuntime {
         let Some(snapshot) = self.current_snapshot() else {
             return Ok(());
         };
-        let message = match snapshot.actions.input_access {
+        Self::check_input_access(snapshot.actions.input_access)
+    }
+    /// Validate the observation already captured for a command's projection.
+    pub(super) fn check_input_access(access: InputAccess) -> Result<(), RuntimeError> {
+        let message = match access {
             InputAccess::Editable => return Ok(()),
             InputAccess::CheckingControl => "正在检查会话控制权，请稍候",
             InputAccess::ExternalController => {

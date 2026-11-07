@@ -231,6 +231,7 @@ sealed class Commands
 
     readonly string path;
     readonly Dictionary<Command, Shortcut?> changed = [];
+    bool canWrite = true;
 
     public SendMode SendMode { get; private set; } = SendMode.Enter;
 
@@ -243,9 +244,12 @@ sealed class Commands
     public Commands(string home)
     {
         path = Path.Combine(home, "windows-shortcuts.json");
+        if (!File.Exists(path)) return;
         try
         {
-            if (JsonSerializer.Deserialize<Saved>(File.ReadAllText(path), LayoutStore.Options) is { Schema: 1 } saved)
+            using var document = JsonDocument.Parse(File.ReadAllText(path));
+            if (document.RootElement.Deserialize<Saved>(LayoutStore.Options) is { Schema: 1 } saved
+                && LayoutStore.HasOnlyKnownKeys(document.RootElement, JsonSerializer.SerializeToElement(saved, LayoutStore.Options)))
             {
                 SendMode = saved.SendMode ?? SendMode.Enter;
                 foreach (var (command, keys) in saved.Shortcuts.Where(entry => Table.ContainsKey(entry.Key)))
@@ -253,9 +257,11 @@ sealed class Commands
                     changed[command] = keys is { } set ? new Shortcut((VirtualKeyModifiers)set.Modifiers, (VirtualKey)set.Key) : null;
                 }
             }
+            else canWrite = false;
         }
         catch (Exception failure) when (failure is IOException or UnauthorizedAccessException or JsonException or NotSupportedException)
         {
+            canWrite = false;
         }
     }
 
@@ -339,6 +345,7 @@ sealed class Commands
 
     void Write()
     {
+        if (!canWrite) return;
         try
         {
             Directory.CreateDirectory(Path.GetDirectoryName(path)!);

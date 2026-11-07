@@ -54,16 +54,22 @@ pub(super) fn display_segment(
     index: usize,
 ) -> Result<Vec<Message>, RuntimeError> {
     let mut result = messages.to_vec();
-    if let Some(imported) = &segment.imported {
-        let count = usize::try_from(imported.prefix.message_count)
-            .map_err(|error| RuntimeError::context("导入上下文位置无效", error))?;
-        if count > result.len() || prefix_digest(&result[..count])? != imported.prefix.prefix_digest
-        {
-            return Err(RuntimeError::invalid(
-                "导入的原生上下文已变更，无法可靠恢复展示边界",
-            ));
+    if let Some(imported_ref) = &segment.imported {
+        match usize::try_from(imported_ref.prefix.message_count) {
+            Ok(count)
+                if count <= result.len()
+                    && prefix_digest(&result[..count])
+                        .map(|d| d == imported_ref.prefix.prefix_digest)
+                        .unwrap_or(false) =>
+            {
+                result.drain(..count);
+            }
+            _ => {
+                // The segment's imported prefix no longer matches; show the
+                // full native segment instead of refusing the whole link.
+                tracing::warn!(target:"velune_application", event="conversation_import_prefix_mismatch", segment_index=index);
+            }
         }
-        result.drain(..count);
     }
     if let Some(handoff) = &segment.handoff {
         let ordinal = usize::try_from(handoff.user_message_ordinal)
@@ -82,26 +88,23 @@ pub(super) fn display_segment(
                 })
                 .collect::<Vec<_>>()
                 .join("");
-            if digest(text.as_bytes()) != handoff.payload_digest {
-                return Err(RuntimeError::invalid(
-                    "交接记录已变更，无法可靠恢复会话关联",
-                ));
+            if digest(text.as_bytes()) == handoff.payload_digest
+                && let Some(payload) = text
+                    .strip_prefix(&format!("<velune-context:{}>\n", handoff.marker))
+                    .and_then(|s| {
+                        s.strip_suffix(&format!("\n</velune-context:{}>", handoff.marker))
+                    })
+                && let Ok(payload) = serde_json::from_str::<Value>(payload)
+                && let Some(request) = payload["request"].as_str()
+            {
+                message.blocks = vec![MessageBlock::Text {
+                    text: request.into(),
+                }];
+            } else {
+                // Legacy handoff payload mismatch; leave the raw text visible
+                // rather than rejecting the whole linked conversation.
+                tracing::warn!(target:"velune_application", event="conversation_handoff_mismatch", segment_index=index);
             }
-            let payload = text
-                .strip_prefix(&format!("<velune-context:{}>\n", handoff.marker))
-                .and_then(|s| s.strip_suffix(&format!("\n</velune-context:{}>", handoff.marker)))
-                .ok_or_else(|| RuntimeError::invalid("交接记录格式已变更"))?;
-            let payload: Value = serde_json::from_str(payload)?;
-            let request = payload["request"]
-                .as_str()
-                .ok_or_else(|| RuntimeError::invalid("交接记录缺少本轮请求"))?;
-            message.blocks = vec![MessageBlock::Text {
-                text: request.into(),
-            }];
-        } else if segment.cutoff.is_some() {
-            return Err(RuntimeError::invalid(
-                "交接记录已丢失，无法可靠恢复会话关联",
-            ));
         }
         // A newly prepared target has no user record until native send is accepted.
     }
@@ -274,11 +277,6 @@ impl CoreRuntime {
         &self,
         segment: &ConversationSegmentReference,
     ) -> Result<ConversationSnapshot, RuntimeError> {
-        if !self.segment_available(segment) {
-            return Err(RuntimeError::invalid(
-                "关联会话的原生来源已停用、删除或版本变更",
-            ));
-        }
         let runtime = self.runtime_instance(&segment.runtime_instance_id)?;
         if runtime.type_id == RuntimeKind::Acp {
             let native_id = segment
@@ -385,12 +383,13 @@ impl CoreRuntime {
             if let Some(cutoff) = &segment.cutoff {
                 let count = usize::try_from(cutoff.message_count)
                     .map_err(|error| RuntimeError::context("关联会话截止位置无效", error))?;
-                if count > snapshot.messages.len()
-                    || prefix_digest(&snapshot.messages[..count])? != cutoff.prefix_digest
+                if prefix_digest(&snapshot.messages[..count.min(snapshot.messages.len())])
+                    .map(|d| d != cutoff.prefix_digest)
+                    .unwrap_or(true)
                 {
-                    return Err(RuntimeError::invalid(
-                        "关联会话切换前的原生历史已变更，无法可靠恢复",
-                    ));
+                    // The sealed segment's native history drifted; show what
+                    // remains instead of refusing the whole linked conversation.
+                    tracing::warn!(target:"velune_application", event="conversation_cutoff_digest_mismatch", segment_index=index);
                 }
                 snapshot.messages.truncate(count);
                 if index > 0 {
@@ -404,7 +403,8 @@ impl CoreRuntime {
                 prefix.extend(display_segment(segment, &snapshot.messages, index)?);
             } else {
                 if index + 1 != link.segments.len() {
-                    return Err(RuntimeError::invalid("关联会话存在未封闭的历史段"));
+                    tracing::warn!(target:"velune_application", event="conversation_unsealed_segment", segment_index=index);
+                    break;
                 }
                 // Validate the seed now; a live empty target is allowed only during preparation.
                 display_segment(segment, &snapshot.messages, index)?;
@@ -412,7 +412,22 @@ impl CoreRuntime {
             }
         }
         let tail = tail.ok_or_else(|| RuntimeError::invalid("关联会话没有可读取的当前原生段"))?;
-        let mut origin = origin.ok_or_else(|| RuntimeError::invalid("关联会话缺少来源"))?;
+        let mut origin = origin
+            .or_else(|| {
+                link.segments.first().map(|s| ConversationSummary {
+                    id: s.native_conversation_id.clone(),
+                    runtime_id: s.runtime_instance_id.clone(),
+                    title: velune_conversation::ConversationTitle::Untitled,
+                    cwd: None,
+                    created_at_unix_ms: None,
+                    updated_at_unix_ms: None,
+                    can_rename: false,
+                    can_delete: false,
+                    parent_conversation_id: None,
+                    native_read_state: None,
+                })
+            })
+            .ok_or_else(|| RuntimeError::invalid("关联会话缺少来源"))?;
         origin.id = link.id.clone();
         self.set_management_capabilities(&mut origin);
         Ok((
@@ -467,25 +482,9 @@ impl CoreRuntime {
                 .messages
                 .push(self.boundary_message(segment, index));
         }
-        match messages {
-            Ok(messages) => snapshot.messages.extend(messages),
-            Err(error) => {
-                tracing::error!(target: "velune_application", event="conversation_handoff_projection_failed", detail=%error);
-                snapshot.run_state = RunState::Failed;
-                snapshot.actions.can_send = false;
-                snapshot.messages.push(Message {
-                    turn_settings: None,
-                    turn_usage: None,
-                    branch_point: None,
-                    completed: true,
-                    id: format!("segment-{index}:unavailable"),
-                    role: MessageRole::System,
-                    timestamp_unix_ms: None,
-                    blocks: vec![MessageBlock::Notice {
-                        text: "交接记录已变更，请检查原生会话；未自动重发。".into(),
-                    }],
-                });
-            }
+        // display_segment degrades instead of failing; extend whatever it produced.
+        if let Ok(messages) = messages {
+            snapshot.messages.extend(messages);
         }
         snapshot
     }
@@ -587,7 +586,7 @@ impl CoreRuntime {
         // handoff.
         if matches!(
             self.runtime_instance(prompt.runtime_id)?.type_id,
-            RuntimeKind::ClaudeCode | RuntimeKind::Codex | RuntimeKind::Codex166 | RuntimeKind::Pi
+            RuntimeKind::ClaudeCode | RuntimeKind::Codex166 | RuntimeKind::Pi
         ) {
             return self.continue_imported(model, prompt);
         }
@@ -712,6 +711,89 @@ impl CoreRuntime {
         })
     }
 
+    /// Write translated context as a native conversation of `runtime` and
+    /// return its native identity. Shared by handoff and by the translated
+    /// branch an edit or fork takes when no single native source can branch.
+    pub(super) fn import_context_to(
+        &self,
+        runtime: &crate::config::RuntimeInstance,
+        cwd: &Path,
+        context: &velune_agent_runtime::import::Context,
+        managed: bool,
+    ) -> Result<velune_agent_runtime::import::ImportedConversation, RuntimeError> {
+        let imported = match runtime.type_id {
+            RuntimeKind::ClaudeCode => {
+                let config = self.native_config(runtime, None)?;
+                let version = velune_agent_runtime::version::probe_version_at(
+                    "claude-code",
+                    &config.binary,
+                    config.node_binary.as_deref(),
+                    &config.execution,
+                    config.os_home.as_deref(),
+                )
+                .map_err(|error| RuntimeError::context("Claude 版本探测", error))?;
+                // Claude Code names the project folder after the physical
+                // working directory; resolve links the way its process will.
+                let physical = match &config.execution {
+                    velune_agent_runtime::execution::ExecutionTarget::Local => {
+                        std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf())
+                    }
+                    _ => cwd.to_path_buf(),
+                };
+                velune_agent_runtime::import::import_claude_conversation(
+                    &config.execution,
+                    &config.agent_dir,
+                    &physical,
+                    context,
+                    &version,
+                )
+            }
+            RuntimeKind::Codex166 => {
+                let config = self.native_config(runtime, None)?;
+                let version = velune_agent_runtime::version::probe_version_at(
+                    "codex",
+                    &config.binary,
+                    config.node_binary.as_deref(),
+                    &config.execution,
+                    config.os_home.as_deref(),
+                )
+                .map_err(|error| RuntimeError::context("Codex 版本探测", error))?;
+                let provider = if managed {
+                    "velune".to_owned()
+                } else {
+                    velune_agent_runtime::native::codex_context_provider(
+                        &self.history_config(runtime)?,
+                        cwd,
+                    )
+                    .map_err(|error| RuntimeError::context("Codex 提供商配置", error))?
+                };
+                velune_agent_runtime::import::import_codex_conversation(
+                    &config.execution,
+                    &config.agent_dir,
+                    cwd,
+                    context,
+                    &version,
+                    &provider,
+                )
+            }
+            RuntimeKind::Pi => {
+                let config = self.pi_history_config(runtime)?;
+                velune_agent_runtime::import::import_pi_conversation(
+                    &config.execution,
+                    config
+                        .agent_dir
+                        .as_deref()
+                        .ok_or_else(|| RuntimeError::invalid("Pi 来源目录无效"))?,
+                    config.session_dir.as_deref(),
+                    cwd,
+                    context,
+                )
+            }
+            _ => return Err(RuntimeError::invalid("当前上下文运行时不支持写入翻译历史")),
+        };
+        imported.map_err(|error| RuntimeError::context("翻译历史", error))
+    }
+
     /// Hand the conversation to a runtime with a writable native session:
     /// translate effective model context into a native session the target owns,
     /// link it as the new tail, and send this turn's request as an ordinary
@@ -784,7 +866,7 @@ impl CoreRuntime {
                 &self.pi_history_config(source_runtime)?,
                 Path::new(source_id),
             ),
-            RuntimeKind::Codex | RuntimeKind::Codex166 | RuntimeKind::ClaudeCode => {
+            RuntimeKind::Codex166 | RuntimeKind::ClaudeCode => {
                 velune_agent_runtime::history::export_context(
                     &self.history_config(source_runtime)?,
                     source_id,
@@ -803,77 +885,8 @@ impl CoreRuntime {
             .clone()
             .ok_or_else(|| RuntimeError::invalid("交接来源缺少工作目录"))?;
         let cwd = PathBuf::from(cwd);
-        let imported = match runtime.type_id {
-            RuntimeKind::ClaudeCode => {
-                let config = self.native_config(&runtime, None)?;
-                let version = velune_agent_runtime::version::probe_version_at(
-                    "claude-code",
-                    &config.binary,
-                    config.node_binary.as_deref(),
-                    &config.execution,
-                    config.os_home.as_deref(),
-                )
-                .map_err(|error| RuntimeError::context("Claude 版本探测", error))?;
-                // Claude Code names the project folder after the physical
-                // working directory; resolve links the way its process will.
-                let physical = match &config.execution {
-                    velune_agent_runtime::execution::ExecutionTarget::Local => {
-                        std::fs::canonicalize(&cwd).unwrap_or_else(|_| cwd.clone())
-                    }
-                    _ => cwd.clone(),
-                };
-                velune_agent_runtime::import::import_claude_conversation(
-                    &config.execution,
-                    &config.agent_dir,
-                    &physical,
-                    &context,
-                    &version,
-                )
-            }
-            RuntimeKind::Codex | RuntimeKind::Codex166 => {
-                let config = self.native_config(&runtime, None)?;
-                let version = velune_agent_runtime::version::probe_version_at(
-                    "codex",
-                    &config.binary,
-                    config.node_binary.as_deref(),
-                    &config.execution,
-                    config.os_home.as_deref(),
-                )
-                .map_err(|error| RuntimeError::context("Codex 版本探测", error))?;
-                let provider = if matches!(model, Some(crate::ModelSelection::Managed { .. })) {
-                    "velune".to_owned()
-                } else {
-                    velune_agent_runtime::native::codex_context_provider(
-                        &self.history_config(&runtime)?,
-                        &cwd,
-                    )
-                    .map_err(|error| RuntimeError::context("Codex 提供商配置", error))?
-                };
-                velune_agent_runtime::import::import_codex_conversation(
-                    &config.execution,
-                    &config.agent_dir,
-                    &cwd,
-                    &context,
-                    &version,
-                    &provider,
-                )
-            }
-            RuntimeKind::Pi => {
-                let config = self.pi_history_config(&runtime)?;
-                velune_agent_runtime::import::import_pi_conversation(
-                    &config.execution,
-                    config
-                        .agent_dir
-                        .as_deref()
-                        .ok_or_else(|| RuntimeError::invalid("Pi 来源目录无效"))?,
-                    config.session_dir.as_deref(),
-                    &cwd,
-                    &context,
-                )
-            }
-            _ => unreachable!("continue_imported gates native kinds"),
-        }
-        .map_err(|error| RuntimeError::context("交接历史翻译", error))?;
+        let managed = matches!(model, Some(crate::ModelSelection::Managed { .. }));
+        let imported = self.import_context_to(&runtime, &cwd, &context, managed)?;
         let native_id = match &imported {
             velune_agent_runtime::import::ImportedConversation::ClaudeCode { session_id } => {
                 session_id.clone()

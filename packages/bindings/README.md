@@ -49,14 +49,20 @@ Running、Unknown、ResultExpired、ServerRestarted 与传输不明保留 pendin
 
 `VeluneRemoteEndpoint.start_local_control(directory)` 为已有服务启动同用户的本地配对 CLI，生命周期由同一 `ServiceOwner` 管理，不创建第二个 endpoint。接口位于私有 `cli/control.sock`，只处理配对状态、邀请、批准、撤销和连接，不暴露应用业务命令。Mac 应用与 Android debug 应用在打开原 endpoint 后启用；用法与访问条件见[开发说明](../../docs/development.md#本地配对-cli)。
 
+## Composer 目标准备
+
+`prepare_composer_target(request, overlay_choices)` 在现有执行端与 composer authority 路由上组合完整用例。已有会话先验证来源身份，再读取保存端目标，缺失时以空意图初始化，最后使用实际保存记录或只读的本地 pending overlay 在执行端解析。回复包含 owner、ContextKey、真实目标 revision、核心依据及有效 NextTurn，保持 InputID 独立。后续目录使用共享纯 helper 重解，明确选择用 raw intent 逐字段更新。保存成功后解析失败保留记录，再次调用重读恢复。
+
+内容同步继续使用既有目录、附件和 CAS。目标准备失败应保留内容编辑和目标修复入口。各端的正常路径消费此 facade，共同规则归[Composer 契约](../../docs/product-tdd/composer-state.md#目标准备用例)。
+
 ## 生成绑定
 
 先构建目标平台动态库，再读取该库中的 UniFFI 元数据。以下命令使用开发构建；平台发行构建由应用构建脚本负责。
 
 ```sh
 cargo build --locked -p velune-bindings
-cargo run --locked -p velune-bindings --features cli --bin velune-bindgen -- \
-  generate --library target/debug/libvelune_bindings.dylib \
+cargo run --locked --target-dir target/build-tools -p velune-build-tools --bin velune-bindgen -- \
+  generate --library target/host-rust/debug/libvelune_bindings.dylib \
   --language swift --language kotlin --language python \
   --out-dir target/bindings
 ```
@@ -81,7 +87,7 @@ cargo run --locked -p velune-bindings --features cli --bin velune-bindgen -- \
 
 `ConfigurationSnapshot.usage_display` 与 `set_usage_display` 使用 `UsageDisplay::{Used, Remaining}`，默认按已用显示。它只控制额度与上下文的呈现，远程修改通过单次 Effect scope 并保留当前 view 的独立选择，不改写执行端本地默认。
 
-`ModelSelection` 明确区分 `Managed`（Velune model record key）与 `Native`（运行时 provider／model ID）；选择参数可为 None，即不指定模型、由运行时使用自己的默认值。专用适配器的 `runtime_models` 返回 native／managed 两类具名候选，通用 ACP 只在活动会话时返回其原生选项；每项 `reasoning_efforts` 是该运行时对此模型可选的推理强度（空表示不提供）；新 `create_conversation_with_selection`／`send_turn` 接受完整选择，后者以 `ComposedTurn`（正文、可选推理强度、可选权限模式与附件绝对路径；权限模式缺省为 None，原有构造保持有效）承载本轮输入，`RuntimeTypeDescriptor.permission_modes` 列出该类型可选的权限模式（`PermissionMode` 的 ID、名称与说明），空表示不提供；`TranscriptTurn.settings`（`TurnSettings`）是该轮的运行时实例 ID、模型显示名、推理强度与权限模式 ID，以及 Velune 请求的模型选择（`model_selection`），各项未知时为空，平台按配置解析名称；资源库子 Agent（`ResourceTemplateContent::Subagent`）的 `model` 是写入原生定义的 model ID，`velune_model` 是只在经网关轮次中提供的 Velune 模型记录键，至多其一；`TranscriptTurn.usage`（`TurnUsage`）是原生记录里该轮的 token 用量：输入（含缓存读写）、缓存读取、缓存写入、输出（含推理）与推理，Harness 不记录的项为空；另有该轮结束时的上下文 token 与模型窗口、Harness 估算的会话累计费用（百万分之一美元）与账户额度（`RateLimit` 列表）；`working_branch` 返回会话工作目录的 git 分支，`ConfigurationSnapshot.status_line` 与 `set_status_line` 是 composer 状态栏显示的项（`StatusLineItem`，按显示顺序）；原有 create／send 入口继续仅接纳 managed key 与纯文本。`reasoning_efforts` 返回某运行时与 managed 模型可选的推理强度，空表示不提供。native 模型不会占用 `DeliveredSnapshot.model_record_key`。`composer_choices` 返回持久化的 composer 选择（`ComposerChoices`：各会话的 `NextTurnIntent` 与各运行时的 `RuntimeComposerChoices`，后者含上次选择与新会话设定 `NewConversationChoice`）；`set_next_turn_intent`／`set_runtime_composer_choices` 写入。`TurnChoice` 各项为 None 即未选。
+`ModelSelection` 明确区分 `Managed`（Velune model record key）与 `Native`（运行时 provider／model ID）；选择参数可为 None，即不指定模型、由运行时使用自己的默认值。专用适配器的 `runtime_models` 返回 native／managed 两类具名候选，通用 ACP 只在活动会话时返回其原生选项；每项 `reasoning_efforts` 是该运行时对此模型可选的推理强度（空表示不提供）；新 `create_conversation_with_selection`／`send_turn` 接受完整选择，后者以 `ComposedTurn`（正文、可选推理强度、可选权限模式与附件绝对路径；权限模式缺省为 None，原有构造保持有效）承载本轮输入，`RuntimeTypeDescriptor.permission_modes` 列出该类型可选的权限模式（`PermissionMode` 的 ID、名称与说明），空表示不提供；`TranscriptTurn.settings`（`TurnSettings`）是该轮的运行时实例 ID、模型显示名、推理强度与权限模式 ID，以及 Velune 请求的模型选择（`model_selection`），各项未知时为空，平台按配置解析名称；资源库子 Agent（`ResourceTemplateContent::Subagent`）的 `model` 是写入原生定义的 model ID，`velune_model` 是只在经网关轮次中提供的 Velune 模型记录键，至多其一；`TranscriptTurn.usage`（`TurnUsage`）是原生记录里该轮的 token 用量：输入（含缓存读写）、缓存读取、缓存写入、输出（含推理）与推理，Harness 不记录的项为空；另有该轮结束时的上下文 token 与模型窗口、Harness 估算的会话累计费用（百万分之一美元）与账户额度（`RateLimit` 列表）；`working_branch` 返回会话工作目录的 git 分支，`ConfigurationSnapshot.status_line` 与 `set_status_line` 是 composer 状态栏显示的项（`StatusLineItem`，按显示顺序）；原有 create／send 入口继续仅接纳 managed key 与纯文本。`reasoning_efforts` 返回某运行时与 managed 模型可选的推理强度，空表示不提供。native 模型不会占用 `DeliveredSnapshot.model_record_key`。`composer_choices` 返回各会话的 `NextTurnIntent` 与带 Adapter Type 的 `RuntimeComposerChoices.last_chosen`；`set_next_turn_intent`／`set_runtime_composer_choices` 分别写入。实例的新会话策略 `NewConversationChoice` 经 `runtime_new_conversation_choice`／`runtime_with_new_conversation_choice` 的 typed codec 存入实例 settings，与执行环境和 ACP launch 一次提交；`runtime_start_choice(runtime_id)` 返回该实例策略与当前类型 lastChosen 解析出的新建选择。`TurnChoice` 各项为 None 即未选。
 
 `RuntimeExecution` 通过 `runtime_execution` 读取、`upsert_runtime_with_execution` 写入，提供 typed Local／Ssh 位置、Inherit／Existing／Managed HOME 和远端资源目录。后者一次保存实例和执行配置，新建 managed HOME 实例不需要假的 agentDir。`runtime_home_directory` 返回实例在执行机器上实际使用的 HOME（继承时为 None），只解析不创建。既有 `RuntimeInstance` 形状不变，平台不得另行解码内部 execution setting。SSH 目标和所有执行路径的校验、helper 投送、gateway 转发、模型临时覆盖及结束清理由 application／agent-runtime 协调。具体语义见 [application README](../application/README.md)。
 
@@ -117,4 +123,4 @@ ARK 查询认证通过 save_provider 的可选参数 quota_authentication_edit�
 
 `composer_quota(ComposerQuotaContext, refresh)` 是状态栏额度的统一入口：上下文传明确的运行时、模型选择和会话引用，结果为 `ComposerQuotaEntry` 列表。平台不展开模型路由、不按运行时能力切换额度服务，也不从历史 rateLimits 猜测当前账户。`QuotaOrigin` 保留 Provider／RuntimeLogin／ConversationRecord 的语义；中性窗口、节奏与余额类型使用 `QuotaWindowObservation`、`QuotaPaceObservation`、`QuotaBalanceObservation`。窗口观测时间和有效期允许缺失，以表达没有时间戳的历史记录。提供商调度仍只消费其已验证的观测，不接收历史或原生登录展示结果。
 
-`provider_billing_service(endpoint)` 识别可配置组织报表的官方 HTTPS 主机；`provider_billing(gateway_id, provider_id, refresh)` 非阻塞读取／请求刷新，`save_provider_billing` 独立保存配置与认证编辑。两者通过共享 command 契约用于本机与远程，`BillingReport` 明确区分用量、费用、月支出限额和速率配置；查询秘密只写不读。语义见 [组织用量与账单](../../docs/design/ai-service.md#组织用量与账单)。
+`provider_billing_service(endpoint)` 识别可配置组织报表的官方 HTTPS 主机；`provider_billing(gateway_id, provider_id, refresh)` 非阻塞读取／请求刷新，`save_provider_billing` 独立保存配置与认证编辑。两者通过共享 command 契约用于本机与远程，`BillingReport` 明确区分用量、费用、月支出限额和速率配置；查询秘密只写不读。语义见 [组织用量与账单](../../docs/product-tdd/ai-service.md#组织用量与账单)。

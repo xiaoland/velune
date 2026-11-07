@@ -434,7 +434,7 @@ mod protocol_tests {
         std::fs::create_dir(&root).unwrap();
         let binary = root.join("codex");
         std::fs::write(&binary, r#"#!/bin/sh
-if [ "$1" = --version ]; then echo 'codex-cli 0.159.3'; exit 0; fi
+if [ "$1" = --version ]; then echo 'codex-cli 0.166.0'; exit 0; fi
 while IFS= read -r line; do
   printf '%s\n' "$line" >> "$CODEX_HOME/requests.log"
   case "$line" in
@@ -447,7 +447,7 @@ done
         let mut session = NativeSession::connect(NativeConfig {
             execution: crate::execution::ExecutionTarget::Local,
             os_home: Some(root.clone()),
-            kind: NativeKind::Codex,
+            kind: NativeKind::Codex166,
             binary,
             node_binary: None,
             agent_dir: root.clone(),
@@ -653,7 +653,7 @@ done
         std::fs::write(&binary, r#"#!/usr/bin/python3
 import sys,json,os,threading,time
 if '--version' in sys.argv:
- print('codex-cli 0.159.3');sys.exit()
+ print('codex-cli 0.166.0');sys.exit()
 root=os.environ['CODEX_HOME']
 lock=threading.Lock()
 def emit(value):
@@ -679,7 +679,7 @@ for line in sys.stdin:
         let config = NativeConfig {
             execution: crate::execution::ExecutionTarget::Local,
             os_home: Some(root.clone()),
-            kind: NativeKind::Codex,
+            kind: NativeKind::Codex166,
             binary,
             node_binary: None,
             agent_dir: root.clone(),

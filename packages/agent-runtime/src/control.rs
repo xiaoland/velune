@@ -26,10 +26,7 @@ pub struct Target {
     pub resources: PathBuf,
 }
 pub fn reports_control(kind: RuntimeKind) -> bool {
-    matches!(
-        kind,
-        RuntimeKind::Codex | RuntimeKind::Codex166 | RuntimeKind::DeepSeek
-    )
+    matches!(kind, RuntimeKind::Codex166 | RuntimeKind::DeepSeek)
 }
 
 impl Target {
@@ -45,7 +42,7 @@ impl Target {
     fn try_observe(&self) -> Option<Observation> {
         let path =
             match self.kind {
-                RuntimeKind::Codex | RuntimeKind::Codex166 => {
+                RuntimeKind::Codex166 => {
                     // Native IDs are opaque, never caller-controlled filesystem paths.
                     if self.native_id.is_empty()
                         || !self

@@ -773,7 +773,9 @@ fn classify_connect_error(error: iroh::endpoint::ConnectError) -> RemoteError {
         match code {
             // TLS no_application_protocol (120), carried as a QUIC crypto error.
             Some(0x178) => RemoteError::IncompatibleVersion,
-            Some(0x100..=0x1ff) => RemoteError::Unauthorized,
+            // Any other TLS alert means the handshake ran against the wrong peer
+            // (address conflict or interception), not an authorization decision.
+            Some(0x100..=0x1ff) => RemoteError::PeerMismatch,
             _ => RemoteError::Unavailable,
         }
     }
@@ -781,7 +783,7 @@ fn classify_connect_error(error: iroh::endpoint::ConnectError) -> RemoteError {
         ConnectError::Connection { source, .. } => connection(&source),
         ConnectError::Connecting { source, .. } => match source {
             ConnectingError::ConnectionError { source, .. } => connection(&source),
-            ConnectingError::HandshakeFailure { .. } => RemoteError::Unauthorized,
+            ConnectingError::HandshakeFailure { .. } => RemoteError::PeerMismatch,
             _ => RemoteError::Unavailable,
         },
         _ => RemoteError::Unavailable,

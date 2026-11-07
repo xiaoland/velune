@@ -89,9 +89,10 @@ final class TranscriptModel: ObservableObject {
     }
     func retainedExpandedTurnIDs(_ ids: Set<String>) -> Set<String> { ids.intersection(turns.map(\.id)) }
     func reset() { pending = []; presentation = Presentation(revision: contentRevision &+ 1) }
-    /// `canFork` puts a fork button under each turn's closing reply;
-    /// `editable` puts an edit button under those user messages.
-    func apply(_ messages: [DeliveredMessage], turns: [TranscriptTurn], items: [TranscriptItem], outline: [TranscriptOutlineEntry], identities: [TranscriptMessageIdentity], canFork: Bool, editable: Set<String>) {
+    /// Turns carry their own `canFork`: a fork may start from each completed
+    /// turn's end, even while a later turn runs; `editable` puts an edit
+    /// button under those user messages.
+    func apply(_ messages: [DeliveredMessage], turns: [TranscriptTurn], items: [TranscriptItem], outline: [TranscriptOutlineEntry], identities: [TranscriptMessageIdentity], editable: Set<String>) {
         let identitiesByMessage = Dictionary(uniqueKeysWithValues: identities.map { ($0.messageId, $0.id) })
         let existing = Dictionary(uniqueKeysWithValues: rows.map { ($0.id, $0) })
         var changed = presentation.turns != turns || presentation.items != items || presentation.outline != outline
@@ -110,7 +111,7 @@ final class TranscriptModel: ObservableObject {
         }
         // The closing message splits into its work blocks and its reply.
         let replyStarts = Dictionary(turns.compactMap { turn in turn.lastMessageId.map { ($0, Int(turn.replyStartBlock)) } }, uniquingKeysWith: { first, _ in first })
-        let forkTurns = canFork ? Dictionary(turns.compactMap { turn in turn.lastMessageId.map { ($0, turn.userMessageId) } }, uniquingKeysWith: { first, _ in first }) : [:]
+        let forkTurns = Dictionary(turns.compactMap { turn in turn.canFork ? turn.lastMessageId.map { ($0, turn.userMessageId) } : nil }, uniquingKeysWith: { first, _ in first })
         let next = messages.flatMap { message -> [TranscriptRow] in
             guard let id = identitiesByMessage[message.id] else { preconditionFailure("Missing transcript presentation identity") }
             let user = message.role == .user || message.role == .client

@@ -18,7 +18,7 @@
 
 | 范围 | 入口 |
 | --- | --- |
-| 共享 Rust packages | [架构职责表](design/architecture.md#独立-package-与平台装配)，再进入对应 package README |
+| 共享 Rust packages | [架构职责表](product-tdd/architecture.md#独立-package-与平台装配)，再进入对应 package README |
 | macOS | [Mac README](../app/mac/README.md) |
 | Windows | [Windows README](../app/windows/README.md) |
 | iPad／iPhone | [iOS README](../app/ios/README.md) |
@@ -29,7 +29,7 @@
 
 ## 维护约定
 
-每条规则只在一个主题维护，其他页链接引用。按独立用途拆分，不把同一主题机械切成编号文件；入口只提供定位和必要边界。修改规则时合并已被明确取代的表述，保留来源链接；无法确定是否取代的差异留在任务中核实，不让读者自行按日期猜测。
+每条规则只在一个主题维护，其他页链接引用。`prd/` 收录产品行为，`product-tdd/` 将跨 unit 契约的索引和正文放在一起；单个 unit 的内部设计归其 README／TDD。按独立用途拆分，不把同一主题机械切成编号文件；入口只提供定位和必要边界。修改规则时合并已被明确取代的表述，保留来源链接；无法确定是否取代的差异留在任务中核实，不让读者自行按日期猜测。
 
 [仓库 README](../README.md)面向产品使用者，[Agent 指引](../AGENTS.md)维护仓库工作约束。Beluna 是独立姐妹项目，不与本目录混用。
 

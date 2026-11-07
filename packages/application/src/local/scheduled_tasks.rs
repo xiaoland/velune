@@ -183,7 +183,7 @@ impl CoreRuntime {
     fn require_codex_import_target(&self, runtime_id: &str) -> Result<(), RuntimeError> {
         if !matches!(
             self.runtime_instance(runtime_id)?.type_id,
-            RuntimeKind::Codex | RuntimeKind::Codex166
+            RuntimeKind::Codex166
         ) {
             return Err(RuntimeError::invalid(
                 "请先选择对应 CODEX_HOME 的 Codex 运行时",
@@ -352,19 +352,7 @@ impl CoreRuntime {
                         continue;
                     }
                 };
-                if runs.iter().any(|r| {
-                    r.task_id == task.id
-                        && matches!(
-                            r.phase,
-                            Phase::Waiting | Phase::Dispatching | Phase::Running
-                        )
-                }) {
-                    let mut updated = task.clone();
-                    updated.next_run_at_unix_ms = next;
-                    self.scheduled_tasks.put_task(&updated)?;
-                } else {
-                    self.scheduled_tasks.claim(task, due, next)?;
-                }
+                self.scheduled_tasks.claim_due(task, due, next)?;
             }
         }
         // Dispatch at most one invocation per sweep so clients can observe and

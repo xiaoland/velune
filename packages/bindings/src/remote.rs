@@ -45,7 +45,7 @@ pub(crate) fn parse_addresses(
 fn remote_failure_kind(error: velune_remote::RemoteError) -> BindingFailureKind {
     use velune_remote::RemoteError;
     match error {
-        RemoteError::Unauthorized => BindingFailureKind::Unauthorized,
+        RemoteError::Unauthorized | RemoteError::PeerMismatch => BindingFailureKind::Unauthorized,
         RemoteError::ConfigurationConflict => BindingFailureKind::Conflict,
         RemoteError::Timeout | RemoteError::ServerRestarted => BindingFailureKind::OutcomeUnknown,
         RemoteError::PairingUnavailable

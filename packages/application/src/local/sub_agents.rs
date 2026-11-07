@@ -8,7 +8,7 @@ impl CoreRuntime {
     /// transcript links, in order, then the others its runtime lists with it
     /// as parent. A listed one takes its listed title.
     pub(super) fn sub_agents(&self, snapshot: &ConversationSnapshot) -> Vec<SubAgent> {
-        let listed = self.last_listed.borrow();
+        let listed = self.listed_sources();
         let failures = self.sub_agent_failures.borrow();
         let mut found = Vec::<SubAgent>::new();
         let mut add = |id: &str, title: &str| {
@@ -58,8 +58,7 @@ impl CoreRuntime {
     /// from an open conversation's transcript.
     pub(super) fn sub_agent_parent(&self, id: &str) -> Option<String> {
         if let Some(parent) = self
-            .last_listed
-            .borrow()
+            .listed_sources()
             .get(id)
             .and_then(|source| source.summary.parent_conversation_id.clone())
         {

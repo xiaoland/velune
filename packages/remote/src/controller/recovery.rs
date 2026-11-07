@@ -356,6 +356,7 @@ async fn recover(controller: Weak<Controller>, mut wake: watch::Receiver<u64>) {
                     let phase = if matches!(
                         error,
                         RemoteError::Unauthorized
+                            | RemoteError::PeerMismatch
                             | RemoteError::Protocol
                             | RemoteError::IncompatibleVersion
                     ) {

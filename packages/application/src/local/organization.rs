@@ -31,6 +31,13 @@ pub(super) struct ListedSource {
     pub(super) provisional: bool,
 }
 
+/// A client keeps the provenance of the list it last saw when it parks its view.
+#[derive(Clone, Default)]
+pub(super) struct ListedProjection {
+    pub(super) entries: BTreeMap<String, ListedSource>,
+    pub(super) sources: Vec<runtime_source::RuntimeSourceKey>,
+}
+
 /// Where a runtime starts conversations that have no project: HOME, where
 /// they land given no working directory, and the folders the runtime keeps
 /// such conversations in. The filesystem root, where the app's own land,
@@ -68,25 +75,49 @@ pub(crate) fn unix_ms_now() -> i64 {
 }
 
 impl CoreRuntime {
+    pub(super) fn listed_sources(&self) -> std::cell::Ref<'_, BTreeMap<String, ListedSource>> {
+        let stale = self
+            .last_listed
+            .borrow()
+            .sources
+            .iter()
+            .any(|source| !source.is_current(self));
+        if stale {
+            *self.last_listed.borrow_mut() = ListedProjection::default();
+        }
+        std::cell::Ref::map(self.last_listed.borrow(), |projection| &projection.entries)
+    }
+
     pub(super) fn shows_archived(&self) -> bool {
         self.browser_window.archived
     }
 
     /// The conversations every runtime archived itself, for the archive view.
-    pub(super) fn natively_archived(&self) -> Vec<ConversationSummary> {
-        let mut archived = Vec::new();
+    pub(super) fn natively_archived(&self) -> BTreeMap<String, browsing::HistoryArchive> {
+        let mut archived = BTreeMap::new();
         for runtime in self.runtime_instances.iter().filter(|r| r.enabled) {
             if !velune_agent_runtime::version::variant(runtime.type_id).can_archive_conversations {
                 continue;
             }
-            match self.history_config(runtime).and_then(|config| {
-                if config.provider == "codex" {
-                    self.read_codex_projects(runtime, true)
-                } else {
-                    Ok(history::list_archived(&config, &runtime.id)?)
-                }
+            let source = self.runtime_source_key(runtime);
+            match source.and_then(|source| {
+                self.history_config(runtime)
+                    .and_then(|config| {
+                        if config.provider == "codex" {
+                            self.read_codex_projects(runtime, true)
+                        } else {
+                            Ok(history::list_archived(&config, &runtime.id)?)
+                        }
+                    })
+                    .map(|summaries| (source, summaries))
             }) {
-                Ok(mut summaries) => archived.append(&mut summaries),
+                Ok((source, summaries)) if source.is_current(self) => {
+                    archived.insert(
+                        runtime.id.clone(),
+                        browsing::HistoryArchive { source, summaries },
+                    );
+                }
+                Ok(_) => {}
                 Err(error) => {
                     tracing::warn!(target:"velune_application",event="runtime_history_read_failed",phase="archived_list",runtime_id=%runtime.id,runtime_type_id=%runtime.type_id,detail=%error);
                 }
@@ -322,8 +353,7 @@ impl CoreRuntime {
         loop {
             let mut page = self.browse(sources, search);
             let unread = |item: &ListedConversation| {
-                self.last_listed
-                    .borrow()
+                self.listed_sources()
                     .get(&item.conversation.id)
                     .is_some_and(|source| source.provisional)
             };
@@ -368,10 +398,18 @@ impl CoreRuntime {
             .iter()
             .map(|source| self.listed(source, &places))
             .collect();
-        *self.last_listed.borrow_mut() = sources
-            .into_iter()
-            .map(|source| (source.summary.id.clone(), source))
-            .collect();
+        *self.last_listed.borrow_mut() = ListedProjection {
+            entries: sources
+                .into_iter()
+                .map(|source| (source.summary.id.clone(), source))
+                .collect(),
+            sources: self
+                .runtime_instances
+                .iter()
+                .filter(|runtime| runtime.enabled)
+                .filter_map(|runtime| self.runtime_source_key(runtime).ok())
+                .collect(),
+        };
         // Each project's latest activity and the worktrees its conversations
         // ran in: working directories it holds by their repository alone.
         let mut projects = BTreeMap::<String, (Option<i64>, BTreeSet<String>)>::new();
@@ -685,8 +723,7 @@ impl CoreRuntime {
     ) -> Result<Option<ListedConversation>, RuntimeError> {
         let id = conversation_id.as_str();
         if let Some(source) = self
-            .last_listed
-            .borrow()
+            .listed_sources()
             .get(id)
             .filter(|source| !source.provisional)
         {
@@ -724,22 +761,27 @@ impl CoreRuntime {
     /// rather than the runtime's whole archive.
     pub(super) fn reach(&self, runtime: &RuntimeInstance, id: &str) -> Option<ListedSource> {
         let native_id = id.strip_prefix(&format!("{}:", runtime.id))?;
+        let source_key = self.runtime_source_key(runtime).ok()?;
         let read = self
             .history_config(runtime)
             .and_then(|config| Ok(history::read_summary(&config, &runtime.id, native_id)?));
         match read {
-            Ok(Some((summary, archived_natively))) => {
+            Ok(Some((summary, archived_natively))) if source_key.is_current(self) => {
                 let source = ListedSource {
                     summary,
                     archived_natively,
                     provisional: false,
                 };
-                self.reached
-                    .borrow_mut()
-                    .insert(id.to_owned(), source.clone());
+                self.reached.borrow_mut().insert(
+                    id.to_owned(),
+                    browsing::CachedSource {
+                        source: source_key,
+                        value: source.clone(),
+                    },
+                );
                 Some(source)
             }
-            Ok(None) => None,
+            Ok(_) => None,
             Err(error) => {
                 tracing::warn!(target:"velune_application",event="runtime_history_read_failed",phase="reach",runtime_id=%runtime.id,runtime_type_id=%runtime.type_id,detail=%error);
                 None
@@ -789,8 +831,7 @@ impl CoreRuntime {
             // Open archived threads remain manageable even when the ordinary
             // browser no longer includes them. Resolve within their native owner.
             let source = self
-                .last_listed
-                .borrow()
+                .listed_sources()
                 .get(&reference.conversation_id)
                 .cloned()
                 .or_else(|| {
@@ -955,7 +996,7 @@ impl CoreRuntime {
             self.cached_list()
         };
         // The list read again may already show newer activity than the mark.
-        let listed = self.last_listed.borrow();
+        let listed = self.listed_sources();
         for (summary, _, _) in &targets {
             let now = listed
                 .get(&summary.id)

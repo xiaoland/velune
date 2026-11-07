@@ -51,6 +51,7 @@
 - <a id="s34"></a>[S34 · 运行时版本兼容区间](sources/runtime-collaboration.md#s34)
 - <a id="s36"></a>[S36 · 关联 Agent 与打开方式](sources/runtime-collaboration.md#s36)
 - <a id="s44"></a>[S44 · 预发布版本兼容验证](sources/runtime-collaboration.md#s44)
+- <a id="s83"></a>[S83 · Codex 0.167 区间扩展](sources/runtime-collaboration.md#s83)
 
 ## 会话管理与侧聊
 
@@ -106,6 +107,11 @@
 
 - <a id="2026-10-27分布式可观测性"></a>[2026-10-27：分布式可观测性](sources/development.md#2026-10-27分布式可观测性)
 - <a id="s63"></a>[S63 · 显式手动迁移](sources/development.md#s63)
+- <a id="s79"></a>[S79 · 必要迁移的持续授权](sources/development.md#s79)
+- <a id="s80"></a>[S80 · Adapter Type 独立且可编辑](sources/development.md#s80)
+- <a id="s81"></a>[S81 · 目标准备用例与未手选项继承](sources/development.md#s81)
+- <a id="s82"></a>[S82 · 开发构建复用与空间治理](sources/development.md#s82)
+- <a id="s84"></a>[S84 · 首个公开 Beta 与发布治理](sources/development.md#s84)
 
 ## 综合使用反馈与修复要求
 

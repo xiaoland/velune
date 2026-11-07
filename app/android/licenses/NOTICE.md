@@ -2,6 +2,8 @@
 
 本文件随 APK 分发，也可在应用的“关于 › 声明与第三方组件”中查看。
 
+Velune 本身按 GNU Affero General Public License version 3 only（AGPL-3.0-only）发布；完整许可证见“Velune AGPL-3.0-only 许可证”。源代码与对应版本源码归档见 <https://github.com/xiaoland/velune>。
+
 ## 界面参考
 
 Android 界面的布局与交互参考了以下同类开源移动客户端。Velune 只借鉴了可见的布局与交互模式，例如按项目分组的会话列表、折叠为一行的工作过程、圆角输入框与其中的选项行、回到底部按钮、带状态点的设备列表。**Velune 没有复制、翻译或改写这些项目的源代码、图片或文案**，相关代码均为独立编写。
@@ -35,7 +37,7 @@ Apache-2.0 全文见“Apache License 2.0”。
 
 ### Rust 组件
 
-原生库 `libvelune_bindings.so` 链接的 Rust crate 及其许可全文见“Rust 组件许可”，由 `scripts/android-licenses.py` 在构建时按实际依赖生成。其中 UniFFI 采用 MPL-2.0：Velune 未修改其源代码，源代码可从 <https://github.com/mozilla/uniffi-rs> 及 crates.io 获取；MPL-2.0 全文见“Mozilla Public License 2.0”。
+原生库 `libvelune_bindings.so` 链接的 Rust crate 及其许可全文见“Rust 组件许可”，由 `scripts/android-licenses.py` 在构建时按实际依赖生成。对应版本源码归档包含 `Cargo.lock` 锁定的 Rust 依赖源码，其中包括未修改的 UniFFI MPL-2.0 源码；MPL-2.0 全文见“Mozilla Public License 2.0”。
 
 ### commonmark-java（BSD-2-Clause）
 

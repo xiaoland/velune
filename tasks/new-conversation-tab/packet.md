@@ -24,7 +24,7 @@ Mac 端所有“新建会话”入口（菜单 ⌘N、侧栏工具栏按钮、�
 - `app/mac/CommandPalette.swift`：`canPerform`/`.newConversation` 适配新语义（不再因当前 store 加载中禁用）。
 - `app/mac/ComposerChecks.swift`：`--check-new-tab` 预览断言（新开 Tab、全局输入恢复、组目标、草稿复用、无效运行时无操作）。
 - `app/mac/ConversationChecks.swift`：`checkGroupCreation` 按新语义改写（空列表环境走原地复用路径）。
-- 文档：`app/mac/README.md`、`docs/prd/composer.md`、`docs/sources.md`。
+- 文档：`app/mac/README.md`、`docs/prd/composer-input.md`、`docs/sources.md`。
 
 ## 验证
 

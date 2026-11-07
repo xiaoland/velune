@@ -31,7 +31,7 @@ impl CoreRuntime {
         let declared = model.reasoning_levels.as_deref().unwrap_or_default();
         Ok(match runtime.type_id {
             // Codex passes the level on as the Responses reasoning effort.
-            RuntimeKind::Codex | RuntimeKind::Codex166 => declared.to_vec(),
+            RuntimeKind::Codex166 => declared.to_vec(),
             RuntimeKind::ClaudeCode => declared
                 .iter()
                 .filter(|level| CLAUDE_EFFORT_LEVELS.contains(&level.as_str()))
@@ -74,12 +74,14 @@ impl CoreRuntime {
         }))
     }
 
-    /// Settings of the conversation's last turn when it ran on `runtime`.
+    /// Settings of the conversation's latest turn on `runtime`.
     fn current_turn_settings(&mut self, runtime: &RuntimeInstance) -> Option<TurnSettings> {
-        self.current_snapshot()
-            .and_then(|snapshot| snapshot.transcript_turns.into_iter().last())
-            .and_then(|turn| turn.settings)
-            .filter(|settings| settings.runtime_id.as_deref() == Some(runtime.id.as_str()))
+        let snapshot = self.current_snapshot()?;
+        velune_application_api::latest_runtime_turn_settings(
+            &snapshot.transcript_turns,
+            &runtime.id,
+        )
+        .cloned()
     }
 
     /// The turn's permission mode: the one asked for, or else the
@@ -129,7 +131,7 @@ impl CoreRuntime {
                 .iter()
                 .any(|level| level == effort),
             Some(ModelSelection::Native { .. }) | None => match runtime.type_id {
-                RuntimeKind::Codex | RuntimeKind::Codex166 => {
+                RuntimeKind::Codex166 => {
                     !effort.trim().is_empty() && !effort.chars().any(char::is_control)
                 }
                 RuntimeKind::ClaudeCode => CLAUDE_EFFORT_LEVELS.contains(&effort),
@@ -543,7 +545,7 @@ impl CoreRuntime {
             }
             ModelSelection::Native { model_id, .. } => {
                 let kind = self.runtime_instance(runtime_id).ok()?.type_id;
-                Some(velune_agent_runtime::native::display_model_name(
+                Some(velune_conversation::model_variant::display_model_name(
                     kind, model_id,
                 ))
             }
@@ -552,11 +554,31 @@ impl CoreRuntime {
 
     /// A runtime that records the gateway's route alias as its model (Pi
     /// does) names a managed model; turns show the model's own name instead.
+    /// A native variant id (a Codex speed variant) reads as its model name.
     pub(super) fn name_turn_models(&self, turns: &mut [crate::conversation::TranscriptTurn]) {
         for settings in turns.iter_mut().filter_map(|turn| turn.settings.as_mut()) {
             let (Some(runtime_id), Some(model)) = (&settings.runtime_id, &settings.model) else {
                 continue;
             };
+            if matches!(
+                &settings.model_selection,
+                Some(ModelSelection::Native { .. })
+            ) || settings.model_selection.is_none()
+            {
+                // An unknown runtime's model id is not ours to reinterpret.
+                let Some(kind) = self
+                    .runtime_instance(runtime_id)
+                    .ok()
+                    .map(|runtime| runtime.type_id)
+                else {
+                    continue;
+                };
+                let name = velune_conversation::model_variant::display_model_name(kind, model);
+                if name != *model {
+                    settings.model = Some(name);
+                    continue;
+                }
+            }
             let Some(gateway) = self.runtime_instance(runtime_id).ok().and_then(|runtime| {
                 self.gateways
                     .iter()

@@ -1,0 +1,431 @@
+{
+  "archive_count": 28,
+  "archives": [
+    {
+      "binding": "npm registry gitHead",
+      "name": "@braintree/sanitize-url",
+      "path": "sanitize-url-b1e8d50e4066a9af00fa042176676374747f754b.tar.gz",
+      "preferred_source_files": 3,
+      "repo": "https://github.com/braintree/sanitize-url",
+      "rev": "b1e8d50e4066a9af00fa042176676374747f754b",
+      "sha256": "fff2cd7d58cbb4023b9da3bec8a9c8f25ef54bd579c9947b750d6975dc391306",
+      "url": "https://codeload.github.com/braintree/sanitize-url/tar.gz/b1e8d50e4066a9af00fa042176676374747f754b",
+      "version": "7.1.1"
+    },
+    {
+      "binding": "upstream commit packages/utils/package.json declares 3.0.2; commit changes only package metadata from 3.0.1 to 3.0.2; archive includes TypeScript source and build scripts; no npm gitHead or provenance; emitted-source correspondence was not rebuilt",
+      "name": "@iconify/utils",
+      "path": "iconify-04b223aa18ad4e4a4174ef735e8328e01b30ebfc.tar.gz",
+      "preferred_source_files": 146,
+      "repo": "https://github.com/iconify/iconify",
+      "rev": "04b223aa18ad4e4a4174ef735e8328e01b30ebfc",
+      "sha256": "92e79f1db188ee7fcbd40142372c96af33a1efd4f0083e94f7e7921a9f4c8d10",
+      "url": "https://codeload.github.com/iconify/iconify/tar.gz/04b223aa18ad4e4a4174ef735e8328e01b30ebfc",
+      "version": "3.0.2"
+    },
+    {
+      "binding": "npm registry gitHead",
+      "name": "cose-base",
+      "path": "cose-base-914bfe712991534af1d8b795d6f262687edc2563.tar.gz",
+      "preferred_source_files": 6,
+      "repo": "https://github.com/iVis-at-Bilkent/cose-base",
+      "rev": "914bfe712991534af1d8b795d6f262687edc2563",
+      "sha256": "89aa1a9afadfd24e839f9e0fe4156ef27fc2e1dece918bd3d75ade0471e90a16",
+      "url": "https://codeload.github.com/iVis-at-Bilkent/cose-base/tar.gz/914bfe712991534af1d8b795d6f262687edc2563",
+      "version": "1.0.3"
+    },
+    {
+      "binding": "npm registry gitHead",
+      "name": "cose-base",
+      "path": "cose-base-37f07ed2b8803211ec6c74110574cc47c156a136.tar.gz",
+      "preferred_source_files": 7,
+      "repo": "https://github.com/iVis-at-Bilkent/cose-base",
+      "rev": "37f07ed2b8803211ec6c74110574cc47c156a136",
+      "sha256": "3b195c01fd49b78b41be89c9c65e8bb8f086eddbdff0f43d18695c247a10f072",
+      "url": "https://codeload.github.com/iVis-at-Bilkent/cose-base/tar.gz/37f07ed2b8803211ec6c74110574cc47c156a136",
+      "version": "2.2.0"
+    },
+    {
+      "binding": "npm registry gitHead",
+      "name": "cytoscape",
+      "path": "cytoscape.js-72af5edb6cd988851f42dc25f9e1092fd2d9e7cf.tar.gz",
+      "preferred_source_files": 163,
+      "repo": "https://github.com/cytoscape/cytoscape.js",
+      "rev": "72af5edb6cd988851f42dc25f9e1092fd2d9e7cf",
+      "sha256": "60a6b867541baa84129d1d17a86681b2f522c8225bf53a727b808c843755ec7f",
+      "url": "https://codeload.github.com/cytoscape/cytoscape.js/tar.gz/72af5edb6cd988851f42dc25f9e1092fd2d9e7cf",
+      "version": "3.33.1"
+    },
+    {
+      "binding": "npm registry gitHead",
+      "name": "cytoscape-cose-bilkent",
+      "path": "cytoscape.js-cose-bilkent-999090a8438b4f14788d636ef4fd7a5355e29e8c.tar.gz",
+      "preferred_source_files": 1,
+      "repo": "https://github.com/cytoscape/cytoscape.js-cose-bilkent",
+      "rev": "999090a8438b4f14788d636ef4fd7a5355e29e8c",
+      "sha256": "42d5ad3e4663b92107551a6a47f08c2ce32f4d26f3e75897d719b86f7e35459d",
+      "url": "https://codeload.github.com/cytoscape/cytoscape.js-cose-bilkent/tar.gz/999090a8438b4f14788d636ef4fd7a5355e29e8c",
+      "version": "4.1.0"
+    },
+    {
+      "binding": "npm registry gitHead",
+      "name": "cytoscape-fcose",
+      "path": "cytoscape.js-fcose-78afcf96512a409abc903699277ad616c02dfad9.tar.gz",
+      "preferred_source_files": 6,
+      "repo": "https://github.com/iVis-at-Bilkent/cytoscape.js-fcose",
+      "rev": "78afcf96512a409abc903699277ad616c02dfad9",
+      "sha256": "0b57bfca68474dc52c44e7f434df29513a34481db7aeef9b4ed059d3e7f7bb5b",
+      "url": "https://codeload.github.com/iVis-at-Bilkent/cytoscape.js-fcose/tar.gz/78afcf96512a409abc903699277ad616c02dfad9",
+      "version": "2.2.0"
+    },
+    {
+      "binding": "npm registry gitHead",
+      "name": "dayjs",
+      "path": "dayjs-9beb3f3ea595c6046cbe863ee6d15d63e6fb2b07.tar.gz",
+      "preferred_source_files": 184,
+      "repo": "https://github.com/iamkun/dayjs",
+      "rev": "9beb3f3ea595c6046cbe863ee6d15d63e6fb2b07",
+      "sha256": "aafe56ff84ca61ac4b5686ee1bc036e1a87d690230ce5362e2162b99c92a39c2",
+      "url": "https://codeload.github.com/iamkun/dayjs/tar.gz/9beb3f3ea595c6046cbe863ee6d15d63e6fb2b07",
+      "version": "1.11.18"
+    },
+    {
+      "binding": "npm registry gitHead",
+      "name": "js-yaml",
+      "path": "js-yaml-2cef47bebf60da141b78b085f3dea3b5733dcc12.tar.gz",
+      "preferred_source_files": 0,
+      "repo": "https://github.com/nodeca/js-yaml",
+      "rev": "2cef47bebf60da141b78b085f3dea3b5733dcc12",
+      "sha256": "88eb30459d6617dbf7ba76be35a6a210de1b94fbd8d8d4b41e20402971adde5a",
+      "url": "https://codeload.github.com/nodeca/js-yaml/tar.gz/2cef47bebf60da141b78b085f3dea3b5733dcc12",
+      "version": "4.1.0"
+    },
+    {
+      "binding": "npm registry gitHead",
+      "name": "katex",
+      "path": "KaTeX-613c3da85b083f602c0d5265da0f735ddb728dbb.tar.gz",
+      "preferred_source_files": 88,
+      "repo": "https://github.com/KaTeX/KaTeX",
+      "rev": "613c3da85b083f602c0d5265da0f735ddb728dbb",
+      "sha256": "e3adea8d97432e844349cc5120e77067bbc446d4a9c7da551ba72d759fca2372",
+      "url": "https://codeload.github.com/KaTeX/KaTeX/tar.gz/613c3da85b083f602c0d5265da0f735ddb728dbb",
+      "version": "0.16.22"
+    },
+    {
+      "binding": "npm registry gitHead",
+      "name": "khroma",
+      "path": "khroma-4968165afb0d3d09be66497e7985a34f7bfe6d42.tar.gz",
+      "preferred_source_files": 50,
+      "repo": "https://github.com/fabiospampinato/khroma",
+      "rev": "4968165afb0d3d09be66497e7985a34f7bfe6d42",
+      "sha256": "69112127dae68601fca12b5a39e5efa8b1cc83883e045eea5016321ea2bf18ab",
+      "url": "https://codeload.github.com/fabiospampinato/khroma/tar.gz/4968165afb0d3d09be66497e7985a34f7bfe6d42",
+      "version": "2.1.0"
+    },
+    {
+      "binding": "npm registry gitHead",
+      "name": "langium",
+      "path": "langium-ef7ff4e4f47f1c8e8ad15862ec921a24dc988098.tar.gz",
+      "preferred_source_files": 245,
+      "repo": "https://github.com/eclipse-langium/langium",
+      "rev": "ef7ff4e4f47f1c8e8ad15862ec921a24dc988098",
+      "sha256": "4c2b0474e88baab08df2ddde60e1735c805548e31eac1d1c65be70a669d41c0f",
+      "url": "https://codeload.github.com/eclipse-langium/langium/tar.gz/ef7ff4e4f47f1c8e8ad15862ec921a24dc988098",
+      "version": "3.3.1"
+    },
+    {
+      "binding": "npm registry gitHead",
+      "name": "layout-base",
+      "path": "layout-base-836898aa4a88e2794774997d7128b383108a3d5a.tar.gz",
+      "preferred_source_files": 27,
+      "repo": "https://github.com/iVis-at-Bilkent/layout-base",
+      "rev": "836898aa4a88e2794774997d7128b383108a3d5a",
+      "sha256": "921cbb3cb947c1bc86faf6eaa10b48c5c22048b877383474d11c4e3550e966f3",
+      "url": "https://codeload.github.com/iVis-at-Bilkent/layout-base/tar.gz/836898aa4a88e2794774997d7128b383108a3d5a",
+      "version": "1.0.2"
+    },
+    {
+      "binding": "npm registry gitHead",
+      "name": "layout-base",
+      "path": "layout-base-3f7549940feef31416cc35ef8256282ebc4d1ecd.tar.gz",
+      "preferred_source_files": 29,
+      "repo": "https://github.com/iVis-at-Bilkent/layout-base",
+      "rev": "3f7549940feef31416cc35ef8256282ebc4d1ecd",
+      "sha256": "a4931f675297d347ad3a0e63d3af5a91e1a7f37377d4c7c77bcd3e345e97589f",
+      "url": "https://codeload.github.com/iVis-at-Bilkent/layout-base/tar.gz/3f7549940feef31416cc35ef8256282ebc4d1ecd",
+      "version": "2.0.1"
+    },
+    {
+      "binding": "npm registry gitHead",
+      "name": "roughjs",
+      "path": "rough-56a2762171b1294d643501e8d14f120db6b27bd7.tar.gz",
+      "preferred_source_files": 17,
+      "repo": "https://github.com/pshihn/rough",
+      "rev": "56a2762171b1294d643501e8d14f120db6b27bd7",
+      "sha256": "9b2ed54f794d3f5f74f675b15ced161f9cb7e4e2ea000ed5eccb55c75e2bac67",
+      "url": "https://codeload.github.com/pshihn/rough/tar.gz/56a2762171b1294d643501e8d14f120db6b27bd7",
+      "version": "4.6.6"
+    },
+    {
+      "binding": "npm registry gitHead",
+      "name": "uuid",
+      "path": "uuid-3d1eba06be81fb3a02e16d06ef6fe959c9bb5c5c.tar.gz",
+      "preferred_source_files": 38,
+      "repo": "https://github.com/uuidjs/uuid",
+      "rev": "3d1eba06be81fb3a02e16d06ef6fe959c9bb5c5c",
+      "sha256": "6fd75972ac48020159a6388963b25596fc8f4f9e0e56e0dacb92f705e431ad35",
+      "url": "https://codeload.github.com/uuidjs/uuid/tar.gz/3d1eba06be81fb3a02e16d06ef6fe959c9bb5c5c",
+      "version": "11.1.0"
+    },
+    {
+      "binding": "exact upstream tag release/jsonrpc/8.2.0",
+      "name": "vscode-jsonrpc",
+      "path": "vscode-languageserver-node-a705ba5e4d32b1583ac7f2daa8c71652d8bf1f93.tar.gz",
+      "preferred_source_files": 182,
+      "repo": "https://github.com/microsoft/vscode-languageserver-node",
+      "rev": "a705ba5e4d32b1583ac7f2daa8c71652d8bf1f93",
+      "sha256": "54085dd118f69f645cf9cfb1136dcb75d70503011678653f49409355c7fd4854",
+      "url": "https://codeload.github.com/microsoft/vscode-languageserver-node/tar.gz/a705ba5e4d32b1583ac7f2daa8c71652d8bf1f93",
+      "version": "8.2.0"
+    },
+    {
+      "binding": "exact upstream tag release/textDocument/1.0.12",
+      "name": "vscode-languageserver-textdocument",
+      "path": "vscode-languageserver-node-b51c6d57975e84c688daeb84111578580a2cb147.tar.gz",
+      "preferred_source_files": 183,
+      "repo": "https://github.com/microsoft/vscode-languageserver-node",
+      "rev": "b51c6d57975e84c688daeb84111578580a2cb147",
+      "sha256": "276bb5ddc0c34d61ec7c08615dc137e024cd984c46e540a0b669d438dc131737",
+      "url": "https://codeload.github.com/microsoft/vscode-languageserver-node/tar.gz/b51c6d57975e84c688daeb84111578580a2cb147",
+      "version": "1.0.12"
+    },
+    {
+      "binding": "exact upstream tag release/types/3.17.5",
+      "name": "vscode-languageserver-types",
+      "path": "vscode-languageserver-node-4f782ceac1b4444d335a32561bda0ded305c401e.tar.gz",
+      "preferred_source_files": 182,
+      "repo": "https://github.com/microsoft/vscode-languageserver-node",
+      "rev": "4f782ceac1b4444d335a32561bda0ded305c401e",
+      "sha256": "de1eb5a02693a98449f796bea4450d7e4f01233f4624ea66f206452409310830",
+      "url": "https://codeload.github.com/microsoft/vscode-languageserver-node/tar.gz/4f782ceac1b4444d335a32561bda0ded305c401e",
+      "version": "3.17.5"
+    },
+    {
+      "binding": "npm registry gitHead",
+      "name": "hachure-fill",
+      "path": "hachure-fill-2083be6f7e6c814dc6a8c2c88a7823827566504e.tar.gz",
+      "preferred_source_files": 1,
+      "repo": "https://github.com/pshihn/hachure-fill",
+      "rev": "2083be6f7e6c814dc6a8c2c88a7823827566504e",
+      "sha256": "3612e2d5970bde550458b8e6b55082d2a46c263f256eb02337a050e865f33f76",
+      "url": "https://codeload.github.com/pshihn/hachure-fill/tar.gz/2083be6f7e6c814dc6a8c2c88a7823827566504e",
+      "version": "0.5.2"
+    },
+    {
+      "binding": "npm registry gitHead",
+      "name": "path-data-parser",
+      "path": "path-data-parser-93d3fa8448c50d1b6443b06b8c71202ee0967e25.tar.gz",
+      "preferred_source_files": 4,
+      "repo": "https://github.com/pshihn/path-data-parser",
+      "rev": "93d3fa8448c50d1b6443b06b8c71202ee0967e25",
+      "sha256": "afdbc375661c6d1579107c71ab923885c7bfb602c05b3e59be9317a66f64853a",
+      "url": "https://codeload.github.com/pshihn/path-data-parser/tar.gz/93d3fa8448c50d1b6443b06b8c71202ee0967e25",
+      "version": "0.1.0"
+    },
+    {
+      "binding": "npm registry gitHead",
+      "name": "points-on-curve",
+      "path": "bezier-points-48241476eb86307294f54913ccfb60a3e7338c56.tar.gz",
+      "preferred_source_files": 2,
+      "repo": "https://github.com/pshihn/bezier-points",
+      "rev": "48241476eb86307294f54913ccfb60a3e7338c56",
+      "sha256": "f31f62a6c74550a354f76c25acc2b10cb8a5f9bbeccf5dbf14572d875614d92e",
+      "url": "https://codeload.github.com/pshihn/bezier-points/tar.gz/48241476eb86307294f54913ccfb60a3e7338c56",
+      "version": "0.2.0"
+    },
+    {
+      "binding": "npm registry gitHead",
+      "name": "points-on-path",
+      "path": "points-on-path-7693ef0c930466b7408ee7082497e0d735f9c646.tar.gz",
+      "preferred_source_files": 1,
+      "repo": "https://github.com/pshihn/points-on-path",
+      "rev": "7693ef0c930466b7408ee7082497e0d735f9c646",
+      "sha256": "2fc0b7e923dc7e6dc0a8db07b5b5ed19f754703ade0737ab5011f5ac4c23233f",
+      "url": "https://codeload.github.com/pshihn/points-on-path/tar.gz/7693ef0c930466b7408ee7082497e0d735f9c646",
+      "version": "0.2.1"
+    },
+    {
+      "binding": "npm registry gitHead",
+      "name": "@bufbuild/protobuf",
+      "path": "protobuf-es-b3b232f7f466eda27c66e8f63c82f930578b6cc6.tar.gz",
+      "repo": "https://github.com/bufbuild/protobuf-es",
+      "rev": "b3b232f7f466eda27c66e8f63c82f930578b6cc6",
+      "sha256": "771b446b073dcb5a3941ce3ef63658a23cf22e9528e97f96240b4e65663d5164",
+      "url": "https://codeload.github.com/bufbuild/protobuf-es/tar.gz/b3b232f7f466eda27c66e8f63c82f930578b6cc6",
+      "version": "2.16.0"
+    },
+    {
+      "binding": "npm registry gitHead",
+      "name": "fzstd",
+      "path": "fzstd-807a854cac2c5766ef030832cc5b66482dc7ca8a.tar.gz",
+      "repo": "https://github.com/101arrowz/fzstd",
+      "rev": "807a854cac2c5766ef030832cc5b66482dc7ca8a",
+      "sha256": "b375897224d3af415b0355110c04faa25369202be83746886a74bb24a1ac6121",
+      "url": "https://codeload.github.com/101arrowz/fzstd/tar.gz/807a854cac2c5766ef030832cc5b66482dc7ca8a",
+      "version": "0.1.1"
+    },
+    {
+      "binding": "npm SLSA resolvedDependencies gitCommit, subject digest matches locked npm tarball",
+      "name": "huihua",
+      "path": "huihua-eaa776c1485b656cc4761f03adf8732277d7e00c.tar.gz",
+      "repo": "https://github.com/wibus-wee/huihua",
+      "rev": "eaa776c1485b656cc4761f03adf8732277d7e00c",
+      "sha256": "81ec555a2e9522359fbb2b13d92fb32a75b8f05c1a03fb861aecfc1782d06eb4",
+      "url": "https://codeload.github.com/wibus-wee/huihua/tar.gz/eaa776c1485b656cc4761f03adf8732277d7e00c",
+      "version": "0.2.0"
+    },
+    {
+      "binding": "npm SLSA resolvedDependencies gitCommit, subject digest matches pinned npm tarball; tag mermaid@11.12.0 peeled SHA matches",
+      "name": "mermaid",
+      "path": "mermaid-0116b272b4b558f60ec292fb994148956287eaa1.tar.gz",
+      "repo": "https://github.com/mermaid-js/mermaid",
+      "rev": "0116b272b4b558f60ec292fb994148956287eaa1",
+      "sha256": "cb24fadb2e4238187502c1099f3afc3ab1c2c77fe5e520934cd796ee0789aba8",
+      "url": "https://codeload.github.com/mermaid-js/mermaid/tar.gz/0116b272b4b558f60ec292fb994148956287eaa1",
+      "version": "11.12.0"
+    },
+    {
+      "binding": "protobuf-es pinned protoc 36.2.0 and exact upstream tag v36.2",
+      "files": [
+        {
+          "path": "google/protobuf/any.proto",
+          "sha256": "8e56f61e3078e9232d39ce1b1bab28613783af8191f93a910c3617933f87a179",
+          "url": "https://raw.githubusercontent.com/protocolbuffers/protobuf/2c74169b34066ceb8ddb6b882fcb3fb32d737a55/src/google/protobuf/any.proto"
+        },
+        {
+          "path": "google/protobuf/api.proto",
+          "sha256": "6d47d6272eb687c806b6feb08ef3925243c64ea076cd9440b783e27a7aec5502",
+          "url": "https://raw.githubusercontent.com/protocolbuffers/protobuf/2c74169b34066ceb8ddb6b882fcb3fb32d737a55/src/google/protobuf/api.proto"
+        },
+        {
+          "path": "google/protobuf/c_sharp_features.proto",
+          "sha256": "33febc3af13337ed572159e8ea9025aee04fe6c949047edb6e0318f71d0e72b6",
+          "url": "https://raw.githubusercontent.com/protocolbuffers/protobuf/2c74169b34066ceb8ddb6b882fcb3fb32d737a55/csharp/google/protobuf/c_sharp_features.proto"
+        },
+        {
+          "path": "google/protobuf/compiler/plugin.proto",
+          "sha256": "8f5ef6c36fad8e66e3347c0f8d8910dfb14239b8ccfd2a8d16dba8e775b57b7f",
+          "url": "https://raw.githubusercontent.com/protocolbuffers/protobuf/2c74169b34066ceb8ddb6b882fcb3fb32d737a55/src/google/protobuf/compiler/plugin.proto"
+        },
+        {
+          "path": "google/protobuf/cpp_features.proto",
+          "sha256": "98b866a6533e4d7113ec037643db5a19707ee6953fa9b2655c0876c6f42bfb23",
+          "url": "https://raw.githubusercontent.com/protocolbuffers/protobuf/2c74169b34066ceb8ddb6b882fcb3fb32d737a55/src/google/protobuf/cpp_features.proto"
+        },
+        {
+          "path": "google/protobuf/cpp_file_options.proto",
+          "sha256": "1bd55d7dc4d793dfded37b992f30dab75fdb9c754251164cbc7fc19a133bcacc",
+          "url": "https://raw.githubusercontent.com/protocolbuffers/protobuf/2c74169b34066ceb8ddb6b882fcb3fb32d737a55/src/google/protobuf/cpp_file_options.proto"
+        },
+        {
+          "path": "google/protobuf/cpp_options.proto",
+          "sha256": "d6b102328016a57750abc911225592dd2cf06919cfeb6c1f6c1e56ef317a0305",
+          "url": "https://raw.githubusercontent.com/protocolbuffers/protobuf/2c74169b34066ceb8ddb6b882fcb3fb32d737a55/src/google/protobuf/cpp_options.proto"
+        },
+        {
+          "path": "google/protobuf/descriptor.proto",
+          "sha256": "c96db5406336ebcc82523c1dfb122721986a1f43c4aaed45a4a4ad6996efacc2",
+          "url": "https://raw.githubusercontent.com/protocolbuffers/protobuf/2c74169b34066ceb8ddb6b882fcb3fb32d737a55/src/google/protobuf/descriptor.proto"
+        },
+        {
+          "path": "google/protobuf/duration.proto",
+          "sha256": "a3f7301ff2956ec2e30c2241ece07197e4a86c752348d5607224819d4921c9fe",
+          "url": "https://raw.githubusercontent.com/protocolbuffers/protobuf/2c74169b34066ceb8ddb6b882fcb3fb32d737a55/src/google/protobuf/duration.proto"
+        },
+        {
+          "path": "google/protobuf/empty.proto",
+          "sha256": "ecef3d54cc9e079673b9816c67bac770f7f3bf6dada2d4596ba69d71daa971e6",
+          "url": "https://raw.githubusercontent.com/protocolbuffers/protobuf/2c74169b34066ceb8ddb6b882fcb3fb32d737a55/src/google/protobuf/empty.proto"
+        },
+        {
+          "path": "google/protobuf/field_mask.proto",
+          "sha256": "9f031219ae54383afa84299fdd747e119b5f83c8e3dab060930ebb126af4460f",
+          "url": "https://raw.githubusercontent.com/protocolbuffers/protobuf/2c74169b34066ceb8ddb6b882fcb3fb32d737a55/src/google/protobuf/field_mask.proto"
+        },
+        {
+          "path": "google/protobuf/go_features.proto",
+          "sha256": "bf4db7d7b0d40b612c985fcd2378c78ee49fd1c88cc76821cc4a65dbdc229f5f",
+          "url": "https://raw.githubusercontent.com/protocolbuffers/protobuf/2c74169b34066ceb8ddb6b882fcb3fb32d737a55/go/google/protobuf/go_features.proto"
+        },
+        {
+          "path": "google/protobuf/java_features.proto",
+          "sha256": "ac0253f236f9392a9c71c1b21297bc7ca892496ed550b12c93d0a4ae8e4120df",
+          "url": "https://raw.githubusercontent.com/protocolbuffers/protobuf/2c74169b34066ceb8ddb6b882fcb3fb32d737a55/java/core/src/main/resources/google/protobuf/java_features.proto"
+        },
+        {
+          "path": "google/protobuf/json_enumvalue_options.proto",
+          "sha256": "49c7aa8dd13c8bd2e5235fbb87cf71389d42f9883cdb8941b45fc37536c8da57",
+          "url": "https://raw.githubusercontent.com/protocolbuffers/protobuf/2c74169b34066ceb8ddb6b882fcb3fb32d737a55/src/google/protobuf/json_enumvalue_options.proto"
+        },
+        {
+          "path": "google/protobuf/json_options.proto",
+          "sha256": "e2aa95146dd1d7182b32631ac980f1656fa07a21fe57bbe728107aad6b2c8084",
+          "url": "https://raw.githubusercontent.com/protocolbuffers/protobuf/2c74169b34066ceb8ddb6b882fcb3fb32d737a55/src/google/protobuf/json_options.proto"
+        },
+        {
+          "path": "google/protobuf/source_context.proto",
+          "sha256": "37d3401de89af1d1496fc949924a5f2011bd2fadfbeb0da1caa277159a96776d",
+          "url": "https://raw.githubusercontent.com/protocolbuffers/protobuf/2c74169b34066ceb8ddb6b882fcb3fb32d737a55/src/google/protobuf/source_context.proto"
+        },
+        {
+          "path": "google/protobuf/struct.proto",
+          "sha256": "85d5dd93079588f3fa33b5affe431223de4036f66ffb76253efe930bc2d39696",
+          "url": "https://raw.githubusercontent.com/protocolbuffers/protobuf/2c74169b34066ceb8ddb6b882fcb3fb32d737a55/src/google/protobuf/struct.proto"
+        },
+        {
+          "path": "google/protobuf/timestamp.proto",
+          "sha256": "fa6c44dca2c90a2aaf3a1e4776cef2e9177f70fba365f236269f0f41ac166c96",
+          "url": "https://raw.githubusercontent.com/protocolbuffers/protobuf/2c74169b34066ceb8ddb6b882fcb3fb32d737a55/src/google/protobuf/timestamp.proto"
+        },
+        {
+          "path": "google/protobuf/type.proto",
+          "sha256": "50a3b67b4d894e828173319aafcd6ac440c15340048452bd13a13e8b47cc6637",
+          "url": "https://raw.githubusercontent.com/protocolbuffers/protobuf/2c74169b34066ceb8ddb6b882fcb3fb32d737a55/src/google/protobuf/type.proto"
+        },
+        {
+          "path": "google/protobuf/wrappers.proto",
+          "sha256": "6878dc7534cf9805eee56345cdc38b5e9ca39dece246710c663c7007a67fef49",
+          "url": "https://raw.githubusercontent.com/protocolbuffers/protobuf/2c74169b34066ceb8ddb6b882fcb3fb32d737a55/src/google/protobuf/wrappers.proto"
+        },
+        {
+          "path": "LICENSE",
+          "sha256": "6e5e117324afd944dcf67f36cf329843bc1a92229a8cd9bb573d7a83130fea7d",
+          "url": "https://raw.githubusercontent.com/protocolbuffers/protobuf/2c74169b34066ceb8ddb6b882fcb3fb32d737a55/LICENSE"
+        }
+      ],
+      "name": "protobuf well-known-type grammar inputs",
+      "path": "protobuf-wkt-inputs-36.2",
+      "repo": "https://github.com/protocolbuffers/protobuf",
+      "rev": "2c74169b34066ceb8ddb6b882fcb3fb32d737a55",
+      "version": "36.2"
+    }
+  ],
+  "compressed_bytes": 49091630,
+  "conditions": [
+    {
+      "evidence": "iconify-version-commit.json shows only package metadata change for utils, 3.0.1 -> 3.0.2; packages/utils/package.json declares 3.0.2. No npm gitHead or provenance was published.",
+      "package": "@iconify/utils@3.0.2",
+      "repo_rev": "04b223aa18ad4e4a4174ef735e8328e01b30ebfc",
+      "status": "upstream version commit source archived; npm-to-repo emitted-source correspondence was not rebuilt"
+    }
+  ],
+  "exclude": "General-purpose build tools and dependencies which are absent from the linked source-map/bundled dependency closure",
+  "mermaid_source_map_sha256": "d40abef65d402fd67e99d383970bec292a1fa0c1e70d6a5f3bc55edf20021881",
+  "purpose": "Preferred-source supplements to existing 5 locked runtime-support npm tarballs and exact Mermaid embedded source map",
+  "runtime_npm_already_preferred": [
+    "cuint@0.2.2",
+    "xxhashjs@0.2.2"
+  ],
+  "schema": 1,
+  "unpacked_file_bytes": 189452960
+}

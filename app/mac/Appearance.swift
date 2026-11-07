@@ -58,14 +58,52 @@ extension Notification.Name {
         guard let home else { values = AppearanceValues(); return }
         let target = home.appendingPathComponent("mac-appearance.json")
         if FileManager.default.fileExists(atPath: target.path) {
-            switch Result(catching: { try JSONDecoder().decode(AppearanceValues.self, from: Data(contentsOf: target)) }) {
+            switch Result(catching: {
+                try Self.migrateLegacyWidthIfNeeded(at: target)
+                return try JSONDecoder().decode(AppearanceValues.self, from: Data(contentsOf: target))
+            }) {
             case .success(let saved):
-                if saved.composerWidthRatio.isFinite && (0.5...1).contains(saved.composerWidthRatio) { values = saved }
-                else { report("外观配置中的输入区宽度无效") }
-            case .failure(let error): report(error.localizedDescription)
+                if saved.composerWidthRatio.isFinite && (0.5...1).contains(saved.composerWidthRatio) {
+                    values = saved
+                    file = target
+                } else {
+                    report("外观配置中的输入区宽度无效；保留原文件，外观更改不会写入")
+                }
+            case .failure(let error): report("\(error.localizedDescription)；保留原文件，外观更改不会写入")
             }
+        } else {
+            file = target
         }
-        file = target
+    }
+    private static func migrateLegacyWidthIfNeeded(at target: URL) throws {
+        let original = try Data(contentsOf: target)
+        guard var object = try JSONSerialization.jsonObject(with: original) as? [String: Any] else {
+            throw NSError(domain: "VelunePersistence", code: 2, userInfo: [NSLocalizedDescriptionKey: "mac-appearance.json 结构未知"])
+        }
+        if let ratio = object["composerWidthRatio"] as? Double {
+            let current: Set<String> = ["ui", "messages", "code", "density", "composerWidthRatio"]
+            guard Set(object.keys).isSubset(of: current), ratio.isFinite, (0.5...1.0).contains(ratio) else {
+                throw NSError(domain: "VelunePersistence", code: 5, userInfo: [NSLocalizedDescriptionKey: "mac-appearance.json 含未知字段或宽度无效"])
+            }
+            return
+        }
+        let allowed: Set<String> = ["ui", "messages", "code", "density", "composerWidth"]
+        guard Set(object.keys).isSubset(of: allowed), let width = object.removeValue(forKey: "composerWidth") as? Double, width.isFinite else {
+            throw NSError(domain: "VelunePersistence", code: 3, userInfo: [NSLocalizedDescriptionKey: "mac-appearance.json 不是已知 pre-beta 外观格式"])
+        }
+        object["composerWidthRatio"] = min(1, max(0.5, width / 1280))
+        let converted = try JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys])
+        _ = try JSONDecoder().decode(AppearanceValues.self, from: converted)
+        let backup = target.deletingLastPathComponent().appendingPathComponent("mac-appearance.before-beta-width.json")
+        if FileManager.default.fileExists(atPath: backup.path) {
+            guard try Data(contentsOf: backup) == original else {
+                throw NSError(domain: "VelunePersistence", code: 4, userInfo: [NSLocalizedDescriptionKey: "Mac 外观恢复副本与当前原文件不一致"])
+            }
+        } else {
+            try original.write(to: backup, options: .atomic)
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: backup.path)
+        }
+        try converted.write(to: target, options: .atomic)
     }
     private func persist(_ target: URL) {
         let result = Result {

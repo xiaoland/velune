@@ -67,7 +67,6 @@ enum FuzzyMatch {
 
 extension ConversationWindowModel {
     func showPalette(_ mode: PaletteMode) {
-        composerContext().prepare()
         if palette == mode { return closePalette() }
         if palette == nil {
             // A field's editor stands in for the field, which is what takes the keyboard back.
@@ -104,7 +103,7 @@ extension ConversationWindowModel {
         }
         let tab = conversationTab(for: context)
         let store = tab.store
-        let input = composerContext(for: tab)
+        let input = existingComposer(for: tab).map { ComposerContext(tab: tab, model: $0) }
         return switch command {
         // A new conversation opens its own tab: the shown store's loading
         // does not matter, but a side chat is no target and a runtime must
@@ -115,15 +114,15 @@ extension ConversationWindowModel {
         case .openConversation, .newTab, .closeTab, .closeWindow, .find, .splitRight, .splitDown, .commandPalette, .focusTranscript, .rightArea, .bottomArea, .editorOnly, .problems, .shortcutHelp, .nextAttention: true
         case .stop: store.canCancel && !store.isLoading
         case .stopSubAgents: store.followUp.canStopSubAgents
-        case .continueTurn: input.submission(ignoringText: composerCommand).canResume
-        case .compactContext: input.canCompact
-        case .sideChat: input.sideChatTarget != nil
+        case .continueTurn: input?.submission(ignoringText: composerCommand).canResume ?? false
+        case .compactContext: input?.canCompact ?? false
+        case .sideChat: input?.sideChatTarget != nil
         case .attach: store.allowsAttachments && !store.isShuttingDown
         case .chooseRuntime: !store.device.enabledRuntimeInstances.filter { !store.isSideChat || store.device.hasSideChats($0.id) }.isEmpty && !store.isShuttingDown
-        case .chooseModel: input.canSwitchModel
-        case .chooseEffort: input.canSwitchModel && !input.reasoningEffortOptions.isEmpty
-        case .choosePermission: input.canSwitchModel && !input.permissionModeOptions.isEmpty
-        case .chooseWorkingDirectory: input.canChangeWorkingDirectory
+        case .chooseModel: input?.canSwitchModel ?? false
+        case .chooseEffort: input?.canSwitchModel == true && input?.reasoningEffortOptions.isEmpty == false
+        case .choosePermission: input?.canSwitchModel == true && input?.permissionModeOptions.isEmpty == false
+        case .chooseWorkingDirectory: input?.canChangeWorkingDirectory ?? false
         case .reload: store.canReloadFromRuntimes
         case .closeSplit, .nextPane, .previousPane: isSplit
         case .back: !store.backHistory.isEmpty
@@ -240,7 +239,7 @@ extension ConversationWindowModel {
             let queued = store.followUp.queue.last.map { _ in
                 [PaletteItem(id: "queue:last", title: "编辑最后一条排队消息", aliases: ["Edit Last Queued Message", "queue"], detail: "输入区", shortcut: "⌥↑") { [weak self] _ in
                     self?.closePalette(focusComposer: true)
-                    DispatchQueue.main.async { _ = self.map { $0.composer(for: $0.focused).takeLastQueued() } }
+                    DispatchQueue.main.async { _ = self.map { $0.composerContext(for: $0.focused).takeLastQueued() } }
                 }]
             } ?? []
             return commands + queued + pages + windows

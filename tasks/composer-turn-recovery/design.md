@@ -4,7 +4,7 @@
 
 ## 目标、约束与已核实事实
 
-保持已确定的产品行为：输入区状态随布局确定归属；steer 加入当前执行；过载恢复不重发用户输入；只有正常结束才自动折叠；主动压缩不重新打开上一用户轮次。权威需求见 [输入区](../../docs/prd/composer.md)、[会话展示](../../docs/prd/conversation-view.md)与[工作区布局](../../docs/prd/workspace-layout.md)。
+保持已确定的产品行为：输入区状态随布局确定归属；steer 加入当前执行；过载恢复不重发用户输入；只有正常结束才自动折叠；主动压缩不重新打开上一用户轮次。权威需求见 [内容与导航](../../docs/prd/composer-input.md)、[提交与恢复](../../docs/prd/composer-actions.md)、[会话展示](../../docs/prd/conversation-view.md)与[工作区布局](../../docs/prd/workspace-layout.md)。
 
 已核实的机制决定方案边界：
 
@@ -161,7 +161,7 @@ stateDiagram-v2
 
 中间状态不能交付“部分适配器写新结果、部分消费者读旧结果”的版本，不保留长期双写或兼容分支。`ExecutionRecord` 留在内部完整快照，平台仍接收既有 `TranscriptTurn`、`DeliveredBlock` 与游标；本方案不要求远控协议或持久配置迁移。
 
-方案接受并实现时更新现有权威文件：在 [Product TDD](../../docs/product-tdd/index.md)明确区分核心解析规则／会话存储与窗口独立编辑缓冲；在[架构设计](../../docs/design/architecture.md)与 [agent-runtime README](../../packages/agent-runtime/README.md)记录执行、尝试、展示段及身份转换；在 [Mac README](../../app/mac/README.md)记录输入上下文和恢复保存。主动维护与轮次内压缩的差异回写已有 PRD 段落。设计提案现阶段不覆盖这些文档的有效契约。
+方案接受并实现时更新现有权威文件：在 [Product TDD](../../docs/product-tdd/index.md)明确区分核心解析规则／会话存储与窗口独立编辑缓冲；在[架构设计](../../docs/product-tdd/architecture.md)与 [agent-runtime README](../../packages/agent-runtime/README.md)记录执行、尝试、展示段及身份转换；在 [Mac README](../../app/mac/README.md)记录输入上下文和恢复保存。主动维护与轮次内压缩的差异回写已有 PRD 段落。设计提案现阶段不覆盖这些文档的有效契约。
 
 ## 后续验证必须区分的结果
 

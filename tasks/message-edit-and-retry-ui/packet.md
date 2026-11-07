@@ -10,7 +10,7 @@ Codex 0.159.3 的官方 ThreadRevertParams／ThreadForkParams 只有轮次边界
 
 重试复用 RuntimeFailure／RuntimeRetry：Mac 新增 RuntimeRecovery，转录区底部集中显示原始错误、等待倒计时／次数、原生未知进度、停止／耗尽／恢复结果，避免折叠后不可见或重复活动行。composer 高度不变。Pi auto_retry_start 改为同一类型化状态；原生结果仍是终态权威。Codex 旧客户端所需的 Native 文案在结束时清除，避免过期。其他平台此次未增加专门恢复 UI。
 
-产品事实归 [composer PRD](../../docs/prd/composer.md)，通用自动恢复模式归 [DESIGN](../../DESIGN.md)，实现说明归 Mac／agent-runtime README，来源 S65。没有提交、日常重装或真实数据／供应商调用。
+产品事实归 [composer PRD](../../docs/prd/composer-actions.md)，通用自动恢复模式归 [DESIGN](../../DESIGN.md)，实现说明归 Mac／agent-runtime README，来源 S65。没有提交、日常重装或真实数据／供应商调用。
 
 ## 分层证据
 

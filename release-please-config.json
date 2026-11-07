@@ -1,0 +1,18 @@
+{
+  "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
+  "packages": {
+    ".": {
+      "release-type": "simple",
+      "versioning": "prerelease",
+      "prerelease-type": "beta",
+      "prerelease": true,
+      "bump-minor-pre-major": true,
+      "draft": true,
+      "force-tag-creation": true,
+      "include-component-in-tag": false,
+      "pull-request-title-pattern": "chore: 发布版本 ${version}",
+      "pull-request-header": "此版本 PR 由 Release Please 自动生成。",
+      "pull-request-footer": "请核对版本和变更记录；合并后将创建草稿预发布并构建全部发行包。"
+    }
+  }
+}

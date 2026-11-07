@@ -7,7 +7,7 @@ use crate::config::{ConversationBrowserProject, ConversationGroupKey, ProjectRec
 use std::{collections::BTreeSet, path::Component};
 
 pub(super) struct NativeProjects {
-    runtime: RuntimeInstance,
+    source: runtime_source::RuntimeSourceKey,
     projects: Vec<velune_agent_runtime::native::codex_projects::NativeProject>,
     active_assignments: BTreeMap<String, String>,
     archived_assignments: BTreeMap<String, String>,
@@ -54,25 +54,41 @@ impl CoreRuntime {
         runtime: &RuntimeInstance,
         archived: bool,
     ) -> Result<Vec<ConversationSummary>, RuntimeError> {
+        let source = self.runtime_source_key(runtime)?;
         let listing = velune_agent_runtime::native::codex_projects::list_projects(
             &self.history_config(runtime)?,
             &runtime.id,
             archived,
         )
-        .map_err(|error| RuntimeError::context("Codex 项目读取失败", error))?;
+        .map_err(|error| {
+            self.forget_index(runtime);
+            RuntimeError::context("Codex 项目读取失败", error)
+        })?;
+        self.store_native_projects(source, listing, archived)
+    }
+
+    pub(super) fn store_native_projects(
+        &self,
+        source: runtime_source::RuntimeSourceKey,
+        listing: velune_agent_runtime::native::codex_projects::ProjectListing,
+        archived: bool,
+    ) -> Result<Vec<ConversationSummary>, RuntimeError> {
+        if !source.is_current(self) {
+            return Err(RuntimeError::invalid("运行时项目来源已改变，请刷新后重试"));
+        }
         let mut catalogs = self.native_projects.borrow_mut();
         let catalog = catalogs
-            .entry(runtime.id.clone())
+            .entry(source.runtime_id().to_owned())
             .or_insert_with(|| NativeProjects {
-                runtime: runtime.clone(),
+                source: source.clone(),
                 projects: Vec::new(),
                 active_assignments: BTreeMap::new(),
                 archived_assignments: BTreeMap::new(),
             });
-        if catalog.runtime != *runtime {
+        if catalog.source != source {
             catalog.active_assignments.clear();
             catalog.archived_assignments.clear();
-            catalog.runtime = runtime.clone();
+            catalog.source = source;
         }
         catalog.projects = listing.projects;
         if archived {
@@ -103,7 +119,7 @@ impl CoreRuntime {
             .find_map(|runtime| {
                 let catalog = catalogs
                     .get(&runtime.id)
-                    .filter(|catalog| catalog.runtime == *runtime)?;
+                    .filter(|catalog| catalog.source.matches(self, runtime))?;
                 catalog
                     .projects
                     .iter()
@@ -120,7 +136,7 @@ impl CoreRuntime {
             .flat_map(|runtime| {
                 catalogs
                     .get(&runtime.id)
-                    .filter(|catalog| catalog.runtime == *runtime)
+                    .filter(|catalog| catalog.source.matches(self, runtime))
                     .into_iter()
                     .flat_map(|catalog| {
                         catalog
@@ -144,7 +160,7 @@ impl CoreRuntime {
             .find(|instance| instance.id == runtime && instance.enabled)?;
         let catalog = catalogs
             .get(runtime)
-            .filter(|catalog| catalog.runtime == *instance)?;
+            .filter(|catalog| catalog.source.matches(self, instance))?;
         let id = catalog
             .active_assignments
             .get(conversation)
@@ -230,6 +246,7 @@ impl CoreRuntime {
                 return Err(RuntimeError::invalid("项目文件夹不能为空或重复"));
             }
             let runtime = self.runtime_instance(&runtime_id)?;
+            let source = self.runtime_source_key(runtime)?;
             // Absolute paths are validated by Codex on the executing OS, including SSH hosts.
             let updated = velune_agent_runtime::native::codex_projects::update_project(
                 &self.history_config(runtime)?,
@@ -238,7 +255,11 @@ impl CoreRuntime {
                 &roots,
             )
             .map_err(|error| RuntimeError::context("Codex 项目保存失败", error))?;
+            if !source.is_current(self) {
+                return Err(RuntimeError::invalid("运行时项目来源已改变，请刷新后重试"));
+            }
             if let Some(catalog) = self.native_projects.borrow_mut().get_mut(&runtime_id)
+                && catalog.source == source
                 && let Some(stored) = catalog
                     .projects
                     .iter_mut()
@@ -343,7 +364,7 @@ impl CoreRuntime {
     fn forget_redundant_moves(&mut self) -> Result<(), RuntimeError> {
         let places = self.projectless_places();
         let redundant: Vec<String> = {
-            let listed = self.last_listed.borrow();
+            let listed = self.listed_sources();
             self.organization
                 .conversations
                 .iter()

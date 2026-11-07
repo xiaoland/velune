@@ -12,12 +12,6 @@ default = ["local-runtime", "remote"]
 local-runtime = ["dep:velune-application", "dep:tracing-subscriber", "dep:tracing-appender"]
 remote = ["dep:velune-remote", "dep:tokio", "dep:jni", "dep:rustls-platform-verifier"]
 remote-diagnostics = ["remote", "velune-remote/diagnostics", "dep:tracing-subscriber"]
-cli = ["uniffi/cli"]
-
-[[bin]]
-name = "velune-bindgen"
-path = "src/bin.rs"
-required-features = ["cli"]
 
 [dependencies]
 velune-telemetry = { path = "../telemetry" }

@@ -10,6 +10,133 @@ fn empty_default_gateway() -> GatewayConfig {
     }
 }
 
+#[cfg(test)]
+mod runtime_start_tests {
+    use super::*;
+    use crate::config::{NewConversationChoice, RuntimeComposerChoices, TurnChoice};
+
+    #[test]
+    fn runtime_policy_is_one_configuration_commit_and_keeps_old_type_choices() {
+        let mut nonce = [0; 8];
+        getrandom::fill(&mut nonce).unwrap();
+        let root = std::env::temp_dir().join(format!(
+            "velune-runtime-policy-{:x}",
+            u64::from_le_bytes(nonce)
+        ));
+        fs::create_dir(&root).unwrap();
+        let mut application = crate::Application::open(crate::Options {
+            home_directory: root.clone(),
+            resources_directory: root.clone(),
+        })
+        .unwrap();
+        let core = &mut application.runtime;
+        let mut runtime = RuntimeInstance {
+            enabled: false,
+            id: "synthetic".into(),
+            name: "Synthetic".into(),
+            type_id: RuntimeKind::Acp,
+            gateway_id: "default".into(),
+            settings: BTreeMap::new(),
+        };
+        core.upsert_acp_runtime(
+            runtime.clone(),
+            RuntimeExecution::default(),
+            crate::AcpLaunch::default(),
+        )
+        .unwrap();
+        core.set_runtime_composer_choices(RuntimeComposerChoices {
+            runtime_id: runtime.id.clone(),
+            runtime_type: RuntimeKind::Acp,
+            last_chosen: TurnChoice {
+                model: Some(crate::ModelSelection::Native {
+                    provider_id: None,
+                    model_id: "synthetic-model".into(),
+                }),
+                ..TurnChoice::default()
+            },
+        })
+        .unwrap();
+        let composer = fs::read(root.join("composer-choices.json")).unwrap();
+        fs::create_dir(root.join("composer-choices.json.tmp")).unwrap();
+        runtime.type_id = RuntimeKind::ClaudeCode;
+        let policy = NewConversationChoice::Chosen {
+            choice: TurnChoice {
+                permission_mode: Some("manual".into()),
+                ..TurnChoice::default()
+            },
+        };
+        runtime.set_new_conversation_choice(policy.clone()).unwrap();
+        core.upsert_runtime_with_execution(runtime.clone(), RuntimeExecution::default())
+            .unwrap();
+        assert_eq!(
+            fs::read(root.join("composer-choices.json")).unwrap(),
+            composer
+        );
+        assert_eq!(
+            core.runtime_start_choice(runtime.id.clone())
+                .unwrap()
+                .permission_mode
+                .as_deref(),
+            Some("manual")
+        );
+        let committed = fs::read(root.join("generic-config.json")).unwrap();
+        fs::create_dir(root.join("generic-config.json.tmp")).unwrap();
+        runtime.type_id = RuntimeKind::Codex166;
+        runtime
+            .set_new_conversation_choice(NewConversationChoice::LastChosen)
+            .unwrap();
+        assert!(
+            core.upsert_runtime_with_execution(runtime.clone(), RuntimeExecution::default())
+                .is_err()
+        );
+        assert_eq!(
+            core.runtime_instance(&runtime.id).unwrap().type_id,
+            RuntimeKind::ClaudeCode
+        );
+        assert_eq!(
+            core.runtime_instance(&runtime.id)
+                .unwrap()
+                .new_conversation_choice()
+                .unwrap(),
+            policy
+        );
+        assert_eq!(
+            fs::read(root.join("generic-config.json")).unwrap(),
+            committed
+        );
+        fs::remove_dir(root.join("generic-config.json.tmp")).unwrap();
+        let mut invalid = core.runtime_instance(&runtime.id).unwrap().clone();
+        invalid
+            .set_new_conversation_choice(NewConversationChoice::Chosen {
+                choice: TurnChoice {
+                    permission_mode: Some("wrong-type".into()),
+                    ..TurnChoice::default()
+                },
+            })
+            .unwrap();
+        assert!(core.upsert_runtime(invalid).is_err());
+        assert_eq!(
+            fs::read(root.join("generic-config.json")).unwrap(),
+            committed
+        );
+        drop(application);
+        let reopened = crate::Application::open(crate::Options {
+            home_directory: root.clone(),
+            resources_directory: root.clone(),
+        })
+        .unwrap();
+        let saved = reopened.runtime.runtime_instance(&runtime.id).unwrap();
+        assert_eq!(saved.type_id, RuntimeKind::ClaudeCode);
+        assert_eq!(saved.new_conversation_choice().unwrap(), policy);
+        assert_eq!(
+            reopened.runtime.composer_choices.runtimes[0].runtime_type,
+            RuntimeKind::Acp
+        );
+        drop(reopened);
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
 enum RuntimeChange {
     Upsert(RuntimeInstance),
     Delete(String),
@@ -161,7 +288,7 @@ impl CoreRuntime {
         *self.archived_listing.borrow_mut() = if self.shows_archived() {
             self.natively_archived()
         } else {
-            Vec::new()
+            BTreeMap::new()
         };
         *self.history_failures.borrow_mut() = history_failures.clone();
         Ok((self.cached_sources(), history_failures))
@@ -218,13 +345,23 @@ impl CoreRuntime {
                 archived_natively: false,
             })
             .collect();
-        sources.extend(self.archived_listing.borrow().iter().map(|summary| {
-            organization::ListedSource {
-                summary: summary.clone(),
-                archived_natively: true,
-                provisional: false,
-            }
-        }));
+        sources.extend(
+            self.archived_listing
+                .borrow()
+                .values()
+                .filter(|archive| archive.source.is_current(self))
+                .flat_map(|archive| {
+                    archive
+                        .summaries
+                        .iter()
+                        .cloned()
+                        .map(|summary| organization::ListedSource {
+                            summary,
+                            archived_natively: true,
+                            provisional: false,
+                        })
+                }),
+        );
         sources
     }
 
@@ -383,6 +520,36 @@ impl CoreRuntime {
         mut runtime: RuntimeInstance,
     ) -> Result<crate::RuntimeUpdate, RuntimeError> {
         self.retain_private_runtime_settings(&mut runtime);
+        // Plain upsert callers do not edit the start policy. A changed type has its own default.
+        if !runtime
+            .settings
+            .contains_key(velune_application_api::NEW_CONVERSATION_SETTING)
+            && let Some(choice) = self
+                .runtime_instances
+                .iter()
+                .find(|stored| stored.id == runtime.id && stored.type_id == runtime.type_id)
+                .and_then(|stored| {
+                    stored
+                        .settings
+                        .get(velune_application_api::NEW_CONVERSATION_SETTING)
+                })
+        {
+            runtime.settings.insert(
+                velune_application_api::NEW_CONVERSATION_SETTING.into(),
+                choice.clone(),
+            );
+        }
+        if let crate::config::NewConversationChoice::Chosen { choice } =
+            runtime.new_conversation_choice()?
+        {
+            self.validate_model_selection(&runtime, choice.model.as_ref())?;
+            if let Some(effort) = choice.effort.as_deref() {
+                self.validate_effort(&runtime, choice.model.as_ref(), effort)?;
+            }
+            if let Some(mode) = choice.permission_mode.as_deref() {
+                self.validate_permission_mode(&runtime, mode)?;
+            }
+        }
         self.change_runtimes(RuntimeChange::Upsert(runtime))
     }
 
@@ -498,6 +665,17 @@ impl CoreRuntime {
                 self.discard_runtime_choices(&id);
             }
         }
+        // Native projections are source-scoped, including fallbacks kept outside the main index.
+        for old in &previous {
+            let same = self
+                .runtime_instances
+                .iter()
+                .find(|runtime| runtime.id == old.id)
+                .is_some_and(|runtime| runtime.enabled && self.same_runtime_source(old, runtime));
+            if !same {
+                self.discard_runtime_source_caches(&old.id);
+            }
+        }
         // Each open session checks whether the edit reaches its source or execution.
         let mut execution_invalidated = false;
         self.for_each_session(|core| {
@@ -514,33 +692,28 @@ impl CoreRuntime {
                     .map(|view| vec![view.conversation.runtime_id])
                     .unwrap_or_default()
             };
-            let changed = |id: &String| {
-                previous.iter().find(|runtime| &runtime.id == id)
-                    != core
-                        .runtime_instances
-                        .iter()
-                        .find(|runtime| &runtime.id == id)
-            };
-            let source_changed = source_ids.iter().any(|id| {
-                let origin = |runtime: &RuntimeInstance| {
-                    (runtime.type_id, runtime.enabled, runtime.settings.clone())
-                };
-                previous
+            let changed = |id: &String, execution: bool| match (
+                previous.iter().find(|runtime| &runtime.id == id),
+                core.runtime_instances
                     .iter()
-                    .find(|runtime| &runtime.id == id)
-                    .map(origin)
-                    != core
-                        .runtime_instances
-                        .iter()
-                        .find(|runtime| &runtime.id == id)
-                        .map(origin)
-            });
+                    .find(|runtime| &runtime.id == id),
+            ) {
+                (Some(before), Some(after)) if execution => {
+                    before.execution_configuration() != after.execution_configuration()
+                }
+                (Some(before), Some(after)) => {
+                    before.enabled != after.enabled || !core.same_runtime_source(before, after)
+                }
+                (None, None) => false,
+                _ => true,
+            };
+            let source_changed = source_ids.iter().any(|id| changed(id, false));
             let invalidated = source_changed
                 || core
                     .session
                     .execution_runtime_id
                     .as_ref()
-                    .is_some_and(changed);
+                    .is_some_and(|id| changed(id, true));
             if invalidated && core.session.executing() {
                 core.session.configuration_changed = true;
                 return Ok(());

@@ -1,0 +1,496 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing draft release tag to retry, for example v0.1.0-beta.1
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: velune-release-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: github.repository == 'xiaoland/velune'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      contents: write
+      pull-requests: write
+    outputs:
+      publish: ${{ steps.identity.outputs.publish || steps.retry.outputs.publish }}
+      tag: ${{ steps.identity.outputs.tag || steps.retry.outputs.tag }}
+      sha: ${{ steps.identity.outputs.sha || steps.retry.outputs.sha }}
+      version: ${{ steps.identity.outputs.version || steps.retry.outputs.version }}
+      build_number: ${{ steps.identity.outputs.build_number || steps.retry.outputs.build_number }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Create release PR or release tag
+        id: release_please
+        if: github.event_name == 'push'
+        uses: googleapis/release-please-action@v4
+        with:
+          token: ${{ github.token }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+          target-branch: main
+      - name: Create and record release build identity
+        id: identity
+        if: github.event_name == 'push' && steps.release_please.outputs.release_created == 'true'
+        env:
+          RELEASE_TAG: ${{ steps.release_please.outputs.tag_name }}
+          RELEASE_SHA: ${{ steps.release_please.outputs.sha }}
+          RELEASE_VERSION: ${{ steps.release_please.outputs.version }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_NUMBER: ${{ github.run_number }}
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_TAG" == "v$RELEASE_VERSION" ]]
+          git fetch --force origin "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
+          [[ "$(git rev-parse "$RELEASE_TAG^{commit}")" == "$RELEASE_SHA" ]]
+          [[ "$(python3 scripts/version.py --format full)" == "$RELEASE_VERSION" ]]
+          python3 scripts/release-run.py write \
+            --tag "$RELEASE_TAG" --commit "$RELEASE_SHA" \
+            --build-number "$RUN_NUMBER" --run-id "$RUN_ID" --run-number "$RUN_NUMBER" \
+            --output target/release-build.json
+          mkdir -p target/release
+          cp target/release-build.json target/release/release-build.json
+          gh release view "$RELEASE_TAG" --json isDraft --jq '.isDraft' | grep -qx true
+          gh release upload "$RELEASE_TAG" target/release/release-build.json --clobber
+          echo "publish=true" >> "$GITHUB_OUTPUT"
+          echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+          echo "sha=$RELEASE_SHA" >> "$GITHUB_OUTPUT"
+          echo "version=$RELEASE_VERSION" >> "$GITHUB_OUTPUT"
+          echo "build_number=$RUN_NUMBER" >> "$GITHUB_OUTPUT"
+      - name: Load original release identity for a same-tag retry
+        id: retry
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]
+          gh release view "$RELEASE_TAG" --json isDraft --jq '.isDraft' | grep -qx true
+          mkdir -p target/retry
+          gh release download "$RELEASE_TAG" --pattern release-build.json --dir target/retry
+          git fetch --force origin "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
+          git checkout --detach "$RELEASE_TAG"
+          metadata=$(python3 scripts/release-run.py verify --metadata target/retry/release-build.json --tag "$RELEASE_TAG")
+          echo "publish=true" >> "$GITHUB_OUTPUT"
+          echo "tag=$(jq -r .tag <<<"$metadata")" >> "$GITHUB_OUTPUT"
+          echo "sha=$(jq -r .source_commit <<<"$metadata")" >> "$GITHUB_OUTPUT"
+          echo "version=$(jq -r .version <<<"$metadata")" >> "$GITHUB_OUTPUT"
+          echo "build_number=$(jq -r .build_number <<<"$metadata")" >> "$GITHUB_OUTPUT"
+          mkdir -p target/release
+          cp target/retry/release-build.json target/release/release-build.json
+      - name: Validate no-op result
+        if: github.event_name == 'push' && steps.release_please.outputs.release_created != 'true' && steps.release_please.outputs.prs_created != 'true'
+        run: echo 'No new release or release PR is needed.'
+
+  source-bundle:
+    needs: release
+    if: needs.release.outputs.publish == 'true'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.release.outputs.sha }}
+          fetch-depth: 0
+      - name: Verify the tag commit
+        env:
+          TAG: ${{ needs.release.outputs.tag }}
+          SHA: ${{ needs.release.outputs.sha }}
+          BUILD_NUMBER: ${{ needs.release.outputs.build_number }}
+          VERSION: ${{ needs.release.outputs.version }}
+        run: |
+          set -euo pipefail
+          [[ "$(git rev-parse HEAD)" == "$SHA" ]]
+          python3 scripts/release-run.py verify --metadata <(python3 - "$TAG" "$SHA" "$VERSION" "$BUILD_NUMBER" <<'PY'
+          import json,sys
+          tag,sha,version,number=sys.argv[1:]
+          print(json.dumps({'tag':tag,'source_commit':sha,'version':version,'build_number':int(number)}))
+          PY
+          ) --tag "$TAG" --commit "$SHA"
+      - name: Install the pinned Rust toolchain
+        run: |
+          set -euo pipefail
+          channel=$(python3 -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml", "rb"))["toolchain"]["channel"])')
+          rustup toolchain install "$channel" --profile minimal --component rustfmt --component clippy
+          cargo --version
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.1'
+      - name: Cache source-resolution downloads
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: source-bundle-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'packages/ai-provider/relaykit-bridge/go.mod', 'packages/ai-provider/relaykit-bridge/go.sum') }}
+      - name: Create the exact-tag source bundle
+        env:
+          TAG: ${{ needs.release.outputs.tag }}
+          SHA: ${{ needs.release.outputs.sha }}
+          BUILD_NUMBER: ${{ needs.release.outputs.build_number }}
+          VERSION: ${{ needs.release.outputs.version }}
+        run: |
+          set -euo pipefail
+          python3 scripts/create-source-bundle.py --tag "$TAG" --commit "$SHA" --platforms macos windows android --output-dir target/source
+          archive=$(find target/source -maxdepth 1 -name "velune-$TAG-source.tar.gz" -print -quit)
+          test -n "$archive"
+          python3 scripts/package-release.py source --input "$archive" --output-dir target/release \
+            --tag "$TAG" --version "$VERSION" --commit "$SHA" --build-number "$BUILD_NUMBER" --arch all
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-source
+          path: target/release/*
+          if-no-files-found: error
+          retention-days: 2
+
+  platform-builds:
+    needs: [release, source-bundle]
+    if: needs.release.outputs.publish == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macos-arm64
+            platform: macos
+            runner: macos-15
+            architecture: arm64
+          - name: macos-x86_64
+            platform: macos
+            runner: macos-15-intel
+            architecture: x86_64
+          - name: windows-x64
+            platform: windows
+            runner: windows-2025
+            architecture: x64
+          - name: android-arm64
+            platform: android
+            runner: ubuntu-24.04
+            architecture: arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 180
+    permissions:
+      contents: read
+    env:
+      CARGO_BUILD_JOBS: 2
+      VELUNE_BUILD_JOBS: 2
+      VELUNE_BUILD_NUMBER: ${{ needs.release.outputs.build_number }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.release.outputs.sha }}
+          fetch-depth: 0
+      - name: Verify tag, source SHA, and product version
+        env:
+          TAG: ${{ needs.release.outputs.tag }}
+          SHA: ${{ needs.release.outputs.sha }}
+          VERSION: ${{ needs.release.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$(git rev-parse HEAD)" == "$SHA" ]]
+          [[ "$(git rev-parse "$TAG^{commit}")" == "$SHA" ]]
+          [[ "$(python3 scripts/version.py --format full)" == "$VERSION" ]]
+          python3 scripts/version.py --format build-number --build-number "$VELUNE_BUILD_NUMBER" >/dev/null
+      - name: Cache native tool outputs
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/host-rust
+            target/cross-rust
+            target/build-tools
+            target/tools
+            .build
+            ~/.gradle/caches
+          key: velune-${{ matrix.name }}-${{ hashFiles('Cargo.lock', 'Package.resolved', 'app/android/gradle/libs.versions.toml', 'app/android/gradle/wrapper/gradle-wrapper.properties') }}
+      - name: Set up Node.js
+        if: matrix.platform == 'macos' || matrix.platform == 'windows'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.18.0'
+          cache: npm
+          cache-dependency-path: packages/agent-runtime/runtime-support/package-lock.json
+      - name: Select Xcode 26.3
+        if: matrix.platform == 'macos'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo xcode-select -s /Applications/Xcode_26.3.app
+          xcodebuild -version | grep -q 'Xcode 26.3'
+      - name: Set up Go
+        if: matrix.platform == 'macos' || matrix.platform == 'windows'
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.1'
+      - name: Set up .NET 10
+        if: matrix.platform == 'windows'
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: Set up Java 17
+        if: matrix.platform == 'android'
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Set up Android SDK and NDK
+        if: matrix.platform == 'android'
+        uses: android-actions/setup-android@v4
+        with:
+          cmdline-tools-version: 15859902
+          accept-android-sdk-licenses: true
+      - name: Install Android NDK
+        if: matrix.platform == 'android'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sdkmanager --install 'platforms;android-36' 'build-tools;36.0.0' 'ndk;30.0.14904198'
+      - name: Set up Rust Android target
+        if: matrix.platform == 'android'
+        run: rustup target add aarch64-linux-android
+      - name: Install Windows LLVM-MinGW
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $archive = Join-Path $env:RUNNER_TEMP 'llvm-mingw.zip'
+          $url = 'https://github.com/mstorsjo/llvm-mingw/releases/download/20261104/llvm-mingw-20261104-ucrt-x86_64.zip'
+          Invoke-WebRequest -Uri $url -OutFile $archive
+          $actual = (Get-FileHash -Algorithm SHA256 $archive).Hash.ToLowerInvariant()
+          if ($actual -ne '552191b5754c49a5a20723276a6fc56541ea1922c4c50b7b669022333fc1b40f') { throw 'llvm-mingw SHA-256 mismatch' }
+          $root = Join-Path $env:RUNNER_TEMP 'llvm-mingw'
+          Expand-Archive -Path $archive -DestinationPath $root
+          $clang = Get-ChildItem $root -Filter 'x86_64-w64-mingw32-clang.exe' -Recurse | Select-Object -First 1
+          if (-not $clang) { throw 'x86_64-w64-mingw32-clang was not found in the pinned archive' }
+          "VELUNE_RELAYKIT_CC=$($clang.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+      - name: Install runtime support and xURL
+        if: matrix.platform == 'macos'
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/install-runtime-support.sh
+          bash scripts/install-xurl.sh
+      - name: Install Windows runtime support and xURL
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $runtime = 'target/runtime-support'
+          New-Item -ItemType Directory -Force $runtime | Out-Null
+          Copy-Item packages/agent-runtime/runtime-support/package.json,packages/agent-runtime/runtime-support/package-lock.json $runtime
+          npm ci --prefix $runtime --ignore-scripts --omit=dev --no-audit --no-fund
+          Copy-Item -Recurse -Force packages/agent-runtime/runtime-support/licenses $runtime
+          Copy-Item packages/agent-runtime/runtime-support/THIRD_PARTY_NOTICES.md $runtime
+          & scripts/install-xurl.ps1
+      - name: Build and package macOS app
+        if: matrix.platform == 'macos'
+        env:
+          TAG: ${{ needs.release.outputs.tag }}
+          SHA: ${{ needs.release.outputs.sha }}
+          VERSION: ${{ needs.release.outputs.version }}
+          VELUNE_CODESIGN_IDENTITY: '-'
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/build-macos.sh --profile release --purpose daily --build-only
+          python3 scripts/package-release.py macos --input target/macos/Velune.app --output-dir target/release \
+            --tag "$TAG" --version "$VERSION" --commit "$SHA" --build-number "$VELUNE_BUILD_NUMBER" --arch '${{ matrix.architecture }}'
+      - name: Build and package Windows app
+        if: matrix.platform == 'windows'
+        env:
+          TAG: ${{ needs.release.outputs.tag }}
+          SHA: ${{ needs.release.outputs.sha }}
+          VERSION: ${{ needs.release.outputs.version }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          ./scripts/build-windows.ps1 -Profile release
+          python scripts/package-release.py windows --input target/windows/Velune --output-dir target/release `
+            --tag $env:TAG --version $env:VERSION --commit $env:SHA --build-number $env:VELUNE_BUILD_NUMBER --arch x64
+      - name: Prepare fixed Android release keystore
+        if: matrix.platform == 'android'
+        env:
+          ANDROID_RELEASE_KEYSTORE_BASE64: ${{ secrets.ANDROID_RELEASE_KEYSTORE_BASE64 }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$ANDROID_RELEASE_KEYSTORE_BASE64" || { echo 'ANDROID_RELEASE_KEYSTORE_BASE64 is missing' >&2; exit 1; }
+          umask 077
+          key="$RUNNER_TEMP/velune-release.p12"
+          printf '%s' "$ANDROID_RELEASE_KEYSTORE_BASE64" | base64 --decode > "$key"
+          test -s "$key"
+          chmod 600 "$key"
+          echo "ANDROID_RELEASE_KEYSTORE_PATH=$key" >> "$GITHUB_ENV"
+      - name: Build, sign, and verify Android APK
+        if: matrix.platform == 'android'
+        env:
+          TAG: ${{ needs.release.outputs.tag }}
+          SHA: ${{ needs.release.outputs.sha }}
+          VERSION: ${{ needs.release.outputs.version }}
+          VELUNE_REQUIRE_ANDROID_RELEASE_SIGNING: 'true'
+          ANDROID_RELEASE_STORE_PASSWORD: ${{ secrets.ANDROID_RELEASE_STORE_PASSWORD }}
+          ANDROID_RELEASE_KEY_ALIAS: ${{ secrets.ANDROID_RELEASE_KEY_ALIAS }}
+          ANDROID_RELEASE_KEY_PASSWORD: ${{ secrets.ANDROID_RELEASE_KEY_PASSWORD }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          for name in ANDROID_RELEASE_STORE_PASSWORD ANDROID_RELEASE_KEY_ALIAS ANDROID_RELEASE_KEY_PASSWORD; do
+            [[ -n "${!name:-}" ]] || { echo "$name is missing" >&2; exit 1; }
+          done
+          [[ "$ANDROID_RELEASE_KEY_ALIAS" == velune ]]
+          bash scripts/build-android.sh --profile release
+          apk=app/android/app/build/outputs/apk/release/app-release.apk
+          test -s "$apk"
+          apksigner=$(find "$ANDROID_HOME/build-tools" -name apksigner -type f | sort -V | tail -n 1)
+          test -x "$apksigner"
+          cert=$($apksigner verify --verbose --print-certs "$apk" | sed -n 's/^Signer #1 certificate SHA-256 digest: //p' | head -n 1 | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')
+          [[ "$cert" == babd7b659b691b52ca5a7412c68f2e52abed05d0b0aeb1c56e203d548dbda4bb ]]
+          python3 scripts/package-release.py android --input "$apk" --output-dir target/release \
+            --tag "$TAG" --version "$VERSION" --commit "$SHA" --build-number "$VELUNE_BUILD_NUMBER" --arch arm64 \
+            --certificate-sha256 "$cert"
+      - name: Remove temporary Android signing key
+        if: always() && matrix.platform == 'android'
+        shell: bash
+        run: rm -f "${RUNNER_TEMP:-/tmp}/velune-release.p12"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.name }}
+          path: target/release/*
+          if-no-files-found: error
+          retention-days: 2
+
+  publish:
+    needs: [release, source-bundle, platform-builds]
+    if: needs.release.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      actions: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.release.outputs.sha }}
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: target/release
+          merge-multiple: true
+      - name: Verify complete asset set and prepare checksums
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.release.outputs.tag }}
+          SHA: ${{ needs.release.outputs.sha }}
+          VERSION: ${{ needs.release.outputs.version }}
+          BUILD_NUMBER: ${{ needs.release.outputs.build_number }}
+        run: |
+          set -euo pipefail
+          [[ "$(git rev-parse HEAD)" == "$SHA" ]]
+          gh release download "$TAG" --pattern release-build.json --dir target/release
+          test -s target/release/release-build.json
+          python3 scripts/release-run.py verify --metadata target/release/release-build.json --tag "$TAG" --commit "$SHA"
+          for expected in \
+            "Velune-$TAG-macOS-arm64.zip" \
+            "Velune-$TAG-macOS-x86_64.zip" \
+            "Velune-$TAG-windows-x64.zip" \
+            "Velune-$TAG-android-arm64.apk" \
+            "velune-$TAG-source.tar.gz"; do
+            test -s "target/release/$expected"
+          done
+          python3 - "$TAG" "$SHA" "$VERSION" "$BUILD_NUMBER" <<'PY'
+          import json,sys
+          from pathlib import Path
+          import hashlib
+          def digest(path):
+              value=hashlib.sha256()
+              with path.open('rb') as source:
+                  for block in iter(lambda: source.read(1024*1024),b''):
+                      value.update(block)
+              return value.hexdigest()
+          tag,sha,version,number=sys.argv[1:]
+          root=Path('target/release')
+          expected={
+              f'Velune-{tag}-macOS-arm64.zip':('macos','arm64'),
+              f'Velune-{tag}-macOS-x86_64.zip':('macos','x86_64'),
+              f'Velune-{tag}-windows-x64.zip':('windows','x64'),
+              f'Velune-{tag}-android-arm64.apk':('android','arm64'),
+              f'velune-{tag}-source.tar.gz':('source','all'),
+          }
+          metadata=list(root.glob('*.build.json'))
+          assert len(metadata)==len(expected)
+          found=set()
+          actual_platforms=set()
+          source_platforms=None
+          for path in metadata:
+              value=json.loads(path.read_text())
+              assert value['tag']==tag and value['version']==version
+              assert value['source_commit']==sha and value['build_number']==int(number)
+              artifact=value['artifact']
+              assert artifact in expected and artifact not in found
+              assert (value['platform'],value['architecture'])==expected[artifact]
+              packaged=root/artifact
+              assert packaged.is_file() and packaged.stat().st_size>0
+              assert value['sha256']==digest(packaged)
+              found.add(artifact)
+              if value['platform']=='source':
+                  source_platforms=set(value['corresponding_platforms'])
+              else:
+                  actual_platforms.add(value['platform'])
+                  assert value['binary_version']==version
+              if value['platform']=='android':
+                  assert value['certificate_sha256']=='babd7b659b691b52ca5a7412c68f2e52abed05d0b0aeb1c56e203d548dbda4bb'
+          assert found==set(expected)
+          expected_platforms={platform for platform,architecture in expected.values() if platform!='source'}
+          assert actual_platforms==expected_platforms
+          assert source_platforms==actual_platforms
+          PY
+          (cd target/release && sha256sum * > SHA256SUMS.txt)
+      - name: Upload all assets to the draft release and publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.release.outputs.tag }}
+          SHA: ${{ needs.release.outputs.sha }}
+        run: |
+          set -euo pipefail
+          gh release view "$TAG" --json isDraft --jq '.isDraft' | grep -qx true
+          gh release upload "$TAG" target/release/* --clobber
+          gh release view "$TAG" --json body --jq '.body' > target/release-notes-current.md
+          python3 scripts/release-notes.py --input target/release-notes-current.md --output target/release-notes.md --tag "$TAG"
+          gh release edit "$TAG" --draft=false --notes-file target/release-notes.md
+      - name: Create or reuse main-to-develop sync PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          TAG: ${{ needs.release.outputs.tag }}
+          SHA: ${{ needs.release.outputs.sha }}
+        run: |
+          set -euo pipefail
+          pr_number=$(gh pr list --base develop --head main --state open --json number --jq '.[0].number // empty')
+          if [[ -z "$pr_number" ]]; then
+            gh pr create --base develop --head main --title "chore: 将 $TAG 发布提交同步回 develop" \
+              --body "Release $TAG 已从 main 发布。此 PR 将版本基线和发布提交回流至 develop，请在下一次提升前合并。"
+            pr_number=$(gh pr list --base develop --head main --state open --json number --jq '.[0].number')
+          fi

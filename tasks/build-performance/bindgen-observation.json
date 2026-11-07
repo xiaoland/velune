@@ -1,0 +1,11 @@
+{
+  "directory": "/tmp/velune-bindgen-observe-flmwwwxu",
+  "first_seconds": 1.348,
+  "second_seconds": 0.542,
+  "file_count": 15,
+  "total_bytes": 1452580,
+  "same_names": true,
+  "identical_content": true,
+  "rewritten_mtimes": 15,
+  "temporary_output_removed": true
+}

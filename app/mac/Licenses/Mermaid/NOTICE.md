@@ -1,131 +1,87 @@
-# Mermaid 本地渲染器
+# Mermaid local renderer
 
-Mermaid 11.12.0（MIT），分发文件来自 npm 对应版本的 dist/mermaid.min.js；无运行时 CDN 请求。
+Mermaid 11.12.0 (MIT), distributed from the corresponding npm release `dist/mermaid.min.js`; no runtime CDN request is made.
 
-SHA-256：`07e37dfa97b337ccc85365d57eddf99b9706f09db3b59b260d0333b23b343c4b`。依赖版本及其许可证全文见本目录 Licenses。
+SHA-256: `07e37dfa97b337ccc85365d57eddf99b9706f09db3b59b260d0333b23b343c4b`.
 
-- @antfu/install-pkg 2.1.0 — MIT
-- @braintree/sanitize-url 7.1.2 — MIT
-- lodash-es 4.17.21 — MIT
-- @chevrotain/cst-dts-gen 11.0.3 — Apache-2.0
-- lodash-es 4.17.21 — MIT
-- @chevrotain/gast 11.0.3 — Apache-2.0
-- @chevrotain/regexp-to-ast 11.0.3 — Apache-2.0
-- @chevrotain/types 11.0.3 — Apache-2.0
-- @chevrotain/utils 11.0.3 — Apache-2.0
-- @iconify/types 2.0.0 — MIT
-- @iconify/utils 3.1.7 — MIT
-- @mermaid-js/parser 0.6.3 — MIT
-- @types/d3 7.4.3 — MIT
-- @types/d3-array 3.2.2 — MIT
-- @types/d3-axis 3.0.6 — MIT
-- @types/d3-brush 3.0.6 — MIT
-- @types/d3-chord 3.0.6 — MIT
-- @types/d3-color 3.1.3 — MIT
-- @types/d3-contour 3.0.6 — MIT
-- @types/d3-delaunay 6.0.4 — MIT
-- @types/d3-dispatch 3.0.7 — MIT
-- @types/d3-drag 3.0.7 — MIT
-- @types/d3-dsv 3.0.7 — MIT
-- @types/d3-ease 3.0.2 — MIT
-- @types/d3-fetch 3.0.7 — MIT
-- @types/d3-force 3.0.10 — MIT
-- @types/d3-format 3.0.4 — MIT
-- @types/d3-geo 3.1.1 — MIT
-- @types/d3-hierarchy 3.1.7 — MIT
-- @types/d3-interpolate 3.0.4 — MIT
-- @types/d3-path 3.1.1 — MIT
-- @types/d3-polygon 3.0.2 — MIT
-- @types/d3-quadtree 3.0.6 — MIT
-- @types/d3-random 3.0.4 — MIT
-- @types/d3-scale 4.0.9 — MIT
-- @types/d3-scale-chromatic 3.1.0 — MIT
-- @types/d3-selection 3.0.12 — MIT
-- @types/d3-shape 3.2.0 — MIT
-- @types/d3-time 3.0.4 — MIT
-- @types/d3-time-format 4.0.3 — MIT
-- @types/d3-timer 3.0.2 — MIT
-- @types/d3-transition 3.0.9 — MIT
-- @types/d3-zoom 3.0.9 — MIT
-- @types/geojson 7946.0.16 — MIT
-- @types/trusted-types 2.0.7 — MIT
-- lodash-es 4.17.21 — MIT
-- chevrotain 11.0.3 — Apache-2.0
-- chevrotain-allstar 0.3.1 — MIT
-- commander 7.2.0 — MIT
-- cose-base 1.0.3 — MIT
-- cytoscape 3.34.4 — MIT
-- cytoscape-cose-bilkent 4.1.0 — MIT
-- cose-base 2.2.0 — MIT
-- layout-base 2.0.1 — MIT
-- cytoscape-fcose 2.2.0 — MIT
-- d3 7.9.1 — ISC
-- d3-array 3.2.5 — ISC
-- d3-axis 3.0.1 — ISC
-- d3-brush 3.0.1 — ISC
-- d3-chord 3.0.2 — ISC
-- d3-color 3.1.1 — ISC
-- d3-contour 4.0.3 — ISC
-- d3-delaunay 6.0.5 — ISC
-- d3-dispatch 3.0.2 — ISC
-- d3-drag 3.0.1 — ISC
-- d3-dsv 3.0.2 — ISC
-- d3-ease 3.0.2 — BSD-3-Clause
-- d3-fetch 3.0.2 — ISC
-- d3-force 3.0.1 — ISC
-- d3-format 3.1.3 — ISC
-- d3-geo 3.1.2 — ISC
-- d3-hierarchy 3.1.3 — ISC
-- d3-interpolate 3.0.2 — ISC
-- d3-path 3.1.1 — ISC
-- d3-polygon 3.0.2 — ISC
-- d3-quadtree 3.0.2 — ISC
-- d3-random 3.0.2 — ISC
-- d3-array 2.12.1 — BSD-3-Clause
-- d3-path 1.0.9 — BSD-3-Clause
-- d3-shape 1.3.7 — BSD-3-Clause
-- internmap 1.0.1 — ISC
-- d3-sankey 0.12.3 — BSD-3-Clause
-- d3-scale 4.0.3 — ISC
-- d3-scale-chromatic 3.1.1 — ISC
-- d3-selection 3.0.1 — ISC
-- d3-shape 3.2.1 — ISC
-- d3-time 3.1.1 — ISC
-- d3-time-format 4.1.1 — ISC
-- d3-timer 3.0.2 — ISC
-- d3-transition 3.0.2 — ISC
-- d3-zoom 3.0.1 — ISC
-- dagre-d3-es 7.0.11 — MIT
-- dayjs 1.11.23 — MIT
-- delaunator 5.1.0 — ISC
-- dompurify 3.4.17 — (MPL-2.0 OR Apache-2.0)
-- hachure-fill 0.5.2 — MIT
-- iconv-lite 0.6.3 — MIT
-- import-meta-resolve 4.2.0 — MIT
-- internmap 2.0.3 — ISC
-- commander 8.3.0 — MIT
-- katex 0.16.47 — MIT
-- khroma 2.1.0 — 见声明
-- langium 3.3.1 — MIT
-- layout-base 1.0.2 — MIT
-- lodash-es 4.18.1 — MIT
-- marked 16.4.2 — MIT
-- mermaid 11.12.0 — MIT
-- package-manager-detector 1.9.0 — MIT
-- path-data-parser 0.1.0 — MIT
-- points-on-curve 0.2.0 — MIT
-- points-on-path 0.2.1 — MIT
-- robust-predicates 3.0.3 — Unlicense
-- roughjs 4.6.6 — MIT
-- rw 1.3.3 — BSD-3-Clause
-- safer-buffer 2.1.2 — MIT
-- stylis 4.4.0 — MIT
-- tinyexec 1.3.1 — MIT
-- ts-dedent 2.3.0 — MIT
-- uuid 11.1.1 — MIT
-- vscode-jsonrpc 8.2.0 — MIT
-- vscode-languageserver 9.0.1 — MIT
-- vscode-languageserver-protocol 3.17.5 — MIT
-- vscode-languageserver-textdocument 1.0.16 — MIT
-- vscode-languageserver-types 3.17.5 — MIT
-- vscode-uri 3.0.8 — MIT
+The dependency list below reflects modules present in the shipped bundle, extracted from its exact source map. Each package license and notice available from the package is kept under `Licenses/`; the source archive includes the source map, the exact Mermaid upstream revision, and preferred-source snapshots listed in `PREFERRED-SOURCE-SUPPLEMENTS.json`. See `SOURCES.json` for the npm integrity and bundle hashes.
+
+## Modules in the shipped bundle
+
+- `@braintree/sanitize-url@7.1.1`
+- `@chevrotain/cst-dts-gen@11.0.3`
+- `@chevrotain/gast@11.0.3`
+- `@chevrotain/regexp-to-ast@11.0.3`
+- `@chevrotain/utils@11.0.3`
+- `@iconify/utils@3.0.2`
+- `chevrotain-allstar@0.3.1`
+- `chevrotain@11.0.3`
+- `cose-base@1.0.3`
+- `cose-base@2.2.0`
+- `cytoscape-cose-bilkent@4.1.0`
+- `cytoscape-fcose@2.2.0`
+- `cytoscape@3.33.1`
+- `d3-array@2.12.1`
+- `d3-array@3.2.4`
+- `d3-axis@3.0.0`
+- `d3-brush@3.0.0`
+- `d3-chord@3.0.1`
+- `d3-color@3.1.0`
+- `d3-contour@4.0.2`
+- `d3-delaunay@6.0.4`
+- `d3-dispatch@3.0.1`
+- `d3-drag@3.0.0`
+- `d3-dsv@3.0.1`
+- `d3-ease@3.0.1`
+- `d3-fetch@3.0.1`
+- `d3-force@3.0.0`
+- `d3-format@3.1.0`
+- `d3-geo@3.1.1`
+- `d3-hierarchy@3.1.2`
+- `d3-interpolate@3.0.1`
+- `d3-path@1.0.9`
+- `d3-path@3.1.0`
+- `d3-polygon@3.0.1`
+- `d3-quadtree@3.0.1`
+- `d3-random@3.0.1`
+- `d3-sankey@0.12.3`
+- `d3-scale-chromatic@3.1.0`
+- `d3-scale@4.0.2`
+- `d3-selection@3.0.0`
+- `d3-shape@1.3.7`
+- `d3-shape@3.2.0`
+- `d3-time-format@4.1.0`
+- `d3-time@3.1.0`
+- `d3-timer@3.0.1`
+- `d3-transition@3.0.1`
+- `d3-zoom@3.0.0`
+- `d3@7.9.0`
+- `dagre-d3-es@7.0.11`
+- `dayjs@1.11.18`
+- `dompurify@3.2.6`
+- `internmap@2.0.3`
+- `js-yaml@4.1.0`
+- `katex@0.16.22`
+- `khroma@2.1.0`
+- `langium@3.3.1`
+- `layout-base@1.0.2`
+- `layout-base@2.0.1`
+- `lodash-es@4.17.21`
+- `marked@16.3.0`
+- `roughjs@4.6.6`
+- `stylis@4.3.6`
+- `ts-dedent@2.2.0`
+- `uuid@11.1.0`
+- `vscode-jsonrpc@8.2.0`
+- `vscode-languageserver-textdocument@1.0.12`
+- `vscode-languageserver-types@3.17.5`
+- `mermaid@11.12.0`
+- `@mermaid-js/parser@0.6.2`
+- `vscode-uri@3.0.8`
+- `path-browserify@1.0.1`
+- `hachure-fill@0.5.2`
+- `path-data-parser@0.1.0`
+- `points-on-curve@0.2.0`
+- `points-on-path@0.2.1`
+
+The source map includes generated parser output; the archived Mermaid repository contains the corresponding grammar and build inputs. Some supplement revisions are tied through npm `gitHead`, exact upstream release tags, or npm provenance. The Iconify Utils 3.0.2 source is tied to its upstream version commit; emitted-source correspondence has not been rebuilt.

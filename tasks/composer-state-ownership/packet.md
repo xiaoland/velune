@@ -8,7 +8,7 @@
 
 共享核心及 Mac／iOS／Android／Windows 已接入完整记录、持久附件、条件读取、输入与关联各自的 CAS、离线基线和创建交接。旧 ClientState 正文隔离存储已移除，旧正文／选择 API 桥接同一目录。Mac 观察输入可用性和指针变化，正文未变也更新提交资格；锁定仍可编辑。创建回调捕获实际 InputID 与目标；创建成功先保留原生身份，迟到回包不能清掉新输入或重复消耗新建项。
 
-现行契约归 [Composer 输入身份与同步](../../docs/design/composer-state.md)，产品规则归 [输入区](../../docs/prd/composer.md#输入与布局)。[产品推导](product.md)保留方案形成过程；[实现与分层证据](design.md#本轮分层证据)记录本轮结果，历史方案不作为当前实现限制。
+现行契约归 [Composer 输入身份与同步](../../docs/product-tdd/composer-state.md)，产品规则归 [输入区](../../docs/prd/composer-input.md#内容与目标的归属)。[产品推导](product.md)保留方案形成过程；[实现与分层证据](design.md#本轮分层证据)记录本轮结果，历史方案不作为当前实现限制。
 
 ## 验证范围与结论
 
@@ -16,7 +16,7 @@
 
 Mac／iOS／Android／Windows 构建通过；Windows 在目标机隔离 worktree 构建。Windows 原生检查两次触发前台保护并自动退出，即使第二次未调用 Show／Activate 仍不能满足不影响前台的约束，已停止尝试，明确不计为 UI 或主题验收。未注入鼠标键盘事件；已向用户说明。Windows 本任务 worktree、两个 scheduled task 和临时脚本已删除，三个缓存 junction 仅解除链接，日常缓存仍存在。
 
-本轮 Mac 检查使用隐藏原生模型与真实 application I/O，不宣称视觉验收；没有修改 composer 视觉布局。其他端的源码编译通过，不等于各端完整交互已验。Windows 仍保留自己的每 Tab 输入呈现，Mac 共享 drawer 体验未整体移植，见 [PARITY](../../app/windows/PARITY.md#composer-状态同步2026-11-03)。
+本轮 Mac 检查使用隐藏原生模型与真实 application I/O，不宣称视觉验收；没有修改 composer 视觉布局。其他端的源码编译通过，不等于各端完整交互已验。Windows 仍保留自己的每 Tab 输入呈现，Mac 共享 drawer 体验未整体移植，见 [PARITY](../../app/windows/PARITY.md)。
 
 ## 升级与部署边界
 

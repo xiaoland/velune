@@ -5,12 +5,7 @@
 use crate::QuotaHistoryPoint;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    io::Write,
-    path::PathBuf,
-    sync::Mutex,
-};
+use std::{collections::BTreeMap, io::Write, path::PathBuf, sync::Mutex};
 
 pub(crate) const RETENTION_MS: i64 = 30 * 24 * 60 * 60 * 1000;
 /// Unchanged values are kept at most this often, bounding a busy provider.
@@ -31,7 +26,12 @@ struct Last {
 }
 pub(crate) struct QuotaHistory {
     directory: PathBuf,
-    last: Mutex<BTreeMap<String, Last>>,
+    state: Mutex<State>,
+}
+#[derive(Default)]
+struct State {
+    bindings: BTreeMap<String, Option<String>>,
+    last: BTreeMap<String, Last>,
 }
 fn same_values(a: &QuotaHistoryPoint, b: &QuotaHistoryPoint) -> bool {
     a.available == b.available && a.windows == b.windows && a.balances == b.balances
@@ -40,7 +40,7 @@ impl QuotaHistory {
     pub(crate) fn new(directory: PathBuf) -> Self {
         Self {
             directory,
-            last: Mutex::new(BTreeMap::new()),
+            state: Mutex::new(State::default()),
         }
     }
     pub(crate) fn name(gateway: &str, provider: &str) -> String {
@@ -81,7 +81,13 @@ impl QuotaHistory {
         point: QuotaHistoryPoint,
     ) {
         let name = Self::name(gateway, provider);
-        let mut last = self.last.lock().expect("quota history");
+        let mut state = self.state.lock().expect("quota history");
+        // Old configuration workers may finish after a binding was replaced or
+        // removed. Their live quota stays with that execution's service only.
+        if state.bindings.get(&name).and_then(Option::as_deref) != Some(epoch) {
+            return;
+        }
+        let last = &mut state.last;
         let now = point.observed_at_ms;
         let previous = match last.remove(&name) {
             Some(previous) => Some(previous),
@@ -160,7 +166,7 @@ impl QuotaHistory {
         since_ms: i64,
         now_ms: i64,
     ) -> std::io::Result<Vec<QuotaHistoryPoint>> {
-        let _guard = self.last.lock().expect("quota history");
+        let _guard = self.state.lock().expect("quota history");
         let text = match std::fs::read_to_string(self.path(&Self::name(gateway, provider))) {
             Ok(text) => text,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
@@ -178,8 +184,8 @@ impl QuotaHistory {
     }
     pub(crate) fn clear(&self, gateway: &str, provider: &str) -> std::io::Result<()> {
         let name = Self::name(gateway, provider);
-        let mut last = self.last.lock().expect("quota history");
-        last.remove(&name);
+        let mut state = self.state.lock().expect("quota history");
+        state.last.remove(&name);
         match std::fs::remove_file(self.path(&name)) {
             Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(error),
             _ => Ok(()),
@@ -187,9 +193,10 @@ impl QuotaHistory {
     }
     /// Delete history of providers no longer configured, including ones
     /// removed while the application was not running.
-    pub(crate) fn retain(&self, names: &BTreeSet<String>) {
-        let mut last = self.last.lock().expect("quota history");
-        last.retain(|name, _| names.contains(name));
+    pub(crate) fn configure(&self, bindings: BTreeMap<String, Option<String>>) {
+        let mut state = self.state.lock().expect("quota history");
+        state.last.retain(|name, _| bindings.contains_key(name));
+        state.bindings = bindings;
         let Ok(entries) = std::fs::read_dir(&self.directory) else {
             return;
         };
@@ -201,7 +208,7 @@ impl QuotaHistory {
             else {
                 continue;
             };
-            if !names.contains(stem) {
+            if !state.bindings.contains_key(stem) {
                 let _ = std::fs::remove_file(entry.path());
             }
         }

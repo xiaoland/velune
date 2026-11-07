@@ -105,6 +105,12 @@ struct ScheduledTasksView: View {
             }.frame(minWidth: 560)
         }
         .disabled(model.busy)
+        .onAppear {
+            store.openConversationWindow = { [openWindow] seed in
+                WindowPresentation.windowed.insert(seed.id)
+                openWindow(id: ConversationWindowKind.workspace.sceneID, value: seed)
+            }
+        }
         .confirmationDialog("丢弃尚未保存的修改？", isPresented: $discarding) {
             Button("丢弃修改并继续", role: .destructive) { if pendingNew { create() } else { select(pendingSelection) }; pendingNew = false }
             Button("取消", role: .cancel) { pendingNew = false }
@@ -248,9 +254,7 @@ struct ScheduledTasksView: View {
         original = draft
     }
     private func openConversation(_ id: String) {
-        if let window = ConversationWindowModel.openWindows.first(where: { $0.application === store && $0.window.map { $0.isVisible || $0.isMiniaturized } == true && !$0.focused.store.isShuttingDown }) {
-            window.focused.store.openLinkedConversation(id: id); window.window?.deminiaturize(nil); window.window?.makeKeyAndOrderFront(nil)
-        } else { openWindow(id: ConversationWindowKind.workspace.sceneID, value: WindowSeed(conversationID: id)) }
+        store.showConversation(id)
     }
     private func history(_ task: ScheduledTask) -> some View {
         VStack(alignment: .leading, spacing: 14) {

@@ -72,7 +72,7 @@ struct PreviewConversation: View {
 @MainActor
 enum PreviewData {
     static let runtimes: [RuntimeInstance] = [
-        .init(enabled: true, id: "sample", name: "Codex", typeId: .codex, gatewayId: "", settings: [:]),
+        .init(enabled: true, id: "sample", name: "Codex", typeId: .codex166, gatewayId: "", settings: [:]),
         .init(enabled: true, id: "claude", name: "Claude Code", typeId: .claudeCode, gatewayId: "", settings: [:])
     ]
     static let projects: [ConversationProject] = [
@@ -103,14 +103,14 @@ enum PreviewData {
         if ProcessInfo.processInfo.arguments.contains("--long") {
             assistant.blocks.append(.text(text: (1...24).map { "### 检查项 \($0)\n\n这是用于验证阅读历史时不跳到底部的合成段落。" }.joined(separator: "\n\n") + "\n\n```swift\nlet unfinished = true"))
         }
-        let turn = TranscriptTurn(id: "turn", userMessageId: user.id, workMessageIds: [assistant.id], lastMessageId: assistant.id, replyStartBlock: 1, durationMs: 2400, isRunning: false, settings: nil, usage: nil)
+        let turn = TranscriptTurn(id: "turn", userMessageId: user.id, workMessageIds: [assistant.id], lastMessageId: assistant.id, replyStartBlock: 1, durationMs: 2400, isRunning: false, canFork: false, settings: nil, usage: nil)
         let snapshot = DeliveredSnapshot(cursor: .init(generation: 1, sequence: 1), base: nil, messageIds: [user.id, assistant.id], messages: [user, assistant], revision: 1,
             conversation: .init(id: "sample", title: .native("iPad 控制端"), updatedAtUnixMs: nil, createdAtUnixMs: nil, runtimeId: "sample", cwd: "/sample/velune", canRename: false, canDelete: false, parentConversationId: nil, nativeReadState: nil),
             contextRuntimeId: "sample", resourceId: nil, modelRecordKey: nil, runState: .idle, transcriptTurns: [turn], usage: ConversationUsage(endedTurns: 1, unrecordedTurns: 1),
             transcriptItems: [.message(id: "user", messageId: user.id), .work(turnId: turn.id), .message(id: "reply:assistant", messageId: assistant.id)],
             transcriptOutline: [.init(id: "user", messageId: "user")], transcriptMessageIdentities: [], messageIdentityConfirmations: [], pendingInteractions: [],
             actions: .init(inputAccess: .editable, canSend: true, canCancel: false, canSwitch: false),
-            followUp: .init(queue: [], paused: nil, waiting: nil, canStopSubAgents: false, canSteer: false, canResume: false, canCompact: false, isCompacting: false, editable: [], canFork: false), subAgents: [.init(conversationId: "preview-child", title: "检查构建结果", failed: false)], collaborators: [.init(conversationId: "preview-peer", title: "复核 iPad 布局", runtimeName: "Claude Code", contacted: true, contactedBy: true)])
+            followUp: .init(queue: [], paused: nil, waiting: nil, canStopSubAgents: false, canQueue: false, canSteer: false, canResume: false, canCompact: false, isCompacting: false, editable: [], canFork: false), subAgents: [.init(conversationId: "preview-child", title: "检查构建结果", failed: false)], collaborators: [.init(conversationId: "preview-peer", title: "复核 iPad 布局", runtimeName: "Claude Code", contacted: true, contactedBy: true)])
         model.merge(snapshot)
         model.loading = false
         model.models = models

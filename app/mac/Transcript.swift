@@ -1,4 +1,5 @@
 import SwiftUI
+import Combine
 import VeluneBindings
 import AppKit
 
@@ -41,6 +42,8 @@ struct TranscriptView: View {
     var stoppingRecovery = false
     var canStopRecovery = false
     var stopRecovery: () -> Void = {}
+    /// A fork the user asked for while a turn ran; it fires when the turn ends.
+    var heldForkNotice: String? = nil
     @State private var dismissedRecovery: String?
     @State private var scrollerStyle = NSScroller.preferredScrollerStyle
 
@@ -68,9 +71,16 @@ struct TranscriptView: View {
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 if let recovery, recovery.active || dismissedRecovery != recovery.id {
                     RuntimeRecoveryView(recovery: recovery, stopping: stoppingRecovery, canStop: canStopRecovery, stop: stopRecovery) { dismissedRecovery = recovery.id }
+                } else if let heldForkNotice {
+                    Label(heldForkNotice, systemImage: "clock")
+                        .uiFont(.callout).foregroundStyle(.secondary)
+                        .padding(.horizontal, 16).padding(.vertical, 8)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(.bar)
                 }
             }
-            .onReceive(NotificationCenter.default.publisher(for: NSScroller.preferredScrollerStyleDidChangeNotification)) { _ in
+            .onReceive(NotificationCenter.default.publisher(for: NSScroller.preferredScrollerStyleDidChangeNotification)
+                .receive(on: DispatchQueue.main)) { _ in
                 scrollerStyle = NSScroller.preferredScrollerStyle
             }
             .onChange(of: conversationID) { _, _ in reading.following = reading.table.isFollowing; reading.outlineAnchorID = nil }

@@ -13,8 +13,6 @@ pub(super) struct State {
     /// Threads of this app-server besides the conversation's own, by thread
     /// id, while they work.
     pub(super) threads: BTreeMap<String, CodexThread>,
-    /// Every thread besides the conversation's own that this app-server has run.
-    pub(super) ran_threads: std::collections::BTreeSet<String>,
     /// The developer instructions Codex's configuration gives, which a side
     /// chat's own follow.
     pub(super) developer_instructions: Option<String>,
@@ -24,37 +22,13 @@ pub(super) struct State {
     pub(super) service_tier: Option<String>,
 }
 
-/// Adapter-owned selection IDs keep upstream IDs and tiers unambiguous.
-const SPEED_PREFIX: &str = "velune:codex-speed:";
-
-fn speed_id(base: &str, tier: &str) -> String {
-    format!("{SPEED_PREFIX}{}", json!([base, tier]))
-}
-
-pub(super) fn split_speed(model_id: &str) -> (String, Option<String>) {
-    if let Some(encoded) = model_id.strip_prefix(SPEED_PREFIX)
-        && let Ok((base, tier)) = serde_json::from_str::<(String, String)>(encoded)
-        && !base.is_empty()
-        && !tier.is_empty()
-    {
-        return (base, Some(tier));
-    }
-    (model_id.to_owned(), None)
-}
+use velune_conversation::model_variant::codex_speed_model as speed_id;
 
 /// A speed tier as the catalog reports it; variants keep id and name.
 #[derive(Clone, serde::Deserialize)]
 struct CatalogTier {
     id: String,
     name: String,
-}
-
-/// A speed variant reads as its base model and tier; anything else is itself.
-pub(crate) fn speed_model_name(model_id: &str) -> String {
-    match split_speed(model_id) {
-        (base, Some(tier)) => format!("{base} · {tier}"),
-        (id, None) => id,
-    }
 }
 
 impl NativeSession {
@@ -448,12 +422,7 @@ impl NativeSession {
         if self.config.gateway.is_none()
             && let Some(tier) = &self.codex.service_tier
         {
-            let field = if self.config.kind == NativeKind::Codex166 {
-                "serviceTierForTurn"
-            } else {
-                "serviceTier"
-            };
-            params[field] = json!(tier);
+            params["serviceTierForTurn"] = json!(tier);
         }
         if let Some((approval, sandbox, reviewer)) = policy {
             params["approvalPolicy"] = json!(approval);
@@ -529,7 +498,7 @@ impl NativeSession {
                     .as_str()
                     .ok_or_else(|| Error::new("Codex 未返回 fork 会话身份"))?
                     .to_owned();
-                self.codex_adopt_fork(&thread, &fork, cwd.as_deref(), &runtime_id)?;
+                self.codex_adopt_fork(&fork, cwd.as_deref(), &runtime_id)?;
                 // Editing immediately sends the replacement as one operation.
                 // Acquire only the fork's writer before application admission;
                 // an asynchronous control probe must not interrupt that send.
@@ -566,38 +535,21 @@ impl NativeSession {
             .as_str()
             .ok_or_else(|| Error::new("Codex 未返回 fork 会话身份"))?
             .to_owned();
-        self.codex_adopt_fork(&thread, &fork, cwd.as_deref(), &runtime_id)?;
+        self.codex_adopt_fork(&fork, cwd.as_deref(), &runtime_id)?;
         Ok(())
     }
 
     /// The app-server that loaded the source also owns its writer after
     /// forking. Unsubscribing can leave it resident; ending this short-lived
     /// process releases both writers, and the next turn opens only the fork.
-    fn codex_adopt_fork(
-        &mut self,
-        source: &str,
-        fork: &str,
-        cwd: Option<&Path>,
-        runtime_id: &str,
-    ) -> Result<()> {
+    fn codex_adopt_fork(&mut self, fork: &str, cwd: Option<&Path>, runtime_id: &str) -> Result<()> {
         self.native_id = None;
         self.codex_open(fork, cwd, runtime_id, Vec::new())?;
         self.shutdown()?;
         self.restart_required = true;
-        if self.gateway_turn && self.config.kind == NativeKind::Codex {
-            // 0.159's resume override also touches its persisted provider.
-            // Put both source and fork back as at the end of a gateway turn,
-            // while keeping the desired injection for the fork's next turn.
-            self.codex.ran_threads.insert(source.into());
-            let desired = self.config.gateway.take();
-            let result = self.codex_restore_provider();
-            self.config.gateway = desired;
-            self.gateway_turn = false;
-            result?;
-        }
         Ok(())
     }
-    /// The configured model first, then the catalog. Codex 0.159.3 lists each
+    /// The configured model first, then the catalog. Codex lists each
     /// model's `supportedReasoningEfforts`.
     pub(super) fn codex_models(&mut self) -> Result<Vec<ModelOption>> {
         let cwd = self
@@ -1030,9 +982,6 @@ impl NativeSession {
     /// active. Tracking every thread, not only those the spawning item
     /// names, does not depend on which of their events arrives first.
     fn codex_track_thread(&mut self, thread: &str, method: &str, params: &Value) {
-        if !self.codex.ran_threads.contains(thread) {
-            self.codex.ran_threads.insert(thread.into());
-        }
         match method {
             "thread/status/changed" => {
                 let status = &params["status"];
@@ -1065,11 +1014,6 @@ impl NativeSession {
             _ => {}
         }
     }
-    /// Codex keeps the provider a thread last ran with, so the threads a
-    /// gateway turn's app-server ran, the conversation's and its sub-agents',
-    /// would look for the gateway when resumed later. Once that process has
-    /// ended, a short-lived app-server resumes each on the runtime's own
-    /// provider: one that already has a thread loaded keeps its provider.
     /// Codex sends no `item/completed` for the tool calls a stopped or failed
     /// turn aborted, nor keeps them in its history; they did not finish.
     fn codex_fail_open_tools(&mut self) {
@@ -1090,37 +1034,6 @@ impl NativeSession {
                 }
             }
         }
-    }
-    pub(super) fn codex_restore_provider(&mut self) -> Result<()> {
-        let threads = self
-            .native_id
-            .clone()
-            .into_iter()
-            .chain(std::mem::take(&mut self.codex.ran_threads))
-            .collect::<Vec<_>>();
-        let provider = self
-            .native_selection
-            .as_ref()
-            .and_then(|model| model.provider_id.clone())
-            .or_else(|| self.native_provider.clone())
-            .ok_or_else(|| Error::new("Codex 原生提供商未知，未能恢复会话的提供商"))?;
-        let mut rpc = history_client_at(
-            self.config.kind.runtime_kind(),
-            &self.config.binary,
-            &self.config.agent_dir,
-            &self.config.execution,
-            self.config.os_home.as_deref(),
-        )?;
-        let result = threads.iter().try_for_each(|thread| {
-            let mut options = json!({"threadId":thread,"excludeTurns":true,"modelProvider":provider,
-                "config":{"model_provider":provider},"approvalPolicy":"on-request","sandbox":"workspace-write"});
-            if let Some(model) = &self.native_selection {
-                options["model"] = json!(model.id);
-            }
-            rpc.request("thread/resume", &options).map(drop)
-        });
-        rpc.shutdown();
-        result
     }
     /// Interrupts each sub-agent thread's turn; interrupting the
     /// conversation's own turn does not stop them. They end when their
@@ -1326,7 +1239,7 @@ pub enum ThreadChange<'a> {
 /// Native thread metadata management without model selection or gateway startup.
 pub fn manage_thread(binary: &Path, home: &Path, id: &str, change: ThreadChange) -> Result<()> {
     manage_thread_at(
-        crate::version::RuntimeKind::Codex,
+        crate::version::RuntimeKind::Codex166,
         binary,
         home,
         id,
@@ -1624,7 +1537,7 @@ pub(super) fn project_item(item: &Value, runtime_id: &str) -> Option<Message> {
                 }],
             )
         }
-        // Codex 0.159 records a native sub-agent's life in its parent's history
+        // Codex records a native sub-agent's life in its parent's history
         // instead of a call: its start is the conversation's link to it, named
         // by the last segment of its agent path; the rest shows in its own.
         "subAgentActivity" if item["kind"] == "started" => {
@@ -1784,26 +1697,6 @@ pub fn update_read_state(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn speed_variants_split_only_the_adapter_own_encoding() {
-        assert_eq!(
-            split_speed(&speed_id("gpt-5.1-codex", "fast")),
-            ("gpt-5.1-codex".to_owned(), Some("fast".into()))
-        );
-        for ordinary in ["gpt-5.1-codex", "gpt-5.1-codex~", "~fast", "a~b~c"] {
-            assert_eq!(
-                split_speed(ordinary),
-                (ordinary.to_owned(), None),
-                "{ordinary}"
-            );
-        }
-        assert_eq!(
-            speed_model_name(&speed_id("gpt-5.1-codex", "fast")),
-            "gpt-5.1-codex · fast"
-        );
-        assert_eq!(speed_model_name("gpt-5.1-codex"), "gpt-5.1-codex");
-    }
 
     #[test]
     fn error_projection_preserves_details_and_distinguishes_retry() {

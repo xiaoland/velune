@@ -163,7 +163,7 @@ sealed partial class Conversation
         Notify();
     }
 
-    public bool CanSteer => ComposerReady && InputEditable && !Busy && !stopRequested && !composing && Snapshot?.RunState == RunState.Running && FollowUp is { CanSteer: true };
+    public bool CanSteer => ComposerReady && !Busy && !stopRequested && !composing && FollowUp is { CanSteer: true };
 
     public ComposerSubmission Submission
     {
@@ -171,16 +171,16 @@ sealed partial class Conversation
         {
             var phase = stopRequested || Snapshot?.RunState == RunState.Stopping ? ComposerSubmission.Phase.Stopping
                 : composerRequest ?? (Running ? ComposerSubmission.Phase.Running
-                : Working || activityRunning || Loading || Busy || ParentID != null ? ComposerSubmission.Phase.Blocked : ComposerSubmission.Phase.Idle);
-            var ready = ComposerReady && InputEditable && !Busy && !Loading && Next.Length > 0 && Uploading == 0;
-            var canSend = ready && !Working && !activityRunning && (Target.Unsent || Snapshot is { Actions.CanSend: true } snapshot && !snapshot.PendingInteractions.Any());
+                : activityRunning || Loading || Busy ? ComposerSubmission.Phase.Blocked : ComposerSubmission.Phase.Idle);
+            var ready = ComposerReady && !Busy && !Loading && Next.Length > 0 && Uploading == 0;
+            var canSend = ready && !activityRunning && (Target.Unsent || Snapshot is { Actions.CanSend: true });
             return ComposerSubmission.Resolve(phase, !string.IsNullOrWhiteSpace(composerText) || Attached.Count > 0 || Uploading > 0,
-                composing, canSend, ready && Running && !stopRequested && FollowUp?.IsCompacting != true,
+                composing, canSend, ready && !stopRequested && FollowUp is { CanQueue: true },
                 ready && FollowUp is { CanResume: true } && Next == Snapshot?.ContextRuntimeId);
         }
     }
 
-    public bool CanCompact => !Busy && !Loading && !Working && !activityRunning
+    public bool CanCompact => !Busy && !Loading && !activityRunning
         && FollowUp?.CanCompact == true && Next == Snapshot?.ContextRuntimeId;
 
     public async Task Compact()

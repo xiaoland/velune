@@ -15,6 +15,7 @@ sealed partial class Conversation
     ulong? composerDirectoryRevision;
     ulong? composerBaseline;
     ComposerTargetChoices? composerTargetChoices;
+    PreparedComposerTarget? preparedComposerTarget;
     ulong? composerTargetRevision, composerTargetBaseline;
     ulong composerTargetVersion;
     bool composerTargetDirty, composerTargetLoaded, composerCacheBlocked;
@@ -25,7 +26,7 @@ sealed partial class Conversation
     public ulong ComposerVersion { get; private set; }
     public string ComposerText => composerText;
     public string? ComposerIssue => (composerTargetDirty && composerTargetBaseline != composerTargetRevision ? "配置已在另一端更新，请重新选择以采用当前配置" : composerFailure) ?? (intentOwner != null && intentOwner != composerOwner ? "所选运行时位于另一设备，输入已保留" : null) ?? (!composerLoaded ? "正在恢复输入" : null);
-    public bool ComposerReady => composerLoaded && composerTargetLoaded && composerFailure == null && pendingCreation == null && !composerUnbound && !composerSaving && (intentOwner == null || intentOwner == composerOwner) && Configuration.Runtimes.Any(runtime => runtime.Id == Next && runtime.Enabled);
+    public bool ComposerReady => composerLoaded && composerTargetLoaded && PreparedNextTurn()?.ChosenModelUnavailable == false && composerFailure == null && pendingCreation == null && !composerUnbound && !composerSaving && (intentOwner == null || intentOwner == composerOwner) && Configuration.Runtimes.Any(runtime => runtime.Id == Next && runtime.Enabled);
     string ComposerCachePath => ComposerCachePathFor(Target.Unsent ? "newConversation" : "conversation:" + Target.ConversationID);
     string ComposerCachePathFor(string context) => Path.Combine(core.Home, "composer-cache", Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(Device.PeerId + "/" + context))) + ".json");
     sealed record CachedComposer(int Schema, ComposerInput? Input, bool Pending, ulong? Baseline, string? Owner, ulong? DirectoryRevision, PendingComposerCreation? Creation, bool Unbound, ulong? BindingRevision, ulong? BindingBaseline, ComposerTargetChoices? TargetChoices, ulong? TargetRevision, bool TargetPending, ulong? TargetBaseline);
@@ -88,9 +89,9 @@ sealed partial class Conversation
 
     ComposerTargetChoices ComposerTargetContent()
     {
-        var runtime = intentRuntime ?? (Target.Unsent && Next.Length > 0 ? Next : null);
-        return new(runtime, runtime == null ? null : intentOwner ?? composerOwner,
-            [.. (composerTargetChoices?.Choices.Where(choice => choice.OwnerId != composerOwner && choice.OwnerId.Length > 0) ?? []).Concat(intent.OrderBy(entry => entry.Key, StringComparer.Ordinal).Select(entry => new ComposerRuntimeChoice(composerOwner ?? "", entry.Key, entry.Value)))], composerTargetChoices?.ChoiceEdited ?? false);
+        var runtime = intentRuntime;
+        return VeluneApplicationApiMethods.NormalizeComposerTargetChoices(new(runtime, runtime == null ? null : intentOwner ?? composerOwner,
+            [.. (composerTargetChoices?.Choices.Where(choice => choice.OwnerId != composerOwner && choice.OwnerId.Length > 0) ?? []).Concat(intent.OrderBy(entry => entry.Key, StringComparer.Ordinal).Select(entry => new ComposerRuntimeChoice(composerOwner ?? "", entry.Key, entry.Value)))], composerTargetChoices?.ChoiceEdited ?? false));
     }
     ComposerContextKey ComposerContext() => Target.Unsent
         ? new ComposerContextKey.NewConversation()
@@ -106,6 +107,7 @@ sealed partial class Conversation
     }
     void ReceiveTargetChoices(ComposerTargetChoices choices)
     {
+        choices = VeluneApplicationApiMethods.NormalizeComposerTargetChoices(choices);
         composerTargetChoices = choices;
         intentRuntime = choices.RuntimeId; intentOwner = choices.RuntimeOwnerId;
         nextChosen = intentRuntime != null;
@@ -114,6 +116,7 @@ sealed partial class Conversation
             Next = intentRuntime;
             if (Target.Unsent) Target = Target with { RuntimeID = intentRuntime };
         }
+        else if (preparedComposerTarget is { } prepared) Next = prepared.DefaultRuntimeId;
         else if (Snapshot != null) FollowCurrentRuntime();
         else Next = Target.RuntimeID;
         intent.Clear(); foreach (var choice in choices.Choices.Where(choice => choice.OwnerId == composerOwner || composerOwner == null && choice.OwnerId.Length == 0)) intent[choice.RuntimeId] = choice.Choice;
@@ -124,17 +127,15 @@ sealed partial class Conversation
         composerTargetRevision = target.Revision; composerTargetLoaded = true;
         ReceiveTargetChoices(target.Choices);
     }
-    ComposerTargetChoices SeedTarget()
+    ComposerTargetRequest ComposerTargetRequest() => new(
+        Snapshot?.Conversation.RuntimeId ?? Target.RuntimeID,
+        Target.Unsent ? null : Target.ConversationID);
+    NextTurn? PreparedNextTurn()
     {
-        // Existing conversations must be read before seeding their execution choices.
-        if (!Target.Unsent && Snapshot == null) throw new InvalidOperationException("正在恢复会话的发送目标");
-        var runtime = Target.RuntimeID;
-        if (Snapshot is { } snapshot)
-        {
-            runtime = snapshot.ContextRuntimeId;
-            if (snapshot.TranscriptTurns.LastOrDefault()?.Settings?.RuntimeId is { } last && Configuration.Runtime(last) != null) runtime = last;
-        }
-        return new(runtime.Length == 0 ? null : runtime, runtime.Length == 0 ? null : composerOwner, [], false);
+        if (preparedComposerTarget is not { } prepared || prepared.Request != ComposerTargetRequest()
+            || Snapshot is { } snapshot && prepared.DefaultRuntimeId != snapshot.ContextRuntimeId) return null;
+        return VeluneApplicationApiMethods.ResolveComposerTarget(prepared, ComposerTargetContent(),
+            NextCatalog is { Loading: false, Failure: "" } catalog ? catalog.Models : null);
     }
     void ComposerChanged()
     {
@@ -154,7 +155,8 @@ sealed partial class Conversation
         // Only an explicit choice may adopt a newer target revision after a conflict.
         if (!composerTargetDirty || composerTargetBaseline != composerTargetRevision) composerTargetBaseline = composerTargetRevision;
         composerTargetDirty = true;
-        composerTargetChoices = ComposerTargetContent() with { ChoiceEdited = true };
+        composerTargetChoices = (composerTargetChoices ?? new(null, null, [], false)) with { ChoiceEdited = true };
+        composerTargetChoices = ComposerTargetContent();
         try { CacheComposer(); }
         catch (Exception failure) { composerFailure = Core.Describe(failure); Problems.Report("保存发送目标", failure, Device); }
     }
@@ -236,27 +238,36 @@ sealed partial class Conversation
         {
             // Keep choices edited while the native target was being persisted.
             composerTargetRevision = target.Revision; composerTargetLoaded = true;
-            composerTargetBaseline = SameComposerValue(target.Choices, choices) ? target.Revision : null;
+            composerTargetBaseline = SameComposerValue(target.Choices, VeluneApplicationApiMethods.NormalizeComposerTargetChoices(choices)) ? target.Revision : null;
         }
         CacheComposer();
         var newPath = ComposerCachePathFor("newConversation");
         if (File.Exists(newPath) && JsonSerializer.Deserialize<CachedComposer>(File.ReadAllText(newPath), ComposerJson)?.Creation?.InputId == creation.InputId) File.Delete(newPath);
         if (oldPath != ComposerCachePath && File.Exists(oldPath)) File.Delete(oldPath);
     }
+    void ObserveComposerTarget(ComposerTarget target)
+    {
+        composerTargetRevision = target.Revision;
+        if (composerTargetDirty && SameComposerValue(ComposerTargetContent(), VeluneApplicationApiMethods.NormalizeComposerTargetChoices(target.Choices)))
+        {
+            composerTargetDirty = false; composerTargetBaseline = null;
+        }
+        if (!composerTargetDirty) ReceiveTarget(target);
+    }
     async Task PollComposer()
     {
         if (closed || Busy || composerPolling || composerSaving || composerCacheBlocked) return;
-        // A target must be seeded from this conversation's snapshot, never a previous view.
         if (!Target.Unsent && Snapshot == null) return;
         composerPolling = true;
         try
         {
             composerOwner ??= await Call(NativeOperation.ConversationRead, application => application.ComposerOwnerId());
             await CompleteCreation();
+            var request = ComposerTargetRequest();
             var context = ComposerContext();
             var baseline = composerDirectoryRevision ?? 0;
             var update = await Call(NativeOperation.ConversationRead, application => application.ManageComposerInputs(new ComposerInputOperation.Read(composerReadRequired ? null : composerDirectoryRevision)));
-            if (closed) return;
+            if (closed || request != ComposerTargetRequest()) return;
             composerReadRequired = false;
             if (update.State is { } state)
             {
@@ -269,20 +280,15 @@ sealed partial class Conversation
                     if (closed) return;
                     await FlushComposerTarget(context);
                     Merge(created.Snapshot ?? throw new InvalidOperationException("设备没有返回新会话"));
-                    context = new ComposerContextKey.Conversation(composerOwner, creation.ConversationId);
-                    composerTargetLoaded = false; composerTargetRevision = null;
+                    composerTargetLoaded = false; composerTargetRevision = null; preparedComposerTarget = null;
                     CacheComposer(); if (oldPath != ComposerCachePath && File.Exists(oldPath)) File.Delete(oldPath);
+                    return;
                 }
                 if (!state.Bindings.Any(binding => binding.Context == context))
                 {
                     var ensured = await Call(NativeOperation.ConversationWrite, application => application.ManageComposerInputs(new ComposerInputOperation.Ensure(context, Guid.NewGuid().ToString(), new("", []))));
+                    if (closed || request != ComposerTargetRequest()) return;
                     state = ensured.State ?? throw new InvalidOperationException("设备没有返回输入目录");
-                }
-                if (!state.Targets.Any(target => target.Context == context) && !composerTargetDirty)
-                {
-                    var seed = SeedTarget();
-                    var ensured = await Call(NativeOperation.ConversationWrite, application => application.ManageComposerInputs(new ComposerInputOperation.EnsureTarget(context, seed)));
-                    state = ensured.State ?? throw new InvalidOperationException("设备没有返回发送目标目录");
                 }
                 composerDirectoryRevision = state.Revision;
                 var binding = state.Bindings.First(binding => binding.Context == context);
@@ -294,17 +300,15 @@ sealed partial class Conversation
                     composerInput = shared; composerDirty = false; composerBaseline = null;
                 }
                 if (!composerDirty && !composerUnbound) ReceiveComposer(state.Inputs.First(input => input.Id == id));
-                if (state.Targets.FirstOrDefault(target => target.Context == context) is { } target)
-                {
-                    composerTargetRevision = target.Revision;
-                    if (composerTargetDirty && SameComposerValue(ComposerTargetContent(), target.Choices))
-                    {
-                        composerTargetDirty = false; composerTargetBaseline = null;
-                    }
-                    if (!composerTargetDirty) ReceiveTarget(target);
-                }
+                if (state.Targets.FirstOrDefault(target => target.Context == context) is { } target) ObserveComposerTarget(target);
             }
             composerLoaded = true;
+            var overlay = composerTargetDirty ? ComposerTargetContent() : null;
+            var prepared = await Call(NativeOperation.ConversationWrite, application => application.PrepareComposerTarget(request, overlay));
+            if (closed || request != ComposerTargetRequest()) return;
+            if (prepared.OwnerId != composerOwner) throw new InvalidOperationException("执行端身份已改变，请重新打开会话，输入已保留");
+            preparedComposerTarget = prepared;
+            ObserveComposerTarget(prepared.Target);
             await FlushComposer();
             CacheComposer(); composerFailure = null;
         }

@@ -30,7 +30,7 @@ velune-gateway = { path = "../gateway" }
 
 tokio = { version = "1", features = ["rt", "time", "process", "io-util", "net", "sync"] }
 reqwest = { version = "0.13", default-features = false, features = ["native-tls", "system-proxy", "stream", "query"] }
-rusqlite = { version = "0.37", features = ["bundled"] }
+rusqlite = { version = "0.37", features = ["bundled", "backup"] }
 
 [target.'cfg(unix)'.dependencies]
 rustix = { version = "1", features = ["process"] }

@@ -41,6 +41,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
@@ -52,6 +53,7 @@ data class LegalDocument(val asset: String, val title: String)
 
 private val documents = listOf(
     LegalDocument("NOTICE.md", "声明与第三方组件"),
+    LegalDocument("LICENSE", "Velune AGPL-3.0-only 许可证"),
     LegalDocument("rust-licenses.txt", "Rust 组件许可"),
     LegalDocument("Apache-2.0.txt", "Apache License 2.0"),
     LegalDocument("MPL-2.0.txt", "Mozilla Public License 2.0"),
@@ -61,6 +63,7 @@ private val documents = listOf(
 @Composable
 fun AboutScreen(back: () -> Unit, open: (LegalDocument) -> Unit) {
     val context = LocalContext.current
+    val uriHandler = LocalUriHandler.current
     val version = remember { context.packageManager.getPackageInfo(context.packageName, 0).versionName }
     Scaffold(topBar = {
         TopAppBar(
@@ -75,6 +78,15 @@ fun AboutScreen(back: () -> Unit, open: (LegalDocument) -> Unit) {
                 }
                 Text("Velune", style = MaterialTheme.typography.titleLarge, modifier = Modifier.padding(top = 8.dp))
                 Text("版本 ${version.orEmpty()}", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(
+                    "对应源码归档",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.clickable {
+                        val tag = "v${version.orEmpty()}"
+                        uriHandler.openUri("https://github.com/xiaoland/velune/releases/download/$tag/velune-$tag-source.tar.gz")
+                    },
+                )
             }
             Surface(color = MaterialTheme.colorScheme.surfaceContainerLow, shape = RoundedCornerShape(16.dp)) {
                 Text(
