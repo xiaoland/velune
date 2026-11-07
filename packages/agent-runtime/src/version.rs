@@ -44,7 +44,7 @@ pub(crate) const CLAUDE_PERMISSION_MODES: &[PermissionMode] = &[
         detail: "跳过全部权限检查，请谨慎使用",
     },
 ];
-/// Codex 0.159 built-in permission presets and Auto-review, applied per
+/// Codex 0.166 built-in permission presets and Auto-review, applied per
 /// turn as approval policy, sandbox policy and approvals reviewer.
 pub(crate) const CODEX_PERMISSION_MODES: &[PermissionMode] = &[
     PermissionMode {
@@ -114,6 +114,21 @@ pub enum ResumeStrategy {
     Message(&'static str),
 }
 
+/// The adapter operation that keeps side questions outside the saved conversation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SideChatStrategy {
+    Unsupported,
+    CodexEphemeralThread,
+    ClaudeSideQuestion,
+    PiInMemory,
+}
+
+impl SideChatStrategy {
+    pub fn is_supported(self) -> bool {
+        self != Self::Unsupported
+    }
+}
+
 pub struct RuntimeVariant {
     pub kind: RuntimeKind,
     pub family_id: &'static str,
@@ -131,6 +146,7 @@ pub struct RuntimeVariant {
     pub permission_modes: &'static [PermissionMode],
     /// How an interrupted context continues on this runtime.
     pub resume: ResumeStrategy,
+    pub side_chat: SideChatStrategy,
     /// Compacts a conversation's context when the user asks.
     pub can_compact: bool,
     /// A new conversation persists only with its first turn, so it can
@@ -156,6 +172,7 @@ const VARIANTS: &[RuntimeVariant] = &[
         supported_protocols: &[],
         permission_modes: &[],
         resume: ResumeStrategy::Unsupported,
+        side_chat: SideChatStrategy::Unsupported,
         can_compact: false,
         persists_on_first_turn: false,
         accepts_images: true,
@@ -175,6 +192,7 @@ const VARIANTS: &[RuntimeVariant] = &[
         supported_protocols: &[Protocol::Messages],
         permission_modes: CLAUDE_PERMISSION_MODES,
         resume: ResumeStrategy::Native,
+        side_chat: SideChatStrategy::ClaudeSideQuestion,
         can_compact: true,
         persists_on_first_turn: true,
         accepts_images: true,
@@ -195,26 +213,7 @@ const VARIANTS: &[RuntimeVariant] = &[
         ],
         permission_modes: &[],
         resume: ResumeStrategy::Message("continue"),
-        can_compact: true,
-        persists_on_first_turn: true,
-        accepts_images: true,
-    },
-    RuntimeVariant {
-        kind: RuntimeKind::Codex,
-        family_id: "codex",
-        name: "Codex 0.159",
-        versions: Versions::Cli {
-            minimum: "0.159.3",
-            below: "0.164.0",
-        },
-        can_rename_conversations: true,
-        can_delete_conversations: true,
-        can_archive_conversations: true,
-        // The Codex app's default folder for chats without a project.
-        projectless_directories: &["Documents/Codex"],
-        supported_protocols: &[Protocol::Responses],
-        permission_modes: CODEX_PERMISSION_MODES,
-        resume: ResumeStrategy::Native,
+        side_chat: SideChatStrategy::PiInMemory,
         can_compact: true,
         persists_on_first_turn: true,
         accepts_images: true,
@@ -225,7 +224,7 @@ const VARIANTS: &[RuntimeVariant] = &[
         name: "Codex 0.166",
         versions: Versions::Cli {
             minimum: "0.166.0",
-            below: "0.167.0",
+            below: "0.168.0",
         },
         can_rename_conversations: true,
         can_delete_conversations: true,
@@ -235,6 +234,7 @@ const VARIANTS: &[RuntimeVariant] = &[
         supported_protocols: &[Protocol::Responses],
         permission_modes: CODEX_PERMISSION_MODES,
         resume: ResumeStrategy::Native,
+        side_chat: SideChatStrategy::CodexEphemeralThread,
         can_compact: true,
         persists_on_first_turn: true,
         accepts_images: true,
@@ -258,6 +258,7 @@ const VARIANTS: &[RuntimeVariant] = &[
         ],
         permission_modes: &[],
         resume: ResumeStrategy::Unsupported,
+        side_chat: SideChatStrategy::Unsupported,
         can_compact: false,
         persists_on_first_turn: false,
         accepts_images: false,

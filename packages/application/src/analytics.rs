@@ -13,6 +13,15 @@ use std::{
 use velune_gateway::{AnalyticsOutcome, AnalyticsRecord, AnalyticsSink, Protocol};
 const QUEUE: usize = 256;
 const WAIT: Duration = Duration::from_secs(3);
+
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum AnalyticsOpenError {
+    #[error("analytics database open failed: {0}")]
+    Database(#[from] rusqlite::Error),
+    #[error("unsupported analytics database schema {version} at {path:?}; data was preserved")]
+    UnsupportedSchema { path: PathBuf, version: u32 },
+}
+
 enum QueueItem {
     Record(Box<AnalyticsRecord>),
     Flush(SyncSender<()>),
@@ -61,15 +70,59 @@ usage_complete INTEGER NOT NULL, uncached_input_tokens INTEGER);
 CREATE INDEX IF NOT EXISTS usage_terminal ON request_usage(terminal_at_ms DESC, request_id);
 PRAGMA user_version=1;";
 impl AnalyticsStore {
-    pub(crate) fn open(home: &Path) -> Result<Self, rusqlite::Error> {
+    pub(crate) fn open(home: &Path) -> Result<Self, AnalyticsOpenError> {
         let path = home.join("analytics.sqlite");
+        let existed = path.exists();
         let db = Connection::open(&path)?;
         db.busy_timeout(WAIT)?;
-        db.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;")?;
         let version: u32 = db.pragma_query_value(None, "user_version", |r| r.get(0))?;
-        if version != 1 {
-            db.execute_batch("DROP TABLE IF EXISTS request_usage;")?;
+        let has_user_tables: bool = db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%')",
+            [],
+            |row| row.get(0),
+        )?;
+        if version == 0 && existed && has_user_tables {
+            return Err(unsupported_schema(&path, version));
         }
+        if version != 0 && version != 1 {
+            return Err(unsupported_schema(&path, version));
+        }
+        if version == 1 {
+            let columns = {
+                let mut statement = db.prepare("PRAGMA table_info(request_usage)")?;
+                statement
+                    .query_map([], |row| row.get::<_, String>(1))?
+                    .collect::<Result<Vec<_>, _>>()?
+            };
+            let expected = [
+                "request_id",
+                "provider_id",
+                "provider_name",
+                "model_record_key",
+                "provider_model_id",
+                "protocol",
+                "started_at_ms",
+                "terminal_at_ms",
+                "elapsed_ms",
+                "first_output_ms",
+                "terminal_elapsed_ms",
+                "status",
+                "outcome",
+                "input_tokens",
+                "output_tokens",
+                "reasoning_output_tokens",
+                "cached_input_tokens",
+                "cache_read_input_tokens",
+                "cache_creation_input_tokens",
+                "usage_reported",
+                "usage_complete",
+                "uncached_input_tokens",
+            ];
+            if columns.iter().map(String::as_str).ne(expected) {
+                return Err(unsupported_schema(&path, version));
+            }
+        }
+        db.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;")?;
         db.execute_batch(SCHEMA)?;
         drop(db);
         let (sender, receiver) = mpsc::sync_channel(QUEUE);
@@ -226,6 +279,12 @@ impl AnalyticsStore {
         read()
     }
 }
+fn unsupported_schema(path: &Path, version: u32) -> AnalyticsOpenError {
+    AnalyticsOpenError::UnsupportedSchema {
+        path: path.to_owned(),
+        version,
+    }
+}
 impl AnalyticsSink for AnalyticsStore {
     fn record(&self, record: AnalyticsRecord) {
         if self.sender.as_ref().is_none_or(|sender| {
@@ -281,4 +340,84 @@ fn insert(db: &Connection, r: &AnalyticsRecord) -> Result<(), rusqlite::Error> {
     };
     db.execute("INSERT INTO request_usage VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22)", params![r.request_id,r.provider_id,r.provider_name,r.model_record_key,r.provider_model_id,protocol,r.started_at_ms,r.terminal_at_ms,integer(Some(r.elapsed_ms))?,integer(r.first_output_ms)?,integer(r.terminal_elapsed_ms)?,r.status.map(i64::from),outcome,integer(r.usage.input)?,integer(r.usage.output)?,integer(r.usage.reasoning_output)?,integer(r.usage.cached_input)?,integer(r.usage.cache_read_input)?,integer(r.usage.cache_creation_input)?,r.usage_reported,r.usage_complete,integer(r.usage.uncached_input)?])?;
     Ok(())
+}
+
+#[cfg(test)]
+mod schema_tests {
+    use super::*;
+
+    struct Home(PathBuf);
+    impl Home {
+        fn new() -> Self {
+            static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+            let nonce = NEXT.fetch_add(1, Ordering::Relaxed);
+            let path = std::env::temp_dir().join(format!(
+                "velune-analytics-schema-{}-{nonce}",
+                std::process::id()
+            ));
+            std::fs::create_dir(&path).unwrap();
+            Self(path)
+        }
+    }
+    impl Drop for Home {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn unknown_or_unversioned_populated_database_is_rejected_unchanged() {
+        for version in [0, 2, 99, 1] {
+            let home = Home::new();
+            let path = home.0.join("analytics.sqlite");
+            let db = Connection::open(&path).unwrap();
+            let table = if version == 1 {
+                "CREATE TABLE request_usage(future TEXT); INSERT INTO request_usage VALUES ('synthetic');"
+            } else {
+                "CREATE TABLE preserved(value TEXT); INSERT INTO preserved VALUES ('synthetic');"
+            };
+            db.execute_batch(table).unwrap();
+            db.pragma_update(None, "user_version", version).unwrap();
+            drop(db);
+            let bytes = std::fs::read(&path).unwrap();
+            match AnalyticsStore::open(&home.0) {
+                Err(AnalyticsOpenError::UnsupportedSchema {
+                    path: error_path,
+                    version: error_version,
+                }) => {
+                    assert_eq!(error_path, path);
+                    assert_eq!(error_version, version);
+                }
+                Err(AnalyticsOpenError::Database(error)) => {
+                    panic!("expected an unsupported-schema error, got {error}")
+                }
+                Ok(_) => panic!("unsupported schema {version} unexpectedly opened"),
+            }
+            assert_eq!(std::fs::read(path).unwrap(), bytes);
+        }
+    }
+
+    #[test]
+    fn current_and_missing_database_open_normally() {
+        let home = Home::new();
+        let store = AnalyticsStore::open(&home.0).unwrap();
+        drop(store);
+        let db = Connection::open(home.0.join("analytics.sqlite")).unwrap();
+        let version: u32 = db
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, 1);
+        assert!(
+            db.query_row(
+                "SELECT count(*) FROM sqlite_master WHERE name='request_usage'",
+                [],
+                |row| row.get::<_, u32>(0)
+            )
+            .unwrap()
+                == 1
+        );
+        drop(db);
+        let existing = AnalyticsStore::open(&home.0).unwrap();
+        drop(existing);
+    }
 }

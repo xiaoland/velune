@@ -49,7 +49,7 @@ Windows 的完整端：在本机运行 Agent、Harness 与网关，也能控制�
     - **从 Agent 运行时导入**：来源是核心 `provider_import_types` 中类型的已配置运行时实例；读取后按提供商列出协议、地址、凭据状态与不可导入的原因，模型在 Expander 中逐个勾选，读取不默认选中；所选包含已导入的提供商时可选择替换。
     - **模型模板**：列表可增删与编辑（名称、建议的 model ID、昵称与参数）。模板只用于填写，填入的模型是独立副本。
   - **模型路由**：列出路由（名称、策略、成员数与会话保持），＋／−、双击或右键编辑；编辑在页内打开。名称、策略（智能、顺序、轮询、权重，各附含义）与会话保持之下按优先顺序列出成员：提供商与模型、认证与账户、适用于该 model ID 的额度窗口（已用或剩余、上限、重置时间、是否过期），以及路由此时不会使用它的原因（未登录、设有上限而缺少最新额度、已达上限、ARK 查询认证未确认）。未登录且核心给出登录动作的成员可就地登录，双击或右键“编辑提供商…”转到它的提供商。成员用上移、下移与移除调整；“添加成员”按提供商分组，其他协议或已加入的模型不可选；权重策略下每个成员有权重及所占比例。成员含订阅提供商时显示其披露。新路由默认智能策略并开启会话保持。路由与提供商模型一起出现在输入区的模型菜单中（核心的模型目录）。
-  - **Agent 运行时**：列出本机的运行时实例（类型、是否停用）。＋按类型手动添加（路径字段可浏览），“快速导入…”在 PATH、npm／pnpm 与厂商安装位置中发现 Pi、Codex、Claude Code，只读取公开版本；编辑可改名称、启用与类型的配置项，其他设置保持不变；其下依次是可展开的几节（标题行带当前摘要）：“运行环境”选择 HOME（继承当前用户、指定目录或由 Velune 管理；由 Velune 管理时隐去“运行时目录”，由核心在该 HOME 中推出，已保存的实例显示核心解析的位置，可在资源管理器中显示，首次运行时创建）；ACP 类型的“启动参数”逐行填写参数与“名称=值”环境变量（不经 shell）；已保存的 ACP 实例可在“Agent 信息”中读取 Agent 的名称、版本、能力与登录方式；“新会话”选择会话尚未在此运行时上运行或选择时输入区从哪里开始：上次的选择、运行时默认，或指定的模型（读取该运行时的模型目录）、推理强度与权限。ACP 类型可手动添加。经 SSH 运行的实例在 Mac 上设置，Windows 上保持其运行位置不变。
+  - **Agent 运行时**：列出本机的运行时实例（类型、是否停用）。＋按类型手动添加（路径字段可浏览），“快速导入…”在 PATH、npm／pnpm 与厂商安装位置中发现 Pi、Codex、Claude Code，只读取公开版本；编辑可改名称、启用、类型与该类型的配置项；切换类型时分别保留本次表单中各类型的配置与新会话选择，保存只提交当前类型的设置，保留实例 ID、名称和运行环境，并清空旧类型的上次执行选择；其下依次是可展开的几节（标题行带当前摘要）：“运行环境”选择 HOME（继承当前用户、指定目录或由 Velune 管理；由 Velune 管理时隐去“运行时目录”，由核心在该 HOME 中推出，已保存的实例显示核心解析的位置，可在资源管理器中显示，首次运行时创建）；ACP 类型的“启动参数”逐行填写参数与“名称=值”环境变量（不经 shell）；已保存的 ACP 实例可在“Agent 信息”中读取 Agent 的名称、版本、能力与登录方式；“新会话”选择会话尚未在此运行时上运行或选择时输入区从哪里开始：上次的选择、运行时默认，或指定的模型（读取该运行时的模型目录）、推理强度与权限。ACP 类型可手动添加。经 SSH 运行的实例在 Mac 上设置，Windows 上保持其运行位置不变。
   - **设备**：与 Mac 相同的两组，每项是一张设置卡片。“这台电脑”：允许其他设备控制的开关、设备名称、“添加控制设备…”（五分钟内有效、只能使用一次的邀请，以二维码与“复制邀请”给出，对方使用后或过期即收回），以及可以控制这台电脑的设备（撤销）。“控制其他设备”：已配对设备及其连接状态或核对码，“打开”在主窗口切换到该设备，配对中的可“取消”，右键菜单“移除此设备”；下方粘贴另一台设备的邀请并连接。
 
 ## xURL
@@ -68,11 +68,18 @@ Windows 的完整端：在本机运行 Agent、Harness 与网关，也能控制�
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\install-xurl.ps1
+# 开发构建（Rust dev、.NET Debug）：
 powershell -ExecutionPolicy Bypass -File scripts\build-windows.ps1
-target\windows\Velune\Velune.exe
+target\windows-dev\Velune\Velune.exe
+# 交付／性能验证：
+powershell -ExecutionPolicy Bypass -File scripts\build-windows.ps1 -Profile release
 ```
 
-脚本输出 `target\windows\Velune`：先构建 `velune_bindings.dll`，再用固定提交的 `uniffi-bindgen-cs`（安装在 `target\tools`）从中生成 C# 绑定到 `target\bindings\cs`（生成物不入库），最后 `dotnet publish` 出自包含的 `Velune.exe`。输出目录包括 .NET 与 Windows App SDK 运行时、两个 DLL，以及 Harness 辅助脚本、`node_modules`、官方 `xurl/bin/xurl.exe` 和第三方许可组成的 `resources`；整个目录可以移动，但各部分必须放在一起，Windows 从 exe 所在目录解析 DLL 依赖。生成绑定后也可以只用 `dotnet build app\windows\Velune.csproj` 编译。
+开发产物在 `target\windows-dev\Velune`，release 在 `target\windows\Velune`，两者都不安装或启动应用。Rust 使用独立的 `target\host-rust` 热缓存，开发配置保留增量并使用有限调试信息；完整原生变量调试按需使用显式配置，release 不作为日常编辑循环。
+
+脚本先确认 native 库，再从该库生成配套 C# 到 `target\bindings\cs`，随后运行 `dotnet publish`。固定提交的 `uniffi-bindgen-cs` 作为 host 工具保存在 `target\tools`；首次核验 Cargo 的安装记录或准备正确版本后写入工具身份，日常构建直接复用，不再每次进入远端安装。生成内容相同时保留文件和修改时间，publish 与资源输出也按变化同步，避免破坏 MSBuild 的增量判断。脚本经共享构建入口串行保护 Windows 输出，记录输入来源；构建期间源码变化会将本次结果标为过期，不冒充最新源码的验收。
+
+输出目录包括自包含的 .NET 与 Windows App SDK、两个 DLL，以及 Harness 辅助脚本、`node_modules`、官方 xURL 和第三方许可组成的 `resources`。整个目录可以移动，各部分须保持配套，Windows 从 exe 所在目录解析 DLL。生成绑定后也可以只用 `dotnet build app\windows\Velune.csproj` 编译；这种直接入口不会重新准备 native 库，不能用于确认新的跨语言接口。构建复用和缓存维护规则见[开发环境](../../docs/development/environment.md)。
 
 ## 数据与 Harness
 
@@ -97,4 +104,8 @@ NuGet 依赖：Windows App SDK（WinUI、Foundation、InteractiveExperiences）�
 
 遥测设置属于当前客户端，默认未配置且关闭；更换被控设备不改变本机出口。设置页支持 OTLP/gRPC 地址、认证、trace 采样、两侧生效状态和显式测试，以及独立授权的一次性配置复制。保存/复制保留本机开关；分享授权与控制授权分别核对和撤销。手机在前台可提供配置分享，不增加本地执行能力或后台保活，也不保证后台仍可读取。
 
-使用官方原生 SDK 与 Rust SDK，共用实例身份与配置修订。原始会话、路径、认证和底层错误链不外传，本地问题详情保留。接收回执不等于后台查询已可见，未提供的 SDK 丢弃计数为未知。开发启动与隔离验收见[开发遥测](../../docs/development.md#开发遥测)，跨单元契约见[遥测装配](../../docs/design/telemetry.md)。
+使用官方原生 SDK 与 Rust SDK，共用实例身份与配置修订。原始会话、路径、认证和底层错误链不外传，本地问题详情保留。接收回执不等于后台查询已可见，未提供的 SDK 丢弃计数为未知。开发启动与隔离验收见[开发遥测](../../docs/development.md#开发遥测)，跨单元契约见[遥测装配](../../docs/product-tdd/telemetry.md)。
+
+## 执行目标准备
+
+会话模型在内容同步之后调用共享 `prepareComposerTarget`，采用保存端返回的实际目标与修订，随后用共享解析结果处理目录到达和有效发送参数。首次打开的默认值继续继承，明确选择只保存对应字段。内容身份独立于目标准备，失败时保留正文、本地未同步选择和 CAS 基线，迟到回复按目标身份拒收。

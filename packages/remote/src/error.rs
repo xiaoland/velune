@@ -10,7 +10,7 @@ pub enum RemoteError {
     ConfigurationConflict,
     #[error("无法读取或安全保存设备身份")]
     IdentityStorage,
-    #[error("无法读取或原子保存远控状态")]
+    #[error("远控状态无法读取或保存；不兼容格式需要显式迁移，应用不会自动清空旧状态")]
     StateStorage,
     #[error("配对事务未授权、已失效或不可查询")]
     PairingUnavailable,
@@ -24,6 +24,8 @@ pub enum RemoteError {
     ExpiredInvitation,
     #[error("设备未获授权或授权已撤销")]
     Unauthorized,
+    #[error("对端身份与预期设备不符，可能存在地址冲突或中间人干扰")]
+    PeerMismatch,
     #[error("远控连接不可用")]
     Unavailable,
     #[error("远控请求超时；已接纳的业务可能仍在执行")]
@@ -64,6 +66,7 @@ impl RemoteError {
             Self::InvalidInvitation => "invalid_invitation",
             Self::ExpiredInvitation => "expired_invitation",
             Self::Unauthorized => "unauthorized",
+            Self::PeerMismatch => "peer_mismatch",
             Self::Unavailable => "unavailable",
             Self::Timeout => "timeout",
             Self::Protocol => "protocol",

@@ -156,15 +156,41 @@ sealed class LayoutStore(string home, DispatcherQueue dispatcher)
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
     };
 
+    public static bool HasOnlyKnownKeys(JsonElement source, JsonElement current)
+    {
+        if (source.ValueKind == JsonValueKind.Object && current.ValueKind == JsonValueKind.Object)
+        {
+            foreach (var property in source.EnumerateObject())
+            {
+                if (!current.TryGetProperty(property.Name, out var known) || !HasOnlyKnownKeys(property.Value, known)) return false;
+            }
+        }
+        else if (source.ValueKind == JsonValueKind.Array && current.ValueKind == JsonValueKind.Array)
+        {
+            var left = source.EnumerateArray().ToArray();
+            var right = current.EnumerateArray().ToArray();
+            if (left.Length != right.Length) return false;
+            for (var index = 0; index < left.Length; index++)
+            {
+                if (!HasOnlyKnownKeys(left[index], right[index])) return false;
+            }
+        }
+        return true;
+    }
+
     readonly string path = Path.Combine(home, "windows-layout.json");
     DispatcherQueueTimer? timer;
+    bool canWrite = true;
 
     public SavedLayout Read()
     {
+        if (!File.Exists(path)) return new SavedLayout();
         try
         {
-            var saved = JsonSerializer.Deserialize<SavedLayout>(File.ReadAllText(path), Options);
-            if (saved is { Schema: SavedLayout.CurrentSchema })
+            using var document = JsonDocument.Parse(File.ReadAllText(path));
+            var saved = document.RootElement.Deserialize<SavedLayout>(Options);
+            if (saved is { Schema: SavedLayout.CurrentSchema }
+                && HasOnlyKnownKeys(document.RootElement, JsonSerializer.SerializeToElement(saved, Options)))
             {
                 saved.Tools.Complete();
                 foreach (var window in saved.Windows)
@@ -173,9 +199,11 @@ sealed class LayoutStore(string home, DispatcherQueue dispatcher)
                 }
                 return saved;
             }
+            canWrite = false;
         }
         catch (Exception failure) when (failure is IOException or UnauthorizedAccessException or JsonException or NotSupportedException)
         {
+            canWrite = false;
         }
         return new SavedLayout();
     }
@@ -183,6 +211,7 @@ sealed class LayoutStore(string home, DispatcherQueue dispatcher)
     // Save writes the layout a moment after the latest change.
     public void Save(Func<SavedLayout> layout)
     {
+        if (!canWrite) return;
         if (timer == null)
         {
             timer = dispatcher.CreateTimer();
@@ -200,6 +229,7 @@ sealed class LayoutStore(string home, DispatcherQueue dispatcher)
     // Flush writes a pending change now, as the app quits.
     public void Flush()
     {
+        if (!canWrite) return;
         if (pending is not { } layout)
         {
             return;

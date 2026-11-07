@@ -223,17 +223,37 @@ struct ToolWindowLayout: Codable, Equatable {
     private let url: URL?
     private let failed: (Error) -> Void
     private var pending: DispatchWorkItem?
+    private var canWrite = true
 
-    /// Any other schema or an unreadable file starts from the default and is replaced on the next change.
+    /// Unknown or unreadable formats use display defaults while preserving the original file.
     init(home: URL?, failed: @escaping (Error) -> Void) {
         url = home?.appendingPathComponent("mac-tool-layout.json")
         self.failed = failed
-        let file = url.flatMap { try? Data(contentsOf: $0) }.flatMap { try? JSONDecoder().decode(File.self, from: $0) }
-        layout = file.flatMap { $0.schema == File.schema ? $0.tools.normalized() : nil } ?? ToolWindowLayout()
+        if let url, FileManager.default.fileExists(atPath: url.path) {
+            let data = try? Data(contentsOf: url)
+            let file = data.flatMap { try? JSONDecoder().decode(File.self, from: $0) }
+            let strict = data.flatMap { data -> Bool? in
+                guard let file else { return nil }
+                guard let source = try? JSONSerialization.jsonObject(with: data),
+                      let encodedData = try? JSONEncoder().encode(file),
+                      let encoded = try? JSONSerialization.jsonObject(with: encodedData) else { return nil }
+                return SavedWindowLayout.hasOnlyEncodedKeys(source, encoded: encoded)
+            }
+            if let file, file.schema == File.schema, strict == true {
+                layout = file.tools.normalized()
+            } else {
+                canWrite = false
+                layout = ToolWindowLayout()
+                failed(NSError(domain: "VelunePersistence", code: 1, userInfo: [NSLocalizedDescriptionKey: "mac-tool-layout.json 格式不受支持；保留原文件，布局更改不会写入。请升级到支持该格式的版本后重试。"]))
+            }
+        } else {
+            layout = ToolWindowLayout()
+        }
     }
 
     /// Kept a moment later, so a divider being dragged writes once.
     func remember(_ tools: ToolWindowLayout) {
+        guard canWrite else { return }
         var tools = tools
         if tools.isEditorOnly { tools.toggleEditorOnly() }
         guard tools != layout else { return }
@@ -253,7 +273,7 @@ struct ToolWindowLayout: Codable, Equatable {
 
     private func write() {
         pending = nil
-        guard let url else { return }
+        guard canWrite, let url else { return }
         do {
             try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
             try JSONEncoder().encode(File(tools: layout)).write(to: url, options: .atomic)

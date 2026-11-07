@@ -2,6 +2,7 @@
 // Pi only records this virtual selection and the routed model in its branch.
 import { readFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
+import installPiBackgroundWork from "./pi_background_work.mjs";
 
 const selectionPath = process.env.VELUNE_PI_SELECTION_FILE;
 
@@ -13,6 +14,7 @@ function selection() {
 }
 
 export default function (pi) {
+  installPiBackgroundWork(pi);
   // RPC emits message_end before SessionManager appends its entry. Keep only
   // object-reference associations until the native entry supplies its identity.
   const liveMessages = new WeakMap();

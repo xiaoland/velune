@@ -212,7 +212,14 @@ sealed partial class RuntimesPage : UserControl
         }
         var home = new HomeSection(window, extras.Execution, extras.ManagedHome);
         var launch = new LaunchSection(extras.Launch);
-        var starts = new StartsSection(core, existing, kind, extras.Choices);
+        var starts = new StartsSection(core, existing, kind, extras.Start);
+        var startsDrafts = new Dictionary<RuntimeKind, StartsSection> { [kind.Id] = starts };
+        var settingsDrafts = new Dictionary<RuntimeKind, Dictionary<string, string>>();
+        var agent = new StackPanel();
+        if (existing != null && kind.AgentInfo)
+        {
+            agent.Children.Add(AgentInfo(existing));
+        }
         var panel = new StackPanel { Spacing = 16, MinWidth = 440 };
         var name = new TextBox { Header = "实例名称", Text = existing?.Name ?? (template?.TypeId == kind.Id ? template.Name : kind.Name) };
         var enabled = new ToggleSwitch { Header = "启用此运行时", IsOn = existing?.Enabled ?? true };
@@ -228,6 +235,25 @@ sealed partial class RuntimesPage : UserControl
                 directory.Visibility = home.Managed ? Visibility.Collapsed : Visibility.Visible;
             }
         }
+        Dictionary<string, string> ReadSettings(bool normalize)
+        {
+            var saved = settingsDrafts.GetValueOrDefault(kind.Id);
+            var result = new Dictionary<string, string>(saved ?? []);
+            foreach (var field in kind.Fields)
+            {
+                var raw = values[field.Key]();
+                var value = normalize ? raw.Trim() : raw;
+                if (!normalize || value.Length > 0)
+                {
+                    result[field.Key] = value;
+                }
+                else
+                {
+                    result.Remove(field.Key);
+                }
+            }
+            return result;
+        }
         void ShowFields(RuntimeTypeDescriptor shown)
         {
             kind = shown;
@@ -240,11 +266,17 @@ sealed partial class RuntimesPage : UserControl
             {
                 fields.Children.Add(Ui.Text("实例配置", "BodyStrongTextBlockStyle"));
             }
-            // A template fills only its own type's fields.
-            var source = existing ?? (template?.TypeId == shown.Id ? template : null);
+            agent.Visibility = existing?.TypeId == shown.Id && shown.AgentInfo ? Visibility.Visible : Visibility.Collapsed;
+            // Each type owns its fields, even when two fields have the same key.
+            if (!settingsDrafts.TryGetValue(shown.Id, out var source))
+            {
+                var seed = existing?.TypeId == shown.Id ? existing : template?.TypeId == shown.Id ? template : null;
+                source = new Dictionary<string, string>(seed?.Settings ?? []);
+                settingsDrafts[shown.Id] = source;
+            }
             foreach (var field in shown.Fields)
             {
-                var value = source?.Settings.GetValueOrDefault(field.Key) ?? field.Value;
+                var value = source.GetValueOrDefault(field.Key) ?? field.Value;
                 errors[field.Key] = Ui.Error();
                 var view = Ui.Field(FieldControl(field, value, values), field.Help ?? "", errors[field.Key]);
                 views[field.Key] = view;
@@ -255,40 +287,43 @@ sealed partial class RuntimesPage : UserControl
         home.Changed += ShowDirectory;
         panel.Children.Add(name);
         panel.Children.Add(Ui.Field(enabled, "停用后不读取其历史，也不创建或执行新任务；原生会话数据保留。"));
-        if (existing == null)
+        var type = new ComboBox { Header = "类型", HorizontalAlignment = HorizontalAlignment.Stretch };
+        foreach (var candidate in addable)
         {
-            var type = new ComboBox { Header = "类型", HorizontalAlignment = HorizontalAlignment.Stretch };
-            foreach (var candidate in addable)
+            type.Items.Add(candidate.Name);
+        }
+        type.SelectedIndex = addable.IndexOf(kind);
+        type.SelectionChanged += (_, _) =>
+        {
+            if (type.SelectedIndex < 0 || type.SelectedIndex >= addable.Count)
             {
-                type.Items.Add(candidate.Name);
+                return;
             }
-            type.SelectedIndex = addable.IndexOf(kind);
-            type.SelectionChanged += (_, _) =>
+            settingsDrafts[kind.Id] = ReadSettings(false);
+            ShowFields(addable[type.SelectedIndex]);
+            if (existing == null)
             {
-                ShowFields(addable[type.SelectedIndex]);
-                name.Text = addable[type.SelectedIndex].Name;
-                // Permission modes are the type's.
-                var at = panel.Children.IndexOf(starts.Element);
-                starts = new StartsSection(core, null, kind, null);
-                if (at >= 0)
-                {
-                    panel.Children[at] = starts.Element;
-                }
-            };
-            panel.Children.Add(type);
-        }
-        else
-        {
-            panel.Children.Add(Ui.Labeled("类型", new TextBlock { Text = kind.Name }));
-        }
+                name.Text = kind.Name;
+            }
+            // Models and permission modes belong to the selected type.
+            var at = panel.Children.IndexOf(starts.Element);
+            if (!startsDrafts.TryGetValue(kind.Id, out var next))
+            {
+                next = new StartsSection(core, null, kind, null);
+                startsDrafts[kind.Id] = next;
+            }
+            starts = next;
+            if (at >= 0)
+            {
+                panel.Children[at] = starts.Element;
+            }
+        };
+        panel.Children.Add(type);
         ShowFields(kind);
         panel.Children.Add(fields);
         panel.Children.Add(home.Element);
         panel.Children.Add(launch.Element);
-        if (existing != null && kind.AgentInfo)
-        {
-            panel.Children.Add(AgentInfo(existing));
-        }
+        panel.Children.Add(agent);
         panel.Children.Add(starts.Element);
         panel.Children.Add(formError);
 
@@ -322,35 +357,17 @@ sealed partial class RuntimesPage : UserControl
                 return;
             }
             var started = starts.Read();
-            var lastChosen = extras.Choices?.LastChosen ?? new TurnChoice(null, null, null);
-            // An edited instance's other settings stay as they are.
-            var settings = new Dictionary<string, string>(existing?.Settings ?? []);
-            foreach (var field in kind.Fields)
-            {
-                var value = values[field.Key]().Trim();
-                if (value.Length > 0)
-                {
-                    settings[field.Key] = value;
-                }
-                else
-                {
-                    settings.Remove(field.Key);
-                }
-            }
+            var settings = ReadSettings(true);
             var shownName = name.Text.Trim();
             var runtime = existing == null
                 ? new RuntimeInstance(Guid.NewGuid().ToString(), shownName.Length > 0 ? shownName : kind.Name, kind.Id, DefaultGateway, settings, enabled.IsOn)
-                : existing with { Enabled = enabled.IsOn, Name = shownName.Length > 0 ? shownName : kind.Name, Settings = settings };
+                : existing with { Enabled = enabled.IsOn, Name = shownName.Length > 0 ? shownName : kind.Name, TypeId = kind.Id, Settings = settings };
+            runtime = VeluneBindingsMethods.RuntimeWithNewConversationChoice(runtime, started);
             e.Cancel = !await Write("保存运行时「" + runtime.Name + "」", application =>
             {
-                var update = launched != null
+                return launched != null
                     ? application.UpsertAcpRuntime(runtime, execution, launched)
                     : application.UpsertRuntimeWithExecution(runtime, execution);
-                if (started != null)
-                {
-                    application.SetRuntimeComposerChoices(new RuntimeComposerChoices(runtime.Id, lastChosen, started));
-                }
-                return update;
             }, formError);
             deferral.Complete();
         };

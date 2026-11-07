@@ -11,6 +11,27 @@ pub trait LiveConversation {
     /// The conversation as the runtime shows it, once it has one.
     fn snapshot(&self) -> Option<&ConversationSnapshot>;
     fn turn_running(&self) -> bool;
+    /// Work that outlives the parent turn, as observed by this adapter.
+    fn work(&self) -> Vec<crate::work::BackgroundTask> {
+        Vec::new()
+    }
+    /// True only once the adapter has observed that all background work and
+    /// its completion delivery have settled. An empty but stale list is not
+    /// enough to authorize replacing the process.
+    fn work_settled(&self) -> bool {
+        self.work().is_empty()
+    }
+    /// A best-effort metadata request still needs the current connection.
+    fn has_pending_metadata(&self) -> bool {
+        false
+    }
+    fn stop_background(&mut self) -> LiveResult {
+        if self.work_settled() {
+            Ok(())
+        } else {
+            Err("此运行时没有后台工作停止接口".into())
+        }
+    }
     fn set_conversation(&mut self, conversation: ConversationSummary);
     /// Change native metadata without replacing the running conversation.
     fn rename(&mut self, _title: &str) -> LiveResult {
@@ -47,6 +68,18 @@ impl LiveConversation for PiSession {
     }
     fn turn_running(&self) -> bool {
         PiSession::turn_running(self)
+    }
+    fn work(&self) -> Vec<crate::work::BackgroundTask> {
+        PiSession::work(self)
+    }
+    fn work_settled(&self) -> bool {
+        self.work().is_empty() && !PiSession::has_pending_metadata(self)
+    }
+    fn has_pending_metadata(&self) -> bool {
+        PiSession::has_pending_metadata(self)
+    }
+    fn stop_background(&mut self) -> LiveResult {
+        Ok(PiSession::stop_background(self)?)
     }
     fn set_conversation(&mut self, conversation: ConversationSummary) {
         PiSession::set_conversation(self, conversation)
@@ -87,6 +120,15 @@ impl LiveConversation for native::NativeSession {
     }
     fn turn_running(&self) -> bool {
         native::NativeSession::turn_running(self)
+    }
+    fn work(&self) -> Vec<crate::work::BackgroundTask> {
+        native::NativeSession::work(self)
+    }
+    fn has_pending_metadata(&self) -> bool {
+        native::NativeSession::has_pending_metadata(self)
+    }
+    fn stop_background(&mut self) -> LiveResult {
+        Ok(native::NativeSession::stop_background(self)?)
     }
     fn set_conversation(&mut self, conversation: ConversationSummary) {
         native::NativeSession::set_conversation(self, conversation)

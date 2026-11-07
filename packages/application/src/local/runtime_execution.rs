@@ -106,7 +106,7 @@ impl CoreRuntime {
         // A generic ACP Agent declares no native root.
         let managed_directory = match runtime.type_id {
             RuntimeKind::Pi => ".pi/agent",
-            RuntimeKind::Codex | RuntimeKind::Codex166 => ".codex",
+            RuntimeKind::Codex166 => ".codex",
             RuntimeKind::ClaudeCode => ".claude",
             RuntimeKind::DeepSeek => ".dsh",
             RuntimeKind::Acp => return Ok(None),

@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 const EXECUTION_SETTING: &str = "execution";
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, uniffi::Enum)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub enum RuntimeTransport {
     #[default]
     Local,
@@ -17,7 +17,7 @@ pub enum RuntimeTransport {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, uniffi::Enum)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub enum RuntimeHome {
     #[default]
     Inherit,
@@ -31,7 +31,7 @@ pub enum RuntimeHome {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, uniffi::Record)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct RuntimeExecution {
     pub transport: RuntimeTransport,
     pub home: RuntimeHome,

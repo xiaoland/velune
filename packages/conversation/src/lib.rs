@@ -8,6 +8,8 @@ pub mod resources;
 mod runtime_kind;
 pub use runtime_kind::RuntimeKind;
 
+pub mod model_variant;
+
 mod execution;
 pub use execution::*;
 
@@ -146,6 +148,10 @@ pub struct FollowUp {
     /// process; the user may stop them.
     #[serde(default)]
     pub can_stop_sub_agents: bool,
+    /// A running normal conversation offers new messages to its send queue.
+    /// Already dispatched queue requests may also be accepted after it ends.
+    #[serde(default)]
+    pub can_queue: bool,
     /// The runtime takes a message into the running turn.
     pub can_steer: bool,
     /// The stopped or failed context can continue using its runtime's declared strategy.
@@ -244,7 +250,7 @@ pub struct Message {
 /// What a turn ran with, as far as it is known; each part is absent when
 /// neither the native record nor Velune's own request says.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, uniffi::Record)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TurnSettings {
     /// The runtime instance that ran the turn.
     #[uniffi(default = None)]
@@ -685,6 +691,10 @@ pub struct TranscriptTurn {
     /// Observed execution elapsed time. None for history without lifecycle evidence.
     pub duration_ms: Option<u64>,
     pub is_running: bool,
+    /// A fork may start a new conversation from this turn's end, even while
+    /// a later turn runs; false on the unfinished turn itself.
+    #[serde(default)]
+    pub can_fork: bool,
     #[serde(default)]
     #[uniffi(default = None)]
     pub outcome: Option<TurnOutcome>,

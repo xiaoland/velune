@@ -13,6 +13,7 @@ uniffi::custom_newtype!(Revision, u64);
 
 /// A revision is mandatory for configuration and destructive edits over remote connections.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, uniffi::Record)]
+#[serde(deny_unknown_fields)]
 pub struct ExecutionContext {
     pub expected_revision: Option<Revision>,
 }
@@ -50,6 +51,9 @@ pub enum DeliveryClass {
 #[serde(rename_all = "camelCase")]
 pub enum CommandKind {
     ReadComposerOwner,
+    ReadComposerTarget,
+    ReadComposerTargetIdentity,
+    ReadComposerTargetBasis,
     ManageComposerInputs,
     UploadComposerAttachment,
     ReadComposerAttachment,
@@ -80,6 +84,7 @@ pub enum CommandKind {
     ReadComposerDrafts,
     SetComposerDraft,
     ReadComposerChoices,
+    ReadRuntimeStartChoice,
     SetNextTurnIntent,
     SetRuntimeComposerChoices,
     SetConversationBrowserLimits,
@@ -171,6 +176,16 @@ pub enum CommandKind {
 #[allow(clippy::large_enum_variant)]
 pub enum Command {
     ReadComposerOwner,
+    ReadComposerTarget {
+        context: crate::ComposerContextKey,
+    },
+    ReadComposerTargetIdentity {
+        request: crate::ComposerTargetRequest,
+    },
+    ReadComposerTargetBasis {
+        request: crate::ComposerTargetRequest,
+        choices: Option<crate::ComposerTargetChoices>,
+    },
     ManageComposerInputs {
         operation: crate::ComposerInputOperation,
     },
@@ -263,6 +278,9 @@ pub enum Command {
         text: String,
     },
     ReadComposerChoices,
+    ReadRuntimeStartChoice {
+        runtime_id: String,
+    },
     /// An intent without choices or runtime removes the conversation's.
     SetNextTurnIntent {
         intent: crate::config::NextTurnIntent,
@@ -597,6 +615,9 @@ pub enum Command {
 #[serde(tag = "response", content = "value", rename_all = "camelCase")]
 pub enum Response {
     ReadComposerOwner(String),
+    ReadComposerTarget(Option<crate::ComposerTarget>),
+    ReadComposerTargetIdentity(crate::ComposerTargetIdentity),
+    ReadComposerTargetBasis(crate::ComposerTargetBasis),
     ManageComposerInputs(crate::ComposerInputUpdate),
     UploadComposerAttachment(crate::ComposerAttachment),
     ReadComposerAttachment(crate::ComposerAttachmentContent),
@@ -627,6 +648,7 @@ pub enum Response {
     ReadComposerDrafts(Vec<crate::config::ComposerDraft>),
     SetComposerDraft,
     ReadComposerChoices(crate::config::ComposerChoices),
+    ReadRuntimeStartChoice(crate::config::TurnChoice),
     SetNextTurnIntent,
     SetRuntimeComposerChoices,
     SetConversationBrowserLimits(ConversationBrowserLimits),
@@ -725,9 +747,11 @@ impl Command {
                 crate::ComposerInputOperation::Read { .. } => DeliveryClass::Observation,
                 _ => DeliveryClass::Effect,
             },
-            Self::ReadComposerOwner | Self::ReadComposerAttachment { .. } => {
-                DeliveryClass::Observation
-            }
+            Self::ReadComposerOwner
+            | Self::ReadComposerTarget { .. }
+            | Self::ReadComposerTargetIdentity { .. }
+            | Self::ReadComposerAttachment { .. }
+            | Self::ReadComposerTargetBasis { .. } => DeliveryClass::Observation,
             Self::UploadComposerAttachment { .. } => DeliveryClass::Effect,
             Self::ManageScheduledTasks { operation } => match operation {
                 crate::ScheduledTasksOperation::List
@@ -750,6 +774,7 @@ impl Command {
             | Self::ReadConfiguration
             | Self::ReadComposerDrafts
             | Self::ReadComposerChoices
+            | Self::ReadRuntimeStartChoice { .. }
             | Self::SearchConversations { .. }
             | Self::FindConversation { .. }
             | Self::ResolveAgentUri { .. }
@@ -842,6 +867,9 @@ impl Command {
     pub fn kind(&self) -> CommandKind {
         match self {
             Self::ReadComposerOwner => CommandKind::ReadComposerOwner,
+            Self::ReadComposerTarget { .. } => CommandKind::ReadComposerTarget,
+            Self::ReadComposerTargetIdentity { .. } => CommandKind::ReadComposerTargetIdentity,
+            Self::ReadComposerTargetBasis { .. } => CommandKind::ReadComposerTargetBasis,
             Self::ManageComposerInputs { .. } => CommandKind::ManageComposerInputs,
             Self::UploadComposerAttachment { .. } => CommandKind::UploadComposerAttachment,
             Self::ReadComposerAttachment { .. } => CommandKind::ReadComposerAttachment,
@@ -876,6 +904,7 @@ impl Command {
             Self::ReadComposerDrafts => CommandKind::ReadComposerDrafts,
             Self::SetComposerDraft { .. } => CommandKind::SetComposerDraft,
             Self::ReadComposerChoices => CommandKind::ReadComposerChoices,
+            Self::ReadRuntimeStartChoice { .. } => CommandKind::ReadRuntimeStartChoice,
             Self::SetNextTurnIntent { .. } => CommandKind::SetNextTurnIntent,
             Self::SetRuntimeComposerChoices { .. } => CommandKind::SetRuntimeComposerChoices,
             Self::SetConversationBrowserLimits { .. } => CommandKind::SetConversationBrowserLimits,

@@ -4,6 +4,35 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
+val python = if (System.getProperty("os.name").startsWith("Windows", ignoreCase = true)) "python" else "python3"
+val buildNumber = providers.environmentVariable("VELUNE_BUILD_NUMBER").orElse("1").get()
+val versionInfo = providers.exec {
+    commandLine(
+        python,
+        rootProject.file("../../scripts/version.py").absolutePath,
+        "--format",
+        "build-info",
+        "--build-number",
+        buildNumber,
+    )
+}.standardOutput.asText.get().trim().split('\t')
+check(versionInfo.size == 3) { "scripts/version.py must return SemVer, numeric core, and build number" }
+val veluneVersion = versionInfo[0]
+val veluneBuildNumber = versionInfo[2].toInt()
+dependencyLocking { lockAllConfigurations() }
+val releaseKeystorePath = providers.environmentVariable("ANDROID_RELEASE_KEYSTORE_PATH").orNull
+val releaseStorePassword = providers.environmentVariable("ANDROID_RELEASE_STORE_PASSWORD").orNull
+val releaseKeyAlias = providers.environmentVariable("ANDROID_RELEASE_KEY_ALIAS").orNull
+val releaseKeyPassword = providers.environmentVariable("ANDROID_RELEASE_KEY_PASSWORD").orNull
+val releaseSigningValues = listOf(releaseKeystorePath, releaseStorePassword, releaseKeyAlias, releaseKeyPassword)
+val hasReleaseSigning = releaseSigningValues.all { !it.isNullOrBlank() }
+check(releaseSigningValues.all { it.isNullOrBlank() } || hasReleaseSigning) {
+    "Android release signing requires the keystore path, store password, key alias, and key password together"
+}
+if (providers.environmentVariable("VELUNE_REQUIRE_ANDROID_RELEASE_SIGNING").orNull == "true") {
+    check(hasReleaseSigning) { "Android release signing material is required for this release build" }
+}
+
 android {
     namespace = "app.velune.android"
     compileSdk = 36
@@ -12,9 +41,21 @@ android {
         applicationId = providers.gradleProperty("veluneApplicationId").getOrElse("app.velune.android")
         minSdk = 28
         targetSdk = 36
-        versionCode = 1
-        versionName = "0.1 beta.1"
+        versionCode = veluneBuildNumber
+        versionName = veluneVersion
         ndk { abiFilters += "arm64-v8a" }
+    }
+    if (hasReleaseSigning) {
+        signingConfigs.create("veluneRelease") {
+            storeFile = file(requireNotNull(releaseKeystorePath))
+            storeType = "PKCS12"
+            storePassword = requireNotNull(releaseStorePassword)
+            keyAlias = requireNotNull(releaseKeyAlias)
+            keyPassword = requireNotNull(releaseKeyPassword)
+        }
+    }
+    buildTypes.getByName("release") {
+        if (hasReleaseSigning) signingConfig = signingConfigs.getByName("veluneRelease")
     }
     buildFeatures { compose = true }
     compileOptions {

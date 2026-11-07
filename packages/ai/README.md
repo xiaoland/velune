@@ -2,7 +2,7 @@
 
 本 unit 定义 AI 能力的权威契约。当前唯一的操作是原生 LLM 派发：`Protocol` 区分 OpenAI Chat Completions v1、Responses v1 与 Anthropic Messages，三者共用 `NativeRequest`、`NativeEvent`、`NativeFailure` 与 `NativeCompletion`，由 `NativeProvider` 对一个确定目标执行一次请求。原生操作只允许路由替换必要的模型标识，保留协议 JSON、headers、流式事件和响应状态。
 
-本包不读取应用配置、全局环境、认证文件，也不依赖 HTTP 客户端、Harness、网关或 UniFFI。具体协议执行由 [ai-provider](../ai-provider/README.md) 负责。跨单元设计见 [AI service](../../docs/design/ai-service.md)。
+本包不读取应用配置、全局环境、认证文件，也不依赖 HTTP 客户端、Harness、网关或 UniFFI。具体协议执行由 [ai-provider](../ai-provider/README.md) 负责。跨单元设计见 [AI service](../../docs/product-tdd/ai-service.md)。
 
 `ProviderModelId` 明确表示提供商原生协议标识，保留完整字符串；它不承载应用记录主键或网关选择别名。`Protocol` 的序列化名（`chatCompletionsV1` 等）也是网关配置与应用 API 中的协议名。
 

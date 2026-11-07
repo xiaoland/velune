@@ -2,12 +2,131 @@
 use crate::TurnChoice;
 use serde::{Deserialize, Serialize};
 
+/// A source conversation, or the one global new-conversation target.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, uniffi::Record)]
+#[serde(rename_all = "camelCase")]
+pub struct ComposerTargetRequest {
+    pub runtime_id: String,
+    pub conversation_id: Option<String>,
+}
+
+/// The execution identity of a target without its conversation payload.
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[serde(rename_all = "camelCase")]
+pub struct ComposerTargetIdentity {
+    pub owner_id: String,
+    pub context: ComposerContextKey,
+    pub default_runtime_id: String,
+}
+
+/// Execution facts used by the facade before and after consulting the input authority.
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[serde(rename_all = "camelCase")]
+pub struct ComposerTargetBasis {
+    pub request: ComposerTargetRequest,
+    pub owner_id: String,
+    pub context: ComposerContextKey,
+    pub default_runtime_id: String,
+    pub input: crate::NextTurnInput,
+}
+
+/// The authority record and its execution projection, independent of an InputID.
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[serde(rename_all = "camelCase")]
+pub struct PreparedComposerTarget {
+    pub request: ComposerTargetRequest,
+    pub owner_id: String,
+    pub context: ComposerContextKey,
+    pub target: ComposerTarget,
+    pub default_runtime_id: String,
+    pub basis: crate::NextTurnInput,
+    pub next_turn: crate::NextTurn,
+}
+
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct ComposerTargetChoiceUpdate {
+    pub choices: ComposerTargetChoices,
+    pub runtime_choices: Option<crate::RuntimeComposerChoices>,
+}
+
+/// Unselected fields follow current facts instead of freezing an observed default.
+#[uniffi::export]
+pub fn normalize_composer_target_choices(choices: ComposerTargetChoices) -> ComposerTargetChoices {
+    if choices.choice_edited {
+        choices
+    } else {
+        ComposerTargetChoices::default()
+    }
+}
+
+#[uniffi::export]
+pub fn resolve_composer_target(
+    prepared: PreparedComposerTarget,
+    choices: Option<ComposerTargetChoices>,
+    catalog: Option<Vec<crate::RuntimeModel>>,
+) -> Option<crate::NextTurn> {
+    let choices = normalize_composer_target_choices(choices.unwrap_or(prepared.target.choices));
+    let runtime = choices
+        .runtime_id
+        .as_ref()
+        .unwrap_or(&prepared.default_runtime_id);
+    if *runtime != prepared.basis.runtime_id
+        || choices
+            .runtime_owner_id
+            .as_ref()
+            .is_some_and(|owner| owner != &prepared.owner_id)
+    {
+        return None;
+    }
+    let mut input = prepared.basis;
+    input.kept = choices
+        .choices
+        .iter()
+        .find(|choice| choice.owner_id == prepared.owner_id && choice.runtime_id == *runtime)
+        .map(|choice| choice.choice.clone());
+    input.catalog = catalog;
+    Some(crate::resolve_next_turn(input))
+}
+
+#[uniffi::export]
+pub fn change_composer_target(
+    mut next: crate::NextTurn,
+    target_choices: ComposerTargetChoices,
+    owner_id: String,
+    runtime_choices: Option<crate::RuntimeComposerChoices>,
+    change: crate::TurnChoiceChange,
+) -> Option<ComposerTargetChoiceUpdate> {
+    let mut choices = normalize_composer_target_choices(target_choices);
+    next.choice = choices
+        .choices
+        .iter()
+        .find(|choice| choice.owner_id == owner_id && choice.runtime_id == next.runtime_id)
+        .map(|choice| choice.choice.clone())
+        .unwrap_or_default();
+    let runtime_id = next.runtime_id.clone();
+    let update = crate::change_next_turn(next, runtime_choices, change)?;
+    choices
+        .choices
+        .retain(|choice| choice.owner_id != owner_id || choice.runtime_id != runtime_id);
+    if !update.choice.is_empty() {
+        choices.choices.push(ComposerRuntimeChoice {
+            owner_id,
+            runtime_id,
+            choice: update.choice,
+        });
+    }
+    choices.choice_edited = true;
+    Some(ComposerTargetChoiceUpdate {
+        choices,
+        runtime_choices: update.runtime_choices,
+    })
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, uniffi::Enum)]
 #[serde(
     tag = "kind",
     rename_all = "camelCase",
-    rename_all_fields = "camelCase",
-    deny_unknown_fields
+    rename_all_fields = "camelCase"
 )]
 pub enum ComposerContextKey {
     Conversation {
@@ -18,7 +137,7 @@ pub enum ComposerContextKey {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, uniffi::Record)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct ComposerAttachment {
     pub id: String,
     pub name: String,
@@ -26,7 +145,7 @@ pub struct ComposerAttachment {
 }
 
 #[derive(Clone, Serialize, Deserialize, uniffi::Record)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct ComposerAttachmentContent {
     pub attachment: ComposerAttachment,
     #[serde(with = "crate::bytes")]
@@ -34,7 +153,7 @@ pub struct ComposerAttachmentContent {
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize, uniffi::Record)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct ComposerRuntimeChoice {
     pub owner_id: String,
     pub runtime_id: String,
@@ -42,7 +161,7 @@ pub struct ComposerRuntimeChoice {
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize, uniffi::Record)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct ComposerInputContent {
     pub text: String,
     pub attachments: Vec<ComposerAttachment>,
@@ -50,7 +169,7 @@ pub struct ComposerInputContent {
 
 /// Execution choices belong to a target, independently of borrowed input content.
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize, uniffi::Record)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct ComposerTargetChoices {
     pub runtime_id: Option<String>,
     pub runtime_owner_id: Option<String>,
@@ -59,7 +178,7 @@ pub struct ComposerTargetChoices {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, uniffi::Record)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct ComposerTarget {
     pub context: ComposerContextKey,
     pub revision: u64,
@@ -67,7 +186,7 @@ pub struct ComposerTarget {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, uniffi::Record)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct ComposerInput {
     pub id: String,
     pub revision: u64,
@@ -75,7 +194,7 @@ pub struct ComposerInput {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, uniffi::Record)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct ComposerInputBinding {
     pub context: ComposerContextKey,
     pub input_id: String,
@@ -83,7 +202,7 @@ pub struct ComposerInputBinding {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, uniffi::Record)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct ComposerCreation {
     pub input_id: String,
     pub owner_id: String,
@@ -93,7 +212,7 @@ pub struct ComposerCreation {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, uniffi::Record)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct ComposerInputState {
     /// Stable execution-application identity, independent of the viewing client.
     pub owner_id: String,
@@ -106,7 +225,7 @@ pub struct ComposerInputState {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, uniffi::Record)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct ComposerInputUpdate {
     pub revision: u64,
     /// None means the caller already has this exact directory revision.
@@ -118,8 +237,7 @@ pub struct ComposerInputUpdate {
     tag = "operation",
     content = "parameters",
     rename_all = "camelCase",
-    rename_all_fields = "camelCase",
-    deny_unknown_fields
+    rename_all_fields = "camelCase"
 )]
 pub enum ComposerInputOperation {
     Read {

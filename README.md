@@ -1,44 +1,88 @@
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="assets/brand/velune-large-dark.svg">
-    <img src="assets/brand/velune-large-graphite.svg" width="112" alt="Velune 标志">
+    <img src="assets/brand/velune-large-graphite.svg" width="112" alt="Velune">
   </picture>
 </p>
 
 <h1 align="center">Velune</h1>
 
-Velune 是面向 Codex、Claude Code、Pi 等 coding agent 的控制界面与协调层。它帮助你在同一应用中浏览和继续不同运行时的会话、配置 AI 提供商与模型，并让不同 Agent 之间交接上下文、协作处理工作。
+<p align="center"><strong>A native workspace for your coding agents.</strong></p>
 
-Velune 本身不是执行任务的 Agent，也不替代 Codex、Claude Code、Pi 等 Harness。它连接你安装和配置的运行时，由这些运行时执行代码、调用工具并保存各自的会话历史。
+<p align="center">English · <a href="README.zh-CN.md">简体中文</a></p>
 
-## 当前代码包含的能力
+<p align="center">
+  <a href="https://github.com/xiaoland/velune/releases">Beta downloads</a> ·
+  <a href="docs/index.md">Documentation</a> ·
+  <a href="https://github.com/xiaoland/velune/discussions">Discussions</a> ·
+  <a href="https://github.com/xiaoland/velune/issues">Report an issue</a>
+</p>
 
-- **统一浏览会话**：查看不同运行时的会话、工作过程和状态，并按项目或运行时整理。
-- **切换运行时继续工作**：在新运行时会话中交接可携带的文本上下文；旧会话里的工具执行和审批状态不会被重放。
-- **配置模型与路由**：管理提供商模型，设置 LLM 路由；符合切换条件时，可在响应交给调用方前尝试下一个路由成员。订阅额度仍由各供应商分别管理。
-- **连接 Agent 协作**：查看原生子 Agent 和相关会话，并通过 Velune 的协作能力联系其他会话。
-- **管理共享资源**：整理指令、技能、MCP 服务器和子 Agent 定义，并同步到支持的运行时。
+Bring Codex, Claude Code, Pi and ACP agents into one place. Browse their sessions, continue work across runtimes, choose providers and models, and control your desktop workspace from your phone.
 
-## 平台
+Your installed harnesses execute tools and own their native histories. Velune provides the workspace, routing and coordination around them. Install your preferred harnesses separately and connect your own accounts or API providers.
 
-| 平台 | 定位 | 当前状态 |
+![Velune on macOS with two conversations and a shared composer](assets/screenshots/macos-split-workspace.png)
+
+*macOS workspace with synthetic conversations. The current interface is primarily in Chinese.*
+
+<details>
+<summary>Single-session view</summary>
+
+![Velune single-session workspace](assets/screenshots/macos-workspace.png)
+
+</details>
+
+## One workspace, several runtimes
+
+- **Keep your sessions together.** Browse and organize conversations across agents, with execution status, unread markers, tabs, split views and separate windows.
+- **Continue with another runtime.** Carry supported context into a new native session. Tool execution and approvals stay with the original session, and unsupported context produces an explicit error.
+- **Choose your model connection.** Use a runtime's own provider or configure Velune-managed providers, models and routing. Subscription quotas remain specific to each provider.
+- **Coordinate agents.** Follow native sub-agents and let independent sessions collaborate through Velune's tools.
+- **Manage shared resources.** Organize instructions, skills, MCP services and sub-agent definitions through each runtime's supported capabilities.
+- **Take control from your phone.** Connect a mobile client to a desktop host. That host keeps running the agents and holding their native histories.
+
+The product documentation covers supported behavior and current boundaries. Most developer documentation is currently in Chinese. [Product guide](docs/prd/index.md)
+
+## Platforms
+
+| Platform | Role | First beta target |
 | --- | --- | --- |
-| macOS | 完整端，可在本机运行 Agent | 原生应用持续开发与验证中 |
-| Windows | 完整端，可在本机运行 Agent | WinUI 应用持续开发与验证中 |
-| Android | 远程控制端 | 连接 Mac 或 Windows 完整端；不在手机上运行 Agent |
-| iPad / iPhone | 远程控制端 | SwiftUI 通用应用，复用远控核心 |
+| macOS | Desktop host and remote client | macOS 15+, Apple Silicon / Intel |
+| Windows | Desktop host and remote client | x64, self-contained ZIP |
+| Android | Remote client | Android 9+, arm64 signed APK |
+| iPhone / iPad | Remote client | Build from source |
 
-各平台都还在开发验证阶段，功能与操作细节会继续调整。
+The first public beta is being prepared. Available downloads follow the assets listed on each release. The initial macOS builds use ad-hoc signing and have no Apple notarization, and Windows builds have no publisher signature. Follow the installation steps and known limitations on the release page. [Releases](https://github.com/xiaoland/velune/releases)
 
-## 试用
+Feature coverage differs by platform. [Windows coverage](app/windows/PARITY.md) · [Android scope](app/android/README.md)
 
-目前 [GitHub Releases](https://github.com/xiaoland/velune/releases) 尚无可下载的安装包。开发者可以按[开发说明](docs/development.md)从源码构建，平台细节见 [macOS](app/mac/README.md)、[Windows](app/windows/README.md)、[Android](app/android/README.md) 和 [iPad / iPhone](app/ios/README.md) 说明。
+## Get started
 
-运行 Agent 前，需要先自行安装并配置对应的 Harness。Velune 不附带这些运行时；添加模型提供商时，也需要使用者自行配置可用的账户或 API 凭据。多账户路由不会合并额度或绕过供应商规则。
+### On your desktop
 
-## 文档与反馈
+1. Download a build for your operating system from [Releases](https://github.com/xiaoland/velune/releases), when available. For source builds, follow the [development guide](docs/development.md).
+2. Install a supported harness, then add its runtime in Velune.
+3. Open an existing session or create a new one. Use the runtime's native model connection or configure a provider in Velune.
 
-- [产品定义](docs/prd/index.md)：产品目标、范围与能力
-- [架构说明](docs/design/architecture.md)：共享核心与平台应用的分工
-- [完整文档索引](docs/index.md)
-- [提交问题或建议](https://github.com/xiaoland/velune/issues)
+Supported adapter versions, execution locations and model connections are documented in the runtime guide. [Agent runtimes](docs/prd/agent-runtimes.md)
+
+### On your phone
+
+Install the Android APK, keep a desktop host running, and pair with it from the device page. The host approves access and continues running your agents. See the remote-access guide for connection options and permissions. [Remote access](docs/prd/remote-access.md)
+
+## Build and contribute
+
+Development targets `develop`. Pull requests promote release source to `main`, where version PRs and releases are managed. Start with the development and contribution guides. [Development](docs/development.md) · [Contributing](CONTRIBUTING.md)
+
+For bugs, include the app version, operating system, runtime version and a small reproduction when possible. Remove credentials and private conversation data from diagnostics. Use private vulnerability reporting for security issues. [Report a bug](https://github.com/xiaoland/velune/issues/new/choose) · [Report a vulnerability](https://github.com/xiaoland/velune/security/advisories/new)
+
+## Documentation
+
+- [Product guide](docs/prd/index.md)
+- [Architecture](docs/product-tdd/architecture.md)
+- [Full documentation index](docs/index.md)
+
+## License
+
+Velune is licensed under AGPL-3.0-only. Desktop builds include RelayKit, based on New API. Bundled dependencies retain their respective licenses and notices. Binary releases include corresponding source and build materials. [License](LICENSE) · [RelayKit notices](app/mac/Licenses/RelayKit/NOTICE.md)

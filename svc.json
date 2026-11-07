@@ -291,12 +291,12 @@
         }
       },
       "macos-app": {
-        "label": "Velune Mac 构建与重装",
+        "label": "Velune Mac 重装",
         "scope": "host",
         "host_key": "velune-macos-install",
         "access": [
           "/Applications/Velune.app",
-          "构建完成后正常退出旧版、安装并在后台启动新版；在 Velune 外部执行"
+          "正常退出旧版、安装并在后台启动新版；在 Velune 外部执行"
         ],
         "observations": {
           "installed": {
@@ -312,22 +312,6 @@
           }
         },
         "actions": {
-          "build": {
-            "kind": "exec",
-            "intent": "构建并验证 Mac 应用签名",
-            "traits": [
-              "provision"
-            ],
-            "effect_scope": "当前工作树的 target/ 与 .build/",
-            "data_effect": "modify",
-            "argv": [
-              "bash",
-              "scripts/build-macos.sh",
-              "--build-only"
-            ],
-            "completion": "exit",
-            "interruption": "wait"
-          },
           "reinstall": {
             "kind": "exec",
             "intent": "构建、正常退出旧版、重装并在后台启动 Velune",
@@ -351,11 +335,35 @@
   "run": {
     "build-macos": {
       "argv": [
-        "svc",
+        "bash",
+        "scripts/build-macos.sh",
+        "--profile",
         "dev",
-        "act",
-        "macos-app",
-        "build"
+        "--build-only"
+      ],
+      "env": {
+        "CARGO_BUILD_JOBS": "2"
+      }
+    },
+    "start-macos-dev": {
+      "argv": [
+        "python3",
+        "scripts/macos-dev.py",
+        "start"
+      ]
+    },
+    "status-macos-dev": {
+      "argv": [
+        "python3",
+        "scripts/macos-dev.py",
+        "status"
+      ]
+    },
+    "stop-macos-dev": {
+      "argv": [
+        "python3",
+        "scripts/macos-dev.py",
+        "stop"
       ]
     },
     "reinstall-macos": {
@@ -365,6 +373,122 @@
         "act",
         "macos-app",
         "reinstall"
+      ]
+    },
+    "build-macos-release": {
+      "argv": [
+        "bash",
+        "scripts/build-macos.sh",
+        "--profile",
+        "release",
+        "--build-only"
+      ],
+      "env": {
+        "CARGO_BUILD_JOBS": "2"
+      }
+    },
+    "start-macos-dev-release": {
+      "argv": [
+        "python3",
+        "scripts/macos-dev.py",
+        "start",
+        "--profile",
+        "release"
+      ]
+    },
+    "package-macos": {
+      "argv": [
+        "bash",
+        "scripts/build-macos.sh",
+        "--profile",
+        "release",
+        "--purpose",
+        "daily",
+        "--build-only"
+      ],
+      "env": {
+        "CARGO_BUILD_JOBS": "2"
+      }
+    },
+    "build-ios": {
+      "argv": [
+        "bash",
+        "scripts/build-ios.sh",
+        "--profile",
+        "dev"
+      ],
+      "env": {
+        "CARGO_BUILD_JOBS": "2"
+      }
+    },
+    "build-ios-release": {
+      "argv": [
+        "bash",
+        "scripts/build-ios.sh",
+        "--profile",
+        "release"
+      ],
+      "env": {
+        "CARGO_BUILD_JOBS": "2"
+      }
+    },
+    "build-android": {
+      "argv": [
+        "bash",
+        "scripts/build-android.sh",
+        "--profile",
+        "dev"
+      ],
+      "env": {
+        "CARGO_BUILD_JOBS": "2"
+      }
+    },
+    "build-android-release": {
+      "argv": [
+        "bash",
+        "scripts/build-android.sh",
+        "--profile",
+        "release"
+      ],
+      "env": {
+        "CARGO_BUILD_JOBS": "2"
+      }
+    },
+    "build-windows": {
+      "argv": [
+        "powershell",
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        "scripts/build-windows.ps1",
+        "-Profile",
+        "dev"
+      ],
+      "env": {
+        "CARGO_BUILD_JOBS": "2"
+      }
+    },
+    "build-windows-release": {
+      "argv": [
+        "powershell",
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        "scripts/build-windows.ps1",
+        "-Profile",
+        "release"
+      ],
+      "env": {
+        "CARGO_BUILD_JOBS": "2"
+      }
+    },
+    "build-cache-report": {
+      "argv": [
+        "python3",
+        "scripts/build-cache.py",
+        "report"
       ]
     }
   }

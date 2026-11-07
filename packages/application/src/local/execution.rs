@@ -4,17 +4,20 @@ use super::*;
 pub(super) struct ExecutionConfiguration {
     pub(super) runtime: RuntimeInstance,
     pub(super) gateway: Option<GatewayConfig>,
+    pub(super) gateway_session: Option<velune_gateway::SessionIdentity>,
     pub(super) backends: velune_gateway::ExecutionBackends,
 }
+
 impl CoreRuntime {
     pub(super) fn capture_execution_configuration(
         &mut self,
         runtime: &RuntimeInstance,
-        gateway: Option<&GatewayConfig>,
+        gateway: Option<(&GatewayConfig, velune_gateway::SessionIdentity)>,
     ) {
         self.session.execution_configuration = Some(ExecutionConfiguration {
             runtime: runtime.clone(),
-            gateway: gateway.cloned(),
+            gateway: gateway.as_ref().map(|(gateway, _)| (*gateway).clone()),
+            gateway_session: gateway.map(|(_, session)| session),
             backends: self.execution_backends.clone(),
         });
         self.session.configuration_changed = false;
@@ -66,32 +69,27 @@ impl CoreRuntime {
                     .query(&gateway.id, &member.provider().id, false);
             }
         }
+        // Stopping the previous runtime removes its native projection. Capture
+        // the public identity first, and give a new, unnamed conversation its
+        // own execution identity until the harness creates its native ID.
+        let session = self
+            .session
+            .conversation_id()
+            .map(|id| velune_gateway::SessionIdentity {
+                namespace: "velune.conversation".into(),
+                id: id.into(),
+            })
+            .unwrap_or_else(|| velune_gateway::SessionIdentity {
+                namespace: "velune.prepared_execution".into(),
+                id: crate::new_record_key(),
+            });
         if runtime.type_id != RuntimeKind::Pi {
             self.shutdown_active()?;
-            self.capture_execution_configuration(&runtime, Some(&gateway));
+            self.capture_execution_configuration(&runtime, Some((&gateway, session)));
             let runtime_projection = self.execution_context(&runtime)?.projection;
             let lane = self.lane_projection(&runtime_projection);
-            let runner = Runner::start_with_scheduling(
-                gateway.to_gateway_config()?,
-                crate::authentication_resolver::ProviderResolver::capture_for_dispatch(
-                    &gateway,
-                    &self.options,
-                    self.subscription_quota.clone(),
-                ),
-                self.native_aliases(&runtime, model_record_key)?,
-                Some(self.analytics.clone()),
-                self.scheduling_state.clone(),
-                self.subscription_quota.source(&gateway.id),
-                self.session
-                    .conversation_id()
-                    .map(|id| velune_gateway::SessionIdentity {
-                        namespace: "velune.conversation".into(),
-                        id: id.into(),
-                    }),
-                self.execution_backends.clone(),
-            )
-            .map_err(|error| RuntimeError::context("gateway startup", error))?;
-            runner.set_telemetry(self.telemetry.clone(), None, None);
+            let runner = self
+                .start_gateway_runner(&gateway, self.native_aliases(&runtime, model_record_key)?)?;
             self.session.gateway_runner = Some(runner);
             let servers = self.collaboration_servers();
             let result = (|| {
@@ -135,27 +133,8 @@ impl CoreRuntime {
             })
             .collect::<Result<BTreeMap<_, _>, _>>()?;
         self.shutdown_active()?;
-        self.capture_execution_configuration(&runtime, Some(&gateway));
-        let runner = Runner::start_with_scheduling(
-            gateway.to_gateway_config()?,
-            crate::authentication_resolver::ProviderResolver::capture_for_dispatch(
-                &gateway,
-                &self.options,
-                self.subscription_quota.clone(),
-            ),
-            route_aliases,
-            Some(self.analytics.clone()),
-            self.scheduling_state.clone(),
-            self.subscription_quota.source(&gateway.id),
-            self.session
-                .conversation_id()
-                .map(|id| velune_gateway::SessionIdentity {
-                    namespace: "velune.conversation".into(),
-                    id: id.into(),
-                }),
-            self.execution_backends.clone(),
-        )
-        .map_err(|error| RuntimeError::context("gateway startup", error))?;
+        self.capture_execution_configuration(&runtime, Some((&gateway, session)));
+        let runner = self.start_gateway_runner(&gateway, route_aliases)?;
         let context = self.prepare_execution_context(&runtime)?;
         let tunnel = velune_agent_runtime::execution::LoopbackTunnel::open(
             &context.target,
@@ -205,13 +184,41 @@ impl CoreRuntime {
             return Err(error);
         }
         write_selection_file(&config, model_record_key, &physical_model_id)?;
-        runner.set_telemetry(self.telemetry.clone(), None, None);
         self.session.gateway_runner = Some(runner);
         self.session.gateway_tunnel = Some(tunnel);
         self.session.active_state = ActiveState::Pi(Box::new(pi::PiSession::new(config)));
         self.session.execution_runtime_id = Some(runtime_id.into());
         self.session.model_record_key = None;
         Ok(())
+    }
+
+    /// Aliases, credentials, quota bindings and session identity belong to one
+    /// prepared execution. Editing saved configuration affects the next one.
+    fn start_gateway_runner(
+        &self,
+        gateway: &GatewayConfig,
+        aliases: BTreeMap<String, String>,
+    ) -> Result<Runner, RuntimeError> {
+        let runner = Runner::start_with_scheduling(
+            gateway.to_gateway_config()?,
+            crate::authentication_resolver::ProviderResolver::capture_for_dispatch(
+                gateway,
+                &self.options,
+                self.subscription_quota.clone(),
+            ),
+            aliases,
+            Some(self.analytics.clone()),
+            self.scheduling_state.clone(),
+            self.subscription_quota.source(&gateway.id),
+            self.session
+                .execution_configuration
+                .as_ref()
+                .and_then(|configuration| configuration.gateway_session.clone()),
+            self.execution_backends.clone(),
+        )
+        .map_err(|error| RuntimeError::context("gateway startup", error))?;
+        runner.set_telemetry(self.telemetry.clone(), None, None);
+        Ok(runner)
     }
 
     pub(super) fn start_pi_for_session(
@@ -341,5 +348,324 @@ impl CoreRuntime {
             velune_telemetry::Outcome::Unknown
         });
         result
+    }
+}
+
+#[cfg(all(test, unix))]
+mod gateway_execution_tests {
+    use super::*;
+    use crate::conversation::ConversationSnapshot;
+    use axum::{
+        Json, Router,
+        http::{HeaderMap, Uri},
+    };
+    use std::{os::unix::fs::PermissionsExt, sync::Mutex, time::Duration};
+
+    fn provider(id: &str, endpoint: &str) -> crate::ProviderDraft {
+        crate::ProviderDraft {
+            id: id.into(),
+            name: id.into(),
+            protocol: Protocol::Responses,
+            endpoint: endpoint.into(),
+            execution_backend: crate::config::ExecutionBackend::Http,
+            request_profile: crate::config::RequestProfile::Native,
+            authentication_source: crate::ProviderAuthenticationSource::ApiKey,
+            quota_source: crate::config::ProviderQuotaSource::None,
+            models: vec![velune_application_api::ProviderModel {
+                record_key: id.into(),
+                provider_model_id: "shared-model-name".into(),
+                nickname: id.into(),
+                icon: None,
+                context_window: Some(8192),
+                max_output_tokens: Some(1024),
+                reasoning_levels: None,
+                request_parameters: None,
+            }],
+            quota_limits: Vec::new(),
+        }
+    }
+
+    fn save(core: &mut CoreRuntime, draft: crate::ProviderDraft, key: &str) {
+        core.save_provider(
+            "default".into(),
+            draft,
+            crate::AuthenticationEdit::SetApiKey { value: key.into() },
+            None,
+        )
+        .unwrap();
+    }
+
+    fn snapshot(id: &str) -> ConversationSnapshot {
+        PiProjection::new(ConversationSummary {
+            native_read_state: None,
+            id: id.into(),
+            runtime_id: "pi".into(),
+            title: velune_conversation::ConversationTitle::Untitled,
+            created_at_unix_ms: None,
+            updated_at_unix_ms: None,
+            cwd: None,
+            can_rename: false,
+            can_delete: false,
+            parent_conversation_id: None,
+        })
+        .snapshot
+        .unwrap()
+    }
+
+    async fn send(endpoint: &str, token: &str, model: &str) -> reqwest::Response {
+        reqwest::Client::new()
+            .post(format!("{endpoint}/responses"))
+            .bearer_auth(token)
+            .timeout(Duration::from_secs(5))
+            .json(&json!({"model":model, "input":"synthetic"}))
+            .send()
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn edits_preserve_running_snapshot_and_isolate_later_executions() {
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let admitted = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let captured = requests.clone();
+        let arrived = admitted.clone();
+        let released = release.clone();
+        let upstream = Router::new().fallback(
+            move |uri: Uri, headers: HeaderMap, Json(body): Json<Value>| {
+                let captured = captured.clone();
+                let arrived = arrived.clone();
+                let released = released.clone();
+                async move {
+                    let first = {
+                        let mut requests = captured.lock().unwrap();
+                        requests.push((
+                            uri.path().to_owned(),
+                            headers["authorization"].to_str().unwrap().to_owned(),
+                            body["model"].clone(),
+                        ));
+                        requests.len() == 1
+                    };
+                    if first {
+                        arrived.notify_one();
+                        released.notified().await;
+                    }
+                    Json(json!({
+                        "id":"synthetic", "object":"response", "status":"completed", "output":[]
+                    }))
+                }
+            },
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move { axum::serve(listener, upstream).await.unwrap() });
+        let root = std::env::temp_dir().join(format!(
+            "velune-gateway-execution-{}",
+            crate::new_record_key()
+        ));
+        fs::create_dir(&root).unwrap();
+        let helper = r#"#!/usr/bin/python3
+import json, sys
+if '--validate' in sys.argv:
+    sys.exit(0)
+if '--version' in sys.argv:
+    print('codex-cli 0.166.0')
+    sys.exit(0)
+for line in sys.stdin:
+    request = json.loads(line)
+    if 'id' not in request:
+        continue
+    if 'method' in request:
+        reply = {'id':request['id'], 'result':{}}
+    else:
+        reply = {'type':'response', 'id':request['id'], 'command':request['type'], 'success':True, 'data':{}}
+    print(json.dumps(reply), flush=True)
+"#;
+        fs::write(root.join("pi_rpc.mjs"), helper).unwrap();
+        let codex = root.join("codex");
+        fs::write(&codex, helper).unwrap();
+        fs::set_permissions(&codex, fs::Permissions::from_mode(0o700)).unwrap();
+        let mut app = crate::Application::open(crate::Options {
+            home_directory: root.clone(),
+            resources_directory: root.clone(),
+        })
+        .unwrap();
+        let core = &mut app.runtime;
+        for (id, kind, binary) in [
+            ("pi", RuntimeKind::Pi, Path::new("/synthetic/pi")),
+            ("codex", RuntimeKind::Codex166, codex.as_path()),
+        ] {
+            core.upsert_runtime_with_execution(
+                RuntimeInstance {
+                    enabled: true,
+                    id: id.into(),
+                    name: id.into(),
+                    type_id: kind,
+                    gateway_id: "default".into(),
+                    settings: BTreeMap::from([
+                        ("binary".into(), binary.to_string_lossy().into_owned()),
+                        ("nodeBinary".into(), "/usr/bin/python3".into()),
+                        (
+                            "agentDir".into(),
+                            root.join(id).to_string_lossy().into_owned(),
+                        ),
+                    ]),
+                },
+                crate::RuntimeExecution {
+                    home: crate::RuntimeHome::Existing {
+                        path: root.to_string_lossy().into_owned(),
+                    },
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        }
+        save(core, provider("a", &format!("{origin}/old/v1")), "old-key");
+        save(core, provider("b", &format!("{origin}/b/v1")), "b-key");
+        core.session.active_state = ActiveState::History(Box::new(snapshot("pi:first")));
+        core.prepare_runtime("pi", "a").unwrap();
+        assert_eq!(core.backend_session_identity().unwrap().1.id, "pi:first");
+        let old_gateway = core
+            .session
+            .execution_configuration
+            .as_ref()
+            .unwrap()
+            .gateway
+            .as_ref()
+            .unwrap()
+            .clone();
+        let old_alias = old_gateway
+            .pi_binding_id("a", old_gateway.authentication_revision("a"))
+            .unwrap();
+        let runner = core.session.gateway_runner.as_ref().unwrap();
+        let old_endpoint = runner.endpoint().to_owned();
+        let old_token = runner.token().to_owned();
+        let old_quota = Arc::downgrade(&core.subscription_quota);
+        let pi = core.session.pi().unwrap();
+        let client = pi::Client::spawn(pi.config().clone()).unwrap();
+        let mut projection = PiProjection::new(snapshot("pi:first").conversation);
+        projection.apply_event(&json!({"type":"agent_start"}));
+        pi.start(client, projection);
+        assert!(core.session.executing());
+        let endpoint = old_endpoint.clone();
+        let token = old_token.clone();
+        let alias = old_alias.clone();
+        let pending = tokio::spawn(async move { send(&endpoint, &token, &alias).await });
+        tokio::time::timeout(Duration::from_secs(5), admitted.notified())
+            .await
+            .unwrap();
+        save(core, provider("a", &format!("{origin}/new/v1")), "new-key");
+        assert!(core.session.executing());
+        assert!(core.session.configuration_changed);
+        let revision = core.gateways[0].authentication_revision("a");
+        core.save_provider(
+            "default".into(),
+            provider("a", &format!("{origin}/kept-key/v1")),
+            crate::AuthenticationEdit::Keep,
+            None,
+        )
+        .unwrap();
+        assert!(core.gateways[0].authentication_revision("a") > revision);
+        let committed = core.gateways.clone();
+        fs::create_dir(root.join("generic-config.json.tmp")).unwrap();
+        assert!(
+            core.save_provider(
+                "default".into(),
+                provider("a", &format!("{origin}/rejected/v1")),
+                crate::AuthenticationEdit::Keep,
+                None,
+            )
+            .is_err()
+        );
+        assert_eq!(core.gateways, committed);
+        fs::remove_dir(root.join("generic-config.json.tmp")).unwrap();
+        assert_eq!(
+            core.session
+                .execution_configuration
+                .as_ref()
+                .unwrap()
+                .gateway
+                .as_ref(),
+            Some(&old_gateway)
+        );
+        release.notify_one();
+        assert_eq!(pending.await.unwrap().status(), 200);
+        assert_eq!(
+            send(&old_endpoint, &old_token, &old_alias).await.status(),
+            200
+        );
+
+        core.focus_new();
+        core.prepare_runtime("codex", "b").unwrap();
+        let second_identity = core.backend_session_identity().unwrap().1;
+        let runner = core.session.gateway_runner.as_ref().unwrap();
+        assert_ne!(runner.endpoint(), old_endpoint);
+        assert_eq!(
+            send(runner.endpoint(), runner.token(), "shared-model-name")
+                .await
+                .status(),
+            200
+        );
+        core.focus_new();
+        core.prepare_runtime("codex", "a").unwrap();
+        assert_ne!(core.backend_session_identity().unwrap().1, second_identity);
+        let runner = core.session.gateway_runner.as_ref().unwrap();
+        assert_eq!(
+            send(runner.endpoint(), runner.token(), "shared-model-name")
+                .await
+                .status(),
+            200
+        );
+        assert_eq!(
+            *requests.lock().unwrap(),
+            vec![
+                (
+                    "/old/v1/responses".into(),
+                    "Bearer old-key".into(),
+                    json!("shared-model-name")
+                ),
+                (
+                    "/old/v1/responses".into(),
+                    "Bearer old-key".into(),
+                    json!("shared-model-name")
+                ),
+                (
+                    "/b/v1/responses".into(),
+                    "Bearer b-key".into(),
+                    json!("shared-model-name")
+                ),
+                (
+                    "/kept-key/v1/responses".into(),
+                    "Bearer new-key".into(),
+                    json!("shared-model-name")
+                ),
+            ]
+        );
+        assert!(core.focus_existing("pi:first"));
+        core.shutdown_active().unwrap();
+        assert!(old_quota.upgrade().is_none());
+        let address = url::Url::parse(&old_endpoint)
+            .unwrap()
+            .socket_addrs(|| None)
+            .unwrap()[0];
+        assert!(std::net::TcpStream::connect_timeout(&address, Duration::from_secs(1)).is_err());
+
+        let mut runtime = core.runtime_instance("codex").unwrap().clone();
+        runtime.settings.insert(
+            "binary".into(),
+            root.join("missing").to_string_lossy().into_owned(),
+        );
+        core.upsert_runtime(runtime.clone()).unwrap();
+        assert!(core.prepare_runtime("codex", "a").is_err());
+        assert!(core.session.gateway_runner.is_none());
+        runtime
+            .settings
+            .insert("binary".into(), codex.to_string_lossy().into_owned());
+        core.upsert_runtime(runtime).unwrap();
+        core.prepare_runtime("codex", "a").unwrap();
+        core.close_if_idle(true).unwrap();
+        drop(app);
+        server.abort();
+        fs::remove_dir_all(root).unwrap();
     }
 }

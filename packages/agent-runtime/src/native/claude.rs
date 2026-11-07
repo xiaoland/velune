@@ -636,6 +636,7 @@ impl NativeSession {
         // A side question cannot be interrupted; its child is ended instead.
         if self.side {
             self.rpc.retire();
+            self.tunnel = None;
             self.process_ended = true;
             self.claude.side_question = None;
             if let Some(snapshot) = &mut self.snapshot {

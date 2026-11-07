@@ -132,8 +132,13 @@ impl SettingsStore {
         let path = private_settings_path(state_path)?;
         let value = match crate::identity::read_private(&path) {
             Ok(bytes) => {
-                let stored: StoredNetworkSettings =
+                let raw: serde_json::Value =
                     serde_json::from_slice(&bytes).map_err(|_| RemoteError::StateStorage)?;
+                let stored: StoredNetworkSettings =
+                    serde_json::from_value(raw.clone()).map_err(|_| RemoteError::StateStorage)?;
+                if serde_json::to_value(&stored).map_err(|_| RemoteError::StateStorage)? != raw {
+                    return Err(RemoteError::StateStorage);
+                }
                 if stored.version != 1 || stored.revision == 0 {
                     return Err(RemoteError::StateStorage);
                 }
@@ -378,5 +383,29 @@ pub(crate) fn configured_lookup_urls(discovery: &DiscoveryConfig) -> Vec<String>
             iroh::address_lookup::pkarr::N0_DNS_PKARR_RELAY_PROD.into(),
             iroh::address_lookup::pkarr::N0_DNS_PKARR_RELAY_STAGING.into(),
         ],
+    }
+}
+
+#[cfg(test)]
+mod persistence_tests {
+    use super::*;
+
+    #[test]
+    fn unknown_nested_network_settings_are_rejected_without_rewrite() {
+        let directory = tempfile::tempdir().unwrap();
+        let state = directory.path().join("remote-state.json");
+        let settings_path = private_settings_path(&state).unwrap();
+        let mut value = serde_json::to_value(StoredNetworkSettings {
+            version: 1,
+            revision: 1,
+            config: EndpointConfig::default(),
+            withdrawn_lookup_urls: Default::default(),
+        })
+        .unwrap();
+        value["config"]["future"] = serde_json::json!("retain");
+        let bytes = serde_json::to_vec(&value).unwrap();
+        crate::identity::atomic_write(&settings_path, &bytes).unwrap();
+        assert!(SettingsStore::open(&state).is_err());
+        assert_eq!(std::fs::read(settings_path).unwrap(), bytes);
     }
 }

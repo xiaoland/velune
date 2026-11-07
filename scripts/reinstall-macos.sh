@@ -15,21 +15,24 @@ while [[ $# -gt 0 ]]; do
 done
 [[ "$(uname -s)" == Darwin ]] || { echo '重装需要 macOS 与 Xcode 工具链。' >&2; exit 1; }
 
+# Resolve the same OS-user home used by a normal LaunchServices launch before
+# any build, quit, migration, or installation. Shell development homes fail here.
+home=$(python3 scripts/macos_identity.py daily-home)
+
 # Keep the current app available throughout the build. A failed build or
 # signature check must not interrupt the conversation it is hosting.
 if "$build"; then
   echo '重装阶段：构建新版'
-  bash scripts/build-macos.sh --build-only
+  bash scripts/build-macos.sh --profile release --purpose daily --build-only
 fi
 app="$PWD/target/macos/Velune.app"
-echo '重装阶段：验证新版签名'
-codesign --verify --deep --strict "$app"
+echo '重装阶段：验证日常安装准入与新版签名'
+python3 scripts/install-macos.py "$app" --destination "$destination" --validate-only
 identifier=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app/Contents/Info.plist")
 echo '重装阶段：请求旧版正常退出'
 xcrun swift scripts/quit-macos.swift "$identifier" "$destination"
 echo '重装阶段：安装新版'
 python3 scripts/install-macos.py "$app" --destination "$destination"
-home="${VELUNE_HOME:-$HOME/.velune}"
 if [[ -d $home ]]; then
   echo '重装阶段：执行数据迁移'
   python3 scripts/run-migrations.py --home "$home"

@@ -96,7 +96,14 @@ pub(crate) struct Repository {
     home_lock: File,
 }
 impl Repository {
+    #[cfg(test)]
     pub(crate) fn open(home: &Path) -> Result<(Self, PersistedConfig), RuntimeError> {
+        let home_lock = Self::lock_home(home)?;
+        super::persistence_migrations::prepare(home)?;
+        Self::open_with_lock(home, home_lock)
+    }
+
+    pub(crate) fn lock_home(home: &Path) -> Result<File, RuntimeError> {
         let lock_path = home.join("runtime.lock");
         let home_lock = OpenOptions::new()
             .create(true)
@@ -118,61 +125,66 @@ impl Repository {
             }
             Err(TryLockError::Error(error)) => return Err(error.into()),
         }
+        Ok(home_lock)
+    }
+
+    pub(crate) fn open_with_lock(
+        home: &Path,
+        home_lock: File,
+    ) -> Result<(Self, PersistedConfig), RuntimeError> {
         let persisted_path = home.join("generic-config.json");
 
-        let mut reset = false;
         let persisted = match fs::read(&persisted_path) {
             Ok(bytes) => {
+                let raw: serde_json::Value = serde_json::from_slice(&bytes)?;
+                let version = raw["schemaVersion"].as_u64().ok_or_else(|| {
+                    RuntimeError::invalid("configuration schema version is required")
+                })?;
+                if version != u64::from(CURRENT_SCHEMA_VERSION) {
+                    return Err(RuntimeError::Invalid(format!(
+                        "普通配置 schema {version} 不受支持；请先执行适用的显式迁移或使用支持该格式的版本。原文件已保留。"
+                    )));
+                }
+                let value: PersistedConfig = serde_json::from_value(raw.clone())?;
+                if serde_json::to_value(&value)? != raw {
+                    return Err(RuntimeError::invalid(
+                        "普通配置含当前 schema 未知字段；原文件保留",
+                    ));
+                }
+                if value.conversation_browser_group_limit == 0 {
+                    return Err(RuntimeError::invalid("每组会话加载数量必须大于零"));
+                }
+                for gateway in &value.gateways {
+                    gateway.validate().map_err(RuntimeError::invalid)?;
+                }
+                for runtime in &value.runtime_instances {
+                    runtime.new_conversation_choice()?;
+                    if runtime.id.is_empty()
+                        || runtime.name.is_empty()
+                        || !value
+                            .gateways
+                            .iter()
+                            .any(|item| item.id == runtime.gateway_id)
+                    {
+                        return Err(RuntimeError::invalid("invalid persisted runtime instance"));
+                    }
+                }
+                let mut template_ids = std::collections::BTreeSet::new();
+                for template in &value.model_templates {
+                    if template.id.is_empty()
+                        || template.name.trim().is_empty()
+                        || !template_ids.insert(&template.id)
+                    {
+                        return Err(RuntimeError::invalid("invalid model template identity"));
+                    }
+                    crate::provider_configuration::validate_template(template)?;
+                }
                 #[cfg(unix)]
                 {
                     use std::os::unix::fs::PermissionsExt;
                     fs::set_permissions(&persisted_path, fs::Permissions::from_mode(0o600))?;
                 }
-                let raw: serde_json::Value = serde_json::from_slice(&bytes)?;
-                let version = raw["schemaVersion"].as_u64().ok_or_else(|| {
-                    RuntimeError::invalid("configuration schema version is required")
-                })?;
-                if version < u64::from(CURRENT_SCHEMA_VERSION) {
-                    reset = true;
-                    PersistedConfig::default()
-                } else {
-                    if version > u64::from(CURRENT_SCHEMA_VERSION) {
-                        return Err(RuntimeError::invalid(
-                            "配置版本高于本应用支持的版本；请使用支持该版本的应用。",
-                        ));
-                    }
-                    let value: PersistedConfig = serde_json::from_value(raw)?;
-                    if value.conversation_browser_group_limit == 0 {
-                        return Err(RuntimeError::invalid("每组会话加载数量必须大于零"));
-                    }
-                    for gateway in &value.gateways {
-                        gateway.validate().map_err(RuntimeError::invalid)?;
-                    }
-                    for runtime in &value.runtime_instances {
-                        if runtime.id.is_empty()
-                            || runtime.name.is_empty()
-                            || !value
-                                .gateways
-                                .iter()
-                                .any(|item| item.id == runtime.gateway_id)
-                        {
-                            return Err(RuntimeError::invalid(
-                                "invalid persisted runtime instance",
-                            ));
-                        }
-                    }
-                    let mut template_ids = std::collections::BTreeSet::new();
-                    for template in &value.model_templates {
-                        if template.id.is_empty()
-                            || template.name.trim().is_empty()
-                            || !template_ids.insert(&template.id)
-                        {
-                            return Err(RuntimeError::invalid("invalid model template identity"));
-                        }
-                        crate::provider_configuration::validate_template(template)?;
-                    }
-                    value
-                }
+                value
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 PersistedConfig::default()
@@ -183,9 +195,6 @@ impl Repository {
             home: home.to_owned(),
             home_lock,
         };
-        if reset {
-            repository.store(&persisted)?;
-        }
         Ok((repository, persisted))
     }
     pub(crate) fn unlock(&self) -> Result<(), RuntimeError> {
@@ -199,15 +208,24 @@ impl Repository {
         )
     }
 
-    /// Next-turn and new-conversation choices live beside the drafts, for the
-    /// same reasons; a file of another schema starts afresh.
+    /// Remembered choices are adapter-scoped. Start policies live with runtime configuration.
     pub(crate) fn load_composer_choices(
         &self,
     ) -> Result<crate::config::ComposerChoices, RuntimeError> {
-        let value = match self.read_versioned("composer-choices.json")? {
-            Some(value) => value,
-            None => return Ok(Default::default()),
+        let bytes = match fs::read(self.home.join("composer-choices.json")) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(Default::default());
+            }
+            Err(error) => return Err(error.into()),
         };
+        let value: serde_json::Value = serde_json::from_slice(&bytes)?;
+        if value["schemaVersion"].as_u64() != Some(2) {
+            return Err(RuntimeError::invalid(
+                "运行时默认配置需要显式迁移；请先执行 scripts/run-migrations.py",
+            ));
+        }
+        reject_unknown_envelope_fields("composer-choices.json", &value, &["choices"])?;
         Ok(serde_json::from_value(value["choices"].clone())?)
     }
 
@@ -215,7 +233,7 @@ impl Repository {
         &self,
         choices: &crate::config::ComposerChoices,
     ) -> Result<(), RuntimeError> {
-        let value = serde_json::json!({"schemaVersion":1,"choices":choices});
+        let value = serde_json::json!({"schemaVersion":2,"choices":choices});
         commit(
             &self.home.join("composer-choices.json"),
             &serde_json::to_vec_pretty(&value)?,
@@ -267,7 +285,8 @@ impl Repository {
         )
     }
 
-    /// A schema 1 file's value; none when it is missing or of another schema.
+    /// Read a schema 1 file. Only a missing file means there are no records;
+    /// an older or future format must never be mistaken for an empty store.
     fn read_versioned(&self, name: &str) -> Result<Option<serde_json::Value>, RuntimeError> {
         let bytes = match fs::read(self.home.join(name)) {
             Ok(bytes) => bytes,
@@ -275,7 +294,16 @@ impl Repository {
             Err(error) => return Err(error.into()),
         };
         let value: serde_json::Value = serde_json::from_slice(&bytes)?;
-        Ok((value["schemaVersion"].as_u64() == Some(1)).then_some(value))
+        reject_unknown_envelope_fields(name, &value, &["conversations"])?;
+        match value["schemaVersion"].as_u64() {
+            Some(1) => Ok(Some(value)),
+            Some(version) => Err(RuntimeError::Invalid(format!(
+                "{name} schema {version} 不受支持；请先执行适用的显式迁移或使用支持该格式的版本。原文件已保留。"
+            ))),
+            None => Err(RuntimeError::Invalid(format!(
+                "{name} 缺少有效 schema 版本；原文件已保留。"
+            ))),
+        }
     }
 
     /// Reusable resource templates (with their secrets) and the managed bindings
@@ -295,6 +323,7 @@ impl Repository {
             if value["schemaVersion"].as_u64() != Some(1) {
                 return Err(RuntimeError::invalid("resource library schema version"));
             }
+            reject_unknown_envelope_fields(name, &value, &[field])?;
             Ok(value[field].clone())
         };
         let mut stored_templates = read("resource-templates.json", "templates")?;
@@ -359,17 +388,22 @@ impl Repository {
         let value: serde_json::Value = serde_json::from_slice(&bytes)?;
         match value["schemaVersion"].as_u64() {
             Some(ORGANIZATION_SCHEMA_VERSION) => {}
-            Some(version) if version < ORGANIZATION_SCHEMA_VERSION => {
-                let organization = fresh();
-                self.store_conversation_organization(&organization)?;
-                return Ok(organization);
+            Some(version) => {
+                return Err(RuntimeError::Invalid(format!(
+                    "conversation-organization.json schema {version} 不受支持；请先执行适用的显式迁移或使用支持该格式的版本。原文件已保留。"
+                )));
             }
-            _ => {
+            None => {
                 return Err(RuntimeError::invalid(
-                    "conversation organization schema version",
+                    "conversation-organization.json 缺少有效 schema 版本；原文件已保留。",
                 ));
             }
         }
+        reject_unknown_envelope_fields(
+            "conversation-organization.json",
+            &value,
+            &["organization"],
+        )?;
         let organization: crate::config::ConversationOrganization =
             serde_json::from_value(value["organization"].clone())?;
         let mut ids = std::collections::BTreeSet::new();
@@ -417,6 +451,7 @@ impl Repository {
         if value["schemaVersion"].as_u64() != Some(1) {
             return Err(RuntimeError::invalid("conversation links schema version"));
         }
+        reject_unknown_envelope_fields("conversation-links.json", &value, &["links"])?;
         let links: Vec<crate::config::ConversationLink> =
             serde_json::from_value(value["links"].clone())?;
         let mut ids = std::collections::BTreeSet::new();
@@ -546,9 +581,175 @@ struct StoredTurnRequests {
 }
 
 #[derive(Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct StoredTurnRequest {
     #[serde(flatten)]
     key: crate::local::TurnKey,
     settings: crate::conversation::TurnSettings,
+}
+
+fn reject_unknown_envelope_fields(
+    name: &str,
+    value: &serde_json::Value,
+    payload_fields: &[&str],
+) -> Result<(), RuntimeError> {
+    let Some(fields) = value.as_object() else {
+        return Err(RuntimeError::Invalid(format!(
+            "{name} 外层格式无效；原文件已保留。"
+        )));
+    };
+    if fields.keys().any(|field| {
+        field != "schemaVersion" && !payload_fields.iter().any(|allowed| field == allowed)
+    }) {
+        return Err(RuntimeError::Invalid(format!(
+            "{name} 含当前版本无法识别的字段；原文件已保留。"
+        )));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod persistence_version_tests {
+    use super::*;
+
+    struct Home(PathBuf);
+    impl Home {
+        fn new() -> Self {
+            static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+            let nonce = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let path = std::env::temp_dir().join(format!(
+                "velune-repository-version-{}-{nonce}",
+                std::process::id()
+            ));
+            fs::create_dir(&path).unwrap();
+            Self(path)
+        }
+    }
+    impl Drop for Home {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn generic_config_rejects_old_future_and_corrupt_without_rewrite() {
+        for bytes in [
+            br#"{"schemaVersion":10,"synthetic":"preserve"}"#.as_slice(),
+            br#"{"schemaVersion":12,"synthetic":"preserve"}"#,
+            br#"{"schemaVersion":11,"unknown":"preserve"}"#,
+            br#"{"schemaVersion":11"#,
+        ] {
+            let home = Home::new();
+            let path = home.0.join("generic-config.json");
+            fs::write(&path, bytes).unwrap();
+            assert!(Repository::open(&home.0).is_err());
+            assert_eq!(fs::read(path).unwrap(), bytes);
+        }
+    }
+
+    #[test]
+    fn generic_config_rejects_unknown_nested_preferences_without_rewrite() {
+        let home = Home::new();
+        let mut value = serde_json::to_value(PersistedConfig::default()).unwrap();
+        value["conversationBrowserPreferences"]["future"] = serde_json::json!("retain");
+        let bytes = serde_json::to_vec_pretty(&value).unwrap();
+        let path = home.0.join("generic-config.json");
+        fs::write(&path, &bytes).unwrap();
+        assert!(Repository::open(&home.0).is_err());
+        assert_eq!(fs::read(path).unwrap(), bytes);
+    }
+
+    #[test]
+    fn current_and_missing_config_open_normally() {
+        let home = Home::new();
+        fs::write(
+            home.0.join("generic-config.json"),
+            serde_json::to_vec(&PersistedConfig::default()).unwrap(),
+        )
+        .unwrap();
+        assert!(Repository::open(&home.0).is_ok());
+
+        let fresh = Home::new();
+        let (repository, config) = Repository::open(&fresh.0).unwrap();
+        assert_eq!(config.schema_version, CURRENT_SCHEMA_VERSION);
+        assert!(repository.load_turn_requests().unwrap().is_empty());
+        assert!(repository.load_conversation_organization().is_ok());
+        assert!(
+            repository
+                .load_composer_choices()
+                .unwrap()
+                .conversations
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn versioned_records_reject_unknown_versions_without_rewrite() {
+        let home = Home::new();
+        let (repository, _) = Repository::open(&home.0).unwrap();
+        for (name, bytes) in [
+            (
+                "turn-requests.json",
+                br#"{"schemaVersion":0,"synthetic":"preserve"}"#.as_slice(),
+            ),
+            (
+                "turn-requests.json",
+                br#"{"schemaVersion":2,"synthetic":"preserve"}"#,
+            ),
+            (
+                "conversation-organization.json",
+                br#"{"schemaVersion":1,"synthetic":"preserve"}"#,
+            ),
+            (
+                "conversation-organization.json",
+                br#"{"schemaVersion":3,"synthetic":"preserve"}"#,
+            ),
+            (
+                "conversation-organization.json",
+                br#"{"schemaVersion":2,"organization":{"conversations":[],"projects":[],"readBaselineUnixMs":0},"future":"preserve"}"#,
+            ),
+        ] {
+            let path = home.0.join(name);
+            fs::write(&path, bytes).unwrap();
+            let result = if name == "turn-requests.json" {
+                repository.load_turn_requests().map(|_| ())
+            } else {
+                repository.load_conversation_organization().map(|_| ())
+            };
+            assert!(
+                result.is_err(),
+                "{name} should reject its unsupported schema"
+            );
+            assert_eq!(fs::read(path).unwrap(), bytes);
+        }
+
+        for (name, bytes) in [
+            (
+                "turn-requests.json",
+                br#"{"schemaVersion":1,"conversations":[{"conversationID":"synthetic","turns":[],"future":"preserve"}]}"#.as_slice(),
+            ),
+            (
+                "turn-requests.json",
+                br#"{"schemaVersion":1,"conversations":[],"future":"preserve"}"#,
+            ),
+            (
+                "composer-choices.json",
+                br#"{"schemaVersion":2,"choices":{"conversations":[],"runtimes":[],"future":"preserve"}}"#,
+            ),
+            (
+                "composer-choices.json",
+                br#"{"schemaVersion":2,"choices":{"conversations":[],"runtimes":[]},"future":"preserve"}"#,
+            ),
+        ] {
+            let path = home.0.join(name);
+            fs::write(&path, bytes).unwrap();
+            let result = if name == "turn-requests.json" {
+                repository.load_turn_requests().map(|_| ())
+            } else {
+                repository.load_composer_choices().map(|_| ())
+            };
+            assert!(result.is_err(), "{name} must reject unknown persisted fields");
+            assert_eq!(fs::read(path).unwrap(), bytes);
+        }
+    }
 }

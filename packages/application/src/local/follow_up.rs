@@ -118,15 +118,16 @@ impl CoreRuntime {
         ) {
             self.require_input_access()?;
         }
-        let snapshot = self.native_snapshot();
         if matches!(
             operation,
             SendQueueOperation::Add { .. } | SendQueueOperation::Resume
-        ) && snapshot.as_ref().is_some_and(|snapshot| {
-            snapshot.conversation.parent_conversation_id.is_some()
-                || matches!(snapshot.run_state, RunState::Stopping | RunState::Elsewhere)
-        }) {
-            return Err(RuntimeError::invalid("当前会话不能接纳新的排队消息"));
+        ) {
+            let snapshot = self
+                .native_snapshot()
+                .ok_or_else(|| RuntimeError::invalid("请选择会话"))?;
+            Self::submission_admission(&self.session, &snapshot)
+                .accept_queue
+                .map_err(RuntimeError::invalid)?;
         }
         let interrupted_idle = if self.turn_running() {
             None
@@ -243,16 +244,8 @@ impl CoreRuntime {
 
     /// The running turn takes messages through the runtime's own channel.
     fn can_steer(&self) -> bool {
-        if self.session.compacting {
-            return false;
-        }
-        // A turn being stopped takes nothing more.
-        !self.session.cancel_requested
-            && self
-                .session
-                .active_state
-                .live()
-                .is_some_and(LiveConversation::can_steer)
+        self.native_snapshot()
+            .is_some_and(|snapshot| Self::submission_admission(&self.session, &snapshot).can_steer)
     }
 
     /// The addressed session's turn ended with `outcome`: the queue goes on
@@ -346,21 +339,18 @@ impl CoreRuntime {
         session: &session::Session,
         snapshot: &crate::conversation::ConversationSnapshot,
     ) -> bool {
-        let idle = !session.turn_running()
-            && matches!(snapshot.run_state, RunState::Idle | RunState::Failed);
-        idle && self
-            .runtime_instance(&snapshot.context_runtime_id)
-            .is_ok_and(|runtime| {
-                runtime.enabled
-                    && !matches!(
-                        velune_agent_runtime::version::variant(runtime.type_id).resume,
-                        velune_agent_runtime::version::ResumeStrategy::Unsupported
-                    )
-            })
-            && snapshot.pending_interactions.is_empty()
-            && snapshot.actions.can_send
-            && session.work().is_empty()
-            && snapshot.conversation.parent_conversation_id.is_none()
+        session.side.is_none()
+            && Self::submission_admission(session, snapshot).send.is_ok()
+            && self
+                .runtime_instance(&snapshot.context_runtime_id)
+                .is_ok_and(|runtime| {
+                    runtime.enabled
+                        && !matches!(
+                            velune_agent_runtime::version::variant(runtime.type_id).resume,
+                            velune_agent_runtime::version::ResumeStrategy::Unsupported
+                        )
+                })
+            && session.work_settled()
             && snapshot
                 .messages
                 .iter()
@@ -391,8 +381,7 @@ impl CoreRuntime {
         snapshot: &crate::conversation::ConversationSnapshot,
     ) -> FollowUp {
         let queue = &self.session.send_queue;
-        let idle =
-            !self.turn_running() && matches!(snapshot.run_state, RunState::Idle | RunState::Failed);
+        let admission = Self::submission_admission(&self.session, snapshot);
         FollowUp {
             queue: queue.turns.iter().map(QueuedTurn::public).collect(),
             paused: queue.paused.clone(),
@@ -402,20 +391,18 @@ impl CoreRuntime {
                 .work()
                 .iter()
                 .any(|task| task.state != velune_agent_runtime::work::BackgroundState::Stopping),
-            can_steer: self.can_steer(),
+            can_queue: admission.offer_queue,
+            can_steer: admission.can_steer,
             can_resume: self.resumable(&self.session, snapshot),
             is_compacting: self.session.compacting,
-            can_compact: idle
+            can_compact: admission.send.is_ok()
                 && self
                     .runtime_instance(&snapshot.context_runtime_id)
                     .is_ok_and(|runtime| {
                         runtime.enabled
                             && velune_agent_runtime::version::variant(runtime.type_id).can_compact
                     })
-                && snapshot.actions.can_send
-                && snapshot.pending_interactions.is_empty()
-                && self.session.work().is_empty()
-                && snapshot.conversation.parent_conversation_id.is_none()
+                && self.session.work_settled()
                 && !snapshot.messages.is_empty(),
             editable: self.editable_messages(snapshot),
             can_fork: self.forkable(snapshot),

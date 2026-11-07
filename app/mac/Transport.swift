@@ -3,6 +3,12 @@ import OSLog
 import Combine
 import VeluneBindings
 
+@MainActor enum MacNativePersistenceGate {
+    private(set) static var isEnabled = false
+    static func close() { isEnabled = false }
+    static func open() { isEnabled = true }
+}
+
 enum TransportError: LocalizedError {
     indirect case operation(String, TransportError)
     case unavailable
@@ -98,18 +104,15 @@ final class Transport: @unchecked Sendable {
     }
 
     static func applicationDefault() throws -> Transport {
-        let configuredHome = getenv("VELUNE_HOME").map { String(cString: $0) }
-        let home = try applicationHome(configuredHome, userHome: FileManager.default.homeDirectoryForCurrentUser)
+        let context = try MacExecutionContext.application()
         guard let resources = Bundle.main.resourceURL else { throw TransportError.unavailable }
-        return Transport(stateDirectory: home, resourcesDirectory: resources)
+        return Transport(stateDirectory: context.stateDirectory, resourcesDirectory: resources)
     }
 
-    static func applicationHome(_ configured: String?, userHome: URL) throws -> URL {
-        guard let configured, !configured.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            return userHome.appendingPathComponent(".velune", isDirectory: true)
-        }
-        guard configured.hasPrefix("/"), !configured.contains("\u{0}") else { throw TransportError.invalidHome }
-        return URL(fileURLWithPath: configured, isDirectory: true).standardizedFileURL
+    /// Open the local core before native preference and scene restoration reads.
+    /// Application::open acquires and retains the same home lock used by later calls.
+    func prepareForLaunch() throws {
+        try withApplication("prepareForLaunch", .reads, .read) { _ in () }
     }
 
     func setConversationBrowserPreferences(_ preferences: ConversationBrowserPreferences) throws -> ConfigurationSnapshot { try withApplication("setConversationBrowserPreferences", .writes, .configurationWrite) { try $0.setConversationBrowserPreferences(preferences: preferences) } }
@@ -118,17 +121,17 @@ final class Transport: @unchecked Sendable {
     func setLinkedConversationOpening(_ opening: LinkedConversationOpening) throws -> LinkedConversationOpening { try withApplication("setLinkedConversationOpening", .changesConfiguration, .configurationWrite) { try $0.setLinkedConversationOpening(opening: opening) } }
     func setUsageDisplay(_ display: UsageDisplay) throws -> UsageDisplay { try withApplication("setUsageDisplay", .changesConfiguration, .configurationWrite) { try $0.setUsageDisplay(display: display) } }
     func setContextUsageDisplay(_ display: UsageDisplay) throws -> UsageDisplay { try withApplication("setContextUsageDisplay", .changesConfiguration, .configurationWrite) { try $0.setContextUsageDisplay(display: display) } }
-    func composerDrafts() throws -> [ComposerDraft] { try withApplication("composerDrafts", .reads, .conversationRead) { try $0.composerDrafts() } }
     func composerInputs(_ operation: ComposerInputOperation) throws -> ComposerInputUpdate {
         let reading: Bool = if case .read = operation { true } else { false }
         return try withApplication("composerInputs", reading ? .reads : .writes, reading ? .conversationRead : .conversationWrite) { try $0.manageComposerInputs(operation: operation) }
     }
+    func prepareComposerTarget(_ request: ComposerTargetRequest, overlayChoices: ComposerTargetChoices?) throws -> PreparedComposerTarget {
+        try withApplication("prepareComposerTarget", .writes, .conversationRead) { try $0.prepareComposerTarget(request: request, overlayChoices: overlayChoices) }
+    }
     func composerOwnerID() throws -> String { try withApplication("composerOwnerID", .reads, .conversationRead) { try $0.composerOwnerId() } }
     func uploadComposerAttachment(name: String, bytes: Data) throws -> ComposerAttachment { try withApplication("uploadComposerAttachment", .writes, .conversationWrite) { try $0.uploadComposerAttachment(name: name, bytes: bytes) } }
     func readComposerAttachment(_ id: String) throws -> Data { try withApplication("readComposerAttachment", .reads, .conversationRead) { try $0.readComposerAttachment(attachmentId: id).bytes } }
-    func setComposerDraft(conversationID: String, text: String) throws { try withApplication("setComposerDraft", .writes, .conversationWrite) { try $0.setComposerDraft(conversationId: conversationID, text: text) } }
     func composerChoices() throws -> ComposerChoices { try withApplication("composerChoices", .reads, .configurationRead) { try $0.composerChoices() } }
-    func setNextTurnIntent(_ intent: VeluneBindings.NextTurnIntent) throws { try withApplication("setNextTurnIntent", .writes, .configurationWrite) { try $0.setNextTurnIntent(intent: intent) } }
     func setRuntimeComposerChoices(_ choices: VeluneBindings.RuntimeComposerChoices) throws { try withApplication("setRuntimeComposerChoices", .writes, .configurationWrite) { try $0.setRuntimeComposerChoices(choices: choices) } }
     func setConversationBrowserLimits(_ limits: ConversationBrowserLimits) throws -> ConversationBrowserLimits { try withApplication("setConversationBrowserLimits", .changesConfiguration, .configurationWrite) { try $0.setConversationBrowserLimits(limits: limits) } }
     func organizeConversations(_ conversations: [ConversationReference], _ change: ConversationOrganizationChange) throws -> ConfigurationSnapshot { try withApplication("organizeConversations", .writes, .conversationWrite) { try $0.organizeConversations(conversations: conversations, change: change) } }

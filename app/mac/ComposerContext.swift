@@ -1,38 +1,19 @@
 import Foundation
 import VeluneBindings
 
-/// A window pairs a draft owner with a target. Visibility never changes ownership.
-/// Values resolved here are captured again at the start of a submission.
+/// A window pairs input content with a Store's prepared target projection.
+/// Reads are pure; explicit actions forward to the owning Store or editor.
 @MainActor struct ComposerContext {
     let tab: ConversationTab
     let model: ComposerModel
     var store: ConversationStore { tab.store }
     let nextTurn: NextTurn?
     private var targetID: String? { store.selectedConversationID ?? store.loadedConversationID }
-    private var targetChoices: ComposerTargetChoices? { store.isSideChat ? nil : targetID.flatMap { store.device.composerInputs.targetChoices(for: $0) } }
+    private var targetChoices: ComposerTargetChoices? { store.composerTargetChoices }
     private var targetReady: Bool { store.loadedConversationID != nil && (store.selectedConversationID == nil || store.selectedConversationID == store.loadedConversationID) && !store.isLoading }
     init(tab: ConversationTab, model: ComposerModel) {
         self.tab = tab; self.model = model
-        let store = tab.store
-        let key = store.selectedConversationID ?? store.loadedConversationID
-        let ready = store.loadedConversationID != nil && (store.selectedConversationID == nil || store.selectedConversationID == store.loadedConversationID) && !store.isLoading
-        guard ready else { nextTurn = nil; return }
-        if store.isSideChat { nextTurn = store.nextTurn; return }
-        let client = store.device.composerInputs
-        if let key, let choices = client.targetChoices(for: key), choices.runtimeId != nil || !choices.choices.isEmpty {
-            nextTurn = store.resolve(kept: ConversationChoices(runtimeID: choices.runtimeId, choices: Dictionary(uniqueKeysWithValues: choices.choices.filter { $0.ownerId == client.ownerID }.map { ($0.runtimeId, $0.choice) })))
-        } else { nextTurn = store.nextTurn }
-        if let key, let nextTurn, let owner = client.ownerID {
-            client.ensureTarget(key, seed: ComposerTargetChoices(runtimeId: nextTurn.runtimeId, runtimeOwnerId: owner, choices: [.init(ownerId: owner, runtimeId: nextTurn.runtimeId, choice: nextTurn.choice)], choiceEdited: false))
-        }
-    }
-    private func capturedChoices() -> ComposerTargetChoices? {
-        guard let nextTurn, let owner = store.device.composerInputs.ownerID else { return nil }
-        var value = targetChoices ?? ComposerTargetChoices(runtimeId: nextTurn.runtimeId, runtimeOwnerId: owner, choices: [], choiceEdited: false)
-        value.runtimeId = nextTurn.runtimeId; value.runtimeOwnerId = value.runtimeOwnerId ?? owner
-        value.choices.removeAll { $0.ownerId == owner && $0.runtimeId == nextTurn.runtimeId }
-        value.choices.append(.init(ownerId: owner, runtimeId: nextTurn.runtimeId, choice: nextTurn.choice))
-        return value
+        nextTurn = tab.store.nextTurn
     }
     var nextTurnRuntimeID: String? { nextTurn?.runtimeId }
     var nextTurnModel: ModelSelection? { nextTurn?.model }
@@ -45,8 +26,9 @@ import VeluneBindings
         if let runtime = targetChoices?.runtimeId, !store.device.enabledRuntimeInstances.contains(where: { $0.id == runtime }) { return "所选运行时在此设备不可用" }
         if let project = selectedWorkingProject, project.runtimeID != nextTurnRuntimeID { return "所选项目属于另一运行时，请重新选择项目或工作目录" }
         if let project = selectedWorkingProject, !workingDirectoryProjects.contains(where: { $0.project == project.key && $0.canSelectProject }) { return "所选项目已不可用，请刷新或重新选择工作区" }
+        if let issue = store.composerTargetIssue { return issue }
         if !store.isSideChat, let key = targetID, let issue = store.device.composerInputs.targetIssue(for: key) { return issue }
-        if !model.followsConversation, let issue = store.device.composerInputs.issue(for: model.id) { return issue }
+        if !store.isSideChat, let issue = store.device.composerInputs.issue(for: model.id) { return issue }
         if model.attachments.contains(where: { !FileManager.default.isReadableFile(atPath: $0.path) }) { return "附件不可用，点击附件重试或移除" }
         return nil
     }
@@ -72,32 +54,16 @@ import VeluneBindings
     var sideChatTarget: SideChatTarget? { store.sideChatTarget(next: nextTurn) }
 
     func selectNextTurnRuntime(_ id: String) {
-        guard canSwitchModel, store.device.enabledRuntimeInstances.contains(where: { $0.id == id }) else { return }
-        guard !store.isSideChat || store.device.hasSideChats(id) else { return }
-        if store.isSideChat { store.selectNextTurnRuntime(id); return }
-        guard let key = targetID, let owner = store.device.composerInputs.ownerID else { return }
-        var choices = targetChoices ?? ComposerTargetChoices(runtimeId: nil, runtimeOwnerId: nil, choices: [], choiceEdited: false)
-        choices.runtimeId = id; choices.runtimeOwnerId = owner; choices.choiceEdited = true
-        store.device.composerInputs.saveTarget(key, choices: choices, userEdit: true)
-        store.loadModelCatalog(runtimeID: id)
+        if store.isSideChat { store.selectSideChatRuntime(id) }
+        else { store.selectComposerRuntime(id) }
     }
-    func selectModel(_ selection: ModelSelection?) { change(.model(selection: selection)) }
-    func selectEffort(_ effort: String?) { change(.effort(level: effort)) }
-    func selectPermissionMode(_ mode: String?) { change(.permissionMode(mode: mode)) }
-    private func change(_ change: TurnChoiceChange) {
-        guard canSwitchModel else { return }
-        if store.isSideChat { store.changeNextTurn(change); return }
-        guard let nextTurn, let key = targetID, let owner = store.device.composerInputs.ownerID else { return }
-        guard targetChoices?.runtimeOwnerId == nil || targetChoices?.runtimeOwnerId == owner else { return }
-        guard let update = VeluneBindings.changeNextTurn(next: nextTurn, runtimeChoices: store.device.runtimeComposerChoices[nextTurn.runtimeId], change: change), var choices = capturedChoices() else { return }
-        if let runtimeChoices = update.runtimeChoices { store.device.setRuntimeComposerChoices(runtimeChoices) }
-        choices.choices.removeAll { $0.ownerId == owner && $0.runtimeId == nextTurn.runtimeId }
-        choices.choices.append(.init(ownerId: owner, runtimeId: nextTurn.runtimeId, choice: update.choice))
-        choices.choiceEdited = true
-        store.device.composerInputs.saveTarget(key, choices: choices, userEdit: true)
+    func selectModel(_ selection: ModelSelection?) { store.changeComposerChoice(.model(selection: selection)) }
+    func selectEffort(_ effort: String?) { store.changeComposerChoice(.effort(level: effort)) }
+    func selectPermissionMode(_ mode: String?) { store.changeComposerChoice(.permissionMode(mode: mode)) }
+    func takeLastQueued() -> Bool {
+        model.attach(store)
+        return model.takeLastQueued()
     }
-
-    func prepare() { if let runtime = nextTurnRuntimeID { store.loadModelCatalog(runtimeID: runtime) } }
     func reloadModelCatalog() { if let runtime = nextTurnRuntimeID { store.reloadModelCatalog(runtimeID: runtime) } }
     var composerQuotaRequest: ComposerQuotaRequest { store.quotaRequest(next: nextTurn) }
     var composerAccountQuotas: [ComposerQuotaEntry] { store.quotaEntries(for: composerQuotaRequest) }
@@ -120,7 +86,7 @@ import VeluneBindings
     }
     func submission(ignoringText: Bool = false) -> ComposerSubmission { tab.submission(using: model, ignoringText: ignoringText, next: nextTurn) }
     func send() {
-        if store.isUnsentConversation, let choices = capturedChoices() { store.device.composerInputs.captureTarget(model.id, choices: choices) }
+        store.captureComposerTarget(model.id)
         tab.send(using: model, next: nextTurn)
     }
     func steer() { tab.steer(using: model, next: nextTurn) }

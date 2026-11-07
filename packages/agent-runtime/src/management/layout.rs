@@ -62,8 +62,7 @@ pub(super) fn unsupported_variant(
             ResourceKind::McpServers | ResourceKind::NativeAgentDefinitions,
         ) => Some("DSH 支持此运行能力，但当前管理适配未支持其 Cordis 插件声明与 patch 语义"),
         (
-            RuntimeKind::Codex
-            | RuntimeKind::Codex166
+            RuntimeKind::Codex166
             | RuntimeKind::ClaudeCode
             | RuntimeKind::Pi
             | RuntimeKind::DeepSeek,
@@ -101,7 +100,7 @@ pub(super) fn resolve(config: &Config, kind: ResourceKind, scope: ResourceScope)
                 RuntimeKind::ClaudeCode => {
                     vec!["CLAUDE.md", ".claude/CLAUDE.md", "CLAUDE.local.md"]
                 }
-                RuntimeKind::Codex | RuntimeKind::Codex166 => {
+                RuntimeKind::Codex166 => {
                     vec!["AGENTS.md", "AGENTS.override.md"]
                 }
                 RuntimeKind::Pi => vec![
@@ -126,7 +125,7 @@ pub(super) fn resolve(config: &Config, kind: ResourceKind, scope: ResourceScope)
                 "skills"
             } else {
                 match family {
-                    RuntimeKind::Codex | RuntimeKind::Codex166 => ".agents/skills",
+                    RuntimeKind::Codex166 => ".agents/skills",
                     RuntimeKind::ClaudeCode => ".claude/skills",
                     RuntimeKind::Pi => ".pi/skills",
                     RuntimeKind::DeepSeek | RuntimeKind::Acp => ".dsh/skills",
@@ -143,12 +142,12 @@ pub(super) fn resolve(config: &Config, kind: ResourceKind, scope: ResourceScope)
         ResourceKind::NativeAgentDefinitions => {
             let prefix = if user {
                 "agents"
-            } else if matches!(family, RuntimeKind::Codex | RuntimeKind::Codex166) {
+            } else if matches!(family, RuntimeKind::Codex166) {
                 ".codex/agents"
             } else {
                 ".claude/agents"
             };
-            let format = if matches!(family, RuntimeKind::Codex | RuntimeKind::Codex166) {
+            let format = if matches!(family, RuntimeKind::Codex166) {
                 Format::TomlAgents
             } else {
                 Format::MarkdownAgents
@@ -157,8 +156,8 @@ pub(super) fn resolve(config: &Config, kind: ResourceKind, scope: ResourceScope)
         }
         ResourceKind::McpServers => {
             let path = match (family, user) {
-                (RuntimeKind::Codex | RuntimeKind::Codex166, true) => "config.toml",
-                (RuntimeKind::Codex | RuntimeKind::Codex166, false) => ".codex/config.toml",
+                (RuntimeKind::Codex166, true) => "config.toml",
+                (RuntimeKind::Codex166, false) => ".codex/config.toml",
                 (RuntimeKind::ClaudeCode, true) => ".claude.json",
                 (RuntimeKind::ClaudeCode, false) => ".mcp.json",
                 (RuntimeKind::Pi | RuntimeKind::DeepSeek | RuntimeKind::Acp, true) => "mcp.json",
@@ -169,7 +168,7 @@ pub(super) fn resolve(config: &Config, kind: ResourceKind, scope: ResourceScope)
             (
                 path,
                 vec![],
-                if matches!(family, RuntimeKind::Codex | RuntimeKind::Codex166) {
+                if matches!(family, RuntimeKind::Codex166) {
                     Format::TomlMcp
                 } else {
                     Format::JsonMcp

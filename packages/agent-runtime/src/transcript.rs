@@ -309,6 +309,7 @@ impl TranscriptProjection {
                     reply_start_block: u32::try_from(reply_start).unwrap_or(u32::MAX),
                     duration_ms,
                     is_running: ordinal + 1 == starts.len() && (self.running || self.elsewhere),
+                    can_fork: false,
                     outcome: user.outcome,
                     settings: self.settings(user),
                     usage: user.usage.clone(),

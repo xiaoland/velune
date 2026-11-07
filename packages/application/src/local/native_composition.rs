@@ -163,15 +163,25 @@ impl CoreRuntime {
         &self,
         runtime: &RuntimeInstance,
     ) -> Result<HistoryConfig, RuntimeError> {
+        let config = self.history_configuration(runtime)?;
+        self.prepare_execution_context(runtime)?;
+        Ok(config)
+    }
+
+    /// The exact reader configuration, resolved without preparing processes or resources.
+    pub(super) fn history_configuration(
+        &self,
+        runtime: &RuntimeInstance,
+    ) -> Result<HistoryConfig, RuntimeError> {
         let provider = match runtime.type_id {
-            RuntimeKind::Codex | RuntimeKind::Codex166 => "codex",
+            RuntimeKind::Codex166 => "codex",
             RuntimeKind::DeepSeek => "deepseek",
             RuntimeKind::ClaudeCode => "claude-code",
             RuntimeKind::Pi | RuntimeKind::Acp => {
                 return Err(RuntimeError::invalid("native history type"));
             }
         };
-        let context = self.prepare_execution_context(runtime)?;
+        let context = self.execution_context(runtime)?;
         let home = context.agent_dir;
         Ok(HistoryConfig {
             kind: runtime.type_id,

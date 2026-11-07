@@ -1,0 +1,45 @@
+name: Feature idea
+description: Describe a user problem or unmet need.
+title: "[Idea] "
+body:
+  - type: markdown
+    attributes:
+      value: >
+        Describe the user problem and who it affects. You can also start in
+        [GitHub Discussions](https://github.com/xiaoland/velune/discussions).
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem are you trying to solve?
+      description: Who is affected, and in what situation?
+    validations:
+      required: true
+  - type: textarea
+    id: current_workaround
+    attributes:
+      label: How do you handle this today?
+      description: An existing workaround or limitation helps us understand the impact.
+    validations:
+      required: false
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Relevant platform
+      options:
+        - macOS
+        - Windows
+        - Android
+        - iPadOS
+        - iOS
+        - Multiple platforms
+        - Not platform-specific
+        - Not sure
+    validations:
+      required: false
+  - type: textarea
+    id: context
+    attributes:
+      label: Other useful context
+      description: Add constraints or examples that help explain the problem.
+    validations:
+      required: false

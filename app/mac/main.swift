@@ -233,6 +233,7 @@ struct ConversationWindow: View {
     /// The window's panes as last arranged, restored with the window.
     @SceneStorage("windowLayout") private var savedLayout = ""
     @SceneStorage("windowIdentity") private var windowIdentity = UUID().uuidString
+    @State private var savedLayoutWritable = true
     @State private var startsWindowed: Bool
     let seed: WindowSeed?
     @Environment(\.openWindow) private var openWindow
@@ -255,15 +256,43 @@ struct ConversationWindow: View {
             // the source is full screen. Re-enable full screen after presentation.
             .windowFullScreenBehavior(startsWindowed ? .disabled : .automatic)
             .onAppear {
+                if !window.application.isPreview && !MacNativePersistenceGate.isEnabled {
+                    savedLayoutWritable = false
+                }
                 if let seed { WindowPresentation.windowed.remove(seed.id) }
                 window.openWindow = { [openWindow] kind, seed in
                     WindowPresentation.windowed.insert(seed.id)
                     openWindow(id: kind.sceneID, value: seed)
                 }
+                window.application.openConversationWindow = { [openWindow, device = window.device] seed in
+                    var seed = seed; seed.device = device
+                    WindowPresentation.windowed.insert(seed.id)
+                    openWindow(id: ConversationWindowKind.workspace.sceneID, value: seed)
+                }
                 DispatchQueue.main.async {
                     if startsWindowed, window.window?.isKeyWindow == true { startsWindowed = false }
                 }
-                let saved = savedLayout.data(using: .utf8).flatMap { try? JSONDecoder().decode(SavedWindowLayout.self, from: $0) }
+                var saved: SavedWindowLayout?
+                if !savedLayout.isEmpty && savedLayoutWritable {
+                    do {
+                        var decoded = try SavedWindowLayout.decodeKnown(Data(savedLayout.utf8))
+                        if decoded.schemaVersion == 0 {
+                            let backupKey = "velune.before-beta.windowLayout.\(windowIdentity)"
+                            if let previous = UserDefaults.standard.string(forKey: backupKey), previous != savedLayout {
+                                throw NSError(domain: "VelunePersistence", code: 22, userInfo: [NSLocalizedDescriptionKey: "窗口 SceneStorage 恢复副本与旧布局不一致"])
+                            }
+                            UserDefaults.standard.set(savedLayout, forKey: backupKey)
+                            decoded.schemaVersion = 1
+                            let converted = try JSONEncoder().encode(decoded)
+                            guard let text = String(data: converted, encoding: .utf8) else { throw CocoaError(.fileWriteInapplicableStringEncoding) }
+                            savedLayout = text
+                        }
+                        saved = decoded
+                    } catch {
+                        savedLayoutWritable = false
+                        window.application.recordProblem(error, source: "窗口恢复")
+                    }
+                }
                 window.start(restoring: saved, seed: seed, persistenceID: windowIdentity)
                 // Development check of split panes without driving the interface.
                 if CommandLine.arguments.contains("--check-split-panes"), !window.isSplit { window.split(.horizontal); window.openInNewTab(); window.split(.vertical) }
@@ -272,9 +301,7 @@ struct ConversationWindow: View {
                 if CommandLine.arguments.contains("--check-edit-message") { window.focused.checkEditMessage() }
                 if CommandLine.arguments.contains("--check-list-actions") { window.checkListActions() }
                 if CommandLine.arguments.contains("--check-side-chat") { window.checkSideChat() }
-                if CommandLine.arguments.contains("--check-composer-state") { window.checkComposerState() }
                 if CommandLine.arguments.contains("--check-group-creation") { window.checkGroupCreation() }
-                if CommandLine.arguments.contains("--check-composer-recovery-read") { window.checkComposerRecovery() }
                 if CommandLine.arguments.contains("--check-dock-areas") { window.tools.move(.outline, to: .docked(.left)); window.tools.move(.list, to: .docked(.right)); window.tools.move(.composer, to: .docked(.bottom)) }
                 if window.application.isPreview, CommandLine.arguments.contains("--check-composer-minimum") {
                     window.tools.bottomHeight = Double(ComposerTextView.minimumHeight + 54)
@@ -287,24 +314,30 @@ struct ConversationWindow: View {
                 DispatchQueue.main.async { startsWindowed = false }
             }
             .onChange(of: window.savedLayout) { _, layout in
+                guard savedLayoutWritable else { return }
                 if let data = try? JSONEncoder().encode(layout), let text = String(data: data, encoding: .utf8) { savedLayout = text }
                 window.persistWorkspace()
             }
             .onReceive(window.composerDrafts.changes.debounce(for: .milliseconds(350), scheduler: RunLoop.main)) { _ in
+                guard savedLayoutWritable else { return }
                 if let data = try? JSONEncoder().encode(window.savedLayout), let text = String(data: data, encoding: .utf8) { savedLayout = text }
             }
             .onReceive(NotificationCenter.default.publisher(for: NSWindow.willCloseNotification)) { note in
-                if let closed = note.object as? NSWindow, closed === window.window,
-                   let data = try? JSONEncoder().encode(window.savedLayout), let text = String(data: data, encoding: .utf8) { savedLayout = text; window.persistWorkspace() }
+                if let closed = note.object as? NSWindow, closed === window.window {
+                    guard savedLayoutWritable else { window.noteWindowClosed(); return }
+                    if let data = try? JSONEncoder().encode(window.savedLayout), let text = String(data: data, encoding: .utf8) { savedLayout = text; window.persistWorkspace() }
+                    window.noteWindowClosed()
+                }
             }
             .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
+                guard savedLayoutWritable else { return }
                 if let data = try? JSONEncoder().encode(window.savedLayout), let text = String(data: data, encoding: .utf8) { savedLayout = text }
             }
             // A conversation link opens in a window already showing Velune.
-            .handlesExternalEvents(preferring: [ConversationLink.scheme, "agents"], allowing: [ConversationLink.scheme, "agents"])
+            .handlesExternalEvents(preferring: MacExecutionContext.admitted.externalEventSchemes, allowing: MacExecutionContext.admitted.externalEventSchemes)
             .sheet(isPresented: $window.showsAgentURI) { AgentURIView(window: window) }
             .onOpenURL { url in
-                if url.scheme == "agents" { window.openAgentURI(url.absoluteString); return }
+                if !MacExecutionContext.admitted.isDevelopment, url.scheme == "agents" { window.openAgentURI(url.absoluteString); return }
                 guard let link = ConversationLink.conversation(in: url) else { return }
                 window.open(link.conversationID)
             }
@@ -360,23 +393,51 @@ struct VeluneApp: App {
     private let previewSettings: Bool
 
     init() {
+        // Admit purpose and home before checks, telemetry, defaults-backed
+        // preferences or any core/device object can be initialized.
+        do {
+            let context = try MacExecutionContext.application()
+            try context.activateDevelopmentEnvironment()
+            try context.validateDevelopmentChecks(CommandLine.arguments)
+            try context.validateCheckDirectories(environment: ProcessInfo.processInfo.environment)
+        } catch { MacExecutionContext.failAndExit(error) }
+        let retiredComposerChecks: Set<String> = ["--check-composer-state", "--check-composer-recovery-write", "--check-composer-recovery-read"]
+        if !retiredComposerChecks.isDisjoint(with: CommandLine.arguments) {
+            FileHandle.standardError.write(Data("旧 Composer 双所有权检查已退役；请使用 --check-composer-ownership --composer-check-content-target 与 --check-composer-controls。\n".utf8))
+            exit(2)
+        }
         if CommandLine.arguments.contains("--check-composer-ownership") { composerOwnershipCheck() }
         if CommandLine.arguments.contains("--check-new-tab") { composerOwnershipCheck() }
         if CommandLine.arguments.contains("--check-composer-controls") { composerControlsCheck() }
         if CommandLine.arguments.contains("--check-message-experience") { messageExperienceChecks() }
-        let preview = Bundle.main.bundleIdentifier == "local.velune.visual-preview" || CommandLine.arguments.contains { $0.hasPrefix("--preview") }
-        let applicationStore = DeviceStore(preview: preview)
-        AppearancePreferences.shared.load(home: preview ? nil : applicationStore.transport?.stateDirectory) { [weak applicationStore] detail in
+        let preview = CommandLine.arguments.contains { $0.hasPrefix("--preview") }
+        MacNativePersistenceGate.close()
+        let transport: Transport?
+        do { transport = preview ? nil : try Transport.applicationDefault() }
+        catch { MacExecutionContext.failAndExit(error) }
+        var startupError: Error?
+        if !preview, let transport {
+            do {
+                try transport.prepareForLaunch()
+                MacNativePersistenceGate.open()
+            } catch {
+                startupError = error
+            }
+        }
+        let applicationStore = DeviceStore(transport: transport, preview: preview)
+        if let startupError { applicationStore.recordProblem(startupError, source: "初始化") }
+        let nativeHome = MacNativePersistenceGate.isEnabled ? applicationStore.transport?.stateDirectory : nil
+        AppearancePreferences.shared.load(home: nativeHome) { [weak applicationStore] detail in
             applicationStore?.recordProblem(detail, source: "外观设置")
         }
         _store = StateObject(wrappedValue: applicationStore)
         previewEmpty = CommandLine.arguments.contains("--preview-empty")
         previewSettings = CommandLine.arguments.contains("--preview-settings")
         appDelegate.store = applicationStore
-        if !preview, let transport = applicationStore.transport {
+        if !preview, MacNativePersistenceGate.isEnabled, let transport = applicationStore.transport {
             DeviceHub(local: transport).start()
         }
-        KeyboardShortcutSettings.shared.load(home: applicationStore.transport?.stateDirectory) { [weak applicationStore] in
+        KeyboardShortcutSettings.shared.load(home: nativeHome) { [weak applicationStore] in
             applicationStore?.recordProblem($0, source: "保存快捷键")
         }
         // Tabs live in each pane; the system's window tabs would stack a second, look-alike bar above them.
@@ -398,10 +459,32 @@ struct VeluneApp: App {
                     if let version = Bundle.main.object(forInfoDictionaryKey: "VeluneDisplayVersion") as? String {
                         options[.applicationVersion] = version
                     }
+                    let projectURL = URL(string: "https://github.com/QuantumNous/new-api")!
+                    let sourceTag = "v\(Bundle.main.object(forInfoDictionaryKey: "VeluneDisplayVersion") as? String ?? "")"
+                    let sourceURL = URL(string: "https://github.com/xiaoland/velune/releases/download/\(sourceTag)/velune-\(sourceTag)-source.tar.gz")!
+                    let projectLink = projectURL.absoluteString
+                    let creditText = NSMutableAttributedString(
+                        string: "Velune includes New API RelayKit for protocol conversion.\n\nFrontend design and development by New API contributors.\n\n\(projectLink)\n\nCorresponding source archive: \(sourceURL.absoluteString)"
+                    )
+                    creditText.addAttribute(
+                        .link,
+                        value: projectURL,
+                        range: (creditText.string as NSString).range(of: projectLink)
+                    )
+                    let sourceLink = sourceURL.absoluteString
+                    creditText.addAttribute(
+                        .link,
+                        value: sourceURL,
+                        range: (creditText.string as NSString).range(of: sourceLink)
+                    )
+                    options[.credits] = creditText
                     NSApplication.shared.orderFrontStandardAboutPanel(options: options)
                 }
                 Button("开源许可…") {
                     if let url = Bundle.main.url(forResource: "THIRD_PARTY_NOTICES", withExtension: "md", subdirectory: "ThirdParty") { NSWorkspace.shared.open(url) }
+                }
+                Button("Velune AGPL-3.0-only 许可证…") {
+                    if let url = Bundle.main.url(forResource: "LICENSE", withExtension: nil, subdirectory: "ThirdParty") { NSWorkspace.shared.open(url) }
                 }
             }
             ConversationCommands()

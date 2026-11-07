@@ -5,12 +5,14 @@
 use crate::config::NewConversationChoice;
 use crate::conversation::{TranscriptTurn, TurnSettings};
 use crate::{
-    ModelSelection, PermissionMode, ProviderSummary, RuntimeComposerChoices, RuntimeModel,
-    RuntimeTypeDescriptor, TurnChoice,
+    ModelSelection, PermissionMode, ProviderSummary, RuntimeComposerChoices, RuntimeKind,
+    RuntimeModel, RuntimeTypeDescriptor, TurnChoice,
 };
+use serde::{Deserialize, Serialize};
 
 /// What resolving the next turn depends on.
-#[derive(Debug, Clone, uniffi::Record)]
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[serde(rename_all = "camelCase")]
 pub struct NextTurnInput {
     /// The runtime instance the next turn runs on.
     pub runtime_id: String,
@@ -21,9 +23,9 @@ pub struct NextTurnInput {
     /// not be read.
     #[uniffi(default = None)]
     pub catalog: Option<Vec<RuntimeModel>>,
-    /// The conversation's turns; none for an unsent conversation.
+    /// Recorded execution settings in turn order; empty for an unsent conversation.
     #[uniffi(default = [])]
-    pub turns: Vec<TranscriptTurn>,
+    pub turn_settings: Vec<TurnSettings>,
     /// The conversation's runtime and its recorded managed model.
     #[uniffi(default = None)]
     pub conversation_runtime_id: Option<String>,
@@ -35,12 +37,16 @@ pub struct NextTurnInput {
     /// The runtime's choices across conversations.
     #[uniffi(default = None)]
     pub runtime_choices: Option<RuntimeComposerChoices>,
+    /// The policy committed with the runtime instance, independent of remembered choices.
+    pub new_conversation: NewConversationChoice,
 }
 
 /// The next turn's options and effective choice.
-#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, uniffi::Record)]
+#[serde(rename_all = "camelCase")]
 pub struct NextTurn {
     pub runtime_id: String,
+    pub runtime_type: Option<RuntimeKind>,
     /// The choice in effect: the conversation's kept one, else, on a runtime
     /// it has not run on, what the runtime's new conversations start with.
     /// An absent part follows the conversation's current one.
@@ -66,15 +72,15 @@ pub struct NextTurn {
     /// The chosen level while `model` accepts it; absent keeps the
     /// conversation's current one.
     pub effort: Option<String>,
-    /// The level of the conversation's last turn, while it ran on the runtime
-    /// and `model` accepts it.
+    /// The level of the conversation's latest turn on the runtime, while
+    /// `model` accepts it.
     pub current_effort: Option<String>,
     /// Modes the runtime type declares.
     pub permission_modes: Vec<PermissionMode>,
     /// The chosen mode while the runtime offers it; absent keeps the
     /// conversation's current one, which is the session's state in the runtime.
     pub permission_mode: Option<PermissionMode>,
-    /// The mode of the conversation's last turn, while it ran on the runtime.
+    /// The mode of the conversation's latest turn on the runtime.
     pub current_permission_mode: Option<PermissionMode>,
 }
 
@@ -102,24 +108,38 @@ pub fn resolve_next_turn(input: NextTurnInput) -> NextTurn {
         runtime_type,
         providers,
         catalog,
-        turns,
+        turn_settings,
         conversation_runtime_id,
         model_record_key,
         kept,
         runtime_choices,
+        new_conversation,
     } = input;
+    let runtime_kind = runtime_type.as_ref().map(|kind| kind.id);
     let ready = catalog.is_some();
     let catalog = catalog.unwrap_or_else(|| managed_models(&providers));
-    let has_current = turns
+    let has_current = turn_settings
         .iter()
-        .any(|turn| turn_runtime(turn) == Some(runtime_id.as_str()));
-    let choice = kept.unwrap_or_else(|| match runtime_choices {
-        Some(choices) if !has_current => match choices.new_conversation {
-            NewConversationChoice::LastChosen => choices.last_chosen,
+        .any(|settings| settings.runtime_id.as_deref() == Some(runtime_id.as_str()));
+    let defaults = if has_current {
+        TurnChoice::default()
+    } else {
+        match new_conversation {
             NewConversationChoice::Chosen { choice } => choice,
-        },
-        _ => TurnChoice::default(),
-    });
+            NewConversationChoice::LastChosen => runtime_choices
+                .filter(|choices| {
+                    choices.runtime_id == runtime_id && Some(choices.runtime_type) == runtime_kind
+                })
+                .map(|choices| choices.last_chosen)
+                .unwrap_or_default(),
+        }
+    };
+    let kept = kept.unwrap_or_default();
+    let choice = TurnChoice {
+        model: kept.model.or(defaults.model),
+        effort: kept.effort.or(defaults.effort),
+        permission_mode: kept.permission_mode.or(defaults.permission_mode),
+    };
     let default_efforts = if runtime_type
         .as_ref()
         .is_some_and(|kind| kind.session_options)
@@ -138,7 +158,14 @@ pub fn resolve_next_turn(input: NextTurnInput) -> NextTurn {
         }
         levels
     };
-    let latest = latest_turn_model(&turns, &runtime_id, &catalog, &providers, ready);
+    let latest = latest_turn_model(
+        &turn_settings,
+        &runtime_id,
+        runtime_type.as_ref().map(|kind| kind.id),
+        &catalog,
+        &providers,
+        ready,
+    );
     let mut models = catalog;
     if ready
         && let Some(current @ ModelSelection::Native { model_id, .. }) = &latest
@@ -183,10 +210,7 @@ pub fn resolve_next_turn(input: NextTurnInput) -> NextTurn {
             .map(|model| model.reasoning_efforts.clone())
             .unwrap_or_default(),
     };
-    let current = turns
-        .last()
-        .and_then(|turn| turn.settings.as_ref())
-        .filter(|settings| settings.runtime_id.as_deref() == Some(runtime_id.as_str()));
+    let current = latest_settings(&turn_settings, &runtime_id);
     let accepted = |level: Option<&String>| level.filter(|level| efforts.contains(level)).cloned();
     let effort = accepted(choice.effort.as_ref());
     let current_effort = accepted(current.and_then(|settings| settings.effort.as_ref()));
@@ -202,6 +226,7 @@ pub fn resolve_next_turn(input: NextTurnInput) -> NextTurn {
         mode(current.and_then(|settings| settings.permission_mode.as_ref()));
     NextTurn {
         runtime_id,
+        runtime_type: runtime_kind,
         choice,
         has_current,
         models,
@@ -261,15 +286,22 @@ pub fn change_next_turn(
         }
     };
     let choice = changed(next.choice, &change);
-    let runtime_choices = (chosen || !next.has_current).then(|| {
-        let mut choices = runtime_choices.unwrap_or_else(|| RuntimeComposerChoices {
-            runtime_id: next.runtime_id.clone(),
-            last_chosen: TurnChoice::default(),
-            new_conversation: NewConversationChoice::LastChosen,
+    let runtime_choices = next
+        .runtime_type
+        .filter(|_| chosen || !next.has_current)
+        .map(|runtime_type| {
+            let mut choices = runtime_choices
+                .filter(|choices| {
+                    choices.runtime_id == next.runtime_id && choices.runtime_type == runtime_type
+                })
+                .unwrap_or_else(|| RuntimeComposerChoices {
+                    runtime_id: next.runtime_id.clone(),
+                    runtime_type,
+                    last_chosen: TurnChoice::default(),
+                });
+            choices.last_chosen = changed(choices.last_chosen, &change);
+            choices
         });
-        choices.last_chosen = changed(choices.last_chosen, &change);
-        choices
-    });
     Some(TurnChoiceUpdate {
         choice,
         runtime_choices,
@@ -285,8 +317,25 @@ fn changed(mut choice: TurnChoice, change: &TurnChoiceChange) -> TurnChoice {
     choice
 }
 
-fn turn_runtime(turn: &TranscriptTurn) -> Option<&str> {
-    turn.settings.as_ref()?.runtime_id.as_deref()
+/// The latest recorded settings on this runtime. Returning to a runtime after
+/// a handoff restores its own state; missing parts in that latest turn remain
+/// unknown instead of reviving values from an older turn.
+pub fn latest_runtime_turn_settings<'a>(
+    turns: &'a [TranscriptTurn],
+    runtime_id: &str,
+) -> Option<&'a TurnSettings> {
+    turns.iter().rev().find_map(|turn| {
+        turn.settings
+            .as_ref()
+            .filter(|settings| settings.runtime_id.as_deref() == Some(runtime_id))
+    })
+}
+
+fn latest_settings<'a>(settings: &'a [TurnSettings], runtime_id: &str) -> Option<&'a TurnSettings> {
+    settings
+        .iter()
+        .rev()
+        .find(|settings| settings.runtime_id.as_deref() == Some(runtime_id))
 }
 
 /// The gateway's models, named as the runtime's catalog names them.
@@ -312,17 +361,16 @@ fn managed_models(providers: &[ProviderSummary]) -> Vec<RuntimeModel> {
 /// A native ID the read catalog does not list is the runtime's own model
 /// where its models take no provider.
 fn latest_turn_model(
-    turns: &[TranscriptTurn],
+    turns: &[TurnSettings],
     runtime_id: &str,
+    runtime_kind: Option<crate::RuntimeKind>,
     catalog: &[RuntimeModel],
     providers: &[ProviderSummary],
     ready: bool,
 ) -> Option<ModelSelection> {
-    let settings: &TurnSettings = turns.iter().rev().find_map(|turn| {
-        turn.settings.as_ref().filter(|settings| {
-            settings.runtime_id.as_deref() == Some(runtime_id)
-                && (settings.model.is_some() || settings.model_selection.is_some())
-        })
+    let settings: &TurnSettings = turns.iter().rev().find(|settings| {
+        settings.runtime_id.as_deref() == Some(runtime_id)
+            && (settings.model.is_some() || settings.model_selection.is_some())
     })?;
     if let Some(selection) = &settings.model_selection {
         return Some(selection.clone());
@@ -334,6 +382,15 @@ fn latest_turn_model(
     if let Some(model) = catalog.iter().find(
         |model| matches!(&model.selection, ModelSelection::Native { model_id, .. } if model_id == recorded),
     ) {
+        return Some(model.selection.clone());
+    }
+    // A turn recorded under a variant's display name still names that variant.
+    if let Some(kind) = runtime_kind
+        && let Some(model) = catalog.iter().find(|model| {
+            matches!(&model.selection, ModelSelection::Native { model_id, .. }
+                if velune_conversation::model_variant::display_model_name(kind, model_id) == recorded)
+        })
+    {
         return Some(model.selection.clone());
     }
     let keys: Vec<&str> = providers
@@ -348,6 +405,9 @@ fn latest_turn_model(
     if let (Some(only), None) = (managed.next(), managed.next()) {
         return Some(only.selection.clone());
     }
+    // A native record that names no offered model is the runtime's own model
+    // only where history records raw ids (Claude Code aliases); Codex records
+    // ids and variant ids, so an unmatched name there is stale, not a model.
     let mut native = catalog
         .iter()
         .filter_map(|model| match &model.selection {
@@ -355,11 +415,13 @@ fn latest_turn_model(
             ModelSelection::Managed { .. } => None,
         })
         .peekable();
-    (ready && native.peek().is_some() && native.all(Option::is_none)).then(|| {
-        ModelSelection::Native {
-            provider_id: None,
-            model_id: recorded.to_owned(),
-        }
+    (ready
+        && runtime_kind != Some(crate::RuntimeKind::Codex166)
+        && native.peek().is_some()
+        && native.all(Option::is_none))
+    .then(|| ModelSelection::Native {
+        provider_id: None,
+        model_id: recorded.to_owned(),
     })
 }
 
@@ -398,6 +460,7 @@ mod tests {
             reply_start_block: 0,
             duration_ms: None,
             is_running: false,
+            can_fork: false,
             outcome: None,
             settings: Some(settings),
             usage: None,
@@ -452,15 +515,85 @@ mod tests {
     fn input(catalog: Option<Vec<RuntimeModel>>, turns: Vec<TranscriptTurn>) -> NextTurnInput {
         NextTurnInput {
             runtime_id: "runtime".into(),
-            runtime_type: None,
+            runtime_type: Some(runtime_type()),
             providers: vec![provider()],
             catalog,
-            turns,
+            turn_settings: turns.into_iter().filter_map(|turn| turn.settings).collect(),
             conversation_runtime_id: Some("runtime".into()),
             model_record_key: None,
             kept: None,
             runtime_choices: None,
+            new_conversation: NewConversationChoice::LastChosen,
         }
+    }
+
+    fn runtime_type() -> RuntimeTypeDescriptor {
+        RuntimeTypeDescriptor {
+            id: RuntimeKind::Codex166,
+            family_id: String::new(),
+            compatible_versions: String::new(),
+            can_rename_conversations: false,
+            can_delete_conversations: false,
+            can_side_chat: true,
+            launch_options: false,
+            agent_info: false,
+            session_options: false,
+            native_account_quota: false,
+            remote_resources: false,
+            supported_protocols: Vec::new(),
+            supported_provider_protocols: Vec::new(),
+            name: String::new(),
+            fields: Vec::new(),
+            permission_modes: vec![PermissionMode {
+                id: "workspace-write".into(),
+                label: "Workspace".into(),
+                detail: String::new(),
+            }],
+        }
+    }
+
+    #[test]
+    fn returning_to_a_runtime_restores_its_latest_effort_and_permissions() {
+        let mut settings = on("runtime", "a");
+        settings.effort = Some("high".into());
+        settings.permission_mode = Some("workspace-write".into());
+        let mut returning = input(
+            Some(vec![model(native("a"), "A", &["low", "high"])]),
+            vec![turn(settings), turn(on("other", "b"))],
+        );
+        returning.runtime_type = Some(runtime_type());
+        let next = resolve_next_turn(returning);
+        assert!(next.has_current);
+        assert_eq!(next.model, Some(native("a")));
+        assert_eq!(next.current_effort.as_deref(), Some("high"));
+        assert_eq!(
+            next.current_permission_mode
+                .as_ref()
+                .map(|mode| mode.id.as_str()),
+            Some("workspace-write")
+        );
+    }
+
+    #[test]
+    fn unknown_parts_of_the_latest_runtime_turn_do_not_revive_older_values() {
+        let mut older = on("runtime", "a");
+        older.effort = Some("high".into());
+        older.permission_mode = Some("workspace-write".into());
+        let mut returning = input(
+            Some(vec![model(native("a"), "A", &["high"])]),
+            vec![
+                turn(older),
+                turn(on("runtime", "a")),
+                turn(on("other", "b")),
+            ],
+        );
+        returning.runtime_type = Some(runtime_type());
+        let settings = latest_settings(&returning.turn_settings, "runtime").unwrap();
+        assert_eq!(settings.effort, None);
+        assert_eq!(settings.permission_mode, None);
+        let next = resolve_next_turn(returning);
+        assert_eq!(next.current_effort, None);
+        assert_eq!(next.current_permission_mode, None);
     }
 
     #[test]
@@ -487,14 +620,42 @@ mod tests {
     #[test]
     fn a_current_model_the_catalog_lists_under_an_alias_comes_first() {
         let catalog = vec![model(native("opus"), "Opus", &["low", "high"])];
-        let next = resolve_next_turn(input(
-            Some(catalog),
-            vec![turn(on("runtime", "claude-opus-4"))],
-        ));
+        let mut claude = input(Some(catalog), vec![turn(on("runtime", "claude-opus-4"))]);
+        claude.runtime_type = Some(RuntimeTypeDescriptor {
+            id: RuntimeKind::ClaudeCode,
+            ..runtime_type()
+        });
+        let next = resolve_next_turn(claude);
         assert_eq!(next.models[0].name, "claude-opus-4（会话当前）");
         assert_eq!(next.models[0].reasoning_efforts, ["low", "high"]);
         assert_eq!(next.model, Some(native("claude-opus-4")));
         assert!(next.has_current);
+    }
+
+    #[test]
+    fn a_variant_recorded_by_display_name_names_the_variant() {
+        let variant = velune_conversation::model_variant::codex_speed_model("gpt", "priority");
+        let catalog = vec![
+            model(native("gpt"), "GPT", &["high"]),
+            model(native(&variant), "GPT · Priority", &["high"]),
+        ];
+        // The native history and Velune's own presentation record the
+        // variant's display name; the choice still recovers the variant.
+        let next = resolve_next_turn(input(
+            Some(catalog),
+            vec![turn(on("runtime", "gpt · priority"))],
+        ));
+        assert_eq!(next.model, Some(native(&variant)));
+    }
+
+    #[test]
+    fn a_stale_recorded_name_is_not_sent_as_a_codex_model_id() {
+        let catalog = vec![model(native("gpt"), "GPT", &["high"])];
+        let next = resolve_next_turn(input(
+            Some(catalog),
+            vec![turn(on("runtime", "gpt · retired-tier"))],
+        ));
+        assert_eq!(next.model, None);
     }
 
     #[test]
@@ -528,17 +689,64 @@ mod tests {
         let mut fresh = input(Some(Vec::new()), vec![turn(on("other", "x"))]);
         fresh.runtime_choices = Some(RuntimeComposerChoices {
             runtime_id: "runtime".into(),
+            runtime_type: RuntimeKind::Codex166,
             last_chosen: TurnChoice {
                 effort: Some("low".into()),
                 ..TurnChoice::default()
             },
-            new_conversation: NewConversationChoice::LastChosen,
         });
         let next = resolve_next_turn(fresh.clone());
         assert!(!next.has_current);
         assert_eq!(next.choice.effort.as_deref(), Some("low"));
-        fresh.turns.push(turn(on("runtime", "x")));
+        fresh.turn_settings.push(on("runtime", "x"));
         assert_eq!(resolve_next_turn(fresh).choice, TurnChoice::default());
+    }
+
+    #[test]
+    fn a_new_adapter_ignores_old_last_choice_but_keeps_explicit_target_choices() {
+        let mut fresh = input(Some(Vec::new()), Vec::new());
+        fresh.runtime_choices = Some(RuntimeComposerChoices {
+            runtime_id: "runtime".into(),
+            runtime_type: RuntimeKind::Acp,
+            last_chosen: TurnChoice {
+                effort: Some("old-type".into()),
+                ..TurnChoice::default()
+            },
+        });
+        assert_eq!(
+            resolve_next_turn(fresh.clone()).choice,
+            TurnChoice::default()
+        );
+        let explicit = TurnChoice {
+            effort: Some("explicit-target".into()),
+            ..TurnChoice::default()
+        };
+        fresh.kept = Some(explicit.clone());
+        assert_eq!(resolve_next_turn(fresh.clone()).choice, explicit);
+        fresh.kept = None;
+        fresh.new_conversation = NewConversationChoice::Chosen {
+            choice: TurnChoice {
+                permission_mode: Some("workspace-write".into()),
+                ..TurnChoice::default()
+            },
+        };
+        let next = resolve_next_turn(fresh);
+        assert_eq!(
+            next.choice.permission_mode.as_deref(),
+            Some("workspace-write")
+        );
+        let changed = change_next_turn(
+            next,
+            None,
+            TurnChoiceChange::PermissionMode {
+                mode: Some("workspace-write".into()),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            changed.runtime_choices.unwrap().runtime_type,
+            RuntimeKind::Codex166
+        );
     }
 
     #[test]
@@ -552,6 +760,7 @@ mod tests {
             can_rename_conversations: false,
             can_delete_conversations: false,
             launch_options: true,
+            can_side_chat: false,
             agent_info: true,
             session_options: true,
             native_account_quota: false,

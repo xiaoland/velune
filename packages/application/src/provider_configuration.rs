@@ -53,6 +53,12 @@ pub(crate) fn edit_provider(
                 draft.id = crate::new_record_key();
             }
             let previous = gateway.providers.iter().find(|p| p.id == draft.id);
+            let target_changed = previous.is_some_and(|p| {
+                p.endpoint != draft.endpoint
+                    || p.protocol != draft.protocol
+                    || p.request_profile != draft.request_profile
+                    || p.quota_source != draft.quota_source
+            });
             let mut authentication = previous
                 .map(|p| p.authentication.clone())
                 .unwrap_or_default();
@@ -82,6 +88,11 @@ pub(crate) fn edit_provider(
                 };
             }
             let changed = reset
+                || (target_changed
+                    && matches!(
+                        authentication.material,
+                        AuthenticationMaterial::ApiKey { .. }
+                    ))
                 || matches!(
                     edit,
                     AuthenticationEdit::SetApiKey { .. }
@@ -118,12 +129,6 @@ pub(crate) fn edit_provider(
             let mut quota_authentication = previous
                 .map(|p| p.quota_authentication.clone())
                 .unwrap_or_default();
-            let target_changed = previous.is_some_and(|p| {
-                p.endpoint != draft.endpoint
-                    || p.protocol != draft.protocol
-                    || p.request_profile != draft.request_profile
-                    || p.quota_source != draft.quota_source
-            });
             if draft.quota_source == ProviderQuotaSource::ArkCodingUsage {
                 quota_authentication.apply(quota_edit, authentication.generation, matches!(&authentication.material, AuthenticationMaterial::ApiKey { value } if !value.is_empty()), target_changed)?;
             } else if quota_edit.is_some() {

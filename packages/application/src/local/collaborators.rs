@@ -57,7 +57,7 @@ impl CoreRuntime {
                 }
             }
         }
-        let listed = self.last_listed.borrow();
+        let listed = self.listed_sources();
         for entry in &mut found {
             if let Some(source) = listed.get(&entry.conversation_id) {
                 entry.title = source.summary.title.display_text().to_owned();

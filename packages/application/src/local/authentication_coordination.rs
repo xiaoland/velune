@@ -24,13 +24,18 @@ impl CoreRuntime {
         gateway_id: &str,
         provider_id: &str,
     ) -> Result<(), RuntimeError> {
-        self.ensure_gateway_idle(gateway_id)?;
-        if self
-            .authentication_source_runtime(gateway_id, provider_id)
-            .is_some_and(|id| self.runtime_in_use(&id))
+        let source = self.authentication_source_runtime(gateway_id, provider_id);
+        let writes_source = matches!(
+            self.provider(gateway_id, provider_id)?
+                .authentication
+                .material,
+            AuthenticationMaterial::RuntimeProvider { .. }
+        );
+        if (writes_source && self.provider_in_use(gateway_id, provider_id))
+            || source.is_some_and(|id| self.runtime_in_use(&id))
         {
             return Err(RuntimeError::invalid(
-                "此认证来源的运行时仍有会话或后台任务正在运行，请停止后再登录",
+                "此认证来源仍有会话或后台任务正在使用，请停止后再登录",
             ));
         }
         Ok(())
@@ -49,8 +54,12 @@ impl CoreRuntime {
                     .as_ref()
                     .is_some_and(|id| core.session.uses_runtime(id))
             {
-                core.invalidate_execution()?;
-                invalidated = true;
+                if core.session.executing() {
+                    core.session.configuration_changed = true;
+                } else {
+                    core.invalidate_execution()?;
+                    invalidated = true;
+                }
             }
             Ok(())
         })?;
@@ -110,6 +119,7 @@ impl CoreRuntime {
                 return Err(error);
             }
             self.sync_scheduling(&previous);
+            self.invalidate_gateway_execution(gateway_id)?;
         }
         Ok(metadata)
     }
@@ -181,13 +191,11 @@ impl CoreRuntime {
                 .find(|g| g.id == gateway_id)
                 .and_then(|g| g.providers.iter_mut().find(|p| p.id == provider_id))
                 .ok_or_else(|| RuntimeError::invalid("login provider missing"))?;
-            let is_claude = claude_status.is_some();
-            let old_credential = match &mut provider.authentication.material {
+            match &mut provider.authentication.material {
                 AuthenticationMaterial::CodexSubscription {
                     credential_id,
                     configured,
                 } => {
-                    let old = credential_id.clone();
                     *credential_id = self
                         .subscription_login
                         .as_ref()
@@ -195,7 +203,6 @@ impl CoreRuntime {
                         .credential_id()
                         .to_owned();
                     *configured = true;
-                    old
                 }
                 AuthenticationMaterial::ClaudeCli {
                     credential_id,
@@ -203,7 +210,6 @@ impl CoreRuntime {
                     account_label,
                     identity,
                 } => {
-                    let old = credential_id.clone();
                     let status = claude_status
                         .as_ref()
                         .ok_or_else(|| RuntimeError::invalid("CLI login status missing"))?;
@@ -211,7 +217,6 @@ impl CoreRuntime {
                     *configured = status.configured;
                     *account_label = status.label.clone();
                     *identity = status.identity.clone();
-                    old
                 }
                 _ => return Err(RuntimeError::invalid("subscription binding changed")),
             };
@@ -229,47 +234,10 @@ impl CoreRuntime {
             if let Some(login) = self.subscription_login.as_mut() {
                 login.commit();
             }
-            let cleanup_failed = if is_claude {
-                let mut failed = false;
-                if let Some(old) = previous
-                    .iter()
-                    .find(|g| g.id == gateway_id)
-                    .and_then(|g| g.providers.iter().find(|p| p.id == provider_id))
-                    && let (
-                        crate::config::ExecutionBackend::ClaudeCli { binary },
-                        AuthenticationMaterial::ClaudeCli {
-                            configured: true, ..
-                        },
-                    ) = (&old.execution_backend, &old.authentication.material)
-                {
-                    let runtime = tokio::runtime::Builder::new_current_thread()
-                        .enable_all()
-                        .build()?;
-                    failed |= runtime
-                        .block_on(crate::claude_cli::logout(
-                            binary,
-                            &crate::claude_cli::directory(
-                                &self.options.home_directory,
-                                &old_credential,
-                            ),
-                        ))
-                        .is_err();
-                }
-                failed
-                    | crate::claude_cli::remove(&self.options.home_directory, &old_credential)
-                        .is_err()
-            } else {
-                crate::subscription_auth::remove(&self.options.home_directory, &old_credential)
-                    .is_err()
-            };
+            // sync_scheduling retains the old credential until every execution
+            // that captured it has ended, then performs the owned cleanup.
             let invalidated =
                 self.invalidate_authentication_execution(&gateway_id, &provider_id)?;
-            if cleanup_failed {
-                tracing::warn!(event = "subscription_cleanup_failed");
-                return Err(RuntimeError::invalid(
-                    "订阅登录已保存，但旧认证清理失败；请检查应用配置目录的写入权限。",
-                ));
-            }
             progress.gateways = Some(self.public_gateways());
             progress.execution_invalidated = Some(invalidated);
         }
@@ -477,6 +445,13 @@ impl CoreRuntime {
         provider_id: String,
     ) -> Result<crate::GatewayUpdate, RuntimeError> {
         self.ensure_authentication_idle(&gateway_id, &provider_id)?;
+        // CLI logout mutates the captured directory itself, so it cannot be
+        // staged beside an execution that still needs those credentials.
+        if self.provider_in_use(&gateway_id, &provider_id) {
+            return Err(RuntimeError::invalid(
+                "此订阅仍有会话或后台任务正在使用，请停止后再退出登录",
+            ));
+        }
         if self
             .subscription_login
             .as_ref()

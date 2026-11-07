@@ -51,6 +51,7 @@ final class ConversationModel: ObservableObject {
     }
     @Published private(set) var destination: DraftDestination
     @Published private(set) var loadingModels = false
+    private var modelRuntime: String?
     private var choices: [String: TurnChoice] = [:]
     private var restoringSelection = false
     @Published var busy = false
@@ -69,6 +70,7 @@ final class ConversationModel: ObservableObject {
     private var composerDirty = false
     private var contentGeneration: UInt64 = 0
     private var sharedTarget: ComposerTarget?
+    private var preparedComposerTarget: PreparedComposerTarget?
     private var targetDirty = false
     private var targetBaseline: UInt64?
     private var observedTargetRevision: UInt64?
@@ -102,7 +104,7 @@ final class ConversationModel: ObservableObject {
         destination = .init(runtime: target.runtime, cwd: target.cwd)
     }
 
-    var canEditTarget: Bool { peer == "preview" || composerLoaded && sharedTarget != nil }
+    var canEditTarget: Bool { peer == "preview" || composerLoaded && composerOwner != nil }
     var runtimeID: String { inputRuntime ?? snapshot?.contextRuntimeId ?? destination.runtime }
     var title: String {
         if snapshot?.conversation.parentConversationId != nil { return target.title }
@@ -122,7 +124,9 @@ final class ConversationModel: ObservableObject {
     func restore(_ state: ComposerState) {
         applyingComposer = true
         defer { applyingComposer = false }
-        sharedTarget = state.sharedTarget; observedTargetRevision = state.sharedTarget?.revision; targetDirty = state.targetPending ?? false; targetBaseline = state.targetBaseline; legacyTarget = state.legacyTarget
+        sharedTarget = state.sharedTarget
+        if var restored = sharedTarget { restored.choices = normalizeComposerTargetChoices(choices: restored.choices); sharedTarget = restored }
+        observedTargetRevision = state.sharedTarget?.revision; targetDirty = state.targetPending ?? false; targetBaseline = state.targetBaseline; legacyTarget = state.legacyTarget
         composerRestored = true; composerBindingRevision = state.composerBindingRevision; composerBindingBaseline = state.composerBindingBaseline
         composerDirectoryRevision = state.composerDirectoryRevision; pendingCreation = state.pendingCreation
         sharedInput = state.sharedInput; composerDirty = state.composerPending ?? false; composerUnbound = state.composerUnbound ?? false; composerBaseline = state.composerBaseline
@@ -134,12 +138,12 @@ final class ConversationModel: ObservableObject {
             sharedInput = nil; composerDirty = false; composerUnbound = false
         }
         inputAttachments = sharedInput?.content.attachments ?? []
-        composerChoiceEdited = state.sharedTarget?.choices.choiceEdited ?? false
-        inputRuntime = state.sharedTarget?.choices.runtimeId; inputRuntimeOwner = state.sharedTarget?.choices.runtimeOwnerId
+        composerChoiceEdited = sharedTarget?.choices.choiceEdited ?? false
+        inputRuntime = sharedTarget?.choices.runtimeId; inputRuntimeOwner = sharedTarget?.choices.runtimeOwnerId
         if let saved = state.destination { destination = saved }
-        choices = state.choices ?? [runtimeID: .init(model: state.selection, effort: nil, permissionMode: nil)]
+        choices = sharedTarget?.choices.choiceEdited == false ? [:] : state.choices ?? [runtimeID: .init(model: state.selection, effort: nil, permissionMode: nil)]
         restoringSelection = true
-        draft = state.text; selection = state.selection; following = state.following; readingOffset = state.offset
+        draft = state.text; selection = sharedTarget?.choices.choiceEdited == false ? nil : state.selection; following = state.following; readingOffset = state.offset
         restoringSelection = false
     }
     func chooseProject(_ cwd: String?) {
@@ -162,24 +166,14 @@ final class ConversationModel: ObservableObject {
         guard !runtime.isEmpty else { return }
         loadingModels = true
         defer { if runtimeID == runtime && !Task.isCancelled { loadingModels = false } }
-        let needsDefault = isNew && choices[runtime] == nil
         do {
             let result = try await client.application(peer, operation: .configurationRead) {
-                (try $0.runtimeModels(runtimeId: runtime), needsDefault ? try $0.composerChoices() : nil)
+                try $0.runtimeModels(runtimeId: runtime)
             }
             guard runtimeID == runtime, !Task.isCancelled else { return }
             runtimeAvailable = true
-            models = result.0
-            if needsDefault, choices[runtime] == nil, sharedTarget?.choices.runtimeOwnerId == nil {
-                restoringSelection = true
-                defer { restoringSelection = false }
-                if let defaults = result.1?.runtimes.first(where: { $0.runtimeId == runtime }) {
-                    switch defaults.newConversation {
-                    case .lastChosen: selection = defaults.lastChosen.model
-                    case .chosen(let choice): selection = choice.model
-                    }
-                } else { selection = nil }
-            }
+            modelRuntime = runtime
+            models = result
         } catch {
             guard runtimeID == runtime, !Task.isCancelled else { return }
             runtimeAvailable = false
@@ -198,7 +192,7 @@ final class ConversationModel: ObservableObject {
         }
     }
     var canSend: Bool {
-        !loading && !loadingModels && !busy && (peer == "preview" || composerLoaded && !composerSaving && pendingCreation == nil && composerFailure == nil) && !runtimeID.isEmpty && (peer == "preview" || (inputRuntimeOwner == nil || inputRuntimeOwner == composerOwner) && runtimeAvailable && (selection == nil || models.contains { $0.selection == selection })) && (target.conversation == nil || snapshot != nil)
+        !loading && !loadingModels && !busy && (peer == "preview" || composerLoaded && effectiveNextTurn?.chosenModelUnavailable == false && !composerSaving && pendingCreation == nil && composerFailure == nil) && !runtimeID.isEmpty && (peer == "preview" || (inputRuntimeOwner == nil || inputRuntimeOwner == composerOwner) && runtimeAvailable && (selection == nil || models.contains { $0.selection == selection })) && (target.conversation == nil || snapshot != nil)
             && (!draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !inputAttachments.isEmpty) && snapshot?.actions.canSend != false
     }
     var canEditDraft: Bool { snapshot?.actions.inputAccess != .readOnly }
@@ -271,11 +265,6 @@ final class ConversationModel: ObservableObject {
         let identityChanged = snapshot?.conversation.id != next.conversation.id
         snapshot = next
         if identityChanged { onIdentityChange?(self) }
-        if choices[runtimeID] == nil, !composerLoaded {
-            restoringSelection = true
-            selection = next.modelRecordKey.map { .managed(modelRecordKey: $0) }
-            restoringSelection = false
-        }
     }
 
     func message(_ id: String) -> DeliveredMessage? { payloads[id] ?? messages[id] }
@@ -283,14 +272,14 @@ final class ConversationModel: ObservableObject {
     func send() {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard canSend else { return }
-        let runtime = runtimeID, cwd = cwd, selection = selection
+        let next = effectiveNextTurn
+        let runtime = next?.runtimeId ?? runtimeID, cwd = cwd, selection = peer == "preview" ? selection : next?.model
         let submittedContent = composerContent
         let submittedGeneration = contentGeneration
         let submittedTarget = composerTargetContent
         act("发送消息") {
             try await self.flushComposer()
             guard let input = self.sharedInput else { throw MobileError.unavailable }
-            let choice = submittedTarget.choices.first { $0.runtimeId == runtime && $0.ownerId == self.composerOwner }?.choice
             self.sending = text
             defer { self.sending = nil }
             if self.snapshot == nil {
@@ -305,7 +294,7 @@ final class ConversationModel: ObservableObject {
                 try await self.completeCreation()
             }
             guard let current = self.snapshot else { throw MobileError.missingConversation }
-            let turn = ComposedTurn(text: text, effort: choice?.effort, permissionMode: choice?.permissionMode, attachments: submittedContent.attachments.map { "composer:" + $0.id })
+            let turn = ComposedTurn(text: text, effort: next?.effort, permissionMode: next?.permissionMode?.id, attachments: submittedContent.attachments.map { "composer:" + $0.id })
             self.apply(try await self.client.application(self.peer, operation: .send) {
                 try $0.sendTurn(sourceRuntimeId: current.contextRuntimeId, conversationId: current.conversation.id,
                     targetRuntimeId: runtime, selection: selection, turn: turn)
@@ -355,8 +344,9 @@ final class ConversationModel: ObservableObject {
         guard !busy else { return }
         busy = true; failure = nil
         Task {
-            defer { busy = false }
             do { try await body(); ProblemStore.shared.recovered(source: source, context: problemContext) } catch { report(error, source: source) }
+            busy = false
+            await pollComposer()
         }
     }
 }
@@ -365,9 +355,18 @@ final class ConversationModel: ObservableObject {
 extension ConversationModel {
     private var composerContent: ComposerInputContent { .init(text: draft, attachments: inputAttachments) }
     private var composerTargetContent: ComposerTargetChoices {
-        let runtime = inputRuntime ?? runtimeID
-        return .init(runtimeId: runtime, runtimeOwnerId: inputRuntimeOwner ?? composerOwner,
-                     choices: (sharedTarget?.choices.choices.filter { $0.ownerId != composerOwner } ?? []) + choices.sorted { $0.key < $1.key }.map { .init(ownerId: composerOwner ?? "", runtimeId: $0.key, choice: $0.value) }, choiceEdited: composerChoiceEdited)
+        let runtime = inputRuntime
+        return normalizeComposerTargetChoices(choices: .init(runtimeId: runtime, runtimeOwnerId: runtime == nil ? nil : inputRuntimeOwner ?? composerOwner,
+                     choices: (sharedTarget?.choices.choices.filter { $0.ownerId != composerOwner } ?? []) + choices.sorted { $0.key < $1.key }.map { .init(ownerId: composerOwner ?? "", runtimeId: $0.key, choice: $0.value) }, choiceEdited: composerChoiceEdited))
+    }
+    private var composerTargetRequest: ComposerTargetRequest {
+        .init(runtimeId: snapshot?.conversation.runtimeId ?? destination.runtime,
+              conversationId: snapshot?.conversation.id ?? target.conversation)
+    }
+    private var effectiveNextTurn: NextTurn? {
+        guard let preparedComposerTarget, preparedComposerTarget.request == composerTargetRequest,
+              snapshot == nil || preparedComposerTarget.defaultRuntimeId == snapshot?.contextRuntimeId else { return nil }
+        return resolveComposerTarget(prepared: preparedComposerTarget, choices: composerTargetContent, catalog: modelRuntime == preparedComposerTarget.basis.runtimeId ? models : nil)
     }
     private var composerTargetContext: ComposerContextKey? {
         guard let owner = composerOwner else { return nil }
@@ -388,6 +387,8 @@ extension ConversationModel {
         }
     }
     private func receiveTarget(_ target: ComposerTarget) {
+        var target = target
+        target.choices = normalizeComposerTargetChoices(choices: target.choices)
         applyingComposer = true
         sharedTarget = target; composerChoiceEdited = target.choices.choiceEdited
         inputRuntime = target.choices.runtimeId; inputRuntimeOwner = target.choices.runtimeOwnerId
@@ -457,31 +458,51 @@ extension ConversationModel {
             apply(result)
         }
         if let choices = creation.choices {
-            _ = try await client.application(peer, operation: .conversationWrite) { try $0.manageComposerInputs(operation: .ensureTarget(context: .conversation(ownerId: creation.ownerID, conversationId: creation.conversationID), seed: choices)) }
+            let context = ComposerContextKey.conversation(ownerId: creation.ownerID, conversationId: creation.conversationID)
+            let updated = try await client.application(peer, operation: .conversationWrite) { try $0.manageComposerInputs(operation: .ensureTarget(context: context, seed: choices)) }
+            guard let actual = updated.state?.targets.first(where: { $0.context == context }) else { throw MobileError.unavailable }
+            observedTargetRevision = actual.revision
+            if targetDirty {
+                targetBaseline = normalizeComposerTargetChoices(choices: actual.choices) == normalizeComposerTargetChoices(choices: choices) ? actual.revision : nil
+            } else { receiveTarget(actual) }
         }
+        preparedComposerTarget = nil
         _ = try await client.application(peer, operation: .conversationWrite) { try $0.manageComposerInputs(operation: .promote(inputId: creation.inputID, ownerId: creation.ownerID, conversationId: creation.conversationID, runtimeId: creation.runtimeID)) }
         pendingCreation = nil; onComposerChange?(self)
     }
+    private func observeTarget(_ target: ComposerTarget) {
+        observedTargetRevision = target.revision
+        if targetDirty && normalizeComposerTargetChoices(choices: target.choices) == composerTargetContent {
+            targetDirty = false; targetBaseline = nil; targetWriteFailed = false
+        }
+        if !targetDirty { receiveTarget(target) }
+    }
     private func pollComposer() async {
-        guard peer != "preview", !busy, !composerSaving, !composerPolling else { return }
+        guard peer != "preview", !busy, !composerSaving, !composerPolling, isNew || snapshot != nil else { return }
         composerPolling = true
         defer { composerPolling = false }
         do {
-            if composerOwner == nil { composerOwner = try await client.application(peer, operation: .conversationRead) { try $0.composerOwnerId() } }
+            if composerOwner == nil {
+                composerOwner = try await client.application(peer, operation: .conversationRead) { try $0.composerOwnerId() }
+                if let sharedTarget { receiveTarget(sharedTarget) }
+            }
             guard let owner = composerOwner else { return }
             try await completeCreation()
-            var context: ComposerContextKey = (snapshot?.conversation.id ?? target.conversation).map { .conversation(ownerId: owner, conversationId: $0) } ?? .newConversation
+            guard let context = composerTargetContext else { return }
+            let request = composerTargetRequest
             let baseline = composerDirectoryRevision ?? 0
             let update = try await client.application(peer, operation: .conversationRead) {
                 try $0.manageComposerInputs(operation: .read(sinceRevision: self.composerDirectoryRevision))
             }
+            guard !Task.isCancelled, request == composerTargetRequest else { return }
             if let state = update.state {
                 if isNew, let input = sharedInput,
                    let creation = state.creations.first(where: { creation in creation.inputId == input.id && creation.ownerId == owner && creation.revision > baseline && state.bindings.contains { $0.inputId == input.id && $0.context == .conversation(ownerId: owner, conversationId: creation.conversationId) } }) {
                     composerLoaded = false
                     let created = try await client.application(peer, operation: .conversationRead) { try $0.readConversation(runtimeId: creation.runtimeId, conversationId: creation.conversationId) }
                     apply(created)
-                    context = .conversation(ownerId: owner, conversationId: creation.conversationId)
+                    preparedComposerTarget = nil
+                    return
                 }
                 var resolved = state
                 if !state.bindings.contains(where: { $0.context == context }) {
@@ -489,30 +510,30 @@ extension ConversationModel {
                     let created = try await client.application(peer, operation: .conversationWrite) {
                         try $0.manageComposerInputs(operation: .ensure(context: context, inputId: UUID().uuidString.lowercased(), seed: seed))
                     }
+                    guard !Task.isCancelled, request == composerTargetRequest else { return }
                     guard let state = created.state else { throw MobileError.unavailable }; resolved = state
-                }
-                guard isNew || snapshot != nil else { return }
-                if !resolved.targets.contains(where: { $0.context == context }) || resolved.targets.first(where: { $0.context == context })?.choices.runtimeId == nil {
-                    let seed = ComposerTargetChoices(runtimeId: snapshot?.contextRuntimeId ?? destination.runtime, runtimeOwnerId: owner, choices: [], choiceEdited: false)
-                    let created = try await client.application(peer, operation: .conversationWrite) { try $0.manageComposerInputs(operation: .ensureTarget(context: context, seed: seed)) }
-                    guard let state = created.state else { throw MobileError.unavailable }; resolved = state
-                }
-                if let target = resolved.targets.first(where: { $0.context == context }) {
-                    observedTargetRevision = target.revision
-                    if targetDirty && target.choices == composerTargetContent { targetDirty = false; targetBaseline = nil; targetWriteFailed = false }
-                    if !targetDirty { receiveTarget(target) }
                 }
                 composerDirectoryRevision = resolved.revision
                 let binding = resolved.bindings.first { $0.context == context }
                 composerBindingRevision = binding?.revision
                 if composerUnbound, binding?.inputId == sharedInput?.id { composerUnbound = false; composerBindingBaseline = nil }
                 else if composerUnbound, !composerRestored, sharedInput?.revision == 0 { composerBindingBaseline = binding?.revision }
-                if !composerDirty, !composerUnbound, let id = resolved.bindings.first(where: { $0.context == context })?.inputId, let input = resolved.inputs.first(where: { $0.id == id }) { receiveComposer(input) }
+                if !composerDirty, !composerUnbound, let id = binding?.inputId, let input = resolved.inputs.first(where: { $0.id == id }) { receiveComposer(input) }
+                if let target = resolved.targets.first(where: { $0.context == context }) { observeTarget(target) }
             }
             composerLoaded = true
+            let overlay = targetDirty ? composerTargetContent : nil
+            let prepared = try await client.application(peer, operation: .conversationWrite) {
+                try $0.prepareComposerTarget(request: request, overlayChoices: overlay)
+            }
+            guard !Task.isCancelled, request == composerTargetRequest else { return }
+            guard prepared.ownerId == owner else { throw MobileError.unavailable }
+            preparedComposerTarget = prepared
+            observeTarget(prepared.target)
             try await flushComposer()
             composerFailure = nil
-        } catch { composerFailure = composerError(error); report(error, source: "接续输入") }
+        } catch is CancellationError { return }
+        catch { composerFailure = composerError(error); report(error, source: "接续输入") }
     }
     func importLegacyInput() { if let legacyInput { importLegacyInput(legacyInput) } }
     func importLegacyInput(_ content: ComposerInputContent, target importedTarget: ComposerTargetChoices? = nil) {

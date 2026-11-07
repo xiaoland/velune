@@ -125,7 +125,6 @@ private final class ComposerInputWorker: @unchecked Sendable {
     private var dirty: [UUID: SavedComposerDraft] = [:]
     private var targetDirty: [ComposerContextKey: SavedComposerTarget] = [:]
     private var targetFailures: Set<ComposerContextKey> = []
-    private var ensuringTargets: Set<ComposerContextKey> = []
     private var previewTargets: [ComposerContextKey: ComposerTargetChoices] = [:]
     private var submittedTargets: [UUID: ComposerTargetChoices] = [:]
     private var baselines: [UUID: UInt64] = [:]
@@ -158,6 +157,34 @@ private final class ComposerInputWorker: @unchecked Sendable {
         guard let context = context(conversationID) else { return nil }
         return targetDirty[context]?.choices ?? state?.targets.first { $0.context == context }?.choices ?? previewTargets[context]
     }
+    func pendingTarget(for conversationID: String) -> SavedComposerTarget? {
+        context(conversationID).flatMap { targetDirty[$0] }
+    }
+    func targetRecord(for conversationID: String) -> ComposerTarget? {
+        guard let context = context(conversationID) else { return nil }
+        if let record = state?.targets.first(where: { $0.context == context }) { return record }
+        return previewTargets[context].map { ComposerTarget(context: context, revision: 1, choices: $0) }
+    }
+    /// Preparation reports authority facts; it never acknowledges a different
+    /// local edit or changes the CAS baseline captured when that edit began.
+    func observePreparedTarget(_ prepared: PreparedComposerTarget) {
+        guard ownerID == prepared.ownerId else { return }
+        guard worker != nil else {
+            if previewTargets[prepared.context] == nil { previewTargets[prepared.context] = prepared.target.choices }
+            return
+        }
+        guard var directory = state else { return }
+        if let index = directory.targets.firstIndex(where: { $0.context == prepared.context }) {
+            guard directory.targets[index].revision <= prepared.target.revision else { return }
+            directory.targets[index] = prepared.target
+        } else { directory.targets.append(prepared.target) }
+        // The facade observes this target, not a replacement directory. Keep
+        // the observed directory revision so the next poll still reads it.
+        if state != directory {
+            state = directory
+            changes.send()
+        }
+    }
     func targetIssue(for conversationID: String) -> String? {
         guard worker != nil else { return nil }
         guard let context = context(conversationID), state != nil else { return "正在恢复目标执行配置" }
@@ -180,30 +207,13 @@ private final class ComposerInputWorker: @unchecked Sendable {
             return
         }
         guard targetDirty[context] == nil else { return }
-        targetDirty[context] = value
-        saveTarget(conversationID, choices: value.choices)
-    }
-    /// A target is initialized only from its loaded native identity. Opening
-    /// another target while an old transcript is visible never seeds it.
-    func ensureTarget(_ conversationID: String, seed: ComposerTargetChoices) {
-        guard let context = context(conversationID), !ensuringTargets.contains(context), targetDirty[context] == nil else { return }
-        if let current = targetChoices(for: conversationID), current != ComposerTargetChoices(runtimeId: nil, runtimeOwnerId: nil, choices: [], choiceEdited: false) { return }
-        guard let worker else { previewTargets[context] = seed; return }
-        ensuringTargets.insert(context)
-        worker.queue.async { [weak self] in
-            let result = Result { try worker.perform(.ensureTarget(context: context, seed: seed)) }
-            DispatchQueue.main.async {
-                guard let self else { return }
-                self.ensuringTargets.remove(context)
-                switch result {
-                case .success(let value): self.apply(value)
-                case .failure(let error): self.available = false; self.changes.send(); self.device?.recordProblem(error, source: "恢复目标执行配置")
-                }
-            }
-        }
+        let choices = normalizeComposerTargetChoices(choices: value.choices)
+        targetDirty[context] = SavedComposerTarget(choices: choices, revision: value.revision)
+        saveTarget(conversationID, choices: choices)
     }
     func saveTarget(_ conversationID: String, choices: ComposerTargetChoices, userEdit: Bool = false) {
         guard let context = context(conversationID) else { return }
+        let choices = normalizeComposerTargetChoices(choices: choices)
         guard let worker else { previewTargets[context] = choices; changes.send(); return }
         let latest = state?.targets.first { $0.context == context }?.revision
         // Only a new explicit choice can accept the latest observed target.
@@ -295,7 +305,7 @@ private final class ComposerInputWorker: @unchecked Sendable {
         }
         for context in Array(targetFailures) {
             guard let pending = targetDirty[context], let received = result.0.targets.first(where: { $0.context == context }) else { continue }
-            if received.choices == pending.choices { targetDirty[context] = nil; targetFailures.remove(context); changes.send() }
+            if normalizeComposerTargetChoices(choices: received.choices) == normalizeComposerTargetChoices(choices: pending.choices) { targetDirty[context] = nil; targetFailures.remove(context); changes.send() }
             else if received.revision == pending.revision {
                 targetFailures.remove(context)
                 let id: String
@@ -322,7 +332,7 @@ private final class ComposerInputWorker: @unchecked Sendable {
             }
             return
         }
-        let seed = model.savedDraft ?? SavedComposerDraft(text: "", attachments: [])
+        let seed = model.savedDraft
         let id = model.id
         worker.queue.async { [weak self] in
             let result = Result {
@@ -385,8 +395,7 @@ private final class ComposerInputWorker: @unchecked Sendable {
         }
         failedBindings.remove(context)
         optimisticBindings[context] = .init(inputID: input.id, revision: state?.bindings.first(where: { $0.context == context })?.revision)
-        if let draft = input.savedDraft { saveNow(input.id, draft: draft) }
-        else { retryAssociations() }
+        saveNow(input.id, draft: input.savedDraft)
     }
     /// A sent first message consumes the global new-conversation input: the
     /// entry immediately takes the next empty input (choices kept), so a
@@ -397,14 +406,18 @@ private final class ComposerInputWorker: @unchecked Sendable {
     func consumeNewConversationInput(_ sent: ComposerModel) {
         let draftID = ConversationStore.draftConversationPrefix + "new-conversation"
         guard inputID(for: draftID) == sent.id else { return }
-        let fresh = ComposerModel(followsConversation: false)
+        let fresh = ComposerModel()
         bind(draftID, input: fresh)
     }
     /// A failed first send hands the consumed input back to the global new
     /// entry — only while the entry's fresh input is still untouched; with
     /// newer content in it, the consumed input stays kept (保留的输入)
     /// rather than replacing that work.
-    func restoreConsumedNewConversationInput(_ consumed: ComposerModel) {
+    func restoreConsumedNewConversationInput(_ consumed: ComposerModel, whileCreating store: ConversationStore) {
+        // Once native creation succeeds, failed dispatch belongs to that
+        // conversation. Check this submission's source, not historical
+        // creations: a content identity may be reused in a later new session.
+        guard store.isUnsentConversation else { return }
         let draftID = ConversationStore.draftConversationPrefix + "new-conversation"
         guard let current = inputID(for: draftID), current != consumed.id else { return }
         if let currentDraft = draft(current), !currentDraft.text.isEmpty || !currentDraft.attachments.isEmpty { return }
@@ -413,7 +426,7 @@ private final class ComposerInputWorker: @unchecked Sendable {
     func promote(_ model: ComposerModel, to conversationID: String, runtimeID: String) {
         guard worker != nil, ownerID != nil else { return }
         promotions[conversationID] = .init(inputID: model.id, runtimeID: runtimeID, choices: submittedTargets.removeValue(forKey: model.id))
-        if let draft = model.savedDraft { saveNow(model.id, draft: draft) }
+        saveNow(model.id, draft: model.savedDraft)
         retryAssociations()
     }
     private func retryAssociations() {

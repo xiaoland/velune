@@ -48,6 +48,7 @@ pub mod config;
 mod local;
 pub mod model_catalog;
 mod native_provider_import;
+mod persistence_migrations;
 mod provider_configuration;
 mod provider_import;
 mod repository;
@@ -84,7 +85,7 @@ pub use transcript_delivery::{
 };
 pub use velune_conversation as conversation;
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct Options {
     pub home_directory: PathBuf,
     pub resources_directory: PathBuf,
@@ -125,6 +126,10 @@ pub enum Error {
     /// or background tasks still run.
     #[error("子 Agent 仍在运行；请等待其结束，或先停止子 Agent")]
     OutstandingWork,
+    /// The conversation's own turn runs; the asked branch would disturb it.
+    /// Fork requests hold for the turn to end instead of interrupting it.
+    #[error("会话正在运行；请等当前 turn 结束后重试")]
+    Busy,
     #[error("application I/O failed: {0}")]
     Io(#[from] std::io::Error),
     #[error("application JSON failed: {0}")]
@@ -151,6 +156,8 @@ pub struct Application {
 impl Application {
     pub fn open(options: Options) -> Result<Self, Error> {
         options.validate()?;
+        let home_lock = repository::Repository::lock_home(&options.home_directory)?;
+        persistence_migrations::prepare(&options.home_directory)?;
         let analytics = std::sync::Arc::new(
             analytics::AnalyticsStore::open(&options.home_directory).unwrap_or_else(|error| {
                 analytics::AnalyticsStore::unavailable(&options.home_directory, error)
@@ -158,7 +165,7 @@ impl Application {
         );
         let attachment_directory = options.home_directory.join("remote-attachments");
         let composer_home = options.home_directory.clone();
-        let runtime = local::CoreRuntime::open(options, analytics.clone())?;
+        let runtime = local::CoreRuntime::open(options, analytics.clone(), home_lock)?;
         let composer = composer::ComposerInputs::open(&composer_home)?;
         Ok(Self {
             composer,
@@ -206,6 +213,14 @@ impl From<Error> for Failure {
                 Kind::OutstandingWork,
                 "子 Agent 仍在运行；请等待其结束，或先停止子 Agent",
             ),
+            Error::Busy => {
+                let mut failure = Failure::new(
+                    Kind::Invalid,
+                    "会话正在运行；请等当前 turn 结束后重试".to_owned(),
+                );
+                failure.code = "busy".into();
+                failure
+            }
             Error::Io(error) => Failure::new(Kind::Io, error.to_string()),
             Error::Json(error) => Failure::new(Kind::Contract, error.to_string()),
             Error::History(error) => {

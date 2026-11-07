@@ -197,7 +197,8 @@ struct TabContentView: View {
                        forkConversation: { [store, window] id in store.forkConversation(through: id, forked: window.openInNewTab(adopting:)) },
                        describeSettings: { [store] in store.describe($0) },
                        recovery: store.runtimeRecovery, stoppingRecovery: store.isStopping,
-                       canStopRecovery: store.canCancel, stopRecovery: store.cancel)
+                       canStopRecovery: store.canCancel, stopRecovery: store.cancel,
+                       heldForkNotice: store.heldForkNotice)
     }
 }
 
@@ -713,10 +714,11 @@ private struct TabDropDelegate: DropDelegate {
 
     func performDrop(info: DropInfo) -> Bool {
         guard let at = insertion, let provider = info.itemProviders(for: ConversationLink.dropTypes).first else { insertion = nil; return false }
+        let source = ListDragWatch.shared.sourceWindow
         ListDragWatch.shared.accepted()
         insertion = nil
         ConversationLink.load(provider) { [window, pane] url in
-            Task { @MainActor in window.drop(url, on: pane, zone: .center, at: at) }
+            Task { @MainActor in window.drop(url, on: pane, zone: .center, at: at, from: source) }
         }
         return true
     }
@@ -744,10 +746,11 @@ private struct PaneDropDelegate: DropDelegate {
 
     func performDrop(info: DropInfo) -> Bool {
         guard let zone, let provider = info.itemProviders(for: ConversationLink.dropTypes).first else { zone = nil; return false }
+        let source = ListDragWatch.shared.sourceWindow
         ListDragWatch.shared.accepted()
         self.zone = nil
         ConversationLink.load(provider) { [window, pane] url in
-            Task { @MainActor in window.drop(url, on: pane, zone: zone) }
+            Task { @MainActor in window.drop(url, on: pane, zone: zone, from: source) }
         }
         return true
     }

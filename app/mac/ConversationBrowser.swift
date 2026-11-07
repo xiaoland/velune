@@ -110,9 +110,9 @@ struct ConversationBrowser {
     }
 }
 
-/// Velune's link to a conversation: `velune://conversation?runtime=…&id=…`.
+/// A conversation link belongs to this application purpose and development scope.
 enum ConversationLink {
-    static let scheme = "velune"
+    static var scheme: String { MacExecutionContext.admitted.conversationScheme }
     static func url(runtimeID: String, conversationID: String) -> URL {
         var components = URLComponents()
         components.scheme = scheme; components.host = "conversation"
@@ -141,8 +141,19 @@ enum ConversationLink {
     static func itemProvider(runtimeID: String, conversationID: String) -> NSItemProvider {
         let data = url(runtimeID: runtimeID, conversationID: conversationID).dataRepresentation
         let provider = NSItemProvider()
-        provider.registerDataRepresentation(forTypeIdentifier: dragType.identifier, visibility: .ownProcess) { done in
-            DispatchQueue.main.async { done(data, nil) }
+        provider.registerDataRepresentation(forTypeIdentifier: dragType.identifier, visibility: .ownProcess) { (done: @escaping @Sendable (Foundation.Data?, Swift.Error?) -> Void) -> Progress? in
+            // AppKit resolves outstanding drag data synchronously on quit.
+            // The captured payload must be available without the main run loop.
+            done(data, nil)
+            return nil
+        }
+        return provider
+    }
+
+    static func groupItemProvider() -> NSItemProvider {
+        let provider = NSItemProvider()
+        provider.registerDataRepresentation(forTypeIdentifier: groupDragType.identifier, visibility: .ownProcess) { (done: @escaping @Sendable (Foundation.Data?, Swift.Error?) -> Void) -> Progress? in
+            done(Data(), nil)
             return nil
         }
         return provider

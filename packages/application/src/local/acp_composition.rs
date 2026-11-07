@@ -15,16 +15,8 @@ impl CoreRuntime {
         if !runtime.enabled {
             return Err(RuntimeError::invalid("此运行时已停用，请先启用"));
         }
-        let launch = runtime.acp_launch()?;
-        let (execution, os_home) = self.prepare_runtime_location(runtime)?;
-        let config = Config {
-            binary: setting_path(runtime, "binary")?,
-            args: launch.args,
-            environment: launch.environment,
-            execution,
-            os_home,
-            mcp_servers,
-        };
+        let config = self.acp_configuration(runtime, mcp_servers)?;
+        self.prepare_runtime_location(runtime)?;
         let client = telemetry::observe(self.telemetry.as_ref(), "harness.start", || {
             Client::connect(config)
         })
@@ -34,6 +26,23 @@ impl CoreRuntime {
             serde_json::from_value(serde_json::to_value(client.capabilities())?)?,
         );
         Ok(client)
+    }
+
+    pub(super) fn acp_configuration(
+        &self,
+        runtime: &RuntimeInstance,
+        mcp_servers: Vec<velune_agent_runtime::mcp::Server>,
+    ) -> Result<Config, RuntimeError> {
+        let launch = runtime.acp_launch()?;
+        let (execution, os_home) = self.runtime_location(runtime)?;
+        Ok(Config {
+            binary: setting_path(runtime, "binary")?,
+            args: launch.args,
+            environment: launch.environment,
+            execution,
+            os_home,
+            mcp_servers,
+        })
     }
 
     pub(crate) fn acp_launch(&self, runtime_id: String) -> Result<crate::AcpLaunch, RuntimeError> {

@@ -105,7 +105,7 @@ pub(crate) struct SubscriptionQuota {
     defer_identity_retirement: bool,
     identity_changes: Arc<Mutex<BTreeSet<Key>>>,
     state: Mutex<State>,
-    history: crate::quota_history::QuotaHistory,
+    history: Arc<crate::quota_history::QuotaHistory>,
 }
 struct GatewayView {
     service: Arc<SubscriptionQuota>,
@@ -137,7 +137,9 @@ impl SubscriptionQuota {
         scheduling: velune_gateway::SchedulingState,
     ) -> Arc<Self> {
         let service = Arc::new(Self {
-            history: crate::quota_history::QuotaHistory::new(home.join("quota-history")),
+            history: Arc::new(crate::quota_history::QuotaHistory::new(
+                home.join("quota-history"),
+            )),
             home,
             scheduling,
             defer_identity_retirement: false,
@@ -156,7 +158,7 @@ impl SubscriptionQuota {
             scheduling: self.scheduling.clone(),
             defer_identity_retirement: true,
             identity_changes: self.identity_changes.clone(),
-            history: crate::quota_history::QuotaHistory::new(self.home.join("quota-history")),
+            history: self.history.clone(),
             state: Mutex::new(State {
                 entries: state
                     .entries
@@ -323,9 +325,14 @@ impl SubscriptionQuota {
             }
             false
         });
-        let names: BTreeSet<String> = desired
-            .keys()
-            .map(|(g, p)| crate::quota_history::QuotaHistory::name(g, p))
+        let history_bindings = desired
+            .iter()
+            .map(|((gateway, provider), (binding, _))| {
+                (
+                    crate::quota_history::QuotaHistory::name(gateway, provider),
+                    binding.as_ref().map(Binding::epoch),
+                )
+            })
             .collect();
         for (key, (binding, limits)) in desired {
             state.entries.entry(key).or_insert_with(|| Entry {
@@ -349,7 +356,7 @@ impl SubscriptionQuota {
             });
         }
         drop(state);
-        self.history.retain(&names);
+        self.history.configure(history_bindings);
     }
     pub(crate) async fn authorize(
         self: &Arc<Self>,
@@ -1122,6 +1129,21 @@ mod configuration_tests {
         };
         gateways[0].providers[0].name = "Saved label".into();
         let next = service.fork_configuration(&gateways);
+        let old_epoch = service.state.lock().unwrap().entries
+            [&("fixture".into(), "fixture".into())]
+            .binding
+            .as_ref()
+            .unwrap()
+            .epoch();
+        let point = crate::QuotaHistoryPoint {
+            observed_at_ms: now,
+            available: Some(true),
+            windows: Vec::new(),
+            balances: Vec::new(),
+        };
+        service
+            .history
+            .record("fixture", "fixture", &old_epoch, point.clone());
         let observation = next.query("fixture", "fixture", false).unwrap().observation;
         assert!(matches!(observation.freshness, QuotaFreshness::Fresh));
         assert_eq!(observation.windows[0].used_percent, 98.0);
@@ -1129,6 +1151,21 @@ mod configuration_tests {
         // Replacing the next version's binding must not revoke the running one.
         gateways[0].providers[0].authentication.generation = 2;
         next.configure(&gateways);
+        let new_epoch = next.state.lock().unwrap().entries[&("fixture".into(), "fixture".into())]
+            .binding
+            .as_ref()
+            .unwrap()
+            .epoch();
+        next.history
+            .record("fixture", "fixture", &new_epoch, point.clone());
+        // A late old worker cannot replace the current binding's retained history.
+        service
+            .history
+            .record("fixture", "fixture", &old_epoch, point.clone());
+        assert_eq!(
+            next.history("fixture", "fixture", 0).unwrap().points,
+            vec![point]
+        );
         assert!(!*old_cancellation.borrow());
         let old = service
             .query("fixture", "fixture", false)
@@ -1136,6 +1173,24 @@ mod configuration_tests {
             .observation;
         assert!(matches!(old.freshness, QuotaFreshness::Fresh));
         assert_eq!(old.windows[0].used_percent, 98.0);
+        next.configure(&[]);
+        service.history.record(
+            "fixture",
+            "fixture",
+            &old_epoch,
+            crate::QuotaHistoryPoint {
+                observed_at_ms: now,
+                available: Some(true),
+                windows: Vec::new(),
+                balances: Vec::new(),
+            },
+        );
+        assert!(
+            std::fs::read_dir(home.join("quota-history"))
+                .unwrap()
+                .next()
+                .is_none()
+        );
         service.stop();
         next.stop();
         let _ = std::fs::remove_dir_all(home);
