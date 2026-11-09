@@ -1714,6 +1714,11 @@ enum TranscriptConversationLink {
     func show(language: String?, source: String, text value: NSAttributedString, frame: NSRect, textFrame: NSRect, textDelegate: NSTextViewDelegate, openArtifact: @escaping () -> Void) {
         self.frame = frame
         self.openArtifact = openArtifact
+        // Labels and controls refresh their fonts on every apply; the views
+        // outlive any single appearance size.
+        label.font = TranscriptTypography.caption
+        viewButton.font = TranscriptTypography.caption
+        copyButton.font = TranscriptTypography.caption
         viewButton.isHidden = language?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() != "mermaid"
         label.stringValue = language ?? "代码"
         let padding = TranscriptRowLayout.codePadding, labelHeight = TranscriptRowLayout.codeLabelHeight
@@ -1872,6 +1877,9 @@ enum TranscriptConversationLink {
     required init?(coder: NSCoder) { fatalError("init(coder:) is unavailable") }
 
     func show(_ text: String, shimmering: Bool) {
+        // Read the font on every apply: a label created under another size
+        // follows the current appearance instead of keeping its birth font.
+        label.font = TranscriptTypography.callout
         if label.stringValue != text { label.stringValue = text; needsLayout = true }
         setAccessibilityLabel(text)
         let shimmer = shimmering && !text.isEmpty && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
@@ -1933,6 +1941,9 @@ enum TranscriptConversationLink {
     override func updateLayer() { layer?.backgroundColor = NSColor.quaternarySystemFill.cgColor }
 
     func show(_ item: TranscriptAttachment) {
+        // Before the identity guard: re-applying the same item after an
+        // appearance change must still pick up the new size.
+        name.font = TranscriptTypography.callout
         guard item != self.item else { return }
         self.item = item
         name.stringValue = item.name
@@ -2051,6 +2062,7 @@ enum TranscriptConversationLink {
 
     func show(_ value: TurnSettingsSummary) {
         settings = value
+        summary.font = TranscriptTypography.callout
         summary.stringValue = value.brief
         button.toolTip = value.brief
         button.setAccessibilityLabel("本轮配置")

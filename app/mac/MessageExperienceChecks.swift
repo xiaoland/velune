@@ -43,7 +43,42 @@ import VeluneBindings
         undo.undo()
         precondition(editor.string == "保留当前输入" && model.submission == editor.string)
         precondition(!NSApp.isActive)
+        // Transcript chrome (activity line, attachment name, code label and
+        // controls) must read its fonts on every apply: views are reused
+        // across appearance changes, so a font snapshotted at creation would
+        // keep a stale size after switching back.
+        let transcriptDelegate = TranscriptTableController()
+        let chromeMessage = DeliveredMessage(id: "chrome", role: .assistant, timestampUnixMs: nil, blocks: [
+            .text(text: "```swift\nlet size = 1\n```"),
+            .file(path: "/tmp/velune-typography-合成.txt"),
+        ])
+        let activityCell = TranscriptCellView()
+        let chromeCell = TranscriptCellView()
+        func chromeFonts(activity: Bool) -> [CGFloat] {
+            let content: TranscriptRowContent = activity
+                ? .activity(.init(text: "正在思考", isLive: true))
+                : .message(chromeMessage, revision: 0, expanded: [], status: nil, copies: false, edits: false, forks: false)
+            let layout = TranscriptRowLayout.make(content, rendered: activity ? nil : RenderedMessage(chromeMessage), width: 640, measurer: TextMeasurer())
+            let cell = activity ? activityCell : chromeCell
+            cell.frame = NSRect(x: 0, y: 0, width: 640, height: layout.height)
+            cell.apply(layout, rowID: activity ? "activity" : "chrome", outlineToggle: nil, edit: nil, fork: nil, toggleHelp: nil, textDelegate: transcriptDelegate, openArtifact: { _ in }, toggle: { _ in })
+            func descendants(_ root: NSView) -> [NSView] { [root] + root.subviews.flatMap(descendants) }
+            return descendants(cell).compactMap { $0 as? NSTextField }.map { $0.font?.pointSize ?? 0 }.sorted()
+        }
+        // The composer leg above leaves the message size at .extraLarge.
+        AppearancePreferences.shared.values.messages = .standard
+        AppearancePreferences.shared.values.ui = .standard
+        let chromeBase = chromeFonts(activity: true) + chromeFonts(activity: false)
+        AppearancePreferences.shared.values.messages = .extraLarge
+        AppearancePreferences.shared.values.ui = .extraLarge
+        let chromeLarge = chromeFonts(activity: true) + chromeFonts(activity: false)
+        AppearancePreferences.shared.values.messages = .standard
+        AppearancePreferences.shared.values.ui = .standard
+        let chromeRestored = chromeFonts(activity: true) + chromeFonts(activity: false)
+        precondition(chromeBase == chromeRestored && chromeBase.count == chromeLarge.count && !chromeBase.isEmpty, "转录静态标签字体必须随外观恢复默认")
+        precondition(zip(chromeBase, chromeLarge).allSatisfy { $1 > $0 }, "转录静态标签字体必须随超大增大")
         note("PASS live typography: native composer text, selection and undo survive message font changes without recreating the editor")
+        note("PASS transcript chrome typography: activity, attachment, code label and control fonts follow appearance changes on reused cells")
         exit(0)
     }
     if !CommandLine.arguments.contains("--experience-visual-only") {

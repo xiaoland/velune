@@ -141,9 +141,9 @@ Mermaid 11.12.0 与许可随 bundle 本地分发，使用固定版本和本地 W
 
 `MessageMetadata` 统一消息操作行的本地时间格式，用户／client／最终回复显示自身创建时间，时间与copy／edit／fork共用hover显隐；工作过程footer只提供复制，不显示时间。缺失原生时间不补造。
 
-通用设置中的外观区分别控制 UI／消息／代码字号、紧凑程度与 composer 可用宽度比例。`AppearancePreferences` 原子保存本机 `mac-appearance.json`，原生测量读线程安全快照；字体变化清消息布局缓存并重测，composer 更新原对象排版以保留正文、选区和撤销记录。速度由模型目录变体表达，不增加独立的按轮维度。
+通用设置中的外观区分别控制 UI／消息／代码字号、紧凑程度与 composer 可用宽度比例。`AppearancePreferences` 原子保存本机 `mac-appearance.json`，原生测量读线程安全快照；字体变化清消息布局缓存并重测，composer 更新原对象排版以保留正文、选区和撤销记录。转录里的持久子视图（活动行、附件名、代码块标签与按钮、本轮配置摘要）在每次配置时重读字体，不保留创建时的字号快照。速度由模型目录变体表达，不增加独立的按轮维度。
 
-`--check-message-experience` 使用 `/tmp` 下的合成 HOME 检查提交反馈和模型／journal 的保存；`--experience-reopen` 在新进程读回 editor 与外观；`--experience-visual-only` 只生成定向原生 PNG，`--experience-typography-only` 只检查原生编辑器更改字号的连续性。入口禁止激活，不创建可见窗口或注入全局输入。当前验证范围见[任务记录](../../tasks/messaging-and-workspace-polish/packet.md)。
+`--check-message-experience` 使用 `/tmp` 下的合成 HOME 检查提交反馈和模型／journal 的保存；`--experience-reopen` 在新进程读回 editor 与外观；`--experience-visual-only` 只生成定向原生 PNG，`--experience-typography-only` 检查原生编辑器更改字号的连续性，并核对复用 cell 上活动行／附件／代码块等持久标签的字体随外观恢复。入口禁止激活，不创建可见窗口或注入全局输入。当前验证范围见[任务记录](../../tasks/messaging-and-workspace-polish/packet.md)。
 
 系统通知使用通知专用的窗口路由：已打开的目标聚焦其原有Tab，否则在当前工作窗口新开Tab；保留此前Tab。原生通知回调才激活窗口，隐藏检查只验证模型路由。
 
