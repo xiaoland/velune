@@ -63,7 +63,12 @@ import VeluneBindings
             cell.frame = NSRect(x: 0, y: 0, width: 640, height: layout.height)
             cell.apply(layout, rowID: activity ? "activity" : "chrome", outlineToggle: nil, edit: nil, fork: nil, toggleHelp: nil, textDelegate: transcriptDelegate, openArtifact: { _ in }, toggle: { _ in })
             func descendants(_ root: NSView) -> [NSView] { [root] + root.subviews.flatMap(descendants) }
-            return descendants(cell).compactMap { $0 as? NSTextField }.map { $0.font?.pointSize ?? 0 }.sorted()
+            // Chrome labels now draw attributed strings baked at measurement
+            // time; the check reads the baked font, falling back to the field's.
+            return descendants(cell).compactMap { $0 as? NSTextField }.map { field in
+                let attributes = field.attributedStringValue.length > 0 ? field.attributedStringValue.attributes(at: 0, effectiveRange: nil) : [:]
+                return (attributes[.font] as? NSFont ?? field.font)?.pointSize ?? 0
+            }.sorted()
         }
         // The composer leg above leaves the message size at .extraLarge.
         AppearancePreferences.shared.values.messages = .standard

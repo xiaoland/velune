@@ -1393,7 +1393,7 @@ enum TranscriptConversationLink {
         for view in textViews { view.clear() }
         for view in codeBlocks { view.clear() }
         spinner?.stopAnimation(nil)
-        activityLabel?.show("", shimmering: false)
+        activityLabel?.show(NSAttributedString(string: ""), shimmering: false)
     }
 
     func apply(_ layout: TranscriptRowLayout, rowID: String, outlineToggle: (() -> Void)?, edit: (() -> Void)?, fork: (() -> Void)?, toggleHelp: String?, textDelegate: NSTextViewDelegate, openArtifact: @escaping (String) -> Void, toggle: @escaping (String) -> Void) {
@@ -1426,7 +1426,7 @@ enum TranscriptConversationLink {
                 view.delegate = textDelegate
                 view.passesClicks = inBubble && outlineToggle != nil
                 view.show(text, frame: frame)
-            case .code(let language, let source, let text, let frame, let textFrame):
+            case .code(let language, let label, let source, let text, let frame, let textFrame, let controlsFont):
                 if codeIndex == codeBlocks.count {
                     let view = TranscriptCodeBlockView()
                     codeBlocks.append(view)
@@ -1434,8 +1434,9 @@ enum TranscriptConversationLink {
                 }
                 let view = codeBlocks[codeIndex]; codeIndex += 1
                 view.isHidden = false
-                view.show(language: language, source: source, text: text, frame: frame,
-                          textFrame: textFrame.offsetBy(dx: -frame.minX, dy: -frame.minY), textDelegate: textDelegate,
+                view.show(language: language, label: label, source: source, text: text, frame: frame,
+                          textFrame: textFrame.offsetBy(dx: -frame.minX, dy: -frame.minY), controlsFont: controlsFont,
+                          textDelegate: textDelegate,
                           openArtifact: { openArtifact(source) })
             case .disclosure(let key, let title, let symbol, let expanded, let frame):
                 if disclosureIndex == disclosures.count {
@@ -1447,7 +1448,7 @@ enum TranscriptConversationLink {
                 view.frame = frame
                 view.configure(title: title, symbol: symbol, expanded: expanded) { toggle(key) }
                 view.isHidden = false
-            case .attachment(let item, let frame):
+            case .attachment(let item, let name, let frame):
                 if attachmentIndex == attachments.count {
                     let view = TranscriptAttachmentView()
                     attachments.append(view)
@@ -1455,18 +1456,18 @@ enum TranscriptConversationLink {
                 }
                 let view = attachments[attachmentIndex]; attachmentIndex += 1
                 view.frame = frame
-                view.show(item)
+                view.show(item, title: name)
                 view.isHidden = false
-            case .turnSettings(let settings, let frame):
+            case .turnSettings(let settings, let brief, let frame):
                 if turnSettings == nil {
                     let view = TranscriptTurnSettingsView()
                     addSubview(view)
                     turnSettings = view
                 }
                 turnSettings?.frame = frame
-                turnSettings?.show(settings)
+                turnSettings?.show(settings, brief: brief)
                 turnSettings?.isHidden = false
-            case .activity(let activity, let frame):
+            case .activity(let activity, let text, let frame):
                 if spinner == nil {
                     let indicator = NSProgressIndicator()
                     indicator.style = .spinning; indicator.controlSize = .small; indicator.isDisplayedWhenStopped = false
@@ -1477,7 +1478,7 @@ enum TranscriptConversationLink {
                 spinner?.frame = NSRect(x: frame.minX, y: frame.minY + 1, width: 16, height: 16)
                 spinner?.isHidden = false; spinner?.startAnimation(nil)
                 activityLabel?.frame = NSRect(x: frame.minX + 22, y: frame.minY, width: frame.width - 22, height: frame.height)
-                activityLabel?.show(activity.text, shimmering: activity.isLive)
+                activityLabel?.show(text, shimmering: activity.isLive)
                 activityLabel?.isHidden = activity.text.isEmpty
             case .copy(let text, let frame):
                 if copyButton == nil {
@@ -1651,16 +1652,16 @@ enum TranscriptConversationLink {
     required init?(coder: NSCoder) { fatalError("init(coder:) is unavailable") }
 
     /// A nil `expanded` shows the label alone, aligned with expandable ones.
-    func configure(title: String, symbol: String?, expanded: Bool?, action: @escaping () -> Void) {
+    /// `title` carries its own typography (font, color, truncation); this
+    /// view draws it as given and holds no font of its own.
+    func configure(title: NSAttributedString, symbol: String?, expanded: Bool?, action: @escaping () -> Void) {
         self.action = expanded == nil ? nil : action
         triangle.isHidden = expanded == nil
         triangle.state = expanded == true ? .on : .off
-        triangle.setAccessibilityLabel(title)
+        triangle.setAccessibilityLabel(title.string)
         label.setAccessibilityRole(expanded == nil ? .staticText : .button)
-        label.toolTip = title
-        let paragraph = NSMutableParagraphStyle()
-        paragraph.lineBreakMode = .byTruncatingTail
-        label.attributedTitle = NSAttributedString(string: title, attributes: [.font: TranscriptTypography.callout, .foregroundColor: NSColor.secondaryLabelColor, .paragraphStyle: paragraph])
+        label.toolTip = title.string
+        label.attributedTitle = title
         label.image = symbol.flatMap { NSImage(systemSymbolName: $0, accessibilityDescription: nil)?.withSymbolConfiguration(.init(pointSize: 11, weight: .regular)) }
         needsLayout = true
     }
@@ -1700,29 +1701,25 @@ enum TranscriptConversationLink {
 
     override init(frame: NSRect) {
         super.init(frame: frame)
-        label.font = TranscriptTypography.caption
-        label.textColor = .secondaryLabelColor
         viewButton.bezelStyle = .accessoryBarAction
         viewButton.controlSize = .small
-        viewButton.font = TranscriptTypography.caption
         viewButton.target = self; viewButton.action = #selector(viewArtifact)
         addSubview(label); addSubview(copyButton); addSubview(viewButton); addSubview(text)
     }
     convenience init() { self.init(frame: .zero) }
     required init?(coder: NSCoder) { fatalError("init(coder:) is unavailable") }
 
-    func show(language: String?, source: String, text value: NSAttributedString, frame: NSRect, textFrame: NSRect, textDelegate: NSTextViewDelegate, openArtifact: @escaping () -> Void) {
+    /// Typography arrives baked from the row layout: `label` as an attributed
+    /// string, `controlsFont` for the buttons. The view holds no fonts.
+    func show(language: String?, label attributedLabel: NSAttributedString, source: String, text value: NSAttributedString, frame: NSRect, textFrame: NSRect, controlsFont: NSFont, textDelegate: NSTextViewDelegate, openArtifact: @escaping () -> Void) {
         self.frame = frame
         self.openArtifact = openArtifact
-        // Labels and controls refresh their fonts on every apply; the views
-        // outlive any single appearance size.
-        label.font = TranscriptTypography.caption
-        viewButton.font = TranscriptTypography.caption
-        copyButton.font = TranscriptTypography.caption
+        label.attributedStringValue = attributedLabel
+        copyButton.font = controlsFont
+        viewButton.font = controlsFont
         viewButton.isHidden = language?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() != "mermaid"
-        label.stringValue = language ?? "代码"
-        let padding = TranscriptRowLayout.codePadding, labelHeight = TranscriptRowLayout.codeLabelHeight
         label.sizeToFit()
+        let padding = TranscriptRowLayout.codePadding, labelHeight = TranscriptRowLayout.codeLabelHeight
         label.frame.origin = NSPoint(x: padding, y: padding + (labelHeight - label.frame.height) / 2)
         copyButton.code = source
         copyButton.sizeToFit()
@@ -1751,7 +1748,6 @@ enum TranscriptConversationLink {
         super.init(frame: .zero)
         bezelStyle = .accessoryBarAction
         controlSize = .small
-        font = TranscriptTypography.caption
         target = self; action = #selector(copyCode)
         reset()
     }
@@ -1863,8 +1859,6 @@ enum TranscriptConversationLink {
     override init(frame: NSRect) {
         super.init(frame: frame)
         wantsLayer = true
-        label.font = TranscriptTypography.callout
-        label.textColor = .secondaryLabelColor
         label.lineBreakMode = .byTruncatingTail
         label.maximumNumberOfLines = 1
         label.wantsLayer = true
@@ -1876,13 +1870,12 @@ enum TranscriptConversationLink {
     convenience init() { self.init(frame: .zero) }
     required init?(coder: NSCoder) { fatalError("init(coder:) is unavailable") }
 
-    func show(_ text: String, shimmering: Bool) {
-        // Read the font on every apply: a label created under another size
-        // follows the current appearance instead of keeping its birth font.
-        label.font = TranscriptTypography.callout
-        if label.stringValue != text { label.stringValue = text; needsLayout = true }
-        setAccessibilityLabel(text)
-        let shimmer = shimmering && !text.isEmpty && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+    /// `text` carries its own typography (font, color, truncation) baked at
+    /// measurement time; the label draws it as given and holds no font.
+    func show(_ text: NSAttributedString, shimmering: Bool) {
+        if !label.attributedStringValue.isEqual(to: text) { label.attributedStringValue = text; needsLayout = true }
+        setAccessibilityLabel(text.string)
+        let shimmer = shimmering && text.length > 0 && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         guard shimmer != self.shimmering else { return }
         self.shimmering = shimmer
         needsLayout = true
@@ -1927,7 +1920,6 @@ enum TranscriptConversationLink {
         image.wantsLayer = true
         image.layer?.cornerRadius = 4
         image.layer?.masksToBounds = true
-        name.font = TranscriptTypography.callout
         name.lineBreakMode = .byTruncatingMiddle
         name.maximumNumberOfLines = 1
         addSubview(image); addSubview(name)
@@ -1940,13 +1932,12 @@ enum TranscriptConversationLink {
     override var wantsUpdateLayer: Bool { true }
     override func updateLayer() { layer?.backgroundColor = NSColor.quaternarySystemFill.cgColor }
 
-    func show(_ item: TranscriptAttachment) {
-        // Before the identity guard: re-applying the same item after an
-        // appearance change must still pick up the new size.
-        name.font = TranscriptTypography.callout
+    /// `title` carries its own typography baked at measurement time; the
+    /// identity guard covers the other per-item work only.
+    func show(_ item: TranscriptAttachment, title: NSAttributedString) {
+        name.attributedStringValue = title
         guard item != self.item else { return }
         self.item = item
-        name.stringValue = item.name
         let path: String? = switch item.content { case .imageFile(let path), .file(let path): path; case .imageData, .imagePending: nil }
         toolTip = path ?? item.name
         setAccessibilityLabel("打开附件 \(item.name)")
@@ -2050,8 +2041,6 @@ enum TranscriptConversationLink {
         button.image = NSImage(systemSymbolName: "info.circle", accessibilityDescription: "本轮配置")?.withSymbolConfiguration(.init(pointSize: 11, weight: .regular))
         button.contentTintColor = .tertiaryLabelColor
         button.target = self; button.action = #selector(showSettings)
-        summary.font = TranscriptTypography.callout
-        summary.textColor = .secondaryLabelColor
         summary.lineBreakMode = .byTruncatingMiddle
         summary.alignment = .right
         summary.alphaValue = 0
@@ -2060,10 +2049,10 @@ enum TranscriptConversationLink {
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is unavailable") }
 
-    func show(_ value: TurnSettingsSummary) {
+    /// `brief` carries its own typography baked at measurement time.
+    func show(_ value: TurnSettingsSummary, brief: NSAttributedString) {
         settings = value
-        summary.font = TranscriptTypography.callout
-        summary.stringValue = value.brief
+        summary.attributedStringValue = brief
         button.toolTip = value.brief
         button.setAccessibilityLabel("本轮配置")
         button.setAccessibilityValue(value.brief)

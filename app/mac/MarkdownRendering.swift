@@ -21,6 +21,15 @@ enum TranscriptTypography {
     static func plain(_ text: String, font: NSFont = body, color: NSColor = .labelColor, alignment: NSTextAlignment = .natural) -> NSAttributedString {
         NSAttributedString(string: text, attributes: [.font: font, .foregroundColor: color, .paragraphStyle: paragraph(alignment: alignment)])
     }
+
+    /// A single-line chrome label (truncating tail) baked at measurement time.
+    /// Transcript cell views draw these as given and hold no fonts of their
+    /// own, so display typography cannot drift from measured typography.
+    static func chrome(_ text: String, font: NSFont, color: NSColor = .labelColor, alignment: NSTextAlignment = .natural) -> NSAttributedString {
+        let style = paragraph(alignment: alignment)
+        style.lineBreakMode = .byTruncatingTail
+        return NSAttributedString(string: text, attributes: [.font: font, .foregroundColor: color, .paragraphStyle: style])
+    }
 }
 
 private extension NSFont {
