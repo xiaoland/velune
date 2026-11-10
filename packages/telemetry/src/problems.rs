@@ -4,7 +4,7 @@ use crate::{ClientTelemetry, Error, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, HashMap, HashSet},
     io::{BufRead, Write},
 };
 
@@ -18,6 +18,7 @@ pub struct DiagnosticProblem {
     pub code: Option<String>,
     pub phase: Option<String>,
     pub operation_id: Option<String>,
+    pub peer_id: Option<String>,
     pub activity_key: Option<String>,
     pub resolved_at_unix_ms: Option<i64>,
 }
@@ -69,6 +70,13 @@ impl ClientTelemetry {
             .collect::<Vec<_>>();
         files.sort();
         let mut problems = BTreeMap::<String, DiagnosticProblem>::new();
+        // Operations already represented, so a failure's twin lines and its UI
+        // record never become separate problems.
+        let mut operations = HashSet::<String>::new();
+        // A background poll can fail the same way thousands of times; repeated
+        // backfilled failures stay one open problem at their latest occurrence.
+        let mut repeated =
+            HashMap::<(String, String, Option<String>, Option<String>, String), String>::new();
         for file in files {
             for (index, line) in std::io::BufReader::new(std::fs::File::open(&file)?)
                 .split(b'\n')
@@ -94,8 +102,10 @@ impl ClientTelemetry {
                                 continue;
                             };
                             problem.id = problem.id.to_ascii_uppercase();
+                            problem.operation_id = problem.operation_id.filter(|id| !id.is_empty());
                             if let Some(operation) = &problem.operation_id {
                                 problems.retain(|_, p| p.operation_id.as_ref() != Some(operation));
+                                operations.insert(operation.clone());
                             }
                             problems.insert(problem.id.clone(), problem);
                         }
@@ -133,12 +143,11 @@ impl ClientTelemetry {
                 let operation_id = span
                     .and_then(|s| s.get("velune.operation.id"))
                     .and_then(Value::as_str)
+                    .filter(|id| !id.is_empty())
                     .map(str::to_owned);
-                if operation_id.as_ref().is_some_and(|id| {
-                    problems
-                        .values()
-                        .any(|p| p.operation_id.as_ref() == Some(id))
-                }) {
+                if let Some(id) = &operation_id
+                    && !operations.insert(id.clone())
+                {
                     continue;
                 }
                 let field = |name: &str| {
@@ -166,6 +175,25 @@ impl ClientTelemetry {
                     })
                     .map(|t| (t.unix_timestamp_nanos() / 1_000_000) as i64)
                     .unwrap_or(entry.timestamp_unix_ms);
+                let detail = field("detail")
+                    .or_else(|| field("message"))
+                    .unwrap_or_else(|| "操作失败；当时的日志未记录原始详情".into());
+                let kind = field("failure_kind").unwrap_or_else(|| "local".into());
+                let repeat = (
+                    source.clone(),
+                    kind.clone(),
+                    field("code"),
+                    field("phase"),
+                    detail.clone(),
+                );
+                if let Some(open) = repeated
+                    .get(&repeat)
+                    .and_then(|id| problems.get_mut(id))
+                    .filter(|p| p.resolved_at_unix_ms.is_none())
+                {
+                    open.occurred_at_unix_ms = open.occurred_at_unix_ms.max(occurred);
+                    continue;
+                }
                 let key = format!(
                     "{}:{index}",
                     file.file_name().unwrap_or_default().to_string_lossy()
@@ -189,13 +217,12 @@ impl ClientTelemetry {
                     id: id.clone(),
                     occurred_at_unix_ms: occurred,
                     source,
-                    detail: field("detail")
-                        .or_else(|| field("message"))
-                        .unwrap_or_else(|| "操作失败；当时的日志未记录原始详情".into()),
-                    kind: field("failure_kind").unwrap_or_else(|| "local".into()),
+                    detail,
+                    kind,
                     code: field("code"),
                     phase: field("phase"),
                     operation_id,
+                    peer_id: None,
                     activity_key: if field("event").as_deref()
                         == Some("runtime_history_read_failed")
                     {
@@ -205,6 +232,7 @@ impl ClientTelemetry {
                     },
                     resolved_at_unix_ms: None,
                 };
+                repeated.insert(repeat, id.clone());
                 problems.insert(id, problem);
             }
         }
@@ -288,5 +316,55 @@ mod tests {
         let third = open();
         assert!(third.problems("test").unwrap().is_empty());
         third.shutdown().unwrap();
+    }
+
+    #[test]
+    fn repeated_backfilled_failures_stay_one_problem() {
+        let home = tempfile::tempdir().unwrap();
+        let logs = home.path().join("logs");
+        std::fs::create_dir(&logs).unwrap();
+        let failure = |second: u32, operation: &str| {
+            let span = json!({"velune.operation":"bindings.synthetic_poll","velune.operation.id":operation});
+            format!(
+                "{}\n{}\n",
+                json!({"timestamp":format!("2026-01-01T00:00:{second:02}Z"),"level":"ERROR","target":"velune_bindings","span":span,
+                    "fields":{"event":"operation_failed","code":"closed","phase":"remote","failure_kind":"closed","detail":"synthetic closed"}}),
+                json!({"timestamp":format!("2026-01-01T00:00:{second:02}Z"),"level":"ERROR","target":"velune_telemetry","span":span,
+                    "fields":{"velune.outcome":"failure","error.type":"closed"}}),
+            )
+        };
+        let early = (0..30)
+            .map(|n| failure(n, &format!("early-{n}")))
+            .collect::<String>();
+        std::fs::write(logs.join("velune.2026-01-01.jsonl"), early).unwrap();
+        let open = || {
+            ClientTelemetry::open(
+                home.path(),
+                TelemetryIdentity::new("test", "0.1").unwrap(),
+                true,
+                None,
+            )
+            .unwrap()
+        };
+        let first = open();
+        let problems = first.problems("test").unwrap();
+        assert_eq!(problems.len(), 1);
+        assert_eq!(problems[0].detail, "synthetic closed");
+        assert_eq!(problems[0].occurred_at_unix_ms, 1_767_225_629_000);
+        first
+            .dismiss_problems("test", vec![problems[0].id.clone()])
+            .unwrap();
+        first.shutdown().unwrap();
+        drop(first);
+
+        // A recurrence after the dismissal is a new problem; the dismissed
+        // history does not come back.
+        // Files are read in name order; this one sorts after the dismissal.
+        std::fs::write(logs.join("velune.9999-12-31.jsonl"), failure(59, "late")).unwrap();
+        let second = open();
+        let problems = second.problems("test").unwrap();
+        assert_eq!(problems.len(), 1);
+        assert_eq!(problems[0].operation_id.as_deref(), Some("late"));
+        second.shutdown().unwrap();
     }
 }

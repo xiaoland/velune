@@ -33,6 +33,10 @@ final class ConversationStore: ObservableObject {
     /// a new tab reads the list first, or one off the list is looked up.
     @Published private(set) var reachingConversationID: String?
     private var linkedConversationRequest: UUID?
+    /// A seeded/restored tab may start while its device is offline. Keep
+    /// that destination until a successful read or another navigation.
+    private var unopenedConversationID: String?
+    private var openingNeedsRetry = false
     /// The conversation is being opened, as loading shows.
     var isOpeningConversation: Bool { pendingConversationID != nil || reachingConversationID != nil || (isSideChat && snapshot == nil && openingFailure == nil) }
     @Published private(set) var projectionRuntimeID: String?
@@ -44,6 +48,8 @@ final class ConversationStore: ObservableObject {
     private var preparedComposerTarget: PreparedComposerTarget?
     private var composerTargetRequestID: UUID?
     private var composerTargetNeedsRefresh = false
+    /// A failed preparation is retried with backoff; changed facts retry at once.
+    private var composerTargetRetry = PollBackoff()
     private var composerTargetClosed = false
     /// An explicit runtime action may arrive before the first authority read.
     private var pendingComposerRuntime: (target: ComposerTargetRequest, runtimeID: String)?
@@ -154,6 +160,10 @@ final class ConversationStore: ObservableObject {
             if searchResults != nil { refreshSearch() }
             let selected = selectedConversationIDs.filter { conversation(id: $0) != nil }
             if selected != selectedConversationIDs { selectedConversationIDs = selected }
+            if openingNeedsRetry, let id = unopenedConversationID, snapshot == nil, !isLoading {
+                openingNeedsRetry = false
+                openLinkedConversation(id: id)
+            }
         }
         let configurationChanged = device.configurationRevision != seenConfigurationRevision
         let defaultsChanged = device.composerChoicesRevision != seenComposerChoicesRevision
@@ -394,6 +404,7 @@ final class ConversationStore: ObservableObject {
     }
     private func requestComposerTarget(refreshFacts: Bool = false) {
         guard !isSideChat, let request = composerTargetRequest else { return }
+        if !refreshFacts, composerTargetFailure != nil, !composerTargetRetry.ready { return }
         if composerTargetRequestID != nil {
             if refreshFacts { composerTargetNeedsRefresh = true }
             return
@@ -421,7 +432,7 @@ final class ConversationStore: ObservableObject {
                 guard self.generation == currentGeneration, self.composerTargetRequest == request,
                       self.device.configurationRevision == configurationRevision,
                       self.device.composerChoicesRevision == defaultsRevision else {
-                    self.requestComposerTarget()
+                    self.requestComposerTarget(refreshFacts: true)
                     return
                 }
                 let choicesChanged = requestedChoices != normalizeComposerTargetChoices(choices: client.targetChoices(for: targetID)
@@ -430,15 +441,18 @@ final class ConversationStore: ObservableObject {
                 case .success(let prepared):
                     guard prepared.request == request, prepared.ownerId == client.ownerID,
                           prepared.context == client.context(targetID) else {
+                        self.composerTargetRetry.failed()
                         self.composerTargetFailure = "执行端身份已变化，请重新连接设备"
                         self.objectWillChange.send()
                         return
                     }
                     self.preparedComposerTarget = prepared
+                    self.composerTargetRetry.succeeded()
                     self.composerTargetFailure = nil
                     client.observePreparedTarget(prepared)
                     self.refreshNextTurn()
                 case .failure(let error):
+                    self.composerTargetRetry.failed()
                     let detail = AppProblem.failure(error, source: "准备输入目标").detail
                     if self.composerTargetFailure != detail {
                         self.composerTargetFailure = detail
@@ -608,6 +622,7 @@ final class ConversationStore: ObservableObject {
         }
         guard let transport else { return }
         reachingConversationID = conversationID
+        unopenedConversationID = conversationID
         // A new tab shares the device's current list. Opening it must not
         // scan every runtime again before reading the chosen conversation.
         if device.listRevision > 0 {
@@ -617,7 +632,12 @@ final class ConversationStore: ObservableObject {
             else if newConversation || loadFirstConversation, snapshot == nil, pendingConversationID == nil { createConversation() }
             return
         }
-        enqueue({ try transport.list() }, onFailure: { [weak self] _ in self?.reachingConversationID = nil }) { [weak self] data in
+        enqueue({ try transport.list() }, onFailure: { [weak self] _ in
+            self?.reachingConversationID = nil
+            self?.openingNeedsRetry = self?.unopenedConversationID != nil
+            self?.selectedConversationID = self?.unopenedConversationID
+            self?.schedulePolling()
+        }) { [weak self] data in
             guard let self else { return }
             applyList(data)
             schedulePolling()
@@ -777,6 +797,7 @@ final class ConversationStore: ObservableObject {
     /// Open a conversation a link names, such as a sub-agent's, or one gone
     /// back to; an agent may have started it after the list was last read.
     func openLinkedConversation(id: String, move: NavigationMove = .new) {
+        if unopenedConversationID != id { unopenedConversationID = nil; openingNeedsRetry = false }
         if conversation(id: id) != nil { selectConversation(id: id, move: move); return }
         guard !isPreview, !isShuttingDown, let transport else { abandonLinkedConversationLookup(); return }
         let request = UUID()
@@ -800,8 +821,12 @@ final class ConversationStore: ObservableObject {
             offListConversations.removeAll { $0.id == reached.id }
             offListConversations.append(reached)
             selectConversation(id: id, move: move)
-        case .success(nil): recordProblem("找不到这个会话；它可能已被删除或其运行时已停用", source: "打开会话")
-        case .failure(let failure): recordProblem(failure, source: "打开会话")
+        case .success(nil):
+            unopenedConversationID = nil
+            recordProblem("找不到这个会话；它可能已被删除或其运行时已停用", source: "打开会话")
+        case .failure(let failure):
+            openingNeedsRetry = unopenedConversationID != nil
+            recordProblem(failure, source: "打开会话")
         }
     }
     func selectConversation(id: String, move: NavigationMove = .new) {
@@ -826,9 +851,10 @@ final class ConversationStore: ObservableObject {
         composerEvents.send(.conversation(id))
         enqueue({ try transport.openConversation(runtimeID: conversation.runtimeID, conversationID: id) }, onFailure: { [weak self] _ in
             guard let self else { return }
+            self.openingNeedsRetry = self.snapshot == nil && self.unopenedConversationID != nil
             self.isDraft = previousWasDraft
-            self.selectedConversationID = previousSelection
-            self.selectedConversationIDs = Set([previousSelection].compactMap { $0 })
+            self.selectedConversationID = self.openingNeedsRetry ? self.unopenedConversationID : previousSelection
+            self.selectedConversationIDs = Set([self.selectedConversationID].compactMap { $0 })
             if let previousSelection { self.composerEvents.send(previousWasDraft ? .newConversation : .conversation(previousSelection)) }
             self.finishConversationLoading()
         }) { [weak self] in
@@ -934,6 +960,7 @@ final class ConversationStore: ObservableObject {
         let enabled = device.enabledRuntimeInstances
         guard let runtimeID = requestedRuntimeID ?? enabled.first(where: { $0.id == nextTurnRuntimeID })?.id ?? enabled.first?.id,
               enabled.contains(where: { $0.id == runtimeID }) else { return false }
+        unopenedConversationID = nil
         abandonLinkedConversationLookup()
         let id = Self.draftConversationPrefix + "new-conversation"
         let conversation = Conversation(id: id, title: "新会话", updatedAtUnixMs: isPreview ? Int64(Date().timeIntervalSince1970 * 1000) : nil, runtimeID: runtimeID, cwd: project?.directories.first ?? cwd, creationProject: project, canRename: isPreview, canDelete: isPreview)
@@ -948,7 +975,9 @@ final class ConversationStore: ObservableObject {
     /// show: the tab's title and the window's already-open checks work
     /// meanwhile, following the device's list once it is read.
     func noteRestoredConversation(_ id: String) {
-        guard !started, selectedConversationID == nil else { return }
+        // Preview initialization selects its sample before restoration runs.
+        // A restored background tab still owns the saved destination.
+        guard !started, selectedConversationID == nil || isPreview else { return }
         selectedConversationID = id
     }
     /// An unsent conversation can still choose its working directory.
@@ -1333,9 +1362,13 @@ final class ConversationStore: ObservableObject {
 
     // MARK: - Projection
 
-    private func resetProjection() { composerRequest = nil; stopRequested = false; executionStarting = false; preparedComposerTarget = nil; composerTargetRequestID = nil; nextTurn = nil; nextTurnRuntimeID = nil; loadedPayloads.removeAll(); isDraft = false; generation += 1; snapshot = nil; projectionRuntimeID = nil; selectedConversationID = nil; pendingConversationID = nil; abandonLinkedConversationLookup(); transcript.reset(); outgoing.reset(); activity = nil; sessionOptions = nil; sessionOptionsKey = nil }
+    private func resetProjection() { composerTargetRetry = PollBackoff(); composerRequest = nil; stopRequested = false; executionStarting = false; preparedComposerTarget = nil; composerTargetRequestID = nil; nextTurn = nil; nextTurnRuntimeID = nil; loadedPayloads.removeAll(); isDraft = false; generation += 1; snapshot = nil; projectionRuntimeID = nil; selectedConversationID = nil; pendingConversationID = nil; abandonLinkedConversationLookup(); transcript.reset(); outgoing.reset(); activity = nil; sessionOptions = nil; sessionOptionsKey = nil }
     private func apply(_ value: ConversationSnapshot?, preserveSelection: Bool = false) {
         guard var value else { return }
+        if value.conversation.id == unopenedConversationID {
+            unopenedConversationID = nil
+            openingNeedsRetry = false
+        }
         let conversationChanged = value.conversation.id != snapshot?.conversation.id
         let targetFactsChanged = conversationChanged
             || value.contextRuntimeID != snapshot?.contextRuntimeID

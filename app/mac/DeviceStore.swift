@@ -174,9 +174,11 @@ final class DeviceStore: ObservableObject {
     private func loadProblems() {
         guard let transport, !isPreview else { return }
         let scope = transport.stateDirectory.path
+        let peerID = peerID
         problemQueue.async { [weak self] in
             do {
-                let history = try transport.telemetryResult.get().binding.problems(scope: scope).compactMap(AppProblem.restored)
+                let history = try transport.telemetryResult.get().binding.problems(scope: scope)
+                    .filter { $0.peerId == peerID }.compactMap(AppProblem.restored)
                 DispatchQueue.main.async {
                     guard let self else { return }
                     var loaded = Dictionary(history.map { ($0.id, $0) }, uniquingKeysWith: { _, latest in latest })
@@ -209,12 +211,14 @@ final class DeviceStore: ObservableObject {
 
     let transport: Transport?
     let isPreview: Bool
+    let peerID: String?
     /// The tool windows as last arranged, for windows without a layout of their own.
     private(set) lazy var rememberedToolLayout = RememberedToolLayout(home: isPreview || !MacNativePersistenceGate.isEnabled ? nil : transport?.stateDirectory) { [weak self] in
         self?.recordProblem($0, source: "保存布局")
     }
     private var subscriptions: Set<AnyCancellable> = []
     private let queue = DispatchQueue(label: "local.velune.device", qos: .userInitiated)
+    private var lastConnectedEpoch: UInt64?
     private var timer: Timer?
     private var started = false
     private var authenticationPollPending = false
@@ -229,6 +233,8 @@ final class DeviceStore: ObservableObject {
     /// Counts reads of the kept choices, for tabs to take them up.
     @Published private(set) var composerChoicesRevision = 0
     private var activePollPending = false
+    private var activePollBackoff = PollBackoff()
+    private var quotaAlertBackoff = PollBackoff()
     private var activityCursor: UInt64 = 0
     private var quotaAlertPollPending = false
     private var quotaAlertCursor: UInt64 = 0
@@ -242,8 +248,9 @@ final class DeviceStore: ObservableObject {
     /// Sample conversations shown instead of a core's.
     private(set) var previewSnapshots: [String: ConversationSnapshot] = [:]
 
-    init(transport: Transport? = nil, preview: Bool = false) {
+    init(transport: Transport? = nil, preview: Bool = false, peerID: String? = nil) {
         isPreview = preview
+        self.peerID = peerID
         if preview { self.transport = nil }
         else if let transport { self.transport = transport }
         else {
@@ -284,15 +291,30 @@ final class DeviceStore: ObservableObject {
         schedulePolling()
     }
 
-    private func refreshConfiguration() {
+    /// The same store survives a connection replacement. Its previous list
+    /// read may have failed or may predate the new connection.
+    func connected(epoch: UInt64) {
+        guard lastConnectedEpoch != epoch else { return }
+        lastConnectedEpoch = epoch
+        retryConnection()
+    }
+
+    func retryConnection() {
+        // A new connection is worth reading at once, whatever earlier failures waited for.
+        activePollBackoff.succeeded(); quotaAlertBackoff.succeeded(); composerInputs.resumePolling()
+        refreshConfiguration(forgetOpenFailure: true)
+    }
+
+    private func refreshConfiguration(forgetOpenFailure: Bool = false) {
         guard let transport, !isShuttingDown else { return }
         performOnQueue { [weak self] in
+            if forgetOpenFailure { transport.retryOpen() }
             let result = Result { try transport.list() }
             DispatchQueue.main.async {
                 guard let self else { return }
                 switch result {
                 case .success(let value): self.applyList(value)
-                case .failure(let error): self.recordProblem(error, source: "刷新配置")
+                case .failure(let error): self.recordProblem(error, source: "刷新配置", activityKey: "configuration-list")
                 }
             }
         }
@@ -304,6 +326,7 @@ final class DeviceStore: ObservableObject {
     }
 
     func applyList(_ data: ConfigurationSnapshot) {
+        clearActivityProblem("configuration-list")
         for conversation in data.conversations.map(BindingMapping.listed) where rememberedConversations[conversation.id] != nil {
             rememberedConversations[conversation.id] = conversation
         }
@@ -402,9 +425,15 @@ final class DeviceStore: ObservableObject {
         browse({ try transport.showArchivedConversations(archived) }, source: "切换已归档会话")
     }
     /// Shapes the project whose primary folder is `path`.
-    func setProject(path: String, primaryFolder: String, name: String?, folders: [String]) {
-        guard let transport else { return }
-        browse({ try transport.setProject(path: path, primaryFolder: primaryFolder, name: name, folders: folders) }, source: "编辑项目")
+    func setProject(path: String, primaryFolder: String, name: String?, folders: [String], basis: ConversationProject? = nil, finished: ((Result<ConfigurationSnapshot, Error>) -> Void)? = nil) {
+        guard let transport, !isPreview, !isShuttingDown else {
+            finished?(.failure(TransportError.unavailable))
+            return
+        }
+        browse({ try transport.setProject(path: path, primaryFolder: primaryFolder, name: name, folders: folders, basis: basis) }, source: "编辑项目") { [weak self] result in
+            if case .failure = result { self?.refreshConversations() }
+            finished?(result)
+        }
     }
     /// Marks the conversation read once, while no mark is on its way.
     func markRead(_ conversation: Conversation) {
@@ -524,23 +553,26 @@ final class DeviceStore: ObservableObject {
               let owner = ConversationWindowModel.owning(window: keyWindow)
                 ?? ConversationWindowModel.owning(detached: keyWindow)
                 ?? keyWindow.sheetParent.flatMap({ ConversationWindowModel.owning(window: $0) }),
-              owner.application === self else { return false }
-        return owner.visibleConversation?.store.loadedConversationID == id
+              owner.canShow(self) else { return false }
+        guard let visible = owner.visibleConversation else { return false }
+        return visible.store.device === self && visible.store.loadedConversationID == id
     }
     func showConversation(_ id: String) {
         if let window = ConversationWindowModel.openNotificationConversation(id, application: self) {
             window.window?.deminiaturize(nil)
             window.window?.makeKeyAndOrderFront(nil)
             window.focusNotificationTarget(id)
-        } else if let openConversationWindow {
-            let seed = WindowSeed(conversationID: id)
+        } else if let open = openConversationWindow ?? DeviceHub.shared?.openWorkspaceWindow {
+            // Opening intent owns the full target, independently of whichever
+            // window last installed the scene action.
+            let seed = WindowSeed(conversationID: id, device: peerID)
             WindowPresentation.notificationTargets.insert(seed.id)
-            openConversationWindow(seed)
+            open(seed)
         }
     }
     /// Quota conditions the core raised since the last poll, announced by the notifier.
     private func pollQuotaAlerts() {
-        guard started, !isPreview, !isShuttingDown, !quotaAlertPollPending, Date().timeIntervalSince(lastQuotaAlertPoll) >= 3, let transport else { return }
+        guard started, !isPreview, !isShuttingDown, !quotaAlertPollPending, quotaAlertBackoff.ready, Date().timeIntervalSince(lastQuotaAlertPoll) >= 3, let transport else { return }
         quotaAlertPollPending = true
         lastQuotaAlertPoll = Date()
         let since = quotaAlertCursor
@@ -551,16 +583,19 @@ final class DeviceStore: ObservableObject {
                 self.quotaAlertPollPending = false
                 switch result {
                 case .success(let alerts):
+                    self.quotaAlertBackoff.succeeded()
                     self.clearActivityProblem("quota-alerts")
                     self.quotaAlertCursor = alerts.cursor
                     for alert in alerts.alerts { self.notifier?.observe(alert) }
-                case .failure(let failure): self.recordProblem(failure, source: "读取额度提醒", activityKey: "quota-alerts")
+                case .failure(let failure):
+                    self.quotaAlertBackoff.failed()
+                    self.recordProblem(failure, source: "读取额度提醒", activityKey: "quota-alerts")
                 }
             }
         }
     }
     private func pollActiveConversations() {
-        guard started, !isPreview, !isShuttingDown, !activePollPending, let transport else { return }
+        guard started, !isPreview, !isShuttingDown, !activePollPending, activePollBackoff.ready, let transport else { return }
         activePollPending = true
         let since = activityCursor
         performOnQueue { [weak self] in
@@ -570,6 +605,7 @@ final class DeviceStore: ObservableObject {
                 self.activePollPending = false
                 switch result {
                 case .success(let activity):
+                    self.activePollBackoff.succeeded()
                     self.clearActivityProblem("active-conversations")
                     self.activityCursor = activity.cursor
                     let active = activity.active
@@ -602,7 +638,9 @@ final class DeviceStore: ObservableObject {
                     if finishedUnlisted || !unlisted.isSubset(of: self.unlistedElsewhereIDs) { self.refreshConversations() }
                     self.unlistedElsewhereIDs = unlisted
                     self.notifier?.observe(activity)
-                case .failure(let failure): self.recordProblem(failure, source: "读取运行状态", activityKey: "active-conversations")
+                case .failure(let failure):
+                    self.activePollBackoff.failed()
+                    self.recordProblem(failure, source: "读取运行状态", activityKey: "active-conversations")
                 }
             }
         }
@@ -1047,8 +1085,9 @@ final class DeviceStore: ObservableObject {
     func recordProblem(_ message: String, source: String = "操作") { recordProblem(TransportError.rejected(message), source: source) }
     func appendProblems(_ values: [AppProblem]) {
         problems.append(contentsOf: values)
+        let peerID = peerID
         problemJournal { journal, scope in
-            for value in values { try journal.recordProblem(scope: scope, problem: value.record) }
+            for value in values { try journal.recordProblem(scope: scope, problem: value.record(peerID: peerID)) }
         }
     }
     /// Recovery closes an incident; it never erases its diagnostic history.
@@ -1179,4 +1218,18 @@ final class DeviceStore: ObservableObject {
         }
         conversationGroups = [ConversationGroup(key: .all, name: nil, total: UInt32(topics.count), loaded: UInt32(topics.count), latestActivityUnixMs: conversations.first?.updatedAtUnixMs, collapsed: false)]
     }
+}
+
+/// A failing background read waits longer before each retry, so a closed
+/// connection or missing target is not retried several times a second. A
+/// success or a new connection returns it to the normal pace.
+struct PollBackoff {
+    private(set) var failures = 0
+    private var notBefore = Date.distantPast
+    var ready: Bool { Date() >= notBefore }
+    mutating func failed() {
+        failures += 1
+        notBefore = Date().addingTimeInterval(min(30, 0.6 * pow(2, Double(min(failures, 6)))))
+    }
+    mutating func succeeded() { failures = 0; notBefore = .distantPast }
 }

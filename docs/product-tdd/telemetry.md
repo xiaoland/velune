@@ -45,7 +45,7 @@ Rust 的同一许可锁覆盖连接接纳和 TLS 下的 socket I/O。Swift 关�
 
 每个 Operation 只有一个完成 owner。完成后释放自己的 span，后台子操作通过 carrier 关联，不克隆父 span 来延长时长。受控 tracing span 不采用隐式 registry 父引用，避免跨 dispatcher 析构旧父引用。父 span 可以先于子操作结束；网络超时不会终止已运行的阻塞 handler，因此 CLIENT 等待失败与 SERVER 随后成功可以同时成立。
 
-命名业务事件只导出为关联 trace 的日志；trace layer 仅导出批准 span，不再重复生成 span events。本地完整诊断仍留在本地。标准 eventName 为 `velune.operation.completed` 和上述三个轮次事件；轮次专用终态替代通用 completed，不对同一终态重复记录。failure 使用 ERROR，其余结果与 started 使用 INFO。body 仅供阅读，不能解析源码行号或消息文本识别事件。成功 snapshot、snapshot_update、authentication_poll 和 remote 查询不产生常规完成日志；失败、取消和未知仍记录。原生成功 application.read／conversation.read 同样降噪。
+命名业务事件只导出为关联 trace 的日志；trace layer 仅导出批准 span，不再重复生成 span events。本地完整诊断仍留在本地。标准 eventName 为 `velune.operation.completed` 和上述三个轮次事件；轮次专用终态替代通用 completed，不对同一终态重复记录。failure 使用 ERROR，其余结果与 started 使用 INFO。body 仅供阅读，不能解析源码行号或消息文本识别事件。成功 snapshot、snapshot_update、authentication_poll、remote 查询与请求，以及后台轮询 conversation_activity、quota_alerts、composer_quota、manage_composer_inputs 不产生常规完成日志，只计入指标；失败、取消和未知仍记录。远控写操作的成功由其 bindings 操作记录 request ID。原生成功 application.read／conversation.read 同样降噪。
 
 | 属性 | 类型与含义 |
 | --- | --- |
@@ -99,6 +99,8 @@ agent 通过本地状态与接收端的 Tempo、Loki、Prometheus API 联合判�
 
 ## 本地问题历史
 
-Mac 问题面板是既有 `logs/velune.<UTC日期>.jsonl` 的跨进程投影，不按 run ID 过滤。`DiagnosticProblem` 带时间、来源、详情、错误类别／代码、阶段、operation ID 和恢复时间；新增、恢复、显式清理是同一 rolling writer 的日志事件，写入后 flush。恢复不删除记录，用户清理的记录在重启后不复活。旧 ERROR 与带详情的 WARN 可回填，重复 operation ID 收敛到完整问题记录，断裂或无效单行不遮蔽其他记录。旧日志缺少原始详情时只报告原有证据。保留沿用本地滚动日志的 7 个文件上限，不另建问题数据库或保留第二份错误日志；此限制与重启无关。
+Mac 问题面板是既有 `logs/velune.<UTC日期>.jsonl` 的跨进程投影，不按 run ID 过滤。`DiagnosticProblem` 带时间、来源、详情、错误类别／代码、阶段、operation ID 和恢复时间；新增、恢复、显式清理是同一 rolling writer 的日志事件，写入后 flush。恢复不删除记录，用户清理的记录在重启后不复活。旧 ERROR 与带详情的 WARN 可回填，重复 operation ID 收敛到完整问题记录；来源、类别、代码、阶段和详情相同的回填失败在恢复或清理前合并为一条，时间取最近一次，后台重试不放大成多条问题。断裂或无效单行不遮蔽其他记录。旧日志缺少原始详情时只报告原有证据。保留沿用本地滚动日志的 7 个文件上限，不另建问题数据库或保留第二份错误日志；此限制与重启无关。
 
 这些本地详细事件不进入 OTLP 导出。FFI 提供本地 `problems/record_problem/resolve_problems/dismiss_problems`，无需应用控制锁或连接其他设备；本机状态路径区分投影 scope，日志读写故障在面板明确显示，不递归写入。
+
+Mac 聚合面板仍读取控制端本机日志。由远控操作产生的界面记录保存目标设备公钥，用于重启后恢复归属；没有设备字段的历史记录仍保留。远控调用失败时，bindings 返回本机操作编号；日志可用该编号定位失败，并在已分配 RequestId 时继续关联请求。聚合面板不读取远端设备的日志。

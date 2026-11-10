@@ -877,12 +877,19 @@ impl Operation {
             self.failure_kind = None;
         }
         let elapsed = self.started.elapsed().as_secs_f64();
+        // Background polls run several times a second per device; their
+        // successes stay in metrics instead of filling the local log.
         let quiet = matches!(
             self.operation,
             "bindings.snapshot"
                 | "bindings.snapshot_update"
                 | "bindings.authentication_poll"
+                | "bindings.conversation_activity"
+                | "bindings.quota_alerts"
+                | "bindings.composer_quota"
+                | "bindings.manage_composer_inputs"
                 | "remote.query"
+                | "remote.request"
                 | "remote.query_request"
         );
         if execution || !quiet || !matches!(outcome, Outcome::Success) {

@@ -140,6 +140,7 @@ private final class ComposerInputWorker: @unchecked Sendable {
     private var deferred: [() -> Void] = []
     private var pollPending = false
     private var lastPoll = Date.distantPast
+    private var pollBackoff = PollBackoff()
     let changes = PassthroughSubject<Void, Never>()
 
     init(device: DeviceStore, transport: Transport?) {
@@ -268,8 +269,11 @@ private final class ComposerInputWorker: @unchecked Sendable {
         saveNow(id, draft: draft)
     }
 
+    /// A reconnected device is read at once instead of after its failure backoff.
+    func resumePolling() { pollBackoff.succeeded() }
+
     func poll(force: Bool = false) {
-        guard let worker, !pollPending, force || Date().timeIntervalSince(lastPoll) > 0.6 else { return }
+        guard let worker, !pollPending, force || (pollBackoff.ready && Date().timeIntervalSince(lastPoll) > 0.6) else { return }
         pollPending = true; lastPoll = Date()
         worker.queue.async { [weak self] in
             let result = Result { try worker.poll(force: force) }
@@ -277,8 +281,9 @@ private final class ComposerInputWorker: @unchecked Sendable {
                 guard let self else { return }
                 self.pollPending = false
                 switch result {
-                case .success(let result): self.apply(result); if force { self.changes.send() }
+                case .success(let result): self.pollBackoff.succeeded(); self.apply(result); if force { self.changes.send() }
                 case .failure(let error):
+                    self.pollBackoff.failed()
                     self.available = false; self.changes.send()
                     if force { self.device?.recordProblem(error, source: "读取共享输入") }
                 }
