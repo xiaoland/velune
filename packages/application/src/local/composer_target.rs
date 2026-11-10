@@ -15,8 +15,22 @@ impl CoreRuntime {
                 if id.starts_with("side-chat:") {
                     return Err(RuntimeError::invalid("侧聊使用自己的临时执行选择"));
                 }
+                // The request names the logical source, while snapshots are
+                // addressed in the runtime of the current native segment.
+                let context_runtime_id =
+                    match self.conversation_links.iter().find(|link| link.id == *id) {
+                        Some(link) => match link.segments.split_first() {
+                            Some((source, rest))
+                                if source.runtime_instance_id == request.runtime_id =>
+                            {
+                                rest.last().unwrap_or(source).runtime_instance_id.clone()
+                            }
+                            _ => return Err(RuntimeError::invalid("会话来源运行时不匹配")),
+                        },
+                        None => request.runtime_id.clone(),
+                    };
                 Ok(Some(
-                    self.queried_snapshot(&request.runtime_id, id)?
+                    self.queried_snapshot(&context_runtime_id, id)?
                         .ok_or_else(|| RuntimeError::invalid("目标会话尚不可用"))?,
                 ))
             }

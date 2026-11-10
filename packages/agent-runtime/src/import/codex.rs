@@ -53,12 +53,13 @@ pub fn import_codex_conversation(
             let (item, display) = match block {
                 Block::Text { text } => {
                     let id = prefixed_id("msg_")?;
+                    // The translated context does not carry assistant message phases.
                     (
-                        json!({"type":"message","id":id,"role":role,"content":[{"type":if role == "user" {"input_text"} else {"output_text"},"text":text}],"phase":"commentary"}),
+                        json!({"type":"message","id":id,"role":role,"content":[{"type":if role == "user" {"input_text"} else {"output_text"},"text":text}]}),
                         Some(if role == "user" {
                             json!({"type":"UserMessage","id":id,"content":[{"type":"text","text":text,"text_elements":[]}]})
                         } else {
-                            json!({"type":"AgentMessage","id":id,"content":[{"type":"Text","text":text}],"phase":"commentary"})
+                            json!({"type":"AgentMessage","id":id,"content":[{"type":"Text","text":text}]})
                         }),
                     )
                 }
