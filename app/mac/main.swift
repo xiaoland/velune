@@ -123,6 +123,18 @@ struct ConversationCommands: Commands {
                 Button("停止子 Agent") { target?.store.stopSubAgents() }
                     .keyboardShortcut(shortcuts[.stopSubAgents])
                     .disabled(target?.store.followUp.canStopSubAgents != true)
+                if let store = target?.store {
+                    switch store.controlHandoff {
+                    case .canRelease:
+                        Button("释放会话控制权") { store.setConversationHandoff(release: true) }.disabled(store.isLoading)
+                    case .releasing:
+                        Button("取消交接") { store.setConversationHandoff(release: false) }.disabled(store.isLoading)
+                    case .released:
+                        Button("恢复 Velune 执行") { store.setConversationHandoff(release: false) }.disabled(store.isLoading)
+                    case nil:
+                        EmptyView()
+                    }
+                }
             }
         }
         CommandGroup(before: .windowArrangement) {

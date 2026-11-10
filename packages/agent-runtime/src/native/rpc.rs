@@ -14,7 +14,7 @@ use std::{
     time::{Duration, Instant},
 };
 const MAX_STDERR_BYTES: usize = 1024 * 1024;
-const TIMEOUT: Duration = Duration::from_secs(15);
+pub(crate) const CONTROL_TIMEOUT: Duration = Duration::from_secs(15);
 pub(crate) struct RpcClient {
     /// None once handed to a thread that lets it end; see `retire`.
     child: Option<ProcessTree>,
@@ -81,7 +81,7 @@ pub(crate) fn bounded_process(
         };
         let _ = stderr_tx.send(outcome);
     });
-    let deadline = Instant::now() + TIMEOUT;
+    let deadline = Instant::now() + CONTROL_TIMEOUT;
     let status = loop {
         match child.try_wait() {
             Ok(Some(status)) => break status,
@@ -270,26 +270,23 @@ impl RpcClient {
             .map_err(|error| Error::new(format!("运行时请求发送失败：{error}")))
     }
     pub(crate) fn claude_control(&mut self, request: Value) -> Result<Value> {
-        let id = format!("velune-{}", self.next);
-        self.next += 1;
-        self.write(&json!({"type":"control_request","request_id":id,"request":request}))?;
-        let deadline = Instant::now() + TIMEOUT;
-        loop {
-            let record = self
-                .records
-                .recv_timeout(deadline.saturating_duration_since(Instant::now()))
-                .map_err(|error| {
-                    self.with_stderr(Error::new(format!("Claude 控制请求等待失败：{error}")))
-                })?
-                .map_err(|error| self.with_stderr(error))?;
-            if record["type"] == "control_response" && record["response"]["request_id"] == id {
-                if record["response"]["subtype"] != "success" {
-                    return Err(Error::new("Claude 拒绝控制请求"));
+        let method = request["subtype"].as_str().unwrap_or("control_request");
+        observe_request(method, || {
+            let id = format!("velune-{}", self.next);
+            self.next += 1;
+            self.write(&json!({"type":"control_request","request_id":id,"request":request}))?;
+            let deadline = Instant::now() + CONTROL_TIMEOUT;
+            loop {
+                let record = self.wait_for_record(method, deadline)?;
+                if record["type"] == "control_response" && record["response"]["request_id"] == id {
+                    if record["response"]["subtype"] != "success" {
+                        return Err(Error::new("Claude 拒绝控制请求"));
+                    }
+                    return Ok(record["response"]["response"].clone());
                 }
-                return Ok(record["response"]["response"].clone());
+                self.queued.push_back(record);
             }
-            self.queued.push_back(record);
-        }
+        })
     }
     pub(crate) fn begin(&mut self, method: &str, params: &Value) -> Result<u64> {
         let id = self.next;
@@ -309,48 +306,53 @@ impl RpcClient {
         params: &Value,
         classify: impl Fn(&Value) -> Option<&'static str>,
     ) -> Result<Value> {
-        let id = self.begin(method, params)?;
-        let deadline = Instant::now() + TIMEOUT;
-        loop {
-            let record = self
-                .records
-                .recv_timeout(deadline.saturating_duration_since(Instant::now()))
-                .map_err(|error| {
-                    self.with_stderr(Error::new(format!("运行时控制请求等待失败：{error}")))
-                })?
-                .map_err(|error| self.with_stderr(error))?;
-            if record["id"].as_u64() == Some(id) && record.get("method").is_none() {
-                if record.get("error").is_some() {
-                    return Err(self.with_stderr(Error::with_code(
-                        format!(
-                            "运行时拒绝控制请求，请检查适配器版本与配置：{}",
-                            record["error"]
-                        ),
-                        classify(&record["error"]).unwrap_or("internal"),
-                    )));
+        observe_request(method, || {
+            let id = self.begin(method, params)?;
+            let deadline = Instant::now() + CONTROL_TIMEOUT;
+            loop {
+                let mut record = self.wait_for_record(method, deadline)?;
+                if record["id"].as_u64() == Some(id) && record.get("method").is_none() {
+                    if let Some(error) = record.get("error") {
+                        return Err(self.with_stderr(Error::with_code(
+                            format!("运行时拒绝控制请求，请检查适配器版本与配置：{error}"),
+                            classify(error).unwrap_or("internal"),
+                        )));
+                    }
+                    return record
+                        .as_object_mut()
+                        .and_then(|record| record.remove("result"))
+                        .ok_or_else(|| Error::new("运行时响应缺少结果"));
                 }
-                return record
-                    .get("result")
-                    .cloned()
-                    .ok_or_else(|| Error::new("运行时响应缺少结果"));
+                self.queued.push_back(record);
             }
-            self.queued.push_back(record);
-        }
+        })
     }
-    /// Read one record while a protocol adapter services interleaved agent requests.
-    pub(crate) fn receive(&mut self, deadline: Instant) -> Result<Value> {
-        if let Some(record) = self.queued.pop_front() {
-            return Ok(record);
-        }
+    fn wait_for_record(&self, method: &str, deadline: Instant) -> Result<Value> {
         self.records
             .recv_timeout(deadline.saturating_duration_since(Instant::now()))
             .map_err(|error| {
-                self.with_stderr(Error::with_code(
-                    format!("运行时控制请求等待失败：{error}"),
-                    "transport",
-                ))
+                self.with_stderr(match error {
+                    mpsc::RecvTimeoutError::Timeout => Error::with_code(
+                        format!(
+                            "运行时控制请求 {method} 在 {} 秒内未响应",
+                            CONTROL_TIMEOUT.as_secs()
+                        ),
+                        "timeout",
+                    ),
+                    mpsc::RecvTimeoutError::Disconnected => Error::with_code(
+                        format!("运行时控制请求 {method} 的响应通道已关闭"),
+                        "transport",
+                    ),
+                })
             })?
             .map_err(|error| self.with_stderr(error))
+    }
+    /// Read one record while a protocol adapter services interleaved agent requests.
+    pub(crate) fn receive(&mut self, method: &str, deadline: Instant) -> Result<Value> {
+        if let Some(record) = self.queued.pop_front() {
+            return Ok(record);
+        }
+        self.wait_for_record(method, deadline)
     }
     pub(crate) fn notify(&mut self, method: &str, params: &Value) -> Result<()> {
         self.write(&json!({"jsonrpc":"2.0","method":method,"params":params}))
@@ -427,6 +429,21 @@ impl RpcClient {
         }
     }
 }
+
+pub(crate) fn observe_request<T>(method: &str, request: impl FnOnce() -> Result<T>) -> Result<T> {
+    let started = Instant::now();
+    let result = request();
+    let elapsed_ms = started.elapsed().as_millis();
+    if let Err(error) = &result {
+        tracing::warn!(target: "velune_agent_runtime", event = "native_rpc_failed", phase = "control_rpc",
+            method, elapsed_ms, failure_kind = error.code());
+    } else {
+        tracing::debug!(target: "velune_agent_runtime", event = "native_rpc_completed", phase = "control_rpc",
+            method, elapsed_ms);
+    }
+    result
+}
+
 impl Drop for RpcClient {
     fn drop(&mut self) {
         self.shutdown();

@@ -22,7 +22,19 @@ struct ComposerView: View {
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            if let message = model.inputLockMessage { Label(message, systemImage: "lock.fill").font(.caption).textSelection(.enabled) }
+            if model.snapshot?.followUp.controlHandoff == .released {
+                HStack {
+                    Text("控制权已交还").foregroundStyle(.secondary)
+                    Button("恢复 Velune 执行") { model.setConversationHandoff(release: false) }.disabled(model.busy)
+                }.font(.caption)
+            } else if model.snapshot?.followUp.controlHandoff == .releasing {
+                HStack {
+                    Text("正在交还控制权…").foregroundStyle(.secondary)
+                    Button("取消交接") { model.setConversationHandoff(release: false) }.disabled(model.busy)
+                }.font(.caption)
+            } else if let message = model.inputLockMessage {
+                Label(message, systemImage: "lock.fill").font(.caption).textSelection(.enabled)
+            }
             if model.failure != nil {
                 HStack {
                     Label("操作未完成", systemImage: "exclamationmark.triangle").foregroundStyle(.orange)

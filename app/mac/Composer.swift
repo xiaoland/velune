@@ -823,7 +823,14 @@ struct ComposerView: View {
         if store.followUp.canStopSubAgents && !store.isGenerating && !store.followUp.waitingForSubAgents {
             Button("停止子 Agent", action: store.stopSubAgents).disabled(store.isLoading)
         }
-        if let message = store.inputLockMessage {
+        if store.controlHandoff == .releasing {
+            Text("正在交还控制权…").uiFont(.callout).foregroundStyle(.secondary)
+            Button("取消交接") { store.setConversationHandoff(release: false) }.disabled(store.isLoading)
+        } else if store.controlHandoff == .released {
+            Button("恢复 Velune 执行") { store.setConversationHandoff(release: false) }
+                .disabled(store.isLoading).help("控制权已交还，草稿可继续编辑")
+                .accessibilityHint("控制权已交还，草稿可继续编辑")
+        } else if let message = store.inputLockMessage {
             Button { showingInputAccess = true } label: {
                 Label(store.inputAccess.composerTitle, systemImage: "lock.fill")
                     .uiFont(.callout).lineLimit(1)

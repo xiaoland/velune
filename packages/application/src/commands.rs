@@ -697,6 +697,15 @@ impl Application {
                 Login::Blocks,
                 |core| core.stop_sub_agents(&runtime_id),
             )?),
+            Command::SetConversationHandoff {
+                runtime_id,
+                conversation_id,
+                release,
+            } => Response::SetConversationHandoff(application.runtime.set_conversation_handoff(
+                &runtime_id,
+                &conversation_id,
+                release,
+            )?),
             Command::ReadConversationActivity { since } => {
                 Response::ReadConversationActivity(application.runtime.serve(
                     Focus::None,
@@ -1118,7 +1127,7 @@ impl Application {
         }
     }
 
-    fn remote_response(
+    pub(crate) fn remote_response(
         &mut self,
         mut response: Response,
         payload_runtime: Option<String>,
@@ -1137,6 +1146,7 @@ impl Application {
             | Response::ForkConversation(result)
             | Response::Cancel(result)
             | Response::StopSubAgents(result)
+            | Response::SetConversationHandoff(result)
             | Response::OpenSideChat(result)
             | Response::SendSideChat(result)
             | Response::ReplyRuntimeInteraction(result) => result.snapshot.as_mut(),

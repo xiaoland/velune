@@ -256,17 +256,13 @@ impl NativeSession {
         }
         Ok(())
     }
-    pub(super) fn codex_open(
-        &mut self,
-        id: &str,
-        cwd: Option<&Path>,
-        runtime_id: &str,
-        history: Vec<Message>,
-    ) -> Result<()> {
+    /// Resume acquires the native writer. History is a separate projection
+    /// and the server need not serialize every turn in its resume reply.
+    pub(super) fn codex_resume_thread(&mut self, id: &str, cwd: Option<&Path>) -> Result<()> {
         self.codex_capture_provider(cwd)?;
         let mut options = self.codex_options(cwd);
         options["threadId"] = json!(id);
-        options["excludeTurns"] = json!(false);
+        options["excludeTurns"] = json!(true);
         let result = self
             .rpc
             .request_classified("thread/resume", &options, |error| {
@@ -288,105 +284,31 @@ impl NativeSession {
                 name: model.into(),
             });
         }
-        let resolved_cwd = result["thread"]["cwd"]
-            .as_str()
-            .map(PathBuf::from)
-            .or_else(|| cwd.map(Path::to_path_buf));
-        self.replace_snapshot(id, resolved_cwd.as_deref(), runtime_id, history);
-        let metadata = self
-            .rpc
-            .request("thread/read", &json!({"threadId":id,"includeTurns":false}))?;
-        let receipt = super::codex_history::read_state(metadata.get("readState"), runtime_id, id)?;
+        Ok(())
+    }
+
+    pub(super) fn codex_open(
+        &mut self,
+        id: &str,
+        cwd: Option<&Path>,
+        runtime_id: &str,
+    ) -> Result<()> {
+        self.codex_resume_thread(id, cwd)?;
+        let metadata = super::codex_history::read_metadata(&mut self.rpc, id)?;
+        let history = super::codex_history::read_history(
+            &mut self.rpc,
+            runtime_id,
+            id,
+            &self.config.execution,
+            &metadata,
+        )?;
+        let resolved_cwd = history.cwd.as_deref().map(Path::new).or(cwd);
+        self.replace_snapshot(id, resolved_cwd, runtime_id, history.messages);
         if let Some(snapshot) = &mut self.snapshot {
-            snapshot.conversation.title = super::codex_history::thread_title(&result["thread"]);
-            snapshot.conversation.native_read_state = receipt;
-        }
-        if let Some(turns) = result["thread"]["turns"].as_array() {
-            if let Some(snapshot) = &mut self.snapshot {
-                snapshot.follow_up.can_resume = turns.last().is_some_and(|turn| {
-                    matches!(turn["status"].as_str(), Some("interrupted" | "failed"))
-                });
-            }
-            // A resumed native snapshot owns current history, including compaction and rollback.
-            if let Some(snapshot) = &mut self.snapshot {
-                snapshot.messages.clear();
-            }
-            // What each turn ran with and used, as history reads it.
-            let records = match (&self.config.execution, result["thread"]["path"].as_str()) {
-                (crate::execution::ExecutionTarget::Local, Some(path)) => {
-                    super::codex_history::rollout_turns(Path::new(path))
-                }
-                _ => Default::default(),
-            };
-            for turn in turns {
-                let start = self.snapshot.as_ref().map_or(0, |s| s.messages.len());
-                if let Some(items) = turn["items"].as_array() {
-                    for item in items {
-                        self.codex_item(item, turn["id"].as_str());
-                    }
-                }
-                if let Some(record) = turn["id"].as_str().and_then(|id| records.get(id))
-                    && let Some(snapshot) = &mut self.snapshot
-                {
-                    let start = start.min(snapshot.messages.len());
-                    let has_user = snapshot.messages[start..]
-                        .iter()
-                        .any(|message| message.role == MessageRole::User);
-                    for message in snapshot.messages[start..]
-                        .iter_mut()
-                        .filter(|message| message.role == MessageRole::User)
-                    {
-                        message.turn_settings = Some(record.settings.clone());
-                        message.turn_usage = record.usage.clone();
-                    }
-                    if !has_user {
-                        super::codex_history::add_resumed_usage(
-                            &mut snapshot.messages[..start],
-                            record.usage.as_ref(),
-                        );
-                    }
-                }
-                if let Some(message) = project_turn_error(turn)? {
-                    self.message(message);
-                }
-                let maintenance = turn["items"].as_array().is_some_and(|items| {
-                    !items.is_empty()
-                        && items.iter().all(|item| item["type"] == "contextCompaction")
-                });
-                if let Some(snapshot) = &mut self.snapshot {
-                    let ids = snapshot.messages[start..]
-                        .iter()
-                        .map(|m| m.id.clone())
-                        .collect();
-                    let kind = if maintenance {
-                        ExecutionKind::ContextMaintenance
-                    } else {
-                        ExecutionKind::UserTurn
-                    };
-                    let resumed = !snapshot.messages[start..]
-                        .iter()
-                        .any(|m| m.role == MessageRole::User)
-                        && kind == ExecutionKind::UserTurn;
-                    if resumed
-                        && let Some(record) = snapshot
-                            .executions
-                            .records
-                            .iter_mut()
-                            .rev()
-                            .find(|r| r.kind == kind)
-                    {
-                        record.message_ids.extend(ids);
-                        record.outcome = turn_outcome(turn["status"].as_str());
-                    } else {
-                        snapshot.executions.history(
-                            turn["id"].as_str().unwrap_or_default().into(),
-                            kind,
-                            ids,
-                            turn_outcome(turn["status"].as_str()),
-                        );
-                    }
-                }
-            }
+            snapshot.conversation.title = history.title;
+            snapshot.conversation.native_read_state = history.native_read_state;
+            snapshot.executions = history.executions;
+            snapshot.follow_up.can_resume = history.can_resume;
         }
         Ok(())
     }
@@ -544,7 +466,7 @@ impl NativeSession {
     /// process releases both writers, and the next turn opens only the fork.
     fn codex_adopt_fork(&mut self, fork: &str, cwd: Option<&Path>, runtime_id: &str) -> Result<()> {
         self.native_id = None;
-        self.codex_open(fork, cwd, runtime_id, Vec::new())?;
+        self.codex_open(fork, cwd, runtime_id)?;
         self.shutdown()?;
         self.restart_required = true;
         Ok(())

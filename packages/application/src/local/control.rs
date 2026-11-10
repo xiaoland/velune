@@ -55,7 +55,7 @@ impl ControlWatch {
     }
 }
 impl CoreRuntime {
-    fn control_target(&self) -> Result<Option<Target>, RuntimeError> {
+    pub(super) fn control_target(&self) -> Result<Option<Target>, RuntimeError> {
         if self.session.side.is_some() || self.session.unsubmitted_draft.is_some() {
             return Ok(None);
         }
@@ -104,9 +104,13 @@ impl CoreRuntime {
         }))
     }
     fn observed_input_access(&mut self) -> InputAccess {
+        if self.current_handoff_is_released() {
+            self.session.control = None;
+            return InputAccess::Editable;
+        }
         self.observe_control_target(self.control_target())
     }
-    fn observe_control_target(
+    pub(super) fn observe_control_target(
         &mut self,
         target: Result<Option<Target>, RuntimeError>,
     ) -> InputAccess {
@@ -147,14 +151,6 @@ impl CoreRuntime {
             matches!(self.session.active_state, ActiveState::History(_)),
         );
     }
-    pub(super) fn apply_read_input_access(
-        &mut self,
-        snapshot: &mut ConversationSnapshot,
-        target: Result<Option<Target>, RuntimeError>,
-    ) {
-        let access = self.observe_control_target(target);
-        Self::decorate_input_access(snapshot, access, true);
-    }
     fn decorate_input_access(
         snapshot: &mut ConversationSnapshot,
         mut access: InputAccess,
@@ -182,6 +178,7 @@ impl CoreRuntime {
         let Some(snapshot) = self.current_snapshot() else {
             return Ok(());
         };
+        self.check_handoff_input(&snapshot)?;
         Self::check_input_access(snapshot.actions.input_access)
     }
     /// Validate the observation already captured for a command's projection.

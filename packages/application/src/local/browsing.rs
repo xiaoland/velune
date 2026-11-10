@@ -74,6 +74,152 @@ pub(super) enum EntryState {
     /// The runtime could not read it as a session; not listed until it changes.
     Unreadable,
 }
+/// A read job carries only the source identity and native read inputs.
+pub(super) struct HistoryRead {
+    source: runtime_source::RuntimeSourceKey,
+    summary: Option<ConversationSummary>,
+    native_id: String,
+    acp_cwd: Option<PathBuf>,
+    pi_context: Option<String>,
+}
+
+pub(super) struct LoadedHistory {
+    source: runtime_source::RuntimeSourceKey,
+    snapshot: ConversationSnapshot,
+    acp_capabilities: Option<crate::AcpCapabilities>,
+}
+
+pub(super) fn history_read_changed() -> RuntimeError {
+    let mut failure = crate::Failure::new(
+        crate::FailureKind::Conflict,
+        "读取期间会话来源已改变，请重新打开",
+    );
+    failure.code = "history_source_changed".into();
+    failure.phase = "history_read".into();
+    RuntimeError::Contract(failure)
+}
+
+impl HistoryRead {
+    pub(super) fn source(&self) -> &runtime_source::RuntimeSourceKey {
+        &self.source
+    }
+
+    pub(super) fn load(self) -> Result<LoadedHistory, RuntimeError> {
+        let started = std::time::Instant::now();
+        let runtime_type = self.source.kind();
+        let result = self.load_native();
+        tracing::info!(
+            target: "velune_application",
+            event = "runtime_history_read",
+            phase = "native_read",
+            runtime_type = %runtime_type,
+            elapsed_ms = started.elapsed().as_millis() as u64,
+            success = result.is_ok(),
+        );
+        result
+    }
+
+    fn load_native(self) -> Result<LoadedHistory, RuntimeError> {
+        use runtime_source::Reader;
+        let Self {
+            source,
+            summary,
+            native_id,
+            acp_cwd,
+            pi_context,
+        } = self;
+        let runtime_id = source.runtime_id();
+        let reader = source.reader();
+        if let Reader::Acp(config) = reader {
+            let cwd = acp_cwd
+                .as_deref()
+                .expect("ACP history captures its working directory");
+            let (snapshot, capabilities) = super::acp_composition::load_acp_history(
+                config.clone(),
+                runtime_id,
+                &native_id,
+                cwd,
+            )?;
+            return Ok(LoadedHistory {
+                source,
+                snapshot,
+                acp_capabilities: Some(capabilities),
+            });
+        }
+
+        let summary = match (summary, reader) {
+            (Some(summary), _) => summary,
+            (None, Reader::Native(config)) => {
+                history::read_summary(config, runtime_id, &native_id)?
+                    .map(|(summary, _)| summary)
+                    .ok_or_else(|| RuntimeError::invalid("此会话不属于所选运行时历史目录"))?
+            }
+            _ => return Err(RuntimeError::invalid("此会话不属于所选运行时历史目录")),
+        };
+        let mut snapshot = ConversationSnapshot {
+            revision: 1,
+            context_runtime_id: runtime_id.to_owned(),
+            conversation: summary,
+            resource_id: None,
+            model_record_key: None,
+            run_state: RunState::Idle,
+            messages: Vec::new(),
+            executions: Default::default(),
+            transcript_turns: Vec::new(),
+            transcript_items: Vec::new(),
+            transcript_outline: Vec::new(),
+            transcript_message_identities: Vec::new(),
+            message_identity_confirmations: Vec::new(),
+            pending_interactions: Vec::new(),
+            follow_up: Default::default(),
+            sub_agents: Vec::new(),
+            collaborators: Vec::new(),
+            actions: ConversationActions {
+                input_access: Default::default(),
+                can_send: false,
+                can_cancel: false,
+                can_switch: true,
+            },
+        };
+        match reader {
+            Reader::Pi(config) => {
+                let saved = pi_session_helper(config, Path::new(&native_id)).map_err(|error| {
+                    RuntimeError::context(pi_context.as_deref().unwrap_or("Pi 历史读取"), error)
+                })?;
+                let mut projection = PiProjection::new(snapshot.conversation.clone());
+                projection.replace_history(&saved);
+                let projected = projection.snapshot.expect("history projection");
+                snapshot.messages = projected.messages;
+                snapshot.executions = projected.executions;
+                snapshot.conversation.cwd = saved["cwd"].as_str().map(str::to_owned);
+                let marker = &saved["virtualState"];
+                if marker["provider"] == "velune" || marker["provider"] == "velune-gateway" {
+                    snapshot.model_record_key = marker["state"]["modelRecordKey"]
+                        .as_str()
+                        .map(str::to_owned);
+                }
+            }
+            Reader::Native(config) => {
+                let read = history::read(config, runtime_id, &native_id)?;
+                snapshot.conversation.native_read_state = read.native_read_state;
+                snapshot.conversation.cwd = read.cwd;
+                snapshot.messages = read.messages;
+                snapshot.executions = read.executions;
+                snapshot.follow_up.can_resume = read.can_resume;
+            }
+            Reader::Acp(_) => unreachable!("ACP history has its own snapshot"),
+        }
+        // The next-turn model is supplied when the user submits. Sub-agent
+        // conversations remain read-only.
+        snapshot.actions.can_send = snapshot.conversation.parent_conversation_id.is_none();
+        Ok(LoadedHistory {
+            source,
+            snapshot,
+            acp_capabilities: None,
+        })
+    }
+}
+
 /// Runtimes whose sessions are files read one by one.
 fn reads_lazily(runtime: &RuntimeInstance) -> bool {
     matches!(runtime.type_id, RuntimeKind::Pi | RuntimeKind::ClaudeCode)
@@ -504,6 +650,14 @@ impl CoreRuntime {
         runtime_id: &str,
         id: &str,
     ) -> Result<ConversationSnapshot, RuntimeError> {
+        self.finish_history_read(self.prepare_history_read(runtime_id, id)?.load()?)
+    }
+
+    pub(super) fn prepare_history_read(
+        &self,
+        runtime_id: &str,
+        id: &str,
+    ) -> Result<HistoryRead, RuntimeError> {
         let runtime = self.runtime_instance(runtime_id)?;
         if !runtime.enabled {
             return Err(RuntimeError::invalid("此运行时已停用，请先启用"));
@@ -512,110 +666,94 @@ impl CoreRuntime {
             .strip_prefix(&format!("{runtime_id}:"))
             .filter(|s| !s.is_empty())
             .ok_or_else(|| RuntimeError::invalid("conversation id"))?;
-        // Source-scoped lookup prevents arbitrary caller paths from being opened.
-        // Conversations are opened from a listing, so its membership is reused;
-        // an identifier the latest listing does not contain lists again.
-        // Codex can omit a fork with inherited history and no own user turn;
-        // its native read-by-identity API still owns that conversation.
+        let source = self.runtime_source_key(runtime)?;
+        // Codex checks exact native identity through its own read API. File
+        // readers still require source-scoped membership before opening a path.
         let summary = match self.listed_summary(runtime, id) {
-            Some(summary) => summary,
-            None => self
-                .conversation_summary(runtime, id)
-                .map_err(|error| {
-                    tracing::warn!(target: "velune_application", event="runtime_history_read_failed", phase="history_lookup", runtime_id=%runtime.id, runtime_name=%runtime.name, runtime_type_id=%runtime.type_id, binary=?runtime.settings.get("binary"), node_binary=?runtime.settings.get("nodeBinary"), agent_dir=?runtime.settings.get("agentDir"), detail=%error);
-                    if runtime.type_id == RuntimeKind::Pi {
-                        RuntimeError::context(&runtime_context(runtime), error)
-                    } else {
-                        error
-                    }
-                })?
-                .or_else(|| {
-                    matches!(runtime.type_id, RuntimeKind::Codex166)
-                        .then(|| self.reach(runtime, id))
-                        .flatten()
-                        .map(|source| source.summary)
-                })
-                .ok_or_else(|| RuntimeError::invalid("此会话不属于所选运行时历史目录"))?,
+            Some(summary) => Some(summary),
+            None if runtime.type_id == RuntimeKind::Codex166 => None,
+            None => Some(
+                self.conversation_summary(runtime, id)
+                    .map_err(|error| {
+                        tracing::warn!(target: "velune_application", event="runtime_history_read_failed", phase="history_lookup", runtime_type_id=%runtime.type_id, detail=%error);
+                        if runtime.type_id == RuntimeKind::Pi {
+                            RuntimeError::context(&runtime_context(runtime), error)
+                        } else {
+                            error
+                        }
+                    })?
+                    .ok_or_else(|| RuntimeError::invalid("此会话不属于所选运行时历史目录"))?,
+            ),
         };
         if runtime.type_id == RuntimeKind::Acp {
             let cwd = summary
-                .cwd
-                .as_deref()
+                .as_ref()
+                .and_then(|summary| summary.cwd.as_deref())
                 .map(Path::new)
                 .ok_or_else(|| RuntimeError::invalid("ACP 会话列表缺少工作目录"))?;
-            return self.read_acp_history(runtime, native_id, cwd);
+            return self.prepare_acp_history(runtime, native_id, cwd);
         }
-        let mut snapshot = ConversationSnapshot {
-            revision: 1,
-            context_runtime_id: runtime_id.into(),
-            conversation: summary,
-            resource_id: None,
-            model_record_key: None,
-            run_state: RunState::Idle,
-            messages: Vec::new(),
-            executions: Default::default(),
-            transcript_turns: Vec::new(),
-            transcript_items: Vec::new(),
-            transcript_outline: Vec::new(),
-            transcript_message_identities: Vec::new(),
-            message_identity_confirmations: Vec::new(),
-            pending_interactions: Vec::new(),
-            follow_up: Default::default(),
-            sub_agents: Vec::new(),
-            collaborators: Vec::new(),
-            actions: ConversationActions {
-                input_access: Default::default(),
-                can_send: false,
-                can_cancel: false,
-                can_switch: true,
-            },
-        };
-        if runtime.type_id == RuntimeKind::Pi {
-            let saved = pi_session_helper(
-                &self.pi_history_config(runtime)?,
-                Path::new(native_id),
-            ).map_err(|error| {
-                tracing::warn!(target: "velune_application", event="runtime_history_read_failed", phase="history_read", runtime_id=%runtime.id, runtime_name=%runtime.name, runtime_type_id=%runtime.type_id, binary=?runtime.settings.get("binary"), node_binary=?runtime.settings.get("nodeBinary"), agent_dir=?runtime.settings.get("agentDir"), detail=%error);
-                RuntimeError::context(&runtime_context(runtime), error)
-            })?;
-            let mut projection = PiProjection::new(snapshot.conversation.clone());
-            projection.replace_history(&saved);
-            let projected = projection.snapshot.expect("history projection");
-            snapshot.messages = projected.messages;
-            snapshot.executions = projected.executions;
-            snapshot.conversation.cwd = saved["cwd"].as_str().map(str::to_owned);
-            let marker = &saved["virtualState"];
-            if marker["provider"] == "velune" || marker["provider"] == "velune-gateway" {
-                snapshot.model_record_key = marker["state"]["modelRecordKey"]
-                    .as_str()
-                    .filter(|key| self.validate_session_model(runtime, key).is_ok())
-                    .map(str::to_owned);
-            }
-        } else {
-            let read = history::read(&self.history_config(runtime)?, runtime_id, native_id).map_err(|error| {
-                let family = velune_agent_runtime::version::variant(runtime.type_id).family_id;
-                tracing::warn!(target: "velune_application", event = "runtime_history_read_failed", phase = error.phase(), failure_kind = error.code(), runtime_family = family, runtime_id=%runtime.id, runtime_name=%runtime.name, runtime_type_id=%runtime.type_id, binary=?runtime.settings.get("binary"), node_binary=?runtime.settings.get("nodeBinary"), agent_dir=?runtime.settings.get("agentDir"), detail=%error);
-                RuntimeError::History(error)
-            })?;
-            snapshot.conversation.native_read_state = read.native_read_state;
-            snapshot.conversation.cwd = read.cwd;
-            snapshot.messages = read.messages;
-            snapshot.executions = read.executions;
-            snapshot.follow_up.can_resume = read.can_resume;
+        self.prepare_execution_context(runtime)?;
+        Ok(HistoryRead {
+            source,
+            summary,
+            native_id: native_id.to_owned(),
+            acp_cwd: None,
+            pi_context: (runtime.type_id == RuntimeKind::Pi).then(|| runtime_context(runtime)),
+        })
+    }
+
+    pub(super) fn prepare_acp_history(
+        &self,
+        runtime: &RuntimeInstance,
+        native_id: &str,
+        cwd: &Path,
+    ) -> Result<HistoryRead, RuntimeError> {
+        if !runtime.enabled {
+            return Err(RuntimeError::invalid("此运行时已停用，请先启用"));
         }
-        // A history projection is send-capable once the UI supplies the next
-        // turn's model. The source record may intentionally have no model
-        // marker, so this flag must not encode the old model-selection state.
-        // A native sub-agent's conversation is continued by its parent's agent.
-        snapshot.actions.can_send = snapshot.conversation.parent_conversation_id.is_none();
+        let source = self.runtime_source_key(runtime)?;
+        self.prepare_runtime_location(runtime)?;
+        Ok(HistoryRead {
+            source,
+            summary: None,
+            native_id: native_id.to_owned(),
+            acp_cwd: Some(cwd.to_owned()),
+            pi_context: None,
+        })
+    }
+
+    pub(super) fn finish_history_read(
+        &self,
+        loaded: LoadedHistory,
+    ) -> Result<ConversationSnapshot, RuntimeError> {
+        let LoadedHistory {
+            source,
+            mut snapshot,
+            acp_capabilities,
+        } = loaded;
+        if !source.is_current(self) {
+            return Err(history_read_changed());
+        }
+        let runtime = self.runtime_instance(source.runtime_id())?;
+        if let Some(capabilities) = acp_capabilities {
+            self.acp_capability_cache
+                .borrow_mut()
+                .insert(runtime.id.clone(), capabilities);
+        }
+        if snapshot
+            .model_record_key
+            .as_deref()
+            .is_some_and(|key| self.validate_session_model(runtime, key).is_err())
+        {
+            snapshot.model_record_key = None;
+        }
         Ok(snapshot)
     }
+
     pub(super) fn invalidate_execution(&mut self) -> Result<(), RuntimeError> {
         self.ensure_work_ended()?;
-        let can_restore = match &self.session.active_state {
-            ActiveState::Acp(session) => session.capabilities().load_session,
-            _ => true,
-        };
+        let can_restore = !self.session.requires_live_connection();
         let mut snapshot = self.native_snapshot();
         // Closing execution leaves its native history view usable. A read-only
         // view has no execution owner, so restoration must follow its source.

@@ -265,25 +265,26 @@ impl CoreRuntime {
                     .open_side(native_id, cwd.as_deref(), &runtime.id)
                     .map_err(|error| RuntimeError::context("侧聊打开失败", error))?;
             } else {
-                session
-                    .open(
+                telemetry::observe(self.telemetry.as_ref(), "harness.resume", || {
+                    session.open(
                         native_id,
                         cwd.as_deref(),
                         &runtime.id,
                         snapshot.messages.clone(),
                     )
-                    .map_err(|error| {
-                        if error.code() == "control_held_elsewhere" {
-                            let mut failure = crate::Failure::new(
-                                crate::FailureKind::Conflict,
-                                "另一个客户端正在控制此会话；草稿已保留，未自动重发",
-                            );
-                            failure.code = error.code().into();
-                            RuntimeError::Contract(failure)
-                        } else {
-                            RuntimeError::context("会话恢复失败", error)
-                        }
-                    })?;
+                })
+                .map_err(|error| {
+                    if error.code() == "control_held_elsewhere" {
+                        let mut failure = crate::Failure::new(
+                            crate::FailureKind::Conflict,
+                            "另一个客户端正在控制此会话；草稿已保留，未自动重发",
+                        );
+                        failure.code = error.code().into();
+                        RuntimeError::Contract(failure)
+                    } else {
+                        RuntimeError::context("会话恢复失败", error)
+                    }
+                })?;
                 session.restore_context(snapshot);
             }
         }

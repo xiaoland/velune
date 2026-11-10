@@ -259,6 +259,7 @@ impl CoreRuntime {
                     && snapshot.conversation.runtime_id == runtime_id
             })
             .ok_or_else(|| RuntimeError::invalid("会话未打开"))?;
+        self.check_handoff_input(&current)?;
         if !self.forkable_turn_users(&current).contains(message_id) {
             return Err(RuntimeError::invalid("会话当前不能分叉"));
         }
@@ -377,6 +378,7 @@ impl CoreRuntime {
                     && snapshot.conversation.runtime_id == runtime_id
             })
             .ok_or_else(|| RuntimeError::invalid("会话未打开"))?;
+        self.check_handoff_input(&current)?;
         let choice = self
             .editing_choices(&current)
             .into_iter()

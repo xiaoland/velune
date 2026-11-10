@@ -11,6 +11,9 @@ pub trait LiveConversation {
     /// The conversation as the runtime shows it, once it has one.
     fn snapshot(&self) -> Option<&ConversationSnapshot>;
     fn turn_running(&self) -> bool;
+    /// A persisted conversation can be reopened after closing this connection.
+    /// The application checks whether the current identity has been persisted.
+    fn supports_reopen(&self) -> bool;
     /// Work that outlives the parent turn, as observed by this adapter.
     fn work(&self) -> Vec<crate::work::BackgroundTask> {
         Vec::new()
@@ -69,6 +72,9 @@ impl LiveConversation for PiSession {
     fn turn_running(&self) -> bool {
         PiSession::turn_running(self)
     }
+    fn supports_reopen(&self) -> bool {
+        true
+    }
     fn work(&self) -> Vec<crate::work::BackgroundTask> {
         PiSession::work(self)
     }
@@ -121,6 +127,9 @@ impl LiveConversation for native::NativeSession {
     fn turn_running(&self) -> bool {
         native::NativeSession::turn_running(self)
     }
+    fn supports_reopen(&self) -> bool {
+        true
+    }
     fn work(&self) -> Vec<crate::work::BackgroundTask> {
         native::NativeSession::work(self)
     }
@@ -171,6 +180,10 @@ impl LiveConversation for acp::Client {
     }
     fn turn_running(&self) -> bool {
         acp::Client::turn_running(self)
+    }
+    fn supports_reopen(&self) -> bool {
+        // Velune reopens generic ACP through session/load, which also replays history.
+        self.capabilities().load_session
     }
     fn set_conversation(&mut self, conversation: ConversationSummary) {
         acp::Client::set_conversation(self, conversation)

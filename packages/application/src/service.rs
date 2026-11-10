@@ -1,9 +1,23 @@
 //! One application owner, advanced independently from its presentation clients.
+use crate::local::{
+    Focus, Login,
+    conversation_history::{
+        ConversationHistoryRequest, ConversationRead, LoadedConversationHistory,
+    },
+};
 use crate::{
     Application, ApplicationReply, ClientViewId, Command, Error, ExecutionContext, Failure,
     FailureKind, Options, Response, Revision,
 };
-use std::{collections::BTreeMap, sync::mpsc, time::Duration};
+use std::{
+    collections::BTreeMap,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    },
+    time::{Duration, Instant},
+};
 
 #[derive(Clone)]
 pub struct ApplicationService {
@@ -15,21 +29,105 @@ enum Job {
         view: ClientViewId,
         context: Option<ExecutionContext>,
         command: Box<Command>,
+        queued_at: Instant,
+        history_completion: Option<mpsc::Sender<Job>>,
         dispatch: tracing::Dispatch,
         span: tracing::Span,
         reply: mpsc::Sender<Result<ApplicationReply, Failure>>,
     },
+    HistoryFinished(Box<FinishedHistory>),
     Close {
         stop_work: bool,
         reply: mpsc::Sender<Result<(), Failure>>,
     },
 }
 
+struct View {
+    state: crate::local::ClientState,
+    created: u64,
+    used: u64,
+}
+
+type CommandReply = mpsc::Sender<Result<ApplicationReply, Failure>>;
+
+struct PendingHistory {
+    view: ClientViewId,
+    view_created: u64,
+    conversation_id: String,
+    affected_ids: Vec<String>,
+    invalidated: bool,
+    remote: bool,
+    reply: CommandReply,
+}
+
+struct HistoryJob {
+    completion: mpsc::Sender<Job>,
+    id: u64,
+    request: ConversationHistoryRequest,
+    queued_at: Instant,
+    dispatch: tracing::Dispatch,
+    span: tracing::Span,
+}
+
+struct FinishedHistory {
+    id: u64,
+    history: LoadedConversationHistory,
+    dispatch: tracing::Dispatch,
+    span: tracing::Span,
+}
+
+struct HistoryWorkers {
+    jobs: mpsc::SyncSender<HistoryJob>,
+    stopped: Arc<AtomicBool>,
+}
+
+impl HistoryWorkers {
+    fn start() -> std::io::Result<Self> {
+        let (jobs, receiver) = mpsc::sync_channel::<HistoryJob>(8);
+        let stopped = Arc::new(AtomicBool::new(false));
+        let receiver = Arc::new(Mutex::new(receiver));
+        for index in 0..2 {
+            let receiver = receiver.clone();
+            let stopped = stopped.clone();
+            std::thread::Builder::new()
+                .name(format!("velune-history-{index}"))
+                .spawn(move || {
+                    loop {
+                        let job = receiver.lock().expect("history job queue").recv();
+                        let Ok(HistoryJob { completion, id, request, queued_at, dispatch, span }) = job else {
+                            break;
+                        };
+                        if stopped.load(Ordering::Acquire) {
+                            break;
+                        }
+                        let history = tracing::dispatcher::with_default(&dispatch, || {
+                            let _entered = span.enter();
+                            tracing::info!(target: "velune_application", event = "conversation_history_read", phase = "worker_queue", elapsed_ms = queued_at.elapsed().as_millis() as u64);
+                            request.load()
+                        });
+                        if completion.send(Job::HistoryFinished(Box::new(FinishedHistory { id, history, dispatch, span }))).is_err() {
+                            break;
+                        }
+                    }
+                })?;
+        }
+        Ok(Self { jobs, stopped })
+    }
+}
+
+impl Drop for HistoryWorkers {
+    fn drop(&mut self) {
+        self.stopped.store(true, Ordering::Release);
+    }
+}
+
 struct Owner {
     application: Application,
-    views: BTreeMap<ClientViewId, (crate::local::ClientState, u64)>,
+    views: BTreeMap<ClientViewId, View>,
     view_clock: u64,
     revision: Revision,
+    history: HistoryWorkers,
+    pending_history: BTreeMap<u64, PendingHistory>,
 }
 
 impl Owner {
@@ -57,35 +155,183 @@ impl Owner {
                 response: Response::ReleaseView,
             });
         }
-        if !self.views.contains_key(&view)
-            && self.views.len() >= 128
-            && let Some(expired) = self
-                .views
-                .iter()
-                .min_by_key(|(_, (_, used))| *used)
-                .map(|(key, _)| key.clone())
-        {
-            self.views.remove(&expired);
+        for pending in self.pending_history.values_mut() {
+            pending.invalidated |= affects_history(&command, &pending.affected_ids);
         }
-        self.view_clock = self.view_clock.wrapping_add(1);
-        let (state, used) = self
-            .views
-            .entry(view.clone())
-            .or_insert_with(|| (self.application.runtime.client_state(), 0));
-        *used = self.view_clock;
-        self.application
-            .runtime
-            .enter_client_state(state, context.is_some());
         let changes = command.changes_shared_state();
-        let result = self
-            .application
-            .execute_command(command, context.is_some(), &view);
-        self.application.runtime.leave_client_state(state);
+        let result = self.with_view(&view, context.is_some(), |application| {
+            application.execute_command(command, context.is_some(), &view)
+        });
         // A failed dispatch can commit association metadata; invalidate old edits too.
         if changes {
             self.revision.0 = self.revision.0.wrapping_add(1);
         }
         result.map(|response| ApplicationReply {
+            revision: self.revision,
+            response,
+        })
+    }
+
+    fn with_view<T>(
+        &mut self,
+        view: &ClientViewId,
+        remote: bool,
+        operation: impl FnOnce(&mut Application) -> T,
+    ) -> T {
+        if !self.views.contains_key(view)
+            && self.views.len() >= 128
+            && let Some(expired) = self
+                .views
+                .iter()
+                .min_by_key(|(_, view)| view.used)
+                .map(|(key, _)| key.clone())
+        {
+            self.views.remove(&expired);
+        }
+        self.view_clock = self.view_clock.wrapping_add(1);
+        let current = self.views.entry(view.clone()).or_insert_with(|| View {
+            state: self.application.runtime.client_state(),
+            created: self.view_clock,
+            used: 0,
+        });
+        current.used = self.view_clock;
+        self.application
+            .runtime
+            .enter_client_state(&mut current.state, remote);
+        let result = operation(&mut self.application);
+        self.application
+            .runtime
+            .leave_client_state(&mut current.state);
+        result
+    }
+
+    fn start_history(
+        &mut self,
+        view: ClientViewId,
+        remote: bool,
+        runtime_id: String,
+        id: String,
+        reply: CommandReply,
+        completion: mpsc::Sender<Job>,
+    ) {
+        let prepared = self.with_view(&view, remote, |application| {
+            application
+                .runtime
+                .serve(Focus::Existing(id.clone()), Login::Blocks, |core| {
+                    core.prepare_conversation_read(&runtime_id, &id)
+                })
+        });
+        let sequence = self.view_clock;
+        let view_created = self
+            .views
+            .get(&view)
+            .expect("history read has a client view")
+            .created;
+        match prepared {
+            Ok(ConversationRead::Load(request)) => {
+                let affected_ids = request.affected_ids();
+                let job = HistoryJob {
+                    completion,
+                    id: sequence,
+                    request: *request,
+                    queued_at: Instant::now(),
+                    dispatch: tracing::dispatcher::get_default(Clone::clone),
+                    span: tracing::Span::current(),
+                };
+                if self.pending_history.len() >= 10 || self.history.jobs.try_send(job).is_err() {
+                    let _ = reply.send(Err(Failure::new(
+                        FailureKind::Unavailable,
+                        "会话历史读取繁忙，请重试",
+                    )));
+                    return;
+                }
+                self.application.runtime.begin_history_read(&id);
+                self.pending_history.insert(
+                    sequence,
+                    PendingHistory {
+                        view,
+                        view_created,
+                        conversation_id: id,
+                        affected_ids,
+                        invalidated: false,
+                        remote,
+                        reply,
+                    },
+                );
+            }
+            Ok(ConversationRead::Ready(snapshot)) => {
+                let result = self.history_response(*snapshot, remote);
+                let _ = reply.send(result);
+            }
+            Err(error) => {
+                let _ = reply.send(Err(Failure::from(error)));
+            }
+        }
+    }
+
+    fn finish_history(&mut self, job: FinishedHistory) {
+        let FinishedHistory {
+            id,
+            history,
+            dispatch,
+            span,
+        } = job;
+        let Some(pending) = self.pending_history.remove(&id) else {
+            return;
+        };
+        self.application
+            .runtime
+            .end_history_read(&pending.conversation_id);
+        let result = tracing::dispatcher::with_default(&dispatch, || {
+            let _entered = span.enter();
+            if self
+                .views
+                .get(&pending.view)
+                .is_none_or(|view| view.created != pending.view_created)
+            {
+                return Err(Failure::new(
+                    FailureKind::Conflict,
+                    "已切换会话视图，历史读取结果已过期",
+                ));
+            }
+            let result = self
+                .with_view(&pending.view, pending.remote, |application| {
+                    application.runtime.serve(
+                        Focus::Existing(history.id().to_owned()),
+                        Login::Blocks,
+                        |core| {
+                            if pending.invalidated {
+                                return core
+                                    .read_present_conversation(history.runtime_id(), history.id())?
+                                    .ok_or_else(|| {
+                                        Error::Contract(Failure::new(
+                                            FailureKind::Conflict,
+                                            "读取期间会话已改变，请重新打开",
+                                        ))
+                                    });
+                            }
+                            core.finish_conversation_read(history)
+                        },
+                    )
+                })
+                .map_err(Failure::from)?;
+            self.history_response(result, pending.remote)
+        });
+        let _ = pending.reply.send(result);
+    }
+
+    fn history_response(
+        &mut self,
+        snapshot: crate::SnapshotResult,
+        remote: bool,
+    ) -> Result<ApplicationReply, Failure> {
+        let response = Response::ReadConversation(snapshot);
+        let response = if remote {
+            self.application.remote_response(response, None)?
+        } else {
+            response
+        };
+        Ok(ApplicationReply {
             revision: self.revision,
             response,
         })
@@ -102,17 +348,51 @@ impl Owner {
                     view,
                     context,
                     command,
+                    queued_at,
+                    history_completion,
                     dispatch,
                     span,
                     reply,
                 }) => {
-                    let outcome = tracing::dispatcher::with_default(&dispatch, || {
+                    tracing::dispatcher::with_default(&dispatch, || {
                         let _entered = span.enter();
-                        self.execute(view, context, *command)
+                        let elapsed_ms = queued_at.elapsed().as_millis() as u64;
+                        let kind = command.kind();
+                        if elapsed_ms >= 100
+                            || matches!(
+                                *command,
+                                Command::ReadConversation { .. }
+                                    | Command::OpenConversation { .. }
+                                    | Command::SendTurn { .. }
+                                    | Command::ReplyRuntimeInteraction { .. }
+                                    | Command::Cancel { .. }
+                                    | Command::SetConversationHandoff { .. }
+                            )
+                        {
+                            tracing::info!(target: "velune_application", event = "application_command", phase = "owner_queue", command = ?kind, elapsed_ms);
+                        }
+                        match *command {
+                            Command::ReadConversation {
+                                runtime_id,
+                                conversation_id,
+                            } => {
+                                self.start_history(
+                                    view,
+                                    context.is_some(),
+                                    runtime_id,
+                                    conversation_id,
+                                    reply,
+                                    history_completion.expect("history completion channel"),
+                                );
+                            }
+                            command => {
+                                let _ = reply.send(self.execute(view, context, command));
+                            }
+                        }
                     });
                     self.application.runtime.publish_execution();
-                    let _ = reply.send(outcome);
                 }
+                Ok(Job::HistoryFinished(history)) => self.finish_history(*history),
                 Ok(Job::Close { stop_work, reply }) => {
                     let result = if stop_work {
                         self.application.close_stopping_work()
@@ -180,6 +460,13 @@ impl ApplicationService {
                     if let Some(owner) = &telemetry {
                         application.runtime.set_telemetry(owner.clone());
                     }
+                    let history = match HistoryWorkers::start() {
+                        Ok(history) => history,
+                        Err(error) => {
+                            let _ = initialized.send(Err(Failure::from(Error::from(error))));
+                            return;
+                        }
+                    };
                     let _ = initialized.send(Ok(()));
                     let revision = Revision(
                         std::time::SystemTime::now()
@@ -192,6 +479,8 @@ impl ApplicationService {
                         views: BTreeMap::new(),
                         view_clock: 0,
                         revision,
+                        history,
+                        pending_history: BTreeMap::new(),
                     }
                     .run(receiver, telemetry);
                 });
@@ -234,7 +523,10 @@ impl ApplicationService {
             .send(Job::Execute {
                 view,
                 context,
+                history_completion: matches!(command, Command::ReadConversation { .. })
+                    .then(|| self.sender.clone()),
                 command: Box::new(command),
+                queued_at: Instant::now(),
                 dispatch: tracing::dispatcher::get_default(Clone::clone),
                 span: tracing::Span::current(),
                 reply,
@@ -250,6 +542,52 @@ impl ApplicationService {
             .send(Job::Close { stop_work, reply })
             .map_err(|_| closed())?;
         result.recv().map_err(|_| closed())?
+    }
+}
+
+fn affects_history(command: &Command, ids: &[String]) -> bool {
+    use Command::*;
+    match command {
+        RenameConversation {
+            conversation_id, ..
+        }
+        | DeleteConversation {
+            conversation_id, ..
+        }
+        | SendTurn {
+            conversation_id, ..
+        }
+        | EditMessage {
+            conversation_id, ..
+        }
+        | CompactConversation {
+            conversation_id, ..
+        }
+        | ResumeTurn {
+            conversation_id, ..
+        }
+        | SteerTurn {
+            conversation_id, ..
+        }
+        | EditSendQueue {
+            conversation_id, ..
+        }
+        | ReplyRuntimeInteraction {
+            conversation_id, ..
+        }
+        | Cancel {
+            conversation_id, ..
+        }
+        | StopSubAgents {
+            conversation_id, ..
+        }
+        | SetConversationHandoff {
+            conversation_id, ..
+        } => ids.contains(conversation_id),
+        OrganizeConversations { conversations, .. } => conversations
+            .iter()
+            .any(|reference| ids.contains(&reference.conversation_id)),
+        _ => false,
     }
 }
 

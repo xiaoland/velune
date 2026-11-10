@@ -197,6 +197,8 @@ pub struct NativeSession {
     /// The runtime process was ended on purpose; there is nothing to read.
     process_ended: bool,
     gateway_turn: bool,
+    /// A DeepSeek process may require Velune's model metadata to resume.
+    dsh_history_overlay: bool,
     /// A side chat: a temporary copy of a conversation that is never saved.
     side: bool,
     /// What only a Codex app-server session tracks.
@@ -216,6 +218,36 @@ impl NativeSession {
             && self.config.execution == target.execution
             && self.config.agent_dir == target.agent_dir
             && self.config.os_home == target.os_home
+    }
+
+    /// Releasing this live handle leaves a session the native client can open
+    /// with its own configuration. The host also checks durable identity and
+    /// that work has settled before reporting release.
+    pub fn can_handoff_control(&self, target: Option<&crate::control::Target>) -> bool {
+        if self.process_ended
+            || self.failed
+            || self.side
+            || self.native_id.is_none()
+            || self.gateway_turn
+            || self.config.gateway.is_some()
+        {
+            return false;
+        }
+        let owns_reported_control =
+            || target.is_some_and(|target| target.reports_control() && self.owns_control(target));
+        match self.config.kind {
+            NativeKind::Codex166 => {
+                owns_reported_control()
+                    && self.native_provider.as_deref() != Some("velune")
+                    && self
+                        .native_selection
+                        .as_ref()
+                        .and_then(|model| model.provider_id.as_deref())
+                        != Some("velune")
+            }
+            NativeKind::DeepSeek => owns_reported_control() && !self.dsh_history_overlay,
+            NativeKind::ClaudeCode => true,
+        }
     }
 
     pub fn connect(mut config: NativeConfig) -> Result<Self> {
@@ -277,7 +309,7 @@ impl NativeSession {
         } else {
             None
         };
-        let rpc = Self::spawn_rpc(&active, None, None, None, None)?;
+        let (rpc, dsh_history_overlay) = Self::spawn_rpc(&active, None, None, None, None)?;
         let mut bytes = [0; 8];
         getrandom::fill(&mut bytes)
             .map_err(|error| Error::new(format!("运行时会话身份生成失败：{error}")))?;
@@ -302,6 +334,7 @@ impl NativeSession {
             restart_required: false,
             process_ended: false,
             gateway_turn: tunnel.is_some(),
+            dsh_history_overlay,
             side: false,
             codex: Default::default(),
             claude: Default::default(),
@@ -319,8 +352,8 @@ impl NativeSession {
         session: Option<(&str, Option<&Path>, &claude::ClaudeStart)>,
         effort: Option<&str>,
         permission_mode: Option<&str>,
-    ) -> Result<rpc::RpcClient> {
-        let mut command = match config.kind {
+    ) -> Result<(rpc::RpcClient, bool)> {
+        let (mut command, dsh_history_overlay) = match config.kind {
             NativeKind::Codex166 => {
                 let mut command = crate::process_tree::command(&config.binary);
                 command.arg("app-server");
@@ -343,12 +376,13 @@ impl NativeSession {
                         json!(gateway.endpoint)
                     ));
                 }
-                command
+                (command, false)
             }
             NativeKind::DeepSeek => Self::dsh_command(config)?,
-            NativeKind::ClaudeCode => {
-                Self::claude_command(config, selection, session, effort, permission_mode)?
-            }
+            NativeKind::ClaudeCode => (
+                Self::claude_command(config, selection, session, effort, permission_mode)?,
+                false,
+            ),
         };
         let home_key = match config.kind {
             NativeKind::Codex166 => "CODEX_HOME",
@@ -368,7 +402,8 @@ impl NativeSession {
         } else {
             command.env_remove("VELUNE_GATEWAY_TOKEN");
         }
-        rpc::RpcClient::spawn_at(command, &config.execution, config.os_home.as_deref())
+        let rpc = rpc::RpcClient::spawn_at(command, &config.execution, config.os_home.as_deref())?;
+        Ok((rpc, dsh_history_overlay))
     }
     fn initialize(&mut self) -> Result<()> {
         match self.config.kind {
@@ -487,7 +522,7 @@ impl NativeSession {
         };
         let outcome: Result<()> = (|| {
             match self.config.kind {
-                NativeKind::Codex166 => self.codex_open(native_id, cwd, runtime_id, history)?,
+                NativeKind::Codex166 => self.codex_open(native_id, cwd, runtime_id)?,
                 NativeKind::DeepSeek => self.dsh_open(native_id, cwd, runtime_id, history)?,
                 NativeKind::ClaudeCode => self.claude_open(native_id, cwd, runtime_id, history)?,
             };
@@ -889,7 +924,7 @@ impl NativeSession {
         }
         self.codex.threads.clear();
         self.process_ended = false;
-        self.rpc = Self::spawn_rpc(
+        (self.rpc, self.dsh_history_overlay) = Self::spawn_rpc(
             &active,
             self.native_selection.as_ref(),
             Some((&id, cwd.as_deref(), &self.claude.start)),
@@ -905,12 +940,12 @@ impl NativeSession {
             // The previous process owned this loaded-session handle; the replacement has none yet.
             self.native_id = None;
             match self.config.kind {
-                NativeKind::Codex166 => self.codex_open(
-                    &id,
-                    cwd.as_deref(),
-                    &saved.context_runtime_id,
-                    saved.messages.clone(),
-                )?,
+                NativeKind::Codex166 => {
+                    // Only the execution handle is being replaced. Keep this
+                    // session's projection and its associated read receipt.
+                    self.codex_resume_thread(&id, cwd.as_deref())?;
+                    self.set_native_thread(&id, &saved.messages);
+                }
                 NativeKind::DeepSeek => self.dsh_open(
                     &id,
                     cwd.as_deref(),
@@ -1163,6 +1198,15 @@ impl NativeSession {
         }
         Ok(())
     }
+    fn set_native_thread(&mut self, id: &str, history: &[Message]) {
+        self.native_id = Some(id.into());
+        self.turn_id = None;
+        self.codex.turn_error = None;
+        self.interactions.clear();
+        self.pending_rpc.clear();
+        self.sub_agents = sub_agent_conversations(history).collect();
+    }
+
     fn replace_snapshot(
         &mut self,
         id: &str,
@@ -1170,12 +1214,7 @@ impl NativeSession {
         runtime_id: &str,
         history: Vec<Message>,
     ) {
-        self.native_id = Some(id.into());
-        self.turn_id = None;
-        self.codex.turn_error = None;
-        self.interactions.clear();
-        self.pending_rpc.clear();
-        self.sub_agents = sub_agent_conversations(&history).collect();
+        self.set_native_thread(id, &history);
         self.snapshot = Some(ConversationSnapshot {
             context_runtime_id: runtime_id.into(),
             revision: 1,

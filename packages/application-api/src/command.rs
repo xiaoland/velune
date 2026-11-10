@@ -126,6 +126,7 @@ pub enum CommandKind {
     ForkConversation,
     Cancel,
     StopSubAgents,
+    SetConversationHandoff,
     OpenSideChat,
     SendSideChat,
     CloseSideChat,
@@ -459,6 +460,11 @@ pub enum Command {
         runtime_id: String,
         conversation_id: String,
     },
+    SetConversationHandoff {
+        runtime_id: String,
+        conversation_id: String,
+        release: bool,
+    },
     /// Open a side chat on a sent conversation: questions asked on its
     /// context without adding to it, with the given next-turn model,
     /// reasoning level and permission mode. The snapshot is the side chat's, by
@@ -690,6 +696,7 @@ pub enum Response {
     ForkConversation(SnapshotResult),
     Cancel(SnapshotResult),
     StopSubAgents(SnapshotResult),
+    SetConversationHandoff(SnapshotResult),
     OpenSideChat(SnapshotResult),
     SendSideChat(SnapshotResult),
     CloseSideChat,
@@ -841,6 +848,7 @@ impl Command {
             | Self::ForkConversation { .. }
             | Self::Cancel { .. }
             | Self::StopSubAgents { .. }
+            | Self::SetConversationHandoff { .. }
             | Self::OpenSideChat { .. }
             | Self::SendSideChat { .. }
             | Self::CloseSideChat { .. }
@@ -946,6 +954,7 @@ impl Command {
             Self::ForkConversation { .. } => CommandKind::ForkConversation,
             Self::Cancel { .. } => CommandKind::Cancel,
             Self::StopSubAgents { .. } => CommandKind::StopSubAgents,
+            Self::SetConversationHandoff { .. } => CommandKind::SetConversationHandoff,
             Self::OpenSideChat { .. } => CommandKind::OpenSideChat,
             Self::SendSideChat { .. } => CommandKind::SendSideChat,
             Self::CloseSideChat { .. } => CommandKind::CloseSideChat,
@@ -1026,6 +1035,7 @@ impl Command {
                     | Self::ReplyRuntimeInteraction { .. }
                     | Self::Cancel { .. }
                     | Self::StopSubAgents { .. }
+                    | Self::SetConversationHandoff { .. }
                     | Self::OpenSideChat { .. }
                     | Self::SendSideChat { .. }
                     | Self::CloseSideChat { .. }

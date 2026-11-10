@@ -18,7 +18,7 @@ use std::{
         mpsc::{self, Receiver, RecvTimeoutError},
     },
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 const MAX_STDERR_BYTES: usize = 1024 * 1024;
@@ -41,8 +41,8 @@ pub enum Error {
     MissingCommandType,
     #[error("Pi RPC child exited before responding")]
     ChildExited,
-    #[error("Pi RPC response timed out")]
-    Timeout,
+    #[error("Pi RPC response timed out: {0}")]
+    Timeout(String),
     #[error("Pi RPC response failed: {0}")]
     CommandFailed(String),
     #[error("Pi SDK 接入失败: {0}")]
@@ -452,7 +452,7 @@ impl Client {
         Error::CommandFailed(detail)
     }
 
-    fn timeout_error(&mut self) -> Error {
+    fn timeout_error(&mut self, method: &str) -> Error {
         let status = match self.child.try_wait() {
             Ok(Some(status)) => format!("进程状态：{status}"),
             Ok(None) => "Pi RPC 子进程仍在运行".into(),
@@ -460,11 +460,9 @@ impl Client {
         };
         let detail = self.stderr_detail(false);
         if detail.is_empty() {
-            Error::CommandFailed(format!("Pi RPC response timed out；{status}"))
+            Error::Timeout(format!("{method}；{status}"))
         } else {
-            Error::CommandFailed(format!(
-                "Pi RPC response timed out；{status}；原始错误：{detail}"
-            ))
+            Error::Timeout(format!("{method}；{status}；原始错误：{detail}"))
         }
     }
 
@@ -503,7 +501,7 @@ impl Client {
         Ok(format!("{command_type}\0{id}"))
     }
 
-    fn receive(&mut self, timeout: Duration) -> Result<Value> {
+    fn receive(&mut self, method: &str, timeout: Duration) -> Result<Value> {
         if let Some(error) = &self.terminal_error {
             return Err(Error::CommandFailed(error.clone()));
         }
@@ -514,18 +512,64 @@ impl Client {
             Ok(Incoming::Record(value)) => Ok(value),
             Ok(Incoming::Error(error)) => Err(self.terminate(Some(error))),
             Ok(Incoming::Closed) | Err(RecvTimeoutError::Disconnected) => Err(self.terminate(None)),
-            Err(RecvTimeoutError::Timeout) => Err(self.timeout_error()),
+            Err(RecvTimeoutError::Timeout) => Err(self.timeout_error(method)),
         }
     }
 
     /// Send a command and wait for its matching response. Other records stay
     /// buffered for `poll`, preserving event order across requests.
     fn request_with_timeout(&mut self, command: Value, timeout: Duration) -> Result<Value> {
+        // Only fixed protocol commands enter diagnostics. Arbitrary caller
+        // fields and unknown command names do not become log labels.
+        let method = match command["type"].as_str() {
+            Some(
+                method @ ("abort"
+                | "clear_queue"
+                | "clone"
+                | "fork"
+                | "get_available_models"
+                | "get_commands"
+                | "get_messages"
+                | "get_state"
+                | "new_session"
+                | "prompt"
+                | "set_model"
+                | "set_session_name"
+                | "set_thinking_level"
+                | "steer"
+                | "switch_session"),
+            ) => method.to_owned(),
+            _ => "command".to_owned(),
+        };
+        let started = Instant::now();
+        let outcome = self.request_response(command, &method, timeout);
+        let elapsed_ms = started.elapsed().as_millis();
+        if let Err(error) = &outcome {
+            let failure_kind = if matches!(error, Error::Timeout(_)) {
+                "timeout"
+            } else {
+                "command_failed"
+            };
+            tracing::warn!(target: "velune_agent_runtime", event = "native_rpc_failed",
+                phase = "control_rpc", runtime_family = "pi", method, elapsed_ms, failure_kind);
+        } else {
+            tracing::debug!(target: "velune_agent_runtime", event = "native_rpc_completed",
+                phase = "control_rpc", runtime_family = "pi", method, elapsed_ms);
+        }
+        outcome
+    }
+
+    fn request_response(
+        &mut self,
+        command: Value,
+        method: &str,
+        timeout: Duration,
+    ) -> Result<Value> {
         let key = self.write_command(command)?;
         let (_, id) = key.split_once('\0').expect("internal command key");
         let mut deferred = VecDeque::new();
         loop {
-            let value = match self.receive(timeout) {
+            let value = match self.receive(method, timeout) {
                 Ok(value) => value,
                 Err(error) => {
                     deferred.append(&mut self.pending);

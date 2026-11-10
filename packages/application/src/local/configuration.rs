@@ -714,6 +714,9 @@ impl CoreRuntime {
                     .execution_runtime_id
                     .as_ref()
                     .is_some_and(|id| changed(id, true));
+            if invalidated && core.preserves_connection_configuration() {
+                return Ok(());
+            }
             if invalidated && core.session.executing() {
                 core.session.configuration_changed = true;
                 return Ok(());

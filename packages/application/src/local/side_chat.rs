@@ -90,6 +90,7 @@ impl CoreRuntime {
         let parent = self
             .queried_snapshot(runtime_id, conversation_id)?
             .ok_or_else(|| RuntimeError::invalid("此会话不可用"))?;
+        self.check_handoff_input(&parent)?;
         if self.session.side.is_some() || parent.conversation.parent_conversation_id.is_some() {
             return Err(RuntimeError::invalid("此会话不提供侧聊"));
         }

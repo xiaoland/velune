@@ -282,6 +282,12 @@ impl CoreRuntime {
     /// The addressed session's runtime process does nothing more: a queue
     /// waiting for its work goes on.
     pub(super) fn follow_ended_work(&mut self) {
+        if let Err(error) = self.advance_conversation_handoff() {
+            tracing::warn!(target: "velune_application", event = "conversation_handoff_progress_failed", detail = %error);
+        }
+        if self.current_handoff_blocks_dispatch() {
+            return;
+        }
         let queue = &mut self.session.send_queue;
         if queue.waiting.take().is_some() && queue.paused.is_none() {
             self.send_next_queued();
@@ -296,6 +302,13 @@ impl CoreRuntime {
     /// Send the first queued message as its own turn. One that is not
     /// accepted stays first and the queue waits; it is never resent unasked.
     fn send_next_queued(&mut self) {
+        if self.current_handoff_blocks_dispatch() {
+            let queue = &mut self.session.send_queue;
+            if !queue.turns.is_empty() && queue.paused.is_none() {
+                queue.waiting.get_or_insert(QueueWait::Control);
+            }
+            return;
+        }
         if self.current_snapshot().is_some_and(|snapshot| {
             matches!(
                 snapshot.actions.input_access,
@@ -320,6 +333,12 @@ impl CoreRuntime {
                 let queue = &mut self.session.send_queue;
                 queue.turns.push_front(turn);
                 queue.waiting = Some(QueueWait::SubAgents);
+            }
+            Err(RuntimeError::Contract(failure)) if failure.code == "control_held_elsewhere" => {
+                self.control_held_elsewhere();
+                let queue = &mut self.session.send_queue;
+                queue.turns.push_front(turn);
+                queue.waiting = Some(QueueWait::Control);
             }
             Err(error) => {
                 tracing::warn!(target: "velune_application", event = "queued_turn_not_sent", detail = %error);
@@ -383,6 +402,7 @@ impl CoreRuntime {
         let queue = &self.session.send_queue;
         let admission = Self::submission_admission(&self.session, snapshot);
         FollowUp {
+            control_handoff: self.conversation_handoff(snapshot),
             queue: queue.turns.iter().map(QueuedTurn::public).collect(),
             paused: queue.paused.clone(),
             waiting: queue.waiting.clone(),

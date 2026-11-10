@@ -127,22 +127,8 @@ impl CoreRuntime {
         native_id: &str,
         cwd: &Path,
     ) -> Result<ConversationSnapshot, RuntimeError> {
-        self.validate_runtime_cwd(runtime, cwd)?;
-        let mut session = self.acp_client(runtime)?;
-        if !session.capabilities().load_session {
-            return Err(RuntimeError::Unsupported(
-                "此 ACP Agent 不提供会话历史加载；持久跨运行时接续需要可重读的原生历史".into(),
-            ));
-        }
-        let snapshot = session
-            .load(native_id, cwd, &runtime.id)
-            .map_err(|error| RuntimeError::context("ACP 原生历史加载", error));
-        let closed = session
-            .shutdown()
-            .map_err(|error| RuntimeError::context("ACP 关闭", error));
-        let snapshot = snapshot?;
-        closed?;
-        Ok(snapshot)
+        let request = self.prepare_acp_history(runtime, native_id, cwd)?;
+        self.finish_history_read(request.load()?)
     }
 
     pub(super) fn prepare_acp_snapshot(
@@ -268,6 +254,43 @@ impl CoreRuntime {
         }
         self.list()
     }
+}
+
+/// Perform the ACP history request without touching application state.
+pub(super) fn load_acp_history(
+    config: Config,
+    runtime_id: &str,
+    native_id: &str,
+    cwd: &Path,
+) -> Result<(ConversationSnapshot, crate::AcpCapabilities), RuntimeError> {
+    if !cwd.is_absolute()
+        || !config
+            .execution
+            .is_directory(cwd)
+            .map_err(|error| RuntimeError::context("会话工作目录检查", error))?
+    {
+        return Err(RuntimeError::invalid(
+            "会话工作目录必须是执行机器上的已有绝对目录",
+        ));
+    }
+    let mut session =
+        Client::connect(config).map_err(|error| RuntimeError::context("ACP 初始化", error))?;
+    let capabilities = acp_runtime_info(&session).capabilities;
+    let snapshot = if capabilities.load_session {
+        session
+            .load(native_id, cwd, runtime_id)
+            .map_err(|error| RuntimeError::context("ACP 原生历史加载", error))
+    } else {
+        Err(RuntimeError::Unsupported(
+            "此 ACP Agent 不提供会话历史加载；持久跨运行时接续需要可重读的原生历史".into(),
+        ))
+    };
+    let closed = session
+        .shutdown()
+        .map_err(|error| RuntimeError::context("ACP 关闭", error));
+    let snapshot = snapshot?;
+    closed?;
+    Ok((snapshot, capabilities))
 }
 
 fn acp_runtime_info(session: &velune_agent_runtime::acp::Client) -> crate::AcpRuntimeInfo {

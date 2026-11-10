@@ -173,6 +173,7 @@ pub struct CoreRuntime {
     session: session::Session,
     /// Other open conversation sessions, most recently used last.
     parked: Vec<session::Session>,
+    handoffs: handoff::Handoffs,
     elsewhere: live::ElsewhereScan,
     finished_turns: session::FinishedTurns,
     scheduled_tasks: crate::scheduled_tasks::Store,
@@ -180,6 +181,7 @@ pub struct CoreRuntime {
     gateways: Vec<GatewayConfig>,
     model_templates: Vec<crate::config::ModelTemplate>,
     conversation_links: Vec<crate::config::ConversationLink>,
+    pending_history_reads: BTreeMap<String, usize>,
     conversation_browser_limits: crate::ConversationBrowserLimits,
     organization: crate::config::ConversationOrganization,
     browser_window: organization::BrowserWindow,
@@ -246,6 +248,7 @@ mod browsing;
 mod collaboration;
 mod composer_choices;
 mod composer_target;
+pub(crate) mod conversation_history;
 pub(crate) use composer_choices::{TurnKey, TurnRequests};
 mod compaction;
 mod configuration;
@@ -256,6 +259,7 @@ mod delivery;
 mod editing;
 mod execution;
 mod follow_up;
+mod handoff;
 mod submission;
 use crate::SendQueueOperation;
 mod collaborators;
@@ -294,6 +298,7 @@ impl CoreRuntime {
         let turn_requests = repository.load_turn_requests()?;
         let organization = repository.load_conversation_organization()?;
         let (resource_templates, resource_bindings) = repository.load_resource_library()?;
+        let handoffs = handoff::Handoffs::open(&options.home_directory);
         let scheduled_tasks = crate::scheduled_tasks::Store::open(&options.home_directory)?;
         let scheduling_state = velune_gateway::SchedulingState::default();
         let billing = Arc::new(crate::billing::Billing::default());
@@ -313,10 +318,12 @@ impl CoreRuntime {
             finished_turns: session::FinishedTurns::default(),
             scheduled_tasks,
             schedule_next_check: std::time::Instant::now(),
+            handoffs,
             repository,
             gateways: persisted.gateways,
             model_templates: persisted.model_templates,
             conversation_links,
+            pending_history_reads: BTreeMap::new(),
             conversation_browser_limits: crate::ConversationBrowserLimits {
                 page: persisted.conversation_browser_group_limit,
                 total: persisted.conversation_browser_total_limit,
@@ -624,6 +631,11 @@ impl CoreRuntime {
             if !self.runtime_instance(runtime_id)?.enabled {
                 return Err(RuntimeError::invalid("此运行时已停用"));
             }
+            // A cold browse is already loading off-owner. An early poll
+            // must not start a second copy of the same IO on the owner.
+            if self.pending_history_reads.contains_key(conversation_id) {
+                return Ok(None);
+            }
             // A conversation shown read-only has no session yet; its first
             // poll opens one so the view can follow native changes.
             match self.read_conversation_context(runtime_id, conversation_id) {
@@ -665,7 +677,11 @@ impl CoreRuntime {
         }
         // A queued next turn also prepares from the saved configuration.
         if !self.session.executing() && self.session.configuration_changed {
-            self.invalidate_execution()?;
+            if self.preserves_connection_configuration() {
+                self.session.configuration_changed = false;
+            } else {
+                self.invalidate_execution()?;
+            }
         }
         self.poll_automatic_naming(outcome == Some(crate::TurnOutcome::Completed));
         if let Some(outcome) = outcome {

@@ -136,10 +136,24 @@ impl Session {
                 .is_some_and(|snapshot| snapshot.conversation.runtime_id == id)
     }
 
-    /// Must stay open: closing it would end work, drop a request the user
-    /// has not answered or drop queued messages.
+    /// Whether closing execution preserves the ability to continue this conversation.
+    pub(super) fn can_reopen_execution(&self) -> bool {
+        self.side.is_none()
+            && self.unsubmitted_draft.is_none()
+            && self.pending_native_fork.is_none()
+            && !self.requires_live_connection()
+    }
+
+    pub(super) fn requires_live_connection(&self) -> bool {
+        self.active_state
+            .live()
+            .is_some_and(|live| !live.supports_reopen())
+    }
+
+    /// Retain continuation that depends on this connection, active work,
+    /// approvals and queued messages.
     pub(super) fn pinned(&self) -> bool {
-        self.side.is_some()
+        !self.can_reopen_execution()
             || self.naming.is_some()
             || self.executing()
             || !self.send_queue.is_empty()
@@ -222,6 +236,22 @@ pub(super) struct FinishedTurns {
 const RETAINED_FINISHED_TURNS: usize = 64;
 
 impl CoreRuntime {
+    /// Configuration for new connections can change while a live-only session
+    /// keeps the configuration it was created with.
+    pub(super) fn preserves_connection_configuration(&self) -> bool {
+        self.session.requires_live_connection()
+            && self
+                .session
+                .execution_configuration
+                .as_ref()
+                .is_some_and(|saved| {
+                    self.runtime_instance(&saved.runtime.id)
+                        .is_ok_and(|current| {
+                            current.enabled && current.type_id == saved.runtime.type_id
+                        })
+                })
+    }
+
     /// Address the open session of conversation `id`, if there is one.
     pub(super) fn focus_existing(&mut self, id: &str) -> bool {
         if self.session.presents(id) {
@@ -329,8 +359,8 @@ impl CoreRuntime {
             })
     }
 
-    /// Close the least recently used idle sessions beyond the retained number.
-    /// One whose native sub-agents still run is not idle.
+    /// Close the least recently used reopenable idle sessions beyond the
+    /// retained number. Sessions with outstanding work stay connected.
     pub(super) fn trim_sessions(&mut self) {
         let mut kept: Vec<bool> = self
             .parked

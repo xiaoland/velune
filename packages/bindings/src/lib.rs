@@ -1532,6 +1532,23 @@ impl VeluneApplication {
         )
     }
 
+    pub fn set_conversation_handoff(
+        &self,
+        runtime_id: String,
+        conversation_id: String,
+        release: bool,
+    ) -> Result<SnapshotResult, BindingError> {
+        request!(
+            self,
+            "set_conversation_handoff",
+            SetConversationHandoff {
+                runtime_id,
+                conversation_id,
+                release
+            }
+        )
+    }
+
     /// Uncommitted changes in the conversation's working directory.
     pub fn working_changes(
         &self,

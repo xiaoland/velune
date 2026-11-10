@@ -41,6 +41,8 @@ enum OperationEffect {
     case reads
     case writes
     case changesConfiguration
+    /// Browsing waits independently of other conversations' operations.
+    case browsesConversation
 }
 
 /// Typed UniFFI application boundary. The UI never constructs an action or
@@ -63,7 +65,7 @@ final class Transport: @unchecked Sendable {
     private var openFailure: (error: Error, at: Date)?
     private struct CachedOpenFailure: Error { let error: Error }
     private var isClosed = false
-    /// From the moment quitting starts until the core closes or refuses to; apart from `lock`, which an operation holds throughout.
+    /// From the moment quitting starts until the core closes or refuses to.
     private let closingLock = NSLock()
     private var closingRequested = false
     private var isClosing: Bool { closingLock.withLock { closingRequested } }
@@ -227,7 +229,7 @@ final class Transport: @unchecked Sendable {
             return try application.sendTurn(sourceRuntimeId: native.conversation.runtimeId, conversationId: native.conversation.id, targetRuntimeId: runtimeID, selection: selection, turn: try deliver(turn, using: application))
         }
     }
-    func openConversation(runtimeID: String, conversationID: String) throws -> SnapshotResult { try withApplication("openConversation", .reads, .conversationRead) { try $0.readConversation(runtimeId: runtimeID, conversationId: conversationID) } }
+    func openConversation(runtimeID: String, conversationID: String) throws -> SnapshotResult { try withApplication("openConversation", .browsesConversation, .conversationRead) { try $0.readConversation(runtimeId: runtimeID, conversationId: conversationID) } }
     func renameConversation(runtimeID: String, conversationID: String, title: String) throws -> ConfigurationSnapshot { try withApplication("renameConversation", .writes, .conversationWrite) { try $0.renameConversation(runtimeId: runtimeID, conversationId: conversationID, title: title) } }
     func deleteConversation(runtimeID: String, conversationID: String) throws -> ConfigurationSnapshot { try withApplication("deleteConversation", .writes, .conversationWrite) { try $0.deleteConversation(runtimeId: runtimeID, conversationId: conversationID) } }
     func scheduledTasks(_ operation: ScheduledTasksOperation) throws -> ScheduledTasksState {
@@ -281,6 +283,11 @@ final class Transport: @unchecked Sendable {
     }
     func closeSideChat(sideChatID: String) throws { try withApplication("closeSideChat", .writes, .cancel) { try $0.closeSideChat(sideChatId: sideChatID) } }
     func stopSubAgents(runtimeID: String, conversationID: String) throws -> SnapshotResult { try withApplication("stopSubAgents", .writes, .cancel) { try $0.stopSubAgents(runtimeId: runtimeID, conversationId: conversationID) } }
+    func setConversationHandoff(runtimeID: String, conversationID: String, release: Bool) throws -> SnapshotResult {
+        try withApplication("setConversationHandoff", .writes, .conversationWrite) {
+            try $0.setConversationHandoff(runtimeId: runtimeID, conversationId: conversationID, release: release)
+        }
+    }
     func workingBranch(runtimeID: String, conversationID: String) throws -> String? { try withApplication("workingBranch", .reads, .conversationRead) { try $0.workingBranch(runtimeId: runtimeID, conversationId: conversationID) } }
     func workingChanges(runtimeID: String, conversationID: String) throws -> WorkingChanges { try withApplication("workingChanges", .reads, .conversationRead) { try $0.workingChanges(runtimeId: runtimeID, conversationId: conversationID) } }
     func fileDiff(runtimeID: String, conversationID: String, path: String) throws -> FileDiff { try withApplication("fileDiff", .reads, .conversationRead) { try $0.fileDiff(runtimeId: runtimeID, conversationId: conversationID, path: path) } }
@@ -322,22 +329,14 @@ final class Transport: @unchecked Sendable {
         Self.logger.debug("operation=\(operation, privacy: .public) localCorrelation=\(correlation, privacy: .public) started")
         do {
             let value = try telemetryCoordinator().operation(category) { carrier in
-                lock.lock(); defer { lock.unlock() }
-                guard !isClosed else { throw TransportError.operation(operation, .closed) }
-                guard effect != .reads || !isClosing else { throw TransportError.operation(operation, .quitting) }
-                if application == nil {
-                    if let failure = openFailure, Date().timeIntervalSince(failure.at) < Self.openRetryInterval {
-                        throw CachedOpenFailure(error: failure.error)
-                    }
-                    do {
-                        application = try open()
-                        openFailure = nil
-                    } catch {
-                        openFailure = (error, Date())
-                        throw error
-                    }
+                if effect == .browsesConversation {
+                    let application = try lock.withLock { try admittedApplication(operation, effect) }
+                    return try body(application.withTraceContext(carrier: carrier))
                 }
-                return try body(application!.withTraceContext(carrier: carrier))
+                return try lock.withLock {
+                    let application = try admittedApplication(operation, effect)
+                    return try body(application.withTraceContext(carrier: carrier))
+                }
             }
             if effect == .changesConfiguration { configurationChanged.send() }
             return value
@@ -346,6 +345,28 @@ final class Transport: @unchecked Sendable {
             // A cached open failure was already logged when the open itself failed.
             if let cached = error as? CachedOpenFailure { throw TransportError.operation(operation, map(cached.error)) }
             logFailure(operation: operation, localCorrelation: correlation, error: error); throw TransportError.operation(operation, map(error))
+        }
+    }
+
+    /// Call under the lifecycle lock. The handle shares the Rust backend
+    /// state, including closure, with handles captured by a browsing call.
+    private func admittedApplication(_ operation: String, _ effect: OperationEffect) throws -> VeluneApplication {
+        guard !isClosed else { throw TransportError.operation(operation, .closed) }
+        if (effect == .reads || effect == .browsesConversation) && isClosing {
+            throw TransportError.operation(operation, .quitting)
+        }
+        if let application { return application }
+        if let failure = openFailure, Date().timeIntervalSince(failure.at) < Self.openRetryInterval {
+            throw CachedOpenFailure(error: failure.error)
+        }
+        do {
+            let application = try open()
+            self.application = application
+            openFailure = nil
+            return application
+        } catch {
+            openFailure = (error, Date())
+            throw error
         }
     }
 

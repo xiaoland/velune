@@ -1,7 +1,7 @@
 //! Local application conversations use cases.
 use super::*;
 use crate::conversation::ConversationSnapshot;
-use crate::local::continuation::{LogicalProjection, display_segment};
+use crate::local::continuation::LogicalProjection;
 use crate::{ComposedTurn, ConfigurationSnapshot, ModelSelection, SnapshotResult};
 
 /// A turn the user sends in a conversation: where it comes from, the
@@ -66,6 +66,25 @@ impl CoreRuntime {
         result
     }
 
+    fn addresses_source(&self, runtime_id: &str, conversation_id: &str) -> bool {
+        if let Some(draft) = &self.session.unsubmitted_draft
+            && draft.public_id == conversation_id
+            && draft.original_runtime_id == runtime_id
+        {
+            return true;
+        }
+        self.session
+            .logical_projection
+            .as_ref()
+            .map(|projection| &projection.origin)
+            .or_else(|| {
+                self.session
+                    .projected()
+                    .map(|snapshot| &snapshot.conversation)
+            })
+            .is_some_and(|source| source.id == conversation_id && source.runtime_id == runtime_id)
+    }
+
     fn send_requested_turn(
         &mut self,
         request: &TurnRequest,
@@ -89,38 +108,7 @@ impl CoreRuntime {
         let images = &attachments.images;
         let effort = request.turn.effort.as_deref();
         let permission_mode = request.turn.permission_mode.as_deref();
-        let active_snapshot = self.native_snapshot();
-        let active_conversation_id = self
-            .session
-            .logical_projection
-            .as_ref()
-            .map(|projection| projection.origin.id.as_str())
-            .or_else(|| {
-                active_snapshot
-                    .as_ref()
-                    .map(|snapshot| snapshot.conversation.id.as_str())
-            });
-        let active_source_runtime = self
-            .session
-            .logical_projection
-            .as_ref()
-            .map(|projection| projection.origin.runtime_id.as_str())
-            .or_else(|| {
-                active_snapshot
-                    .as_ref()
-                    .map(|snapshot| snapshot.conversation.runtime_id.as_str())
-            });
-        let known_draft_source = self
-            .session
-            .unsubmitted_draft
-            .as_ref()
-            .is_some_and(|draft| {
-                draft.public_id == conversation_id && draft.original_runtime_id == source_runtime_id
-            });
-        if !known_draft_source
-            && (active_conversation_id != Some(conversation_id)
-                || active_source_runtime != Some(source_runtime_id))
-        {
+        if !self.addresses_source(source_runtime_id, conversation_id) {
             let (source, projection) =
                 self.read_conversation_source(source_runtime_id, conversation_id)?;
             self.invalidate_execution()?;
@@ -132,6 +120,7 @@ impl CoreRuntime {
         let admitted = self
             .current_snapshot()
             .ok_or_else(|| RuntimeError::invalid("conversation is not active"))?;
+        self.check_handoff_input(&admitted)?;
         Self::check_input_access(admitted.actions.input_access)?;
         let snapshot = self
             .native_snapshot()
@@ -324,7 +313,9 @@ impl CoreRuntime {
     ) -> Result<SnapshotResult, RuntimeError> {
         // Reopening a conversation whose turn or sub-agents run shows it as it
         // runs; its native history is read again once they have ended.
-        if self.session.executing()
+        // Some idle conversations can only be reopened through the live handle.
+        if (self.session.requires_live_connection() && self.addresses_source(runtime_id, id))
+            || self.session.executing()
             || self
                 .session
                 .pending_native_fork
@@ -408,100 +399,17 @@ impl CoreRuntime {
         }
     }
 
-    /// Read one native conversation without changing the active execution or
-    /// transcript projection.
     pub(crate) fn read_conversation(
         &mut self,
         runtime_id: &str,
         id: &str,
     ) -> Result<SnapshotResult, RuntimeError> {
-        tracing::info!(target:"velune_application", event="conversation_read_requested", conversation_id=%id, runtime_id=%runtime_id);
-        let active_snapshot = self.native_snapshot();
-        let active_id = self
-            .session
-            .logical_projection
-            .as_ref()
-            .map(|projection| projection.origin.id.as_str())
-            .or_else(|| {
-                active_snapshot
-                    .as_ref()
-                    .map(|snapshot| snapshot.conversation.id.as_str())
-            });
-        let active_runtime = self
-            .session
-            .logical_projection
-            .as_ref()
-            .map(|projection| projection.origin.runtime_id.as_str())
-            .or_else(|| {
-                active_snapshot
-                    .as_ref()
-                    .map(|snapshot| snapshot.conversation.runtime_id.as_str())
-            });
-        if active_id == Some(id) && active_runtime == Some(runtime_id) {
-            self.sync_projection()?;
-            return self.snapshot_result();
-        }
-        let (mut snapshot, projection) = self.read_conversation_source(runtime_id, id)?;
-        let control_target = self.read_control_target(&snapshot, projection.as_ref());
-        if let Some(projection) = projection {
-            let segment = projection
-                .link
-                .segments
-                .last()
-                .ok_or_else(|| RuntimeError::invalid("关联会话缺少当前段"))?;
-            let index = projection.link.segments.len() - 1;
-            let mut messages = projection.prefix;
-            if index > 0 {
-                messages.push(self.boundary_message(segment, index));
+        match self.prepare_conversation_read(runtime_id, id)? {
+            super::conversation_history::ConversationRead::Ready(snapshot) => Ok(*snapshot),
+            super::conversation_history::ConversationRead::Load(request) => {
+                self.finish_conversation_read(request.load())
             }
-            super::continuation::namespace_associations(&mut snapshot, index);
-            snapshot
-                .executions
-                .records
-                .extend(projection.executions.records);
-            messages.extend(display_segment(segment, &snapshot.messages, index)?);
-            snapshot.conversation = projection.origin;
-            snapshot.context_runtime_id = segment.runtime_instance_id.clone();
-            snapshot.messages = messages;
-            self.set_management_capabilities(&mut snapshot.conversation);
-        } else {
-            snapshot.context_runtime_id = runtime_id.into();
-            self.set_management_capabilities(&mut snapshot.conversation);
         }
-        super::continuation::stamp_turn_runtime(
-            &mut snapshot.messages,
-            &snapshot.context_runtime_id,
-        );
-        // Read-only history must reproduce stable transcript turn IDs without
-        // touching the shared live projection or its timing state.
-        use velune_agent_runtime::transcript::{TranscriptEvent, TranscriptProjection};
-        let mut transcript = TranscriptProjection::default();
-        transcript.apply(TranscriptEvent::ConfirmIdentities(
-            &snapshot.message_identity_confirmations,
-        ));
-        transcript.apply(TranscriptEvent::Replace {
-            messages: &snapshot.messages,
-            executions: &snapshot.executions,
-        });
-        super::composer_choices::recall_turn_requests(
-            &self.turn_requests,
-            &mut transcript,
-            &snapshot,
-        );
-        transcript.apply(TranscriptEvent::ExecutionState(snapshot.run_state.clone()));
-        snapshot.transcript_turns = transcript.turns();
-        self.name_turn_models(&mut snapshot.transcript_turns);
-        self.stamp_forkable_turns(&mut snapshot);
-        snapshot.transcript_items = transcript.items();
-        snapshot.transcript_outline = transcript.outline();
-        snapshot.transcript_message_identities = transcript.message_identities();
-        snapshot.sub_agents = self.sub_agents(&snapshot);
-        snapshot.collaborators = self.collaborators(&snapshot);
-        self.apply_read_input_access(&mut snapshot, control_target);
-        Self::apply_read_submission_admission(&mut snapshot);
-        Ok(SnapshotResult {
-            snapshot: Some(self.delivery.snapshot(snapshot)),
-        })
     }
 
     pub(crate) fn rename_conversation(
@@ -838,16 +746,21 @@ impl CoreRuntime {
         }
         self.drain_runtime()?;
         self.session.unsubmitted_draft = None;
-        let sent = match &mut self.session.active_state {
-            ActiveState::Native(session) if resuming => session
-                .resume(input.effort.clone(), input.permission_mode.clone())
-                .map_err(Into::into),
-            state => match state.live_mut() {
-                Some(live) => live.send(&input),
-                None => Err("会话执行尚未准备".into()),
-            },
-        }
-        .map_err(|error| RuntimeError::context("message send", error));
+        let sent =
+            telemetry::observe(
+                self.telemetry.as_ref(),
+                "harness.dispatch",
+                || match &mut self.session.active_state {
+                    ActiveState::Native(session) if resuming => session
+                        .resume(input.effort.clone(), input.permission_mode.clone())
+                        .map_err(Into::into),
+                    state => match state.live_mut() {
+                        Some(live) => live.send(&input),
+                        None => Err("会话执行尚未准备".into()),
+                    },
+                },
+            )
+            .map_err(|error| RuntimeError::context("message send", error));
         if let ActiveState::Native(session) = &self.session.active_state {
             self.session.pending_native_fork = session.pending_fork();
         }

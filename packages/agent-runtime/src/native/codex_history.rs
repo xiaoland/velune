@@ -73,12 +73,11 @@ pub(super) fn pages(rpc: &mut RpcClient, method: &str, mut params: Value) -> Res
     let mut entries = Vec::new();
     let mut cursors = HashSet::new();
     loop {
-        let page = rpc.request(method, &params)?;
-        let data = page["data"]
-            .as_array()
-            .ok_or_else(|| Error::new("Codex 历史分页缺少内容"))?;
-        for entry in data {
-            let mut entry = entry.clone();
+        let mut page = rpc.request(method, &params)?;
+        let Some(Value::Array(data)) = page.get_mut("data").map(Value::take) else {
+            return Err(Error::new("Codex 历史分页缺少内容"));
+        };
+        for mut entry in data {
             if method == "thread/list"
                 && let Some(id) = entry["id"].as_str()
                 && let Some(receipt) = page["readStates"].get(id)
@@ -246,11 +245,26 @@ pub fn read_codex_history_at(
     os_home: Option<&Path>,
 ) -> Result<History> {
     let mut rpc = codex::history_client_at(kind, binary, home, execution, os_home)?;
+    let metadata = read_metadata(&mut rpc, id)?;
+    read_history(&mut rpc, runtime_id, id, execution, &metadata)
+}
+
+pub(super) fn read_metadata(rpc: &mut RpcClient, id: &str) -> Result<Value> {
     let metadata = rpc.request("thread/read", &json!({"threadId":id,"includeTurns":false}))?;
-    let thread = &metadata["thread"];
-    if thread["id"].as_str() != Some(id) {
+    if metadata["thread"]["id"].as_str() != Some(id) {
         return Err(Error::new("Codex 返回不同的原生会话"));
     }
+    Ok(metadata)
+}
+
+pub(super) fn read_history(
+    rpc: &mut RpcClient,
+    runtime_id: &str,
+    id: &str,
+    execution: &crate::execution::ExecutionTarget,
+    metadata: &Value,
+) -> Result<History> {
+    let thread = &metadata["thread"];
     let history_mode = thread["historyMode"]
         .as_str()
         .filter(|mode| matches!(*mode, "legacy" | "paginated"))
@@ -264,12 +278,12 @@ pub fn read_codex_history_at(
     } else {
         (
             pages(
-                &mut rpc,
+                rpc,
                 "thread/items/list",
                 json!({"threadId":id,"limit":50,"sortDirection":"asc"}),
             )?,
             pages(
-                &mut rpc,
+                rpc,
                 "thread/turns/list",
                 json!({"threadId":id,"limit":50,"sortDirection":"asc","itemsView":"notLoaded"}),
             )?,
@@ -324,29 +338,38 @@ fn project_history(
     turns: &HashMap<String, RolloutTurn>,
     runtime_id: &str,
 ) -> Result<(Vec<Message>, Executions)> {
-    let ends: HashMap<&str, usize> = items
-        .iter()
-        .enumerate()
-        .filter_map(|(index, entry)| entry["turnId"].as_str().map(|id| (id, index + 1)))
-        .collect();
-    let mut maintenance = HashMap::new();
-    for entry in items {
+    #[derive(Default)]
+    struct ProjectedTurn {
+        end: usize,
+        maintenance: bool,
+        last_user: Option<usize>,
+        items: Vec<String>,
+        error: Option<String>,
+    }
+    // Associate items once rather than scanning the entire transcript per turn.
+    let mut projected = HashMap::new();
+    for (index, entry) in items.iter().enumerate() {
         if let Some(id) = entry["turnId"].as_str() {
-            let compact = entry["item"]["type"] == "contextCompaction";
-            maintenance
-                .entry(id)
-                .and_modify(|only: &mut bool| *only &= compact)
-                .or_insert(compact);
+            let turn = projected.entry(id).or_insert_with(|| ProjectedTurn {
+                maintenance: true,
+                ..Default::default()
+            });
+            turn.end = index + 1;
+            turn.maintenance &= entry["item"]["type"] == "contextCompaction";
         }
     }
     let mut errors: HashMap<usize, Vec<Message>> = HashMap::new();
     let mut end = 0;
     for turn in native_turns {
-        if let Some(position) = turn["id"].as_str().and_then(|id| ends.get(id)) {
-            end = *position;
+        let id = turn["id"].as_str();
+        if let Some(position) = id.and_then(|id| projected.get(id)) {
+            end = position.end;
         }
         if let Some(message) = codex::project_turn_error(turn)? {
             // A failed turn can have no items; keep its place between adjacent turns.
+            if let Some(id) = id {
+                projected.entry(id).or_default().error = Some(message.id.clone());
+            }
             errors.entry(end).or_default().push(message);
         }
     }
@@ -357,9 +380,16 @@ fn project_history(
             message.timestamp_unix_ms = entry["startedAtMs"]
                 .as_i64()
                 .or_else(|| entry["completedAtMs"].as_i64());
+            let id = entry["turnId"].as_str();
+            if let Some(turn) = id.and_then(|id| projected.get_mut(id)) {
+                turn.items.push(message.id.clone());
+                if message.role == MessageRole::User {
+                    turn.last_user = Some(messages.len());
+                }
+            }
             if message.role == MessageRole::User {
-                message.branch_point = entry["turnId"].as_str().map(str::to_owned);
-                let turn = entry["turnId"].as_str().and_then(|turn| turns.get(turn));
+                message.branch_point = id.map(str::to_owned);
+                let turn = id.and_then(|id| turns.get(id));
                 message.turn_settings = Some(turn.map(|t| t.settings.clone()).unwrap_or_default());
                 message.turn_usage = turn.and_then(|t| t.usage.clone());
             }
@@ -368,78 +398,48 @@ fn project_history(
     }
     messages.extend(errors.remove(&items.len()).unwrap_or_default());
     let mut last_user = None;
-    for turn in native_turns {
-        let Some(id) = turn["id"].as_str() else {
-            continue;
-        };
-        if let Some(index) = messages.iter().rposition(|message| {
-            message.role == MessageRole::User && message.branch_point.as_deref() == Some(id)
-        }) {
-            last_user = Some(index);
-        } else if let Some(index) = last_user {
-            if maintenance.get(id) == Some(&true) {
-                continue;
-            }
-            add_resumed_usage(
-                &mut messages[..=index],
-                turns.get(id).and_then(|turn| turn.usage.as_ref()),
-            );
-        }
-    }
+    let mut last_user_execution: Option<usize> = None;
     let mut executions = Executions::default();
     for turn in native_turns {
         let Some(id) = turn["id"].as_str() else {
             continue;
         };
-        let mut ids: Vec<_> = items
-            .iter()
-            .filter(|entry| entry["turnId"] == id)
-            .filter_map(|entry| codex::project_item(&entry["item"], runtime_id).map(|m| m.id))
-            .filter(|id| messages.iter().any(|m| m.id == *id))
-            .collect();
-        if let Some(error) = codex::project_turn_error(turn)? {
-            ids.push(error.id);
-        }
-        let kind = if maintenance.get(id) == Some(&true) {
+        let projection = projected.remove(id).unwrap_or_default();
+        let mut ids = projection.items;
+        ids.extend(projection.error);
+        let kind = if projection.maintenance {
             ExecutionKind::ContextMaintenance
         } else {
             ExecutionKind::UserTurn
         };
-        let has_user = messages
-            .iter()
-            .any(|m| m.role == MessageRole::User && ids.contains(&m.id));
-        if !has_user
-            && kind == ExecutionKind::UserTurn
-            && let Some(record) = executions.records.iter_mut().rev().find(|r| r.kind == kind)
-        {
-            record.message_ids.extend(ids);
-            record.outcome = codex::turn_outcome(turn["status"].as_str());
-        } else {
-            executions.history(
-                id.into(),
-                kind,
-                ids,
-                codex::turn_outcome(turn["status"].as_str()),
-            );
+        let outcome = codex::turn_outcome(turn["status"].as_str());
+        if let Some(index) = projection.last_user {
+            last_user = Some(index);
+        } else if kind == ExecutionKind::UserTurn {
+            // Input-free turns belong to the preceding user message's visible
+            // segment, and keep its original requested settings.
+            if let Some(index) = last_user
+                && let Some(usage) = turns.get(id).and_then(|turn| turn.usage.as_ref())
+            {
+                let message: &mut Message = &mut messages[index];
+                match &mut message.turn_usage {
+                    Some(total) => total.add(usage),
+                    total => *total = Some(usage.clone()),
+                }
+            }
+            if let Some(index) = last_user_execution {
+                let record = &mut executions.records[index];
+                record.message_ids.extend(ids);
+                record.outcome = outcome;
+                continue;
+            }
         }
+        if kind == ExecutionKind::UserTurn {
+            last_user_execution = Some(executions.records.len());
+        }
+        executions.history(id.into(), kind, ids, outcome);
     }
     Ok((messages, executions))
-}
-
-/// Input-free turns belong to the preceding user message's visible segment,
-/// just as live token notifications do; its requested settings stay intact.
-pub(super) fn add_resumed_usage(messages: &mut [Message], usage: Option<&TurnUsage>) {
-    if let Some(usage) = usage
-        && let Some(message) = messages
-            .iter_mut()
-            .rev()
-            .find(|message| message.role == MessageRole::User)
-    {
-        match &mut message.turn_usage {
-            Some(total) => total.add(usage),
-            total => *total = Some(usage.clone()),
-        }
-    }
 }
 
 #[cfg(test)]

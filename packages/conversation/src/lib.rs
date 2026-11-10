@@ -135,6 +135,10 @@ pub enum InputAccess {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
 pub struct FollowUp {
+    /// The user's ability to hand this native conversation to another client.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[uniffi(default = None)]
+    pub control_handoff: Option<ControlHandoff>,
     /// Sent one by one, in order, each as its own turn once the turn before
     /// it ends normally.
     pub queue: Vec<QueuedMessage>,
@@ -172,6 +176,14 @@ pub struct FollowUp {
     /// runs.
     #[serde(default)]
     pub can_fork: bool,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, uniffi::Enum)]
+#[serde(rename_all = "camelCase")]
+pub enum ControlHandoff {
+    CanRelease,
+    Releasing,
+    Released,
 }
 
 /// A user message an edit can replace, continuing from just before it.

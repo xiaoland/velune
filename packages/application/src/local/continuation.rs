@@ -355,12 +355,23 @@ impl CoreRuntime {
         &self,
         link: &ConversationLink,
     ) -> Result<(ConversationSnapshot, LogicalProjection), RuntimeError> {
+        self.read_link_with(link, |segment| self.read_segment(segment))
+    }
+
+    /// Combine native reads on the owner, even when IO ran on a history worker.
+    pub(super) fn read_link_with(
+        &self,
+        link: &ConversationLink,
+        mut read: impl FnMut(
+            &ConversationSegmentReference,
+        ) -> Result<ConversationSnapshot, RuntimeError>,
+    ) -> Result<(ConversationSnapshot, LogicalProjection), RuntimeError> {
         let mut prefix = Vec::new();
         let mut executions = velune_conversation::Executions::default();
         let mut origin = None;
         let mut tail = None;
         for (index, segment) in link.segments.iter().enumerate() {
-            let mut snapshot = match self.read_segment(segment) {
+            let mut snapshot = match read(segment) {
                 Ok(snapshot) => snapshot,
                 Err(error)
                     if index + 1 == link.segments.len()

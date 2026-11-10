@@ -211,6 +211,7 @@ final class ConversationStore: ObservableObject {
     var canSend: Bool { !executionStarting && !device.authenticationRunning && !isLoading && !isStopping && !activityBlocksSending && !isShuttingDown && (snapshot?.actions.canSend ?? false) }
     var canCancel: Bool { !isStopping && snapshot?.runState == .running && (snapshot?.actions.canCancel ?? false) }
     var followUp: FollowUp { snapshot?.followUp ?? FollowUp() }
+    var controlHandoff: ControlHandoff? { isOpeningConversation || isSideChat ? nil : followUp.controlHandoff }
     /// The loaded conversation's native sub-agents.
     var subAgents: [SubAgent] { pendingConversationID == nil ? snapshot?.subAgents ?? [] : [] }
     /// The conversations the loaded one took part with in agent-to-agent collaboration.
@@ -1065,6 +1066,15 @@ final class ConversationStore: ObservableObject {
         guard let runtimeID = projectionRuntimeID, let conversationID = loadedConversationID else { recordProblem("请选择会话"); return }
         guard let transport else { recordProblem("本地核心未配置"); return }
         enqueue({ try transport.stopSubAgents(runtimeID: runtimeID, conversationID: conversationID) }) { [weak self] in self?.applySnapshotResult($0) }
+    }
+    func setConversationHandoff(release: Bool) {
+        let handoff = controlHandoff
+        guard (release ? handoff == .canRelease : handoff == .releasing || handoff == .released),
+              !isLoading, !isPreview,
+              let transport, let runtimeID = projectionRuntimeID, let conversationID = loadedConversationID else { return }
+        enqueue({ try transport.setConversationHandoff(runtimeID: runtimeID, conversationID: conversationID, release: release) }) { [weak self] in
+            self?.applySnapshotResult($0)
+        }
     }
     func cancel() {
         guard canCancel, !isLoading else { return }

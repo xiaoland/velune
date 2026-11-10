@@ -59,6 +59,7 @@ public sealed partial class ConversationView
         };
         ComposerPanel.Drop += Drop;
         CompactButton.Click += async (_, _) => await Model.Compact();
+        HandoffActionButton.Click += (_, _) => Model.SetConversationHandoff(false);
         StatusButton.Click += (_, _) => ShowStatus();
         RestoreDraft();
     }
@@ -213,8 +214,18 @@ public sealed partial class ConversationView
             restoringDraft = true; Input.Text = Model.ComposerText; restoringDraft = false;
         }
         Input.IsReadOnly = !Model.DraftEditable;
-        InputLock.Text = Model.InputLockMessage ?? Model.ComposerIssue ?? "";
-        InputLock.Visibility = Visible(!Model.InputEditable || Model.ComposerIssue != null);
+        var handoff = Model.FollowUp?.ControlHandoff;
+        var handoffMessage = handoff switch
+        {
+            ControlHandoff.Releasing => "正在交还控制权…",
+            ControlHandoff.Released => "控制权已交还",
+            _ => null,
+        };
+        InputLock.Text = handoffMessage ?? Model.InputLockMessage ?? Model.ComposerIssue ?? "";
+        InputLock.Visibility = Visible(handoffMessage != null || !Model.InputEditable || Model.ComposerIssue != null);
+        HandoffActionButton.Visibility = Visible(handoffMessage != null);
+        HandoffActionButton.Content = handoff == ControlHandoff.Releasing ? "取消交接" : "恢复 Velune 执行";
+        HandoffActionButton.IsEnabled = !Model.Busy;
         if (!Model.DraftEditable) CompletionPopup.IsOpen = false;
         if (!sessionOptionsRead && Model.Snapshot != null && Model.SessionOpen)
         {

@@ -1,5 +1,6 @@
 package app.velune.android
 
+import app.velune.bindings.conversation.ControlHandoff
 import app.velune.bindings.conversation.InputAccess
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
@@ -30,6 +31,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.ChatBubbleOutline
@@ -38,6 +40,8 @@ import androidx.compose.material.icons.automirrored.outlined.HelpOutline
 import androidx.compose.material.icons.outlined.Shield
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.FilledTonalButton
@@ -94,6 +98,7 @@ class ConversationActions(
     val compact: () -> Unit = {},
     val editDraft: (String) -> Unit = {},
     val removeAttachment: (String) -> Unit = {},
+    val setConversationHandoff: (release: Boolean) -> Unit = {},
 )
 
 @Composable
@@ -109,7 +114,18 @@ fun ConversationScreen(hub: DeviceHub, peer: String, runtime: RuntimeLabel?, mod
         cwd = state.conversation?.cwd ?: (target as? ConversationTarget.New)?.cwd,
     )
     ConversationContent(header, state, remember(model, back) {
-        ConversationActions(back, model::send, model::stop, model::reply, model::select, { model.loadPayload(it) }, model::compact, model::editDraft, model::removeAttachment)
+        ConversationActions(
+            back = back,
+            send = model::send,
+            stop = model::stop,
+            reply = model::reply,
+            select = model::select,
+            load = { model.loadPayload(it) },
+            compact = model::compact,
+            editDraft = model::editDraft,
+            removeAttachment = model::removeAttachment,
+            setConversationHandoff = model::setConversationHandoff,
+        )
     })
 }
 
@@ -121,6 +137,20 @@ fun ConversationContent(header: ConversationHeader, state: ConversationState, ac
             TopAppBar(
                 actions = {
                     TextButton(onClick = actions.compact, enabled = state.canCompact && !state.busy) { Text("压缩上下文") }
+                    if (state.controlHandoff == ControlHandoff.CAN_RELEASE) {
+                        var more by remember { mutableStateOf(false) }
+                        Box {
+                            IconButton(onClick = { more = true }, enabled = !state.busy) {
+                                Icon(Icons.Filled.MoreVert, contentDescription = "更多会话操作")
+                            }
+                            DropdownMenu(expanded = more, onDismissRequest = { more = false }) {
+                                DropdownMenuItem(text = { Text("释放会话控制权") }, enabled = !state.busy, onClick = {
+                                    more = false
+                                    actions.setConversationHandoff(true)
+                                })
+                            }
+                        }
+                    }
                 },
                 navigationIcon = { IconButton(onClick = actions.back) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回") } },
                 title = {
@@ -246,7 +276,16 @@ private fun Composer(state: ConversationState, actions: ConversationActions) {
             InputAccess.EXTERNAL_EXECUTION -> "此会话正在其他客户端执行。"
             InputAccess.READ_ONLY -> "此会话当前只可阅读。"
         }
-        if (lockMessage != null) Text(lockMessage, style = MaterialTheme.typography.bodySmall)
+        when (state.controlHandoff) {
+            ControlHandoff.RELEASED, ControlHandoff.RELEASING -> Row(verticalAlignment = Alignment.CenterVertically) {
+                val releasing = state.controlHandoff == ControlHandoff.RELEASING
+                Text(if (releasing) "正在交还控制权…" else "控制权已交还", style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
+                TextButton(onClick = { actions.setConversationHandoff(false) }, enabled = !state.busy) {
+                    Text(if (releasing) "取消交接" else "恢复 Velune 执行")
+                }
+            }
+            ControlHandoff.CAN_RELEASE, null -> if (lockMessage != null) Text(lockMessage, style = MaterialTheme.typography.bodySmall)
+        }
         if (!state.composerReady) Text("正在恢复输入", style = MaterialTheme.typography.bodySmall)
         state.composerFailure?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
         state.attachments.forEach { attachment ->

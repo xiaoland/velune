@@ -214,7 +214,10 @@ impl CoreRuntime {
             .type_id
             == RuntimeKind::Acp
         {
-            self.prepare_acp_snapshot(&snapshot, selection, is_new)?;
+            let owner = self.telemetry.clone();
+            telemetry::observe(owner.as_ref(), "harness.prepare", || {
+                self.prepare_acp_snapshot(&snapshot, selection, is_new)
+            })?;
             self.session.model_selection = Some(selection.cloned());
             self.session.model_record_key = None;
             self.session.pending_native_fork = None;
@@ -291,13 +294,17 @@ impl CoreRuntime {
         if let Some(cwd) = cwd {
             self.validate_runtime_cwd(&runtime, cwd)?;
         }
-        velune_agent_runtime::version::check_version_at(
-            runtime.type_id,
-            &setting_path(&runtime, "binary")?,
-            setting_path_optional(&runtime, "nodeBinary").as_deref(),
-            &context.target,
-            context.os_home.as_deref(),
-        )
+        let binary = setting_path(&runtime, "binary")?;
+        let node = setting_path_optional(&runtime, "nodeBinary");
+        telemetry::observe(self.telemetry.as_ref(), "harness.version", || {
+            velune_agent_runtime::version::check_version_at(
+                runtime.type_id,
+                &binary,
+                node.as_deref(),
+                &context.target,
+                context.os_home.as_deref(),
+            )
+        })
         .map_err(|error| RuntimeError::context("运行时版本检查", error))?;
         self.shutdown_active()?;
         self.capture_execution_configuration(&runtime, None);
@@ -341,8 +348,10 @@ impl CoreRuntime {
             let servers = self.collaboration_servers();
             let mut config = self.native_config(&runtime, None)?;
             config.mcp_servers = servers;
-            let mut session = NativeSession::connect(config)
-                .map_err(|error| RuntimeError::context("原生运行时连接", error))?;
+            let mut session = telemetry::observe(self.telemetry.as_ref(), "harness.start", || {
+                NativeSession::connect(config)
+            })
+            .map_err(|error| RuntimeError::context("原生运行时连接", error))?;
             if let Some((provider_id, model_id)) = native {
                 session
                     .select_native_model(provider_id, model_id.into())
@@ -376,9 +385,10 @@ impl CoreRuntime {
                         .open_side(native_id, cwd, &runtime.id)
                         .map_err(|error| RuntimeError::context("侧聊打开", error))?;
                 } else {
-                    session
-                        .open(native_id, cwd, &runtime.id, snapshot.messages.clone())
-                        .map_err(|error| RuntimeError::context("原生会话恢复", error))?;
+                    telemetry::observe(self.telemetry.as_ref(), "harness.resume", || {
+                        session.open(native_id, cwd, &runtime.id, snapshot.messages.clone())
+                    })
+                    .map_err(|error| RuntimeError::context("原生会话恢复", error))?;
                     session.restore_context(snapshot);
                 }
             }

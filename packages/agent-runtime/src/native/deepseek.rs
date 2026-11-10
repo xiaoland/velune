@@ -2,7 +2,7 @@
 use super::*;
 
 impl NativeSession {
-    pub(super) fn dsh_command(config: &NativeConfig) -> Result<Command> {
+    pub(super) fn dsh_command(config: &NativeConfig) -> Result<(Command, bool)> {
         let path = if let Some(gateway) = &config.gateway {
             let api = match gateway.protocol.as_str() {
                 "openai-completions" => "openai-completions",
@@ -89,10 +89,11 @@ impl NativeSession {
             crate::process_tree::command(&config.binary)
         };
         command.args(["--profile", "acp"]);
+        let has_overlay = path.is_some();
         if let Some(path) = path {
             command.arg("--patch").arg(path);
         }
-        Ok(command)
+        Ok((command, has_overlay))
     }
 
     pub(super) fn dsh_initialize(&mut self) -> Result<()> {
@@ -321,7 +322,7 @@ impl NativeSession {
             )?;
             let mut config = self.config.clone();
             config.gateway = None;
-            let mut command = Self::dsh_command(&config)?;
+            let (mut command, _) = Self::dsh_command(&config)?;
             command
                 .arg("--patch")
                 .arg(&patch)

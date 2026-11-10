@@ -1,13 +1,17 @@
 //! Generic ACP v1 over stdio. Agent launch, authentication and provider ownership stay external.
 pub use crate::native::{Error, Result};
-use crate::{conversation::*, execution::ExecutionTarget, native::rpc::RpcClient};
+use crate::{
+    conversation::*,
+    execution::ExecutionTarget,
+    native::rpc::{CONTROL_TIMEOUT, RpcClient, observe_request},
+};
 use agent_client_protocol_schema::v1 as wire;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
-    time::{Duration, Instant},
+    time::Instant,
 };
 mod config;
 mod projection;
@@ -595,6 +599,14 @@ impl Client {
         method: &str,
         params: &Value,
     ) -> Result<T> {
+        observe_request(method, || self.request_response(method, params))
+    }
+
+    fn request_response<T: serde::de::DeserializeOwned>(
+        &mut self,
+        method: &str,
+        params: &Value,
+    ) -> Result<T> {
         let id = match self.rpc.begin(method, params) {
             Ok(id) => id,
             Err(error) => {
@@ -602,9 +614,9 @@ impl Client {
                 return Err(error);
             }
         };
-        let deadline = Instant::now() + Duration::from_secs(15);
+        let deadline = Instant::now() + CONTROL_TIMEOUT;
         loop {
-            let record = match self.rpc.receive(deadline) {
+            let record = match self.rpc.receive(method, deadline) {
                 Ok(record) => record,
                 Err(error) => {
                     self.fail();

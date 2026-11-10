@@ -103,6 +103,22 @@ sealed partial class Conversation
 
     public void StopSubAgents() => Act("停止子 Agent", NativeOperation.Cancel, (application, runtimeID, conversation) => application.StopSubAgents(runtimeID, conversation));
 
+    public void SetConversationHandoff(bool release)
+    {
+        var action = (release, FollowUp?.ControlHandoff) switch
+        {
+            (true, ControlHandoff.CanRelease) => "释放会话控制权",
+            (false, ControlHandoff.Releasing) => "取消交接",
+            (false, ControlHandoff.Released) => "恢复 Velune 执行",
+            _ => null,
+        };
+        if (action != null)
+        {
+            Act(action, NativeOperation.ConversationWrite,
+                (application, runtimeID, conversation) => application.SetConversationHandoff(runtimeID, conversation, release));
+        }
+    }
+
     // TakeQueued takes a queued message out of the queue to send it again:
     // its attachments go back to the composer, the text to the caller.
     public async Task<bool> TakeQueued(QueuedMessage message)

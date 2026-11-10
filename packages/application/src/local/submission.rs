@@ -1,7 +1,7 @@
 //! Submission admission shared by command execution and its public projection.
 //! Draft contents, input methods and requests in flight remain client state.
 use super::*;
-use crate::conversation::{ConversationSnapshot, InputAccess};
+use crate::conversation::{ControlHandoff, ConversationSnapshot, InputAccess};
 
 #[derive(Clone, Copy, Default)]
 pub(super) struct SubmissionState {
@@ -26,7 +26,13 @@ impl SubmissionAdmission {
     /// before `apply` replaces it with application admission. Never feed an
     /// already delivered snapshot back into this calculation as a source.
     fn resolve(snapshot: &ConversationSnapshot, state: SubmissionState) -> Self {
-        let common = if snapshot.actions.input_access != InputAccess::Editable {
+        let handed_off = matches!(
+            snapshot.follow_up.control_handoff,
+            Some(ControlHandoff::Releasing | ControlHandoff::Released)
+        );
+        let common = if handed_off {
+            Err("会话已申请交还，请先恢复 Velune 控制")
+        } else if snapshot.actions.input_access != InputAccess::Editable {
             Err("当前会话不能提交输入")
         } else if state.compacting {
             Err("上下文压缩期间不能提交输入")
@@ -73,7 +79,12 @@ impl SubmissionAdmission {
         snapshot.follow_up.can_steer = self.can_steer;
         snapshot.follow_up.can_resume &= self.send.is_ok();
         snapshot.follow_up.can_compact &= self.send.is_ok();
-        if snapshot.actions.input_access != InputAccess::Editable {
+        if snapshot.actions.input_access != InputAccess::Editable
+            || matches!(
+                snapshot.follow_up.control_handoff,
+                Some(ControlHandoff::Releasing | ControlHandoff::Released)
+            )
+        {
             // Editing survives a read-only view: only the in-place
             // replacement is lost; continuing in a fork sends elsewhere.
             for editable in &mut snapshot.follow_up.editable {
@@ -120,6 +131,7 @@ impl CoreRuntime {
         }
     }
 
+    #[cfg(test)]
     pub(super) fn apply_read_submission_admission(snapshot: &mut ConversationSnapshot) {
         SubmissionAdmission::resolve(snapshot, SubmissionState::default()).apply(snapshot);
     }
