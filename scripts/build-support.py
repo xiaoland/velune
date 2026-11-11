@@ -193,7 +193,7 @@ def source_snapshot(platform):
     elif platform == "windows":
         paths += ["assets", "app/mac/Licenses", "scripts/build-windows.ps1"]
     elif platform == "ios":
-        paths += ["app/mac/Licenses", "app/mac/ClientTelemetry.swift", "app/mac/TelemetryExporters.swift", "app/mac/TelemetrySettings.swift", "scripts/build-ios.sh", "scripts/build-ios-native.sh"]
+        paths += ["app/mac/Licenses", "app/mac/ClientTelemetry.swift", "app/mac/TelemetryExporters.swift", "app/mac/TelemetrySettings.swift", "app/mac/RemoteNetworkSettings.swift", "scripts/build-ios.sh", "scripts/build-ios-native.sh"]
     elif platform == "android":
         paths += ["scripts/build-android.sh", "scripts/build-android-native.sh"]
     if is_git_checkout():

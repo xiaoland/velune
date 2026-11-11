@@ -215,6 +215,7 @@ struct DeviceSettingsView: View {
     @Environment(\.openWindow) private var openWindow
     @State private var offer = ""
     @State private var showsIPadInstallation = false
+    @State private var showsNetworkSettings = false
     @StateObject private var iPadInstallation = IPadInstallationModel()
     var body: some View {
         Form {
@@ -237,6 +238,9 @@ struct DeviceSettingsView: View {
                     }
                 }
             }
+            Section("本机连接") {
+                Button("连接设置…") { showsNetworkSettings = true }.disabled(hub.state == nil)
+            }
             Section {
                 Button("安装到 iPad…") { showsIPadInstallation = true }
             }
@@ -251,12 +255,23 @@ struct DeviceSettingsView: View {
                     Button("连接") { hub.beginPairing(offer); offer = "" }.disabled(offer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || hub.state == nil)
                 }
                 Text("粘贴来源设备的控制或遥测分享邀请，核对两端数字，并在来源设备上批准对应权限。").uiFont(.caption).foregroundStyle(.secondary)
+                Text("如果对方使用需要认证的中继，请先在本机“连接设置”添加对应访问令牌；邀请不包含中继令牌。").uiFont(.caption).foregroundStyle(.secondary)
             }
             if let failure = hub.failure {
                 Section { Text(failure).foregroundStyle(.red) }
             }
         }.formStyle(.grouped)
         .sheet(isPresented: $showsIPadInstallation) { IPadInstallationPanel(model: iPadInstallation) }
+        .sheet(isPresented: $showsNetworkSettings) {
+            VStack(spacing: 0) {
+                HStack {
+                    Text("连接设置").font(.headline)
+                    Spacer()
+                    Button("完成") { showsNetworkSettings = false }
+                }.padding()
+                RemoteNetworkSettingsView(endpoint: { [hub] in try hub.telemetryEndpoint() })
+            }.frame(width: 620, height: 620)
+        }
     }
 }
 

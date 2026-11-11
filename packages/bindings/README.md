@@ -35,6 +35,8 @@ Running、Unknown、ResultExpired、ServerRestarted 与传输不明保留 pendin
 
 `read_state` 的 `network`（`NetworkState`）区分保存目标、网络代际已应用与实际观察的设施可达性；Unknown 不表示可达，lookup 注册也不是发布证明。普通摘要只给中继 URL 和是否已配置凭据。启动时保存目标动态不可应用也保留可读的稳定对象。
 
+各端连接设置使用 `read_network_state()` 读取同一安全摘要，`apply_relay_settings(expected_revision, relay, credentials)` 提交中继和完整资格表，保留已保存的 discovery、mDNS、路径策略、绑定地址和超时。`RelayCredentialEdit` 按 URL 指定 `CredentialEdit.Keep`／`Set { value }`／`Remove`，省略条目表示移除；平台必须保留未编辑的资格，不能把旧 token 自动转移到新 URL。修订冲突返回错误并保留编辑内容。`retry_network()` 重试当前保存目标，不回退旧设施。三者不关闭业务 owner 或重置配对。
+
 `BindingRemoteNetworkOptions.local_discovery` 控制生产 mDNS，公网预设与自定义 lookup 并行；本地接口变化由 `report_network_change` 带入。lookup 为有界 `lookup_urls`；联系人投影带线索来源（配对邀请或已认证对端）。被明确撤除的 lookup 跨冷启动保留禁用，Hello 不能恢复。
 
 网络配置与 Bearer 保存在普通 state 文件名加 `.network-private.json` 的独立私有文件，公开状态、邀请、Debug 与 pending 文件不含 token。独立资格表不扩大本机 home relay 候选；非 literal loopback 的明文 HTTP Bearer 在保存前拒绝，3xx 不跟随，lookup 不附带 relay token。identity、state 与派生配置在 open 前检查路径冲突。具体网络与资源寿命见 [remote README](../remote/README.md)。

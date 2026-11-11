@@ -62,7 +62,7 @@ data class DeviceSummary(val peerId: String, val name: String, val status: Devic
 
 data class DeviceStatus(val text: String, val tone: Tone)
 
-class DevicesActions(val open: (String) -> Unit, val add: () -> Unit, val remove: (DeviceSummary) -> Unit, val about: () -> Unit, val telemetry: () -> Unit = {})
+class DevicesActions(val open: (String) -> Unit, val add: () -> Unit, val remove: (DeviceSummary) -> Unit, val about: () -> Unit, val telemetry: () -> Unit = {}, val network: () -> Unit = {})
 
 @Composable
 fun DevicesScreen(hub: DeviceHub, open: (String) -> Unit, add: () -> Unit, about: () -> Unit, telemetry: () -> Unit) {
@@ -70,8 +70,10 @@ fun DevicesScreen(hub: DeviceHub, open: (String) -> Unit, add: () -> Unit, about
     val failure by hub.failure.collectAsState()
     val scope = rememberCoroutineScope()
     var removing by remember { mutableStateOf<DeviceSummary?>(null) }
+    var network by remember { mutableStateOf(false) }
     val devices = state?.let { snapshot -> snapshot.contacts.filter { it.controlAuthorized }.map { deviceSummary(snapshot, it) } }
-    DevicesContent(devices, failure, DevicesActions(open, add, remove = { removing = it }, about, telemetry))
+    DevicesContent(devices, failure, DevicesActions(open, add, remove = { removing = it }, about, telemetry, network = { network = true }))
+    if (network) RemoteNetworkDialog(hub, dismiss = { network = false })
     removing?.let { device ->
         AlertDialog(
             onDismissRequest = { removing = null },
@@ -97,6 +99,7 @@ fun DevicesContent(devices: List<DeviceSummary>?, failure: String?, actions: Dev
             TopAppBar(
                 title = { Text("设备") },
                 actions = {
+                    TextButton(onClick = actions.network, enabled = devices != null) { Text("连接设置") }
                     TextButton(onClick = actions.telemetry, enabled = devices != null) { Text("遥测") }
                     IconButton(onClick = actions.about) { Icon(Icons.Outlined.Info, contentDescription = "关于与开源许可") }
                 },

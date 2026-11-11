@@ -6,7 +6,7 @@
 
 ## 连接与公网设施
 
-`RemoteAccessService::bind` 装配稳定服务，加载已保存的目标配置并应用首个网络代际；首次配置来自传入的 `EndpointConfig`。也可先 `new` 再配置。`EndpointConfig::default()` 使用 n0 公共 relay／lookup 与生产 mDNS；`DevelopmentPublic` 表示公共设施预设，没有 Velune 服务 SLA。`RelayConfig::Custom` 选择本机 home relay 候选；`DiscoveryConfig::CustomPkarr { urls }` 最多装配四个自部署 pkarr 发布／解析入口。显式 Disabled／None 不回退公共预设。本包不部署服务。
+`RemoteAccessService::bind` 装配稳定服务，加载已保存的目标配置并应用首个网络代际；首次配置来自传入的 `EndpointConfig`。也可先 `new` 再配置。`EndpointConfig::default()` 使用 n0 公共 relay／lookup 与生产 mDNS；`DevelopmentPublic` 表示公共设施预设，没有 Velune 服务 SLA。`RelayConfig::Custom` 选择本机 home relay 候选；`DiscoveryConfig::CustomPkarr { urls }` 最多装配四个自部署 pkarr 发布／解析入口。显式 Disabled／None 不回退公共预设；`RelayConfig::Disabled` 移除整个 relay transport，也不能使用对端公布的 relay。本包不部署服务。
 
 本地传输绑定成功不要求公网设施在线。`network_state()` 分别投影 saved 修订、Applying／Applied／Failed、实际代际及设施的已观察可达性；Unknown 不是可达。home relay 状态来自原生连接／认证状态，lookup 状态来自实际签名解析结果，不把注册返回当发布成功。`descriptor()` 只在有当前网络时返回拨号线索，不代表授权。若合法配置因端口占用等动态原因不能应用，`bind` 仍返回可读取和修正设置的稳定服务，descriptor 不可用。公共 lookup 的实际 prod／staging 入口在每代装配时选定，Publisher、Resolver 与 descriptor 共用这一个 URL；联系人交接不会同时添加两套公共入口。
 

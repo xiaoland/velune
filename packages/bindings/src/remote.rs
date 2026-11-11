@@ -4,8 +4,9 @@ use std::{path::Path, sync::Arc, time::Duration};
 use velune_application_api::{ApplicationReply, ExecutionContext, Revision};
 use velune_remote::{
     ConnectionStatus, Controller, ControllerStatus, DeviceIdentity, DeviceStore, DiscoveryConfig,
-    EndpointConfig, EndpointDescriptor, PairingPermission, PairingStatus, PathPolicy,
-    PlatformNetworkSnapshot, RelayConfig, RemoteAccessService, RemoteServiceSnapshot,
+    EndpointConfig, EndpointDescriptor, NetworkSettingsUpdate, NetworkState, PairingPermission,
+    PairingStatus, PathPolicy, PlatformNetworkSnapshot, RelayConfig, RelayCredentialEdit,
+    RemoteAccessService, RemoteServiceSnapshot,
 };
 #[cfg(unix)]
 mod cli;
@@ -262,6 +263,55 @@ pub struct VeluneRemoteEndpoint {
 }
 #[uniffi::export]
 impl VeluneRemoteEndpoint {
+    /// Safe settings and observed reachability; bearer values are never returned.
+    pub fn read_network_state(&self) -> Result<NetworkState, BindingError> {
+        Ok(self.owner.service.network_state()?)
+    }
+
+    /// Replace relay choices and the complete qualification table, preserving all other settings.
+    /// A stale editor is rejected before retiring the active network generation.
+    pub fn apply_relay_settings(
+        &self,
+        expected_revision: u64,
+        relay: RelayConfig,
+        credentials: Vec<RelayCredentialEdit>,
+    ) -> Result<NetworkState, BindingError> {
+        let saved = self
+            .owner
+            .service
+            .network_state()?
+            .saved
+            .ok_or(velune_remote::RemoteError::Configuration)?;
+        if saved.revision != expected_revision {
+            return Err(velune_remote::RemoteError::ConfigurationConflict.into());
+        }
+        Ok(self
+            .owner
+            .runtime
+            .block_on(self.owner.service.apply_network(NetworkSettingsUpdate {
+                expected_revision,
+                config: EndpointConfig {
+                    relay,
+                    relay_credentials: Vec::new(),
+                    discovery: saved.discovery,
+                    local_discovery: saved.local_discovery,
+                    path_policy: saved.path_policy,
+                    bind_addresses: saved.bind_addresses,
+                    request_timeout: Duration::from_millis(saved.request_timeout_ms),
+                },
+                credentials,
+                restore_lookup_urls: Vec::new(),
+            }))?)
+    }
+
+    /// Retry the saved target after an application failure, without changing the target revision.
+    pub fn retry_network(&self) -> Result<NetworkState, BindingError> {
+        Ok(self
+            .owner
+            .runtime
+            .block_on(self.owner.service.retry_network())?)
+    }
+
     pub fn allow_telemetry_profile(&self, peer_id: String) -> Result<(), BindingError> {
         Ok(self.owner.service.allow_telemetry_profile(&peer_id)?)
     }
@@ -749,3 +799,6 @@ impl VeluneApplication {
         Ok(remote.controller.connection_status()?)
     }
 }
+
+#[cfg(test)]
+mod network_settings_tests;

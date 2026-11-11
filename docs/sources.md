@@ -102,6 +102,7 @@
 - <a id="s46"></a>[S46 · Android 参考界面与许可](sources/remote-platforms.md#s46)
 - <a id="s48"></a>[S48 · iPad 基础控制端](sources/remote-platforms.md#s48)
 - <a id="s49"></a>[S49 · iPad 工作台与体验](sources/remote-platforms.md#s49)
+- <a id="s86"></a>[S86 · 自部署远控中继与客户端设置](sources/remote-platforms.md#s86)
 
 ## 可观测性、开发与迁移
 
