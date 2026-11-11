@@ -118,6 +118,7 @@ struct TabContentView: View {
     let previewEmpty: Bool
     /// Over the window, where a composer the window shares does not reach.
     var inSheet = false
+    @State private var forkMessageID: String?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -144,9 +145,17 @@ struct TabContentView: View {
             guard let tab else { return }; window?.registerConversation(tab, anchor: anchor)
         })
         .sheet(item: $tab.editing) { request in
-            MessageEditorSheet(store: store, request: request, forked: window.openInNewTab(adopting:))
+            MessageEditorSheet(store: store, request: request, forked: { window.openInNewTab(adopting: $0, device: store.device) })
         }
-        .onChange(of: store.loadedConversationID) { _, _ in tab.outlineCollapsed = false }
+        .alert("创建分叉会话？", isPresented: Binding(get: { forkMessageID != nil }, set: { if !$0 { forkMessageID = nil } }), presenting: forkMessageID) { id in
+            Button("取消", role: .cancel) {}
+            Button("创建分叉") {
+                store.forkConversation(through: id) { window.openInNewTab(adopting: $0, device: store.device) }
+            }
+        } message: { _ in
+            Text("新会话将包含截至这一轮结束的内容，并在新标签页打开；原会话保持不变。\(store.isGenerating ? "当前 turn 结束后会自动创建，不会中断正在执行的工作。" : "")")
+        }
+        .onChange(of: store.loadedConversationID) { _, _ in tab.outlineCollapsed = false; forkMessageID = nil }
         .onChange(of: store.device.outlinePresentation) { _, _ in tab.outlineCollapsed = false }
     }
 
@@ -194,11 +203,11 @@ struct TabContentView: View {
                        openConversation: { [window, tab] id in window.openLinked(id, from: tab) },
                        openAgentURI: window.openAgentURI, openArtifact: window.openArtifact,
                        editMessage: { [store, tab] id in store.editability(of: id) == nil ? nil : { tab.edit(messageID: id) } },
-                       forkConversation: { [store, window] id in store.forkConversation(through: id, forked: window.openInNewTab(adopting:)) },
+                       forkConversation: { id in if store.canFork { forkMessageID = id } },
                        describeSettings: { [store] in store.describe($0) },
                        recovery: store.runtimeRecovery, stoppingRecovery: store.isStopping,
                        canStopRecovery: store.canCancel, stopRecovery: store.cancel,
-                       heldForkNotice: store.heldForkNotice)
+                       heldForkNotice: store.heldForkNotice, forking: store.isForking)
     }
 }
 

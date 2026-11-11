@@ -153,6 +153,7 @@ pub struct PendingFork {
     conversation_id: String,
     from: String,
     at: Option<String>,
+    name: Option<String>,
 }
 
 impl PendingFork {
@@ -565,8 +566,12 @@ impl NativeSession {
             self.config.gateway.take()
         };
         let outcome = match strategy {
-            SideChatStrategy::CodexEphemeralThread => self.codex_open_side(parent_id, cwd, runtime_id),
-            SideChatStrategy::ClaudeSideQuestion => self.claude_open_side(parent_id, cwd, runtime_id),
+            SideChatStrategy::CodexEphemeralThread => {
+                self.codex_open_side(parent_id, cwd, runtime_id)
+            }
+            SideChatStrategy::ClaudeSideQuestion => {
+                self.claude_open_side(parent_id, cwd, runtime_id)
+            }
             SideChatStrategy::Unsupported | SideChatStrategy::PiInMemory => {
                 Err(Error::new("侧聊策略不属于原生会话适配器"))
             }
@@ -758,13 +763,14 @@ impl NativeSession {
     }
 
     pub fn pending_fork(&self) -> Option<PendingFork> {
-        let claude::ClaudeStart::Fork { from, at } = &self.claude.start else {
+        let claude::ClaudeStart::Fork { from, at, name } = &self.claude.start else {
             return None;
         };
         Some(PendingFork {
             conversation_id: self.snapshot.as_ref()?.conversation.id.clone(),
             from: from.clone(),
             at: at.clone(),
+            name: name.clone(),
         })
     }
 
@@ -785,6 +791,7 @@ impl NativeSession {
         self.claude.start = claude::ClaudeStart::Fork {
             from: pending.from.clone(),
             at: pending.at.clone(),
+            name: pending.name.clone(),
         };
         Ok(())
     }
@@ -1062,11 +1069,31 @@ impl NativeSession {
             .ok_or_else(|| Error::new("原生会话尚未创建"))?;
         match self.config.kind {
             NativeKind::Codex166 => {
-                self.rpc
-                    .request("thread/name/set", &json!({"threadId":id,"name":title}))?;
+                if self.process_ended {
+                    // Forking releases the source writer. Naming the new
+                    // thread is metadata and must not resume the old writer.
+                    manage_thread_at(
+                        self.config.kind.runtime_kind(),
+                        &self.config.binary,
+                        &self.config.agent_dir,
+                        id,
+                        ThreadChange::Rename(title),
+                        &self.config.execution,
+                        self.config.os_home.as_deref(),
+                    )?;
+                } else {
+                    self.rpc
+                        .request("thread/name/set", &json!({"threadId":id,"name":title}))?;
+                }
             }
             NativeKind::ClaudeCode => {
-                self.rpc.claude_control(json!({"subtype":"rename_session","title":title,"source":"host","session_id":id}))?;
+                if let claude::ClaudeStart::Fork { name, .. } = &mut self.claude.start {
+                    // The native file is made on first send. Carry its title
+                    // with the fork through reconfiguration to that launch.
+                    *name = Some(title.into());
+                } else {
+                    self.rpc.claude_control(json!({"subtype":"rename_session","title":title,"source":"host","session_id":id}))?;
+                }
             }
             NativeKind::DeepSeek => return Err(Error::new("此运行时没有原生会话重命名接口")),
         }

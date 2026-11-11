@@ -22,6 +22,21 @@ struct EditingChoice {
     native: bool,
 }
 
+/// Once the native runtime has made a copy, or its result is unknown, a
+/// later failure must not create a second one through translation.
+struct NativeForkFailure {
+    error: RuntimeError,
+    copied: bool,
+}
+impl From<RuntimeError> for NativeForkFailure {
+    fn from(error: RuntimeError) -> Self {
+        Self {
+            error,
+            copied: false,
+        }
+    }
+}
+
 impl Branching {
     fn of(kind: RuntimeKind) -> Option<Self> {
         match kind {
@@ -263,26 +278,86 @@ impl CoreRuntime {
         if !self.forkable_turn_users(&current).contains(message_id) {
             return Err(RuntimeError::invalid("会话当前不能分叉"));
         }
-        if !self.simple_source(&current.conversation.id) {
-            return self.translated_branch(&current, message_id, None, None);
-        }
         if self.turn_running() {
             // Forking reopens the source natively; a running turn must not
             // be disturbed. Hold for the turn to end and retry.
             return Err(crate::Error::Busy);
         }
-        let branching =
-            Branching::of(self.runtime_instance(runtime_id)?.type_id).expect("forkable runtime");
-        // The message as the native history has it now: what the view shows
-        // may predate a change made outside Velune.
-        let native_id = self
-            .session
-            .logical_projection
-            .as_ref()
-            .map(|projection| projection.link.segments[0].native_conversation_id.as_str())
-            .unwrap_or(conversation_id)
-            .to_owned();
-        let fresh = self.read_history(runtime_id, &native_id)?;
+        // A linked tail already contains the runtime's effective imported
+        // context. Fork that native session first, rather than reimporting it.
+        let native = if self.simple_source(conversation_id) {
+            self.native_snapshot().map(|source| {
+                let id = if self.link_of(conversation_id).is_some() {
+                    message_id.strip_prefix("segment-0:").unwrap_or(message_id)
+                } else {
+                    message_id
+                };
+                (source, id.to_owned())
+            })
+        } else {
+            self.link_of(conversation_id).and_then(|link| {
+                link.segments
+                    .iter()
+                    .enumerate()
+                    .find_map(|(index, segment)| {
+                        let id = message_id.strip_prefix(&format!("segment-{index}:"))?;
+                        if segment.runtime_instance_id != current.context_runtime_id
+                            || segment.deleted
+                        {
+                            return None;
+                        }
+                        let source = if index + 1 == link.segments.len() {
+                            self.native_snapshot()
+                        } else {
+                            match self.read_history(&segment.runtime_instance_id, &segment.native_conversation_id) {
+                                Ok(snapshot) => Some(snapshot),
+                                Err(error) => {
+                                    tracing::warn!(target:"velune_application", event="conversation_fork_source_unavailable", detail=%error);
+                                    None
+                                }
+                            }
+                        };
+                        source.map(|source| (source, id.to_owned()))
+                    })
+            })
+        };
+        if let Some((source, id)) = native {
+            match self.native_fork_message(&source, &id) {
+                Ok(()) => {
+                    self.name_fork(&current)?;
+                    return self.snapshot_result();
+                }
+                Err(NativeForkFailure {
+                    error,
+                    copied: true,
+                }) => return Err(error),
+                Err(NativeForkFailure { error, .. }) => {
+                    if matches!(error, RuntimeError::Busy | RuntimeError::OutstandingWork) {
+                        return Err(error);
+                    }
+                    tracing::warn!(target:"velune_application", event="conversation_fork_fallback", detail=%error);
+                }
+            }
+        }
+        let selection = self.session.model_selection.clone().flatten().or_else(|| {
+            current
+                .model_record_key
+                .clone()
+                .map(|model_record_key| crate::ModelSelection::Managed { model_record_key })
+        });
+        self.translated_branch(&current, message_id, selection, None)
+    }
+
+    fn native_fork_message(
+        &mut self,
+        current: &ConversationSnapshot,
+        message_id: &str,
+    ) -> Result<(), NativeForkFailure> {
+        let runtime_id = current.context_runtime_id.as_str();
+        let branching = Branching::of(self.runtime_instance(runtime_id)?.type_id)
+            .ok_or_else(|| RuntimeError::invalid("此运行时不提供原生会话分叉"))?;
+        let native_id = &current.conversation.id;
+        let fresh = self.read_history(runtime_id, native_id)?;
         let users: Vec<&Message> = fresh
             .messages
             .iter()
@@ -331,16 +406,34 @@ impl CoreRuntime {
             self.invalidate_execution()?;
         }
         self.focus_new();
+        let mut copied = false;
         let branched = (|| {
             self.prepare_with_selection(fresh.clone(), selection.as_ref(), false)?;
             match &mut self.session.active_state {
-                ActiveState::Native(session) => session
-                    .fork_through(&message_id)
-                    .map_err(|error| RuntimeError::context("会话分叉", error)),
+                ActiveState::Native(session) => {
+                    session.fork_through(&message_id).map_err(|error| {
+                        // Timeout/disconnect has an unknown native result;
+                        // it is not permission to create a second copy.
+                        copied = matches!(
+                            error.code(),
+                            "fork_created" | "fork_outcome_unknown" | "timeout" | "transport"
+                        );
+                        RuntimeError::context("会话分叉", error)
+                    })?;
+                    copied = true;
+                    Ok(())
+                }
                 ActiveState::Pi(session) => {
                     session
                         .fork_at(pi_boundary.flatten().as_deref())
-                        .map_err(|error| RuntimeError::context("会话分叉", error))?;
+                        .map_err(|error| {
+                            copied = !matches!(
+                                error,
+                                pi::Error::CommandFailed(_) | pi::Error::NotStarted
+                            );
+                            RuntimeError::context("会话分叉", error)
+                        })?;
+                    copied = true;
                     self.sync_projection()
                 }
                 _ => Err(RuntimeError::invalid("此运行时不提供会话分叉")),
@@ -352,12 +445,38 @@ impl CoreRuntime {
             let _ = self.shutdown_active();
             self.session.unsubmitted_draft = None;
             self.focus_key(origin);
-            return Err(error);
+            return Err(NativeForkFailure { error, copied });
         }
         if let ActiveState::Native(session) = &self.session.active_state {
             self.session.pending_native_fork = session.pending_fork();
         }
-        self.snapshot_result()
+        Ok(())
+    }
+
+    fn name_fork(&mut self, source: &ConversationSnapshot) -> Result<(), RuntimeError> {
+        let mut titles: Vec<String> = self
+            .cached_sources()
+            .into_iter()
+            .map(|item| item.summary.title.display_text().to_owned())
+            .collect();
+        titles.extend(
+            std::iter::once(&self.session)
+                .chain(&self.parked)
+                .filter_map(|session| session.projected())
+                .map(|snapshot| snapshot.conversation.title.display_text().to_owned()),
+        );
+        let title = fork_title(source.conversation.title.display_text(), &titles);
+        self.session
+            .active_state
+            .live_mut()
+            .ok_or_else(|| RuntimeError::invalid("分叉会话尚不可命名"))?
+            .rename(&title)
+            .map_err(|error| RuntimeError::context("分叉会话命名", error))?;
+        self.sync_projection()?;
+        if let ActiveState::Native(session) = &self.session.active_state {
+            self.session.pending_native_fork = session.pending_fork();
+        }
+        Ok(())
     }
 
     /// Send `turn` in place of the user message `message_id`, continuing as
@@ -527,6 +646,9 @@ impl CoreRuntime {
         if let ActiveState::Native(session) = &self.session.active_state {
             self.session.pending_native_fork = session.pending_fork();
         }
+        if placement == EditPlacement::Fork {
+            self.name_fork(&current)?;
+        }
         let conversation = self
             .session
             .conversation_id()
@@ -555,33 +677,62 @@ impl CoreRuntime {
         selection: Option<crate::ModelSelection>,
         turn: Option<crate::ComposedTurn>,
     ) -> Result<crate::SnapshotResult, RuntimeError> {
-        let link = self
-            .session
-            .logical_projection
-            .as_ref()
-            .ok_or_else(|| RuntimeError::invalid("会话缺少关联信息"))?
-            .link
-            .clone();
-        // Authoritative re-read of every sealed segment, as handoff does.
-        let (tail, checked) = self.read_link(&link)?;
-        let tail_index = link.segments.len() - 1;
-        let tail_segment = link.segments.last().expect("linked tail");
         let target_runtime = self.runtime_instance(&current.context_runtime_id)?.clone();
-        // Assemble the displayed messages to locate the boundary, the same
-        // way a read of the linked conversation presents them.
-        let mut displayed = checked.prefix;
-        if tail_index > 0 {
-            displayed.push(self.boundary_message(tail_segment, tail_index));
-        }
-        displayed.extend(super::continuation::display_segment(
-            tail_segment,
-            &tail.messages,
-            tail_index,
-        )?);
-        let boundary = displayed
+        let simple = self.simple_source(&current.conversation.id);
+        let (link, displayed) = if simple {
+            let native_id = self
+                .link_of(&current.conversation.id)
+                .map(|link| link.segments[0].native_conversation_id.as_str())
+                .unwrap_or(&current.conversation.id);
+            let fresh = self.read_history(&current.conversation.runtime_id, native_id)?;
+            (
+                crate::config::ConversationLink {
+                    id: current.conversation.id.clone(),
+                    segments: vec![self.segment_reference(&fresh)?],
+                },
+                fresh.messages,
+            )
+        } else {
+            let link = self
+                .link_of(&current.conversation.id)
+                .ok_or_else(|| RuntimeError::invalid("会话缺少关联信息"))?
+                .clone();
+            let (tail, checked) = self.read_link(&link)?;
+            let index = link.segments.len() - 1;
+            let segment = &link.segments[index];
+            let mut displayed = checked.prefix;
+            if index > 0 {
+                displayed.push(self.boundary_message(segment, index));
+            }
+            displayed.extend(super::continuation::display_segment(
+                segment,
+                &tail.messages,
+                index,
+            )?);
+            (link, displayed)
+        };
+        let tail_index = link.segments.len() - 1;
+        let (ordinal, expected) = current
+            .messages
             .iter()
-            .position(|message| message.id == message_id)
+            .filter(|message| message.role == MessageRole::User)
+            .enumerate()
+            .find(|(_, message)| message.id == message_id)
             .ok_or_else(|| RuntimeError::invalid("会话中没有这条消息"))?;
+        let boundary = if simple {
+            displayed
+                .iter()
+                .enumerate()
+                .filter(|(_, message)| message.role == MessageRole::User)
+                .nth(ordinal)
+                .filter(|(_, message)| message_text(message) == message_text(expected))
+                .map(|(index, _)| index)
+        } else {
+            displayed.iter().position(|message| {
+                message.id == message_id && message_text(message) == message_text(expected)
+            })
+        }
+        .ok_or_else(|| RuntimeError::invalid("会话已在别处改变，请重新打开后再分叉"))?;
         let boundary_text = message_text(&displayed[boundary]);
         if boundary_text.is_empty() {
             return Err(RuntimeError::invalid("这条消息没有可翻译的内容"));
@@ -631,7 +782,7 @@ impl CoreRuntime {
             _ => return Err(RuntimeError::invalid("关联段的运行时不支持导出上下文")),
         }
         .map_err(|error| RuntimeError::context("导出原生上下文", error))?;
-        truncate_context(&mut export, &boundary_text)?;
+        truncate_context(&mut export, &boundary_text, turn.is_none())?;
         let translated = export.messages;
         if translated.is_empty() {
             return Err(RuntimeError::invalid("分叉边界之前没有可翻译的内容"));
@@ -672,6 +823,7 @@ impl CoreRuntime {
                     .map(|model_record_key| crate::ModelSelection::Managed { model_record_key })
             });
             self.prepare_with_selection(target, selection.as_ref(), false)?;
+            self.name_fork(current)?;
             if let Some(turn) = turn {
                 let conversation = self
                     .session
@@ -699,6 +851,22 @@ impl CoreRuntime {
     }
 }
 
+fn fork_title(source: &str, existing: &[String]) -> String {
+    let (base, first) = source
+        .rsplit_once(" (")
+        .and_then(|(base, suffix)| {
+            suffix
+                .strip_suffix(')')
+                .and_then(|n| n.parse::<u32>().ok())
+                .map(|n| (base, u64::from(n) + 1))
+        })
+        .unwrap_or((source, 1));
+    (first..)
+        .map(|n| format!("{base} ({n})"))
+        .find(|title| title != source && !existing.contains(title))
+        .expect("available fork suffix")
+}
+
 fn context_user_text(message: &velune_agent_runtime::import::ContextMessage) -> Vec<&str> {
     message
         .content
@@ -717,6 +885,7 @@ fn context_user_text(message: &velune_agent_runtime::import::ContextMessage) -> 
 fn truncate_context(
     context: &mut velune_agent_runtime::import::Context,
     boundary_text: &str,
+    include_boundary: bool,
 ) -> Result<(), RuntimeError> {
     use velune_agent_runtime::import::Role;
     let exact = context.messages.iter().position(|message| {
@@ -745,13 +914,62 @@ fn truncate_context(
     });
     let cut = cut
         .ok_or_else(|| RuntimeError::invalid("原生上下文中找不到分叉边界，它可能已被压缩或改写"))?;
-    context.messages.truncate(cut + 1);
+    if include_boundary {
+        let next = context.messages[cut + 1..]
+            .iter()
+            .position(|message| {
+                message.role == Role::User
+                    && message.content.iter().any(|block| {
+                        !matches!(
+                            block,
+                            velune_agent_runtime::import::Block::ToolResult { .. }
+                        )
+                    })
+            })
+            .map_or(context.messages.len(), |offset| cut + 1 + offset);
+        context.messages.truncate(next);
+    } else {
+        context.messages.truncate(cut + 1);
+    }
     Ok(())
 }
 
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fork_names_are_distinct_without_stacking_suffixes() {
+        let titles = vec!["Work".into(), "Work (1)".into(), "Work (3)".into()];
+        assert_eq!(fork_title("Work", &titles), "Work (2)");
+        assert_eq!(fork_title("Work (3)", &titles), "Work (4)");
+        assert_eq!(fork_title("Work (2)", &titles), "Work (4)");
+        assert_eq!(fork_title("Work (draft)", &[]), "Work (draft) (1)");
+    }
+
+    #[test]
+    fn translated_fork_includes_the_reply_and_tool_results_but_not_the_next_turn() {
+        let mut context = serde_json::from_value::<velune_agent_runtime::import::Context>(json!({"messages":[
+            {"role":"user","content":[{"type":"text","text":"first"}]},
+            {"role":"assistant","content":[{"type":"tool_call","id":"call","name":"read","arguments":{}}]},
+            {"role":"user","content":[{"type":"tool_result","id":"call","content":[{"type":"text","text":"result"}],"is_error":false}]},
+            {"role":"assistant","content":[{"type":"text","text":"first reply"}]},
+            {"role":"user","content":[{"type":"text","text":"second"}]},
+            {"role":"assistant","content":[{"type":"text","text":"second reply"}]}
+        ]})).unwrap();
+        truncate_context(&mut context, "second", true).unwrap();
+        assert_eq!(context.messages.len(), 6, "last turn retains its reply");
+        truncate_context(&mut context, "first", true).unwrap();
+        assert_eq!(
+            context.messages.len(),
+            4,
+            "tool-result user records do not end the turn"
+        );
+        assert_eq!(
+            context_user_text(context.messages.last().unwrap()),
+            ["first reply"]
+        );
+    }
 
     #[test]
     fn rejected_running_edits_preserve_the_source_execution() {

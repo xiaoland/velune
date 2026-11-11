@@ -212,7 +212,7 @@ Codex 使用 `thread/compact/start` 并消费独立 turn 与 `contextCompaction`
 
 频率限制（`rateLimitExceeded` 或错误中的 HTTP 429）复用上述恢复，账户配额耗尽不自动恢复。Pi 的 `auto_retry_start` 投影为保留原始错误的 `RuntimeFailure`／`RuntimeRetry::Native`，不再仅发 Notice；结束仍以原生消息结果为准。Codex 为旧客户端附加的“正在自动重试”说明在 Native 状态结束时移除，避免与终止状态矛盾；平台应以类型化恢复状态展示进度，未知的原生次数／时间不推测。
 
-消息编辑优先使用各运行时原生分叉。不带新消息的会话分叉用 `NativeSession::fork_through`（Codex `thread/fork` 复制到该消息所属轮次；Claude Code `Fork { from, at }` 的 `at` 为下一用户消息前一条记录，`None` 复制整个分支）与 `PiSession::fork_at`（下一条目 RPC `fork`，无则 RPC `clone` 复制当前分支）。关联会话由 application 逐段导出有效模型上下文，确认可定位的消息边界后截断，再通过本 unit 的 import 写成当前上下文运行时的新原生会话；不把旧正文塞入 developer instructions。源会话、关联图和旧原生记录保持原样，压缩或改写导致边界无法确认时明确拒绝。运行中已完成 turn 的按钮资格与分叉执行资格不同；Mac 可先安排，原生分叉仍须等待当前 turn 结束，不能通过释放源 writer 中断其运行。
+消息编辑优先使用各运行时原生分叉。不带新消息的会话分叉用 `NativeSession::fork_through`（Codex `thread/fork` 复制到该消息所属轮次；Claude Code `Fork { from, at }` 的 `at` 为下一用户消息前一条记录，`None` 复制整个分支）与 `PiSession::fork_at`（下一条目 RPC `fork`，无则 RPC `clone` 复制当前分支）。关联段仍在目标运行时实例内时也优先原生分叉；跨实例或原生不可用时，由 application 导出边界所在段的有效模型上下文，确认可定位的消息边界后截断，再通过本 unit 的 import 写成当前上下文运行时的新原生会话。Codex 已创建副本但后续打开失败以 `fork_created` 错误标记；超时和断连同样不授权再建一份副本。Claude 尚未首发的分支名称随 `PendingFork` 和首次启动 `--name` 保留；不把旧正文塞入 developer instructions。源会话、关联图和旧原生记录保持原样，压缩或改写导致边界无法确认时明确拒绝。运行中已完成 turn 的按钮资格与分叉执行资格不同；Mac 可先安排，原生分叉仍须等待当前 turn 结束，不能通过释放源 writer 中断其运行。
 
 
 ### Pi 扩展与运行状态

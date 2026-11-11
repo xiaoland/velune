@@ -1194,8 +1194,9 @@ final class ConversationStore: ObservableObject {
         return recovery
     }
     /// Whether a turn's closing reply may fork the conversation now.
-    var canFork: Bool { !isPreview && !isDraft }
-    /// A fork asked while the conversation ran, waiting for the turn to end.
+    var canFork: Bool { !isPreview && !isDraft && !isForking && heldFork == nil && heldEditFork == nil }
+    /// Waiting for the source turn and copying its history are distinct phases.
+    @Published private(set) var isForking = false
     @Published private(set) var heldForkNotice: String?
     private var heldFork: (messageID: String, open: (SnapshotResult) -> Void)?
     private var heldEditFork: (messageID: String, text: String, attachments: [String], open: (SnapshotResult) -> Void)?
@@ -1219,13 +1220,16 @@ final class ConversationStore: ObservableObject {
         let editNext = resolve(kept: kept)
         let model = editNext?.model
         guard let transport else { recordProblem("本地核心未配置"); return }
+        guard !isLoading, !isForking else { return }
         executionStarting = true
+        isForking = placement == .fork
         let turn = ComposedTurn(text: text, effort: editNext?.effort, permissionMode: editNext?.permissionMode?.id, attachments: attachments)
         enqueue({ try transport.editMessage(runtimeID: runtimeID, conversationID: conversationID, messageID: messageID, placement: placement, selection: model, turn: turn) },
-                onFailure: { [weak self] _ in self?.executionStarting = false }) { [weak self] value in
+                onFailure: { [weak self] _ in self?.executionStarting = false; self?.isForking = false }) { [weak self] value in
             guard let self else { return }
             self.executionStarting = false
-            if placement == .fork { forked(value); self.device.refreshConversations() } else { self.applySnapshotResult(value) }
+            self.isForking = false
+            if placement == .fork { self.device.rememberFork(value); forked(value) } else { self.applySnapshotResult(value) }
             accepted()
         }
     }
@@ -1244,17 +1248,21 @@ final class ConversationStore: ObservableObject {
             return
         }
         heldFork = nil; heldForkNotice = nil
+        isForking = true
         enqueue({ try transport.forkConversation(runtimeID: runtimeID, conversationID: conversationID, messageID: messageID) },
                 onFailure: { [weak self] error in
                     // The turn may have restarted between the idle check and
                     // this request; hold again instead of dropping the fork.
-                    guard let self, Self.isBusy(error) else { return }
+                    guard let self else { return }
+                    self.isForking = false
+                    guard Self.isBusy(error) else { return }
                     self.heldFork = (messageID, forked)
                     self.heldForkNotice = "已安排：当前 turn 结束后自动分叉"
                 }) { [weak self] value in
             guard let self else { return }
+            self.isForking = false
+            self.device.rememberFork(value)
             forked(value)
-            self.device.refreshConversations()
         }
     }
 
@@ -1276,6 +1284,16 @@ final class ConversationStore: ObservableObject {
     }
     /// Show a conversation the core has already opened, as `result` gives it.
     func adopt(_ result: SnapshotResult) { applySnapshotResult(result) }
+    /// A fork is already open on the execution owner. Do not put a full
+    /// runtime-list scan ahead of preparing this conversation's composer.
+    func start(adopting result: SnapshotResult) {
+        guard !started else { adopt(result); return }
+        started = true
+        composerTargetClosed = false
+        device.start()
+        adopt(result)
+        schedulePolling()
+    }
     func followComposerCreation(_ creation: ComposerCreation) {
         guard isDraft, let transport else { return }
         isDraft = false; snapshot = nil

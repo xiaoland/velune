@@ -962,7 +962,7 @@ impl CoreRuntime {
         })
     }
 
-    fn segment_reference(
+    pub(super) fn segment_reference(
         &self,
         snapshot: &ConversationSnapshot,
     ) -> Result<ConversationSegmentReference, RuntimeError> {

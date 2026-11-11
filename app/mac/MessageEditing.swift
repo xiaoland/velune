@@ -53,6 +53,12 @@ struct MessageEditorSheet: View {
             if store.isGenerating {
                 Text("会话正在运行：在新会话中继续会等当前 turn 结束后自动发送；在原会话中继续会先停止当前 turn。").uiFont(.callout).foregroundStyle(.secondary)
             }
+            if store.isForking {
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text("正在创建分叉会话…").uiFont(.callout).foregroundStyle(.secondary)
+                }
+            }
             HStack {
                 Spacer()
                 Button("取消", role: .cancel) { dismiss() }.keyboardShortcut(.cancelAction)

@@ -78,7 +78,11 @@ pub(super) enum ClaudeStart {
     /// Begin the conversation's session as a copy of session `from` up to
     /// record `at`, or of its whole current branch without one; `from` is
     /// left as it is.
-    Fork { from: String, at: Option<String> },
+    Fork {
+        from: String,
+        at: Option<String>,
+        name: Option<String>,
+    },
     /// Read the session for a side question and save nothing.
     Side,
     /// A portable side context, with no native session to resume or save.
@@ -143,7 +147,10 @@ impl NativeSession {
                     .arg(id)
                     .arg("--resume-session-at")
                     .arg(at),
-                ClaudeStart::Fork { from, at } => {
+                ClaudeStart::Fork { from, at, name } => {
+                    if let Some(name) = name {
+                        command.arg("--name").arg(name);
+                    }
                     command.arg("--resume").arg(from);
                     if let Some(at) = at {
                         command.arg("--resume-session-at").arg(at);
@@ -336,7 +343,11 @@ impl NativeSession {
                 let runtime_id = snapshot.conversation.runtime_id.clone();
                 let history = snapshot.messages[..index].to_vec();
                 self.replace_snapshot(&id, cwd.as_deref(), &runtime_id, history);
-                self.claude.start = ClaudeStart::Fork { from, at: Some(at) };
+                self.claude.start = ClaudeStart::Fork {
+                    from,
+                    at: Some(at),
+                    name: None,
+                };
             }
         }
         Ok(())
@@ -369,7 +380,11 @@ impl NativeSession {
         let runtime_id = snapshot.conversation.runtime_id.clone();
         let history = snapshot.messages[..next.unwrap_or(snapshot.messages.len())].to_vec();
         self.replace_snapshot(&id, cwd.as_deref(), &runtime_id, history);
-        self.claude.start = ClaudeStart::Fork { from, at };
+        self.claude.start = ClaudeStart::Fork {
+            from,
+            at,
+            name: None,
+        };
         Ok(())
     }
     pub(super) fn claude_open(
@@ -1427,6 +1442,50 @@ fn claude_session_id() -> Result<String> {
 #[cfg(test)]
 mod error_tests {
     use super::*;
+
+    #[test]
+    fn named_fork_launch_keeps_its_source_and_boundary() {
+        let config = NativeConfig {
+            execution: crate::execution::ExecutionTarget::Local,
+            os_home: None,
+            kind: NativeKind::ClaudeCode,
+            binary: "/synthetic/claude".into(),
+            node_binary: None,
+            agent_dir: "/synthetic/home".into(),
+            resources_directory: "/synthetic/resources".into(),
+            projection_directory: "/synthetic/projection".into(),
+            gateway: None,
+            mcp_servers: Vec::new(),
+            session_agents: Vec::new(),
+        };
+        let pending = PendingFork {
+            conversation_id: "claude:copy".into(),
+            from: "source".into(),
+            at: Some("boundary".into()),
+            name: Some("Work (2)".into()),
+        };
+        let start = ClaudeStart::Fork {
+            from: pending.from,
+            at: pending.at,
+            name: pending.name,
+        };
+        let command =
+            NativeSession::claude_command(&config, None, Some(("copy", None, &start)), None, None)
+                .unwrap();
+        let args: Vec<_> = command
+            .get_args()
+            .map(|s| s.to_string_lossy().into_owned())
+            .collect();
+        for pair in [
+            ["--name", "Work (2)"],
+            ["--resume", "source"],
+            ["--resume-session-at", "boundary"],
+            ["--session-id", "copy"],
+        ] {
+            assert!(args.windows(2).any(|args| args == pair));
+        }
+        assert!(args.iter().any(|arg| arg == "--fork-session"));
+    }
 
     #[test]
     fn result_and_assistant_errors_preserve_native_details() {

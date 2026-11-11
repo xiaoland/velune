@@ -1460,15 +1460,14 @@ struct WindowSeed: Codable, Hashable {
 
     /// Show in a new tab a conversation the core has just opened, such as an
     /// edit's fork, as `result` gives it.
-    func openInNewTab(adopting result: SnapshotResult) {
+    func openInNewTab(adopting result: SnapshotResult, device: DeviceStore) {
         guard let id = result.snapshot?.conversation.id else { return }
-        if select(showing: id) { return }
-        let store = ConversationStore(device: application)
+        if select(showing: id, device: device) { return }
+        let store = ConversationStore(device: device)
         let pane = focusedPane
         let index = pane.tabs.firstIndex { $0.id == pane.selectedID }.map { $0 + 1 }
         pane.insert(ConversationTab(store: store, start: {
-            store.start(loadFirstConversation: false)
-            store.adopt(result)
+            store.start(adopting: result)
         }), at: index)
         navigateComposer(to: id, tab: focused)
         focused.store.noteFocused()
@@ -1489,15 +1488,18 @@ struct WindowSeed: Codable, Hashable {
     }
 
     /// Select the tab showing a conversation, if one does.
-    private func select(showing conversationID: String) -> Bool {
-        guard let (_, tab) = tab(showing: conversationID) else { return false }
+    private func select(showing conversationID: String, device: DeviceStore? = nil) -> Bool {
+        guard let (_, tab) = tab(showing: conversationID, device: device) else { return false }
         selectTab(tab.id)
         return true
     }
 
-    func tab(showing conversationID: String) -> (Pane, ConversationTab)? {
+    func tab(showing conversationID: String, device: DeviceStore? = nil) -> (Pane, ConversationTab)? {
         for pane in orderedPanes {
-            if let tab = pane.tabs.compactMap({ $0 as? ConversationTab }).first(where: { $0.store.selectedConversationID == conversationID || $0.store.reachingConversationID == conversationID }) { return (pane, tab) }
+            if let tab = pane.tabs.compactMap({ $0 as? ConversationTab }).first(where: { tab in
+                (device == nil || tab.store.device === device)
+                    && (tab.store.selectedConversationID == conversationID || tab.store.reachingConversationID == conversationID)
+            }) { return (pane, tab) }
         }
         return nil
     }

@@ -44,6 +44,7 @@ struct TranscriptView: View {
     var stopRecovery: () -> Void = {}
     /// A fork the user asked for while a turn ran; it fires when the turn ends.
     var heldForkNotice: String? = nil
+    var forking = false
     @State private var dismissedRecovery: String?
     @State private var scrollerStyle = NSScroller.preferredScrollerStyle
 
@@ -69,7 +70,16 @@ struct TranscriptView: View {
                 }
             }
             .safeAreaInset(edge: .bottom, spacing: 0) {
-                if let recovery, recovery.active || dismissedRecovery != recovery.id {
+                if forking {
+                    HStack(spacing: 8) {
+                        ProgressView().controlSize(.small)
+                        Text("正在创建分叉会话…").uiFont(.callout)
+                    }
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 16).padding(.vertical, 8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(.bar)
+                } else if let recovery, recovery.active || dismissedRecovery != recovery.id {
                     RuntimeRecoveryView(recovery: recovery, stopping: stoppingRecovery, canStop: canStopRecovery, stop: stopRecovery) { dismissedRecovery = recovery.id }
                 } else if let heldForkNotice {
                     Label(heldForkNotice, systemImage: "clock")

@@ -42,6 +42,18 @@
 
 Pi in-place 中断时序经核实安全（RPC `abort` await 到 turn 真正结束，rewind 有序）。
 
-## 当前
+## 当前修复：fork 交互与配置就绪
 
-用户要求完整保留并带回本任务。严格 clippy 与测试进行中；之后重跑 `svc run build-macos` 验证 Swift。
+用户授权修复 fork 的模态确认、复制加载态、分支名称 ` (n)`、新分支执行配置等待过长，以及原生优先／翻译兜底。不修改日常会话或配置，不重装日常应用，不自动提交。
+
+日常日志只读诊断发现 2026-11-10 的两次 `bindings.fork_conversation` 耗时 40.0 秒和 39.6 秒，源 Codex 历史约 3.26 万 items；同期存在 `composer_target_identity` 的“目标会话尚不可用”，但日志没有足够目标身份，不能断言这些查询属于新分支。源码确认两个会阻塞或错投执行配置的路径：新 tab 的普通启动可先全量扫描列表，fork 后也立即全量刷新；接收新分支固定使用窗口默认设备，而非发起设备。修复改为直接接收已打开的快照、发布新分支摘要，不在 composer 前全量扫描，并保留设备。
+
+已实现：系统模态确认、等待与实际复制的不同状态、复制期间进度指示和重复请求抑制；原生名称使用 ` (n)` 后缀，Claude 未首发名称随原生 fork 和首次启动参数保存。当前运行时实例内的关联段也优先原生 fork；只有原生明确拒绝或创建前不可用才翻译兜底，结果不明或已创建副本后不重复创建。翻译保留所选轮次的回复／工具结果（原实现只截到用户消息）。日常数据诊断之外的验收只用合成目录。已完成实现与本地验收，用户已授权提交；未重装日常应用。
+
+最终核心证据：application 库测试 82 项、agent-runtime 库测试 48 项全部通过；两个 crate 的生产库严格 Clippy 通过。覆盖 Claude 原生待首发名称及边界、Codex 明确拒绝／未知结果／已创建但打开失败的合成 JSON-RPC，以及翻译 fork 的整轮回复／工具结果边界和数字后缀。日志保留在 `target/verification/conversation-fork/core-tests.log`。
+
+提交前另在原始 HEAD 加本轮补丁的隔离工作树验证：两个生产库严格 Clippy 通过，agent-runtime 40 项测试全部通过，application 64 项通过、1 项输入迁移测试失败。移除本轮补丁后，原始 HEAD 的 `composer::tests::borrowed_input_promotes_without_consuming_new_and_legacy_edits_preserve_content` 同样失败（跨执行主机的 runtime ID 区分断言，0 != 2），确认不是本轮回归。提交保留基线消息编辑 API，不夹带工作树中其它编辑器／远控／运行时修改；翻译兜底仅补入所需的 `segment_reference` 共享可见性。隔离证据见同目录的 `commit-isolation.log` 与 `baseline-check.log`。
+
+Mac 最终 `svc run build-macos` 成功，execution `c1b24e29-057b-42ab-8fdb-28790e543fd4`，构建记录 `current=true`、输入前后身份一致、`changed_inputs=[]`。`--check-message-experience --experience-fork-only` 通过：来源设备保留、直接接收快照、新分支立即改运行时／推理配置、名称摘要与加载态。已检查 `target/verification/conversation-fork/fork-loading.png`；构建记录和 UI 日志同目录。共享 bundle 可能被下一次构建改写，因此检查在 `macos.lock` 内复制并验签独立 App，使用私有临时 HOME 与准确子进程句柄；副本和合成目录已自动清理。
+
+验收边界：`--all-targets` 严格 Clippy 曾被本工作树其它任务的测试 lint 阻断（`local/browsing.rs`、`local/configuration.rs` 的 items-after-test-module，以及 `persistence_migrations.rs` 的默认值后赋字段和裸 `Command::new`），不宣称全目标 lint 全绿；本轮未接管这些修复。共享导航合成检查的编译警告已由其修改者补齐。没有在日常会话中创建新分支或重放模型请求。独立诊断子会话因宿主后台能力与虚拟模型注册均未启动成功，没有产生修改。

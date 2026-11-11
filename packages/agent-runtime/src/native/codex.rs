@@ -452,12 +452,27 @@ impl NativeSession {
         options["threadId"] = json!(thread);
         options["lastTurnId"] = json!(turn);
         options["excludeTurns"] = json!(true);
-        let result = self.rpc.request("thread/fork", &options)?;
+        let result = self
+            .rpc
+            .request_classified("thread/fork", &options, |_| Some("fork_rejected"))
+            .map_err(|error| {
+                if error.code() == "fork_rejected" {
+                    error
+                } else {
+                    Error::with_code(error.to_string(), "fork_outcome_unknown")
+                }
+            })?;
         let fork = result["thread"]["id"]
             .as_str()
-            .ok_or_else(|| Error::new("Codex 未返回 fork 会话身份"))?
+            .ok_or_else(|| Error::with_code("Codex 未返回 fork 会话身份", "fork_outcome_unknown"))?
             .to_owned();
-        self.codex_adopt_fork(&fork, cwd.as_deref(), &runtime_id)?;
+        self.codex_adopt_fork(&fork, cwd.as_deref(), &runtime_id)
+            .map_err(|error| {
+                Error::with_code(
+                    format!("分叉 {fork} 已创建，但打开失败：{error}"),
+                    "fork_created",
+                )
+            })?;
         Ok(())
     }
 
@@ -1619,6 +1634,84 @@ pub fn update_read_state(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn fork_rejection_is_distinct_from_unknown_or_already_created_results() {
+        use std::os::unix::fs::PermissionsExt;
+        let mut nonce = [0; 8];
+        getrandom::fill(&mut nonce).unwrap();
+        let root = std::env::temp_dir().join(format!(
+            "velune-fork-result-{:x}",
+            u64::from_le_bytes(nonce)
+        ));
+        std::fs::create_dir(&root).unwrap();
+        let binary = root.join("codex");
+        std::fs::write(&binary, r#"#!/usr/bin/python3
+import json, pathlib, sys
+root = pathlib.Path(__file__).parent
+if '--version' in sys.argv:
+    print('codex-cli 0.166.0')
+    sys.exit(0)
+for line in sys.stdin:
+    request = json.loads(line)
+    if 'id' not in request:
+        continue
+    method = request['method']
+    with (root / 'calls').open('a') as log:
+        log.write(method + '\n')
+    response = {'jsonrpc':'2.0','id':request['id'],'result':{}}
+    if method == 'thread/fork':
+        mode = (root / 'mode').read_text()
+        if mode == 'rejected':
+            response = {'jsonrpc':'2.0','id':request['id'],'error':{'code':-32601,'message':'fork unsupported'}}
+        elif mode == 'created':
+            response['result'] = {'thread':{'id':'copy'}}
+    elif method == 'thread/resume':
+        response = {'jsonrpc':'2.0','id':request['id'],'error':{'code':-1,'message':'cannot open copy'}}
+    print(json.dumps(response), flush=True)
+"#).unwrap();
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
+        for (mode, code) in [
+            ("rejected", "fork_rejected"),
+            ("unknown", "fork_outcome_unknown"),
+            ("created", "fork_created"),
+        ] {
+            std::fs::write(root.join("mode"), mode).unwrap();
+            let mut session = NativeSession::connect(NativeConfig {
+                execution: crate::execution::ExecutionTarget::Local,
+                os_home: Some(root.clone()),
+                kind: NativeKind::Codex166,
+                binary: binary.clone(),
+                node_binary: None,
+                agent_dir: root.clone(),
+                resources_directory: root.clone(),
+                projection_directory: root.clone(),
+                gateway: None,
+                mcp_servers: Vec::new(),
+                session_agents: Vec::new(),
+            })
+            .unwrap();
+            let history: Vec<Message> = serde_json::from_value(json!([
+                {"id":"user","role":"user","branch_point":"turn","completed":true,"blocks":[{"kind":"text","text":"request"}]},
+                {"id":"answer","role":"assistant","completed":true,"blocks":[{"kind":"text","text":"reply"}]}
+            ])).unwrap();
+            session.replace_snapshot("source", Some(&root), "codex", history);
+            let error = session.fork_through("user").unwrap_err();
+            assert_eq!(error.code(), code, "{mode}: {error}");
+            session.shutdown().unwrap();
+        }
+        let calls = std::fs::read_to_string(root.join("calls")).unwrap();
+        assert_eq!(
+            calls
+                .lines()
+                .filter(|method| *method == "thread/fork")
+                .count(),
+            3
+        );
+        assert!(!calls.contains("turn/start") && !calls.contains("thread/revert"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn error_projection_preserves_details_and_distinguishes_retry() {

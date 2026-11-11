@@ -2,6 +2,56 @@ import AppKit
 import SwiftUI
 import VeluneBindings
 
+/// Receive a fork on a non-default device and immediately change its next
+/// turn's settings. No runtime or daily state directory is opened.
+@MainActor private func forkExperienceChecks(home: URL) {
+    let local = DeviceStore(preview: true)
+    let source = DeviceStore(preview: true)
+    let window = ConversationWindowModel(application: local, kind: .workspace)
+    let summary = ConversationSummary(id: "synthetic-fork", title: .native("Synthetic (1)"), updatedAtUnixMs: nil,
+        createdAtUnixMs: nil, runtimeId: "sample-instance", cwd: nil, canRename: true, canDelete: true,
+        parentConversationId: nil, nativeReadState: nil)
+    let messages = [DeliveredMessage(id: "u", role: .user, blocks: [.text(text: "Synthetic request")]),
+                    DeliveredMessage(id: "a", role: .assistant, blocks: [.text(text: "Synthetic reply")])]
+    let identities = messages.map { TranscriptMessageIdentity(id: $0.id, messageId: $0.id) }
+    let items = messages.map { TranscriptItem.message(id: $0.id, messageId: $0.id) }
+    let result = SnapshotResult(snapshot: DeliveredSnapshot(cursor: .init(generation: 1, sequence: 1), base: nil,
+        messageIds: messages.map(\.id), messages: messages, revision: 1, conversation: summary,
+        contextRuntimeId: "sample-instance", resourceId: nil, modelRecordKey: nil, runState: .idle,
+        transcriptTurns: [], usage: .init(), transcriptItems: items, transcriptOutline: [],
+        transcriptMessageIdentities: identities, messageIdentityConfirmations: [], pendingInteractions: [],
+        actions: .init(inputAccess: .editable, canSend: true, canCancel: false, canSwitch: true),
+        followUp: .init(), subAgents: [], collaborators: []))
+    source.rememberFork(result)
+    window.openInNewTab(adopting: result, device: source)
+    let store = window.focused.store
+    precondition(store.device === source && store.device !== local, "fork 必须留在发起设备")
+    precondition(store.loadedConversationID == "synthetic-fork" && !store.isLoading)
+    precondition(store.nextTurn != nil, "接收快照后立即提供执行配置，不等待列表扫描")
+    store.selectComposerRuntime("sample-review")
+    precondition(store.nextTurnRuntimeID == "sample-review", "新分支可立即更改执行运行时")
+    store.selectComposerRuntime("sample-instance")
+    store.changeComposerChoice(.effort(level: "high"))
+    precondition(store.nextTurn?.choice.effort == "high", "新分支可立即更改推理配置")
+    precondition(source.conversations.contains { $0.id == "synthetic-fork" && $0.title == "Synthetic (1)" })
+    let transcript = TranscriptModel()
+    transcript.apply(messages, turns: [], items: items, outline: [], identities: identities, editable: [])
+    let view = NSHostingView(rootView: TranscriptView(model: transcript, reading: TranscriptReading(),
+        conversationID: "synthetic-fork", scrollRequest: 0, cwd: nil, outlineCollapsed: .constant(false), navigation: nil,
+        activity: nil, loadPayloads: { _ in }, openConversation: { _ in }, openAgentURI: { _ in },
+        describeSettings: { _ in nil }, forking: true))
+    view.frame = NSRect(x: 0, y: 0, width: 720, height: 420)
+    let host = NSWindow(contentRect: view.frame, styleMask: [.borderless], backing: .buffered, defer: false)
+    host.contentView = view
+    view.layoutSubtreeIfNeeded()
+    RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+    guard let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { fatalError("无法绘制 fork 加载态") }
+    view.cacheDisplay(in: view.bounds, to: bitmap)
+    try! bitmap.representation(using: .png, properties: [:])!.write(to: home.appendingPathComponent("fork-loading.png"))
+    store.close()
+    FileHandle.standardError.write(Data("PASS fork: original device, adopted snapshot, immediate runtime/effort edits, distinct summary and native loading presentation\n".utf8))
+}
+
 /// Synthetic, hidden checks: no scenes, hotkeys, orderFront, activation or input injection.
 @MainActor func messageExperienceChecks() -> Never {
     NSApplication.shared.setActivationPolicy(.prohibited)
@@ -14,6 +64,7 @@ import VeluneBindings
         while !ready(), Date() < end { RunLoop.main.run(until: Date().addingTimeInterval(0.02)) }
         precondition(ready(), "合成检查超时")
     }
+    if CommandLine.arguments.contains("--experience-fork-only") { forkExperienceChecks(home: home); exit(0) }
     if CommandLine.arguments.contains("--experience-drag-provider-only") { dragProviderChecks() }
     if CommandLine.arguments.contains("--experience-workspace-only") { workspaceRecoveryChecks(home: home); exit(0) }
     AppearancePreferences.shared.load(home: home) { fatalError($0) }

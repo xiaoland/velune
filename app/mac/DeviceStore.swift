@@ -65,6 +65,18 @@ final class DeviceStore: ObservableObject {
         }
         if rememberedConversations[conversation.id] != nil { rememberedConversations[conversation.id]?.title = conversation.title }
     }
+    /// A completed fork already supplies its summary. Publish it without a
+    /// synchronous scan of every runtime ahead of the new tab's composer.
+    func rememberFork(_ result: SnapshotResult) {
+        guard let snapshot = result.snapshot else { return }
+        let conversation = BindingMapping.snapshot(snapshot).conversation
+        if let index = conversations.firstIndex(where: { $0.id == conversation.id }) {
+            conversations[index] = conversation
+        } else {
+            conversations.insert(conversation, at: 0)
+        }
+        listRevision &+= 1
+    }
     @Published private(set) var rememberedConversations: [String: Conversation] = [:]
     func rememberOrganization(_ targets: [Conversation], _ change: ConversationOrganizationChange) {
         for var target in targets {
