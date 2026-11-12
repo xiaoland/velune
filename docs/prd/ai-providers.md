@@ -6,17 +6,17 @@ AI 服务与 LLM 网关的职责，提供商、模型与模板，协议及转换
 
 ## AI 服务与网关
 
-2026-10-03 用户确认 AI service 为独立 lib、领域不限 LLM，sampling 是其中一项操作。service 拥有对调用方和 provider 的权威契约；provider 即 adapter，转换外部协议，协议库／SDK 只作为 provider 内部可替换依赖。provider 基本配置为协议配置、凭据引用、模型列表，不再新增账户／渠道实体。
+AI 服务独立于 Harness，领域不限 LLM，sampling 是其中一项操作。提供商配置包含协议、认证与模型列表，不要求用户另建账户／渠道实体。服务与适配器的职责归[AI 服务技术契约](../product-tdd/ai-service.md#职责)。
 
 Harness 与 AI 服务保持独立；读取 Harness 提供商配置属于装配边界的导入适配，不让 AI 服务理解 Harness 的配置、运行或推理级别。AI 服务也不以大语言模型作为整个领域的基础假设；模型、token、对话和推理参数只归相应操作及协议契约。当前操作与协议的实现范围不将 AI 服务限定为 LLM。
 
 2026-10-05 用户进一步明确：当前 gateway 仅为 LLM Gateway，是 AI 模块的一种应用模式，不代表整个 AI 服务。应用可以直接消费 AI 能力，不要求全部经过 gateway。此前本页“AI 网关”在当前实现范围内均指 LLM Gateway；非 LLM 能力及其接入模式按具体需求另行设计。
 
-提供商拥有认证配置，不要求独立中央认证建档。API key 可在 application 私有文件保存并显式查看编辑，公开摘要与日志不含秘密；OAuth 保留来源登录／刷新，不复制 refresh credential。Pi 等运行时只是来源，不是认证方式。解析与目标校验归 application，gateway 仅消费中立异步解析接口；解析失败不回退环境或其它认证。
+提供商拥有认证配置，不要求独立中央认证建档。API key 私有保存并可显式查看编辑，公开摘要与日志不含秘密；OAuth 保留来源登录／刷新，不复制 refresh credential。Pi 等运行时只是来源，不是认证方式；认证失败不回退到其它来源。
 
-统一配置中心持久化，app main 装配；AI lib 不自行读全局配置／环境／文件或保存配置；一次已开始调用保持运行配置稳定。具体归属见 [AI service 设计](../product-tdd/ai-service.md)，决定来源见 [S13](../sources/first-loop.md#s13)。验收方案、真实接入与 fixture 证据归对应任务记录，不把静态检查等同运行验收。
+配置集中管理，一次已开始调用保持运行配置稳定。持久化、装配和认证解析职责见 [AI service 设计](../product-tdd/ai-service.md)，决定来源见 [S13](../sources/first-loop.md#s13)。
 
-网关接管只作用于选择 Velune 模型的轮次，保留 Harness 原生提供商与模型能力。稳定模型入口和认证委托由各适配器实现；读取既有提供商配置的范围见[提供商模板与来源](#提供商模板与来源)，执行边界见[Agent 运行时](agent-runtimes.md#原生提供商网关轮次与执行位置)。开发验证遵守[真实数据边界](../development.md)。
+网关接管只作用于选择 Velune 模型的轮次，保留 Harness 原生提供商与模型能力。读取既有提供商配置的范围见[提供商模板与来源](#提供商模板与来源)，执行边界见[Agent 运行时](agent-runtimes.md#原生提供商网关轮次与执行位置)。
 
 ## 提供商与模型
 
@@ -26,7 +26,7 @@ Harness 与 AI 服务保持独立；读取 Harness 提供商配置属于装配�
 
 协议使用有限选项：OpenAI ChatCompletions v1、Responses v1 与 Anthropic Messages；不使用任意字符串输入来代表协议。透传与转换规则见[协议](#协议)。AI 提供商只是 Velune AI 服务网关配置的一部分；模型路由与 fail-over 策略同属网关配置，不属于提供商实体。Harness 通过 Velune 注册的网关提供商共享模型、聚合订阅与提供商；网关是新增入口，不是唯一允许的入口。用户于 2026-10-08 明确纠正：不得拦截运行时原有提供商注册、模型选择或派发，不以“防绕过”为由限制原生能力。认证由 Velune 提供商适配边界处理；认证来源可以研究对用户指定 Harness 配置的明确委托，并不要求所有登录流程由 Velune 重写。
 
-配置变更允许 hard-reset／hard-cutoff，但已有数据或配置必须在版本切换前完成显式手动迁移，不建立应用自动迁移机制；原 Harness 文件、会话与平台秘密不在重置范围内。当前执行约定归[破坏性变更与手动迁移](../development/migrations.md)，来源为 [S63](../sources/development.md#s63)。
+升级须保留已有配置与数据；已知旧格式完成可恢复备份与迁移，未知、未来或损坏格式保留原样并报错，不以空配置覆盖。当前数据保留要求见 [S84](../sources/development.md#s84)，替代早期开发阶段的重置约定；迁移与恢复步骤归[数据迁移](../development/migrations.md)。
 
 提供商的协议、服务地址可修改；API model ID 在模型表单显示并可编辑，API key 可直接查看和修改，不要求 Keychain。配置围绕“提供商及其模型”组织，不要求独立的中央认证入口或全局模型调用实体（2026-10-05 修订）。
 

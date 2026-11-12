@@ -1,5 +1,7 @@
 # Android 控制端
 
+本文面向 Android 端开发者，记录平台实现、构建与验证。安装和配对操作见[用户指南](../../docs/usage.md)，代码 Agent 的 ADB 操作约束见 [AGENTS.md](AGENTS.md)。
+
 Android 是只控制、不执行的端。它不运行 Agent、Harness、网关或 Node，所有会话都在被控的完整端（Mac、Windows）上运行。应用使用 Kotlin、Jetpack Compose 与 Material 3，经 remote-only UniFFI／iroh 调用被控端的 `VeluneApplication`，与完整端自己的界面使用同一组具名业务方法。支持 API 28 及以上的 arm64-v8a 设备，应用 ID 为 `app.velune.android`。
 
 ## 界面

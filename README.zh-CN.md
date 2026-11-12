@@ -42,7 +42,7 @@ Harness 执行代码、调用工具并保存原生历史。Velune 提供围绕�
 - **按来源管理资源。** 整理指令、技能、MCP 服务与子 Agent 定义，按各运行时的能力管理和同步。
 - **从手机控制工作区。** 从手机控制桌面上的会话，桌面继续持有运行任务和原生历史。
 
-详细能力与当前边界见[产品文档](docs/prd/index.md)。
+安装、首次配置和连接步骤见[安装与开始使用](docs/usage.md)。
 
 ## 平台
 
@@ -54,7 +54,7 @@ Harness 执行代码、调用工具并保存原生历史。Velune 提供围绕�
 | iPad | 远程控制端 | 从 Mac 应用使用自己的签名安装 |
 | iPhone | 远程控制端 | 源码构建 |
 
-首个公开 beta 面向 macOS 15+（Apple Silicon / Intel）和 Android 9+ arm64。macOS 包采用 ad-hoc 签名且尚未公证。Windows 安装器待依赖许可问题解决后发布。安装步骤与可下载资产见[发布页](https://github.com/xiaoland/velune/releases)。各端能力有差异，可先查看 [Windows 覆盖情况](app/windows/PARITY.md)和 [Android 范围](app/android/README.md)。
+首个公开 beta 面向 macOS 15+（Apple Silicon / Intel）和 Android 9+ arm64。macOS 包采用 ad-hoc 签名且尚未公证。Windows 安装器待依赖许可问题解决后发布。可下载资产见[发布页](https://github.com/xiaoland/velune/releases)，平台获取方式与安装说明见[用户指南](docs/usage.md#平台与安装)。
 
 ## 开始使用
 
@@ -64,13 +64,13 @@ Harness 执行代码、调用工具并保存原生历史。Velune 提供围绕�
 2. 安装所需的 Harness，在 Velune 中添加运行时。
 3. 打开已有会话或新建会话，选择原生模型连接，或配置自己的提供商。
 
-支持的 Adapter 版本、执行位置与模型连接见[运行时指南](docs/prd/agent-runtimes.md)。
+首次配置见[添加运行时](docs/usage.md#添加运行时)，适配器兼容版本与执行契约可从该节进入技术参考。
 
 ### 手机与 iPad
 
-安装 Android 构建，保持桌面完整端运行，再从设备页面配对并由桌面批准。手机端控制桌面会话，本机不运行 Coding Agent。连接和权限边界见[远程访问](docs/prd/remote-access.md)。
+安装 Android 构建，保持桌面完整端运行，再从设备页面配对并由桌面批准。手机端控制桌面会话，本机不运行 Coding Agent。具体操作见[移动端配对与连接设置](docs/usage.md#手机与-ipad-连接桌面)。
 
-iPad 可以在 Mac 应用的“设置 → 设备 → 安装到 iPad…”中，使用自己的 Apple 签名团队一键构建、签名和安装。首次准备 Xcode、Rust 工具链及对应版本的 Velune 源码，选择签名团队和已连接的 iPad，并在 iPad 上信任此 Mac、开启开发者模式。详见 [iPad 安装步骤](app/ios/README.md#从-mac-应用安装到-ipad)。
+iPad 可以在 Mac 应用的“设置 → 设备 → 安装到 iPad…”中，使用自己的 Apple 签名团队一键构建、签名和安装。首次准备 Xcode、Rust 工具链及对应版本的 Velune 源码，选择签名团队和已连接的 iPad，并在 iPad 上信任此 Mac、开启开发者模式。详见 [iPad 安装步骤](docs/usage.md#从-mac-应用安装到-ipad)。
 
 ## 构建与贡献
 
@@ -80,7 +80,9 @@ iPad 可以在 Mac 应用的“设置 → 设备 → 安装到 iPad…”中，�
 
 ## 文档
 
-- [产品定义](docs/prd/index.md)
+- [安装与使用](docs/usage.md)
+- [开发说明](docs/development.md)
+- [产品需求规范](docs/prd/index.md)
 - [架构说明](docs/product-tdd/architecture.md)
 - [完整文档索引](docs/index.md)
 

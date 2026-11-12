@@ -60,13 +60,6 @@ application 在 `ClientState` 之外持有 `VELUNE_HOME/composer-inputs.json`（
 
 旧输入目录或旧窗口格式必须在升级前显式迁移。schema 1 中同一输入携带的选择转换为每个已绑定 ContextKey 的目标选择；正文／附件和内容身份保持，原文件及孤立输入的旧资料保存在备份中。旧文字／窗口输入先由原迁移接入目录，再拆分内容与目标。应用不自动转换或用空输入覆盖旧文件。
 
-退出使用该 HOME 的 Velune 后，按[手动迁移规则](../development/migrations.md)预览并执行：
-
-```sh
-python3 scripts/migrations/target-intent.py --home /absolute/VELUNE_HOME
-python3 scripts/run-migrations.py --home /absolute/VELUNE_HOME
-```
-
-脚本获取运行时排他锁，保留原数据并幂等；缺失附件保留引用并报告。各平台窗口缓存中的旧选择需显式接入目标记录，不能用迟到旧缓存重写新的共享目录。真实 HOME 的迁移是否执行由任务包单独记录，合成验证不代表已迁移用户数据。
+旧开发格式的预览与执行步骤归[迁移说明](../development/migrations.md#composer-未手选默认)。迁移获取运行时排他锁，保留原数据并幂等；缺失附件保留引用并报告。各平台窗口缓存中的旧选择需显式接入目标记录，不能用迟到旧缓存重写新的共享目录。
 
 旧 `choiceEdited=false` 记录可能包含平台自动固化的值。显式 `target-intent.py` 迁移把它们归为空意图，推进修改记录的修订并完整备份，同时移出平台缓存中的自动初始化待写项。`choiceEdited=true` 保留，历史上被顺带固定的字段无法可靠反推。

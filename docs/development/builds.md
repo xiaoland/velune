@@ -40,7 +40,7 @@ PR 检查先验证版本、Release Please manifest、脚本语法和差异空白
 
 Android 发行采用固定 keystore，由以下 GitHub repository secrets 提供材料。 `ANDROID_RELEASE_KEYSTORE_BASE64`、`ANDROID_RELEASE_STORE_PASSWORD`、`ANDROID_RELEASE_KEY_ALIAS`、`ANDROID_RELEASE_KEY_PASSWORD`。CI 要求四项齐全、APK 签名验证通过，且证书 SHA-256 与已保管发行公钥相符。不提供无签名发布回退。不要打印或提交密钥材料。
 
-Mac 包分别为 arm64、x86_64 zip，使用 ad-hoc 签名且未公证。macOS 首次拦截时可在“系统设置 → 隐私与安全性 → 仍要打开”针对 Velune 放行，应保持 Gatekeeper 开启。Android beta 使用固定发行签名，首版面向新安装。现有 pre-beta/debug APK 密钥不同，无法原地覆盖，旧安装继续保留等待数据转移入口；卸载会删除私有数据。
+Mac 包分别为 arm64、x86_64 zip，使用 ad-hoc 签名且未公证。首次安装的系统放行步骤见[用户指南](../usage.md#平台与安装)。Android beta 使用固定发行签名，首版面向新安装。现有 pre-beta/debug APK 密钥不同，无法原地覆盖，旧安装继续保留等待数据转移入口；卸载会删除私有数据。
 
 Windows 已准备每用户 Velopack 安装器、GitHub 更新源和原生 feed，固定 CLI／SDK 为 1.2.161，应用身份为 Velune，渠道为 win-x64-beta。实际产物名称包含渠道，安装器为 `Velune-win-x64-beta-Setup.exe`，完整包为 `Velune-<version>-win-x64-beta-full.nupkg`，feed 为 `releases.win-x64-beta.json`。`scripts/package-windows-velopack.ps1` 对已构建目录打包，`scripts/package-release.py windows` 核验实际包内容和三个资产的摘要。当前正式 workflow 不调度 Windows 构建或公开这些资产，依赖与 AGPL 许可保持，跨协议能力保留。后续重新启用需先闭合 Windows 对应源码／许可门禁。应用更新入口及持久数据目录见 [Windows 说明](../../app/windows/README.md#安装与更新)。
 
@@ -48,7 +48,7 @@ Windows 已准备每用户 Velopack 安装器、GitHub 更新源和原生 feed�
 
 GitHub Release 中每个平台包都有 build metadata（源码 SHA、完整 SemVer、构建号、架构、签名状态及包摘要），发布前逐一比对预定清单中的实际包并核验摘要。另附全资产 `SHA256SUMS.txt` 和精确 tag 的 `velune-<tag>-source.tar.gz`（含 vendored RelayKit 源码）。首 beta 要求 Mac 两个架构、Android 和源码的四份 metadata，源码平台集合恰为 macos／android。构建失败时修复后对原来的 workflow run 重跑失败 job。需要新 run 时使用仍为草稿的 tag dispatch 重试，保持原 `release-build.json` 的构建号。全部资产成功后才解除草稿状态并建立回流 PR。首轮 promotion merge commit 的 body 须保留一次性 `Release-As: 0.1.0-beta.1` trailer（建议 subject 为 `chore(release): 提升首个公开 beta 源码至 main`，trailer 单独成行），以固定目标首版号。仅写在 PR 描述里不一定进入提交。此覆盖只用于首个候选。后续 beta 由 prerelease 策略按已合并的 Conventional Commits 递增，0.x breaking 变更按 release-please pre-major 策略递增 minor。
 
-## 多 Agent 复用与结果来源
+## 并行构建与结果来源
 
 同一工作树、同一 SVC run 入口的在途请求会合并；各调用者取得同一 execution ID、输出和退出结果。已结束后再次调用会重新检查增量，不把旧成功永久当缓存。会改变构建含义的环境差异应声明在 `run.<entry>.env` 或独立入口中；只改变临时shell环境不构成SVC的新请求身份。`svc run --follow <ID>` 跟随既有执行；follower取消只退出自身等待，不终止owner构建。
 
@@ -56,7 +56,7 @@ GitHub Release 中每个平台包都有 build metadata（源码 SHA、完整 Sem
 
 `target/build-state/results/<platform>-<profile>.json`（Mac 为 `macos-<profile>-<purpose>.json`） 记录命令、输入前后身份、变化路径、产物摘要、耗时与退出码；成功时另存 `*-success.json`。输入身份覆盖相关源码／资源、编译配置和选择的环境摘要，并包含mtime／inode来识别构建期间临时修改后还原的情况。它是工作区本地来源记录，不是跨机器源码版本号，也不替代编译器的依赖判断。若输入变化，返回3、保留产物与此前成功记录；本次不得作为当前源码的通过证据，下一次请求使用现有增量缓存继续。
 
-多 Agent 各验证自己影响的层，稳定集成后由一个owner取得共同构建；其它Agent复用这次证据。仅改UI先验证对应App；共享ABI变化才编译所有受影响消费者。不要把每个Agent的完成都变成一次全平台完整构建。
+代码 Agent 的验证分工与证据复用约束见[Agent 指引](../../AGENTS.md#构建与验收协作)。
 
 ## 编译与生成的边界
 

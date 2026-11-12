@@ -1,5 +1,7 @@
 # iPad 与 iPhone 控制端
 
+本文面向 iOS 端开发者，记录实现、构建和验证方式。使用者的安装与配对步骤见[安装与开始使用](../../docs/usage.md)。
+
 SwiftUI 通用应用，最低 iOS／iPadOS 18，应用 ID 为 `app.velune.ios`。iPad 使用系统分栏，iPhone 使用同一套视图的紧凑导航。与 Android 一样只控制桌面设备，通过 remote-only UniFFI／iroh 调用 `VeluneApplication`，不携带本地 Agent、Node 或网关。
 
 支持设备邀请扫码与粘贴、核对码配对、设备切换与移除；会话分组、折叠、搜索、刷新与新建；增量消息、Markdown、代码与表格复制、工作过程折叠、按需读取大输出、模型选择、发送、停止、审批与提问。`agents://` 系统链接选择设备后解析，正文链接沿用当前设备；多匹配和部分读取失败显示选择列表。分组、排序与折叠消费被控端核心的列表契约。搜索调用核心 `searchConversations`，覆盖未加载的历史；组内可以加载更多。
@@ -52,20 +54,13 @@ scripts/build-ios.sh iphoneos DEVELOPMENT_TEAM=<Apple团队ID> -allowProvisionin
 
 CLI 对整个构建持有工作树的平台输出锁，直接 Xcode Run 只覆盖 native 准备段；同一工作树不要同时运行 Xcode 与 CLI 的不同构建。设备签名、安装及日常应用状态不由开发构建入口操作。
 
-若本机将 Cargo registry 符号链接到另一磁盘，Askama 0.16 的相对模板路径可能生成失败；用 `CARGO_HOME` 指向 registry 的实际父目录运行构建，不修改第三方源码。本次开发机为 `CARGO_HOME=/Volumes/WorkSSD/.dev-cache/cargo`。
+若本机将 Cargo registry 符号链接到另一磁盘，Askama 0.16 的相对模板路径可能生成失败；用 `CARGO_HOME` 指向 registry 的实际父目录运行构建，不修改第三方源码。本机环境值通过 `svc.local.json` 配置。
 
 Markdown 渲染复用 [MarkdownUI 2.4.1](https://github.com/gonzalezreal/swift-markdown-ui)，表格、列表和行内格式交给库，应用只定制代码块复制与横向滚动。该库已进入维护模式，但支持当前 iOS 18 基线；不为渲染引入另一套视图框架。Velune 的 AGPL-3.0-only 全文、按实际 iOS target 生成的 Rust 组件许可，以及 MarkdownUI、NetworkImage 与 cmark 的许可原文随包在“关于与开源许可”展示；该页面也链接到对应版本的 GitHub 源码归档。图标来自共享 graphite SVG 光学稿，采用不透明全幅 iOS 背景。
 
 ## 从 Mac 应用安装到 iPad
 
-Mac 应用提供一键构建、使用自己团队签名并安装的入口。首次使用先完成以下准备。
-
-1. 安装上述 Xcode 和 Rust 工具链，并添加 `aarch64-apple-ios` target。在 Xcode 中登录自己的 Apple 账号，准备可用于该设备的签名团队。
-2. 下载并解压对应发布版本的 Velune 源码，或检出对应 tag。
-3. 连接并解锁 iPad，确认信任此 Mac，在 iPad 开启开发者模式。
-4. 在 Mac 应用打开“设置 → 设备 → 安装到 iPad…”，选择源码目录，填写签名团队 ID，刷新并选择 iPad，点击“安装”。
-
-应用调用同一 iOS 构建脚本，校验签名团队、配置文件和目标设备，再安装生成的 App。后续沿用同一签名团队和应用身份覆盖安装，保留应用数据。源码目录与团队选择会记住，安装版本由所选源码决定。
+使用者的准备与操作步骤归[用户指南](../../docs/usage.md#从-mac-应用安装到-ipad)。安装入口调用同一 iOS 构建脚本，校验签名团队、配置文件和目标设备，再安装生成的 App。
 
 `VELUNE_IOS_DEVICE_ID` 选择构建目标设备，`VELUNE_IOS_DERIVED_DATA` 指定本次构建目录。Mac 入口为每次安装设置独立 DerivedData，完成后清理，不改变日常模拟器构建输出。
 

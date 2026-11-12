@@ -86,13 +86,13 @@ Rust 只外传固定 target、固定事件名及受控字段。`otel.name`／`ot
 
 分享只返回保存的 profile；临时开发覆盖、开关、修订和身份均不复制。`TelemetryProfileRead` 与控制授权独立，邀请与核对材料绑定用途。读取在入站权限锁内与撤销排序，不进入业务账本或重试缓存。目的端取得后仍走本机准备／提交路径，保留自己的偏好与 expected revision；失败保留原配置。
 
-agent 通过本地状态与接收端的 Tempo、Loki、Prometheus API 联合判断。报告必须限定 run、实例、时间与数量，说明采样、查询截断、保留期和外部 Harness 内部不可见范围。未找到数据不足以证明没有失败。
+本地状态与接收端查询分别提供客户端和存储侧的证据，查询步骤及报告范围见[开发诊断](../development/telemetry.md#诊断查询)。
 
 ## 扩展埋点与读取范例
 
 新增埋点先说明谁拥有起止或终态、它回答什么诊断问题，再使用已有 owner 和官方 SDK。普通同机调用是 `ui.* → bindings.*`；发送受理后 `execution.turn` 继续到 Session 终态，UI 返回不替它结束。跨设备调用在 bindings 后经过 `remote.request → remote.submit → remote.execute`；查询是独立的 client/server 对，以 RequestId 查找执行。Gateway 在同一 request 下记录每次 attempt，因此一次失败后重试成功应看到失败 attempt、成功 attempt 和成功 request，而不能把整个 trace 归为失败。
 
-排障先限定 run、实例、时间与契约版本，再检查 trace 的父子、kind 和结果。没有采样到 span 时，以完成日志的 operation ID、RequestId 与终态字段继续查；缺失的 finished 不能推出仍在执行，需结合 owner_available、observation.age 与业务查询。跨设备时钟可能有偏差，不能将两端时间戳相减当网络延迟。
+完成日志的 operation ID、RequestId 与终态字段可在未采样 span 时提供关联；缺失的 finished 不表达“仍在执行”，需结合 owner_available、observation.age 与业务查询。跨设备时钟可能有偏差，两端时间戳之差不表示网络延迟。
 
 新增字段同时维护外传准入、类型、单位、指标基数和查询方。改变名称、kind、触发或结果含义属于契约演进，需要说明版本影响；普通源码移动不能改变 eventName。实际输出检查能发现表达偏差，但是否值得新增 span、操作边界是否清楚，仍需按业务语义和维护成本审查。
 

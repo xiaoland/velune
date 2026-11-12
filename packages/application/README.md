@@ -56,7 +56,7 @@ Codex 订阅由 application 自身管理，与 Harness 登录独立。保存提�
 
 公开 DTO、`Command`／`Response` 与静态提供商模板目录定义在 `application-api`，`api.rs` 实现类型化的本地用例方法，没有平台 JSON dispatcher。内部用例仍有 JSON 投影转换，不构成跨语言契约。隐藏稳定 `recordKey` 用于模型选择引用；`providerModelId` 是可编辑的精确上游标识，修改它不改变内部身份。能力可以未知，只有具体运行时准备边界检查必需字段。模板不复制内部键、认证、服务地址或 Pi 执行元数据。
 
-只接受 schema 11，升级前必须完成[显式手动迁移](../../docs/development.md#破坏性变更与手动迁移)。当前加载器仍将未迁移的更低版本普通配置原子覆盖为空配置，不在应用内迁移或备份；此行为不能代替迁移交付。原 Harness 会话、认证或既有平台秘密不在重置范围内；未来版本、损坏 JSON 和当前版本中的未知字段明确报错。
+当前普通配置为 schema 11。持久存储负责已知旧格式的备份与迁移，未知版本、损坏 JSON 和当前版本的未知字段保留原文件并报错，不以空配置覆盖。原 Harness 会话、认证与既有平台秘密保持原有归属。转换范围、锁与恢复步骤统一见[数据迁移](../../docs/development/migrations.md)。
 
 运行时描述包含 familyId、versioned variant ID 与兼容版本区间文字（compatibleVersions），配置实例引用 variant。专用适配器支持 `pi-1.0`、`codex-0.159`、`codex-0.166`、`claude-code-2.1` 与 `dsh-acp-0.2`；通用 `acp-v1` 表示协商的协议版本，不限定 Agent 品牌或 CLI 版本。family 不参与控制协议派发。应用协调 Codex app-server／DSH ACP 与 huihua 历史读取，原生 ID 与 runtimeId 共同形成公开会话身份；读取成功不等于原生恢复成功。运行时添加后直接可读历史，不要求模型或执行准备。新建显式给出会话模型并自动准备；历史视图选择模型后，在发送时按需恢复执行。Pi 历史中的 Velune 模型标记只恢复 managed 引用；原生目录提供的模型通过显式 native 选择发送，不另存会话状态。
 
