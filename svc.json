@@ -484,6 +484,12 @@
         "CARGO_BUILD_JOBS": "2"
       }
     },
+    "reinstall-yyh-win": {
+      "argv": [
+        "python3",
+        "scripts/reinstall-yyh-win.py"
+      ]
+    },
     "build-cache-report": {
       "argv": [
         "python3",
