@@ -20,7 +20,49 @@ const sessionDir = value("--session-dir");
 const inspectPath = value("--inspect-session");
 const mutationPath = value("--rename-session") ?? value("--delete-session");
 const exportPath = value("--export-context");
-if (exportPath) {
+const forkPath = value("--fork-session");
+if (forkPath) {
+  const { SessionManager, CURRENT_SESSION_VERSION, loadEntriesFromFile } = await sessionManager();
+  const { existsSync, writeFileSync } = await import("node:fs");
+  let input = "";
+  for await (const chunk of process.stdin) input += chunk;
+  let copyStarted = false;
+  let targetPath;
+  try {
+    const { position, entryId } = JSON.parse(input);
+    // Opening current native format is read-only. Do not let an SDK open
+    // migrate the source as a side effect of creating a different session.
+    const entries = loadEntriesFromFile(forkPath);
+    if (entries[0]?.type !== "session" || entries[0].version !== CURRENT_SESSION_VERSION) {
+      throw new Error("Pi source must use the current native format before forking");
+    }
+    const source = SessionManager.open(forkPath, sessionDir);
+    const entry = source.getEntry(entryId);
+    if (!entry || !["at", "before"].includes(position)) throw new Error("Invalid Pi fork boundary");
+    const leaf = position === "at" ? entry.id : entry.parentId;
+    copyStarted = true;
+    if (leaf) {
+      targetPath = source.createBranchedSession(leaf);
+    } else {
+      const target = SessionManager.create(source.getCwd(), source.getSessionDir());
+      target.newSession({parentSession:forkPath});
+      targetPath = target.getSessionFile();
+      // An empty fork is still an addressable target before its first turn.
+      writeFileSync(targetPath, `${JSON.stringify(target.getHeader())}\n`, {flag:"wx", mode:0o600});
+    }
+    if (!targetPath) throw new Error("Pi did not create a fork identity");
+    if (!existsSync(targetPath)) {
+      // SDK persistence normally waits for conversation content. Materialize
+      // only the SDK-produced new records, never rewrite the source file.
+      const records = [source.getHeader(), ...source.getEntries()];
+      writeFileSync(targetPath, records.map(record => JSON.stringify(record)).join("\n") + "\n", {flag:"wx", mode:0o600});
+    }
+    process.stdout.write(JSON.stringify({path:targetPath}));
+  } catch (error) {
+    const code = targetPath ? "fork_created" : copyStarted ? "fork_outcome_unknown" : "fork_rejected";
+    process.stdout.write(JSON.stringify({error:`Pi fork${targetPath ? ` ${targetPath}` : ""}: ${error.message}`, code}));
+  }
+} else if (exportPath) {
   const { SessionManager } = await sessionManager();
   const { convertToLlm } = await installation.importModule("dist/core/messages.js");
   const context = SessionManager.open(exportPath).buildSessionContext();

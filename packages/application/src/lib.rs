@@ -126,8 +126,8 @@ pub enum Error {
     /// or background tasks still run.
     #[error("子 Agent 仍在运行；请等待其结束，或先停止子 Agent")]
     OutstandingWork,
-    /// The conversation's own turn runs; the asked branch would disturb it.
-    /// Fork requests hold for the turn to end instead of interrupting it.
+    /// A requested operation conflicts with the conversation's active turn.
+    /// Copying a completed prefix into an independent fork is not a conflict.
     #[error("会话正在运行；请等当前 turn 结束后重试")]
     Busy,
     #[error("application I/O failed: {0}")]

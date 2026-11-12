@@ -1,6 +1,15 @@
 //! Native runtime composition maps model ownership into a credential-blind gateway injection.
 use super::*;
 use velune_agent_runtime::native::SessionAgent;
+/// Preserve whether the native operation was rejected, may have completed,
+/// or already created a target, so callers never create a duplicate fallback.
+pub(super) fn fork_failure(error: velune_agent_runtime::native::Error) -> RuntimeError {
+    let mut failure =
+        crate::Failure::new(crate::FailureKind::Internal, format!("会话分叉：{error}"));
+    failure.code = error.code().into();
+    RuntimeError::Contract(failure)
+}
+
 impl CoreRuntime {
     pub(super) fn native_injection(
         &self,
@@ -245,6 +254,33 @@ impl CoreRuntime {
         self.session.model_record_key = Some(key.into());
         Ok(())
     }
+    pub(super) fn native_fork_source(
+        &mut self,
+        source: &crate::conversation::ConversationSnapshot,
+        key: &str,
+        through_turn: &str,
+    ) -> Result<(), RuntimeError> {
+        let runtime = self.active_instance()?.clone();
+        let source_id = source
+            .conversation
+            .id
+            .strip_prefix(&format!("{}:", runtime.id))
+            .ok_or_else(|| RuntimeError::invalid("conversation id"))?;
+        let ActiveState::Native(session) = &mut self.session.active_state else {
+            return Err(RuntimeError::invalid("分叉执行尚未准备"));
+        };
+        session
+            .fork_codex_from(
+                source_id,
+                source.conversation.cwd.as_deref().map(Path::new),
+                &runtime.id,
+                through_turn,
+            )
+            .map_err(fork_failure)?;
+        self.session.model_record_key = Some(key.into());
+        Ok(())
+    }
+
     pub(super) fn native_resume(
         &mut self,
         snapshot: &crate::conversation::ConversationSnapshot,

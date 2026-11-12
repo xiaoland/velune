@@ -1194,27 +1194,17 @@ final class ConversationStore: ObservableObject {
         return recovery
     }
     /// Whether a turn's closing reply may fork the conversation now.
-    var canFork: Bool { !isPreview && !isDraft && !isForking && heldFork == nil && heldEditFork == nil }
-    /// Waiting for the source turn and copying its history are distinct phases.
+    var canFork: Bool { !isPreview && !isDraft && !isForking && !isLoading && !isShuttingDown }
+    /// Copying is independent of whether the source has a running turn.
     @Published private(set) var isForking = false
-    @Published private(set) var heldForkNotice: String?
-    private var heldFork: (messageID: String, open: (SnapshotResult) -> Void)?
-    private var heldEditFork: (messageID: String, text: String, attachments: [String], open: (SnapshotResult) -> Void)?
     var messageEditingRuntimeName: String? { snapshot.flatMap { value in device.runtimeInstances.first { $0.id == value.contextRuntimeID }?.name } }
     func isLastUserMessage(_ messageID: String) -> Bool { snapshot?.messages.last { $0.role == .user }?.id == messageID }
     /// Send `text` in place of a user message. In place the conversation
     /// shows the new turn here; a fork's new conversation goes to `forked`.
-    /// A fork asked while a turn runs waits for the turn to end; in place
-    /// stops the turn first, as the user confirmed in the editor.
+    /// A fork runs independently; only an in-place replacement stops the
+    /// source turn, as the user confirmed in the editor.
     func editMessage(_ messageID: String, placement: EditPlacement, text: String, attachments: [String], forked: @escaping (SnapshotResult) -> Void, accepted: @escaping () -> Void) {
         guard editability(of: messageID) != nil, let runtimeID = snapshot?.conversation.runtimeID, let conversationID = loadedConversationID else { return }
-        if placement == .fork && !forkReady {
-            heldEditFork = (messageID, text, attachments, forked)
-            heldForkNotice = "已安排：当前 turn 结束后自动分叉"
-            accepted()
-            return
-        }
-        heldEditFork = nil
         var kept = keptComposerChoices
         kept.runtimeID = snapshot?.contextRuntimeID ?? runtimeID
         let editNext = resolve(kept: kept)
@@ -1233,53 +1223,17 @@ final class ConversationStore: ObservableObject {
             accepted()
         }
     }
-    /// Whether the conversation can take a fork now; otherwise the request
-    /// waits for the running turn to end.
-    private var forkReady: Bool { !isGenerating && snapshot?.runState != .elsewhere && !isLoading }
-
-    /// Fork the conversation through the turn `messageID` starts; the new
-    /// conversation goes to `forked`, this one stays as it is. While a turn
-    /// runs the fork waits for it to end, then goes by itself.
+    /// Copy the completed prefix immediately, even while the source runs.
+    /// The core creates a separate native execution and leaves this one alone.
     func forkConversation(through messageID: String, forked: @escaping (SnapshotResult) -> Void) {
         guard canFork, let runtimeID = snapshot?.conversation.runtimeID, let conversationID = loadedConversationID, let transport else { return }
-        guard forkReady else {
-            heldFork = (messageID, forked)
-            heldForkNotice = "已安排：当前 turn 结束后自动分叉"
-            return
-        }
-        heldFork = nil; heldForkNotice = nil
         isForking = true
         enqueue({ try transport.forkConversation(runtimeID: runtimeID, conversationID: conversationID, messageID: messageID) },
-                onFailure: { [weak self] error in
-                    // The turn may have restarted between the idle check and
-                    // this request; hold again instead of dropping the fork.
-                    guard let self else { return }
-                    self.isForking = false
-                    guard Self.isBusy(error) else { return }
-                    self.heldFork = (messageID, forked)
-                    self.heldForkNotice = "已安排：当前 turn 结束后自动分叉"
-                }) { [weak self] value in
+                onFailure: { [weak self] _ in self?.isForking = false }) { [weak self] value in
             guard let self else { return }
             self.isForking = false
             self.device.rememberFork(value)
             forked(value)
-        }
-    }
-
-    /// The core refused because the conversation's turn runs (code "busy").
-    private static func isBusy(_ error: Error) -> Bool {
-        AppProblem.failure(error).code == "busy"
-    }
-
-    /// A held fork or edit-fork fires once the conversation is ready again.
-    private func fireHeldForkIfReady() {
-        guard forkReady, !isShuttingDown else { return }
-        if let held = heldFork {
-            heldFork = nil; heldForkNotice = nil
-            forkConversation(through: held.messageID, forked: held.open)
-        } else if let held = heldEditFork {
-            heldEditFork = nil; heldForkNotice = nil
-            editMessage(held.messageID, placement: .fork, text: held.text, attachments: held.attachments, forked: held.open, accepted: {})
         }
     }
     /// Show a conversation the core has already opened, as `result` gives it.
@@ -1406,9 +1360,6 @@ final class ConversationStore: ObservableObject {
         } else if targetFactsChanged { requestComposerTarget(refreshFacts: true) }
         else { refreshNextTurn() }
         if !preserveSelection && conversationChanged && selectedConversationIDs.count <= 1 { selectedConversationIDs = [value.conversation.id] }
-        // A fork held while a turn ran goes by itself once the turn ends.
-        if conversationChanged { heldFork = nil; heldEditFork = nil; heldForkNotice = nil }
-        else { fireHeldForkIfReady() }
         let editable = !isPreview && !isDraft ? Set(value.followUp.editable.map(\.messageId)) : []
         transcript.apply(value.messages, turns: value.transcriptTurns, items: value.transcriptItems, outline: value.transcriptOutline, identities: value.transcriptMessageIdentities, editable: editable)
         activity = switch value.runState {
@@ -1571,12 +1522,36 @@ final class ConversationStore: ObservableObject {
 }
 
 extension ConversationStore {
+    /// The frontend must dispatch while the source runs, not retain a hidden
+    /// intent until a later snapshot. The private empty backend rejects this
+    /// synthetic identity, which also checks failure restores only loading state.
+    static func checkConcurrentForkDispatch(home: URL) {
+        let transport = Transport(stateDirectory: home.appendingPathComponent("fork-dispatch"), resourcesDirectory: Bundle.main.resourceURL!)
+        let store = ConversationStore(device: DeviceStore(transport: transport))
+        store.composerTargetClosed = true
+        for state in [RunState.running, .elsewhere] {
+            let source = ConversationSnapshot(revision: 1,
+                conversation: Conversation(id: "synthetic-running-source", title: "Synthetic", updatedAtUnixMs: nil,
+                    runtimeID: "synthetic", cwd: nil, canRename: false, canDelete: false),
+                contextRuntimeID: "synthetic", modelRecordKey: nil, runState: state, messages: [],
+                actions: ConversationActions(inputAccess: .editable, canSend: false, canCancel: false, canSwitch: true))
+            store.apply(source)
+            precondition(store.canFork, "源运行态不能禁止独立 fork")
+            store.forkConversation(through: "completed-user") { _ in preconditionFailure("合成空后端不应找到会话") }
+            precondition(store.isForking && store.isLoading, "必须立即派发，不能等待源结束")
+            let deadline = Date().addingTimeInterval(15)
+            while store.isLoading, Date() < deadline { RunLoop.main.run(until: Date().addingTimeInterval(0.02)) }
+            precondition(!store.isLoading && !store.isForking, "实际失败必须结束复制加载态")
+            precondition(store.snapshot?.runState == state && store.loadedConversationID == source.conversation.id,
+                         "失败不得替换或停止源会话投影")
+        }
+        store.close()
+        FileHandle.standardError.write(Data("PASS fork dispatch: running and elsewhere sources dispatch immediately; backend failure clears loading without changing source\n".utf8))
+    }
+
     /// Hidden native check of the production navigation/catalog admission path.
     /// A retained source snapshot must not launch any catalog before open finishes.
     static func checkOpeningCatalogAdmission() {
-        let busy = TransportError.operation("fork", .diagnostic(kind: "busy", detail: "synthetic", code: "busy", phase: "application", operationID: "synthetic"))
-        precondition(isBusy(busy), "操作包装不能丢失可稍后执行的 busy 状态")
-        precondition(!isBusy(TransportError.rejected("busy")), "错误正文不能充当类型化准入")
         let device = DeviceStore(preview: true)
         let store = ConversationStore(device: device)
         let source = device.previewSnapshots["sample-0"]!

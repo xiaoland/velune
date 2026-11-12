@@ -5,6 +5,7 @@ import VeluneBindings
 /// Receive a fork on a non-default device and immediately change its next
 /// turn's settings. No runtime or daily state directory is opened.
 @MainActor private func forkExperienceChecks(home: URL) {
+    ConversationStore.checkConcurrentForkDispatch(home: home)
     let local = DeviceStore(preview: true)
     let source = DeviceStore(preview: true)
     let window = ConversationWindowModel(application: local, kind: .workspace)

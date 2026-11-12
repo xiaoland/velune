@@ -793,9 +793,11 @@ impl CoreRuntime {
         &mut self,
         snapshot: ConversationSnapshot,
         key: &str,
-        is_new: bool,
+        start: super::model_selection::ConversationStart<'_>,
         project: Option<&velune_agent_runtime::native::codex_projects::NativeProject>,
     ) -> Result<(), RuntimeError> {
+        use super::model_selection::ConversationStart;
+        let is_new = matches!(start, ConversationStart::New);
         let previous = self.native_snapshot();
         let previous_runtime = self.next_turn_runtime_id.clone();
         let runtime_id = snapshot.conversation.runtime_id.clone();
@@ -839,10 +841,12 @@ impl CoreRuntime {
         let result = (|| {
             self.prepare_runtime(&runtime_id, key)?;
             if runtime.type_id != RuntimeKind::Pi {
-                if is_new {
-                    self.native_create(cwd.as_deref(), key, project)?;
-                } else {
-                    self.native_resume(&snapshot, key)?;
+                match start {
+                    ConversationStart::New => self.native_create(cwd.as_deref(), key, project)?,
+                    ConversationStart::Resume => self.native_resume(&snapshot, key)?,
+                    ConversationStart::CodexFork(through_turn) => {
+                        self.native_fork_source(&snapshot, key, through_turn)?;
+                    }
                 }
                 return Ok(());
             }

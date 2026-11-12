@@ -47,6 +47,9 @@ pub(super) struct State {
     pub(super) tasks: std::collections::BTreeSet<String>,
     pub(super) requires_action: bool,
     pub(super) stream_id: Option<String>,
+    /// The session selected when this RPC child was launched, which can
+    /// differ from a newly represented, not-yet-started snapshot.
+    pub(super) bound_session_id: Option<String>,
     /// The model, input tokens (including cache), and final output tokens
     /// of the latest reply; streaming output usage can arrive after the reply.
     pub(super) context: Option<(String, u64, u64)>,
@@ -71,7 +74,7 @@ pub(super) enum ClaudeStart {
     #[default]
     Resume,
     /// Begin a new session under the conversation's identity.
-    Fresh,
+    Fresh { name: Option<String> },
     /// Resume with the history cut after record `at`: the new prompt follows
     /// it, and what came after stays in the file on another branch.
     ResumeAt { at: String },
@@ -141,7 +144,12 @@ impl NativeSession {
             // `--resume-session-at` and `--fork-session` apply in print mode.
             match start {
                 ClaudeStart::Resume => command.arg("--resume").arg(id),
-                ClaudeStart::Fresh => command.arg("--session-id").arg(id),
+                ClaudeStart::Fresh { name } => {
+                    if let Some(name) = name {
+                        command.arg("--name").arg(name);
+                    }
+                    command.arg("--session-id").arg(id)
+                }
                 ClaudeStart::ResumeAt { at } => command
                     .arg("--resume")
                     .arg(id)
@@ -316,7 +324,7 @@ impl NativeSession {
             .map(Path::to_path_buf)
             .unwrap_or_else(|| self.default_cwd.clone());
         self.replace_snapshot(&id, Some(&cwd), runtime_id, Vec::new());
-        self.claude.start = ClaudeStart::Fresh;
+        self.claude.start = ClaudeStart::Fresh { name: None };
         Ok(())
     }
     /// The next turn child resumes at the record before the message; a fork
@@ -1485,6 +1493,22 @@ mod error_tests {
             assert!(args.windows(2).any(|args| args == pair));
         }
         assert!(args.iter().any(|arg| arg == "--fork-session"));
+        let fresh = ClaudeStart::Fresh {
+            name: Some("Work (1)".into()),
+        };
+        let command =
+            NativeSession::claude_command(&config, None, Some(("fresh", None, &fresh)), None, None)
+                .unwrap();
+        let args: Vec<_> = command
+            .get_args()
+            .map(|s| s.to_string_lossy().into_owned())
+            .collect();
+        assert!(args.windows(2).any(|args| args == ["--name", "Work (1)"]));
+        assert!(
+            args.windows(2)
+                .any(|args| args == ["--session-id", "fresh"])
+        );
+        assert!(!args.iter().any(|arg| arg == "--resume"));
     }
 
     #[test]

@@ -79,17 +79,19 @@ impl SubmissionAdmission {
         snapshot.follow_up.can_steer = self.can_steer;
         snapshot.follow_up.can_resume &= self.send.is_ok();
         snapshot.follow_up.can_compact &= self.send.is_ok();
-        if snapshot.actions.input_access != InputAccess::Editable
-            || matches!(
-                snapshot.follow_up.control_handoff,
-                Some(ControlHandoff::Releasing | ControlHandoff::Released)
-            )
-        {
-            // Editing survives a read-only view: only the in-place
-            // replacement is lost; continuing in a fork sends elsewhere.
+        let handed_off = matches!(
+            snapshot.follow_up.control_handoff,
+            Some(ControlHandoff::Releasing | ControlHandoff::Released)
+        );
+        if snapshot.actions.input_access != InputAccess::Editable || handed_off {
+            // Source write access only governs replacement in place. Forks
+            // create a different conversation, so retain the completed-turn
+            // eligibility already derived by editing.rs.
             for editable in &mut snapshot.follow_up.editable {
                 editable.in_place = false;
             }
+        }
+        if handed_off {
             snapshot.follow_up.can_fork = false;
             for turn in &mut snapshot.transcript_turns {
                 turn.can_fork = false;
@@ -291,8 +293,28 @@ mod tests {
         assert!(running.accept_queue.is_ok() && running.offer_queue);
     }
 
+    fn fork_turn(
+        id: &str,
+        is_running: bool,
+        can_fork: bool,
+    ) -> crate::conversation::TranscriptTurn {
+        crate::conversation::TranscriptTurn {
+            id: id.into(),
+            user_message_id: format!("{id}:user"),
+            work_message_ids: Vec::new(),
+            last_message_id: Some(format!("{id}:reply")),
+            reply_start_block: 0,
+            duration_ms: None,
+            is_running,
+            can_fork,
+            outcome: None,
+            settings: None,
+            usage: None,
+        }
+    }
+
     #[test]
-    fn control_projection_preserves_fork_only_edits_without_changing_the_source() {
+    fn control_projection_preserves_forks_and_fork_only_edits_without_changing_the_source() {
         for access in [
             InputAccess::CheckingControl,
             InputAccess::ExternalController,
@@ -305,6 +327,10 @@ mod tests {
             source.follow_up.can_resume = true;
             source.follow_up.can_compact = true;
             source.follow_up.can_fork = true;
+            source.transcript_turns = vec![
+                fork_turn("completed", false, true),
+                fork_turn("running", true, false),
+            ];
             source
                 .follow_up
                 .editable
@@ -317,12 +343,31 @@ mod tests {
             assert!(!delivered.actions.can_send);
             assert!(!delivered.follow_up.can_queue && !delivered.follow_up.can_steer);
             assert!(!delivered.follow_up.can_resume && !delivered.follow_up.can_compact);
-            assert!(!delivered.follow_up.can_fork);
+            assert!(delivered.follow_up.can_fork);
+            assert!(delivered.transcript_turns[0].can_fork);
+            assert!(!delivered.transcript_turns[1].can_fork);
             assert_eq!(delivered.follow_up.editable.len(), 1);
             assert_eq!(delivered.follow_up.editable[0].message_id, "user-message");
             assert!(!delivered.follow_up.editable[0].in_place);
             assert!(source.actions.can_send && source.follow_up.can_resume);
             assert!(source.follow_up.editable[0].in_place);
+            assert!(source.transcript_turns[0].can_fork);
+            let wire = super::super::delivery::TranscriptDelivery::new().snapshot(delivered);
+            assert!(wire.follow_up.can_fork);
+            assert!(wire.transcript_turns[0].can_fork);
+            assert!(!wire.transcript_turns[1].can_fork);
+        }
+        // Explicit control handoff remains a separate operation policy; this
+        // change only removes source-write admission from read-only forks.
+        for handoff in [ControlHandoff::Releasing, ControlHandoff::Released] {
+            let mut view = snapshot(RunState::Idle);
+            view.follow_up.control_handoff = Some(handoff);
+            view.follow_up.can_fork = true;
+            view.transcript_turns
+                .push(fork_turn("completed", false, true));
+            CoreRuntime::apply_read_submission_admission(&mut view);
+            assert!(!view.follow_up.can_fork);
+            assert!(!view.transcript_turns[0].can_fork);
         }
     }
 

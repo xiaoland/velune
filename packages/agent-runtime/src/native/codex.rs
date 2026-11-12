@@ -411,20 +411,19 @@ impl NativeSession {
                     .ok_or_else(|| Error::new("第一条消息没有可复制的上文"))?;
                 let cwd = snapshot.conversation.cwd.as_deref().map(PathBuf::from);
                 let runtime_id = snapshot.conversation.runtime_id.clone();
-                let mut options = self.codex_options(cwd.as_deref());
-                options["threadId"] = json!(thread);
-                options["lastTurnId"] = json!(previous);
-                options["excludeTurns"] = json!(true);
-                let result = self.rpc.request("thread/fork", &options)?;
-                let fork = result["thread"]["id"]
-                    .as_str()
-                    .ok_or_else(|| Error::new("Codex 未返回 fork 会话身份"))?
-                    .to_owned();
-                self.codex_adopt_fork(&fork, cwd.as_deref(), &runtime_id)?;
+                self.codex_copy(&thread, &previous, cwd.as_deref(), &runtime_id)?;
                 // Editing immediately sends the replacement as one operation.
                 // Acquire only the fork's writer before application admission;
                 // an asynchronous control probe must not interrupt that send.
-                self.prepare_turn(None, None)?;
+                self.prepare_turn(None, None).map_err(|error| {
+                    Error::with_code(
+                        format!(
+                            "分叉 {} 已创建，但执行准备失败：{error}",
+                            self.native_id.as_deref().unwrap_or_default()
+                        ),
+                        "fork_created",
+                    )
+                })?;
             }
         }
         Ok(())
@@ -448,9 +447,21 @@ impl NativeSession {
             .ok_or_else(|| Error::new("这条消息没有对应的 Codex 轮次"))?;
         let cwd = snapshot.conversation.cwd.as_deref().map(PathBuf::from);
         let runtime_id = snapshot.conversation.runtime_id.clone();
-        let mut options = self.codex_options(cwd.as_deref());
-        options["threadId"] = json!(thread);
-        options["lastTurnId"] = json!(turn);
+        self.codex_copy(&thread, &turn, cwd.as_deref(), &runtime_id)
+    }
+
+    /// The source is only a reference for this operation. The caller may
+    /// own a different execution, or no loaded thread at all.
+    pub(super) fn codex_copy(
+        &mut self,
+        source: &str,
+        through_turn: &str,
+        cwd: Option<&Path>,
+        runtime_id: &str,
+    ) -> Result<()> {
+        let mut options = self.codex_options(cwd);
+        options["threadId"] = json!(source);
+        options["lastTurnId"] = json!(through_turn);
         options["excludeTurns"] = json!(true);
         let result = self
             .rpc
@@ -466,7 +477,7 @@ impl NativeSession {
             .as_str()
             .ok_or_else(|| Error::with_code("Codex 未返回 fork 会话身份", "fork_outcome_unknown"))?
             .to_owned();
-        self.codex_adopt_fork(&fork, cwd.as_deref(), &runtime_id)
+        self.codex_adopt_fork(&fork, cwd, runtime_id)
             .map_err(|error| {
                 Error::with_code(
                     format!("分叉 {fork} 已创建，但打开失败：{error}"),
@@ -476,9 +487,9 @@ impl NativeSession {
         Ok(())
     }
 
-    /// The app-server that loaded the source also owns its writer after
-    /// forking. Unsubscribing can leave it resident; ending this short-lived
-    /// process releases both writers, and the next turn opens only the fork.
+    /// End only this operation's connection after adopting the copy. With
+    /// `fork_codex_from` it never owned the source writer; its running owner
+    /// is independent and the next turn will reopen only the target.
     fn codex_adopt_fork(&mut self, fork: &str, cwd: Option<&Path>, runtime_id: &str) -> Result<()> {
         self.native_id = None;
         self.codex_open(fork, cwd, runtime_id)?;
@@ -1659,7 +1670,7 @@ for line in sys.stdin:
         continue
     method = request['method']
     with (root / 'calls').open('a') as log:
-        log.write(method + '\n')
+        log.write(method + '\t' + request.get('params', {}).get('threadId', '') + '\n')
     response = {'jsonrpc':'2.0','id':request['id'],'result':{}}
     if method == 'thread/fork':
         mode = (root / 'mode').read_text()
@@ -1692,12 +1703,9 @@ for line in sys.stdin:
                 session_agents: Vec::new(),
             })
             .unwrap();
-            let history: Vec<Message> = serde_json::from_value(json!([
-                {"id":"user","role":"user","branch_point":"turn","completed":true,"blocks":[{"kind":"text","text":"request"}]},
-                {"id":"answer","role":"assistant","completed":true,"blocks":[{"kind":"text","text":"reply"}]}
-            ])).unwrap();
-            session.replace_snapshot("source", Some(&root), "codex", history);
-            let error = session.fork_through("user").unwrap_err();
+            let error = session
+                .fork_codex_from("source", Some(&root), "codex", "turn")
+                .unwrap_err();
             assert_eq!(error.code(), code, "{mode}: {error}");
             session.shutdown().unwrap();
         }
@@ -1705,11 +1713,15 @@ for line in sys.stdin:
         assert_eq!(
             calls
                 .lines()
-                .filter(|method| *method == "thread/fork")
+                .filter(|method| method.starts_with("thread/fork\t"))
                 .count(),
             3
         );
         assert!(!calls.contains("turn/start") && !calls.contains("thread/revert"));
+        assert!(
+            !calls.contains("thread/resume\tsource"),
+            "fork must not acquire the source writer"
+        );
         std::fs::remove_dir_all(root).unwrap();
     }
 

@@ -153,7 +153,7 @@ struct TabContentView: View {
                 store.forkConversation(through: id) { window.openInNewTab(adopting: $0, device: store.device) }
             }
         } message: { _ in
-            Text("新会话将包含截至这一轮结束的内容，并在新标签页打开；原会话保持不变。\(store.isGenerating ? "当前 turn 结束后会自动创建，不会中断正在执行的工作。" : "")")
+            Text("新会话将包含截至这一轮结束的内容，并在新标签页打开；原会话保持不变。原会话正在执行的工作会继续，不必等待它结束。")
         }
         .onChange(of: store.loadedConversationID) { _, _ in tab.outlineCollapsed = false; forkMessageID = nil }
         .onChange(of: store.device.outlinePresentation) { _, _ in tab.outlineCollapsed = false }
@@ -207,7 +207,7 @@ struct TabContentView: View {
                        describeSettings: { [store] in store.describe($0) },
                        recovery: store.runtimeRecovery, stoppingRecovery: store.isStopping,
                        canStopRecovery: store.canCancel, stopRecovery: store.cancel,
-                       heldForkNotice: store.heldForkNotice, forking: store.isForking)
+                       forking: store.isForking)
     }
 }
 

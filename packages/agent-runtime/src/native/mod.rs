@@ -538,6 +538,27 @@ impl NativeSession {
             .clone()
             .ok_or_else(|| Error::new("运行时未恢复会话"))
     }
+    /// Copy a completed Codex prefix on a separate, configured connection.
+    /// Unlike `open`, this never resumes or acquires the source's writer.
+    pub fn fork_codex_from(
+        &mut self,
+        source_id: &str,
+        cwd: Option<&Path>,
+        runtime_id: &str,
+        through_turn: &str,
+    ) -> Result<ConversationSnapshot> {
+        self.ensure_idle()?;
+        self.validate_cwd(cwd)?;
+        if self.config.kind != NativeKind::Codex166 {
+            return Err(Error::new("此分叉入口仅用于 Codex"));
+        }
+        self.codex_capture_provider(cwd)?;
+        self.codex_copy(source_id, through_turn, cwd, runtime_id)?;
+        self.snapshot
+            .clone()
+            .ok_or_else(|| Error::with_code("Codex 分叉已创建但未返回快照", "fork_created"))
+    }
+
     /// Opens a side chat on native conversation `parent_id`, in the
     /// runtime's own way: Claude Code answers side questions on the
     /// conversation's context, Codex forks it into an ephemeral thread told
@@ -900,6 +921,13 @@ impl NativeSession {
             || (self.config.gateway.is_some() && !self.gateway_turn)
             || self.restart_required
     }
+    /// Acquire this idle copy's writer before an edit sends its first prompt.
+    /// Callers must never use execution reconfiguration to interrupt a source.
+    pub fn prepare_fork_turn(&mut self) -> Result<()> {
+        self.ensure_idle()?;
+        self.prepare_turn(None, None)
+    }
+
     fn prepare_turn(&mut self, effort: Option<&str>, permission_mode: Option<&str>) -> Result<()> {
         if !self.restart_needed() {
             return Ok(());
@@ -917,6 +945,7 @@ impl NativeSession {
             .clone()
             .ok_or_else(|| Error::new("没有原生会话身份"))?;
         let cwd = saved.conversation.cwd.as_deref().map(PathBuf::from);
+        self.claude.bound_session_id = None;
         self.rpc.shutdown();
         self.tunnel = None;
         let title_eligible = self.codex.title.eligible;
@@ -961,6 +990,7 @@ impl NativeSession {
                 )?,
                 NativeKind::ClaudeCode => {
                     self.native_id = Some(id.clone());
+                    self.claude.bound_session_id = Some(id.clone());
                 }
             }
             Ok(())
@@ -1087,10 +1117,32 @@ impl NativeSession {
                 }
             }
             NativeKind::ClaudeCode => {
-                if let claude::ClaudeStart::Fork { name, .. } = &mut self.claude.start {
+                if let claude::ClaudeStart::Fork { name, .. }
+                | claude::ClaudeStart::Fresh { name } = &mut self.claude.start
+                {
                     // The native file is made on first send. Carry its title
-                    // with the fork through reconfiguration to that launch.
+                    // with the new session through its actual child launch.
                     *name = Some(title.into());
+                } else if self.process_ended || self.claude.bound_session_id.as_deref() != Some(id)
+                {
+                    // A history/import snapshot is not the session of the
+                    // placeholder RPC child. Address the persisted target,
+                    // never send metadata to that unrelated child.
+                    let cwd = self
+                        .snapshot
+                        .as_ref()
+                        .and_then(|view| view.conversation.cwd.as_deref())
+                        .map(Path::new)
+                        .unwrap_or(&self.default_cwd);
+                    rename_claude_session_at(
+                        &self.config.binary,
+                        &self.config.agent_dir,
+                        id,
+                        cwd,
+                        title,
+                        &self.config.execution,
+                        self.config.os_home.as_deref(),
+                    )?;
                 } else {
                     self.rpc.claude_control(json!({"subtype":"rename_session","title":title,"source":"host","session_id":id}))?;
                 }

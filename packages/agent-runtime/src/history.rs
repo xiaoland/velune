@@ -486,6 +486,42 @@ pub fn export_pi_context(
         &serde_json::to_vec(&value).map_err(|error| Error::new(error.to_string()))?,
     )
 }
+/// A stable source entry, never a live Agent/RPC host to switch.
+#[derive(Clone, Copy)]
+pub enum PiForkBoundary<'a> {
+    ThroughEntry(&'a str),
+    BeforeEntry(&'a str),
+}
+
+pub fn fork_pi_session(
+    config: &crate::Config,
+    source: &std::path::Path,
+    boundary: PiForkBoundary<'_>,
+) -> NativeResult<std::path::PathBuf> {
+    let (position, entry) = match boundary {
+        PiForkBoundary::ThroughEntry(entry) => ("at", entry),
+        PiForkBoundary::BeforeEntry(entry) => ("before", entry),
+    };
+    let input = serde_json::to_vec(&json!({"position":position,"entryId":entry}))
+        .map_err(|error| Error::new(error.to_string()))?;
+    let value = execute_pi(config, PiOperation::Fork(source), Some(input))
+        .map_err(|error| Error::with_code(error.to_string(), "fork_outcome_unknown"))?;
+    if let Some(error) = value["error"].as_str() {
+        let code = match value["code"].as_str() {
+            Some("fork_rejected") => "fork_rejected",
+            Some("fork_created") => "fork_created",
+            _ => "fork_outcome_unknown",
+        };
+        return Err(Error::with_code(error, code));
+    }
+    let path = value["path"]
+        .as_str()
+        .map(std::path::PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .ok_or_else(|| Error::with_code("Pi 分叉没有返回原生身份", "fork_outcome_unknown"))?;
+    Ok(path)
+}
+
 /// Modify Pi's native source with the fixed SDK; no Velune metadata overlay.
 pub fn manage_pi(
     config: &crate::Config,
@@ -512,6 +548,7 @@ enum PiOperation<'a> {
     List,
     Inspect(&'a std::path::Path),
     ExportContext(&'a std::path::Path),
+    Fork(&'a std::path::Path),
     Rename(&'a std::path::Path),
     Delete(&'a std::path::Path),
 }
@@ -548,6 +585,9 @@ fn execute_pi(
         PiOperation::List => {}
         PiOperation::ExportContext(session) => {
             command.arg("--export-context").arg(session);
+        }
+        PiOperation::Fork(session) => {
+            command.arg("--fork-session").arg(session);
         }
         PiOperation::Inspect(session) => {
             command.arg("--inspect-session").arg(session);

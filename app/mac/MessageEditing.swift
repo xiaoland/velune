@@ -51,7 +51,7 @@ struct MessageEditorSheet: View {
                 Text("原消息中的 \(embeddedImages) 张内嵌图片没有文件，编辑后的消息不包含它们。").uiFont(.callout).foregroundStyle(.secondary)
             }
             if store.isGenerating {
-                Text("会话正在运行：在新会话中继续会等当前 turn 结束后自动发送；在原会话中继续会先停止当前 turn。").uiFont(.callout).foregroundStyle(.secondary)
+                Text("会话正在运行：在新会话中继续将独立分叉并发送，不等待源 turn；在原会话中继续会先停止当前 turn。").uiFont(.callout).foregroundStyle(.secondary)
             }
             if store.isForking {
                 HStack(spacing: 8) {

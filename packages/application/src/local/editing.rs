@@ -190,8 +190,8 @@ impl CoreRuntime {
 
     /// The user message IDs whose turns a fork may start from now. Each
     /// completed turn on the conversation's own branching runtime qualifies.
-    /// The UI may arrange the copy while a later turn runs; execution still
-    /// waits for idleness so releasing a native writer cannot stop that turn.
+    /// A later source turn may keep running: copying prepares a separate
+    /// execution and never releases or reopens the source writer.
     pub(super) fn forkable_turn_users(
         &self,
         snapshot: &ConversationSnapshot,
@@ -277,11 +277,6 @@ impl CoreRuntime {
         self.check_handoff_input(&current)?;
         if !self.forkable_turn_users(&current).contains(message_id) {
             return Err(RuntimeError::invalid("会话当前不能分叉"));
-        }
-        if self.turn_running() {
-            // Forking reopens the source natively; a running turn must not
-            // be disturbed. Hold for the turn to end and retry.
-            return Err(crate::Error::Busy);
         }
         // A linked tail already contains the runtime's effective imported
         // context. Fork that native session first, rather than reimporting it.
@@ -378,20 +373,25 @@ impl CoreRuntime {
             .filter(|message| message_text(message) == message_text(expected))
             .ok_or_else(|| RuntimeError::invalid("会话已在别处改变，请重新打开后再分叉"))?;
         let message_id = message.id.clone();
-        // Pi forks before an entry: the next user message's, or the whole
-        // branch when the turn is the last.
-        let pi_boundary = match branching {
-            Branching::Pi => Some(
-                users
-                    .get(ordinal + 1)
-                    .map(|message| {
-                        pi_entry(&message.id)
-                            .map(str::to_owned)
-                            .ok_or_else(|| RuntimeError::invalid("这条消息没有 Pi 条目身份"))
-                    })
-                    .transpose()?,
-            ),
-            _ => None,
+        // Pin a native boundary, never the helper's later 'current leaf'.
+        // Before the known next user also retains intervening native metadata.
+        let pi_boundary = if branching == Branching::Pi {
+            use velune_agent_runtime::history::PiForkBoundary;
+            if let Some(next) = users.get(ordinal + 1) {
+                Some(PiForkBoundary::BeforeEntry(pi_entry(&next.id).ok_or_else(
+                    || RuntimeError::invalid("这条消息没有 Pi 条目身份"),
+                )?))
+            } else {
+                let leaf = fresh
+                    .messages
+                    .iter()
+                    .rev()
+                    .find_map(|message| pi_entry(&message.id))
+                    .ok_or_else(|| RuntimeError::invalid("这轮消息没有 Pi 条目身份"))?;
+                Some(PiForkBoundary::ThroughEntry(leaf))
+            }
+        } else {
+            None
         };
         let selection = self.session.model_selection.clone().unwrap_or_else(|| {
             fresh
@@ -400,14 +400,25 @@ impl CoreRuntime {
                 .map(|model_record_key| crate::ModelSelection::Managed { model_record_key })
         });
         let origin = self.session.key;
-        // A parked Codex session keeps its writer. Release it before a
-        // separate app-server opens the source to create the fork.
-        if branching == Branching::Codex {
-            self.invalidate_execution()?;
-        }
         self.focus_new();
         let mut copied = false;
         let branched = (|| {
+            if branching == Branching::Codex {
+                let point =
+                    codex_fork_point(&fresh.messages, &message_id, ForkBoundary::ThroughTurn)?;
+                self.prepare_codex_fork(fresh.clone(), selection.as_ref(), &point)
+                    .inspect_err(|error| {
+                        copied = native_fork_may_exist(error);
+                    })?;
+                return Ok(());
+            }
+            if let Some(boundary) = pi_boundary {
+                self.prepare_pi_fork(&fresh, selection.as_ref(), boundary)
+                    .inspect_err(|error| {
+                        copied = native_fork_may_exist(error);
+                    })?;
+                return Ok(());
+            }
             self.prepare_with_selection(fresh.clone(), selection.as_ref(), false)?;
             match &mut self.session.active_state {
                 ActiveState::Native(session) => {
@@ -422,19 +433,6 @@ impl CoreRuntime {
                     })?;
                     copied = true;
                     Ok(())
-                }
-                ActiveState::Pi(session) => {
-                    session
-                        .fork_at(pi_boundary.flatten().as_deref())
-                        .map_err(|error| {
-                            copied = !matches!(
-                                error,
-                                pi::Error::CommandFailed(_) | pi::Error::NotStarted
-                            );
-                            RuntimeError::context("会话分叉", error)
-                        })?;
-                    copied = true;
-                    self.sync_projection()
                 }
                 _ => Err(RuntimeError::invalid("此运行时不提供会话分叉")),
             }
@@ -451,6 +449,40 @@ impl CoreRuntime {
             self.session.pending_native_fork = session.pending_fork();
         }
         Ok(())
+    }
+
+    fn prepare_pi_fork(
+        &mut self,
+        source: &ConversationSnapshot,
+        selection: Option<&crate::ModelSelection>,
+        boundary: velune_agent_runtime::history::PiForkBoundary<'_>,
+    ) -> Result<(), RuntimeError> {
+        let runtime = self.runtime_instance(&source.context_runtime_id)?.clone();
+        let source_path = source
+            .conversation
+            .id
+            .strip_prefix(&format!("{}:", runtime.id))
+            .ok_or_else(|| RuntimeError::invalid("conversation id"))?;
+        let target = velune_agent_runtime::history::fork_pi_session(
+            &self.pi_history_config(&runtime)?,
+            Path::new(source_path),
+            boundary,
+        )
+        .map_err(super::native_composition::fork_failure)?;
+        self.forget_index(&runtime);
+        let result = (|| {
+            let snapshot =
+                self.read_history(&runtime.id, &format!("{}:{}", runtime.id, target.display()))?;
+            self.prepare_with_selection(snapshot, selection, false)
+        })();
+        result.map_err(|error| {
+            let mut failure = crate::Failure::new(
+                crate::FailureKind::Internal,
+                format!("分叉 {} 已创建，但执行准备失败：{error}", target.display()),
+            );
+            failure.code = "fork_created".into();
+            RuntimeError::Contract(failure)
+        })
     }
 
     fn name_fork(&mut self, source: &ConversationSnapshot) -> Result<(), RuntimeError> {
@@ -527,11 +559,6 @@ impl CoreRuntime {
         if let Some(mode) = &turn.permission_mode {
             self.validate_permission_mode(&runtime, mode)?;
         }
-        if placement == EditPlacement::Fork && self.turn_running() {
-            // Releasing a native source writer must not interrupt its turn.
-            // Mac retains the arranged fork and retries after it ends.
-            return Err(RuntimeError::Busy);
-        }
         // Validate the replacement before stopping a running turn: rejected
         // attachments or settings must leave the current work untouched.
         if placement == EditPlacement::InPlace && self.turn_running() {
@@ -579,9 +606,6 @@ impl CoreRuntime {
 
         let origin = self.session.key;
         if placement == EditPlacement::Fork {
-            if branching == Branching::Codex {
-                self.invalidate_execution()?;
-            }
             self.focus_new();
         }
         // A single-target alias is a public identity, not a separate history.
@@ -601,6 +625,38 @@ impl CoreRuntime {
             }
             if placement == EditPlacement::InPlace {
                 self.invalidate_execution()?;
+            }
+            if placement == EditPlacement::Fork {
+                if branching == Branching::Codex {
+                    let point =
+                        codex_fork_point(&fresh.messages, &original.id, ForkBoundary::BeforeTurn)?;
+                    self.prepare_codex_fork(fresh.clone(), selection.as_ref(), &point)?;
+                    // Editing sends immediately. Acquire only the new target's
+                    // writer before application admission, never the source's.
+                    if let ActiveState::Native(session) = &mut self.session.active_state {
+                        let target = session
+                            .snapshot()
+                            .map(|view| view.conversation.id.clone())
+                            .unwrap_or_default();
+                        session.prepare_fork_turn().map_err(|error| {
+                            RuntimeError::context(
+                                &format!("分叉 {target} 已创建，但执行准备失败"),
+                                error,
+                            )
+                        })?;
+                    }
+                    return Ok(());
+                }
+                if branching == Branching::Pi {
+                    let entry = pi_entry(&original.id)
+                        .ok_or_else(|| RuntimeError::invalid("这条消息没有 Pi 条目身份"))?;
+                    self.prepare_pi_fork(
+                        &fresh,
+                        selection.as_ref(),
+                        velune_agent_runtime::history::PiForkBoundary::BeforeEntry(entry),
+                    )?;
+                    return Ok(());
+                }
             }
             self.prepare_with_selection(fresh.clone(), selection.as_ref(), false)?;
             match &mut self.session.active_state {
@@ -851,6 +907,44 @@ impl CoreRuntime {
     }
 }
 
+#[derive(Clone, Copy)]
+enum ForkBoundary {
+    ThroughTurn,
+    BeforeTurn,
+}
+
+/// Codex branches at native turns; steering messages share the preceding point.
+fn codex_fork_point(
+    messages: &[Message],
+    message_id: &str,
+    boundary: ForkBoundary,
+) -> Result<String, RuntimeError> {
+    let index = messages
+        .iter()
+        .position(|message| message.id == message_id)
+        .ok_or_else(|| RuntimeError::invalid("会话中没有这条用户消息"))?;
+    let turn = messages[..=index]
+        .iter()
+        .rev()
+        .filter(|message| message.role == MessageRole::User)
+        .find_map(|message| message.branch_point.clone())
+        .ok_or_else(|| RuntimeError::invalid("这条消息没有对应的 Codex 轮次"))?;
+    match boundary {
+        ForkBoundary::ThroughTurn => Ok(turn),
+        ForkBoundary::BeforeTurn => messages[..index]
+            .iter()
+            .rev()
+            .filter(|message| message.role == MessageRole::User)
+            .find_map(|message| message.branch_point.clone().filter(|point| point != &turn))
+            .ok_or_else(|| RuntimeError::invalid("第一条消息没有可复制的上文")),
+    }
+}
+
+fn native_fork_may_exist(error: &RuntimeError) -> bool {
+    matches!(error, RuntimeError::Contract(failure)
+        if matches!(failure.code.as_str(), "fork_created" | "fork_outcome_unknown" | "timeout" | "transport"))
+}
+
 fn fork_title(source: &str, existing: &[String]) -> String {
     let (base, first) = source
         .rsplit_once(" (")
@@ -939,6 +1033,29 @@ mod tests {
     use super::*;
 
     #[test]
+    fn codex_fork_boundaries_distinguish_copying_a_turn_from_editing_it() {
+        let messages: Vec<Message> = serde_json::from_value(json!([
+            {"id":"first","role":"user","branch_point":"turn-1","completed":true,"blocks":[]},
+            {"id":"steer","role":"user","completed":true,"blocks":[]},
+            {"id":"second","role":"user","branch_point":"turn-2","completed":true,"blocks":[]}
+        ]))
+        .unwrap();
+        assert_eq!(
+            codex_fork_point(&messages, "first", ForkBoundary::ThroughTurn).unwrap(),
+            "turn-1"
+        );
+        assert_eq!(
+            codex_fork_point(&messages, "steer", ForkBoundary::ThroughTurn).unwrap(),
+            "turn-1"
+        );
+        assert_eq!(
+            codex_fork_point(&messages, "second", ForkBoundary::BeforeTurn).unwrap(),
+            "turn-1"
+        );
+        assert!(codex_fork_point(&messages, "first", ForkBoundary::BeforeTurn).is_err());
+    }
+
+    #[test]
     fn fork_names_are_distinct_without_stacking_suffixes() {
         let titles = vec!["Work".into(), "Work (1)".into(), "Work (3)".into()];
         assert_eq!(fork_title("Work", &titles), "Work (2)");
@@ -972,7 +1089,7 @@ mod tests {
     }
 
     #[test]
-    fn rejected_running_edits_preserve_the_source_execution() {
+    fn invalid_edits_and_unavailable_forks_leave_running_source_untouched() {
         let mut nonce = [0; 8];
         getrandom::fill(&mut nonce).unwrap();
         let root = std::env::temp_dir().join(format!(
@@ -1087,11 +1204,9 @@ for line in sys.stdin:
                 },
             )
             .unwrap_err();
-        assert!(matches!(error, RuntimeError::Busy));
-        assert!(matches!(
-            core.fork_message("pi", "pi:synthetic", "u1"),
-            Err(RuntimeError::Busy)
-        ));
+        assert!(!matches!(error, RuntimeError::Busy), "{error:?}");
+        let fork_error = core.fork_message("pi", "pi:synthetic", "u1").unwrap_err();
+        assert!(!matches!(fork_error, RuntimeError::Busy), "{fork_error:?}");
         assert!(core.turn_running());
         assert!(core.session.key == source_key);
         assert!(

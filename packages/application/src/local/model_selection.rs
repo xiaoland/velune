@@ -4,6 +4,15 @@ use crate::conversation::{ConversationSnapshot, TurnSettings};
 use crate::{ModelSelection, RuntimeModel};
 use velune_agent_runtime::native::CLAUDE_EFFORT_LEVELS;
 
+/// How this execution acquires history. A fork connects with the target's
+/// configuration but must never resume or close the source writer.
+#[derive(Clone, Copy)]
+pub(super) enum ConversationStart<'a> {
+    New,
+    Resume,
+    CodexFork(&'a str),
+}
+
 impl CoreRuntime {
     /// Reasoning levels a turn may request for a managed model on this
     /// runtime: those the model declares, in the vocabulary the harness's own
@@ -207,6 +216,36 @@ impl CoreRuntime {
         is_new: bool,
         project: Option<&velune_agent_runtime::native::codex_projects::NativeProject>,
     ) -> Result<(), RuntimeError> {
+        let start = if is_new {
+            ConversationStart::New
+        } else {
+            ConversationStart::Resume
+        };
+        self.prepare_with_start(snapshot, selection, start, project)
+    }
+
+    pub(super) fn prepare_codex_fork(
+        &mut self,
+        source: ConversationSnapshot,
+        selection: Option<&ModelSelection>,
+        through_turn: &str,
+    ) -> Result<(), RuntimeError> {
+        self.prepare_with_start(
+            source,
+            selection,
+            ConversationStart::CodexFork(through_turn),
+            None,
+        )
+    }
+
+    fn prepare_with_start(
+        &mut self,
+        snapshot: ConversationSnapshot,
+        selection: Option<&ModelSelection>,
+        start: ConversationStart<'_>,
+        project: Option<&velune_agent_runtime::native::codex_projects::NativeProject>,
+    ) -> Result<(), RuntimeError> {
+        let is_new = matches!(start, ConversationStart::New);
         self.ensure_work_ended()?;
         let conversation_id = snapshot.conversation.id.clone();
         if self
@@ -224,7 +263,7 @@ impl CoreRuntime {
             return Ok(());
         }
         if let Some(ModelSelection::Managed { model_record_key }) = selection {
-            self.prepare_snapshot(snapshot, model_record_key, is_new, project)?;
+            self.prepare_snapshot(snapshot, model_record_key, start, project)?;
         } else {
             let native = match selection {
                 Some(ModelSelection::Native {
@@ -235,7 +274,7 @@ impl CoreRuntime {
             };
             let previous = self.native_snapshot();
             let previous_selection = self.session.model_selection.clone();
-            let result = self.prepare_native_snapshot(&snapshot, native, is_new, project);
+            let result = self.prepare_native_snapshot(&snapshot, native, start, project);
             if let Err(error) = result {
                 let _ = self.shutdown_active();
                 if let Some(snapshot) = previous {
@@ -280,9 +319,10 @@ impl CoreRuntime {
         &mut self,
         snapshot: &ConversationSnapshot,
         native: Option<(Option<String>, &str)>,
-        is_new: bool,
+        start: ConversationStart<'_>,
         project: Option<&velune_agent_runtime::native::codex_projects::NativeProject>,
     ) -> Result<(), RuntimeError> {
+        let is_new = matches!(start, ConversationStart::New);
         let runtime = self
             .runtime_instance(&snapshot.conversation.runtime_id)?
             .clone();
@@ -357,7 +397,16 @@ impl CoreRuntime {
                     .select_native_model(provider_id, model_id.into())
                     .map_err(|error| RuntimeError::context("原生模型选择", error))?;
             }
-            if is_new {
+            if let ConversationStart::CodexFork(through_turn) = start {
+                let source_id = snapshot
+                    .conversation
+                    .id
+                    .strip_prefix(&format!("{}:", runtime.id))
+                    .ok_or_else(|| RuntimeError::invalid("conversation id"))?;
+                session
+                    .fork_codex_from(source_id, cwd, &runtime.id, through_turn)
+                    .map_err(super::native_composition::fork_failure)?;
+            } else if is_new {
                 if let Some(side) = &self.session.side {
                     session
                         .create_side_context(cwd, &runtime.id, &side.context)
