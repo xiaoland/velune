@@ -56,9 +56,9 @@ final class ConversationNotifier: NSObject, UNUserNotificationCenterDelegate {
         case .capReached:
             body = "\(window)\(UsageFormat.ceiling(alert.maxUsedPercent ?? 100, application.usageDisplay, reached: true))，直到额度回到上限以内。"
         case .exhausted:
-            body = "\(window)已用尽，重置前暂停向它发送新请求。"
+            body = "\(window)已用完；额外额度尚未完整查询，实际可用性以服务商响应为准。"
         case .unavailable:
-            body = "提供商表示此账户当前不可用（例如余额不足），暂停新请求。"
+            body = QuotaStatusText.limitedObservation
         }
         let content = UNMutableNotificationContent()
         content.title = provider.name

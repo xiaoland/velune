@@ -167,6 +167,7 @@ private struct RouteMemberStatus: View {
             }
             Group {
                 if let notice { Label(notice, systemImage: "pause.circle").uiFont(.caption).foregroundStyle(.orange) }
+                if quota?.available == false { Label(QuotaStatusText.limitedObservation, systemImage: "info.circle").uiFont(.caption).foregroundStyle(.secondary) }
                 ForEach(Array(windows.enumerated()), id: \.offset) { _, window in
                     QuotaWindowRow(window: window, limit: member.provider.quotaLimits.first { $0.windowId == window.id }?.maxUsedPercent, fresh: quota?.freshness == .fresh, display: store.usageDisplay)
                 }
@@ -189,7 +190,6 @@ private struct RouteMemberStatus: View {
     private var notice: String? {
         if needsSignIn { return "登录前路由不会使用它" }
         if authentication.method == .unconfigured { return "配置认证前路由不会使用它" }
-        if quota?.available == false { return "提供商表示此账户当前不可用" }
         let limits = member.provider.quotaLimits
         guard !limits.isEmpty else { return nil }
         if member.provider.composition.quotaSource == .arkCodingUsage && !member.provider.quotaAuthentication.bindingConfirmed { return "额度来源未确认关联，暂停派发" }

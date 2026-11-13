@@ -3,6 +3,7 @@ namespace Velune;
 // How quota windows read, wherever the core's observation is shown.
 static class Quota
 {
+    public const string LimitedObservation = "额度观测显示受限；额外额度尚未完整查询，实际可用性以服务商响应为准。";
     // Name names a quota window by the period its ID records.
     public static string Name(string id)
     {

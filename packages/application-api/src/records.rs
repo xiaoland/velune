@@ -709,11 +709,11 @@ pub struct ProviderQuotaHistory {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, uniffi::Enum)]
 #[serde(rename_all = "camelCase")]
 pub enum QuotaAlertKind {
-    /// A window reached the provider's usage cap; new requests pause.
+    /// A window reached the user's configured usage cap; new requests pause.
     CapReached,
-    /// A window is fully used.
+    /// One observed window is fully used; other credits may remain available.
     Exhausted,
-    /// The provider reports the account cannot be used now.
+    /// The source reports limited availability; this need not cover all credits.
     Unavailable,
 }
 /// A quota condition that newly held at an observation. It is raised again
@@ -767,6 +767,8 @@ pub struct QuotaObservation {
     pub freshness: QuotaFreshness,
     pub windows: Vec<QuotaWindowObservation>,
     pub balances: Vec<QuotaBalanceObservation>,
+    /// Source-reported availability, which may omit credits and extra buckets.
+    /// It does not determine whether model requests can proceed.
     pub available: Option<bool>,
     pub refreshing: bool,
     pub problem: Option<String>,

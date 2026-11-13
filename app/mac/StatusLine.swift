@@ -211,7 +211,7 @@ struct StatusDetails: View {
             ForEach(accounts) { account in
                 Divider()
                 Text(account.title).uiFont(.subheadline.weight(.semibold))
-                if account.quota.available == false { Text("账户当前不可用").uiFont(.caption).foregroundStyle(.orange) }
+                if account.quota.available == false { Text(QuotaStatusText.limitedObservation).uiFont(.caption).foregroundStyle(.secondary) }
                 ForEach(Array(account.windows.enumerated()), id: \.offset) { _, window in
                     QuotaWindowRow(window: window, limit: account.limit(for: window.id),
                                    fresh: account.quota.freshness == .fresh, display: quotaDisplay, showsModels: true, title: account.isRecorded && window.period == nil ? "限额" : nil)

@@ -67,6 +67,7 @@ enum UsageFormat {
 
 /// When the quota was observed, or why it is missing.
 struct QuotaStatusText: View {
+    static let limitedObservation = "额度观测显示受限；额外额度尚未完整查询，实际可用性以服务商响应为准。"
     let quota: QuotaObservation?
     var body: some View {
         Text(Self.summary(quota)).uiFont(.caption).foregroundStyle(.secondary)
@@ -154,7 +155,7 @@ struct ProviderQuotaForm: View {
                     Text("配置认证后读取额度。").foregroundStyle(.secondary)
                 } else {
                     if let quota, quota.available == false {
-                        Label("提供商表示此账户当前不可用，暂停新请求。", systemImage: "pause.circle").foregroundStyle(.orange)
+                        Label(QuotaStatusText.limitedObservation, systemImage: "info.circle").foregroundStyle(.secondary)
                     }
                     ForEach(Array((quota?.windows ?? []).enumerated()), id: \.offset) { _, window in
                         QuotaWindowRow(window: window, limit: limit(window.id), fresh: quota?.freshness == .fresh, display: store.usageDisplay, showsModels: true)
