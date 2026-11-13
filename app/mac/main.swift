@@ -2,6 +2,9 @@ import AppKit
 import Combine
 import SwiftUI
 import VeluneBindings
+import OSLog
+
+let windowRecoveryLogger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "Velune", category: "WindowRecovery")
 
 /// The focused pane of the key window, and its window.
 @MainActor struct ConversationCommandTarget {
@@ -242,24 +245,73 @@ struct ConversationCommands: Commands {
 
 @MainActor
 struct ConversationWindow: View {
-    @StateObject private var window: ConversationWindowModel
-    /// The window's panes as last arranged, restored with the window.
+    /// SwiftUI can hydrate these values after the first appearance. Keep them
+    /// outside the state object lifetime so restored input creates its model.
     @SceneStorage("windowLayout") private var savedLayout = ""
     @SceneStorage("windowIdentity") private var windowIdentity = UUID().uuidString
+    let application: DeviceStore
+    let kind: ConversationWindowKind
+    let seed: WindowSeed?
+    let previewEmpty: Bool
+    let previewSettings: Bool
+
+    init(application: DeviceStore, kind: ConversationWindowKind, seed: WindowSeed?, previewEmpty: Bool, previewSettings: Bool) {
+        self.application = application; self.kind = kind; self.seed = seed
+        self.previewEmpty = previewEmpty; self.previewSettings = previewSettings
+    }
+
+    var body: some View {
+        if kind == .single, seed == nil {
+            WindowRestorationPendingView()
+                .applicationAppearance()
+        } else {
+            ConversationWindowContent(application: application, kind: kind, seed: seed,
+                                      savedLayout: $savedLayout, windowIdentity: windowIdentity,
+                                      previewEmpty: previewEmpty, previewSettings: previewSettings)
+                .id((seed?.id.uuidString ?? "default") + ":" + windowIdentity)
+        }
+    }
+}
+
+struct WindowRestorationPendingView: View {
+    var body: some View {
+        ProgressView("正在恢复窗口…")
+            .uiFont(.callout)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Color(nsColor: .windowBackgroundColor))
+    }
+}
+
+@MainActor
+private struct ConversationWindowContent: View {
+    @StateObject private var window: ConversationWindowModel
+    @Binding private var savedLayout: String
+    let windowIdentity: String
     @State private var savedLayoutWritable = true
     @State private var startsWindowed: Bool
     let seed: WindowSeed?
     @Environment(\.openWindow) private var openWindow
     let previewEmpty: Bool
     let previewSettings: Bool
-    init(application: DeviceStore, kind: ConversationWindowKind, seed: WindowSeed?, previewEmpty: Bool, previewSettings: Bool) {
+    init(application: DeviceStore, kind: ConversationWindowKind, seed: WindowSeed?, savedLayout: Binding<String>, windowIdentity: String, previewEmpty: Bool, previewSettings: Bool) {
         // A paired device's window shows that device's core through the same interface.
         let target = seed?.device.flatMap { DeviceHub.shared?.store(for: $0) } ?? application
         _window = StateObject(wrappedValue: ConversationWindowModel(application: target, kind: kind, device: seed?.device))
         _startsWindowed = State(initialValue: seed.map { WindowPresentation.windowed.contains($0.id) } ?? false)
+        _savedLayout = savedLayout
+        self.windowIdentity = windowIdentity
         self.seed = seed
         self.previewEmpty = previewEmpty
         self.previewSettings = previewSettings
+    }
+    private func traceRecovery(_ phase: String) {
+        let seedID = seed?.id.uuidString ?? "none"
+        let tabID = seed?.tab?.uuidString ?? "none"
+        let kindID = window.kind.sceneID, sceneID = windowIdentity
+        let modelID = window.restorationLifecycleID.uuidString
+        let hasConversation = seed?.conversationID != nil
+        let savedBytes = savedLayout.utf8.count, activeTabID = window.focused.id.uuidString
+        windowRecoveryLogger.debug("phase=\(phase, privacy: .public) model=\(modelID, privacy: .public) kind=\(kindID, privacy: .public) seed=\(seedID, privacy: .public) tab=\(tabID, privacy: .public) hasConversation=\(hasConversation) scene=\(sceneID, privacy: .public) savedBytes=\(savedBytes) activeTab=\(activeTabID, privacy: .public)")
     }
     var body: some View {
         VeluneRootView(window: window, store: window.list, tab: window.focused, focused: window.focused.store,
@@ -269,6 +321,7 @@ struct ConversationWindow: View {
             // the source is full screen. Re-enable full screen after presentation.
             .windowFullScreenBehavior(startsWindowed ? .disabled : .automatic)
             .onAppear {
+                traceRecovery("appear")
                 if !window.application.isPreview && !MacNativePersistenceGate.isEnabled {
                     savedLayoutWritable = false
                 }
@@ -307,6 +360,7 @@ struct ConversationWindow: View {
                     }
                 }
                 window.start(restoring: saved, seed: seed, persistenceID: windowIdentity)
+                traceRecovery("started")
                 // Development check of split panes without driving the interface.
                 if CommandLine.arguments.contains("--check-split-panes"), !window.isSplit { window.split(.horizontal); window.openInNewTab(); window.split(.vertical) }
                 if CommandLine.arguments.contains("--check-tool-windows") { window.tools.move(.list, to: .floating); window.tools.move(.outline, to: .window); window.tools.move(.composer, to: .floating) }
@@ -322,6 +376,18 @@ struct ConversationWindow: View {
                 }
                 if window.application.isPreview, CommandLine.arguments.contains("--check-composer-sharing") { window.checkComposerSharing() }
             }
+            .onDisappear {
+                // An identity replacement removes the old native anchors.
+                // Minimizing or changing Space keeps them attached.
+                let retiringModel = window
+                DispatchQueue.main.async {
+                    guard retiringModel.window == nil else { return }
+                    retiringModel.persistWorkspace()
+                    retiringModel.noteWindowClosed()
+                    retiringModel.detached.closeAll()
+                }
+            }
+            .onChange(of: seed) { _, _ in traceRecovery("seedChanged") }
             .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { note in
                 guard startsWindowed, let shown = note.object as? NSWindow, shown === window.window else { return }
                 DispatchQueue.main.async { startsWindowed = false }

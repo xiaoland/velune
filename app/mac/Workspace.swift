@@ -1,4 +1,5 @@
 import AppKit
+import OSLog
 import Combine
 import SwiftUI
 import VeluneBindings
@@ -649,9 +650,11 @@ struct WindowSeed: Codable, Hashable {
     private var paneSubscriptions: [UUID: AnyCancellable] = [:]
     private var started = false
     private var closed = false
+    private var workspaceRestored = false
+    let restorationLifecycleID = UUID()
     /// SwiftUI can retain a closed scene while other windows keep changing.
     /// Its last recovery point must stop following those later publications.
-    var acceptsWorkspacePersistence: Bool { started && !closed }
+    var acceptsWorkspacePersistence: Bool { started && workspaceRestored && !closed }
     func noteWindowClosed() { closed = true }
     private var persistenceID: String?
     private var draftPersistence: AnyCancellable?
@@ -661,7 +664,8 @@ struct WindowSeed: Codable, Hashable {
     private var restoredCreationTargets: [UUID: Conversation] = [:]
     func persistWorkspace() {
         guard acceptsWorkspacePersistence, let persistenceID else { return }
-        application.windowWorkspaceJournal.save(savedLayout, id: persistenceID)
+        let layout = savedLayout
+        application.windowWorkspaceJournal.save(layout, id: persistenceID)
     }
     /// The pane views by pane, for telling which one a click lands in.
     private var anchors: [UUID: () -> NSView?] = [:]
@@ -871,7 +875,9 @@ struct WindowSeed: Codable, Hashable {
         self.device = device
         list = ConversationStore(device: application)
         let store = ConversationStore(device: application)
-        let first = Pane(tabs: [ConversationTab(store: store, start: { store.start() })])
+        let first = Pane(tabs: [ConversationTab(store: store, start: {
+            store.start(loadFirstConversation: kind == .workspace, newConversation: kind == .single)
+        })])
         layout = .pane(first.id)
         panes = [first.id: first]
         focusedPaneID = first.id
@@ -959,13 +965,30 @@ struct WindowSeed: Codable, Hashable {
         closed = false
         guard !started else { return }
         started = true
-        self.persistenceID = persistenceID
-        let sceneSaved = saved.flatMap {
-            $0.isWhole && ($0.windowKind == nil || $0.windowKind == kind)
-                && ($0.windowDevice == nil || $0.windowDevice == SavedWindowLayout.ExecutionDevice(device)) ? $0 : nil
+        // Restoring the composer synchronously publishes draft changes. They
+        // must not save the initial blank panes over the snapshot being read.
+        defer {
+            workspaceRestored = true
+            persistWorkspace()
         }
-        let saved = persistenceID.flatMap { application.windowWorkspaceJournal.restore(id: $0, recoverLatest: seed == nil && sceneSaved == nil && kind == .workspace, kind: kind, device: device) }
-            ?? sceneSaved
+        // The archived WindowGroup value survives native window renumbering.
+        // SceneStorage may be absent on restoration, so its fresh UUID cannot
+        // be the only address of a seeded window's recovery point.
+        let recoveryID = seed?.id.uuidString ?? persistenceID
+        self.persistenceID = recoveryID
+        let sceneSaved: SavedWindowLayout? = saved.flatMap { candidate in
+            if let tab = seed?.tab, Self.handoff[tab] == nil,
+               !candidate.panes.values.contains(where: { $0.tabs.contains(tab) }) { return nil }
+            return candidate.isWhole && (candidate.windowKind == nil || candidate.windowKind == kind)
+                && (candidate.windowDevice == nil || candidate.windowDevice == SavedWindowLayout.ExecutionDevice(device)) ? candidate : nil
+        }
+        let journalSaved = recoveryID.flatMap { application.windowWorkspaceJournal.restore(id: $0, recoverLatest: seed == nil && sceneSaved == nil && kind == .workspace, kind: kind, device: device, legacyTabID: seed?.tab) }
+        let saved = journalSaved ?? sceneSaved
+        let recoveryBranch = seed?.tab.flatMap { Self.handoff[$0] } != nil ? "handoff" : saved != nil ? "snapshot" : seed?.conversationID != nil ? "conversation" : seed?.tab != nil ? "missingHandoff" : "default"
+        let recoveryKind = kind.sceneID
+        let modelID = restorationLifecycleID.uuidString
+        let journalTabs = journalSaved?.panes.values.flatMap(\.tabs).map(\.uuidString).sorted().joined(separator: ",") ?? "none"
+        windowRecoveryLogger.debug("phase=modelStart model=\(modelID, privacy: .public) kind=\(recoveryKind, privacy: .public) recovery=\(recoveryID ?? "none", privacy: .public) branch=\(recoveryBranch, privacy: .public) journal=\(journalSaved != nil) journalTabs=\(journalTabs, privacy: .public) scene=\(sceneSaved != nil)")
         list.start(loadFirstConversation: false)
         // A layout the system restores below replaces this one.
         switch kind {
@@ -1014,6 +1037,12 @@ struct WindowSeed: Codable, Hashable {
             let store = ConversationStore(device: application)
             replacePanes(with: [Pane(tabs: [ConversationTab(store: store, start: { store.start(loadFirstConversation: false, opening: id) })])], layout: nil)
             focused.activate()
+        } else if seed?.tab != nil {
+            // An in-process handoff is not a cold-start recovery source.
+            // A missing snapshot must not impersonate the list's first session.
+            replacePanes(with: [Pane(tabs: [makeTab(opening: nil)])], layout: nil)
+            focused.activate()
+            application.recordProblem("此窗口的内容未能恢复，已打开空白标签页。", source: "窗口恢复")
         } else {
             focused.activate()
         }

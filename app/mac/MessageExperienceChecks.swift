@@ -235,6 +235,61 @@ import VeluneBindings
     precondition(device.windowWorkspaceJournal.restore(id: closedIdentity, recoverLatest: false, kind: .single) == closing.savedLayout)
     closing.noteWindowClosed()
     note("PASS closed window persistence: late publications preserve the last open recovery point; reopening re-enables writes")
+    let firstSeed = WindowSeed(tab: single.focused.id)
+    let firstSeeded = ConversationWindowModel(application: device, kind: .single)
+    firstSeeded.start(restoring: single.savedLayout, seed: firstSeed, persistenceID: UUID().uuidString)
+    firstSeeded.persistWorkspace()
+    firstSeeded.noteWindowClosed()
+    let keptSeed = WindowSeed(tab: closing.focused.id)
+    let keptSeeded = ConversationWindowModel(application: device, kind: .single)
+    keptSeeded.start(restoring: closing.savedLayout, seed: keptSeed, persistenceID: UUID().uuidString)
+    keptSeeded.persistWorkspace(); device.windowWorkspaceJournal.flush()
+    let keptLayout = keptSeeded.savedLayout
+    let archivedSeed = try! JSONDecoder().decode(WindowSeed.self, from: JSONEncoder().encode(keptSeed))
+    let coldSeeded = ConversationWindowModel(application: device, kind: .single)
+    coldSeeded.start(restoring: firstSeeded.savedLayout, seed: archivedSeed, persistenceID: UUID().uuidString)
+    precondition(coldSeeded.savedLayout.panes == keptLayout.panes && coldSeeded.savedLayout.tools == keptLayout.tools,
+                 "恢复值仍指向保留的窗口；SceneStorage丢失或串入已关闭窗口的布局不能改变归属")
+    precondition(device.windowWorkspaceJournal.restore(id: keptSeed.id.uuidString, recoverLatest: false, kind: .single)?.panes == keptLayout.panes)
+    let replacedStartingTab = ConversationWindowModel(application: device, kind: .single)
+    replacedStartingTab.start(restoring: firstSeeded.savedLayout, seed: WindowSeed(id: keptSeed.id, tab: UUID()), persistenceID: UUID().uuidString)
+    precondition(replacedStartingTab.savedLayout.panes == keptLayout.panes,
+                 "canonical窗口身份仍可恢复已合法替换起始tab的布局")
+    let legacyLayout = ConversationWindowModel(application: device, kind: .single).savedLayout
+    let legacyID = UUID().uuidString
+    device.windowWorkspaceJournal.save(legacyLayout, id: legacyID)
+    device.windowWorkspaceJournal.flush()
+    let legacySeed = WindowSeed(tab: legacyLayout.panes.values.first!.tabs[0])
+    let legacyRecovery = ConversationWindowModel(application: device, kind: .single)
+    legacyRecovery.start(restoring: nil, seed: legacySeed, persistenceID: UUID().uuidString)
+    precondition(legacyRecovery.savedLayout.panes == legacyLayout.panes,
+                 "旧handoff恢复点可由同设备、同窗口类型的精确tab身份迁移，不借用latest")
+    let missingSeed = ConversationWindowModel(application: device, kind: .single)
+    missingSeed.start(restoring: firstSeeded.savedLayout, seed: WindowSeed(tab: UUID()), persistenceID: UUID().uuidString)
+    precondition(missingSeed.focused.store.reachingConversationID == nil,
+                 "丢失handoff和恢复点时不得自动载入首个无关会话")
+    note("PASS seeded window recovery: archived seed wins over fresh SceneStorage identity and wrong scene contents; exact legacy tab recovery; missing handoff stays blank")
+    let draftSeed = WindowSeed(tab: legacyLayout.panes.values.first!.tabs[0])
+    var draftLayout = legacyLayout
+    let draftText = "恢复中的非空草稿\n保留执行前输入"
+    draftLayout.composer = SavedComposerDraft(text: draftText, attachments: [])
+    draftLayout.composerWorkspace = nil
+    device.windowWorkspaceJournal.save(draftLayout, id: draftSeed.id.uuidString)
+    device.windowWorkspaceJournal.flush()
+    let firstDraftRestore = ConversationWindowModel(application: device, kind: .single)
+    firstDraftRestore.start(restoring: nil, seed: draftSeed, persistenceID: UUID().uuidString)
+    firstDraftRestore.noteWindowClosed()
+    let afterDraftRestore = device.windowWorkspaceJournal.restore(id: draftSeed.id.uuidString, recoverLatest: false, kind: .single)!
+    precondition(afterDraftRestore.panes == draftLayout.panes,
+                 "非空草稿的同步发布不能在替换pane前覆盖canonical恢复点")
+    let secondDraftRestore = ConversationWindowModel(application: device, kind: .single)
+    secondDraftRestore.start(restoring: nil, seed: draftSeed, persistenceID: UUID().uuidString)
+    precondition(secondDraftRestore.savedLayout.panes == draftLayout.panes,
+                 "SceneStorage紧接着重新挂载时仍恢复原tab，不读取半恢复布局")
+    let draftSaved = secondDraftRestore.savedLayout
+    precondition(draftSaved.composer?.text == draftText || draftSaved.composerWorkspace?.drafts.contains(where: { $0.state.text == draftText }) == true,
+                 "抑制恢复中写入后仍须完整保留草稿")
+    note("PASS restoration write transaction: nonempty legacy draft publication cannot replace the original tab; immediate second mount retains panes and draft")
     let fallback = device.windowWorkspaceJournal.restore(id: UUID().uuidString, recoverLatest: true)!
     precondition(fallback.layout == expected.layout && fallback.panes == expected.panes)
     note("PASS actual window lifecycle: structural edits persist without a text edit; two groups/four tabs; independent composer default; latest single window cannot replace workspace recovery")
@@ -254,9 +309,10 @@ import VeluneBindings
 }
 
 @MainActor private func renderExperienceSamples(home: URL, window: ConversationWindowModel, model: ComposerModel, now: Int64) {
-    func capture(_ view: NSView, name: String, size: NSSize) {
+    func capture(_ view: NSView, name: String, size: NSSize, appearance: NSAppearance.Name = .aqua) {
         view.frame = NSRect(origin: .zero, size: size)
         let host = NSWindow(contentRect: view.frame, styleMask: [.borderless], backing: .buffered, defer: false)
+        host.appearance = NSAppearance(named: appearance)
         host.contentView = view
         view.layoutSubtreeIfNeeded()
         RunLoop.main.run(until: Date().addingTimeInterval(0.15))
@@ -267,6 +323,8 @@ import VeluneBindings
         precondition(!host.isVisible && !host.isKeyWindow)
         host.contentView = nil
     }
+    capture(NSHostingView(rootView: WindowRestorationPendingView()), name: "window-restoration-pending-light", size: NSSize(width: 520, height: 300))
+    capture(NSHostingView(rootView: WindowRestorationPendingView().environment(\.colorScheme, .dark)), name: "window-restoration-pending-dark", size: NSSize(width: 520, height: 300), appearance: .darkAqua)
     let rows = MessageSampleCanvas(frame: NSRect(x: 0, y: 0, width: 1000, height: 780))
     rows.wantsLayer = true; rows.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
     let delegate = TranscriptTableController()

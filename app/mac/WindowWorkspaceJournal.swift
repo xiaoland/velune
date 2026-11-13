@@ -52,7 +52,7 @@ final class WindowWorkspaceJournal: @unchecked Sendable {
     }
     func flush() { queue.sync {} }
 
-    func restore(id: String, recoverLatest: Bool, kind: ConversationWindowKind = .workspace, device: String? = nil) -> SavedWindowLayout? {
+    func restore(id: String, recoverLatest: Bool, kind: ConversationWindowKind = .workspace, device: String? = nil, legacyTabID: UUID? = nil) -> SavedWindowLayout? {
         guard let directory else { return nil }
         flush()
         do {
@@ -90,6 +90,13 @@ final class WindowWorkspaceJournal: @unchecked Sendable {
             // An explicit old scene identity may still restore a pre-kind
             // snapshot. Unqualified recovery must never borrow another kind.
             let chosen = snapshots.first { $0.id == id && ($0.layout.windowDevice == nil || $0.layout.windowDevice == scope) && ($0.layout.windowKind == nil || $0.layout.windowKind == kind) }
+                // Older handoff windows used a SceneStorage-only identity.
+                // Their archived seed still carries the exact tab UUID; use
+                // that proof within the same device/kind, never a nearby window.
+                ?? legacyTabID.flatMap { tabID in
+                    snapshots.last { $0.layout.windowDevice == scope && $0.layout.windowKind == kind
+                        && $0.layout.panes.values.contains { $0.tabs.contains(tabID) } }
+                }
                 ?? (recoverLatest ? snapshots.last { $0.layout.windowDevice == scope && $0.layout.windowKind == kind } : nil)
             // Shared content is authoritative. A window snapshot restores its cursor
             // and any explicitly pending edit; never copy text between input identities.
