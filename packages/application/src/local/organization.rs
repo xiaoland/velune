@@ -923,7 +923,9 @@ impl CoreRuntime {
                         {
                             core.invalidate_execution()?;
                             core.session.source = None;
-                            core.session.control = None;
+                            if let Ok(Some(target)) = core.control_target() {
+                                core.control_observations.invalidate(&target);
+                            }
                         }
                         Ok(())
                     })?;

@@ -43,8 +43,10 @@ impl CoreRuntime {
         if matches!(&result, Err(RuntimeError::Contract(failure)) if failure.code == "control_held_elsewhere")
         {
             self.control_held_elsewhere();
-        } else if result.is_err() {
-            self.session.control = None;
+        } else if result.is_err()
+            && let Ok(Some(target)) = self.control_target()
+        {
+            self.control_observations.invalidate(&target);
         }
         match result {
             Err(RuntimeError::OutstandingWork) => {

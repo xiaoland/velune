@@ -173,12 +173,8 @@ pub struct CoreRuntime {
     session: session::Session,
     /// Other open conversation sessions, most recently used last.
     parked: Vec<session::Session>,
-    /// Lightweight native control observations outlive a parked history
-    /// projection when its full transcript is evicted.
-    control_watches: Vec<control::ControlWatch>,
-    /// Shared worker pool for all `ControlWatch` observations. Bounds thread
-    /// count and enforces per-observation deadlines.
-    control_pool: control::ControlObservationPool,
+    /// One bounded observation lifetime per physical source, independent of history views.
+    control_observations: control::ControlObservations,
     handoffs: handoff::Handoffs,
     elsewhere: live::ElsewhereScan,
     finished_turns: session::FinishedTurns,
@@ -259,6 +255,7 @@ pub(crate) use composer_choices::{TurnKey, TurnRequests};
 mod compaction;
 mod configuration;
 mod continuation;
+mod conversation_address;
 mod conversations;
 pub(crate) use conversations::TurnRequest;
 mod delivery;
@@ -321,8 +318,8 @@ impl CoreRuntime {
             collaboration: Default::default(),
             session: Default::default(),
             parked: Vec::new(),
-            control_watches: Vec::new(),
-            control_pool: control::ControlObservationPool::new(),
+            control_observations: control::ControlObservations::new()
+                .map_err(|error| RuntimeError::context("控制权观察服务无法启动", error))?,
             elsewhere: live::ElsewhereScan::default(),
             finished_turns: session::FinishedTurns::default(),
             scheduled_tasks,
@@ -636,6 +633,7 @@ impl CoreRuntime {
         runtime_id: &str,
         conversation_id: &str,
     ) -> Result<Option<crate::conversation::ConversationSnapshot>, RuntimeError> {
+        let address = self.conversation_read_address(runtime_id, conversation_id)?;
         if matches!(self.session.active_state, ActiveState::Empty) {
             if !self.runtime_instance(runtime_id)?.enabled {
                 return Err(RuntimeError::invalid("此运行时已停用"));
@@ -647,7 +645,7 @@ impl CoreRuntime {
             }
             // A conversation shown read-only has no session yet; its first
             // poll opens one so the view can follow native changes.
-            match self.read_conversation_context(runtime_id, conversation_id) {
+            match self.read_conversation_context(&address.context_runtime_id, conversation_id) {
                 Ok((snapshot, projection)) => self.present_history(snapshot, projection),
                 Err(error) => {
                     tracing::warn!(target: "velune_application", event = "followed_conversation_read_failed", detail = %error);
@@ -658,7 +656,8 @@ impl CoreRuntime {
         self.sync_projection()?;
         self.follow_source();
         Ok(self.current_snapshot().filter(|snapshot| {
-            snapshot.context_runtime_id == runtime_id && snapshot.conversation.id == conversation_id
+            snapshot.context_runtime_id == address.context_runtime_id
+                && snapshot.conversation.id == conversation_id
         }))
     }
     fn drain_runtime(&mut self) -> Result<(), RuntimeError> {

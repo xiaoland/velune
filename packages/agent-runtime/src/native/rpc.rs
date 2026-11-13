@@ -28,10 +28,27 @@ pub(crate) struct RpcClient {
 /// Run a short-lived helper. `stderr_limit` only bounds retained diagnostics;
 /// stdout is a business payload and is read to EOF without an adapter limit.
 pub(crate) fn bounded_process(
-    mut command: Command,
+    command: Command,
     input: Option<Vec<u8>>,
     stderr_limit: usize,
 ) -> Result<Vec<u8>> {
+    bounded_process_with_budget(
+        command,
+        input,
+        stderr_limit,
+        &crate::probe::ProbeBudget::new(CONTROL_TIMEOUT),
+    )
+}
+
+pub(crate) fn bounded_process_with_budget(
+    mut command: Command,
+    input: Option<Vec<u8>>,
+    stderr_limit: usize,
+    budget: &crate::probe::ProbeBudget,
+) -> Result<Vec<u8>> {
+    if budget.finished() {
+        return Err(probe_budget_error(budget));
+    }
     command
         .stdin(if input.is_some() {
             Stdio::piped()
@@ -81,7 +98,6 @@ pub(crate) fn bounded_process(
         };
         let _ = stderr_tx.send(outcome);
     });
-    let deadline = Instant::now() + CONTROL_TIMEOUT;
     let status = loop {
         match child.try_wait() {
             Ok(Some(status)) => break status,
@@ -94,8 +110,11 @@ pub(crate) fn bounded_process(
                 ));
             }
         }
-        if Instant::now() >= deadline {
+        if budget.finished() {
             child.stop();
+            if budget.cancelled() {
+                return Err(probe_budget_error(budget));
+            }
             let detail = stderr_rx
                 .try_recv()
                 .ok()
@@ -122,22 +141,11 @@ pub(crate) fn bounded_process(
         thread::sleep(Duration::from_millis(20));
     };
     child.stop();
-    let bytes = rx
-        .recv_timeout(Duration::from_secs(1))
-        .map_err(|error| {
-            Error::with_code(format!("运行时辅助进程输出未关闭：{error}"), "transport")
-        })?
-        .map_err(|error| {
+    let bytes =
+        receive_probe_output(&rx, budget, "运行时辅助进程输出未关闭")?.map_err(|error| {
             Error::with_code(format!("运行时辅助进程读取失败：{error}"), "transport")
         })?;
-    let stderr = stderr_rx
-        .recv_timeout(Duration::from_secs(1))
-        .map_err(|error| {
-            Error::with_code(
-                format!("运行时辅助进程错误输出未关闭：{error}"),
-                "transport",
-            )
-        })?
+    let stderr = receive_probe_output(&stderr_rx, budget, "运行时辅助进程错误输出未关闭")?
         .map_err(|error| {
             Error::with_code(
                 format!("运行时辅助进程错误输出读取失败：{error}"),
@@ -157,6 +165,34 @@ pub(crate) fn bounded_process(
         ));
     }
     Ok(bytes)
+}
+
+fn receive_probe_output<T>(
+    receiver: &Receiver<T>,
+    budget: &crate::probe::ProbeBudget,
+    phase: &str,
+) -> Result<T> {
+    let drain_deadline = Instant::now() + Duration::from_secs(1);
+    loop {
+        if budget.finished() {
+            return Err(probe_budget_error(budget));
+        }
+        match receiver.recv_timeout(Duration::from_millis(20)) {
+            Ok(value) => return Ok(value),
+            Err(mpsc::RecvTimeoutError::Timeout) if Instant::now() < drain_deadline => {}
+            Err(error) => {
+                return Err(Error::with_code(format!("{phase}：{error}"), "transport"));
+            }
+        }
+    }
+}
+
+fn probe_budget_error(budget: &crate::probe::ProbeBudget) -> Error {
+    if budget.cancelled() {
+        Error::with_code("运行时辅助进程已取消", "cancelled")
+    } else {
+        Error::with_code("运行时辅助进程超时", "timeout")
+    }
 }
 
 impl RpcClient {
@@ -443,6 +479,10 @@ pub(crate) fn observe_request<T>(method: &str, request: impl FnOnce() -> Result<
     }
     result
 }
+
+#[cfg(test)]
+#[path = "probe_tests.rs"]
+mod probe_tests;
 
 impl Drop for RpcClient {
     fn drop(&mut self) {

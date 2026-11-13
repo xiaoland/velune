@@ -48,7 +48,6 @@ pub(super) struct Session {
     /// Private execution files of this session's runtime; see `CoreRuntime::lane`.
     pub(super) lane: Option<usize>,
     pub(super) source: Option<live::SourceWatch>,
-    pub(super) control: Option<control::ControlWatch>,
     /// When this session was last seen executing; its native writes until
     /// shortly after that are Velune's own.
     pub(super) last_execution: Option<std::time::Instant>,

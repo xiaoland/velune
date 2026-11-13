@@ -51,6 +51,12 @@ Codex 0.166 的 `load_for_resume` 同时核对保存的 provider、请求 provid
 
 通用 `acp-v1`（family `acp`）声明协议主版本 `1`（`Versions::AcpProtocol`），描述为“协议 1”。它通过 `acp::Client::connect` 的 `initialize` 协商，既不执行未知程序的 `--version`，也不根据 `agentInfo` 名称或版本筛选 Harness。公开 CLI 版本探测 API 对此 family 明确返回 `unsupported`，调用方应使用协议握手。
 
+## 控制探测预算
+
+原生控制事实由 `control::Target` 的版本适配器解释，application 负责共享观察与准入。`observe_with_budget` 接受跨步骤共用的 `ProbeBudget`；DeepSeek 定位和后续远端锁查询共用同一截止时间与取消标记，不能每启动一个 helper 就重新计时。`ExecutionTarget::probe_output` 保留目标机器与 HOME，子进程仍由 `ProcessTree` 管理；取消或超时停止本次拥有的进程组／Job Object 并回收直接子进程。普通 helper 继续使用 15 秒预算，控制观察默认 5 秒。进程退出后的 stdout／stderr EOF 等待也检查同一预算与取消标记，不再额外取得新的观察期限。
+
+文件打开与部分 OS 调用不能通过取消标记强制中断。调用方必须在真实返回前保留并发名额，预算到期的返回值不能作为可写证据；`tokio::timeout` 或丢弃接收端都不能替代资源回收。该预算不改变完整历史载荷的保留规则，也不是 live RPC 写入／响应的统一异步实现。
+
 ## 通用 ACP v1
 
 `acp::Config` 接受目标机器上的绝对 `binary`、完整 `args`、显式 `environment`、`ExecutionTarget` 与可选 `os_home`。用户安装的原生 ACP 程序和社区 bridge 均可直接作为启动命令；本包不安装 Agent、不维护程序名单，也不要求通用 ACP 使用 Node 或本包 helper。SSH 与 HOME 复用下文执行边界。设置 `os_home` 时禁止环境表重复设置 `HOME`，避免家目录归属不明确；环境值可能包含秘密，因此该配置不实现 Debug。

@@ -346,7 +346,9 @@ impl CoreRuntime {
             self.advance_conversation_handoff()?;
         } else {
             self.handoffs.set(&identity, None)?;
-            self.session.control = None;
+            if let Ok(Some(target)) = self.control_target() {
+                self.control_observations.invalidate(&target);
+            }
         }
         self.snapshot_result()
     }
@@ -376,7 +378,9 @@ impl CoreRuntime {
         let had_handle = self.session.active_state.live().is_some();
         if had_handle {
             self.invalidate_execution()?;
-            self.session.control = None;
+            if let Ok(Some(target)) = self.control_target() {
+                self.control_observations.invalidate(&target);
+            }
             self.handoffs.set(&identity, Some(Phase::HandleClosed))?;
         }
         // With a native lock protocol, success requires a fresh observation.
@@ -391,7 +395,9 @@ impl CoreRuntime {
         };
         if released {
             self.handoffs.set(&identity, Some(Phase::Released))?;
-            self.session.control = None;
+            if let Ok(Some(target)) = self.control_target() {
+                self.control_observations.invalidate(&target);
+            }
         }
         Ok(())
     }

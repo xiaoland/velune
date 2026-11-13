@@ -21,6 +21,7 @@ pub mod acp;
 pub mod activity;
 pub mod authentication;
 pub mod control;
+pub mod probe;
 pub mod provider_inventory;
 pub mod provider_source;
 

@@ -95,6 +95,7 @@ impl CoreRuntime {
         runtime_id: &str,
         id: &str,
     ) -> Result<Option<SnapshotResult>, RuntimeError> {
+        let address = self.conversation_read_address(runtime_id, id)?;
         let identity = self
             .session
             .logical_projection
@@ -105,8 +106,9 @@ impl CoreRuntime {
                     .projected()
                     .map(|snapshot| &snapshot.conversation)
             });
-        if !identity.is_some_and(|identity| identity.id == id && identity.runtime_id == runtime_id)
-        {
+        if !identity.is_some_and(|identity| {
+            identity.id == id && identity.runtime_id == address.source_runtime_id
+        }) {
             return Ok(None);
         }
         self.sync_projection()?;
@@ -122,14 +124,9 @@ impl CoreRuntime {
             return Ok(ConversationRead::Ready(Box::new(snapshot)));
         }
         let started = std::time::Instant::now();
+        let address = self.conversation_read_address(runtime_id, id)?;
+        let runtime_id = address.source_runtime_id.as_str();
         let parts = if let Some(link) = self.conversation_links.iter().find(|link| link.id == id) {
-            if link
-                .segments
-                .first()
-                .is_none_or(|segment| segment.runtime_instance_id != runtime_id)
-            {
-                return Err(RuntimeError::invalid("会话来源运行时不匹配"));
-            }
             let parts =
                 link.segments
                     .iter()
