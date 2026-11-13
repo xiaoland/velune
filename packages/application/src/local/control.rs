@@ -2,49 +2,130 @@
 use super::*;
 use crate::conversation::{ConversationSnapshot, InputAccess};
 use std::{
-    sync::mpsc,
+    sync::{Arc, Mutex, mpsc},
     time::{Duration, Instant},
 };
 use velune_agent_runtime::control::{Observation, Target};
+
+/// How long a pending observation may run before the watch gives up and
+/// reports `ControlUnavailable`. This covers filesystem stalls on external
+/// volumes where `File::open` can block even though `flock(LOCK_NB)` is
+/// non-blocking; it also gives subprocess-based observations (DeepSeek /
+/// SSH) headroom before `bounded_process`'s own 15-second timeout fires.
+const OBSERVATION_DEADLINE: Duration = Duration::from_secs(10);
+
+/// Interval after a deadline expiry before retrying.
+const DEADLINE_RETRY: Duration = Duration::from_secs(5);
+
+/// Interval after the pool queue is full before retrying.
+const POOL_FULL_RETRY: Duration = Duration::from_millis(500);
+
+/// Number of observation worker threads.
+const POOL_WORKERS: usize = 4;
+
+/// Bounded queue depth. Observations are fast (non-blocking flock or a
+/// subprocess with its own timeout), so a small queue is sufficient.
+const POOL_QUEUE: usize = 32;
+
+struct PoolRequest {
+    target: Target,
+    result_tx: mpsc::Sender<Observation>,
+}
+
+/// Shared pool of worker threads that execute `Target::observe()`.
+/// Replaces per-watch `std::thread::spawn` calls, bounding total thread count.
+pub(super) struct ControlObservationPool {
+    request_tx: mpsc::SyncSender<PoolRequest>,
+}
+
+impl ControlObservationPool {
+    pub(super) fn new() -> Self {
+        let (request_tx, request_rx) = mpsc::sync_channel::<PoolRequest>(POOL_QUEUE);
+        let request_rx = Arc::new(Mutex::new(request_rx));
+        for index in 0..POOL_WORKERS {
+            let rx = request_rx.clone();
+            std::thread::Builder::new()
+                .name(format!("velune-ctrl-{index}"))
+                .spawn(move || {
+                    while let Ok(req) = rx.lock().expect("control pool").recv() {
+                        let _ = req.result_tx.send(req.target.observe());
+                    }
+                })
+                .expect("control worker thread");
+        }
+        Self { request_tx }
+    }
+
+    /// Submit an observation for `target`. Returns `None` when the pool queue
+    /// is full; the caller should back off and retry.
+    fn observe(&self, target: Target) -> Option<mpsc::Receiver<Observation>> {
+        let (result_tx, result_rx) = mpsc::channel();
+        self.request_tx
+            .try_send(PoolRequest { target, result_tx })
+            .ok()
+            .map(|()| result_rx)
+    }
+}
 
 pub(super) struct ControlWatch {
     target: Target,
     observation: Option<Observation>,
     pending: Option<mpsc::Receiver<Observation>>,
+    /// Absolute time after which a pending observation is abandoned.
+    deadline: Option<Instant>,
     next: Instant,
 }
 impl ControlWatch {
-    fn new(target: Target) -> Self {
+    pub(super) fn new(target: Target) -> Self {
         Self {
             target,
             observation: None,
             pending: None,
+            deadline: None,
             next: Instant::now(),
         }
     }
-    fn poll(&mut self) -> InputAccess {
-        if let Some(receiver) = &self.pending {
-            match receiver.try_recv() {
-                Ok(observation) => {
-                    self.observation = Some(observation);
-                    self.pending = None;
-                    self.next = Instant::now() + Duration::from_secs(2);
+    pub(super) fn poll(&mut self, pool: &ControlObservationPool) -> InputAccess {
+        if self.pending.is_some() {
+            let now = Instant::now();
+            let expired = self.deadline.is_some_and(|d| now >= d);
+            if expired {
+                // Observation worker is stuck (filesystem stall or subprocess
+                // hang). Abandon the in-flight result and report unavailable.
+                self.observation = Some(Observation::Unknown);
+                self.pending = None;
+                self.deadline = None;
+                self.next = now + DEADLINE_RETRY;
+            } else if let Some(receiver) = &self.pending {
+                match receiver.try_recv() {
+                    Ok(observation) => {
+                        self.observation = Some(observation);
+                        self.pending = None;
+                        self.deadline = None;
+                        self.next = Instant::now() + Duration::from_secs(2);
+                    }
+                    Err(mpsc::TryRecvError::Disconnected) => {
+                        self.observation = Some(Observation::Unknown);
+                        self.pending = None;
+                        self.deadline = None;
+                        self.next = Instant::now() + Duration::from_secs(2);
+                    }
+                    Err(mpsc::TryRecvError::Empty) => {}
                 }
-                Err(mpsc::TryRecvError::Disconnected) => {
-                    self.observation = Some(Observation::Unknown);
-                    self.pending = None;
-                    self.next = Instant::now() + Duration::from_secs(2);
-                }
-                Err(mpsc::TryRecvError::Empty) => {}
             }
         }
         if self.pending.is_none() && Instant::now() >= self.next {
-            let target = self.target.clone();
-            let (sender, receiver) = mpsc::channel();
-            self.pending = Some(receiver);
-            std::thread::spawn(move || {
-                let _ = sender.send(target.observe());
-            });
+            match pool.observe(self.target.clone()) {
+                Some(rx) => {
+                    self.pending = Some(rx);
+                    self.deadline = Some(Instant::now() + OBSERVATION_DEADLINE);
+                }
+                None => {
+                    // Pool saturated; retry after a short backoff without
+                    // resetting the last known observation.
+                    self.next = Instant::now() + POOL_FULL_RETRY;
+                }
+            }
         }
         match self.observation {
             None => InputAccess::CheckingControl,
@@ -54,6 +135,71 @@ impl ControlWatch {
         }
     }
 }
+
+/// Keep pending control observations when the associated full history view is
+/// evicted. The cache is small and independent of transcript memory.
+const RETAINED_CONTROL_WATCHES: usize = 256;
+
+pub(super) fn retain_in_cache(cache: &mut Vec<ControlWatch>, watch: ControlWatch) {
+    if let Some(index) = cache.iter().position(|known| known.target == watch.target) {
+        cache.remove(index);
+    }
+    cache.push(watch);
+    if cache.len() > RETAINED_CONTROL_WATCHES {
+        cache.remove(0);
+    }
+}
+
+pub(super) fn take_from_cache(
+    cache: &mut Vec<ControlWatch>,
+    target: &Target,
+) -> Option<ControlWatch> {
+    let index = cache.iter().position(|watch| watch.target == *target)?;
+    Some(cache.remove(index))
+}
+
+pub(super) fn remove_from_cache(cache: &mut Vec<ControlWatch>, target: &Target) {
+    cache.retain(|watch| watch.target != *target);
+}
+
+#[cfg(test)]
+mod cache_tests {
+    use super::*;
+
+    fn target() -> Target {
+        Target {
+            execution: velune_agent_runtime::execution::ExecutionTarget::Local,
+            os_home: None,
+            kind: velune_agent_runtime::version::RuntimeKind::Codex166,
+            agent_dir: PathBuf::from("/synthetic/codex-home"),
+            native_id: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa".into(),
+            node_binary: PathBuf::from("/usr/bin/node"),
+            resources: PathBuf::from("/synthetic/resources"),
+        }
+    }
+
+    #[test]
+    fn explicit_refresh_discards_retired_and_late_control_observations() {
+        let target = target();
+        let (sender, receiver) = mpsc::channel();
+        let mut retired = ControlWatch::new(target.clone());
+        retired.observation = Some(Observation::HeldElsewhere);
+        retired.pending = Some(receiver);
+        let mut cache = Vec::new();
+        retain_in_cache(&mut cache, retired);
+
+        remove_from_cache(&mut cache, &target);
+        assert!(take_from_cache(&mut cache, &target).is_none());
+        assert!(sender.send(Observation::Available).is_err());
+
+        let pool = ControlObservationPool::new();
+        let mut refreshed = ControlWatch::new(target);
+        refreshed.next = Instant::now() + Duration::from_secs(60);
+        assert_eq!(refreshed.poll(&pool), InputAccess::CheckingControl);
+        assert_eq!(refreshed.observation, None);
+    }
+}
+
 impl CoreRuntime {
     pub(super) fn control_target(&self) -> Result<Option<Target>, RuntimeError> {
         if self.session.side.is_some() || self.session.unsubmitted_draft.is_some() {
@@ -116,11 +262,15 @@ impl CoreRuntime {
     ) -> InputAccess {
         let target = match target {
             Ok(None) => {
-                self.session.control = None;
+                if let Some(watch) = self.session.control.take() {
+                    retain_in_cache(&mut self.control_watches, watch);
+                }
                 return InputAccess::Editable;
             }
             Err(_) => {
-                self.session.control = None;
+                if let Some(watch) = self.session.control.take() {
+                    retain_in_cache(&mut self.control_watches, watch);
+                }
                 return InputAccess::ControlUnavailable;
             }
             Ok(Some(target)) => target,
@@ -131,6 +281,7 @@ impl CoreRuntime {
         if matches!(&self.session.active_state, ActiveState::Native(native) if native.owns_control(&target))
         {
             self.session.control = None;
+            remove_from_cache(&mut self.control_watches, &target);
             return InputAccess::Editable;
         }
         if self
@@ -139,9 +290,16 @@ impl CoreRuntime {
             .as_ref()
             .is_none_or(|watch| watch.target != target)
         {
-            self.session.control = Some(ControlWatch::new(target));
+            if let Some(watch) = self.session.control.take() {
+                retain_in_cache(&mut self.control_watches, watch);
+            }
+            self.session.control = Some(
+                take_from_cache(&mut self.control_watches, &target)
+                    .unwrap_or_else(|| ControlWatch::new(target)),
+            );
         }
-        self.session.control.as_mut().expect("control watch").poll()
+        let pool = &self.control_pool;
+        self.session.control.as_mut().expect("control watch").poll(pool)
     }
     pub(super) fn apply_input_access(&mut self, snapshot: &mut ConversationSnapshot) {
         let access = self.observed_input_access();
@@ -167,9 +325,13 @@ impl CoreRuntime {
     }
     pub(super) fn control_held_elsewhere(&mut self) {
         if let Ok(Some(target)) = self.control_target() {
+            remove_from_cache(&mut self.control_watches, &target);
             let mut watch = ControlWatch::new(target);
             watch.observation = Some(Observation::HeldElsewhere);
             watch.next = Instant::now() + Duration::from_secs(2);
+            if let Some(previous) = self.session.control.take() {
+                retain_in_cache(&mut self.control_watches, previous);
+            }
             self.session.control = Some(watch);
         }
     }

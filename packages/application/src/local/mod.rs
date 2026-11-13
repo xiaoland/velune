@@ -173,6 +173,12 @@ pub struct CoreRuntime {
     session: session::Session,
     /// Other open conversation sessions, most recently used last.
     parked: Vec<session::Session>,
+    /// Lightweight native control observations outlive a parked history
+    /// projection when its full transcript is evicted.
+    control_watches: Vec<control::ControlWatch>,
+    /// Shared worker pool for all `ControlWatch` observations. Bounds thread
+    /// count and enforces per-observation deadlines.
+    control_pool: control::ControlObservationPool,
     handoffs: handoff::Handoffs,
     elsewhere: live::ElsewhereScan,
     finished_turns: session::FinishedTurns,
@@ -314,6 +320,8 @@ impl CoreRuntime {
             collaboration: Default::default(),
             session: Default::default(),
             parked: Vec::new(),
+            control_watches: Vec::new(),
+            control_pool: control::ControlObservationPool::new(),
             elsewhere: live::ElsewhereScan::default(),
             finished_turns: session::FinishedTurns::default(),
             scheduled_tasks,
