@@ -32,6 +32,9 @@ pub(super) struct Retry {
     pub(super) attempts: u32,
     pub(super) phase: Phase,
     pub(super) native: bool,
+    /// The native attempt may recover before the containing turn completes.
+    pub(super) native_view: Option<RuntimeRetry>,
+    pub(super) native_reconnects: u32,
     pub(super) effort: Option<String>,
     pub(super) permission_mode: Option<String>,
     pub(super) early: Vec<Value>,
@@ -58,7 +61,7 @@ impl Retry {
                 at_unix_ms: *at_unix_ms,
             }),
             Phase::Ended(view) => view.clone(),
-            _ if self.native => Some(RuntimeRetry::Native),
+            _ if self.native => self.native_view.clone(),
             _ if self.attempts > 0 => Some(RuntimeRetry::Attempted {
                 attempt: self.attempts,
                 maximum: MAXIMUM,
@@ -69,6 +72,16 @@ impl Retry {
 }
 
 impl NativeSession {
+    /// Only current-turn model output proves the stream has resumed. Account,
+    /// usage and tool completion notifications can arrive during a disconnect.
+    pub(super) fn codex_native_retry_progress(&mut self) {
+        if self.codex.retry.native_view != Some(RuntimeRetry::Native) {
+            return;
+        }
+        self.codex.retry.native_view = Some(RuntimeRetry::Recovered);
+        self.codex_retry_view();
+    }
+
     pub(super) fn codex_retry_transient(&mut self, message: &mut Message) -> bool {
         if self
             .snapshot
@@ -380,6 +393,7 @@ impl NativeSession {
                 }
                 for block in &mut message.blocks {
                     if let MessageBlock::RuntimeFailure { detail, retry, .. } = block
+                        && *retry != Some(RuntimeRetry::Recovered)
                         && *retry != view
                     {
                         // Older clients use this adapter-owned note during
@@ -548,6 +562,70 @@ done
                 ..
             }
         ));
+        // A native reconnect is a stream interruption inside a still-running
+        // turn, not a terminal failure. Only this turn's model progress settles it.
+        session
+            .snapshot
+            .as_mut()
+            .unwrap()
+            .executions
+            .begin(ExecutionKind::UserTurn, true);
+        session.codex.retry = Retry::default();
+        session.turn_id = Some("reconnecting".into());
+        session.running();
+        let reconnect = json!({"method":"error","params":{"turnId":"reconnecting","willRetry":true,"error":{"message":"Reconnecting... 1/5","codexErrorInfo":"responseStreamDisconnected"}}});
+        session.codex_handle_record(reconnect.clone()).unwrap();
+        let retry_view = |session: &NativeSession| {
+            session
+                .snapshot()
+                .unwrap()
+                .messages
+                .iter()
+                .rev()
+                .find(|message| message.id.starts_with("codex-turn-error-reconnecting"))
+                .and_then(|message| message.blocks.first())
+                .and_then(|block| match block {
+                    MessageBlock::RuntimeFailure { retry, .. } => Some(retry.clone()),
+                    _ => None,
+                })
+                .unwrap()
+        };
+        assert_eq!(retry_view(&session), Some(RuntimeRetry::Native));
+        session
+            .codex_handle_record(
+                json!({"method":"thread/tokenUsage/updated","params":{"turnId":"reconnecting"}}),
+            )
+            .unwrap();
+        session.codex_handle_record(json!({"method":"item/completed","params":{"turnId":"reconnecting","item":{"id":"late-tool","type":"commandExecution","status":"completed","command":"true"}}})).unwrap();
+        session.codex_handle_record(json!({"method":"item/agentMessage/delta","params":{"turnId":"stale-turn","itemId":"stale","delta":"old output"}})).unwrap();
+        session.codex_handle_record(json!({"method":"item/reasoning/textDelta","params":{"turnId":"reconnecting","delta":""}})).unwrap();
+        assert_eq!(retry_view(&session), Some(RuntimeRetry::Native));
+        session.codex_handle_record(json!({"method":"item/reasoning/textDelta","params":{"turnId":"reconnecting","delta":"resumed reasoning"}})).unwrap();
+        session.codex_poll_retry().unwrap();
+        assert_eq!(retry_view(&session), Some(RuntimeRetry::Recovered));
+        assert!(session.turn_running());
+        assert!(!session.snapshot().unwrap().messages.iter().any(|message| message.blocks.iter().any(|block| matches!(block, MessageBlock::RuntimeFailure { detail, .. } if detail.ends_with(super::super::codex::NATIVE_RETRY_DETAIL)))));
+        // Another disconnect reactivates the same occurrence. A definitive
+        // native failure must not be hidden by the preceding recovery or cause
+        // Velune to independently replay a turn the SDK already retried.
+        session.codex_handle_record(reconnect).unwrap();
+        assert_eq!(retry_view(&session), Some(RuntimeRetry::Native));
+        assert!(
+            session
+                .snapshot()
+                .unwrap()
+                .messages
+                .iter()
+                .any(|message| message.id == "codex-turn-error-reconnecting-reconnect-1")
+        );
+        session.codex_handle_record(json!({"method":"error","params":{"turnId":"reconnecting","willRetry":false,"error":{"message":"retry exhausted","codexErrorInfo":"serverOverloaded"}}})).unwrap();
+        session.codex_poll_retry().unwrap();
+        assert_eq!(retry_view(&session), None);
+        session.codex_handle_record(json!({"method":"turn/completed","params":{"turn":{"id":"reconnecting","status":"failed"}}})).unwrap();
+        assert_eq!(session.snapshot().unwrap().run_state, RunState::Failed);
+        assert_eq!(retry_view(&session), None);
+        assert!(!matches!(session.codex.retry.phase, Phase::Waiting { .. }));
+        session.codex.retry = Retry::default();
         fail(&mut session, "second", "serverOverloaded", false);
         session.cancel().unwrap();
         assert!(!session.turn_running());

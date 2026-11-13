@@ -724,6 +724,24 @@ impl NativeSession {
         {
             return Ok(());
         }
+        if params["turnId"].as_str() == self.turn_id.as_deref()
+            && self.turn_id.is_some()
+            && ((matches!(
+                method,
+                "item/agentMessage/delta"
+                    | "item/reasoning/textDelta"
+                    | "item/reasoning/summaryTextDelta"
+            ) && params["delta"]
+                .as_str()
+                .is_some_and(|delta| !delta.is_empty()))
+                || (method == "item/started"
+                    && matches!(
+                        params["item"]["type"].as_str(),
+                        Some("agentMessage" | "reasoning")
+                    )))
+        {
+            self.codex_native_retry_progress();
+        }
         match method {
             "thread/readState/changed" => {
                 if let Some(snapshot) = &mut self.snapshot {
@@ -894,7 +912,11 @@ impl NativeSession {
                     let retrying = params["willRetry"]
                         .as_bool()
                         .ok_or_else(|| Error::new("Codex 错误通知缺少重试状态"))?;
+                    if retrying && self.codex.retry.native_view == Some(RuntimeRetry::Recovered) {
+                        self.codex.retry.native_reconnects += 1;
+                    }
                     self.codex.retry.native |= retrying;
+                    self.codex.retry.native_view = retrying.then_some(RuntimeRetry::Native);
                     let error = project_error(turn, &params["error"], retrying, None)?;
                     self.codex_error_message(error);
                     self.codex.turn_error = Some(params["error"].clone());
@@ -905,6 +927,12 @@ impl NativeSession {
         Ok(())
     }
     fn codex_error_message(&mut self, mut message: Message) {
+        if self.codex.retry.native_reconnects > 0 {
+            message.id = format!(
+                "{}-reconnect-{}",
+                message.id, self.codex.retry.native_reconnects
+            );
+        }
         if self.compacting {
             message.id = self.compaction_message_id.clone().unwrap_or(message.id);
             self.compaction_message_id = Some(message.id.clone());

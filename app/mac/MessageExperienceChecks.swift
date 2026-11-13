@@ -63,6 +63,11 @@ import VeluneBindings
         while !ready(), Date() < end { RunLoop.main.run(until: Date().addingTimeInterval(0.02)) }
         precondition(ready(), "合成检查超时")
     }
+    if CommandLine.arguments.contains("--experience-runtime-recovery-only") {
+        runtimeRecoveryLifecycleChecks()
+        note("PASS runtime recovery lifecycle: dismiss without stopping, automatic recovery removal, repeated interruption and terminal failure visibility")
+        exit(0)
+    }
     if CommandLine.arguments.contains("--experience-fork-only") { forkExperienceChecks(home: home); exit(0) }
     if CommandLine.arguments.contains("--experience-drag-provider-only") { dragProviderChecks() }
     if CommandLine.arguments.contains("--experience-workspace-only") { workspaceRecoveryChecks(home: home); exit(0) }

@@ -53,7 +53,7 @@ struct TranscriptView: View {
             visibleRows = model.rows.filter { userIDs.contains($0.id) }
         } else { visibleRows = model.rows }
         return TranscriptTable(controller: reading.table, conversationID: conversationID, items: model.items(for: visibleRows, turnHeaders: !outlineCollapsed), revision: model.contentRevision,
-                               activity: recovery?.active == true ? nil : activity, outlineCollapsed: outlineCollapsed, outlineAnchorID: reading.outlineAnchorID,
+                               activity: recovery?.active == true && recovery?.isVisible(dismissed: dismissedRecovery) == true ? nil : activity, outlineCollapsed: outlineCollapsed, outlineAnchorID: reading.outlineAnchorID,
                                cwd: cwd, remoteHost: remoteHost, bottomRequest: reading.bottomRequest, jump: navigation,
                                followingChanged: { [reading] value in if reading.following != value { reading.following = value } },
                                outlineToggle: { [reading] id in reading.outlineAnchorID = id; outlineCollapsed = false }, loadPayloads: loadPayloads,
@@ -77,8 +77,8 @@ struct TranscriptView: View {
                     .padding(.horizontal, 16).padding(.vertical, 8)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .background(.bar)
-                } else if let recovery, recovery.active || dismissedRecovery != recovery.id {
-                    RuntimeRecoveryView(recovery: recovery, stopping: stoppingRecovery, canStop: canStopRecovery, stop: stopRecovery) { dismissedRecovery = recovery.id }
+                } else if let recovery, recovery.isVisible(dismissed: dismissedRecovery) {
+                    RuntimeRecoveryView(recovery: recovery, stopping: stoppingRecovery, canStop: canStopRecovery, stop: stopRecovery) { dismissedRecovery = recovery.dismissalID }
                 }
             }
             .onReceive(NotificationCenter.default.publisher(for: NSScroller.preferredScrollerStyleDidChangeNotification)

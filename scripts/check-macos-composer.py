@@ -21,7 +21,7 @@ def digest(path):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('check', choices=['background', 'experience'])
+    parser.add_argument('check', choices=['background', 'experience', 'recovery'])
     parser.add_argument('--app', type=Path, default=app_bundle_path(ROOT, 'dev'))
     parser.add_argument('--output', type=Path)
     parser.add_argument('--dark', action='store_true')
@@ -56,7 +56,9 @@ def main():
                    VELUNE_EXPERIENCE_CHECK_HOME=str(evidence),
                    CODEX_HOME=str(root / 'codex'), PI_CODING_AGENT_DIR=str(root / 'pi'), CLAUDE_CONFIG_DIR=str(root / 'claude'),
                    XDG_CONFIG_HOME=str(root / 'config'), XDG_DATA_HOME=str(root / 'data'), XDG_CACHE_HOME=str(root / 'cache'))
-        flags = ['--check-message-experience'] if args.check == 'experience' else ['--check-background-tasks']
+        flags = ['--check-background-tasks'] if args.check == 'background' else ['--check-message-experience']
+        if args.check == 'recovery':
+            flags.append('--experience-runtime-recovery-only')
         if args.dark and args.check == 'background':
             flags.append('--background-check-dark')
         with (output / 'native.log').open('w') as log:

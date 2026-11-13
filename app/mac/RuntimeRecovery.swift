@@ -16,6 +16,14 @@ struct RuntimeRecovery: Identifiable, Equatable {
         }
     }
 
+    /// Dismissal hides this occurrence without controlling the runtime. A
+    /// terminal failure must remain reviewable after a dismissed retry.
+    var dismissalID: String { id + (active ? ":retrying" : ":ended") }
+
+    func isVisible(dismissed: String?) -> Bool {
+        retry != .recovered && dismissed != dismissalID
+    }
+
     static func latest(in messages: [DeliveredMessage]) -> Self? {
         var laterUser = false
         for message in messages.reversed() {
@@ -23,6 +31,7 @@ struct RuntimeRecovery: Identifiable, Equatable {
             for (index, block) in message.blocks.enumerated().reversed() {
                 if case let .runtimeFailure(failure, detail, retry) = block {
                     let value = Self(id: message.id + ":\(index)", failure: failure, detail: detail, retry: retry)
+                    guard retry != .recovered else { return nil }
                     return value.active || !laterUser ? value : nil
                 }
             }
@@ -48,7 +57,7 @@ struct RuntimeRecoveryView: View {
                 if recovery.active { ProgressView().controlSize(.small).padding(.top, 2) }
                 else { Image(systemName: recovery.retry == .recovered ? "checkmark.circle" : "exclamationmark.circle").foregroundStyle(.secondary) }
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(recovery.failure.title).uiFont(.callout.weight(.medium))
+                    Text(recovery.active ? "正在恢复请求" : recovery.failure.title).uiFont(.callout.weight(.medium))
                     Text(recovery.detail).uiFont(.callout).lineLimit(3).textSelection(.enabled)
                     TimelineView(.periodic(from: .now, by: 1)) { context in
                         Text(status(at: context.date)).uiFont(.caption).foregroundStyle(.secondary)
@@ -57,10 +66,9 @@ struct RuntimeRecoveryView: View {
                 }.frame(maxWidth: .infinity, alignment: .leading)
                 if recovery.active {
                     Button(stopping ? "正在停止…" : "停止重试", action: stop).disabled(!canStop || stopping)
-                } else {
-                    Button(action: dismiss) { Image(systemName: "xmark") }.buttonStyle(.borderless)
-                        .accessibilityLabel("关闭重试结果").help("关闭此结果，错误记录仍保留在工作过程中")
                 }
+                Button(action: dismiss) { Image(systemName: "xmark") }.buttonStyle(.borderless)
+                    .accessibilityLabel("忽略此提示").help("隐藏此提示，运行时继续执行；错误记录仍保留在工作过程中")
             }.padding(12).frame(maxWidth: 760, alignment: .leading).frame(maxWidth: .infinity)
         }
         .background(.bar)
