@@ -1219,7 +1219,7 @@ final class ConversationStore: ObservableObject {
             guard let self else { return }
             self.executionStarting = false
             self.isForking = false
-            if placement == .fork { self.device.rememberFork(value); forked(value) } else { self.applySnapshotResult(value) }
+            if placement == .fork { self.device.noteForkCompleted(); forked(value) } else { self.applySnapshotResult(value) }
             accepted()
         }
     }
@@ -1232,7 +1232,7 @@ final class ConversationStore: ObservableObject {
                 onFailure: { [weak self] _ in self?.isForking = false }) { [weak self] value in
             guard let self else { return }
             self.isForking = false
-            self.device.rememberFork(value)
+            self.device.noteForkCompleted()
             forked(value)
         }
     }
@@ -1545,8 +1545,17 @@ extension ConversationStore {
             precondition(store.snapshot?.runState == state && store.loadedConversationID == source.conversation.id,
                          "失败不得替换或停止源会话投影")
         }
+        // A completed fork republishes the core list (noteForkCompleted):
+        // the sidebar shows the fork only as the core's grouped entry, with
+        // no provisional row of its own. The empty backend answers the list
+        // read, so the refresh applying is observable through listRevision.
+        let revision = store.device.listRevision
+        store.device.noteForkCompleted()
+        let refreshDeadline = Date().addingTimeInterval(15)
+        while store.device.listRevision == revision, Date() < refreshDeadline { RunLoop.main.run(until: Date().addingTimeInterval(0.02)) }
+        precondition(store.device.listRevision > revision, "fork 后必须由核心列表刷新提供新会话条目")
         store.close()
-        FileHandle.standardError.write(Data("PASS fork dispatch: running and elsewhere sources dispatch immediately; backend failure clears loading without changing source\n".utf8))
+        FileHandle.standardError.write(Data("PASS fork dispatch: running and elsewhere sources dispatch immediately; backend failure clears loading without changing source; a completed fork republishes the core list with no provisional entry\n".utf8))
     }
 
     /// Hidden native check of the production navigation/catalog admission path.

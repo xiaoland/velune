@@ -23,7 +23,6 @@ import VeluneBindings
         transcriptMessageIdentities: identities, messageIdentityConfirmations: [], pendingInteractions: [],
         actions: .init(inputAccess: .editable, canSend: true, canCancel: false, canSwitch: true),
         followUp: .init(), subAgents: [], collaborators: []))
-    source.rememberFork(result)
     window.openInNewTab(adopting: result, device: source)
     let store = window.focused.store
     precondition(store.device === source && store.device !== local, "fork 必须留在发起设备")
@@ -34,7 +33,6 @@ import VeluneBindings
     store.selectComposerRuntime("sample-instance")
     store.changeComposerChoice(.effort(level: "high"))
     precondition(store.nextTurn?.choice.effort == "high", "新分支可立即更改推理配置")
-    precondition(source.conversations.contains { $0.id == "synthetic-fork" && $0.title == "Synthetic (1)" })
     let transcript = TranscriptModel()
     transcript.apply(messages, turns: [], items: items, outline: [], identities: identities, editable: [])
     let view = NSHostingView(rootView: TranscriptView(model: transcript, reading: TranscriptReading(),
@@ -50,7 +48,7 @@ import VeluneBindings
     view.cacheDisplay(in: view.bounds, to: bitmap)
     try! bitmap.representation(using: .png, properties: [:])!.write(to: home.appendingPathComponent("fork-loading.png"))
     store.close()
-    FileHandle.standardError.write(Data("PASS fork: original device, adopted snapshot, immediate runtime/effort edits, distinct summary and native loading presentation\n".utf8))
+    FileHandle.standardError.write(Data("PASS fork: original device, adopted snapshot, immediate runtime/effort edits and native loading presentation; the sidebar entry comes from the core list alone\n".utf8))
 }
 
 /// Synthetic, hidden checks: no scenes, hotkeys, orderFront, activation or input injection.
