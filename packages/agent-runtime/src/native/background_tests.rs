@@ -67,6 +67,50 @@ impl Drop for Fixture {
 }
 
 #[test]
+fn background_tasks_claude_shell_and_workflow_stay_separate_from_agent_relationships() {
+    let mut f = Fixture::new();
+    for (id, kind) in [("shell", "local_bash"), ("workflow", "local_workflow")] {
+        f.event(json!({"type":"system","subtype":"task_started","task_id":id,"task_type":kind,"description":id}));
+        assert!(f.task(id).conversation_id.is_none());
+    }
+    assert!(f.session.sub_agents.is_empty());
+    assert!(
+        sub_agent_conversations(&f.session.snapshot.as_ref().unwrap().messages)
+            .next()
+            .is_none()
+    );
+
+    f.event(json!({"type":"system","subtype":"task_started","task_id":"agent","task_type":"local_agent","description":"Agent task"}));
+    let child = f.session.claude_agent_conversation("agent").unwrap();
+    assert_eq!(
+        f.task("Agent task").conversation_id.as_deref(),
+        Some(child.as_str()),
+        "the first agent receipt must link its child without waiting for progress"
+    );
+    assert_eq!(
+        f.session.sub_agents.iter().cloned().collect::<Vec<_>>(),
+        vec![child.clone()]
+    );
+
+    for id in ["shell", "workflow"] {
+        f.event(json!({"type":"system","subtype":"task_notification","task_id":id,"status":"completed","summary":"Synthetic result"}));
+        assert!(f.task(id).conversation_id.is_none());
+    }
+    assert_eq!(f.session.sub_agents.len(), 1);
+    assert!(
+        sub_agent_conversations(&f.session.snapshot.as_ref().unwrap().messages)
+            .next()
+            .is_none(),
+        "ordinary background completion must not create a child conversation link"
+    );
+    f.event(json!({"type":"system","subtype":"task_notification","task_id":"agent","status":"completed","summary":"Agent result"}));
+    assert_eq!(
+        sub_agent_conversations(&f.session.snapshot.as_ref().unwrap().messages).collect::<Vec<_>>(),
+        vec![child]
+    );
+}
+
+#[test]
 fn background_tasks_claude_exact_stop_preserves_parent_and_sibling_until_terminal() {
     let mut f = Fixture::new();
     f.event(

@@ -852,7 +852,18 @@ impl NativeSession {
                         if record["task_type"] == "local_agent"
                             && let Some(conversation) = self.claude_agent_conversation(id)
                         {
-                            self.sub_agents.insert(conversation);
+                            self.sub_agents.insert(conversation.clone());
+                            // Background observation precedes relationship discovery.
+                            // Link the first task receipt immediately; a quiet agent
+                            // need not emit a later progress event to become openable.
+                            if let Some(task) = self
+                                .claude
+                                .task_runs
+                                .get(id)
+                                .and_then(|run| self.claude.task_infos.get_mut(run))
+                            {
+                                task.conversation_id = Some(conversation);
+                            }
                         }
                     }
                 }
