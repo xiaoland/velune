@@ -106,25 +106,44 @@ pub(super) fn rejected(
     error_response(status, message)
 }
 pub(super) fn scheduling_rejected(
-    observation: Observation,
+    mut observation: Observation,
     unavailable: ScheduleUnavailable,
 ) -> Response<Body> {
-    let mut response = rejected(
-        observation,
-        if unavailable.retry_after.is_some() {
-            StatusCode::TOO_MANY_REQUESTS
-        } else {
-            StatusCode::SERVICE_UNAVAILABLE
-        },
-        "no eligible provider: quota or health observations do not permit a request",
+    observation.http_response(unavailable.status());
+    observation.finish("rejected");
+    tracing::warn!(
+        event = "gateway_request_rejected",
+        http_status = unavailable.status(),
+        reason = unavailable.reason.code(),
     );
+    let failure = scheduling_failure(unavailable);
+    response(failure.meta, Body::from(failure.body.into_inner()))
+}
+pub(super) fn scheduling_failure(unavailable: ScheduleUnavailable) -> ResponseBody {
+    let mut headers = vec![Header {
+        name: "content-type".into(),
+        value: "application/json".into(),
+    }];
     if let Some(delay) = unavailable.retry_after {
-        response.headers_mut().insert(
-            "retry-after",
-            HeaderValue::from_str(&retry_seconds(delay).to_string()).expect("numeric retry delay"),
-        );
+        headers.push(Header {
+            name: "retry-after".into(),
+            value: retry_seconds(delay).to_string(),
+        });
     }
-    response
+    ResponseBody {
+        meta: ResponseMeta {
+            status: unavailable.status(),
+            headers,
+        },
+        body: Payload::new(
+            json!({"error": {
+                "code": unavailable.reason.code(),
+                "message": unavailable.message(),
+            }})
+            .to_string()
+            .into_bytes(),
+        ),
+    }
 }
 pub(super) fn retry_seconds(delay: Duration) -> u64 {
     delay

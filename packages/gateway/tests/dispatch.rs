@@ -14,9 +14,9 @@ use std::{
 use velune_gateway::{
     AnalyticsOutcome, AnalyticsRecord, AnalyticsSink, CredentialMaterial, CredentialRecovery,
     CredentialResolutionError, CredentialResolver, CredentialTarget, ExecutionBackend,
-    GatewayConfig, HttpAuthorization, ModelRoute, ProviderDefinition, ProviderModel,
-    RequestCapabilities, RequestProfile, ResolvedCredential, RoutingStrategy, Runner,
-    SchedulingState,
+    GatewayConfig, HttpAuthorization, ModelRoute, ProviderDefinition, ProviderModel, QuotaLimit,
+    QuotaSnapshot, QuotaSource, QuotaWindow, RequestCapabilities, RequestProfile,
+    ResolvedCredential, RoutingStrategy, Runner, SchedulingState,
 };
 
 #[derive(Clone)]
@@ -211,6 +211,200 @@ async fn send(runner: &Runner, protocol: Api, model: &str, stream: bool) -> Answ
         status: response.status().as_u16(),
         headers: response.headers().clone(),
         body: response.text().await.unwrap(),
+    }
+}
+
+#[derive(Clone)]
+struct ObservedQuota(QuotaSnapshot);
+impl QuotaSource for ObservedQuota {
+    fn snapshot(&self, _: &str) -> QuotaSnapshot {
+        self.0.clone()
+    }
+}
+
+fn quota_window(reset_at_ms: Option<i64>) -> QuotaWindow {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64;
+    QuotaWindow {
+        id: "daily".into(),
+        model_ids: None,
+        used_percent: 100.0,
+        reset_at_ms,
+        window_ms: None,
+        observed_at_ms: now,
+        expires_at_ms: now + 60_000,
+    }
+}
+
+#[tokio::test]
+async fn quota_admission_reports_the_reason_across_all_protocols() {
+    for protocol in Api::ALL {
+        let (upstream, address) = Upstream::start().await;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64;
+        let cases = [
+            (
+                QuotaSnapshot::Known {
+                    available: Some(false),
+                    windows: vec![quota_window(Some(now + 60_000))],
+                },
+                false,
+                429,
+                "quota_exhausted",
+                Some("60"),
+            ),
+            (
+                QuotaSnapshot::Known {
+                    available: Some(false),
+                    windows: vec![],
+                },
+                false,
+                429,
+                "quota_exhausted",
+                None,
+            ),
+            (
+                QuotaSnapshot::Unknown,
+                true,
+                503,
+                "quota_pending",
+                Some("1"),
+            ),
+            (
+                QuotaSnapshot::Stale {
+                    available: Some(false),
+                    windows: vec![quota_window(Some(now + 60_000))],
+                },
+                true,
+                503,
+                "quota_pending",
+                Some("1"),
+            ),
+            (
+                QuotaSnapshot::Unsupported,
+                true,
+                503,
+                "quota_window_missing",
+                None,
+            ),
+        ];
+        for (snapshot, limited, status, code, retry) in cases {
+            let mut config = gateway_config(protocol, &address);
+            if limited {
+                for provider in &mut config.providers {
+                    provider.quota_limits = vec![QuotaLimit {
+                        window_id: "daily".into(),
+                        max_used_percent: 80,
+                    }];
+                }
+            }
+            let runner = Runner::start_with_scheduling(
+                config,
+                Arc::new(Keys),
+                BTreeMap::new(),
+                None,
+                SchedulingState::default(),
+                Arc::new(ObservedQuota(snapshot)),
+                None,
+                Default::default(),
+            )
+            .unwrap();
+            for stream in [false, true] {
+                let answer = send(&runner, protocol, "velune/model/route", stream).await;
+                assert_eq!(answer.status, status);
+                let actual_retry = answer
+                    .headers
+                    .get("retry-after")
+                    .map(|h| h.to_str().unwrap());
+                if retry == Some("60") {
+                    // Wall time elapses while previous protocol/case runners
+                    // shut down; the delay must still point at the same reset.
+                    assert!((1..=60).contains(&actual_retry.unwrap().parse::<u64>().unwrap()));
+                } else {
+                    assert_eq!(actual_retry, retry);
+                }
+                let body: Value = serde_json::from_str(&answer.body).unwrap();
+                assert_eq!(body["error"]["code"], code);
+                assert!(!body["error"]["message"].as_str().unwrap().is_empty());
+            }
+        }
+        assert!(upstream.hits().is_empty());
+    }
+}
+
+#[tokio::test]
+async fn health_and_invalidated_bindings_remain_service_unavailable() {
+    for protocol in Api::ALL {
+        let (upstream, address) = Upstream::start().await;
+        upstream.reply("a", Reply::json(500, json!({"error":"temporary"})));
+        let health = SchedulingState::default();
+        let runner = Runner::start_with_analytics(
+            gateway_config(protocol, &address),
+            Arc::new(Keys),
+            BTreeMap::new(),
+            None,
+            health.clone(),
+        )
+        .unwrap();
+        assert_eq!(
+            send(&runner, protocol, "velune/model/a-model", false)
+                .await
+                .status,
+            500
+        );
+        let answer = send(&runner, protocol, "velune/model/a-model", false).await;
+        assert_eq!(answer.status, 503);
+        assert_eq!(
+            serde_json::from_str::<Value>(&answer.body).unwrap()["error"]["code"],
+            "provider_unavailable"
+        );
+        assert!(answer.headers.contains_key("retry-after"));
+        health.invalidate_provider("gateway", "a");
+        let answer = send(&runner, protocol, "velune/model/a-model", false).await;
+        assert_eq!(answer.status, 503);
+        assert_eq!(
+            serde_json::from_str::<Value>(&answer.body).unwrap()["error"]["code"],
+            "binding_invalidated"
+        );
+        assert!(!answer.headers.contains_key("retry-after"));
+        assert_eq!(upstream.hits().len(), 1);
+    }
+}
+
+#[tokio::test]
+async fn quota_change_between_ranking_and_acquiring_keeps_the_same_error_contract() {
+    struct ChangedQuota(std::sync::atomic::AtomicUsize);
+    impl QuotaSource for ChangedQuota {
+        fn snapshot(&self, _: &str) -> QuotaSnapshot {
+            QuotaSnapshot::Known {
+                available: Some(self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0),
+                windows: vec![],
+            }
+        }
+    }
+    for protocol in Api::ALL {
+        let (upstream, address) = Upstream::start().await;
+        let runner = Runner::start_with_scheduling(
+            gateway_config(protocol, &address),
+            Arc::new(Keys),
+            BTreeMap::new(),
+            None,
+            SchedulingState::default(),
+            Arc::new(ChangedQuota(std::sync::atomic::AtomicUsize::new(0))),
+            None,
+            Default::default(),
+        )
+        .unwrap();
+        let answer = send(&runner, protocol, "velune/model/a-model", true).await;
+        assert_eq!(answer.status, 429);
+        let body: Value = serde_json::from_str(&answer.body).unwrap();
+        assert_eq!(body["error"]["code"], "quota_exhausted");
+        assert!(!answer.headers.contains_key("retry-after"));
+        assert!(upstream.hits().is_empty());
     }
 }
 

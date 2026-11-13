@@ -9,13 +9,13 @@ use super::{
     failover::{AttemptEnd, NextCandidate, PendingFailure, next_candidate, structured_quota_error},
     ingress::Ingress,
     routes::RouteTarget,
-    wire::{WireEvent, retry_seconds, send_failure, send_json},
+    wire::{WireEvent, retry_seconds, scheduling_failure, send_failure, send_json},
 };
 use crate::{
     analytics::{AnalyticsOutcome, SharedTracker, Tracker, now_ms},
     config::{ExecutionBackend, Protocol},
     observation::Observation,
-    scheduling::ScheduleUnavailable,
+    scheduling::{AdmissionReason, ScheduleUnavailable},
 };
 use serde_json::Value;
 use std::{
@@ -52,7 +52,10 @@ pub(super) async fn dispatch(
     telemetry: TelemetryContext,
 ) {
     let mut last_failure = None;
-    let mut unavailable = ScheduleUnavailable { retry_after: None };
+    let mut unavailable = ScheduleUnavailable {
+        reason: AdmissionReason::BindingInvalidated,
+        retry_after: None,
+    };
     for (index, target) in candidates.iter().enumerate() {
         let permit = match state.health.acquire(
             &state.gateway_id,
@@ -74,10 +77,7 @@ pub(super) async fn dispatch(
                         "Claude tool continuation is paused by quota, health or an invalidated provider binding").await;
                     return;
                 }
-                if let Some(delay) = blocked.retry_after {
-                    unavailable.retry_after =
-                        Some(unavailable.retry_after.map_or(delay, |old| old.min(delay)));
-                }
+                unavailable.merge(blocked);
                 continue;
             }
         };
@@ -213,27 +213,12 @@ pub(super) async fn dispatch(
         )
         .await;
     } else {
-        let status = if unavailable.retry_after.is_some() {
-            429
-        } else {
-            503
-        };
-        let headers = unavailable
-            .retry_after
-            .into_iter()
-            .map(|delay| Header {
-                name: "retry-after".into(),
-                value: retry_seconds(delay).to_string(),
-            })
-            .collect();
-        send_failure(
-            &sender,
-            Some(ResponseMeta { status, headers }),
-            None,
-            status,
-            "no eligible provider: quota or health observations do not permit a request",
-        )
-        .await;
+        tracing::warn!(
+            event = "gateway_scheduling_unavailable",
+            http_status = unavailable.status(),
+            reason = unavailable.reason.code()
+        );
+        send_json(&sender, scheduling_failure(unavailable)).await;
     }
 }
 
