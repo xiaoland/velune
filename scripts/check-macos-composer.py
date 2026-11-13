@@ -21,7 +21,7 @@ def digest(path):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('check', choices=['background'])
+    parser.add_argument('check', choices=['background', 'experience'])
     parser.add_argument('--app', type=Path, default=app_bundle_path(ROOT, 'dev'))
     parser.add_argument('--output', type=Path)
     parser.add_argument('--dark', action='store_true')
@@ -53,10 +53,11 @@ def main():
         evidence = root / 'evidence'; evidence.mkdir(mode=0o700)
         env.update(HOME=str(private_home), TMPDIR=str(private_tmp) + '/', VELUNE_HOME=str(root / 'state'), VELUNE_CHECK_OUTPUT=str(evidence),
                    VELUNE_CONTINUATION_CHECK_HOME=str(root / 'continuation'), VELUNE_COMPOSER_CHECK_HOME=str(root / 'targets'),
+                   VELUNE_EXPERIENCE_CHECK_HOME=str(evidence),
                    CODEX_HOME=str(root / 'codex'), PI_CODING_AGENT_DIR=str(root / 'pi'), CLAUDE_CONFIG_DIR=str(root / 'claude'),
                    XDG_CONFIG_HOME=str(root / 'config'), XDG_DATA_HOME=str(root / 'data'), XDG_CACHE_HOME=str(root / 'cache'))
-        flags = ['--check-background-tasks']
-        if args.dark:
+        flags = ['--check-message-experience'] if args.check == 'experience' else ['--check-background-tasks']
+        if args.dark and args.check == 'background':
             flags.append('--background-check-dark')
         with (output / 'native.log').open('w') as log:
             child = subprocess.Popen([str(copied / 'Contents/MacOS' / context['executable']), *flags], env=env,

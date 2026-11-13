@@ -138,6 +138,8 @@ import VeluneBindings
     }
     if !CommandLine.arguments.contains("--experience-visual-only") {
     let transport = Transport(stateDirectory: home.appendingPathComponent("application"), resourcesDirectory: Bundle.main.resourceURL!)
+    try! transport.prepareForLaunch()
+    MacNativePersistenceGate.open()
     let device = DeviceStore(transport: transport)
     let savedFile = home.appendingPathComponent("expected-window.json")
     if CommandLine.arguments.contains("--experience-reopen") {
@@ -208,6 +210,25 @@ import VeluneBindings
     single.start(restoring: nil, seed: nil, persistenceID: UUID().uuidString)
     precondition(single.tools[.composer].place == .builtIn && single.tools[.composer].shown)
     single.persistWorkspace(); device.windowWorkspaceJournal.flush()
+    let closedIdentity = UUID().uuidString
+    let closing = ConversationWindowModel(application: device, kind: .single)
+    precondition(!closing.acceptsWorkspacePersistence)
+    closing.start(restoring: nil, seed: nil, persistenceID: closedIdentity)
+    closing.persistWorkspace(); device.windowWorkspaceJournal.flush()
+    let lastOpenLayout = device.windowWorkspaceJournal.restore(id: closedIdentity, recoverLatest: false, kind: .single)!
+    closing.noteWindowClosed()
+    precondition(!closing.acceptsWorkspacePersistence)
+    closing.tools.move(.outline, to: .docked(.right))
+    precondition(closing.savedLayout != lastOpenLayout)
+    closing.persistWorkspace(); device.windowWorkspaceJournal.flush()
+    precondition(device.windowWorkspaceJournal.restore(id: closedIdentity, recoverLatest: false, kind: .single) == lastOpenLayout,
+                 "关闭后迟到的布局／草稿发布不得改写最后恢复点")
+    closing.start(restoring: nil, seed: nil, persistenceID: closedIdentity)
+    precondition(closing.acceptsWorkspacePersistence, "原生 scene 合法重用时可重新保存")
+    closing.persistWorkspace(); device.windowWorkspaceJournal.flush()
+    precondition(device.windowWorkspaceJournal.restore(id: closedIdentity, recoverLatest: false, kind: .single) == closing.savedLayout)
+    closing.noteWindowClosed()
+    note("PASS closed window persistence: late publications preserve the last open recovery point; reopening re-enables writes")
     let fallback = device.windowWorkspaceJournal.restore(id: UUID().uuidString, recoverLatest: true)!
     precondition(fallback.layout == expected.layout && fallback.panes == expected.panes)
     note("PASS actual window lifecycle: structural edits persist without a text edit; two groups/four tabs; independent composer default; latest single window cannot replace workspace recovery")

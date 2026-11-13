@@ -649,6 +649,9 @@ struct WindowSeed: Codable, Hashable {
     private var paneSubscriptions: [UUID: AnyCancellable] = [:]
     private var started = false
     private var closed = false
+    /// SwiftUI can retain a closed scene while other windows keep changing.
+    /// Its last recovery point must stop following those later publications.
+    var acceptsWorkspacePersistence: Bool { started && !closed }
     func noteWindowClosed() { closed = true }
     private var persistenceID: String?
     private var draftPersistence: AnyCancellable?
@@ -657,7 +660,7 @@ struct WindowSeed: Codable, Hashable {
     private var workspacePersistence: AnyCancellable?
     private var restoredCreationTargets: [UUID: Conversation] = [:]
     func persistWorkspace() {
-        guard started, let persistenceID else { return }
+        guard acceptsWorkspacePersistence, let persistenceID else { return }
         application.windowWorkspaceJournal.save(savedLayout, id: persistenceID)
     }
     /// The pane views by pane, for telling which one a click lands in.

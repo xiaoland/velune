@@ -327,12 +327,12 @@ struct ConversationWindow: View {
                 DispatchQueue.main.async { startsWindowed = false }
             }
             .onChange(of: window.savedLayout) { _, layout in
-                guard savedLayoutWritable else { return }
+                guard savedLayoutWritable, window.acceptsWorkspacePersistence else { return }
                 if let data = try? JSONEncoder().encode(layout), let text = String(data: data, encoding: .utf8) { savedLayout = text }
                 window.persistWorkspace()
             }
             .onReceive(window.composerDrafts.changes.debounce(for: .milliseconds(350), scheduler: RunLoop.main)) { _ in
-                guard savedLayoutWritable else { return }
+                guard savedLayoutWritable, window.acceptsWorkspacePersistence else { return }
                 if let data = try? JSONEncoder().encode(window.savedLayout), let text = String(data: data, encoding: .utf8) { savedLayout = text }
             }
             .onReceive(NotificationCenter.default.publisher(for: NSWindow.willCloseNotification)) { note in
@@ -343,7 +343,7 @@ struct ConversationWindow: View {
                 }
             }
             .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
-                guard savedLayoutWritable else { return }
+                guard savedLayoutWritable, window.acceptsWorkspacePersistence else { return }
                 if let data = try? JSONEncoder().encode(window.savedLayout), let text = String(data: data, encoding: .utf8) { savedLayout = text }
             }
             // A conversation link opens in a window already showing Velune.
