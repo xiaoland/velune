@@ -30,6 +30,8 @@ impl QuotaWindow {
     }
 }
 #[derive(Debug, Clone)]
+/// Observed windows may omit credits or additional quota buckets. Availability
+/// is advisory; only caller-configured limits are admission constraints.
 pub enum QuotaSnapshot {
     Known {
         available: Option<bool>,
@@ -157,9 +159,7 @@ impl ScheduleUnavailable {
             AdmissionReason::QuotaPending => {
                 "provider quota observation is refreshing; retry shortly"
             }
-            AdmissionReason::QuotaExhausted => {
-                "provider quota or configured usage limit is exhausted"
-            }
+            AdmissionReason::QuotaExhausted => "configured provider usage limit is reached",
             AdmissionReason::QuotaWindowMissing => {
                 "configured quota window is absent from provider observations"
             }
@@ -530,7 +530,7 @@ fn quota_margin(
     snapshot: QuotaSnapshot,
     now: i64,
 ) -> Result<Option<f64>, ScheduleUnavailable> {
-    let QuotaSnapshot::Known { available, windows } = snapshot else {
+    let QuotaSnapshot::Known { windows, .. } = snapshot else {
         return if candidate.limits.is_empty() {
             Ok(None)
         } else {
@@ -557,20 +557,6 @@ fn quota_margin(
             && window.expires_at_ms > now
             && window.reset_at_ms.is_none_or(|reset| reset > now)
     };
-    if available == Some(false) {
-        // The provider may deny ordinary usage without a window or reset.
-        // Only attach an observed wait when an applicable fresh window is
-        // actually exhausted; all exhausted windows must reset before retry.
-        let retry_after = applicable
-            .iter()
-            .filter(|window| fresh(window) && window.used_percent >= 100.0)
-            .filter_map(|window| reset_delay(window, now))
-            .max();
-        return Err(ScheduleUnavailable::new(
-            AdmissionReason::QuotaExhausted,
-            retry_after,
-        ));
-    }
     let mut margin: Option<f64> = None;
     for limit in candidate.limits {
         if windows.iter().any(|window| window.id == limit.window_id)
@@ -606,12 +592,8 @@ fn quota_margin(
     }
     for window in applicable.into_iter().filter(|window| fresh(window)) {
         let remaining = (100.0 - window.used_percent) / 100.0;
-        if remaining <= 0.0 {
-            return Err(ScheduleUnavailable::new(
-                AdmissionReason::QuotaExhausted,
-                reset_delay(window, now),
-            ));
-        }
+        // Ordinary windows do not describe every credit/bucket the upstream
+        // can use. A depleted observation lowers rank, but cannot deny a call.
         let remaining = paced(remaining, window, now);
         margin = Some(margin.map_or(remaining, |old| old.min(remaining)));
     }
@@ -679,6 +661,10 @@ mod tests {
         for snapshot in [
             QuotaSnapshot::Unsupported,
             QuotaSnapshot::Known {
+                available: Some(false),
+                windows: vec![],
+            },
+            QuotaSnapshot::Known {
                 available: Some(true),
                 windows: vec![],
             },
@@ -690,7 +676,7 @@ mod tests {
         for snapshot in [
             QuotaSnapshot::Known {
                 available: Some(false),
-                windows: vec![],
+                windows: vec![window(80.0)],
             },
             QuotaSnapshot::Known {
                 available: Some(true),
@@ -730,6 +716,31 @@ mod tests {
             quota_margin(&test_candidate(&[]), QuotaSnapshot::Unknown, 1000).unwrap(),
             None
         );
+        for available in [Some(false), Some(true), None] {
+            assert_eq!(
+                quota_margin(
+                    &test_candidate(&[]),
+                    QuotaSnapshot::Known {
+                        available,
+                        windows: vec![window(100.0)]
+                    },
+                    1000
+                )
+                .unwrap(),
+                Some(0.0)
+            );
+            assert!(
+                quota_margin(
+                    &candidate,
+                    QuotaSnapshot::Known {
+                        available,
+                        windows: vec![window(10.0)]
+                    },
+                    1000
+                )
+                .is_ok()
+            );
+        }
     }
 
     #[test]

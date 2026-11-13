@@ -252,7 +252,7 @@ async fn quota_admission_reports_the_reason_across_all_protocols() {
                     available: Some(false),
                     windows: vec![quota_window(Some(now + 60_000))],
                 },
-                false,
+                true,
                 429,
                 "quota_exhausted",
                 Some("60"),
@@ -260,9 +260,9 @@ async fn quota_admission_reports_the_reason_across_all_protocols() {
             (
                 QuotaSnapshot::Known {
                     available: Some(false),
-                    windows: vec![],
+                    windows: vec![quota_window(None)],
                 },
-                false,
+                true,
                 429,
                 "quota_exhausted",
                 None,
@@ -380,16 +380,27 @@ async fn quota_change_between_ranking_and_acquiring_keeps_the_same_error_contrac
     struct ChangedQuota(std::sync::atomic::AtomicUsize);
     impl QuotaSource for ChangedQuota {
         fn snapshot(&self, _: &str) -> QuotaSnapshot {
+            let mut window = quota_window(None);
+            window.used_percent = if self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+                10.0
+            } else {
+                80.0
+            };
             QuotaSnapshot::Known {
-                available: Some(self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0),
-                windows: vec![],
+                available: Some(false),
+                windows: vec![window],
             }
         }
     }
     for protocol in Api::ALL {
         let (upstream, address) = Upstream::start().await;
+        let mut config = gateway_config(protocol, &address);
+        config.providers[0].quota_limits = vec![QuotaLimit {
+            window_id: "daily".into(),
+            max_used_percent: 80,
+        }];
         let runner = Runner::start_with_scheduling(
-            gateway_config(protocol, &address),
+            config,
             Arc::new(Keys),
             BTreeMap::new(),
             None,
@@ -405,6 +416,67 @@ async fn quota_change_between_ranking_and_acquiring_keeps_the_same_error_contrac
         assert_eq!(body["error"]["code"], "quota_exhausted");
         assert!(!answer.headers.contains_key("retry-after"));
         assert!(upstream.hits().is_empty());
+    }
+}
+
+#[tokio::test]
+async fn automatic_quota_observations_do_not_block_upstream_requests() {
+    for protocol in Api::ALL {
+        let (upstream, address) = Upstream::start().await;
+        let mut weekly = quota_window(None);
+        weekly.id = "window:604800".into();
+        weekly.window_ms = Some(604_800_000);
+        for snapshot in [
+            QuotaSnapshot::Known {
+                available: Some(false),
+                windows: vec![weekly.clone()],
+            },
+            QuotaSnapshot::Known {
+                available: Some(true),
+                windows: vec![weekly.clone()],
+            },
+            QuotaSnapshot::Known {
+                available: Some(false),
+                windows: vec![],
+            },
+            QuotaSnapshot::Stale {
+                available: Some(false),
+                windows: vec![weekly.clone()],
+            },
+        ] {
+            upstream.reply("a", Reply::json(200, protocol.success()));
+            let runner = Runner::start_with_scheduling(
+                gateway_config(protocol, &address),
+                Arc::new(Keys),
+                BTreeMap::new(),
+                None,
+                SchedulingState::default(),
+                Arc::new(ObservedQuota(snapshot)),
+                None,
+                Default::default(),
+            )
+            .unwrap();
+            let before = upstream.hits().len();
+            for model in ["velune/model/a-model", "velune/model/route"] {
+                assert_eq!(send(&runner, protocol, model, false).await.status, 200);
+            }
+            assert_eq!(upstream.hits().len(), before + 2);
+            // Actual upstream rejection remains authoritative, with its body
+            // and retry hint preserved; advisory observations do not replace it.
+            upstream.reply(
+                "a",
+                Reply::json(429, json!({"error":{"message":"upstream usage limit"}}))
+                    .header("retry-after", "17"),
+            );
+            let answer = send(&runner, protocol, "velune/model/a-model", false).await;
+            assert_eq!(answer.status, 429);
+            assert_eq!(answer.headers["retry-after"], "17");
+            assert_eq!(
+                serde_json::from_str::<Value>(&answer.body).unwrap()["error"]["message"],
+                "upstream usage limit"
+            );
+            assert_eq!(upstream.hits().len(), before + 3);
+        }
     }
 }
 
