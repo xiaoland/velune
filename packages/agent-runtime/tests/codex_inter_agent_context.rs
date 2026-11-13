@@ -1,0 +1,184 @@
+//! Narrow regressions for the production Codex rollout translation helper.
+use serde_json::{Value, json};
+use std::io::Write;
+use std::process::{Command, Output, Stdio};
+
+fn run(records: &[Value]) -> Output {
+    let mut child = Command::new("python3")
+        .arg("-c")
+        .arg(include_str!("../resources/codex_context.py"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("python3 must be available for Codex context export");
+    {
+        let mut input = child.stdin.take().unwrap();
+        for record in records {
+            writeln!(input, "{record}").unwrap();
+        }
+    }
+    child.wait_with_output().unwrap()
+}
+
+fn export(records: &[Value]) -> Value {
+    let output = run(records);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    serde_json::from_slice(&output.stdout).unwrap()
+}
+
+fn rejected(records: &[Value], reason: &str) {
+    let output = run(records);
+    assert!(!output.status.success(), "unexpected successful export");
+    assert!(output.stdout.is_empty(), "must not return partial context");
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains(reason),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+fn record(kind: &str, payload: Value) -> Value {
+    json!({"type": kind, "payload": payload})
+}
+
+fn item(payload: Value) -> Value {
+    record("response_item", payload)
+}
+
+fn metadata() -> Value {
+    record("inter_agent_communication_metadata", json!({"trigger_turn": true}))
+}
+
+fn agent(content: Value) -> Value {
+    json!({"type":"agent_message", "author":"worker-alpha", "recipient":"parent",
+           "content":content})
+}
+
+#[test]
+fn delivery_metadata_preserves_function_and_custom_tool_order() {
+    let context = export(&[
+        metadata(),
+        item(
+            json!({"type":"function_call", "call_id":"f", "name":"inspect", "arguments":"{\"path\":\"src\"}"}),
+        ),
+        metadata(),
+        item(json!({"type":"function_call_output", "call_id":"f", "output":"found"})),
+        item(json!({"type":"custom_tool_call", "call_id":"c", "name":"apply", "input":"patch"})),
+        metadata(),
+        item(
+            json!({"type":"custom_tool_call_output", "call_id":"c", "output":{"content":[{"type":"text", "text":"done"}]}}),
+        ),
+        metadata(),
+    ]);
+    assert_eq!(
+        context,
+        json!({"messages":[
+            {"role":"assistant", "content":[{"type":"tool_call", "id":"f", "name":"inspect", "arguments":{"path":"src"}}]},
+            {"role":"user", "content":[{"type":"tool_result", "id":"f", "content":[{"type":"text", "text":"found"}], "is_error":false}]},
+            {"role":"assistant", "content":[{"type":"tool_call", "id":"c", "name":"apply", "arguments":{"input":"patch"}}]},
+            {"role":"user", "content":[{"type":"tool_result", "id":"c", "content":[{"type":"text", "text":"done"}], "is_error":false}]}
+        ]})
+    );
+}
+
+#[test]
+fn plaintext_agent_body_keeps_attribution_as_assistant_context() {
+    let context = export(&[
+        item(json!({"type":"message", "role":"user", "content":"human request"})),
+        metadata(),
+        item(agent(
+            json!([{"type":"input_text", "text":"first\n正文"}, {"type":"input_text", "text":"second"}]),
+        )),
+        item(json!({"type":"message", "role":"assistant", "content":"parent reply"})),
+    ]);
+    assert_eq!(
+        context,
+        json!({"messages":[
+            {"role":"user", "content":[{"type":"text", "text":"human request"}]},
+            {"role":"assistant", "content":[
+                {"type":"text", "text":"Agent message from worker-alpha to parent:\n"},
+                {"type":"text", "text":"first\n正文"}, {"type":"text", "text":"second"}]},
+            {"role":"assistant", "content":[{"type":"text", "text":"parent reply"}]}
+        ]})
+    );
+}
+
+#[test]
+fn newest_compaction_replacement_keeps_agent_context_and_suffix() {
+    let context = export(&[
+        item(json!({"type":"unknown_old_item"})),
+        record(
+            "compacted",
+            json!({"replacement_history":[
+                {"type":"message", "role":"assistant", "content":"retained summary"},
+                agent(json!([{"type":"input_text", "text":"retained agent body"}]))
+            ]}),
+        ),
+        metadata(),
+        item(agent(
+            json!([{"type":"input_text", "text":"new agent body"}]),
+        )),
+    ]);
+    assert_eq!(
+        context,
+        json!({"messages":[
+            {"role":"assistant", "content":[{"type":"text", "text":"retained summary"}]},
+            {"role":"assistant", "content":[{"type":"text", "text":"Agent message from worker-alpha to parent:\n"}, {"type":"text", "text":"retained agent body"}]},
+            {"role":"assistant", "content":[{"type":"text", "text":"Agent message from worker-alpha to parent:\n"}, {"type":"text", "text":"new agent body"}]}
+        ]})
+    );
+}
+
+#[test]
+fn metadata_does_not_allow_unknown_rollout_or_response_items() {
+    rejected(
+        &[metadata(), record("future_context", json!({}))],
+        "unsupported Codex rollout record: future_context",
+    );
+    rejected(
+        &[metadata(), item(json!({"type":"future_item"}))],
+        "unsupported Codex context item: future_item",
+    );
+}
+
+#[test]
+fn opaque_and_unknown_agent_content_are_rejected_even_in_replacements() {
+    for content in [
+        json!([{"type":"encrypted_text", "text":"opaque"}]),
+        json!([{"type":"future_content", "text":"unknown"}]),
+        json!([{"type":"input_image", "image_url":"data:image/png;base64,AA=="}]),
+        json!([{"type":"input_text", "text":42}]),
+        json!([{"type":"input_text", "text":"visible prefix"}, {"type":"encrypted_text", "text":"opaque suffix"}]),
+    ] {
+        rejected(
+            &[metadata(), item(agent(content.clone()))],
+            "unsupported Codex agent message content",
+        );
+        rejected(
+            &[record(
+                "compacted",
+                json!({"replacement_history":[agent(content)]}),
+            )],
+            "unsupported Codex agent message content",
+        );
+    }
+}
+
+#[test]
+fn agent_attribution_cannot_be_missing_or_empty() {
+    for field in ["author", "recipient"] {
+        for invalid in [json!(null), json!(""), json!(7)] {
+            let mut message = agent(json!([{"type":"input_text", "text":"body"}]));
+            message[field] = invalid;
+            rejected(
+                &[item(message)],
+                "Codex agent message lacks author or recipient",
+            );
+        }
+    }
+}

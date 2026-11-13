@@ -23,6 +23,12 @@ for record in records[start:]:
         items = replacement.copy()
     elif kind == "history_base" or (kind == "event_msg" and payload.get("type") == "thread_rolled_back"):
         raise ValueError("Codex inherited or reverted context requires native history resolution")
+    elif kind == "inter_agent_communication_metadata":
+        # Codex persists only the delivery/wake flag here. Model-visible
+        # communication is persisted separately as a response_item; native
+        # rollout reconstruction also skips this metadata. Never turn it into
+        # a user prompt or relax rejection of unknown context-bearing records.
+        continue
     elif kind not in ("session_meta", "turn_context", "event_msg", "world_state", "token_usage_record"):
         raise ValueError("unsupported Codex rollout record: " + kind)
 
@@ -51,6 +57,18 @@ for item in items:
         if item["role"] in ("system", "developer"):
             continue
         role, content = item["role"], blocks(item["content"])
+    elif kind == "agent_message":
+        # The portable context has no native inter-agent role. Keep plaintext
+        # communication as attributed assistant context, not a human prompt.
+        # Encrypted content cannot be replaced by its visible envelope alone.
+        author, recipient = item["author"], item["recipient"]
+        if not isinstance(author, str) or not author or not isinstance(recipient, str) or not recipient:
+            raise ValueError("Codex agent message lacks author or recipient")
+        for block in item["content"]:
+            if block["type"] != "input_text" or not isinstance(block.get("text"), str):
+                raise ValueError("unsupported Codex agent message content: " + block["type"])
+        role = "assistant"
+        content = [{"type": "text", "text": f"Agent message from {author} to {recipient}:\n"}] + blocks(item["content"])
     elif kind in ("function_call", "custom_tool_call"):
         arguments = json.loads(item["arguments"]) if kind == "function_call" else {"input": item["input"]}
         role, content = "assistant", [{"type": "tool_call", "id": item["call_id"], "name": item["name"], "arguments": arguments}]
