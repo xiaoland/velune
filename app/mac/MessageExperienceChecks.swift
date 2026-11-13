@@ -142,6 +142,7 @@ import VeluneBindings
         exit(0)
     }
     if !CommandLine.arguments.contains("--experience-visual-only") {
+    ConversationStore.checkColdOpeningRetryLifecycle(home: home)
     let transport = Transport(stateDirectory: home.appendingPathComponent("application"), resourcesDirectory: Bundle.main.resourceURL!)
     try! transport.prepareForLaunch()
     MacNativePersistenceGate.open()
