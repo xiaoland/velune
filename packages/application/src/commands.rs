@@ -689,6 +689,36 @@ impl Application {
                 )?;
                 Response::CloseSideChat
             }
+            Command::ReadBackgroundTasks {
+                runtime_id,
+                conversation_id,
+            } => Response::ReadBackgroundTasks(
+                application
+                    .runtime
+                    .background_tasks(&runtime_id, &conversation_id)?,
+            ),
+            Command::ReadBackgroundTaskOutput {
+                runtime_id,
+                conversation_id,
+                task_id,
+                request_id,
+            } => Response::ReadBackgroundTaskOutput(
+                application.runtime.read_background_task_output(
+                    &runtime_id,
+                    &conversation_id,
+                    &task_id,
+                    request_id.as_deref(),
+                )?,
+            ),
+            Command::StopBackgroundTask {
+                runtime_id,
+                conversation_id,
+                task_id,
+            } => Response::StopBackgroundTask(application.runtime.stop_background_task(
+                &runtime_id,
+                &conversation_id,
+                &task_id,
+            )?),
             Command::StopSubAgents {
                 runtime_id,
                 conversation_id,

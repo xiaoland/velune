@@ -233,6 +233,7 @@ struct ConversationCommands: Commands {
         case .outline where window.tools[.outline].place == .builtIn:
             window.application.outlinePresentation == .popover ? window.outlinePopover : window.focused.outlineCollapsed
         case .agents where window.tools[.agents].place == .builtIn: window.agentsPopover
+        case .backgroundTasks where window.tools[.backgroundTasks].place == .builtIn: window.backgroundTasksPopover
         default: window.tools.isOpen(kind)
         }
         return (shown ? "隐藏" : "显示") + kind.title
@@ -397,6 +398,26 @@ final class VeluneApplicationDelegate: NSObject, NSApplicationDelegate {
 }
 
 @main
+@MainActor
+enum VeluneEntry {
+    static func main() {
+        if CommandLine.arguments.contains("--check-background-tasks") {
+            admitMacExecution()
+            backgroundTaskChecks()
+        }
+        VeluneApp.main()
+    }
+}
+
+@MainActor private func admitMacExecution() {
+    do {
+        let context = try MacExecutionContext.application()
+        try context.activateDevelopmentEnvironment()
+        try context.validateDevelopmentChecks(CommandLine.arguments)
+        try context.validateCheckDirectories(environment: ProcessInfo.processInfo.environment)
+    } catch { MacExecutionContext.failAndExit(error) }
+}
+
 @MainActor
 struct VeluneApp: App {
     @NSApplicationDelegateAdaptor(VeluneApplicationDelegate.self) private var appDelegate

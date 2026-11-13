@@ -126,6 +126,9 @@ pub enum CommandKind {
     ForkConversation,
     Cancel,
     StopSubAgents,
+    ReadBackgroundTasks,
+    ReadBackgroundTaskOutput,
+    StopBackgroundTask,
     SetConversationHandoff,
     OpenSideChat,
     SendSideChat,
@@ -460,6 +463,21 @@ pub enum Command {
         runtime_id: String,
         conversation_id: String,
     },
+    ReadBackgroundTasks {
+        runtime_id: String,
+        conversation_id: String,
+    },
+    ReadBackgroundTaskOutput {
+        runtime_id: String,
+        conversation_id: String,
+        task_id: String,
+        request_id: Option<String>,
+    },
+    StopBackgroundTask {
+        runtime_id: String,
+        conversation_id: String,
+        task_id: String,
+    },
     SetConversationHandoff {
         runtime_id: String,
         conversation_id: String,
@@ -696,6 +714,9 @@ pub enum Response {
     ForkConversation(SnapshotResult),
     Cancel(SnapshotResult),
     StopSubAgents(SnapshotResult),
+    ReadBackgroundTasks(crate::BackgroundTaskList),
+    ReadBackgroundTaskOutput(crate::BackgroundTaskOutput),
+    StopBackgroundTask(crate::BackgroundTaskList),
     SetConversationHandoff(SnapshotResult),
     OpenSideChat(SnapshotResult),
     SendSideChat(SnapshotResult),
@@ -779,6 +800,8 @@ impl Command {
             | Self::ReadRuntimeDiscoveryHints { .. }
             | Self::DiscoverRuntimes { .. }
             | Self::ReadConfiguration
+            | Self::ReadBackgroundTasks { .. }
+            | Self::ReadBackgroundTaskOutput { .. }
             | Self::ReadComposerDrafts
             | Self::ReadComposerChoices
             | Self::ReadRuntimeStartChoice { .. }
@@ -848,6 +871,7 @@ impl Command {
             | Self::ForkConversation { .. }
             | Self::Cancel { .. }
             | Self::StopSubAgents { .. }
+            | Self::StopBackgroundTask { .. }
             | Self::SetConversationHandoff { .. }
             | Self::OpenSideChat { .. }
             | Self::SendSideChat { .. }
@@ -954,6 +978,9 @@ impl Command {
             Self::ForkConversation { .. } => CommandKind::ForkConversation,
             Self::Cancel { .. } => CommandKind::Cancel,
             Self::StopSubAgents { .. } => CommandKind::StopSubAgents,
+            Self::ReadBackgroundTasks { .. } => CommandKind::ReadBackgroundTasks,
+            Self::ReadBackgroundTaskOutput { .. } => CommandKind::ReadBackgroundTaskOutput,
+            Self::StopBackgroundTask { .. } => CommandKind::StopBackgroundTask,
             Self::SetConversationHandoff { .. } => CommandKind::SetConversationHandoff,
             Self::OpenSideChat { .. } => CommandKind::OpenSideChat,
             Self::SendSideChat { .. } => CommandKind::SendSideChat,
@@ -1035,6 +1062,7 @@ impl Command {
                     | Self::ReplyRuntimeInteraction { .. }
                     | Self::Cancel { .. }
                     | Self::StopSubAgents { .. }
+                    | Self::StopBackgroundTask { .. }
                     | Self::SetConversationHandoff { .. }
                     | Self::OpenSideChat { .. }
                     | Self::SendSideChat { .. }

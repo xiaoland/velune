@@ -80,9 +80,9 @@ struct VeluneRootView: View {
             window.openSettings = { [openSettings] in openSettings() }
         }
         .onChange(of: activeState, initial: true) { _, value in if value == .key { focused.noteFocused() } }
-        .onChange(of: tab.id) { _, _ in window.outlinePopover = false; window.agentsPopover = false }
-        .onChange(of: focused.pendingConversationID) { _, value in if value != nil { window.outlinePopover = false; window.agentsPopover = false } }
-        .onChange(of: focused.loadedConversationID) { _, _ in window.outlinePopover = false; window.agentsPopover = false }
+        .onChange(of: tab.id) { _, _ in closeToolPopovers() }
+        .onChange(of: focused.pendingConversationID) { _, value in if value != nil { closeToolPopovers() } }
+        .onChange(of: focused.loadedConversationID) { _, _ in closeToolPopovers() }
         .sheet(item: Binding(get: { window.sheetTab }, set: { if $0 == nil { window.closeSheet() } }), onDismiss: {
             // AppKit cannot move focus out of a sheet until dismissal finishes.
             if window.focused.store.isSideChat { window.focused.composer.focusWhenShown() }
@@ -136,8 +136,11 @@ struct VeluneRootView: View {
         if !store.device.conversationManagement.isEmpty { ToolbarItem(id: "operations") { ConversationOperationStatus(device: store.device) } }
         ToolbarSpacer(.flexible)
         ToolbarItem(id: "reload") { reloadButton }
-        ToolbarItem(id: "outline") { outlineButton }
-        if showsAgentsItem { ToolbarItem(id: "sub-agents") { agentsButton } }
+        Group {
+            ToolbarItem(id: "outline") { outlineButton }
+            if showsAgentsItem { ToolbarItem(id: "sub-agents") { agentsButton } }
+            if showsBackgroundTasksItem { ToolbarItem(id: "background-tasks") { backgroundTasksButton } }
+        }
         if showsPinItem { ToolbarItem(id: "pin") { pinToggle } }
         ToolbarItem(id: "split") { splitButton }
         if Self.changeReviewEnabled { ToolbarItem(id: "changes") { changesToggle } }
@@ -158,6 +161,7 @@ struct VeluneRootView: View {
                 case .reload: reloadButton
                 case .outline: outlineButton
                 case .subAgents: if showsAgentsItem { agentsButton }
+                case .backgroundTasks: if showsBackgroundTasksItem { backgroundTasksButton }
                 case .pin: if showsPinItem { pinToggle }
                 case .split: splitButton
                 case .problems: if !store.device.problems.isEmpty { ProblemsButton(store: store.device) }
@@ -184,6 +188,11 @@ struct VeluneRootView: View {
     }
 
     private var showsAgentsItem: Bool { window.hasConversationFocus && (window.tools[.agents].place != .builtIn || focused.hasLinkedAgents) }
+    private var showsBackgroundTasksItem: Bool { window.hasConversationFocus && (window.tools[.backgroundTasks].place != .builtIn || focused.canShowBackgroundTasks) }
+
+    private func closeToolPopovers() {
+        window.outlinePopover = false; window.agentsPopover = false; window.backgroundTasksPopover = false
+    }
     /// A window of the editor area alone is often one to keep in view.
     private var showsPinItem: Bool { !window.hasToolWindows || window.pinned }
 
@@ -250,6 +259,26 @@ struct VeluneRootView: View {
                 .popover(isPresented: $window.agentsPopover, arrowEdge: .bottom) {
                     LinkedAgentsView(store: focused, layout: window) { id, opening in
                         window.agentsPopover = false
+                        window.openLinked(id, from: tab, opening: opening)
+                    }
+                }
+        }
+    }
+
+    @ViewBuilder private var backgroundTasksButton: some View {
+        if window.tools[.backgroundTasks].place != .builtIn {
+            Toggle(isOn: Binding(get: { window.tools.isOpen(.backgroundTasks) }, set: { _ in window.toggle(.backgroundTasks) })) {
+                Label("后台任务", systemImage: "terminal")
+            }
+            .help(shortcuts.help(window.tools.isOpen(.backgroundTasks) ? "隐藏后台任务" : "显示后台任务", .showBackgroundTasks))
+            .background(toolbarButtonAnchor(.backgroundTasks))
+        } else {
+            Button { window.backgroundTasksPopover.toggle() } label: { Label("后台任务", systemImage: "terminal") }
+                .help(shortcuts.help("查看后台任务", .showBackgroundTasks))
+                .background(toolbarButtonAnchor(.backgroundTasks))
+                .popover(isPresented: $window.backgroundTasksPopover, arrowEdge: .bottom) {
+                    BackgroundTasksView(store: focused, layout: window) { id, opening in
+                        window.backgroundTasksPopover = false
                         window.openLinked(id, from: tab, opening: opening)
                     }
                 }

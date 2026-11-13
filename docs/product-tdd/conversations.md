@@ -44,6 +44,8 @@
 
 重命名与删除由 agent-runtime 的原生操作执行，application 负责实例身份校验、执行状态与投影同步；平台不写运行时文件，也不维护标题覆盖或隐藏列表。能力由版本化描述声明，缺失的能力不以本地隐藏代替。删除前必须结束会话工作；重命名按原生元数据接口能力独立判定，不以执行中统一禁用，见[会话管理](../prd/conversations.md#会话管理)。Pi 首条消息前的未落盘会话仍由活动 SessionManager 拥有，只有身份精确匹配且确认文件不存在时，才经活动 RPC 改名或关闭空草稿。
 
+Codex 的 `inter_agent_communication_metadata` 只记录投递／唤醒信息，按原生 replay 跳过；对应 `response_item.agent_message` 的明文正文仍保留，带作者与接收方归属转换为 assistant 上下文，不成为用户输入。未知记录、未知内容或加密 Agent 正文不能静默丢弃，须在提交目标关联前明确失败。
+
 ### 会话数据通路
 
 - **列表**：application 按实例保留最近一次列表，以同一原生读取来源校验索引、项目及回退投影，打开列表中的会话复用来源范围校验。Claude Code 与 Pi 的列表先建索引：只取文件状态与文件头的工作目录、开始时间，用于分组、计数与决定先读哪些；只解析列表窗口显示到的会话，未变化的文件复用已读摘要。搜索、协作工具与按 ID 查找按需读取所需会话。索引是进程内缓存。
@@ -66,6 +68,16 @@
 - **Claude Code**：以工具结果的 `agentId` 与任务通知链接 `<session>/agent-<id>`，历史读取父会话旁的 `subagents/agent-<id>.jsonl`；`Agent` 调用与其结果合并为一个工具块。
 
 子会话进入 application 列表但平台不在侧栏列出；它们只读，`send_turn` 明确拒绝，A2A 的 `list_conversations` 也不提供。子 Agent 的审批、继续与取消归启动它的会话。
+
+### 后台任务观察与控制
+
+Mac 的后台任务与关联 Agent 使用独立工具身份、入口和视图所有者。旧布局的 `subAgents` 键仍指关联 Agent；新增 `backgroundTasks` 不改变其位置、尺寸或显示状态，旧记录缺少该键时使用内建弹出位置。只有后台任务视图可见时轮询任务；切换会话进入 pending 时立即撤下旧任务及控制，迟到读取／停止回执按会话和请求代际丢弃。输出详情每次刷新或可读能力变化都启动自己的请求／轮询，关闭详情取消后不再发读取请求；输出只显示给匹配的 task ID。
+
+任务使用独立的 `BackgroundTaskInfo` 身份与能力，不扩大为普通会话或把日志放入主 transcript snapshot。`ReadBackgroundTasks` 直接读取既有 session／parked live 的轻量事实，不进入 `serve/prepare`，不 focus、同步读取历史或推进其它会话。`ReadBackgroundTaskOutput` 显式发起有界读取，后续以 task／request ID 取 Checking／Ready／Failed；每连接保留最多 8 个读取结果，单个最多 64 KiB，10 秒超时。客户端只在详情可见且结果为 Checking 时以一秒间隔继续读取。冷历史不做 owner 同步扫描兜底，没有当前宿主时明确不可查询；丢失观察的任务保留为未知。
+
+Pi 桥保留 Host v1 的 task ID、kind、描述、状态和操作能力；`stop` 只发送精确 task ID，`logs` 请求最多 64 KiB，delegate/fusion 优先读取 Host 校验的 `result`。命令只写 RPC，Host EventBus 在原生侧异步执行，普通 poll 收取按请求归属的状态帧，application owner 不等待 Host 或日志 IO。delegate 仅从该任务的 artifact/child-session 路径检查 manifest 的 task／nonce／seed／child ID、当前父 session 和子文件头，缺失或不符时保持普通任务。
+
+Claude 使用结构化 task events 与 `background_tasks_changed` 的完整活动集合，不以通知文本解析 live 状态。任务按进程 epoch、native task ID 与 run ID 隔离，旧 run 和迟到停止 ACK 不能覆盖新 run 或终态。`stop_task` 能力保守限定为已证实的 CLI 2.1.292 及之后版本，复用原有启动版本结果；旧版仍可观察，不额外探测或回退到父 `interrupt`。ACK 仅确认请求，任务保持 Stopping 直到终态或完整活动集合证明结束；控制超时不释放仍活动的进程。任务描述不成为结果，仅结构化 summary/output 可读。任务缓存以 128 项为回收目标，活动工作不驱逐；回收非活动项时同步移除其输出。
 
 ## 会话输入准入与调度
 

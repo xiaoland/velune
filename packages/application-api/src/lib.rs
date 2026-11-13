@@ -40,6 +40,11 @@ pub use velune_conversation as conversation;
 pub use velune_conversation::bytes;
 pub use velune_conversation::resources as runtime_management;
 
+pub use velune_conversation::{
+    BackgroundTaskInfo, BackgroundTaskList, BackgroundTaskOutput, BackgroundTaskOutputStatus,
+    BackgroundTaskStatus,
+};
+
 uniffi::setup_scaffolding!();
 
 /// Ordered maps keep persisted configuration stable; foreign languages see dictionaries.

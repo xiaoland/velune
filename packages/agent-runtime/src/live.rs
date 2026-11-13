@@ -8,6 +8,25 @@ pub type LiveError = Box<dyn std::error::Error + Send + Sync>;
 pub type LiveResult = Result<(), LiveError>;
 
 pub trait LiveConversation {
+    fn background_tasks(&self) -> crate::conversation::BackgroundTaskList {
+        Default::default()
+    }
+    fn read_background_task_output(
+        &mut self,
+        _task: &str,
+        _request: Option<&str>,
+    ) -> Result<crate::conversation::BackgroundTaskOutput, LiveError> {
+        Err("此运行时不能读取后台任务输出".into())
+    }
+    fn stop_background_task(&mut self, _task: &str) -> LiveResult {
+        Err("此运行时不能独立停止后台任务".into())
+    }
+    fn can_stop_child(&self, _id: &str) -> bool {
+        false
+    }
+    fn stop_child(&mut self, _id: &str) -> LiveResult {
+        Err("此运行时不支持独立停止子会话".into())
+    }
     /// The conversation as the runtime shows it, once it has one.
     fn snapshot(&self) -> Option<&ConversationSnapshot>;
     fn turn_running(&self) -> bool;
@@ -66,6 +85,26 @@ pub trait LiveConversation {
 }
 
 impl LiveConversation for PiSession {
+    fn background_tasks(&self) -> crate::conversation::BackgroundTaskList {
+        PiSession::background_tasks(self)
+    }
+    fn read_background_task_output(
+        &mut self,
+        task: &str,
+        request: Option<&str>,
+    ) -> Result<crate::conversation::BackgroundTaskOutput, LiveError> {
+        Ok(PiSession::read_background_task_output(self, task, request)?)
+    }
+    fn stop_background_task(&mut self, task: &str) -> LiveResult {
+        Ok(PiSession::stop_background_task(self, task)?)
+    }
+    fn can_stop_child(&self, id: &str) -> bool {
+        PiSession::can_stop_child(self, id)
+    }
+    fn stop_child(&mut self, id: &str) -> LiveResult {
+        Ok(PiSession::stop_child(self, id)?)
+    }
+
     fn snapshot(&self) -> Option<&ConversationSnapshot> {
         PiSession::snapshot(self)
     }
@@ -121,6 +160,21 @@ impl LiveConversation for PiSession {
 }
 
 impl LiveConversation for native::NativeSession {
+    fn background_tasks(&self) -> crate::conversation::BackgroundTaskList {
+        native::NativeSession::background_tasks(self)
+    }
+    fn read_background_task_output(
+        &mut self,
+        task: &str,
+        request: Option<&str>,
+    ) -> Result<crate::conversation::BackgroundTaskOutput, LiveError> {
+        Ok(native::NativeSession::read_background_task_output(
+            self, task, request,
+        )?)
+    }
+    fn stop_background_task(&mut self, task: &str) -> LiveResult {
+        Ok(native::NativeSession::stop_background_task(self, task)?)
+    }
     fn snapshot(&self) -> Option<&ConversationSnapshot> {
         native::NativeSession::snapshot(self)
     }

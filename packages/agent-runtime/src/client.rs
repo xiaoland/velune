@@ -865,6 +865,16 @@ impl Client {
         self.background_work_command(&json!({"operation":"stop_all","taskIds":task_ids}))
     }
 
+    /// The extension performs the host request asynchronously. Its scoped
+    /// setStatus response is consumed by ordinary nonblocking polling.
+    pub fn begin_background_work_command(&mut self, command: &Value) -> Result<()> {
+        let encoded = URL_SAFE_NO_PAD.encode(serde_json::to_vec(command)?);
+        self.write_command(
+            json!({"type":"prompt","message":format!("/velune-background-work {encoded}")}),
+        )?;
+        Ok(())
+    }
+
     pub fn switch_session(&mut self, path: &Path) -> Result<Value> {
         self.request(json!({"type":"switch_session","sessionPath":path}))
     }

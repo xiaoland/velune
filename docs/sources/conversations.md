@@ -39,3 +39,9 @@
 ## S58
 
 2026-10-30 用户进一步要求：会话列表右键菜单中的侧聊默认通过 sheet 打开，避免切换当前标签页；拆分发生在“editor”级别，而不是 editor 内部；简化 UI，不必说明 temporary，让它与普通会话只在名称上有所区分。产品归 [侧聊](../prd/conversations.md#侧聊)。同轮要求考虑撤销针对 SVC Dev 缺陷的脚本修复，PATH 继承交由 SVC Dev 上游处理；保留独立的构建与重装动作。
+
+## S91
+
+2026-11-12 用户指出 Pi 会话通过 `bg_delegate` 创建工作，认为不一定适合直接当作关联 Agent，但希望接入 Pi／Claude Code 的后台 shell 和任务；如果能可靠关联原生子会话则更好。此要求区分后台任务与可读取的子会话，不授权把普通 shell 或失败启动伪造成 Agent。产品归[后台任务](../prd/collaboration.md#后台任务)，技术契约归[后台任务观察与控制](../product-tdd/conversations.md#后台任务观察与控制)。
+
+2026-11-13 用户明确纠正：“你似乎把‘后台任务’和‘关联 Agent’混在一起了，这是不行的。”此前将后台任务放在关联 Agent 内分区是实现偏差；两者须有独立入口与状态，可信子会话仍可从任务详情跳转。同次报告 Codex 原生提供商切换到 Velune 托管 Kimi 时，导出器因 `inter_agent_communication_metadata` 报 unsupported。

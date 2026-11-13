@@ -45,6 +45,15 @@ pub(super) struct State {
     pub(super) result: Option<(TurnOutcome, std::time::Instant)>,
     /// Background tasks the turn started.
     pub(super) tasks: std::collections::BTreeSet<String>,
+    pub(super) task_infos: BTreeMap<String, BackgroundTaskInfo>,
+    pub(super) task_order: std::collections::VecDeque<String>,
+    pub(super) task_runs: BTreeMap<String, String>,
+    pub(super) task_stops: BTreeMap<String, (String, std::time::Instant)>,
+    pub(super) task_outputs: BTreeMap<String, (String, bool)>,
+    pub(super) task_reads: crate::background::Reads,
+    pub(super) task_issue: Option<String>,
+    pub(super) task_sequence: u64,
+    pub(super) task_stop_capable: bool,
     pub(super) requires_action: bool,
     pub(super) stream_id: Option<String>,
     /// The session selected when this RPC child was launched, which can
@@ -678,6 +687,7 @@ impl NativeSession {
         if self.side {
             return self.claude_side_record(&record);
         }
+        self.claude_background_record(&record);
         match record["type"].as_str() {
             Some("control_cancel_request") => {
                 let expired = self
@@ -848,6 +858,9 @@ impl NativeSession {
                 }
                 Some("task_notification") => {
                     if let Some(id) = record["task_id"].as_str() {
+                        if !self.claude_task_run_matches(&record, id) {
+                            return Ok(());
+                        }
                         self.claude.tasks.remove(id);
                         let conversation = self.claude_agent_conversation(id);
                         if let Some(conversation) =
@@ -883,6 +896,9 @@ impl NativeSession {
                     ) =>
                 {
                     if let Some(id) = record["task_id"].as_str() {
+                        if !self.claude_task_run_matches(&record, id) {
+                            return Ok(());
+                        }
                         self.claude.tasks.remove(id);
                     }
                 }
@@ -1153,17 +1169,8 @@ impl NativeSession {
         self.sub_agents.extend(conversation_id.clone());
         true
     }
-    /// The sub-agents whose tasks have not ended.
-    pub(super) fn claude_running_sub_agents(&self) -> Vec<String> {
-        self.claude
-            .tasks
-            .iter()
-            .filter_map(|task| self.claude_agent_conversation(task))
-            .filter(|conversation| self.sub_agents.contains(conversation))
-            .collect()
-    }
     /// A sub-agent's session, as the history reader names it.
-    fn claude_agent_conversation(&self, agent: &str) -> Option<String> {
+    pub(super) fn claude_agent_conversation(&self, agent: &str) -> Option<String> {
         let runtime_id = &self.snapshot.as_ref()?.conversation.runtime_id;
         Some(format!(
             "{runtime_id}:{}/agent-{agent}",

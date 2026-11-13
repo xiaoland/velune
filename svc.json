@@ -496,6 +496,19 @@
         "scripts/build-cache.py",
         "report"
       ]
+    },
+    "check-runtime-background-tasks": {
+      "argv": [
+        "node",
+        "scripts/check-runtime-background-tasks.mjs"
+      ]
+    },
+    "check-macos-background-tasks": {
+      "argv": [
+        "python3",
+        "scripts/check-macos-composer.py",
+        "background"
+      ]
     }
   }
 }

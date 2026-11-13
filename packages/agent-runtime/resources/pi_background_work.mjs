@@ -2,6 +2,8 @@
 // The RPC stdin stream stays owned by Pi's SDK; requests cross it only as
 // ordinary Velune extension commands and versioned setStatus frames.
 import { randomUUID } from "node:crypto";
+import { readdir, open, lstat } from "node:fs/promises";
+import { dirname, basename, join, isAbsolute } from "node:path";
 
 const REQUEST = "pi-background-tasks:host:request:v1";
 const RESPONSE = "pi-background-tasks:host:response:v1";
@@ -10,6 +12,14 @@ const CLIENT_ID = "velune-pi-runtime-v1";
 const STATUS_KEY = "velune.background-work-v1";
 const FRAME_VERSION = 1;
 const REQUEST_TIMEOUT_MS = 1500;
+const canonicalRunId = value => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu.test(value);
+const canonicalRunSlot = value => /^run-(0|[1-9][0-9]{0,9})$/u.test(value) && Number(value.slice(4)) <= 0xffffffff;
+const boundedOutput = value => {
+  const bytes = Buffer.from(typeof value === "string" ? value : "");
+  let end = Math.min(bytes.length, 65536);
+  while (end > 0 && end < bytes.length && (bytes[end] & 0xc0) === 0x80) end -= 1;
+  return {text:bytes.subarray(0, end).toString("utf8"),truncated:end < bytes.length};
+};
 
 const compactError = (error) => {
   const text = error instanceof Error ? error.message : String(error);
@@ -21,12 +31,124 @@ export default function installPiBackgroundWork(pi) {
   let latestContext;
   let disposed = false;
   let host;
+  let hostObserved = false;
+  let hostOperations = new Set();
   let lease;
   let sequence = 0;
   let refreshPromise;
   let refreshAgain = false;
   let refreshFailures = 0;
   let retryTimer;
+  let children = [];
+  let childrenUnknown = false;
+  let subagentSupported;
+  let subagentObserved = false;
+  // Public registries distinguish a silent installed extension from a missing
+  // responder. Disabled tools are still returned by getAllTools.
+  const registeredSubagents = () => {
+    try {
+      const tools = pi.getAllTools?.();
+      const commands = pi.getCommands?.();
+      if (tools?.some(tool => ["subagent", "subagents_enable"].includes(tool.name))
+          || commands?.some(command => command.name === "subagents-inspect-rpc")) return true;
+      return Array.isArray(tools) && Array.isArray(commands) ? false : undefined;
+    } catch { return undefined; }
+  };
+  const subagentRpc = (method, params = {}) => new Promise((resolve, reject) => {
+    const requestId = randomUUID();
+    const event = `subagents:rpc:v1:reply:${requestId}`;
+    let remove = () => {};
+    const timer = setTimeout(() => { remove(); reject(Object.assign(new Error("Pi subagent RPC timed out"), {code:"subagent_timeout"})); }, REQUEST_TIMEOUT_MS);
+    remove = pi.events.on(event, reply => {
+      subagentObserved = true;
+      clearTimeout(timer); remove();
+      if (reply?.version !== 1 || reply.requestId !== requestId || reply.method !== method) {
+        reject(new Error("Invalid Pi subagent RPC reply"));
+        return;
+      }
+      if (reply.success) resolve(reply.data); else reject(new Error(reply.error?.message ?? "Pi subagent RPC rejected"));
+    });
+    pi.events.emit("subagents:rpc:v1:request", {version:1, requestId, method, params});
+  });
+  const readChildren = async ctx => {
+    if (subagentSupported === false) return;
+    try {
+      if (subagentSupported === undefined) {
+        const caps = await subagentRpc("ping");
+        if (caps?.capabilities?.asyncStatusSnapshot?.version !== 1 || !Array.isArray(caps.methods) || !caps.methods.includes("stop")) {
+          throw new Error("Unknown Pi subagent capabilities");
+        }
+        subagentSupported = true;
+      }
+      const response = await subagentRpc("status");
+      const snapshot = response.asyncSnapshot;
+      if (snapshot?.version !== 1 || !Array.isArray(snapshot.runs)) throw new Error("Unknown Pi subagent snapshot");
+      if (snapshot.omitted?.runs > 0 || snapshot.omitted?.children > 0 || snapshot.omitted?.byteLimitExceeded) throw new Error("Pi subagent snapshot is incomplete");
+      const parent = ctx.sessionManager.getSessionFile();
+      const next = [];
+      let unmapped = false;
+      if (!parent && snapshot.runs.some(run => ["running", "queued"].includes(run.state))) unmapped = true;
+      if (parent) for (const run of snapshot.runs) {
+        if (!["running", "queued"].includes(run.state)) continue;
+        if (!/^[a-zA-Z0-9_-]+$/.test(run.id)) { unmapped = true; continue; }
+        const stem = join(dirname(parent), basename(parent, ".jsonl"));
+        const safeDirectory = async path => lstat(path).then(stat => stat.isDirectory() && !stat.isSymbolicLink()).catch(() => false);
+        if (!await safeDirectory(stem)) { unmapped = true; continue; }
+        const directories = [];
+        // Supported public extension layouts: the older forks/run folder,
+        // and pi-subagents' task-owned run/step folders. Never scan cwd.
+        const forks = join(stem, "forks"), legacy = join(forks, run.id), current = join(stem, run.id);
+        if (await safeDirectory(forks) && await safeDirectory(legacy)) directories.push(legacy);
+        if (canonicalRunId(run.id) && await safeDirectory(current)) {
+          for (const entry of await readdir(current, {withFileTypes:true})) {
+            const step = join(current, entry.name);
+            if (entry.isDirectory() && canonicalRunSlot(entry.name) && await safeDirectory(step)) directories.push(step);
+          }
+        }
+        const sessions = [];
+        for (const directory of directories) {
+          const names = await readdir(directory, {withFileTypes:true}).catch(() => []);
+          for (const entry of names.filter(entry => entry.isFile() && entry.name.endsWith(".jsonl"))) {
+            const sessionFile = join(directory, entry.name);
+            try {
+              const file = await open(sessionFile, "r");
+              let header;
+              try {
+                const buffer = Buffer.alloc(65536);
+                const {bytesRead} = await file.read(buffer, 0, buffer.length, 0);
+                const text = buffer.subarray(0, bytesRead).toString("utf8");
+                if (!text.includes("\n")) throw new Error("Incomplete Pi session header");
+                header = JSON.parse(text.split("\n", 1)[0]);
+              } finally { await file.close(); }
+              if (header.type === "session" && typeof header.id === "string" && header.id.length > 0 && header.parentSession === parent) sessions.push(sessionFile);
+            } catch {}
+          }
+        }
+        // The public snapshot deliberately omits per-step transcript paths.
+        // Only a proven single-session run can be stopped without siblings.
+        if (!sessions.length) unmapped = true;
+        const single = run.kind === "subagent" && run.children?.length === 1 && sessions.length === 1;
+        for (const sessionFile of sessions) next.push({sessionFile, runId:run.id, canStop:single, state:"running"});
+      }
+      // An active run can temporarily lose readable transcript metadata. Its
+      // previously proven child remains work until a complete snapshot ends
+      // the run; absence of a file is not completion evidence.
+      const activeRuns = new Set(snapshot.runs.filter(run => ["running", "queued"].includes(run.state)).map(run => run.id));
+      children = unmapped
+        ? [...next, ...children.filter(child => activeRuns.has(child.runId) && !next.some(known => known.sessionFile === child.sessionFile))]
+        : next;
+      childrenUnknown = unmapped;
+      if (unmapped) children = children.map(child => ({...child, canStop:false}));
+    } catch (error) {
+      if (subagentSupported === undefined && !subagentObserved
+          && error?.code === "subagent_timeout" && registeredSubagents() === false) {
+        subagentSupported = false;
+      } else {
+        childrenUnknown = true;
+        children = children.map(child => ({...child, canStop:false}));
+      }
+    }
+  };
   let lastFrame = { version: FRAME_VERSION, kind: "uninitialized", tasks: [] };
   let removeResponseListener = () => {};
   let removeChangedListener = () => {};
@@ -37,7 +159,17 @@ export default function installPiBackgroundWork(pi) {
     if (disposed) return;
     if (ctx) latestContext = ctx;
     if (!latestContext) return;
-    lastFrame = frame;
+    // Delivery is a fact of the session archive, not the current LLM context.
+    // Compaction may remove an already-delivered notification from get_messages.
+    const persistedNotificationIds = [...new Set((latestContext.sessionManager.getEntries?.() ?? [])
+      .filter(entry => entry.type === "custom_message" && entry.customType === "background-task-notification")
+      .map(entry => entry.details?.id)
+      .filter(id => typeof id === "string" && id.length > 0))];
+    frame = {...frame, children, childrenUnknown, persistedNotificationIds};
+    // Results are one-shot deliveries, not part of the periodically
+    // republished metadata snapshot (which can otherwise repeat 64 KiB logs).
+    const {taskOutput, taskOperation, ...metadata} = frame;
+    lastFrame = metadata;
     latestContext.ui.setStatus(STATUS_KEY, JSON.stringify(frame));
   };
 
@@ -49,7 +181,7 @@ export default function installPiBackgroundWork(pi) {
     const requestId = randomUUID();
     const timer = setTimeout(() => {
       pending.delete(requestId);
-      reject(new Error(`Pi background host ${operation} request timed out`));
+      reject(Object.assign(new Error(`Pi background host ${operation} request timed out`), {code:"background_host_timeout"}));
     }, REQUEST_TIMEOUT_MS);
     pending.set(requestId, { resolve, reject, timer, operation });
     try {
@@ -71,6 +203,7 @@ export default function installPiBackgroundWork(pi) {
     const item = pending.get(frame.request_id);
     if (!item) return;
     pending.delete(frame.request_id);
+    hostObserved = true;
     clearTimeout(item.timer);
     if (frame.operation !== item.operation) {
       item.reject(new Error("Pi background host response operation mismatch"));
@@ -94,11 +227,55 @@ export default function installPiBackgroundWork(pi) {
 
   const taskFields = (view) => ({
     id: view.task.id,
+    kind: view.kind,
+    description: view.task.description?.slice(0, 512),
+    command: view.task.command?.slice(0, 512),
+    childSessionId: view.task.delegate?.childSessionId,
+    canStop: hostOperations.has("stop") && view.task.status === "running",
+    canReadOutput: hostOperations.has("detail") && (hostOperations.has("logs") || (hostOperations.has("result") && view.canReadResult)),
     status: view.task.status,
     notifyOnCompletion: view.task.notifyOnCompletion === true,
     notified: view.task.notified === true,
     triggerOnCompletion: view.task.triggerOnCompletion === true,
   });
+
+  const readHeader = async (path, whole = false) => {
+    const stat = await lstat(path);
+    if (!stat.isFile() || stat.isSymbolicLink() || (whole && stat.size > 65536)) throw new Error("Not a bounded regular task artifact");
+    const file = await open(path, "r");
+    try {
+      const buffer = Buffer.alloc(65536);
+      const {bytesRead} = await file.read(buffer, 0, buffer.length, 0);
+      const text = buffer.subarray(0, bytesRead).toString("utf8");
+      if (!whole && !text.includes("\n")) throw new Error("Incomplete task session header");
+      return JSON.parse(whole ? text : text.split("\n", 1)[0]);
+    } finally { await file.close(); }
+  };
+  const delegateSession = async (view, sessionId, ctx) => {
+    const facts = view.task.delegate;
+    if (view.kind !== "delegate" || !facts || facts.taskId !== view.task.id || !isAbsolute(facts.artifactDirAbs ?? "")
+        || sessionId !== ctx.sessionManager.getSessionId?.()) return undefined;
+    try {
+      const directory = join(facts.artifactDirAbs, "child-session");
+      for (const path of [facts.artifactDirAbs, directory]) {
+        const stat = await lstat(path);
+        if (!stat.isDirectory() || stat.isSymbolicLink()) return undefined;
+      }
+      const manifest = await readHeader(join(facts.artifactDirAbs, "manifest.json"), true);
+      if (manifest.task_id !== view.task.id || manifest.launch_nonce !== facts.launchNonce
+          || manifest.child_session_id !== facts.childSessionId || manifest.child_session_dir !== directory
+          || manifest.seed_sha256 !== facts.seedSha256) return undefined;
+      const sessions = [];
+      for (const entry of await readdir(directory, {withFileTypes:true})) {
+        if (!entry.isFile() || !entry.name.endsWith(".jsonl")) continue;
+        const path = join(directory, entry.name);
+        const header = await readHeader(path);
+        if (header.type === "session" && header.id === facts.childSessionId
+            && (!header.parentSession || header.parentSession === ctx.sessionManager.getSessionFile())) sessions.push(path);
+      }
+      return sessions.length === 1 ? sessions[0] : undefined;
+    } catch { return undefined; }
+  };
 
   const readTasks = async (ctx) => {
     if (disposed || !lease) return;
@@ -110,9 +287,13 @@ export default function installPiBackgroundWork(pi) {
       const result = await leasedRequest("list", { limit: 50, ...(cursor ? { cursor } : {}) });
       if (disposed) return;
       if (result.activationId !== lease.activationId) throw new Error("Pi background host activation changed while listing tasks");
+      const expectedSession = ctx.sessionManager.getSessionId?.();
+      if (typeof expectedSession === "string" && result.sessionId !== expectedSession) throw new Error("Pi background task snapshot belongs to another session");
       activationId = result.activationId;
       revision = result.revision;
-      if (Array.isArray(result.tasks)) tasks.push(...result.tasks.map(taskFields));
+      if (Array.isArray(result.tasks)) for (const view of result.tasks) {
+        tasks.push({...taskFields(view), childSessionFile:await delegateSession(view, result.sessionId, ctx)});
+      }
       cursor = result.nextCursor ?? undefined;
     } while (cursor);
     publish(ctx, {
@@ -203,13 +384,19 @@ export default function installPiBackgroundWork(pi) {
           return false;
         }
         host = "available";
-      } catch (_error) {
+        hostOperations = new Set(caps.operations);
+      } catch (error) {
         if (disposed) return false;
-        // Missing plugin is a stable capability result. Once capabilities
-        // succeeded, later errors remain unknown and keep the process alive.
-        host = "unsupported";
-        publish(ctx, { version: FRAME_VERSION, kind: "unsupported", supported: false, tasks: [] });
-        return false;
+        if (!hostObserved && error?.code === "background_host_timeout") {
+          // No responder was observed. A missing optional plugin is a stable
+          // capability result; an actual host rejection remains unknown.
+          host = "unsupported";
+          publish(ctx, { version: FRAME_VERSION, kind: "unsupported", supported: false, tasks: [] });
+          return false;
+        }
+        publish(ctx, { version: FRAME_VERSION, kind: "unknown", supported: true, error: compactError(error), tasks: [] });
+        scheduleSubscribeRetry(ctx);
+        return true;
       }
     }
     if (!lease) {
@@ -255,10 +442,71 @@ export default function installPiBackgroundWork(pi) {
         throw new Error("Invalid Velune background host command");
       }
       try {
-      const supported = await ensureSubscribed(ctx);
+      // These are independent optional extension protocols. Serial cold
+      // discovery takes two 1.5s absence timeouts and races the 3s RPC deadline.
+      const [, supported] = await Promise.all([
+        readChildren(ctx),
+        command.operation === "stop_child" ? false : ensureSubscribed(ctx),
+      ]);
+      if (command.operation === "stop_child") {
+        const matches = children.filter(child => child.sessionFile === command.sessionFile && child.canStop);
+        if (childrenUnknown || matches.length !== 1) {
+          publish(ctx, lastFrame);
+          throw new Error("Pi child cannot be stopped independently");
+        }
+        await subagentRpc("stop", {id:matches[0].runId});
+        children = children.map(child => child.sessionFile === command.sessionFile ? {...child, state:"stopping", canStop:false} : child);
+        publish(ctx, lastFrame);
+        return;
+      }
+      if (command.operation === "stop_all") {
+        if (childrenUnknown) throw new Error("Pi subagent state is unknown");
+        for (const id of new Set(children.map(child => child.runId))) await subagentRpc("stop", {id});
+        children = children.map(child => ({...child, state:"stopping", canStop:false}));
+      }
       if (disposed) return;
       if (!supported) return publish(ctx, lastFrame);
       if (!lease) return publish(ctx, lastFrame);
+      if (command.operation === "task_output") {
+        const owner = ctx.sessionManager.getSessionFile?.();
+        let output;
+        try {
+          if (!lastFrame.tasks?.some(task => task.id === command.taskId && task.canReadOutput)) throw new Error("Task output is not available");
+          const detail = await leasedRequest("detail", {taskId:command.taskId});
+          if (detail.task?.task?.id !== command.taskId) throw new Error("Pi background task detail identity mismatch");
+          if (detail.task.canReadResult && hostOperations.has("result")) {
+            const result = await leasedRequest("result", {taskId:command.taskId});
+            if (result.taskId !== command.taskId) throw new Error("Pi background task result identity mismatch");
+            output = {text:result.text ?? result.message ?? (result.delivery === "artifact" ? "结果已提交，内容超过内联显示上限。" : "任务尚未提供结果。"), truncated:result.delivery === "artifact"};
+          } else {
+            const result = await leasedRequest("logs", {taskId:command.taskId,maxBytes:65536,tail:true});
+            if (result.task?.id !== command.taskId) throw new Error("Pi background task logs identity mismatch");
+            output = {text:result.text, truncated:result.truncated};
+          }
+        } catch (error) { output = {error:compactError(error)}; }
+        if (disposed || latestContext?.sessionManager.getSessionFile?.() !== owner) return;
+        if (typeof output.text === "string") {
+          const bounded = boundedOutput(output.text);
+          output = {...output,text:bounded.text,truncated:output.truncated || bounded.truncated};
+        }
+        publish(ctx, {...lastFrame,taskOutput:{requestId:command.requestId,taskId:command.taskId,...output}});
+        return;
+      }
+      if (command.operation === "stop_task") {
+        const owner = ctx.sessionManager.getSessionFile?.();
+        try {
+          if (!lastFrame.tasks?.some(task => task.id === command.taskId && task.canStop)) throw new Error("Task cannot be stopped independently");
+          const stopped = await leasedRequest("stop", {taskId:command.taskId});
+          if (stopped.task?.id !== command.taskId) throw new Error("Pi background task stop identity mismatch");
+          await refresh(ctx, true);
+          if (disposed || latestContext?.sessionManager.getSessionFile?.() !== owner) return;
+          publish(ctx, {...lastFrame,taskOperation:{taskId:command.taskId}});
+        } catch (error) {
+          if (disposed || latestContext?.sessionManager.getSessionFile?.() !== owner) return;
+          publish(ctx, {...lastFrame,taskOperation:{taskId:command.taskId,error:compactError(error)}});
+        }
+        return;
+      }
       if (command.operation === "stop_all") {
         const taskIds = [...new Set(command.taskIds ?? [])].filter((id) => typeof id === "string" && id.length > 0);
         if (taskIds.length > 0) {
@@ -281,6 +529,19 @@ export default function installPiBackgroundWork(pi) {
     },
   });
 
+  const childPoll = setInterval(() => {
+    if (!disposed && latestContext && subagentSupported !== false) void readChildren(latestContext).then(() => publish(latestContext, lastFrame));
+  }, 2000);
+  childPoll.unref?.();
+  const removeStartedListener = pi.events.on("subagent:async-started", () => {
+    if (!disposed && latestContext) void readChildren(latestContext).then(() => publish(latestContext, lastFrame));
+  });
+  const removeChildListener = pi.events.on("subagent:child-status", () => {
+    if (!disposed && latestContext) void readChildren(latestContext).then(() => publish(latestContext, lastFrame));
+  });
+  const removeCompleteListener = pi.events.on("subagent:async-complete", () => {
+    if (!disposed && latestContext) void readChildren(latestContext).then(() => publish(latestContext, lastFrame));
+  });
   removeSessionStartListener = pi.on("session_start", (_event, ctx) => {
     if (!disposed) latestContext = ctx;
   });
@@ -297,6 +558,10 @@ export default function installPiBackgroundWork(pi) {
     }
     removeResponseListener();
     removeChangedListener();
+    removeChildListener();
+    removeCompleteListener();
+    removeStartedListener();
+    clearInterval(childPoll);
     removeSessionStartListener();
     for (const item of pending.values()) {
       clearTimeout(item.timer);

@@ -803,6 +803,7 @@ struct WindowSeed: Codable, Hashable {
     /// The outline popover from the toolbar button.
     @Published var outlinePopover = false
     @Published var agentsPopover = false
+    @Published var backgroundTasksPopover = false
     /// A conversation opened over the window from one linked to it, and the sheet's size.
     @Published private(set) var artifactSheet: ArtifactTab?
     @Published private(set) var sheetTab: ConversationTab?

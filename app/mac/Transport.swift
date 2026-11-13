@@ -282,6 +282,9 @@ final class Transport: @unchecked Sendable {
         try withApplication("sendSideChat", .writes, .send) { try $0.sendSideChat(sideChatId: sideChatID, targetRuntimeId: runtimeID, selection: selection, turn: try deliver(turn, using: $0)) }
     }
     func closeSideChat(sideChatID: String) throws { try withApplication("closeSideChat", .writes, .cancel) { try $0.closeSideChat(sideChatId: sideChatID) } }
+    func backgroundTasks(runtimeID: String, conversationID: String) throws -> BackgroundTaskList { try withApplication("backgroundTasks", .reads, .conversationRead) { try $0.backgroundTasks(runtimeId: runtimeID, conversationId: conversationID) } }
+    func backgroundTaskOutput(runtimeID: String, conversationID: String, taskID: String, requestID: String?) throws -> BackgroundTaskOutput { try withApplication("backgroundTaskOutput", .reads, .conversationRead) { try $0.backgroundTaskOutput(runtimeId: runtimeID, conversationId: conversationID, taskId: taskID, requestId: requestID) } }
+    func stopBackgroundTask(runtimeID: String, conversationID: String, taskID: String) throws -> BackgroundTaskList { try withApplication("stopBackgroundTask", .writes, .cancel) { try $0.stopBackgroundTask(runtimeId: runtimeID, conversationId: conversationID, taskId: taskID) } }
     func stopSubAgents(runtimeID: String, conversationID: String) throws -> SnapshotResult { try withApplication("stopSubAgents", .writes, .cancel) { try $0.stopSubAgents(runtimeId: runtimeID, conversationId: conversationID) } }
     func setConversationHandoff(runtimeID: String, conversationID: String, release: Bool) throws -> SnapshotResult {
         try withApplication("setConversationHandoff", .writes, .conversationWrite) {

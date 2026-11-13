@@ -6,7 +6,7 @@ import SwiftUI
 /// costs scrolling speed, so Velune offers the same choices itself over a
 /// plain toolbar.
 enum ToolbarButton: String, CaseIterable, Identifiable {
-    case reload, outline, subAgents, pin, split, problems
+    case reload, outline, subAgents, backgroundTasks, pin, split, problems
     case listFilter, newConversation
 
     var id: String { rawValue }
@@ -30,6 +30,7 @@ enum ToolbarButton: String, CaseIterable, Identifiable {
         case .reload: "重新读取"
         case .outline: "会话大纲"
         case .subAgents: "关联 Agent"
+        case .backgroundTasks: "后台任务"
         case .pin: "保持在最前面"
         case .split: "拆分"
         case .problems: "问题"
@@ -43,6 +44,7 @@ enum ToolbarButton: String, CaseIterable, Identifiable {
         case .reload: "arrow.clockwise"
         case .outline: "list.bullet"
         case .subAgents: "person.2"
+        case .backgroundTasks: "terminal"
         case .pin: "pin"
         case .split: "rectangle.split.2x1"
         case .problems: "exclamationmark.triangle"
@@ -122,7 +124,7 @@ struct ToolbarSettingsSection: View {
                     .onMove { settings.move(in: area, from: $0, to: $1) }
                 }
                 if area == .sidebar {
-                    Text("勾选决定按钮是否显示，拖动调整顺序。有些按钮只在适用时才出现（关联 Agent、保持在最前面、问题）。").uiFont(.caption).foregroundStyle(.secondary)
+                    Text("勾选决定按钮是否显示，拖动调整顺序。有些按钮只在适用时才出现（关联 Agent、后台任务、保持在最前面、问题）。").uiFont(.caption).foregroundStyle(.secondary)
                     Button("恢复默认") { settings.reset() }.disabled(settings.isDefault)
                 }
             }

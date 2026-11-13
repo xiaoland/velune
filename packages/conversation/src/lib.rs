@@ -3,8 +3,10 @@
 
 pub mod acp_config;
 pub mod authentication;
+mod background;
 pub mod bytes;
 pub mod resources;
+pub use background::*;
 mod runtime_kind;
 pub use runtime_kind::RuntimeKind;
 

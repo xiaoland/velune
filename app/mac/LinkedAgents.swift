@@ -71,15 +71,17 @@ struct LinkedAgentsView: View {
         VStack(spacing: 0) {
             if agents.isEmpty {
                 ContentUnavailableView("没有关联 Agent", systemImage: "person.2",
-                                       description: Text("会话的 Agent 启动子 Agent，或经 Velune 与其他会话协作后，在这里列出并可打开。"))
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                                       description: Text("父会话、子 Agent 和协作会话会列在这里。"))
             } else {
                 if inSidebar { list(agents).listStyle(.sidebar) } else { list(agents).listStyle(.inset) }
                 Divider()
                 HStack {
-                    Text(LinkedAgent.summary(of: store)).uiFont(.callout).foregroundStyle(.secondary).lineLimit(2)
+                    Text(LinkedAgent.summary(of: store))
+                        .uiFont(.callout).foregroundStyle(.secondary).lineLimit(2)
                     Spacer()
-                    Button("打开") { if let selectedID { open(selectedID, nil) } }
+                    Button("打开") {
+                        if let selectedID { open(selectedID, nil) }
+                    }
                         .keyboardShortcut(inPopover ? .defaultAction : nil).disabled(selectedID == nil)
                 }.padding(10)
             }
@@ -106,7 +108,11 @@ struct LinkedAgentsView: View {
             } else if let layout {
                 ToolPlaceSection(window: layout, kind: .agents)
             }
-        } primaryAction: { ids in if let id = ids.first { open(id, nil) } }
+        } primaryAction: { ids in
+            if let id = ids.first {
+                open(id, nil)
+            }
+        }
     }
 
     @ViewBuilder private func section(_ title: String, _ agents: [LinkedAgent]) -> some View {
@@ -131,7 +137,7 @@ struct LinkedAgentsView: View {
     private func detail(of agent: LinkedAgent) -> String? {
         guard case .collaborator(let runtimeName, let contacted, let contactedBy) = agent.relation else { return nil }
         let direction = contacted && contactedBy ? "互相联系" : contacted ? "本会话联系了它" : "它联系了本会话"
-        return [runtimeName, direction].compactMap { $0 }.joined(separator: " · ")
+        return [runtimeName, direction].compactMap { $0 }.joined(separator: "，")
     }
 
     @ViewBuilder private func state(of agent: LinkedAgent) -> some View {

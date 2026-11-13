@@ -7,7 +7,10 @@ use std::{
     path::{Path, PathBuf},
     process::Command,
 };
+#[cfg(all(test, unix))]
+mod background_tests;
 mod claude;
+mod claude_background;
 pub use claude::{
     CLAUDE_EFFORT_LEVELS, claude_login_directory, claude_user_config_directory,
     rename_claude_session_at,
@@ -262,7 +265,7 @@ impl NativeSession {
                 return Err(Error::new("运行时路径必须为绝对路径"));
             }
         }
-        crate::version::check_version_at(
+        let actual_version = crate::version::check_version_at(
             config.kind.runtime_kind(),
             &config.binary,
             config.node_binary.as_deref(),
@@ -343,6 +346,11 @@ impl NativeSession {
             _mcp: mcp,
             epoch: format!("{:x}", u64::from_le_bytes(bytes)),
         };
+        // stop_task's stream-json schema is verified against this CLI
+        // generation. Earlier supported CLIs retain observation-only tasks.
+        session.claude.task_stop_capable = session.config.kind == NativeKind::ClaudeCode
+            && semver::Version::parse(&actual_version)
+                .is_ok_and(|version| version >= semver::Version::new(2, 1, 292));
         session.initialize()?;
         session.config.gateway = selected_gateway;
         Ok(session)
@@ -1018,6 +1026,7 @@ impl NativeSession {
                 }
             }
             if self.config.kind == NativeKind::ClaudeCode {
+                self.claude_expire_background_controls();
                 self.claude_check_terminal_timeout();
             }
             if matches!(self.config.kind, NativeKind::Codex166) {
@@ -1182,11 +1191,21 @@ impl NativeSession {
                     .collect()
             }
             NativeKind::ClaudeCode => self
-                .claude_running_sub_agents()
-                .into_iter()
-                .map(|conversation_id| BackgroundTask {
-                    conversation_id: Some(conversation_id),
-                    state: BackgroundState::Running,
+                .claude
+                .task_infos
+                .values()
+                .filter_map(|task| match task.status {
+                    BackgroundTaskStatus::Running | BackgroundTaskStatus::Stopping => {
+                        Some(BackgroundTask {
+                            conversation_id: task.conversation_id.clone(),
+                            state: if task.status == BackgroundTaskStatus::Stopping {
+                                BackgroundState::Stopping
+                            } else {
+                                BackgroundState::Running
+                            },
+                        })
+                    }
+                    _ => None,
                 })
                 .collect(),
             NativeKind::DeepSeek => Vec::new(),

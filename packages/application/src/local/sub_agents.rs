@@ -40,6 +40,22 @@ impl CoreRuntime {
                 add(id, title);
             }
         }
+        for session in std::iter::once(&self.session).chain(&self.parked) {
+            if session.conversation_id() == Some(snapshot.conversation.id.as_str()) {
+                for task in session.work() {
+                    if let Some(id) = task.conversation_id {
+                        add(&id, "子 Agent");
+                    }
+                }
+                if let Some(live) = session.active_state.live() {
+                    for task in live.background_tasks().tasks {
+                        if let Some(id) = task.conversation_id {
+                            add(&id, &task.title);
+                        }
+                    }
+                }
+            }
+        }
         let mut children: Vec<_> = listed
             .values()
             .map(|source| &source.summary)
@@ -63,6 +79,23 @@ impl CoreRuntime {
             .and_then(|source| source.summary.parent_conversation_id.clone())
         {
             return Some(parent);
+        }
+        if let Some(parent) = std::iter::once(&self.session)
+            .chain(&self.parked)
+            .find(|session| {
+                session
+                    .work()
+                    .iter()
+                    .any(|task| task.conversation_id.as_deref() == Some(id))
+                    || session.active_state.live().is_some_and(|live| {
+                        live.background_tasks()
+                            .tasks
+                            .iter()
+                            .any(|task| task.conversation_id.as_deref() == Some(id))
+                    })
+            })
+        {
+            return parent.conversation_id().map(str::to_owned);
         }
         std::iter::once(&self.session)
             .chain(&self.parked)

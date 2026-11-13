@@ -1,6 +1,7 @@
 //! Credential-blind Pi runtime adapter.
 
 pub use velune_conversation as conversation;
+pub mod background;
 
 mod client;
 pub mod model_projection;

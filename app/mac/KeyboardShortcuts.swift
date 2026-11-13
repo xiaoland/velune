@@ -108,7 +108,7 @@ enum ShortcutCommand: String, CaseIterable, Identifiable {
     case find
     case stop, stopSubAgents, continueTurn, compactContext, sideChat, attach, chooseRuntime, chooseModel, chooseEffort, choosePermission, chooseWorkingDirectory, nextAttention, reload
     case splitRight, splitDown, closeSplit, back, forward, nextPane, previousPane, nextTab, previousTab, moveTabToNewWindow, keepInFront
-    case commandPalette, focusTranscript, showList, showOutline, focusComposer, showAgents, rightArea, bottomArea, editorOnly, problems
+    case commandPalette, focusTranscript, showList, showOutline, focusComposer, showAgents, showBackgroundTasks, rightArea, bottomArea, editorOnly, problems
     case shortcutHelp
     case globalShow, globalNewConversation
 
@@ -127,7 +127,7 @@ enum ShortcutCommand: String, CaseIterable, Identifiable {
         case .find: .edit
         case .stop, .stopSubAgents, .continueTurn, .compactContext, .sideChat, .attach, .chooseRuntime, .chooseModel, .chooseEffort, .choosePermission, .chooseWorkingDirectory, .nextAttention, .reload: .conversation
         case .splitRight, .splitDown, .closeSplit, .back, .forward, .nextPane, .previousPane, .nextTab, .previousTab, .moveTabToNewWindow, .keepInFront: .window
-        case .commandPalette, .focusTranscript, .showList, .showOutline, .focusComposer, .showAgents, .rightArea, .bottomArea, .editorOnly, .problems: .view
+        case .commandPalette, .focusTranscript, .showList, .showOutline, .focusComposer, .showAgents, .showBackgroundTasks, .rightArea, .bottomArea, .editorOnly, .problems: .view
         case .shortcutHelp: .help
         case .globalShow, .globalNewConversation: .global
         }
@@ -146,7 +146,7 @@ enum ShortcutCommand: String, CaseIterable, Identifiable {
         case .closeWindow: "关闭窗口"
         case .find: "查找…"
         case .stop: "停止生成"
-        case .stopSubAgents: "停止子 Agent"
+        case .stopSubAgents: "停止全部后台工作"
         case .continueTurn: "继续"
         case .compactContext: "压缩上下文"
         case .sideChat: "侧聊"
@@ -175,6 +175,7 @@ enum ShortcutCommand: String, CaseIterable, Identifiable {
         case .showOutline: "显示／隐藏会话大纲"
         case .focusComposer: "转到输入区"
         case .showAgents: "显示／隐藏关联 Agent"
+        case .showBackgroundTasks: "显示／隐藏后台任务"
         case .rightArea: "显示／隐藏右侧区域"
         case .bottomArea: "显示／隐藏底部区域"
         case .editorOnly: "只显示编辑区"
@@ -198,7 +199,7 @@ enum ShortcutCommand: String, CaseIterable, Identifiable {
         case .closeWindow: "Close Window"
         case .find: "Find"
         case .stop: "Stop"
-        case .stopSubAgents: "Stop Sub-agents"
+        case .stopSubAgents: "Stop All Background Work"
         case .continueTurn: "Continue"
         case .compactContext: "Compact context"
         case .sideChat: "Side Chat"
@@ -227,6 +228,7 @@ enum ShortcutCommand: String, CaseIterable, Identifiable {
         case .showOutline: "Toggle Outline"
         case .focusComposer: "Go to Composer"
         case .showAgents: "Toggle Linked Agents"
+        case .showBackgroundTasks: "Toggle Background Tasks"
         case .rightArea: "Toggle Right Area"
         case .bottomArea: "Toggle Bottom Area"
         case .editorOnly: "Editor Only"
@@ -263,6 +265,7 @@ enum ShortcutCommand: String, CaseIterable, Identifiable {
         case .showList: ["sidebar", "侧栏"]
         case .focusComposer: ["input", "prompt", "输入框"]
         case .showAgents: ["subagent", "子 Agent"]
+        case .showBackgroundTasks: ["background", "task", "shell", "后台", "任务"]
         case .editorOnly: ["zen", "maximize", "专注"]
         case .problems: ["errors", "diagnostics", "issues", "错误"]
         case .shortcutHelp: ["keys", "keybindings", "cheat sheet", "help", "快捷键"]
@@ -320,7 +323,7 @@ enum ShortcutCommand: String, CaseIterable, Identifiable {
         case .editorOnly: Shortcut("return", [.command, .shift])
         case .problems: Shortcut("m", [.command, .shift])
         // Global ones are the user's to choose: any default would take a key from other apps.
-        case .stopSubAgents, .continueTurn, .compactContext, .sideChat, .chooseWorkingDirectory, .closeSplit, .moveTabToNewWindow, .keepInFront, .globalShow, .globalNewConversation: nil
+        case .showBackgroundTasks, .stopSubAgents, .continueTurn, .compactContext, .sideChat, .chooseWorkingDirectory, .closeSplit, .moveTabToNewWindow, .keepInFront, .globalShow, .globalNewConversation: nil
         }
     }
 
@@ -331,6 +334,7 @@ enum ShortcutCommand: String, CaseIterable, Identifiable {
         case .outline: .showOutline
         case .composer: .focusComposer
         case .agents: .showAgents
+        case .backgroundTasks: .showBackgroundTasks
         }
     }
 }

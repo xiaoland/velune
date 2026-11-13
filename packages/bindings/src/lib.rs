@@ -1517,6 +1517,55 @@ impl VeluneApplication {
         request!(self, "close_side_chat", CloseSideChat { side_chat_id }; unit)
     }
 
+    pub fn background_tasks(
+        &self,
+        runtime_id: String,
+        conversation_id: String,
+    ) -> Result<BackgroundTaskList, BindingError> {
+        request!(
+            self,
+            "background_tasks",
+            ReadBackgroundTasks {
+                runtime_id,
+                conversation_id
+            }
+        )
+    }
+    pub fn background_task_output(
+        &self,
+        runtime_id: String,
+        conversation_id: String,
+        task_id: String,
+        request_id: Option<String>,
+    ) -> Result<BackgroundTaskOutput, BindingError> {
+        request!(
+            self,
+            "background_task_output",
+            ReadBackgroundTaskOutput {
+                runtime_id,
+                conversation_id,
+                task_id,
+                request_id
+            }
+        )
+    }
+    pub fn stop_background_task(
+        &self,
+        runtime_id: String,
+        conversation_id: String,
+        task_id: String,
+    ) -> Result<BackgroundTaskList, BindingError> {
+        request!(
+            self,
+            "stop_background_task",
+            StopBackgroundTask {
+                runtime_id,
+                conversation_id,
+                task_id
+            }
+        )
+    }
+
     pub fn stop_sub_agents(
         &self,
         runtime_id: String,

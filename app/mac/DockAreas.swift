@@ -213,6 +213,10 @@ struct ToolContent: View {
             }
         case .agents:
             ToolAgents(window: window, tab: tab, store: tab.store, inSidebar: side == .left).id(tab.id)
+        case .backgroundTasks:
+            BackgroundTasksView(store: tab.store, inPopover: false, inSidebar: side == .left, layout: window) {
+                window.openLinked($0, from: tab, opening: $1)
+            }.id(tab.id)
         }
     }
 }

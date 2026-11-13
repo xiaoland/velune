@@ -1,6 +1,9 @@
 //! One Pi conversation: its launch configuration, and once started its RPC
 //! process with the projection of what that process shows.
-use crate::conversation::{ConversationSnapshot, ConversationSummary, EditPlacement, RunState};
+use crate::conversation::{
+    BackgroundTaskInfo, BackgroundTaskList, BackgroundTaskOutput, BackgroundTaskStatus,
+    ConversationSnapshot, ConversationSummary, EditPlacement, RunState,
+};
 use crate::work::{BackgroundState, BackgroundTask};
 use crate::{Client, Config, Error, PiProjection, Result, TurnInput};
 use serde_json::{Value, json};
@@ -10,6 +13,10 @@ pub struct PiSession {
     config: Config,
     running: Option<Running>,
     background: BTreeMap<String, BackgroundState>,
+    task_items: BTreeMap<String, BackgroundTaskInfo>,
+    task_reads: crate::background::Reads,
+    task_issue: Option<String>,
+    children: BTreeMap<String, (BackgroundState, bool)>,
     pending_notifications: HashSet<String>,
     acknowledged_notifications: HashSet<String>,
     background_pending_sync: bool,
@@ -45,6 +52,10 @@ impl PiSession {
             config,
             running: None,
             background: BTreeMap::new(),
+            task_items: BTreeMap::new(),
+            task_reads: Default::default(),
+            task_issue: None,
+            children: BTreeMap::new(),
             pending_notifications: HashSet::new(),
             acknowledged_notifications: HashSet::new(),
             background_pending_sync: false,
@@ -99,18 +110,152 @@ impl PiSession {
     /// Known Pi-owned tasks that outlive the current parent turn.
     pub fn work(&self) -> Vec<BackgroundTask> {
         self.background
-            .values()
-            .map(|state| BackgroundTask {
-                conversation_id: None,
+            .iter()
+            .map(|(id, state)| BackgroundTask {
+                conversation_id: self
+                    .task_items
+                    .get(id)
+                    .and_then(|task| task.conversation_id.clone()),
                 state: *state,
             })
             .collect()
+    }
+
+    pub fn can_stop_child(&self, id: &str) -> bool {
+        if self
+            .background_tasks()
+            .tasks
+            .iter()
+            .any(|task| task.conversation_id.as_deref() == Some(id) && task.can_stop)
+        {
+            return true;
+        }
+        self.snapshot()
+            .and_then(|snapshot| id.strip_prefix(&format!("{}:", snapshot.conversation.runtime_id)))
+            .and_then(|path| self.children.get(path))
+            .is_some_and(|(_, can_stop)| *can_stop)
+    }
+
+    pub fn background_tasks(&self) -> BackgroundTaskList {
+        let live = self.running.is_some()
+            && !self.background_pending_sync
+            && self.background_error.is_none();
+        let tasks = self
+            .task_items
+            .values()
+            .cloned()
+            .map(|mut task| {
+                if !live {
+                    task.status = BackgroundTaskStatus::Unknown;
+                    task.can_stop = false;
+                    task.can_read_output = false;
+                }
+                task
+            })
+            .collect();
+        BackgroundTaskList {
+            tasks,
+            live,
+            issue: self
+                .task_issue
+                .clone()
+                .or_else(|| self.background_error.clone()),
+        }
+    }
+    pub fn read_background_task_output(
+        &mut self,
+        task: &str,
+        request: Option<&str>,
+    ) -> Result<BackgroundTaskOutput> {
+        if let Some(request) = request {
+            return self
+                .task_reads
+                .read(task, request)
+                .ok_or_else(|| Error::Sdk("任务输出请求已失效，请重新读取".into()));
+        }
+        if !self
+            .background_tasks()
+            .tasks
+            .iter()
+            .any(|entry| entry.id == task && entry.can_read_output)
+        {
+            return Err(Error::Sdk("当前不能读取此后台任务的输出".into()));
+        }
+        let output = self.task_reads.begin(task);
+        self.running
+            .as_mut()
+            .ok_or(Error::NotStarted)?
+            .client
+            .begin_background_work_command(
+                &json!({"operation":"task_output","taskId":task,"requestId":output.request_id}),
+            )?;
+        Ok(output)
+    }
+    pub fn stop_background_task(&mut self, task: &str) -> Result<()> {
+        if !self
+            .background_tasks()
+            .tasks
+            .iter()
+            .any(|entry| entry.id == task && entry.can_stop)
+        {
+            return Err(Error::Sdk("当前不能独立停止此后台任务".into()));
+        }
+        self.running
+            .as_mut()
+            .ok_or(Error::NotStarted)?
+            .client
+            .begin_background_work_command(&json!({"operation":"stop_task","taskId":task}))?;
+        if let Some(entry) = self.task_items.get_mut(task) {
+            entry.status = BackgroundTaskStatus::Stopping;
+            entry.can_stop = false;
+        }
+        Ok(())
+    }
+
+    pub fn stop_child(&mut self, id: &str) -> Result<()> {
+        if let Some(task) = self
+            .background_tasks()
+            .tasks
+            .iter()
+            .find(|task| task.conversation_id.as_deref() == Some(id) && task.can_stop)
+            .map(|task| task.id.clone())
+        {
+            return self.stop_background_task(&task);
+        }
+        if !self.can_stop_child(id) {
+            return Err(Error::Sdk("Pi 子会话不能独立停止".into()));
+        }
+        let path = id
+            .strip_prefix(&format!(
+                "{}:",
+                self.snapshot().unwrap().conversation.runtime_id
+            ))
+            .unwrap()
+            .to_owned();
+        let frame = self
+            .running
+            .as_mut()
+            .ok_or(Error::NotStarted)?
+            .client
+            .background_work_command(&json!({"operation":"stop_child", "sessionFile":&path}))?;
+        self.receive_background_frame(&frame);
+        if frame["childrenUnknown"] == true
+            || self.background_error.is_some()
+            || !self
+                .children
+                .get(&path)
+                .is_some_and(|(state, can_stop)| *state == BackgroundState::Stopping && !can_stop)
+        {
+            return Err(Error::Sdk("Pi 未确认所选子会话停止请求；请刷新状态".into()));
+        }
+        Ok(())
     }
 
     /// True while the Host API snapshot, an error, or a completion
     /// notification handoff is not yet settled.
     pub fn has_pending_metadata(&self) -> bool {
         self.background_pending_sync
+            || self.task_reads.pending()
             || self.background_error.is_some()
             || !self.pending_notifications.is_empty()
     }
@@ -162,8 +307,20 @@ impl PiSession {
         }
     }
 
+    fn receive_background_frame(&mut self, frame: &Value) {
+        if let Some(running) = &mut self.running {
+            let events = running.client.take_buffered_events();
+            self.apply_events(events);
+        }
+        self.apply_background_frame(frame);
+    }
+
     fn reset_background_session(&mut self) {
         self.background.clear();
+        self.task_items.clear();
+        self.task_reads = Default::default();
+        self.task_issue = None;
+        self.children.clear();
         self.pending_notifications.clear();
         self.acknowledged_notifications.clear();
         self.background_pending_sync = true;
@@ -177,20 +334,77 @@ impl PiSession {
             self.set_background_error(Some("Pi 后台工作桥接返回了未知协议版本".into()));
             return;
         }
+        if let Some(output) = frame.get("taskOutput")
+            && let (Some(request), Some(task)) =
+                (output["requestId"].as_str(), output["taskId"].as_str())
+        {
+            self.task_reads.finish(
+                request,
+                task,
+                output["text"].as_str().unwrap_or(""),
+                output["truncated"] == true,
+                output["error"].as_str().map(str::to_owned),
+            );
+        }
+        if let Some(operation) = frame.get("taskOperation") {
+            self.task_issue = operation["error"].as_str().map(str::to_owned);
+        }
+        if let Some(receipts) = frame["persistedNotificationIds"].as_array() {
+            for id in receipts
+                .iter()
+                .filter_map(Value::as_str)
+                .filter(|id| !id.is_empty())
+            {
+                self.acknowledged_notifications.insert(id.to_owned());
+                self.pending_notifications.remove(id);
+            }
+        }
         match frame["kind"].as_str() {
             Some("unsupported") => {
                 self.background.clear();
+                self.task_items.clear();
                 self.pending_notifications.clear();
                 self.background_pending_sync = false;
                 self.set_background_error(None);
             }
             Some("snapshot") => {
                 self.background.clear();
+                self.task_items.clear();
                 if let Some(tasks) = frame["tasks"].as_array() {
                     for task in tasks {
                         let Some(id) = task["id"].as_str().filter(|id| !id.is_empty()) else {
                             continue;
                         };
+                        let status =
+                            crate::background::status(task["status"].as_str().unwrap_or("unknown"));
+                        let kind = task["kind"].as_str().unwrap_or("task");
+                        let title = task["description"]
+                            .as_str()
+                            .filter(|value| !value.is_empty())
+                            .or_else(|| task["command"].as_str())
+                            .unwrap_or(kind);
+                        self.task_items.insert(
+                            id.into(),
+                            BackgroundTaskInfo {
+                                id: id.into(),
+                                kind: kind.into(),
+                                title: crate::background::text(title, 512).0,
+                                status,
+                                conversation_id: task["childSessionFile"].as_str().and_then(
+                                    |path| {
+                                        self.snapshot().map(|snapshot| {
+                                            format!("{}:{path}", snapshot.conversation.runtime_id)
+                                        })
+                                    },
+                                ),
+                                child_session_id: task["childSessionId"]
+                                    .as_str()
+                                    .map(str::to_owned),
+                                can_stop: status == BackgroundTaskStatus::Running
+                                    && task["canStop"] == true,
+                                can_read_output: task["canReadOutput"] == true,
+                            },
+                        );
                         if task["status"] == "running" {
                             self.background.insert(id.into(), BackgroundState::Running);
                         } else if task["notifyOnCompletion"] == true
@@ -229,6 +443,31 @@ impl PiSession {
                 self.background_pending_sync = true;
                 self.set_background_error(Some("Pi 后台工作桥接返回了未知状态".into()));
             }
+        }
+        if let Some(children) = frame["children"].as_array() {
+            self.children.clear();
+            for child in children {
+                if let Some(path) = child["sessionFile"]
+                    .as_str()
+                    .filter(|path| std::path::Path::new(path).is_absolute())
+                {
+                    let state = if child["state"] == "stopping" {
+                        BackgroundState::Stopping
+                    } else {
+                        BackgroundState::Running
+                    };
+                    self.children.insert(
+                        path.into(),
+                        (
+                            state,
+                            child["canStop"] == true && frame["childrenUnknown"] != true,
+                        ),
+                    );
+                }
+            }
+        }
+        if frame["childrenUnknown"] == true {
+            self.background_pending_sync = true;
         }
     }
 
@@ -352,6 +591,17 @@ impl PiSession {
             return;
         };
         let events = running.client.poll();
+        let settled = self.apply_events(events);
+        if settled && !self.turn_running() {
+            // Close the admission-coalescing window at the parent turn fence:
+            // read the public task snapshot before callers can conclude that
+            // an empty cached list is settled and release Pi/the gateway.
+            self.background_pending_sync = true;
+            self.refresh_background(json!({"operation":"snapshot"}));
+        }
+    }
+
+    fn apply_events(&mut self, events: Vec<Value>) -> bool {
         let mut settled = false;
         for event in events {
             self.observe_background_notification(&event);
@@ -368,13 +618,7 @@ impl PiSession {
                 settled |= event["type"] == "agent_settled";
             }
         }
-        if settled && !self.turn_running() {
-            // Close the admission-coalescing window at the parent turn fence:
-            // read the public task snapshot before callers can conclude that
-            // an empty cached list is settled and release Pi/the gateway.
-            self.background_pending_sync = true;
-            self.refresh_background(json!({"operation":"snapshot"}));
-        }
+        settled
     }
 
     /// Replace the projection's history with the process's authoritative
@@ -551,6 +795,138 @@ mod tests {
     use crate::LiveConversation;
 
     #[test]
+    fn background_tasks_async_output_and_exact_stop_do_not_block_or_interrupt_parent() {
+        let mut random = [0; 8];
+        getrandom::fill(&mut random).unwrap();
+        let root = std::env::temp_dir().join(format!(
+            "velune-task-output-{:x}",
+            u64::from_le_bytes(random)
+        ));
+        std::fs::create_dir(&root).unwrap();
+        let helper = root.join("rpc.py");
+        std::fs::write(&helper, r#"
+import json,sys,time,base64,os
+def emit(value): print(json.dumps(value),flush=True)
+tasks=[{'id':'a','kind':'shell','description':'Shell A','status':'running','canStop':True,'canReadOutput':True},{'id':'b','kind':'shell','description':'Shell B','status':'running','canStop':True,'canReadOutput':True}]
+for line in sys.stdin:
+ r=json.loads(line); command=r['type']; data={}
+ with open(os.path.join(os.path.dirname(__file__),'requests.jsonl'),'a') as f: f.write(json.dumps(r)+'\n')
+ if command=='get_commands': data={'commands':[{'name':'velune-background-work'}]}
+ elif command=='get_messages': data={'messages':[]}
+ elif command=='prompt' and r['message']=='/velune-projection-sync':
+  emit({'type':'extension_ui_request','method':'setStatus','statusKey':'velune.session-metadata','statusText':json.dumps({'messageIds':[],'identityConfirmations':[]})})
+  data={'disposition':'handled'}
+ elif command=='prompt':
+  encoded=r['message'].split(' ',1)[1]; request=json.loads(base64.urlsafe_b64decode(encoded+'='*((-len(encoded))%4)))
+  frame={'version':1,'kind':'snapshot','tasks':tasks}
+  if request['operation']=='task_output':
+   time.sleep(0.5)
+   frame['taskOutput']={'taskId':request['taskId'],'requestId':request['requestId'],'text':'Shell A output','truncated':False}
+  elif request['operation']=='stop_task':
+   for task in tasks:
+    if task['id']==request['taskId']: task['status']='killed'; task['canStop']=False
+   frame['tasks']=tasks; frame['taskOperation']={'taskId':request['taskId']}
+  emit({'type':'extension_ui_request','method':'setStatus','statusKey':'velune.background-work-v1','statusText':json.dumps(frame)})
+  data={'disposition':'handled'}
+ emit({'type':'response','id':r['id'],'command':command,'success':True,'data':data})
+"#).unwrap();
+        let config: Config = serde_json::from_value(json!({"execution":{"kind":"local"},"os_home":root,"binary":"/usr/bin/python3","node_binary":"/usr/bin/python3","rpc_entry":helper})).unwrap();
+        let mut client = Client::spawn(config.clone()).unwrap();
+        // Production execution performs the patient readiness snapshot before
+        // its first ordinary 3s metadata command. Keep the fixture faithful.
+        client.state().unwrap();
+        let mut session = PiSession::new(config);
+        session.start(
+            client,
+            PiProjection::new(ConversationSummary {
+                native_read_state: None,
+                id: "pi:synthetic".into(),
+                runtime_id: "pi".into(),
+                title: crate::conversation::conversation_title(None, None),
+                cwd: None,
+                created_at_unix_ms: None,
+                updated_at_unix_ms: None,
+                can_rename: false,
+                can_delete: false,
+                parent_conversation_id: None,
+            }),
+        );
+        session.apply_events(vec![json!({"type":"agent_start"})]);
+        assert!(
+            session
+                .background_tasks()
+                .tasks
+                .iter()
+                .any(|task| task.id == "a" && task.can_read_output),
+            "initial task frame failed: {:?}; metadata={:?}",
+            session.background_error,
+            session.background_tasks()
+        );
+        let start = std::time::Instant::now();
+        let output = session.read_background_task_output("a", None).unwrap();
+        assert!(
+            start.elapsed() < std::time::Duration::from_millis(250),
+            "output request must not wait for the host"
+        );
+        assert_eq!(
+            output.status,
+            crate::conversation::BackgroundTaskOutputStatus::Checking
+        );
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        loop {
+            session.poll();
+            if session
+                .read_background_task_output("a", Some(&output.request_id))
+                .unwrap()
+                .status
+                == crate::conversation::BackgroundTaskOutputStatus::Ready
+            {
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert_eq!(
+            session
+                .read_background_task_output("a", Some(&output.request_id))
+                .unwrap()
+                .text,
+            "Shell A output"
+        );
+        assert!(session.turn_running());
+        session.stop_background_task("a").unwrap();
+        while session
+            .background_tasks()
+            .tasks
+            .iter()
+            .any(|task| task.id == "a" && task.status != BackgroundTaskStatus::Cancelled)
+        {
+            session.poll();
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(session.turn_running());
+        assert_eq!(
+            session
+                .background_tasks()
+                .tasks
+                .iter()
+                .find(|task| task.id == "b")
+                .unwrap()
+                .status,
+            BackgroundTaskStatus::Running
+        );
+        let requests = std::fs::read_to_string(root.join("requests.jsonl")).unwrap();
+        assert!(
+            !requests
+                .lines()
+                .any(|line| serde_json::from_str::<Value>(line).unwrap()["type"] == "abort")
+        );
+        session.shutdown().unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn background_snapshot_keeps_running_work_and_notification_handoff_separate() {
         let mut config: Config = serde_json::from_value(json!({
             "execution":{"kind":"local"}, "binary":"/bin/pi", "node_binary":"/bin/node",
@@ -613,6 +989,110 @@ mod tests {
         );
         assert!(session.work().is_empty());
         assert!(!session.has_pending_metadata());
+    }
+
+    #[test]
+    fn compacted_notification_receipts_settle_without_claiming_undelivered_work() {
+        let config: Config = serde_json::from_value(json!({
+            "execution":{"kind":"local"}, "binary":"/bin/pi", "node_binary":"/bin/node",
+        }))
+        .unwrap();
+        let mut session = PiSession::new(config);
+        // get_messages no longer includes this notification after compaction.
+        // The SDK archive still proves it was delivered to this session.
+        session.apply_background_frame(&json!({
+            "version":1,"kind":"snapshot","tasks":[
+                {"id":"before-compaction","status":"completed","notifyOnCompletion":true,"notified":true}
+            ],"persistedNotificationIds":["before-compaction"]
+        }));
+        assert!(session.work_settled());
+        assert!(!session.has_pending_metadata());
+
+        session.apply_background_frame(&json!({
+            "version":1,"kind":"snapshot","tasks":[
+                {"id":"before-compaction","status":"completed","notifyOnCompletion":true,"notified":true},
+                {"id":"in-flight","status":"completed","notifyOnCompletion":true,"notified":true},
+                {"id":"actual-work","status":"running"}
+            ],"persistedNotificationIds":["before-compaction"]
+        }));
+        assert!(
+            session.has_pending_metadata(),
+            "notified alone is not delivery proof"
+        );
+        assert_eq!(session.work().len(), 1);
+        session.apply_background_frame(&json!({
+            "version":1,"kind":"snapshot","tasks":[
+                {"id":"in-flight","status":"completed","notifyOnCompletion":true,"notified":true},
+                {"id":"actual-work","status":"running"}
+            ],"persistedNotificationIds":["in-flight"]
+        }));
+        assert!(!session.has_pending_metadata());
+        assert!(
+            !session.work_settled(),
+            "a receipt must not erase active work"
+        );
+    }
+
+    #[test]
+    fn notification_receipt_snapshot_observes_preceding_agent_start() {
+        let mut random = [0; 8];
+        getrandom::fill(&mut random).unwrap();
+        let root = std::env::temp_dir().join(format!(
+            "velune-pi-receipt-order-{:x}",
+            u64::from_le_bytes(random)
+        ));
+        std::fs::create_dir(&root).unwrap();
+        let helper = root.join("rpc.py");
+        std::fs::write(&helper, r#"
+import json,sys
+def emit(value): print(json.dumps(value),flush=True)
+started=False
+for line in sys.stdin:
+ r=json.loads(line); command=r['type']; data={}
+ if command=='get_commands': data={'commands':[{'name':'velune-background-work'}]}
+ elif command=='prompt':
+  if not started: emit({'type':'agent_start'}); started=True
+  frame={'version':1,'kind':'snapshot','tasks':[{'id':'old','status':'completed','notifyOnCompletion':True,'notified':True}],'persistedNotificationIds':['old']}
+  emit({'type':'extension_ui_request','method':'setStatus','statusKey':'velune.background-work-v1','statusText':json.dumps(frame)})
+  data={'disposition':'handled'}
+ elif command=='abort': emit({'type':'agent_settled','aborted':True})
+ emit({'type':'response','id':r['id'],'command':command,'success':True,'data':data})
+"#).unwrap();
+        let config: Config = serde_json::from_value(json!({
+            "execution":{"kind":"local"}, "os_home":root,
+            "binary":"/usr/bin/python3", "node_binary":"/usr/bin/python3", "rpc_entry":helper,
+        }))
+        .unwrap();
+        let client = Client::spawn(config.clone()).unwrap();
+        let mut session = PiSession::new(config);
+        session.start(
+            client,
+            PiProjection::new(ConversationSummary {
+                native_read_state: None,
+                id: "pi:synthetic".into(),
+                runtime_id: "pi".into(),
+                title: crate::conversation::conversation_title(None, None),
+                cwd: None,
+                created_at_unix_ms: None,
+                updated_at_unix_ms: None,
+                can_rename: false,
+                can_delete: false,
+                parent_conversation_id: None,
+            }),
+        );
+        assert!(!session.has_pending_metadata());
+        assert!(
+            session.turn_running(),
+            "settling old receipts must retain the new run"
+        );
+        assert_eq!(session.snapshot().unwrap().run_state, RunState::Running);
+        assert!(session.can_steer());
+        session.cancel().unwrap();
+        session.poll();
+        assert!(!session.turn_running());
+        assert_eq!(session.snapshot().unwrap().run_state, RunState::Idle);
+        session.shutdown().unwrap();
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

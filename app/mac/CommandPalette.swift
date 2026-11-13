@@ -134,6 +134,7 @@ extension ConversationWindowModel {
         case .showOutline: canToggle(.outline)
         case .focusComposer: store.isSideChat || canToggle(.composer)
         case .showAgents: canToggle(.agents)
+        case .showBackgroundTasks: canToggle(.backgroundTasks)
         case .globalShow, .globalNewConversation: false
         }
     }
@@ -181,6 +182,7 @@ extension ConversationWindowModel {
         case .showOutline: toggle(.outline)
         case .focusComposer: if tab === sheetTab || tab === composerSheetTab { tab.composer.focusWhenShown() } else { focusComposer() }
         case .showAgents: toggle(.agents)
+        case .showBackgroundTasks: toggle(.backgroundTasks)
         case .rightArea: tools.toggleArea(.right)
         case .bottomArea: tools.toggleArea(.bottom)
         case .editorOnly: tools.toggleEditorOnly()
