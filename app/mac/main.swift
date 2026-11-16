@@ -467,6 +467,10 @@ final class VeluneApplicationDelegate: NSObject, NSApplicationDelegate {
 @MainActor
 enum VeluneEntry {
     static func main() {
+        if CommandLine.arguments.contains("--check-palette-ime") {
+            admitMacExecution()
+            commandPaletteChecks()
+        }
         if CommandLine.arguments.contains("--check-list-pagination") {
             admitMacExecution()
             conversationPaginationChecks()

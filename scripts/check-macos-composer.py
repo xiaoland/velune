@@ -21,7 +21,7 @@ def digest(path):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('check', choices=['pagination', 'tabs', 'targets', 'ownership', 'background', 'experience', 'recovery'])
+    parser.add_argument('check', choices=['palette-ime', 'pagination', 'tabs', 'targets', 'ownership', 'background', 'experience', 'recovery'])
     parser.add_argument('--app', type=Path, default=app_bundle_path(ROOT, 'dev'))
     parser.add_argument('--output', type=Path)
     parser.add_argument('--dark', action='store_true')
@@ -57,6 +57,8 @@ def main():
                    CODEX_HOME=str(root / 'codex'), PI_CODING_AGENT_DIR=str(root / 'pi'), CLAUDE_CONFIG_DIR=str(root / 'claude'),
                    XDG_CONFIG_HOME=str(root / 'config'), XDG_DATA_HOME=str(root / 'data'), XDG_CACHE_HOME=str(root / 'cache'))
         flags = ['--check-background-tasks'] if args.check == 'background' else ['--check-message-experience']
+        if args.check == 'palette-ime':
+            flags = ['--check-palette-ime']
         if args.check == 'pagination':
             flags = ['--check-list-pagination']
         if args.check in ['tabs', 'targets', 'ownership']:

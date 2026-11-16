@@ -430,7 +430,7 @@ struct CommandPaletteView: View {
 
 /// The palette's text field: it keeps the keyboard and hands ↑↓, Return,
 /// ⌘Return and Escape to the palette instead of moving its caret.
-private struct PaletteField: NSViewRepresentable {
+struct PaletteField: NSViewRepresentable {
     @Binding var text: String
     let prompt: String
     let move: (Int) -> Void
@@ -454,7 +454,10 @@ private struct PaletteField: NSViewRepresentable {
 
     func updateNSView(_ field: PaletteTextField, context: Context) {
         context.coordinator.parent = self
-        if field.stringValue != text { field.stringValue = text }
+        // The binding contains committed text. Writing it back while an input
+        // method owns marked text cancels composition, even without a focus change.
+        if (field.currentEditor() as? NSTextView)?.hasMarkedText() != true,
+           field.stringValue != text { field.stringValue = text }
         if field.placeholderString != prompt { field.placeholderString = prompt }
     }
 
@@ -462,9 +465,12 @@ private struct PaletteField: NSViewRepresentable {
         var parent: PaletteField
         init(_ parent: PaletteField) { self.parent = parent }
         func controlTextDidChange(_ notification: Notification) {
-            parent.text = (notification.object as? NSTextField)?.stringValue ?? ""
+            guard let field = notification.object as? NSTextField,
+                  (field.currentEditor() as? NSTextView)?.hasMarkedText() != true else { return }
+            parent.text = field.stringValue
         }
         func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
+            guard !textView.hasMarkedText() else { return false }
             switch selector {
             case #selector(NSResponder.moveUp(_:)): parent.move(-1)
             case #selector(NSResponder.moveDown(_:)): parent.move(1)
@@ -477,7 +483,7 @@ private struct PaletteField: NSViewRepresentable {
     }
 }
 
-private final class PaletteTextField: NSTextField {
+final class PaletteTextField: NSTextField {
     weak var coordinator: PaletteField.Coordinator?
 
     override func viewDidMoveToWindow() {
@@ -491,7 +497,11 @@ private final class PaletteTextField: NSTextField {
     /// ⌘Return would reach the menus' Send first.
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         if event.keyCode == 36 || event.keyCode == 76, event.modifierFlags.intersection([.command, .shift, .option, .control]) == .command,
-           let editor = currentEditor(), window?.firstResponder === editor {
+           let editor = currentEditor() as? NSTextView, window?.firstResponder === editor {
+            if editor.hasMarkedText() {
+                editor.keyDown(with: event)
+                return true
+            }
             coordinator?.parent.run(true)
             return true
         }
