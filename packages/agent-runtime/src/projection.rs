@@ -128,6 +128,17 @@ impl PiProjection {
         self.history_synchronized
     }
 
+    /// Native child identities persist independently of the current active work set.
+    /// Missing metadata (including ordinary get_messages responses) proves nothing
+    /// about identities observed previously.
+    pub(crate) fn update_sub_agents(&mut self, records: &Value, overwrite: bool) {
+        if let Some(snapshot) = &mut self.snapshot
+            && merge_sub_agents(snapshot, records, overwrite)
+        {
+            snapshot.revision = snapshot.revision.saturating_add(1);
+        }
+    }
+
     pub fn replace_history(&mut self, response: &Value) {
         if self.lifecycle == Lifecycle::Closed {
             return;
@@ -142,6 +153,7 @@ impl PiProjection {
             self.snapshot = Some(snapshot);
             return;
         };
+        merge_sub_agents(&mut snapshot, &response["subAgents"], true);
         let mut projected: Vec<Message> = Vec::new();
         // The user message that starts the turn the following replies belong to.
         let mut turn = None;
@@ -256,6 +268,9 @@ impl PiProjection {
 
     pub fn set_conversation(&mut self, conversation: ConversationSummary) {
         if let Some(snapshot) = self.snapshot.as_mut() {
+            if snapshot.conversation.id != conversation.id {
+                snapshot.sub_agents.clear();
+            }
             snapshot.conversation = conversation;
             snapshot.revision = snapshot.revision.saturating_add(1);
         }
@@ -422,8 +437,11 @@ impl PiProjection {
                     return;
                 };
                 if let Some(path) = metadata["sessionFile"].as_str() {
-                    snapshot.conversation.id =
-                        format!("{}:{path}", snapshot.conversation.runtime_id);
+                    let id = format!("{}:{path}", snapshot.conversation.runtime_id);
+                    if snapshot.conversation.id != id {
+                        snapshot.sub_agents.clear();
+                    }
+                    snapshot.conversation.id = id;
                 }
                 snapshot.conversation.cwd = metadata["cwd"].as_str().map(str::to_owned);
                 snapshot.conversation.created_at_unix_ms = metadata["createdUnixMs"].as_i64();
@@ -1032,6 +1050,53 @@ fn pi_outcome(message: &Value) -> Option<TurnOutcome> {
     }
 }
 
+/// The bridge has already validated native parentage. Do not infer it from
+/// background tasks: they can link a conversation without being sub-agents.
+fn merge_sub_agents(snapshot: &mut ConversationSnapshot, records: &Value, overwrite: bool) -> bool {
+    let Some(records) = records.as_array() else {
+        return false;
+    };
+    let mut changed = false;
+    for record in records {
+        let Some(path) = record["sessionFile"]
+            .as_str()
+            .filter(|path| std::path::Path::new(path).is_absolute())
+        else {
+            continue;
+        };
+        let Some(title) = record["title"]
+            .as_str()
+            .map(str::trim)
+            .filter(|title| !title.is_empty())
+        else {
+            continue;
+        };
+        let id = format!("{}:{path}", snapshot.conversation.runtime_id);
+        if id == snapshot.conversation.id {
+            continue;
+        }
+        let agent = crate::conversation::SubAgent {
+            conversation_id: id,
+            title: title.chars().take(512).collect(),
+            failed: record["failed"] == true,
+        };
+        if let Some(known) = snapshot
+            .sub_agents
+            .iter_mut()
+            .find(|known| known.conversation_id == agent.conversation_id)
+        {
+            if overwrite && *known != agent {
+                *known = agent;
+                changed = true;
+            }
+        } else {
+            snapshot.sub_agents.push(agent);
+            changed = true;
+        }
+    }
+    changed
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1050,6 +1115,49 @@ mod tests {
             can_delete: false,
             parent_conversation_id: None,
         })
+    }
+
+    #[test]
+    fn pi_subagent_descriptors_survive_cold_and_live_history_without_changing_session_names() {
+        let mut p = projection();
+        let original_title = p.snapshot.as_ref().unwrap().conversation.title.clone();
+        p.replace_history(&json!({"messages":[],"subAgents":[
+            {"sessionFile":"/synthetic/child.jsonl","title":"worker：检查缓存归属","failed":false},
+            {"sessionFile":"relative.jsonl","title":"untrusted"},
+            {"sessionFile":"/synthetic/empty.jsonl","title":" "}
+        ]}));
+        let view = p.snapshot.as_ref().unwrap();
+        assert_eq!(view.sub_agents.len(), 1);
+        assert_eq!(
+            view.sub_agents[0].conversation_id,
+            "pi:/synthetic/child.jsonl"
+        );
+        assert_eq!(view.conversation.title, original_title);
+        p.replace_history(&json!({"data":{"messages":[]}}));
+        assert_eq!(
+            p.snapshot.as_ref().unwrap().sub_agents[0].title,
+            "worker：检查缓存归属"
+        );
+        let revision = p.snapshot.as_ref().unwrap().revision;
+        let terminal = json!([{"sessionFile":"/synthetic/child.jsonl","title":"reviewer：复核缓存","failed":true}]);
+        p.update_sub_agents(&terminal, true);
+        assert!(p.snapshot.as_ref().unwrap().revision > revision);
+        p.update_sub_agents(
+            &json!([{"sessionFile":"/synthetic/child.jsonl","title":"child fallback"}]),
+            false,
+        );
+        let view = p.snapshot.as_ref().unwrap();
+        assert_eq!(view.sub_agents[0].title, "reviewer：复核缓存");
+        assert!(view.sub_agents[0].failed);
+        let revision = view.revision;
+        p.update_sub_agents(&terminal, true);
+        assert_eq!(p.snapshot.as_ref().unwrap().revision, revision);
+        p.replace_history(&json!({"messages":[],"subAgents":[]}));
+        assert_eq!(p.snapshot.as_ref().unwrap().sub_agents.len(), 1);
+        let mut other = p.snapshot.as_ref().unwrap().conversation.clone();
+        other.id = "pi:/synthetic/other-parent.jsonl".into();
+        p.set_conversation(other);
+        assert!(p.snapshot.as_ref().unwrap().sub_agents.is_empty());
     }
 
     fn message(projection: &mut PiProjection, value: Value) {

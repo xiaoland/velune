@@ -323,7 +323,7 @@ impl CoreRuntime {
                             cwd: entry.hint.cwd,
                             can_rename: false,
                             can_delete: false,
-                            parent_conversation_id: None,
+                            parent_conversation_id: entry.hint.parent_conversation_id,
                         });
                     }
                     browsing::EntryState::Unreadable => {}

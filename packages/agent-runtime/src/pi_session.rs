@@ -118,6 +118,14 @@ impl PiSession {
                     .and_then(|task| task.conversation_id.clone()),
                 state: *state,
             })
+            .chain(self.children.iter().map(|(path, (state, _))| {
+                BackgroundTask {
+                    conversation_id: self
+                        .snapshot()
+                        .map(|snapshot| format!("{}:{path}", snapshot.conversation.runtime_id)),
+                    state: *state,
+                }
+            }))
             .collect()
     }
 
@@ -329,6 +337,25 @@ impl PiSession {
     }
 
     fn apply_background_frame(&mut self, frame: &Value) {
+        // A delayed response from the previous native parent must not mutate
+        // the newly addressed session, including output and operation receipts.
+        // Bridges predating this owner field remain compatible.
+        let expected = self
+            .snapshot()
+            .and_then(|snapshot| {
+                snapshot
+                    .conversation
+                    .id
+                    .strip_prefix(&format!("{}:", snapshot.conversation.runtime_id))
+            })
+            .map(std::path::Path::new)
+            .filter(|path| path.is_absolute())
+            .or(self.config.session.as_deref());
+        if let (Some(parent), Some(expected)) = (frame["parentSessionFile"].as_str(), expected)
+            && std::path::Path::new(parent) != expected
+        {
+            return;
+        }
         if frame["version"] != 1 {
             self.background_pending_sync = true;
             self.set_background_error(Some("Pi 后台工作桥接返回了未知协议版本".into()));
@@ -443,6 +470,16 @@ impl PiSession {
                 self.background_pending_sync = true;
                 self.set_background_error(Some("Pi 后台工作桥接返回了未知状态".into()));
             }
+        }
+        if let Some(running) = &mut self.running {
+            running
+                .projection
+                .update_sub_agents(&frame["subAgents"], true);
+            // Older bridges may describe an active child only here. Its
+            // fallback must never replace the fuller native agent/task title.
+            running
+                .projection
+                .update_sub_agents(&frame["children"], false);
         }
         if let Some(children) = frame["children"].as_array() {
             self.children.clear();
@@ -793,6 +830,113 @@ impl PiSession {
 mod tests {
     use super::*;
     use crate::LiveConversation;
+
+    #[test]
+    fn pi_subagent_live_metadata_keeps_terminal_identities_separate_from_active_work() {
+        let mut random = [0; 8];
+        getrandom::fill(&mut random).unwrap();
+        let root = std::env::temp_dir().join(format!(
+            "velune-child-descriptors-{:x}",
+            u64::from_le_bytes(random)
+        ));
+        std::fs::create_dir(&root).unwrap();
+        let helper = root.join("rpc.py");
+        std::fs::write(&helper, r#"import json,sys
+for line in sys.stdin:
+ r=json.loads(line)
+ data={'commands':[]} if r['type']=='get_commands' else {'messages':[]}
+ print(json.dumps({'type':'response','id':r['id'],'command':r['type'],'success':True,'data':data}),flush=True)
+"#).unwrap();
+        let config: Config = serde_json::from_value(json!({"execution":{"kind":"local"},"os_home":root,"binary":"/usr/bin/python3","node_binary":"/usr/bin/python3","rpc_entry":helper})).unwrap();
+        let client = Client::spawn(config.clone()).unwrap();
+        let mut session = PiSession::new(config);
+        session.start(
+            client,
+            PiProjection::new(ConversationSummary {
+                native_read_state: None,
+                id: "pi:synthetic".into(),
+                runtime_id: "pi".into(),
+                title: crate::conversation::ConversationTitle::Untitled,
+                cwd: None,
+                created_at_unix_ms: None,
+                updated_at_unix_ms: None,
+                can_rename: false,
+                can_delete: false,
+                parent_conversation_id: None,
+            }),
+        );
+        session.config.session = Some("/synthetic/parent-a.jsonl".into());
+        session.apply_background_frame(&json!({"version":1,"kind":"snapshot","parentSessionFile":"/synthetic/parent-b.jsonl",
+            "tasks":[{"id":"foreign-task","status":"running"}],
+            "children":[{"sessionFile":"/synthetic/foreign-child.jsonl","title":"foreign child","canStop":true}],
+            "subAgents":[{"sessionFile":"/synthetic/foreign-child.jsonl","title":"foreign descriptor"}],
+            "taskOperation":{"error":"foreign operation"},
+            "persistedNotificationIds":["foreign-notification"]
+        }));
+        assert!(session.snapshot().unwrap().sub_agents.is_empty());
+        assert!(session.work().is_empty());
+        assert!(session.children.is_empty());
+        assert!(session.task_items.is_empty());
+        assert!(session.task_issue.is_none());
+        assert!(
+            !session
+                .acknowledged_notifications
+                .contains("foreign-notification")
+        );
+        session.apply_background_frame(&json!({"version":1,"kind":"snapshot","parentSessionFile":"/synthetic/parent-a.jsonl","tasks":[
+            {"id":"shell","status":"running","kind":"shell","description":"Ordinary shell","childSessionFile":"/synthetic/not-native.jsonl"}
+        ],"subAgents":[{"sessionFile":"/synthetic/child.jsonl","title":"worker：缓存检查","failed":false}],
+        "children":[{"sessionFile":"/synthetic/child.jsonl","title":"fallback","state":"running","canStop":true}]}));
+        let agents = &session.snapshot().unwrap().sub_agents;
+        assert_eq!(
+            agents.len(),
+            1,
+            "ordinary background tasks do not create native identities"
+        );
+        assert_eq!(agents[0].title, "worker：缓存检查");
+        assert!(
+            session
+                .work()
+                .iter()
+                .any(|task| task.conversation_id.as_deref() == Some("pi:/synthetic/child.jsonl"))
+        );
+        session.apply_background_frame(&json!({"version":1,"kind":"snapshot","tasks":[],"children":[],"subAgents":[{"sessionFile":"/synthetic/child.jsonl","title":"worker：缓存检查","failed":true}]}));
+        assert!(session.work().is_empty());
+        assert!(session.snapshot().unwrap().sub_agents[0].failed);
+        session.apply_background_frame(
+            &json!({"version":1,"kind":"unknown","childrenUnknown":true,"children":[]}),
+        );
+        assert_eq!(session.snapshot().unwrap().sub_agents.len(), 1);
+        assert!(session.has_pending_metadata());
+        // The SDK owner is newer than the launch configuration. Follow it in
+        // both directions rather than accepting frames for the stale launch A.
+        for (owner, rejected) in [("b", "a"), ("a", "b")] {
+            let parent = format!("/synthetic/parent-{owner}.jsonl");
+            session.apply_events(vec![json!({"type":"extension_ui_request","method":"setStatus",
+                "statusKey":"velune.session-metadata","statusText":json!({"sessionFile":parent}).to_string()
+            })]);
+            assert!(
+                session.snapshot().unwrap().sub_agents.is_empty(),
+                "switching the SDK owner clears the previous parent's descriptors"
+            );
+            session.apply_background_frame(&json!({"version":1,"kind":"snapshot",
+                "parentSessionFile":format!("/synthetic/parent-{rejected}.jsonl"),
+                "tasks":[],"children":[],"subAgents":[{"sessionFile":"/synthetic/stale.jsonl","title":"stale parent"}]
+            }));
+            assert!(session.snapshot().unwrap().sub_agents.is_empty());
+            session.apply_background_frame(&json!({"version":1,"kind":"snapshot","parentSessionFile":parent,
+                "tasks":[],"children":[],"subAgents":[{"sessionFile":format!("/synthetic/child-{owner}.jsonl"),"title":format!("owner {owner}")}]
+            }));
+            assert_eq!(session.snapshot().unwrap().sub_agents.len(), 1);
+            assert_eq!(
+                session.snapshot().unwrap().sub_agents[0].title,
+                format!("owner {owner}")
+            );
+        }
+        session.shutdown().unwrap();
+        drop(session);
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn background_tasks_async_output_and_exact_stop_do_not_block_or_interrupt_parent() {

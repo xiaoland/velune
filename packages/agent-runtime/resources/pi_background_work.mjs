@@ -2,6 +2,7 @@
 // The RPC stdin stream stays owned by Pi's SDK; requests cross it only as
 // ordinary Velune extension commands and versioned setStatus frames.
 import { randomUUID } from "node:crypto";
+import {indexSubagentRuns, subagentSessions, subagentTitle, readSubagentMetadata} from "./pi_subagents.mjs";
 import { readdir, open, lstat } from "node:fs/promises";
 import { dirname, basename, join, isAbsolute } from "node:path";
 
@@ -43,6 +44,22 @@ export default function installPiBackgroundWork(pi) {
   let childrenUnknown = false;
   let subagentSupported;
   let subagentObserved = false;
+  let childReadSequence = 0;
+  let metadataKey;
+  let archivedRuns = new Map();
+  let subAgents = [];
+  let childParent;
+  const useChildParent = parent => {
+    if (childParent === parent) return;
+    childParent = parent;
+    childReadSequence += 1;
+    metadataKey = undefined;
+    archivedRuns = new Map();
+    subAgents = [];
+    children = [];
+    childrenUnknown = false;
+    lastFrame = {version:FRAME_VERSION,kind:"uninitialized",tasks:[]};
+  };
   // Public registries distinguish a silent installed extension from a missing
   // responder. Disabled tools are still returned by getAllTools.
   const registeredSubagents = () => {
@@ -72,7 +89,22 @@ export default function installPiBackgroundWork(pi) {
   });
   const readChildren = async ctx => {
     if (subagentSupported === false) return;
+    const parent = ctx.sessionManager.getSessionFile();
+    if (latestContext && parent !== latestContext.sessionManager.getSessionFile()) return;
+    useChildParent(parent);
+    const request = ++childReadSequence;
     try {
+      const entries = ctx.sessionManager.getEntries?.() ?? [];
+      const key = JSON.stringify([parent, entries.length, entries.at(-1)?.id]);
+      if (parent && key !== metadataKey) {
+        const metadata = await readSubagentMetadata(parent, entries);
+        if (request !== childReadSequence || disposed) return;
+        archivedRuns = indexSubagentRuns(entries);
+        const names = new Map(subAgents.map(child => [child.sessionFile, child]));
+        for (const child of metadata) names.set(child.sessionFile, child);
+        subAgents = [...names.values()];
+        metadataKey = key;
+      }
       if (subagentSupported === undefined) {
         const caps = await subagentRpc("ping");
         if (caps?.capabilities?.asyncStatusSnapshot?.version !== 1 || !Array.isArray(caps.methods) || !caps.methods.includes("stop")) {
@@ -84,62 +116,46 @@ export default function installPiBackgroundWork(pi) {
       const snapshot = response.asyncSnapshot;
       if (snapshot?.version !== 1 || !Array.isArray(snapshot.runs)) throw new Error("Unknown Pi subagent snapshot");
       if (snapshot.omitted?.runs > 0 || snapshot.omitted?.children > 0 || snapshot.omitted?.byteLimitExceeded) throw new Error("Pi subagent snapshot is incomplete");
-      const parent = ctx.sessionManager.getSessionFile();
-      const next = [];
+      const next = [], activeRuns = new Set();
       let unmapped = false;
-      if (!parent && snapshot.runs.some(run => ["running", "queued"].includes(run.state))) unmapped = true;
-      if (parent) for (const run of snapshot.runs) {
+      for (const run of snapshot.runs) {
         if (!["running", "queued"].includes(run.state)) continue;
-        if (!/^[a-zA-Z0-9_-]+$/.test(run.id)) { unmapped = true; continue; }
-        const stem = join(dirname(parent), basename(parent, ".jsonl"));
-        const safeDirectory = async path => lstat(path).then(stat => stat.isDirectory() && !stat.isSymbolicLink()).catch(() => false);
-        if (!await safeDirectory(stem)) { unmapped = true; continue; }
-        const directories = [];
-        // Supported public extension layouts: the older forks/run folder,
-        // and pi-subagents' task-owned run/step folders. Never scan cwd.
-        const forks = join(stem, "forks"), legacy = join(forks, run.id), current = join(stem, run.id);
-        if (await safeDirectory(forks) && await safeDirectory(legacy)) directories.push(legacy);
-        if (canonicalRunId(run.id) && await safeDirectory(current)) {
-          for (const entry of await readdir(current, {withFileTypes:true})) {
-            const step = join(current, entry.name);
-            if (entry.isDirectory() && canonicalRunSlot(entry.name) && await safeDirectory(step)) directories.push(step);
-          }
+        const states = (run.children ?? []).map(child => child.state);
+        // A run can still monitor/report after all of its child executions end.
+        if (states.length && states.every(state => ["complete", "completed", "failed", "partial", "paused", "stopped", "rejected"].includes(state))) continue;
+        activeRuns.add(run.id);
+        if (!parent || !/^[a-zA-Z0-9_-]+$/.test(run.id)) { unmapped = true; continue; }
+        const sessions = await subagentSessions(parent, run.id, archivedRuns);
+        if (!sessions.length) { unmapped = true; continue; }
+        // Mixed workflow steps cannot be matched from opaque snapshot node IDs.
+        // Preserve uncertainty rather than marking terminal siblings as running.
+        if (states.some(state => ["complete", "completed", "failed", "partial", "paused", "stopped", "rejected"].includes(state))) {
+          unmapped = true;
+          continue;
         }
-        const sessions = [];
-        for (const directory of directories) {
-          const names = await readdir(directory, {withFileTypes:true}).catch(() => []);
-          for (const entry of names.filter(entry => entry.isFile() && entry.name.endsWith(".jsonl"))) {
-            const sessionFile = join(directory, entry.name);
-            try {
-              const file = await open(sessionFile, "r");
-              let header;
-              try {
-                const buffer = Buffer.alloc(65536);
-                const {bytesRead} = await file.read(buffer, 0, buffer.length, 0);
-                const text = buffer.subarray(0, bytesRead).toString("utf8");
-                if (!text.includes("\n")) throw new Error("Incomplete Pi session header");
-                header = JSON.parse(text.split("\n", 1)[0]);
-              } finally { await file.close(); }
-              if (header.type === "session" && typeof header.id === "string" && header.id.length > 0 && header.parentSession === parent) sessions.push(sessionFile);
-            } catch {}
-          }
-        }
-        // The public snapshot deliberately omits per-step transcript paths.
-        // Only a proven single-session run can be stopped without siblings.
-        if (!sessions.length) unmapped = true;
         const single = run.kind === "subagent" && run.children?.length === 1 && sessions.length === 1;
-        for (const sessionFile of sessions) next.push({sessionFile, runId:run.id, canStop:single, state:"running"});
+        for (const sessionFile of sessions) {
+          const title = subagentTitle(archivedRuns.get(run.id), archivedRuns, run.label ?? "子 Agent", sessionFile);
+          next.push({sessionFile, title, runId:run.id, canStop:single, state:"running"});
+        }
       }
-      // An active run can temporarily lose readable transcript metadata. Its
-      // previously proven child remains work until a complete snapshot ends
-      // the run; absence of a file is not completion evidence.
-      const activeRuns = new Set(snapshot.runs.filter(run => ["running", "queued"].includes(run.state)).map(run => run.id));
+      if (request !== childReadSequence || disposed || parent !== ctx.sessionManager.getSessionFile()) return;
+      // An older slow snapshot must not resurrect work after a newer completion.
       children = unmapped
         ? [...next, ...children.filter(child => activeRuns.has(child.runId) && !next.some(known => known.sessionFile === child.sessionFile))]
         : next;
       childrenUnknown = unmapped;
-      if (unmapped) children = children.map(child => ({...child, canStop:false}));
+      const claims = new Map();
+      for (const child of children) {
+        if (!claims.has(child.sessionFile)) claims.set(child.sessionFile, new Set());
+        claims.get(child.sessionFile).add(child.runId);
+      }
+      children = children.map(child => ({...child, canStop:child.canStop && !unmapped && claims.get(child.sessionFile).size === 1}));
+      const names = new Map(subAgents.map(child => [child.sessionFile, child]));
+      for (const child of children) if (!names.has(child.sessionFile)) names.set(child.sessionFile, {sessionFile:child.sessionFile,title:child.title,failed:false});
+      subAgents = [...names.values()];
     } catch (error) {
+      if (request !== childReadSequence || disposed) return;
       if (subagentSupported === undefined && !subagentObserved
           && error?.code === "subagent_timeout" && registeredSubagents() === false) {
         subagentSupported = false;
@@ -157,15 +173,18 @@ export default function installPiBackgroundWork(pi) {
 
   const publish = (ctx, frame) => {
     if (disposed) return;
+    if (ctx && latestContext && ctx.sessionManager.getSessionFile() !== latestContext.sessionManager.getSessionFile()) return;
     if (ctx) latestContext = ctx;
     if (!latestContext) return;
+    const parentSessionFile = latestContext.sessionManager.getSessionFile();
+    useChildParent(parentSessionFile);
     // Delivery is a fact of the session archive, not the current LLM context.
     // Compaction may remove an already-delivered notification from get_messages.
     const persistedNotificationIds = [...new Set((latestContext.sessionManager.getEntries?.() ?? [])
       .filter(entry => entry.type === "custom_message" && entry.customType === "background-task-notification")
       .map(entry => entry.details?.id)
       .filter(id => typeof id === "string" && id.length > 0))];
-    frame = {...frame, children, childrenUnknown, persistedNotificationIds};
+    frame = {...frame, parentSessionFile, children, subAgents, childrenUnknown, persistedNotificationIds};
     // Results are one-shot deliveries, not part of the periodically
     // republished metadata snapshot (which can otherwise repeat 64 KiB logs).
     const {taskOutput, taskOperation, ...metadata} = frame;
@@ -435,6 +454,8 @@ export default function installPiBackgroundWork(pi) {
     description: "Synchronize Pi background task state for Velune",
     handler: async (args, ctx) => {
       if (disposed) return;
+      latestContext = ctx;
+      useChildParent(ctx.sessionManager.getSessionFile());
       let command;
       try {
         command = JSON.parse(Buffer.from(args.trim(), "base64url").toString("utf8"));
@@ -529,21 +550,30 @@ export default function installPiBackgroundWork(pi) {
     },
   });
 
-  const childPoll = setInterval(() => {
-    if (!disposed && latestContext && subagentSupported !== false) void readChildren(latestContext).then(() => publish(latestContext, lastFrame));
-  }, 2000);
+  const refreshChildren = () => {
+    if (disposed || !latestContext || subagentSupported === false) return;
+    const ctx = latestContext, parent = ctx.sessionManager.getSessionFile();
+    const reading = readChildren(ctx), sequence = childReadSequence;
+    void reading.then(() => {
+      if (!disposed && sequence === childReadSequence && parent === latestContext?.sessionManager.getSessionFile()) publish(ctx, lastFrame);
+    });
+  };
+  const childPoll = setInterval(refreshChildren, 2000);
   childPoll.unref?.();
   const removeStartedListener = pi.events.on("subagent:async-started", () => {
-    if (!disposed && latestContext) void readChildren(latestContext).then(() => publish(latestContext, lastFrame));
+    refreshChildren();
   });
   const removeChildListener = pi.events.on("subagent:child-status", () => {
-    if (!disposed && latestContext) void readChildren(latestContext).then(() => publish(latestContext, lastFrame));
+    refreshChildren();
   });
   const removeCompleteListener = pi.events.on("subagent:async-complete", () => {
-    if (!disposed && latestContext) void readChildren(latestContext).then(() => publish(latestContext, lastFrame));
+    refreshChildren();
   });
   removeSessionStartListener = pi.on("session_start", (_event, ctx) => {
-    if (!disposed) latestContext = ctx;
+    if (!disposed) {
+      latestContext = ctx;
+      useChildParent(ctx.sessionManager.getSessionFile());
+    }
   });
 
   removeShutdownListener = pi.on("session_shutdown", () => {

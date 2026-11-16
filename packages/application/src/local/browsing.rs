@@ -61,6 +61,7 @@ pub(super) struct IndexedConversation {
 }
 #[derive(Clone, Default)]
 pub(super) struct ConversationHint {
+    pub(super) parent_conversation_id: Option<String>,
     pub(super) session_id: Option<String>,
     pub(super) cwd: Option<String>,
     /// The file's modification time: which sessions to read first, never shown.
@@ -191,6 +192,7 @@ impl HistoryRead {
                 let projected = projection.snapshot.expect("history projection");
                 snapshot.messages = projected.messages;
                 snapshot.executions = projected.executions;
+                snapshot.sub_agents = projected.sub_agents;
                 snapshot.conversation.cwd = saved["cwd"].as_str().map(str::to_owned);
                 let marker = &saved["virtualState"];
                 if marker["provider"] == "velune" || marker["provider"] == "velune-gateway" {
@@ -312,6 +314,9 @@ impl CoreRuntime {
                     id: format!("{}:{}", runtime.id, file.path),
                     identity: format!("{}:{}", file.size, file.mtime_ns),
                     hint: ConversationHint {
+                        parent_conversation_id: file
+                            .parent_path
+                            .map(|parent| format!("{}:{parent}", runtime.id)),
                         session_id: file.session_id,
                         cwd: file.cwd,
                         activity_unix_ms: file.modified_at_unix_ms,
@@ -327,6 +332,7 @@ impl CoreRuntime {
                     id: format!("{}:{}", runtime.id, entry.native_id),
                     identity: format!("{}:{:?}", entry.size, entry.modified_at_unix_ms),
                     hint: ConversationHint {
+                        parent_conversation_id: None,
                         session_id: None,
                         cwd: entry.cwd,
                         activity_unix_ms: entry.modified_at_unix_ms,
@@ -463,7 +469,9 @@ impl CoreRuntime {
                             created_at_unix_ms: session.created_unix_ms,
                             runtime_id: runtime.id.clone(),
                             cwd: session.cwd,
-                            parent_conversation_id: None,
+                            parent_conversation_id: session
+                                .parent_path
+                                .map(|parent| format!("{}:{parent}", runtime.id)),
                         },
                     )
                 })

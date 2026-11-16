@@ -68,6 +68,11 @@ Codex 的 `inter_agent_communication_metadata` 只记录投递／唤醒信息，
 
 ### 原生子 Agent
 
+Pi的原生描述由adapter填入snapshot.sub_agents，application合并关联，不从普通后台任务推断原生子关系。描述来自append-only父记录中的调用、结构化结果及通知，冷inspect和热metadata使用同一验证器；SessionManager的name和有效消息保持原义。run身份与原生session路径分别建模，resume依据原生调用关系映射旧session，不以新run ID猜目录。活动children只来自当前完整RPC观察，停止只指向已验证单子项的当前run；描述保留不表示活动。
+
+内部metadata帧带父session身份，JS缓存及异步发布按父作用域和读取序号隔离；Rust以SDK当前投影的原生路径校验，不能以可能过期的启动配置覆盖当前owner。SDK换父时清除旧描述；缺字段的旧get_messages响应不擦除同父已知描述。新资源模块须随完整端bundle与SSH执行资源一起部署。
+
+
 原生子 Agent 是 Harness 自己的子会话，属于会话体验。会话模型以两个通用字段表达，平台不按运行时分支：`ConversationSummary.parent_conversation_id` 标出子会话及其父会话，`MessageBlock::Tool.conversation_id` 记录调用启动或指向的子会话。快照的 `collaborators` 另列 A2A 参与方及方向，平台把子 Agent、父会话与协作方一起呈现为关联 Agent。
 
 - **Codex**：`collabAgentToolCall` 在恰有一个 receiver 线程时链接该线程，`subAgentActivity` 的 `started` 链接其 `agentThreadId`；线程列表按 `parentThreadId` 或 `source.subAgent.thread_spawn.parent_thread_id` 标父会话。Codex 在子 Agent 结束后归档其线程，按身份查找时只用 `thread/read` 读这一个线程，不扫描整个归档。子线程上的审批请求作为父会话的交互出现，标题前缀“子 Agent：”。

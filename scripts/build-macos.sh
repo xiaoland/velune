@@ -125,7 +125,7 @@ python3 scripts/build-support.py copy "$swift_binary_directory/VeluneMac" "$app/
 # JavaScript is a sealed resource, not a nested macOS executable.
 resources="$app/Contents/Resources"
 python3 scripts/build-support.py copy LICENSE "$resources/ThirdParty/LICENSE"
-for script in pi_sdk pi_sessions pi_rpc pi_virtual_model pi_background_work pi_auth pi_provider_import huihua_sessions; do
+for script in pi_sdk pi_sessions pi_rpc pi_virtual_model pi_background_work pi_subagents pi_auth pi_provider_import huihua_sessions; do
   python3 scripts/build-support.py copy "packages/agent-runtime/resources/$script.mjs" "$resources/$script.mjs"
 done
 python3 scripts/build-support.py sync target/runtime-support/node_modules "$resources/node_modules" --include '*' --prune

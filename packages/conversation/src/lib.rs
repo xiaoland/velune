@@ -520,8 +520,8 @@ pub struct ConversationSnapshot {
     /// Velune's decoration; adapters leave it empty.
     #[serde(default)]
     pub follow_up: FollowUp,
-    /// The conversation's native sub-agents; Velune's decoration, adapters
-    /// leave it empty.
+    /// Native child descriptions supplied by adapters and enriched with
+    /// application-owned associations. Their presence does not imply activity.
     #[serde(default)]
     pub sub_agents: Vec<SubAgent>,
     /// The conversations its agent contacted through Velune, or whose agents

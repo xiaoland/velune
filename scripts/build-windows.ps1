@@ -82,7 +82,7 @@ Invoke-BuildSupport copy "$native\velune_relaykit.dll" "$app\velune_relaykit.dll
 
 $resources = "$app\resources"
 Invoke-BuildSupport copy LICENSE "$resources\ThirdParty\LICENSE"
-$scripts = 'pi_sdk', 'pi_sessions', 'pi_rpc', 'pi_virtual_model', 'pi_background_work', 'pi_auth', 'pi_provider_import', 'huihua_sessions'
+$scripts = 'pi_sdk', 'pi_sessions', 'pi_rpc', 'pi_virtual_model', 'pi_background_work', 'pi_subagents', 'pi_auth', 'pi_provider_import', 'huihua_sessions'
 foreach ($script in $scripts) { Invoke-BuildSupport copy "packages\agent-runtime\resources\$script.mjs" "$resources\$script.mjs" }
 if (Test-Path $resources) {
     Get-ChildItem $resources -Filter '*.mjs' -File | Where-Object { $_.BaseName -notin $scripts } | Remove-Item

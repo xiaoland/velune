@@ -2,6 +2,7 @@
 // Pi's SessionManager remains authoritative for session metadata.
 
 import { resolvePiSdk } from "./pi_sdk.mjs";
+import { readSubagentMetadata } from "./pi_subagents.mjs";
 
 const args = process.argv.slice(2);
 const value = (name) => {
@@ -119,6 +120,7 @@ if (inspectPath) {
   process.stdout.write(JSON.stringify({
     name: manager.getSessionName() ?? null,
     cwd: manager.getCwd(),
+    subAgents: await readSubagentMetadata(inspectPath, manager.getEntries()),
     messages: manager.buildSessionProjection().entries.flatMap(entry =>
       entry.messages.map((message, ordinal) => ({...message, id:`pi:${manager.getSessionId()}:${entry.sourceEntry.id}:${ordinal}`}))),
     model: context.model,
@@ -132,8 +134,8 @@ if (inspectPath) {
   // sessions. Only the files the caller names are parsed, by Pi's own
   // metadata reader through a private directory of links, so Pi stays
   // authoritative for every listed field.
-  const { readdir, stat, mkdtemp, symlink, link, copyFile, rm, open } = await import("node:fs/promises");
-  const { join, resolve } = await import("node:path");
+  const { readdir, stat, lstat, mkdtemp, symlink, link, copyFile, rm, open } = await import("node:fs/promises");
+  const { join, resolve, dirname, basename } = await import("node:path");
   const { tmpdir } = await import("node:os");
   let input = "";
   for await (const chunk of process.stdin) input += chunk;
@@ -142,12 +144,10 @@ if (inspectPath) {
   const directories = sessionDir
     ? [sessionDir]
     : await readdir(sessionsRoot, { withFileTypes: true })
-        .then((entries) => entries.filter((entry) => entry.isDirectory() || entry.isSymbolicLink()).map((entry) => join(sessionsRoot, entry.name)))
+        .then((entries) => entries.filter((entry) => entry.isDirectory()).map((entry) => join(sessionsRoot, entry.name)))
         .catch(() => []);
-  const paths = (await Promise.all(directories.map((directory) => readdir(directory)
-    .then((names) => names.filter((name) => name.endsWith(".jsonl")).map((name) => join(directory, name)))
-    .catch(() => [])))).flat();
-  const header = async (path) => {
+  const headers = new Map();
+  const readHeader = async (path) => {
     const file = await open(path, "r");
     try {
       const buffer = Buffer.alloc(65536);
@@ -161,6 +161,50 @@ if (inspectPath) {
       await file.close();
     }
   };
+  const header = path => {
+    if (!headers.has(path)) headers.set(path, readHeader(path).catch(() => null));
+    return headers.get(path);
+  };
+  const runID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  const runSlot = name => /^run-(0|[1-9][0-9]{0,9})$/.test(name) && Number(name.slice(4)) <= 0xffffffff;
+  const parentPaths = new Map();
+  // Recognize only the two native child layouts. A directory alone is not
+  // ownership: every nested file must name this already discovered parent.
+  const children = async (directory, depth = 0, parent = null, modern = false) => {
+    if (depth > 16 || !(await lstat(directory).catch(() => null))?.isDirectory()) return [];
+    const entries = await readdir(directory, { withFileTypes: true }).catch(() => []);
+    const candidates = entries.filter(entry => entry.isFile()
+      && (modern ? entry.name === "session.jsonl" : entry.name.endsWith(".jsonl")));
+    const files = [];
+    for (const entry of candidates) {
+      const file = join(directory, entry.name);
+      const start = await header(file);
+      if (parent && (start?.parentSession !== parent || typeof start?.id !== "string" || !start.id)) continue;
+      files.push(file);
+      if (parent) parentPaths.set(file, parent);
+      if (typeof start?.id !== "string" || !start.id) continue;
+      const stem = join(dirname(file), basename(file, ".jsonl"));
+      if (!(await lstat(stem).catch(() => null))?.isDirectory()) continue;
+      const forks = join(stem, "forks");
+      if ((await lstat(forks).catch(() => null))?.isDirectory()) {
+        const runs = await readdir(forks, { withFileTypes: true }).catch(() => []);
+        for (const run of runs.filter(item => item.isDirectory())) {
+          files.push(...await children(join(forks, run.name), depth + 1, file));
+        }
+      }
+      // pi-subagents 0.80 native foreground/detached child session layout.
+      const runs = await readdir(stem, { withFileTypes: true }).catch(() => []);
+      for (const run of runs.filter(item => item.isDirectory() && runID.test(item.name))) {
+        const directory = join(stem, run.name);
+        const slots = await readdir(directory, { withFileTypes: true }).catch(() => []);
+        for (const slot of slots.filter(item => item.isDirectory() && runSlot(item.name))) {
+          files.push(...await children(join(directory, slot.name), depth + 1, file, true));
+        }
+      }
+    }
+    return files;
+  };
+  const paths = [...new Set((await Promise.all(directories.map(directory => children(directory)))).flat())];
   // Nanoseconds as a decimal string survive the JSON round trip exactly.
   const files = (await Promise.all(paths.map(async (path) => {
     try {
@@ -170,11 +214,17 @@ if (inspectPath) {
       return { path, sessionId: typeof start?.id === "string" ? start.id : null, size: String(stats.size), mtimeNs: String(stats.mtimeNs),
         modifiedAtUnixMs: Number(stats.mtimeMs),
         cwd: typeof start?.cwd === "string" && start.cwd ? start.cwd : null,
+        parentSession: typeof start?.parentSession === "string" ? start.parentSession : null,
         createdAtUnixMs: Number.isFinite(created) ? created : null };
     } catch {
       return null;
     }
   }))).filter((file) => file !== null);
+  const knownPaths = new Set(files.map(file => file.path));
+  for (const file of files) {
+    const parent = parentPaths.get(file.path);
+    file.parentPath = parent && knownPaths.has(parent) ? parent : null;
+  }
   const wanted = files.filter((file) => want.has(file.path));
   let sessions = [];
   if (wanted.length) {
@@ -196,6 +246,7 @@ if (inspectPath) {
         const index = Number(session.path.slice(links.length + 1, -".jsonl".length));
         return {
           path: wanted[index].path,
+          parentPath: wanted[index].parentPath,
           id: session.id,
           cwd: session.cwd,
           name: session.name ?? null,

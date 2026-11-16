@@ -429,6 +429,8 @@ fn native_history_error(error: Error, phase: &'static str) -> HistoryError {
 #[serde(rename_all = "camelCase")]
 pub struct PiSessionFile {
     pub path: String,
+    #[serde(default)]
+    pub parent_path: Option<String>,
     pub session_id: Option<String>,
     pub size: String,
     pub mtime_ns: String,
@@ -443,6 +445,8 @@ pub struct PiSessionFile {
 #[serde(rename_all = "camelCase")]
 pub struct PiSessionSummary {
     pub path: String,
+    #[serde(default)]
+    pub parent_path: Option<String>,
     pub cwd: Option<String>,
     pub name: Option<String>,
     pub created_unix_ms: Option<i64>,
