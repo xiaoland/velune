@@ -19,6 +19,9 @@ use std::collections::{BTreeSet, HashMap};
 pub(super) struct BrowserWindow {
     /// Pages beyond the first that the user loaded, per group.
     extra_pages: BTreeMap<ConversationGroupKey, u32>,
+    /// Initial capacity belongs to this client window, not the current group
+    /// order: reading native dates can reorder groups without evicting rows.
+    initial_loads: std::cell::RefCell<BTreeMap<ConversationGroupKey, usize>>,
     archived: bool,
 }
 
@@ -62,6 +65,7 @@ impl ProjectlessPlaces {
 }
 
 pub(super) struct Page {
+    pub(super) history_failures: Vec<crate::HistoryFailure>,
     pub(super) conversations: Vec<ListedConversation>,
     pub(super) groups: Vec<ConversationGroup>,
     pub(super) projects: Vec<ConversationProject>,
@@ -348,10 +352,15 @@ impl CoreRuntime {
     /// Reading gives a conversation its native activity time, which may move
     /// it out of the window and others in, so the window is drawn again
     /// until it settles; whatever is still unread then is left out.
-    pub(super) fn browse_read(&self, mut sources: Vec<ListedSource>, search: Option<&str>) -> Page {
+    pub(super) fn browse_read(
+        &self,
+        mut sources: Vec<ListedSource>,
+        search: Option<&str>,
+        extend_index: bool,
+    ) -> Page {
         let mut rounds = 0;
         loop {
-            let mut page = self.browse(sources, search);
+            let page = self.browse_window(sources, search, true, extend_index);
             let unread = |item: &ListedConversation| {
                 self.listed_sources()
                     .get(&item.conversation.id)
@@ -368,18 +377,24 @@ impl CoreRuntime {
                 return page;
             }
             rounds += 1;
-            let mut failed = false;
+            let mut failures = Vec::new();
             for (runtime_id, ids) in &wanted {
                 let read = self
                     .runtime_instance(runtime_id)
                     .and_then(|runtime| self.read_indexed(runtime, ids));
                 if let Err(error) = read {
-                    failed = true;
+                    failures.push(crate::HistoryFailure {
+                        runtime_id: (*runtime_id).into(),
+                        detail: format!("会话历史无法读取：{error}"),
+                    });
                     tracing::warn!(target:"velune_application",event="runtime_history_read_failed",phase="list_window",runtime_id=%runtime_id,detail=%error);
                 }
             }
-            if failed || rounds > 4 {
-                page.conversations.retain(|item| !unread(item));
+            if !failures.is_empty() || rounds > 4 {
+                // Use the summaries that did succeed, while leaving failed reads
+                // provisional so another explicit request can retry them.
+                let mut page = self.browse_window(self.cached_sources(), search, false, true);
+                page.history_failures = failures;
                 return page;
             }
             sources = self.cached_sources();
@@ -390,7 +405,13 @@ impl CoreRuntime {
     /// recent activity, each loading its pages while the list's total lasts
     /// and any further page the user asked for. A search loads every match
     /// up to the total instead.
-    pub(super) fn browse(&self, sources: Vec<ListedSource>, search: Option<&str>) -> Page {
+    fn browse_window(
+        &self,
+        sources: Vec<ListedSource>,
+        search: Option<&str>,
+        include_provisional: bool,
+        known_first: bool,
+    ) -> Page {
         let preferences = &self.conversation_browser_preferences;
         let archived_view = self.browser_window.archived;
         let places = self.projectless_places();
@@ -559,6 +580,12 @@ impl CoreRuntime {
         }
         let page = self.conversation_browser_limits.page as usize;
         let mut remaining = self.conversation_browser_limits.total as usize;
+        if needle.is_none() {
+            let mut initial = self.browser_window.initial_loads.borrow_mut();
+            let present: BTreeSet<_> = groups.iter().map(|(key, ..)| key).collect();
+            initial.retain(|key, _| present.contains(key));
+            remaining = remaining.saturating_sub(initial.values().sum());
+        }
         let mut conversations = Vec::new();
         let mut descriptors = Vec::new();
         for (key, indices, latest) in groups {
@@ -578,16 +605,45 @@ impl CoreRuntime {
                     .get(&key)
                     .copied()
                     .unwrap_or(0) as usize;
-                let first = if key == ConversationGroupKey::All {
-                    remaining
-                } else {
-                    page.min(remaining)
-                }
-                .min(indices.len());
-                remaining -= first;
+                let mut initial = self.browser_window.initial_loads.borrow_mut();
+                let first = *initial.entry(key.clone()).or_insert_with(|| {
+                    let first = if key == ConversationGroupKey::All {
+                        remaining
+                    } else {
+                        page.min(remaining)
+                    }
+                    .min(indices.len());
+                    remaining -= first;
+                    first
+                });
                 indices.len().min(first + page * extra)
             };
-            for index in &indices[..loaded] {
+            // Extending an indexed window keeps known rows available. Only a
+            // native refresh lets file-date hints displace them; paging another
+            // group must not chase cold candidates in an already loaded group.
+            let known = |index: &&usize| {
+                self.listed_sources()
+                    .get(&all[**index].conversation.id)
+                    .is_some_and(|source| !source.provisional)
+            };
+            let mut visible: Vec<_> = if known_first {
+                indices.iter().filter(known).take(loaded).collect()
+            } else {
+                Vec::new()
+            };
+            if include_provisional {
+                let remaining = loaded - visible.len();
+                visible.extend(
+                    indices
+                        .iter()
+                        .filter(|index| !known_first || !known(index))
+                        .take(remaining),
+                );
+            }
+            // Every selected row still uses native dates and the same tie-breaks.
+            visible.sort_by(|left, right| order(left, right));
+            let loaded = visible.len();
+            for index in visible {
                 let mut item = all[*index].clone();
                 item.group = Some(key.clone());
                 conversations.push(item);
@@ -689,6 +745,7 @@ impl CoreRuntime {
             }
         }
         Page {
+            history_failures: Vec::new(),
             working_directory_projects: self.working_directory_projects(&all, &projects),
             conversations,
             groups: descriptors,
@@ -710,7 +767,7 @@ impl CoreRuntime {
                 tracing::warn!(target:"velune_application",event="runtime_history_read_failed",phase="search",runtime_id=%runtime.id,runtime_type_id=%runtime.type_id,detail=%error);
             }
         }
-        let page = self.browse_read(self.cached_sources(), Some(text));
+        let page = self.browse_read(self.cached_sources(), Some(text), false);
         Ok(ConversationSearch {
             conversations: page.conversations,
             groups: page.groups,
@@ -794,7 +851,9 @@ impl CoreRuntime {
         group: ConversationGroupKey,
     ) -> Result<crate::ConfigurationSnapshot, RuntimeError> {
         *self.browser_window.extra_pages.entry(group).or_default() += 1;
-        self.list()
+        // Paging extends the current index, not the set of native sources.
+        // cached_list still reads newly visible provisional summaries.
+        Ok(self.cached_list())
     }
 
     pub(crate) fn show_archived_conversations(
@@ -810,9 +869,23 @@ impl CoreRuntime {
         self.list()
     }
 
+    pub(super) fn release_collapsed_browser_capacity(&self, group: &ConversationGroupKey) {
+        let mut initial = self.browser_window.initial_loads.borrow_mut();
+        if initial.remove(group).is_some_and(|capacity| capacity > 0) {
+            // Keep every other granted capacity. Only groups with no initial
+            // capacity may compete for the space this explicit fold released.
+            initial.retain(|_, capacity| *capacity > 0);
+        }
+    }
+
+    pub(super) fn reset_browser_allocation(&self) {
+        self.browser_window.initial_loads.borrow_mut().clear();
+    }
+
     /// New grouping, sorting, or filters start the list from its first pages.
     pub(super) fn reset_browser_pages(&mut self) {
         self.browser_window.extra_pages.clear();
+        self.browser_window.initial_loads.get_mut().clear();
     }
 
     /// Changes Velune's organization of the conversations; the runtime's own
@@ -1103,5 +1176,567 @@ impl CoreRuntime {
         .map_err(|error| {
             RuntimeError::context("Codex 原生归档失败；请检查运行时版本与目录后重试", error)
         })
+    }
+}
+
+#[cfg(all(test, unix))]
+mod pagination_tests {
+    use super::*;
+    use crate::{ApplicationService, ClientViewId, Command, Options, Response};
+    use std::time::Instant;
+
+    struct Fixture(PathBuf);
+    impl Fixture {
+        fn new(collapsed: bool) -> Self {
+            let root =
+                std::env::temp_dir().join(format!("velune-pagination-{}", crate::new_record_key()));
+            fs::create_dir(&root).unwrap();
+            // Deliberately slow unrelated history reader. Paging an existing index
+            // must neither restart it nor require it to remain available.
+            fs::write(
+                root.join("huihua_sessions.mjs"),
+                r#"
+import json, pathlib, sys, time
+root = pathlib.Path(__file__).parent
+request = json.load(sys.stdin)
+with (root / 'scans').open('a') as log: log.write(request['operation'] + '\n')
+time.sleep(0.15)
+if (root / 'fail').exists(): sys.exit(1)
+print(json.dumps({'contractVersion':1,'sessions':[
+ {'nativeId':f'{group}-{row}','title':{'source':'native','text':f'Group {group} row {row}'},
+  'cwd':f'/synthetic/project-{group}','updatedAtUnixMs':100000-group*100-row,'createdAtUnixMs':1}
+ for group in range(6) for row in range(4)]}))
+"#,
+            )
+            .unwrap();
+            let runtime = RuntimeInstance {
+                enabled: true,
+                id: "synthetic".into(),
+                name: "Synthetic".into(),
+                type_id: RuntimeKind::DeepSeek,
+                gateway_id: "default".into(),
+                settings: BTreeMap::from([
+                    ("binary".into(), "/synthetic/unused-agent".into()),
+                    ("nodeBinary".into(), "/usr/bin/python3".into()),
+                    (
+                        "agentDir".into(),
+                        root.join("state").to_string_lossy().into_owned(),
+                    ),
+                ]),
+            };
+            let mut config = crate::repository::PersistedConfig {
+                runtime_instances: vec![runtime],
+                ..Default::default()
+            };
+            config.gateways.push(GatewayConfig {
+                id: "default".into(),
+                name: "Default".into(),
+                providers: Vec::new(),
+                routes: Vec::new(),
+            });
+            config.conversation_browser_group_limit = 2;
+            config.conversation_browser_total_limit = 4;
+            config.conversation_browser_preferences.grouping = ConversationBrowserGrouping::Project;
+            config.conversation_browser_preferences.group_sort = ConversationGroupSort::Manual;
+            config.conversation_browser_preferences.group_order = (0..6).map(Self::key).collect();
+            if collapsed {
+                config
+                    .conversation_browser_preferences
+                    .collapsed
+                    .extend([Self::key(3), Self::key(4)]);
+            }
+            fs::write(
+                root.join("generic-config.json"),
+                serde_json::to_vec(&config).unwrap(),
+            )
+            .unwrap();
+            Self(root)
+        }
+        fn key(group: usize) -> ConversationGroupKey {
+            ConversationGroupKey::Project {
+                path: Some(format!("/synthetic/project-{group}")),
+            }
+        }
+        fn open(&self) -> ApplicationService {
+            ApplicationService::open(Options {
+                home_directory: self.0.clone(),
+                resources_directory: self.0.clone(),
+            })
+            .unwrap()
+        }
+        fn scan_count(&self) -> usize {
+            fs::read_to_string(self.0.join("scans"))
+                .unwrap()
+                .lines()
+                .count()
+        }
+        fn read(service: &ApplicationService, view: &str) -> crate::ConfigurationSnapshot {
+            let Response::ReadConfiguration(value) = service
+                .execute(ClientViewId(view.into()), Command::ReadConfiguration)
+                .unwrap()
+            else {
+                panic!("configuration response")
+            };
+            value
+        }
+        fn more(
+            service: &ApplicationService,
+            view: &str,
+            group: usize,
+        ) -> crate::ConfigurationSnapshot {
+            let Response::LoadMoreConversations(value) = service
+                .execute(
+                    ClientViewId(view.into()),
+                    Command::LoadMoreConversations {
+                        group: Self::key(group),
+                    },
+                )
+                .unwrap()
+            else {
+                panic!("pagination response")
+            };
+            value
+        }
+    }
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn pagination_beyond_initial_budget_preserves_rows_and_client_windows_without_rescanning() {
+        let fixture = Fixture::new(false);
+        let app = fixture.open();
+        let started = Instant::now();
+        let first = Fixture::read(&app, "first");
+        let scan_elapsed = started.elapsed();
+        assert_eq!(
+            first
+                .conversation_groups
+                .iter()
+                .map(|g| g.loaded)
+                .collect::<Vec<_>>(),
+            [2, 2, 0, 0, 0, 0]
+        );
+        let original: BTreeSet<_> = first
+            .conversations
+            .iter()
+            .map(|c| c.conversation.id.clone())
+            .collect();
+        let scans = fixture.scan_count();
+        fs::write(fixture.0.join("fail"), "transient history outage").unwrap();
+        let started = Instant::now();
+        let next = Fixture::more(&app, "first", 4);
+        let page_elapsed = started.elapsed();
+        assert_eq!(
+            next.conversation_groups
+                .iter()
+                .map(|g| g.loaded)
+                .collect::<Vec<_>>(),
+            [2, 2, 0, 0, 2, 0]
+        );
+        assert!(
+            original.is_subset(
+                &next
+                    .conversations
+                    .iter()
+                    .map(|c| c.conversation.id.clone())
+                    .collect()
+            )
+        );
+        assert_eq!(
+            fixture.scan_count(),
+            scans,
+            "paging must not scan an unrelated/native runtime again"
+        );
+        let last = Fixture::more(&app, "first", 5);
+        assert_eq!(
+            last.conversation_groups
+                .iter()
+                .map(|g| g.loaded)
+                .collect::<Vec<_>>(),
+            [2, 2, 0, 0, 2, 2]
+        );
+        let retry = Fixture::more(&app, "first", 4);
+        assert_eq!(retry.conversation_groups[4].loaded, 4);
+        // A second real service view starts at its own initial window. Its read
+        // also demonstrates that explicit refresh still scans the native owner.
+        fs::remove_file(fixture.0.join("fail")).unwrap();
+        let other = Fixture::read(&app, "second");
+        assert_eq!(other.conversation_groups[4].loaded, 0);
+        let restored = Fixture::more(&app, "first", 3);
+        assert_eq!(restored.conversation_groups[4].loaded, 4);
+        assert_eq!(restored.conversation_groups[5].loaded, 2);
+        eprintln!(
+            "pagination benchmark: synthetic native scan={scan_elapsed:?}, indexed page={page_elapsed:?}, page rescans=0"
+        );
+        app.close(false).unwrap();
+    }
+
+    #[test]
+    fn pagination_respects_source_collapsed_state_until_explicitly_expanded() {
+        let fixture = Fixture::new(true);
+        let app = fixture.open();
+        let initial = Fixture::read(&app, "view");
+        assert!(initial.conversation_groups[4].collapsed);
+        let next = Fixture::more(&app, "view", 4);
+        assert_eq!(next.conversation_groups[4].loaded, 0);
+        let mut preferences = next.conversation_browser_preferences;
+        preferences.collapsed.retain(|key| *key != Fixture::key(4));
+        let scans = fixture.scan_count();
+        fs::write(fixture.0.join("fail"), "unrelated native outage").unwrap();
+        app.execute(
+            ClientViewId("view".into()),
+            Command::SetConversationBrowserPreferences { preferences },
+        )
+        .unwrap();
+        let expanded = Fixture::more(&app, "view", 4);
+        assert_eq!(expanded.conversation_groups[4].loaded, 4);
+        assert!(!expanded.conversation_groups[4].collapsed);
+        assert!(expanded.conversation_groups[3].collapsed);
+        assert_eq!(fixture.scan_count(), scans);
+        assert_eq!(expanded.conversations.len(), 8);
+        app.close(false).unwrap();
+    }
+
+    fn cold_fixture(rows: usize) -> Fixture {
+        let fixture = Fixture::new(false);
+        let config_path = fixture.0.join("generic-config.json");
+        let mut config: crate::repository::PersistedConfig =
+            serde_json::from_slice(&fs::read(&config_path).unwrap()).unwrap();
+        config.runtime_instances[0].type_id = RuntimeKind::ClaudeCode;
+        fs::write(&config_path, serde_json::to_vec(&config).unwrap()).unwrap();
+        for group in 0..6 {
+            let folder = fixture.0.join(format!("state/projects/group-{group}"));
+            fs::create_dir_all(&folder).unwrap();
+            for row in 0..rows {
+                let id = format!("00000000-0000-4000-8000-{group:06}{row:06}");
+                let record = serde_json::json!({"type":"user", "uuid":format!("u-{group}-{row}"), "parentUuid":null,
+                    "sessionId":id, "cwd":format!("/synthetic/project-{group}"), "timestamp":"2026-01-01T00:00:00Z",
+                    "message":{"role":"user", "content":format!("Synthetic group {group} row {row}")}});
+                fs::write(folder.join(format!("{id}.jsonl")), format!("{record}\n")).unwrap();
+            }
+        }
+        fixture
+    }
+
+    #[test]
+    fn pagination_cold_summaries_report_failure_and_retry_without_losing_loaded_groups() {
+        let fixture = cold_fixture(4);
+        let app = fixture.open();
+        let initial = Fixture::read(&app, "view");
+        assert_eq!(initial.conversations.len(), 4);
+        assert_eq!(initial.conversation_groups[4].loaded, 0);
+        let original: BTreeSet<_> = initial
+            .conversations
+            .iter()
+            .map(|c| c.conversation.id.clone())
+            .collect();
+        // Ambiguous duplicate native identity makes the production Python reader
+        // fail before reading summaries, without changing source configuration.
+        let duplicate = fixture.0.join("state/projects/duplicate");
+        fs::create_dir(&duplicate).unwrap();
+        fs::write(
+            duplicate.join("00000000-0000-4000-8000-000000000000.jsonl"),
+            "{}\n",
+        )
+        .unwrap();
+        let failed = Fixture::more(&app, "view", 4);
+        assert_eq!(
+            failed.conversation_groups[4].loaded, 0,
+            "loaded must describe actual rows after a read failure"
+        );
+        assert!(
+            failed
+                .history_failures
+                .iter()
+                .any(|f| f.runtime_id == "synthetic")
+        );
+        assert!(
+            original.is_subset(
+                &failed
+                    .conversations
+                    .iter()
+                    .map(|c| c.conversation.id.clone())
+                    .collect()
+            )
+        );
+        fs::remove_dir_all(duplicate).unwrap();
+        let retried = Fixture::more(&app, "view", 4);
+        assert!(retried.conversation_groups[4].loaded >= 2);
+        assert!(retried.history_failures.is_empty());
+        assert!(
+            original.is_subset(
+                &retried
+                    .conversations
+                    .iter()
+                    .map(|c| c.conversation.id.clone())
+                    .collect()
+            )
+        );
+        assert!(
+            retried
+                .conversations
+                .iter()
+                .filter(|c| c.group.as_ref() == Some(&Fixture::key(4)))
+                .all(|c| c
+                    .conversation
+                    .title
+                    .display_text()
+                    .starts_with("Synthetic group 4"))
+        );
+        app.close(false).unwrap();
+    }
+    #[test]
+    fn pagination_large_cold_group_makes_progress_with_stale_file_times() {
+        let fixture = cold_fixture(30);
+        let app = fixture.open();
+        let initial = Fixture::read(&app, "view");
+        let original: BTreeSet<_> = initial
+            .conversations
+            .iter()
+            .map(|c| c.conversation.id.clone())
+            .collect();
+        let loaded = Fixture::more(&app, "view", 4);
+        assert_eq!(loaded.conversation_groups[4].total, 30);
+        assert!(
+            original.is_subset(
+                &loaded
+                    .conversations
+                    .iter()
+                    .map(|c| c.conversation.id.clone())
+                    .collect()
+            )
+        );
+        assert!(
+            loaded.conversation_groups[4].loaded > 0,
+            "a completed page must make visible progress even when native dates precede file times"
+        );
+        app.close(false).unwrap();
+    }
+
+    #[test]
+    fn pagination_activity_order_preserves_seen_rows_and_target_progress() {
+        let fixture = cold_fixture(30);
+        let config_path = fixture.0.join("generic-config.json");
+        let mut config: crate::repository::PersistedConfig =
+            serde_json::from_slice(&fs::read(&config_path).unwrap()).unwrap();
+        config.conversation_browser_preferences.group_sort = Default::default();
+        config.conversation_browser_preferences.group_order.clear();
+        fs::write(config_path, serde_json::to_vec(&config).unwrap()).unwrap();
+        let app = fixture.open();
+        let initial = Fixture::read(&app, "view");
+        let mut seen: BTreeSet<_> = initial
+            .conversations
+            .iter()
+            .map(|item| item.conversation.id.clone())
+            .collect();
+        let targets: Vec<_> = initial
+            .conversation_groups
+            .iter()
+            .map(|group| group.key.clone())
+            .collect();
+        for key in targets {
+            let mut before = initial
+                .conversation_groups
+                .iter()
+                .find(|group| group.key == key)
+                .unwrap()
+                .loaded;
+            for _ in 0..20 {
+                let Response::LoadMoreConversations(next) = app
+                    .execute(
+                        ClientViewId("view".into()),
+                        Command::LoadMoreConversations { group: key.clone() },
+                    )
+                    .unwrap()
+                else {
+                    panic!("pagination response")
+                };
+                let current = next
+                    .conversation_groups
+                    .iter()
+                    .find(|group| group.key == key)
+                    .unwrap();
+                let visible: BTreeSet<_> = next
+                    .conversations
+                    .iter()
+                    .map(|item| item.conversation.id.clone())
+                    .collect();
+                eprintln!(
+                    "activity pagination {key:?}: before={before}, after={}, total={}, visible={}",
+                    current.loaded,
+                    current.total,
+                    visible.len()
+                );
+                assert!(
+                    seen.is_subset(&visible),
+                    "paging {key:?} lost previously seen rows: {:?}",
+                    seen.difference(&visible).collect::<Vec<_>>()
+                );
+                assert!(
+                    current.loaded > before || before == current.total,
+                    "paging {key:?} did not advance from {before}"
+                );
+                seen.extend(visible);
+                before = current.loaded;
+                if current.loaded == current.total {
+                    break;
+                }
+            }
+        }
+        // A native refresh starts a new initial allocation so newly discovered
+        // active projects can enter the first window instead of staying at 0/n.
+        let folder = fixture.0.join("state/projects/new-project");
+        fs::create_dir(&folder).unwrap();
+        let record = serde_json::json!({"type":"user", "uuid":"new-user", "parentUuid":null,
+            "sessionId":"00000000-0000-4000-8000-000006000000", "cwd":"/synthetic/project-6",
+            "timestamp":"2026-11-16T00:00:00Z", "message":{"role":"user", "content":"New project"}});
+        fs::write(
+            folder.join("00000000-0000-4000-8000-000006000000.jsonl"),
+            format!("{record}\n"),
+        )
+        .unwrap();
+        let refreshed = Fixture::read(&app, "view");
+        assert_eq!(
+            refreshed
+                .conversation_groups
+                .iter()
+                .find(|group| group.key == Fixture::key(6))
+                .unwrap()
+                .loaded,
+            1
+        );
+        app.close(false).unwrap();
+    }
+
+    #[test]
+    fn pagination_collapsing_a_group_releases_only_its_initial_capacity() {
+        let fixture = Fixture::new(false);
+        let app = fixture.open();
+        let initial = Fixture::read(&app, "view");
+        assert_eq!(
+            initial
+                .conversation_groups
+                .iter()
+                .map(|g| g.loaded)
+                .collect::<Vec<_>>(),
+            [2, 2, 0, 0, 0, 0]
+        );
+        let kept: BTreeSet<_> = initial
+            .conversations
+            .iter()
+            .filter(|item| item.group.as_ref() == Some(&Fixture::key(1)))
+            .map(|item| item.conversation.id.clone())
+            .collect();
+        let mut preferences = initial.conversation_browser_preferences;
+        preferences.collapsed.push(Fixture::key(0));
+        let scans = fixture.scan_count();
+        let Response::SetConversationBrowserPreferences(folded) = app
+            .execute(
+                ClientViewId("view".into()),
+                Command::SetConversationBrowserPreferences { preferences },
+            )
+            .unwrap()
+        else {
+            panic!("preference response")
+        };
+        assert_eq!(
+            folded
+                .conversation_groups
+                .iter()
+                .map(|g| g.loaded)
+                .collect::<Vec<_>>(),
+            [0, 2, 2, 0, 0, 0]
+        );
+        assert!(
+            kept.is_subset(
+                &folded
+                    .conversations
+                    .iter()
+                    .map(|item| item.conversation.id.clone())
+                    .collect()
+            )
+        );
+        assert_eq!(fixture.scan_count(), scans);
+        app.close(false).unwrap();
+    }
+
+    #[test]
+    fn pagination_expanding_first_source_group_does_not_take_other_groups_capacity() {
+        let fixture = Fixture::new(false);
+        let config_path = fixture.0.join("generic-config.json");
+        let mut config: crate::repository::PersistedConfig =
+            serde_json::from_slice(&fs::read(&config_path).unwrap()).unwrap();
+        config
+            .conversation_browser_preferences
+            .collapsed
+            .push(Fixture::key(0));
+        fs::write(config_path, serde_json::to_vec(&config).unwrap()).unwrap();
+        let app = fixture.open();
+        let initial = Fixture::read(&app, "view");
+        assert_eq!(
+            initial
+                .conversation_groups
+                .iter()
+                .map(|g| g.loaded)
+                .collect::<Vec<_>>(),
+            [0, 2, 2, 0, 0, 0]
+        );
+        let kept: BTreeSet<_> = initial
+            .conversations
+            .iter()
+            .map(|item| item.conversation.id.clone())
+            .collect();
+        let mut preferences = initial.conversation_browser_preferences;
+        preferences.collapsed.retain(|key| *key != Fixture::key(0));
+        let scans = fixture.scan_count();
+        let Response::SetConversationBrowserPreferences(expanded) = app
+            .execute(
+                ClientViewId("view".into()),
+                Command::SetConversationBrowserPreferences { preferences },
+            )
+            .unwrap()
+        else {
+            panic!("preference response")
+        };
+        assert_eq!(
+            expanded
+                .conversation_groups
+                .iter()
+                .map(|g| g.loaded)
+                .collect::<Vec<_>>(),
+            [0, 2, 2, 0, 0, 0]
+        );
+        assert!(
+            kept.is_subset(
+                &expanded
+                    .conversations
+                    .iter()
+                    .map(|item| item.conversation.id.clone())
+                    .collect()
+            )
+        );
+        let paged = Fixture::more(&app, "view", 0);
+        assert_eq!(
+            paged
+                .conversation_groups
+                .iter()
+                .map(|g| g.loaded)
+                .collect::<Vec<_>>(),
+            [2, 2, 2, 0, 0, 0]
+        );
+        assert!(
+            kept.is_subset(
+                &paged
+                    .conversations
+                    .iter()
+                    .map(|item| item.conversation.id.clone())
+                    .collect()
+            )
+        );
+        assert_eq!(fixture.scan_count(), scans);
+        app.close(false).unwrap();
     }
 }

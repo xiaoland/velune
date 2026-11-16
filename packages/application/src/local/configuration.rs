@@ -153,6 +153,11 @@ impl CoreRuntime {
             return Err(error);
         }
         let current = &self.conversation_browser_preferences;
+        for group in &current.collapsed {
+            if !previous.collapsed.contains(group) {
+                self.release_collapsed_browser_capacity(group);
+            }
+        }
         if (
             current.grouping,
             current.sort,
@@ -168,7 +173,7 @@ impl CoreRuntime {
         ) {
             self.reset_browser_pages();
         }
-        self.list()
+        Ok(self.cached_list())
     }
 
     pub(crate) fn set_outline_presentation(
@@ -248,6 +253,9 @@ impl CoreRuntime {
         if let Err(error) = self.persist() {
             self.conversation_browser_limits = previous;
             return Err(error);
+        }
+        if limits != previous {
+            self.reset_browser_pages();
         }
         Ok(limits)
     }
@@ -367,7 +375,10 @@ impl CoreRuntime {
 
     pub(crate) fn list(&self) -> Result<crate::ConfigurationSnapshot, RuntimeError> {
         let (sources, history_failures) = self.list_sources(false)?;
-        Ok(self.configuration_from_sources(sources, history_failures))
+        // A source refresh can discover new active groups. Reallocate only its
+        // initial budget; explicit additional pages remain owned by this view.
+        self.reset_browser_allocation();
+        Ok(self.configuration_from_sources(sources, history_failures, false))
     }
 
     /// Reapply list organization to the indexed history. A read receipt or
@@ -376,15 +387,18 @@ impl CoreRuntime {
         self.configuration_from_sources(
             self.cached_sources(),
             self.history_failures.borrow().clone(),
+            true,
         )
     }
 
     fn configuration_from_sources(
         &self,
         sources: Vec<organization::ListedSource>,
-        history_failures: Vec<crate::HistoryFailure>,
+        mut history_failures: Vec<crate::HistoryFailure>,
+        extend_index: bool,
     ) -> crate::ConfigurationSnapshot {
-        let page = self.browse_read(sources, None);
+        let page = self.browse_read(sources, None, extend_index);
+        history_failures.extend(page.history_failures);
         let runtime_types = runtime_types();
         let provider_import_types = std::iter::once(provider_import::descriptor())
             .chain(

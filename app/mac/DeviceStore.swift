@@ -36,6 +36,7 @@ final class DeviceStore: ObservableObject {
     @Published private(set) var conversations: [Conversation] = []
     /// The list's groups in display order, as the core windows them.
     @Published private(set) var conversationGroups: [ConversationGroup] = []
+    @Published private(set) var loadingConversationGroups: Set<ConversationGroupKey> = []
     @Published private(set) var conversationProjects: [ConversationProject] = []
     @Published private(set) var workingDirectoryProjects: [String: [WorkingDirectoryProject]] = [:]
     @Published private(set) var showsArchived = false
@@ -420,8 +421,20 @@ final class DeviceStore: ObservableObject {
         }
     }
     func loadMoreConversations(in group: ConversationGroupKey) {
-        guard let transport else { return }
-        browse({ try transport.loadMoreConversations(group: group) }, source: "加载会话")
+        guard let transport, !isPreview, !isShuttingDown,
+              loadingConversationGroups.insert(group).inserted else { return }
+        let preferences = conversationBrowserPreferences
+        browse({
+            // A merged list can show this group while its source view still
+            // has it folded. An explicit page request must read that group.
+            if var expanded = preferences, expanded.collapsed.contains(group) {
+                expanded.collapsed.removeAll { $0 == group }
+                _ = try transport.setConversationBrowserPreferences(expanded)
+            }
+            return try transport.loadMoreConversations(group: group)
+        }, source: "加载会话", finished: { [weak self] _ in
+            self?.loadingConversationGroups.remove(group)
+        })
     }
     func setShowsArchived(_ archived: Bool) {
         guard let transport, archived != showsArchived else { return }

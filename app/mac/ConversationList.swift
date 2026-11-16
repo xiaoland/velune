@@ -184,8 +184,10 @@ struct ConversationListView: View {
                     }
                     if section.hasMore {
                         if store.searchResults == nil {
-                            Button("加载更多（\(section.group.loaded) / \(section.group.total)）") { store.device.loadMoreConversations(in: section.id) }
-                                .buttonStyle(.plain).foregroundStyle(.secondary).selectionDisabled(true)
+                            ConversationPaginationButton(loaded: section.group.loaded, total: section.group.total,
+                                isLoading: store.device.loadingConversationGroups.contains(section.id),
+                                load: { store.device.loadMoreConversations(in: section.id) })
+                                .selectionDisabled(true)
                                 .groupDrop(groupDropDelegate(section, .more), line: groupLines(section, .more))
                                 .opacity(draggingGroup == section.id ? 0.4 : 1)
                         } else {

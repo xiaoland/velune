@@ -467,6 +467,10 @@ final class VeluneApplicationDelegate: NSObject, NSApplicationDelegate {
 @MainActor
 enum VeluneEntry {
     static func main() {
+        if CommandLine.arguments.contains("--check-list-pagination") {
+            admitMacExecution()
+            conversationPaginationChecks()
+        }
         if CommandLine.arguments.contains("--check-background-tasks") {
             admitMacExecution()
             backgroundTaskChecks()
