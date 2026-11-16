@@ -2,6 +2,8 @@
 mod config;
 mod context;
 mod health;
+mod local_log;
+pub use local_log::LocalLogHealth;
 mod probe;
 mod problems;
 pub use problems::DiagnosticProblem;
@@ -225,15 +227,7 @@ impl ClientTelemetry {
                 use std::os::unix::fs::PermissionsExt;
                 std::fs::set_permissions(&logs, std::fs::Permissions::from_mode(0o700))?;
             }
-            Some(LocalWriter(Arc::new(Mutex::new(
-                tracing_appender::rolling::RollingFileAppender::builder()
-                    .rotation(tracing_appender::rolling::Rotation::DAILY)
-                    .filename_prefix("velune")
-                    .filename_suffix("jsonl")
-                    .max_log_files(7)
-                    .build(logs)
-                    .map_err(|_| Error::Unavailable)?,
-            ))))
+            Some(LocalWriter::new(logs)?)
         } else {
             None
         };
@@ -572,6 +566,9 @@ impl ClientTelemetry {
         }
         Ok(())
     }
+    pub fn local_log_health(&self) -> Option<LocalLogHealth> {
+        self.writer.as_ref().map(LocalWriter::health)
+    }
     pub fn dispatch(&self) -> tracing::Dispatch {
         self.current
             .lock()
@@ -672,10 +669,12 @@ impl ClientTelemetry {
         observation
     }
     pub fn flush(&self) -> bool {
-        self.lock()
+        let sdk = self.lock()
             .ok()
             .and_then(|s| s.active.clone())
-            .is_none_or(|g| g.flush())
+            .is_none_or(|g| g.flush());
+        let local = self.writer.as_ref().is_none_or(|writer| writer.flush().is_ok());
+        sdk && local
     }
     pub fn shutdown(&self) -> Result<()> {
         let mut state = self.lock()?;
@@ -695,7 +694,9 @@ impl ClientTelemetry {
         if let Some(candidate) = candidate {
             self.cleanup(candidate.generation);
         }
+        let persisted = self.writer.as_ref().map(LocalWriter::shutdown).transpose();
         self.write_status();
+        persisted?;
         Ok(())
     }
     fn cleanup(&self, generation: Option<Arc<Generation>>) {
@@ -706,9 +707,11 @@ impl ClientTelemetry {
     }
     fn write_status(&self) {
         let _guard = self.status_writer.lock().unwrap_or_else(|e| e.into_inner());
-        let result = self
-            .snapshot()
-            .and_then(|snapshot| config::write(&self.directory.join("status.json"), &snapshot));
+        let result = self.snapshot().and_then(|snapshot| {
+            let mut status = serde_json::to_value(snapshot)?;
+            status["localLog"] = serde_json::to_value(self.local_log_health())?;
+            config::write(&self.directory.join("status.json"), &status)
+        });
         self.status_write_failed
             .store(result.is_err(), std::sync::atomic::Ordering::Relaxed);
     }
@@ -1010,6 +1013,9 @@ impl Drop for ClientTelemetry {
             .get_mut()
             .unwrap_or_else(|e| e.into_inner())
             .take();
+        if let Some(writer) = &self.writer {
+            writer.close();
+        }
         let state = self.state.get_mut().unwrap_or_else(|e| e.into_inner());
         if let Some(active) = state.active.take() {
             active.revoke();

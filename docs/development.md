@@ -56,7 +56,11 @@
 
 ## 本地诊断
 
-Mac 使用 `OSLog.Logger`，subsystem 为 `local.velune`，系统 Console 可按它筛选。Rust 的 `tracing` subscriber 由客户端遥测 owner 装配，JSON Lines 日志位于 `VELUNE_HOME/logs/velune.<日期>.jsonl`，按 UTC 日期轮转并保留最近 7 个文件；只限制文件数量，没有总字节上限。日志目录在 Unix 上为 0700 权限。领域包只发事件，不创建 subscriber；跨线程显式传播 dispatcher 和 span。
+Mac 使用 `OSLog.Logger`，subsystem 为 `local.velune`，系统 Console 可按它筛选。Rust 的 `tracing` subscriber 由客户端遥测 owner 装配，JSON Lines 日志位于 `VELUNE_HOME/logs/velune.*.jsonl`。新分片按递增序号排序，按 UTC 日期或单文件 8 MiB 轮转，最多保留 7 个文件、56 MiB 日志数据；保留清理只删除最旧前缀。旧日期命名文件保留原始内容，随正常保留策略淘汰。日志目录在 Unix 上为 0700 权限。领域包只发事件，不创建 subscriber；跨线程显式传播 dispatcher 和 span。
+
+普通 tracing 只将完整记录交给有界磁盘 worker，不在调用线程写文件。每个 writer 的 formatter、队列和在途记录共用 512 条／2 MiB 保留 payload capacity 预算，单记录上限 256 KiB；这不代表瞬时分配或 RSS 有严格上界。问题新增、恢复和清理等待 write＋flush 回执，不保证 fsync。2 秒未确认的回执是不确定结果，不能自动重放。`telemetry/status.json` 的 `localLog` 提供排队、拒绝／未确认记录、写失败及关闭状态；快照仍须按其 run ID 和新鲜度判断。
+
+同目录的协作 writer 在稳定目录锁内选择最新分片、追加和轮转，读取问题历史也在该锁内取得一致边界。慢盘或较长回放会阻塞追加，可能产生回执超时或明确的队列丢弃；不创建替代 worker 绕过上限。该协议不能逆推出旧日志中已有的跨文件交错，也不协调仍运行的旧版 writer。切换版本时应通过既有实例生命周期正常结束旧 writer，不通过删除日志来伪装修复。
 
 失败信息带诊断编号；用它查找日志中的 `operation_id`，可定位操作、错误代码、阶段、耗时与底层原因。Swift 的本地操作编号另行命名，不是 Rust trace ID。常规 snapshot 和认证轮询不产生成功日志。诊断保存实际错误链、helper stderr 与失败上下文，默认不采集请求、配置或会话正文；显式启用的 OTLP 只导出批准的操作元数据。
 

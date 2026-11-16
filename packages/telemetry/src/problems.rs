@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
-    io::{BufRead, Write},
+    io::BufRead,
 };
 
 #[derive(Clone, Debug, Serialize, Deserialize, uniffi::Record)]
@@ -42,11 +42,9 @@ impl ClientTelemetry {
         let entry = json!({"timestamp_unix_ms":now(),"level":"INFO","target":"velune_problems","fields":fields});
         let mut line = serde_json::to_vec(&entry)?;
         line.push(b'\n');
-        // Share the actual rolling writer, including its lock and retention.
-        // No second error file, OSLog-only path, or export of local details.
-        let mut output = writer.0.lock().map_err(|_| Error::Unavailable)?;
-        output.write_all(&line)?;
-        output.flush()?;
+        // Journal callers require a write-and-flush receipt; ordinary tracing
+        // only enqueues. A timeout is indeterminate and is not replayed here.
+        writer.persist(line)?;
         Ok(())
     }
 
@@ -59,16 +57,11 @@ impl ClientTelemetry {
         if !directory.exists() {
             return Ok(Vec::new());
         }
-        let mut files = std::fs::read_dir(directory)?
-            .filter_map(|entry| entry.ok())
-            .map(|entry| entry.path())
-            .filter(|path| {
-                path.file_name()
-                    .and_then(|s| s.to_str())
-                    .is_some_and(|s| s.starts_with("velune.") && s.ends_with(".jsonl"))
-            })
-            .collect::<Vec<_>>();
-        files.sort();
+        // Read one committed boundary. Keep the same directory lock as append
+        // and prefix retention until replay ends: reading an old source while
+        // missing its concurrently pruned cleanup would resurrect the problem.
+        let _committed = crate::local_log::lock_directory(&directory)?;
+        let files = crate::local_log::ordered_logs(&directory)?;
         let mut problems = BTreeMap::<String, DiagnosticProblem>::new();
         // Operations already represented, so a failure's twin lines and its UI
         // record never become separate problems.
@@ -78,12 +71,18 @@ impl ClientTelemetry {
         let mut repeated =
             HashMap::<(String, String, Option<String>, Option<String>, String), String>::new();
         for file in files {
-            for (index, line) in std::io::BufReader::new(std::fs::File::open(&file)?)
-                .split(b'\n')
-                .enumerate()
-            {
-                let line = line?;
-                // An interrupted final write must not hide earlier diagnostics.
+            let input = std::fs::File::open(&file)?;
+            let mut input = std::io::BufReader::new(input);
+            let mut index = 0;
+            let mut line = Vec::new();
+            loop {
+                line.clear();
+                if input.read_until(b'\n', &mut line)? == 0 || !line.ends_with(b"\n") {
+                    break; // An unterminated tail is not a committed journal line.
+                }
+                let line_index = index;
+                index += 1;
+                // Interrupted or otherwise invalid lines do not hide earlier diagnostics.
                 let Ok(entry) = serde_json::from_slice::<LogEntry>(&line) else {
                     continue;
                 };
@@ -195,7 +194,7 @@ impl ClientTelemetry {
                     continue;
                 }
                 let key = format!(
-                    "{}:{index}",
+                    "{}:{line_index}",
                     file.file_name().unwrap_or_default().to_string_lossy()
                 );
                 let first = key.bytes().fold(0xcbf29ce484222325u64, |h, b| {
@@ -235,6 +234,21 @@ impl ClientTelemetry {
                 repeated.insert(repeat, id.clone());
                 problems.insert(id, problem);
             }
+        }
+        if let Some(health) = self.local_log_health().filter(|health| health.dropped_records > 0 || health.failed_writes > 0) {
+            problems.insert("local-log-health".into(), DiagnosticProblem {
+                id: "4F43414C-4C4F-4748-4541-4C5448000001".into(),
+                occurred_at_unix_ms: now(),
+                source: "本地诊断存储".into(),
+                detail: format!("本次进程拒绝或未确认 {} 条诊断记录，磁盘写入失败 {} 次；日志可能不完整。", health.dropped_records, health.failed_writes),
+                kind: "io".into(),
+                code: Some("local_log_incomplete".into()),
+                phase: Some("local_log".into()),
+                operation_id: None,
+                peer_id: None,
+                activity_key: Some("local-log-health".into()),
+                resolved_at_unix_ms: None,
+            });
         }
         let mut values = problems.into_values().collect::<Vec<_>>();
         values.sort_by_key(|p| p.occurred_at_unix_ms);
@@ -357,14 +371,137 @@ mod tests {
         first.shutdown().unwrap();
         drop(first);
 
-        // A recurrence after the dismissal is a new problem; the dismissed
-        // history does not come back.
-        // Files are read in name order; this one sorts after the dismissal.
-        std::fs::write(logs.join("velune.9999-12-31.jsonl"), failure(59, "late")).unwrap();
+        // A recurrence appended after the dismissal is a new problem; the
+        // dismissed history does not come back.
         let second = open();
+        second.writer.as_ref().unwrap()
+            .persist(failure(59, "late").into_bytes())
+            .unwrap();
         let problems = second.problems("test").unwrap();
         assert_eq!(problems.len(), 1);
         assert_eq!(problems[0].operation_id.as_deref(), Some("late"));
         second.shutdown().unwrap();
+    }
+
+    fn synthetic_problem(id: &str) -> DiagnosticProblem {
+        DiagnosticProblem {
+            id: id.into(),
+            occurred_at_unix_ms: 1,
+            source: "synthetic".into(),
+            detail: "synthetic shared journal failure".into(),
+            kind: "local".into(),
+            code: None,
+            phase: None,
+            operation_id: None,
+            peer_id: None,
+            activity_key: None,
+            resolved_at_unix_ms: None,
+        }
+    }
+
+    #[test]
+    fn later_writer_records_are_resolved_and_dismissed_by_the_earlier_writer() {
+        let home = tempfile::tempdir().unwrap();
+        let open = || {
+            ClientTelemetry::open(
+                home.path(),
+                TelemetryIdentity::new("test", "0.1").unwrap(),
+                true,
+                None,
+            )
+            .unwrap()
+        };
+        let a = open();
+        let b = open();
+        let p = synthetic_problem("00000000-0000-0000-0000-000000000001");
+        b.record_problem("test", p.clone()).unwrap();
+        // A complete JSON value without its commit newline is still a bad tail.
+        // The next successful resolution must neither promote it nor stick to it.
+        let logs = home.path().join("logs");
+        {
+            use std::io::Write;
+            let _lock = crate::local_log::lock_directory(&logs).unwrap();
+            let files = crate::local_log::ordered_logs(&logs).unwrap();
+            let partial = json!({"target":"velune_problems","fields":{
+                "scope":"test","event":"problem_recorded",
+                "problem":synthetic_problem("00000000-0000-0000-0000-000000000003")}});
+            std::fs::OpenOptions::new()
+                .append(true)
+                .open(files.last().unwrap())
+                .unwrap()
+                .write_all(&serde_json::to_vec(&partial).unwrap())
+                .unwrap();
+        }
+        assert_eq!(a.problems("test").unwrap().len(), 1);
+        a.resolve_problems("test", vec![p.id.clone()]).unwrap();
+        let q = synthetic_problem("00000000-0000-0000-0000-000000000002");
+        b.record_problem("test", q.clone()).unwrap();
+        a.dismiss_problems("test", vec![q.id]).unwrap();
+        for client in [&a, &b] {
+            let problems = client.problems("test").unwrap();
+            assert_eq!(problems.len(), 1);
+            assert_eq!(problems[0].id, p.id);
+            assert!(problems[0].resolved_at_unix_ms.is_some());
+        }
+        a.shutdown().unwrap();
+        b.shutdown().unwrap();
+    }
+
+    #[test]
+    fn prefix_retention_never_drops_a_cleanup_while_retaining_its_source() {
+        let home = tempfile::tempdir().unwrap();
+        let open = || {
+            ClientTelemetry::open(
+                home.path(),
+                TelemetryIdentity::new("test", "0.1").unwrap(),
+                true,
+                None,
+            )
+            .unwrap()
+        };
+        let a = open();
+        let p = synthetic_problem("00000000-0000-0000-0000-000000000001");
+        a.record_problem("test", p.clone()).unwrap();
+        let logs = home.path().join("logs");
+        let source = {
+            let _lock = crate::local_log::lock_directory(&logs).unwrap();
+            crate::local_log::ordered_logs(&logs)
+                .unwrap()
+                .pop()
+                .unwrap()
+        };
+        let b = open();
+        let mut filler = vec![b'x'; 256 * 1024];
+        *filler.last_mut().unwrap() = b'\n';
+        // Real 8 MiB of writes moves B's cleanup to a later shard while A lives.
+        for _ in 0..32 {
+            b.writer.as_ref().unwrap().persist(filler.clone()).unwrap();
+        }
+        b.dismiss_problems("test", vec![p.id]).unwrap();
+        b.shutdown().unwrap();
+        let cleanup = {
+            let _lock = crate::local_log::lock_directory(&logs).unwrap();
+            crate::local_log::ordered_logs(&logs)
+                .unwrap()
+                .pop()
+                .unwrap()
+        };
+        assert!(cleanup > source);
+        assert!(source.exists());
+        let c = crate::local_log::LocalWriter::new(logs.clone()).unwrap();
+        for _ in 0..8 {
+            for _ in 0..32 {
+                c.persist(filler.clone()).unwrap();
+            }
+            // This deterministically failed with per-writer active pins: A's
+            // source survived while B's closed cleanup was evicted around it.
+            if source.exists() {
+                assert!(cleanup.exists());
+            }
+            assert!(a.problems("test").unwrap().is_empty());
+        }
+        assert!(!source.exists());
+        c.shutdown().unwrap();
+        a.shutdown().unwrap();
     }
 }
