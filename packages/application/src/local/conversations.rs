@@ -636,6 +636,22 @@ impl CoreRuntime {
                 )
             })?;
         }
+        if deleting && variant.can_archive_conversations {
+            // Deletion must be confirmed against both native collections. The
+            // active index refresh below cannot invalidate a cached archive.
+            let source = self.runtime_source_key(&runtime)?;
+            let config = self.history_config(&runtime)?;
+            let summaries = if config.provider == "codex" {
+                self.read_codex_projects(&runtime, true)?
+            } else {
+                history::list_archived(&config, &runtime.id)?
+            };
+            self.archived_listing.borrow_mut().insert(
+                runtime.id.clone(),
+                browsing::HistoryArchive { source, summaries },
+            );
+            self.reached.borrow_mut().remove(id);
+        }
         let summary = self.conversation_summary(&runtime, id)?;
         if deleting {
             if summary.is_some() {

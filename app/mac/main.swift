@@ -467,6 +467,10 @@ final class VeluneApplicationDelegate: NSObject, NSApplicationDelegate {
 @MainActor
 enum VeluneEntry {
     static func main() {
+        if CommandLine.arguments.contains("--check-archived-conversations") {
+            admitMacExecution()
+            archivedConversationsChecks()
+        }
         if CommandLine.arguments.contains("--check-palette-ime") {
             admitMacExecution()
             commandPaletteChecks()
@@ -601,6 +605,7 @@ struct VeluneApp: App {
             ConversationCommands()
             CommandGroup(after: .sidebar) {
                 AnalyticsMenuItem()
+                ArchivedConversationsMenuItem()
                 ResourceLibraryMenuItem()
                 ProblemsMenuItem(store: store)
             }
@@ -620,6 +625,9 @@ struct VeluneApp: App {
         Window("本机定时任务", id: "scheduled-tasks") {
             ScheduledTasksView(store: store).frame(minWidth: 860, minHeight: 560)
         }.defaultSize(width: 1040, height: 700)
+        Window("已归档会话", id: "archived-conversations") {
+            ArchivedConversationsView(local: store, hub: DeviceHub.shared).frame(minWidth: 680, minHeight: 420)
+        }.defaultSize(width: 920, height: 640)
         Window("资源库", id: "resource-library") {
             ResourceLibraryView(store: store).frame(minWidth: 820, minHeight: 500)
         }.defaultSize(width: 1040, height: 680)

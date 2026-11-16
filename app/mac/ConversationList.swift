@@ -675,11 +675,11 @@ struct ConversationFilterMenu: View {
             }
             if window.listBrowser.hasFilters { Divider(); Button("清除筛选") { window.listBrowser.runtimeID = nil; window.listBrowser.project = .all } }
             Divider()
-            Toggle("显示已归档的会话", isOn: Binding(get: { store.device.showsArchived }, set: { store.device.setShowsArchived($0) }))
+            ArchivedConversationsMenuItem()
             Divider()
             // Where the list itself is; the rest of the window's layout is in a tab's menu.
             Menu("布局") { ToolPlaceMenu(window: window, kind: .list) }
-        } label: { Label("显示", systemImage: window.listBrowser.hasFilters || store.device.showsArchived ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease") }
+        } label: { Label("显示", systemImage: window.listBrowser.hasFilters ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease") }
         .help("会话分组、筛选、排序、已归档会话与列表的位置")
         .sheet(item: $projectTarget) { ProjectEditorView(store: store, target: $0) }
         .accessibilityLabel("显示")

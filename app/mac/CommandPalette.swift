@@ -235,7 +235,7 @@ extension ConversationWindowModel {
                     self?.openSettings?()
                 }
             }
-            let windows = [("analytics", "分析", ["Analytics", "usage", "tokens", "用量"]), ("resource-library", "资源库", ["Resource Library", "skills", "mcp", "instructions", "技能"])].map { id, name, aliases in
+            let windows = [("analytics", "分析", ["Analytics", "usage", "tokens", "用量"]), ("archived-conversations", "已归档会话", ["Archived Conversations", "archive", "unarchive", "取消归档"]), ("resource-library", "资源库", ["Resource Library", "skills", "mcp", "instructions", "技能"])].map { id, name, aliases in
                 PaletteItem(id: "window:\(id)", title: name, aliases: aliases, detail: "窗口") { [weak self] _ in self?.closePalette(); self?.openScene?(id) }
             }
             let queued = store.followUp.queue.last.map { _ in

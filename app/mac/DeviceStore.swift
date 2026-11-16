@@ -56,9 +56,11 @@ final class DeviceStore: ObservableObject {
         let source: String
         let conversations: Set<String>
         let deleting: Bool
+        let gate = ConversationManagementGate()
         var running = false
     }
     @Published private(set) var conversationManagement: [ConversationManagement] = []
+    let managedConversations = PassthroughSubject<Set<String>, Never>()
     /// A live native or generated name can arrive before the next list scan.
     func rememberConversationTitle(_ conversation: Conversation) {
         if let index = conversations.firstIndex(where: { $0.id == conversation.id }), conversations[index].title != conversation.title {
@@ -84,11 +86,12 @@ final class DeviceStore: ObservableObject {
 
     /// Accept independent user intentions immediately; serialization belongs
     /// to the device, and never locks navigation or another management action.
-    func manageConversations<T: Sendable>(source: String, ids: Set<String>, deleting: Bool = false, operation: @escaping () throws -> T, apply: @escaping (T) -> Void) {
+    func manageConversations<T: Sendable>(source: String, ids: Set<String>, deleting: Bool = false, operation: @escaping () throws -> T, completedIDs: ((T) -> Set<String>)? = nil, apply: @escaping (T) -> Void) {
         guard !isShuttingDown else { return }
         let request = ConversationManagement(id: UUID(), source: source, conversations: ids, deleting: deleting)
         conversationManagement.append(request)
         performOnQueue { [weak self] in
+            guard request.gate.begin() else { return }
             DispatchQueue.main.async {
                 guard let self, let index = self.conversationManagement.firstIndex(where: { $0.id == request.id }) else { return }
                 self.conversationManagement[index].running = true
@@ -98,11 +101,23 @@ final class DeviceStore: ObservableObject {
                 guard let self else { return }
                 self.conversationManagement.removeAll { $0.id == request.id }
                 switch result {
-                case .success(let value): apply(value)
+                case .success(let value):
+                    apply(value)
+                    let completed = completedIDs?(value) ?? ids
+                    if !completed.isEmpty { self.managedConversations.send(completed) }
                 case .failure(let error): self.recordProblem(error, source: source); self.refreshConversations()
                 }
             }
         }
+    }
+    @discardableResult func cancelConversationManagement(_ id: UUID) -> Bool {
+        guard let index = conversationManagement.firstIndex(where: { $0.id == id }) else { return false }
+        guard conversationManagement[index].gate.cancel() else {
+            conversationManagement[index].running = true
+            return false
+        }
+        conversationManagement.remove(at: index)
+        return true
     }
     /// Deleted from any tab; a tab showing one closes it.
     @Published private(set) var deletedConversationIDs: Set<String> = []

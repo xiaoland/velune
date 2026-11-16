@@ -610,11 +610,7 @@ impl VeluneRemoteEndpoint {
         controller: Arc<Controller>,
         view_id: String,
     ) -> Result<Arc<VeluneApplication>, BindingError> {
-        if view_id.trim().is_empty() || view_id.len() > 128 {
-            return Err(BindingError::Invalid {
-                detail: "客户端视图标识必须为 1 至 128 字节".into(),
-            });
-        }
+        validate_client_view_id(&view_id)?;
         let info = controller.connection_info()?;
         let remote = Arc::new(RemoteApplication {
             owner: self.owner.clone(),
@@ -636,7 +632,10 @@ impl VeluneRemoteEndpoint {
 }
 fn remote_proxy(remote: Arc<RemoteApplication>) -> Arc<VeluneApplication> {
     let diagnostics = diagnostics::Diagnostics::with_telemetry(remote.owner.telemetry.clone());
+    let client_view = remote.view.clone();
     Arc::new(VeluneApplication {
+        client_view,
+        owns_backend: true,
         application: Arc::new(Mutex::new(Some(Backend::Remote(remote)))),
         diagnostics,
         trace_carrier: None,
@@ -683,6 +682,23 @@ struct RequestContext {
     connection_epoch: u64,
 }
 impl RemoteApplication {
+    pub(crate) fn with_client_view(&self, view_id: String) -> Result<Arc<Self>, BindingError> {
+        self.context()?;
+        let state = self.state()?;
+        Ok(Arc::new(Self {
+            owner: self.owner.clone(),
+            controller: self.controller.clone(),
+            view: ClientViewId(view_id),
+            state: Mutex::new(RemoteState {
+                descriptor: state.descriptor.clone(),
+                expected: state.expected,
+                observed: state.observed,
+                user_epoch: state.user_epoch,
+                connection_epoch: state.connection_epoch,
+                closed: false,
+            }),
+        }))
+    }
     fn state(&self) -> Result<MutexGuard<'_, RemoteState>, BindingError> {
         self.state.lock().map_err(|_| BindingError::Unavailable)
     }

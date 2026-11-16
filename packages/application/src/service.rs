@@ -27,6 +27,7 @@ pub struct ApplicationService {
 enum Job {
     Execute {
         view: ClientViewId,
+        presentation_isolated: bool,
         context: Option<ExecutionContext>,
         command: Box<Command>,
         queued_at: Instant,
@@ -46,6 +47,7 @@ struct View {
     state: crate::local::ClientState,
     created: u64,
     used: u64,
+    presentation_isolated: bool,
 }
 
 type CommandReply = mpsc::Sender<Result<ApplicationReply, Failure>>;
@@ -175,7 +177,7 @@ impl Owner {
     fn with_view<T>(
         &mut self,
         view: &ClientViewId,
-        remote: bool,
+        presentation_isolated: bool,
         operation: impl FnOnce(&mut Application) -> T,
     ) -> T {
         if !self.views.contains_key(view)
@@ -193,11 +195,12 @@ impl Owner {
             state: self.application.runtime.client_state(),
             created: self.view_clock,
             used: 0,
+            presentation_isolated,
         });
         current.used = self.view_clock;
         self.application
             .runtime
-            .enter_client_state(&mut current.state, remote);
+            .enter_client_state(&mut current.state, current.presentation_isolated);
         let result = operation(&mut self.application);
         self.application
             .runtime
@@ -346,6 +349,7 @@ impl Owner {
             match receiver.recv_timeout(Duration::from_millis(40)) {
                 Ok(Job::Execute {
                     view,
+                    presentation_isolated,
                     context,
                     command,
                     queued_at,
@@ -354,6 +358,9 @@ impl Owner {
                     span,
                     reply,
                 }) => {
+                    if !matches!(command.as_ref(), Command::ReleaseView) {
+                        self.with_view(&view, presentation_isolated || context.is_some(), |_| ());
+                    }
                     tracing::dispatcher::with_default(&dispatch, || {
                         let _entered = span.enter();
                         let elapsed_ms = queued_at.elapsed().as_millis() as u64;
@@ -494,7 +501,18 @@ impl ApplicationService {
 
     /// Local, trusted presentation API. Filesystem attachment paths are local to this host.
     pub fn execute(&self, view: ClientViewId, command: Command) -> Result<Response, Failure> {
-        self.request(view, None, command)
+        self.request(view, None, false, command)
+            .map(|reply| reply.response)
+    }
+
+    /// Local execution with presentation preferences scoped to this client view.
+    /// This does not change local command permissions or attachment semantics.
+    pub fn execute_isolated(
+        &self,
+        view: ClientViewId,
+        command: Command,
+    ) -> Result<Response, Failure> {
+        self.request(view, None, true, command)
             .map(|reply| reply.response)
     }
 
@@ -506,13 +524,14 @@ impl ApplicationService {
         context: ExecutionContext,
         command: Command,
     ) -> Result<ApplicationReply, Failure> {
-        self.request(view, Some(context), command)
+        self.request(view, Some(context), true, command)
     }
 
     fn request(
         &self,
         view: ClientViewId,
         context: Option<ExecutionContext>,
+        presentation_isolated: bool,
         command: Command,
     ) -> Result<ApplicationReply, Failure> {
         if view.0.is_empty() || view.0.len() > 512 || view.0.chars().any(char::is_control) {
@@ -522,6 +541,7 @@ impl ApplicationService {
         self.sender
             .send(Job::Execute {
                 view,
+                presentation_isolated,
                 context,
                 history_completion: matches!(command, Command::ReadConversation { .. })
                     .then(|| self.sender.clone()),
@@ -636,6 +656,96 @@ mod usage_tests {
             panic!("list response")
         };
         (value.usage_display, value.context_usage_display)
+    }
+
+    fn browser_preferences(
+        service: &ApplicationService,
+        view: &str,
+    ) -> crate::config::ConversationBrowserPreferences {
+        let Response::ReadConfiguration(value) = service
+            .execute(ClientViewId(view.into()), Command::ReadConfiguration)
+            .unwrap()
+        else {
+            panic!("configuration response")
+        };
+        value.conversation_browser_preferences
+    }
+
+    #[test]
+    fn isolated_local_view_preferences_do_not_replace_persisted_defaults() {
+        let fixture = Fixture::new();
+        let app = fixture.open();
+        let main = crate::config::ConversationBrowserPreferences {
+            grouping: crate::config::ConversationBrowserGrouping::Project,
+            runtime_id: Some("main-runtime".into()),
+            ..Default::default()
+        };
+        let archive = crate::config::ConversationBrowserPreferences {
+            grouping: crate::config::ConversationBrowserGrouping::Runtime,
+            runtime_id: Some("archive-runtime".into()),
+            ..Default::default()
+        };
+        app.execute(
+            ClientViewId("local".into()),
+            Command::SetConversationBrowserPreferences {
+                preferences: main.clone(),
+            },
+        )
+        .unwrap();
+        app.execute_isolated(
+            ClientViewId("archive-window".into()),
+            Command::SetConversationBrowserPreferences {
+                preferences: archive.clone(),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(browser_preferences(&app, "local"), main);
+        assert_eq!(
+            browser_preferences_isolated(&app, "archive-window"),
+            archive
+        );
+        app.execute(ClientViewId("archive-window".into()), Command::ReleaseView)
+            .unwrap();
+        assert_eq!(browser_preferences(&app, "local"), main);
+        app.close(false).unwrap();
+
+        let reopened = fixture.open();
+        assert_eq!(browser_preferences(&reopened, "restarted"), main);
+        let updated_main = crate::config::ConversationBrowserPreferences {
+            grouping: crate::config::ConversationBrowserGrouping::None,
+            runtime_id: Some("new-main-runtime".into()),
+            ..Default::default()
+        };
+        reopened
+            .execute(
+                ClientViewId("local".into()),
+                Command::SetConversationBrowserPreferences {
+                    preferences: updated_main.clone(),
+                },
+            )
+            .unwrap();
+        reopened.close(false).unwrap();
+
+        let reopened_again = fixture.open();
+        assert_eq!(
+            browser_preferences(&reopened_again, "restarted"),
+            updated_main
+        );
+        reopened_again.close(false).unwrap();
+    }
+
+    fn browser_preferences_isolated(
+        service: &ApplicationService,
+        view: &str,
+    ) -> crate::config::ConversationBrowserPreferences {
+        let Response::ReadConfiguration(value) = service
+            .execute_isolated(ClientViewId(view.into()), Command::ReadConfiguration)
+            .unwrap()
+        else {
+            panic!("configuration response")
+        };
+        value.conversation_browser_preferences
     }
 
     #[test]

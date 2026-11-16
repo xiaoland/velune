@@ -810,6 +810,9 @@ public sealed partial class WorkspaceWindow : Window
             case Command.Problems:
                 Shell.OpenProblems();
                 break;
+            case Command.ArchivedConversations:
+                Shell.OpenArchivedConversations(Device);
+                break;
             case Command.Analytics:
                 Shell.OpenAnalytics();
                 break;
@@ -893,7 +896,7 @@ public sealed partial class WorkspaceWindow : Window
             MoreMenu.Items.Add(item);
             MoreMenu.Items.Add(new MenuFlyoutSeparator());
         }
-        foreach (var (command, name) in new[] { (Command.CompactContext, "压缩上下文"), (Command.Library, "资源库…"), (Command.Analytics, "分析…"), (Command.Problems, "问题…") })
+        foreach (var (command, name) in new[] { (Command.CompactContext, "压缩上下文"), (Command.Library, "资源库…"), (Command.Analytics, "分析…"), (Command.ArchivedConversations, "已归档会话…"), (Command.Problems, "问题…") })
         {
             var item = Ui.MenuItem(name, () => Run(command));
             item.IsEnabled = command != Command.CompactContext || FocusedView?.Model.CanCompact == true;

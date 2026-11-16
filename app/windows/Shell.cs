@@ -25,6 +25,7 @@ sealed class Shell
     SettingsWindow? settings;
     ProblemsWindow? problems;
     AnalyticsWindow? analytics;
+    readonly Dictionary<Device, ArchivedConversationsWindow> archived = [];
     LibraryWindow? library;
     // The user chose to quit with the library's edits unsaved.
     bool discardDrafts;
@@ -199,6 +200,7 @@ sealed class Shell
         settings?.Close();
         problems?.Close();
         analytics?.Close();
+        foreach (var history in archived.Values.ToList()) history.Close();
         library?.Close();
         Listings.Leave(Device.Local, KeepLocal);
         notifier.Stop();
@@ -436,6 +438,17 @@ sealed class Shell
                 OpenLibrary();
                 break;
         }
+    }
+
+    public void OpenArchivedConversations(Device device)
+    {
+        if (!archived.TryGetValue(device, out var window))
+        {
+            window = new ArchivedConversationsWindow(this, device);
+            archived[device] = window;
+            window.Closed += (_, _) => archived.Remove(device);
+        }
+        window.Activate();
     }
 
     // OpenAnalytics shows the 分析 window, reusing an open one.

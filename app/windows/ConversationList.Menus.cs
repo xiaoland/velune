@@ -196,10 +196,7 @@ sealed partial class ConversationList
         }
 
         displayMenu.Items.Add(new MenuFlyoutSeparator());
-        var archived = new ToggleMenuFlyoutItem { Text = "显示已归档的会话", IsChecked = Listing.ShowsArchived };
-        var showing = Listing.ShowsArchived;
-        archived.Click += (_, _) => Change("显示已归档的会话", NativeOperation.ConversationWrite, application => application.ShowArchivedConversations(!showing));
-        displayMenu.Items.Add(archived);
+        displayMenu.Items.Add(MenuItem("已归档会话…", () => window.Shell.OpenArchivedConversations(Device)));
     }
 
     // ProjectName is a project's name, else its primary folder's name.

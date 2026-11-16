@@ -213,6 +213,8 @@ enum Backend {
 #[derive(uniffi::Object)]
 pub struct VeluneApplication {
     application: Arc<Mutex<Option<Backend>>>,
+    client_view: ClientViewId,
+    owns_backend: bool,
     trace_carrier: Option<velune_telemetry::TraceCarrier>,
     composer_authority: Option<Arc<VeluneApplication>>,
     diagnostics: diagnostics::Diagnostics,
@@ -280,9 +282,13 @@ impl VeluneApplication {
                     let backend = self.lock()?.as_ref().ok_or(BindingError::Closed)?.clone();
                     match backend {
                         #[cfg(feature = "local-runtime")]
-                        Backend::Local(service) => service
-                            .execute(ClientViewId("local".into()), command)
-                            .map_err(Into::into),
+                        Backend::Local(service) => {
+                            if self.owns_backend {
+                                service.execute(self.client_view.clone(), command)
+                            } else {
+                                service.execute_isolated(self.client_view.clone(), command)
+                            }
+                        }.map_err(Into::into),
                         #[cfg(feature = "remote")]
                         Backend::Remote(remote) => remote.request(command),
                     }
@@ -296,6 +302,13 @@ impl VeluneApplication {
     }
 
     fn close(&self, _stop_work: bool) -> Result<(), BindingError> {
+        if !self.owns_backend {
+            if self.lock()?.is_some() {
+                self.release_view()?;
+                *self.lock()? = None;
+            }
+            return Ok(());
+        }
         self.diagnostics.run("bindings.shutdown", || {
             let mut state = self.lock()?;
             if let Some(backend) = state.as_mut() {
@@ -368,6 +381,8 @@ impl VeluneApplication {
         })?;
         Ok(Arc::new(Self {
             application: Arc::new(Mutex::new(Some(Backend::Local(application)))),
+            client_view: ClientViewId("local".into()),
+            owns_backend: true,
             trace_carrier: None,
             composer_authority: None,
             diagnostics,
@@ -379,6 +394,31 @@ impl VeluneApplication {
 
 #[uniffi::export]
 impl VeluneApplication {
+    /// Derive a presentation view from the existing owner or remote connection.
+    /// Use a distinct ID per concurrent window. Dropping a wrapper does not release
+    /// its view; call release_view when the window closes. Shutdown of a derived
+    /// wrapper releases only that view and never shuts down the shared owner.
+    pub fn with_client_view(&self, view_id: String) -> Result<Arc<Self>, BindingError> {
+        validate_client_view_id(&view_id)?;
+        let backend = self.lock()?.as_ref().ok_or(BindingError::Closed)?.clone();
+        let backend = match backend {
+            #[cfg(feature = "local-runtime")]
+            Backend::Local(service) => Backend::Local(service),
+            #[cfg(feature = "remote")]
+            Backend::Remote(remote) => Backend::Remote(remote.with_client_view(view_id.clone())?),
+        };
+        Ok(Arc::new(Self {
+            application: Arc::new(Mutex::new(Some(backend))),
+            client_view: ClientViewId(view_id),
+            owns_backend: false,
+            trace_carrier: self.trace_carrier.clone(),
+            composer_authority: self.composer_authority.clone(),
+            diagnostics: self.diagnostics.clone(),
+            #[cfg(all(feature = "local-runtime", feature = "remote"))]
+            remote_service: self.remote_service.clone(),
+        }))
+    }
+
     /// An immutable per-call view. Dropping it does not close the shared application session.
     pub fn with_trace_context(
         &self,
@@ -392,6 +432,8 @@ impl VeluneApplication {
         }
         Ok(Arc::new(Self {
             application: self.application.clone(),
+            client_view: self.client_view.clone(),
+            owns_backend: self.owns_backend,
             diagnostics: self.diagnostics.clone(),
             trace_carrier: carrier,
             composer_authority: self.composer_authority.clone(),
@@ -399,13 +441,15 @@ impl VeluneApplication {
             remote_service: self.remote_service.clone(),
         }))
     }
-    /// Local shutdown retains a busy owner. A remote object only closes its connection.
+    /// Owner shutdown retains a busy local owner; a remote owner closes its connection.
+    /// A derived client view only releases its own presentation state.
     pub fn shutdown(&self) -> Result<(), BindingError> {
         self.close(false)
     }
 
-    /// Local shutdown stops work. A remote object only closes its connection;
+    /// Local owner shutdown stops work. A remote object only closes its connection;
     /// stopping a remote turn requires its explicit conversation cancellation API.
+    /// A derived client view never stops work or shuts down its shared owner.
     pub fn shutdown_stopping_work(&self) -> Result<(), BindingError> {
         self.close(true)
     }
@@ -621,6 +665,8 @@ impl VeluneApplication {
         }
         Ok(Arc::new(Self {
             application: self.application.clone(),
+            client_view: self.client_view.clone(),
+            owns_backend: self.owns_backend,
             trace_carrier: self.trace_carrier.clone(),
             diagnostics: self.diagnostics.clone(),
             composer_authority: authority,
@@ -1854,3 +1900,15 @@ impl BindingError {
         }
     }
 }
+
+fn validate_client_view_id(view_id: &str) -> Result<(), BindingError> {
+    if view_id.trim().is_empty() || view_id.len() > 128 {
+        return Err(BindingError::Invalid {
+            detail: "客户端视图标识必须为 1 至 128 字节".into(),
+        });
+    }
+    Ok(())
+}
+
+#[cfg(all(test, unix, feature = "local-runtime"))]
+mod client_view_tests;

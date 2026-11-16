@@ -96,6 +96,22 @@ final class Transport: @unchecked Sendable {
         }
     }
 
+    /// An independent browser over the same device and application owner.
+    /// Closing it releases only this presentation view and never the runtime.
+    private init(source: Transport, viewID: String) {
+        stateDirectory = source.stateDirectory
+        remoteAttachments = source.remoteAttachments
+        telemetryResult = source.telemetryResult
+        ownsTelemetry = false
+        open = {
+            try source.withApplication("openClientView", .reads, .configurationRead) {
+                try $0.withClientView(viewId: viewID)
+            }
+        }
+    }
+
+    func clientView(_ id: String) -> Transport { Transport(source: self, viewID: id) }
+
     func telemetryCoordinator() throws -> ClientTelemetry {
         let telemetry = try telemetryResult.get(); try telemetry.start(); return telemetry
     }
