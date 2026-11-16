@@ -34,9 +34,11 @@ enum TransportError: LocalizedError {
     }
 }
 
-/// What an operation does: changed configuration is read again, and a read
-/// not yet begun when quitting starts gives way, so the core closes after
-/// the operation under way and the changes queued before it.
+/// Business calls capture a shared backend handle under the lifecycle lock,
+/// then wait outside it. The core owns command and shutdown ordering; a long
+/// write receipt must not block another conversation's reads or control calls.
+/// Closing refuses new admissions, but does not retract previously captured
+/// calls or turn an unknown mutation result into a safe-to-retry rejection.
 enum OperationEffect {
     case reads
     case writes
@@ -232,8 +234,9 @@ final class Transport: @unchecked Sendable {
     }
     func deleteRuntime(id: String) throws -> RuntimeUpdate { try withApplication("deleteRuntime", .changesConfiguration, .configurationWrite) { try $0.deleteRuntime(id: id) } }
     func selectRuntime(id: String) throws -> ConfigurationSnapshot { try withApplication("selectRuntime", .writes, .configurationWrite) { try $0.selectRuntime(id: id) } }
-    /// Keep first creation and dispatch under the same shared application lock.
-    /// Report the native identity before dispatch so failure never recreates a draft.
+    /// Keep dependent creation and dispatch on the same captured application.
+    /// Publish the native identity first: closing or a failed dispatch must not
+    /// erase successful creation or make a retry create another conversation.
     func createAndSend(runtimeID: String, cwd: String?, project: String? = nil, selection: ModelSelection?, turn: ComposedTurn, onCreated: (SnapshotResult) -> Void) throws -> SnapshotResult {
         let selection = selection
         return try withApplication("sendTurn", .writes, .send) { application in
@@ -321,7 +324,7 @@ final class Transport: @unchecked Sendable {
     func authenticationCancel() throws -> AuthenticationProgress { try withApplication("authenticationCancel", .writes, .write) { try $0.authenticationCancel() } }
     func authenticationLogout(gatewayID: String, providerID: String) throws -> GatewayUpdate { try withApplication("authenticationLogout", .changesConfiguration, .configurationWrite) { try $0.authenticationLogout(gatewayId: gatewayID, providerId: providerID) } }
 
-    /// Quitting starts: reads not yet begun are refused until `close` ends.
+    /// Quitting stops new admissions; a busy refusal restores the same owner.
     func beginClosing() { closingLock.withLock { closingRequested = true } }
 
     /// `stoppingWork` ends running turns and sub-agents; otherwise they refuse it.
@@ -348,14 +351,8 @@ final class Transport: @unchecked Sendable {
         Self.logger.debug("operation=\(operation, privacy: .public) localCorrelation=\(correlation, privacy: .public) started")
         do {
             let value = try telemetryCoordinator().operation(category) { carrier in
-                if effect == .browsesConversation {
-                    let application = try lock.withLock { try admittedApplication(operation, effect) }
-                    return try body(application.withTraceContext(carrier: carrier))
-                }
-                return try lock.withLock {
-                    let application = try admittedApplication(operation, effect)
-                    return try body(application.withTraceContext(carrier: carrier))
-                }
+                let application = try lock.withLock { try admittedApplication(operation) }
+                return try body(application.withTraceContext(carrier: carrier))
             }
             if effect == .changesConfiguration { configurationChanged.send() }
             return value
@@ -368,10 +365,10 @@ final class Transport: @unchecked Sendable {
     }
 
     /// Call under the lifecycle lock. The handle shares the Rust backend
-    /// state, including closure, with handles captured by a browsing call.
-    private func admittedApplication(_ operation: String, _ effect: OperationEffect) throws -> VeluneApplication {
+    /// state, including closure, with every admitted call.
+    private func admittedApplication(_ operation: String) throws -> VeluneApplication {
         guard !isClosed else { throw TransportError.operation(operation, .closed) }
-        if (effect == .reads || effect == .browsesConversation) && isClosing {
+        if isClosing {
             throw TransportError.operation(operation, .quitting)
         }
         if let application { return application }
