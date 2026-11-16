@@ -93,7 +93,32 @@ impl Default for PersistedConfig {
 
 pub(crate) struct Repository {
     home: PathBuf,
-    home_lock: File,
+    home_lock: HomeLock,
+}
+/// The application owner keeps this lease from initial acquisition through
+/// execution cleanup, including failed startup before a Repository exists.
+pub(crate) struct HomeLock {
+    file: File,
+    unlocked: std::sync::atomic::AtomicBool,
+}
+impl HomeLock {
+    fn unlock(&self) -> Result<(), RuntimeError> {
+        if !self.unlocked.load(std::sync::atomic::Ordering::Acquire) {
+            self.file.unlock()?;
+            self.unlocked
+                .store(true, std::sync::atomic::Ordering::Release);
+        }
+        Ok(())
+    }
+}
+impl Drop for HomeLock {
+    fn drop(&mut self) {
+        // close alone can leave a Unix open-file-description lock held by a
+        // descriptor inherited during another thread's fork/exec window.
+        if let Err(error) = self.unlock() {
+            tracing::warn!(target: "velune_application", event = "application_home_unlock_failed", detail = %error);
+        }
+    }
 }
 impl Repository {
     #[cfg(test)]
@@ -103,7 +128,7 @@ impl Repository {
         Self::open_with_lock(home, home_lock)
     }
 
-    pub(crate) fn lock_home(home: &Path) -> Result<File, RuntimeError> {
+    pub(crate) fn lock_home(home: &Path) -> Result<HomeLock, RuntimeError> {
         let lock_path = home.join("runtime.lock");
         let home_lock = OpenOptions::new()
             .create(true)
@@ -125,12 +150,15 @@ impl Repository {
             }
             Err(TryLockError::Error(error)) => return Err(error.into()),
         }
-        Ok(home_lock)
+        Ok(HomeLock {
+            file: home_lock,
+            unlocked: std::sync::atomic::AtomicBool::new(false),
+        })
     }
 
     pub(crate) fn open_with_lock(
         home: &Path,
-        home_lock: File,
+        home_lock: HomeLock,
     ) -> Result<(Self, PersistedConfig), RuntimeError> {
         let persisted_path = home.join("generic-config.json");
 
@@ -198,8 +226,7 @@ impl Repository {
         Ok((repository, persisted))
     }
     pub(crate) fn unlock(&self) -> Result<(), RuntimeError> {
-        self.home_lock.unlock()?;
-        Ok(())
+        self.home_lock.unlock()
     }
     pub(crate) fn store(&self, config: &PersistedConfig) -> Result<(), RuntimeError> {
         commit(
@@ -629,6 +656,32 @@ mod persistence_version_tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn repository_drop_unlocks_even_while_an_inherited_description_survives() {
+        let home = Home::new();
+        let startup = Repository::lock_home(&home.0).unwrap();
+        let startup_description = startup.file.try_clone().unwrap();
+        drop(startup); // A failed startup has not constructed a Repository yet.
+        let (repository, _) = Repository::open(&home.0).unwrap();
+        drop(startup_description);
+        let inherited = repository.home_lock.file.try_clone().unwrap();
+        assert!(
+            Repository::open(&home.0).is_err(),
+            "a live owner retains its lock"
+        );
+        drop(repository);
+        let (reopened, _) = Repository::open(&home.0).unwrap();
+        // A descriptor alone does not extend the completed owner's lease.
+        drop(inherited);
+        assert!(
+            Repository::open(&home.0).is_err(),
+            "the new owner still holds the lock"
+        );
+        reopened.unlock().unwrap();
+        reopened.unlock().unwrap();
     }
 
     #[test]
