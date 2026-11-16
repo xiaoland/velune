@@ -960,7 +960,7 @@ mod tests {
                             choice: Default::default(),
                         },
                     ],
-                    ..Default::default()
+                    choice_edited: true,
                 },
             })
             .unwrap();
