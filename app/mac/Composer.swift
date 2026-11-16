@@ -73,6 +73,17 @@ struct SavedComposerDraft: Codable, Equatable {
             setAttachments(saved.attachments)
         }
     }
+    /// Navigation replaces the visible composer state. Undo copies the prior
+    /// state into the current tab; it never edits or navigates the source tab.
+    func registerNavigationUndo(_ draft: SavedComposerDraft, choices: ComposerTargetChoices?, context: String, client: ComposerInputClient, currentChoices: @escaping () -> ComposerTargetChoices?) {
+        undo.registerUndo(withTarget: self) { model in
+            let current = currentChoices() ?? client.targetChoices(for: context)
+            model.registerNavigationUndo(model.savedDraft, choices: current, context: context, client: client, currentChoices: currentChoices)
+            model.restoreSavedDraft(draft)
+            if let choices { client.saveTarget(context, choices: choices, userEdit: true) }
+        }
+        undo.setActionName("切换输入")
+    }
     func receiveDraft(_ saved: SavedComposerDraft) {
         if saved.text != text { undo.removeAllActions() }
         // A synchronized projection invalidates an older failure snapshot,

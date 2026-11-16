@@ -114,7 +114,7 @@ impl ComposerInputs {
             .collect()
     }
     fn legacy_context(&self, id: &str) -> ComposerContextKey {
-        if id.is_empty() || id.starts_with("draft:") {
+        if id.is_empty() || id == "draft:new-conversation" {
             ComposerContextKey::NewConversation
         } else {
             ComposerContextKey::Conversation {
@@ -831,6 +831,90 @@ mod tests {
             Response::ManageComposerInputs(update) => update.state.unwrap(),
             _ => panic!("unexpected response"),
         }
+    }
+
+    #[test]
+    fn blank_tab_contexts_keep_independent_content_and_choices_after_promotion() {
+        let home = std::env::temp_dir().join(format!("velune-tab-composer-{}", identity()));
+        fs::create_dir_all(&home).unwrap();
+        let mut store = ComposerInputs::open(&home).unwrap();
+        let owner_id = store.owner_id();
+        let contexts: Vec<_> = (0..2)
+            .map(|_| ComposerContextKey::Conversation {
+                owner_id: owner_id.clone(),
+                conversation_id: format!("draft:{}", identity()),
+            })
+            .collect();
+        let inputs = [identity(), identity()];
+        for (index, context) in contexts.iter().enumerate() {
+            store
+                .operate(ComposerInputOperation::Ensure {
+                    context: context.clone(),
+                    input_id: inputs[index].clone(),
+                    seed: ComposerInputContent {
+                        text: format!("tab {index}"),
+                        attachments: vec![],
+                    },
+                })
+                .unwrap();
+            store
+                .operate(ComposerInputOperation::EnsureTarget {
+                    context: context.clone(),
+                    seed: ComposerTargetChoices {
+                        runtime_id: Some(format!("runtime-{index}")),
+                        runtime_owner_id: Some(owner_id.clone()),
+                        choice_edited: true,
+                        ..Default::default()
+                    },
+                })
+                .unwrap();
+        }
+        if let ComposerContextKey::Conversation {
+            conversation_id, ..
+        } = &contexts[1]
+        {
+            store
+                .legacy_edit(conversation_id.clone(), Some("tab 1".into()), None)
+                .unwrap();
+            assert_eq!(store.legacy_input(conversation_id).unwrap().id, inputs[1]);
+        }
+        store
+            .operate(ComposerInputOperation::Promote {
+                input_id: inputs[0].clone(),
+                owner_id: owner_id.clone(),
+                conversation_id: "native-created".into(),
+                runtime_id: "runtime-0".into(),
+            })
+            .unwrap();
+        drop(store);
+        let restored = ComposerInputs::open(&home).unwrap();
+        for (index, context) in contexts.iter().enumerate() {
+            let binding = restored
+                .stored
+                .state
+                .bindings
+                .iter()
+                .find(|binding| &binding.context == context)
+                .unwrap();
+            assert_eq!(binding.input_id, inputs[index]);
+            assert_eq!(
+                restored
+                    .stored
+                    .state
+                    .inputs
+                    .iter()
+                    .find(|input| input.id == inputs[index])
+                    .unwrap()
+                    .content
+                    .text,
+                format!("tab {index}")
+            );
+            assert_eq!(
+                restored.target(context).unwrap().choices.runtime_id,
+                Some(format!("runtime-{index}"))
+            );
+        }
+        fs::remove_dir_all(home).unwrap();
     }
 
     #[test]

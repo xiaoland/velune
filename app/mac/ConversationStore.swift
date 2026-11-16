@@ -99,6 +99,9 @@ final class ConversationStore: ObservableObject {
     /// Complete messages read on demand, by message identifier.
     private var loadedPayloads: [String: DeliveredMessage] = [:]
     static let draftConversationPrefix = "draft:"
+    var unsentTabID = UUID()
+    var unsentContextID: String { Self.draftConversationPrefix + unsentTabID.uuidString.lowercased() }
+    private(set) var restoresLegacyUnsentInput = false
 
     init(device: DeviceStore, sideChat: SideChatTarget? = nil) {
         self.device = device
@@ -326,12 +329,24 @@ final class ConversationStore: ObservableObject {
               selectedConversationID == nil || selectedConversationID == snapshot.conversation.id else { return nil }
         let unsent = isDraft || snapshot.conversation.id.hasPrefix(Self.draftConversationPrefix)
         return ComposerTargetRequest(runtimeId: unsent ? snapshot.contextRuntimeID : snapshot.conversation.runtimeID,
-                                     conversationId: unsent ? nil : snapshot.conversation.id)
+                                     conversationId: snapshot.conversation.id)
     }
     private var composerTargetID: String? { selectedConversationID ?? loadedConversationID }
     var composerTargetChoices: ComposerTargetChoices? {
         guard !isSideChat else { return nil }
         return composerTargetID.flatMap { device.composerInputs.targetChoices(for: $0) }
+    }
+    /// A copied composer state fixes the values currently shown, including
+    /// inherited execution settings that raw intent deliberately leaves nil.
+    var composerNavigationChoices: ComposerTargetChoices? {
+        guard let next = nextTurn, let owner = device.composerInputs.ownerID else { return composerTargetChoices }
+        var choices = composerTargetChoices ?? ComposerTargetChoices(runtimeId: nil, runtimeOwnerId: nil, choices: [], choiceEdited: false)
+        choices.runtimeId = next.runtimeId; choices.runtimeOwnerId = owner; choices.choiceEdited = true
+        choices.choices.removeAll { $0.ownerId == owner && $0.runtimeId == next.runtimeId }
+        let effective = TurnChoice(model: next.model, effort: next.effort ?? next.currentEffort,
+                                   permissionMode: (next.permissionMode ?? next.currentPermissionMode)?.id)
+        choices.choices.append(.init(ownerId: owner, runtimeId: next.runtimeId, choice: effective))
+        return choices
     }
     var composerTargetIssue: String? {
         guard !isSideChat else { return nil }
@@ -1000,7 +1015,7 @@ final class ConversationStore: ObservableObject {
               enabled.contains(where: { $0.id == runtimeID }) else { return false }
         cancelOpeningRetry()
         abandonLinkedConversationLookup()
-        let id = Self.draftConversationPrefix + "new-conversation"
+        let id = unsentContextID
         let conversation = Conversation(id: id, title: "新会话", updatedAtUnixMs: isPreview ? Int64(Date().timeIntervalSince1970 * 1000) : nil, runtimeID: runtimeID, cwd: project?.directories.first ?? cwd, creationProject: project, canRename: isPreview, canDelete: isPreview)
         creationFailure = nil
         isDraft = !isPreview
@@ -1019,10 +1034,13 @@ final class ConversationStore: ObservableObject {
         selectedConversationID = id
     }
     /// An unsent conversation can still choose its working directory.
-    var isUnsentConversation: Bool { isDraft }
-    var unsentConversation: Conversation? { isDraft ? snapshot?.conversation : nil }
-    func restoreUnsentConversation(_ conversation: Conversation) {
+    var isUnsentConversation: Bool { isDraft || loadedConversationID?.hasPrefix(Self.draftConversationPrefix) == true }
+    var unsentConversation: Conversation? { isUnsentConversation ? snapshot?.conversation : nil }
+    func restoreUnsentConversation(_ saved: Conversation) {
         guard !started else { return }
+        restoresLegacyUnsentInput = saved.id == Self.draftConversationPrefix + "new-conversation"
+        if restoresLegacyUnsentInput { device.composerInputs.restoreLegacyTarget(to: unsentContextID) }
+        let conversation = Conversation(id: unsentContextID, title: saved.title, updatedAtUnixMs: saved.updatedAtUnixMs, createdAtUnixMs: saved.createdAtUnixMs, runtimeID: saved.runtimeID, cwd: saved.cwd, creationProject: saved.creationProject, canRename: saved.canRename, canDelete: saved.canDelete)
         started = true
         device.start()
         isDraft = true

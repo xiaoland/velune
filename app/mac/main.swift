@@ -471,6 +471,10 @@ enum VeluneEntry {
             admitMacExecution()
             backgroundTaskChecks()
         }
+        if CommandLine.arguments.contains("--check-composer-ownership") {
+            admitMacExecution()
+            composerOwnershipCheck()
+        }
         VeluneApp.main()
     }
 }

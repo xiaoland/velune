@@ -54,6 +54,7 @@ import VeluneBindings
 
     init(id: UUID = UUID(), store: ConversationStore, start: @escaping () -> Void) {
         self.store = store
+        store.unsentTabID = id
         pendingStart = start
         super.init(id: id)
         reading.table.observeFind(find)
@@ -709,36 +710,42 @@ struct WindowSeed: Codable, Hashable {
         default: return .conversation(tab.store.selectedConversationID ?? tab.store.loadedConversationID ?? "tab:\(tab.id)")
         }
     }
+    /// A shared panel is only a presentation host. Looking up another visible
+    /// tab's input must never return the currently focused tab's draft.
+    private func composerInputOwner(for tab: ConversationTab) -> ComposerDrafts.Owner? {
+        guard composerOwner(for: tab) != nil else { return nil }
+        return .conversation(tab.store.selectedConversationID ?? tab.store.loadedConversationID ?? "tab:\(tab.id)")
+    }
     func composer(for tab: ConversationTab) -> ComposerModel {
-        guard let owner = composerOwner(for: tab) else { return tab.composer }
+        guard let owner = composerInputOwner(for: tab) else { return tab.composer }
         let model = composerDrafts.model(for: owner, tab: tab)
-        if case .conversation = owner { tab.composer = model }
+        tab.composer = model
         return model
     }
     func existingComposer(for tab: ConversationTab) -> ComposerModel? {
-        guard let owner = composerOwner(for: tab) else { return tab.composer }
+        guard let owner = composerInputOwner(for: tab) else { return tab.composer }
         return composerDrafts.existingModel(for: owner)
     }
     func selectComposerDraft(_ model: ComposerModel, for tab: ConversationTab) {
-        guard let owner = composerOwner(for: tab) else { return }
+        guard let owner = composerInputOwner(for: tab) else { return }
         composerDrafts.select(model, replacing: composer(for: tab), owner: owner, tab: tab)
         objectWillChange.send()
         composer(for: tab).focusWhenShown()
     }
     func newComposerDraft(for tab: ConversationTab) {
-        guard let owner = composerOwner(for: tab) else { return }
+        guard let owner = composerInputOwner(for: tab) else { return }
         composerDrafts.newDraft(replacing: composer(for: tab), owner: owner, tab: tab)
         objectWillChange.send()
         composer(for: tab).focusWhenShown()
     }
     private func navigateComposer(to id: String, tab: ConversationTab, checkpointPrevious: Bool = true) {
-        guard let owner = composerOwner(for: tab) else { return }
-        composerDrafts.navigate(to: id, tab: tab, sharedInput: owner == .shared, checkpointPrevious: checkpointPrevious)
+        guard composerOwner(for: tab) != nil else { return }
+        composerDrafts.navigate(to: id, tab: tab, checkpointPrevious: checkpointPrevious)
     }
     /// A new conversation opens in a new tab after the focused pane's shown
     /// one; a focused tab already holding an unsent conversation is restored
-    /// in place instead, not stacked under another empty tab. The one global
-    /// new-conversation input restores as the tab is selected.
+    /// in place instead, not stacked under another empty tab. Every blank tab
+    /// restores its own content and execution choices when selected.
     @discardableResult
     func createConversation() -> ConversationTab? {
         if let shown = focusedEditor as? ConversationTab, shown.store.isUnsentConversation {
@@ -888,7 +895,7 @@ struct WindowSeed: Codable, Hashable {
         composerCreationWatch = composerDrafts.creations.sink { [weak self] creation in
             guard let self, let input = self.composerDrafts.existing(creation.inputId) else { return }
             let tabs = self.conversationTabs.filter { tab in
-                tab.store.isUnsentConversation && (self.composerOwner(for: tab) == .shared ? self.composerDrafts.isNewInput(input) : tab.composer === input)
+                tab.store.isUnsentConversation && self.composerDrafts.owns(input, for: tab)
             }
             guard !tabs.isEmpty else { return }
             for tab in tabs {
@@ -1003,8 +1010,8 @@ struct WindowSeed: Codable, Hashable {
             tab.activate()
             noteSelected(tab)
         } else if let saved, saved.isWhole {
-            sharedComposer.restoreSavedDraft(saved.composer)
-            composerDrafts.restore(saved.composerWorkspace)
+            if let workspace = saved.composerWorkspace { composerDrafts.restore(workspace) }
+            else { composerDrafts.restoreLegacy(saved.composer) }
             if saved.composerWorkspace == nil, sharedComposer.hasUnfinishedInput { restoredComposerDraft = sharedComposer }
             let lone = saved.layout.paneIDs.count == 1 && saved.panes.values.first?.tabs.count == 1
             let restored = saved.layout.paneIDs.map { paneID in
@@ -2000,29 +2007,36 @@ struct WindowSeed: Codable, Hashable {
         return false
     }
 
-    /// A click in a pane focuses it, wherever in the pane it lands.
+    /// A primary click in a pane focuses it, wherever in the pane it lands.
+    /// Context menus and middle-button close act on their target without
+    /// changing the active pane or the shared composer.
     private func installMouseMonitor() {
         guard mouseMonitor == nil else { return }
         mouseMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]) { [weak self] event in
             guard let self else { return event }
-            if event.type == .leftMouseDown { self.noteClick(event) }
-            if event.type == .rightMouseDown, self.showsToolbarPlaceMenu(for: event) { return nil }
-            for tab in self.conversationTabs {
-                guard let view = self.conversationAnchors[tab.id]?(), view.window === event.window,
-                      view.bounds.contains(view.convert(event.locationInWindow, from: nil)) else { continue }
-                self.focusConversation(tab)
+            return self.handleMouseDown(event)
+        }
+    }
+
+    func handleMouseDown(_ event: NSEvent) -> NSEvent? {
+        if event.type == .rightMouseDown, showsToolbarPlaceMenu(for: event) { return nil }
+        guard event.type == .leftMouseDown, !event.modifierFlags.contains(.control) else { return event }
+        noteClick(event)
+        for tab in conversationTabs {
+            guard let view = conversationAnchors[tab.id]?(), view.window === event.window,
+                  view.bounds.contains(view.convert(event.locationInWindow, from: nil)) else { continue }
+            focusConversation(tab)
+            break
+        }
+        guard isSplit else { return event }
+        for (id, anchor) in anchors {
+            guard let view = anchor(), let window = view.window, window === event.window else { continue }
+            if view.bounds.contains(view.convert(event.locationInWindow, from: nil)) {
+                focus(id)
                 break
             }
-            guard self.isSplit else { return event }
-            for (id, anchor) in self.anchors {
-                guard let view = anchor(), let window = view.window, window === event.window else { continue }
-                if view.bounds.contains(view.convert(event.locationInWindow, from: nil)) {
-                    self.focus(id)
-                    break
-                }
-            }
-            return event
         }
+        return event
     }
 }
 

@@ -2,7 +2,8 @@
 use crate::TurnChoice;
 use serde::{Deserialize, Serialize};
 
-/// A source conversation, or the one global new-conversation target.
+/// A source conversation, a stable `draft:<tab identity>`, or a legacy
+/// unscoped new-conversation target (`None`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
 pub struct ComposerTargetRequest {

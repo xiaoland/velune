@@ -11,6 +11,9 @@ impl CoreRuntime {
         request: &ComposerTargetRequest,
     ) -> Result<Option<crate::conversation::ConversationSnapshot>, RuntimeError> {
         match &request.conversation_id {
+            // A stable unsent-tab identity owns choices before a native
+            // conversation exists. It must never query a runtime transcript.
+            Some(id) if id.starts_with("draft:") => Ok(None),
             Some(id) => {
                 if id.starts_with("side-chat:") {
                     return Err(RuntimeError::invalid("侧聊使用自己的临时执行选择"));
