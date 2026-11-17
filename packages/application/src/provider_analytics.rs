@@ -498,7 +498,7 @@ fn aggregate_chatgpt_profiles(
     let mut lifetime_source_count = 0u32;
     let mut daily_reported_profile_count = 0u32;
     let mut daily = BTreeMap::<String, (u64, u32)>::new();
-    for (_, (_, profile)) in &profiles {
+    for (_, profile) in profiles.values() {
         let Some(profile) = profile else { continue };
         if let Some(tokens) = profile.lifetime_tokens.filter(|value| *value >= 0) {
             lifetime_tokens = Some(checked_add(lifetime_tokens.unwrap_or(0), tokens as u64)?);

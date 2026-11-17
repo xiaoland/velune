@@ -5,7 +5,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, BTreeSet},
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
@@ -162,7 +162,7 @@ impl TryFrom<RawDailyBucket> for DailyBucket {
         })
     }
 }
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 struct TopInvocation {
     #[serde(rename = "type")]
@@ -172,18 +172,6 @@ struct TopInvocation {
     skill_id: Option<String>,
     skill_name: Option<String>,
     usage_count: Option<i64>,
-}
-impl Default for TopInvocation {
-    fn default() -> Self {
-        Self {
-            kind: None,
-            plugin_id: None,
-            plugin_name: None,
-            skill_id: None,
-            skill_name: None,
-            usage_count: None,
-        }
-    }
 }
 #[derive(Debug, Deserialize, Default)]
 #[serde(default)]
@@ -879,14 +867,14 @@ async fn collect_async(home: PathBuf, capture: Capture) -> Result<Collected, Str
 }
 
 async fn fetch_json(
-    home: &PathBuf,
+    home: &Path,
     capture: &Capture,
     endpoint: crate::subscription_auth::AccountDataEndpoint,
     source: ProviderAccountSource,
     collected: &mut Collected,
 ) -> Option<Value> {
     match crate::subscription_auth::read_provider_account_data(
-        home.clone(),
+        home.to_path_buf(),
         capture.credential_id.clone(),
         capture.generation,
         endpoint,
