@@ -945,23 +945,16 @@ fn is_custom_message(message: &Value) -> bool {
     matches!(message["role"].as_str(), Some("custom" | "hookMessage"))
 }
 
-/// Native work results, excluding supervisor questions and control requests.
+/// Group Pi's subagent notification namespace with work, regardless of whether
+/// it reports a result, asks for a decision, or needs attention. Grouping does
+/// not resolve a request or change its native role/content.
 fn is_work_notification(message: &Value) -> bool {
     is_custom_message(message)
-        && match message["customType"].as_str() {
-            Some(
-                "background-task-notification"
-                | "subagent-notify"
-                | "subagent-incremental-child-notify",
-            ) => true,
-            // The same native type also reports timeout, missing-run and
-            // needs-attention states. Only explicit settled results fold.
-            Some("subagent-wait-subscription") => matches!(
-                message["details"]["outcome"].as_str(),
-                Some("completed" | "failed")
-            ),
-            _ => false,
-        }
+        && message["customType"].as_str().is_some_and(|kind| {
+            kind == "background-task-notification"
+                || kind.starts_with("subagent-")
+                || kind.starts_with("subagent_")
+        })
 }
 
 fn is_background_task_notification(message: &Value) -> bool {
@@ -1631,13 +1624,32 @@ mod tests {
     fn notice(id: &str) -> Value {
         json!({"id":id,"role":"custom","customType":"background-task-notification","content":"arbitrary body"})
     }
+    const SUBAGENT_NOTIFICATIONS: [&str; 17] = [
+        "subagent-notify",
+        "subagent-incremental-child-notify",
+        "subagent_supervisor_request",
+        "subagent_control_notice",
+        "subagent_steering_notice",
+        "subagent-supervisor-unanswered",
+        "subagent-supervisor-blocked",
+        "subagent_watchdog_warning",
+        "subagent_watchdog_clarification",
+        "subagent-completion-unanswered",
+        "subagent-completion-unhandled",
+        "subagent-workflow-result-write-failed",
+        "subagent-wait-subscription",
+        "subagent-slash-result",
+        "subagent-slash-text-result",
+        "subagent-future-notification",
+        "subagent_future_notice",
+    ];
     fn subagent_return(id: &str, custom_type: &str) -> Value {
         json!({"id":id,"role":"custom","customType":custom_type,"display":true,
             "content":"**结果**\n\n[报告](/synthetic/report.md:20)\n\n```text\nresult\n```"})
     }
     #[test]
     fn subagent_return_notifications_join_work_in_cold_and_live_projection() {
-        for custom_type in ["subagent-notify", "subagent-incremental-child-notify"] {
+        for custom_type in SUBAGENT_NOTIFICATIONS {
             let returned = subagent_return("returned", custom_type);
             let s = native(json!([user(), tool("before"), returned, tool("after")]));
             assert_eq!(s.work_notification_ids, ["returned"]);
@@ -1678,7 +1690,7 @@ mod tests {
     }
     #[test]
     fn subagent_return_notifications_preserve_late_orphan_and_mixed_reply_boundaries() {
-        for custom_type in ["subagent-notify", "subagent-incremental-child-notify"] {
+        for custom_type in SUBAGENT_NOTIFICATIONS {
             for mixed in [false, true] {
                 let content = if mixed {
                     json!([{"type":"thinking","thinking":"reason"},{"type":"text","text":"answer"}])
@@ -1709,21 +1721,8 @@ mod tests {
         }
     }
     #[test]
-    fn subagent_return_classification_preserves_requests_directives_and_hidden_messages() {
-        for custom_type in [
-            "subagent_supervisor_request",
-            "subagent_control_notice",
-            "subagent-notify-other",
-        ] {
-            let s = native(json!([
-                user(),
-                tool("before"),
-                subagent_return("request", custom_type)
-            ]));
-            assert!(s.work_notification_ids.is_empty());
-            assert_eq!(ids(&transcript(&s)), ["user", "work", "request"]);
-        }
-        for custom_type in ["subagent-notify", "subagent-incremental-child-notify"] {
+    fn subagent_notifications_preserve_user_directives_and_hidden_messages() {
+        for custom_type in SUBAGENT_NOTIFICATIONS {
             let mut directive = subagent_return("directive", custom_type);
             directive["role"] = json!("user");
             let s = native(json!([user(), directive]));
@@ -1844,7 +1843,7 @@ mod tests {
     }
 
     #[test]
-    fn settled_wait_results_join_work_but_attention_and_unknown_outcomes_stay_visible() {
+    fn all_wait_outcomes_join_work_without_reinterpreting_status() {
         for outcome in [
             "completed",
             "failed",
@@ -1862,7 +1861,7 @@ mod tests {
                 {"id":"wait","role":"custom","customType":"subagent-wait-subscription","display":true,"content":"native wait outcome","details":{"token":"synthetic-token","runId":"synthetic-run","outcome":outcome}},
                 tool("after")]));
             let t = transcript(&snapshot);
-            let result = matches!(outcome, "completed" | "failed");
+            let result = true;
             assert_eq!(
                 snapshot.work_notification_ids.contains(&"wait".into()),
                 result,
@@ -1883,7 +1882,7 @@ mod tests {
             let mut messages = vec![
                 user(),
                 tool("before"),
-                json!({"id":"request","role":"custom","customType":"subagent_supervisor_request","display":true,"content":"synthetic decision question","details":{"requestId":"R","expectsReply":true,"reason":"need_decision"}}),
+                json!({"id":"request","role":"custom","customType":"subagent_supervisor_request","display":true,"content":"Subagent needs a supervisor decision.","details":{"requestId":"R","expectsReply":true,"reason":"need_decision"}}),
             ];
             if let Some(is_error) = replied {
                 messages.push(json!({"id":"reply","role":"assistant","content":[{"type":"toolCall","id":"reply-call","name":"subagent_supervisor","arguments":{"action":"reply","replyTo":"R","message":"synthetic"}}]}));
@@ -1892,9 +1891,9 @@ mod tests {
             messages.push(json!({"id":"closing","role":"assistant","content":"answer"}));
             let snapshot = native(json!(messages));
             let t = transcript(&snapshot);
-            assert!(!snapshot.work_notification_ids.contains(&"request".into()));
-            assert!(!t.turns()[0].work_message_ids.contains(&"request".into()));
-            assert_eq!(ids(&t), ["user", "work", "request", "closing"]);
+            assert!(snapshot.work_notification_ids.contains(&"request".into()));
+            assert!(t.turns()[0].work_message_ids.contains(&"request".into()));
+            assert_eq!(ids(&t), ["user", "work", "closing"]);
             assert!(
                 snapshot.pending_interactions.is_empty(),
                 "custom history does not prove current reply availability or resolution"
@@ -1910,34 +1909,23 @@ mod tests {
     }
 
     #[test]
-    fn control_questions_reminders_and_user_operations_keep_their_native_visible_order() {
-        let kinds = [
-            "subagent_control_notice",
-            "subagent_steering_notice",
-            "subagent-supervisor-unanswered",
-            "subagent-supervisor-blocked",
-            "subagent_watchdog_warning",
-            "subagent_watchdog_clarification",
-            "subagent-completion-unanswered",
-            "subagent-completion-unhandled",
-            "subagent-workflow-result-write-failed",
-            "subagent-slash-result",
-            "subagent-slash-text-result",
-            "subagents-admin",
-            "unrecognized",
-        ];
+    fn subagent_notices_join_work_while_other_extensions_stay_independent() {
         let mut messages = vec![user(), tool("before")];
-        for kind in kinds {
-            messages.push(json!({"id":kind,"role":"custom","customType":kind,"content":"native visible control message","display":true,"details":{"runId":"synthetic-run"}}));
+        for kind in SUBAGENT_NOTIFICATIONS {
+            messages.push(subagent_return(kind, kind));
+        }
+        for kind in ["subagents-admin", "unrecognized"] {
+            messages.push(json!({"id":kind,"role":"custom","customType":kind,"content":"independent extension output","display":true}));
         }
         messages.push(tool("after"));
         let snapshot = native(json!(messages));
         let t = transcript(&snapshot);
-        assert!(snapshot.work_notification_ids.is_empty());
-        assert_eq!(t.turns()[0].work_message_ids, ["before", "after"]);
-        let mut expected: Vec<String> = vec!["user".into(), "work".into()];
-        expected.extend(kinds.into_iter().map(str::to_owned));
-        assert_eq!(ids(&t), expected);
+        assert_eq!(snapshot.work_notification_ids, SUBAGENT_NOTIFICATIONS);
+        let mut expected_work = vec!["before".to_owned()];
+        expected_work.extend(SUBAGENT_NOTIFICATIONS.into_iter().map(str::to_owned));
+        expected_work.push("after".into());
+        assert_eq!(t.turns()[0].work_message_ids, expected_work);
+        assert_eq!(ids(&t), ["user", "work", "subagents-admin", "unrecognized"]);
     }
 
     #[test]
@@ -2085,7 +2073,11 @@ mod tests {
             "background-task-notification",
             "subagent-notify",
             "subagent-incremental-child-notify",
+            "subagent_supervisor_request",
+            "subagent_control_notice",
             "subagent-wait-subscription",
+            "subagent_supervisor_request",
+            "subagent_control_notice",
         ] {
             let notification = |id: &str| {
                 let mut value = notice(id);

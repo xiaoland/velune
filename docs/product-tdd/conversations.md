@@ -14,7 +14,7 @@ Pi 的原生消息与来源身份必须取自同一已固定的 SDK 投影快照
 
 独立客户端通知、独立上下文维护项与外露回复的相对顺序遵守原生记录；closing 回复在遍历到该原生消息时输出，位于回复之前的独立通知仍先于回复，真正晚到的通知仍在回复之后。工作过程仍使用用户锚点下的单个分组，内部成员顺序不变；尚无外露回复时，独立通知可以显示在该分组下方，这不表示它比组内全部工作都晚。混合思考／工具与正文的 closing 消息维持原有 work 与 reply 拆分身份。
 
-工作通知由内部 `ConversationSnapshot.work_notification_ids` 显式分类，Pi adapter 依据原生 custom 类型及结构化 outcome 识别后台任务通知、子 Agent 回传与已经结束的等待结果，不由正文、消息 ID 前缀或 `Client + Notice` 组合推断。待答请求、需要关注的状态与未知类型不自动归入 work。`TranscriptEvent::ReplaceSnapshot` 原子消费消息、执行关联与分类；通知早于外露回复或本轮尚无回复时，按原生顺序进入 work 成员，不参与 closing 判定，真正晚到的通知仍独立位于回复之后。压缩后无用户锚点的通知保留原位；身份确认、续接命名空间、侧聊拼接与截断／分支过滤同步转换或裁剪分类 ID。平台继续只消费既有的有序展示项和 work 成员，不新增通知容器或公开 ABI。
+工作通知由内部 `ConversationSnapshot.work_notification_ids` 显式分类。Pi adapter 将原生 custom（含 legacy hookMessage）中的 `background-task-notification` 与 `subagent-`／`subagent_` 通知命名空间统一归组，包括 supervisor 请求、控制提醒及所有等待 outcome；不按待答、成功或需要关注状态排除，也不由正文、消息 ID 前缀或 `Client + Notice` 组合推断。归组不改变消息角色、正文或交互状态；原生隐藏标记仍生效，其它扩展／管理输出不自动归组。`TranscriptEvent::ReplaceSnapshot` 原子消费消息、执行关联与分类；通知早于外露回复或本轮尚无回复时，按原生顺序进入 work 成员，不参与 closing 判定，真正晚到的通知仍独立位于回复之后。压缩后无用户锚点的通知保留原位；身份确认、续接命名空间、侧聊拼接与截断／分支过滤同步转换或裁剪分类 ID。平台继续只消费既有的有序展示项和 work 成员，不新增通知容器或公开 ABI。
 
 `ContextCompaction.text` 的首行承载运行时状态；可读原生摘要附在空行后的详情中，由客户端默认折叠。Adapter依据原生结构化边界关联摘要，不生成用户消息或新的执行范围，后续只含状态的事件不擦除已有详情。客户端只拆分呈现首行与详情，不解释原生 synthetic／meta 字段。
 
