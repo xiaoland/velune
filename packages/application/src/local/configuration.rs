@@ -383,7 +383,7 @@ impl CoreRuntime {
 
     /// Reapply list organization to the indexed history. A read receipt or
     /// pin changes no native files and must not wait for unrelated runtimes.
-    pub(super) fn cached_list(&self) -> crate::ConfigurationSnapshot {
+    pub(crate) fn cached_list(&self) -> crate::ConfigurationSnapshot {
         self.configuration_from_sources(
             self.cached_sources(),
             self.history_failures.borrow().clone(),

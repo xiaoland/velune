@@ -25,6 +25,8 @@ mod claude_quota;
 mod credential_helper;
 mod kimi_quota;
 mod native_quota_source;
+mod provider_account;
+mod provider_analytics;
 mod provider_authentication;
 mod provider_login;
 mod query_credential;
@@ -42,6 +44,18 @@ pub use provider_authentication::{
 pub use velune_application_api::{
     BilledCost, BillingAuthenticationEdit, BillingConfiguration, BillingRateLimit, BillingReport,
     BillingScope, BillingService, BillingSpendLimit, BillingUsage, ProviderBillingStatus,
+};
+pub use velune_application_api::{
+    ProviderAccountCredits, ProviderAccountDailyUsage, ProviderAccountFailure,
+    ProviderAccountProfile, ProviderAccountResetGrant, ProviderAccountResets,
+    ProviderAccountSource, ProviderAccountState, ProviderAccountStatus,
+    ProviderAccountTopInvocation,
+};
+pub use velune_application_api::{
+    ProviderAnalyticsArea, ProviderAnalyticsChatgptProfileTotal, ProviderAnalyticsDailyTotal,
+    ProviderAnalyticsFailure, ProviderAnalyticsOrganizationTotal, ProviderAnalyticsReport,
+    ProviderAnalyticsScope, ProviderAnalyticsSource, ProviderAnalyticsSourceKind,
+    ProviderAnalyticsSourceState, ProviderAnalyticsUsage,
 };
 pub use velune_application_api::{ProviderTemplate, ProviderTemplateKind, provider_templates};
 pub mod config;
@@ -174,6 +188,17 @@ impl Application {
             runtime,
             analytics,
         })
+    }
+    /// Read a cached ChatGPT provider account report or request a background refresh.
+    /// This information is informational and never affects model admission.
+    pub fn provider_account(
+        &self,
+        gateway_id: &str,
+        provider_id: &str,
+        refresh: bool,
+    ) -> Result<ProviderAccountStatus, Error> {
+        self.runtime
+            .provider_account(gateway_id, provider_id, refresh)
     }
     /// Close unless a conversation's turn or its sub-agents still run.
     pub fn close(&mut self) -> Result<(), Error> {

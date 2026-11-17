@@ -140,7 +140,7 @@ final class DeviceStore: ObservableObject {
     @Published private(set) var stoppingConversationIDs: Set<String> = []
     /// Conversations running elsewhere that the list did not contain when last read again.
     private var unlistedElsewhereIDs: Set<String> = []
-    @Published private(set) var gateway = GatewaySummary(id: "default", name: "默认网关", providers: [], routes: []) { didSet { if oldValue != gateway { configurationRevision &+= 1 } } }
+    @Published private(set) var gateway = GatewaySummary(id: "default", name: "默认网关", providers: [], routes: []) { didSet { if oldValue != gateway { configurationRevision &+= 1; invalidateProviderReports() } } }
     @Published private(set) var runtimeInstances: [RuntimeInstance] = [] {
         didSet {
             if oldValue != runtimeInstances {
@@ -152,6 +152,11 @@ final class DeviceStore: ObservableObject {
     /// Counts changes to providers and runtime instances; model catalogs and
     /// quota read before one are stale.
     @Published private(set) var configurationRevision: UInt64 = 0
+    /// Public account descriptions can stay identical when credentials change.
+    /// This epoch invalidates view-owned reports without exposing credential identity.
+    @Published private(set) var providerReportRevision: UInt64 = 0
+    func invalidateProviderReports() { providerReportRevision &+= 1 }
+
     /// Where each instance runs, read with its saved execution; unknown ones count as local.
     @Published private(set) var runtimeLocations: [String: RuntimeTransport] = [:]
     private var runtimeLocationsRequest = UUID()
@@ -280,7 +285,9 @@ final class DeviceStore: ObservableObject {
         if preview { seedPreview() }
         else { loadProblems() }
         transport?.configurationChanged.receive(on: DispatchQueue.main).sink { [weak self] in
-            guard let self, self.started else { return }
+            guard let self else { return }
+            self.invalidateProviderReports()
+            guard self.started else { return }
             self.refreshConfiguration()
         }.store(in: &subscriptions)
     }
@@ -832,6 +839,21 @@ final class DeviceStore: ObservableObject {
         guard !isPreview, let transport else { recordProblem("预览不会读取 API key"); return }
         enqueue({ try transport.readProviderAPIKey(gatewayID: self.gateway.id, providerID: providerID) }, apply: completion)
     }
+    func readProviderAccount(_ providerID: String, refresh: Bool, completion: @escaping (Result<ProviderAccountStatus, Error>) -> Void) {
+        guard let transport, !isPreview else { completion(.failure(TransportError.rejected("预览不读取账户；请在已配置的执行设备上查询。"))); return }
+        let gatewayID = gateway.id
+        performOnQueue {
+            let result = Result { try transport.providerAccount(gatewayID: gatewayID, providerID: providerID, refresh: refresh) }
+            DispatchQueue.main.async { completion(result) }
+        }
+    }
+    func readProviderAnalytics(refresh: Bool, completion: @escaping (Result<ProviderAnalyticsReport, Error>) -> Void) {
+        guard let transport, !isPreview else { completion(.failure(TransportError.rejected("预览不查询提供商报告；请在已配置的执行设备上查询。"))); return }
+        performOnQueue {
+            let result = Result { try transport.providerAnalytics(refresh: refresh) }
+            DispatchQueue.main.async { completion(result) }
+        }
+    }
     func readProviderBilling(_ providerID: String, refresh: Bool, completion: @escaping (Result<ProviderBillingStatus, Error>) -> Void) {
         guard let transport, !isPreview else { completion(.failure(TransportError.rejected("预览不读取组织账单；请在已配置的执行设备上查询。"))); return }
         let gatewayID = gateway.id
@@ -992,6 +1014,7 @@ final class DeviceStore: ObservableObject {
                 // A sign-in page opens in the browser; the sheet keeps a link to open it again.
                 if notification.kind == "url", let address = notification.url, let url = URL(string: address), url.scheme == "https" { NSWorkspace.shared.open(url) }
             case .finished(let ok, let error, let cancelled):
+                if ok { invalidateProviderReports() }
                 authenticationPrompt = nil
                 authenticationResult = ok ? "登录完成。" : cancelled ? "登录已取消。" : nil
                 if !ok && !cancelled { recordProblem(error ?? "登录未完成。", source: "登录") }

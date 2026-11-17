@@ -7,7 +7,31 @@ struct AnalyticsMenuItem: View {
     var body: some View { Button("分析…") { openWindow(id: "analytics") } }
 }
 
+private enum AnalyticsSource: String, CaseIterable, Identifiable {
+    case local, provider
+    var id: Self { self }
+    var title: String { self == .local ? "本地记录" : "提供商报告" }
+}
+
 struct AnalyticsView: View {
+    @ObservedObject var store: DeviceStore
+    @State private var source = AnalyticsSource.local
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Picker("数据来源", selection: $source) {
+                    ForEach(AnalyticsSource.allCases) { Text($0.title).tag($0) }
+                }.pickerStyle(.segmented).frame(width: 250).accessibilityLabel("数据来源")
+                Spacer()
+            }.padding(.horizontal, 20).padding(.vertical, 12)
+            Divider()
+            if source == .local { LocalAnalyticsView(store: store) }
+            else { ProviderAnalyticsView(store: store) }
+        }.navigationTitle("分析")
+    }
+}
+
+private struct LocalAnalyticsView: View {
     @ObservedObject var store: DeviceStore
     @Environment(\.scenePhase) private var scenePhase
     @State private var page = AnalyticsPage.overview

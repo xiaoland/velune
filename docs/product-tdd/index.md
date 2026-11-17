@@ -13,7 +13,7 @@
 | 输入内容、目标配置、跨设备修订与新建交接 | [Composer 输入身份与同步](composer-state.md) |
 | AI 操作、认证、路由、额度、协议转换与分析 | [AI 服务与网关](ai-service.md) |
 | 网关切换、协议保真与 token 计量 | [LLM 网关](ai-gateway.md) |
-| 组织报表、账单缓存与查询凭据 | [组织用量与账单](ai-billing.md) |
+| 订阅账户报告、组织账单、查询凭据与提供商聚合 | [账户报告与组织账单](ai-billing.md) |
 | 配对、设备身份、网络恢复与远程请求交付 | [远程访问](remote-access.md) |
 | SDK 装配、关联、指标、分享与本地问题历史 | [遥测](telemetry.md) |
 

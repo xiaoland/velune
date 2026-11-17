@@ -72,6 +72,7 @@ pub enum CommandKind {
     ReadResourceNativeImport,
     ResolveResourceBinding,
     QueryAnalytics,
+    ReadProviderAnalytics,
     ReadRuntimeDiscoveryHints,
     DiscoverRuntimes,
     ReadConfiguration,
@@ -140,6 +141,7 @@ pub enum CommandKind {
     PreviewProviderImport,
     ApplyProviderImport,
     ReadProviderBilling,
+    ReadProviderAccount,
     SaveProviderBilling,
     ReadProviderQuota,
     RefreshProviderQuota,
@@ -249,6 +251,9 @@ pub enum Command {
     },
     QueryAnalytics {
         query: AnalyticsQuery,
+    },
+    ReadProviderAnalytics {
+        refresh: bool,
     },
     ReadRuntimeDiscoveryHints {
         user_home: String,
@@ -539,6 +544,11 @@ pub enum Command {
         provider_id: String,
         refresh: bool,
     },
+    ReadProviderAccount {
+        gateway_id: String,
+        provider_id: String,
+        refresh: bool,
+    },
     SaveProviderBilling {
         gateway_id: String,
         provider_id: String,
@@ -660,6 +670,7 @@ pub enum Response {
     ReadResourceNativeImport(crate::ResourceTemplateImport),
     ResolveResourceBinding,
     QueryAnalytics(AnalyticsReport),
+    ReadProviderAnalytics(crate::ProviderAnalyticsReport),
     ReadRuntimeDiscoveryHints(Vec<RuntimeDiscoveryHint>),
     DiscoverRuntimes(Vec<RuntimeDiscoveryCandidate>),
     ReadConfiguration(ConfigurationSnapshot),
@@ -728,6 +739,7 @@ pub enum Response {
     PreviewProviderImport(ProviderImportPreview),
     ApplyProviderImport(ImportResult),
     ReadProviderBilling(crate::ProviderBillingStatus),
+    ReadProviderAccount(crate::ProviderAccountStatus),
     SaveProviderBilling(crate::ProviderBillingStatus),
     ReadProviderQuota(ProviderQuotaStatus),
     RefreshProviderQuota(ProviderQuotaStatus),
@@ -797,6 +809,7 @@ impl Command {
             | Self::ListUnmanagedRuntimeResources { .. }
             | Self::ReadResourceNativeImport { .. }
             | Self::QueryAnalytics { .. }
+            | Self::ReadProviderAnalytics { .. }
             | Self::ReadRuntimeDiscoveryHints { .. }
             | Self::DiscoverRuntimes { .. }
             | Self::ReadConfiguration
@@ -826,6 +839,7 @@ impl Command {
             | Self::ReadFileDiff { .. }
             | Self::PreviewProviderImport { .. }
             | Self::ReadProviderBilling { .. }
+            | Self::ReadProviderAccount { .. }
             | Self::ReadProviderQuota { .. }
             | Self::ReadProviderQuotaHistory { .. }
             | Self::ReadQuotaAlerts { .. }
@@ -922,6 +936,7 @@ impl Command {
             Self::ReadResourceNativeImport { .. } => CommandKind::ReadResourceNativeImport,
             Self::ResolveResourceBinding { .. } => CommandKind::ResolveResourceBinding,
             Self::QueryAnalytics { .. } => CommandKind::QueryAnalytics,
+            Self::ReadProviderAnalytics { .. } => CommandKind::ReadProviderAnalytics,
             Self::ReadRuntimeDiscoveryHints { .. } => CommandKind::ReadRuntimeDiscoveryHints,
             Self::DiscoverRuntimes { .. } => CommandKind::DiscoverRuntimes,
             Self::ReadConfiguration => CommandKind::ReadConfiguration,
@@ -992,6 +1007,7 @@ impl Command {
             Self::PreviewProviderImport { .. } => CommandKind::PreviewProviderImport,
             Self::ApplyProviderImport { .. } => CommandKind::ApplyProviderImport,
             Self::ReadProviderBilling { .. } => CommandKind::ReadProviderBilling,
+            Self::ReadProviderAccount { .. } => CommandKind::ReadProviderAccount,
             Self::SaveProviderBilling { .. } => CommandKind::SaveProviderBilling,
             Self::ReadProviderQuota { .. } => CommandKind::ReadProviderQuota,
             Self::RefreshProviderQuota { .. } => CommandKind::RefreshProviderQuota,

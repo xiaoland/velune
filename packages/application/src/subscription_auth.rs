@@ -2,6 +2,7 @@
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use std::{
     fs::{self, File, OpenOptions},
     io::{Read, Write},
@@ -666,6 +667,208 @@ pub(crate) async fn read_usage(
             .map_err(|_| CredentialResolutionError::InvalidContract);
     }
     Err(failure())
+}
+
+/// The only ChatGPT OAuth account-data resources this module will request.
+/// Keeping the target as an enum prevents credentials from reaching a provider-supplied URL.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AccountDataEndpoint {
+    Usage,
+    Resets,
+    Profile,
+}
+impl AccountDataEndpoint {
+    fn url(self) -> &'static str {
+        match self {
+            Self::Usage => "https://chatgpt.com/backend-api/wham/usage",
+            Self::Resets => "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits",
+            Self::Profile => "https://chatgpt.com/backend-api/wham/profiles/me",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AccountIdentity {
+    pub account_scope_key: String,
+    pub profile_subject_key: String,
+}
+
+/// Return opaque deduplication keys without exposing email, JWTs, or raw account IDs.
+pub(crate) fn account_identity(
+    home: &Path,
+    id: &str,
+    generation: u64,
+) -> Result<AccountIdentity, CredentialResolutionError> {
+    let (file, _lock) = lock(home, id)?;
+    let session = read(&file)?;
+    if session.generation != generation {
+        return Err(CredentialResolutionError::StaleBinding);
+    }
+    if session.invalidated {
+        return Err(CredentialResolutionError::AuthenticationExpired);
+    }
+    let claims = claims(&session.id_token).ok_or(CredentialResolutionError::InvalidContract)?;
+    let subject = claims["sub"]
+        .as_str()
+        .filter(|value| nonempty(value))
+        .ok_or(CredentialResolutionError::InvalidContract)?;
+    let hash = |scope: &str| {
+        let mut digest = Sha256::new();
+        digest.update(b"velune-provider-account-v1\0");
+        digest.update(scope.as_bytes());
+        format!("sha256:{:x}", digest.finalize())
+    };
+    let profile_subject_key = hash(&format!("profile\0{subject}"));
+    let account_scope_key = hash(&format!("account\0{subject}\0{}", session.account_id));
+    Ok(AccountIdentity {
+        account_scope_key,
+        profile_subject_key,
+    })
+}
+
+/// Perform a fixed, read-only provider account GET using the provider's owned OAuth session.
+/// Only a first 401 refresh is retried; limits, errors, and redirects never trigger replay.
+pub(crate) async fn read_provider_account_data(
+    home: PathBuf,
+    id: String,
+    generation: u64,
+    endpoint: AccountDataEndpoint,
+) -> Result<Value, CredentialResolutionError> {
+    read_provider_account_data_at(home, id, generation, endpoint.url(), endpoint).await
+}
+
+async fn read_provider_account_data_at(
+    home: PathBuf,
+    id: String,
+    generation: u64,
+    url: &str,
+    endpoint: AccountDataEndpoint,
+) -> Result<Value, CredentialResolutionError> {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(20))
+        .redirect(reqwest::redirect::Policy::none())
+        .retry(reqwest::retry::never())
+        .build()
+        .map_err(|_| failure())?;
+    let mut auth = resolve(home.clone(), id.clone(), generation, None).await?;
+    for attempt in 0..2 {
+        let velune_gateway::CredentialMaterial::Http {
+            authorization,
+            account_id: Some(account_id),
+        } = &auth.material
+        else {
+            return Err(CredentialResolutionError::UnauthorizedTarget);
+        };
+        let mut bearer =
+            reqwest::header::HeaderValue::from_str(&format!("Bearer {}", authorization.secret()))
+                .map_err(|_| CredentialResolutionError::InvalidContract)?;
+        bearer.set_sensitive(true);
+        let response = account_data_request(&client, url, bearer, account_id, endpoint)
+            .send()
+            .await
+            .map_err(|_| failure())?;
+        if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+            if attempt == 0 {
+                auth = resolve(
+                    home.clone(),
+                    id.clone(),
+                    generation,
+                    Some(
+                        auth.token()
+                            .ok_or(CredentialResolutionError::InvalidContract)?
+                            .to_owned(),
+                    ),
+                )
+                .await?;
+                continue;
+            }
+            invalidate(
+                home,
+                id,
+                generation,
+                auth.token()
+                    .ok_or(CredentialResolutionError::InvalidContract)?
+                    .to_owned(),
+            )
+            .await;
+            return Err(CredentialResolutionError::AuthenticationExpired);
+        }
+        if !response.status().is_success() {
+            return Err(failure());
+        }
+        let mut response = response;
+        let mut bytes = Vec::new();
+        while let Some(chunk) = response.chunk().await.map_err(|_| failure())? {
+            if bytes.len() + chunk.len() > LIMIT as usize {
+                return Err(CredentialResolutionError::InvalidContract);
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+        return serde_json::from_slice(&bytes)
+            .map_err(|_| CredentialResolutionError::InvalidContract);
+    }
+    Err(failure())
+}
+
+#[cfg(test)]
+pub(crate) async fn read_provider_account_data_at_for_test(
+    url: &str,
+    endpoint: AccountDataEndpoint,
+    access_token: &str,
+    account_id: &str,
+) -> Result<Value, CredentialResolutionError> {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(2))
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .retry(reqwest::retry::never())
+        .build()
+        .map_err(|_| failure())?;
+    let mut bearer = reqwest::header::HeaderValue::from_str(&format!("Bearer {access_token}"))
+        .map_err(|_| CredentialResolutionError::InvalidContract)?;
+    bearer.set_sensitive(true);
+    let response = account_data_request(&client, url, bearer, account_id, endpoint)
+        .send()
+        .await
+        .map_err(|_| failure())?;
+    if !response.status().is_success() {
+        return Err(failure());
+    }
+    let mut response = response;
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(|_| failure())? {
+        if bytes.len() + chunk.len() > LIMIT as usize {
+            return Err(CredentialResolutionError::InvalidContract);
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    serde_json::from_slice(&bytes).map_err(|_| CredentialResolutionError::InvalidContract)
+}
+
+fn account_data_request(
+    client: &reqwest::Client,
+    url: &str,
+    bearer: reqwest::header::HeaderValue,
+    account_id: &str,
+    endpoint: AccountDataEndpoint,
+) -> reqwest::RequestBuilder {
+    match endpoint {
+        AccountDataEndpoint::Resets => client
+            .get(url)
+            .header("authorization", bearer)
+            .header("chatgpt-account-id", account_id)
+            .header("accept", "application/json")
+            .header("openai-beta", "codex-1")
+            .header("originator", "Codex Desktop")
+            .header("user-agent", "codex-cli/1.0.0"),
+        AccountDataEndpoint::Usage | AccountDataEndpoint::Profile => client
+            .get(url)
+            .header("authorization", bearer)
+            .header("chatgpt-account-id", account_id)
+            .header("accept", "application/json")
+            .header("originator", "codex_cli_rs")
+            .header("user-agent", "codex_cli_rs/0.162.0 Velune/0.1"),
+    }
 }
 
 /// The full subscription identity stays private; email is never used for deduplication.

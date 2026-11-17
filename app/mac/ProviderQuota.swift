@@ -175,6 +175,9 @@ struct ProviderQuotaForm: View {
                     }
                 }
             }
+            if let providerID, let provider = store.providers.first(where: { $0.id == providerID }), provider.composition.authenticationSource == .codexOAuth {
+                ProviderAccountSection(store: store, providerID: providerID)
+            }
             if !balancesOnly { Section {
                 if windowIDs.isEmpty {
                     Text("取得额度后可为各窗口设置上限。").foregroundStyle(.secondary)

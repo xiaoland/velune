@@ -13,6 +13,8 @@ pub use scheduled_tasks::*;
 pub mod config;
 mod failure;
 mod next_turn;
+mod provider_account;
+mod provider_analytics;
 mod provider_template;
 pub mod records;
 pub mod resource_library;
@@ -27,6 +29,8 @@ pub use command::*;
 pub use config::*;
 pub use failure::*;
 pub use next_turn::*;
+pub use provider_account::*;
+pub use provider_analytics::*;
 pub use provider_template::{
     ProviderTemplate, ProviderTemplateKind, provider_subscription_template, provider_templates,
 };

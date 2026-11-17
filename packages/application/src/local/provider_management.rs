@@ -182,6 +182,16 @@ impl CoreRuntime {
             .query(&gateway_id, &provider_id, refresh)
     }
 
+    pub(crate) fn provider_account(
+        &self,
+        gateway_id: &str,
+        provider_id: &str,
+        refresh: bool,
+    ) -> Result<velune_application_api::ProviderAccountStatus, RuntimeError> {
+        self.provider_account
+            .query(gateway_id, provider_id, refresh)
+    }
+
     pub(crate) fn quota_alerts(&self, since: u64) -> Result<crate::QuotaAlerts, RuntimeError> {
         Ok(self.subscription_quota.alerts(since))
     }

@@ -586,6 +586,32 @@ impl VeluneApplication {
     pub fn analytics_query(&self, query: AnalyticsQuery) -> Result<AnalyticsReport, BindingError> {
         request!(self, "analytics_query", QueryAnalytics { query })
     }
+    pub fn provider_analytics(
+        &self,
+        refresh: bool,
+    ) -> Result<ProviderAnalyticsReport, BindingError> {
+        request!(
+            self,
+            "provider_analytics",
+            ReadProviderAnalytics { refresh }
+        )
+    }
+    pub fn provider_account(
+        &self,
+        gateway_id: String,
+        provider_id: String,
+        refresh: bool,
+    ) -> Result<ProviderAccountStatus, BindingError> {
+        request!(
+            self,
+            "provider_account",
+            ReadProviderAccount {
+                gateway_id,
+                provider_id,
+                refresh
+            }
+        )
+    }
     pub fn runtime_discovery_hints(
         &self,
         user_home: String,

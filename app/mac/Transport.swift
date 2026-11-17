@@ -196,6 +196,12 @@ final class Transport: @unchecked Sendable {
             (refresh ? try application.refreshProviderQuota(gatewayId: gatewayID, providerId: providerID) : try application.providerQuota(gatewayId: gatewayID, providerId: providerID)).observation
         }
     }
+    func providerAccount(gatewayID: String, providerID: String, refresh: Bool) throws -> ProviderAccountStatus {
+        try withApplication("providerAccount", .reads, .read) { try $0.providerAccount(gatewayId: gatewayID, providerId: providerID, refresh: refresh) }
+    }
+    func providerAnalytics(refresh: Bool) throws -> ProviderAnalyticsReport {
+        try withApplication("providerAnalytics", .reads, .read) { try $0.providerAnalytics(refresh: refresh) }
+    }
     func providerBilling(gatewayID: String, providerID: String, refresh: Bool) throws -> ProviderBillingStatus {
         try withApplication("providerBilling", .reads, .read) { try $0.providerBilling(gatewayId: gatewayID, providerId: providerID, refresh: refresh) }
     }

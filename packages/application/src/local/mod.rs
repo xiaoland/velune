@@ -235,6 +235,7 @@ pub struct CoreRuntime {
     /// Saved provider versions whose dispatch resources are still leased by a turn.
     retired_gateway_providers: Vec<(String, crate::config::ProviderDefinition)>,
     pending_provider_identity_changes: std::collections::BTreeSet<(String, String)>,
+    provider_account: Arc<crate::provider_account::ProviderAccountService>,
     subscription_quota: Arc<crate::subscription_quota::SubscriptionQuota>,
     billing: Arc<crate::billing::Billing>,
     runtime_quota: Arc<crate::runtime_quota::RuntimeQuota>,
@@ -312,6 +313,10 @@ impl CoreRuntime {
             &persisted.gateways,
             scheduling_state.clone(),
         );
+        let provider_account = crate::provider_account::ProviderAccountService::new(
+            options.home_directory.clone(),
+            &persisted.gateways,
+        );
         Ok(Self {
             telemetry: None,
             options,
@@ -375,6 +380,7 @@ impl CoreRuntime {
             execution_backends: Default::default(),
             retired_gateway_providers: Vec::new(),
             pending_provider_identity_changes: Default::default(),
+            provider_account,
             subscription_quota,
             billing,
             runtime_quota: Arc::default(),
@@ -434,6 +440,7 @@ impl CoreRuntime {
         self.retire_gateway_configurations();
         self.subscription_quota.configure(&self.gateways);
         self.billing.configure(&self.gateways);
+        self.provider_account.configure(&self.gateways);
     }
 
     fn retire_gateway_configurations(&mut self) {
@@ -782,6 +789,7 @@ impl CoreRuntime {
         }
         self.subscription_quota.stop();
         self.billing.stop();
+        self.provider_account.stop();
         self.runtime_quota.stop();
         self.execution_backends.shutdown();
         self.collaboration.shutdown();
@@ -857,6 +865,7 @@ impl Drop for CoreRuntime {
         }
         self.subscription_quota.stop();
         self.billing.stop();
+        self.provider_account.stop();
         self.runtime_quota.stop();
         self.execution_backends.shutdown();
     }

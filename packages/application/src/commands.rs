@@ -207,6 +207,9 @@ impl Application {
             Command::QueryAnalytics { query } => {
                 Response::QueryAnalytics(application.analytics_query(query)?)
             }
+            Command::ReadProviderAnalytics { refresh } => {
+                Response::ReadProviderAnalytics(application.provider_analytics(refresh)?)
+            }
             Command::ReadRuntimeDiscoveryHints {
                 user_home,
                 overrides,
@@ -803,6 +806,15 @@ impl Application {
                 Focus::None,
                 Login::Allows,
                 |core| core.provider_billing(gateway_id, provider_id, refresh),
+            )?),
+            Command::ReadProviderAccount {
+                gateway_id,
+                provider_id,
+                refresh,
+            } => Response::ReadProviderAccount(application.provider_account(
+                &gateway_id,
+                &provider_id,
+                refresh,
             )?),
             Command::SaveProviderBilling {
                 gateway_id,
