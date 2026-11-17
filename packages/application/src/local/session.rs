@@ -21,6 +21,7 @@ pub(super) struct Session {
     pub(super) scheduled_run: Option<(String, bool)>,
     pub(super) turn_observation: Option<velune_telemetry::Operation>,
     pub(super) key: SessionKey,
+    pub(super) edit_revision_cache: std::cell::RefCell<Option<editing::RevisionCache>>,
     /// Authorizes this session's executions to use Velune's collaboration tools.
     pub(super) collaboration_ticket: Option<collaboration::Ticket>,
     pub(super) logical_projection: Option<continuation::LogicalProjection>,
@@ -79,6 +80,10 @@ pub(super) struct SideChat {
 }
 
 impl Session {
+    pub(super) fn set_history(&mut self, snapshot: crate::conversation::ConversationSnapshot) {
+        self.active_state = ActiveState::History(Box::new(snapshot));
+    }
+
     /// The conversation's own turn runs.
     pub(super) fn turn_running(&self) -> bool {
         self.active_state

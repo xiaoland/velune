@@ -530,15 +530,27 @@ final class ConversationStore: ObservableObject {
     }
     /// Message editing addresses the current native context rather than the
     /// composer's selected execution target. Its existing caller owns that path.
-    func resolve(kept: ConversationChoices) -> NextTurn? {
+    func resolve(kept: ConversationChoices, editingMessageID: String? = nil) -> NextTurn? {
         guard let runtimeID = kept.runtimeID ?? nextTurnRuntimeID,
               let policy = try? device.newConversationChoice(for: runtimeID) else { return nil }
         let typeID = device.runtimeInstances.first { $0.id == runtimeID }?.typeId
-        return resolveNextTurn(input: NextTurnInput(
+        let settings = isDraft ? [] : snapshot?.transcriptTurns
+            .filter { editingMessageID == nil || $0.userMessageId == editingMessageID }.compactMap(\.settings) ?? []
+        var resolved = resolveNextTurn(input: NextTurnInput(
             runtimeId: runtimeID, runtimeType: device.runtimeTypes.first { $0.id == typeID }, providers: device.gateway.providers,
-            catalog: modelCatalogs[runtimeID]?.models, turnSettings: isDraft ? [] : snapshot?.transcriptTurns.compactMap(\.settings) ?? [],
-            conversationRuntimeId: snapshot?.conversation.runtimeID, modelRecordKey: snapshot?.modelRecordKey,
+            catalog: modelCatalogs[runtimeID]?.models, turnSettings: settings,
+            conversationRuntimeId: snapshot?.conversation.runtimeID,
+            modelRecordKey: editingMessageID == nil ? snapshot?.modelRecordKey : nil,
             kept: kept.choices[runtimeID], runtimeChoices: device.runtimeComposerChoices[runtimeID], newConversation: policy))
+        // A historical display name is resolved by the shared native/model-route
+        // rules, never fabricated into a native ID. An unresolvable recorded
+        // model must not silently become a default-model edit after loading.
+        if editingMessageID != nil, kept.choices[runtimeID]?.model == nil,
+           settings.contains(where: { $0.runtimeId == runtimeID && ($0.model != nil || $0.modelSelection != nil) }),
+           modelCatalogs[runtimeID]?.models != nil, resolved.model == nil {
+            resolved.chosenModelUnavailable = true
+        }
+        return resolved
     }
     var keptComposerChoices: ConversationChoices {
         if isSideChat { return temporaryChoices }
@@ -1278,30 +1290,115 @@ final class ConversationStore: ObservableObject {
     var canFork: Bool { !isPreview && !isDraft && !isForking && !isLoading && !isShuttingDown }
     /// Copying is independent of whether the source has a running turn.
     @Published private(set) var isForking = false
+    func messageEditingChoices(_ messageID: String) -> ConversationChoices {
+        var choices = ConversationChoices()
+        let settings = snapshot?.transcriptTurns.first { $0.userMessageId == messageID }?.settings
+        let runtime = snapshot?.contextRuntimeID ?? projectionRuntimeID
+        choices.runtimeID = runtime
+        if let runtime, let settings, settings.runtimeId == runtime {
+            // Legacy `model` is a recorded label, not necessarily a native ID.
+            // The resolver maps it using this message's settings and catalog.
+            choices.choices[runtime] = TurnChoice(model: settings.modelSelection, effort: settings.effort, permissionMode: settings.permissionMode)
+        }
+        return choices
+    }
+    func messageEditingRecordedModel(_ messageID: String) -> String? {
+        snapshot?.transcriptTurns.first { $0.userMessageId == messageID }?.settings?.model
+    }
+    /// Core may discover a native writer only when checking the edit CAS.
+    /// Re-read that source once after rejection; never advance the editor's
+    /// confirmed baseline or retry its mutation as part of this read.
+    func refreshMessageEditingState(_ messageID: String, reloaded: @escaping (String?, String?) -> Void) {
+        guard !isPreview, !isLoading, !isShuttingDown, let runtime = snapshot?.conversation.runtimeID,
+              let conversation = loadedConversationID, let transport else {
+            reloaded("原会话暂时无法重新读取，编辑副本仍保留。", nil)
+            return
+        }
+        enqueue({ try transport.refreshConversation(runtimeID: runtime, conversationID: conversation) },
+                consumeReceipt: { result in
+            switch result {
+            case .success(let value):
+                let revision = value.snapshot?.followUp.editable.first { $0.messageId == messageID }?.revision
+                // A poll may supersede this projection. Its read receipt still
+                // belongs to the edit; process it after the apply attempt.
+                DispatchQueue.main.async { reloaded(nil, revision) }
+            case .failure(let error): reloaded(AppProblem.failure(error).detail, nil)
+            }
+        }) { [weak self] value in
+            self?.applySnapshotResult(value)
+        }
+    }
+    func restoreMessageEditingChoices(_ kept: ConversationChoices) -> Bool {
+        guard let runtimeID = kept.runtimeID, let targetID = loadedConversationID,
+              composerTargetIssue == nil,
+              let owner = device.composerInputs.ownerID,
+              device.enabledRuntimeInstances.contains(where: { $0.id == runtimeID }) else { return false }
+        var raw = composerTargetChoices ?? ComposerTargetChoices(runtimeId: nil, runtimeOwnerId: nil, choices: [], choiceEdited: false)
+        raw.runtimeId = runtimeID; raw.runtimeOwnerId = owner; raw.choiceEdited = true
+        raw.choices.removeAll { $0.ownerId == owner && $0.runtimeId == runtimeID }
+        raw.choices.append(.init(ownerId: owner, runtimeId: runtimeID, choice: kept.choices[runtimeID] ?? TurnChoice()))
+        device.composerInputs.saveTarget(targetID, choices: raw, userEdit: true)
+        refreshNextTurn()
+        return true
+    }
+    /// Build only a target update. Ordinary input content and attachments never
+    /// participate in accepting a historical edit, including a fork.
+    func messageEditingTargetChoices(_ kept: ConversationChoices, base: ComposerTargetChoices?) -> ComposerTargetChoices? {
+        guard let runtime = kept.runtimeID, let owner = device.composerInputs.ownerID else { return nil }
+        var raw = base ?? ComposerTargetChoices(runtimeId: nil, runtimeOwnerId: nil, choices: [], choiceEdited: false)
+        raw.runtimeId = runtime; raw.runtimeOwnerId = owner; raw.choiceEdited = true
+        raw.choices.removeAll { $0.ownerId == owner && $0.runtimeId == runtime }
+        raw.choices.append(.init(ownerId: owner, runtimeId: runtime, choice: kept.choices[runtime] ?? TurnChoice()))
+        return raw
+    }
+    var messageEditingRuntimeID: String? { snapshot?.contextRuntimeID }
     var messageEditingRuntimeName: String? { snapshot.flatMap { value in device.runtimeInstances.first { $0.id == value.contextRuntimeID }?.name } }
     func isLastUserMessage(_ messageID: String) -> Bool { snapshot?.messages.last { $0.role == .user }?.id == messageID }
     /// Send `text` in place of a user message. In place the conversation
     /// shows the new turn here; a fork's new conversation goes to `forked`.
     /// A fork runs independently; only an in-place replacement stops the
     /// source turn, as the user confirmed in the editor.
-    func editMessage(_ messageID: String, placement: EditPlacement, text: String, attachments: [String], forked: @escaping (SnapshotResult) -> Void, accepted: @escaping () -> Void) {
+    func editMessage(_ messageID: String, placement: EditPlacement, text: String, attachments: [String], choices: ConversationChoices? = nil, expectedRevision: String? = nil, forked: @escaping (SnapshotResult) -> Void, accepted: @escaping () -> Void, failed: ((String) -> Void)? = nil) {
         guard editability(of: messageID) != nil, let runtimeID = snapshot?.conversation.runtimeID, let conversationID = loadedConversationID else { return }
-        var kept = keptComposerChoices
-        kept.runtimeID = snapshot?.contextRuntimeID ?? runtimeID
-        let editNext = resolve(kept: kept)
+        let kept = choices ?? messageEditingChoices(messageID)
+        let editNext = resolve(kept: kept, editingMessageID: messageID)
         let model = editNext?.model
         guard let transport else { recordProblem("本地核心未配置"); return }
-        guard !isLoading, !isForking else { return }
+        guard !isLoading, !isForking, !isShuttingDown else { failed?("请等待当前操作完成后重试"); return }
+        let inputs = device.composerInputs
+        guard let targetChoices = messageEditingTargetChoices(kept, base: placement == .inPlace ? composerTargetChoices : nil) else {
+            failed?("执行配置尚未就绪，请稍后重试"); return
+        }
         executionStarting = true
         isForking = placement == .fork
+        // The editor's private choices become the continuing conversation's
+        // next-turn intent only after its replacement has actually been sent.
+        let targetRevision: UInt64?
+        if placement != .inPlace { targetRevision = nil }
+        else if let pending = inputs.pendingTarget(for: conversationID) { targetRevision = pending.revision }
+        else { targetRevision = inputs.targetRecord(for: conversationID)?.revision }
         let turn = ComposedTurn(text: text, effort: editNext?.effort, permissionMode: editNext?.permissionMode?.id, attachments: attachments)
-        enqueue({ try transport.editMessage(runtimeID: runtimeID, conversationID: conversationID, messageID: messageID, placement: placement, selection: model, turn: turn) },
-                onFailure: { [weak self] _ in self?.executionStarting = false; self?.isForking = false }) { [weak self] value in
+        enqueue({
+            let result = try transport.editMessage(runtimeID: runtimeID, conversationID: conversationID, messageID: messageID, placement: placement, targetRuntimeID: editNext?.runtimeId, selection: model, turn: turn, expectedRevision: expectedRevision)
+            if let snapshot = result.snapshot {
+                // The accepted target survives closing the editing surface or
+                // source tab before its UI completion callback is delivered.
+                let resultID = snapshot.conversation.id
+                DispatchQueue.main.async { inputs.saveEditedTarget(resultID, choices: targetChoices, expectedRevision: targetRevision) }
+            }
+            return result
+        }, consumeReceipt: { [weak self] result in
+            self?.executionStarting = false
+            self?.isForking = false
+            switch result {
+            case .success:
+                if placement == .fork { self?.device.noteForkCompleted() }
+                accepted()
+            case .failure(let error): failed?(AppProblem.failure(error).detail)
+            }
+        }) { [weak self] value in
             guard let self else { return }
-            self.executionStarting = false
-            self.isForking = false
-            if placement == .fork { self.device.noteForkCompleted(); forked(value) } else { self.applySnapshotResult(value) }
-            accepted()
+            if placement == .fork { forked(value) } else { self.applySnapshotResult(value) }
         }
     }
     /// Copy the completed prefix immediately, even while the source runs.
@@ -2041,4 +2138,93 @@ extension ConversationStore {
         precondition(!MacNativePersistenceGate.isEnabled && !store.started && !window.acceptsWorkspacePersistence)
         store.close(); window.list.close()
     }
+}
+
+@MainActor extension ConversationStore {
+    /// Historical execution settings and a synthetic catalog drive the real
+    /// message-editor popover without reading or mutating a runtime.
+    static func inspectEditorVisualStates(_ inspect: (ConversationWindowModel, MessageEditingSession, String) -> Void) {
+        let matrix = CommandLine.arguments.contains("--editor-visual-matrix") || CommandLine.arguments.contains("--experience-message-editor-offscreen")
+        let requested = CommandLine.arguments.first(where: { $0.hasPrefix("--editor-visual-state=") }).map { String($0.dropFirst("--editor-visual-state=".count)) }
+        for state in ["empty", "long", "failed", "missing-model", "missing-runtime", "fork-only", "legacy-model", "legacy-model-loading", "legacy-model-missing", "catalog-loading", "busy", "failure", "failure-target-changed", "placement", "history-changed", "long-floating", "busy-floating", "failure-floating"] {
+            if let requested { if state != requested { continue } }
+            else if !matrix, state != "long", state != "failed" { continue }
+            let device = DeviceStore(preview: true)
+            let workspace = ConversationWindowModel(application: device, kind: .workspace)
+            let source = workspace.focused.store
+            var value = device.previewSnapshots["sample-0"]!
+            let message = value.messages.first(where: { $0.role == .user })!
+            let legacy = state.hasPrefix("legacy-model")
+            let selection: ModelSelection = legacy ? .managed(modelRecordKey: "synthetic-editor-route")
+                : .native(providerId: "sample", modelId: "visual-editor-model")
+            let recordedModel = legacy ? "GPT-6.1-Sol（ChatGPT1）" : "visual-editor-model"
+            value.transcriptTurns = [.init(id: "editor-turn", userMessageId: message.id, workMessageIds: [], lastMessageId: nil, replyStartBlock: 0, durationMs: nil, isRunning: false, canFork: false, settings: .init(runtimeId: value.contextRuntimeID, model: recordedModel, modelSelection: legacy ? nil : selection), usage: nil)]
+            device.keepPreviewSnapshot(value)
+            source.isDraft = false
+            source.apply(value)
+            let session = MessageEditingSession(source: source, request: .init(message: message, conversationID: value.conversation.id, inPlace: state != "fork-only", isLast: state != "placement", revision: ["history-changed", "failure-target-changed"].contains(state) ? "synthetic-old-revision" : nil), presentation: state.hasSuffix("floating") ? .floating : .sheet)
+            session.start()
+            let store = session.store
+            if state == "failed" { store.modelCatalogs[value.contextRuntimeID] = .failed("模型目录读取失败（合成错误）。请重新读取模型后重试。") }
+            else { store.modelCatalogs[value.contextRuntimeID] = .ready([.init(selection: selection, name: "视觉验收长模型 " + String(repeating: "Very Long Model Name ", count: 10), reasoningEfforts: ["low", "medium", "high"])]) }
+            store.refreshNextTurn()
+            if legacy {
+                store.modelCatalogs[value.contextRuntimeID] = .loading
+                precondition(session.next?.chosenModelUnavailable == false, "目录加载不能被判成模型不可用")
+                precondition(session.target.issue?.hasPrefix("正在确认原消息的模型") == true,
+                             "尚未恢复历史模型时不可悄悄按默认模型发送")
+                store.modelCatalogs[value.contextRuntimeID] = .ready([.init(selection: selection, name: recordedModel, reasoningEfforts: [])])
+                precondition(session.next?.model == selection && session.next?.chosenModelUnavailable == false,
+                             "历史显示名应恢复为目录中的可靠选择，而非伪造原生ID")
+                if state == "legacy-model-loading" {
+                    store.modelCatalogs[value.contextRuntimeID] = .loading
+                    let context = ComposerContext(tab: session.tab, model: session.editor, editingTarget: session.target)
+                    precondition(context.selectedModelName == recordedModel && !context.chosenModelUnavailable,
+                                 "确认原消息模型期间应保留记录名称，不能声称默认模型或不可用")
+                }
+                if state == "legacy-model-missing" {
+                    store.modelCatalogs[value.contextRuntimeID] = .ready([])
+                    precondition(session.next?.chosenModelUnavailable == true, "无法恢复历史模型时不得默认发送")
+                }
+            }
+            if state == "catalog-loading" {
+                let chosen = ModelSelection.native(providerId: "sample", modelId: "user-selected-model")
+                session.target.chooseModel(chosen)
+                store.modelCatalogs[value.contextRuntimeID] = .loading
+                precondition(session.next?.choice.model == chosen && session.next?.chosenModelUnavailable == false,
+                             "异步目录准备必须保留用户选择，loading不能判不可用")
+            }
+            if state == "empty" {
+                session.editor.receiveDraft(.init(text: "", attachments: []))
+                precondition(session.editor.isEmpty)
+            }
+            if state.hasPrefix("long") {
+                let text = String(repeating: "长正文保持原生字体与内边距，增长到上限后滚动。\n", count: 30)
+                session.editor.receiveDraft(.init(text: text, attachments: []))
+                precondition(session.editor.submission == text)
+            }
+            if state == "missing-model" {
+                let other = ModelSelection.native(providerId: "sample", modelId: "visual-removed-model")
+                store.modelCatalogs[value.contextRuntimeID] = .ready([.init(selection: other, name: "即将移除的模型", reasoningEfforts: [])])
+                session.target.chooseModel(other)
+                precondition(session.choices.choices[value.contextRuntimeID]?.model == other)
+                store.modelCatalogs[value.contextRuntimeID] = .ready([])
+                precondition(session.next?.chosenModelUnavailable == true)
+            }
+            if state == "missing-runtime" {
+                precondition(session.next != nil)
+                device.deleteRuntimeInstance(id: value.contextRuntimeID)
+                precondition(session.next == nil, "Removed runtimes must not resolve an editor execution target")
+                precondition(!session.canSubmit)
+            }
+            session.prepareVisualCheckState(state)
+            if state == "failure-target-changed" {
+                precondition(session.historyNotice != nil && session.failure != nil)
+                precondition(session.noticeText == session.failure && session.noticeHelp == session.failure,
+                             "回退后目标变化不能遮住尚未发送的真实失败详情")
+            }
+            inspect(workspace, session, state)
+        }
+    }
+
 }

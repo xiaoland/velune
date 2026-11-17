@@ -233,11 +233,26 @@ private final class ComposerInputWorker: @unchecked Sendable {
         let latest = state?.targets.first { $0.context == context }?.revision
         // Only a new explicit choice can accept the latest observed target.
         // Reconnect, restoration and queued retries keep their original CAS.
-        let baseline = userEdit ? latest : targetDirty[context]?.revision ?? latest
+        let baseline: UInt64?
+        if userEdit { baseline = latest }
+        else if let pending = targetDirty[context] { baseline = pending.revision }
+        else { baseline = latest }
+        saveTarget(context: context, choices: choices, baseline: baseline, chainOwnWrites: userEdit, worker: worker)
+    }
+    /// Editing has already sent its turn. Preserve the pre-send CAS baseline:
+    /// a concurrent choice must remain a visible configuration conflict, never
+    /// turn a successful message into an apparent failed send.
+    func saveEditedTarget(_ conversationID: String, choices: ComposerTargetChoices, expectedRevision: UInt64?) {
+        guard let context = context(conversationID) else { return }
+        let choices = normalizeComposerTargetChoices(choices: choices)
+        guard let worker else { previewTargets[context] = choices; changes.send(); return }
+        saveTarget(context: context, choices: choices, baseline: expectedRevision, chainOwnWrites: false, worker: worker)
+    }
+    private func saveTarget(context: ComposerContextKey, choices: ComposerTargetChoices, baseline: UInt64?, chainOwnWrites: Bool, worker: ComposerInputWorker) {
         targetDirty[context] = .init(choices: choices, revision: baseline)
         changes.send()
         worker.queue.async { [weak self] in
-            let result = Result { try worker.saveTarget(context: context, observed: baseline, choices: choices, chainOwnWrites: userEdit) }
+            let result = Result { try worker.saveTarget(context: context, observed: baseline, choices: choices, chainOwnWrites: chainOwnWrites) }
             DispatchQueue.main.async {
                 guard let self else { return }
                 switch result {

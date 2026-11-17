@@ -2,13 +2,148 @@
 import json
 import sys
 
-records = [json.loads(line) for line in sys.stdin if line.strip()]
+from pathlib import Path
+import uuid
+
+def option(name):
+    return sys.argv[sys.argv.index(name) + 1] if name in sys.argv else None
+
+def parse_records(data):
+    return [json.loads(line) for line in data.splitlines() if line.strip()]
+
+def resolve_records(path, data, resolving):
+    records = parse_records(data)
+    metadata = next((record["payload"] for record in records if record["type"] == "session_meta"), {})
+    base = metadata.get("history_base")
+    if not base:
+        return records
+    thread = str(uuid.UUID(base["thread_id"]))
+    size, ordinal = base["end_byte_offset"], base["end_ordinal_exclusive"]
+    if not isinstance(size, int) or size < 0 or not isinstance(ordinal, int) or ordinal < 0:
+        raise ValueError("invalid Codex history base")
+    home = option("--home")
+    if home is None:
+        raise ValueError("Codex history lineage requires its configured HOME")
+    candidates = []
+    for root in (Path(home) / "sessions", Path(home) / "archived_sessions"):
+        for candidate in root.rglob("*" + thread + "*.jsonl"):
+            candidate = candidate.resolve()
+            if candidate == path or (str(candidate), size) in resolving:
+                continue
+            with candidate.open("rb") as source:
+                prefix = source.read(size)
+            if len(prefix) != size or (prefix and not prefix.endswith(b"\n")):
+                continue
+            try:
+                prior = parse_records(prefix)
+            except (ValueError, UnicodeDecodeError):
+                continue
+            meta = next((r["payload"] for r in prior if r["type"] == "session_meta"), {})
+            if not prior or meta.get("id", meta.get("session_id")) != thread or prior[-1].get("ordinal") != ordinal - 1:
+                continue
+            complete = resolve_records(candidate, prefix, resolving | {(str(candidate), size)})
+            if not candidates or complete != candidates[0]:
+                candidates.append(complete)
+    if len(candidates) != 1:
+        raise ValueError("Codex history base is missing or ambiguous")
+    return candidates[0] + records
+
+if "--before-message-id" in sys.argv:
+    source_path = option("--source-path")
+    source = sys.stdin.buffer.read()
+    legacy_boundary = None
+    legacy_boundaries = {}
+    if "--request-envelope" in sys.argv:
+        request = json.loads(source)
+        source = request["rollout"].encode("utf-8")
+        legacy_boundary = request.get("legacyBoundary")
+        legacy_boundaries = request.get("legacyBoundaries", {})
+    records = resolve_records(Path(source_path).resolve(), source, {(str(Path(source_path).resolve()), len(source))}) if source_path else parse_records(source)
+    active = []
+    for record in records:
+        if record["type"] == "event_msg" and record["payload"].get("type") == "thread_rolled_back":
+            count = record["payload"].get("num_turns")
+            starts = [i for i, prior in enumerate(active) if prior["type"] == "event_msg" and prior["payload"].get("type") == "task_started"]
+            if not isinstance(count, int) or count < 0 or count > len(starts):
+                raise ValueError("Codex rollback boundary could not be resolved")
+            if count:
+                active = active[:starts[-count]]
+        else:
+            active.append(record)
+    records = active
+    def user_content(content):
+        if isinstance(content, str):
+            content = [{"type":"text", "text":content}]
+        normalized = []
+        for block in content:
+            kind = block["type"]
+            if kind in ("text", "input_text"):
+                normalized.append(("text", block["text"]))
+            elif kind in ("image", "input_image"):
+                url = block.get("image_url", block.get("url"))
+                if not isinstance(url, str):
+                    raise ValueError("Codex legacy image input cannot be associated")
+                normalized.append(("image", url))
+            else:
+                raise ValueError("Codex legacy input cannot be associated: " + kind)
+        return normalized
+
+    before = option("--before-message-id")
+    legacy_boundary = legacy_boundaries.get(before, legacy_boundary)
+    # Imported messages share their response/display identity. Native prompts
+    # have a separate UserMessage event identity immediately after the input.
+    event = next((i for i, record in enumerate(records)
+                  if record["type"] == "event_msg" and record["payload"].get("type") == "item_completed"
+                  and record["payload"].get("item", {}).get("type") == "UserMessage"
+                  and record["payload"]["item"].get("id") == before), None)
+    direct = next((i for i, record in enumerate(records)
+                   if record["type"] == "response_item" and record["payload"].get("type") == "message"
+                   and record["payload"].get("role") == "user" and record["payload"].get("id") == before), None)
+    if direct is not None:
+        boundary = direct
+    elif event is not None:
+        boundary = event - 1
+        while boundary >= 0 and records[boundary]["type"] != "response_item":
+            boundary -= 1
+        if boundary < 0 or records[boundary]["payload"].get("type") != "message" or records[boundary]["payload"].get("role") != "user":
+            raise ValueError("Codex user event has no corresponding native input")
+    elif legacy_boundary is not None:
+        turn = legacy_boundary["turnId"]
+        starts = [i for i, record in enumerate(records)
+                  if record["type"] == "event_msg" and record["payload"].get("type") == "task_started"
+                  and record["payload"].get("turn_id") == turn]
+        if not starts:
+            starts = [i for i, record in enumerate(records)
+                      if record["type"] == "turn_context" and record["payload"].get("turn_id") == turn]
+        if not starts:
+            raise ValueError("Codex legacy user turn was not found")
+        start = starts[-1]
+        end = next((i for i in range(start + 1, len(records))
+                    if records[i]["type"] == "event_msg" and records[i]["payload"].get("type") == "task_started"), len(records))
+        inputs = [i for i in range(start + 1, end) if records[i]["type"] == "response_item"
+                  and records[i]["payload"].get("type") == "message" and records[i]["payload"].get("role") == "user"]
+        users = legacy_boundary["users"]
+        ordinal = legacy_boundary["ordinal"]
+        if not isinstance(ordinal, int) or ordinal < 0 or ordinal >= len(users) or users[ordinal]["id"] != before:
+            raise ValueError("Codex legacy user identity changed")
+        expected = [user_content(item["content"]) for item in users]
+        actual = [user_content(records[i]["payload"]["content"]) for i in inputs]
+        # Canonical native turn order establishes identity. Content only
+        # validates the association; it never selects a duplicate by text.
+        if len(expected) != len(actual) or expected != actual:
+            raise ValueError("Codex legacy input identity cannot be associated exactly")
+        boundary = inputs[ordinal]
+    else:
+        raise ValueError("Codex native user message boundary was not found")
+    records = records[:boundary]
+else:
+    records = [json.loads(line) for line in sys.stdin if line.strip()]
 # The newest full replacement already includes inherited and retained context.
 # Older records are no longer model input, including earlier compactions.
 start = next((index for index in range(len(records) - 1, -1, -1)
               if records[index]["type"] == "compacted"
               and records[index]["payload"].get("replacement_history") is not None), 0)
-if not start and any(record["type"] == "session_meta" and record["payload"].get("history_base")
+if "--before-message-id" not in sys.argv and not start and any(record["type"] == "session_meta" and record["payload"].get("history_base")
                      for record in records):
     raise ValueError("Codex inherited context without a complete compact replacement requires native lineage resolution")
 items = []

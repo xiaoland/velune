@@ -461,7 +461,7 @@ def main():
         if path is None:
             return {"error": {"code": "session_not_found"}}
         if operation == "export_context":
-            return export_context(path, sidechain=bool(agent))
+            return export_context(path, sidechain=bool(agent), before_message_id=request.get("beforeMessageId"))
         return {"contractVersion": 1, "history": history(path, requested, runtime_id, sidechain=bool(agent))}
     raise ValueError("unknown operation")
 

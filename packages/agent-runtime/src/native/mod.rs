@@ -25,8 +25,8 @@ mod codex_retry;
 mod codex_side;
 mod codex_title;
 pub use codex_history::{
-    codex_context_provider, export_codex_context, list_codex_history, list_codex_history_at,
-    read_codex_history, read_codex_history_at, read_codex_summary_at,
+    codex_context_provider, export_codex_context, export_codex_context_before, list_codex_history,
+    list_codex_history_at, read_codex_history, read_codex_history_at, read_codex_summary_at,
 };
 mod deepseek;
 pub(crate) mod rpc;

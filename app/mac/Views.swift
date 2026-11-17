@@ -593,6 +593,7 @@ private struct GeneralSettingsView: View {
 /// Settings for how a conversation reads: its outline, linked agents and status line.
 private struct ConversationSettingsView: View {
     @ObservedObject var store: DeviceStore
+    @AppStorage(MessageEditPresentation.preferenceKey) private var messageEditPresentation = MessageEditPresentation.sheet.rawValue
     @State private var outlineForm = OutlineForm.popover
     private static let statusLineItems: [(item: StatusLineItem, title: String)] = [
         (.contextUsage, "上下文用量"), (.sessionTokens, "本会话累计 token"), (.workingDirectory, "工作目录与 Git 分支"),
@@ -600,6 +601,12 @@ private struct ConversationSettingsView: View {
     ]
     var body: some View {
         Form {
+            Section("消息编辑") {
+                Picker("打开方式", selection: $messageEditPresentation) {
+                    ForEach(MessageEditPresentation.allCases) { Text($0.title).tag($0.rawValue) }
+                }
+                Text("对新打开的消息编辑器生效。").uiFont(.caption).foregroundStyle(.secondary)
+            }
             Section("大纲") {
                 Picker("大纲", selection: Binding(get: { outlineForm }, set: { outlineForm = $0; ConversationWindowModel.setOutlineForm($0, application: store) })) {
                     Text("弹出面板").tag(OutlineForm.popover)

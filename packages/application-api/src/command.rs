@@ -466,6 +466,10 @@ pub enum Command {
         conversation_id: String,
         message_id: String,
         placement: crate::conversation::EditPlacement,
+        #[serde(default)]
+        target_runtime_id: Option<String>,
+        #[serde(default)]
+        expected_revision: Option<String>,
         selection: Option<ModelSelection>,
         turn: ComposedTurn,
     },

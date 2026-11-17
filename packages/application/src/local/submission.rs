@@ -338,6 +338,7 @@ mod tests {
                 .push(crate::conversation::EditableMessage {
                     message_id: "user-message".into(),
                     in_place: true,
+                    revision: None,
                 });
             let mut delivered = source.clone();
             CoreRuntime::apply_read_submission_admission(&mut delivered);

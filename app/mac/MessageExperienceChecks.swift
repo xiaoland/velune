@@ -70,6 +70,7 @@ import VeluneBindings
     if CommandLine.arguments.contains("--experience-drag-provider-only") { dragProviderChecks() }
     if CommandLine.arguments.contains("--experience-workspace-only") { workspaceRecoveryChecks(home: home); exit(0) }
     AppearancePreferences.shared.load(home: home) { fatalError($0) }
+    if CommandLine.arguments.contains("--experience-message-editor-offscreen") { messageEditorOffscreenChecks(home: home) }
     if CommandLine.arguments.contains("--experience-runtime-editor-only") { runtimeEditorChecks(home: home) }
     func stamp(_ date: Date) -> Int64 { Int64(date.timeIntervalSince1970 * 1000) }
     if CommandLine.arguments.contains("--experience-navigation-only") {

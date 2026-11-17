@@ -235,6 +235,75 @@ pub fn export_codex_context(
     crate::import::Context::parse(&output)
 }
 
+pub fn export_codex_context_before(
+    config: &crate::history::HistoryConfig,
+    id: &str,
+    message_id: &str,
+) -> Result<crate::import::Context> {
+    let mut rpc = codex::history_client_at(
+        config.kind,
+        &config.binary,
+        &config.home,
+        &config.execution,
+        config.os_home.as_deref(),
+    )?;
+    let metadata = rpc.request("thread/read", &json!({"threadId":id,"includeTurns":false}))?;
+    let thread = &metadata["thread"];
+    if thread["id"].as_str() != Some(id) {
+        return Err(Error::new("Codex 返回不同的原生会话"));
+    }
+    let path = thread["path"]
+        .as_str()
+        .ok_or_else(|| Error::new("Codex 未提供上下文来源路径"))?;
+    let bytes = config.execution.read_file(Path::new(path))?;
+    let mut legacy_boundary = None;
+    if thread["historyMode"] == "legacy" {
+        let read = rpc.request("thread/read", &json!({"threadId":id,"includeTurns":true}))?;
+        let (items, _) = legacy_history(&read["thread"], id)?;
+        let selected = items
+            .iter()
+            .find(|entry| {
+                entry["item"]["id"] == message_id && entry["item"]["type"] == "userMessage"
+            })
+            .ok_or_else(|| Error::new("Codex 原生用户消息已改变"))?;
+        let turn = selected["turnId"]
+            .as_str()
+            .ok_or_else(|| Error::new("Codex 用户消息缺少所属轮次"))?;
+        let users: Vec<&Value> = items
+            .iter()
+            .filter(|entry| entry["turnId"] == turn && entry["item"]["type"] == "userMessage")
+            .map(|entry| &entry["item"])
+            .collect();
+        let ordinal = users
+            .iter()
+            .position(|item| item["id"] == message_id)
+            .ok_or_else(|| Error::new("Codex 用户消息未出现在所属轮次"))?;
+        legacy_boundary = Some(json!({"turnId":turn,"ordinal":ordinal,"users":users}));
+    }
+    let mut command = config.execution.python();
+    command
+        .args(["-c", include_str!("../../resources/codex_context.py")])
+        .arg("--source-path")
+        .arg(path)
+        .arg("--home")
+        .arg(&config.home);
+    command.arg("--before-message-id").arg(message_id);
+    let bytes = if legacy_boundary.is_some() {
+        command.arg("--request-envelope");
+        serde_json::to_vec(&json!({
+            "rollout":String::from_utf8(bytes).map_err(|error| Error::new(error.to_string()))?,
+            "legacyBoundary":legacy_boundary,
+        }))
+        .map_err(|error| Error::new(error.to_string()))?
+    } else {
+        bytes
+    };
+    let output = config
+        .execution
+        .output(command, Some(bytes), config.os_home.as_deref())?;
+    crate::import::Context::parse_before(&output)
+}
+
 pub fn read_codex_history_at(
     kind: crate::version::RuntimeKind,
     binary: &Path,

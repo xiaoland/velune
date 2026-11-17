@@ -1502,6 +1502,8 @@ impl VeluneApplication {
         selection: Option<ModelSelection>,
         turn: ComposedTurn,
     ) -> Result<SnapshotResult, BindingError> {
+        let target_runtime_id = None;
+        let expected_revision = None;
         request!(
             self,
             "edit_message",
@@ -1510,6 +1512,39 @@ impl VeluneApplication {
                 conversation_id,
                 message_id,
                 placement,
+                target_runtime_id,
+                expected_revision,
+                selection,
+                turn
+            }
+        )
+    }
+
+    #[uniffi::method(default(expected_revision = None))]
+    pub fn edit_message_with_runtime(
+        &self,
+        runtime_id: String,
+        conversation_id: String,
+        message_id: String,
+        placement: EditPlacement,
+        target_runtime_id: Option<String>,
+        selection: Option<ModelSelection>,
+        turn: ComposedTurn,
+        expected_revision: Option<String>,
+    ) -> Result<SnapshotResult, BindingError> {
+        if expected_revision.is_none() {
+            return Err(BindingError::Invalid { detail: "编辑缺少会话版本，请重新打开消息编辑后再发送".into() });
+        }
+        request!(
+            self,
+            "edit_message",
+            EditMessage {
+                runtime_id,
+                conversation_id,
+                message_id,
+                placement,
+                target_runtime_id,
+                expected_revision,
                 selection,
                 turn
             }

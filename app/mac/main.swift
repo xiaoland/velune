@@ -38,7 +38,10 @@ struct ConversationCommands: Commands {
     @ObservedObject private var shortcuts = KeyboardShortcutSettings.shared
     /// A floating panel or tool window is no scene: while one is key, its window is the target.
     private var target: ConversationCommandTarget? {
-        focusedTarget ?? ConversationWindowModel.owning(detached: NSApp.keyWindow).map { window in
+        // A message editor owns its input; conversation commands must not
+        // silently act on the source tab behind its floating panel.
+        guard MessageEditingSession.owning(window: NSApp.keyWindow) == nil else { return nil }
+        return focusedTarget ?? ConversationWindowModel.owning(detached: NSApp.keyWindow).map { window in
             ConversationCommandTarget(window: window)
         }
     }
@@ -78,7 +81,8 @@ struct ConversationCommands: Commands {
             // A conversation window closes its shown tab; the last one closes the window. Any other window closes.
             Button("关闭标签页") {
                 let keyWindow = NSApp.keyWindow
-                if let window = ConversationWindowModel.owning(window: keyWindow?.sheetParent ?? keyWindow) { window.perform(.closeTab) }
+                if let edit = MessageEditingSession.owning(window: keyWindow) { edit.cancel() }
+                else if let window = ConversationWindowModel.owning(window: keyWindow?.sheetParent ?? keyWindow) { window.perform(.closeTab) }
                 else { NSApp.keyWindow?.performClose(nil) }
             }
             .keyboardShortcut(shortcuts[.closeTab])
@@ -504,7 +508,7 @@ enum VeluneEntry {
             composerOwnershipCheck()
         }
         if CommandLine.arguments.contains("--check-message-experience"),
-           CommandLine.arguments.contains("--experience-runtime-recovery-only") {
+           CommandLine.arguments.contains("--experience-runtime-recovery-only") || CommandLine.arguments.contains("--experience-message-editor-offscreen") {
             admitMacExecution()
             messageExperienceChecks()
         }

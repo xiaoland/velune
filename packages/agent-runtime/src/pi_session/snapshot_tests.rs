@@ -175,3 +175,21 @@ fn obsolete_query_frame_after_matching_snapshot_cannot_retarget_installed_body()
     assert_eq!(ids(&session), ["native:u:0", "native:a:0"]);
     finish(session, root);
 }
+
+#[test]
+fn editing_sync_facade_installs_fresh_frame_and_rejects_busy_read() {
+    let (mut session, root) = fixture("late");
+    session.sync_history_for_edit("pi", None).unwrap();
+    assert!(ids(&session).iter().any(|id| id == "native:a:0"));
+    // Ordinary synchronization can skip an installed frame; editing must
+    // explicitly force and finish another authoritative read.
+    session.sync_history_for_edit("pi", None).unwrap();
+    assert!(ids(&session).iter().any(|id| id == "native:a:0"));
+    finish(session, root);
+
+    let (mut session, root) = fixture("busy");
+    assert!(session.sync_history_for_edit("pi", None).is_err());
+    assert!(session.turn_running());
+    assert!(!ids(&session).iter().any(|id| id == "native:a:0"));
+    finish(session, root);
+}

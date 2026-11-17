@@ -799,6 +799,29 @@ impl PiSession {
         Ok(())
     }
 
+    /// Editing requires a fresh native frame to be installed before continuing.
+    /// Unlike ordinary background synchronization, an incomplete read is an error.
+    pub fn sync_history_for_edit(
+        &mut self,
+        runtime_id: &str,
+        model_record_key: Option<String>,
+    ) -> Result<()> {
+        self.running()?.projection.invalidate_history();
+        if self.sync_history(runtime_id, model_record_key)? {
+            Ok(())
+        } else {
+            Err(Error::CommandFailed(
+                "Pi 编辑历史同步尚未完成，请重新读取会话后再编辑".into(),
+            ))
+        }
+    }
+
+    /// Return only after the native rewind is acknowledged; history is refreshed
+    /// separately before the replacement is sent.
+    pub fn branch_for_edit(&mut self, entry_id: &str) -> Result<()> {
+        self.branch(entry_id, EditPlacement::InPlace)
+    }
+
     /// Continue from before the user entry `entry_id`, here or in a new
     /// session as `placement` says.
     pub fn branch(&mut self, entry_id: &str, placement: EditPlacement) -> Result<()> {

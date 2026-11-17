@@ -625,20 +625,35 @@ impl Application {
                 conversation_id,
                 message_id,
                 placement,
+                target_runtime_id,
+                expected_revision,
                 selection,
                 turn,
             } => Response::EditMessage(application.runtime.serve(
                 Focus::Conversation(conversation_id.clone()),
                 Login::Blocks,
                 |core| {
-                    core.edit_message(
-                        &runtime_id,
-                        &conversation_id,
-                        &message_id,
-                        placement,
-                        selection,
-                        turn,
-                    )
+                    if target_runtime_id.is_none() && expected_revision.is_none() {
+                        core.edit_message(
+                            &runtime_id,
+                            &conversation_id,
+                            &message_id,
+                            placement,
+                            selection,
+                            turn,
+                        )
+                    } else {
+                        core.edit_message_with_revision(
+                            &runtime_id,
+                            &conversation_id,
+                            &message_id,
+                            placement,
+                            target_runtime_id.as_deref(),
+                            expected_revision.as_deref(),
+                            selection,
+                            turn,
+                        )
+                    }
                 },
             )?),
             Command::ForkConversation {

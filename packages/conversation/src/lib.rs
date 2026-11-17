@@ -197,6 +197,10 @@ pub struct EditableMessage {
     /// message and all after it; otherwise only a new conversation can
     /// continue from it.
     pub in_place: bool,
+    /// Native history version offered for this edit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[uniffi(default = None)]
+    pub revision: Option<String>,
 }
 
 /// Where an edited user message continues.

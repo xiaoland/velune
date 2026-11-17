@@ -144,9 +144,16 @@ struct TabContentView: View {
         .background(PaneAnchor { [weak window, weak tab] anchor in
             guard let tab else { return }; window?.registerConversation(tab, anchor: anchor)
         })
-        .sheet(item: $tab.editing) { request in
-            MessageEditorSheet(store: store, request: request, forked: { window.openInNewTab(adopting: $0, device: store.device) })
+        .sheet(item: Binding(get: { tab.editing?.presentation == .sheet ? tab.editing : nil }, set: { value in
+            if value == nil, tab.editing?.presentation == .sheet { tab.finishMessageEditing() }
+        }), onDismiss: {
+            // SwiftUI has now ended the native modal sheet. Ordering a panel
+            // before this callback lets sheet teardown steal its key state.
+            tab.showFloatingMessageEditor(in: window)
+        }) { session in
+            MessageEditorView(session: session, window: window, source: tab).frame(width: 560)
         }
+        .onChange(of: tab.editing?.id) { _, _ in tab.showFloatingMessageEditor(in: window) }
         .alert("创建分叉会话？", isPresented: Binding(get: { forkMessageID != nil }, set: { if !$0 { forkMessageID = nil } }), presenting: forkMessageID) { id in
             Button("取消", role: .cancel) {}
             Button("创建分叉") {

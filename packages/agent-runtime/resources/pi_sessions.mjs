@@ -64,9 +64,56 @@ if (forkPath) {
     process.stdout.write(JSON.stringify({error:`Pi fork${targetPath ? ` ${targetPath}` : ""}: ${error.message}`, code}));
   }
 } else if (exportPath) {
-  const { SessionManager } = await sessionManager();
+  const { SessionManager, buildSessionProjection } = await sessionManager();
   const { convertToLlm } = await installation.importModule("dist/core/messages.js");
-  const context = SessionManager.open(exportPath).buildSessionContext();
+  const before = value("--before-message-id");
+  if (before !== undefined) {
+    const { CURRENT_SESSION_VERSION, loadEntriesFromFile } = await sessionManager();
+    const entries = loadEntriesFromFile(exportPath);
+    if (entries[0]?.type !== "session" || entries[0].version !== CURRENT_SESSION_VERSION) {
+      throw new Error("Pi source must use the current native format before boundary export");
+    }
+  }
+  const manager = SessionManager.open(exportPath);
+  let context;
+  if (before === undefined) {
+    context = manager.buildSessionContext();
+  } else {
+    const prefix = `pi:${manager.getSessionId()}:`;
+    if (!before.startsWith(prefix)) throw new Error("Pi message belongs to another session");
+    const parts = before.slice(prefix.length).split(":");
+    if (parts.length !== 2 || !/^\d+$/.test(parts[1])) throw new Error("Invalid Pi message boundary");
+    const [entryId, ordinalText] = parts;
+    const ordinal = Number(ordinalText);
+    const entries = manager.getEntries();
+    const boundary = entries.findIndex(entry => entry.id === entryId);
+    if (boundary < 0 || !manager.getBranch().some(entry => entry.id === entryId)) throw new Error("Pi user message is no longer on the active branch");
+    const selected = entries[boundary];
+    // Reconstruct the boundary with the active branch's latest edits to its
+    // surviving entries. Those edits may have been appended in the future we
+    // are discarding; replay only their effects, never future messages/tools.
+    const projectAt = (leaf, end) => {
+      const retained = new Set(leaf ? manager.getBranch(leaf).map(entry => entry.id) : []);
+      const latest = new Map(manager.getBranch().filter(entry => entry.type === "context_edit")
+        .map(entry => [entry.targetId, entry]));
+      const prefix = entries.slice(0, end);
+      for (const edit of latest.values()) {
+        if (!retained.has(edit.targetId) || retained.has(edit.id)) continue;
+        prefix.push({...edit, parentId:leaf});
+        leaf = edit.id;
+      }
+      return buildSessionProjection(prefix, leaf);
+    };
+    const through = projectAt(selected.id, boundary + 1);
+    const projected = through.entries.find(entry => entry.sourceEntry.id === entryId);
+    if (projected?.messages[ordinal]?.role !== "user") throw new Error("Pi boundary is not a user message");
+    if (ordinal === 0) {
+      context = projectAt(selected.parentId, boundary);
+    } else {
+      const at = through.entries.indexOf(projected);
+      context = {messages: through.entries.slice(0, at).flatMap(entry => entry.messages).concat(projected.messages.slice(0, ordinal))};
+    }
+  }
   const blocks = content => typeof content === "string" ? [{type:"text", text:content}] : content.flatMap(block => {
     switch (block.type) {
       case "text": return [{type:"text", text:block.text}];

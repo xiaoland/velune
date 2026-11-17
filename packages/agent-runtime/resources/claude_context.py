@@ -1,11 +1,29 @@
 """Claude Code's effective branch, including compact summaries and retained segments.
 Loaded with claude_history.py so source selection has the same ownership checks.
 """
-def export_context(path, sidechain=False):
+def export_context(path, sidechain=False, before_message_id=None):
     with open(path, encoding="utf-8") as file:
         records = [json.loads(line) for line in file if line.strip()]
+    boundary_parent = None
+    if before_message_id is not None:
+        boundary = next((i for i, entry in enumerate(records)
+                         if entry.get("uuid") == before_message_id
+                         and bool(entry.get("isSidechain")) == sidechain
+                         and entry.get("type") == "user"), None)
+        if boundary is None:
+            raise ValueError("native user message boundary was not found")
+        selected = records[boundary]
+        boundary_parent = selected.get("parentUuid")
+        # Tool results in this same native entry belong to preceding calls,
+        # not to the selected human prompt. Preserve them at the exact cut.
+        content = selected.get("message", {}).get("content")
+        results = [block for block in content if block.get("type") == "tool_result"] if isinstance(content, list) else []
+        records = records[:boundary]
+        if results:
+            records.append(dict(selected, message=dict(selected["message"], content=results)))
+            boundary_parent = selected["uuid"]
     entries = {r["uuid"]: r for r in records if "uuid" in r and bool(r.get("isSidechain")) == sidechain}
-    leaf = next((r["uuid"] for r in reversed(records) if r.get("uuid") in entries and r.get("type") in ("user", "assistant")), None)
+    leaf = boundary_parent if before_message_id is not None else next((r["uuid"] for r in reversed(records) if r.get("uuid") in entries and r.get("type") in ("user", "assistant")), None)
     chain, seen = [], set()
     while leaf is not None:
         if leaf in seen or leaf not in entries:

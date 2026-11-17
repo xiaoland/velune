@@ -4,6 +4,90 @@ use crate::conversation::{ConversationSnapshot, TurnSettings};
 use crate::{ModelSelection, RuntimeModel};
 use velune_agent_runtime::native::CLAUDE_EFFORT_LEVELS;
 
+#[cfg(test)]
+mod edit_model_tests {
+    use super::*;
+
+    #[test]
+    fn managed_edit_model_keeps_identity_after_history_is_named() {
+        let root =
+            std::env::temp_dir().join(format!("velune-edit-model-{}", crate::new_record_key()));
+        std::fs::create_dir_all(&root).unwrap();
+        let mut app = crate::Application::open(crate::Options {
+            home_directory: root.clone(),
+            resources_directory: root.clone(),
+        })
+        .unwrap();
+        let core = &mut app.runtime;
+        core.runtime_instances = vec![RuntimeInstance {
+            enabled: true,
+            id: "pi".into(),
+            name: "Synthetic Pi".into(),
+            type_id: RuntimeKind::Pi,
+            gateway_id: "synthetic".into(),
+            settings: Default::default(),
+        }];
+        core.gateways = vec![GatewayConfig {
+            id: "synthetic".into(),
+            name: "Synthetic".into(),
+            routes: Vec::new(),
+            providers: vec![crate::config::ProviderDefinition {
+                id: "provider".into(),
+                name: "ChatGPT1".into(),
+                protocol: Protocol::Responses,
+                endpoint: "http://127.0.0.1:1/v1".into(),
+                execution_backend: crate::config::ExecutionBackend::Http,
+                request_profile: crate::config::RequestProfile::Native,
+                quota_source: crate::config::ProviderQuotaSource::None,
+                authentication: Default::default(),
+                quota_authentication: Default::default(),
+                billing: Default::default(),
+                quota_limits: Vec::new(),
+                models: vec![crate::config::ProviderModel {
+                    record_key: "managed-model".into(),
+                    provider_model_id: "gpt-6.1-sol".into(),
+                    nickname: "GPT-6.1-Sol".into(),
+                    icon: None,
+                    context_window: None,
+                    max_output_tokens: None,
+                    reasoning_levels: None,
+                    request_parameters: None,
+                    pi_projection: None,
+                }],
+            }],
+        }];
+        let alias = core.gateways[0].pi_binding_id("managed-model", 0).unwrap();
+        let mut turns = vec![crate::conversation::TranscriptTurn {
+            id: "turn".into(),
+            user_message_id: "user".into(),
+            work_message_ids: vec![],
+            last_message_id: Some("reply".into()),
+            reply_start_block: 0,
+            duration_ms: None,
+            is_running: false,
+            can_fork: false,
+            outcome: Some(crate::conversation::TurnOutcome::Completed),
+            usage: None,
+            settings: Some(TurnSettings {
+                runtime_id: Some("pi".into()),
+                model: Some(alias),
+                ..Default::default()
+            }),
+        }];
+        core.name_turn_models(&mut turns);
+        let settings = turns[0].settings.as_ref().unwrap();
+        assert_eq!(settings.model.as_deref(), Some("GPT-6.1-Sol · ChatGPT1"));
+        assert_eq!(
+            settings.model_selection,
+            Some(ModelSelection::Managed {
+                model_record_key: "managed-model".into()
+            }),
+            "a display label must not erase the managed identity needed by the editor"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+}
+
 /// How this execution acquires history. A fork connects with the target's
 /// configuration but must never resume or close the source writer.
 #[derive(Clone, Copy)]
@@ -653,10 +737,16 @@ impl CoreRuntime {
                         .is_ok_and(|alias| &alias == model)
                 })
                 .map(str::to_owned);
-            if let Some(name) = key.and_then(|model_record_key| {
-                self.turn_model_name(runtime_id, &ModelSelection::Managed { model_record_key })
-            }) {
-                settings.model = Some(name);
+            if let Some(model_record_key) = key {
+                let selection = ModelSelection::Managed { model_record_key };
+                if let Some(name) = self.turn_model_name(runtime_id, &selection) {
+                    settings.model = Some(name);
+                    // The readable title is presentation; retain the matched
+                    // route identity so editing never reconstructs it from text.
+                    if settings.model_selection.is_none() {
+                        settings.model_selection = Some(selection);
+                    }
+                }
             }
         }
         for turn in turns.iter_mut() {

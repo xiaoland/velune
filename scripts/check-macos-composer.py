@@ -21,7 +21,7 @@ def digest(path):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('check', choices=['provider-analytics', 'archived', 'palette-ime', 'pagination', 'tabs', 'targets', 'ownership', 'background', 'experience', 'recovery', 'background-notifications', 'sidebar-toolbar', 'outgoing-submissions'])
+    parser.add_argument('check', choices=['editor', 'provider-analytics', 'archived', 'palette-ime', 'pagination', 'tabs', 'targets', 'ownership', 'background', 'experience', 'recovery', 'background-notifications', 'sidebar-toolbar', 'outgoing-submissions'])
     parser.add_argument('--app', type=Path, default=app_bundle_path(ROOT, 'dev'))
     parser.add_argument('--output', type=Path)
     parser.add_argument('--dark', action='store_true')
@@ -57,6 +57,11 @@ def main():
                    CODEX_HOME=str(root / 'codex'), PI_CODING_AGENT_DIR=str(root / 'pi'), CLAUDE_CONFIG_DIR=str(root / 'claude'),
                    XDG_CONFIG_HOME=str(root / 'config'), XDG_DATA_HOME=str(root / 'data'), XDG_CACHE_HOME=str(root / 'cache'))
         flags = ['--check-background-tasks'] if args.check == 'background' else ['--check-message-experience']
+        if args.check == 'editor':
+            env['VELUNE_HOME'] = str(evidence / 'state')
+            flags = ['--check-message-experience', '--experience-message-editor-offscreen']
+            if args.dark:
+                flags.append('--editor-check-dark')
         if args.check == 'archived':
             flags = ['--check-archived-conversations']
             if args.dark:
@@ -102,9 +107,14 @@ def main():
         # Copy only explicit result artifacts; application state stays private.
         exported = []
         for result in evidence.iterdir():
-            if result.is_file() and (result.name in ['archived-check.json', 'continuation-check.json', 'background-check.json', 'provider-analytics-check.json', 'background-notifications-check.json', 'sidebar-toolbar-check.json', 'outgoing-submissions-check.json', 'recovery-check.json'] or result.suffix in ['.png', '.csv', '.txt']):
+            if result.is_file() and (result.name in ['acceptance.json', 'render-measurements.json', 'editor-wire.jsonl', 'editor-native.json', 'fixture.json', 'archived-check.json', 'continuation-check.json', 'background-check.json', 'provider-analytics-check.json', 'background-notifications-check.json', 'sidebar-toolbar-check.json', 'outgoing-submissions-check.json', 'recovery-check.json'] or result.suffix in ['.png', '.csv', '.txt']):
                 shutil.copy2(result, output / result.name)
                 exported.append(result.name)
+        if args.check == 'editor':
+            for native_log in (evidence / 'state' / 'logs').glob('*.jsonl'):
+                name = 'editor-core-' + native_log.name
+                shutil.copy2(native_log, output / name)
+                exported.append(name)
         receipt['artifacts'] = sorted(exported)
         (output / 'receipt.json').write_text(json.dumps(receipt, indent=2) + '\n')
         print((output / 'native.log').read_text(), end='')

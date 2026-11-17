@@ -12,6 +12,7 @@ pub(super) struct LogicalProjection {
     pub link: ConversationLink,
     pub origin: ConversationSummary,
     pub prefix: Vec<Message>,
+    pub sealed_sources: std::collections::BTreeMap<String, ConversationSnapshot>,
     pub work_notification_ids: Vec<String>,
     pub executions: velune_conversation::Executions,
 }
@@ -30,7 +31,7 @@ fn digest(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
 
-fn prefix_digest(messages: &[Message]) -> Result<String, RuntimeError> {
+pub(super) fn prefix_digest(messages: &[Message]) -> Result<String, RuntimeError> {
     // IDs and timestamps differ between live adapters and historical projections.
     // Always compute this from the authoritative historical content, not live events.
     let content: Vec<_> = messages.iter().map(|m| (&m.role, &m.blocks)).collect();
@@ -62,6 +63,28 @@ fn display_work_notifications(ids: &[String], displayed: &[Message], index: usiz
         .map(|id| display_id(index, id))
         .filter(|id| visible.contains(id.as_str()))
         .collect()
+}
+
+pub(super) fn shows_boundary(link: &ConversationLink, index: usize) -> bool {
+    let Some(segment) = link.segments.get(index) else {
+        return false;
+    };
+    index > 0
+        && segment
+            .cutoff
+            .as_ref()
+            .is_none_or(|cutoff| cutoff.message_count > 0)
+        && !(segment.imported.is_some()
+            && link.segments[index - 1].runtime_instance_id == segment.runtime_instance_id)
+}
+
+pub(super) fn verified_import_prefix(
+    segment: &ConversationSegmentReference,
+    messages: &[Message],
+) -> Option<usize> {
+    let prefix = &segment.imported.as_ref()?.prefix;
+    let count = usize::try_from(prefix.message_count).ok()?;
+    (prefix_digest(messages.get(..count)?).ok()? == prefix.prefix_digest).then_some(count)
 }
 
 pub(super) fn display_segment(
@@ -289,10 +312,24 @@ impl CoreRuntime {
         native
     }
 
-    fn read_segment(
+    pub(super) fn read_segment(
         &self,
         segment: &ConversationSegmentReference,
     ) -> Result<ConversationSnapshot, RuntimeError> {
+        if segment.runtime_type_id == RuntimeKind::Acp
+            && segment.cutoff.is_some()
+            && let Some(source) = std::iter::once(&self.session)
+                .chain(&self.parked)
+                .filter_map(|session| session.logical_projection.as_ref())
+                .find_map(|projection| {
+                    projection
+                        .sealed_sources
+                        .get(&segment.native_conversation_id)
+                })
+        {
+            return Ok(source.clone());
+        }
+
         let runtime = self.runtime_instance(&segment.runtime_instance_id)?;
         if runtime.type_id == RuntimeKind::Acp {
             let native_id = segment
@@ -383,6 +420,12 @@ impl CoreRuntime {
             &ConversationSegmentReference,
         ) -> Result<ConversationSnapshot, RuntimeError>,
     ) -> Result<(ConversationSnapshot, LogicalProjection), RuntimeError> {
+        let sealed_sources = std::iter::once(&self.session)
+            .chain(&self.parked)
+            .filter_map(|session| session.logical_projection.as_ref())
+            .filter(|projection| projection.link.id == link.id)
+            .flat_map(|projection| projection.sealed_sources.clone())
+            .collect();
         let mut prefix = Vec::new();
         let mut work_notification_ids = Vec::new();
         let mut executions = velune_conversation::Executions::default();
@@ -421,7 +464,7 @@ impl CoreRuntime {
                     tracing::warn!(target:"velune_application", event="conversation_cutoff_digest_mismatch", segment_index=index);
                 }
                 snapshot.messages.truncate(count);
-                if index > 0 {
+                if shows_boundary(link, index) {
                     prefix.push(self.boundary_message(segment, index));
                 }
                 snapshot.executions.retain(&snapshot.messages);
@@ -468,6 +511,7 @@ impl CoreRuntime {
         Ok((
             tail,
             LogicalProjection {
+                sealed_sources,
                 work_notification_ids,
                 link: link.clone(),
                 origin,
@@ -536,7 +580,7 @@ impl CoreRuntime {
         snapshot
     }
 
-    fn store_links(&mut self, links: Vec<ConversationLink>) -> Result<(), RuntimeError> {
+    pub(super) fn store_links(&mut self, links: Vec<ConversationLink>) -> Result<(), RuntimeError> {
         self.repository.store_conversation_links(&links)?;
         self.conversation_links = links;
         Ok(())
@@ -595,6 +639,7 @@ impl CoreRuntime {
         let mut origin = native.conversation.clone();
         origin.id = public_id;
         self.session.logical_projection = Some(LogicalProjection {
+            sealed_sources: Default::default(),
             work_notification_ids: Vec::new(),
             link,
             origin,
@@ -749,6 +794,7 @@ impl CoreRuntime {
             return Err(error);
         }
         self.session.logical_projection = Some(LogicalProjection {
+            sealed_sources: Default::default(),
             work_notification_ids,
             link,
             origin,
@@ -997,6 +1043,7 @@ impl CoreRuntime {
             return Err(error);
         }
         self.session.logical_projection = Some(LogicalProjection {
+            sealed_sources: Default::default(),
             work_notification_ids,
             link,
             origin,

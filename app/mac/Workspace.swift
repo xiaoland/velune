@@ -28,8 +28,9 @@ import VeluneBindings
     @Published var outlineNavigation: TranscriptJump?
     /// Searching the conversation's messages (see `TranscriptFindBar`).
     let find = TranscriptFind()
-    /// The user message being edited, in a sheet over the tab.
-    @Published var editing: MessageEditRequest?
+    /// One independent edit, regardless of its configured surface.
+    @Published var editing: MessageEditingSession?
+    var messageEditingPanel: MessageEditingPanel?
     /// When the keyboard was asked to go to the request waiting for an
     /// answer; its card takes it on showing, which may follow loading the
     /// conversation. A request older than a few seconds has lapsed.
@@ -48,7 +49,7 @@ import VeluneBindings
     var sideChatParentID: UUID?
     var canOpenSideChat: Bool { store.sideChatTarget != nil }
 
-    override func close() { store.close() }
+    override func close() { finishMessageEditing(); store.close() }
     /// Reading starts when the tab is first shown, so restored background tabs cost nothing.
     private var pendingStart: (() -> Void)?
 
@@ -185,8 +186,44 @@ import VeluneBindings
 
     /// Edit a user message of the transcript, when it may be edited now.
     func edit(messageID: String) {
+        guard editing == nil else { messageEditingPanel?.showFromUserAction(); return }
         guard let editable = store.editability(of: messageID), let message = store.message(id: messageID) else { return }
-        editing = MessageEditRequest(message: message, inPlace: editable.inPlace, isLast: store.isLastUserMessage(messageID))
+        let request = MessageEditRequest(message: message, conversationID: store.loadedConversationID, inPlace: editable.inPlace, isLast: store.isLastUserMessage(messageID), revision: editable.revision)
+        let session = MessageEditingSession(source: store, request: request)
+        let identity = session.id
+        session.onClose = { [weak self] in self?.finishMessageEditing(identity) }
+        editing = session
+        session.start()
+    }
+
+    func finishMessageEditing(_ identity: UUID? = nil) {
+        guard let session = editing, identity == nil || session.id == identity else { return }
+        editing = nil
+        session.cancel()
+        let panel = messageEditingPanel
+        messageEditingPanel = nil
+        panel?.closeEditor()
+    }
+
+    func changeMessageEditorPresentation(in window: ConversationWindowModel) {
+        guard let editing else { return }
+        objectWillChange.send()
+        let destination: MessageEditPresentation = editing.presentation == .sheet ? .floating : .sheet
+        if destination == .sheet {
+            window.selectTab(id)
+            let panel = messageEditingPanel
+            messageEditingPanel = nil
+            panel?.closeForTransfer()
+        }
+        editing.setPresentation(destination)
+        // Sheet -> panel is ordered by the sheet's onDismiss callback, after
+        // AppKit has finished tearing down its modal session.
+    }
+
+    func showFloatingMessageEditor(in window: ConversationWindowModel) {
+        guard let editing, editing.presentation == .floating else { return }
+        if messageEditingPanel == nil { messageEditingPanel = MessageEditingPanel(session: editing, window: window, source: self) }
+        messageEditingPanel?.showFromUserAction()
     }
 
     /// The link a drag carries to other apps; an unsent conversation has none yet.

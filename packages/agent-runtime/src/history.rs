@@ -155,6 +155,16 @@ fn execute(
     native_id: Option<&str>,
     native_ids: &[String],
 ) -> Result<Vec<u8>, HistoryError> {
+    execute_before(config, operation, runtime_id, native_id, native_ids, None)
+}
+fn execute_before(
+    config: &HistoryConfig,
+    operation: &str,
+    runtime_id: &str,
+    native_id: Option<&str>,
+    native_ids: &[String],
+    before_message_id: Option<&str>,
+) -> Result<Vec<u8>, HistoryError> {
     if !matches!(config.provider.as_str(), "deepseek" | "claude-code") {
         return Err(HistoryError::new(
             HistoryFailureKind::UnsupportedProvider,
@@ -175,7 +185,7 @@ fn execute(
             ));
         }
     }
-    let request = json!({"operation":operation,"provider":config.provider,"home":config.home,"roots":[config.root],"runtimeId":runtime_id,"nativeId":native_id,"nativeIds":native_ids});
+    let request = json!({"operation":operation,"provider":config.provider,"home":config.home,"roots":[config.root],"runtimeId":runtime_id,"nativeId":native_id,"nativeIds":native_ids,"beforeMessageId":before_message_id});
     let input = serde_json::to_vec(&request).map_err(|error| {
         HistoryError::new(HistoryFailureKind::BridgeContract, "request")
             .with_detail(error.to_string())
@@ -371,6 +381,35 @@ pub fn export_context(
     crate::import::Context::parse(&bytes)
 }
 
+/// Effective model context immediately before one exact native user message.
+/// The boundary is resolved before compaction, so later summaries cannot
+/// leak the replaced message or its replies back into the rebuilt session.
+pub fn export_context_before(
+    config: &HistoryConfig,
+    native_id: &str,
+    message_id: &str,
+) -> NativeResult<crate::import::Context> {
+    if config.provider == "codex" {
+        return crate::native::export_codex_context_before(config, native_id, message_id);
+    }
+    if config.provider != "claude-code" {
+        return Err(Error::with_code(
+            "此运行时尚未接入历史边界导出",
+            "unsupported",
+        ));
+    }
+    let bytes = execute_before(
+        config,
+        "export_context",
+        "",
+        Some(native_id),
+        &[],
+        Some(message_id),
+    )
+    .map_err(|error| Error::new(error.full_message()))?;
+    crate::import::Context::parse_before(&bytes)
+}
+
 pub fn read(
     config: &HistoryConfig,
     runtime_id: &str,
@@ -490,6 +529,16 @@ pub fn export_pi_context(
         &serde_json::to_vec(&value).map_err(|error| Error::new(error.to_string()))?,
     )
 }
+pub fn export_pi_context_before(
+    config: &crate::Config,
+    session: &std::path::Path,
+    message_id: &str,
+) -> NativeResult<crate::import::Context> {
+    let value = execute_pi(config, PiOperation::ExportBefore(session, message_id), None)?;
+    crate::import::Context::parse_before(
+        &serde_json::to_vec(&value).map_err(|error| Error::new(error.to_string()))?,
+    )
+}
 /// A stable source entry, never a live Agent/RPC host to switch.
 #[derive(Clone, Copy)]
 pub enum PiForkBoundary<'a> {
@@ -552,6 +601,7 @@ enum PiOperation<'a> {
     List,
     Inspect(&'a std::path::Path),
     ExportContext(&'a std::path::Path),
+    ExportBefore(&'a std::path::Path, &'a str),
     Fork(&'a std::path::Path),
     Rename(&'a std::path::Path),
     Delete(&'a std::path::Path),
@@ -589,6 +639,13 @@ fn execute_pi(
         PiOperation::List => {}
         PiOperation::ExportContext(session) => {
             command.arg("--export-context").arg(session);
+        }
+        PiOperation::ExportBefore(session, message_id) => {
+            command
+                .arg("--export-context")
+                .arg(session)
+                .arg("--before-message-id")
+                .arg(message_id);
         }
         PiOperation::Fork(session) => {
             command.arg("--fork-session").arg(session);
