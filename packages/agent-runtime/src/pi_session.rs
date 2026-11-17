@@ -34,6 +34,15 @@ struct Running {
 
 impl Running {
     fn apply_event(&mut self, event: &Value) {
+        // Complete query frames are installed only by the matching history RPC.
+        // A stale or late frame must not rename the currently installed body.
+        if event["statusKey"] == "velune.session-metadata"
+            && event["statusText"].as_str()
+                .and_then(|text| serde_json::from_str::<Value>(text).ok())
+                .is_some_and(|frame| frame.get("snapshotVersion").is_some() || frame.get("requestId").is_some())
+        {
+            return;
+        }
         self.projection.apply_event(event);
         if self.projection.turn_ended() {
             self.busy = false;
@@ -84,6 +93,10 @@ impl PiSession {
             projection,
             busy,
         });
+        // The caller installed readiness history before handing off the client.
+        // Consume its queued prefix and later live events before another RPC.
+        let events = self.running.as_mut().unwrap().client.poll();
+        self.apply_events(events);
         self.background_pending_sync = true;
         self.refresh_background(json!({"operation":"snapshot"}));
     }
@@ -307,7 +320,7 @@ impl PiSession {
             .ok_or(Error::NotStarted)
             .and_then(|running| running.client.background_work_command(&command));
         match result {
-            Ok(frame) => self.apply_background_frame(&frame),
+            Ok(frame) => self.receive_background_frame(&frame),
             Err(error) => {
                 self.background_pending_sync = true;
                 self.set_background_error(Some(error.to_string()));
@@ -683,19 +696,34 @@ impl PiSession {
         {
             return Ok(false);
         }
-        let (state, messages) = running.client.state()?;
+        let (_state, messages) = running.client.state()?;
+        let mut snapshot_header = None;
+        for event in running.client.take_buffered_events() {
+            // This synthetic header belongs to the body below. If native work
+            // began before the frame, defer both without renaming old history.
+            let is_snapshot_header = event["statusKey"] == "velune.session-metadata"
+                && event["statusText"].as_str()
+                    .and_then(|text| serde_json::from_str::<Value>(text).ok())
+                    .is_some_and(|frame| frame["snapshotHeaderOnly"] == true);
+            if is_snapshot_header {
+                snapshot_header = Some(event);
+            } else {
+                running.apply_event(&event);
+            }
+        }
+        if running.busy || !running.projection.can_sync_history() {
+            return Ok(false);
+        }
+        if let Some(header) = snapshot_header {
+            running.apply_event(&header);
+        }
         Self::observe_persisted_background_notifications(
             &messages,
             &mut self.acknowledged_notifications,
             &mut self.pending_notifications,
         );
-        // Events received before get_messages' response are covered by that
-        // authoritative context. Do not replay them after replacing history.
-        for event in running.client.take_buffered_events() {
-            running.apply_event(&event);
-        }
         let projection = &mut running.projection;
-        if let Some(path) = state["data"]["sessionFile"].as_str() {
+        if let Some(path) = messages["nativeSession"]["sessionFile"].as_str() {
             let previous = projection.snapshot.as_ref().map(|s| &s.conversation);
             projection.set_conversation(ConversationSummary {
                 native_read_state: None,
@@ -703,7 +731,7 @@ impl PiSession {
                 can_delete: false,
                 id: format!("{runtime_id}:{path}"),
                 title: crate::conversation::conversation_title(
-                    state["data"]["sessionName"].as_str(),
+                    messages["nativeSession"]["name"].as_str(),
                     None,
                 ),
                 created_at_unix_ms: previous.and_then(|c| c.created_at_unix_ms),
@@ -964,8 +992,8 @@ for line in sys.stdin:
  with open(os.path.join(os.path.dirname(__file__),'requests.jsonl'),'a') as f: f.write(json.dumps(r)+'\n')
  if command=='get_commands': data={'commands':[{'name':'velune-background-work'}]}
  elif command=='get_messages': data={'messages':[]}
- elif command=='prompt' and r['message']=='/velune-projection-sync':
-  emit({'type':'extension_ui_request','method':'setStatus','statusKey':'velune.session-metadata','statusText':json.dumps({'messageIds':[],'identityConfirmations':[]})})
+ elif command=='prompt' and r['message'].startswith('/velune-projection-sync '):
+  emit({'type':'extension_ui_request','method':'setStatus','statusKey':'velune.session-metadata','statusText':json.dumps({'requestId':r['id'],'snapshotVersion':1,'messages':[],'messageIds':[],'identityConfirmations':[]})})
   data={'disposition':'handled'}
  elif command=='prompt':
   encoded=r['message'].split(' ',1)[1]; request=json.loads(base64.urlsafe_b64decode(encoded+'='*((-len(encoded))%4)))
@@ -1186,6 +1214,12 @@ for line in sys.stdin:
 
     #[test]
     fn notification_receipt_snapshot_observes_preceding_agent_start() {
+        for readiness in [false, true] {
+            receipt_snapshot_observes_agent_start(readiness);
+        }
+    }
+
+    fn receipt_snapshot_observes_agent_start(readiness: bool) {
         let mut random = [0; 8];
         getrandom::fill(&mut random).unwrap();
         let root = std::env::temp_dir().join(format!(
@@ -1201,6 +1235,10 @@ started=False
 for line in sys.stdin:
  r=json.loads(line); command=r['type']; data={}
  if command=='get_commands': data={'commands':[{'name':'velune-background-work'}]}
+ elif command=='prompt' and r['message'].startswith('/velune-projection-sync '):
+  emit({'type':'extension_ui_request','method':'setStatus','statusKey':'velune.session-metadata','statusText':json.dumps({'requestId':r['id'],'snapshotVersion':1,'messages':[],'messageIds':[],'identityConfirmations':[]})})
+  emit({'type':'agent_start'}); started=True
+  data={'disposition':'handled'}
  elif command=='prompt':
   if not started: emit({'type':'agent_start'}); started=True
   frame={'version':1,'kind':'snapshot','tasks':[{'id':'old','status':'completed','notifyOnCompletion':True,'notified':True}],'persistedNotificationIds':['old']}
@@ -1214,7 +1252,10 @@ for line in sys.stdin:
             "binary":"/usr/bin/python3", "node_binary":"/usr/bin/python3", "rpc_entry":helper,
         }))
         .unwrap();
-        let client = Client::spawn(config.clone()).unwrap();
+        let mut client = Client::spawn(config.clone()).unwrap();
+        if readiness {
+            client.state().unwrap();
+        }
         let mut session = PiSession::new(config);
         session.start(
             client,
@@ -1270,7 +1311,7 @@ for line in sys.stdin:
     if command == 'prompt':
         emit({'type':'extension_ui_request','method':'setStatus',
               'statusKey':'velune.session-metadata',
-              'statusText':json.dumps({'messageIds':[], 'identityConfirmations':[]})})
+              'statusText':json.dumps({'requestId':request['id'],'snapshotVersion':1,'messages':[],'messageIds':[], 'identityConfirmations':[]})})
         data = {'disposition':'handled'}
     elif command == 'get_state':
         if not started:
@@ -1307,7 +1348,7 @@ for line in sys.stdin:
                 parent_conversation_id: None,
             }),
         );
-        assert!(session.sync_history("pi", None).unwrap());
+        assert!(!session.sync_history("pi", None).unwrap());
         assert!(session.turn_running());
         assert!(session.can_steer());
         let snapshot = session.snapshot().unwrap();
@@ -1323,3 +1364,6 @@ for line in sys.stdin:
         std::fs::remove_dir_all(root).unwrap();
     }
 }
+
+#[cfg(test)]
+mod snapshot_tests;

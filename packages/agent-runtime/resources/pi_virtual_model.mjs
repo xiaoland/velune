@@ -33,18 +33,25 @@ export default function (pi) {
     description: "Project current native session metadata",
     handler: (_args, ctx) => {
       const manager = ctx.sessionManager;
+      // One synchronous projection supplies both content and provenance. A
+      // later get_messages reads agent.state.messages, which can already be a
+      // different branch or include an in-flight message not persisted here.
+      const projection = manager.buildSessionProjection();
+      const sessionId = manager.getSessionId();
+      const messages = [];
       const messageIds = [];
       const identityConfirmations = [];
-      for (const entry of manager.buildSessionProjection().entries) {
-        for (const [ordinal] of entry.messages.entries()) {
-          const currentId = `pi:${manager.getSessionId()}:${entry.sourceEntry.id}:${ordinal}`;
+      for (const entry of projection.entries) {
+        for (const [ordinal, message] of entry.messages.entries()) {
+          const currentId = `pi:${sessionId}:${entry.sourceEntry.id}:${ordinal}`;
+          messages.push({...message, id:currentId});
           messageIds.push(currentId);
           const previousId = entry.sourceEntry.type === "message"
             ? liveMessages.get(entry.sourceEntry.message) : undefined;
           if (previousId && ordinal === 0) identityConfirmations.push({previousId, currentId});
         }
       }
-      ctx.ui.setStatus("velune.session-metadata", JSON.stringify({sessionFile:manager.getSessionFile() ?? null,cwd:manager.getCwd(),name:manager.getSessionName() ?? null,createdUnixMs:Date.parse(manager.getHeader()?.timestamp ?? ""),messageIds,identityConfirmations}));
+      ctx.ui.setStatus("velune.session-metadata", JSON.stringify({sessionFile:manager.getSessionFile() ?? null,cwd:manager.getCwd(),name:manager.getSessionName() ?? null,createdUnixMs:Date.parse(manager.getHeader()?.timestamp ?? ""),requestId:_args.trim(),snapshotVersion:1,messages,messageIds,identityConfirmations}));
     },
   });
   // Editing a user message in place: the leaf moves to just before the

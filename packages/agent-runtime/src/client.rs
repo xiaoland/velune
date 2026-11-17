@@ -170,6 +170,8 @@ pub struct Client {
     stdin: Option<ChildStdin>,
     incoming: Receiver<Incoming>,
     pending: VecDeque<Value>,
+    snapshot_event_barrier: Option<usize>,
+    prepared_snapshot: Option<Value>,
     next_id: u64,
     stderr: SharedStderr,
     terminal_error: Option<String>,
@@ -388,6 +390,8 @@ impl Client {
             stdin: Some(stdin),
             incoming,
             pending: VecDeque::new(),
+            snapshot_event_barrier: None,
+            prepared_snapshot: None,
             next_id: 1,
             stderr,
             terminal_error: None,
@@ -565,25 +569,52 @@ impl Client {
         method: &str,
         timeout: Duration,
     ) -> Result<Value> {
+        let projection_sync = command["type"] == "prompt"
+            && command["message"]
+                .as_str()
+                .is_some_and(|m| m.starts_with("/velune-projection-sync "));
+        if projection_sync {
+            self.prepared_snapshot = None;
+            self.snapshot_event_barrier = None;
+        }
         let key = self.write_command(command)?;
         let (_, id) = key.split_once('\0').expect("internal command key");
         let mut deferred = VecDeque::new();
-        loop {
+        let result = loop {
             let value = match self.receive(method, timeout) {
                 Ok(value) => value,
-                Err(error) => {
-                    deferred.append(&mut self.pending);
-                    self.pending = deferred;
-                    return Err(error);
-                }
+                Err(error) => break Err(error),
             };
+            if projection_sync
+                && value["type"] == "extension_ui_request"
+                && value["method"] == "setStatus"
+                && value["statusKey"] == "velune.session-metadata"
+                && let Some(frame) = value["statusText"]
+                    .as_str()
+                    .and_then(|text| serde_json::from_str::<Value>(text).ok())
+                && frame["requestId"].as_str() == Some(id)
+            {
+                // The current RPC's result body is held once, separately from
+                // ordinary deferred events and appends after the frame.
+                if self.prepared_snapshot.is_none() {
+                    if let Err(error) = Self::validate_projection_frame(&frame, id) {
+                        break Err(error);
+                    }
+                    deferred.push_back(json!({"type":"extension_ui_request","method":"setStatus",
+                        "statusKey":"velune.session-metadata","statusText":json!({
+                            "snapshotHeaderOnly":true,"snapshotRequestId":id,"sessionFile":frame["sessionFile"],"cwd":frame["cwd"],
+                            "name":frame["name"],"createdUnixMs":frame["createdUnixMs"]
+                        }).to_string()}));
+                    self.snapshot_event_barrier = Some(deferred.len());
+                    self.prepared_snapshot = Some(value);
+                }
+                continue;
+            }
             let matches = value.get("type").and_then(Value::as_str) == Some("response")
                 && value.get("id").and_then(Value::as_str) == Some(id);
             if matches {
-                deferred.append(&mut self.pending);
-                self.pending = deferred;
                 if value.get("success") == Some(&Value::Bool(false)) {
-                    return Err(Error::CommandFailed(
+                    break Err(Error::CommandFailed(
                         value
                             .get("error")
                             .and_then(Value::as_str)
@@ -591,12 +622,33 @@ impl Client {
                             .to_string(),
                     ));
                 }
-                return Ok(value);
+                break Ok(value);
             }
             deferred.push_back(value);
+        };
+        // receive() drains older pending records first. Keep that FIFO prefix
+        // before the new frame; do not reorder it after this request's events.
+        deferred.append(&mut self.pending);
+        self.pending = deferred;
+        if result.is_err() && projection_sync {
+            self.prepared_snapshot = None;
+            self.snapshot_event_barrier = None;
+            // Failed queries expose no body, so withdraw only their synthetic header.
+            self.pending.retain(|event| {
+                !(event["type"] == "extension_ui_request"
+                    && event["method"] == "setStatus"
+                    && event["statusKey"] == "velune.session-metadata"
+                    && event["statusText"]
+                        .as_str()
+                        .and_then(|text| serde_json::from_str::<Value>(text).ok())
+                        .is_some_and(|frame| {
+                            frame["snapshotHeaderOnly"] == true
+                                && frame["snapshotRequestId"].as_str() == Some(id)
+                        }))
+            });
         }
+        result
     }
-
     pub fn request(&mut self, command: Value) -> Result<Value> {
         self.request_with_timeout(command, RESPONSE_TIMEOUT)
     }
@@ -725,6 +777,7 @@ impl Client {
     }
 
     pub fn poll(&mut self) -> Vec<Value> {
+        self.snapshot_event_barrier = None;
         let mut records: Vec<_> = self.pending.drain(..).collect();
         if let Some(error) = &self.terminal_error {
             if !std::mem::replace(&mut self.terminal_reported, true) {
@@ -752,46 +805,80 @@ impl Client {
         records
     }
 
-    /// Events encountered before the last RPC response. Unlike poll, this does
-    /// not consume newer reader records after the authoritative message barrier.
+    /// Events covered by the last native snapshot frame. Later records stay
+    /// queued for poll after the caller has installed that history.
     pub fn take_buffered_events(&mut self) -> Vec<Value> {
-        self.pending.drain(..).collect()
+        let count = self
+            .snapshot_event_barrier
+            .take()
+            .unwrap_or(self.pending.len());
+        self.pending
+            .drain(..count.min(self.pending.len()))
+            .collect()
     }
 
+    /// Readiness/history preparation before handing the client to PiSession.
+    /// The live owner installs the atomic ProjectionSync frame in event order.
     pub fn state(&mut self) -> Result<(Value, Value)> {
+        let mut state = self.request_with_timeout(json!({"type":"get_state"}), STARTUP_TIMEOUT)?;
+        let request_id = format!("velune-snapshot-{}", self.next_id);
         let metadata = self.request_with_timeout(
-            json!({"type":"prompt","message":"/velune-projection-sync"}),
+            json!({"id":request_id,"type":"prompt","message":format!("/velune-projection-sync {request_id}")}),
             STARTUP_TIMEOUT,
         )?;
         if metadata["data"]["disposition"] != "handled" {
             return Err(Error::Sdk("原生会话元数据查询未被扩展处理".into()));
         }
-        let state = self.request_with_timeout(json!({"type":"get_state"}), STARTUP_TIMEOUT)?;
-        let mut messages =
-            self.request_with_timeout(json!({"type":"get_messages"}), STARTUP_TIMEOUT)?;
         let metadata_event = self
-            .pending
-            .iter()
-            .rev()
-            .find(|event| {
-                event["type"] == "extension_ui_request"
-                    && event["method"] == "setStatus"
-                    && event["statusKey"] == "velune.session-metadata"
-            })
-            .ok_or_else(|| Error::Sdk("原生会话投影缺少来源身份".into()))?;
+            .prepared_snapshot
+            .take()
+            .ok_or_else(|| Error::Sdk("原生会话投影缺少同源快照".into()))?;
+        let messages = Self::projection_snapshot(&metadata_event, &request_id)?;
+        // Session navigation may occur after get_state. Display identity must
+        // come from the same frame as the returned history, never that old state.
+        state["data"]["sessionFile"] = messages["nativeSession"]["sessionFile"].clone();
+        state["data"]["sessionName"] = messages["nativeSession"]["name"].clone();
+        Ok((state, messages))
+    }
+
+    /// Decode one self-contained native projection. No message list obtained
+    /// by another RPC is allowed to borrow these source identities.
+    pub(crate) fn projection_snapshot(metadata_event: &Value, request_id: &str) -> Result<Value> {
         let metadata_text = metadata_event["statusText"]
             .as_str()
             .ok_or_else(|| Error::Sdk("原生会话来源身份 statusText 必须为字符串".into()))?;
-        let provenance: Value = serde_json::from_str(metadata_text)
+        let mut provenance: Value = serde_json::from_str(metadata_text)
             .map_err(|error| Error::Sdk(format!("原生会话来源身份 JSON 无效: {error}")))?;
+        Self::validate_projection_frame(&provenance, request_id)?;
+        let messages = provenance["messages"].take();
+        let confirmations = provenance["identityConfirmations"].take();
+        Ok(json!({
+            "data":{"messages":messages},
+            "identityConfirmations":confirmations,
+            "nativeSession":{
+                "sessionFile":provenance["sessionFile"],"cwd":provenance["cwd"],
+                "name":provenance["name"],"createdUnixMs":provenance["createdUnixMs"]
+            }
+        }))
+    }
+
+    fn validate_projection_frame(provenance: &Value, request_id: &str) -> Result<()> {
+        if provenance["requestId"].as_str() != Some(request_id) {
+            return Err(Error::Sdk("原生会话投影不属于当前快照请求".into()));
+        }
+        if provenance["snapshotVersion"] != 1 {
+            return Err(Error::Sdk(
+                "原生会话投影缺少同源快照，请更新运行时桥接组件".into(),
+            ));
+        }
         let _: Vec<crate::conversation::MessageIdentityConfirmation> =
             serde_json::from_value(provenance["identityConfirmations"].clone())
                 .map_err(|error| Error::Sdk(format!("原生会话身份确认格式无效: {error}")))?;
         let identities = provenance["messageIds"]
             .as_array()
             .ok_or_else(|| Error::Sdk("原生会话消息身份格式无效".into()))?;
-        let native_messages = messages["data"]["messages"]
-            .as_array_mut()
+        let native_messages = provenance["messages"]
+            .as_array()
             .ok_or_else(|| Error::Sdk("原生会话消息格式无效".into()))?;
         if identities.len() != native_messages.len() {
             return Err(Error::Sdk(format!(
@@ -800,18 +887,20 @@ impl Client {
                 identities.len()
             )));
         }
-        for (message, identity) in native_messages.iter_mut().zip(identities) {
+        let mut seen = std::collections::BTreeSet::new();
+        for (message, identity) in native_messages.iter().zip(identities) {
             let id = identity
                 .as_str()
                 .filter(|id| !id.is_empty())
                 .ok_or_else(|| Error::Sdk("原生会话消息身份为空".into()))?;
-            let object = message
-                .as_object_mut()
-                .ok_or_else(|| Error::Sdk("原生会话消息格式无效".into()))?;
-            object.insert("id".into(), Value::String(id.into()));
+            if message["id"].as_str() != Some(id) || !seen.insert(id) {
+                return Err(Error::Sdk("原生会话消息身份不属于同一快照或重复".into()));
+            }
+            if !message.is_object() {
+                return Err(Error::Sdk("原生会话消息格式无效".into()));
+            }
         }
-        messages["identityConfirmations"] = provenance["identityConfirmations"].clone();
-        Ok((state, messages))
+        Ok(())
     }
 
     /// Run Velune's structured Pi background host bridge without starting a
@@ -897,3 +986,6 @@ impl Drop for Client {
         let _ = self.shutdown();
     }
 }
+
+#[cfg(test)]
+mod snapshot_tests;
