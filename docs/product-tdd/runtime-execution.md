@@ -27,6 +27,10 @@
 - 下一轮能复用进程时照常发送。需要另起进程（选择、提供商或会话变化；Claude Code 每轮都是）时，`restart_needed` 与 `ensure_work_ended` 以 `Error::OutstandingWork` 拒绝，不结束子 Agent；消息进入发送队列并标记 `FollowUp.waiting = SubAgents`，工作结束后自动发出。
 - 停止父会话同时中断其子 Agent；`stop_sub_agents` 只停止子 Agent。退出时若有轮次或子 Agent 在 Velune 的进程中运行，平台先确认，再以 `shutdown_stopping_work` 结束它们。
 
+原生失败的类别与原始详情由 adapter 归一化为 `MessageBlock::RuntimeFailure`，一般通知继续使用 `Notice`。冷历史、实时观测与重新打开须保留同一失败原因；平台消费类型化事实，在工作过程折叠时仍呈现当前故障，不通过正文关键词猜测错误。已知登录失效等非重试失败不伪造重试计划，原生没有提供详情时明确保留未知。
+
+错误记录与执行终态分别处理：通知本身不能证明轮次已结束，已有明确失败证据再由原生结束信号结算。真实后续成功应撤下该次当前故障提示，历史原因仍可查看；新的用户轮次也不继承旧的静态失败提示。忽略展示不等于中断或停止重试。
+
 ### 通用 ACP
 
 `agent-runtime::acp` 是独立的 ACP v1 客户端，连接用户安装的原生 ACP Agent 或社区 bridge；application 只装配执行位置、HOME、可执行文件、参数与显式环境。新增 Agent 不需要新的类型分支、私有历史解析器或版本正则；协议主版本由 `initialize` 协商，程序名称、版本与可选能力只作为数据。官方 Rust schema 定义 wire 类型，Velune 拥有会话投影与进程生命周期。

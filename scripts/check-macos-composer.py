@@ -102,7 +102,7 @@ def main():
         # Copy only explicit result artifacts; application state stays private.
         exported = []
         for result in evidence.iterdir():
-            if result.is_file() and (result.name in ['archived-check.json', 'continuation-check.json', 'background-check.json', 'provider-analytics-check.json', 'background-notifications-check.json', 'sidebar-toolbar-check.json', 'outgoing-submissions-check.json'] or result.suffix in ['.png', '.csv', '.txt']):
+            if result.is_file() and (result.name in ['archived-check.json', 'continuation-check.json', 'background-check.json', 'provider-analytics-check.json', 'background-notifications-check.json', 'sidebar-toolbar-check.json', 'outgoing-submissions-check.json', 'recovery-check.json'] or result.suffix in ['.png', '.csv', '.txt']):
                 shutil.copy2(result, output / result.name)
                 exported.append(result.name)
         receipt['artifacts'] = sorted(exported)

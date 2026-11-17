@@ -123,6 +123,7 @@ def history(path, native_id, runtime_id, sidechain=False):
     # by message id: a response's records repeat it, the last one complete.
     prompt, usages, prompt_id, can_resume = None, {}, None, False
     executions, execution = [], None
+    api_failures = []
     for entry in reversed(chain):
         role = entry.get("type")
         if role == "system" and entry.get("subtype") == "compact_boundary":
@@ -142,7 +143,7 @@ def history(path, native_id, runtime_id, sidechain=False):
                 and entry.get("message", {}).get("content") == [{"type": "text", "text": "[Request interrupted by user]"}]:
             can_resume = True
             if execution is not None:
-                execution["outcome"] = "cancelled"
+                execution["outcome"] = "failed" if api_failures else "cancelled"
             continue
         content = entry.get("message", {}).get("content")
         if role == "user" and (entry.get("origin") or {}).get("kind") == "task-notification" and isinstance(content, str):
@@ -179,11 +180,17 @@ def history(path, native_id, runtime_id, sidechain=False):
             stop = entry.get("message", {}).get("stop_reason")
             execution["outcome"] = "failed" if api_error else "completed" if stop in ("end_turn", "stop_sequence") else None
         if api_error:
-            content = [{"kind": "notice", "text": block["text"]} for block in content if block["kind"] == "text"]
+            details = [block["text"] for block in content if block["kind"] == "text"]
             if isinstance(entry.get("error"), str):
-                content.append({"kind": "notice", "text": "Claude Code 错误类型：" + entry["error"]})
-            if not content:
-                content.append({"kind": "notice", "text": "Claude Code 执行失败（上游未提供错误详情）。"})
+                details.append("Claude Code 错误类型：" + entry["error"])
+            content = [{"kind": "runtimeFailure", "failure": "other", "retry": None,
+                        "detail": "\n".join(details) or "Claude Code 执行失败（上游未提供错误详情）。"}]
+            api_failures.extend(content)
+        elif role == "assistant" and entry.get("message", {}).get("stop_reason") in ("end_turn", "stop_sequence") and execution is not None:
+            # Only a native completed response within this execution proves recovery.
+            for failure in api_failures:
+                failure["retry"] = {"kind": "recovered"}
+            api_failures.clear()
         # The turn's model is the first its replies name; Claude Code marks
         # replies it wrote itself (errors and the like) with "<synthetic>".
         if role == "assistant" and turn is not None and "model" not in turn and isinstance(model, str) and not model.startswith("<"):
@@ -207,6 +214,7 @@ def history(path, native_id, runtime_id, sidechain=False):
             executions.append(execution)
             prompt_id = entry.get("promptId")
             can_resume = False
+            api_failures.clear()
             # A replacement resumes at the nearest message record before the
             # prompt (`--resume-session-at`); the first prompt has none.
             parent = entries.get(entry.get("parentUuid"))

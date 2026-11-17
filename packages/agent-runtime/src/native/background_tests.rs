@@ -257,3 +257,107 @@ fn background_tasks_claude_old_cli_observes_without_unproven_stop_capability() {
     assert_eq!(task.status, BackgroundTaskStatus::Running);
     assert!(f.session.stop_background_task(&task.id).is_err());
 }
+
+#[test]
+fn claude_api_failure_preserves_reason_and_settles_on_native_idle() {
+    for marker in ["isApiErrorMessage", "is_api_error_message"] {
+        let mut f = Fixture::new();
+        f.session.turn_id = Some("turn".into());
+        let mut error = json!({"type":"assistant","error":"authentication_failed",
+            "message":{"id":"failure","stop_reason":"stop_sequence",
+                "content":[{"type":"text","text":"Login expired · Please run /login"}]}});
+        error[marker] = json!(true);
+        f.event(error.clone());
+        f.event(error);
+        f.event(json!({"type":"system","subtype":"session_state_changed","state":"idle"}));
+        let snapshot = f.session.snapshot.as_ref().unwrap();
+        assert_eq!(snapshot.run_state, RunState::Failed);
+        assert_eq!(snapshot.messages.last().unwrap().blocks, vec![MessageBlock::RuntimeFailure {
+            failure: RuntimeFailureKind::Other,
+            detail: "Login expired · Please run /login\nClaude Code 错误类型：authentication_failed".into(),
+            retry: None,
+        }]);
+        let notices: Vec<_> = snapshot.messages.iter().flat_map(|m| &m.blocks).collect();
+        assert!(notices.iter().any(|b| matches!(b, MessageBlock::RuntimeFailure {detail: text, ..} if text.contains("Login expired · Please run /login"))));
+        assert!(notices.iter().any(|b| matches!(b, MessageBlock::RuntimeFailure {detail: text, ..} if text.contains("authentication_failed"))));
+    }
+}
+
+#[test]
+fn claude_api_failure_marker_without_detail_is_not_a_success() {
+    let mut f = Fixture::new();
+    f.session.turn_id = Some("turn".into());
+    f.event(json!({"type":"assistant","isApiErrorMessage":true,
+        "message":{"id":"failure","stop_reason":"stop_sequence","content":[]}}));
+    f.event(json!({"type":"result","subtype":"success","is_error":false}));
+    f.event(json!({"type":"system","subtype":"session_state_changed","state":"idle"}));
+    let snapshot = f.session.snapshot.as_ref().unwrap();
+    assert_eq!(snapshot.run_state, RunState::Failed);
+    assert!(snapshot.messages.iter().flat_map(|m| &m.blocks).any(|b| matches!(b,
+        MessageBlock::RuntimeFailure {detail: text, ..} if text == "Claude Code 执行失败（上游未提供错误详情）。")));
+}
+
+#[test]
+fn claude_api_failure_can_recover_only_after_a_successful_assistant_response() {
+    let mut f = Fixture::new();
+    f.session.turn_id = Some("turn".into());
+    f.event(json!({"type":"assistant","error":"authentication_failed",
+        "message":{"id":"failure","stop_reason":"stop_sequence","content":[]}}));
+    f.event(
+        json!({"type":"assistant","message":{"id":"answer","stop_reason":"end_turn",
+        "content":[{"type":"text","text":"recovered answer"}]}}),
+    );
+    f.event(json!({"type":"system","subtype":"session_state_changed","state":"idle"}));
+    let snapshot = f.session.snapshot.as_ref().unwrap();
+    assert_eq!(snapshot.run_state, RunState::Idle);
+    assert!(
+        snapshot
+            .messages
+            .iter()
+            .flat_map(|message| &message.blocks)
+            .any(|block| matches!(
+                block,
+                MessageBlock::RuntimeFailure {
+                    retry: Some(RuntimeRetry::Recovered),
+                    ..
+                }
+            ))
+    );
+}
+
+#[test]
+fn claude_api_failure_cold_history_deserializes_and_stays_in_failed_work() {
+    use crate::transcript::{TranscriptEvent, TranscriptProjection};
+    let f = Fixture::new();
+    let native_id = "00000000-0000-4000-8000-000000000003";
+    let projects = f.root.join("projects");
+    std::fs::create_dir(&projects).unwrap();
+    let records = [
+        json!({"type":"user","uuid":"u","parentUuid":null,"message":{"content":"question"}}),
+        json!({"type":"assistant","uuid":"a","parentUuid":"u","message":{"content":"answer","stop_reason":"end_turn"}}),
+        json!({"type":"user","uuid":"notification","parentUuid":"a","origin":{"kind":"task-notification"},"promptSource":"system","message":{"content":"<task-notification><task-id>job</task-id><status>completed</status><summary>done</summary></task-notification>"}}),
+        json!({"type":"assistant","uuid":"error","parentUuid":"notification","isApiErrorMessage":true,"error":"authentication_failed","message":{"stop_reason":"stop_sequence","content":[{"type":"text","text":"Login expired · Please run /login"}]}}),
+        json!({"type":"system","uuid":"duration","parentUuid":"error","subtype":"turn_duration","durationMs":2356}),
+    ];
+    std::fs::write(projects.join(format!("{native_id}.jsonl")), records.iter().map(|r| format!("{r}\n")).collect::<String>()).unwrap();
+    let history = crate::history::read(&crate::history::HistoryConfig {
+        kind: crate::version::RuntimeKind::ClaudeCode,
+        execution: f.session.config.execution.clone(), os_home: Some(f.root.clone()),
+        provider: "claude-code".into(), binary: f.session.config.binary.clone(),
+        node_binary: PathBuf::new(), resources_directory: f.root.clone(),
+        root: projects, home: f.root.clone(),
+    }, "runtime", native_id).unwrap();
+    let error = history.messages.last().unwrap();
+    assert_eq!(error.role, MessageRole::System);
+    assert_eq!(error.blocks, vec![MessageBlock::RuntimeFailure {
+        failure: RuntimeFailureKind::Other,
+        detail: "Login expired · Please run /login\nClaude Code 错误类型：authentication_failed".into(),
+        retry: None,
+    }]);
+    let mut projection = TranscriptProjection::default();
+    projection.apply(TranscriptEvent::Replace {messages: &history.messages, executions: &history.executions});
+    let turns = projection.turns();
+    assert_eq!(turns.len(), 1);
+    assert_eq!(turns[0].outcome, Some(TurnOutcome::Failed));
+    assert!(turns[0].work_message_ids.contains(&"error".to_owned()));
+}

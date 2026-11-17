@@ -503,6 +503,11 @@ enum VeluneEntry {
             admitMacExecution()
             composerOwnershipCheck()
         }
+        if CommandLine.arguments.contains("--check-message-experience"),
+           CommandLine.arguments.contains("--experience-runtime-recovery-only") {
+            admitMacExecution()
+            messageExperienceChecks()
+        }
         VeluneApp.main()
     }
 }

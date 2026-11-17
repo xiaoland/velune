@@ -43,6 +43,8 @@ fn claude_agents(agents: &[SessionAgent]) -> Value {
 pub(super) struct State {
     /// The turn's result, whether it failed, and the last activity since.
     pub(super) result: Option<(TurnOutcome, std::time::Instant)>,
+    /// An explicit API failure remains pending until native terminal/recovery evidence.
+    api_failed: bool,
     /// Background tasks the turn started.
     pub(super) tasks: std::collections::BTreeSet<String>,
     pub(super) task_infos: BTreeMap<String, BackgroundTaskInfo>,
@@ -518,6 +520,7 @@ impl NativeSession {
         self.compaction_message_id = None;
         let text = input.text.as_str();
         self.claude.result = None;
+        self.claude.api_failed = false;
         self.claude.tasks.clear();
         self.claude.requires_action = false;
         self.claude.stream_id = None;
@@ -601,6 +604,7 @@ impl NativeSession {
     }
     pub(super) fn claude_compact(&mut self) -> Result<()> {
         self.claude.result = None;
+        self.claude.api_failed = false;
         self.compaction_message_id = None;
         self.claude.context = None;
         self.rpc.write(
@@ -925,10 +929,41 @@ impl NativeSession {
                     return Ok(());
                 }
                 if record["type"] == "assistant"
-                    && (record["error"].is_string() || record["is_api_error_message"] == true)
+                    && (record["error"].is_string()
+                        || record["is_api_error_message"] == true
+                        || record["isApiErrorMessage"] == true)
                 {
+                    self.claude.api_failed = true;
+                    self.claude.result = Some((TurnOutcome::Failed, std::time::Instant::now()));
                     self.claude_error(claude_error_blocks(&record)?);
                     return Ok(());
+                }
+                if record["type"] == "assistant"
+                    && matches!(
+                        record["message"]["stop_reason"].as_str(),
+                        Some("end_turn" | "stop_sequence")
+                    )
+                {
+                    if self.claude.api_failed {
+                        self.claude.result =
+                            Some((TurnOutcome::Completed, std::time::Instant::now()));
+                    }
+                    self.claude.api_failed = false;
+                    // A native successful response proves recovery; a success
+                    // envelope alone must not erase the preceding API failure.
+                    let id = format!("{}:error", self.turn_id.as_deref().unwrap_or_default());
+                    if let Some(message) = self.snapshot.as_mut().and_then(|snapshot| {
+                        snapshot
+                            .messages
+                            .iter_mut()
+                            .find(|message| message.id == id)
+                    }) {
+                        for block in &mut message.blocks {
+                            if let MessageBlock::RuntimeFailure { retry, .. } = block {
+                                *retry = Some(RuntimeRetry::Recovered);
+                            }
+                        }
+                    }
                 }
                 // Local /compact output belongs to maintenance; status/result carry its outcome.
                 if self.compacting && record["type"] == "assistant" {
@@ -1047,8 +1082,8 @@ impl NativeSession {
                     record["terminal_reason"].as_str(),
                     Some("aborted_streaming" | "aborted_tools")
                 );
-                let failed =
-                    !interrupted && (record["is_error"] == true || record["subtype"] != "success");
+                let failed = self.claude.api_failed
+                    || (!interrupted && (record["is_error"] == true || record["subtype"] != "success"));
                 if self.compacting && self.compaction_message_id.is_none() {
                     let detail = record["result"]
                         .as_str()
@@ -1060,10 +1095,10 @@ impl NativeSession {
                     self.claude_error(claude_error_blocks(&record)?);
                 }
                 self.claude.result = Some((
-                    if interrupted {
-                        TurnOutcome::Cancelled
-                    } else if failed {
+                    if failed {
                         TurnOutcome::Failed
+                    } else if interrupted {
+                        TurnOutcome::Cancelled
                     } else {
                         TurnOutcome::Completed
                     },
@@ -1127,16 +1162,31 @@ impl NativeSession {
                 turn_usage: None,
                 branch_point: None,
             });
+        let mut details = message
+            .blocks
+            .iter()
+            .filter_map(|block| match block {
+                MessageBlock::RuntimeFailure { detail, .. } => Some(detail.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
         for block in blocks {
-            if !message.blocks.contains(&block) {
-                message.blocks.push(block);
+            if let MessageBlock::Notice { text } | MessageBlock::Text { text } = block
+                && !details.iter().any(|detail| {
+                    format!("\n{detail}\n").contains(&format!("\n{text}\n"))
+                })
+            {
+                details.push(text);
             }
         }
-        if message.blocks.is_empty() {
-            message.blocks.push(MessageBlock::Notice {
-                text: "Claude Code 执行失败（上游未提供错误详情）。".into(),
-            });
+        if details.is_empty() {
+            details.push("Claude Code 执行失败（上游未提供错误详情）。".into());
         }
+        message.blocks = vec![MessageBlock::RuntimeFailure {
+            failure: RuntimeFailureKind::Other,
+            detail: details.join("\n"),
+            retry: None,
+        }];
         self.message(message);
     }
     /// Complete the call a tool result answers, as one row like the native

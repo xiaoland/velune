@@ -64,9 +64,7 @@ import VeluneBindings
         precondition(ready(), "合成检查超时")
     }
     if CommandLine.arguments.contains("--experience-runtime-recovery-only") {
-        runtimeRecoveryLifecycleChecks()
-        note("PASS runtime recovery lifecycle: dismiss without stopping, automatic recovery removal, repeated interruption and terminal failure visibility")
-        exit(0)
+        runtimeRecoveryNativeChecks(home: home)
     }
     if CommandLine.arguments.contains("--experience-fork-only") { forkExperienceChecks(home: home); exit(0) }
     if CommandLine.arguments.contains("--experience-drag-provider-only") { dragProviderChecks() }
