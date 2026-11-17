@@ -243,7 +243,7 @@ final class Transport: @unchecked Sendable {
     /// Keep dependent creation and dispatch on the same captured application.
     /// Publish the native identity first: closing or a failed dispatch must not
     /// erase successful creation or make a retry create another conversation.
-    func createAndSend(runtimeID: String, cwd: String?, project: String? = nil, selection: ModelSelection?, turn: ComposedTurn, onCreated: (SnapshotResult) -> Void) throws -> SnapshotResult {
+    func createAndSend(runtimeID: String, cwd: String?, project: String? = nil, selection: ModelSelection?, turn: ComposedTurn, submissionId: String? = nil, onCreated: (SnapshotResult) -> Void) throws -> SnapshotResult {
         let selection = selection
         return try withApplication("sendTurn", .writes, .send) { application in
             let created: SnapshotResult
@@ -251,7 +251,7 @@ final class Transport: @unchecked Sendable {
             else { created = try application.createConversation(runtimeId: runtimeID, cwd: cwd, selection: selection) }
             onCreated(created)
             guard let native = created.snapshot else { throw TransportError.rejected("运行时未返回新会话") }
-            return try application.sendTurn(sourceRuntimeId: native.conversation.runtimeId, conversationId: native.conversation.id, targetRuntimeId: runtimeID, selection: selection, turn: try deliver(turn, using: application))
+            return try application.sendTurn(sourceRuntimeId: native.conversation.runtimeId, conversationId: native.conversation.id, targetRuntimeId: runtimeID, selection: selection, turn: try deliver(turn, using: application), submissionId: submissionId)
         }
     }
     func openConversation(runtimeID: String, conversationID: String) throws -> SnapshotResult { try withApplication("openConversation", .browsesConversation, .conversationRead) { try $0.readConversation(runtimeId: runtimeID, conversationId: conversationID) } }
@@ -268,7 +268,7 @@ final class Transport: @unchecked Sendable {
     func snapshot(runtimeID: String, conversationID: String) throws -> SnapshotResult { try withApplication("snapshot", .reads, .conversationRead) { try $0.snapshot(runtimeId: runtimeID, conversationId: conversationID) } }
     func snapshotUpdate(runtimeID: String, conversationID: String, since: TranscriptCursor) throws -> SnapshotUpdate { try withApplication("snapshotUpdate", .reads, .conversationRead) { try $0.snapshotUpdate(runtimeId: runtimeID, conversationId: conversationID, since: since) } }
     func messagePayloads(runtimeID: String, conversationID: String, messageIDs: [String]) throws -> [DeliveredMessage] { try withApplication("messagePayloads", .reads, .conversationRead) { try $0.messagePayloads(runtimeId: runtimeID, conversationId: conversationID, messageIds: messageIDs) } }
-    func sendTurn(sourceRuntimeID: String, conversationID: String, targetRuntimeID: String, selection: ModelSelection?, turn: ComposedTurn) throws -> SnapshotResult { try withApplication("sendTurn", .writes, .send) { try $0.sendTurn(sourceRuntimeId: sourceRuntimeID, conversationId: conversationID, targetRuntimeId: targetRuntimeID, selection: selection, turn: try deliver(turn, using: $0)) } }
+    func sendTurn(sourceRuntimeID: String, conversationID: String, targetRuntimeID: String, selection: ModelSelection?, turn: ComposedTurn, submissionId: String? = nil) throws -> SnapshotResult { try withApplication("sendTurn", .writes, .send) { try $0.sendTurn(sourceRuntimeId: sourceRuntimeID, conversationId: conversationID, targetRuntimeId: targetRuntimeID, selection: selection, turn: try deliver(turn, using: $0), submissionId: submissionId) } }
     /// The runtime's own models first, then the managed models; every entry
     /// carries the levels the runtime accepts for it.
     func runtimeModels(runtimeID: String) throws -> [RuntimeModel] { try withApplication("runtimeModels", .reads, .configurationRead) { try $0.runtimeModels(runtimeId: runtimeID) } }
@@ -289,12 +289,12 @@ final class Transport: @unchecked Sendable {
         }
         return delivered
     }
-    func sendQueue(runtimeID: String, conversationID: String, operation: SendQueueOperation) throws -> SnapshotResult {
+    func sendQueue(runtimeID: String, conversationID: String, operation: SendQueueOperation, submissionId: String? = nil) throws -> SnapshotResult {
         try withApplication("sendQueue", .writes, .conversationWrite) { application in
             let delivered: SendQueueOperation
             if case let .add(source, target, selection, turn) = operation { delivered = .add(sourceRuntimeId: source, targetRuntimeId: target, selection: selection, turn: try deliver(turn, using: application)) }
             else { delivered = operation }
-            return try application.sendQueue(runtimeId: runtimeID, conversationId: conversationID, operation: delivered)
+            return try application.sendQueue(runtimeId: runtimeID, conversationId: conversationID, operation: delivered, submissionId: submissionId)
         }
     }
     func editMessage(runtimeID: String, conversationID: String, messageID: String, placement: EditPlacement, selection: ModelSelection?, turn: ComposedTurn) throws -> SnapshotResult { try withApplication("editMessage", .writes, .conversationWrite) { try $0.editMessage(runtimeId: runtimeID, conversationId: conversationID, messageId: messageID, placement: placement, selection: selection, turn: try deliver(turn, using: $0)) } }

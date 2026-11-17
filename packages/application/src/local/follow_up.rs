@@ -19,6 +19,7 @@ impl QueuedTurn {
     fn public(&self) -> QueuedMessage {
         QueuedMessage {
             id: self.id.clone(),
+            submission_id: self.request.submission_id.clone(),
             text: self.request.turn.text.clone(),
             attachments: self.request.turn.attachments.clone(),
         }
@@ -109,6 +110,15 @@ impl CoreRuntime {
         conversation_id: &str,
         operation: SendQueueOperation,
     ) -> Result<SnapshotResult, RuntimeError> {
+        self.send_queue_submission(conversation_id, operation, None)
+    }
+
+    pub(crate) fn send_queue_submission(
+        &mut self,
+        conversation_id: &str,
+        operation: SendQueueOperation,
+        submission_id: Option<String>,
+    ) -> Result<SnapshotResult, RuntimeError> {
         if self.session.compacting {
             return Err(RuntimeError::invalid("上下文压缩期间不能修改发送队列"));
         }
@@ -134,6 +144,7 @@ impl CoreRuntime {
         } else {
             self.session.send_queue.interrupted.clone()
         };
+        let added_id = matches!(&operation, SendQueueOperation::Add { .. }).then(queued_id);
         let queue = &mut self.session.send_queue;
         match operation {
             SendQueueOperation::Add {
@@ -151,8 +162,9 @@ impl CoreRuntime {
                     queue.paused = interrupted_idle;
                 }
                 queue.turns.push_back(QueuedTurn {
-                    id: queued_id(),
+                    id: added_id.clone().expect("Add request identity"),
                     request: TurnRequest {
+                        submission_id,
                         source_runtime_id,
                         conversation_id: conversation_id.to_owned(),
                         runtime_id: target_runtime_id,
@@ -204,7 +216,17 @@ impl CoreRuntime {
         {
             self.send_next_queued();
         }
-        self.snapshot_result()
+        if let Some(queue_id) = added_id {
+            let queued = self.session.send_queue.turns.iter().any(|turn| turn.id == queue_id);
+            let receipt = if queued {
+                crate::SubmissionReceipt::Queued { queue_id }
+            } else {
+                crate::SubmissionReceipt::Sending
+            };
+            self.accepted_submission_result(receipt)
+        } else {
+            self.snapshot_result()
+        }
     }
 
     /// Deliver a composed message into the running turn through the
@@ -270,13 +292,15 @@ impl CoreRuntime {
 
     /// A send that needs another runtime process while sub-agents still run
     /// in the current one goes last in the queue, which waits for them.
-    pub(super) fn queue_after_work(&mut self, request: TurnRequest) {
+    pub(super) fn queue_after_work(&mut self, request: TurnRequest) -> String {
+        let id = queued_id();
         let queue = &mut self.session.send_queue;
         queue.turns.push_back(QueuedTurn {
-            id: queued_id(),
+            id: id.clone(),
             request,
         });
         queue.waiting = Some(QueueWait::SubAgents);
+        id
     }
 
     /// The addressed session's runtime process does nothing more: a queue
@@ -429,3 +453,6 @@ impl CoreRuntime {
         }
     }
 }
+
+#[cfg(test)]
+mod submission_tests;

@@ -214,6 +214,10 @@ pub enum EditPlacement {
 #[serde(rename_all = "camelCase")]
 pub struct QueuedMessage {
     pub id: String,
+    /// Opaque client request identity, never part of the model input.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[uniffi(default = None)]
+    pub submission_id: Option<String>,
     pub text: String,
     /// Absolute paths, as the composer attached them.
     pub attachments: Vec<String>,

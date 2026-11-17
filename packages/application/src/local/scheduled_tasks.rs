@@ -495,6 +495,7 @@ impl CoreRuntime {
         run.conversation_id = Some(snapshot.conversation.id.clone());
         self.scheduled_tasks.put_run(run)?;
         let request = conversations::TurnRequest {
+            submission_id: None,
             source_runtime_id: snapshot.conversation.runtime_id.clone(),
             conversation_id: snapshot.conversation.id,
             runtime_id: task.target.runtime_id().into(),

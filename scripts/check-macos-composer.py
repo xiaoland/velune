@@ -21,7 +21,7 @@ def digest(path):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('check', choices=['provider-analytics', 'archived', 'palette-ime', 'pagination', 'tabs', 'targets', 'ownership', 'background', 'experience', 'recovery', 'background-notifications', 'sidebar-toolbar'])
+    parser.add_argument('check', choices=['provider-analytics', 'archived', 'palette-ime', 'pagination', 'tabs', 'targets', 'ownership', 'background', 'experience', 'recovery', 'background-notifications', 'sidebar-toolbar', 'outgoing-submissions'])
     parser.add_argument('--app', type=Path, default=app_bundle_path(ROOT, 'dev'))
     parser.add_argument('--output', type=Path)
     parser.add_argument('--dark', action='store_true')
@@ -61,6 +61,8 @@ def main():
             flags = ['--check-archived-conversations']
             if args.dark:
                 flags.append('--archived-check-dark')
+        if args.check == 'outgoing-submissions':
+            flags = ['--check-outgoing-submissions']
         if args.check == 'sidebar-toolbar':
             flags = ['--check-sidebar-toolbar']
         if args.check == 'background-notifications':
@@ -100,7 +102,7 @@ def main():
         # Copy only explicit result artifacts; application state stays private.
         exported = []
         for result in evidence.iterdir():
-            if result.is_file() and (result.name in ['archived-check.json', 'continuation-check.json', 'background-check.json', 'provider-analytics-check.json', 'background-notifications-check.json', 'sidebar-toolbar-check.json'] or result.suffix in ['.png', '.csv', '.txt']):
+            if result.is_file() and (result.name in ['archived-check.json', 'continuation-check.json', 'background-check.json', 'provider-analytics-check.json', 'background-notifications-check.json', 'sidebar-toolbar-check.json', 'outgoing-submissions-check.json'] or result.suffix in ['.png', '.csv', '.txt']):
                 shutil.copy2(result, output / result.name)
                 exported.append(result.name)
         receipt['artifacts'] = sorted(exported)

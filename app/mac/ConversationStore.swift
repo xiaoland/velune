@@ -221,7 +221,14 @@ final class ConversationStore: ObservableObject {
     var inputLockMessage: String? { inputAccess.message }
     var canSend: Bool { !executionStarting && !device.authenticationRunning && !isLoading && !isStopping && !activityBlocksSending && !isShuttingDown && (snapshot?.actions.canSend ?? false) }
     var canCancel: Bool { !isStopping && snapshot?.runState == .running && (snapshot?.actions.canCancel ?? false) }
-    var followUp: FollowUp { snapshot?.followUp ?? FollowUp() }
+    var pendingQueuedMessages: [QueuedMessage] { outgoing.queued }
+    var followUp: FollowUp {
+        var value = snapshot?.followUp ?? FollowUp()
+        let ids = Set(value.queue.map(\.id))
+        let tokens = Set(value.queue.compactMap(\.submissionId))
+        value.queue += outgoing.queued.filter { !ids.contains($0.id) && !($0.submissionId.map(tokens.contains) ?? false) }
+        return value
+    }
     var controlHandoff: ControlHandoff? { isOpeningConversation || isSideChat ? nil : followUp.controlHandoff }
     /// The loaded conversation's native sub-agents.
     var subAgents: [SubAgent] { pendingConversationID == nil ? snapshot?.subAgents ?? [] : [] }
@@ -1107,6 +1114,7 @@ final class ConversationStore: ObservableObject {
         executionStarting = true
         composerRequest = .sending
         let submission = outgoing.begin(.send, text: text, attachments: attachments, snapshot: snapshot)
+        let requestGeneration = generation
         let creating = isDraft
         let temporary = isSideChat
         let cwd = snapshot?.conversation.cwd
@@ -1116,9 +1124,9 @@ final class ConversationStore: ObservableObject {
         enqueue({
             if temporary { return try transport.sendSideChat(sideChatID: conversationID, runtimeID: target, selection: model, turn: turn) }
             if creating {
-                return try transport.createAndSend(runtimeID: target, cwd: cwd, project: project?.key, selection: model, turn: turn) { [weak self] created in
+                return try transport.createAndSend(runtimeID: target, cwd: cwd, project: project?.key, selection: model, turn: turn, submissionId: submission) { [weak self] created in
                     DispatchQueue.main.async {
-                        guard let self else { return }
+                        guard let self, self.generation == requestGeneration, !self.composerTargetClosed else { return }
                         self.isDraft = false
                         // Text typed while sending and the next-turn choice follow the created conversation.
                         if let id = created.snapshot?.conversation.id {
@@ -1128,22 +1136,33 @@ final class ConversationStore: ObservableObject {
                     }
                 }
             }
-            return try transport.sendTurn(sourceRuntimeID: source, conversationID: conversationID, targetRuntimeID: target, selection: model, turn: turn)
-        }, onAccepted: { [weak self] in onAccepted?(self?.loadedConversationID) }, onFailure: { [weak self] error in
-            if creating, self?.isDraft == true { self?.creationFailure = AppProblem.failure(error).detail }
-            self?.executionStarting = false
-            self?.composerRequest = nil
-            self?.outgoing.fail(submission)
-            onFailure?()
-        }) { [weak self] value in
-            guard let self else { return }
-            self.executionStarting = false
-            self.composerRequest = nil
-            self.outgoing.accept(submission, snapshot: value.snapshot.map(BindingMapping.snapshot))
-            self.acceptedSubmissions &+= 1
-            self.applySnapshotResult(value)
-        }
+            return try transport.sendTurn(sourceRuntimeID: source, conversationID: conversationID, targetRuntimeID: target, selection: model, turn: turn, submissionId: submission)
+        }, consumeReceipt: { [self] result in
+            executionStarting = false
+            composerRequest = nil
+            switch result {
+            case .success(let value):
+                acceptSubmission(submission, receipt: value)
+                acceptedSubmissions &+= 1
+                onAccepted?(value.snapshot?.conversation.id ?? conversationID)
+            case .failure(let error):
+                if AppProblem.failure(error).code == "message_delivery_accepted" {
+                    outgoing.accept(submission, snapshot: nil)
+                    acceptedSubmissions &+= 1
+                    onAccepted?(conversationID)
+                } else if outgoing.fail(submission) {
+                    if creating && isDraft { creationFailure = AppProblem.failure(error).detail }
+                    onFailure?()
+                } else {
+                    acceptedSubmissions &+= 1; onAccepted?(conversationID)
+                }
+            }
+        }) { [weak self] value in self?.applySnapshotResult(value) }
         return true
+    }
+    private func acceptSubmission(_ id: String, receipt: SnapshotResult) {
+        outgoing.accept(id, receipt: receipt.submissionReceipt, snapshot: receipt.snapshot.map(BindingMapping.snapshot))
+        if case .queued = receipt.submissionReceipt {} else { outgoing.reconcile(snapshot) }
     }
     /// Stop the sub-agents the loaded conversation started; they may run after its turn.
     func stopSubAgents() {
@@ -1186,14 +1205,20 @@ final class ConversationStore: ObservableObject {
     /// Queue a message after the running turn, with the next-turn choices as
     /// they are now. `onFailure` runs when it was not queued.
     @discardableResult
-    func queue(text: String, attachments: [String] = [], next: NextTurn? = nil, onFailure: (() -> Void)? = nil) -> Bool {
+    func queue(text: String, attachments: [String] = [], next: NextTurn? = nil, onAccepted: (() -> Void)? = nil, onFailure: (() -> Void)? = nil) -> Bool {
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !attachments.isEmpty else { return false }
         guard canQueue, let next = next ?? nextTurn, case let target = next.runtimeId, let source = snapshot?.conversation.runtimeID else { return false }
         let turn = ComposedTurn(text: text, effort: next.effort, permissionMode: next.permissionMode?.id, attachments: attachments)
         let submission = outgoing.begin(.queue, text: text, attachments: attachments, snapshot: snapshot)
-        changeQueue(.add(sourceRuntimeId: source, targetRuntimeId: target, selection: next.model, turn: turn), onFailure: { [weak self] in self?.outgoing.fail(submission); onFailure?() }) { [weak self] in
-            guard let self else { return }
-            outgoing.accept(submission, snapshot: snapshot); acceptedSubmissions &+= 1
+        composerRequest = .queueing
+        changeQueue(.add(sourceRuntimeId: source, targetRuntimeId: target, selection: next.model, turn: turn), submissionId: submission, onFailure: { [self] in
+            composerRequest = nil
+            if outgoing.fail(submission) { onFailure?() }
+            else { acceptedSubmissions &+= 1; onAccepted?() }
+        }) { [self] receipt in
+            composerRequest = nil
+            acceptSubmission(submission, receipt: receipt)
+            acceptedSubmissions &+= 1; onAccepted?()
         }
         return true
     }
@@ -1317,24 +1342,23 @@ final class ConversationStore: ObservableObject {
     func steerQueued(_ id: String) {
         guard let message = followUp.queue.first(where: { $0.id == id }) else { return }
         let submission = outgoing.begin(.steer, text: message.text, attachments: message.attachments, snapshot: snapshot)
-        changeQueue(.steer(id: id), onFailure: { [weak self] in self?.outgoing.fail(submission) }) { [weak self] in
-            guard let self else { return }
-            outgoing.accept(submission, snapshot: snapshot)
+        changeQueue(.steer(id: id), onFailure: { [weak self] in self?.outgoing.fail(submission) }) { [weak self] receipt in
+            self?.acceptSubmission(submission, receipt: receipt)
         }
     }
     func editQueued(_ id: String, text: String) { changeQueue(.edit(id: id, text: text)) }
     /// `onRemoved` runs once the core has taken the message out of the queue.
-    func removeQueued(_ id: String, onRemoved: (() -> Void)? = nil) { changeQueue(.remove(id: id), onDone: onRemoved) }
+    func removeQueued(_ id: String, onRemoved: (() -> Void)? = nil) { changeQueue(.remove(id: id), onDone: { _ in onRemoved?() }) }
     func moveQueued(_ id: String, to index: Int) { changeQueue(.move(id: id, index: UInt32(max(index, 0)))) }
     func resumeQueue() { guard inputSubmissionAllowed else { return }; changeQueue(.resume) }
-    private func changeQueue(_ operation: SendQueueOperation, onFailure: (() -> Void)? = nil, onDone: (() -> Void)? = nil) {
+    private func changeQueue(_ operation: SendQueueOperation, submissionId: String? = nil,
+                             onFailure: (() -> Void)? = nil, onDone: ((SnapshotResult) -> Void)? = nil) {
         guard !isPreview else { return }
         guard let runtimeID = projectionRuntimeID, let conversationID = loadedConversationID else { recordProblem("请选择会话"); onFailure?(); return }
         guard let transport else { recordProblem("本地核心未配置"); onFailure?(); return }
-        enqueue({ try transport.sendQueue(runtimeID: runtimeID, conversationID: conversationID, operation: operation) }, onFailure: { _ in onFailure?() }) { [weak self] in
-            self?.applySnapshotResult($0)
-            onDone?()
-        }
+        enqueueSnapshot({ try transport.sendQueue(runtimeID: runtimeID, conversationID: conversationID, operation: operation, submissionId: submissionId) }, consumeReceipt: { result in
+            switch result { case .success(let receipt): onDone?(receipt); case .failure: onFailure?() }
+        })
     }
     var pendingInteractions: [RuntimeInteraction] { snapshot?.pendingInteractions ?? [] }
     func replyInteraction(_ interaction: RuntimeInteraction, reply: RuntimeInteractionReply) {
@@ -1445,8 +1469,16 @@ final class ConversationStore: ObservableObject {
     /// Preparation and operation results replace the projection; polling asks
     /// the core only for changes after the current cursor (see `poll`).
     private func applySnapshotResult(_ value: SnapshotResult) {
-        guard let incoming = value.snapshot else { resetProjection(); return }
-        apply(BindingMapping.snapshot(incoming))
+        guard let incoming = value.snapshot else {
+            if value.submissionReceipt != nil { return }
+            resetProjection(); return
+        }
+        let mapped = BindingMapping.snapshot(incoming)
+        if let current = snapshot, current.conversation.id == mapped.conversation.id,
+           current.contextRuntimeID == mapped.contextRuntimeID,
+           let previous = current.cursor, let next = mapped.cursor,
+           previous.generation == next.generation, next.sequence < previous.sequence { return }
+        apply(mapped)
     }
     private enum PolledSnapshot: Sendable {
         case absent, unchanged
@@ -1557,9 +1589,17 @@ final class ConversationStore: ObservableObject {
     }
     /// One conversation operation at a time; one that finishes after the tab
     /// moved on is dropped, and a conversation chosen meanwhile then opens.
-    private func enqueue<T: Sendable>(_ operation: @escaping () throws -> T, onAccepted: (() -> Void)? = nil, onFailure: ((Error) -> Void)? = nil, apply: @escaping (T) -> Void) {
+    private func enqueueSnapshot(_ operation: @escaping () throws -> SnapshotResult,
+                                 consumeReceipt: ((Result<SnapshotResult, Error>) -> Void)? = nil) {
+        enqueue(operation, consumeReceipt: consumeReceipt) { [weak self] value in self?.applySnapshotResult(value) }
+    }
+    private func enqueue<T: Sendable>(_ operation: @escaping () throws -> T, consumeReceipt: ((Result<T, Error>) -> Void)? = nil, onAccepted: (() -> Void)? = nil, onFailure: ((Error) -> Void)? = nil, apply: @escaping (T) -> Void) {
         guard !isLoading, !isShuttingDown else { recordProblem("请等待当前操作完成后重试"); return }
         guard transport != nil else { recordProblem("本地核心未配置"); return }
+        enqueuePreparedOperation(operation, consumeReceipt: consumeReceipt, onAccepted: onAccepted, onFailure: onFailure, apply: apply)
+    }
+    private func enqueuePreparedOperation<T: Sendable>(_ operation: @escaping () throws -> T, consumeReceipt: ((Result<T, Error>) -> Void)? = nil, onAccepted: (() -> Void)? = nil, onFailure: ((Error) -> Void)? = nil, apply: @escaping (T) -> Void) {
+        guard !isLoading, !isShuttingDown else { recordProblem("请等待当前操作完成后重试"); return }
         let revision = generation
         isLoading = true
         performOnQueue { [weak self] in
@@ -1568,6 +1608,7 @@ final class ConversationStore: ObservableObject {
                 guard let self else { return }
                 self.isLoading = false
                 defer { self.selectDeferredConversation() }
+                consumeReceipt?(result)
                 guard revision == self.generation else { return }
                 switch result {
                 case .success(let value): onAccepted?(); apply(value)
@@ -1802,5 +1843,202 @@ extension ConversationStore {
         precondition(store.selectedConversationID == linkedID && store.linkedConversationRequest == nil)
         wait()
         FileHandle.standardError.write(Data("PASS linked navigation: stale lookup cannot replace a newer destination or consume a newer request for the same link\n".utf8))
+    }
+}
+
+extension ConversationStore {
+    /// Runs the production serial receipt-before-projection runner with a
+    /// preview store. Synthetic operations never create or open a backend.
+    static func checkOutgoingAdmissionLifecycle(home: URL, inspect: (ConversationWindowModel, String) -> Void) {
+        precondition(!MacNativePersistenceGate.isEnabled)
+        precondition(home.path.hasPrefix("/tmp/") || home.path.hasPrefix("/private/tmp/"))
+        let device = DeviceStore(preview: true)
+        let window = ConversationWindowModel(application: device, kind: .workspace)
+        let store = window.focused.store
+        let summary = ConversationSummary(id: "queue-fixture", title: .native("合成提交与队列"), updatedAtUnixMs: nil,
+            createdAtUnixMs: nil, runtimeId: "sample-instance", cwd: nil, canRename: false, canDelete: false,
+            parentConversationId: nil, nativeReadState: nil)
+        let history = DeliveredMessage(id: "history-user", role: .user, blocks: [.text(text: "已有原生用户消息，始终保留。")])
+        func snapshot(_ sequence: UInt64, queue: [QueuedMessage] = [], sent: [DeliveredMessage] = []) -> DeliveredSnapshot {
+            let messages = [history] + sent
+            var followUp = FollowUp()
+            followUp.queue = queue
+            return DeliveredSnapshot(cursor: .init(generation: 701, sequence: sequence), base: nil,
+                messageIds: messages.map(\.id), messages: messages, revision: sequence, conversation: summary,
+                contextRuntimeId: "sample-instance", resourceId: nil, modelRecordKey: nil, runState: .running,
+                transcriptTurns: [], usage: .init(), transcriptItems: messages.map { .message(id: "message:" + $0.id, messageId: $0.id) },
+                transcriptOutline: [], transcriptMessageIdentities: messages.map { .init(id: "message:" + $0.id, messageId: $0.id) },
+                messageIdentityConfirmations: [], pendingInteractions: [],
+                actions: .init(inputAccess: .editable, canSend: false, canCancel: true, canSwitch: false),
+                followUp: followUp, subAgents: [], collaborators: [])
+        }
+        func apply(_ value: DeliveredSnapshot) { store.apply(BindingMapping.snapshot(value)) }
+        func enqueueFixture(_ operation: @escaping () throws -> SnapshotResult, consumeReceipt: @escaping (Result<SnapshotResult, Error>) -> Void) {
+            store.enqueuePreparedOperation(operation, consumeReceipt: consumeReceipt) { value in
+                store.applySnapshotResult(value)
+            }
+        }
+        func receipt(_ id: String, _ value: SnapshotResult, beforeProjection: (() -> Void)? = nil) {
+            var consumed = false
+            enqueueFixture({ value }, consumeReceipt: { result in
+                guard case .success(let incoming) = result else { preconditionFailure("synthetic receipt failed") }
+                store.acceptSubmission(id, receipt: incoming)
+                beforeProjection?()
+                consumed = true
+            })
+            let end = Date().addingTimeInterval(8)
+            while !consumed, Date() < end { RunLoop.main.run(until: Date().addingTimeInterval(0.01)) }
+            precondition(consumed && !store.isLoading, "synthetic business receipt must settle")
+        }
+        apply(snapshot(1))
+        let queueInput = window.composer(for: window.focused)
+        queueInput.restore("仅排队：尚未派发，不应进入消息列表。", attachments: [])
+        let queueRevision = queueInput.revision
+        let queued = store.outgoing.begin(.queue, text: queueInput.submission, attachments: [], snapshot: store.snapshot)
+        store.composerRequest = .queueing
+        precondition(store.outgoing.displayed.isEmpty && store.pendingQueuedMessages.isEmpty && store.followUp.queue.isEmpty)
+        precondition(window.focused.submission(using: queueInput).action == .queueing && !window.focused.submission(using: queueInput).enabled)
+        inspect(window, "pending-queue-input-retained")
+        let canonical = QueuedMessage(id: "queue-A", submissionId: queued, text: "仅排队：尚未派发，不应进入消息列表。", attachments: [])
+        receipt(queued, SnapshotResult(snapshot: snapshot(2, queue: [canonical]), submissionReceipt: .queued(queueId: canonical.id))) {
+            store.composerRequest = nil
+            if queueInput.revision == queueRevision { queueInput.clear(submitted: canonical.text, attachments: []) }
+            precondition(queueInput.isEmpty, "successful queue admission consumes the unchanged captured input")
+            precondition(store.followUp.queue.isEmpty, "receipt consumer must precede projection installation")
+            precondition(store.outgoing.displayed.isEmpty && store.pendingQueuedMessages.isEmpty,
+                         "queue receipt must use its own projection, not the old Store snapshot")
+        }
+        precondition(store.followUp.queue.map(\.id) == [canonical.id] && store.outgoing.displayed.isEmpty)
+        inspect(window, "accepted-queue")
+
+        apply(snapshot(3))
+        let racing = store.outgoing.begin(.send, text: "忙闲竞态：核心将这次发送实际接纳为排队。", attachments: [], snapshot: store.snapshot)
+        precondition(store.outgoing.displayed.count == 1)
+        inspect(window, "optimistic-send")
+        let raced = QueuedMessage(id: "queue-race", submissionId: racing, text: "忙闲竞态：核心将这次发送实际接纳为排队。", attachments: [])
+        apply(snapshot(4, queue: [raced]))
+        precondition(store.outgoing.displayed.isEmpty && store.pendingQueuedMessages.isEmpty && store.followUp.queue.count == 1,
+                     "poll-before-ACK must transfer the same submission only to the queue")
+        inspect(window, "poll-before-ack")
+        let dispatched = DeliveredMessage(id: "native-dispatched", role: .user, blocks: [.text(text: raced.text)])
+        apply(snapshot(5, sent: [dispatched]))
+        receipt(racing, SnapshotResult(snapshot: snapshot(4, queue: [raced]), submissionReceipt: .queued(queueId: raced.id)))
+        precondition(store.snapshot?.cursor?.sequence == 5 && store.followUp.queue.isEmpty && store.pendingQueuedMessages.isEmpty && store.outgoing.displayed.isEmpty,
+                     "late queued ACK must neither overwrite a newer dispatch nor resurrect its placeholder")
+        precondition(store.transcript.rows.map(\.message.id) == [history.id, dispatched.id])
+        inspect(window, "dispatched-late-ack")
+
+        let failure = store.outgoing.begin(.send, text: "已由轮询确认受理，迟到错误不得恢复草稿。", attachments: [], snapshot: store.snapshot)
+        let admitted = QueuedMessage(id: "queue-admitted", submissionId: failure, text: "已由轮询确认受理，迟到错误不得恢复草稿。", attachments: [])
+        let releaseFailure = DispatchSemaphore(value: 0)
+        var failureSettled = false, restoredDrafts = 0
+        enqueueFixture({ () throws -> SnapshotResult in
+            _ = releaseFailure.wait(timeout: .now() + 8)
+            throw TransportError.rejected("合成 RPC 投影失败")
+        }, consumeReceipt: { result in
+            guard case .failure = result else { preconditionFailure("synthetic RPC must fail") }
+            if store.outgoing.fail(failure) { restoredDrafts += 1 }
+            failureSettled = true
+        })
+        apply(snapshot(6, queue: [admitted], sent: [dispatched]))
+        releaseFailure.signal()
+        let failureDeadline = Date().addingTimeInterval(8)
+        while !failureSettled, Date() < failureDeadline { RunLoop.main.run(until: Date().addingTimeInterval(0.01)) }
+        precondition(failureSettled && restoredDrafts == 0 && store.pendingQueuedMessages.isEmpty && store.outgoing.displayed.isEmpty,
+                     "poll-confirmed admission must forbid draft restoration after a real RPC-lane failure")
+        inspect(window, "admitted-before-rpc-failure")
+
+        let unavailable = store.outgoing.begin(.queue, text: "已受理，投影暂时不可用。", attachments: [], snapshot: store.snapshot)
+        receipt(unavailable, SnapshotResult(snapshot: nil, submissionReceipt: .queued(queueId: "queue-no-projection")))
+        precondition(store.loadedConversationID == "queue-fixture" && store.snapshot?.cursor?.sequence == 6 && store.transcript.rows.count == 2,
+                     "successful admission with unavailable projection must retain the current conversation and native transcript")
+        let recoveredQueue = QueuedMessage(id: "queue-no-projection", submissionId: unavailable, text: "已受理，投影暂时不可用。", attachments: [])
+        apply(snapshot(7, queue: [admitted, recoveredQueue], sent: [dispatched]))
+        precondition(store.pendingQueuedMessages.isEmpty && store.followUp.queue.count == 2)
+
+        apply(snapshot(8))
+        let immediateInput = "空闲即时派发：原生消息先于受理回执到达。"
+        queueInput.restore(immediateInput, attachments: [])
+        let immediateRevision = queueInput.revision
+        let immediateToken = store.outgoing.begin(.queue, text: immediateInput, attachments: [], snapshot: store.snapshot)
+        store.composerRequest = .queueing
+        let immediateNative = DeliveredMessage(id: "native-before-ack", role: .user, blocks: [.text(text: immediateInput)])
+        apply(snapshot(9, sent: [immediateNative]))
+        precondition(store.followUp.queue.isEmpty && store.pendingQueuedMessages.isEmpty && store.outgoing.displayed.isEmpty,
+                     "a queue intent dispatched while idle must not manufacture a queue row beside the native echo")
+        precondition(queueInput.submission == immediateInput)
+        inspect(window, "immediate-native-before-ack")
+        receipt(immediateToken, SnapshotResult(snapshot: snapshot(9, sent: [immediateNative]), submissionReceipt: .sending)) {
+            store.composerRequest = nil
+            if queueInput.revision == immediateRevision { queueInput.clear(submitted: immediateInput, attachments: []) }
+        }
+        precondition(store.followUp.queue.isEmpty && store.outgoing.displayed.isEmpty && queueInput.isEmpty)
+        let ledger = OutgoingSubmissions()
+        let base = BindingMapping.snapshot(snapshot(7))
+        let failed = ledger.begin(.queue, text: "同文请求", attachments: [], snapshot: base)
+        precondition(ledger.fail(failed), "unadmitted failure must restore its original input")
+        let retry = ledger.begin(.queue, text: "同文请求", attachments: [], snapshot: base)
+        let another = ledger.begin(.queue, text: "同文请求", attachments: [], snapshot: base)
+        precondition(failed != retry && retry != another && ledger.queued.isEmpty && ledger.displayed.isEmpty,
+                     "unadmitted queue requests are tracked without manufacturing queue rows")
+        var unrelated = base
+        unrelated.followUp.queue = [.init(id: "unrelated", submissionId: "another-client", text: "同文请求", attachments: [])]
+        unrelated.messages.append(.init(id: "real-same-text", role: .user, blocks: [.text(text: "同文请求")]))
+        unrelated.transcriptMessageIdentities.append(.init(id: "real-same-text", messageId: "real-same-text"))
+        ledger.reconcile(unrelated)
+        precondition(ledger.queued.isEmpty && unrelated.messages.count == 2,
+                     "same text is neither queue ownership nor permission to filter native users")
+        let immediate = OutgoingSubmissions()
+        let immediateID = immediate.begin(.queue, text: "空闲时直接派发", attachments: [], snapshot: base)
+        immediate.accept(immediateID, receipt: .sending, snapshot: base)
+        precondition(immediate.displayed.count == 1 && immediate.queued.isEmpty,
+                     "only a typed Sending receipt may promote queue intent to a dispatched placeholder")
+        var echoed = base
+        echoed.messages.append(.init(id: "native-immediate", role: .user, blocks: [.text(text: "空闲时直接派发")]))
+        echoed.transcriptMessageIdentities.append(.init(id: "native-immediate", messageId: "native-immediate"))
+        immediate.reconcile(echoed)
+        precondition(immediate.displayed.isEmpty && echoed.messages.count == 2)
+        let pollFirstImmediate = OutgoingSubmissions()
+        let pollFirstID = pollFirstImmediate.begin(.queue, text: "空闲即时派发", attachments: [], snapshot: base)
+        var immediateEcho = base
+        immediateEcho.messages.append(.init(id: "poll-first-native", role: .user, blocks: [.text(text: "空闲即时派发")]))
+        immediateEcho.transcriptMessageIdentities.append(.init(id: "poll-first-native", messageId: "poll-first-native"))
+        pollFirstImmediate.reconcile(immediateEcho)
+        precondition(pollFirstImmediate.queued.isEmpty && pollFirstImmediate.displayed.isEmpty && immediateEcho.messages.count == 2,
+                     "explicit queue dispatched while idle must not duplicate native poll-before-ACK in a local queue")
+        pollFirstImmediate.accept(pollFirstID, receipt: .sending, snapshot: immediateEcho)
+        precondition(pollFirstImmediate.queued.isEmpty && pollFirstImmediate.displayed.isEmpty)
+        let missingProjection = OutgoingSubmissions()
+        let missingID = missingProjection.begin(.send, text: "已排队但投影暂缺", attachments: [], snapshot: base)
+        missingProjection.accept(missingID, receipt: .queued(queueId: "projection-missing"), snapshot: nil)
+        precondition(missingProjection.displayed.isEmpty && missingProjection.queued.first?.id == "projection-missing")
+        missingProjection.reconcile(base)
+        precondition(missingProjection.queued.isEmpty,
+                     "next complete observation may already be after dispatch/removal; never leave a stale local queue copy")
+        let closing = OutgoingSubmissions()
+        let closingID = closing.begin(.send, text: "关闭后的受理回执", attachments: [], snapshot: base)
+        var closingSnapshot = base
+        closingSnapshot.followUp.queue = [.init(id: "closing-queue", submissionId: closingID, text: "关闭后的受理回执", attachments: [])]
+        closing.reconcile(closingSnapshot); closing.reset()
+        precondition(!closing.fail(closingID) && closing.displayed.isEmpty && closing.queued.isEmpty,
+                     "navigation must retain in-flight admission proof without leaking into the new view")
+        if case .remove(let id) = OutgoingSubmissions.queuedCancellation(.queued(queueId: "cancel-exact")) {
+            precondition(id == "cancel-exact")
+        } else { preconditionFailure("queued cancellation must target its exact queue identity") }
+        precondition(OutgoingSubmissions.queuedCancellation(.sending) == nil && OutgoingSubmissions.queuedCancellation(nil) == nil)
+        let composer = ComposerModel()
+        composer.restore("取消前的输入", attachments: [])
+        let original = composer.submission, attachments = composer.attachments
+        composer.clear(submitted: original, attachments: attachments)
+        let revision = composer.revision
+        composer.restoreFailed(original, attachments: attachments, revision: revision)
+        precondition(composer.submission == original, "confirmed queued cancellation recovers the original input")
+        composer.clear(submitted: original, attachments: attachments)
+        let previous = composer.revision
+        composer.restore("较新的编辑", attachments: [])
+        composer.restoreFailed(original, attachments: attachments, revision: previous)
+        precondition(composer.submission == "较新的编辑", "queued cancellation must not overwrite a newer input revision")
+        precondition(!MacNativePersistenceGate.isEnabled && !store.started && !window.acceptsWorkspacePersistence)
+        store.close(); window.list.close()
     }
 }

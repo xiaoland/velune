@@ -598,6 +598,7 @@ impl CoreRuntime {
             None => self.collaboration_selection(&target, None)?,
         };
         self.send_turn(super::conversations::TurnRequest {
+            submission_id: None,
             source_runtime_id: source,
             conversation_id: id,
             runtime_id: target,

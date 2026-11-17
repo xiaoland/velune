@@ -96,12 +96,14 @@ import VeluneBindings
         let attachments = composer.attachments
         let text = submitted.trimmingCharacters(in: .whitespacesAndNewlines)
         guard submission(using: composer, next: next).canSubmitDraft, store.allowsAttachments || attachments.isEmpty else { return }
-        // While a turn runs the message waits in the queue above the composer.
+        // A queue request keeps its original input until the core admits it.
+        // Edits made while waiting belong to the next input, even if identical.
         if store.canQueue {
-            guard store.queue(text: text, attachments: attachments.map(\.path), next: next, onFailure: { [composer] in
-                composer.restoreFailed(submitted, attachments: attachments, revision: clearedRevision)
-            }) else { return }
-            composer.clear(submitted: submitted, attachments: attachments); clearedRevision = composer.revision
+            let submittedRevision = composer.revision
+            _ = store.queue(text: text, attachments: attachments.map(\.path), next: next, onAccepted: { [composer] in
+                guard composer.revision == submittedRevision else { return }
+                composer.clear(submitted: submitted, attachments: attachments)
+            })
             return
         }
         guard store.canSend else { return }

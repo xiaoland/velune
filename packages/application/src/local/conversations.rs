@@ -8,6 +8,7 @@ use crate::{ComposedTurn, ConfigurationSnapshot, ModelSelection, SnapshotResult}
 /// runtime and model it runs on, and what was composed.
 #[derive(Clone)]
 pub(crate) struct TurnRequest {
+    pub submission_id: Option<String>,
     pub source_runtime_id: String,
     pub conversation_id: String,
     pub runtime_id: String,
@@ -50,10 +51,13 @@ impl CoreRuntime {
         }
         match result {
             Err(RuntimeError::OutstandingWork) => {
-                self.queue_after_work(request);
-                self.snapshot_result()
+                let queue_id = self.queue_after_work(request);
+                self.accepted_submission_result(crate::SubmissionReceipt::Queued { queue_id })
             }
-            result => result,
+            result => result.map(|mut result| {
+                result.submission_receipt = Some(crate::SubmissionReceipt::Sending);
+                result
+            }),
         }
     }
 

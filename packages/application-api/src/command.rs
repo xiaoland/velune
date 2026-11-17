@@ -412,6 +412,15 @@ pub enum Command {
         message_ids: Vec<String>,
     },
     SendTurn {
+        /// One client-generated identity per logical submission. Correlation
+        /// only, not an idempotency key or part of turn/handoff semantics.
+        #[serde(
+            default,
+            rename = "submissionId",
+            skip_serializing_if = "Option::is_none"
+        )]
+        #[uniffi(default = None)]
+        submission_id: Option<String>,
         source_runtime_id: String,
         conversation_id: String,
         target_runtime_id: String,
@@ -423,6 +432,14 @@ pub enum Command {
         model_record_key: String,
     },
     EditSendQueue {
+        /// Identity of an Add request; ignored by queue editing operations.
+        #[serde(
+            default,
+            rename = "submissionId",
+            skip_serializing_if = "Option::is_none"
+        )]
+        #[uniffi(default = None)]
+        submission_id: Option<String>,
         runtime_id: String,
         conversation_id: String,
         operation: crate::SendQueueOperation,

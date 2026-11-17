@@ -274,7 +274,23 @@ pub struct RuntimeModel {
 #[serde(rename_all = "camelCase")]
 pub struct SnapshotResult {
     pub snapshot: Option<crate::DeliveredSnapshot>,
+    /// What this request actually did, independent of snapshot/echo timing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[uniffi(default = None)]
+    pub submission_receipt: Option<SubmissionReceipt>,
 }
+
+/// Authoritative acceptance of a composed submission, not completion of its execution.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, uniffi::Enum)]
+#[serde(rename_all = "camelCase", tag = "status")]
+pub enum SubmissionReceipt {
+    /// Still owned by this exact queue item when the command completed.
+    #[serde(rename_all = "camelCase")]
+    Queued { queue_id: String },
+    /// Handed to execution dispatch; a native message echo may arrive later.
+    Sending,
+}
+
 
 /// A conversation that executes or waits for the user, in any open session.
 #[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
@@ -782,4 +798,67 @@ pub struct ComposerQuotaEntry {
     pub origin: QuotaOrigin,
     pub observation: QuotaObservation,
     pub limits: Vec<crate::config::QuotaLimit>,
+}
+
+#[cfg(test)]
+mod submission_contract_tests {
+    use super::*;
+
+    #[test]
+    fn submission_metadata_is_optional_and_does_not_change_composed_input() {
+        let old_reply: SnapshotResult = serde_json::from_value(serde_json::json!({
+            "snapshot": null
+        }))
+        .unwrap();
+        assert!(old_reply.submission_receipt.is_none());
+        let old_queue: crate::conversation::QueuedMessage = serde_json::from_value(
+            serde_json::json!({"id":"q", "text":"same input", "attachments":[]}),
+        )
+        .unwrap();
+        assert!(old_queue.submission_id.is_none());
+        let input = serde_json::json!({"text":"same input", "effort":null,
+            "permissionMode":null, "attachments":[]});
+        let old_command = serde_json::json!({"command":"sendTurn", "parameters":{
+            "source_runtime_id":"source", "conversation_id":"conversation",
+            "target_runtime_id":"target", "selection":null, "turn":input
+        }});
+        let mut command: crate::Command = serde_json::from_value(old_command.clone()).unwrap();
+        assert!(matches!(
+            &command,
+            crate::Command::SendTurn {
+                submission_id: None,
+                ..
+            }
+        ));
+        let mut tracked = old_command;
+        tracked["parameters"]["submissionId"] = "opaque-client-token".into();
+        let mut tracked: crate::Command = serde_json::from_value(tracked).unwrap();
+        assert_eq!(
+            serde_json::to_value(command.composed_turn_mut()).unwrap(),
+            serde_json::to_value(tracked.composed_turn_mut()).unwrap()
+        );
+        assert_eq!(
+            serde_json::to_value(SubmissionReceipt::Queued {
+                queue_id: "q".into()
+            })
+            .unwrap(),
+            serde_json::json!({"status":"queued", "queueId":"q"})
+        );
+        assert_eq!(
+            serde_json::to_value(SubmissionReceipt::Sending).unwrap(),
+            serde_json::json!({"status":"sending"})
+        );
+        let edit: crate::Command = serde_json::from_value(serde_json::json!({
+            "command":"editSendQueue", "parameters": {"runtime_id":"source",
+                "conversation_id":"conversation", "operation":{"kind":"resume"}}
+        }))
+        .unwrap();
+        assert!(matches!(
+            edit,
+            crate::Command::EditSendQueue {
+                submission_id: None,
+                ..
+            }
+        ));
+    }
 }

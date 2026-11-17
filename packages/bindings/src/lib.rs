@@ -1354,6 +1354,7 @@ impl VeluneApplication {
         )
     }
 
+    #[uniffi::method(default(submission_id = None))]
     pub fn send_turn(
         &self,
         source_runtime_id: String,
@@ -1361,11 +1362,13 @@ impl VeluneApplication {
         target_runtime_id: String,
         selection: Option<ModelSelection>,
         turn: ComposedTurn,
+        submission_id: Option<String>,
     ) -> Result<SnapshotResult, BindingError> {
         request!(
             self,
             "send_turn",
             SendTurn {
+                submission_id,
                 source_runtime_id,
                 conversation_id,
                 target_runtime_id,
@@ -1408,16 +1411,19 @@ impl VeluneApplication {
 
     /// Change the conversation's send queue; one added to or resumed while
     /// no turn runs sends its first message at once.
+    #[uniffi::method(default(submission_id = None))]
     pub fn send_queue(
         &self,
         runtime_id: String,
         conversation_id: String,
         operation: SendQueueOperation,
+        submission_id: Option<String>,
     ) -> Result<SnapshotResult, BindingError> {
         request!(
             self,
             "send_queue",
             EditSendQueue {
+                submission_id,
                 runtime_id,
                 conversation_id,
                 operation

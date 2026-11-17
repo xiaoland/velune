@@ -188,9 +188,9 @@ import VeluneBindings
     snapshot.transcriptMessageIdentities.append(.init(id: "stable-b", messageId: "native-b"))
     outgoing.reconcile(snapshot); precondition(outgoing.displayed.isEmpty)
     let queued = outgoing.begin(.queue, text: "queued", attachments: [], snapshot: snapshot)
-    precondition(outgoing.displayed.first?.status == "排队中")
-    snapshot.followUp.queue = [.init(id: "canonical-queue", text: "queued", attachments: [])]
-    outgoing.accept(queued, snapshot: snapshot); precondition(outgoing.displayed.isEmpty)
+    precondition(outgoing.displayed.isEmpty && outgoing.queued.isEmpty, "未受理的排队请求保留输入，不先制造队列行")
+    snapshot.followUp.queue = [.init(id: "canonical-queue", submissionId: queued, text: "queued", attachments: [])]
+    outgoing.accept(queued, receipt: .queued(queueId: "canonical-queue"), snapshot: snapshot); precondition(outgoing.displayed.isEmpty && outgoing.queued.isEmpty)
     let sending = outgoing.begin(.send, text: "failed send", attachments: [], snapshot: snapshot)
     precondition(outgoing.displayed.first?.status == "发送中")
     outgoing.fail(sending); precondition(outgoing.displayed.isEmpty)

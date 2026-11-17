@@ -593,8 +593,25 @@ impl CoreRuntime {
     fn snapshot_result(&mut self) -> Result<crate::SnapshotResult, RuntimeError> {
         let snapshot = self.current_snapshot();
         Ok(crate::SnapshotResult {
+            submission_receipt: None,
             snapshot: snapshot.map(|snapshot| self.delivery.snapshot(snapshot)),
         })
+    }
+    /// Queue ownership has already changed. Presentation failure cannot revoke
+    /// acceptance or invite the client to submit the same input a second time.
+    fn accepted_submission_result(
+        &mut self,
+        receipt: crate::SubmissionReceipt,
+    ) -> Result<crate::SnapshotResult, RuntimeError> {
+        let mut result = self.snapshot_result().unwrap_or_else(|error| {
+            tracing::warn!(target: "velune_application", event = "accepted_submission_projection_failed", detail = %error);
+            crate::SnapshotResult {
+                snapshot: None,
+                submission_receipt: None,
+            }
+        });
+        result.submission_receipt = Some(receipt);
+        Ok(result)
     }
     /// The loaded conversation in its runtime context. An enabled known
     /// instance returns no snapshot when no conversation is loaded; a
@@ -606,6 +623,7 @@ impl CoreRuntime {
     ) -> Result<crate::SnapshotResult, RuntimeError> {
         let snapshot = self.queried_snapshot(runtime_id, conversation_id)?;
         Ok(crate::SnapshotResult {
+            submission_receipt: None,
             snapshot: snapshot.map(|snapshot| self.delivery.snapshot(snapshot)),
         })
     }

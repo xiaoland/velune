@@ -711,6 +711,7 @@ impl CoreRuntime {
             .ok_or_else(|| RuntimeError::invalid("会话未打开"))?
             .to_owned();
         self.send_turn(super::conversations::TurnRequest {
+            submission_id: None,
             source_runtime_id: runtime_id.into(),
             conversation_id: conversation,
             runtime_id: runtime_id.into(),
@@ -887,6 +888,7 @@ impl CoreRuntime {
                     .ok_or_else(|| RuntimeError::invalid("会话未打开"))?
                     .to_owned();
                 self.send_turn(super::conversations::TurnRequest {
+                    submission_id: None,
                     source_runtime_id: target_runtime.id.clone(),
                     conversation_id: conversation,
                     runtime_id: target_runtime.id.clone(),

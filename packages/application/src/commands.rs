@@ -553,6 +553,7 @@ impl Application {
                 |core| Ok(core.message_payloads(&runtime_id, &conversation_id, &message_ids)),
             )?),
             Command::SendTurn {
+                submission_id,
                 source_runtime_id,
                 conversation_id,
                 target_runtime_id,
@@ -563,6 +564,7 @@ impl Application {
                 Login::Blocks,
                 |core| {
                     core.send_turn(TurnRequest {
+                        submission_id,
                         source_runtime_id,
                         conversation_id,
                         runtime_id: target_runtime_id,
@@ -580,13 +582,14 @@ impl Application {
                 |core| core.runtime_reasoning_efforts(runtime_id, model_record_key),
             )?),
             Command::EditSendQueue {
+                submission_id,
                 runtime_id: _,
                 conversation_id,
                 operation,
             } => Response::EditSendQueue(application.runtime.serve(
                 Focus::Conversation(conversation_id.clone()),
                 Login::Blocks,
-                |core| core.send_queue(&conversation_id, operation),
+                |core| core.send_queue_submission(&conversation_id, operation, submission_id),
             )?),
             Command::SteerTurn {
                 runtime_id: _,

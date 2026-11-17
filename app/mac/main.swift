@@ -467,6 +467,10 @@ final class VeluneApplicationDelegate: NSObject, NSApplicationDelegate {
 @MainActor
 enum VeluneEntry {
     static func main() {
+        if CommandLine.arguments.contains("--check-outgoing-submissions") {
+            admitMacExecution()
+            outgoingSubmissionChecks()
+        }
         if CommandLine.arguments.contains("--check-sidebar-toolbar") {
             admitMacExecution()
             sidebarToolbarChecks()
