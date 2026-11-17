@@ -458,6 +458,22 @@ pub(crate) struct SchedulePermit {
     probe: bool,
 }
 impl SchedulePermit {
+    /// A successful upstream response makes the provider reachable again. The
+    /// model may keep streaming for minutes; that does not extend half-open
+    /// admission or establish a successful session binding.
+    pub(crate) fn responded(&self, status: u16) {
+        if !self.probe || !(200..300).contains(&status) {
+            return;
+        }
+        let mut state = self.state.0.lock().expect("scheduling state");
+        let provider = state
+            .providers
+            .get_mut(&(self.gateway.clone(), self.provider.clone()))
+            .expect("captured provider");
+        if provider.epoch == self.epoch && provider.cooldown_generation == self.generation {
+            provider.cooldown = None;
+        }
+    }
     pub(crate) fn cool(&self, duration: Duration) {
         let mut state = self.state.0.lock().expect("scheduling state");
         let provider = state
@@ -638,6 +654,115 @@ mod tests {
             observed_at_ms: 0,
             expires_at_ms: 2000,
         }
+    }
+
+    fn half_open(state: &SchedulingState) -> SchedulePermit {
+        let initial = state
+            .acquire("gateway", &test_candidate(&[]), &UnknownQuotaSource)
+            .unwrap();
+        initial.cool(Duration::ZERO);
+        drop(initial);
+        state
+            .acquire("gateway", &test_candidate(&[]), &UnknownQuotaSource)
+            .unwrap()
+    }
+
+    #[test]
+    fn probe_response_restores_admission_without_binding_model_success() {
+        let state = SchedulingState::default();
+        let probe = half_open(&state);
+        assert!(
+            state
+                .acquire("gateway", &test_candidate(&[]), &UnknownQuotaSource)
+                .is_err()
+        );
+        probe.responded(200);
+        // The original probe is still alive and has no model terminal event.
+        let concurrent = state
+            .acquire("gateway", &test_candidate(&[]), &UnknownQuotaSource)
+            .unwrap();
+        assert!(!concurrent.probe);
+        assert!(state.0.lock().unwrap().sessions.is_empty());
+        // A later transport failure still establishes a fresh cooldown.
+        probe.cool(Duration::from_secs(5));
+        probe.responded(200);
+        assert!(
+            state
+                .acquire("gateway", &test_candidate(&[]), &UnknownQuotaSource)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn cancelled_or_rejected_probe_releases_only_its_lease() {
+        let state = SchedulingState::default();
+        let probe = half_open(&state);
+        probe.responded(429);
+        assert!(
+            state
+                .acquire("gateway", &test_candidate(&[]), &UnknownQuotaSource)
+                .is_err()
+        );
+        drop(probe);
+        let replacement = state
+            .acquire("gateway", &test_candidate(&[]), &UnknownQuotaSource)
+            .unwrap();
+        assert!(replacement.probe);
+        assert!(
+            state
+                .acquire("gateway", &test_candidate(&[]), &UnknownQuotaSource)
+                .is_err()
+        );
+        drop(replacement);
+        assert!(
+            state
+                .acquire("gateway", &test_candidate(&[]), &UnknownQuotaSource)
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn old_response_or_drop_cannot_release_new_authentication_probe() {
+        let state = SchedulingState::default();
+        let old = half_open(&state);
+        state.invalidate_credentials("gateway", "provider");
+        let candidate = Candidate {
+            epoch: 1,
+            ..test_candidate(&[])
+        };
+        let current = state
+            .acquire("gateway", &candidate, &UnknownQuotaSource)
+            .unwrap();
+        old.responded(200);
+        drop(old);
+        assert!(
+            state
+                .acquire("gateway", &candidate, &UnknownQuotaSource)
+                .is_err()
+        );
+        current.responded(200);
+        assert!(
+            state
+                .acquire("gateway", &candidate, &UnknownQuotaSource)
+                .is_ok()
+        );
+        // Changing the provider binding also isolates any late result.
+        state.invalidate_provider("gateway", "provider");
+        let candidate = Candidate {
+            epoch: 2,
+            ..test_candidate(&[])
+        };
+        let next = state
+            .acquire("gateway", &candidate, &UnknownQuotaSource)
+            .unwrap();
+        next.cool(Duration::from_secs(5));
+        current.responded(200);
+        current.completed("route", "model", None);
+        assert!(
+            state
+                .acquire("gateway", &candidate, &UnknownQuotaSource)
+                .is_err()
+        );
     }
 
     #[test]

@@ -15,7 +15,7 @@ use crate::{
     analytics::{AnalyticsOutcome, SharedTracker, Tracker, now_ms},
     config::{ExecutionBackend, Protocol},
     observation::Observation,
-    scheduling::{AdmissionReason, ScheduleUnavailable},
+    scheduling::{AdmissionReason, SchedulePermit, ScheduleUnavailable},
 };
 use serde_json::Value;
 use std::{
@@ -62,7 +62,7 @@ pub(super) async fn dispatch(
             &state.candidate(target),
             state.quotas.as_ref(),
         ) {
-            Ok(permit) => permit,
+            Ok(permit) => Arc::new(permit),
             Err(blocked) => {
                 if target.continuation_required {
                     let headers = blocked
@@ -116,6 +116,7 @@ pub(super) async fn dispatch(
             .map(|guard| guard.tracker.clone())
             .unwrap_or_else(|| Tracker::new(target.protocol));
         let end = Attempt {
+            permit: &permit,
             state: &state,
             target,
             tracker: &tracker,
@@ -224,6 +225,7 @@ pub(super) async fn dispatch(
 
 /// One attempt against one route target.
 struct Attempt<'a> {
+    permit: &'a Arc<SchedulePermit>,
     state: &'a Arc<Ingress>,
     target: &'a RouteTarget,
     tracker: &'a SharedTracker,
@@ -444,7 +446,12 @@ impl Attempt<'_> {
         let completion = adapter
             .send(
                 request,
-                sink(self.sender.clone(), self.tracker.clone(), sent.clone()),
+                sink(
+                    self.sender.clone(),
+                    self.tracker.clone(),
+                    sent.clone(),
+                    self.permit.clone(),
+                ),
             )
             .await;
         self.settle(completion, sent.load(Ordering::Acquire)).await
@@ -509,6 +516,7 @@ impl Attempt<'_> {
                 output: NativeOutput::Json(body),
                 completed,
             }) => {
+                self.permit.responded(body.meta.status);
                 tracing::info!(
                     event = "gateway_upstream_headers",
                     http_status = body.meta.status
@@ -636,14 +644,17 @@ fn sink(
     sender: mpsc::Sender<WireEvent>,
     tracker: SharedTracker,
     sent: Arc<AtomicBool>,
+    permit: Arc<SchedulePermit>,
 ) -> NativeSink {
     Box::new(move |event| {
         let sender = sender.clone();
         let tracker = tracker.clone();
         let sent = sent.clone();
+        let permit = permit.clone();
         Box::pin(async move {
             let event = match event {
                 NativeEvent::Headers(meta) => {
+                    permit.responded(meta.status);
                     tracker
                         .lock()
                         .expect("owned analytics tracker")
