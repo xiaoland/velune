@@ -6,11 +6,13 @@ use crate::config::{
 };
 use crate::conversation::{ConversationSnapshot, Message, MessageBlock, MessageRole, ToolState};
 use sha2::{Digest, Sha256};
+use std::collections::BTreeSet;
 
 pub(super) struct LogicalProjection {
     pub link: ConversationLink,
     pub origin: ConversationSummary,
     pub prefix: Vec<Message>,
+    pub work_notification_ids: Vec<String>,
     pub executions: velune_conversation::Executions,
 }
 
@@ -42,10 +44,24 @@ fn display_id(index: usize, id: &str) -> String {
 /// The same namespace boundary is used by live and read-only logical views.
 pub(super) fn namespace_associations(snapshot: &mut ConversationSnapshot, index: usize) {
     snapshot.executions.map_ids(&|id| display_id(index, id));
+    for id in &mut snapshot.work_notification_ids {
+        *id = display_id(index, id);
+    }
     for confirmation in &mut snapshot.message_identity_confirmations {
         confirmation.previous_id = display_id(index, &confirmation.previous_id);
         confirmation.current_id = display_id(index, &confirmation.current_id);
     }
+}
+
+fn display_work_notifications(ids: &[String], displayed: &[Message], index: usize) -> Vec<String> {
+    let visible: BTreeSet<_> = displayed
+        .iter()
+        .map(|message| message.id.as_str())
+        .collect();
+    ids.iter()
+        .map(|id| display_id(index, id))
+        .filter(|id| visible.contains(id.as_str()))
+        .collect()
 }
 
 pub(super) fn display_segment(
@@ -302,6 +318,7 @@ impl CoreRuntime {
     /// fabricated.
     fn unavailable_tail_snapshot(segment: &ConversationSegmentReference) -> ConversationSnapshot {
         ConversationSnapshot {
+            work_notification_ids: Vec::new(),
             revision: 1,
             context_runtime_id: segment.runtime_instance_id.clone(),
             conversation: ConversationSummary {
@@ -367,6 +384,7 @@ impl CoreRuntime {
         ) -> Result<ConversationSnapshot, RuntimeError>,
     ) -> Result<(ConversationSnapshot, LogicalProjection), RuntimeError> {
         let mut prefix = Vec::new();
+        let mut work_notification_ids = Vec::new();
         let mut executions = velune_conversation::Executions::default();
         let mut origin = None;
         let mut tail = None;
@@ -411,7 +429,13 @@ impl CoreRuntime {
                     .executions
                     .map_ids(&|id| format!("segment-{index}:{id}"));
                 executions.records.extend(snapshot.executions.records);
-                prefix.extend(display_segment(segment, &snapshot.messages, index)?);
+                let displayed = display_segment(segment, &snapshot.messages, index)?;
+                work_notification_ids.extend(display_work_notifications(
+                    &snapshot.work_notification_ids,
+                    &displayed,
+                    index,
+                ));
+                prefix.extend(displayed);
             } else {
                 if index + 1 != link.segments.len() {
                     tracing::warn!(target:"velune_application", event="conversation_unsealed_segment", segment_index=index);
@@ -444,6 +468,7 @@ impl CoreRuntime {
         Ok((
             tail,
             LogicalProjection {
+                work_notification_ids,
                 link: link.clone(),
                 origin,
                 prefix,
@@ -472,6 +497,9 @@ impl CoreRuntime {
         let index = projection.link.segments.len() - 1;
         namespace_associations(&mut snapshot, index);
         snapshot
+            .work_notification_ids
+            .extend(projection.work_notification_ids.iter().cloned());
+        snapshot
             .executions
             .records
             .extend(projection.executions.records.clone());
@@ -497,6 +525,14 @@ impl CoreRuntime {
         if let Ok(messages) = messages {
             snapshot.messages.extend(messages);
         }
+        let visible: BTreeSet<_> = snapshot
+            .messages
+            .iter()
+            .map(|message| message.id.as_str())
+            .collect();
+        snapshot
+            .work_notification_ids
+            .retain(|id| visible.contains(id.as_str()));
         snapshot
     }
 
@@ -559,6 +595,7 @@ impl CoreRuntime {
         let mut origin = native.conversation.clone();
         origin.id = public_id;
         self.session.logical_projection = Some(LogicalProjection {
+            work_notification_ids: Vec::new(),
             link,
             origin,
             prefix: Vec::new(),
@@ -612,7 +649,7 @@ impl CoreRuntime {
             .native_snapshot()
             .ok_or_else(|| RuntimeError::invalid("conversation is not active"))?;
         let source = self.read_segment(&self.segment_reference(&raw)?)?;
-        let (mut link, mut prefix, origin, mut executions) =
+        let (mut link, mut prefix, origin, mut executions, mut work_notification_ids) =
             if let Some(projection) = &self.session.logical_projection {
                 // Re-read every sealed segment before carrying context into another runtime.
                 let (_, checked) = self.read_link(&projection.link)?;
@@ -621,6 +658,7 @@ impl CoreRuntime {
                     checked.prefix,
                     checked.origin,
                     checked.executions,
+                    checked.work_notification_ids,
                 )
             } else {
                 let segment = self.segment_reference(&source)?;
@@ -632,6 +670,7 @@ impl CoreRuntime {
                     Vec::new(),
                     source.conversation.clone(),
                     Default::default(),
+                    Vec::new(),
                 )
             };
         let index = link.segments.len() - 1;
@@ -641,6 +680,11 @@ impl CoreRuntime {
             prefix_digest: prefix_digest(&source.messages)?,
         });
         let visible = display_segment(segment, &source.messages, index)?;
+        work_notification_ids.extend(display_work_notifications(
+            &source.work_notification_ids,
+            &visible,
+            index,
+        ));
         if index > 0 {
             prefix.push(self.boundary_message(segment, index));
         }
@@ -678,6 +722,7 @@ impl CoreRuntime {
         let mut target = source.clone();
         target.conversation.runtime_id = runtime_id.into();
         target.messages.clear();
+        target.work_notification_ids.clear();
         self.prepare_with_selection(target, model, true)?;
         tracing::info!(target:"velune_application", event="conversation_handoff_prepared", phase="prepare");
         let native = self
@@ -704,6 +749,7 @@ impl CoreRuntime {
             return Err(error);
         }
         self.session.logical_projection = Some(LogicalProjection {
+            work_notification_ids,
             link,
             origin,
             prefix,
@@ -827,7 +873,7 @@ impl CoreRuntime {
             .native_snapshot()
             .ok_or_else(|| RuntimeError::invalid("conversation is not active"))?;
         let source = self.read_segment(&self.segment_reference(&raw)?)?;
-        let (mut link, mut prefix, origin, mut executions) =
+        let (mut link, mut prefix, origin, mut executions, mut work_notification_ids) =
             if let Some(projection) = &self.session.logical_projection {
                 // Re-read every sealed segment before carrying context into another runtime.
                 let (_, checked) = self.read_link(&projection.link)?;
@@ -836,6 +882,7 @@ impl CoreRuntime {
                     checked.prefix,
                     checked.origin,
                     checked.executions,
+                    checked.work_notification_ids,
                 )
             } else {
                 let segment = self.segment_reference(&source)?;
@@ -847,6 +894,7 @@ impl CoreRuntime {
                     Vec::new(),
                     source.conversation.clone(),
                     Default::default(),
+                    Vec::new(),
                 )
             };
         let index = link.segments.len() - 1;
@@ -856,6 +904,11 @@ impl CoreRuntime {
             prefix_digest: prefix_digest(&source.messages)?,
         });
         let visible = display_segment(segment, &source.messages, index)?;
+        work_notification_ids.extend(display_work_notifications(
+            &source.work_notification_ids,
+            &visible,
+            index,
+        ));
         if index > 0 {
             prefix.push(self.boundary_message(segment, index));
         }
@@ -917,9 +970,9 @@ impl CoreRuntime {
         target.conversation.cwd = Some(cwd.to_string_lossy().into_owned());
         // Read the target's own display seed before resuming it. Its count
         // cannot be inferred from context blocks (tools group differently).
-        target.messages = self
-            .read_history(runtime_id, &target.conversation.id)?
-            .messages;
+        let imported_snapshot = self.read_history(runtime_id, &target.conversation.id)?;
+        target.messages = imported_snapshot.messages;
+        target.work_notification_ids = imported_snapshot.work_notification_ids;
         self.prepare_with_selection(target, model, false)?;
         tracing::info!(target:"velune_application", event="conversation_handoff_prepared", phase="import");
         let native = self
@@ -944,6 +997,7 @@ impl CoreRuntime {
             return Err(error);
         }
         self.session.logical_projection = Some(LogicalProjection {
+            work_notification_ids,
             link,
             origin,
             prefix,
@@ -1139,8 +1193,10 @@ mod identity_tests {
         snapshot.messages = serde_json::from_value(json!([
             {"id":"native-user","role":"user","completed":true,"branch_point":"native-control","blocks":[]},
             {"id":"steer","role":"user","completed":true,"blocks":[]},
+            {"id":"notice","role":"client","completed":true,"blocks":[{"kind":"text","text":"background complete"}]},
             {"id":"answer","role":"assistant","completed":true,"blocks":[{"kind":"text","text":"done"}]}
         ])).unwrap();
+        snapshot.work_notification_ids = vec!["notice".into()];
         snapshot.executions.begin(ExecutionKind::UserTurn, false);
         for message in &snapshot.messages {
             snapshot.executions.attach(&message.id);
@@ -1167,16 +1223,45 @@ mod identity_tests {
             "segment-2:native-user"
         );
         let mut transcript = velune_agent_runtime::transcript::TranscriptProjection::default();
-        transcript.apply(velune_agent_runtime::transcript::TranscriptEvent::Replace {
-            messages: &snapshot.messages,
-            executions: &snapshot.executions,
-        });
+        transcript
+            .apply(velune_agent_runtime::transcript::TranscriptEvent::ReplaceSnapshot(&snapshot));
+        assert_eq!(snapshot.work_notification_ids, ["segment-2:notice"]);
         assert_eq!(transcript.turns().len(), 2);
+        assert!(
+            transcript.turns()[1]
+                .work_message_ids
+                .contains(&"segment-2:notice".into())
+        );
+        assert!(!transcript.items().iter().any(|item| matches!(item,
+            velune_conversation::TranscriptItem::Message { message_id, .. } if message_id == "segment-2:notice"
+        )));
         assert!(
             transcript
                 .turns()
                 .iter()
                 .all(|t| t.outcome == Some(TurnOutcome::Completed))
+        );
+    }
+    #[test]
+    fn logical_work_notifications_follow_only_visible_segment_messages() {
+        let messages: Vec<Message> = serde_json::from_value(json!([
+            {"id":"inside","role":"client","completed":true,"blocks":[]},
+            {"id":"excluded","role":"client","completed":true,"blocks":[]},
+            {"id":"outside","role":"client","completed":true,"blocks":[]}
+        ]))
+        .unwrap();
+        let ids = messages
+            .iter()
+            .map(|message| message.id.clone())
+            .collect::<Vec<_>>();
+        let mut visible = messages[..2].to_vec();
+        visible.retain(|message| message.id != "excluded");
+        for message in &mut visible {
+            message.id = display_id(3, &message.id);
+        }
+        assert_eq!(
+            display_work_notifications(&ids, &visible, 3),
+            ["segment-3:inside"]
         );
     }
 }

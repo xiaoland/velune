@@ -146,6 +146,7 @@ mod tests {
 
     fn snapshot(run_state: RunState) -> ConversationSnapshot {
         ConversationSnapshot {
+            work_notification_ids: Vec::new(),
             revision: 1,
             context_runtime_id: "runtime".into(),
             conversation: ConversationSummary {

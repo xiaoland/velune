@@ -343,6 +343,7 @@ impl Client {
         self.native_id = Some(native_id.into());
         self.message_sequence = 0;
         self.snapshot = Some(ConversationSnapshot {
+            work_notification_ids: Vec::new(),
             revision: 1,
             conversation: ConversationSummary {
                 native_read_state: None,

@@ -34,6 +34,7 @@ impl PiProjection {
     pub fn new(conversation: ConversationSummary) -> Self {
         Self {
             snapshot: Some(ConversationSnapshot {
+                work_notification_ids: Vec::new(),
                 revision: 0,
                 context_runtime_id: conversation.runtime_id.clone(),
                 conversation,
@@ -155,17 +156,22 @@ impl PiProjection {
         };
         merge_sub_agents(&mut snapshot, &response["subAgents"], true);
         let mut projected: Vec<Message> = Vec::new();
+        let mut work_notification_ids = Vec::new();
         // The user message that starts the turn the following replies belong to.
         let mut turn = None;
         // Pi's estimate of every reply so far, by its price list.
         let mut cost = 0.0;
         for (index, message) in messages.iter().enumerate() {
+            let work_notification = is_background_task_notification(message);
             if message["role"] == "toolResult" {
                 apply_tool_result(&mut projected, message, message["id"].as_str());
             } else if let Some(mut message) = message_from_pi(message, format!("message-{index}")) {
                 if message.role == MessageRole::User {
                     message.turn_settings = Some(crate::conversation::TurnSettings::default());
                     turn = Some(projected.len());
+                }
+                if work_notification {
+                    work_notification_ids.push(message.id.clone());
                 }
                 projected.push(message);
             }
@@ -229,6 +235,7 @@ impl PiProjection {
             .executions
             .confirm(&snapshot.message_identity_confirmations);
         snapshot.messages = projected;
+        snapshot.work_notification_ids = work_notification_ids;
         snapshot.executions.retain(&snapshot.messages);
         let visible: std::collections::BTreeSet<_> = snapshot
             .messages
@@ -350,6 +357,12 @@ impl PiProjection {
                             .unwrap_or_else(|| format!("message-{}", self.next_message_id))
                     };
                     if let Some(mut message) = message_from_pi(native, id.clone()) {
+                        snapshot
+                            .work_notification_ids
+                            .retain(|known| known != &message.id);
+                        if is_background_task_notification(native) {
+                            snapshot.work_notification_ids.push(message.id.clone());
+                        }
                         if event["type"] == "message_end" && native["role"] == "assistant" {
                             self.failed_message_id =
                                 (self.terminal == Some(TurnOutcome::Failed)).then(|| id.clone());
@@ -863,7 +876,9 @@ fn image_blocks(content: &Value) -> Vec<MessageBlock> {
                 media_type: block["mimeType"].as_str().map(str::to_owned),
                 source: crate::conversation::ImageSource::Data { data: data.into() },
             },
-            None => MessageBlock::Notice { text: "图片".into() },
+            None => MessageBlock::Notice {
+                text: "图片".into(),
+            },
         })
         .collect()
 }
@@ -917,10 +932,7 @@ fn attach_tool_images(messages: &mut [Message], id: Option<&str>, images: &[Mess
             continue;
         }
         for image in images {
-            let duplicate = message
-                .blocks
-                .iter()
-                .any(|existing| existing == image);
+            let duplicate = message.blocks.iter().any(|existing| existing == image);
             if !duplicate {
                 message.blocks.push(image.clone());
             }
@@ -928,6 +940,10 @@ fn attach_tool_images(messages: &mut [Message], id: Option<&str>, images: &[Mess
         return;
     }
 }
+fn is_background_task_notification(message: &Value) -> bool {
+    message["role"] == "custom" && message["customType"] == "background-task-notification"
+}
+
 fn message_from_pi(message: &Value, fallback_id: String) -> Option<Message> {
     if message["role"] == "custom" && message["display"] == false {
         return None;
@@ -1004,6 +1020,15 @@ fn message_from_pi(message: &Value, fallback_id: String) -> Option<Message> {
         blocks.push(MessageBlock::Notice {
             text: "Pi 请求失败（上游未提供错误详情）。".into(),
         });
+    }
+    if is_background_task_notification(message) {
+        blocks = blocks
+            .into_iter()
+            .map(|block| match block {
+                MessageBlock::Text { text } => MessageBlock::Notice { text },
+                block => block,
+            })
+            .collect();
     }
     (!blocks.is_empty()).then(|| Message {
         turn_settings: None,
@@ -1100,6 +1125,7 @@ fn merge_sub_agents(snapshot: &mut ConversationSnapshot, records: &Value, overwr
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::conversation::TranscriptItem;
     use serde_json::json;
 
     pub(super) fn projection() -> PiProjection {
@@ -1440,7 +1466,9 @@ mod tests {
             caller.blocks[1..],
             [MessageBlock::Image {
                 media_type: Some("image/jpeg".into()),
-                source: crate::conversation::ImageSource::Data { data: "aGVsbG8=".into() },
+                source: crate::conversation::ImageSource::Data {
+                    data: "aGVsbG8=".into()
+                },
             }]
         );
     }
@@ -1491,9 +1519,194 @@ mod tests {
             message.blocks[1..],
             [MessageBlock::Image {
                 media_type: Some("image/png".into()),
-                source: crate::conversation::ImageSource::Data { data: "aGVsbG8=".into() },
+                source: crate::conversation::ImageSource::Data {
+                    data: "aGVsbG8=".into()
+                },
             }]
         );
+    }
+    fn native(messages: Value) -> ConversationSnapshot {
+        let mut p = projection();
+        p.replace_history(&json!({"messages":messages}));
+        p.snapshot.unwrap()
+    }
+    fn transcript(s: &ConversationSnapshot) -> crate::transcript::TranscriptProjection {
+        let mut p = crate::transcript::TranscriptProjection::default();
+        p.apply(crate::transcript::TranscriptEvent::ReplaceSnapshot(s));
+        p
+    }
+    fn ids(p: &crate::transcript::TranscriptProjection) -> Vec<String> {
+        p.items()
+            .into_iter()
+            .map(|i| match i {
+                TranscriptItem::Message { message_id, .. } => message_id,
+                TranscriptItem::Work { .. } => "work".into(),
+            })
+            .collect()
+    }
+    fn user() -> Value {
+        json!({"id":"user","role":"user","content":"request"})
+    }
+    fn tool(id: &str) -> Value {
+        json!({"id":id,"role":"assistant","content":[{"type":"toolCall","id":format!("call-{id}"),"name":"shell","arguments":{"command":"synthetic"}}]})
+    }
+    fn notice(id: &str) -> Value {
+        json!({"id":id,"role":"custom","customType":"background-task-notification","content":"arbitrary body"})
+    }
+    #[test]
+    fn tools_and_work_notices_preserve_native_work_order_without_closing() {
+        let s = native(json!([
+            user(),
+            tool("before"),
+            notice("notice1"),
+            tool("after"),
+            notice("notice2")
+        ]));
+        let p = transcript(&s);
+        let turns = p.turns();
+        assert_eq!(turns[0].last_message_id, None);
+        assert_eq!(
+            turns[0].work_message_ids,
+            ["before", "notice1", "after", "notice2"]
+        );
+        assert_eq!(ids(&p), ["user", "work"]);
+    }
+    #[test]
+    fn closing_stays_visible_late_notifications_stay_after_and_mixed_identity_is_stable() {
+        for mixed in [false, true] {
+            let close = if mixed {
+                json!([{"type":"thinking","thinking":"reason"},{"type":"text","text":"answer"}])
+            } else {
+                json!([{"type":"text","text":"answer"}])
+            };
+            let s = native(
+                json!([user(),tool("before"),notice("early"),{"id":"closing","role":"assistant","content":close},notice("late")]),
+            );
+            let p = transcript(&s);
+            let t = &p.turns()[0];
+            assert_eq!(t.last_message_id.as_deref(), Some("closing"));
+            assert_eq!(
+                t.work_message_ids,
+                if mixed {
+                    vec!["before", "early", "closing"]
+                } else {
+                    vec!["before", "early"]
+                }
+            );
+            assert_eq!(ids(&p), ["user", "work", "closing", "late"]);
+            assert!(
+                matches!(&p.items()[2],TranscriptItem::Message{id,..} if id == &format!("{}message:closing",if mixed{"reply:"}else{""}))
+            );
+            let before = p.items();
+            let mut p = p;
+            p.apply(crate::transcript::TranscriptEvent::ReplaceSnapshot(&s));
+            assert_eq!(p.items(), before);
+        }
+    }
+    #[test]
+    fn unknown_custom_text_error_and_image_remain_standalone_without_text_guessing() {
+        let s = native(
+            json!([user(),tool("before"),{"id":"unknown","role":"custom","customType":"unrelated","content":"background-task-notification"},{"id":"error","role":"custom","customType":"unrelated","errorMessage":"error"},{"id":"image","role":"custom","customType":"unrelated","content":[{"type":"image"}]},tool("after")]),
+        );
+        let p = transcript(&s);
+        assert_eq!(p.turns()[0].work_message_ids, ["before", "after"]);
+        assert_eq!(ids(&p), ["user", "work", "unknown", "error", "image"]);
+        assert!(
+            s.messages
+                .iter()
+                .filter(|m| ["error", "image"].contains(&m.id.as_str()))
+                .all(|m| m
+                    .blocks
+                    .iter()
+                    .all(|b| matches!(b, MessageBlock::Notice { .. })))
+        );
+    }
+    #[test]
+    fn orphan_notices_keep_order_and_standalone_compaction_blocks_backwards_attachment() {
+        let s = native(
+            json!([notice("orphan1"),notice("orphan2"),user(),tool("before"),{"id":"compact","role":"compactionSummary"},notice("after_compact")]),
+        );
+        let p = transcript(&s);
+        assert_eq!(p.turns()[0].work_message_ids, ["before"]);
+        assert_eq!(
+            ids(&p),
+            [
+                "orphan1",
+                "orphan2",
+                "user",
+                "work",
+                "compact",
+                "after_compact"
+            ]
+        );
+    }
+
+    #[test]
+    fn notifications_inside_automatic_compaction_work_remain_in_the_owning_range() {
+        let mut snapshot = native(json!([
+            user(), tool("before"), {"id":"compact","role":"compactionSummary"},
+            notice("notice"), tool("after")
+        ]));
+        snapshot.executions.begin(ExecutionKind::UserTurn, false);
+        for message in &snapshot.messages {
+            snapshot.executions.attach(&message.id);
+        }
+        snapshot.executions.finish(Some(TurnOutcome::Completed));
+        let p = transcript(&snapshot);
+        assert_eq!(
+            p.turns()[0].work_message_ids,
+            ["before", "compact", "notice", "after"]
+        );
+        assert_eq!(ids(&p), ["user", "work"]);
+    }
+
+    #[test]
+    fn background_notifications_survive_live_confirmation_and_resync_without_stale_classification()
+    {
+        use crate::transcript::{TranscriptEvent, TranscriptProjection};
+        let mut p = projection();
+        message(&mut p, user());
+        message(&mut p, tool("before"));
+        let mut unconfirmed = notice("temporary");
+        unconfirmed.as_object_mut().unwrap().remove("id");
+        message(&mut p, unconfirmed);
+        let snapshot = p.snapshot.as_ref().unwrap();
+        assert_eq!(snapshot.work_notification_ids.len(), 1);
+        let previous = snapshot.work_notification_ids[0].clone();
+        let mut t = TranscriptProjection::default();
+        t.apply(TranscriptEvent::ReplaceSnapshot(snapshot));
+        assert_eq!(t.turns()[0].work_message_ids, ["before", &previous]);
+        let identity = t
+            .message_identities()
+            .into_iter()
+            .find(|m| m.message_id == previous)
+            .unwrap()
+            .id;
+        p.replace_history(&json!({"messages":[user(),tool("before"),notice("native")],
+        "identityConfirmations":[{"previousId":previous,"currentId":"native"}]}));
+        let snapshot = p.snapshot.as_ref().unwrap();
+        t.apply(TranscriptEvent::ConfirmIdentities(
+            &snapshot.message_identity_confirmations,
+        ));
+        t.apply(TranscriptEvent::ReplaceSnapshot(snapshot));
+        assert_eq!(t.turns()[0].work_message_ids, ["before", "native"]);
+        assert_eq!(
+            t.message_identities()
+                .into_iter()
+                .find(|m| m.message_id == "native")
+                .unwrap()
+                .id,
+            identity
+        );
+        // The source changes to an unrelated custom message with the same id:
+        // classification is rebuilt from native semantics, never cached by id.
+        p.replace_history(&json!({"messages":[user(),tool("before"),
+        {"id":"native","role":"custom","customType":"other","content":"arbitrary body"}]}));
+        let snapshot = p.snapshot.as_ref().unwrap();
+        assert!(snapshot.work_notification_ids.is_empty());
+        t.apply(TranscriptEvent::ReplaceSnapshot(snapshot));
+        assert_eq!(t.turns()[0].work_message_ids, ["before"]);
+        assert_eq!(ids(&t), ["user", "work", "native"]);
     }
 }
 

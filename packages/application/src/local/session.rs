@@ -70,6 +70,7 @@ pub(super) struct SideChat {
     pub(super) reference: crate::conversation::ConversationSnapshot,
     pub(super) prior: Vec<crate::conversation::Message>,
     pub(super) prior_executions: velune_conversation::Executions,
+    pub(super) prior_work_notification_ids: Vec<String>,
     pub(super) segment: u64,
     pub(super) context: String,
     pub(super) context_pending: bool,

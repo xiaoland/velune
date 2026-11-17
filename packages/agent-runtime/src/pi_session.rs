@@ -602,6 +602,13 @@ impl PiSession {
                 .executions
                 .restore(&source.executions, &snapshot.messages);
             snapshot.conversation = source.conversation.clone();
+            for id in &source.work_notification_ids {
+                if snapshot.messages.iter().any(|message| &message.id == id)
+                    && !snapshot.work_notification_ids.contains(id)
+                {
+                    snapshot.work_notification_ids.push(id.clone());
+                }
+            }
         }
     }
 

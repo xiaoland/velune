@@ -556,10 +556,7 @@ impl CoreRuntime {
             ));
         self.session
             .transcript_projection
-            .apply(TranscriptEvent::Replace {
-                messages: &snapshot.messages,
-                executions: &snapshot.executions,
-            });
+            .apply(TranscriptEvent::ReplaceSnapshot(&snapshot));
         composer_choices::recall_turn_requests(
             &self.turn_requests,
             &mut self.session.transcript_projection,

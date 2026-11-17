@@ -1314,6 +1314,7 @@ impl NativeSession {
     ) {
         self.set_native_thread(id, &history);
         self.snapshot = Some(ConversationSnapshot {
+            work_notification_ids: Vec::new(),
             context_runtime_id: runtime_id.into(),
             revision: 1,
             conversation: ConversationSummary {

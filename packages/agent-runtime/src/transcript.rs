@@ -1,8 +1,8 @@
 //! Ordered, disposable message-list projection. Native snapshots remain authoritative.
 use crate::conversation::{
-    ExecutionKind, Executions, Message, MessageBlock, MessageIdentityConfirmation, MessageRole,
-    RunState, TranscriptItem, TranscriptMessageIdentity, TranscriptOutlineEntry, TranscriptTurn,
-    TurnOutcome, TurnSettings, TurnUsage,
+    ConversationSnapshot, ExecutionKind, Executions, Message, MessageBlock,
+    MessageIdentityConfirmation, MessageRole, RunState, TranscriptItem, TranscriptMessageIdentity,
+    TranscriptOutlineEntry, TranscriptTurn, TurnOutcome, TurnSettings, TurnUsage,
 };
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -11,6 +11,8 @@ use std::{
 
 /// Forward consumption includes replacement: native branching and compaction are not append-only.
 pub enum TranscriptEvent<'a> {
+    /// Consume canonical content and its native presentation semantics together.
+    ReplaceSnapshot(&'a ConversationSnapshot),
     ConfirmIdentities(&'a [MessageIdentityConfirmation]),
     Replace {
         messages: &'a [Message],
@@ -23,6 +25,8 @@ struct MessageAnchor {
     id: String,
     role: MessageRole,
     standalone: bool,
+    work_notification: bool,
+    compaction: bool,
     outcome: Option<TurnOutcome>,
     /// Index of the first block of the trailing visible text, which is the
     /// agent's reply; `None` when an assistant message does not end in text.
@@ -36,6 +40,7 @@ struct MessageAnchor {
 #[derive(Default)]
 pub struct TranscriptProjection {
     messages: Vec<MessageAnchor>,
+    work_notification_ids: BTreeSet<String>,
     running: bool,
     /// The native record shows the last turn unfinished outside Velune. It is
     /// presented as running but not timed: no execution was observed.
@@ -53,6 +58,14 @@ pub struct TranscriptProjection {
 impl TranscriptProjection {
     pub fn apply(&mut self, event: TranscriptEvent<'_>) {
         match event {
+            TranscriptEvent::ReplaceSnapshot(snapshot) => {
+                self.work_notification_ids =
+                    snapshot.work_notification_ids.iter().cloned().collect();
+                self.apply(TranscriptEvent::Replace {
+                    messages: &snapshot.messages,
+                    executions: &snapshot.executions,
+                });
+            }
             TranscriptEvent::ConfirmIdentities(confirmations) => {
                 let identities: BTreeMap<_, _> = confirmations
                     .iter()
@@ -74,6 +87,10 @@ impl TranscriptProjection {
                     *id = (*current).into();
                 }
                 for confirmation in confirmations {
+                    if self.work_notification_ids.remove(&confirmation.previous_id) {
+                        self.work_notification_ids
+                            .insert(confirmation.current_id.clone());
+                    }
                     if let Some(id) = self.presentation_ids.remove(&confirmation.previous_id) {
                         self.presentation_ids
                             .insert(confirmation.current_id.clone(), id);
@@ -107,7 +124,13 @@ impl TranscriptProjection {
                     .map(|message| MessageAnchor {
                         id: message.id.clone(),
                         role: message.role.clone(),
-                        standalone: message.role == MessageRole::Client
+                        work_notification: self.work_notification_ids.contains(&message.id),
+                        compaction: message
+                            .blocks
+                            .iter()
+                            .any(|block| matches!(block, MessageBlock::ContextCompaction { .. })),
+                        standalone: (message.role == MessageRole::Client
+                            && !self.work_notification_ids.contains(&message.id))
                             || membership
                                 .get(message.id.as_str())
                                 .is_some_and(|(kind, _)| {
@@ -273,20 +296,28 @@ impl TranscriptProjection {
                     .get(ordinal + 1)
                     .copied()
                     .unwrap_or(self.messages.len());
+                // An independent compaction ends the available ownership
+                // evidence. Later notifications must not attach backwards.
+                let mut independent_compaction = false;
                 let responses: Vec<_> = self.messages[start + 1..next_user]
                     .iter()
-                    .filter(|message| !message.standalone)
+                    .filter(|message| {
+                        independent_compaction |= message.compaction && message.standalone;
+                        !message.standalone
+                            && !(message.work_notification && independent_compaction)
+                    })
                     .collect();
                 // The reply is the text at the end of the closing assistant
                 // message. Everything before it, including that message's own
                 // reasoning and tool blocks, is work; a turn that does not end
                 // in text folds fully.
-                let visible = responses
+                let closing_index = responses
                     .iter()
-                    .rev()
-                    .find(|message| message.role != MessageRole::System)
-                    .copied()
-                    .filter(|message| message.reply_start.is_some());
+                    .rposition(|message| {
+                        message.role != MessageRole::System && !message.work_notification
+                    })
+                    .filter(|index| responses[*index].reply_start.is_some());
+                let visible = closing_index.map(|index| responses[index]);
                 let reply_start = visible.and_then(|message| message.reply_start).unwrap_or(0);
                 let user = &self.messages[*start];
                 let duration_ms = self
@@ -300,10 +331,14 @@ impl TranscriptProjection {
                     user_message_id: user.id.clone(),
                     work_message_ids: responses
                         .iter()
-                        .filter(|message| {
-                            reply_start > 0 || visible.is_none_or(|reply| reply.id != message.id)
+                        .enumerate()
+                        .filter(|(index, message)| {
+                            (reply_start > 0 || visible.is_none_or(|reply| reply.id != message.id))
+                                // Truly late notifications remain standalone.
+                                && !(message.work_notification
+                                    && closing_index.is_some_and(|closing| *index > closing))
                         })
-                        .map(|message| message.id.clone())
+                        .map(|(_, message)| message.id.clone())
                         .collect(),
                     last_message_id: visible.map(|message| message.id.clone()),
                     reply_start_block: u32::try_from(reply_start).unwrap_or(u32::MAX),

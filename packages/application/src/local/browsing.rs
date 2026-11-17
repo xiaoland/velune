@@ -158,6 +158,7 @@ impl HistoryRead {
             _ => return Err(RuntimeError::invalid("此会话不属于所选运行时历史目录")),
         };
         let mut snapshot = ConversationSnapshot {
+            work_notification_ids: Vec::new(),
             revision: 1,
             context_runtime_id: runtime_id.to_owned(),
             conversation: summary,
@@ -191,6 +192,7 @@ impl HistoryRead {
                 projection.replace_history(&saved);
                 let projected = projection.snapshot.expect("history projection");
                 snapshot.messages = projected.messages;
+                snapshot.work_notification_ids = projected.work_notification_ids;
                 snapshot.executions = projected.executions;
                 snapshot.sub_agents = projected.sub_agents;
                 snapshot.conversation.cwd = saved["cwd"].as_str().map(str::to_owned);

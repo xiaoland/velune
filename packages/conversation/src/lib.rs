@@ -504,6 +504,10 @@ pub struct ConversationSnapshot {
     pub model_record_key: Option<String>,
     pub run_state: RunState,
     pub messages: Vec<Message>,
+    /// Native background-task notifications eligible for the owning user range's
+    /// work process. Internal projection input, absent from DeliveredSnapshot.
+    #[serde(default)]
+    pub work_notification_ids: Vec<String>,
     #[serde(default)]
     pub executions: Executions,
     #[serde(default)]
