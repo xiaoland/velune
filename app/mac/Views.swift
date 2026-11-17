@@ -37,8 +37,11 @@ struct VeluneRootView: View {
         NavigationSplitView(columnVisibility: Binding(get: { window.tools.tools(in: .left).isEmpty ? .detailOnly : .all },
                                                       set: { $0 == .detailOnly ? window.tools.collapse(.left) : window.tools.showArea(.left) })) {
             DockAreaView(window: window, side: .left)
-                .navigationSplitViewColumnWidth(min: 190, ideal: 240, max: 600)
-                .modifier(ListBlockToolbar(window: window, focused: focused))
+                .background(PaneAnchor { anchor in
+                    anchor()?.identifier = NSUserInterfaceItemIdentifier("conversation-sidebar-column")
+                })
+                .navigationSplitViewColumnWidth(min: window.tools.tools(in: .left) == [.list] ? 220 : 190, ideal: 240, max: 600)
+                .modifier(ConversationListSidebarToolbar(window: window))
         } detail: {
             withToolbar(panes)
             // One inspector column: the right dock area, or change review while that is open.
@@ -199,11 +202,15 @@ struct VeluneRootView: View {
     private var backButton: some View {
         Button { tab.goBack() } label: { Label("后退", systemImage: "chevron.backward") }
             .help(shortcuts.help("回到之前查看的会话", .back)).disabled(!window.hasConversationFocus || focused.backHistory.isEmpty)
+            .accessibilityIdentifier("conversation-back")
+            .background(PaneAnchor { anchor in anchor()?.identifier = NSUserInterfaceItemIdentifier("conversation-back") })
     }
 
     private var forwardButton: some View {
         Button { tab.goForward() } label: { Label("前进", systemImage: "chevron.forward") }
             .help(shortcuts.help("前往后退前的会话", .forward)).disabled(!window.hasConversationFocus || focused.forwardHistory.isEmpty)
+            .accessibilityIdentifier("conversation-forward")
+            .background(PaneAnchor { anchor in anchor()?.identifier = NSUserInterfaceItemIdentifier("conversation-forward") })
     }
 
     private var reloadButton: some View {

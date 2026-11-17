@@ -467,6 +467,10 @@ final class VeluneApplicationDelegate: NSObject, NSApplicationDelegate {
 @MainActor
 enum VeluneEntry {
     static func main() {
+        if CommandLine.arguments.contains("--check-sidebar-toolbar") {
+            admitMacExecution()
+            sidebarToolbarChecks()
+        }
         if CommandLine.arguments.contains("--check-background-notifications") {
             admitMacExecution()
             backgroundNotificationChecks()

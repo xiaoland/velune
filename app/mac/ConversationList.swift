@@ -18,7 +18,6 @@ struct ConversationListView: View {
     @FocusState private var searchFocused: Bool
     @State private var searchFocusRequest = 0
     @Environment(\.controlActiveState) private var activeState
-    @ObservedObject private var toolbarSettings = ToolbarSettings.shared
     /// The window's, so the title bar's filter menu and the list share it.
     private var browser: ConversationBrowser {
         get { window.listBrowser }
@@ -55,10 +54,10 @@ struct ConversationListView: View {
         Group {
             switch placement {
             case .sidebar:
-                withSidebarToolbar(list
+                list
                     .searchable(text: $window.listSearch, placement: .sidebar, prompt: "搜索会话")
                     .searchFocused($searchFocused)
-                    .navigationTitle("会话"))
+                    .navigationTitle("会话")
             case .panel:
                 VStack(spacing: 0) {
                     // A block has its search, filter and new conversation in its title bar.
@@ -101,28 +100,6 @@ struct ConversationListView: View {
             if store.device.conversationBrowserPreferences != nil { store.device.setConversationBrowserPreferences(value) }
         }
         .sheet(item: $projectTarget) { ProjectEditorView(store: store, target: $0) }
-    }
-
-    /// Customizable where the window's toolbar is (see `VeluneRootView.withToolbar`).
-    @ViewBuilder private func withSidebarToolbar(_ content: some View) -> some View {
-        if #available(macOS 26, *) {
-            content.toolbar(id: ConversationToolbar.id) {
-                ToolbarItem(id: "list-filter") { ConversationFilterMenu(window: window, store: store) }
-                ToolbarItem(id: "new-conversation") { NewConversationButton(window: window) }
-            }
-        } else {
-            content.toolbar {
-                ToolbarItemGroup {
-                    ForEach(toolbarSettings.shown(in: .sidebar)) { button in
-                        switch button {
-                        case .listFilter: ConversationFilterMenu(window: window, store: store)
-                        case .newConversation: NewConversationButton(window: window)
-                        default: EmptyView()
-                        }
-                    }
-                }
-            }
-        }
     }
 
     private var list: some View {
@@ -683,6 +660,8 @@ struct ConversationFilterMenu: View {
         .help("会话分组、筛选、排序、已归档会话与列表的位置")
         .sheet(item: $projectTarget) { ProjectEditorView(store: store, target: $0) }
         .accessibilityLabel("显示")
+        .accessibilityIdentifier("conversation-list-filter")
+            .background(PaneAnchor { anchor in anchor()?.identifier = NSUserInterfaceItemIdentifier("conversation-list-filter") })
         .disabled(store.device.conversationBrowserPreferences == nil)
     }
 }
@@ -693,6 +672,8 @@ struct NewConversationButton: View {
     var body: some View {
         Button { window.createConversation() } label: { Label("新建会话", systemImage: "square.and.pencil") }
             .help(KeyboardShortcutSettings.shared.help("新建会话", .newConversation)).disabled(window.application.enabledRuntimeInstances.isEmpty)
+            .accessibilityIdentifier("conversation-new-conversation")
+            .background(PaneAnchor { anchor in anchor()?.identifier = NSUserInterfaceItemIdentifier("conversation-new-conversation") })
     }
 }
 
@@ -730,25 +711,37 @@ extension ConversationStore {
     }
 }
 
-/// The window toolbar's new-conversation button at the top of a sidebar that
-/// holds the list as a block among other tools, where the list's own
-/// toolbar is not there to carry it.
-struct ListBlockToolbar: ViewModifier {
+/// The sidebar column owns its toolbar contributions. Keeping the owner here
+/// preserves the historical split between titlebar actions and list content as
+/// the list changes between a sole sidebar and a titled block in that column.
+struct ConversationListSidebarToolbar: ViewModifier {
     @ObservedObject var window: ConversationWindowModel
-    @ObservedObject var focused: ConversationStore
     @ObservedObject private var toolbarSettings = ToolbarSettings.shared
 
+    private var ownsList: Bool { window.tools.tools(in: .left).contains(.list) }
+
     @ViewBuilder func body(content: Content) -> some View {
-        if window.listIsBlock, window.tools[.list].place.side == .left {
-            if #available(macOS 26, *) {
-                content.toolbar(id: ConversationToolbar.id) { ToolbarItem(id: "new-conversation") { NewConversationButton(window: window) } }
-            } else if toolbarSettings.isShown(.newConversation) {
-                content.toolbar { ToolbarItem { NewConversationButton(window: window) } }
-            } else {
-                content
+        // Keep the column and its toolbar host identical as tools are hidden,
+        // shared or restored. Only the item collection changes ownership.
+        if #available(macOS 26, *) {
+            content.toolbar(id: ConversationToolbar.id) {
+                if ownsList {
+                    if !window.listIsBlock { ToolbarItem(id: "list-filter") { ConversationFilterMenu(window: window, store: window.list) } }
+                    ToolbarItem(id: "new-conversation") { NewConversationButton(window: window) }
+                }
             }
         } else {
-            content
+            content.toolbar {
+                ToolbarItemGroup {
+                    ForEach(ownsList ? toolbarSettings.shown(in: .sidebar) : []) { button in
+                        switch button {
+                        case .listFilter: if !window.listIsBlock { ConversationFilterMenu(window: window, store: window.list) }
+                        case .newConversation: NewConversationButton(window: window)
+                        default: EmptyView()
+                        }
+                    }
+                }
+            }
         }
     }
 }
