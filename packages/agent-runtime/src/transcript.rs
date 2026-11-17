@@ -324,6 +324,14 @@ impl TranscriptProjection {
             .iter()
             .map(|turn| (turn.user_message_id.as_str(), turn))
             .collect();
+        let closing: BTreeMap<_, _> = turns
+            .iter()
+            .filter_map(|turn| {
+                turn.last_message_id
+                    .as_deref()
+                    .map(|id| (id, turn.reply_start_block > 0))
+            })
+            .collect();
         let grouped: BTreeSet<_> = turns
             .iter()
             .flat_map(|turn| {
@@ -349,9 +357,11 @@ impl TranscriptProjection {
                         turn_id: turn.id.clone(),
                     });
                 }
-                if let Some(reply) = &turn.last_message_id {
-                    items.push(item(reply, turn.reply_start_block > 0));
-                }
+            } else if let Some(mixed) = closing.get(message.id.as_str()) {
+                // A closing reply stays at its native position. Emitting it
+                // with the user anchor moves intervening standalone notices
+                // after the answer, despite their earlier source position.
+                items.push(item(&message.id, *mixed));
             } else if !grouped.contains(&message.id) {
                 items.push(item(&message.id, false));
             }
@@ -452,6 +462,121 @@ mod tests {
             matches!(projection.items().last(), Some(TranscriptItem::Message { message_id, .. }) if message_id == "notice")
         );
         assert_eq!(projection.outline().len(), 1);
+    }
+
+    #[test]
+    fn standalone_notifications_keep_their_native_position_before_closing_replies() {
+        for (mixed, notice) in [
+            (
+                false,
+                serde_json::json!({"id":"notice","role":"client","completed":true,"blocks":[{"kind":"text","text":"background task complete"}]}),
+            ),
+            (
+                true,
+                serde_json::json!({"id":"notice","role":"client","completed":true,"blocks":[{"kind":"text","text":"background task complete"}]}),
+            ),
+            (
+                false,
+                serde_json::json!({"id":"notice","role":"system","completed":false,"blocks":[{"kind":"contextCompaction","text":"compacting"}]}),
+            ),
+        ] {
+            let blocks = if mixed {
+                serde_json::json!([{"kind":"reasoning","text":"finishing"},{"kind":"text","text":"done"}])
+            } else {
+                serde_json::json!([{"kind":"text","text":"done"}])
+            };
+            let messages: Vec<Message> = serde_json::from_value(serde_json::json!([
+                {"id":"user","role":"user","completed":true,"blocks":[{"kind":"text","text":"run background work"}]},
+                {"id":"progress","role":"assistant","completed":true,"blocks":[{"kind":"text","text":"checking"}]},
+                notice,
+                {"id":"notice2","role":"client","completed":true,"blocks":[{"kind":"text","text":"another background task complete"}]},
+                {"id":"closing","role":"assistant","completed":true,"blocks":blocks},
+                {"id":"late","role":"client","completed":true,"blocks":[{"kind":"text","text":"arrived after the reply"}]}
+            ])).unwrap();
+            let mut projection = TranscriptProjection::default();
+            projection.apply(TranscriptEvent::Replace {
+                messages: &messages,
+                executions: &Executions::default(),
+            });
+            let turn = projection.turns().remove(0);
+            assert_eq!(turn.last_message_id.as_deref(), Some("closing"));
+            assert_eq!(
+                turn.work_message_ids,
+                if mixed {
+                    vec!["progress", "closing"]
+                } else {
+                    vec!["progress"]
+                }
+            );
+            let identities: BTreeMap<_, _> = projection
+                .message_identities()
+                .into_iter()
+                .map(|identity| (identity.message_id, identity.id))
+                .collect();
+            let items = projection.items();
+            assert!(matches!(&items[1], TranscriptItem::Work { turn_id } if turn_id == &turn.id));
+            for item in &items {
+                if let TranscriptItem::Message { id, message_id } = item {
+                    let prefix = if mixed && message_id == "closing" {
+                        "reply:"
+                    } else {
+                        ""
+                    };
+                    assert_eq!(id, &format!("{prefix}{}", identities[message_id]));
+                }
+            }
+            let order: Vec<_> = projection
+                .items()
+                .into_iter()
+                .map(|item| match item {
+                    TranscriptItem::Message { message_id, .. } => message_id,
+                    TranscriptItem::Work { .. } => "work".into(),
+                })
+                .collect();
+            assert_eq!(
+                order,
+                ["user", "work", "notice", "notice2", "closing", "late"]
+            );
+        }
+    }
+
+    #[test]
+    fn standalone_notifications_do_not_split_or_reorder_pure_work() {
+        let messages: Vec<Message> = serde_json::from_value(serde_json::json!([
+            {"id":"user","role":"user","completed":true,"blocks":[{"kind":"text","text":"run background work"}]},
+            {"id":"before","role":"assistant","completed":true,"blocks":[{"kind":"reasoning","text":"checking"}]},
+            {"id":"notice","role":"client","completed":true,"blocks":[{"kind":"text","text":"background task complete"}]},
+            {"id":"after","role":"assistant","completed":true,"blocks":[{"kind":"reasoning","text":"still checking"}]},
+            {"id":"notice2","role":"client","completed":true,"blocks":[{"kind":"text","text":"another background task complete"}]}
+        ])).unwrap();
+        let mut projection = TranscriptProjection::default();
+        projection.apply(TranscriptEvent::Replace {
+            messages: &messages,
+            executions: &Executions::default(),
+        });
+        let turn = projection.turns().remove(0);
+        assert_eq!(turn.last_message_id, None);
+        assert_eq!(turn.work_message_ids, ["before", "after"]);
+        assert_eq!(
+            projection
+                .items()
+                .iter()
+                .filter(|item| matches!(item, TranscriptItem::Work { .. }))
+                .count(),
+            1
+        );
+        let order: Vec<_> = projection
+            .items()
+            .into_iter()
+            .map(|item| match item {
+                TranscriptItem::Message { message_id, .. } => message_id,
+                TranscriptItem::Work { turn_id } => {
+                    assert_eq!(turn_id, turn.id);
+                    "work".into()
+                }
+            })
+            .collect();
+        assert_eq!(order, ["user", "work", "notice", "notice2"]);
     }
 
     #[test]
