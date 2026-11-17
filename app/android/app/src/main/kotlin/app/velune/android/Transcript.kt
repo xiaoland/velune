@@ -207,10 +207,9 @@ private fun WorkBlock(messageId: String, index: Int, block: DeliveredBlock, expa
             textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp),
         )
         is DeliveredBlock.RuntimeFailure -> Text(block.detail, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        is DeliveredBlock.ContextCompaction -> Text(
-            block.text, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
-            textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp),
-        )
+        is DeliveredBlock.ContextCompaction -> ContextCompaction(block.text, expanded[key] == true) {
+            expanded[key] = expanded[key] != true
+        }
         is DeliveredBlock.Image -> Attachment(Icons.Outlined.Image, "图片")
         is DeliveredBlock.File -> Attachment(Icons.AutoMirrored.Outlined.InsertDriveFile, lastPathComponent(block.path))
         is DeliveredBlock.AgentSender -> Text(
@@ -230,6 +229,38 @@ private fun Reasoning(block: DeliveredBlock.Reasoning, open: Boolean, toggle: ()
             )
         }
         if (open) Payload(block.text, italic = true)
+    }
+}
+
+/** The runtime supplies a status line followed by the native summary, if any. */
+private fun contextCompactionParts(text: String): Pair<String, String?> {
+    val newline = text.indexOf('\n')
+    if (newline < 0) return text to null
+    val detail = text.substring(newline + 1).trimStart('\r', '\n')
+    if (detail.isBlank()) return text to null
+    return text.substring(0, newline).trimEnd('\r') to detail
+}
+
+@Composable
+private fun ContextCompaction(text: String, open: Boolean, toggle: () -> Unit) {
+    val (status, detail) = remember(text) { contextCompactionParts(text) }
+    if (detail == null) {
+        Text(
+            text, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp),
+        )
+    } else Column(Modifier.fillMaxWidth()) {
+        Row(
+            Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).clickable(onClick = toggle).heightIn(min = 44.dp).padding(vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                if (open) Icons.Filled.KeyboardArrowDown else Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = if (open) "收起详情" else "展开详情",
+                modifier = Modifier.size(18.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Text(status, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(start = 6.dp).weight(1f))
+        }
+        if (open) SelectionContainer { Markdown(detail, style = MaterialTheme.typography.bodySmall) }
     }
 }
 

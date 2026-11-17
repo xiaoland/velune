@@ -162,7 +162,7 @@ impl PiProjection {
         // Pi's estimate of every reply so far, by its price list.
         let mut cost = 0.0;
         for (index, message) in messages.iter().enumerate() {
-            let work_notification = is_background_task_notification(message);
+            let work_notification = is_work_notification(message);
             if message["role"] == "toolResult" {
                 apply_tool_result(&mut projected, message, message["id"].as_str());
             } else if let Some(mut message) = message_from_pi(message, format!("message-{index}")) {
@@ -360,7 +360,7 @@ impl PiProjection {
                         snapshot
                             .work_notification_ids
                             .retain(|known| known != &message.id);
-                        if is_background_task_notification(native) {
+                        if is_work_notification(native) {
                             snapshot.work_notification_ids.push(message.id.clone());
                         }
                         if event["type"] == "message_end" && native["role"] == "assistant" {
@@ -940,19 +940,43 @@ fn attach_tool_images(messages: &mut [Message], id: Option<&str>, images: &[Mess
         return;
     }
 }
+// Pi migrates legacy hookMessage records to custom without changing semantics.
+fn is_custom_message(message: &Value) -> bool {
+    matches!(message["role"].as_str(), Some("custom" | "hookMessage"))
+}
+
+/// Native work results, excluding supervisor questions and control requests.
+fn is_work_notification(message: &Value) -> bool {
+    is_custom_message(message)
+        && match message["customType"].as_str() {
+            Some(
+                "background-task-notification"
+                | "subagent-notify"
+                | "subagent-incremental-child-notify",
+            ) => true,
+            // The same native type also reports timeout, missing-run and
+            // needs-attention states. Only explicit settled results fold.
+            Some("subagent-wait-subscription") => matches!(
+                message["details"]["outcome"].as_str(),
+                Some("completed" | "failed")
+            ),
+            _ => false,
+        }
+}
+
 fn is_background_task_notification(message: &Value) -> bool {
-    message["role"] == "custom" && message["customType"] == "background-task-notification"
+    is_custom_message(message) && message["customType"] == "background-task-notification"
 }
 
 fn message_from_pi(message: &Value, fallback_id: String) -> Option<Message> {
-    if message["role"] == "custom" && message["display"] == false {
+    if is_custom_message(message) && message["display"] == false {
         return None;
     }
     let role = match message["role"].as_str()? {
         "user" => MessageRole::User,
         "assistant" => MessageRole::Assistant,
         "toolResult" => MessageRole::Tool,
-        "custom" => MessageRole::Client,
+        "custom" | "hookMessage" | "bashExecution" => MessageRole::Client,
         _ => MessageRole::System,
     };
     let id = message["id"]
@@ -960,10 +984,64 @@ fn message_from_pi(message: &Value, fallback_id: String) -> Option<Message> {
         .map(str::to_owned)
         .unwrap_or(fallback_id);
     let mut blocks = Vec::new();
-    if message["role"] == "compactionSummary" {
-        blocks.push(MessageBlock::ContextCompaction {
-            text: "上下文已压缩".into(),
-        });
+    match message["role"].as_str() {
+        Some("compactionSummary" | "branchSummary") => {
+            let title = if message["role"] == "branchSummary" {
+                "分支摘要"
+            } else {
+                "上下文已压缩"
+            };
+            let summary = message["summary"]
+                .as_str()
+                .filter(|summary| !summary.trim().is_empty());
+            blocks.push(MessageBlock::ContextCompaction {
+                text: summary
+                    .map_or_else(|| title.into(), |summary| format!("{title}\n\n{summary}")),
+            });
+        }
+        Some("bashExecution") => {
+            // A local !/!! command is a client operation, never an assistant
+            // tool call or a new user/model execution. Do not read fullOutputPath.
+            let command = message["command"].as_str().unwrap_or_default();
+            blocks.push(MessageBlock::Tool {
+                tool_id: None,
+                title: format!("本地命令：{command}"),
+                state: if message["cancelled"] == true
+                    || message["exitCode"].as_i64().is_some_and(|code| code != 0)
+                {
+                    ToolState::Failed
+                } else {
+                    ToolState::Completed
+                },
+                output: Some(message["output"].as_str().unwrap_or_default().into()),
+                conversation_id: None,
+            });
+            if message["cancelled"] == true {
+                blocks.push(MessageBlock::Notice {
+                    text: "命令已取消".into(),
+                });
+            } else if let Some(code) = message["exitCode"].as_i64() {
+                blocks.push(MessageBlock::Notice {
+                    text: format!("退出码：{code}"),
+                });
+            }
+            if message["truncated"] == true {
+                let text = message["fullOutputPath"]
+                    .as_str()
+                    .filter(|path| !path.is_empty())
+                    .map_or_else(
+                        || "输出已截断".into(),
+                        |path| format!("输出已截断；完整输出：{path}"),
+                    );
+                blocks.push(MessageBlock::Notice { text });
+            }
+            if message["excludeFromContext"] == true {
+                blocks.push(MessageBlock::Notice {
+                    text: "未加入模型上下文".into(),
+                });
+            }
+        }
+        _ => {}
     }
     if let Some(content) = message["content"].as_array() {
         for block in content {
@@ -1553,6 +1631,111 @@ mod tests {
     fn notice(id: &str) -> Value {
         json!({"id":id,"role":"custom","customType":"background-task-notification","content":"arbitrary body"})
     }
+    fn subagent_return(id: &str, custom_type: &str) -> Value {
+        json!({"id":id,"role":"custom","customType":custom_type,"display":true,
+            "content":"**结果**\n\n[报告](/synthetic/report.md:20)\n\n```text\nresult\n```"})
+    }
+    #[test]
+    fn subagent_return_notifications_join_work_in_cold_and_live_projection() {
+        for custom_type in ["subagent-notify", "subagent-incremental-child-notify"] {
+            let returned = subagent_return("returned", custom_type);
+            let s = native(json!([user(), tool("before"), returned, tool("after")]));
+            assert_eq!(s.work_notification_ids, ["returned"]);
+            let returned_message = s.messages.iter().find(|m| m.id == "returned").unwrap();
+            assert_eq!(returned_message.role, MessageRole::Client);
+            assert_eq!(
+                returned_message.blocks,
+                [MessageBlock::Text {
+                    text: returned["content"].as_str().unwrap().into()
+                }]
+            );
+            let t = transcript(&s);
+            assert_eq!(
+                t.turns()[0].work_message_ids,
+                ["before", "returned", "after"]
+            );
+            assert_eq!(ids(&t), ["user", "work"]);
+
+            let mut live = projection();
+            message(&mut live, user());
+            message(&mut live, tool("before"));
+            message(&mut live, returned.clone());
+            message(&mut live, tool("after"));
+            let s = live.snapshot.as_ref().unwrap();
+            assert_eq!(s.work_notification_ids, ["returned"]);
+            assert_eq!(
+                transcript(s).turns()[0].work_message_ids,
+                ["before", "returned", "after"]
+            );
+            live.replace_history(
+                &json!({"messages":[user(),tool("before"),returned,tool("after")]}),
+            );
+            assert_eq!(
+                live.snapshot.as_ref().unwrap().work_notification_ids,
+                ["returned"]
+            );
+        }
+    }
+    #[test]
+    fn subagent_return_notifications_preserve_late_orphan_and_mixed_reply_boundaries() {
+        for custom_type in ["subagent-notify", "subagent-incremental-child-notify"] {
+            for mixed in [false, true] {
+                let content = if mixed {
+                    json!([{"type":"thinking","thinking":"reason"},{"type":"text","text":"answer"}])
+                } else {
+                    json!([{"type":"text","text":"answer"}])
+                };
+                let s = native(
+                    json!([subagent_return("orphan",custom_type),user(),tool("before"),
+                    subagent_return("early",custom_type),
+                    {"id":"closing","role":"assistant","content":content},
+                    subagent_return("late",custom_type)]),
+                );
+                let t = transcript(&s);
+                let turn = &t.turns()[0];
+                assert_eq!(turn.last_message_id.as_deref(), Some("closing"));
+                assert_eq!(
+                    turn.work_message_ids,
+                    if mixed {
+                        vec!["before", "early", "closing"]
+                    } else {
+                        vec!["before", "early"]
+                    }
+                );
+                assert_eq!(ids(&t), ["orphan", "user", "work", "closing", "late"]);
+                assert!(matches!(&t.items()[3],TranscriptItem::Message{id,..}
+                    if id == &format!("{}message:closing",if mixed{"reply:"}else{""})));
+            }
+        }
+    }
+    #[test]
+    fn subagent_return_classification_preserves_requests_directives_and_hidden_messages() {
+        for custom_type in [
+            "subagent_supervisor_request",
+            "subagent_control_notice",
+            "subagent-notify-other",
+        ] {
+            let s = native(json!([
+                user(),
+                tool("before"),
+                subagent_return("request", custom_type)
+            ]));
+            assert!(s.work_notification_ids.is_empty());
+            assert_eq!(ids(&transcript(&s)), ["user", "work", "request"]);
+        }
+        for custom_type in ["subagent-notify", "subagent-incremental-child-notify"] {
+            let mut directive = subagent_return("directive", custom_type);
+            directive["role"] = json!("user");
+            let s = native(json!([user(), directive]));
+            assert!(s.work_notification_ids.is_empty());
+            assert_eq!(s.messages.last().unwrap().role, MessageRole::User);
+            let mut hidden = subagent_return("hidden", custom_type);
+            hidden["display"] = json!(false);
+            let s = native(json!([user(), tool("before"), hidden]));
+            assert!(s.work_notification_ids.is_empty());
+            assert!(!s.messages.iter().any(|m| m.id == "hidden"));
+        }
+    }
     #[test]
     fn tools_and_work_notices_preserve_native_work_order_without_closing() {
         let s = native(json!([
@@ -1661,52 +1844,304 @@ mod tests {
     }
 
     #[test]
-    fn background_notifications_survive_live_confirmation_and_resync_without_stale_classification()
-    {
-        use crate::transcript::{TranscriptEvent, TranscriptProjection};
-        let mut p = projection();
-        message(&mut p, user());
-        message(&mut p, tool("before"));
-        let mut unconfirmed = notice("temporary");
-        unconfirmed.as_object_mut().unwrap().remove("id");
-        message(&mut p, unconfirmed);
-        let snapshot = p.snapshot.as_ref().unwrap();
-        assert_eq!(snapshot.work_notification_ids.len(), 1);
-        let previous = snapshot.work_notification_ids[0].clone();
-        let mut t = TranscriptProjection::default();
-        t.apply(TranscriptEvent::ReplaceSnapshot(snapshot));
-        assert_eq!(t.turns()[0].work_message_ids, ["before", &previous]);
-        let identity = t
-            .message_identities()
-            .into_iter()
-            .find(|m| m.message_id == previous)
-            .unwrap()
-            .id;
-        p.replace_history(&json!({"messages":[user(),tool("before"),notice("native")],
-        "identityConfirmations":[{"previousId":previous,"currentId":"native"}]}));
-        let snapshot = p.snapshot.as_ref().unwrap();
-        t.apply(TranscriptEvent::ConfirmIdentities(
-            &snapshot.message_identity_confirmations,
-        ));
-        t.apply(TranscriptEvent::ReplaceSnapshot(snapshot));
-        assert_eq!(t.turns()[0].work_message_ids, ["before", "native"]);
-        assert_eq!(
-            t.message_identities()
-                .into_iter()
-                .find(|m| m.message_id == "native")
-                .unwrap()
-                .id,
-            identity
-        );
-        // The source changes to an unrelated custom message with the same id:
-        // classification is rebuilt from native semantics, never cached by id.
-        p.replace_history(&json!({"messages":[user(),tool("before"),
-        {"id":"native","role":"custom","customType":"other","content":"arbitrary body"}]}));
-        let snapshot = p.snapshot.as_ref().unwrap();
+    fn settled_wait_results_join_work_but_attention_and_unknown_outcomes_stay_visible() {
+        for outcome in [
+            "completed",
+            "failed",
+            "needs attention",
+            "timed out",
+            "could not be reconciled",
+            "reconciliation failed",
+            "paused",
+            "partial",
+            "stopped",
+            "rejected",
+            "future status",
+        ] {
+            let snapshot = native(json!([user(), tool("before"),
+                {"id":"wait","role":"custom","customType":"subagent-wait-subscription","display":true,"content":"native wait outcome","details":{"token":"synthetic-token","runId":"synthetic-run","outcome":outcome}},
+                tool("after")]));
+            let t = transcript(&snapshot);
+            let result = matches!(outcome, "completed" | "failed");
+            assert_eq!(
+                snapshot.work_notification_ids.contains(&"wait".into()),
+                result,
+                "{outcome}"
+            );
+            assert_eq!(
+                t.turns()[0].work_message_ids.contains(&"wait".into()),
+                result,
+                "{outcome}"
+            );
+            assert_eq!(ids(&t).contains(&"wait".into()), !result, "{outcome}");
+        }
+    }
+
+    #[test]
+    fn supervisor_requests_remain_history_and_reply_results_do_not_invent_request_state() {
+        for replied in [None, Some(false), Some(true)] {
+            let mut messages = vec![
+                user(),
+                tool("before"),
+                json!({"id":"request","role":"custom","customType":"subagent_supervisor_request","display":true,"content":"synthetic decision question","details":{"requestId":"R","expectsReply":true,"reason":"need_decision"}}),
+            ];
+            if let Some(is_error) = replied {
+                messages.push(json!({"id":"reply","role":"assistant","content":[{"type":"toolCall","id":"reply-call","name":"subagent_supervisor","arguments":{"action":"reply","replyTo":"R","message":"synthetic"}}]}));
+                messages.push(json!({"id":"reply-result","role":"toolResult","toolCallId":"reply-call","toolName":"subagent_supervisor","isError":is_error,"content":[{"type":"text","text":"native reply outcome"}],"details":if is_error { json!({}) } else { json!({"replyTo":"R","runId":"synthetic-run","agent":"synthetic-agent"}) }}));
+            }
+            messages.push(json!({"id":"closing","role":"assistant","content":"answer"}));
+            let snapshot = native(json!(messages));
+            let t = transcript(&snapshot);
+            assert!(!snapshot.work_notification_ids.contains(&"request".into()));
+            assert!(!t.turns()[0].work_message_ids.contains(&"request".into()));
+            assert_eq!(ids(&t), ["user", "work", "request", "closing"]);
+            assert!(
+                snapshot.pending_interactions.is_empty(),
+                "custom history does not prove current reply availability or resolution"
+            );
+            if let Some(is_error) = replied {
+                let reply = snapshot.messages.iter().find(|m| m.id == "reply").unwrap();
+                assert!(
+                    matches!(&reply.blocks[0], MessageBlock::Tool { state, output: Some(output), .. }
+                    if state == &(if is_error { ToolState::Failed } else { ToolState::Completed }) && output == "native reply outcome")
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn control_questions_reminders_and_user_operations_keep_their_native_visible_order() {
+        let kinds = [
+            "subagent_control_notice",
+            "subagent_steering_notice",
+            "subagent-supervisor-unanswered",
+            "subagent-supervisor-blocked",
+            "subagent_watchdog_warning",
+            "subagent_watchdog_clarification",
+            "subagent-completion-unanswered",
+            "subagent-completion-unhandled",
+            "subagent-workflow-result-write-failed",
+            "subagent-slash-result",
+            "subagent-slash-text-result",
+            "subagents-admin",
+            "unrecognized",
+        ];
+        let mut messages = vec![user(), tool("before")];
+        for kind in kinds {
+            messages.push(json!({"id":kind,"role":"custom","customType":kind,"content":"native visible control message","display":true,"details":{"runId":"synthetic-run"}}));
+        }
+        messages.push(tool("after"));
+        let snapshot = native(json!(messages));
+        let t = transcript(&snapshot);
         assert!(snapshot.work_notification_ids.is_empty());
-        t.apply(TranscriptEvent::ReplaceSnapshot(snapshot));
-        assert_eq!(t.turns()[0].work_message_ids, ["before"]);
-        assert_eq!(ids(&t), ["user", "work", "native"]);
+        assert_eq!(t.turns()[0].work_message_ids, ["before", "after"]);
+        let mut expected: Vec<String> = vec!["user".into(), "work".into()];
+        expected.extend(kinds.into_iter().map(str::to_owned));
+        assert_eq!(ids(&t), expected);
+    }
+
+    #[test]
+    fn sdk_injected_context_and_shell_messages_preserve_content_without_inventing_users() {
+        for live in [false, true] {
+            let messages = vec![
+                user(),
+                json!({"id":"answer","role":"assistant","content":"answer"}),
+                json!({"id":"branch","role":"branchSummary","summary":"retained branch summary","fromId":"source"}),
+                json!({"id":"bash","role":"bashExecution","command":"synthetic-command","output":"synthetic output","exitCode":7,"cancelled":false,"truncated":true,"fullOutputPath":"/synthetic/full.txt","excludeFromContext":true}),
+                json!({"id":"compact","role":"compactionSummary","summary":"retained compact summary","tokensBefore":123}),
+            ];
+            let mut p = projection();
+            if live {
+                for m in messages {
+                    message(&mut p, m);
+                }
+            } else {
+                p.replace_history(&json!({"messages":messages}));
+            }
+            let snapshot = p.snapshot.as_ref().unwrap();
+            let branch = snapshot
+                .messages
+                .iter()
+                .find(|m| m.id == "branch")
+                .expect("SDK branch summary is visible");
+            assert_eq!(branch.role, MessageRole::System);
+            assert_eq!(
+                branch.blocks,
+                [MessageBlock::ContextCompaction {
+                    text: "分支摘要\n\nretained branch summary".into()
+                }]
+            );
+            let bash = snapshot
+                .messages
+                .iter()
+                .find(|m| m.id == "bash")
+                .expect("SDK shell result is visible, including context-excluded !! commands");
+            assert_eq!(bash.role, MessageRole::Client);
+            assert!(
+                matches!(&bash.blocks[0], MessageBlock::Tool { tool_id: None, title, state: ToolState::Failed, output: Some(output), conversation_id: None }
+                if title == "本地命令：synthetic-command" && output == "synthetic output")
+            );
+            let facts = bash
+                .blocks
+                .iter()
+                .filter_map(|block| match block {
+                    MessageBlock::Notice { text } => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            assert!(
+                facts.contains("退出码：7")
+                    && facts.contains("/synthetic/full.txt")
+                    && facts.contains("未加入模型上下文")
+            );
+            let compact = snapshot
+                .messages
+                .iter()
+                .find(|m| m.id == "compact")
+                .unwrap();
+            assert!(
+                matches!(&compact.blocks[0], MessageBlock::ContextCompaction { text } if text == "上下文已压缩\n\nretained compact summary")
+            );
+            let t = transcript(snapshot);
+            assert_eq!(t.turns().len(), 1);
+            assert_eq!(t.turns()[0].last_message_id.as_deref(), Some("answer"));
+            assert_eq!(ids(&t), ["user", "answer", "branch", "bash", "compact"]);
+        }
+    }
+
+    #[test]
+    fn sdk_bash_cancellation_and_empty_success_remain_distinguishable() {
+        for cancelled in [true, false] {
+            let m = message_from_pi(&json!({"role":"bashExecution","command":"synthetic","output":"","cancelled":cancelled,"truncated":false,"exitCode":if cancelled { Value::Null } else { json!(0) }}), "bash".into()).unwrap();
+            assert!(
+                m.blocks.iter().any(
+                    |block| matches!(block, MessageBlock::Notice { text } if text == "命令已取消")
+                ) == cancelled
+            );
+            assert!(
+                m.blocks.iter().any(
+                    |block| matches!(block, MessageBlock::Notice { text } if text == "退出码：0")
+                ) == !cancelled
+            );
+            assert!(m.blocks.iter().any(
+                |block| matches!(block, MessageBlock::Tool { output: Some(output), .. } if output.is_empty())
+            ));
+            assert_eq!(
+                m.blocks.len(),
+                2,
+                "empty output has no duplicate placeholder"
+            );
+        }
+    }
+
+    #[test]
+    fn legacy_hooks_and_hidden_custom_messages_follow_the_sdk_custom_contract() {
+        for role in ["custom", "hookMessage"] {
+            let mut p = projection();
+            let messages = vec![
+                user(),
+                tool("before"),
+                json!({"id":"hidden","role":role,"customType":"subagent-notify","display":false,"content":"hidden"}),
+                json!({"id":"visible","role":role,"customType":"subagent-notify","display":true,"content":"**result**"}),
+                json!({"id":"unknown","role":role,"customType":"unrelated","display":true,"content":"actionable"}),
+                tool("after"),
+            ];
+            for m in &messages {
+                message(&mut p, m.clone());
+            }
+            for _ in 0..2 {
+                let snapshot = p.snapshot.as_ref().unwrap();
+                assert_eq!(snapshot.work_notification_ids, ["visible"]);
+                assert!(!snapshot.messages.iter().any(|m| m.id == "hidden"));
+                let visible = snapshot
+                    .messages
+                    .iter()
+                    .find(|m| m.id == "visible")
+                    .unwrap();
+                assert_eq!(visible.role, MessageRole::Client);
+                assert_eq!(
+                    visible.blocks,
+                    [MessageBlock::Text {
+                        text: "**result**".into()
+                    }]
+                );
+                let t = transcript(snapshot);
+                assert_eq!(
+                    t.turns()[0].work_message_ids,
+                    ["before", "visible", "after"]
+                );
+                assert_eq!(ids(&t), ["user", "work", "unknown"]);
+                p.replace_history(&json!({"messages":messages}));
+            }
+        }
+    }
+
+    #[test]
+    fn work_notifications_survive_live_confirmation_resync_and_parent_switch_without_stale_classification()
+     {
+        use crate::transcript::{TranscriptEvent, TranscriptProjection};
+        for kind in [
+            "background-task-notification",
+            "subagent-notify",
+            "subagent-incremental-child-notify",
+            "subagent-wait-subscription",
+        ] {
+            let notification = |id: &str| {
+                let mut value = notice(id);
+                value["customType"] = json!(kind);
+                value["details"] = json!({"outcome":"completed"});
+                value
+            };
+            let mut p = projection();
+            message(&mut p, user());
+            message(&mut p, tool("before"));
+            let mut unconfirmed = notification("temporary");
+            unconfirmed.as_object_mut().unwrap().remove("id");
+            message(&mut p, unconfirmed);
+            let snapshot = p.snapshot.as_ref().unwrap();
+            assert_eq!(snapshot.work_notification_ids.len(), 1);
+            let previous = snapshot.work_notification_ids[0].clone();
+            let mut t = TranscriptProjection::default();
+            t.apply(TranscriptEvent::ReplaceSnapshot(snapshot));
+            assert_eq!(t.turns()[0].work_message_ids, ["before", &previous]);
+            let identity = t
+                .message_identities()
+                .into_iter()
+                .find(|m| m.message_id == previous)
+                .unwrap()
+                .id;
+            p.replace_history(
+                &json!({"messages":[user(),tool("before"),notification("native")],
+        "identityConfirmations":[{"previousId":previous,"currentId":"native"}]}),
+            );
+            let snapshot = p.snapshot.as_ref().unwrap();
+            t.apply(TranscriptEvent::ConfirmIdentities(
+                &snapshot.message_identity_confirmations,
+            ));
+            t.apply(TranscriptEvent::ReplaceSnapshot(snapshot));
+            assert_eq!(t.turns()[0].work_message_ids, ["before", "native"]);
+            assert_eq!(
+                t.message_identities()
+                    .into_iter()
+                    .find(|m| m.message_id == "native")
+                    .unwrap()
+                    .id,
+                identity
+            );
+            let mut parent = snapshot.conversation.clone();
+            parent.id = "pi:another-synthetic-parent".into();
+            p.set_conversation(parent);
+            // The source changes to an unrelated custom message with the same id:
+            // classification is rebuilt from native semantics, never cached by id.
+            p.replace_history(&json!({"messages":[user(),tool("before"),
+        {"id":"native","role":"custom","customType":"other","content":"arbitrary body"}]}));
+            let snapshot = p.snapshot.as_ref().unwrap();
+            assert!(snapshot.work_notification_ids.is_empty());
+            t.apply(TranscriptEvent::ReplaceSnapshot(snapshot));
+            assert_eq!(t.turns()[0].work_message_ids, ["before"]);
+            assert_eq!(ids(&t), ["user", "work", "native"]);
+        }
     }
 }
 

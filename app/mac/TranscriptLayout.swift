@@ -1,6 +1,14 @@
 import AppKit
 import VeluneBindings
 
+/// A compaction status may carry native details after its first line.
+func contextCompactionParts(_ text: String) -> (status: String, detail: String?) {
+    guard let newline = text.firstIndex(where: \.isNewline) else { return (text, nil) }
+    let detail = String(text[text.index(after: newline)...].drop(while: \.isNewline))
+    guard !detail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return (text, nil) }
+    return (String(text[..<newline]), detail)
+}
+
 /// Width-independent native content of one message revision. Built once per
 /// revision (normally off the main thread) and shared by measurement and display.
 final class RenderedMessage: @unchecked Sendable {
@@ -33,8 +41,15 @@ final class RenderedMessage: @unchecked Sendable {
                     case .code(let language, let text, let source, let indent): return .code(language: language, text: text, source: source, indent: indent)
                     }
                 }
-            case .notice(let text), .contextCompaction(let text):
+            case .notice(let text):
                 return [.text(TranscriptTypography.plain(text, font: TranscriptTypography.callout, color: .secondaryLabelColor, alignment: alignment))]
+            case .contextCompaction(let text):
+                let parts = contextCompactionParts(text)
+                guard let detail = parts.detail else {
+                    return [.text(TranscriptTypography.plain(text, font: TranscriptTypography.callout, color: .secondaryLabelColor, alignment: alignment))]
+                }
+                return [.disclosure(key: Self.disclosureKey(block, at: index)!, title: parts.status, symbol: nil,
+                    detail: TranscriptTypography.plain(detail, font: TranscriptTypography.callout, color: .secondaryLabelColor), detailMaxWidth: nil)]
             case .runtimeFailure(let failure, let detail, let retry):
                 let title = failure.title
                 return [.disclosure(key: "failure:\(index)", title: title, symbol: retry == .recovered ? "checkmark.circle" : "exclamationmark.circle", detail: TranscriptTypography.plain(detail, font: TranscriptTypography.callout, color: .secondaryLabelColor), detailMaxWidth: 560)]
@@ -70,13 +85,14 @@ final class RenderedMessage: @unchecked Sendable {
 }
 
 extension RenderedMessage {
-    /// Local disclosure identity of a reasoning or tool block within its message.
+    /// Local disclosure identity within its message, also used to reveal search results.
     static func disclosureKey(_ block: DeliveredBlock, at index: Int) -> String? {
         switch block {
         case .reasoning: return "reasoning:\(index)"
         case .tool(let id, _, _, _, _): return "tool:" + (id ?? String(index))
         case .runtimeFailure: return "failure:\(index)"
-        case .text, .notice, .contextCompaction, .image, .file, .agentSender: return nil
+        case .contextCompaction: return "compaction:\(index)"
+        case .text, .notice, .image, .file, .agentSender: return nil
         }
     }
     /// Disclosures whose content has not been read from the core yet.
@@ -342,7 +358,7 @@ struct TranscriptRowLayout: @unchecked Sendable {
             for (index, block) in message.blocks.enumerated() {
                 if index > 0 { height += blockSpacing }
                 switch block {
-                case .text(let text), .notice(let text), .contextCompaction(let text):
+                case .text(let text), .notice(let text):
                     // Linear byte scans only: this runs for every row on reload.
                     var newlines = 0
                     for byte in text.utf8 where byte == 10 { newlines += 1 }
@@ -351,6 +367,9 @@ struct TranscriptRowLayout: @unchecked Sendable {
                 case .reasoning, .tool, .runtimeFailure:
                     height += headerHeight
                     if !expanded.isEmpty { height += 60 }
+                case .contextCompaction:
+                    height += headerHeight
+                    if let key = RenderedMessage.disclosureKey(block, at: index), expanded.contains(key) { height += 60 }
                 case .agentSender:
                     height += 16
                 case .image, .file:
