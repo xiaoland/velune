@@ -998,20 +998,9 @@ impl CoreRuntime {
             let physical = gateway
                 .pi_binding_id(key, gateway.authentication_revision(key))
                 .map_err(RuntimeError::invalid)?;
-            let session = if is_new {
-                None
-            } else {
-                Some(
-                    snapshot
-                        .conversation
-                        .id
-                        .strip_prefix(&format!("{runtime_id}:"))
-                        .ok_or_else(|| RuntimeError::invalid("conversation id"))?,
-                )
-            };
             self.start_pi_for_session(
                 cwd.as_deref(),
-                session.map(Path::new),
+                (!is_new).then_some(&snapshot),
                 Some(key),
                 Some(&physical),
             )?;
@@ -1021,7 +1010,7 @@ impl CoreRuntime {
                 session
                     .new_session()
                     .map_err(|error| RuntimeError::context("conversation create", error))?;
-            } else {
+            } else if !persistent {
                 session.restore_context(&snapshot);
             }
             self.session.model_record_key = Some(key.into());

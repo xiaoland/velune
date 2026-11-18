@@ -1,5 +1,6 @@
 //! On-demand execution preparation and process/gateway lifecycle.
 use super::*;
+use crate::conversation::ConversationSnapshot;
 
 pub(super) struct ExecutionConfiguration {
     pub(super) runtime: RuntimeInstance,
@@ -224,7 +225,7 @@ impl CoreRuntime {
     pub(super) fn start_pi_for_session(
         &mut self,
         cwd: Option<&Path>,
-        session: Option<&Path>,
+        source: Option<&ConversationSnapshot>,
         model_record_key: Option<&str>,
         physical_model_id: Option<&str>,
     ) -> Result<(), RuntimeError> {
@@ -257,6 +258,17 @@ impl CoreRuntime {
             self.validate_runtime_cwd(&runtime, cwd)?;
         }
         let cwd = cwd.map(Path::to_owned);
+        let session = source
+            .map(|source| {
+                source
+                    .conversation
+                    .id
+                    .strip_prefix(&format!("{}:", runtime.id))
+                    .filter(|path| !path.is_empty())
+                    .map(Path::new)
+                    .ok_or_else(|| RuntimeError::invalid("conversation id"))
+            })
+            .transpose()?;
         let mut config = self.session.pi()?.config().clone();
         self.shutdown_pi()?;
         config.working_dir = cwd.clone();
@@ -273,28 +285,40 @@ impl CoreRuntime {
         // Establish readiness through RPC before exposing bootstrap events to
         // the projection. Pi can emit initialization records before its first
         // command response; those records must not settle a new turn.
-        client
+        let (_, readiness) = client
             .state()
             .map_err(|error| runtime_start_error("startup", error))?;
+        if !config.side
+            && let (Some(expected), Some(reported)) =
+                (session, readiness["nativeSession"]["sessionFile"].as_str())
+            && Path::new(reported) != expected
+        {
+            return Err(super::browsing::history_read_changed());
+        }
+        drop(readiness);
         let runtime_id = self
             .session
             .execution_runtime_id
             .as_deref()
             .unwrap_or_default();
-        let mut projection = PiProjection::new(ConversationSummary {
-            native_read_state: None,
-            can_rename: false,
-            can_delete: false,
-            id: session
-                .map(|path| format!("{runtime_id}:{}", path.display()))
-                .unwrap_or_else(|| "active".into()),
-            title: velune_conversation::ConversationTitle::Untitled,
-            updated_at_unix_ms: None,
-            created_at_unix_ms: None,
-            runtime_id: runtime_id.into(),
-            cwd: cwd.as_ref().map(|path| path.to_string_lossy().into_owned()),
-            parent_conversation_id: None,
-        });
+        let mut projection = if let Some(source) = source.filter(|_| !config.side) {
+            PiProjection::from_history(source)
+        } else {
+            PiProjection::new(ConversationSummary {
+                native_read_state: None,
+                can_rename: false,
+                can_delete: false,
+                id: session
+                    .map(|path| format!("{runtime_id}:{}", path.display()))
+                    .unwrap_or_else(|| "active".into()),
+                title: velune_conversation::ConversationTitle::Untitled,
+                updated_at_unix_ms: None,
+                created_at_unix_ms: None,
+                runtime_id: runtime_id.into(),
+                cwd: cwd.as_ref().map(|path| path.to_string_lossy().into_owned()),
+                parent_conversation_id: None,
+            })
+        };
         if let Some(snapshot) = projection.snapshot.as_mut() {
             snapshot.model_record_key = model_record_key.map(str::to_owned);
         }
@@ -410,6 +434,80 @@ mod gateway_execution_tests {
         })
         .snapshot
         .unwrap()
+    }
+
+    #[test]
+    fn pi_resume_publishes_existing_transcript_before_another_native_sync() {
+        let root =
+            std::env::temp_dir().join(format!("velune-pi-resume-{}", crate::new_record_key()));
+        fs::create_dir(&root).unwrap();
+        let helper = root.join("rpc.py");
+        fs::write(
+            &helper,
+            r#"
+import json, pathlib, sys
+def emit(record): print(json.dumps(record), flush=True)
+session = sys.argv[sys.argv.index('--session') + 1]
+for line in sys.stdin:
+    request = json.loads(line)
+    command, request_id = request['type'], request['id']
+    data = {}
+    if command == 'prompt':
+        assert request['message'].startswith('/velune-projection-sync ')
+        old = {'id':'pi:session:old:0','role':'user','content':'synthetic earlier prompt'}
+        frame = {'requestId':request_id, 'snapshotVersion':1, 'sessionFile':session,
+                 'messages':[old], 'messageIds':[old['id']], 'identityConfirmations':[]}
+        emit({'type':'extension_ui_request','method':'setStatus',
+              'statusKey':'velune.session-metadata','statusText':json.dumps(frame)})
+        data = {'disposition':'handled'}
+    emit({'type':'response','id':request_id,'command':command,'success':True,'data':data})
+"#,
+        )
+        .unwrap();
+        let mut app = crate::Application::open(crate::Options {
+            home_directory: root.clone(),
+            resources_directory: root.clone(),
+        })
+        .unwrap();
+        let core = &mut app.runtime;
+        core.runtime_instances.push(RuntimeInstance {
+            enabled: true,
+            id: "pi".into(),
+            name: "Synthetic Pi".into(),
+            type_id: RuntimeKind::Pi,
+            gateway_id: "default".into(),
+            settings: Default::default(),
+        });
+        let config: PiConfig = serde_json::from_value(json!({
+            "execution":{"kind":"local"}, "os_home":root,
+            "binary":"/usr/bin/python3", "node_binary":"/usr/bin/python3", "rpc_entry":helper,
+        }))
+        .unwrap();
+        core.session.execution_runtime_id = Some("pi".into());
+        core.session.active_state = ActiveState::Pi(Box::new(pi::PiSession::new(config)));
+        let id = format!("pi:{}", root.join("existing.jsonl").display());
+        let mut source = PiProjection::new(snapshot(&id).conversation);
+        source.replace_history(&json!({"messages":[
+            {"id":"pi:session:old:0","role":"user","content":"synthetic earlier prompt"}
+        ]}));
+        let source = source.snapshot.unwrap();
+        core.start_pi_for_session(None, Some(&source), None, None)
+            .unwrap();
+        let live = core.native_snapshot().expect("started Pi view");
+        assert_eq!(live.conversation.id, source.conversation.id);
+        assert_eq!(live.messages, source.messages);
+        assert!(
+            !core
+                .session
+                .pi()
+                .unwrap()
+                .projection()
+                .unwrap()
+                .history_synchronized()
+        );
+        core.shutdown_active().unwrap();
+        drop(app);
+        fs::remove_dir_all(root).unwrap();
     }
 
     async fn send(endpoint: &str, token: &str, model: &str) -> reqwest::Response {

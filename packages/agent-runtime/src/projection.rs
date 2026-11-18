@@ -73,6 +73,44 @@ impl PiProjection {
         }
     }
 
+    /// Seed a resumed live view with the history already shown for this source.
+    /// The next native snapshot still owns reconciliation and edit admission.
+    pub fn from_history(source: &ConversationSnapshot) -> Self {
+        let mut projection = Self::new(source.conversation.clone());
+        let snapshot = projection.snapshot.as_mut().expect("history projection");
+        snapshot.messages.clone_from(&source.messages);
+        snapshot
+            .executions
+            .restore(&source.executions, &snapshot.messages);
+        snapshot
+            .work_notification_ids
+            .clone_from(&source.work_notification_ids);
+        snapshot.sub_agents.clone_from(&source.sub_agents);
+        snapshot
+            .message_identity_confirmations
+            .clone_from(&source.message_identity_confirmations);
+        // A previous live connection can leave local notices in a kept history.
+        // Reserve their numbers before replaying this connection's first events.
+        projection.next_message_id = source
+            .messages
+            .iter()
+            .filter_map(|message| {
+                [
+                    "pi-unconfirmed-",
+                    "message-",
+                    "notice-",
+                    "pi-diagnostic-",
+                    "prompt-error-",
+                    "pi-compaction-",
+                ]
+                .into_iter()
+                .find_map(|prefix| message.id.strip_prefix(prefix)?.parse::<u64>().ok())
+            })
+            .max()
+            .map_or(0, |id| id.saturating_add(1));
+        projection
+    }
+
     /// Pi records a failed model response as an assistant message and keeps
     /// the conversation usable; this tells such a turn from a completed one.
     pub fn turn_failed(&self) -> bool {
@@ -590,13 +628,15 @@ impl PiProjection {
                     .retain(|message| message.id != "pi-auto-retry");
             }
             "extension_error" => {
+                let event_name = event["event"].as_str().unwrap_or_default();
                 let text = format!(
-                    "Pi 扩展错误：{}\n{} · {}",
+                    "Pi 扩展错误：{}\n扩展路径：{}\n事件：{}",
                     event["error"].as_str().unwrap_or("上游未提供错误详情"),
                     event["extensionPath"].as_str().unwrap_or_default(),
-                    event["event"].as_str().unwrap_or_default()
+                    event_name
                 );
-                self.diagnostic(&mut snapshot, text);
+                let startup = event_name == "session_start" && self.lifecycle == Lifecycle::Idle;
+                self.diagnostic(&mut snapshot, text, startup);
             }
             "velune_error" | "velune_closed" => {
                 let compacting = self.manual_compaction.is_some();
@@ -635,7 +675,7 @@ impl PiProjection {
                     }
                 }
                 if !compacting {
-                    self.diagnostic(&mut snapshot, error.into());
+                    self.diagnostic(&mut snapshot, error.into(), false);
                 }
                 for message in &snapshot.messages[before.min(snapshot.messages.len())..] {
                     snapshot.executions.attach(&message.id);
@@ -655,8 +695,8 @@ impl PiProjection {
         self.snapshot = Some(snapshot);
     }
 
-    fn diagnostic(&mut self, snapshot: &mut ConversationSnapshot, text: String) {
-        snapshot.messages.push(Message {
+    fn diagnostic(&mut self, snapshot: &mut ConversationSnapshot, text: String, startup: bool) {
+        let message = Message {
             id: format!("pi-diagnostic-{}", self.next_message_id),
             role: MessageRole::System,
             timestamp_unix_ms: None,
@@ -665,8 +705,19 @@ impl PiProjection {
             turn_settings: None,
             turn_usage: None,
             branch_point: None,
-        });
+        };
         self.next_message_id += 1;
+        if startup {
+            // Startup diagnostics belong to the connection, including after a rewind.
+            let index = snapshot
+                .messages
+                .iter()
+                .position(|message| !message.id.starts_with("pi-diagnostic-"))
+                .unwrap_or(snapshot.messages.len());
+            snapshot.messages.insert(index, message);
+        } else {
+            snapshot.messages.push(message);
+        }
     }
 
     fn compaction_status(

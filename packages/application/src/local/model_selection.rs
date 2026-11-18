@@ -442,23 +442,14 @@ impl CoreRuntime {
             config.rpc_entry = Some(context.resources.join("pi_rpc.mjs"));
             config.extension = Some(context.resources.join("pi_virtual_model.mjs"));
             self.session.active_state = ActiveState::Pi(Box::new(pi::PiSession::new(config)));
-            let native_id = (!is_new)
-                .then(|| {
-                    snapshot
-                        .conversation
-                        .id
-                        .strip_prefix(&format!("{}:", runtime.id))
-                        .ok_or_else(|| RuntimeError::invalid("conversation id"))
-                })
-                .transpose()?;
-            self.start_pi_for_session(cwd, native_id.map(Path::new), None, None)?;
+            self.start_pi_for_session(cwd, (!is_new).then_some(snapshot), None, None)?;
             let persistent = self.session.side.is_none();
             let session = self.session.pi()?;
             if is_new && persistent {
                 session
                     .new_session()
                     .map_err(|error| RuntimeError::context("会话创建", error))?;
-            } else {
+            } else if !persistent {
                 session.restore_context(snapshot);
             }
             if let Some((_, model_id)) = native {

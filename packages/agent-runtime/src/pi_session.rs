@@ -1390,3 +1390,6 @@ for line in sys.stdin:
 
 #[cfg(test)]
 mod snapshot_tests;
+
+#[cfg(test)]
+mod resume_history_tests;
