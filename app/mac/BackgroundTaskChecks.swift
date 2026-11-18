@@ -65,9 +65,53 @@ import VeluneBindings
     let tasks = statuses.enumerated().map { index, status in
         BackgroundTaskInfo(id: "synthetic-\(index)", kind: index == 2 ? "delegate" : "shell", title: index == 2 ? "汇总构建结果并检查各平台兼容性，准备一份可供下一轮使用的报告" : "检查工作区构建与测试结果", status: status, conversationId: index == 2 ? "pi:synthetic-child" : nil, childSessionId: nil, canStop: status == .running, canReadOutput: status == .completed || status == .failed)
     }
-    let listModel = BackgroundTasksModel(); listModel.tasks = tasks
+    let listModel = BackgroundTasksModel(dismissals: store.device.backgroundTaskDismissals)
+    let snapshot = BackgroundTaskList(tasks: tasks, live: true, issue: nil)
+    listModel.reset(store); listModel.apply(snapshot)
+    precondition(!listModel.finishedExpanded && tasks.filter { $0.status.isTerminal }.count == 3)
     render("states", BackgroundTasksContent(model: listModel, inPopover: false, open: { _, _ in }))
     render("sidebar-states", BackgroundTasksContent(model: listModel, inPopover: false, inSidebar: true, open: { _, _ in }))
+    listModel.finishedExpanded = true
+    render("expanded", BackgroundTasksContent(model: listModel, inPopover: false, open: { _, _ in }))
+    listModel.clearFinished()
+    listModel.apply(snapshot)
+    let currentIDs = tasks.filter { !$0.status.isTerminal }.map(\.id)
+    precondition(listModel.hasClearedTasks && !listModel.finishedExpanded && listModel.listedTasks.map(\.id) == currentIDs,
+                 "清理只隐藏终态任务，刷新后仍保留运行中、正在停止和状态未知的任务")
+    render("cleared", BackgroundTasksContent(model: listModel, inPopover: false, open: { _, _ in }))
+
+    let reopened = BackgroundTasksModel(dismissals: store.device.backgroundTaskDismissals)
+    reopened.reset(store); reopened.apply(snapshot)
+    precondition(reopened.hasClearedTasks && reopened.listedTasks.map(\.id) == currentIDs,
+                 "同会话的新面板必须继承清理后的列表")
+    let finished = tasks.filter { $0.status.isTerminal }
+    reopened.apply(BackgroundTaskList(tasks: finished, live: true, issue: nil))
+    precondition(reopened.listedTasks.isEmpty)
+    render("all-cleared", BackgroundTasksContent(model: reopened, inPopover: false, open: { _, _ in }))
+    reopened.restoreFinished()
+    precondition(reopened.finishedExpanded && reopened.listedTasks == finished && !listModel.hasClearedTasks,
+                 "恢复显示必须同时还原该会话其他面板的显示")
+    reopened.clearFinished()
+    listModel.apply(BackgroundTaskList(tasks: [], live: false, issue: "连接不可用"))
+    precondition(listModel.listedTasks.map(\.id) == currentIDs && listModel.listedTasks.allSatisfy { $0.status == .unknown },
+                 "连接失败不可把已确认的终态重置成未知并重新显示")
+    let unavailable = tasks.map { var task = $0; task.status = .unknown; return task }
+    let reopenedOffline = BackgroundTasksModel(dismissals: store.device.backgroundTaskDismissals)
+    reopenedOffline.reset(store)
+    reopenedOffline.apply(BackgroundTaskList(tasks: unavailable, live: false, issue: "连接不可用"))
+    precondition(reopenedOffline.listedTasks.map(\.id) == currentIDs && reopenedOffline.listedTasks.allSatisfy { $0.status == .unknown },
+                 "宿主暂时丢失状态时重开面板，已清理的终态仍隐藏，真正未知的任务仍可见")
+    var revived = tasks[2]; revived.status = .running
+    reopened.apply(BackgroundTaskList(tasks: [revived], live: true, issue: nil))
+    precondition(reopened.listedTasks == [revived])
+    reopened.apply(snapshot)
+    precondition(reopened.listedTasks.contains { $0.id == revived.id }, "同 ID 的新活动完成后应重新显示")
+    precondition(reopened.listedTasks.filter { $0.status.isTerminal }.map(\.id) == [revived.id])
+    var replacement = tasks[3]; replacement.title = "同 ID 下的另一项任务"
+    reopened.apply(BackgroundTaskList(tasks: [replacement], live: true, issue: nil))
+    precondition(reopened.listedTasks == [replacement], "同 ID 的不同任务应重新显示")
+    precondition(!reopened.dismissals.contains(tasks[4], in: "另一会话"), "清理不能跨会话")
+
     for task in tasks {
         let model = BackgroundTasksModel(); model.tasks = [task]
         if task.canReadOutput { model.output = BackgroundTaskOutput(requestId: "synthetic", taskId: task.id, status: .ready, text: task.status == .failed ? "合成任务输出：构建失败，缺少测试依赖。" : "合成任务输出：构建完成，所有已选择的检查通过。", truncated: false, issue: nil) }

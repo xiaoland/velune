@@ -250,6 +250,7 @@ final class DeviceStore: ObservableObject {
     private(set) var hasGateway = false
     private(set) lazy var composerInputs = ComposerInputClient(device: self, transport: transport)
     let conversationRenamed = PassthroughSubject<(id: String, title: String), Never>()
+    let backgroundTaskDismissals = BackgroundTaskDismissals()
     /// Next-turn choices per conversation; the core keeps them across restarts.
     private var conversationChoices: [String: ConversationChoices] = [:]
     /// Each runtime instance's last choices and what its new conversations
