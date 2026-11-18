@@ -44,22 +44,31 @@ impl ConversationHistoryRequest {
     }
 
     pub(crate) fn load(self) -> LoadedConversationHistory {
+        let Self {
+            runtime_id,
+            id,
+            parts,
+        } = self;
         let mut sources = Vec::new();
-        let mut load = |part: Result<HistoryRead, RuntimeError>| {
+        let mut load = |part: Result<HistoryRead, RuntimeError>, segment_index| {
             let read = part?;
             sources.push(read.source().clone());
-            read.load()
+            read.load_with_context(&id, Some(segment_index))
         };
-        let parts = match self.parts {
-            HistoryParts::Native(part) => HistoryParts::Native(load(part)),
+        let parts = match parts {
+            HistoryParts::Native(part) => HistoryParts::Native(load(part, 0)),
             HistoryParts::Linked { link, parts } => HistoryParts::Linked {
                 link,
-                parts: parts.into_iter().map(load).collect(),
+                parts: parts
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, part)| load(part, index))
+                    .collect(),
             },
         };
         LoadedConversationHistory {
-            runtime_id: self.runtime_id,
-            id: self.id,
+            runtime_id,
+            id,
             parts,
             sources,
         }

@@ -10,6 +10,8 @@ async function main() {
   const cli = value("--cli");
   if (!cli || !isAbsolute(cli)) fail("Pi CLI 必须是绝对路径");
   const installation = resolvePiSdk({binary:cli,runtimeTypeId:value("--runtime-type")});
+  // Bind extensions to the converter from this already validated SDK installation.
+  process.env.VELUNE_PI_SDK_PACKAGE_ROOT = installation.packageDirectory;
   if (args.includes("--validate")) return;
   const required = (key) => { const path = value(key); if (!path || !isAbsolute(path)) fail("Pi SDK 装配路径无效"); return path; };
   const agentDir = required("--agent-dir"), modelsPath = value("--models-path"), selectionFile = value("--selection-file"), extension = required("--extension");

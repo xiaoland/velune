@@ -350,6 +350,7 @@ pub fn install_resources(target: &ExecutionTarget, local: &Path, remote: &Path) 
         "pi_sessions.mjs",
         "pi_rpc.mjs",
         "pi_virtual_model.mjs",
+        "pi_transcript.mjs",
         "pi_background_work.mjs",
         "pi_subagents.mjs",
         "pi_auth.mjs",

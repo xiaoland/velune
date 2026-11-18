@@ -2,6 +2,7 @@
 // Pi's SessionManager remains authoritative for session metadata.
 
 import { resolvePiSdk } from "./pi_sdk.mjs";
+import { projectPiDisplayHistory } from "./pi_transcript.mjs";
 import { readSubagentMetadata } from "./pi_subagents.mjs";
 
 const args = process.argv.slice(2);
@@ -158,7 +159,8 @@ if (forkPath) {
   process.stdout.write(JSON.stringify({ok:true}));
 } else
 if (inspectPath) {
-  const { SessionManager } = await sessionManager();
+  const sdk = await sessionManager();
+  const { SessionManager } = sdk;
   const manager = SessionManager.open(inspectPath);
   const context = manager.buildSessionContext();
   const virtualEntry = [...manager.getBranch()]
@@ -168,7 +170,7 @@ if (inspectPath) {
     name: manager.getSessionName() ?? null,
     cwd: manager.getCwd(),
     subAgents: await readSubagentMetadata(inspectPath, manager.getEntries()),
-    messages: manager.buildSessionProjection().entries.flatMap(entry =>
+    messages: projectPiDisplayHistory(manager, sdk.sessionEntryToContextMessages).entries.flatMap(entry =>
       entry.messages.map((message, ordinal) => ({...message, id:`pi:${manager.getSessionId()}:${entry.sourceEntry.id}:${ordinal}`}))),
     model: context.model,
     thinkingLevel: context.thinkingLevel,

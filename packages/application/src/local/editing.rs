@@ -923,10 +923,18 @@ impl CoreRuntime {
             if let Some(cutoff) = &segment.cutoff {
                 let count = usize::try_from(cutoff.message_count)
                     .map_err(|_| RuntimeError::invalid("会话截止位置无效"))?;
-                let prefix = messages
-                    .get(..count)
-                    .ok_or_else(|| RuntimeError::invalid("会话来源已改变，请重新打开后再编辑"))?;
-                if super::continuation::prefix_digest(prefix)? != cutoff.prefix_digest {
+                let Some(prefix) = messages.get(..count) else {
+                    super::continuation::trace_prefix_mismatch(
+                        "conversation_edit_source_conflict", &link.id, index,
+                        segment, "sealed", cutoff, &messages,
+                    );
+                    return Err(RuntimeError::invalid("会话来源已改变，请重新打开后再编辑"));
+                };
+                if !super::continuation::prefix_digest_matches(prefix, &cutoff.prefix_digest)? {
+                    super::continuation::trace_prefix_mismatch(
+                        "conversation_edit_source_conflict", &link.id, index,
+                        segment, "sealed", cutoff, &messages,
+                    );
                     return Err(RuntimeError::invalid("会话来源已改变，请重新打开后再编辑"));
                 }
                 messages.truncate(count);
@@ -935,6 +943,11 @@ impl CoreRuntime {
                 && super::continuation::verified_import_prefix(segment, &snapshot.messages)
                     .is_none()
             {
+                super::continuation::trace_prefix_mismatch(
+                    "conversation_edit_source_conflict", &link.id, index, segment,
+                    "imported", &segment.imported.as_ref().expect("checked import").prefix,
+                    &snapshot.messages,
+                );
                 return Err(RuntimeError::invalid(
                     "会话导入前缀已改变，请重新打开后再编辑",
                 ));
@@ -1904,6 +1917,111 @@ fn quoted_context(messages: &[Message]) -> velune_agent_runtime::import::Context
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn linked_edit_accepts_legacy_error_prefix_but_rejects_changed_source_content() {
+        let root =
+            std::env::temp_dir().join(format!("velune-prefix-edit-{}", crate::new_record_key()));
+        let mut app = crate::Application::open(crate::Options {
+            home_directory: root.clone(),
+            resources_directory: root.clone(),
+        })
+        .unwrap();
+        let core = &mut app.runtime;
+        core.runtime_instances = ["source", "tail"]
+            .into_iter()
+            .map(|id| RuntimeInstance {
+                enabled: true,
+                id: id.into(),
+                name: id.into(),
+                type_id: RuntimeKind::Acp,
+                gateway_id: String::new(),
+                settings: Default::default(),
+            })
+            .collect();
+        let snapshot = |runtime: &str,
+                        id: &str,
+                        messages: serde_json::Value|
+         -> ConversationSnapshot {
+            serde_json::from_value(json!({
+                "revision":1,"conversation":{"id":id,"runtimeId":runtime,"title":{"source":"native","text":"Synthetic"},"cwd":"/synthetic","canRename":false,"canDelete":false},
+                "contextRuntimeId":runtime,"runState":"idle","messages":messages,
+                "transcriptItems":[],"transcriptOutline":[],"transcriptMessageIdentities":[],
+                "actions":{"inputAccess":"editable","canSend":true,"canCancel":false,"canSwitch":true}
+            })).unwrap()
+        };
+        let source = snapshot(
+            "source",
+            "source:native",
+            json!([
+                {"id":"source-user","role":"user","completed":true,"blocks":[{"kind":"text","text":"original source"}]},
+                {"id":"source-error","role":"system","completed":true,"blocks":[{"kind":"runtimeFailure","failure":"other","detail":"API Error\nClaude Code 错误类型：overloaded_error","retry":null}]}
+            ]),
+        );
+        let mut legacy = source.messages.clone();
+        legacy[1].blocks = vec![
+            MessageBlock::Notice {
+                text: "API Error".into(),
+            },
+            MessageBlock::Notice {
+                text: "Claude Code 错误类型：overloaded_error".into(),
+            },
+        ];
+        let stored = super::super::continuation::prefix_digest(&legacy).unwrap();
+        let tail = snapshot(
+            "tail",
+            "tail:native",
+            json!([
+                {"id":"tail-user","role":"user","completed":true,"blocks":[{"kind":"text","text":"edit this"}]}
+            ]),
+        );
+        let link: crate::config::ConversationLink = serde_json::from_value(json!({
+            "id":"source:logical","segments":[
+                {"runtimeInstanceId":"source","runtimeTypeId":RuntimeKind::Acp,"nativeConversationId":"source:native","cwd":"/synthetic","cutoff":{"messageCount":2,"prefixDigest":stored},"handoff":null,"imported":null,"deleted":false},
+                {"runtimeInstanceId":"tail","runtimeTypeId":RuntimeKind::Acp,"nativeConversationId":"tail:native","cwd":"/synthetic","cutoff":null,"handoff":null,"imported":null,"deleted":false}
+            ]
+        })).unwrap();
+        core.conversation_links.push(link.clone());
+        let (tail, mut projection) = core
+            .read_link_with(&link, |segment| {
+                Ok(if segment.runtime_instance_id == "source" {
+                    source.clone()
+                } else {
+                    tail.clone()
+                })
+            })
+            .unwrap();
+        projection
+            .sealed_sources
+            .insert(source.conversation.id.clone(), source.clone());
+        core.session.active_state = ActiveState::History(Box::new(tail));
+        core.session.logical_projection = Some(projection);
+        let current = core.current_snapshot().unwrap();
+        assert!(
+            core.read_edit_sources(&current).is_ok(),
+            "a display upgrade must not block a linked edit"
+        );
+        let cached = core
+            .session
+            .logical_projection
+            .as_mut()
+            .unwrap()
+            .sealed_sources
+            .get_mut("source:native")
+            .unwrap();
+        cached.messages[0].blocks = vec![MessageBlock::Text {
+            text: "changed source".into(),
+        }];
+        assert!(
+            core.read_edit_sources(&current)
+                .unwrap_err()
+                .to_string()
+                .contains("会话来源已改变")
+        );
+        app.close_stopping_work().unwrap();
+        drop(app);
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn edit_revision_cache_reuses_idle_and_streaming_history_but_commands_recheck() {

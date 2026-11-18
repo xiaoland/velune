@@ -106,14 +106,45 @@ impl HistoryRead {
     }
 
     pub(super) fn load(self) -> Result<LoadedHistory, RuntimeError> {
+        let logical_id = self.native_id.clone();
+        self.load_with_context(&logical_id, None)
+    }
+
+    /// Keep the logical conversation and physical native source together in
+    /// local diagnostics without recording native paths or conversation text.
+    pub(super) fn load_with_context(
+        self,
+        logical_id: &str,
+        segment_index: Option<usize>,
+    ) -> Result<LoadedHistory, RuntimeError> {
         let started = std::time::Instant::now();
         let runtime_type = self.source.kind();
+        let runtime_id = self.source.runtime_id().to_owned();
+        let identity = diagnostic_session_identity(runtime_type, logical_id, &self.native_id);
+        tracing::info!(
+            target: "velune_application",
+            event = "runtime_history_read_started",
+            phase = "native_read",
+            runtime_id = %runtime_id,
+            runtime_type = %runtime_type,
+            logical_conversation_id_sha256 = %identity.logical_conversation_id_sha256,
+            logical_session_id = %identity.logical_session_id,
+            native_identity_sha256 = %identity.native_identity_sha256,
+            native_session_id = %identity.native_session_id,
+            segment_index,
+        );
         let result = self.load_native();
         tracing::info!(
             target: "velune_application",
             event = "runtime_history_read",
             phase = "native_read",
+            runtime_id = %runtime_id,
             runtime_type = %runtime_type,
+            logical_conversation_id_sha256 = %identity.logical_conversation_id_sha256,
+            logical_session_id = %identity.logical_session_id,
+            native_identity_sha256 = %identity.native_identity_sha256,
+            native_session_id = %identity.native_session_id,
+            segment_index,
             elapsed_ms = started.elapsed().as_millis() as u64,
             success = result.is_ok(),
         );
@@ -222,6 +253,85 @@ impl HistoryRead {
             acp_capabilities: None,
         })
     }
+}
+
+pub(super) struct DiagnosticSessionIdentity {
+    pub(super) logical_conversation_id_sha256: String,
+    pub(super) logical_session_id: String,
+    pub(super) native_identity_sha256: String,
+    pub(super) native_session_id: String,
+}
+
+/// Stable, privacy-safe session labels shared by history and projection
+/// diagnostics. Known native UUIDs remain searchable; unknown identifiers are
+/// represented only by a digest. Native paths and conversation text are never
+/// copied into a diagnostic field.
+pub(super) fn diagnostic_session_identity(
+    runtime_type: RuntimeKind,
+    logical_id: &str,
+    native_id: &str,
+) -> DiagnosticSessionIdentity {
+    let logical_session_id = logical_session_id_label(runtime_type, logical_id);
+    let native_session_id = session_id_label(runtime_type, native_id);
+    DiagnosticSessionIdentity {
+        logical_conversation_id_sha256: identity_digest(logical_id),
+        logical_session_id,
+        native_identity_sha256: identity_digest(native_id),
+        native_session_id,
+    }
+}
+
+fn logical_session_id_label(runtime_type: RuntimeKind, identity: &str) -> String {
+    let uuid = match runtime_type {
+        RuntimeKind::Pi => pi_session_uuid(identity),
+        RuntimeKind::ClaudeCode | RuntimeKind::Codex166 => runtime_session_uuid(identity),
+        RuntimeKind::Acp | RuntimeKind::DeepSeek => None,
+    }
+    .or_else(|| {
+        identity
+            .rsplit_once(':')
+            .and_then(|(_, token)| normalized_uuid(token))
+    });
+    uuid.unwrap_or_else(|| format!("sha256:{}", identity_digest(identity)))
+}
+
+fn session_id_label(runtime_type: RuntimeKind, identity: &str) -> String {
+    let uuid = match runtime_type {
+        RuntimeKind::Pi => pi_session_uuid(identity),
+        RuntimeKind::ClaudeCode | RuntimeKind::Codex166 => runtime_session_uuid(identity),
+        RuntimeKind::Acp | RuntimeKind::DeepSeek => None,
+    };
+    uuid.unwrap_or_else(|| format!("sha256:{}", identity_digest(identity)))
+}
+
+fn runtime_session_uuid(identity: &str) -> Option<String> {
+    let token = identity
+        .strip_prefix("thread-")
+        .or_else(|| identity.strip_prefix("thread_"))
+        .unwrap_or(identity);
+    normalized_uuid(token)
+}
+
+fn pi_session_uuid(identity: &str) -> Option<String> {
+    let basename = Path::new(identity).file_name()?.to_str()?;
+    let stem = basename.strip_suffix(".jsonl")?;
+    let token = stem.rsplit_once('_').map_or(stem, |(_, token)| token);
+    normalized_uuid(token)
+}
+
+fn normalized_uuid(token: &str) -> Option<String> {
+    let bytes = token.as_bytes();
+    (bytes.len() == 36
+        && bytes.iter().enumerate().all(|(index, byte)| match index {
+            8 | 13 | 18 | 23 => *byte == b'-',
+            _ => byte.is_ascii_hexdigit(),
+        }))
+    .then(|| token.to_ascii_lowercase())
+}
+
+fn identity_digest(identity: &str) -> String {
+    use sha2::Digest;
+    format!("{:x}", sha2::Sha256::digest(identity.as_bytes()))
 }
 
 /// Runtimes whose sessions are files read one by one.
@@ -660,7 +770,10 @@ impl CoreRuntime {
         runtime_id: &str,
         id: &str,
     ) -> Result<ConversationSnapshot, RuntimeError> {
-        self.finish_history_read(self.prepare_history_read(runtime_id, id)?.load()?)
+        self.finish_history_read(
+            self.prepare_history_read(runtime_id, id)?
+                .load_with_context(id, None)?,
+        )
     }
 
     pub(super) fn prepare_history_read(
@@ -935,6 +1048,49 @@ mod source_cache_tests {
     use velune_agent_runtime::native::codex_projects::{
         NativeProject, ProjectListing, ProjectRoot,
     };
+
+    #[test]
+    fn history_diagnostic_identity_is_stable_and_does_not_expose_native_path() {
+        let native_path = "/private/native/session.jsonl";
+        let digest = identity_digest(native_path);
+        assert_eq!(
+            digest,
+            "72f621c3abd0f85a9f384abd742599ce44ab7bd33b0a3b11d91c8ca00cf24aa3"
+        );
+        assert_eq!(digest.len(), 64);
+        assert!(!digest.contains(native_path));
+    }
+
+    #[test]
+    fn history_diagnostic_session_identity_keeps_only_recognized_native_uuids() {
+        let uuid = "dec68bcd-1f99-4d0e-a82d-0f04e86d4ea7";
+        let pi_path = format!("/private/sessions/2026-11-16T11-26-02-240Z_{uuid}.jsonl");
+        let pi = diagnostic_session_identity(RuntimeKind::Pi, &pi_path, &pi_path);
+        assert_eq!(pi.logical_session_id, uuid);
+        assert_eq!(pi.native_session_id, uuid);
+        assert!(!pi.native_session_id.contains("/private"));
+
+        let claude = diagnostic_session_identity(RuntimeKind::ClaudeCode, uuid, uuid);
+        assert_eq!(claude.logical_session_id, uuid);
+        assert_eq!(claude.native_session_id, uuid);
+
+        let logical_from_pi_link = diagnostic_session_identity(
+            RuntimeKind::Pi,
+            "model_record_18e43e8e5109d8d0_4:0d7a90df-259e-4886-ab34-713bf04ba6f9",
+            &pi_path,
+        );
+        assert_eq!(
+            logical_from_pi_link.logical_session_id,
+            "0d7a90df-259e-4886-ab34-713bf04ba6f9"
+        );
+        assert_eq!(logical_from_pi_link.native_session_id, uuid);
+
+        let unknown_path = "/private/sessions/not-a-standard-name.jsonl";
+        let unknown = diagnostic_session_identity(RuntimeKind::Pi, unknown_path, unknown_path);
+        assert!(unknown.logical_session_id.starts_with("sha256:"));
+        assert!(unknown.native_session_id.starts_with("sha256:"));
+        assert!(!unknown.native_session_id.contains("/private"));
+    }
 
     fn runtime(kind: RuntimeKind) -> RuntimeInstance {
         RuntimeInstance {

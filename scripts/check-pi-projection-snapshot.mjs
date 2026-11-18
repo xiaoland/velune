@@ -1,57 +1,104 @@
-// Synthetic-only check of the production extension. No SessionManager.open,
-// model, user session, credentials, or native output path is accessed.
+// Synthetic-only cold and live Pi display history check. The only session file
+// is created under a private temporary directory and removed in finally.
 import assert from "node:assert/strict";
+import {execFileSync} from "node:child_process";
+import {mkdir, mkdtemp, readFile, rm} from "node:fs/promises";
+import {tmpdir} from "node:os";
+import {join, resolve} from "node:path";
 import {pathToFileURL} from "node:url";
-import {resolve} from "node:path";
+import {resolvePiSdk} from "../packages/agent-runtime/resources/pi_sdk.mjs";
+
+const cli = process.argv[2];
+if (!cli || !resolve(cli)) throw new Error("Pass the absolute Pi CLI path");
+const installation = resolvePiSdk({binary:cli,runtimeTypeId:"pi-1.0"});
+process.env.VELUNE_PI_SDK_PACKAGE_ROOT = installation.packageDirectory;
 delete process.env.VELUNE_PI_SELECTION_FILE;
-const moduleUrl = process.argv[2] ? pathToFileURL(resolve(process.argv[2])) : new URL("../packages/agent-runtime/resources/pi_virtual_model.mjs", import.meta.url);
-const install = (await import(moduleUrl.href)).default;
-const commands = new Map(), events = new Map(), statuses = [];
-install({
-  on(name, handler) { events.set(name, [...(events.get(name) ?? []), handler]); },
-  registerCommand(name, command) { commands.set(name, command); },
-  events:{on(){return () => {};},emit(){}},
-});
-const nativeUser = {role:"user",content:"synthetic user"};
-let session = "A", file = "/synthetic/A.jsonl", calls = 0;
-let entries = [
-  {sourceEntry:{id:"u",type:"message",message:nativeUser},messages:[nativeUser]},
-  {sourceEntry:{id:"c",type:"compaction"},messages:[{role:"system",content:"checkpoint"},{role:"compactionSummary",summary:"synthetic summary"}]},
-  {sourceEntry:{id:"h",type:"custom_message"},messages:[{role:"custom",customType:"hidden-control",display:false,content:"hidden"}]},
-];
-const ctx = {sessionManager:{
-  buildSessionProjection(){calls++; return {entries};},getSessionId:()=>session,getSessionFile:()=>file,
-  getCwd:()=>"/synthetic",getSessionName:()=>session,getHeader:()=>({timestamp:"2026-01-01T00:00:00Z"}),
-},ui:{setStatus(key,text){statuses.push({key,text});}}};
-events.get("message_start").at(-1)({message:nativeUser},ctx);
-const liveId = statuses.at(-1).text;
-events.get("message_end").at(-1)({message:nativeUser},ctx);
-const command = commands.get("velune-projection-sync");
-command.handler("query-A",ctx);
-const first = JSON.parse(statuses.at(-1).text);
-assert.equal(calls,1);
-assert.equal(first.snapshotVersion,1);
-assert.equal(first.requestId,"query-A");
-assert.equal(first.messages.length,4);
-assert.deepEqual(first.messageIds,first.messages.map(m=>m.id));
-assert.deepEqual(first.messageIds,["pi:A:u:0","pi:A:c:0","pi:A:c:1","pi:A:h:0"]);
-assert.deepEqual(first.identityConfirmations,[{previousId:liveId,currentId:"pi:A:u:0"}]);
-// Later appends / in-flight agent messages cannot mutate the serialized frame.
-entries.push({sourceEntry:{id:"n",type:"custom_message"},messages:[{role:"custom",customType:"background-task-notification",content:"late"}]});
-const divergentAgentMessages = [...entries.flatMap(e=>e.messages),{role:"assistant",content:"in flight"}];
-assert.notEqual(divergentAgentMessages.length,first.messageIds.length);
-assert.equal(first.messages.length,4);
-command.handler("query-append",ctx);
-assert.equal(JSON.parse(statuses.at(-1).text).messages.length,5);
-// Same message count on another session/branch must still change each paired ID.
-session="B";file="/synthetic/B.jsonl";
-entries=[{sourceEntry:{id:"other",type:"message",message:{role:"user",content:"other"}},messages:[{role:"user",content:"other"},{role:"assistant",content:"branch answer"},{role:"system",content:"branch checkpoint"},{role:"compactionSummary",summary:"branch summary"}]}];
-command.handler("query-B",ctx);
-const branch=JSON.parse(statuses.at(-1).text);
-assert.equal(branch.messages.length,first.messages.length);
-assert.equal(branch.sessionFile,"/synthetic/B.jsonl");
-assert.equal(branch.messages[0].content,"other");
-assert.deepEqual(branch.messageIds,branch.messages.map(m=>m.id));
-assert.ok(branch.messageIds.every(id=>id.startsWith("pi:B:other:")));
-assert.deepEqual(first.messageIds,["pi:A:u:0","pi:A:c:0","pi:A:c:1","pi:A:h:0"]);
-console.log(JSON.stringify({passed:6,source:moduleUrl.pathname,cases:["one-projection","compound-compaction","hidden-identities","live-confirmation","concurrent-append","same-length-session-branch"]}));
+const sdk = await installation.importModule("dist/core/session-manager.js");
+const {SessionManager,CURRENT_SESSION_VERSION} = sdk;
+if (typeof sdk.sessionEntryToContextMessages !== "function") throw new Error("Pi SDK entry conversion API unavailable");
+const temp = await mkdtemp(join(tmpdir(), "velune-pi-display-history-"));
+process.env.PI_CODING_AGENT_DIR = temp;
+const stage = join(temp, "staged-resources");
+const macBuild = await readFile("scripts/build-macos.sh","utf8");
+const macList = macBuild.match(/for script in ([^;]+); do/)?.[1]?.trim().split(/\s+/);
+const windowsBuild = await readFile("scripts/build-windows.ps1","utf8");
+const windowsList = windowsBuild.match(/^\$scripts = (.+)$/m)?.[1]?.match(/'([^']+)'/g)?.map(value => value.slice(1,-1));
+const remoteInstall = await readFile("packages/agent-runtime/src/execution.rs","utf8");
+const remoteList = remoteInstall.match(/pub fn install_resources[\s\S]*?let names = \[([\s\S]*?)\];/)?.[1]?.match(/"([^"]+\.mjs)"/g)?.map(value => value.slice(1,-1).replace(/\.mjs$/,""));
+assert.ok(macList?.includes("pi_transcript"),"macOS resource staging omitted the shared Pi helper");
+assert.deepEqual(windowsList,macList,"Windows prune/copy list differs from macOS resource staging");
+assert.deepEqual(remoteList,macList,"SSH resource list differs from packaged Pi resources");
+const stagedScripts = macList;
+await mkdir(stage);
+for (const name of stagedScripts) {
+  execFileSync("python3",["scripts/build-support.py","copy",
+    `packages/agent-runtime/resources/${name}.mjs`,join(stage,`${name}.mjs`)],{cwd:resolve("."),stdio:"ignore"});
+}
+const moduleUrl = pathToFileURL(join(stage,"pi_virtual_model.mjs"));
+try {
+  const manager = SessionManager.create(temp, join(temp, "sessions"));
+  manager.appendMessage({role:"user",content:"synthetic history before checkpoint",timestamp:Date.now()});
+  const deleted = manager.appendMessage({role:"user",content:"synthetic deleted prompt",timestamp:Date.now()});
+  const liveUser = {role:"user",content:"synthetic retained prompt",timestamp:Date.now()};
+  const kept = manager.appendMessage(liveUser);
+  const assistant = manager.appendMessage({role:"assistant",content:[{type:"text",text:"original answer"}],
+    api:"openai-completions",provider:"synthetic",model:"synthetic",usage:{input:0,output:0,cacheRead:0,cacheWrite:0,totalTokens:0,
+      cost:{input:0,output:0,cacheRead:0,cacheWrite:0,total:0}},stopReason:"stop",timestamp:Date.now()});
+  const branchSummary = manager.branchWithSummary(assistant,"synthetic branch summary");
+  manager.appendMessage({role:"system",content:"synthetic system checkpoint",timestamp:Date.now()});
+  const compaction = manager.appendCompaction("synthetic compaction summary",kept,12);
+  manager.appendContextEdit(deleted,null);
+  manager.appendContextEdit(assistant,{content:"superseded replacement"});
+  manager.appendContextEdit(assistant,{content:"edited answer"});
+  const active = manager.appendMessage({role:"user",content:"active branch continuation",timestamp:Date.now()});
+  manager.appendMessage({role:"user",content:"discarded future must stay hidden",timestamp:Date.now()});
+  manager.branch(active);
+  manager.appendSessionInfo("synthetic");
+
+  // The model context remains Pi's normal compaction-aware projection.
+  const modelContext = manager.buildSessionContext().messages;
+  assert.ok(!modelContext.some(message => message.content === "synthetic deleted prompt"));
+
+  const statuses = [], handlers = new Map(), eventHandlers = new Map();
+  const install = (await import(moduleUrl.href)).default;
+  install({
+    on(name, handler) { eventHandlers.set(name,[...(eventHandlers.get(name) ?? []),handler]); },
+    registerCommand(name, command) { handlers.set(name,command); },
+    events:{on(){return () => {};},emit(){}},
+  });
+  const ctx = {sessionManager:manager,ui:{setStatus(key,text){statuses.push({key,text});}}};
+  eventHandlers.get("message_start").at(-1)({message:liveUser},ctx);
+  const liveId = statuses.at(-1).text;
+  eventHandlers.get("message_end").at(-1)({message:liveUser},ctx);
+  handlers.get("velune-projection-sync").handler("synthetic",ctx);
+  const live = JSON.parse(statuses.at(-1).text);
+
+  const cold = JSON.parse(execFileSync(process.execPath,[
+    join(stage,"pi_sessions.mjs"),"--inspect-session",manager.getSessionFile(),
+    "--agent-dir",temp,"--runtime-type","pi-1.0","--cli",cli,
+  ],{cwd:resolve("."),encoding:"utf8",env:process.env}));
+  assert.equal(live.snapshotVersion,1);
+  assert.ok(live.messages.length > modelContext.length,
+    `display history (${live.messages.length}) must retain pre-compaction branch messages (model context ${modelContext.length})`);
+  assert.deepEqual(live.messages,cold.messages,"cold and live producers must share the same full display projection");
+  assert.ok(live.messages.every(message => message.id.startsWith(`pi:${manager.getSessionId()}:`)));
+  assert.equal(live.messages.some(message => message.content === "synthetic deleted prompt"),false);
+  assert.ok(live.messages.some(message => message.content === "synthetic history before checkpoint"));
+  assert.equal(live.messages.some(message => JSON.stringify(message).includes("discarded future must stay hidden")),false);
+  assert.ok(live.messages.some(message => JSON.stringify(message).includes("edited answer")));
+  assert.equal(live.messages.some(message => JSON.stringify(message).includes("original answer")),false);
+  assert.equal(live.messages.some(message => JSON.stringify(message).includes("superseded replacement")),false);
+  assert.ok(live.messages.some(message => JSON.stringify(message).includes("synthetic branch summary")));
+  assert.ok(live.messages.some(message => JSON.stringify(message).includes("synthetic compaction summary")));
+  assert.ok(live.messages.some(message => message.id === `pi:${manager.getSessionId()}:${branchSummary}:0`));
+  assert.ok(live.messages.some(message => message.id === `pi:${manager.getSessionId()}:${compaction}:1`));
+  assert.deepEqual(live.identityConfirmations,[{previousId:liveId,currentId:`pi:${manager.getSessionId()}:${kept}:0`}]);
+  assert.equal(CURRENT_SESSION_VERSION,manager.getHeader().version);
+  assert.deepEqual(manager.buildSessionContext().messages,modelContext);
+  console.log(JSON.stringify({passed:11,cases:["full-branch-before-compaction","context-edit-delete","context-edit-replacement",
+    "compaction-and-branch-summary","source-entry-ordinal-identity","discarded-branch-exclusion","stable-live-identity",
+    "cold-live-producer-equivalence","model-context-unchanged","current-sdk-api","staged-resource-import"]}));
+} finally {
+  await rm(temp,{recursive:true,force:true});
+  delete process.env.VELUNE_PI_SDK_PACKAGE_ROOT;
+}

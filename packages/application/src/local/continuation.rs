@@ -38,6 +38,167 @@ pub(super) fn prefix_digest(messages: &[Message]) -> Result<String, RuntimeError
     Ok(digest(&serde_json::to_vec(&content)?))
 }
 
+pub(super) fn prefix_digest_matches(
+    messages: &[Message],
+    expected: &str,
+) -> Result<bool, RuntimeError> {
+    if prefix_digest(messages)? == expected {
+        return Ok(true);
+    }
+    if !messages.iter().any(|message| {
+        message
+            .blocks
+            .iter()
+            .any(|block| matches!(block, MessageBlock::RuntimeFailure { .. }))
+    }) {
+        return Ok(false);
+    }
+    let content: Vec<_> = messages
+        .iter()
+        .map(|message| {
+            let blocks = if message
+                .blocks
+                .iter()
+                .any(|block| matches!(block, MessageBlock::RuntimeFailure { .. }))
+            {
+                std::borrow::Cow::Owned(
+                    message
+                        .blocks
+                        .iter()
+                        .flat_map(|block| {
+                            if let MessageBlock::RuntimeFailure { detail, .. } = block {
+                                // Claude's old reader kept the original error text and
+                                // its appended type in two separate notice blocks.
+                                if let Some((text, error_type)) =
+                                    detail.rsplit_once("\nClaude Code 错误类型：")
+                                {
+                                    vec![
+                                        MessageBlock::Notice { text: text.into() },
+                                        MessageBlock::Notice {
+                                            text: format!("Claude Code 错误类型：{error_type}"),
+                                        },
+                                    ]
+                                } else {
+                                    vec![MessageBlock::Notice {
+                                        text: detail.clone(),
+                                    }]
+                                }
+                            } else {
+                                vec![block.clone()]
+                            }
+                        })
+                        .collect::<Vec<_>>(),
+                )
+            } else {
+                std::borrow::Cow::Borrowed(message.blocks.as_slice())
+            };
+            (&message.role, blocks)
+        })
+        .collect();
+    Ok(digest(&serde_json::to_vec(&content)?) == expected)
+}
+
+pub(super) fn trace_prefix_mismatch(
+    event: &'static str,
+    logical_id: &str,
+    index: usize,
+    segment: &ConversationSegmentReference,
+    prefix_kind: &'static str,
+    expected: &crate::config::ConversationCutoff,
+    messages: &[Message],
+) {
+    let native_id = segment
+        .native_conversation_id
+        .strip_prefix(&format!("{}:", segment.runtime_instance_id))
+        .unwrap_or(&segment.native_conversation_id);
+    let identity = super::browsing::diagnostic_session_identity(
+        segment.runtime_type_id,
+        logical_id,
+        native_id,
+    );
+    let count = usize::try_from(expected.message_count).ok();
+    let prefix = count.and_then(|count| messages.get(..count));
+    let failure_kind = if prefix.is_some() {
+        "digest_mismatch"
+    } else {
+        "count_too_short"
+    };
+    let actual = prefix
+        .and_then(|messages| prefix_digest(messages).ok())
+        .unwrap_or_default();
+    tracing::warn!(target: "velune_application", event,
+        phase = "source_prefix", prefix_kind, failure_kind,
+        logical_conversation_id_sha256 = %identity.logical_conversation_id_sha256,
+        logical_session_id = %identity.logical_session_id,
+        native_identity_sha256 = %identity.native_identity_sha256,
+        native_session_id = %identity.native_session_id,
+        runtime_id = %segment.runtime_instance_id,
+        runtime_type = %segment.runtime_type_id,
+        segment_index = index,
+        expected_message_count = expected.message_count,
+        actual_message_count = messages.len(),
+        expected_prefix_digest = %expected.prefix_digest,
+        actual_prefix_digest = %actual,
+    );
+}
+
+#[cfg(test)]
+mod prefix_digest_tests {
+    use super::*;
+
+    fn messages(blocks: serde_json::Value) -> Vec<Message> {
+        serde_json::from_value(serde_json::json!([{
+            "id":"native-error","role":"system","completed":true,"blocks":blocks
+        }]))
+        .unwrap()
+    }
+
+    #[test]
+    fn prefix_digest_accepts_exact_legacy_error_notices_without_weakening_content() {
+        let old = messages(serde_json::json!([
+            {"kind":"notice","text":"API Error: 503\nplease retry"},
+            {"kind":"notice","text":"Claude Code 错误类型：overloaded_error"}
+        ]));
+        let current = messages(serde_json::json!([{
+            "kind":"runtimeFailure","failure":"other",
+            "detail":"API Error: 503\nplease retry\nClaude Code 错误类型：overloaded_error",
+            "retry":{"kind":"recovered"}
+        }]));
+        let stored = prefix_digest(&old).unwrap();
+        assert_ne!(prefix_digest(&current).unwrap(), stored);
+        assert!(prefix_digest_matches(&current, &stored).unwrap());
+        assert!(prefix_digest_matches(&current, &prefix_digest(&current).unwrap()).unwrap());
+        let mut changed = current.clone();
+        changed[0].role = MessageRole::User;
+        assert!(!prefix_digest_matches(&changed, &stored).unwrap());
+        let changed = messages(serde_json::json!([{
+            "kind":"runtimeFailure","failure":"other","detail":"different upstream error","retry":null
+        }]));
+        assert!(!prefix_digest_matches(&changed, &stored).unwrap());
+        assert!(!prefix_digest_matches(&[], &stored).unwrap());
+    }
+
+    #[test]
+    fn prefix_digest_compatibility_preserves_tool_result_checks() {
+        let old = messages(serde_json::json!([
+            {"kind":"notice","text":"API Error"},
+            {"kind":"tool","toolID":"call-1","title":"read","state":"completed","output":"original","conversation_id":null}
+        ]));
+        let current = messages(serde_json::json!([
+            {"kind":"runtimeFailure","failure":"other","detail":"API Error","retry":null},
+            {"kind":"tool","toolID":"call-1","title":"read","state":"completed","output":"original","conversation_id":null}
+        ]));
+        let stored = prefix_digest(&old).unwrap();
+        assert!(prefix_digest_matches(&current, &stored).unwrap());
+        let mut changed = current;
+        if let MessageBlock::Tool { output, .. } = &mut changed[0].blocks[1] {
+            *output = Some("changed".into());
+        }
+        assert!(!prefix_digest_matches(&changed, &stored).unwrap());
+    }
+}
+
+
 fn display_id(index: usize, id: &str) -> String {
     format!("segment-{index}:{id}")
 }
@@ -84,7 +245,9 @@ pub(super) fn verified_import_prefix(
 ) -> Option<usize> {
     let prefix = &segment.imported.as_ref()?.prefix;
     let count = usize::try_from(prefix.message_count).ok()?;
-    (prefix_digest(messages.get(..count)?).ok()? == prefix.prefix_digest).then_some(count)
+    prefix_digest_matches(messages.get(..count)?, &prefix.prefix_digest)
+        .ok()?
+        .then_some(count)
 }
 
 pub(super) fn display_segment(
@@ -452,16 +615,23 @@ impl CoreRuntime {
             if index == 0 {
                 origin = Some(snapshot.conversation.clone());
             }
+            if let Some(imported) = &segment.imported
+                && verified_import_prefix(segment, &snapshot.messages).is_none()
+            {
+                trace_prefix_mismatch("conversation_import_prefix_mismatch", &link.id, index,
+                    segment, "imported", &imported.prefix, &snapshot.messages);
+            }
             if let Some(cutoff) = &segment.cutoff {
                 let count = usize::try_from(cutoff.message_count)
                     .map_err(|error| RuntimeError::context("关联会话截止位置无效", error))?;
-                if prefix_digest(&snapshot.messages[..count.min(snapshot.messages.len())])
-                    .map(|d| d != cutoff.prefix_digest)
+                if prefix_digest_matches(&snapshot.messages[..count.min(snapshot.messages.len())], &cutoff.prefix_digest)
+                    .map(|matches| !matches)
                     .unwrap_or(true)
                 {
                     // The sealed segment's native history drifted; show what
                     // remains instead of refusing the whole linked conversation.
-                    tracing::warn!(target:"velune_application", event="conversation_cutoff_digest_mismatch", segment_index=index);
+                    trace_prefix_mismatch("conversation_cutoff_digest_mismatch", &link.id, index,
+                        segment, "sealed", cutoff, &snapshot.messages);
                 }
                 snapshot.messages.truncate(count);
                 if shows_boundary(link, index) {

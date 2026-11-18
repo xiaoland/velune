@@ -2,7 +2,15 @@
 // Pi only records this virtual selection and the routed model in its branch.
 import { readFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
+import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import installPiBackgroundWork from "./pi_background_work.mjs";
+import { projectPiDisplayHistory } from "./pi_transcript.mjs";
+
+const sdkPackageRoot = process.env.VELUNE_PI_SDK_PACKAGE_ROOT;
+const sessionManagerSdk = sdkPackageRoot
+  ? await import(pathToFileURL(join(sdkPackageRoot, "dist/core/session-manager.js")).href)
+  : undefined;
 
 const selectionPath = process.env.VELUNE_PI_SELECTION_FILE;
 
@@ -33,10 +41,13 @@ export default function (pi) {
     description: "Project current native session metadata",
     handler: (_args, ctx) => {
       const manager = ctx.sessionManager;
+      if (!sessionManagerSdk?.sessionEntryToContextMessages) {
+        throw new Error("Validated Pi SDK entry converter is unavailable");
+      }
       // One synchronous projection supplies both content and provenance. A
       // later get_messages reads agent.state.messages, which can already be a
       // different branch or include an in-flight message not persisted here.
-      const projection = manager.buildSessionProjection();
+      const projection = projectPiDisplayHistory(manager, sessionManagerSdk.sessionEntryToContextMessages);
       const sessionId = manager.getSessionId();
       const messages = [];
       const messageIds = [];
