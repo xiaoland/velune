@@ -127,7 +127,26 @@ impl CoreRuntime {
             })
             .map(|view| view.conversation.id.clone())
     }
+
+    /// A child's live work is tracked by the runtime that spawned it. A
+    /// history read of the child alone may be idle even before its first write.
+    pub(super) fn child_run_state(&self, snapshot: &ConversationSnapshot) -> Option<RunState> {
+        snapshot.conversation.parent_conversation_id.as_ref()?;
+        let child_id = snapshot.conversation.id.as_str();
+        let task = self
+            .parked
+            .iter()
+            .flat_map(session::Session::work)
+            .find(|task| task.conversation_id.as_deref() == Some(child_id))?;
+        Some(match task.state {
+            velune_agent_runtime::work::BackgroundState::Stopping => RunState::Stopping,
+            _ => RunState::Elsewhere,
+        })
+    }
 }
+
+#[cfg(all(test, unix))]
+mod activity_tests;
 
 #[cfg(test)]
 mod tests {

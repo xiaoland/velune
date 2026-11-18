@@ -544,6 +544,10 @@ impl CoreRuntime {
             None => self.decorate_snapshot(native),
         };
         self.apply_generated_title(&mut snapshot.conversation);
+        let child_run_state = self.child_run_state(&snapshot);
+        if let Some(state) = &child_run_state {
+            snapshot.run_state = state.clone();
+        }
         continuation::stamp_turn_runtime(&mut snapshot.messages, &snapshot.context_runtime_id);
         if self.session.transcript_conversation_id.as_deref() != Some(&snapshot.conversation.id) {
             self.session.transcript_projection = TranscriptProjection::default();
@@ -567,6 +571,10 @@ impl CoreRuntime {
             .apply(TranscriptEvent::ExecutionState(
                 if self.session.compacting {
                     RunState::Idle
+                } else if child_run_state.is_some() {
+                    // The owning runtime measures the child turn, not this
+                    // history viewer, including while a stop is in progress.
+                    RunState::Elsewhere
                 } else {
                     snapshot.run_state.clone()
                 },

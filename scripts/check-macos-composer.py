@@ -25,7 +25,10 @@ def main():
     parser.add_argument('--app', type=Path, default=app_bundle_path(ROOT, 'dev'))
     parser.add_argument('--output', type=Path)
     parser.add_argument('--dark', action='store_true')
+    parser.add_argument('--child-activity', action='store_true', help='check only the child conversation activity row')
     args = parser.parse_args()
+    if args.child_activity and args.check != 'background-notifications':
+        parser.error('--child-activity requires background-notifications')
     app = args.app.resolve()
     context = validate_bundle(app, purpose='development')
     output = (args.output or ROOT / 'target/checks' / ('macos-' + args.check + ('-dark' if args.dark else ''))).resolve()
@@ -88,6 +91,10 @@ def main():
             flags.append('--experience-runtime-recovery-only')
         if args.dark and args.check == 'background':
             flags.append('--background-check-dark')
+        if args.child_activity:
+            flags.append('--check-child-activity')
+            if args.dark:
+                flags.append('--child-activity-dark')
         with (output / 'native.log').open('w') as log:
             child = subprocess.Popen([str(copied / 'Contents/MacOS' / context['executable']), *flags], env=env,
                                      cwd=ROOT, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)

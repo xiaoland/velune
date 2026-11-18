@@ -1,4 +1,5 @@
 import AppKit
+import SwiftUI
 import VeluneBindings
 import ObjectiveC
 
@@ -85,6 +86,82 @@ private struct BackgroundNotificationFixture {
             if let text = view as? TranscriptTextView, shown(text) { result.append(text) }
         }
         return result
+    }
+    if CommandLine.arguments.contains("--check-child-activity") {
+        let device = DeviceStore(preview: true)
+        let id = "sample-0"
+        guard var snapshot = device.previewSnapshots[id] else { fail("missing synthetic child fixture") }
+        snapshot.conversation.parentConversationID = "sample-1"
+        snapshot.actions = ConversationActions(inputAccess: .readOnly, canSend: false, canCancel: false, canSwitch: false)
+        snapshot.transcriptTurns = []
+        snapshot.transcriptOutline = []
+        snapshot.pendingInteractions = []
+        let replyID = "synthetic-child-reply"
+        let reply = DeliveredMessage(id: replyID, role: .assistant, blocks: [.text(text: "子 Agent 已开始检查合成项目。")])
+        let stages: [(name: String, state: RunState, hasReply: Bool, status: String?)] = [
+            ("before-first-message", .elsewhere, false, "正在思考"),
+            ("replying", .elsewhere, true, "正在回复"),
+            ("stopping", .stopping, true, "正在停止"),
+            ("finished", .idle, true, nil)
+        ]
+        let workspace = ConversationWindowModel(application: device, kind: .workspace)
+        let tab = workspace.focused
+        let host = NSHostingView(rootView: TabContentView(window: workspace, tab: tab, store: tab.store, previewEmpty: false)
+            .applicationAppearance().background(Color(nsColor: .windowBackgroundColor)))
+        let dark = CommandLine.arguments.contains("--child-activity-dark")
+        let window = BackgroundNotificationCheckWindow(contentRect: NSRect(x: 0, y: 0, width: 660, height: 460), styleMask: [.borderless], backing: .buffered, defer: true)
+        window.isReleasedWhenClosed = false
+        window.isRestorable = false
+        window.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
+        windows.append(window)
+        window.contentView = host
+        var phases: [[String: Any]] = []
+        for stage in stages {
+            snapshot.revision += 1
+            snapshot.runState = stage.state
+            snapshot.messages = stage.hasReply ? [reply] : []
+            snapshot.transcriptItems = stage.hasReply ? [.message(id: replyID, messageId: replyID)] : []
+            snapshot.transcriptMessageIdentities = stage.hasReply ? [.init(id: replyID, messageId: replyID)] : []
+            device.keepPreviewSnapshot(snapshot)
+            tab.store.selectConversation(id: id)
+            host.layoutSubtreeIfNeeded(); settle(); host.layoutSubtreeIfNeeded()
+            tab.reading.table.materializeVisibleRows()
+            settle()
+            let rows = descendants(host).compactMap { $0 as? TranscriptCellView }
+                .filter { $0.rowID != nil && shown($0) }
+            let activityRows = rows.filter { $0.rowID == "transcript-activity" }
+            let replyRow = rows.first { $0.rowID == replyID }
+            require((replyRow != nil) == stage.hasReply, "\(stage.name): reply row visibility")
+            if let expected = stage.status {
+                require(activityRows.count == 1, "\(stage.name): missing or duplicate status row")
+                let activity = activityRows[0]
+                require(descendants(activity).contains { ($0 as? NSTextField)?.stringValue == expected && shown($0) },
+                        "\(stage.name): missing displayed status \(expected)")
+                require(descendants(activity).contains { $0 is NSProgressIndicator && shown($0) && $0.frame.width > 0 },
+                        "\(stage.name): missing spinner")
+                if let replyRow { require(activity.frame.minY >= replyRow.frame.maxY, "\(stage.name): status must follow the reply") }
+            } else {
+                require(activityRows.isEmpty, "finished: status row must disappear")
+            }
+            host.displayIfNeeded(); safe()
+            guard let bitmap = host.bitmapImageRepForCachingDisplay(in: host.bounds) else { fail("cannot capture child activity") }
+            host.cacheDisplay(in: host.bounds, to: bitmap)
+            safe()
+            let filename = "child-activity-\(stage.name).png"
+            guard let png = bitmap.representation(using: .png, properties: [:]) else { fail("cannot encode child activity") }
+            do { try png.write(to: directory.appendingPathComponent(filename)) } catch { fail(error.localizedDescription) }
+            phases.append(["name": stage.name, "rows": rows.compactMap(\.rowID), "image": filename])
+        }
+        window.contentView = nil
+        safe()
+        let evidence: [String: Any] = ["phases": phases, "dark": dark, "visibleWindows": 0,
+            "activationEvents": activations, "keyEvents": keys, "mainEvents": mains, "systemActivationEvents": systemActivations]
+        do {
+            try JSONSerialization.data(withJSONObject: evidence, options: [.prettyPrinted, .sortedKeys])
+                .write(to: directory.appendingPathComponent("acceptance.json"))
+        } catch { fail(error.localizedDescription) }
+        print("PASS child activity: first write, reply, stopping and finished")
+        exit(0)
     }
     func tool(_ id: String, _ title: String) -> DeliveredMessage {
         DeliveredMessage(id: id, role: .assistant, blocks: [.tool(toolId: id, title: title, state: .completed, output: .inline(text: "合成工具输出"), linkedConversationId: nil)])

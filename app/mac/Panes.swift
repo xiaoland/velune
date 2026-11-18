@@ -124,7 +124,7 @@ struct TabContentView: View {
         VStack(spacing: 0) {
             Group {
                 if store.isOpeningConversation { ProgressView("正在加载会话…") }
-                else if previewEmpty || store.transcript.rows.isEmpty { emptyState }
+                else if previewEmpty || (store.transcript.rows.isEmpty && store.activity == nil) { emptyState }
                 else { transcript }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
