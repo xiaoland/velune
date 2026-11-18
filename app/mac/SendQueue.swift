@@ -184,14 +184,36 @@ struct SendQueueView: View {
     }
     func loadCatalog() { store.loadModelCatalog(runtimeID: runtimeID) }
 
+    private func retainedModelName(in target: NextTurn) -> String? {
+        guard !executionChanged, let selection = originalChoice.model,
+              !target.models.contains(where: { $0.selection == selection }) else { return nil }
+        switch selection {
+        case .native(_, let modelID):
+            return modelID
+        case .managed(let key):
+            let gateway = store.device.gateway
+            if let route = gateway.routes.first(where: { $0.recordKey == key }) {
+                return "模型路由：\(route.name)"
+            }
+            for provider in gateway.providers {
+                if let model = provider.models.first(where: { $0.recordKey == key }) {
+                    return "\(model.displayName)（\(provider.name)）"
+                }
+            }
+            return "原排队模型"
+        }
+    }
+
     func target(cancel: (() -> Void)? = nil) -> ComposerEditingTarget {
-        ComposerEditingTarget(nextTurn: next, issue: issue, enabled: canSave,
+        let next = self.next
+        return ComposerEditingTarget(nextTurn: next, issue: issue, enabled: canSave,
                               submitTitle: saving ? "正在保存…" : "保存修改",
                               chooseRuntime: { [weak self] id in self?.chooseRuntime(id) },
                               chooseModel: { [weak self] model in self?.chooseModel(model) },
                               chooseEffort: { [weak self] effort in self?.updateChoice { $0.effort = effort } },
                               choosePermissionMode: { [weak self] mode in self?.updateChoice { $0.permissionMode = mode } },
                               editable: !saving, cancel: cancel, canCancel: !saving,
+                              recordedModelName: retainedModelName(in: next),
                               allowsUnavailableModel: !executionChanged,
                               retainedAttachments: retained,
                               removeRetainedAttachment: { [weak self] id in self?.removeRetained(id) })

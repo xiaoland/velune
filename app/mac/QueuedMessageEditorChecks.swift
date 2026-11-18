@@ -92,7 +92,7 @@ import VeluneBindings
         safe()
     }
 
-    ConversationStore.inspectQueuedEditor { workspace, message, project in
+    ConversationStore.inspectQueuedEditor { workspace, message, project, setCatalog in
         let tab = workspace.focused
         let store = tab.store
         guard let conversationID = store.loadedConversationID, let context = message.editContext else { fail("missing queue fixture identity") }
@@ -109,6 +109,29 @@ import VeluneBindings
         require(session.retained.map(\.id) == [0] && session.retained.first?.name == "notes.md"
                 && session.editor.attachments.isEmpty, "host-only attachment must be retained without a local upload")
         capture("initial", session, workspace)
+
+        let catalog = store.modelCatalogs[context.runtimeId]
+        setCatalog(.loading)
+        var retainedModel = ComposerContext(tab: tab, model: session.editor, editingTarget: session.target)
+        require(retainedModel.selectedModelName == "sample-native" && !retainedModel.chosenModelUnavailable,
+                "loading a model catalog must keep the captured model visible")
+        setCatalog(.ready([]))
+        retainedModel = ComposerContext(tab: tab, model: session.editor, editingTarget: session.target)
+        require(retainedModel.selectedModelName == "sample-native" && retainedModel.chosenModelUnavailable
+                && retainedModel.submission().canSubmitDraft,
+                "a model missing from the catalog must retain its identity without blocking content edits")
+        guard case let .replace(_, _, _, savedSelection, _, _)? = session.operation else { fail("missing retained-model replacement") }
+        require(savedSelection == context.selection, "saving content must keep the original queued model")
+        capture("retained-model", session, workspace)
+        session.target.chooseEffort("high")
+        require(!session.canSave && session.operation == nil && session.target.recordedModelName == nil,
+                "editing execution settings still requires a model offered by the current catalog")
+        session.target.chooseEffort(context.effort)
+        require(session.canSave, "restoring the queued execution settings must allow editing content again")
+        setCatalog(catalog)
+        require(ComposerContext(tab: tab, model: session.editor, editingTarget: session.target).selectedModelName
+                == catalog?.models?.first(where: { $0.selection == context.selection })?.name,
+                "use the regular model name when the catalog offers the captured selection")
 
         session.editor.receiveDraft(.init(text: "", attachments: []))
         let attachmentOnly = ComposerContext(tab: tab, model: session.editor, editingTarget: session.target)

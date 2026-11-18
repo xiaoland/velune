@@ -1851,7 +1851,7 @@ extension ConversationStore {
     }
 
     /// Isolated fixture for the queue editor's attachment and receipt states.
-    static func inspectQueuedEditor(_ inspect: (ConversationWindowModel, QueuedMessage, (QueuedMessage?, Bool) -> Void) -> Void) {
+    static func inspectQueuedEditor(_ inspect: (ConversationWindowModel, QueuedMessage, (QueuedMessage?, Bool) -> Void, (RuntimeModelCatalog?) -> Void) -> Void) {
         let window = ConversationWindowModel(application: DeviceStore(preview: true), kind: .workspace)
         let store = window.focused.store
         var snapshot = store.device.previewSnapshots["sample-0"]!
@@ -1867,11 +1867,11 @@ extension ConversationStore {
         snapshot.followUp.paused = .turnStopped
         store.apply(snapshot)
         store.loadModelCatalog(runtimeID: runtimeID)
-        inspect(window, message) { item, busy in
+        inspect(window, message, { item, busy in
             snapshot.followUp.queue = item.map { [$0] } ?? []
             store.apply(snapshot)
             store.isLoading = busy
-        }
+        }, { store.modelCatalogs[runtimeID] = $0 })
     }
 
     /// The frontend must dispatch while the source runs, not retain a hidden

@@ -66,9 +66,12 @@ struct ComposerEditingTarget {
     var allowsAttachments: Bool { !store.isSideChat && inputEditable }
     var sessionOptions: [AcpConfigOption] { editingTarget == nil ? store.editableSessionOptions : [] }
     func bindInput() { model.attach(store, policy: editingTarget == nil ? .draft : .messageEdit) }
+    var retainedQueueModelName: String? {
+        editingTarget?.allowsUnavailableModel == true ? editingTarget?.recordedModelName : nil
+    }
     var selectedModelName: String? {
         guard let nextTurn else { return nil }
-        if nextTurn.chosenModelUnavailable { return "所选模型不可用" }
+        if nextTurn.chosenModelUnavailable && retainedQueueModelName == nil { return "所选模型不可用" }
         if let recorded = editingTarget?.recordedModelName { return recorded }
         return nextTurn.model == nil ? "运行时默认" : nextTurn.modelName
     }

@@ -996,6 +996,8 @@ struct ComposerView: View {
         let modelTitle = ([model] + (effort.map { [$0] } ?? [])).joined(separator: " · ")
         let title = "\(runtime) · \(modelTitle)"
         let subject = editingTarget != nil ? "此消息" : "下一轮"
+        let unavailableHelp = editingTarget == nil ? "所选模型已不可用，下一轮改用\(model)" : "所选模型已不可用"
+        let modelHelp = context.retainedQueueModelName == nil ? unavailableHelp : ComposerModelChoiceContent.retainedModelExplanation
         return Menu {
             Menu("运行时：\(runtime)") {
                 Picker("Agent 运行时", selection: Binding(get: { context.nextTurnRuntimeID }, set: { if let id = $0 { context.selectNextTurnRuntime(id) } })) {
@@ -1025,7 +1027,7 @@ struct ComposerView: View {
         }
         .fixedSize()
         .accessibilityLabel("\(subject)：运行时 \(runtime)，模型 \(model)，推理强度 \(effort ?? unchosen)")
-        .help(context.chosenModelUnavailable ? (editingTarget == nil ? "所选模型已不可用，下一轮改用\(model)" : "所选模型已不可用") : "\(subject)使用运行时 \(runtime)，模型 \(model)，推理强度 \(effort ?? unchosen)")
+        .help(context.chosenModelUnavailable ? modelHelp : "\(subject)使用运行时 \(runtime)，模型 \(model)，推理强度 \(effort ?? unchosen)")
         .disabled(store.isShuttingDown || editingTarget?.editable == false)
     }
 
@@ -1036,7 +1038,8 @@ struct ComposerView: View {
         let context = self.context
         ComposerModelChoiceContent(next: context.nextTurn, catalog: context.modelCatalog,
                                    selection: Binding(get: { context.chosenModel }, set: { context.selectModel($0) }),
-                                   enabled: context.canSwitchModel)
+                                   enabled: context.canSwitchModel,
+                                   retainedModelName: context.retainedQueueModelName)
     }
 
     @ViewBuilder private func sessionOptionControl(_ option: AcpConfigOption) -> some View {
