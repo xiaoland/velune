@@ -867,6 +867,17 @@ final class ConversationStore: ObservableObject {
         if unopenedConversationID != id { cancelOpeningRetry() }
         if conversation(id: id) != nil { selectConversation(id: id, move: move); return }
         guard !isPreview, !isShuttingDown, let transport else { abandonLinkedConversationLookup(); return }
+        // Native links already carry the source instance. The history reader
+        // validates membership, without rebuilding that instance's list.
+        if let separator = id.firstIndex(of: ":"), id.index(after: separator) != id.endIndex {
+            let runtimeID = String(id[..<separator])
+            if device.enabledRuntimeInstances.contains(where: {
+                $0.id == runtimeID && [.claudeCode, .codex166, .pi].contains($0.typeId)
+            }) {
+                openConversation(id: id, runtimeID: runtimeID, move: move)
+                return
+            }
+        }
         if snapshot == nil { unopenedConversationID = id }
         let request = UUID()
         linkedConversationRequest = request
@@ -899,14 +910,21 @@ final class ConversationStore: ObservableObject {
         }
     }
     func selectConversation(id: String, move: NavigationMove = .new) {
+        guard let conversation = conversation(id: id) else {
+            if unopenedConversationID != id { cancelOpeningRetry() }
+            abandonLinkedConversationLookup()
+            return
+        }
+        openConversation(id: id, runtimeID: conversation.runtimeID, move: move)
+    }
+    private func openConversation(id: String, runtimeID: String, move: NavigationMove) {
         if unopenedConversationID != id { cancelOpeningRetry() }
         abandonLinkedConversationLookup()
-        guard let conversation = conversation(id: id) else { return }
         // Chosen while another operation runs, it opens once that is done; the latest choice wins.
         guard !isLoading, !executionStarting else { deferredSelection = (id, move); return }
         deferredSelection = nil
         selectedConversationIDs = [id]
-        if isPreview { projectionRuntimeID = conversation.runtimeID; apply(device.previewSnapshots[id]); composerEvents.send(.conversation(id)); return }
+        if isPreview { projectionRuntimeID = runtimeID; apply(device.previewSnapshots[id]); composerEvents.send(.conversation(id)); return }
         guard let transport else { recordProblem("本地核心未配置"); return }
         if snapshot == nil { unopenedConversationID = id }
         // The sidebar reflects user intent immediately. The old loaded transcript
@@ -921,7 +939,7 @@ final class ConversationStore: ObservableObject {
         pendingConversationID = id
         composerEvents.send(.conversation(id))
         openingFailure = nil
-        enqueue({ try transport.openConversation(runtimeID: conversation.runtimeID, conversationID: id) }, onFailure: { [weak self] error in
+        enqueue({ try transport.openConversation(runtimeID: runtimeID, conversationID: id) }, onFailure: { [weak self] error in
             guard let self else { return }
             self.noteOpeningFailure(error)
             self.isDraft = previousWasDraft
@@ -938,7 +956,7 @@ final class ConversationStore: ObservableObject {
     private func selectDeferredConversation() {
         guard let (id, move) = deferredSelection, !isLoading, !executionStarting else { return }
         deferredSelection = nil
-        selectConversation(id: id, move: move)
+        openLinkedConversation(id: id, move: move)
     }
     private func finishConversationLoading() {
         pendingConversationID = nil

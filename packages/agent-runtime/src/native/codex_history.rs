@@ -318,6 +318,25 @@ pub fn read_codex_history_at(
     read_history(&mut rpc, runtime_id, id, execution, &metadata)
 }
 
+pub(crate) fn read_codex_with_summary_at(
+    config: &crate::history::HistoryConfig,
+    runtime_id: &str,
+    id: &str,
+) -> Result<(ConversationSummary, History)> {
+    let mut rpc = codex::history_client_at(
+        config.kind,
+        &config.binary,
+        &config.home,
+        &config.execution,
+        config.os_home.as_deref(),
+    )?;
+    let metadata = read_metadata(&mut rpc, id)?;
+    let mut summary = summary(&metadata["thread"], runtime_id)?;
+    let history = read_history(&mut rpc, runtime_id, id, &config.execution, &metadata)?;
+    summary.native_read_state = history.native_read_state.clone();
+    Ok((summary, history))
+}
+
 pub(super) fn read_metadata(rpc: &mut RpcClient, id: &str) -> Result<Value> {
     let metadata = rpc.request("thread/read", &json!({"threadId":id,"includeTurns":false}))?;
     if metadata["thread"]["id"].as_str() != Some(id) {
@@ -513,6 +532,135 @@ fn project_history(
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    #[test]
+    fn exact_codex_child_history_reads_metadata_and_messages_in_one_process() {
+        use std::{fs, os::unix::fs::PermissionsExt, time::Instant};
+
+        let root =
+            std::env::temp_dir().join(format!("velune-codex-child-read-{}", std::process::id()));
+        fs::create_dir_all(&root).unwrap();
+        let binary = root.join("codex");
+        fs::write(
+            &binary,
+            r#"#!/usr/bin/python3
+import json, pathlib, sys
+root = pathlib.Path(__file__).parent
+def log(event):
+    with (root / "calls").open("a") as f: f.write(event + "\n")
+if "--version" in sys.argv:
+    log("version")
+    print("codex-cli 0.166.0")
+    raise SystemExit(0)
+assert sys.argv[1:] == ["app-server"]
+log("app-server")
+for line in sys.stdin:
+    request = json.loads(line)
+    method = request["method"]
+    if "id" not in request:
+        assert method == "initialized"
+        continue
+    log(method)
+    if method == "initialize":
+        result = {}
+    elif method == "thread/read":
+        params = request["params"]
+        assert params["includeTurns"] is False
+        result = {
+            "thread": {"id": "child", "parentThreadId": "parent", "agentNickname": "Worker",
+                       "historyMode": "paginated", "cwd": str(root), "createdAt": 1, "updatedAt": 2,
+                       "path": str(root / "archived_sessions" / "child.jsonl")},
+            "readState": {"revision": "child-receipt", "firstUnread": {"type": "threadStart"}},
+        }
+    elif method == "thread/items/list":
+        assert request["params"]["threadId"] == "child"
+        result = {"data": [{"turnId": "turn", "item": {"type": "agentMessage", "id": "message", "text": "answer"}}], "nextCursor": None}
+    elif method == "thread/turns/list":
+        assert request["params"]["threadId"] == "child"
+        result = {"data": [{"id": "turn", "status": "completed"}], "nextCursor": None}
+    else:
+        raise AssertionError(method)
+    print(json.dumps({"jsonrpc": "2.0", "id": request["id"], "result": result}), flush=True)
+"#,
+        )
+        .unwrap();
+        fs::set_permissions(&binary, fs::Permissions::from_mode(0o700)).unwrap();
+        let config = crate::history::HistoryConfig {
+            kind: crate::version::RuntimeKind::Codex166,
+            execution: crate::execution::ExecutionTarget::Local,
+            os_home: Some(root.clone()),
+            provider: "codex".into(),
+            binary,
+            node_binary: root.join("unused"),
+            resources_directory: root.clone(),
+            root: root.clone(),
+            home: root.clone(),
+        };
+        let calls = root.join("calls");
+        let started = Instant::now();
+        let (previous_summary, archived) =
+            crate::history::read_summary(&config, "runtime", "child")
+                .unwrap()
+                .unwrap();
+        let previous_history = crate::history::read(&config, "runtime", "child").unwrap();
+        let two_reads = started.elapsed();
+        let trace = fs::read_to_string(&calls).unwrap();
+        assert_eq!(
+            trace.lines().filter(|line| *line == "app-server").count(),
+            2
+        );
+        assert_eq!(
+            trace.lines().filter(|line| *line == "thread/read").count(),
+            2
+        );
+        assert!(archived);
+        fs::write(&calls, "").unwrap();
+
+        let started = Instant::now();
+        let (summary, history) =
+            crate::history::read_codex_with_summary(&config, "runtime", "child").unwrap();
+        let combined_read = started.elapsed();
+        assert_eq!(
+            fs::read_to_string(&calls)
+                .unwrap()
+                .lines()
+                .collect::<Vec<_>>(),
+            [
+                "version",
+                "app-server",
+                "initialize",
+                "thread/read",
+                "thread/items/list",
+                "thread/turns/list"
+            ]
+        );
+        assert_eq!(summary, previous_summary);
+        assert_eq!(
+            summary.parent_conversation_id.as_deref(),
+            Some("runtime:parent")
+        );
+        assert_eq!(summary.title, ConversationTitle::Native("Worker".into()));
+        assert_eq!(summary.native_read_state, history.native_read_state);
+        assert_eq!(history.native_id, "child");
+        assert_eq!(history.messages, previous_history.messages);
+        assert_eq!(history.messages.len(), 1);
+
+        fs::write(&calls, "").unwrap();
+        let failure = crate::history::read_codex_with_summary(&config, "runtime", "wrong-thread")
+            .err()
+            .expect("a different thread must not be opened");
+        assert!(failure.full_message().contains("Codex 返回不同的原生会话"));
+        assert_eq!(
+            fs::read_to_string(&calls)
+                .unwrap()
+                .lines()
+                .collect::<Vec<_>>(),
+            ["version", "app-server", "initialize", "thread/read"]
+        );
+        println!("synthetic Codex: two reads {two_reads:?}, combined {combined_read:?}");
+        fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn rollout_turn_context_records_the_speed_variant_as_its_model() {
         let directory = std::env::temp_dir().join(format!("velune-rollout-{}", std::process::id()));

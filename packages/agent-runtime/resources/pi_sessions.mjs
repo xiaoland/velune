@@ -4,6 +4,8 @@
 import { resolvePiSdk } from "./pi_sdk.mjs";
 import { projectPiDisplayHistory } from "./pi_transcript.mjs";
 import { readSubagentMetadata } from "./pi_subagents.mjs";
+import { lstat, open } from "node:fs/promises";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 
 const args = process.argv.slice(2);
 const value = (name) => {
@@ -19,10 +21,100 @@ if (agentDir) process.env.PI_CODING_AGENT_DIR = agentDir;
 const installation = resolvePiSdk({binary:value("--cli"),runtimeTypeId:value("--runtime-type")});
 const sessionManager = () => installation.importModule("dist/core/session-manager.js");
 const sessionDir = value("--session-dir");
+const sessionsRoot = () => resolve(agentDir, "sessions");
 const inspectPath = value("--inspect-session");
 const mutationPath = value("--rename-session") ?? value("--delete-session");
 const exportPath = value("--export-context");
 const forkPath = value("--fork-session");
+
+const maxChildDepth = 16;
+const runID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const runSlot = name => /^run-(0|[1-9][0-9]{0,9})$/.test(name) && Number(name.slice(4)) <= 0xffffffff;
+const hasSessionIdentity = header => typeof header?.id === "string" && header.id.length > 0;
+
+async function readHeader(path) {
+  const file = await open(path, "r");
+  try {
+    const buffer = Buffer.alloc(65536);
+    const { bytesRead } = await file.read(buffer, 0, buffer.length, 0);
+    const line = buffer.subarray(0, bytesRead).toString("utf8").split("\n")[0];
+    const value = JSON.parse(line);
+    return value?.type === "session" ? value : null;
+  } catch {
+    return null;
+  } finally {
+    await file.close();
+  }
+}
+
+// Validate an exact source without enumerating projects or sibling sessions.
+// Reverse the same three-component hops used by child discovery, and require
+// every hop to agree with the native header of its child.
+async function inspectSource(path) {
+  const root = sessionDir ? resolve(sessionDir) : sessionsRoot();
+  const within = relative(root, path);
+  const parts = within.split(sep);
+  const baseParts = sessionDir ? 1 : 2;
+  const depth = (parts.length - baseParts) / 3;
+  const reject = () => { throw new Error("Pi session is not in the configured history source"); };
+  if (!within || parts[0] === ".." || isAbsolute(within) || join(root, within) !== path
+      || !Number.isInteger(depth) || depth < 0 || depth > maxChildDepth
+      || !parts.at(-1).endsWith(".jsonl")) reject();
+  if (sessionDir && !(await lstat(root).catch(() => null))?.isDirectory()) reject();
+
+  let directory = root;
+  for (const part of parts.slice(0, -1)) {
+    directory = join(directory, part);
+    if (!(await lstat(directory).catch(() => null))?.isDirectory()) reject();
+  }
+  let parentPath = null, previousChild = null, source;
+  for (;;) {
+    const candidate = join(root, ...parts);
+    const stats = await lstat(candidate).catch(() => null);
+    if (!stats?.isFile()) reject();
+    const header = await readHeader(candidate).catch(() => null);
+    if (!hasSessionIdentity(header) || (previousChild && previousChild.parentSession !== candidate)) reject();
+    if (!source) source = {header, stats};
+    if (parts.length === baseParts) break;
+    const [run, slot, name] = parts.splice(-3);
+    if (run !== "forks" && !(runID.test(run) && runSlot(slot) && name === "session.jsonl")) reject();
+    parts[parts.length - 1] += ".jsonl";
+    parentPath ??= join(root, ...parts);
+    previousChild = header;
+  }
+  return {...source, parentPath};
+}
+
+// The SDK does not expose its single-file listing projection. Extract only
+// the list fields the open view needs from entries already read by the SDK.
+function inspectedSummary(path, source, manager, entries, name) {
+  const header = manager.getHeader();
+  if (header?.id !== source.header.id || header.parentSession !== source.header.parentSession) {
+    throw new Error("Pi session identity changed during history read");
+  }
+  let firstMessage = "", lastActivity = 0;
+  for (const entry of entries) {
+    if (entry.type !== "message") continue;
+    const message = entry.message;
+    if (message?.role !== "user" && message?.role !== "assistant") continue;
+    if (!("content" in message)) continue;
+    const timestamp = typeof message.timestamp === "number" ? message.timestamp : Date.parse(entry.timestamp);
+    if (Number.isFinite(timestamp)) lastActivity = Math.max(lastActivity, timestamp);
+    if (!firstMessage && message.role === "user") {
+      const content = message.content;
+      firstMessage = typeof content === "string" ? content
+        : (Array.isArray(content) ? content.filter(block => block.type === "text").map(block => block.text).join(" ") : "");
+    }
+  }
+  const created = Date.parse(header.timestamp);
+  return {
+    path, parentPath: source.parentPath, cwd: manager.getCwd(), name,
+    createdUnixMs: Number.isFinite(created) ? created : null,
+    modifiedUnixMs: new Date(lastActivity || (Number.isFinite(created) ? created : source.stats.mtimeMs)).getTime(),
+    firstMessage: firstMessage || "(no messages)",
+  };
+}
+
 if (forkPath) {
   const { SessionManager, CURRENT_SESSION_VERSION, loadEntriesFromFile } = await sessionManager();
   const { existsSync, writeFileSync } = await import("node:fs");
@@ -159,17 +251,22 @@ if (forkPath) {
   process.stdout.write(JSON.stringify({ok:true}));
 } else
 if (inspectPath) {
+  const source = args.includes("--with-summary") ? await inspectSource(inspectPath) : null;
   const sdk = await sessionManager();
   const { SessionManager } = sdk;
   const manager = SessionManager.open(inspectPath);
+  const entries = manager.getEntries();
+  const name = manager.getSessionName() ?? null;
+  const summary = source ? inspectedSummary(inspectPath, source, manager, entries, name) : undefined;
   const context = manager.buildSessionContext();
   const virtualEntry = [...manager.getBranch()]
     .reverse()
     .find((entry) => entry.type === "custom" && entry.customType === "pi.virtual-model-state");
   process.stdout.write(JSON.stringify({
-    name: manager.getSessionName() ?? null,
+    name,
     cwd: manager.getCwd(),
-    subAgents: await readSubagentMetadata(inspectPath, manager.getEntries()),
+    summary,
+    subAgents: await readSubagentMetadata(inspectPath, entries),
     messages: projectPiDisplayHistory(manager, sdk.sessionEntryToContextMessages).entries.flatMap(entry =>
       entry.messages.map((message, ordinal) => ({...message, id:`pi:${manager.getSessionId()}:${entry.sourceEntry.id}:${ordinal}`}))),
     model: context.model,
@@ -183,44 +280,28 @@ if (inspectPath) {
   // sessions. Only the files the caller names are parsed, by Pi's own
   // metadata reader through a private directory of links, so Pi stays
   // authoritative for every listed field.
-  const { readdir, stat, lstat, mkdtemp, symlink, link, copyFile, rm, open } = await import("node:fs/promises");
-  const { join, resolve, dirname, basename } = await import("node:path");
+  const { readdir, stat, mkdtemp, symlink, link, copyFile, rm } = await import("node:fs/promises");
+  const { dirname, basename } = await import("node:path");
   const { tmpdir } = await import("node:os");
   let input = "";
   for await (const chunk of process.stdin) input += chunk;
   const want = new Set(JSON.parse(input).want);
-  const sessionsRoot = resolve(agentDir, "sessions");
+  const root = sessionsRoot();
   const directories = sessionDir
     ? [sessionDir]
-    : await readdir(sessionsRoot, { withFileTypes: true })
-        .then((entries) => entries.filter((entry) => entry.isDirectory()).map((entry) => join(sessionsRoot, entry.name)))
+    : await readdir(root, { withFileTypes: true })
+        .then((entries) => entries.filter((entry) => entry.isDirectory()).map((entry) => join(root, entry.name)))
         .catch(() => []);
   const headers = new Map();
-  const readHeader = async (path) => {
-    const file = await open(path, "r");
-    try {
-      const buffer = Buffer.alloc(65536);
-      const { bytesRead } = await file.read(buffer, 0, buffer.length, 0);
-      const line = buffer.subarray(0, bytesRead).toString("utf8").split("\n")[0];
-      const value = JSON.parse(line);
-      return value?.type === "session" ? value : null;
-    } catch {
-      return null;
-    } finally {
-      await file.close();
-    }
-  };
   const header = path => {
     if (!headers.has(path)) headers.set(path, readHeader(path).catch(() => null));
     return headers.get(path);
   };
-  const runID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-  const runSlot = name => /^run-(0|[1-9][0-9]{0,9})$/.test(name) && Number(name.slice(4)) <= 0xffffffff;
   const parentPaths = new Map();
   // Recognize only the two native child layouts. A directory alone is not
   // ownership: every nested file must name this already discovered parent.
   const children = async (directory, depth = 0, parent = null, modern = false) => {
-    if (depth > 16 || !(await lstat(directory).catch(() => null))?.isDirectory()) return [];
+    if (depth > maxChildDepth || !(await lstat(directory).catch(() => null))?.isDirectory()) return [];
     const entries = await readdir(directory, { withFileTypes: true }).catch(() => []);
     const candidates = entries.filter(entry => entry.isFile()
       && (modern ? entry.name === "session.jsonl" : entry.name.endsWith(".jsonl")));
@@ -228,10 +309,10 @@ if (inspectPath) {
     for (const entry of candidates) {
       const file = join(directory, entry.name);
       const start = await header(file);
-      if (parent && (start?.parentSession !== parent || typeof start?.id !== "string" || !start.id)) continue;
+      if (parent && (start?.parentSession !== parent || !hasSessionIdentity(start))) continue;
       files.push(file);
       if (parent) parentPaths.set(file, parent);
-      if (typeof start?.id !== "string" || !start.id) continue;
+      if (!hasSessionIdentity(start)) continue;
       const stem = join(dirname(file), basename(file, ".jsonl"));
       if (!(await lstat(stem).catch(() => null))?.isDirectory()) continue;
       const forks = join(stem, "forks");

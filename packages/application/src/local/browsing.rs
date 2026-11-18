@@ -179,12 +179,25 @@ impl HistoryRead {
             });
         }
 
+        let mut pi_history = None;
+        let mut native_history = None;
         let summary = match (summary, reader) {
             (Some(summary), _) => summary,
-            (None, Reader::Native(config)) => {
-                history::read_summary(config, runtime_id, &native_id)?
-                    .map(|(summary, _)| summary)
-                    .ok_or_else(|| RuntimeError::invalid("此会话不属于所选运行时历史目录"))?
+            (None, Reader::Pi(config)) => {
+                let (summary, saved) = history::read_pi_with_summary(config, Path::new(&native_id))
+                    .map_err(|error| RuntimeError::context(pi_context.as_deref().unwrap_or("Pi 历史读取"), error))?;
+                pi_history = Some(saved);
+                pi_history_summary(runtime_id, summary)
+            }
+            (None, Reader::Native(config)) if config.provider == "codex" => {
+                let (summary, saved) = history::read_codex_with_summary(config, runtime_id, &native_id)?;
+                native_history = Some(saved);
+                summary
+            }
+            (None, Reader::Native(config)) if config.provider == "claude-code" => {
+                let (summary, saved) = history::read_claude_with_summary(config, runtime_id, &native_id)?;
+                native_history = Some(saved);
+                summary
             }
             _ => return Err(RuntimeError::invalid("此会话不属于所选运行时历史目录")),
         };
@@ -216,9 +229,12 @@ impl HistoryRead {
         };
         match reader {
             Reader::Pi(config) => {
-                let saved = pi_session_helper(config, Path::new(&native_id)).map_err(|error| {
-                    RuntimeError::context(pi_context.as_deref().unwrap_or("Pi 历史读取"), error)
-                })?;
+                let saved = match pi_history {
+                    Some(saved) => saved,
+                    None => pi_session_helper(config, Path::new(&native_id)).map_err(|error| {
+                        RuntimeError::context(pi_context.as_deref().unwrap_or("Pi 历史读取"), error)
+                    })?,
+                };
                 let mut projection = PiProjection::new(snapshot.conversation.clone());
                 projection.replace_history(&saved);
                 let projected = projection.snapshot.expect("history projection");
@@ -235,7 +251,10 @@ impl HistoryRead {
                 }
             }
             Reader::Native(config) => {
-                let read = history::read(config, runtime_id, &native_id)?;
+                let read = match native_history {
+                    Some(saved) => saved,
+                    None => history::read(config, runtime_id, &native_id)?,
+                };
                 snapshot.conversation.native_read_state = read.native_read_state;
                 snapshot.conversation.cwd = read.cwd;
                 snapshot.messages = read.messages;
@@ -332,6 +351,24 @@ fn normalized_uuid(token: &str) -> Option<String> {
 fn identity_digest(identity: &str) -> String {
     use sha2::Digest;
     format!("{:x}", sha2::Sha256::digest(identity.as_bytes()))
+}
+
+fn pi_history_summary(runtime_id: &str, session: history::PiSessionSummary) -> ConversationSummary {
+    ConversationSummary {
+        native_read_state: None,
+        can_rename: false,
+        can_delete: false,
+        id: format!("{runtime_id}:{}", session.path),
+        title: velune_conversation::conversation_title(
+            session.name.as_deref(),
+            session.first_message.as_deref(),
+        ),
+        updated_at_unix_ms: session.modified_unix_ms,
+        created_at_unix_ms: session.created_unix_ms,
+        runtime_id: runtime_id.to_owned(),
+        cwd: session.cwd,
+        parent_conversation_id: session.parent_path.map(|parent| format!("{runtime_id}:{parent}")),
+    }
 }
 
 /// Runtimes whose sessions are files read one by one.
@@ -565,27 +602,8 @@ impl CoreRuntime {
                 .sessions
                 .into_iter()
                 .map(|session| {
-                    let id = format!("{prefix}{}", session.path);
-                    (
-                        id.clone(),
-                        ConversationSummary {
-                            native_read_state: None,
-                            can_rename: false,
-                            can_delete: false,
-                            id,
-                            title: velune_conversation::conversation_title(
-                                session.name.as_deref(),
-                                session.first_message.as_deref(),
-                            ),
-                            updated_at_unix_ms: session.modified_unix_ms,
-                            created_at_unix_ms: session.created_unix_ms,
-                            runtime_id: runtime.id.clone(),
-                            cwd: session.cwd,
-                            parent_conversation_id: session
-                                .parent_path
-                                .map(|parent| format!("{}:{parent}", runtime.id)),
-                        },
-                    )
+                    let summary = pi_history_summary(&runtime.id, session);
+                    (summary.id.clone(), summary)
                 })
                 .collect();
             (summaries, identities)
@@ -790,11 +808,10 @@ impl CoreRuntime {
             .filter(|s| !s.is_empty())
             .ok_or_else(|| RuntimeError::invalid("conversation id"))?;
         let source = self.runtime_source_key(runtime)?;
-        // Codex checks exact native identity through its own read API. File
-        // readers still require source-scoped membership before opening a path.
+        // Native adapters verify exact source membership during the cold read.
         let summary = match self.listed_summary(runtime, id) {
             Some(summary) => Some(summary),
-            None if runtime.type_id == RuntimeKind::Codex166 => None,
+            None if matches!(runtime.type_id, RuntimeKind::Codex166 | RuntimeKind::ClaudeCode | RuntimeKind::Pi) => None,
             None => Some(
                 self.conversation_summary(runtime, id)
                     .map_err(|error| {

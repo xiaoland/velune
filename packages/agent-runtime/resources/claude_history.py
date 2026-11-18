@@ -462,7 +462,12 @@ def main():
             return {"error": {"code": "session_not_found"}}
         if operation == "export_context":
             return export_context(path, sidechain=bool(agent), before_message_id=request.get("beforeMessageId"))
-        return {"contractVersion": 1, "history": history(path, requested, runtime_id, sidechain=bool(agent))}
+        detail = history(path, requested, runtime_id, sidechain=bool(agent))
+        # This read has already located and validated the native session.
+        overview = {key: detail[key] for key in ("nativeId", "title", "cwd", "createdAtUnixMs", "updatedAtUnixMs")}
+        if agent:
+            overview = subagent_summary(requested, path, {"nativeId": session, "cwd": detail["cwd"]})
+        return {"contractVersion": 1, "history": detail, "summary": overview}
     raise ValueError("unknown operation")
 
 try:

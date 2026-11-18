@@ -2,6 +2,7 @@
 """Exercise Pi SDK discovery for validated legacy and current sub-agent layouts."""
 import argparse
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -47,6 +48,15 @@ with tempfile.TemporaryDirectory(prefix='velune-pi-child-history-') as directory
         if ancestor:
             header['parentSession'] = str(ancestor)
         path.write_text(json.dumps(header) + '\n')
+    with modern.open('a') as handle:
+        records = [
+            dict(type='message', id='modern-user', parentId=None, timestamp='2026-11-11T00:00:01Z',
+                 message=dict(role='user', content=[dict(type='text', text='First'), dict(type='text', text='prompt')],
+                              timestamp=1794355201000)),
+            dict(type='session_info', id='modern-name', parentId='modern-user', timestamp='2026-11-11T00:00:02Z',
+                 name='Synthetic child name'),
+        ]
+        handle.writelines(json.dumps(record) + '\n' for record in records)
     symlink_cases = []
     try:
         linked_run = sessions / 'parent' / '21234567-89ab-4cde-8fab-0123456789ab'
@@ -74,6 +84,53 @@ with tempfile.TemporaryDirectory(prefix='velune-pi-child-history-') as directory
         assert rows[str(ordinary)]['parentPath'] is None
         for rejected in [mismatch, modern_mismatch, stray, wrong_run, wrong_name, overflow_slot, padded_slot, negative_slot, *symlink_cases]:
             assert str(rejected) not in rows, f'unverified nested source was admitted: {rejected}'
+
+    # Test the direct read with the same synthetic archive and selector
+    # metadata. Instrument the real helper to count directory enumeration.
+    probe = root / 'count-directory-reads.mjs'
+    probe.write_text("""
+import fs from 'node:fs/promises';
+import { syncBuiltinESMExports } from 'node:module';
+const root = process.env.VELUNE_PI_FIXTURE;
+const original = fs.readdir;
+let count = 0;
+fs.readdir = (...args) => {
+    if (String(args[0]).startsWith(root)) count++;
+    return original(...args);
+};
+syncBuiltinESMExports();
+process.on('exit', () => console.error('fixture-directory-reads=' + count));
+""")
+    helper_command = ['node', '--import', str(probe), str(helper), '--agent-dir', str(root),
+                      '--cli', args.pi, '--runtime-type', 'pi-1.0']
+    env = dict(os.environ, VELUNE_PI_FIXTURE=str(root))
+    def read(path, *options):
+        return subprocess.run([*helper_command, '--inspect-session', str(path), '--with-summary', *options],
+                              env=env, text=True, capture_output=True)
+
+    summary_fields = ('path', 'parentPath', 'cwd', 'name', 'createdUnixMs', 'modifiedUnixMs', 'firstMessage')
+    indexed = {row['path']: row for row in listing['sessions']}
+    for valid in [parent, child, ordinary, modern, modern_second, nested]:
+        inspected = read(valid)
+        assert inspected.returncode == 0, inspected.stderr
+        summary = json.loads(inspected.stdout)['summary']
+        assert summary == {key: indexed[str(valid)][key] for key in summary_fields}, summary
+        assert 'fixture-directory-reads=0' in inspected.stderr
+        if valid == modern:
+            assert summary['name'] == 'Synthetic child name' and summary['firstMessage'] == 'First prompt'
+            assert summary['modifiedUnixMs'] == 1794355201000
+    for invalid in [mismatch, modern_mismatch, stray, wrong_run, wrong_name, overflow_slot,
+                    padded_slot, negative_slot, *symlink_cases]:
+        assert read(invalid).returncode != 0, f'unverified direct source was admitted: {invalid}'
+    custom = root / 'custom'
+    custom.mkdir()
+    custom_session = custom / 'custom.jsonl'
+    custom_session.write_text(parent.read_text())
+    assert read(custom_session).returncode != 0
+    result = read(custom_session, '--session-dir', str(custom))
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)['summary']['path'] == str(custom_session)
+    assert read(parent, '--session-dir', str(custom)).returncode != 0
 
     # Cold inspection must recover child metadata from persisted native
     # entries even when compaction has removed the launch from effective model
@@ -128,8 +185,8 @@ with tempfile.TemporaryDirectory(prefix='velune-pi-child-history-') as directory
     assert parent_view['name'] == 'Synthetic parent native name'
     assert parent_view['subAgents'] == [dict(sessionFile=str(child),
                                              title=f'worker：{task}', failed=False)]
-    effective_messages = json.dumps(parent_view['messages'], ensure_ascii=False)
-    assert task not in effective_messages, 'fixture task should be outside effective post-compaction context'
+    display_messages = json.dumps(parent_view['messages'], ensure_ascii=False)
+    assert task in display_messages, 'cold display history must retain the pre-compaction launch'
     inspected_child = subprocess.run(['node', str(helper), '--agent-dir', str(root), '--cli', args.pi,
                                       '--runtime-type', 'pi-1.0', '--inspect-session', str(child)],
                                      text=True, capture_output=True, check=True)

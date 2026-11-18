@@ -5,7 +5,7 @@ use crate::{
 };
 use serde::Deserialize;
 use serde_json::json;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HistoryFailureKind {
@@ -118,6 +118,24 @@ struct Summary {
     #[serde(default)]
     parent_native_id: Option<String>,
 }
+impl Summary {
+    fn for_runtime(self, runtime_id: &str) -> ConversationSummary {
+        ConversationSummary {
+            native_read_state: None,
+            can_rename: false,
+            can_delete: false,
+            id: format!("{runtime_id}:{}", self.native_id),
+            title: self.title,
+            updated_at_unix_ms: self.updated_at_unix_ms,
+            created_at_unix_ms: self.created_at_unix_ms,
+            runtime_id: runtime_id.into(),
+            cwd: self.cwd,
+            parent_conversation_id: self
+                .parent_native_id
+                .map(|parent| format!("{runtime_id}:{parent}")),
+        }
+    }
+}
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct List {
@@ -131,6 +149,7 @@ struct List {
 struct Read {
     contract_version: u32,
     history: History,
+    summary: Option<Summary>,
 }
 #[derive(Deserialize)]
 struct BridgeFailure {
@@ -259,20 +278,7 @@ fn listed_summaries(
     Ok(result
         .sessions
         .into_iter()
-        .map(|s| ConversationSummary {
-            native_read_state: None,
-            can_rename: false,
-            can_delete: false,
-            id: format!("{runtime_id}:{}", s.native_id),
-            title: s.title,
-            updated_at_unix_ms: s.updated_at_unix_ms,
-            created_at_unix_ms: s.created_at_unix_ms,
-            runtime_id: runtime_id.into(),
-            cwd: s.cwd,
-            parent_conversation_id: s
-                .parent_native_id
-                .map(|parent| format!("{runtime_id}:{parent}")),
-        })
+        .map(|s| s.for_runtime(runtime_id))
         .collect())
 }
 
@@ -410,6 +416,23 @@ pub fn export_context_before(
     crate::import::Context::parse_before(&bytes)
 }
 
+/// Resolve an exact Codex thread and read its display history in one
+/// app-server connection, using the same native receipt for both.
+pub fn read_codex_with_summary(
+    config: &HistoryConfig,
+    runtime_id: &str,
+    native_id: &str,
+) -> Result<(ConversationSummary, History), HistoryError> {
+    if config.provider != "codex" {
+        return Err(HistoryError::new(
+            HistoryFailureKind::UnsupportedProvider,
+            "validate",
+        ));
+    }
+    crate::native::read_codex_with_summary_at(config, runtime_id, native_id)
+        .map_err(|error| native_history_error(error, "native_read"))
+}
+
 pub fn read(
     config: &HistoryConfig,
     runtime_id: &str,
@@ -427,6 +450,24 @@ pub fn read(
         )
         .map_err(|error| native_history_error(error, "native_read"));
     }
+    Ok(read_bridge(config, runtime_id, native_id)?.history)
+}
+
+/// A cold Claude read returns the history and its metadata in one helper.
+pub fn read_claude_with_summary(
+    config: &HistoryConfig,
+    runtime_id: &str,
+    native_id: &str,
+) -> Result<(ConversationSummary, History), HistoryError> {
+    let read = read_bridge(config, runtime_id, native_id)?;
+    let summary = read
+        .summary
+        .filter(|summary| summary.native_id == native_id)
+        .ok_or_else(|| HistoryError::new(HistoryFailureKind::BridgeContract, "read_summary"))?;
+    Ok((summary.for_runtime(runtime_id), read.history))
+}
+
+fn read_bridge(config: &HistoryConfig, runtime_id: &str, native_id: &str) -> Result<Read, HistoryError> {
     let bytes = execute(config, "read", runtime_id, Some(native_id), &[])?;
     let value: serde_json::Value = serde_json::from_slice(&bytes).map_err(|error| {
         HistoryError::new(HistoryFailureKind::BridgeContract, "read").with_detail(error.to_string())
@@ -452,7 +493,7 @@ pub fn read(
             "read",
         ));
     }
-    Ok(result.history)
+    Ok(result)
 }
 
 fn native_history_error(error: Error, phase: &'static str) -> HistoryError {
@@ -518,7 +559,23 @@ pub fn read_pi(
     config: &crate::Config,
     session: &std::path::Path,
 ) -> NativeResult<serde_json::Value> {
-    execute_pi(config, PiOperation::Inspect(session), None)
+    execute_pi(config, PiOperation::Inspect(session, false), None)
+}
+
+/// Inspect a cold Pi history and its metadata without constructing an index.
+pub fn read_pi_with_summary(
+    config: &crate::Config,
+    session: &Path,
+) -> NativeResult<(PiSessionSummary, serde_json::Value)> {
+    let mut value = execute_pi(config, PiOperation::Inspect(session, true), None)?;
+    let summary: PiSessionSummary = serde_json::from_value(
+        value.get_mut("summary").map(serde_json::Value::take).unwrap_or_default(),
+    )
+        .map_err(|error| Error::new(format!("Pi 历史摘要格式不匹配：{error}")))?;
+    if Path::new(&summary.path).as_os_str() != session.as_os_str() {
+        return Err(Error::new("Pi 返回不同的原生会话"));
+    }
+    Ok((summary, value))
 }
 pub fn export_pi_context(
     config: &crate::Config,
@@ -599,7 +656,7 @@ pub fn manage_pi(
 }
 enum PiOperation<'a> {
     List,
-    Inspect(&'a std::path::Path),
+    Inspect(&'a std::path::Path, bool),
     ExportContext(&'a std::path::Path),
     ExportBefore(&'a std::path::Path, &'a str),
     Fork(&'a std::path::Path),
@@ -650,8 +707,11 @@ fn execute_pi(
         PiOperation::Fork(session) => {
             command.arg("--fork-session").arg(session);
         }
-        PiOperation::Inspect(session) => {
+        PiOperation::Inspect(session, with_summary) => {
             command.arg("--inspect-session").arg(session);
+            if with_summary {
+                command.arg("--with-summary");
+            }
         }
         PiOperation::Rename(session) => {
             command.arg("--rename-session").arg(session);

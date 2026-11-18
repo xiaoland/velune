@@ -28,6 +28,7 @@ pub use codex_history::{
     codex_context_provider, export_codex_context, export_codex_context_before, list_codex_history,
     list_codex_history_at, read_codex_history, read_codex_history_at, read_codex_summary_at,
 };
+pub(crate) use codex_history::read_codex_with_summary_at;
 mod deepseek;
 pub(crate) mod rpc;
 #[derive(thiserror::Error, Debug)]
