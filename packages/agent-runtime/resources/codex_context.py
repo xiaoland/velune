@@ -48,6 +48,7 @@ def resolve_records(path, data, resolving):
         raise ValueError("Codex history base is missing or ambiguous")
     return candidates[0] + records
 
+portable_summary = None
 if "--before-message-id" in sys.argv:
     source_path = option("--source-path")
     source = sys.stdin.buffer.read()
@@ -137,7 +138,12 @@ if "--before-message-id" in sys.argv:
         raise ValueError("Codex native user message boundary was not found")
     records = records[:boundary]
 else:
-    records = [json.loads(line) for line in sys.stdin if line.strip()]
+    data = sys.stdin.buffer.read()
+    if "--request-envelope" in sys.argv:
+        request = json.loads(data)
+        portable_summary = request.get("portableSummary")
+        data = request["rollout"].encode("utf-8")
+    records = parse_records(data)
 # The newest full replacement already includes inherited and retained context.
 # Older records are no longer model input, including earlier compactions.
 start = next((index for index in range(len(records) - 1, -1, -1)
@@ -166,6 +172,22 @@ for record in records[start:]:
         continue
     elif kind not in ("session_meta", "turn_context", "event_msg", "world_state", "token_usage_record"):
         raise ValueError("unsupported Codex rollout record: " + kind)
+
+def encrypted_agent_block(block):
+    return (isinstance(block, dict) and block.get("type") == "encrypted_content"
+            and set(block) == {"type", "encrypted_content"}
+            and isinstance(block["encrypted_content"], str) and bool(block["encrypted_content"]))
+
+encrypted_agent_history = any(
+    item.get("type") == "agent_message" and isinstance(item.get("content"), list)
+    and any(encrypted_agent_block(block) for block in item["content"])
+    for item in items
+)
+if "--requires-portable-summary" in sys.argv:
+    print(json.dumps({"required": encrypted_agent_history}))
+    sys.exit(0)
+if portable_summary is not None and not encrypted_agent_history:
+    raise ValueError("portable summary requires encrypted Codex context")
 
 def blocks(content):
     if isinstance(content, str):
@@ -199,9 +221,17 @@ for item in items:
         author, recipient = item["author"], item["recipient"]
         if not isinstance(author, str) or not author or not isinstance(recipient, str) or not recipient:
             raise ValueError("Codex agent message lacks author or recipient")
+        if not isinstance(item.get("content"), list):
+            raise ValueError("unsupported Codex agent message content")
+        encrypted = False
         for block in item["content"]:
+            if encrypted_agent_block(block):
+                encrypted = True
+                continue
             if block["type"] != "input_text" or not isinstance(block.get("text"), str):
                 raise ValueError("unsupported Codex agent message content: " + block["type"])
+        if encrypted:
+            continue
         role = "assistant"
         content = [{"type": "text", "text": f"Agent message from {author} to {recipient}:\n"}] + blocks(item["content"])
     elif kind in ("function_call", "custom_tool_call"):
@@ -212,6 +242,15 @@ for item in items:
         if isinstance(output, dict):
             output = output["content"]
         role, content = "user", [{"type": "tool_result", "id": item["call_id"], "content": blocks(output), "is_error": False}]
+    elif kind == "configuration_update":
+        # Codex persists a positional reasoning-effort control for its backend.
+        # The target runtime gets its reasoning effort from the new request.
+        reasoning = item.get("reasoning")
+        if (set(item) != {"type", "reasoning"} or not isinstance(reasoning, dict)
+                or set(reasoning) != {"effort"} or not isinstance(reasoning["effort"], str)
+                or not reasoning["effort"].strip()):
+            raise ValueError("unsupported Codex configuration update")
+        continue
     elif kind in ("reasoning", "additional_tools"):
         # Tool availability belongs to the target runtime, not historical calls.
         continue
@@ -219,4 +258,12 @@ for item in items:
         raise ValueError("unsupported Codex context item: " + kind)
     if content:
         messages.append({"role": role, "content": content})
+if encrypted_agent_history:
+    summary = portable_summary.strip() if isinstance(portable_summary, str) else ""
+    if not summary:
+        print(json.dumps({"errorCode":"portable_summary_required"}))
+        sys.exit(0)
+    # The source fork summarized the whole effective history, including the
+    # opaque deliveries. A routing envelope cannot replace their actual text.
+    messages = [{"role": "assistant", "content": [{"type": "text", "text": summary}]}]
 print(json.dumps({"messages": messages}))

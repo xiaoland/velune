@@ -232,7 +232,7 @@ pub fn export_codex_context(
     let output = config
         .execution
         .output(command, Some(bytes), config.os_home.as_deref())?;
-    crate::import::Context::parse(&output)
+    parse_codex_context(&output, false)
 }
 
 pub fn export_codex_context_before(
@@ -301,7 +301,24 @@ pub fn export_codex_context_before(
     let output = config
         .execution
         .output(command, Some(bytes), config.os_home.as_deref())?;
-    crate::import::Context::parse_before(&output)
+    parse_codex_context(&output, true)
+}
+
+fn parse_codex_context(bytes: &[u8], before: bool) -> Result<crate::import::Context> {
+    if bytes.starts_with(b"{\"errorCode\"")
+        && let Ok(value) = serde_json::from_slice::<Value>(bytes)
+        && value["errorCode"].as_str() == Some("portable_summary_required")
+    {
+        return Err(Error::with_code(
+            "Codex encrypted history requires a portable summary before handoff",
+            "portable_summary_required",
+        ));
+    }
+    if before {
+        crate::import::Context::parse_before(bytes)
+    } else {
+        crate::import::Context::parse(bytes)
+    }
 }
 
 pub fn read_codex_history_at(

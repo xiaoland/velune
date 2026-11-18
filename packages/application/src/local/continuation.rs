@@ -1158,7 +1158,18 @@ impl CoreRuntime {
                 ));
             }
         }
-        .map_err(|error| RuntimeError::context("导出原生上下文", error))?;
+        .map_err(|error| {
+            if error.code() == "portable_summary_required" {
+                let mut failure = crate::Failure::new(
+                    crate::FailureKind::Unsupported,
+                    "此来源包含 Codex 加密历史。请保留原提供商继续，或先准备可移植摘要。",
+                );
+                failure.code = "portable_summary_required".into();
+                RuntimeError::Contract(failure)
+            } else {
+                RuntimeError::context("导出原生上下文", error)
+            }
+        })?;
         let cwd = source
             .conversation
             .cwd

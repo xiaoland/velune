@@ -4,20 +4,29 @@ use std::io::Write;
 use std::process::{Command, Output, Stdio};
 
 fn run(records: &[Value]) -> Output {
+    run_input(&rollout(records), &[])
+}
+
+fn rollout(records: &[Value]) -> String {
+    records.iter().map(|record| format!("{record}\n")).collect()
+}
+
+fn run_input(input: &str, args: &[&str]) -> Output {
     let mut child = Command::new("python3")
         .arg("-c")
         .arg(include_str!("../resources/codex_context.py"))
+        .args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .expect("python3 must be available for Codex context export");
-    {
-        let mut input = child.stdin.take().unwrap();
-        for record in records {
-            writeln!(input, "{record}").unwrap();
-        }
-    }
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(input.as_bytes())
+        .unwrap();
     child.wait_with_output().unwrap()
 }
 
@@ -51,7 +60,14 @@ fn item(payload: Value) -> Value {
 }
 
 fn metadata() -> Value {
-    record("inter_agent_communication_metadata", json!({"trigger_turn": true}))
+    record(
+        "inter_agent_communication_metadata",
+        json!({"trigger_turn": true}),
+    )
+}
+
+fn effort_update() -> Value {
+    json!({"type":"configuration_update", "reasoning":{"effort":"high"}})
 }
 
 fn agent(content: Value) -> Value {
@@ -66,6 +82,7 @@ fn delivery_metadata_preserves_function_and_custom_tool_order() {
         item(
             json!({"type":"function_call", "call_id":"f", "name":"inspect", "arguments":"{\"path\":\"src\"}"}),
         ),
+        item(effort_update()),
         metadata(),
         item(json!({"type":"function_call_output", "call_id":"f", "output":"found"})),
         item(json!({"type":"custom_tool_call", "call_id":"c", "name":"apply", "input":"patch"})),
@@ -116,6 +133,7 @@ fn newest_compaction_replacement_keeps_agent_context_and_suffix() {
             "compacted",
             json!({"replacement_history":[
                 {"type":"message", "role":"assistant", "content":"retained summary"},
+                effort_update(),
                 agent(json!([{"type":"input_text", "text":"retained agent body"}]))
             ]}),
         ),
@@ -143,6 +161,64 @@ fn metadata_does_not_allow_unknown_rollout_or_response_items() {
     rejected(
         &[metadata(), item(json!({"type":"future_item"}))],
         "unsupported Codex context item: future_item",
+    );
+}
+
+#[test]
+fn unknown_configuration_update_shapes_are_rejected() {
+    for update in [
+        json!({"type":"configuration_update"}),
+        json!({"type":"configuration_update", "reasoning":{"effort":42}}),
+        json!({"type":"configuration_update", "reasoning":{"effort":"high","future":true}}),
+        json!({"type":"configuration_update", "reasoning":{"effort":"high"},"future":true}),
+    ] {
+        rejected(&[item(update)], "unsupported Codex configuration update");
+    }
+}
+
+#[test]
+fn encrypted_agent_payload_requires_a_source_summary() {
+    let records = [
+        item(effort_update()),
+        item(agent(json!([
+            {"type":"input_text", "text":"Routing header only"},
+            {"type":"encrypted_content", "encrypted_content":"opaque fixture"}
+        ]))),
+        item(json!({"type":"message", "role":"assistant", "content":"later plain reply"})),
+    ];
+    let serialized = rollout(&records);
+    let probe = run_input(&serialized, &["--requires-portable-summary"]);
+    assert!(probe.status.success());
+    assert_eq!(
+        serde_json::from_slice::<Value>(&probe.stdout).unwrap(),
+        json!({"required":true})
+    );
+    assert_eq!(
+        export(&records),
+        json!({"errorCode":"portable_summary_required"})
+    );
+    let envelope =
+        json!({"rollout":serialized, "portableSummary":"Judged source summary"}).to_string();
+    let prepared = run_input(&envelope, &["--request-envelope"]);
+    assert!(
+        prepared.status.success(),
+        "{}",
+        String::from_utf8_lossy(&prepared.stderr)
+    );
+    assert_eq!(
+        serde_json::from_slice::<Value>(&prepared.stdout).unwrap(),
+        json!({"messages":[{"role":"assistant","content":[{"type":"text","text":"Judged source summary"}]}]})
+    );
+    let mut with_unknown = records.to_vec();
+    with_unknown.push(item(json!({"type":"future_item"})));
+    let envelope =
+        json!({"rollout":rollout(&with_unknown), "portableSummary":"Judged source summary"})
+            .to_string();
+    let rejected = run_input(&envelope, &["--request-envelope"]);
+    assert!(!rejected.status.success() && rejected.stdout.is_empty());
+    assert!(
+        String::from_utf8_lossy(&rejected.stderr)
+            .contains("unsupported Codex context item: future_item")
     );
 }
 
