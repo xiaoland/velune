@@ -15,8 +15,11 @@ sealed class LinkedAgentsTool : UserControl
     ConversationView? view;
     // What is shown, so a new snapshot rebuilds the panel only on change.
     string shown = "";
+    string? conversationID;
+    bool completedExpanded;
 
     sealed record Linked(string ConversationID, string Title, string Detail);
+    sealed record Group(string Title, List<Linked> Items, bool Completed = false);
 
     public LinkedAgentsTool(WorkspaceWindow window)
     {
@@ -35,13 +38,17 @@ sealed class LinkedAgentsTool : UserControl
             if (view != null)
             {
                 view.Model.Changed -= Render;
+                window.Shell.Listings.Leave(view.Model.Device, Render);
             }
             view = next;
+            conversationID = null;
+            completedExpanded = false;
+            shown = "";
             if (view != null)
             {
                 view.Model.Changed += Render;
+                window.Shell.Listings.Follow(view.Model.Device, Render);
             }
-            shown = "";
         }
         Render();
     }
@@ -50,14 +57,15 @@ sealed class LinkedAgentsTool : UserControl
     public static bool Has(ConversationView? view) =>
         view?.Model is { } model && (model.ParentID != null || model.Snapshot is { SubAgents.Length: > 0 } or { Collaborators.Length: > 0 });
 
-    List<(string Title, List<Linked> Items)> Groups()
+    List<Group> Groups()
     {
-        var found = new List<(string, List<Linked>)>();
+        var found = new List<Group>();
         if (view?.Model is not { } model)
         {
             return found;
         }
-        var active = window.Listing.Active;
+        var listing = window.Shell.Listings.Of(model.Device);
+        var active = listing.Active;
         string State(string id, bool failed) =>
             active.TryGetValue(id, out var running) && running.PendingInteractions > 0 ? "等待处理"
             : running?.RunState == RunState.Running ? "运行中"
@@ -65,17 +73,29 @@ sealed class LinkedAgentsTool : UserControl
             : "已结束";
         if (model.ParentID is { } parent)
         {
-            var title = window.Listing.Conversations.FirstOrDefault(listed => listed.Conversation.Id == parent)?.Conversation.Title.DisplayText() ?? "父会话";
-            found.Add(("父会话", [new Linked(parent, title, "")]));
+            var title = listing.Conversations.FirstOrDefault(listed => listed.Conversation.Id == parent)?.Conversation.Title.DisplayText() ?? "父会话";
+            found.Add(new("父会话", [new Linked(parent, title, "")]));
         }
         if (model.Snapshot is { SubAgents.Length: > 0 } withSubAgents)
         {
-            found.Add(("子 Agent", [.. withSubAgents.SubAgents.Select(agent =>
-                new Linked(agent.ConversationId, agent.Title.Length > 0 ? agent.Title : "子 Agent", State(agent.ConversationId, agent.Failed)))]));
+            var running = new List<Linked>();
+            var completed = new List<Linked>();
+            foreach (var agent in withSubAgents.SubAgents)
+            {
+                var activity = active.GetValueOrDefault(agent.ConversationId);
+                var waiting = activity is { PendingInteractions: > 0 };
+                var working = activity?.RunState is RunState.Running or RunState.Stopping or RunState.Elsewhere;
+                var detail = waiting ? "等待处理" : activity?.RunState == RunState.Stopping ? "正在停止"
+                    : working ? "运行中" : agent.Failed ? "失败" : "已结束";
+                var row = new Linked(agent.ConversationId, agent.Title.Length > 0 ? agent.Title : "子 Agent", detail);
+                (waiting || working ? running : completed).Add(row);
+            }
+            if (running.Count > 0) found.Add(new("子 Agent", running));
+            if (completed.Count > 0) found.Add(new($"已结束的子 Agent（{completed.Count}）", completed, Completed: true));
         }
         if (model.Snapshot is { Collaborators.Length: > 0 } withCollaborators)
         {
-            found.Add(("协作", [.. withCollaborators.Collaborators.Select(collaborator =>
+            found.Add(new("协作", [.. withCollaborators.Collaborators.Select(collaborator =>
             {
                 var direction = collaborator.Contacted && collaborator.ContactedBy ? "互相联系"
                     : collaborator.Contacted ? "联系了对方" : "对方联系了它";
@@ -88,6 +108,14 @@ sealed class LinkedAgentsTool : UserControl
 
     public void Render()
     {
+        if (window.IsClosed) return;
+        var nextID = view?.Model.Snapshot?.Conversation.Id ?? view?.Model.Target.ConversationID;
+        if (conversationID != nextID)
+        {
+            conversationID = nextID;
+            completedExpanded = false;
+            shown = "";
+        }
         var found = Groups();
         empty.Text = view == null ? "没有打开的会话。" : "这个会话还没有关联的 Agent。";
         empty.Visibility = found.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
@@ -98,35 +126,60 @@ sealed class LinkedAgentsTool : UserControl
         }
         shown = key;
         groups.Children.Clear();
-        foreach (var (title, items) in found)
+        foreach (var group in found)
         {
-            groups.Children.Add(new TextBlock { Text = title, Style = Ui.Style("BodyStrongTextBlockStyle"), Margin = new Thickness(12, 8, 12, 2) });
-            var list = new ListView { SelectionMode = ListViewSelectionMode.Single };
-            foreach (var item in items)
+            if (group.Completed)
             {
-                var row = new ListViewItem { Tag = item.ConversationID, Content = Ui.TwoLines(item.Title, item.Detail) };
-                ToolTipService.SetToolTip(row, item.Title);
-                var id = item.ConversationID;
-                row.DoubleTapped += (_, e) =>
+                var disclosure = new Expander
                 {
-                    e.Handled = true;
-                    window.OpenLinked(id);
+                    Header = group.Title,
+                    IsExpanded = completedExpanded,
+                    Content = completedExpanded ? Rows(group.Items) : null,
+                    HorizontalAlignment = HorizontalAlignment.Stretch,
+                    HorizontalContentAlignment = HorizontalAlignment.Stretch,
+                    Margin = new Thickness(12, 4, 12, 2),
                 };
-                var menu = new MenuFlyout();
-                foreach (var (opening, name) in new[]
+                disclosure.Expanding += (_, _) =>
                 {
-                    (LinkedConversationOpening.CurrentTab, "在当前标签页中打开"),
-                    (LinkedConversationOpening.NewTab, "在新标签页中打开"),
-                    (LinkedConversationOpening.Sheet, "在浮层中打开"),
-                    (LinkedConversationOpening.NewWindow, "在新窗口中打开"),
-                })
-                {
-                    menu.Items.Add(Ui.MenuItem(name, () => window.OpenLinked(id, opening)));
-                }
-                row.ContextFlyout = menu;
-                list.Items.Add(row);
+                    completedExpanded = true;
+                    disclosure.Content ??= Rows(group.Items);
+                };
+                disclosure.Collapsed += (_, _) => completedExpanded = false;
+                groups.Children.Add(disclosure);
+                continue;
             }
-            groups.Children.Add(list);
+            groups.Children.Add(new TextBlock { Text = group.Title, Style = Ui.Style("BodyStrongTextBlockStyle"), Margin = new Thickness(12, 8, 12, 2) });
+            groups.Children.Add(Rows(group.Items));
         }
+    }
+
+    ListView Rows(List<Linked> items)
+    {
+        var list = new ListView { SelectionMode = ListViewSelectionMode.Single };
+        foreach (var item in items)
+        {
+            var row = new ListViewItem { Tag = item.ConversationID, Content = Ui.TwoLines(item.Title, item.Detail) };
+            ToolTipService.SetToolTip(row, item.Title);
+            var id = item.ConversationID;
+            row.DoubleTapped += (_, e) =>
+            {
+                e.Handled = true;
+                window.OpenLinked(id);
+            };
+            var menu = new MenuFlyout();
+            foreach (var (opening, name) in new[]
+            {
+                (LinkedConversationOpening.CurrentTab, "在当前标签页中打开"),
+                (LinkedConversationOpening.NewTab, "在新标签页中打开"),
+                (LinkedConversationOpening.Sheet, "在浮层中打开"),
+                (LinkedConversationOpening.NewWindow, "在新窗口中打开"),
+            })
+            {
+                menu.Items.Add(Ui.MenuItem(name, () => window.OpenLinked(id, opening)));
+            }
+            row.ContextFlyout = menu;
+            list.Items.Add(row);
+        }
+        return list;
     }
 }

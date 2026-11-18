@@ -13,6 +13,11 @@ struct LinkedAgent: Identifiable, Equatable {
     let id: String
     let title: String
     let relation: Relation
+    var isChild: Bool { if case .subAgent = relation { true } else { false } }
+
+    @MainActor func isActive(in device: DeviceStore) -> Bool {
+        device.isConversationRunning(id) || device.waitingConversationIDs.contains(id)
+    }
 
     /// The loaded conversation's: the one that started it, its native
     /// sub-agents, then its collaborators, each conversation once.
@@ -35,7 +40,7 @@ struct LinkedAgent: Identifiable, Equatable {
     @MainActor static func summary(of store: ConversationStore) -> String {
         let agents = all(of: store)
         var parts: [String] = []
-        let subAgents = agents.filter { if case .subAgent = $0.relation { true } else { false } }
+        let subAgents = agents.filter(\.isChild)
         if !subAgents.isEmpty {
             let running = subAgents.filter { store.device.isConversationRunning($0.id) }.count
             parts.append(running > 0 ? "\(subAgents.count) 个子 Agent，\(running) 个正在运行" : "\(subAgents.count) 个子 Agent")
@@ -65,15 +70,22 @@ struct LinkedAgentsView: View {
     /// Opens a conversation where it says, or where the setting says when nil.
     let open: (String, LinkedConversationOpening?) -> Void
     @State private var selectedID: String?
+    @State private var finishedExpanded = false
 
     var body: some View {
         let agents = LinkedAgent.all(of: store)
+        let children = agents.filter(\.isChild)
+        // Core has already sorted the children by creation time.
+        let active = children.filter { $0.isActive(in: store.device) }
+        let finished = children.filter { !$0.isActive(in: store.device) }
+        let visibleIDs = Set((finishedExpanded ? agents : agents.filter { !$0.isChild || $0.isActive(in: store.device) }).map(\.id))
         VStack(spacing: 0) {
             if agents.isEmpty {
                 ContentUnavailableView("没有关联 Agent", systemImage: "person.2",
                                        description: Text("父会话、子 Agent 和协作会话会列在这里。"))
             } else {
-                if inSidebar { list(agents).listStyle(.sidebar) } else { list(agents).listStyle(.inset) }
+                if inSidebar { list(agents, active: active, finished: finished).listStyle(.sidebar) }
+                else { list(agents, active: active, finished: finished).listStyle(.inset) }
                 Divider()
                 HStack {
                     Text(LinkedAgent.summary(of: store))
@@ -87,15 +99,39 @@ struct LinkedAgentsView: View {
             }
         }
         .frame(width: inPopover ? 360 : nil, height: inPopover ? 360 : nil)
-        .onChange(of: agents.map(\.id)) { _, ids in
+        .onChange(of: visibleIDs) { _, ids in
             if let selectedID, !ids.contains(selectedID) { self.selectedID = nil }
+        }
+        .onChange(of: store.loadedConversationID) { _, _ in
+            finishedExpanded = false
+            selectedID = nil
         }
     }
 
-    private func list(_ agents: [LinkedAgent]) -> some View {
+    private func list(_ agents: [LinkedAgent], active: [LinkedAgent], finished: [LinkedAgent]) -> some View {
         List(selection: $selectedID) {
             section("父会话", agents.filter { $0.relation == .parent })
-            section("子 Agent", agents.filter { if case .subAgent = $0.relation { true } else { false } })
+            if !active.isEmpty || !finished.isEmpty {
+                Section("子 Agent") {
+                    rows(active)
+                    if !finished.isEmpty {
+                        Button { finishedExpanded.toggle() } label: {
+                            HStack(spacing: 6) {
+                                Image(systemName: finishedExpanded ? "chevron.down" : "chevron.right")
+                                    .font(.caption.weight(.semibold)).frame(width: 14)
+                                Text("已结束（\(finished.count)）").uiFont(.callout)
+                                Spacer(minLength: 0)
+                            }
+                            .foregroundStyle(.secondary)
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("已结束的子 Agent，\(finished.count) 个")
+                        .accessibilityValue(finishedExpanded ? "已展开" : "已折叠")
+                        if finishedExpanded { rows(finished) }
+                    }
+                }
+            }
             section("协作", agents.filter { if case .collaborator = $0.relation { true } else { false } })
         }
         .accessibilityLabel("关联 Agent")
@@ -117,19 +153,21 @@ struct LinkedAgentsView: View {
 
     @ViewBuilder private func section(_ title: String, _ agents: [LinkedAgent]) -> some View {
         if !agents.isEmpty {
-            Section(title) {
-                ForEach(agents) { agent in
-                    HStack(alignment: .firstTextBaseline, spacing: 6) {
-                        state(of: agent).frame(width: 14)
-                        VStack(alignment: .leading, spacing: 1) {
-                            Text(agent.title).lineLimit(2)
-                            if let detail = detail(of: agent) { Text(detail).uiFont(.caption).foregroundStyle(.secondary).lineLimit(1) }
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                    .padding(.vertical, 2).tag(agent.id)
+            Section(title) { rows(agents) }
+        }
+    }
+
+    private func rows(_ agents: [LinkedAgent]) -> some View {
+        ForEach(agents) { agent in
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                state(of: agent).frame(width: 14)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(agent.title).lineLimit(2)
+                    if let detail = detail(of: agent) { Text(detail).uiFont(.caption).foregroundStyle(.secondary).lineLimit(1) }
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
+            .padding(.vertical, 2).tag(agent.id)
         }
     }
 
@@ -141,7 +179,10 @@ struct LinkedAgentsView: View {
     }
 
     @ViewBuilder private func state(of agent: LinkedAgent) -> some View {
-        if store.device.isConversationRunning(agent.id) {
+        if agent.isChild && store.device.waitingConversationIDs.contains(agent.id) {
+            Image(systemName: "hand.raised.fill").foregroundStyle(.orange).imageScale(.small)
+                .help("等待处理").accessibilityLabel("等待处理")
+        } else if store.device.isConversationRunning(agent.id) {
             ProgressView().controlSize(.mini).help("正在运行").accessibilityLabel("正在运行")
         } else {
             switch agent.relation {

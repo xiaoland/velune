@@ -2,11 +2,11 @@
 //! which conversation the running ones belong to.
 use super::*;
 use crate::conversation::{ConversationSnapshot, MessageBlock, SubAgent};
+use std::{cmp::Reverse, collections::HashMap};
 
 impl CoreRuntime {
-    /// The native sub-agents of `snapshot`'s conversation: those its
-    /// transcript links, in order, then the others its runtime lists with it
-    /// as parent. Native work descriptions take priority over session titles.
+    /// The native sub-agents of this conversation, newest first.
+    /// Native work descriptions take priority over session titles.
     pub(super) fn sub_agents(&self, snapshot: &ConversationSnapshot) -> Vec<SubAgent> {
         let listed = self.listed_sources();
         let failures = self.sub_agent_failures.borrow();
@@ -43,14 +43,20 @@ impl CoreRuntime {
                     || failures.get(id).copied().unwrap_or(false),
             });
         };
-        for block in snapshot.messages.iter().flat_map(|message| &message.blocks) {
-            if let MessageBlock::Tool {
-                title,
-                conversation_id: Some(id),
-                ..
-            } = block
-            {
-                add(id, title);
+        let mut first_link_times = HashMap::new();
+        for message in &snapshot.messages {
+            for block in &message.blocks {
+                if let MessageBlock::Tool {
+                    title,
+                    conversation_id: Some(id),
+                    ..
+                } = block
+                {
+                    if let Some(time) = message.timestamp_unix_ms {
+                        first_link_times.entry(id.as_str()).or_insert(time);
+                    }
+                    add(id, title);
+                }
             }
         }
         for agent in native {
@@ -72,16 +78,37 @@ impl CoreRuntime {
                 }
             }
         }
-        let mut children: Vec<_> = listed
+        let children = listed
             .values()
             .map(|source| &source.summary)
             .filter(|summary| {
                 summary.parent_conversation_id.as_deref() == Some(&snapshot.conversation.id)
-            })
-            .collect();
-        children.sort_by_key(|summary| summary.created_at_unix_ms);
+            });
         for child in children {
             add(&child.id, child.title.display_text());
+        }
+        if found.len() > 1 {
+            let open_creation_times: HashMap<_, _> = std::iter::once(&self.session)
+                .chain(&self.parked)
+                .filter_map(session::Session::projected)
+                .filter_map(|view| {
+                    let conversation = &view.conversation;
+                    Some((conversation.id.as_str(), conversation.created_at_unix_ms?))
+                })
+                .collect();
+            // Keep equal and unknown dates in reverse discovery order. An
+            // unfinished child may be known only from its parent's transcript.
+            found.reverse();
+            found.sort_by_cached_key(|agent| {
+                let id = agent.conversation_id.as_str();
+                Reverse(
+                    listed
+                        .get(id)
+                        .and_then(|source| source.summary.created_at_unix_ms)
+                        .or_else(|| open_creation_times.get(id).copied())
+                        .or_else(|| first_link_times.get(id).copied()),
+                )
+            });
         }
         found
     }
@@ -224,6 +251,57 @@ mod tests {
         assert!(
             app.runtime.active_conversations().is_empty(),
             "known terminal identities do not imply active work"
+        );
+        // Two children have native creation dates. The older one was last
+        // active most recently and is also linked late in the transcript.
+        let mut older = child.clone();
+        older.created_at_unix_ms = Some(10);
+        older.updated_at_unix_ms = Some(1000);
+        let mut newer = older.clone();
+        newer.id = "pi:/synthetic/newer.jsonl".into();
+        newer.created_at_unix_ms = Some(40);
+        for summary in [older.clone(), newer.clone()] {
+            app.runtime.last_listed.borrow_mut().entries.insert(
+                summary.id.clone(),
+                organization::ListedSource {
+                    summary,
+                    archived_natively: false,
+                    provisional: false,
+                },
+            );
+        }
+        let linked_only = "pi:/synthetic/linked.jsonl";
+        let unknown = "pi:/synthetic/unknown.jsonl";
+        for (id, time) in [
+            (linked_only, Some(25)),
+            (older.id.as_str(), Some(200)),
+            (linked_only, Some(500)),
+            (unknown, None),
+        ] {
+            view.messages.push(crate::conversation::Message {
+                id: format!("link-{id}-{time:?}"),
+                role: crate::conversation::MessageRole::Assistant,
+                blocks: vec![MessageBlock::Tool {
+                    tool_id: None,
+                    title: "Agent".into(),
+                    state: crate::conversation::ToolState::Completed,
+                    output: None,
+                    conversation_id: Some(id.into()),
+                }],
+                timestamp_unix_ms: time,
+                completed: true,
+                turn_settings: None,
+                turn_usage: None,
+                branch_point: None,
+            });
+        }
+        assert_eq!(
+            app.runtime
+                .sub_agents(&view)
+                .into_iter()
+                .map(|agent| agent.conversation_id)
+                .collect::<Vec<_>>(),
+            [newer.id.as_str(), linked_only, older.id.as_str(), unknown]
         );
         drop(app);
         std::fs::remove_dir_all(root).unwrap();
