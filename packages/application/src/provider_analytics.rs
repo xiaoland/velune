@@ -1,4 +1,4 @@
-//! Aggregated provider reports remain separate from local gateway request analytics.
+//! Provider-scope observations used alongside gateway request analytics.
 use crate::{
     Application, Error, ProviderAnalyticsArea, ProviderAnalyticsChatgptProfileTotal,
     ProviderAnalyticsDailyTotal, ProviderAnalyticsFailure, ProviderAnalyticsOrganizationTotal,
@@ -23,7 +23,8 @@ impl Application {
             let mut sources = Vec::new();
             for gateway in gateways {
                 for provider in gateway.providers {
-                    let account = core.provider_account(&gateway.id, &provider.id, refresh)?;
+                    let account =
+                        core.provider_account_analysis(&gateway.id, &provider.id, refresh)?;
                     if account.state != ProviderAccountState::Unsupported {
                         sources.push(account_source(
                             gateway.id.clone(),
@@ -105,6 +106,10 @@ fn account_source(
             .profile_observed_at
             .as_deref()
             .and_then(parse_rfc3339_ms),
+        model_usage_observed_at_ms: status
+            .model_usage_observed_at
+            .as_deref()
+            .and_then(parse_rfc3339_ms),
         stale: status.stale,
         refreshing: status.refreshing,
         stale_areas: status
@@ -114,9 +119,11 @@ fn account_source(
                 ProviderAccountSource::Usage => ProviderAnalyticsArea::AccountUsage,
                 ProviderAccountSource::Resets => ProviderAnalyticsArea::BankedResets,
                 ProviderAccountSource::Profile => ProviderAnalyticsArea::Profile,
+                ProviderAccountSource::AnalyticsUsage => ProviderAnalyticsArea::ModelUsage,
             })
             .collect(),
         usage: None,
+        model_usage: status.model_usage,
         costs: None,
         profile: status.profile,
         credits: status.credits,
@@ -142,6 +149,7 @@ fn account_failure(failure: ProviderAccountFailure) -> ProviderAnalyticsFailure 
         ProviderAccountSource::Usage => ProviderAnalyticsArea::AccountUsage,
         ProviderAccountSource::Resets => ProviderAnalyticsArea::BankedResets,
         ProviderAccountSource::Profile => ProviderAnalyticsArea::Profile,
+        ProviderAccountSource::AnalyticsUsage => ProviderAnalyticsArea::ModelUsage,
     };
     ProviderAnalyticsFailure {
         area,
@@ -251,6 +259,10 @@ fn billing_source(
         reset_count_observed_at_ms: None,
         reset_grants_observed_at_ms: None,
         profile_observed_at_ms: None,
+        model_usage_observed_at_ms: report
+            .as_ref()
+            .filter(|r| r.model_usage.is_some())
+            .map(|r| r.observed_at_ms),
         stale: status.stale,
         refreshing: status.refreshing,
         stale_areas: if status.stale {
@@ -258,6 +270,9 @@ fn billing_source(
                 let mut areas = Vec::new();
                 if report.usage.is_some() {
                     areas.push(ProviderAnalyticsArea::OrganizationUsage);
+                }
+                if report.model_usage.is_some() {
+                    areas.push(ProviderAnalyticsArea::ModelUsage);
                 }
                 if report.costs.is_some() {
                     areas.push(ProviderAnalyticsArea::Costs);
@@ -276,6 +291,9 @@ fn billing_source(
                 cache_creation_input_tokens: usage.cache_creation_input_tokens,
             })
         }),
+        model_usage: report
+            .as_ref()
+            .and_then(|report| report.model_usage.clone()),
         costs: report.and_then(|value| value.costs),
         profile: None,
         credits: None,
@@ -360,12 +378,59 @@ fn aggregate_report(
     let sources = deduplicate_sources(sources);
     let chatgpt_profile_totals = aggregate_chatgpt_profiles(&sources)?;
     let organization_totals = aggregate_organizations(&sources)?;
+    let comparison_source_ids = Some(comparison_source_ids(&sources));
     Ok(ProviderAnalyticsReport {
         observed_at_ms,
         sources,
         chatgpt_profile_totals,
         organization_totals,
+        comparison_source_ids,
     })
+}
+
+fn comparison_source_ids(sources: &[ProviderAnalyticsSource]) -> Vec<String> {
+    let mut ids = Vec::new();
+    let mut organizations = BTreeMap::<_, Vec<_>>::new();
+    for source in sources {
+        if source.kind == ProviderAnalyticsSourceKind::ChatgptSubscription {
+            if source.profile.is_some() || source.model_usage.is_some() {
+                ids.push(source.id.clone());
+            }
+        } else if (source.usage.is_some() || source.model_usage.is_some())
+            && let (Some(organization), Some(month)) =
+                (&source.organization_id, source.range_start_at_ms)
+        {
+            organizations
+                .entry((source_tag(source.kind), organization, month))
+                .or_default()
+                .push(source);
+        }
+    }
+    for sources in organizations.values() {
+        // Compare one non-overlapping scope family per organization and month.
+        let scope = sources
+            .iter()
+            .map(|source| source.scope)
+            .min()
+            .expect("nonempty organization");
+        let mut selected = BTreeMap::<_, &ProviderAnalyticsSource>::new();
+        for source in sources
+            .iter()
+            .copied()
+            .filter(|source| source.scope == scope)
+        {
+            let key = source.scope_id.as_deref();
+            let quality = |source: &ProviderAnalyticsSource| {
+                (source.model_usage.is_some(), metric_quality(source))
+            };
+            let entry = selected.entry(key).or_insert(source);
+            if quality(source) > quality(entry) {
+                *entry = source;
+            }
+        }
+        ids.extend(selected.values().map(|source| source.id.clone()));
+    }
+    ids
 }
 
 fn deduplicate_sources(sources: Vec<ProviderAnalyticsSource>) -> Vec<ProviderAnalyticsSource> {
@@ -390,6 +455,7 @@ fn deduplicate_sources(sources: Vec<ProviderAnalyticsSource>) -> Vec<ProviderAna
                 let existing = entry.get_mut();
                 let candidate_is_better = source_quality(&source) > source_quality(existing);
                 if candidate_is_better {
+                    retain_newer_model_usage(&mut source, existing);
                     source
                         .provider_ids
                         .extend(existing.provider_ids.iter().cloned());
@@ -406,6 +472,7 @@ fn deduplicate_sources(sources: Vec<ProviderAnalyticsSource>) -> Vec<ProviderAna
                     deduplicate_failures(&mut source.failures);
                     *existing = source;
                 } else {
+                    retain_newer_model_usage(existing, &mut source);
                     existing.gateway_ids.extend(source.gateway_ids);
                     existing.provider_ids.extend(source.provider_ids);
                     existing.provider_names.extend(source.provider_names);
@@ -423,6 +490,7 @@ fn deduplicate_sources(sources: Vec<ProviderAnalyticsSource>) -> Vec<ProviderAna
 
 fn source_quality(source: &ProviderAnalyticsSource) -> (bool, bool, bool, Option<i64>) {
     let has_payload = source.usage.is_some()
+        || source.model_usage.is_some()
         || source.costs.is_some()
         || source.profile.is_some()
         || source.credits.is_some()
@@ -433,6 +501,34 @@ fn source_quality(source: &ProviderAnalyticsSource) -> (bool, bool, bool, Option
         !source.refreshing,
         source.observed_at_ms,
     )
+}
+
+fn retain_newer_model_usage(
+    retained: &mut ProviderAnalyticsSource,
+    alternative: &mut ProviderAnalyticsSource,
+) {
+    let quality = |source: &ProviderAnalyticsSource| {
+        (
+            source.model_usage.is_some(),
+            !source
+                .stale_areas
+                .contains(&ProviderAnalyticsArea::ModelUsage),
+            source.model_usage_observed_at_ms,
+        )
+    };
+    if quality(alternative) > quality(retained) {
+        retained.model_usage = alternative.model_usage.take();
+        retained.model_usage_observed_at_ms = alternative.model_usage_observed_at_ms;
+        retained
+            .stale_areas
+            .retain(|area| *area != ProviderAnalyticsArea::ModelUsage);
+        if alternative
+            .stale_areas
+            .contains(&ProviderAnalyticsArea::ModelUsage)
+        {
+            retained.stale_areas.push(ProviderAnalyticsArea::ModelUsage);
+        }
+    }
 }
 
 fn metric_quality(source: &ProviderAnalyticsSource) -> (bool, bool, Option<i64>) {
@@ -625,13 +721,22 @@ fn aggregate_organizations(
         // per metric. A usage success from one key and a cost success from
         // another are both useful; two usage successes for the same scope are
         // still one observation and must not be added together.
-        let mut logical_scopes = BTreeMap::<String, Vec<&ProviderAnalyticsSource>>::new();
+        let mut logical_scopes = BTreeMap::<_, Vec<_>>::new();
         for source in &rows {
-            let key = source
-                .identity_key
-                .clone()
-                .unwrap_or_else(|| source.id.clone());
-            logical_scopes.entry(key).or_default().push(source);
+            let org = source.organization_id.as_deref();
+            let scope_id = source.scope_id.as_deref();
+            let unknown_child = (source.scope != ProviderAnalyticsScope::Organization
+                && scope_id.is_none())
+            .then_some(source.id.as_str());
+            let scope_id = if source.scope == ProviderAnalyticsScope::Organization {
+                None
+            } else {
+                scope_id
+            };
+            logical_scopes
+                .entry((org, scope_id, unknown_child))
+                .or_default()
+                .push(*source);
         }
         let mut source_count = 0u32;
         for scope_rows in logical_scopes.into_values() {
@@ -764,16 +869,54 @@ mod tests {
             reset_count_observed_at_ms: None,
             reset_grants_observed_at_ms: None,
             profile_observed_at_ms: None,
+            model_usage_observed_at_ms: None,
             stale: false,
             refreshing: false,
             stale_areas: Vec::new(),
             usage: None,
+            model_usage: None,
             costs: None,
             profile: None,
             credits: None,
             banked_resets: None,
             failures: Vec::new(),
         }
+    }
+
+    #[test]
+    fn comparison_uses_one_observation_for_overlapping_organization_scopes() {
+        let make_source = |id: &str, scope, scope_id, observed| {
+            let mut source = organization(
+                id,
+                id,
+                "same-org",
+                scope,
+                scope_id,
+                START,
+                END,
+                Some((100, 30)),
+                None,
+            );
+            source.observed_at_ms = Some(observed);
+            source
+        };
+        let report = aggregate_report(
+            vec![
+                make_source("org-old", ProviderAnalyticsScope::Organization, None, START),
+                make_source("org-new", ProviderAnalyticsScope::Organization, None, END),
+                make_source(
+                    "key",
+                    ProviderAnalyticsScope::ApiKey,
+                    Some("sample-key"),
+                    END,
+                ),
+            ],
+            END,
+        )
+        .unwrap();
+        assert_eq!(report.comparison_source_ids.unwrap(), ["org-new"]);
+        assert_eq!(report.sources.len(), 3);
+        assert_eq!(report.organization_totals[0].input_tokens, Some(100));
     }
 
     fn profile(

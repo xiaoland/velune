@@ -161,6 +161,7 @@ enum ProviderReportFormatting {
         case .usage: return "账户余额"
         case .resets: return "重置权益"
         case .profile: return "账户用量"
+        case .analyticsUsage: return "按模型用量"
         }
     }
 }

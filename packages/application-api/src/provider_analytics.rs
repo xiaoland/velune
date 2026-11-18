@@ -41,6 +41,7 @@ pub enum ProviderAnalyticsArea {
     AccountUsage,
     BankedResets,
     Profile,
+    ModelUsage,
     OrganizationUsage,
     Costs,
     SpendLimit,
@@ -63,6 +64,25 @@ pub struct ProviderAnalyticsUsage {
     pub requests: u64,
     pub cached_input_tokens: Option<u64>,
     pub cache_creation_input_tokens: Option<u64>,
+}
+
+/// A provider-reported model observation. Dates without explicit bounds
+/// remain provider labels. Metrics from different units never substitute for one another.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, uniffi::Record)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderAnalyticsModelUsage {
+    pub model: String,
+    pub date: Option<String>,
+    pub from_ms: Option<i64>,
+    pub to_ms: Option<i64>,
+    pub input_tokens: Option<u64>,
+    pub uncached_input_tokens: Option<u64>,
+    pub cached_input_tokens: Option<u64>,
+    pub output_tokens: Option<u64>,
+    pub requests: Option<u64>,
+    pub turns: Option<u64>,
+    pub credits: Option<f64>,
+    pub relative_usage: Option<f64>,
 }
 
 /// One configured provider or a set of configurations that resolve to the same source.
@@ -94,11 +114,16 @@ pub struct ProviderAnalyticsSource {
     pub reset_count_observed_at_ms: Option<i64>,
     pub reset_grants_observed_at_ms: Option<i64>,
     pub profile_observed_at_ms: Option<i64>,
+    #[serde(default)]
+    pub model_usage_observed_at_ms: Option<i64>,
     pub stale: bool,
     pub refreshing: bool,
     pub stale_areas: Vec<ProviderAnalyticsArea>,
     /// Present only when the source has a complete usage result; zero is a known value.
     pub usage: Option<ProviderAnalyticsUsage>,
+    /// Native-grain rows for the model breakdown; None means unavailable or unreported.
+    #[serde(default)]
+    pub model_usage: Option<Vec<ProviderAnalyticsModelUsage>>,
     /// None means the source did not report costs; Some([]) is a confirmed empty result.
     pub costs: Option<Vec<BilledCost>>,
     pub profile: Option<ProviderAccountProfile>,
@@ -165,4 +190,8 @@ pub struct ProviderAnalyticsReport {
     pub sources: Vec<ProviderAnalyticsSource>,
     pub chatgpt_profile_totals: ProviderAnalyticsChatgptProfileTotal,
     pub organization_totals: Vec<ProviderAnalyticsOrganizationTotal>,
+    /// Primary source observations for the comparison table. All source
+    /// configurations remain available in the provenance drill-down.
+    #[serde(default)]
+    pub comparison_source_ids: Option<Vec<String>>,
 }

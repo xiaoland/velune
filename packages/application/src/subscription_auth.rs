@@ -676,13 +676,72 @@ pub(crate) enum AccountDataEndpoint {
     Usage,
     Resets,
     Profile,
+    ModelUsage {
+        kind: AccountAnalyticsKind,
+        start: chrono::NaiveDate,
+        end: chrono::NaiveDate,
+    },
+    ModelTurns {
+        start: chrono::NaiveDate,
+        end: chrono::NaiveDate,
+    },
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AccountAnalyticsKind {
+    Personal,
+    Business,
+    Enterprise,
+}
+
+impl AccountAnalyticsKind {
+    fn from_plan(plan: Option<&str>) -> Self {
+        match plan {
+            Some(
+                "team"
+                | "self_serve_business_prolite"
+                | "self_serve_business_usage_based"
+                | "sci"
+                | "sci_plus",
+            ) => Self::Business,
+            Some(
+                "business"
+                | "ent26"
+                | "enterprise"
+                | "enterprise_cbp_automation"
+                | "enterprise_cbp_usage_based"
+                | "edu"
+                | "edu_plus"
+                | "edu_pro",
+            ) => Self::Enterprise,
+            _ => Self::Personal,
+        }
+    }
+}
+
 impl AccountDataEndpoint {
     fn url(self) -> &'static str {
         match self {
             Self::Usage => "https://chatgpt.com/backend-api/wham/usage",
             Self::Resets => "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits",
             Self::Profile => "https://chatgpt.com/backend-api/wham/profiles/me",
+            Self::ModelUsage {
+                kind: AccountAnalyticsKind::Personal,
+                ..
+            } => "https://chatgpt.com/backend-api/wham/usage/daily-token-usage-breakdown",
+            Self::ModelUsage { .. } => {
+                "https://chatgpt.com/backend-api/wham/usage/daily-workspace-user-token-usage-breakdown"
+            }
+            Self::ModelTurns { .. } => {
+                "https://chatgpt.com/backend-api/wham/analytics/daily-workspace-usage-counts"
+            }
+        }
+    }
+
+    fn body_limit(self) -> usize {
+        match self {
+            Self::ModelUsage { .. } | Self::ModelTurns { .. } => 2 * 1024 * 1024,
+            _ => LIMIT as usize,
         }
     }
 }
@@ -691,6 +750,7 @@ impl AccountDataEndpoint {
 pub(crate) struct AccountIdentity {
     pub account_scope_key: String,
     pub profile_subject_key: String,
+    pub analytics_kind: AccountAnalyticsKind,
 }
 
 /// Return opaque deduplication keys without exposing email, JWTs, or raw account IDs.
@@ -707,8 +767,8 @@ pub(crate) fn account_identity(
     if session.invalidated {
         return Err(CredentialResolutionError::AuthenticationExpired);
     }
-    let claims = claims(&session.id_token).ok_or(CredentialResolutionError::InvalidContract)?;
-    let subject = claims["sub"]
+    let id_claims = claims(&session.id_token).ok_or(CredentialResolutionError::InvalidContract)?;
+    let subject = id_claims["sub"]
         .as_str()
         .filter(|value| nonempty(value))
         .ok_or(CredentialResolutionError::InvalidContract)?;
@@ -720,9 +780,21 @@ pub(crate) fn account_identity(
     };
     let profile_subject_key = hash(&format!("profile\0{subject}"));
     let account_scope_key = hash(&format!("account\0{subject}\0{}", session.account_id));
+    let auth = "https://api.openai.com/auth";
+    let plan = id_claims[auth]["chatgpt_plan_type"].as_str();
+    let analytics_kind = if plan.is_some() {
+        AccountAnalyticsKind::from_plan(plan)
+    } else {
+        let access_claims = claims(&session.access_token);
+        let plan = access_claims
+            .as_ref()
+            .and_then(|claims| claims[auth]["chatgpt_plan_type"].as_str());
+        AccountAnalyticsKind::from_plan(plan)
+    };
     Ok(AccountIdentity {
         account_scope_key,
         profile_subject_key,
+        analytics_kind,
     })
 }
 
@@ -799,7 +871,7 @@ async fn read_provider_account_data_at(
         let mut response = response;
         let mut bytes = Vec::new();
         while let Some(chunk) = response.chunk().await.map_err(|_| failure())? {
-            if bytes.len() + chunk.len() > LIMIT as usize {
+            if bytes.len() + chunk.len() > endpoint.body_limit() {
                 return Err(CredentialResolutionError::InvalidContract);
             }
             bytes.extend_from_slice(&chunk);
@@ -837,7 +909,7 @@ pub(crate) async fn read_provider_account_data_at_for_test(
     let mut response = response;
     let mut bytes = Vec::new();
     while let Some(chunk) = response.chunk().await.map_err(|_| failure())? {
-        if bytes.len() + chunk.len() > LIMIT as usize {
+        if bytes.len() + chunk.len() > endpoint.body_limit() {
             return Err(CredentialResolutionError::InvalidContract);
         }
         bytes.extend_from_slice(&chunk);
@@ -861,13 +933,40 @@ fn account_data_request(
             .header("openai-beta", "codex-1")
             .header("originator", "Codex Desktop")
             .header("user-agent", "codex-cli/1.0.0"),
-        AccountDataEndpoint::Usage | AccountDataEndpoint::Profile => client
-            .get(url)
-            .header("authorization", bearer)
-            .header("chatgpt-account-id", account_id)
-            .header("accept", "application/json")
-            .header("originator", "codex_cli_rs")
-            .header("user-agent", "codex_cli_rs/0.162.0 Velune/0.1"),
+        _ => {
+            let request = client
+                .get(url)
+                .header("authorization", bearer)
+                .header("chatgpt-account-id", account_id)
+                .header("accept", "application/json")
+                .header("originator", "codex_cli_rs")
+                .header("user-agent", "codex_cli_rs/0.162.0 Velune/0.1");
+            match endpoint {
+                AccountDataEndpoint::ModelUsage { kind, start, end } => {
+                    let request = request.query(&[
+                        ("start_date", start.to_string()),
+                        ("end_date", end.to_string()),
+                        ("group_by", "day".into()),
+                    ]);
+                    if kind == AccountAnalyticsKind::Enterprise {
+                        request.query(&[
+                            ("breakdown_by", "model"),
+                            ("modes", "codex"),
+                            ("modes", "work"),
+                        ])
+                    } else {
+                        request
+                    }
+                }
+                AccountDataEndpoint::ModelTurns { start, end } => request.query(&[
+                    ("start_date", start.to_string()),
+                    ("end_date", end.to_string()),
+                    ("group_by", "day".into()),
+                    ("workspace_user", "true".into()),
+                ]),
+                _ => request,
+            }
+        }
     }
 }
 
@@ -884,5 +983,75 @@ pub(crate) fn same_subscription(home: &Path, left: &str, right: &str) -> bool {
     match (identity(left), identity(right)) {
         (Some(a), Some(b)) => a == b,
         _ => false,
+    }
+}
+
+#[cfg(test)]
+mod account_analytics_tests {
+    use super::{
+        AccountAnalyticsKind as Kind, AccountDataEndpoint as Endpoint, account_data_request,
+    };
+    use chrono::NaiveDate;
+
+    #[test]
+    fn analytics_get_routes_use_plan_and_fixed_account_scope() {
+        let start = NaiveDate::from_ymd_opt(2026, 10, 21).unwrap();
+        let end = NaiveDate::from_ymd_opt(2026, 11, 19).unwrap();
+        let client = reqwest::Client::new();
+        for (plan, kind, path) in [
+            ("pro", Kind::Personal, "usage/daily-token-usage-breakdown"),
+            (
+                "team",
+                Kind::Business,
+                "usage/daily-workspace-user-token-usage-breakdown",
+            ),
+            (
+                "business",
+                Kind::Enterprise,
+                "usage/daily-workspace-user-token-usage-breakdown",
+            ),
+        ] {
+            assert_eq!(Kind::from_plan(Some(plan)), kind);
+            let endpoint = Endpoint::ModelUsage { kind, start, end };
+            let request = account_data_request(
+                &client,
+                endpoint.url(),
+                reqwest::header::HeaderValue::from_static("Bearer synthetic"),
+                "synthetic-account",
+                endpoint,
+            )
+            .build()
+            .unwrap();
+            assert_eq!(request.method(), reqwest::Method::GET);
+            assert_eq!(request.url().scheme(), "https");
+            assert_eq!(request.url().host_str(), Some("chatgpt.com"));
+            assert_eq!(request.url().path(), format!("/backend-api/wham/{path}"));
+            assert_eq!(request.headers()["chatgpt-account-id"], "synthetic-account");
+            let extra = if kind == Kind::Enterprise {
+                "&breakdown_by=model&modes=codex&modes=work"
+            } else {
+                ""
+            };
+            let query = format!("start_date=2026-10-21&end_date=2026-11-19&group_by=day{extra}");
+            assert_eq!(request.url().query(), Some(query.as_str()));
+        }
+        let endpoint = Endpoint::ModelTurns { start, end };
+        let request = account_data_request(
+            &client,
+            endpoint.url(),
+            reqwest::header::HeaderValue::from_static("Bearer synthetic"),
+            "synthetic-account",
+            endpoint,
+        )
+        .build()
+        .unwrap();
+        assert_eq!(
+            request.url().path(),
+            "/backend-api/wham/analytics/daily-workspace-usage-counts",
+        );
+        assert_eq!(
+            request.url().query(),
+            Some("start_date=2026-10-21&end_date=2026-11-19&group_by=day&workspace_user=true"),
+        );
     }
 }

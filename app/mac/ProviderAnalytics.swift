@@ -2,50 +2,87 @@ import SwiftUI
 import Charts
 import VeluneBindings
 
-/// Provider reports retain their own windows and never add to local gateway records.
-struct ProviderAnalyticsView: View {
-    @ObservedObject var store: DeviceStore
-    var body: some View {
-        ProviderAnalyticsReader(store: store).id(ProviderReportReadIdentity(store: store))
-    }
-}
+/// Shown beside the gateway's usage on the same overview. Scope and dates
+/// belong to the provider observations.
+struct AnalyticsProviderUsageSummary: View {
+    let report: ProviderAnalyticsReport?
+    let from: Date
+    let to: Date
+    let reading: Bool
+    let problem: String?
+    let showSources: () -> Void
+    let showModels: () -> Void
 
-private struct ProviderAnalyticsReader: View {
-    @ObservedObject var store: DeviceStore
-    @State private var report: ProviderAnalyticsReport?
-    @State private var reading = false
-    @State private var problem: String?
-    @State private var refreshID = 0
+    private var days: [ProviderAnalyticsDailyTotal] {
+        let range = sourceDate(from)...sourceDate(to)
+        return report?.chatgptProfileTotals.daily.filter { range.contains($0.date) } ?? []
+    }
+    private var dailyTokens: UInt64? {
+        guard !days.isEmpty else { return nil }
+        var total: UInt64 = 0
+        for day in days {
+            let addition = total.addingReportingOverflow(day.tokens)
+            guard !addition.overflow else { return nil }
+            total = addition.partialValue
+        }
+        return total
+    }
+    private var hasModelData: Bool {
+        report?.sources.contains { $0.modelUsage?.isEmpty == false } == true
+    }
+
     var body: some View {
-        ProviderAnalyticsContent(report: report, reading: reading, problem: problem) { refreshID += 1 }
-            .toolbar(id: "provider-analytics") {
-                ToolbarItem(id: "refresh") {
-                    HStack(spacing: 8) {
-                        if reading { ProgressView().controlSize(.small).accessibilityLabel("正在读取提供商报告") }
-                        Button("刷新", systemImage: "arrow.clockwise") { refreshID += 1 }.disabled(reading)
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 14) {
+                Text("提供商用量").uiFont(.subheadline.weight(.semibold))
+                if reading { ProgressView().controlSize(.small).accessibilityLabel("正在读取提供商用量") }
+                if report?.sources.isEmpty == false || problem != nil {
+                    Button("来源与范围", systemImage: "info.circle", action: showSources)
+                        .buttonStyle(.borderless).uiFont(.caption)
+                }
+            }
+            if let dailyTokens {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("ChatGPT 订阅").uiFont(.callout)
+                    Text("\(TokenCount.format(dailyTokens)) Token").uiFont(.title3).monospacedDigit()
+                    if let first = days.first?.date, let last = days.last?.date {
+                        Text(first == last ? "\(first)，提供商日期" : "\(first) 至 \(last)，已报告 \(days.count) 天")
+                            .uiFont(.caption).foregroundStyle(.secondary)
                     }
                 }
             }
-            .task(id: refreshID) { await read(refresh: refreshID > 0) }
+            if let report {
+                ForEach(Array(report.organizationTotals.enumerated()), id: \.offset) { _, total in
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(total.services.map { $0 == .openAi ? "OpenAI Platform" : "Anthropic API" }.joined(separator: "、"))
+                            .uiFont(.callout)
+                        HStack(spacing: 12) {
+                            if let input = total.inputTokens { Text("输入 \(TokenCount.format(input))").monospacedDigit() }
+                            if let output = total.outputTokens { Text("输出 \(TokenCount.format(output))").monospacedDigit() }
+                        }.uiFont(.caption)
+                        Text("本月，UTC；查询至 \(ProviderReportFormatting.utcTimestamp(total.rangeEndMaxAtMs))")
+                            .uiFont(.caption).foregroundStyle(.secondary)
+                    }
+                }
+            }
+            if hasModelData {
+                Button("查看模型用量", action: showModels).buttonStyle(.link).uiFont(.caption)
+            } else if dailyTokens == nil, report?.organizationTotals.isEmpty != false, !reading, problem == nil {
+                Text(report?.sources.isEmpty == false ? "当前范围暂无已报告用量" : "暂无提供商用量")
+                    .uiFont(.callout).foregroundStyle(.secondary)
+            }
+            if let problem { Label(problem, systemImage: "exclamationmark.triangle").uiFont(.caption).foregroundStyle(.secondary) }
+            else if report?.sources.contains(where: \.stale) == true {
+                Text("部分来源显示上次结果").uiFont(.caption).foregroundStyle(.secondary)
+            }
+        }.frame(minWidth: 240, maxWidth: .infinity, alignment: .leading)
     }
-    private func read(refresh: Bool) async {
-        reading = true
-        problem = nil
-        defer { if !Task.isCancelled { reading = false } }
-        for attempt in 0..<24 {
-            let result: Result<ProviderAnalyticsReport, Error> = await withCheckedContinuation { continuation in
-                store.readProviderAnalytics(refresh: refresh && attempt == 0) { continuation.resume(returning: $0) }
-            }
-            guard !Task.isCancelled else { return }
-            switch result {
-            case .success(let value):
-                report = value
-                if !value.sources.contains(where: \.refreshing) { return }
-            case .failure(let error): problem = error.localizedDescription; return
-            }
-            if attempt < 23 { try? await Task.sleep(for: .seconds(2)) }
-        }
-        problem = "部分查询仍在后台进行；稍后可再次刷新。"
+
+    private func sourceDate(_ date: Date) -> String {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = .current
+        let parts = calendar.dateComponents([.year, .month, .day], from: date)
+        return String(format: "%04d-%02d-%02d", parts.year ?? 0, parts.month ?? 0, parts.day ?? 0)
     }
 }
 
@@ -307,6 +344,7 @@ extension ProviderReportFormatting {
         case .accountUsage: return "账户余额"
         case .bankedResets: return "重置权益"
         case .profile: return "账户用量"
+        case .modelUsage: return "按模型用量"
         case .organizationUsage: return "组织用量"
         case .costs: return "费用"
         case .spendLimit: return "支出限额"

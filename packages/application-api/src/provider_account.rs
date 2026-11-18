@@ -19,6 +19,7 @@ pub enum ProviderAccountSource {
     Usage,
     Resets,
     Profile,
+    AnalyticsUsage,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, uniffi::Record)]
@@ -118,6 +119,8 @@ pub struct ProviderAccountStatus {
     pub reset_count_observed_at: Option<String>,
     pub reset_grants_observed_at: Option<String>,
     pub profile_observed_at: Option<String>,
+    #[serde(default)]
+    pub model_usage_observed_at: Option<String>,
     pub refreshing: bool,
     pub stale: bool,
     /// Components whose own last successful observation is older than the cache TTL.
@@ -125,5 +128,8 @@ pub struct ProviderAccountStatus {
     pub credits: Option<ProviderAccountCredits>,
     pub banked_resets: Option<ProviderAccountResets>,
     pub profile: Option<ProviderAccountProfile>,
+    /// Account Analytics only. Missing and explicitly empty model data are distinct.
+    #[serde(default)]
+    pub model_usage: Option<Vec<crate::ProviderAnalyticsModelUsage>>,
     pub failures: Vec<ProviderAccountFailure>,
 }

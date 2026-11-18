@@ -6,7 +6,7 @@ use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
-    sync::{Arc, Mutex, MutexGuard},
+    sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 use velune_application_api::{
@@ -16,6 +16,8 @@ use velune_application_api::{
     ProviderAccountTopInvocation,
 };
 use velune_gateway::CredentialResolutionError;
+
+mod model_usage;
 
 const TTL: Duration = Duration::from_secs(15 * 60);
 const RETRY_DELAY: Duration = Duration::from_secs(60);
@@ -27,6 +29,16 @@ type EntryKey = (String, CollectionScope);
 enum CollectionScope {
     Credits,
     Full,
+    Analysis,
+}
+
+impl CollectionScope {
+    fn primary_source(self) -> ProviderAccountSource {
+        match self {
+            Self::Analysis => ProviderAccountSource::AnalyticsUsage,
+            Self::Credits | Self::Full => ProviderAccountSource::Usage,
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -70,6 +82,7 @@ struct Snapshot {
     credits: Option<ProviderAccountCredits>,
     resets: Option<ProviderAccountResets>,
     profile: Option<ProviderAccountProfile>,
+    model_usage: model_usage::Snapshot,
     credits_observed: Option<Observation>,
     reset_count_observed: Option<Observation>,
     reset_grants_observed: Option<Observation>,
@@ -289,7 +302,26 @@ impl ProviderAccountService {
         provider_id: &str,
         force: bool,
     ) -> Result<ProviderAccountStatus, crate::Error> {
-        let state = self.state.lock().expect("provider account state");
+        self.query_account(gateway_id, provider_id, force, false)
+    }
+
+    pub(crate) fn query_analysis(
+        self: &Arc<Self>,
+        gateway_id: &str,
+        provider_id: &str,
+        force: bool,
+    ) -> Result<ProviderAccountStatus, crate::Error> {
+        self.query_account(gateway_id, provider_id, force, true)
+    }
+
+    fn query_account(
+        self: &Arc<Self>,
+        gateway_id: &str,
+        provider_id: &str,
+        force: bool,
+        include_analytics: bool,
+    ) -> Result<ProviderAccountStatus, crate::Error> {
+        let mut state = self.state.lock().expect("provider account state");
         if state.stopped {
             return Ok(empty_status(
                 gateway_id,
@@ -318,20 +350,32 @@ impl ProviderAccountService {
             }
             Binding::ChatGpt(capture) => capture,
         };
-        Ok(self.query_capture(
-            state,
-            capture,
+        let status = |entry: &Entry, refreshing| {
+            let mut status = status_from_entry(gateway_id, provider_id, entry);
+            if refreshing {
+                status.refreshing = true;
+                status.state = ProviderAccountState::Refreshing;
+            }
+            status
+        };
+        let mut full = self.query_capture(
+            &mut state,
+            capture.clone(),
             CollectionScope::Full,
             force,
-            |entry, refreshing| {
-                let mut status = status_from_entry(gateway_id, provider_id, entry);
-                if refreshing {
-                    status.refreshing = true;
-                    status.state = ProviderAccountState::Refreshing;
-                }
-                status
-            },
-        ))
+            status,
+        );
+        if include_analytics {
+            let analytics = self.query_capture(
+                &mut state,
+                capture,
+                CollectionScope::Analysis,
+                force,
+                status,
+            );
+            merge_analytics_status(&mut full, analytics);
+        }
+        Ok(full)
     }
 
     pub(crate) fn query_credits(
@@ -340,7 +384,7 @@ impl ProviderAccountService {
         provider_id: &str,
         force: bool,
     ) -> Result<Option<(ComposerQuotaCredits, Option<String>)>, crate::Error> {
-        let state = self.state.lock().expect("provider account state");
+        let mut state = self.state.lock().expect("provider account state");
         if state.stopped {
             return Ok(None);
         }
@@ -348,7 +392,7 @@ impl ProviderAccountService {
             return Ok(None);
         };
         Ok(Some(self.query_capture(
-            state,
+            &mut state,
             capture,
             CollectionScope::Credits,
             force,
@@ -358,7 +402,7 @@ impl ProviderAccountService {
 
     fn query_capture<T>(
         self: &Arc<Self>,
-        mut state: MutexGuard<'_, State>,
+        state: &mut State,
         capture: Capture,
         scope: CollectionScope,
         force: bool,
@@ -367,8 +411,8 @@ impl ProviderAccountService {
         let capacity = state.inflight < MAX_INFLIGHT;
         let entry_key = (capture.cache_key.clone(), scope);
         let from_full = match scope {
-            CollectionScope::Credits => fresh_full_credits(&state, &capture.cache_key),
-            CollectionScope::Full => None,
+            CollectionScope::Credits => fresh_full_credits(state, &capture.cache_key),
+            CollectionScope::Full | CollectionScope::Analysis => None,
         };
         let (result, worker) = {
             let entry = state
@@ -418,7 +462,12 @@ impl ProviderAccountService {
             }
             // `refreshing` also covers a refresh request waiting for capacity or backoff.
             // Callers can keep polling the cache; no extra HTTP is started by the wait itself.
-            let refreshing = entry.running || (!entry.expired && refresh_requested);
+            let waiting_to_retry_failed_analysis = scope == CollectionScope::Analysis
+                && !entry.failures.is_empty()
+                && !entry.force_pending
+                && Instant::now() < entry.retry_at;
+            let refreshing = entry.running
+                || (!entry.expired && refresh_requested && !waiting_to_retry_failed_analysis);
             (
                 read(entry, refreshing),
                 start.then(|| (entry.cancel.subscribe(), entry.cancel.clone())),
@@ -427,7 +476,6 @@ impl ProviderAccountService {
         if let Some((cancel, cancel_signal)) = worker {
             state.inflight += 1;
             let service = Arc::clone(self);
-            drop(state);
             std::thread::spawn(move || {
                 let result = collect(service.home.clone(), capture, scope, cancel);
                 service.finish(&entry_key, &cancel_signal, result);
@@ -456,7 +504,7 @@ impl ProviderAccountService {
                 if collected.succeeded {
                     let observed = match key.1 {
                         CollectionScope::Credits => collected.snapshot.credits_observed.clone(),
-                        CollectionScope::Full => None,
+                        CollectionScope::Full | CollectionScope::Analysis => None,
                     }
                     .unwrap_or_else(observation_now);
                     entry.fetched = Some(observed.instant);
@@ -489,6 +537,10 @@ impl ProviderAccountService {
                 if collected.snapshot.profile.is_none() {
                     collected.snapshot.profile = old.profile;
                 }
+                collected
+                    .snapshot
+                    .model_usage
+                    .retain_missing(old.model_usage);
                 if collected.snapshot.credits_observed.is_none() {
                     collected.snapshot.credits_observed = old.credits_observed;
                 }
@@ -513,7 +565,7 @@ impl ProviderAccountService {
             Err(message) => {
                 entry.expired = false;
                 entry.failures = vec![ProviderAccountFailure {
-                    source: ProviderAccountSource::Usage,
+                    source: key.1.primary_source(),
                     message,
                 }];
                 entry.retry_at = Instant::now() + RETRY_DELAY;
@@ -611,12 +663,14 @@ fn empty_status(
         reset_count_observed_at: None,
         reset_grants_observed_at: None,
         profile_observed_at: None,
+        model_usage_observed_at: None,
         refreshing: false,
         stale: false,
         stale_sources: Vec::new(),
         credits: None,
         banked_resets: None,
         profile: None,
+        model_usage: None,
         failures: message
             .map(|message| {
                 vec![ProviderAccountFailure {
@@ -630,22 +684,15 @@ fn empty_status(
 
 fn status_from_entry(gateway_id: &str, provider_id: &str, entry: &Entry) -> ProviderAccountStatus {
     let snapshot = entry.snapshot.clone().unwrap_or_default();
-    let has_data =
-        snapshot.credits.is_some() || snapshot.resets.is_some() || snapshot.profile.is_some();
-    let expired = entry.expired;
-    let state = if entry.running {
-        ProviderAccountState::Refreshing
-    } else if expired {
-        ProviderAccountState::Expired
-    } else if !entry.failures.is_empty() && has_data {
-        ProviderAccountState::PartialFailure
-    } else if !entry.failures.is_empty() {
-        ProviderAccountState::Failed
-    } else if has_data {
-        ProviderAccountState::Available
-    } else {
-        ProviderAccountState::Refreshing
-    };
+    let state = account_state(
+        entry.running,
+        entry.expired,
+        !entry.failures.is_empty(),
+        snapshot.credits.is_some()
+            || snapshot.resets.is_some()
+            || snapshot.profile.is_some()
+            || snapshot.model_usage.observed_at().is_some(),
+    );
     let mut stale_sources = Vec::new();
     if snapshot
         .credits_observed
@@ -675,10 +722,20 @@ fn status_from_entry(gateway_id: &str, provider_id: &str, entry: &Entry) -> Prov
     {
         stale_sources.push(ProviderAccountSource::Profile);
     }
+    if snapshot.model_usage.observed_at().is_some()
+        && (snapshot.model_usage.is_stale()
+            || entry
+                .failures
+                .iter()
+                .any(|failure| failure.source == ProviderAccountSource::AnalyticsUsage))
+    {
+        stale_sources.push(ProviderAccountSource::AnalyticsUsage);
+    }
     stale_sources.sort_by_key(|source| match source {
         ProviderAccountSource::Usage => 0,
         ProviderAccountSource::Resets => 1,
         ProviderAccountSource::Profile => 2,
+        ProviderAccountSource::AnalyticsUsage => 3,
     });
     stale_sources.dedup();
     ProviderAccountStatus {
@@ -704,13 +761,63 @@ fn status_from_entry(gateway_id: &str, provider_id: &str, entry: &Entry) -> Prov
             .profile_observed
             .as_ref()
             .map(|observed| observed.at.clone()),
+        model_usage_observed_at: snapshot
+            .model_usage
+            .observed_at()
+            .map(|observed| observed.at.clone()),
         refreshing: entry.running,
         stale: !stale_sources.is_empty(),
         stale_sources,
         credits: snapshot.credits,
         banked_resets: snapshot.resets,
         profile: snapshot.profile,
+        model_usage: snapshot.model_usage.into_rows(),
         failures: entry.failures.clone(),
+    }
+}
+
+fn merge_analytics_status(full: &mut ProviderAccountStatus, analysis: ProviderAccountStatus) {
+    let expired = full.state == ProviderAccountState::Expired
+        || analysis.state == ProviderAccountState::Expired;
+    full.identity_key = full.identity_key.take().or(analysis.identity_key);
+    full.profile_identity_key = full
+        .profile_identity_key
+        .take()
+        .or(analysis.profile_identity_key);
+    if analysis.fetched_at > full.fetched_at {
+        full.fetched_at = analysis.fetched_at;
+    }
+    full.model_usage = analysis.model_usage;
+    full.model_usage_observed_at = analysis.model_usage_observed_at;
+    full.refreshing |= analysis.refreshing;
+    full.stale |= analysis.stale;
+    full.stale_sources.extend(analysis.stale_sources);
+    full.failures.extend(analysis.failures);
+    let has_data = full.credits.is_some()
+        || full.banked_resets.is_some()
+        || full.profile.is_some()
+        || full.model_usage.is_some();
+    full.state = account_state(
+        full.refreshing,
+        expired,
+        !full.failures.is_empty(),
+        has_data,
+    );
+}
+
+fn account_state(
+    refreshing: bool,
+    expired: bool,
+    failed: bool,
+    has_data: bool,
+) -> ProviderAccountState {
+    match (refreshing, expired, failed, has_data) {
+        (true, _, _, _) => ProviderAccountState::Refreshing,
+        (_, true, _, _) => ProviderAccountState::Expired,
+        (_, _, true, true) => ProviderAccountState::PartialFailure,
+        (_, _, true, false) => ProviderAccountState::Failed,
+        (_, _, false, true) => ProviderAccountState::Available,
+        _ => ProviderAccountState::Refreshing,
     }
 }
 
@@ -733,6 +840,7 @@ fn entry_is_stale(entry: &Entry) -> bool {
                     .profile_observed
                     .as_ref()
                     .is_some_and(|observed| observed.instant.elapsed() >= TTL)
+                || snapshot.model_usage.is_stale()
         })
 }
 
@@ -777,33 +885,36 @@ async fn collect_async(
 ) -> Result<Collected, String> {
     use crate::subscription_auth::{AccountDataEndpoint as Endpoint, account_identity};
     let mut collected = Collected::default();
+    let primary_source = scope.primary_source();
     let identity = match account_identity(&home, &capture.credential_id, capture.generation) {
         Ok(identity) => identity,
         Err(CredentialResolutionError::AuthenticationExpired) => {
             collected.expired = true;
-            collected.failures.push(failure(
-                ProviderAccountSource::Usage,
-                "ChatGPT 订阅授权已过期",
-            ));
+            collected
+                .failures
+                .push(failure(primary_source, "ChatGPT 订阅授权已过期"));
             return Ok(collected);
         }
         Err(CredentialResolutionError::StaleBinding) => {
             collected.failures.push(failure(
-                ProviderAccountSource::Usage,
+                primary_source,
                 "提供商认证已改变，请重新登录后刷新",
             ));
             return Ok(collected);
         }
         Err(_) => {
-            collected.failures.push(failure(
-                ProviderAccountSource::Usage,
-                "订阅登录信息不可用，请重新登录",
-            ));
+            collected
+                .failures
+                .push(failure(primary_source, "订阅登录信息不可用，请重新登录"));
             return Ok(collected);
         }
     };
     collected.snapshot.identity_key = Some(identity.account_scope_key);
     collected.snapshot.profile_identity_key = Some(identity.profile_subject_key);
+    if scope == CollectionScope::Analysis {
+        model_usage::collect(&home, &capture, identity.analytics_kind, &mut collected).await;
+        return Ok(collected);
+    }
 
     let usage = fetch_json(
         &home,
@@ -821,7 +932,7 @@ async fn collect_async(
                     rate_limit_reset_credits: None,
                 })
             }
-            CollectionScope::Full => serde_json::from_value(payload),
+            _ => serde_json::from_value(payload),
         };
         match usage {
             Ok(usage) => {
@@ -1075,6 +1186,7 @@ fn source_unavailable(source: ProviderAccountSource) -> &'static str {
         ProviderAccountSource::Usage => "暂时无法读取额度数据，请稍后刷新",
         ProviderAccountSource::Resets => "暂时无法读取重置权益明细，请稍后刷新",
         ProviderAccountSource::Profile => "暂时无法读取账户用量，请稍后刷新",
+        ProviderAccountSource::AnalyticsUsage => "暂时无法读取订阅模型用量，请稍后刷新",
     }
 }
 
@@ -1094,6 +1206,71 @@ mod tests {
 
     fn full_entry_key(name: &str) -> EntryKey {
         (name.into(), CollectionScope::Full)
+    }
+
+    #[test]
+    fn analysis_demand_is_independent_from_settings_and_reports_failure_after_backoff() {
+        let service = Arc::new(ProviderAccountService {
+            home: PathBuf::from("/synthetic"),
+            state: Mutex::new(State::default()),
+        });
+        let analysis_key = ("scope".into(), CollectionScope::Analysis);
+        {
+            let mut state = service.state.lock().unwrap();
+            state.bindings.insert(
+                ("g".into(), "p".into()),
+                Binding::ChatGpt(Capture {
+                    credential_id: "unused".into(),
+                    generation: 1,
+                    cache_key: "scope".into(),
+                }),
+            );
+            state.inflight = MAX_INFLIGHT;
+        }
+        assert!(
+            service
+                .query("g", "p", false)
+                .unwrap()
+                .model_usage
+                .is_none()
+        );
+        let cancel = {
+            let state = service.state.lock().unwrap();
+            assert!(!state.entries.contains_key(&analysis_key));
+            state.entries[&full_entry_key("scope")].cancel.clone()
+        };
+        service.finish(
+            &full_entry_key("scope"),
+            &cancel,
+            Ok(Collected {
+                snapshot: Snapshot {
+                    identity_key: Some("opaque-account".into()),
+                    credits: Some(ProviderAccountCredits {
+                        has_credits: Some(true),
+                        unlimited: Some(false),
+                        balance: Some("2".into()),
+                    }),
+                    credits_observed: Some(observation_now()),
+                    ..Snapshot::default()
+                },
+                succeeded: true,
+                ..Collected::default()
+            }),
+        );
+        service.state.lock().unwrap().inflight = MAX_INFLIGHT;
+        assert!(service.query_analysis("g", "p", false).unwrap().refreshing);
+        let cancel = service.state.lock().unwrap().entries[&analysis_key]
+            .cancel
+            .clone();
+        service.finish(&analysis_key, &cancel, Err("synthetic model error".into()));
+        let analysis = service.query_analysis("g", "p", false).unwrap();
+        assert_eq!(analysis.state, ProviderAccountState::PartialFailure);
+        assert_eq!(
+            analysis.failures[0].source,
+            ProviderAccountSource::AnalyticsUsage
+        );
+        assert_eq!(analysis.credits.unwrap().balance.as_deref(), Some("2"));
+        assert!(service.query("g", "p", false).unwrap().failures.is_empty());
     }
 
     #[test]
