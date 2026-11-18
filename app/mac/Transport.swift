@@ -294,8 +294,14 @@ final class Transport: @unchecked Sendable {
     func sendQueue(runtimeID: String, conversationID: String, operation: SendQueueOperation, submissionId: String? = nil) throws -> SnapshotResult {
         try withApplication("sendQueue", .writes, .conversationWrite) { application in
             let delivered: SendQueueOperation
-            if case let .add(source, target, selection, turn) = operation { delivered = .add(sourceRuntimeId: source, targetRuntimeId: target, selection: selection, turn: try deliver(turn, using: application)) }
-            else { delivered = operation }
+            switch operation {
+            case let .add(source, target, selection, turn):
+                delivered = .add(sourceRuntimeId: source, targetRuntimeId: target, selection: selection, turn: try deliver(turn, using: application))
+            case let .replace(id, revision, target, selection, retained, turn):
+                delivered = .replace(id: id, expectedRevision: revision, targetRuntimeId: target, selection: selection,
+                                     retainedAttachments: retained, turn: try deliver(turn, using: application))
+            default: delivered = operation
+            }
             return try application.sendQueue(runtimeId: runtimeID, conversationId: conversationID, operation: delivered, submissionId: submissionId)
         }
     }

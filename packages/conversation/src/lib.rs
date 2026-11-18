@@ -225,6 +225,20 @@ pub struct QueuedMessage {
     pub text: String,
     /// Absolute paths, as the composer attached them.
     pub attachments: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[uniffi(default = None)]
+    pub edit_context: Option<QueuedMessageEditContext>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, uniffi::Record)]
+#[serde(rename_all = "camelCase")]
+pub struct QueuedMessageEditContext {
+    /// Changes when this item's input changes. Queue order and other items are independent.
+    pub revision: u64,
+    pub runtime_id: String,
+    pub selection: Option<ModelSelection>,
+    pub effort: Option<String>,
+    pub permission_mode: Option<String>,
 }
 
 /// The queue's next message needs another runtime process, which would end

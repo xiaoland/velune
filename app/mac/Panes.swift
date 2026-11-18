@@ -119,6 +119,7 @@ struct TabContentView: View {
     /// Over the window, where a composer the window shares does not reach.
     var inSheet = false
     @State private var forkMessageID: String?
+    @State private var editingQueue: QueuedMessageEditingSession?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -135,7 +136,7 @@ struct TabContentView: View {
                 RuntimeInteractionView(store: store, tab: tab, interaction: interaction).id(interaction.id)
             }
             if !store.followUp.queue.isEmpty {
-                SendQueueView(store: store, composer: window.composer(for: tab))
+                SendQueueView(store: store, composer: window.composer(for: tab), editing: $editingQueue)
                     .padding(.horizontal, 16).padding(.vertical, 8)
                 Divider()
             }
@@ -154,6 +155,9 @@ struct TabContentView: View {
             MessageEditorView(session: session, window: window, source: tab).frame(width: 560)
         }
         .onChange(of: tab.editing?.id) { _, _ in tab.showFloatingMessageEditor(in: window) }
+        .sheet(item: $editingQueue) { session in
+            QueuedMessageEditor(session: session, window: window, tab: tab)
+        }
         .alert("创建分叉会话？", isPresented: Binding(get: { forkMessageID != nil }, set: { if !$0 { forkMessageID = nil } }), presenting: forkMessageID) { id in
             Button("取消", role: .cancel) {}
             Button("创建分叉") {

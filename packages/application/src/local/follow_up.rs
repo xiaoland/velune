@@ -5,24 +5,50 @@
 //! the conversation shows the same one. It lives while the application runs.
 use super::conversations::{Prompt, TurnRequest};
 use super::*;
-use crate::conversation::{FollowUp, QueuePause, QueueWait, QueuedMessage};
+use crate::conversation::{
+    FollowUp, QueuePause, QueueWait, QueuedMessage, QueuedMessageEditContext,
+};
 use crate::{ComposedTurn, ModelSelection, SnapshotResult};
 use std::collections::VecDeque;
 
 /// One message waiting for the running turn: the send request it becomes.
 struct QueuedTurn {
     id: String,
+    edit_revision: u64,
     request: TurnRequest,
 }
 
 impl QueuedTurn {
+    fn new(id: String, request: TurnRequest) -> Self {
+        Self {
+            id,
+            edit_revision: 1,
+            request,
+        }
+    }
+
     fn public(&self) -> QueuedMessage {
         QueuedMessage {
             id: self.id.clone(),
             submission_id: self.request.submission_id.clone(),
             text: self.request.turn.text.clone(),
             attachments: self.request.turn.attachments.clone(),
+            edit_context: Some(QueuedMessageEditContext {
+                revision: self.edit_revision,
+                runtime_id: self.request.runtime_id.clone(),
+                selection: self.request.selection.clone(),
+                effort: self.request.turn.effort.clone(),
+                permission_mode: self.request.turn.permission_mode.clone(),
+            }),
         }
+    }
+
+    fn edit(&mut self) -> Result<&mut TurnRequest, RuntimeError> {
+        self.edit_revision = self
+            .edit_revision
+            .checked_add(1)
+            .ok_or_else(|| RuntimeError::invalid("此排队消息的编辑版本已达上限"))?;
+        Ok(&mut self.request)
     }
 }
 
@@ -50,11 +76,8 @@ impl SendQueue {
 }
 
 fn queued_id() -> String {
-    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-    format!(
-        "queued-{}",
-        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-    )
+    // A client's open editor can outlive a disconnected host's process.
+    format!("queued-{}", crate::new_record_key())
 }
 
 impl CoreRuntime {
@@ -113,6 +136,85 @@ impl CoreRuntime {
         self.send_queue_submission(conversation_id, operation, None)
     }
 
+    fn replace_queued_turn(
+        &mut self,
+        id: &str,
+        expected_revision: u64,
+        target_runtime_id: String,
+        selection: Option<ModelSelection>,
+        retained_attachments: Vec<u32>,
+        mut turn: ComposedTurn,
+    ) -> Result<SnapshotResult, RuntimeError> {
+        let queue = &self.session.send_queue;
+        let index = queue.position(id)?;
+        let queued = &queue.turns[index];
+        if queued.edit_revision != expected_revision {
+            let mut failure = crate::Failure::new(
+                crate::FailureKind::Conflict,
+                "此排队消息已被修改，请重新打开编辑并核对内容",
+            );
+            failure.code = "queued_message_changed".into();
+            return Err(RuntimeError::Contract(failure));
+        }
+        let previous = &queued.request;
+        let target_changed = previous.runtime_id != target_runtime_id;
+        let config_changed = target_changed
+            || previous.selection != selection
+            || previous.turn.effort != turn.effort
+            || previous.turn.permission_mode != turn.permission_mode;
+        let mut retained = std::collections::HashSet::new();
+        let mut attachments =
+            Vec::with_capacity(retained_attachments.len() + turn.attachments.len());
+        for index in retained_attachments {
+            let path = previous
+                .turn
+                .attachments
+                .get(index as usize)
+                .filter(|_| retained.insert(index))
+                .ok_or_else(|| RuntimeError::invalid("要保留的排队附件无效，请重新打开编辑"))?;
+            attachments.push(path.clone());
+        }
+        let retained_count = attachments.len();
+        attachments.append(&mut turn.attachments);
+        turn.attachments = attachments;
+        if turn.text.trim().is_empty() && turn.attachments.is_empty() {
+            return Err(RuntimeError::invalid("请输入消息或添加附件"));
+        }
+        // Existing inputs keep their captured meaning even after configuration
+        // or files change. Dispatch still validates the entire request.
+        let new_inputs = if target_changed {
+            turn.attachments.as_slice()
+        } else {
+            &turn.attachments[retained_count..]
+        };
+        if config_changed || !new_inputs.is_empty() {
+            let runtime = self
+                .runtime_instance(&target_runtime_id)
+                .map_err(|_| RuntimeError::invalid("所选运行时已不存在，请选择可用的运行时"))?;
+            if config_changed {
+                if !runtime.enabled {
+                    return Err(RuntimeError::invalid(
+                        "所选运行时已停用，请选择可用的运行时",
+                    ));
+                }
+                self.validate_model_selection(runtime, selection.as_ref())?;
+                if let Some(effort) = &turn.effort {
+                    self.validate_effort(runtime, selection.as_ref(), effort)?;
+                }
+                if let Some(mode) = &turn.permission_mode {
+                    self.validate_permission_mode(runtime, mode)?;
+                }
+            }
+            self.turn_attachments(runtime, new_inputs)?;
+        }
+
+        let request = self.session.send_queue.turns[index].edit()?;
+        request.runtime_id = target_runtime_id;
+        request.selection = selection;
+        request.turn = turn;
+        self.snapshot_result()
+    }
+
     pub(crate) fn send_queue_submission(
         &mut self,
         conversation_id: &str,
@@ -161,9 +263,9 @@ impl CoreRuntime {
                 if queue.turns.is_empty() && queue.paused.is_none() {
                     queue.paused = interrupted_idle;
                 }
-                queue.turns.push_back(QueuedTurn {
-                    id: added_id.clone().expect("Add request identity"),
-                    request: TurnRequest {
+                queue.turns.push_back(QueuedTurn::new(
+                    added_id.clone().expect("Add request identity"),
+                    TurnRequest {
                         submission_id,
                         source_runtime_id,
                         conversation_id: conversation_id.to_owned(),
@@ -171,7 +273,7 @@ impl CoreRuntime {
                         selection,
                         turn,
                     },
-                });
+                ));
             }
             SendQueueOperation::Edit { id, text } => {
                 let index = queue.position(&id)?;
@@ -179,7 +281,25 @@ impl CoreRuntime {
                 if text.trim().is_empty() && turn.request.turn.attachments.is_empty() {
                     return Err(RuntimeError::invalid("message text"));
                 }
-                turn.request.turn.text = text;
+                turn.edit()?.turn.text = text;
+                return self.snapshot_result();
+            }
+            SendQueueOperation::Replace {
+                id,
+                expected_revision,
+                target_runtime_id,
+                selection,
+                retained_attachments,
+                turn,
+            } => {
+                return self.replace_queued_turn(
+                    &id,
+                    expected_revision,
+                    target_runtime_id,
+                    selection,
+                    retained_attachments,
+                    turn,
+                );
             }
             SendQueueOperation::Remove { id } => {
                 let index = queue.position(&id)?;
@@ -217,7 +337,12 @@ impl CoreRuntime {
             self.send_next_queued();
         }
         if let Some(queue_id) = added_id {
-            let queued = self.session.send_queue.turns.iter().any(|turn| turn.id == queue_id);
+            let queued = self
+                .session
+                .send_queue
+                .turns
+                .iter()
+                .any(|turn| turn.id == queue_id);
             let receipt = if queued {
                 crate::SubmissionReceipt::Queued { queue_id }
             } else {
@@ -295,10 +420,7 @@ impl CoreRuntime {
     pub(super) fn queue_after_work(&mut self, request: TurnRequest) -> String {
         let id = queued_id();
         let queue = &mut self.session.send_queue;
-        queue.turns.push_back(QueuedTurn {
-            id: id.clone(),
-            request,
-        });
+        queue.turns.push_back(QueuedTurn::new(id.clone(), request));
         queue.waiting = Some(QueueWait::SubAgents);
         id
     }
@@ -456,3 +578,179 @@ impl CoreRuntime {
 
 #[cfg(test)]
 mod submission_tests;
+
+#[cfg(test)]
+mod edit_tests {
+    use super::*;
+    struct Fixture {
+        root: PathBuf,
+        application: crate::Application,
+    }
+    impl Fixture {
+        fn new() -> Self {
+            let root = std::env::temp_dir()
+                .join(format!("velune-queued-edit-{}", crate::new_record_key()));
+            std::fs::create_dir_all(&root).unwrap();
+            let mut application = crate::Application::open(crate::Options {
+                home_directory: root.clone(),
+                resources_directory: root.clone(),
+            })
+            .unwrap();
+            application.runtime.runtime_instances = vec![RuntimeInstance {
+                id: "source".into(),
+                enabled: true,
+                name: "Synthetic".into(),
+                type_id: RuntimeKind::Pi,
+                gateway_id: String::new(),
+                settings: Default::default(),
+            }];
+            let snapshot=serde_json::from_value(json!({"revision":1,"conversation":{"id":"source:one","runtimeId":"source","title":{"source":"untitled"}},"contextRuntimeId":"source","resourceId":null,"modelRecordKey":null,"runState":"idle","messages":[],"transcriptTurns":[],"transcriptItems":[],"transcriptOutline":[],"transcriptMessageIdentities":[],"actions":{"canSend":true,"canCancel":false,"canSwitch":true}})).unwrap();
+            application.runtime.session.set_history(snapshot);
+            let request = TurnRequest {
+                submission_id: None,
+                source_runtime_id: "source".into(),
+                conversation_id: "source:one".into(),
+                runtime_id: "target".into(),
+                selection: None,
+                turn: ComposedTurn {
+                    text: "first".into(),
+                    attachments: vec![],
+                    effort: None,
+                    permission_mode: None,
+                },
+            };
+            let queue = &mut application.runtime.session.send_queue;
+            queue
+                .turns
+                .push_back(QueuedTurn::new("head".into(), request.clone()));
+            let mut tail = request;
+            tail.turn.text = "tail".into();
+            queue.turns.push_back(QueuedTurn::new("tail".into(), tail));
+            queue.waiting = Some(QueueWait::SubAgents);
+            Self { root, application }
+        }
+    }
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            let _ = self.application.close_stopping_work();
+            let _ = std::fs::remove_dir_all(&self.root);
+        }
+    }
+
+    #[test]
+    fn replacing_queue_input_keeps_slot_and_pause_and_rejects_stale_or_invalid_edits() {
+        let mut fixture = Fixture::new();
+        let retained = fixture.root.join("retained.txt");
+        let added = fixture.root.join("new.txt");
+        std::fs::write(&retained, "retained attachment").unwrap();
+        std::fs::write(&added, "new attachment").unwrap();
+        let retained = retained.to_string_lossy().into_owned();
+        let added = added.to_string_lossy().into_owned();
+        let core = &mut fixture.application.runtime;
+        core.runtime_instances.push(RuntimeInstance {
+            id: "codex".into(),
+            enabled: true,
+            name: "Synthetic Codex".into(),
+            type_id: RuntimeKind::Codex166,
+            gateway_id: String::new(),
+            settings: Default::default(),
+        });
+        let queue = &mut core.session.send_queue;
+        queue.paused = Some(QueuePause::TurnStopped);
+        let head = queue.turns[0].public();
+        let tail = &mut queue.turns[1].request;
+        tail.submission_id = Some("original submission".into());
+        tail.turn.attachments = vec!["/synthetic/removed.txt".into(), retained.clone()];
+        let model = ModelSelection::Native {
+            provider_id: None,
+            model_id: "synthetic-model".into(),
+        };
+        let replace =
+            |expected_revision, retained_attachments, path: String| SendQueueOperation::Replace {
+                id: "tail".into(),
+                expected_revision,
+                target_runtime_id: "codex".into(),
+                selection: Some(model.clone()),
+                retained_attachments,
+                turn: ComposedTurn {
+                    text: "edited tail".into(),
+                    attachments: vec![path],
+                    effort: Some("high".into()),
+                    permission_mode: Some("read-only".into()),
+                },
+            };
+        let tail_before = core.session.send_queue.turns[1].public();
+        for invalid in [
+            replace(1, vec![1, 1], added.clone()),
+            replace(1, vec![2], added.clone()),
+            replace(1, vec![1], "relative.txt".into()),
+        ] {
+            assert!(core.send_queue("source:one", invalid).is_err());
+            assert_eq!(core.session.send_queue.turns[1].public(), tail_before);
+        }
+        let snapshot = core
+            .send_queue_submission(
+                "source:one",
+                replace(1, vec![1], added.clone()),
+                Some("edit transport only".into()),
+            )
+            .unwrap()
+            .snapshot
+            .unwrap();
+        let queue = &snapshot.follow_up.queue;
+        assert_eq!(queue.len(), 2);
+        assert_eq!(queue[0], head);
+        assert_eq!(queue[1].id, "tail");
+        assert_eq!(
+            queue[1].submission_id.as_deref(),
+            Some("original submission")
+        );
+        assert_eq!(queue[1].text, "edited tail");
+        assert_eq!(queue[1].attachments, [retained, added.clone()]);
+        assert_eq!(
+            queue[1].edit_context,
+            Some(QueuedMessageEditContext {
+                revision: 2,
+                runtime_id: "codex".into(),
+                selection: Some(model.clone()),
+                effort: Some("high".into()),
+                permission_mode: Some("read-only".into()),
+            })
+        );
+        assert_eq!(snapshot.follow_up.paused, Some(QueuePause::TurnStopped));
+        assert_eq!(snapshot.follow_up.waiting, Some(QueueWait::SubAgents));
+        assert_eq!(
+            core.session.send_queue.turns[1].request.source_runtime_id,
+            "source"
+        );
+
+        core.send_queue(
+            "source:one",
+            SendQueueOperation::Edit {
+                id: "tail".into(),
+                text: "legacy change".into(),
+            },
+        )
+        .unwrap();
+        let stale = core.send_queue("source:one", replace(2, vec![0], added.clone()));
+        assert!(
+            matches!(stale, Err(RuntimeError::Contract(failure)) if failure.code == "queued_message_changed")
+        );
+        let tail = &core.session.send_queue.turns[1];
+        assert_eq!(tail.edit_revision, 3);
+        assert_eq!(tail.request.turn.text, "legacy change");
+        let request = tail.request.clone();
+        core.send_queue(
+            "source:one",
+            SendQueueOperation::Remove { id: "tail".into() },
+        )
+        .unwrap();
+        let new_id = core.queue_after_work(request);
+        assert_ne!(new_id, "tail");
+        assert!(
+            core.send_queue("source:one", replace(3, vec![0], added))
+                .is_err()
+        );
+        assert_eq!(core.session.send_queue.turns[1].id, new_id);
+    }
+}

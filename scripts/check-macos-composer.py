@@ -21,7 +21,7 @@ def digest(path):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('check', choices=['editor', 'provider-analytics', 'archived', 'palette-ime', 'pagination', 'tabs', 'targets', 'ownership', 'background', 'experience', 'recovery', 'background-notifications', 'sidebar-toolbar', 'outgoing-submissions', 'credits'])
+    parser.add_argument('check', choices=['editor', 'queued-editor', 'provider-analytics', 'archived', 'palette-ime', 'pagination', 'tabs', 'targets', 'ownership', 'background', 'experience', 'recovery', 'background-notifications', 'sidebar-toolbar', 'outgoing-submissions', 'credits'])
     parser.add_argument('--app', type=Path, default=app_bundle_path(ROOT, 'dev'))
     parser.add_argument('--output', type=Path)
     parser.add_argument('--dark', action='store_true')
@@ -65,6 +65,10 @@ def main():
             flags = ['--check-message-experience', '--experience-message-editor-offscreen']
             if args.dark:
                 flags.append('--editor-check-dark')
+        if args.check == 'queued-editor':
+            flags = ['--check-queued-message-editor']
+            if args.dark:
+                flags.append('--queued-editor-dark')
         if args.check == 'archived':
             flags = ['--check-archived-conversations']
             if args.dark:

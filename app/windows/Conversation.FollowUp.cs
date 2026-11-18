@@ -81,8 +81,43 @@ sealed partial class Conversation
         return true;
     }
 
-    public void EditQueued(string id, string text) => Act("编辑排队的消息", NativeOperation.ConversationWrite, (application, runtimeID, conversation) =>
-        application.SendQueue(runtimeID, conversation, new SendQueueOperation.Edit(id, text)));
+    public string? QueuedEditIssue(string conversationID, string id, ulong revision)
+    {
+        var current = Snapshot?.Conversation.Id == conversationID ? FollowUp?.Queue.FirstOrDefault(item => item.Id == id) : null;
+        if (current == null) return "这条消息已离开发送队列，修改仍保留在这里。";
+        return current.EditContext?.Revision != revision ? "这条消息已在别处修改。可复制当前修改，再重新打开编辑。" : null;
+    }
+
+    public Task<bool> ReplaceQueued(string conversationID, string id, ulong revision, string runtimeID, TurnChoice choice,
+        uint[] retainedAttachments, string text, string[] newAttachments, Action<string> failed)
+    {
+        if (QueuedEditIssue(conversationID, id, revision) is { } issue)
+        {
+            failed(issue);
+            return Task.FromResult(false);
+        }
+        var turn = new ComposedTurn(Text: text.Trim(), Effort: choice.Effort, Attachments: newAttachments, PermissionMode: choice.PermissionMode);
+        var operation = new SendQueueOperation.Replace(id, revision, runtimeID, choice.Model, retainedAttachments, turn);
+        var sourceRuntimeID = Snapshot!.ContextRuntimeId;
+        return Change("保存排队消息", NativeOperation.ConversationWrite,
+            application => application.SendQueue(sourceRuntimeID, conversationID, operation), problem => failed(Core.Describe(problem)));
+    }
+
+    public async Task<Attachment> UploadQueuedAttachment(string name, byte[] bytes)
+    {
+        var uploaded = await Call(NativeOperation.ConversationWrite, application => application.UploadComposerAttachment(name, bytes));
+        return new Attachment("composer:" + uploaded.Id, uploaded.Name, imageExtensions.Contains(Path.GetExtension(name).ToLowerInvariant()), uploaded);
+    }
+
+    public Catalog? QueuedEditCatalog(string runtimeID) => catalogs.GetValueOrDefault(runtimeID);
+
+    // The queue owns the captured instruction. Its deliberately absent choices
+    // must not inherit new selections made in the ordinary composer.
+    public NextTurn ResolveQueuedExecution(string runtimeID, TurnChoice choice) =>
+        VeluneApplicationApiMethods.ResolveNextTurn(new NextTurnInput(
+            runtimeID, Configuration.RuntimeType(runtimeID), Configuration.Providers(runtimeID),
+            new NewConversationChoice.Chosen(choice),
+            QueuedEditCatalog(runtimeID) is { Loading: false, Failure: "" } catalog ? catalog.Models : null));
 
     public void RemoveQueued(string id) => Act("移除排队的消息", NativeOperation.ConversationWrite, (application, runtimeID, conversation) =>
         application.SendQueue(runtimeID, conversation, new SendQueueOperation.Remove(id)));
@@ -117,27 +152,6 @@ sealed partial class Conversation
             Act(action, NativeOperation.ConversationWrite,
                 (application, runtimeID, conversation) => application.SetConversationHandoff(runtimeID, conversation, release));
         }
-    }
-
-    // TakeQueued takes a queued message out of the queue to send it again:
-    // its attachments go back to the composer, the text to the caller.
-    public async Task<bool> TakeQueued(QueuedMessage message)
-    {
-        if (Snapshot is not { } snapshot)
-        {
-            return false;
-        }
-        var operation = new SendQueueOperation.Remove(message.Id);
-        if (!await Change("取回排队的消息", NativeOperation.ConversationWrite, application => application.SendQueue(snapshot.ContextRuntimeId, snapshot.Conversation.Id, operation)))
-        {
-            return false;
-        }
-        foreach (var reference in message.Attachments)
-        {
-            Attached.Add(new Attachment(reference, Path.GetFileName(reference), imageExtensions.Contains(Path.GetExtension(reference).ToLowerInvariant())));
-        }
-        Notify();
-        return true;
     }
 
     // Steer delivers the message into the running turn through the
@@ -262,7 +276,7 @@ sealed partial class Conversation
     public EditableMessage? Editable(string messageID) => FollowUp?.Editable.FirstOrDefault(editable => editable.MessageId == messageID);
 
     // Change runs one write and takes the snapshot it returns; false shows its failure.
-    async Task<bool> Change(string source, NativeOperation operation, Func<VeluneApplication, SnapshotResult> work)
+    async Task<bool> Change(string source, NativeOperation operation, Func<VeluneApplication, SnapshotResult> work, Action<Exception>? failed = null)
     {
         if (Busy)
         {
@@ -278,6 +292,7 @@ sealed partial class Conversation
         catch (Exception failure)
         {
             Problems.Report(source, failure, Device);
+            failed?.Invoke(failure);
             return false;
         }
         finally

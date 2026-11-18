@@ -795,7 +795,8 @@ impl Command {
             | Self::EditMessage { turn, .. }
             | Self::SendSideChat { turn, .. }
             | Self::EditSendQueue {
-                operation: SendQueueOperation::Add { turn, .. },
+                operation:
+                    SendQueueOperation::Add { turn, .. } | SendQueueOperation::Replace { turn, .. },
                 ..
             } => Some(turn),
             _ => None,

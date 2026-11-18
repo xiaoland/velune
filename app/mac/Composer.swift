@@ -140,14 +140,11 @@ enum ComposerInputPolicy { case draft, messageEdit }
         focus()
     }
 
-    /// ⌥↑: the queue's last message back into an empty box, to edit and
-    /// queue again; with text in the box, its editor instead.
+    /// ⌥↑ opens the last queue item in its own editor.
     func takeLastQueued() -> Bool {
         guard inputPolicy == .draft, let store, let last = store.followUp.queue.last else { return false }
-        guard isEmpty, attachments.isEmpty else { queueEditRequest = last; return true }
-        store.removeQueued(last.id) { [weak self] in
-            self?.restore(last.text, attachments: last.attachments.map { URL(fileURLWithPath: $0) })
-        }
+        guard last.editContext != nil else { return false }
+        queueEditRequest = last
         return true
     }
 
@@ -642,6 +639,7 @@ struct ComposerView: View {
     let submission: () -> ComposerSubmission
     let resume: () -> Void
     var fillsHeight = false
+    var editorMinimumHeight: CGFloat = 0
     var recipient: String? = nil
     var editingTarget: ComposerEditingTarget? = nil
     /// Detached history editors retain their source tab outside navigation.
@@ -681,12 +679,13 @@ struct ComposerView: View {
         let value = appearance.values.composerWidth(available: availableWidth, reserved: wide ? sideWidth : 0) >= fit.controlsWidth + actions
         if oneRow != value { oneRow = value }
     }
-    private var wingWidth: CGFloat { max(recipient == nil ? 0 : 156, model.attachments.isEmpty ? 0 : 208) }
+    private var wingWidth: CGFloat { max(recipient == nil ? 0 : 156, hasAttachments ? 208 : 0) }
 
     private var context: ComposerContext { ComposerContext(tab: inputTab ?? layout.conversationTab(for: store), model: model, editingTarget: editingTarget) }
     private var nextTurnRuntime: RuntimeInstance? { store.device.runtimeInstances.first { $0.id == context.nextTurnRuntimeID } }
 
-    private var hasAccessories: Bool { (editingTarget == nil && store.isUnsentConversation && store.creationFailure != nil) || (!columns && !model.attachments.isEmpty) }
+    private var hasAttachments: Bool { !model.attachments.isEmpty || !(editingTarget?.retainedAttachments.isEmpty ?? true) }
+    private var hasAccessories: Bool { (editingTarget == nil && store.isUnsentConversation && store.creationFailure != nil) || (!columns && hasAttachments) }
     private var compactAccessories: Bool {
         fillsHeight && availableHeight <= ComposerTextView.minimumHeight + 62 + (oneRow ? 0 : 30) + min(accessoriesHeight, 64)
     }
@@ -696,7 +695,7 @@ struct ComposerView: View {
     private var accessories: some View {
         VStack(alignment: .leading, spacing: 8) {
             if editingTarget == nil, store.isUnsentConversation, let failure = store.creationFailure { Text(failure).uiFont(.callout).foregroundStyle(.red).textSelection(.enabled) }
-            if !model.attachments.isEmpty && !columns { attachmentRow }
+            if hasAttachments && !columns { attachmentRow }
         }.frame(maxWidth: .infinity, alignment: .leading)
     }
 
@@ -713,7 +712,7 @@ struct ComposerView: View {
             editorColumn.frame(maxWidth: editorMaximumWidth)
             if columns {
                 VStack(alignment: .leading, spacing: 6) {
-                    if !model.attachments.isEmpty {
+                    if hasAttachments {
                         Text("附件").uiFont(.caption).foregroundStyle(.secondary)
                         ScrollView { VStack(alignment: .leading, spacing: 6) { attachmentChips }.frame(maxWidth: .infinity, alignment: .leading) }
                     }
@@ -748,6 +747,7 @@ struct ComposerView: View {
         .onGeometryChange(for: CGFloat.self) { max(0, $0.size.width - 32) } action: { availableWidth = $0; refit() }
         .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { availableHeight = $0 }
         .onChange(of: model.attachments.count) { _, _ in refit() }
+        .onChange(of: hasAttachments) { _, _ in refit() }
         .onChange(of: recipient) { _, _ in refit() }
         .onChange(of: appearance.values) { _, _ in refit() }
         .onChange(of: store.inputLockMessage) { _, _ in showingInputAccess = false }
@@ -806,7 +806,7 @@ struct ComposerView: View {
                            placeMenu: { [layout] in editingTarget == nil ? layout.placeMenuItem(for: .composer) : nil },
                            bindTarget: bindEditorContext,
                            focused: { if editingTarget == nil { layout.focusConversation(layout.conversationTab(for: store)) } })
-                .frame(height: fillsHeight ? nil : editorHeight)
+                .frame(height: fillsHeight ? nil : max(editorHeight, editorMinimumHeight))
                 .frame(minHeight: fillsHeight ? ComposerTextView.minimumHeight : nil, maxHeight: fillsHeight ? .infinity : nil)
                 // The text view sits in a clipping scroll view, which hides its
                 // own ring; this follows the system ring: focus colour, just
@@ -937,7 +937,23 @@ struct ComposerView: View {
         }.scrollIndicators(.never)
     }
 
-    private var attachmentChips: some View {
+    @ViewBuilder private var attachmentChips: some View {
+        if let editingTarget {
+            ForEach(editingTarget.retainedAttachments) { attachment in
+                HStack(spacing: 6) {
+                    Label(attachment.name, systemImage: "doc")
+                        .lineLimit(1).truncationMode(.middle).frame(maxWidth: 160, alignment: .leading)
+                    Button {
+                        editingTarget.removeRetainedAttachment?(attachment.id)
+                    } label: { Image(systemName: "xmark.circle.fill") }
+                    .buttonStyle(.borderless).foregroundStyle(.secondary).disabled(!context.inputEditable)
+                    .accessibilityLabel("移除附件 \(attachment.name)").help("移除附件")
+                }
+                .padding(4).padding(.trailing, 2).frame(minHeight: 36)
+                .background(.quaternary, in: RoundedRectangle(cornerRadius: 6))
+                .help(attachment.name)
+            }
+        }
         ForEach(model.attachments, id: \.self) { url in
             AttachmentChip(url: url, canRemove: context.inputEditable, retry: {
                 if let editingTarget { editingTarget.retryAttachment?(url) }
@@ -979,6 +995,7 @@ struct ComposerView: View {
         let unchosen = context.nextTurnHasCurrent ? "沿用当前" : "运行时默认"
         let modelTitle = ([model] + (effort.map { [$0] } ?? [])).joined(separator: " · ")
         let title = "\(runtime) · \(modelTitle)"
+        let subject = editingTarget != nil ? "此消息" : "下一轮"
         return Menu {
             Menu("运行时：\(runtime)") {
                 Picker("Agent 运行时", selection: Binding(get: { context.nextTurnRuntimeID }, set: { if let id = $0 { context.selectNextTurnRuntime(id) } })) {
@@ -1007,8 +1024,8 @@ struct ComposerView: View {
                 .lineLimit(1).truncationMode(.middle).frame(maxWidth: 360, alignment: .leading)
         }
         .fixedSize()
-        .accessibilityLabel("下一轮：运行时 \(runtime)，模型 \(model)，推理强度 \(effort ?? unchosen)")
-        .help(context.chosenModelUnavailable ? "所选模型已不可用，下一轮改用\(model)" : "下一轮使用运行时 \(runtime)，模型 \(model)，推理强度 \(effort ?? unchosen)")
+        .accessibilityLabel("\(subject)：运行时 \(runtime)，模型 \(model)，推理强度 \(effort ?? unchosen)")
+        .help(context.chosenModelUnavailable ? (editingTarget == nil ? "所选模型已不可用，下一轮改用\(model)" : "所选模型已不可用") : "\(subject)使用运行时 \(runtime)，模型 \(model)，推理强度 \(effort ?? unchosen)")
         .disabled(store.isShuttingDown || editingTarget?.editable == false)
     }
 

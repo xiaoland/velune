@@ -1,9 +1,12 @@
 import Foundation
 import VeluneBindings
 
-/// A history editor supplies private choices and eligibility while editing.
-/// A successful send promotes its execution choices to the result conversation's
-/// ordinary target; its text and attachments never replace ordinary input.
+/// Message editors supply their own choices, content and submit eligibility.
+struct ComposerRetainedAttachment: Identifiable {
+    let id: UInt32
+    let name: String
+}
+
 struct ComposerEditingTarget {
     let nextTurn: NextTurn?
     let issue: String?
@@ -18,6 +21,9 @@ struct ComposerEditingTarget {
     var canCancel = true
     var retryAttachment: ((URL) -> Void)? = nil
     var recordedModelName: String? = nil
+    var allowsUnavailableModel = false
+    var retainedAttachments: [ComposerRetainedAttachment] = []
+    var removeRetainedAttachment: ((UInt32) -> Void)? = nil
 }
 
 /// A window pairs input content with a Store's prepared target projection.
@@ -133,8 +139,10 @@ struct ComposerEditingTarget {
     }
     func submission(ignoringText: Bool = false) -> ComposerSubmission {
         if let editingTarget {
-            return ComposerSubmission(phase: .idle, hasInput: (!ignoringText && !model.isEmpty) || !model.attachments.isEmpty,
-                                      isComposing: model.isComposing, canSend: editingTarget.enabled && inputIssue == nil && !chosenModelUnavailable,
+            return ComposerSubmission(phase: .idle, hasInput: (!ignoringText && !model.isEmpty) ||
+                                        !model.attachments.isEmpty || !editingTarget.retainedAttachments.isEmpty,
+                                      isComposing: model.isComposing, canSend: editingTarget.enabled && inputIssue == nil &&
+                                        (!chosenModelUnavailable || editingTarget.allowsUnavailableModel),
                                       canQueue: false, canResume: false)
         }
         return tab.submission(using: model, ignoringText: ignoringText, next: nextTurn)

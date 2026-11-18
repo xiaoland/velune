@@ -503,6 +503,10 @@ enum VeluneEntry {
             admitMacExecution()
             backgroundTaskChecks()
         }
+        if CommandLine.arguments.contains("--check-queued-message-editor") {
+            admitMacExecution()
+            queuedMessageEditorChecks()
+        }
         if CommandLine.arguments.contains("--check-composer-ownership") {
             admitMacExecution()
             composerOwnershipCheck()

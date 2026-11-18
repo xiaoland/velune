@@ -600,6 +600,17 @@ pub enum SendQueueOperation {
         id: String,
         text: String,
     },
+    /// Replace this revision's composed input while keeping the queue item.
+    #[serde(rename_all = "camelCase")]
+    Replace {
+        id: String,
+        expected_revision: u64,
+        target_runtime_id: String,
+        selection: Option<crate::ModelSelection>,
+        /// Indices into the displayed revision's attachments. `turn` carries new ones.
+        retained_attachments: Vec<u32>,
+        turn: crate::ComposedTurn,
+    },
     Remove {
         id: String,
     },
@@ -828,6 +839,7 @@ mod submission_contract_tests {
         )
         .unwrap();
         assert!(old_queue.submission_id.is_none());
+        assert!(old_queue.edit_context.is_none());
         let input = serde_json::json!({"text":"same input", "effort":null,
             "permissionMode":null, "attachments":[]});
         let old_command = serde_json::json!({"command":"sendTurn", "parameters":{
@@ -872,5 +884,35 @@ mod submission_contract_tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn queue_replacement_resolves_new_attachments_and_preserves_retained_indices() {
+        let wire = serde_json::json!({
+            "command": "editSendQueue",
+            "parameters": {
+                "runtime_id": "source",
+                "conversation_id": "conversation",
+                "operation": {
+                    "kind": "replace",
+                    "id": "queue",
+                    "expectedRevision": 4,
+                    "targetRuntimeId": "target",
+                    "selection": null,
+                    "retainedAttachments": [1],
+                    "turn": {"text": "edited", "attachments": ["attachment:uploaded"]}
+                }
+            }
+        });
+        let mut command: crate::Command = serde_json::from_value(wire).unwrap();
+        let turn = command.composed_turn_mut().unwrap();
+        assert_eq!(turn.attachments, ["attachment:uploaded"]);
+        turn.attachments[0] = "/synthetic/uploaded".into();
+        let serialized = serde_json::to_value(command).unwrap();
+        let operation = &serialized["parameters"]["operation"];
+        assert_eq!(operation["expectedRevision"], 4);
+        assert_eq!(operation["targetRuntimeId"], "target");
+        assert_eq!(operation["retainedAttachments"], serde_json::json!([1]));
+        assert_eq!(operation["turn"]["attachments"][0], "/synthetic/uploaded");
     }
 }

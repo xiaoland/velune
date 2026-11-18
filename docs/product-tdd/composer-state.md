@@ -36,6 +36,8 @@ Pi 编辑专用接口在来源历史完成同步、或回退的原生结果确�
 
 历史模型的稳定 `ModelSelection` 与显示名分开保存。Pi 网关别名可可靠映射到 managed 记录时，命名投影同时保留该身份；编辑器只以目标消息所属轮次准备选择，目录尚未就绪不判为不可用，不从显示字符串伪造 provider 为空的原生选择。
 
+队列收录待执行的完整指令。队列投影给出该项修订和已受理的执行配置，简版 composer 使用独立编辑副本。替换命令在 Core 按会话与队列项校验原修订，并原子替换正文、附件和执行配置，保留队列项身份、提交编号、位置和暂停决定。保留附件通过原修订的附件下标引用，新增文件经过当前连接的附件交付。Core 校验下标及新输入。失败回执保留编辑副本供核对。
+
 ## 共享存储与修订
 
 application 在 `ClientState` 之外持有 `VELUNE_HOME/composer-inputs.json`（schema 2）。`inputs` 保存正文／附件和内容 revision；`bindings` 保存恢复关联及其 revision；`targets` 保存 ContextKey、选择及独立 revision。内容、关联与目标配置分别 CAS，目录 revision 用于条件读取；编辑正文不会覆盖刚在另一端改变的模型。旧正文／会话选择 API 分别桥接对应记录。实例的新会话策略归 `generic-config.json` 的 `settings.newConversation`，由 typed codec 与执行环境、ACP launch 一次提交。`composer-choices.json`（schema 2）只管理带 Adapter Type 的 `lastChosen`，不成为目标选择的另一份权威存储；类型不匹配的记录不参与默认。改变新会话策略不使已准备的执行或原生历史失效。

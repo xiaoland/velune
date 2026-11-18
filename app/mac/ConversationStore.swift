@@ -1469,9 +1469,25 @@ final class ConversationStore: ObservableObject {
             self?.acceptSubmission(submission, receipt: receipt)
         }
     }
-    func editQueued(_ id: String, text: String) { changeQueue(.edit(id: id, text: text)) }
-    /// `onRemoved` runs once the core has taken the message out of the queue.
-    func removeQueued(_ id: String, onRemoved: (() -> Void)? = nil) { changeQueue(.remove(id: id), onDone: { _ in onRemoved?() }) }
+    func replaceQueued(_ operation: SendQueueOperation, conversationID: String, completion: @escaping (String?) -> Void) {
+        guard selectedConversationID == nil || selectedConversationID == conversationID,
+              loadedConversationID == conversationID, let runtimeID = projectionRuntimeID else {
+            completion("已切换会话，当前修改仍保留。"); return
+        }
+        guard !isLoading, !isShuttingDown else { completion("请等待当前操作完成后重试。"); return }
+        guard !isPreview, let transport else { completion("执行端未连接，当前修改仍保留。"); return }
+        enqueueSnapshot({
+            try transport.sendQueue(runtimeID: runtimeID, conversationID: conversationID, operation: operation)
+        }, consumeReceipt: { result in
+            switch result {
+            case .success: completion(nil)
+            case .failure(let error):
+                let problem = AppProblem.failure(error, source: "编辑排队消息")
+                completion([problem.detail, problem.operationID.map { "操作编号 \($0)" }].compactMap { $0 }.joined(separator: "\n"))
+            }
+        })
+    }
+    func removeQueued(_ id: String) { changeQueue(.remove(id: id)) }
     func moveQueued(_ id: String, to index: Int) { changeQueue(.move(id: id, index: UInt32(max(index, 0)))) }
     func resumeQueue() { guard inputSubmissionAllowed else { return }; changeQueue(.resume) }
     private func changeQueue(_ operation: SendQueueOperation, submissionId: String? = nil,
@@ -1832,6 +1848,30 @@ extension ConversationStore {
         wait { !closing.isLoading }
         precondition(!applied && closing.generation != beforeClose && !closing.openingNeedsRetry && closing.takeOpeningRetry() == nil)
         note("PASS close: queued successful completion is discarded and no retry survives tab closure")
+    }
+
+    /// Isolated fixture for the queue editor's attachment and receipt states.
+    static func inspectQueuedEditor(_ inspect: (ConversationWindowModel, QueuedMessage, (QueuedMessage?, Bool) -> Void) -> Void) {
+        let window = ConversationWindowModel(application: DeviceStore(preview: true), kind: .workspace)
+        let store = window.focused.store
+        var snapshot = store.device.previewSnapshots["sample-0"]!
+        let runtimeID = snapshot.contextRuntimeID
+        let message = QueuedMessage(id: "synthetic-queue", submissionId: "synthetic-submission", text: "补充验收记录并保留附件。",
+                                    attachments: ["/synthetic-host/notes.md"],
+                                    editContext: .init(revision: 3, runtimeId: runtimeID,
+                                                       selection: .native(providerId: "sample", modelId: "sample-native"),
+                                                       effort: "medium", permissionMode: nil))
+        store.isDraft = false
+        snapshot.followUp = .init()
+        snapshot.followUp.queue = [message]
+        snapshot.followUp.paused = .turnStopped
+        store.apply(snapshot)
+        store.loadModelCatalog(runtimeID: runtimeID)
+        inspect(window, message) { item, busy in
+            snapshot.followUp.queue = item.map { [$0] } ?? []
+            store.apply(snapshot)
+            store.isLoading = busy
+        }
     }
 
     /// The frontend must dispatch while the source runs, not retain a hidden
