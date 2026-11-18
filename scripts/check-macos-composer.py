@@ -21,7 +21,7 @@ def digest(path):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('check', choices=['editor', 'provider-analytics', 'archived', 'palette-ime', 'pagination', 'tabs', 'targets', 'ownership', 'background', 'experience', 'recovery', 'background-notifications', 'sidebar-toolbar', 'outgoing-submissions'])
+    parser.add_argument('check', choices=['editor', 'provider-analytics', 'archived', 'palette-ime', 'pagination', 'tabs', 'targets', 'ownership', 'background', 'experience', 'recovery', 'background-notifications', 'sidebar-toolbar', 'outgoing-submissions', 'credits'])
     parser.add_argument('--app', type=Path, default=app_bundle_path(ROOT, 'dev'))
     parser.add_argument('--output', type=Path)
     parser.add_argument('--dark', action='store_true')
@@ -75,6 +75,8 @@ def main():
             flags = ['--check-sidebar-toolbar']
         if args.check == 'background-notifications':
             flags = ['--check-background-notifications']
+        if args.check == 'credits':
+            flags = ['--check-composer-controls', '--check-credits']
         if args.check == 'provider-analytics':
             flags = ['--check-provider-analytics']
         if args.check == 'palette-ime':

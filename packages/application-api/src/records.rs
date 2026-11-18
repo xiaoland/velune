@@ -798,6 +798,18 @@ pub struct ComposerQuotaEntry {
     pub origin: QuotaOrigin,
     pub observation: QuotaObservation,
     pub limits: Vec<crate::config::QuotaLimit>,
+    #[serde(default)]
+    pub credits: Option<ComposerQuotaCredits>,
+}
+
+/// The managed account's credits, independent of quota windows and currency balances.
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[serde(rename_all = "camelCase")]
+pub struct ComposerQuotaCredits {
+    pub observation: Option<crate::ProviderAccountCredits>,
+    pub stale: bool,
+    pub refreshing: bool,
+    pub failed: bool,
 }
 
 #[cfg(test)]

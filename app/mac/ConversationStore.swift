@@ -571,13 +571,19 @@ final class ConversationStore: ObservableObject {
     func quotaRequest(next: NextTurn?) -> ComposerQuotaRequest {
         ComposerQuotaRequest(runtimeID: next?.runtimeId ?? "", selection: next?.model,
             conversationID: isDraft ? nil : snapshot?.conversation.id,
-            conversationRevision: snapshot?.revision, configurationRevision: device.configurationRevision)
+            conversationRevision: snapshot?.revision, configurationRevision: device.configurationRevision,
+            providerReportRevision: device.providerReportRevision)
     }
     var composerAccountQuotas: [ComposerQuotaEntry] { quotaEntries(for: composerQuotaRequest) }
     func quotaEntries(for request: ComposerQuotaRequest) -> [ComposerQuotaEntry] { composerQuotaResults.first { $0.request == request }?.entries ?? [] }
     var composerQuotaError: String? { quotaError(for: composerQuotaRequest) }
     func quotaError(for request: ComposerQuotaRequest) -> String? { composerQuotaResults.first { $0.request == request }?.failure }
-    private func quotaTargetMatches(_ request: ComposerQuotaRequest) -> Bool { request.conversationID == (isDraft ? nil : snapshot?.conversation.id) && request.conversationRevision == snapshot?.revision && request.configurationRevision == device.configurationRevision }
+    private func quotaTargetMatches(_ request: ComposerQuotaRequest) -> Bool {
+        request.conversationID == (isDraft ? nil : snapshot?.conversation.id)
+            && request.conversationRevision == snapshot?.revision
+            && request.configurationRevision == device.configurationRevision
+            && request.providerReportRevision == device.providerReportRevision
+    }
     func observeComposerQuota(_ request: ComposerQuotaRequest) async {
         guard !isPreview, !isShuttingDown, !request.runtimeID.isEmpty, let transport else { return }
         while !Task.isCancelled && quotaTargetMatches(request) {
@@ -590,9 +596,11 @@ final class ConversationStore: ObservableObject {
             case .success(let entries): observation = QuotaResult(request: request, entries: entries, failure: nil)
             case .failure(let error): observation = QuotaResult(request: request, entries: [], failure: error.localizedDescription)
             }
-            composerQuotaResults.removeAll { $0.request.conversationID != request.conversationID || $0.request.conversationRevision != request.conversationRevision || $0.request.configurationRevision != request.configurationRevision || $0.request == request }
+            composerQuotaResults.removeAll { !quotaTargetMatches($0.request) || $0.request == request }
             composerQuotaResults.append(observation)
-            let waiting = observation.entries.contains { $0.quota.refreshing || ($0.quota.freshness == .unknown && $0.quota.problem == nil) }
+            let waiting = observation.entries.contains {
+                $0.credits?.refreshing == true || $0.quota.refreshing || ($0.quota.freshness == .unknown && $0.quota.problem == nil)
+            }
             try? await Task.sleep(for: .seconds(waiting ? 2 : 30))
         }
     }

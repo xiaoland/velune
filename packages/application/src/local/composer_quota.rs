@@ -3,7 +3,8 @@
 use super::*;
 use crate::{
     ComposerQuotaContext, ComposerQuotaEntry, ModelSelection, QuotaFreshness, QuotaObservation,
-    QuotaOrigin, QuotaWindowObservation,
+    QuotaOrigin, QuotaWindowObservation, config::ProviderQuotaSource,
+    provider_authentication::AuthenticationMaterial,
 };
 
 impl CoreRuntime {
@@ -30,11 +31,17 @@ impl CoreRuntime {
                         .resolve_dispatch(&key)
                         .map_err(|_| RuntimeError::invalid("所选模型已不存在"))?;
                     let provider = resolved.provider();
-                    if provider.quota_source == crate::config::ProviderQuotaSource::None
-                        || (matches!(
-                            provider.authentication.description().method,
-                            crate::AuthenticationMethod::OAuth
-                        ) && !provider.authentication.description().configured)
+                    let authentication = provider.authentication.description();
+                    let reports_credits = matches!(
+                        provider.authentication.material,
+                        AuthenticationMaterial::CodexSubscription {
+                            configured: true,
+                            ..
+                        }
+                    );
+                    if (provider.quota_source == ProviderQuotaSource::None && !reports_credits)
+                        || (authentication.method == crate::AuthenticationMethod::OAuth
+                            && !authentication.configured)
                     {
                         continue;
                     }
@@ -48,23 +55,41 @@ impl CoreRuntime {
                         sources.push((provider, vec![model.clone()]));
                     }
                 }
-                sources
-                    .into_iter()
-                    .map(|(provider, models)| {
-                        let mut observation = self
-                            .subscription_quota
-                            .query(&gateway.id, &provider.id, refresh)?
-                            .observation;
-                        observation.windows = scoped_windows(observation.windows, &models);
-                        Ok(ComposerQuotaEntry {
-                            id: format!("provider:{}:{}", gateway.id, provider.id),
-                            name: provider.name.clone(),
-                            origin: QuotaOrigin::Provider,
-                            observation,
-                            limits: provider.quota_limits.clone(),
-                        })
-                    })
-                    .collect::<Result<Vec<_>, RuntimeError>>()?
+                let mut credit_accounts = std::collections::BTreeSet::new();
+                let mut entries = Vec::with_capacity(sources.len());
+                for (provider, models) in sources {
+                    let credits = self
+                        .provider_account
+                        .query_credits(&gateway.id, &provider.id, refresh)?
+                        .and_then(|(credits, identity)| {
+                            let reported = credits.observation.as_ref().is_some_and(|credits| {
+                                credits.unlimited == Some(true)
+                                    || credits
+                                        .balance
+                                        .as_ref()
+                                        .is_some_and(|balance| !balance.trim().is_empty())
+                            });
+                            (!reported || identity.is_none_or(|key| credit_accounts.insert(key)))
+                                .then_some(credits)
+                        });
+                    if provider.quota_source == ProviderQuotaSource::None && credits.is_none() {
+                        continue;
+                    }
+                    let mut observation = self
+                        .subscription_quota
+                        .query(&gateway.id, &provider.id, refresh)?
+                        .observation;
+                    observation.windows = scoped_windows(observation.windows, &models);
+                    entries.push(ComposerQuotaEntry {
+                        id: format!("provider:{}:{}", gateway.id, provider.id),
+                        name: provider.name.clone(),
+                        origin: QuotaOrigin::Provider,
+                        observation,
+                        limits: provider.quota_limits.clone(),
+                        credits,
+                    });
+                }
+                entries
             }
             _ if crate::native_quota_source::Capture::supported(runtime.type_id) => {
                 let quota = self.runtime_quota.query(
@@ -78,6 +103,7 @@ impl CoreRuntime {
                     origin: QuotaOrigin::RuntimeLogin,
                     observation: quota.observation,
                     limits: Vec::new(),
+                    credits: None,
                 }]
             }
             _ => context
@@ -151,6 +177,7 @@ fn recorded_quota(
             problem: None,
         },
         limits: Vec::new(),
+        credits: None,
     })
 }
 

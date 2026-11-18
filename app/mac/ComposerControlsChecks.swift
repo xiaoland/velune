@@ -10,6 +10,8 @@ import VeluneBindings
     let directory = URL(fileURLWithPath: ProcessInfo.processInfo.environment["VELUNE_CHECK_OUTPUT"] ?? "/tmp/velune-next-ux/composer", isDirectory: true)
     try! FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
 
+    if CommandLine.arguments.contains("--check-credits") { composerQuotaCreditChecks(directory: directory); exit(0) }
+
     var appearance = AppearanceValues()
     precondition(appearance.composerWidth(available: 420) == 420)
     precondition(appearance.composerWidth(available: 800) == 600)
@@ -104,7 +106,7 @@ import VeluneBindings
         QuotaWindowObservation(id: "kimi:limit_5h", modelIds: nil, usedPercent: 35, resetAtMs: 1_800_000_000_000, windowMs: 18_000_000, observedAtMs: 1_799_999_000_000, expiresAtMs: 1_800_000_000_000, pace: nil),
         QuotaWindowObservation(id: "kimi:limit_7d", modelIds: nil, usedPercent: 20, resetAtMs: 1_800_500_000_000, windowMs: 604_800_000, observedAtMs: 1_799_999_000_000, expiresAtMs: 1_800_000_000_000, pace: nil)
     ], balances: [], available: true, refreshing: false, problem: nil)
-    let account = ComposerQuotaEntry(id: "provider:synthetic:kimi", name: "Kimi For Coding", origin: .provider, observation: observation, limits: [])
+    let account = ComposerQuotaEntry(id: "provider:synthetic:kimi", name: "Kimi For Coding", origin: .provider, observation: observation, limits: [], credits: nil)
     let details = NSHostingView(rootView: StatusDetails(status: ConversationStatus(), accounts: [account], branch: nil, display: .used, quotaDisplay: .remaining)
         .applicationAppearance().background(Color(nsColor: .windowBackgroundColor)))
     let detailWindow = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 380, height: 520), styleMask: [.borderless], backing: .buffered, defer: false)
@@ -118,4 +120,54 @@ import VeluneBindings
     precondition(!window.isVisible && !detailWindow.isVisible && NSApp.activationPolicy() == .prohibited)
     note("PASS generic quota details rendered with synthetic Kimi 5h/7d observations; no visible windows or application transport")
     exit(0)
+}
+
+@MainActor private func composerQuotaCreditChecks(directory: URL) {
+    let device = DeviceStore(preview: true)
+    let store = ConversationStore(device: device)
+    let previousRequest = store.composerQuotaRequest
+    device.invalidateProviderReports()
+    precondition(store.composerQuotaRequest != previousRequest, "换绑应使已有 credits 请求失效")
+
+    let balance = ProviderAccountCredits(hasCredits: true, unlimited: false, balance: "12.7500")
+    let zero = ProviderAccountCredits(hasCredits: false, unlimited: false, balance: "0")
+    let unlimited = ProviderAccountCredits(hasCredits: true, unlimited: true, balance: nil)
+    let unreported = ProviderAccountCredits(hasCredits: false, unlimited: false, balance: nil)
+    let fixtures: [(String, ComposerQuotaCredits, String, String)] = [
+        ("balance", .init(observation: balance, stale: false, refreshing: false, failed: false), "12.7500", "12.7500 credits"),
+        ("zero", .init(observation: zero, stale: false, refreshing: false, failed: false), "0", "0 credits"),
+        ("unlimited", .init(observation: unlimited, stale: false, refreshing: false, failed: false), "不限量", "credits 不限量"),
+        ("stale", .init(observation: balance, stale: true, refreshing: true, failed: false), "12.7500（上次余额）", "12.7500 credits（上次）"),
+        ("loading", .init(observation: nil, stale: false, refreshing: true, failed: false), "读取中…", "credits 读取中…"),
+        ("unknown", .init(observation: unreported, stale: false, refreshing: false, failed: false), "未报告", "credits 未报告"),
+        ("failed", .init(observation: nil, stale: false, refreshing: false, failed: true), "暂时无法读取", "credits 暂时无法读取")
+    ]
+    let window = QuotaWindowObservation(id: "window:18000", modelIds: nil, usedPercent: 35,
+        resetAtMs: 1_800_000_000_000, windowMs: 18_000_000, observedAtMs: nil, expiresAtMs: nil, pace: nil)
+    for (name, credits, detail, compact) in fixtures {
+        precondition(credits.detailValue == detail && credits.compactValue == compact, "credits presentation: \(name)")
+        let quota = name == "balance"
+            ? QuotaObservation(freshness: .fresh, windows: [window], balances: [], available: true, refreshing: false, problem: nil)
+            : QuotaObservation(freshness: .unsupported, windows: [], balances: [], available: nil, refreshing: false, problem: nil)
+        let account = ComposerQuotaEntry(id: "provider:synthetic:chatgpt", name: "ChatGPT", origin: .provider,
+            observation: quota, limits: [], credits: credits)
+        for (appearance, theme) in [(NSAppearance.Name.aqua, "light"), (.darkAqua, "dark")] {
+            let view = NSHostingView(rootView: StatusDetails(status: ConversationStatus(), accounts: [account],
+                branch: nil, display: .used, quotaDisplay: .remaining)
+                .applicationAppearance().background(Color(nsColor: .windowBackgroundColor)))
+            let host = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 380, height: 215), styleMask: [.borderless], backing: .buffered, defer: false)
+            host.appearance = NSAppearance(named: appearance)
+            host.contentView = view
+            view.layoutSubtreeIfNeeded()
+            RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+            view.layoutSubtreeIfNeeded(); view.display()
+            guard let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else {
+                preconditionFailure("无法绘制 credits 状态")
+            }
+            view.cacheDisplay(in: view.bounds, to: bitmap)
+            try! bitmap.representation(using: .png, properties: [:])!.write(to: directory.appendingPathComponent("credits-\(name)-\(theme).png"))
+            precondition(!host.isVisible && NSApp.activationPolicy() == .prohibited)
+        }
+    }
+    FileHandle.standardError.write(Data("PASS credits formatting and offscreen quota details, seven states in both appearances\n".utf8))
 }

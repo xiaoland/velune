@@ -6,13 +6,13 @@ use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, MutexGuard},
     time::{Duration, Instant},
 };
 use velune_application_api::{
-    ProviderAccountCredits, ProviderAccountDailyUsage, ProviderAccountFailure,
-    ProviderAccountProfile, ProviderAccountResetGrant, ProviderAccountResets,
-    ProviderAccountSource, ProviderAccountState, ProviderAccountStatus,
+    ComposerQuotaCredits, ProviderAccountCredits, ProviderAccountDailyUsage,
+    ProviderAccountFailure, ProviderAccountProfile, ProviderAccountResetGrant,
+    ProviderAccountResets, ProviderAccountSource, ProviderAccountState, ProviderAccountStatus,
     ProviderAccountTopInvocation,
 };
 use velune_gateway::CredentialResolutionError;
@@ -21,6 +21,13 @@ const TTL: Duration = Duration::from_secs(15 * 60);
 const RETRY_DELAY: Duration = Duration::from_secs(60);
 const MAX_INFLIGHT: usize = 4;
 type ProviderKey = (String, String);
+type EntryKey = (String, CollectionScope);
+
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum CollectionScope {
+    Credits,
+    Full,
+}
 
 #[derive(Clone)]
 struct Capture {
@@ -51,7 +58,7 @@ struct Entry {
 #[derive(Default)]
 struct State {
     bindings: BTreeMap<ProviderKey, Binding>,
-    entries: BTreeMap<String, Entry>,
+    entries: BTreeMap<EntryKey, Entry>,
     stopped: bool,
     inflight: usize,
 }
@@ -83,10 +90,31 @@ struct UsageResponse {
 }
 #[derive(Debug, Deserialize, Default)]
 #[serde(default)]
+struct CreditsResponse {
+    credits: Option<UsageCredits>,
+}
+#[derive(Debug, Deserialize, Default)]
+#[serde(default)]
 struct UsageCredits {
     has_credits: Option<bool>,
     unlimited: Option<bool>,
-    balance: Option<String>,
+    balance: Option<UsageBalance>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum UsageBalance {
+    Text(String),
+    Number(serde_json::Number),
+}
+
+impl From<UsageBalance> for String {
+    fn from(balance: UsageBalance) -> Self {
+        match balance {
+            UsageBalance::Text(text) => text,
+            UsageBalance::Number(number) => number.to_string(),
+        }
+    }
 }
 #[derive(Debug, Deserialize, Default)]
 #[serde(default)]
@@ -235,7 +263,7 @@ impl ProviderAccountService {
             .collect();
         let mut state = self.state.lock().expect("provider account state");
         state.bindings = bindings;
-        state.entries.retain(|key, entry| {
+        state.entries.retain(|(key, _), entry| {
             if live.contains(key) {
                 true
             } else {
@@ -261,8 +289,7 @@ impl ProviderAccountService {
         provider_id: &str,
         force: bool,
     ) -> Result<ProviderAccountStatus, crate::Error> {
-        let key = (gateway_id.to_owned(), provider_id.to_owned());
-        let mut state = self.state.lock().expect("provider account state");
+        let state = self.state.lock().expect("provider account state");
         if state.stopped {
             return Ok(empty_status(
                 gateway_id,
@@ -271,11 +298,7 @@ impl ProviderAccountService {
                 Some("账户报告服务已停止"),
             ));
         }
-        let binding = state
-            .bindings
-            .get(&key)
-            .cloned()
-            .ok_or_else(|| crate::Error::invalid("provider id"))?;
+        let binding = account_binding(&state, gateway_id, provider_id)?;
         let capture = match binding {
             Binding::Unsupported => {
                 return Ok(empty_status(
@@ -295,11 +318,62 @@ impl ProviderAccountService {
             }
             Binding::ChatGpt(capture) => capture,
         };
+        Ok(self.query_capture(
+            state,
+            capture,
+            CollectionScope::Full,
+            force,
+            |entry, refreshing| {
+                let mut status = status_from_entry(gateway_id, provider_id, entry);
+                if refreshing {
+                    status.refreshing = true;
+                    status.state = ProviderAccountState::Refreshing;
+                }
+                status
+            },
+        ))
+    }
+
+    pub(crate) fn query_credits(
+        self: &Arc<Self>,
+        gateway_id: &str,
+        provider_id: &str,
+        force: bool,
+    ) -> Result<Option<(ComposerQuotaCredits, Option<String>)>, crate::Error> {
+        let state = self.state.lock().expect("provider account state");
+        if state.stopped {
+            return Ok(None);
+        }
+        let Binding::ChatGpt(capture) = account_binding(&state, gateway_id, provider_id)? else {
+            return Ok(None);
+        };
+        Ok(Some(self.query_capture(
+            state,
+            capture,
+            CollectionScope::Credits,
+            force,
+            credits_from_entry,
+        )))
+    }
+
+    fn query_capture<T>(
+        self: &Arc<Self>,
+        mut state: MutexGuard<'_, State>,
+        capture: Capture,
+        scope: CollectionScope,
+        force: bool,
+        read: impl FnOnce(&Entry, bool) -> T,
+    ) -> T {
         let capacity = state.inflight < MAX_INFLIGHT;
-        let (status, start, cancel, cancel_signal) = {
+        let entry_key = (capture.cache_key.clone(), scope);
+        let from_full = match scope {
+            CollectionScope::Credits => fresh_full_credits(&state, &capture.cache_key),
+            CollectionScope::Full => None,
+        };
+        let (result, worker) = {
             let entry = state
                 .entries
-                .entry(capture.cache_key.clone())
+                .entry(entry_key.clone())
                 .or_insert_with(|| Entry {
                     snapshot: None,
                     failures: Vec::new(),
@@ -311,6 +385,18 @@ impl ProviderAccountService {
                     retry_at: Instant::now(),
                     cancel: tokio::sync::watch::channel(false).0,
                 });
+            if let Some((snapshot, observed)) = from_full
+                && !entry.running
+                && !entry.expired
+                && entry
+                    .fetched
+                    .is_none_or(|fetched| fetched < observed.instant)
+            {
+                entry.snapshot = Some(snapshot);
+                entry.fetched = Some(observed.instant);
+                entry.fetched_at = Some(observed.at);
+                entry.failures.clear();
+            }
             if force && !entry.expired {
                 entry.force_pending = true;
             }
@@ -324,41 +410,35 @@ impl ProviderAccountService {
             if start {
                 entry.running = true;
                 entry.force_pending = false;
-                entry.failures.clear();
+                if scope == CollectionScope::Full {
+                    entry.failures.clear();
+                }
                 entry.expired = false;
                 entry.retry_at = Instant::now() + RETRY_DELAY;
             }
-            let mut status = status_from_entry(gateway_id, provider_id, entry);
             // `refreshing` also covers a refresh request waiting for capacity or backoff.
             // Callers can keep polling the cache; no extra HTTP is started by the wait itself.
-            if entry.running || (!entry.expired && refresh_requested && !start) {
-                status.refreshing = true;
-                status.state = ProviderAccountState::Refreshing;
-            }
+            let refreshing = entry.running || (!entry.expired && refresh_requested);
             (
-                status,
-                start,
-                entry.cancel.subscribe(),
-                entry.cancel.clone(),
+                read(entry, refreshing),
+                start.then(|| (entry.cancel.subscribe(), entry.cancel.clone())),
             )
         };
-        if !start {
-            return Ok(status);
+        if let Some((cancel, cancel_signal)) = worker {
+            state.inflight += 1;
+            let service = Arc::clone(self);
+            drop(state);
+            std::thread::spawn(move || {
+                let result = collect(service.home.clone(), capture, scope, cancel);
+                service.finish(&entry_key, &cancel_signal, result);
+            });
         }
-        state.inflight += 1;
-        let service = Arc::clone(self);
-        let cache_identity = capture.cache_key.clone();
-        drop(state);
-        std::thread::spawn(move || {
-            let result = collect(service.home.clone(), capture, cancel);
-            service.finish(&cache_identity, &cancel_signal, result);
-        });
-        Ok(status)
+        result
     }
 
     fn finish(
         &self,
-        identity: &str,
+        key: &EntryKey,
         cancel_signal: &tokio::sync::watch::Sender<bool>,
         result: Result<Collected, String>,
     ) {
@@ -367,12 +447,21 @@ impl ProviderAccountService {
         if *cancel_signal.borrow() {
             return;
         }
-        let Some(entry) = state.entries.get_mut(identity) else {
+        let Some(entry) = state.entries.get_mut(key) else {
             return;
         };
         entry.running = false;
         match result {
             Ok(mut collected) => {
+                if collected.succeeded {
+                    let observed = match key.1 {
+                        CollectionScope::Credits => collected.snapshot.credits_observed.clone(),
+                        CollectionScope::Full => None,
+                    }
+                    .unwrap_or_else(observation_now);
+                    entry.fetched = Some(observed.instant);
+                    entry.fetched_at = Some(observed.at);
+                }
                 let mut old = entry.snapshot.take().unwrap_or_default();
                 if collected.snapshot.identity_key.is_none() {
                     collected.snapshot.identity_key = old.identity_key;
@@ -412,14 +501,7 @@ impl ProviderAccountService {
                 if collected.snapshot.profile_observed.is_none() {
                     collected.snapshot.profile_observed = old.profile_observed;
                 }
-                if collected.succeeded {
-                    let observed = observation_now();
-                    entry.fetched = Some(observed.instant);
-                    entry.fetched_at = Some(observed.at);
-                    entry.snapshot = Some(collected.snapshot);
-                } else {
-                    entry.snapshot = Some(collected.snapshot);
-                }
+                entry.snapshot = Some(collected.snapshot);
                 entry.failures = collected.failures;
                 entry.expired = collected.expired;
                 if collected.expired {
@@ -438,6 +520,69 @@ impl ProviderAccountService {
             }
         }
     }
+}
+
+fn account_binding(
+    state: &State,
+    gateway_id: &str,
+    provider_id: &str,
+) -> Result<Binding, crate::Error> {
+    state
+        .bindings
+        .get(&(gateway_id.to_owned(), provider_id.to_owned()))
+        .cloned()
+        .ok_or_else(|| crate::Error::invalid("provider id"))
+}
+
+fn fresh_full_credits(state: &State, cache_key: &str) -> Option<(Snapshot, Observation)> {
+    let entry = state
+        .entries
+        .get(&(cache_key.into(), CollectionScope::Full))?;
+    if entry.running
+        || entry
+            .failures
+            .iter()
+            .any(|failure| failure.source == ProviderAccountSource::Usage)
+    {
+        return None;
+    }
+    let snapshot = entry.snapshot.as_ref()?;
+    let observed = snapshot.credits_observed.as_ref()?;
+    if observed.instant.elapsed() >= TTL {
+        return None;
+    }
+    Some((
+        Snapshot {
+            identity_key: snapshot.identity_key.clone(),
+            credits: snapshot.credits.clone(),
+            credits_observed: Some(observed.clone()),
+            ..Snapshot::default()
+        },
+        observed.clone(),
+    ))
+}
+
+fn credits_from_entry(entry: &Entry, refreshing: bool) -> (ComposerQuotaCredits, Option<String>) {
+    let failed = entry.expired || !entry.failures.is_empty();
+    let snapshot = entry.snapshot.as_ref();
+    let stale = snapshot
+        .and_then(|snapshot| snapshot.credits_observed.as_ref())
+        .is_some_and(|observed| {
+            failed
+                || observed.instant.elapsed() >= TTL
+                || entry
+                    .fetched
+                    .is_some_and(|fetched| fetched > observed.instant)
+        });
+    (
+        ComposerQuotaCredits {
+            observation: snapshot.and_then(|snapshot| snapshot.credits.clone()),
+            stale,
+            refreshing,
+            failed,
+        },
+        snapshot.and_then(|snapshot| snapshot.identity_key.clone()),
+    )
 }
 
 fn cache_key(credential_id: &str, generation: u64) -> String {
@@ -605,6 +750,7 @@ fn observation_now() -> Observation {
 fn collect(
     home: PathBuf,
     capture: Capture,
+    scope: CollectionScope,
     mut cancel: tokio::sync::watch::Receiver<bool>,
 ) -> Result<Collected, String> {
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -613,7 +759,7 @@ fn collect(
         .map_err(|_| "账户报告采集无法启动".to_owned())?;
     runtime.block_on(async move {
         tokio::select! {
-            result = tokio::time::timeout(Duration::from_secs(60), collect_async(home, capture)) => {
+            result = tokio::time::timeout(Duration::from_secs(60), collect_async(home, capture, scope)) => {
                 match result {
                     Ok(result) => result,
                     Err(_) => Err("账户报告采集超时".to_owned()),
@@ -624,7 +770,11 @@ fn collect(
     })
 }
 
-async fn collect_async(home: PathBuf, capture: Capture) -> Result<Collected, String> {
+async fn collect_async(
+    home: PathBuf,
+    capture: Capture,
+    scope: CollectionScope,
+) -> Result<Collected, String> {
     use crate::subscription_auth::{AccountDataEndpoint as Endpoint, account_identity};
     let mut collected = Collected::default();
     let identity = match account_identity(&home, &capture.credential_id, capture.generation) {
@@ -664,12 +814,21 @@ async fn collect_async(home: PathBuf, capture: Capture) -> Result<Collected, Str
     )
     .await;
     if let Some(payload) = usage {
-        match serde_json::from_value::<UsageResponse>(payload) {
+        let usage = match scope {
+            CollectionScope::Credits => {
+                serde_json::from_value::<CreditsResponse>(payload).map(|response| UsageResponse {
+                    credits: response.credits,
+                    rate_limit_reset_credits: None,
+                })
+            }
+            CollectionScope::Full => serde_json::from_value(payload),
+        };
+        match usage {
             Ok(usage) => {
                 let credits = usage.credits.map(|credits| ProviderAccountCredits {
                     has_credits: credits.has_credits,
                     unlimited: credits.unlimited,
-                    balance: credits.balance,
+                    balance: credits.balance.map(String::from),
                 });
                 let count = usage
                     .rate_limit_reset_credits
@@ -682,7 +841,10 @@ async fn collect_async(home: PathBuf, capture: Capture) -> Result<Collected, Str
                     });
                     collected.snapshot.reset_count_observed = Some(observation_now());
                 }
-                if collected.snapshot.credits.is_some() || count.is_some() {
+                if collected.snapshot.credits.is_some()
+                    || count.is_some()
+                    || scope == CollectionScope::Credits
+                {
                     if collected.snapshot.credits.is_some() {
                         collected.snapshot.credits_observed = Some(observation_now());
                     }
@@ -699,6 +861,10 @@ async fn collect_async(home: PathBuf, capture: Capture) -> Result<Collected, Str
                 "额度响应格式无效，请稍后刷新",
             )),
         }
+    }
+
+    if scope == CollectionScope::Credits {
+        return Ok(collected);
     }
 
     let resets = fetch_json(
@@ -926,6 +1092,95 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
 
+    fn full_entry_key(name: &str) -> EntryKey {
+        (name.into(), CollectionScope::Full)
+    }
+
+    #[test]
+    fn credits_query_preserves_scope_and_adopts_newer_full_usage() {
+        let service = Arc::new(ProviderAccountService {
+            home: PathBuf::from("/synthetic"),
+            state: Mutex::new(State::default()),
+        });
+        let credits_key = ("scope".into(), CollectionScope::Credits);
+        let full_key = full_entry_key("scope");
+        {
+            let mut state = service.state.lock().unwrap();
+            state.bindings.insert(
+                ("g".into(), "p".into()),
+                Binding::ChatGpt(Capture {
+                    credential_id: "unused".into(),
+                    generation: 1,
+                    cache_key: "scope".into(),
+                }),
+            );
+            // Keep the worker paused so the test can inject results without any HTTP access.
+            state.inflight = MAX_INFLIGHT;
+        }
+
+        let (initial, _) = service.query_credits("g", "p", false).unwrap().unwrap();
+        assert!(initial.refreshing);
+        assert!(initial.observation.is_none());
+        let cancel = {
+            let state = service.state.lock().unwrap();
+            assert!(!state.entries.contains_key(&full_key));
+            state.entries[&credits_key].cancel.clone()
+        };
+        let observation = |balance: &str, observed: Observation| Collected {
+            snapshot: Snapshot {
+                identity_key: Some("opaque-account".into()),
+                credits: Some(ProviderAccountCredits {
+                    has_credits: Some(true),
+                    unlimited: Some(false),
+                    balance: Some(balance.into()),
+                }),
+                credits_observed: Some(observed),
+                ..Snapshot::default()
+            },
+            succeeded: true,
+            ..Collected::default()
+        };
+        let zero = Observation {
+            at: "first".into(),
+            instant: Instant::now() - Duration::from_secs(1),
+        };
+        service.finish(&credits_key, &cancel, Ok(observation("0", zero)));
+        service.state.lock().unwrap().inflight = MAX_INFLIGHT;
+        let (cached, identity) = service.query_credits("g", "p", false).unwrap().unwrap();
+        assert_eq!(cached.observation.unwrap().balance.as_deref(), Some("0"));
+        assert_eq!(identity.as_deref(), Some("opaque-account"));
+        assert!(!cached.refreshing);
+        assert!(service.query("g", "p", false).unwrap().refreshing);
+
+        let full_cancel = service.state.lock().unwrap().entries[&full_key]
+            .cancel
+            .clone();
+        let mut newer = observation("4.5", observation_now());
+        newer
+            .failures
+            .push(failure(ProviderAccountSource::Profile, "合成失败"));
+        service.finish(&full_key, &full_cancel, Ok(newer));
+        let (new, _) = service.query_credits("g", "p", false).unwrap().unwrap();
+        assert_eq!(new.observation.unwrap().balance.as_deref(), Some("4.5"));
+        assert!(!new.stale);
+        assert!(!new.failed);
+        assert!(!new.refreshing);
+        let full = service.query("g", "p", false).unwrap();
+        assert_eq!(full.state, ProviderAccountState::PartialFailure);
+        assert_eq!(full.failures[0].source, ProviderAccountSource::Profile);
+    }
+
+    #[test]
+    fn credits_payload_keeps_numeric_zero_and_ignores_reset_fields() {
+        let response = serde_json::from_value::<CreditsResponse>(serde_json::json!({
+            "credits": {"balance": 0},
+            "rate_limit_reset_credits": "unrecognized schema",
+        }))
+        .unwrap();
+        let balance = response.credits.unwrap().balance.map(String::from);
+        assert_eq!(balance.as_deref(), Some("0"));
+    }
+
     #[test]
     fn profile_fixture_maps_root_stats_metadata_and_raw_daily_dates() {
         let payload = serde_json::json!({
@@ -1048,7 +1303,7 @@ mod tests {
             instant: Instant::now() - TTL - Duration::from_secs(1),
         };
         service.state.lock().unwrap().entries.insert(
-            "scope".into(),
+            full_entry_key("scope"),
             Entry {
                 snapshot: Some(Snapshot {
                     profile: Some(ProviderAccountProfile {
@@ -1084,7 +1339,7 @@ mod tests {
         service.state.lock().unwrap().inflight = 1;
         let now = observation_now();
         service.finish(
-            "scope",
+            &full_entry_key("scope"),
             &sender,
             Ok(Collected {
                 snapshot: Snapshot {
@@ -1105,7 +1360,7 @@ mod tests {
             }),
         );
         let state = service.state.lock().unwrap();
-        let status = status_from_entry("g", "p", &state.entries["scope"]);
+        let status = status_from_entry("g", "p", &state.entries[&full_entry_key("scope")]);
         assert_eq!(status.credits.unwrap().balance.as_deref(), Some("12.5"));
         assert_eq!(status.profile.as_ref().unwrap().lifetime_tokens, Some(10));
         assert_eq!(
@@ -1125,8 +1380,9 @@ mod tests {
         let (cancel, _) = tokio::sync::watch::channel(false);
         cancel.send_replace(true);
         let (job, _) = tokio::sync::watch::channel(false);
+        let key = full_entry_key("scope");
         service.state.lock().unwrap().entries.insert(
-            "scope".into(),
+            key.clone(),
             Entry {
                 snapshot: None,
                 failures: Vec::new(),
@@ -1140,10 +1396,10 @@ mod tests {
             },
         );
         service.state.lock().unwrap().inflight = 1;
-        service.finish("scope", &cancel, Err("late response".into()));
+        service.finish(&key, &cancel, Err("late response".into()));
         let state = service.state.lock().unwrap();
-        assert!(state.entries["scope"].running);
-        assert!(state.entries["scope"].failures.is_empty());
+        assert!(state.entries[&key].running);
+        assert!(state.entries[&key].failures.is_empty());
         assert_eq!(state.inflight, 0);
     }
 
@@ -1161,6 +1417,7 @@ mod tests {
             home: home.clone(),
             state: Mutex::new(State::default()),
         });
+        let key = full_entry_key("scope");
         {
             let mut state = service.state.lock().unwrap();
             state.bindings.insert(
@@ -1174,7 +1431,7 @@ mod tests {
             state.inflight = MAX_INFLIGHT;
             for index in 0..MAX_INFLIGHT {
                 state.entries.insert(
-                    format!("occupied-{index}"),
+                    full_entry_key(&format!("occupied-{index}")),
                     Entry {
                         snapshot: None,
                         failures: Vec::new(),
@@ -1192,18 +1449,18 @@ mod tests {
         let waiting = service.query("g", "p", true).unwrap();
         assert!(waiting.refreshing);
         assert_eq!(waiting.state, ProviderAccountState::Refreshing);
-        assert!(!service.state.lock().unwrap().entries["scope"].running);
-        assert!(service.state.lock().unwrap().entries["scope"].force_pending);
+        assert!(!service.state.lock().unwrap().entries[&key].running);
+        assert!(service.state.lock().unwrap().entries[&key].force_pending);
 
         service.state.lock().unwrap().inflight = MAX_INFLIGHT - 1;
         let started = service.query("g", "p", false).unwrap();
         assert!(started.refreshing);
-        assert!(service.state.lock().unwrap().entries["scope"].running);
-        assert!(!service.state.lock().unwrap().entries["scope"].force_pending);
+        assert!(service.state.lock().unwrap().entries[&key].running);
+        assert!(!service.state.lock().unwrap().entries[&key].force_pending);
 
         for _ in 0..100 {
             let state = service.state.lock().unwrap();
-            let entry = &state.entries["scope"];
+            let entry = &state.entries[&key];
             if !entry.running && !entry.failures.is_empty() {
                 assert_eq!(entry.failures[0].source, ProviderAccountSource::Usage);
                 let _ = std::fs::remove_dir_all(&home);
@@ -1213,7 +1470,7 @@ mod tests {
             std::thread::sleep(Duration::from_millis(10));
         }
         let state = service.state.lock().unwrap();
-        let entry = &state.entries["scope"];
+        let entry = &state.entries[&key];
         let detail = format!(
             "running={}, expired={}, inflight={}, failures={}, force_pending={}",
             entry.running,
