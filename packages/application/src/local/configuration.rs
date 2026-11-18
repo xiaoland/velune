@@ -260,16 +260,34 @@ impl CoreRuntime {
         Ok(limits)
     }
 
-    /// Every enabled runtime's conversations, continued ones by their link,
-    /// with the runtimes' own archives in the archive view. Indexes each
-    /// runtime's history again and reads all of it only when `complete`.
+    /// The full catalog, including active history needed by identity lookup.
     pub(super) fn list_sources(
         &self,
         complete: bool,
     ) -> Result<(Vec<organization::ListedSource>, Vec<crate::HistoryFailure>), RuntimeError> {
+        Ok(self.refresh_list_sources(complete, false))
+    }
+
+    fn refresh_list_sources(
+        &self,
+        complete: bool,
+        archive_only: bool,
+    ) -> (Vec<organization::ListedSource>, Vec<crate::HistoryFailure>) {
+        let marked = archive_only.then(|| self.locally_archived_ids());
+        let segments = self.link_segment_ids(marked.as_ref());
+        let active_runtimes = marked.as_ref().map(|ids| {
+            ids.iter()
+                .chain(&segments)
+                .filter_map(|id| id.split_once(':').map(|(runtime_id, _)| runtime_id))
+                .collect::<std::collections::BTreeSet<_>>()
+        });
         let mut history_failures = Vec::new();
         for (slot, runtime) in self.runtime_instances.iter().enumerate() {
-            if !runtime.enabled {
+            if !runtime.enabled
+                || active_runtimes
+                    .as_ref()
+                    .is_some_and(|ids| !ids.contains(runtime.id.as_str()))
+            {
                 continue;
             }
             let indexed = self.index_history(runtime).and_then(|()| {
@@ -292,14 +310,16 @@ impl CoreRuntime {
                 });
             }
         }
-        self.read_link_segments();
+        self.read_link_segments(&segments);
         *self.archived_listing.borrow_mut() = if self.shows_archived() {
-            self.natively_archived()
+            let (archived, failures) = self.natively_archived();
+            history_failures.extend(failures);
+            archived
         } else {
             BTreeMap::new()
         };
         *self.history_failures.borrow_mut() = history_failures.clone();
-        Ok((self.cached_sources(), history_failures))
+        (self.cached_sources(), history_failures)
     }
 
     /// The listing from the indexes as they stand. A conversation not read
@@ -374,7 +394,7 @@ impl CoreRuntime {
     }
 
     pub(crate) fn list(&self) -> Result<crate::ConfigurationSnapshot, RuntimeError> {
-        let (sources, history_failures) = self.list_sources(false)?;
+        let (sources, history_failures) = self.refresh_list_sources(false, self.shows_archived());
         // A source refresh can discover new active groups. Reallocate only its
         // initial budget; explicit additional pages remain owned by this view.
         self.reset_browser_allocation();

@@ -1,6 +1,7 @@
 //! Read-only browsing and deferred execution preparation share one active view.
 use super::*;
 use crate::conversation::{ConversationActions, ConversationSnapshot, Message, MessageBlock};
+use std::collections::BTreeSet;
 pub(super) fn runtime_context(runtime: &RuntimeInstance) -> String {
     format!(
         "运行时 {}（id={}，type={}）；binary={}；nodeBinary={}；agentDir={}；sessionDir={}",
@@ -676,32 +677,33 @@ impl CoreRuntime {
     }
     /// Read the native conversations continued ones are made of, so a
     /// continued conversation lists with its own title and activity.
-    pub(super) fn read_link_segments(&self) {
+    pub(super) fn read_link_segments(&self, segments: &BTreeSet<&str>) {
+        if segments.is_empty() {
+            return;
+        }
         for runtime in self.runtime_instances.iter().filter(|r| r.enabled) {
-            let unread: Vec<String> = self
-                .indexed(runtime)
-                .into_iter()
-                .filter(|entry| {
-                    matches!(entry.state, EntryState::Unread)
-                        && self.conversation_links.iter().any(|link| {
-                            link.segments
-                                .iter()
-                                .any(|segment| segment.native_conversation_id == entry.id)
-                        })
-                })
-                .map(|entry| entry.id)
-                .collect();
-            if let Err(error) = self.read_indexed(runtime, &unread) {
+            if let Err(error) = self.read_unread_where(runtime, |id| segments.contains(id)) {
                 tracing::warn!(target:"velune_application",event="runtime_history_read_failed",phase="link_segments",runtime_id=%runtime.id,runtime_type_id=%runtime.type_id,detail=%error);
             }
         }
     }
     /// Read what the runtime's index has not read yet.
     pub(super) fn read_unread(&self, runtime: &RuntimeInstance) -> Result<(), RuntimeError> {
+        self.read_unread_where(runtime, |_| true)
+    }
+
+    pub(super) fn read_unread_where(
+        &self,
+        runtime: &RuntimeInstance,
+        wanted: impl Fn(&str) -> bool,
+    ) -> Result<(), RuntimeError> {
+        if !reads_lazily(runtime) {
+            return Ok(());
+        }
         let unread: Vec<String> = self
             .indexed(runtime)
             .into_iter()
-            .filter(|entry| matches!(entry.state, EntryState::Unread))
+            .filter(|entry| matches!(entry.state, EntryState::Unread) && wanted(&entry.id))
             .map(|entry| entry.id)
             .collect();
         self.read_indexed(runtime, &unread)

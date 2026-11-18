@@ -97,8 +97,14 @@ impl CoreRuntime {
     }
 
     /// The conversations every runtime archived itself, for the archive view.
-    pub(super) fn natively_archived(&self) -> BTreeMap<String, browsing::HistoryArchive> {
+    pub(super) fn natively_archived(
+        &self,
+    ) -> (
+        BTreeMap<String, browsing::HistoryArchive>,
+        Vec<crate::HistoryFailure>,
+    ) {
         let mut archived = BTreeMap::new();
+        let mut failures = Vec::new();
         for runtime in self.runtime_instances.iter().filter(|r| r.enabled) {
             if !velune_agent_runtime::version::variant(runtime.type_id).can_archive_conversations {
                 continue;
@@ -124,10 +130,17 @@ impl CoreRuntime {
                 Ok(_) => {}
                 Err(error) => {
                     tracing::warn!(target:"velune_application",event="runtime_history_read_failed",phase="archived_list",runtime_id=%runtime.id,runtime_type_id=%runtime.type_id,detail=%error);
+                    failures.push(crate::HistoryFailure {
+                        runtime_id: runtime.id.clone(),
+                        detail: format!(
+                            "{}；原生归档无法读取：{error}",
+                            browsing::runtime_context(runtime)
+                        ),
+                    });
                 }
             }
         }
-        archived
+        (archived, failures)
     }
 
     /// The places each enabled runtime starts conversations without a project.
@@ -231,6 +244,24 @@ impl CoreRuntime {
             .conversations
             .iter()
             .find(|marks| marks.conversation_id == id)
+    }
+
+    pub(super) fn locally_archived_ids(&self) -> BTreeSet<&str> {
+        self.organization
+            .conversations
+            .iter()
+            .filter(|marks| marks.archived_at_unix_ms.is_some())
+            .map(|marks| marks.conversation_id.as_str())
+            .collect()
+    }
+
+    pub(super) fn link_segment_ids(&self, marked: Option<&BTreeSet<&str>>) -> BTreeSet<&str> {
+        self.conversation_links
+            .iter()
+            .filter(|link| marked.is_none_or(|ids| ids.contains(link.id.as_str())))
+            .flat_map(|link| &link.segments)
+            .map(|segment| segment.native_conversation_id.as_str())
+            .collect()
     }
 
     fn project_name(&self, path: &str) -> Option<String> {
@@ -415,8 +446,15 @@ impl CoreRuntime {
         let preferences = &self.conversation_browser_preferences;
         let archived_view = self.browser_window.archived;
         let places = self.projectless_places();
+        let marked = archived_view.then(|| self.locally_archived_ids());
         let all: Vec<ListedConversation> = sources
             .iter()
+            .filter(|source| {
+                source.archived_natively
+                    || marked
+                        .as_ref()
+                        .is_none_or(|ids| ids.contains(source.summary.id.as_str()))
+            })
             .map(|source| self.listed(source, &places))
             .collect();
         *self.last_listed.borrow_mut() = ListedProjection {
@@ -761,9 +799,15 @@ impl CoreRuntime {
             .filter(|text| !text.is_empty())
             .ok_or_else(|| RuntimeError::invalid("搜索文字不能为空"))?;
         // Searching follows typing, so it searches the latest index rather
-        // than indexing the runtimes again; titles need every session read.
+        // than indexing the runtimes again. Only candidates in this view
+        // need titles; native archives already include them.
+        let marked = self.shows_archived().then(|| self.locally_archived_ids());
+        let segments = marked.as_ref().map(|ids| self.link_segment_ids(Some(ids)));
         for runtime in self.runtime_instances.iter().filter(|r| r.enabled) {
-            if let Err(error) = self.read_unread(runtime) {
+            if let Err(error) = self.read_unread_where(runtime, |id| {
+                marked.as_ref().is_none_or(|ids| ids.contains(id))
+                    || segments.as_ref().is_some_and(|ids| ids.contains(id))
+            }) {
                 tracing::warn!(target:"velune_application",event="runtime_history_read_failed",phase="search",runtime_id=%runtime.id,runtime_type_id=%runtime.type_id,detail=%error);
             }
         }
@@ -1302,6 +1346,244 @@ print(json.dumps({'contractVersion':1,'sessions':[
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[test]
+    fn archive_reads_native_pages_and_only_locally_archived_titles() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root =
+            std::env::temp_dir().join(format!("velune-archive-list-{}", crate::new_record_key()));
+        fs::create_dir(&root).unwrap();
+        let fixture = Fixture(root);
+        let root = &fixture.0;
+        let codex = root.join("codex");
+        fs::write(
+            &codex,
+            r#"#!/usr/bin/python3
+import json, pathlib, sys, time
+root = pathlib.Path(__file__).parent
+if "--version" in sys.argv:
+    print("codex-cli 0.166.0")
+    raise SystemExit(0)
+for line in sys.stdin:
+    request = json.loads(line)
+    if "id" not in request:
+        continue
+    method = request["method"]
+    if method == "initialize":
+        result = {}
+    elif method == "project/list":
+        result = {"data": [{"id": "work", "name": "Work", "roots": []}], "nextCursor": None}
+    else:
+        assert method == "thread/list", method
+        params = request["params"]
+        archived = params["archived"]
+        with (root / "codex-scans").open("a") as log:
+            log.write(("archive" if archived else "active") + "\n")
+        start = int(params.get("cursor", "0"))
+        total = 305 if archived else 1200
+        end = min(total, start + params["limit"])
+        time.sleep(0.015)
+        if archived and (root / "fail-archive").exists():
+            print(json.dumps({"id": request["id"], "error": {"code": -32603, "message": "synthetic archive outage"}}), flush=True)
+            continue
+        result = {"data": [
+            {"id": f"thread-{i}", "name": f"Codex session {i}", "projectId": "work",
+             "createdAt": 1, "updatedAt": 10000-i}
+            for i in range(start, end)
+        ], "nextCursor": str(end) if end < total else None}
+    print(json.dumps({"id": request["id"], "result": result}), flush=True)
+"#,
+        )
+        .unwrap();
+        fs::set_permissions(&codex, fs::Permissions::from_mode(0o700)).unwrap();
+        fs::write(
+            root.join("pi_sessions.mjs"),
+            r#"
+import json, pathlib, sys
+root = pathlib.Path(__file__).parent
+want = json.load(sys.stdin)["want"]
+with (root / "pi-scans").open("a") as log:
+    log.write(",".join(pathlib.Path(path).stem for path in want) + "\n")
+print(json.dumps({"contractVersion": 3, "files": [
+    {"path": str(root / f"{i}.jsonl"), "size": "1", "mtimeNs": "1",
+     "createdAtUnixMs": 1, "modifiedAtUnixMs": 1000-i}
+    for i in range(80)
+], "sessions": [
+    {"path": path, "name": f"Pi session {pathlib.Path(path).stem}", "modifiedUnixMs": 1000}
+    for path in want
+]}))
+"#,
+        )
+        .unwrap();
+        let instance = |id: &str, type_id, binary: &Path| RuntimeInstance {
+            enabled: true,
+            id: id.into(),
+            name: id.into(),
+            type_id,
+            gateway_id: "default".into(),
+            settings: BTreeMap::from([
+                ("binary".into(), binary.to_string_lossy().into_owned()),
+                ("nodeBinary".into(), "/usr/bin/python3".into()),
+                (
+                    "agentDir".into(),
+                    root.join("homes").join(id).display().to_string(),
+                ),
+            ]),
+        };
+        let config = crate::repository::PersistedConfig {
+            runtime_instances: vec![
+                instance("codex", RuntimeKind::Codex166, &codex),
+                instance("pi", RuntimeKind::Pi, &root.join("unused-pi")),
+            ],
+            gateways: vec![GatewayConfig {
+                id: "default".into(),
+                name: "Default".into(),
+                providers: Vec::new(),
+                routes: Vec::new(),
+            }],
+            conversation_browser_group_limit: 2,
+            conversation_browser_total_limit: 4,
+            conversation_browser_preferences: crate::config::ConversationBrowserPreferences {
+                grouping: ConversationBrowserGrouping::None,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        fs::write(
+            root.join("generic-config.json"),
+            serde_json::to_vec(&config).unwrap(),
+        )
+        .unwrap();
+        let pi_id = |index| format!("pi:{}/{index}.jsonl", root.display());
+        let (repository, _) = crate::repository::Repository::open(root).unwrap();
+        repository
+            .store_conversation_organization(&crate::config::ConversationOrganization {
+                conversations: [79, 78]
+                    .into_iter()
+                    .map(|index| ConversationMarks {
+                        conversation_id: pi_id(index),
+                        archived_at_unix_ms: Some(1),
+                        ..Default::default()
+                    })
+                    .collect(),
+                ..Default::default()
+            })
+            .unwrap();
+        repository
+            .store_conversation_links(&[crate::config::ConversationLink {
+                id: pi_id(78),
+                segments: [78, 77]
+                    .into_iter()
+                    .map(|index| {
+                        serde_json::from_value(serde_json::json!({
+                            "runtimeInstanceId": "pi",
+                            "runtimeTypeId": RuntimeKind::Pi,
+                            "nativeConversationId": pi_id(index),
+                            "cutoff": (index == 78).then(|| serde_json::json!({
+                                "messageCount": 1,
+                                "prefixDigest": "a".repeat(64),
+                            })),
+                            "deleted": false,
+                        }))
+                        .unwrap()
+                    })
+                    .collect(),
+            }])
+            .unwrap();
+        drop(repository);
+        let app = fixture.open();
+        let view = ClientViewId("archive".into());
+        let show = || {
+            let Response::ShowArchivedConversations(value) = app
+                .execute(
+                    view.clone(),
+                    Command::ShowArchivedConversations { archived: true },
+                )
+                .unwrap()
+            else {
+                panic!("archive response")
+            };
+            value
+        };
+        let started = Instant::now();
+        let snapshot = show();
+        assert!(
+            snapshot.history_failures.is_empty(),
+            "{:?}",
+            snapshot.history_failures
+        );
+        let codex_scans = fs::read_to_string(root.join("codex-scans")).unwrap();
+        eprintln!(
+            "cold archive: {:?}; {} Codex pages",
+            started.elapsed(),
+            codex_scans.lines().count()
+        );
+        assert_eq!(codex_scans.lines().collect::<Vec<_>>(), ["archive"; 4]);
+        let group = snapshot
+            .conversation_groups
+            .iter()
+            .find(|group| group.key == ConversationGroupKey::All)
+            .unwrap();
+        assert_eq!(group.total, 307);
+        assert!((1..group.total).contains(&group.loaded));
+        assert!(snapshot.conversations.iter().all(|item| item.archived));
+        let Response::LoadMoreConversations(next) = app
+            .execute(
+                view.clone(),
+                Command::LoadMoreConversations {
+                    group: ConversationGroupKey::All,
+                },
+            )
+            .unwrap()
+        else {
+            panic!("pagination response")
+        };
+        assert!(next.conversations.len() > snapshot.conversations.len());
+
+        for (query, expected) in [
+            ("Codex session 304", "codex:thread-304".into()),
+            ("Pi session 79", pi_id(79)),
+            ("Pi session 78", pi_id(78)),
+        ] {
+            let Response::SearchConversations(result) = app
+                .execute(
+                    view.clone(),
+                    Command::SearchConversations { text: query.into() },
+                )
+                .unwrap()
+            else {
+                panic!("search response")
+            };
+            assert_eq!(result.conversations.len(), 1);
+            assert_eq!(result.conversations[0].conversation.id, expected);
+        }
+        assert_eq!(
+            fs::read_to_string(root.join("codex-scans")).unwrap(),
+            codex_scans
+        );
+        let pi_scans = fs::read_to_string(root.join("pi-scans")).unwrap();
+        assert_eq!(
+            pi_scans
+                .lines()
+                .skip(1)
+                .flat_map(|ids| ids.split(','))
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from(["77", "78", "79"])
+        );
+
+        fs::write(root.join("fail-archive"), "").unwrap();
+        let partial = show();
+        assert_eq!(partial.history_failures.len(), 1);
+        assert_eq!(partial.history_failures[0].runtime_id, "codex");
+        assert_eq!(partial.conversations.len(), 2);
+        assert!(
+            partial
+                .conversations
+                .iter()
+                .all(|item| item.conversation.runtime_id == "pi")
+        );
     }
 
     #[test]
