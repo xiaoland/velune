@@ -143,12 +143,6 @@ pub(super) async fn dispatch(
         drop(analytics);
         let failure = match end {
             AttemptEnd::Failed(failure) => failure,
-            AttemptEnd::Interrupted { cooldown } => {
-                if let Some(duration) = cooldown {
-                    permit.cool(duration);
-                }
-                return;
-            }
             AttemptEnd::Completed | AttemptEnd::Settled => return,
         };
         match &failure.next {
@@ -550,6 +544,7 @@ impl Attempt<'_> {
     async fn failed(&mut self, failure: NativeFailure, headers_sent: bool) -> AttemptEnd {
         use NativeErrorKind as Kind;
         let kind = failure.kind;
+        let status = failure.response.as_ref().map(|meta| meta.status);
         if kind == Kind::Cancelled {
             tracing::info!(event = "gateway_dispatch_canceled");
         } else {
@@ -558,9 +553,14 @@ impl Attempt<'_> {
                 Protocol::Responses => "responses",
                 Protocol::Messages => "messages",
             };
-            tracing::warn!(event="gateway_dispatch_failed",protocol,kind=?kind);
+            tracing::warn!(
+                event = "gateway_dispatch_failed",
+                protocol,
+                kind = ?kind,
+                http_status = status,
+                response_started = headers_sent,
+            );
         }
-        let status = failure.response.as_ref().map(|meta| meta.status);
         self.track(|tracker| match (&failure.body, status) {
             (Some(body), _) => tracker.json(status.unwrap_or(502), body.get()),
             (None, Some(status)) => tracker.headers(status),
@@ -572,13 +572,13 @@ impl Attempt<'_> {
         if kind == Kind::QuotaExhausted {
             self.state.quotas.quota_exhausted(&self.target.provider_id);
         }
-        let unreachable = matches!(kind, Kind::Transport | Kind::Timeout);
         if headers_sent {
+            // A broken body after a valid response only failed this exchange.
+            // The committed stream ends without replay or a provider-wide pause.
             let _ = self.sender.send(WireEvent::Failed).await;
-            return AttemptEnd::Interrupted {
-                cooldown: unreachable.then_some(Duration::from_secs(5)),
-            };
+            return AttemptEnd::Settled;
         }
+        let unreachable = matches!(kind, Kind::Transport | Kind::Timeout);
         let cli = self.cli();
         let next = if kind == Kind::Permission {
             NextCandidate::Stop { cooldown: None }

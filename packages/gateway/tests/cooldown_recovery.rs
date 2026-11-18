@@ -1,4 +1,4 @@
-//! A long successful half-open stream must not pause unrelated callers.
+//! A committed stream and provider-wide admission have independent lifetimes.
 use axum::{Router, body::Body, extract::State, http::Response};
 use futures_util::stream;
 use serde_json::json;
@@ -37,7 +37,7 @@ impl CredentialResolver for Keys {
 }
 
 #[tokio::test]
-async fn half_open_response_recovers_admission_and_late_transport_failure_cools_again() {
+async fn a_broken_accepted_stream_does_not_cool_down_other_sessions() {
     async fn upstream(
         State((hits, disconnect)): State<(Arc<AtomicUsize>, Arc<tokio::sync::Notify>)>,
     ) -> Response<Body> {
@@ -65,6 +65,13 @@ async fn half_open_response_recovers_admission_and_late_transport_failure_cools_
                     .body(Body::from_stream(body))
                     .unwrap()
             }
+            4 => Response::builder()
+                .status(503)
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"error":{"message":"synthetic upstream unavailable"}}"#,
+                ))
+                .unwrap(),
             _ => Response::builder()
                 .header("content-type", "application/json")
                 .body(Body::from(
@@ -157,6 +164,26 @@ async fn half_open_response_recovers_admission_and_late_transport_failure_cools_
         3,
         "delivered stream must not fail over"
     );
+    let next = request(&second, false, "velune/model/model")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(next.status(), 200, "{}", next.text().await.unwrap());
+    assert_eq!(
+        hits.load(Ordering::SeqCst),
+        4,
+        "the other runner must reach upstream as soon as the stream fails"
+    );
+
+    let unavailable = request(&first, false, "velune/model/model")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(unavailable.status(), 503);
+    assert_eq!(
+        unavailable.json::<serde_json::Value>().await.unwrap()["error"]["message"],
+        "synthetic upstream unavailable"
+    );
     let blocked = request(&second, false, "velune/model/model")
         .send()
         .await
@@ -169,8 +196,8 @@ async fn half_open_response_recovers_admission_and_late_transport_failure_cools_
     );
     assert_eq!(
         hits.load(Ordering::SeqCst),
-        3,
-        "cooldown rejection must remain local"
+        5,
+        "an upstream 5xx must still cool down the provider across runners"
     );
     server.abort();
 }
