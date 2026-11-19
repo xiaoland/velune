@@ -338,6 +338,9 @@ final class Transport: @unchecked Sendable {
     func authenticationCancel() throws -> AuthenticationProgress { try withApplication("authenticationCancel", .writes, .write) { try $0.authenticationCancel() } }
     func authenticationLogout(gatewayID: String, providerID: String) throws -> GatewayUpdate { try withApplication("authenticationLogout", .changesConfiguration, .configurationWrite) { try $0.authenticationLogout(gatewayId: gatewayID, providerId: providerID) } }
 
+    /// Explicit reconnects may open immediately after a cached connection failure.
+    func retryOpen() { lock.withLock { openFailure = nil } }
+
     /// Quitting stops new admissions; a busy refusal restores the same owner.
     func beginClosing() { closingLock.withLock { closingRequested = true } }
 

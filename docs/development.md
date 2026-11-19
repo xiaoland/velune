@@ -64,6 +64,8 @@ Mac 使用 `OSLog.Logger`，subsystem 为 `local.velune`，系统 Console 可按
 
 失败信息带诊断编号；用它查找日志中的 `operation_id`，可定位操作、错误代码、阶段、耗时与底层原因。Swift 的本地操作编号另行命名，不是 Rust trace ID。常规 snapshot 和认证轮询不产生成功日志。诊断保存实际错误链、helper stderr 与失败上下文，默认不采集请求、配置或会话正文；显式启用的 OTLP 只导出批准的操作元数据。
 
+诊断界面卡顿时，先按时间对齐 `application_command` 的 `owner_queue`（等待应用线程）与 `owner_execute`（该命令占用应用线程）。冷历史命令可能在投递读取任务后就归还线程，正文读取另看 `runtime_history_read`。`application_advance` 记录轮询和维护占用的时间。`conversation_list` 将全量列表拆成刷新来源的 `refresh_ms` 和生成返回页的 `build_page_ms`，后者包含可见条目按需补读。执行、维护和列表分段在耗时达到 100 毫秒时写入本地日志。
+
 历史读取及关联前缀检查同时记录逻辑会话和原生来源身份、运行时与已知段索引。标准 Claude／Codex UUID、Pi JSONL 文件名中的 UUID 可直接检索；其它标识只记录 SHA-256，定位字段不复制原生绝对路径。前缀失败另带 `prefix_kind`、`failure_kind`、预期／实际消息数及摘要，区分长度不足和内容摘要不符。没有明确段上下文时不猜索引为零；一个操作涉及多个来源时按上述身份和段索引关联，不再仅凭运行时类型要求用户补充会话。
 
 网关请求另有 `gateway_request` span 的 `request_id`，与建立执行准备时的 `operation_id` 不同；入口、路由、单次派发与结束事件的含义见 [AI 服务](product-tdd/ai-service.md)。运行时 stderr 持续排空并在有界缓存中保留用于失败诊断，超出时明确标记截断。

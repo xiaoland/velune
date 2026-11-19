@@ -134,7 +134,7 @@ import ObjectiveC
     }
     safe()
     if !FileManager.default.fileExists(atPath: home.appendingPathComponent("fixture.json").path) {
-        do { try prepareMessageEditorFixture(home: home) }
+        do { try prepareMessageEditorFixture(home: home, stateDirectory: MacExecutionContext.admitted.stateDirectory) }
         catch { fatalError("无法准备合成编辑fixture：\(error)") }
     }
     let fixture = try! JSONSerialization.jsonObject(with: Data(contentsOf: home.appendingPathComponent("fixture.json"))) as! [String: String]
@@ -477,7 +477,7 @@ import ObjectiveC
 
 /// Self-contained native fixture for this check; no installed Harness or account
 /// is used. Persisted legacy turns are served through the real Codex adapter.
-@MainActor private func prepareMessageEditorFixture(home: URL) throws {
+@MainActor func prepareMessageEditorFixture(home: URL, stateDirectory: URL) throws {
     let peer = home.appendingPathComponent("synthetic-editor-codex")
     let script = #"""
 #!/usr/bin/python3
@@ -534,7 +534,7 @@ for line in sys.stdin:
 """#
     try Data(script.utf8).write(to: peer)
     try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: peer.path)
-    let transport = Transport(stateDirectory: MacExecutionContext.admitted.stateDirectory, resourcesDirectory: Bundle.main.resourceURL!)
+    let transport = Transport(stateDirectory: stateDirectory, resourcesDirectory: Bundle.main.resourceURL!)
     let defaults = try transport.list()
     for runtime in ["editor", "review"] {
         _ = try transport.upsertRuntime(RuntimeInstance(enabled: true, id: runtime, name: "Synthetic " + runtime,

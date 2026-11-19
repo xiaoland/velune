@@ -110,7 +110,7 @@ impl CoreRuntime {
     }
     /// All writers use the same admission, including queued and scheduled turns.
     pub(super) fn require_input_access(&mut self) -> Result<(), RuntimeError> {
-        let Some(snapshot) = self.current_snapshot() else {
+        let Some(snapshot) = self.submission_context() else {
             return Ok(());
         };
         self.check_handoff_input(&snapshot)?;

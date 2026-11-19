@@ -123,23 +123,15 @@ impl CoreRuntime {
             self.session.model_record_key = source.model_record_key.clone();
             self.session.active_state = ActiveState::History(Box::new(source));
         }
-        let admitted = self
-            .current_snapshot()
-            .ok_or_else(|| RuntimeError::invalid("conversation is not active"))?;
-        self.check_handoff_input(&admitted)?;
-        Self::check_input_access(admitted.actions.input_access)?;
-        let snapshot = self
-            .native_snapshot()
-            .ok_or_else(|| RuntimeError::invalid("conversation is not active"))?;
-        // Consume the same final admission clients see, including a logical
-        // context that failed to project. Keep the native source only for
-        // preparation and, on rejection, its more specific error reason.
-        if !admitted.actions.can_send {
-            let reason = Self::submission_admission(&self.session, &snapshot)
+        {
+            let context = self
+                .submission_context()
+                .ok_or_else(|| RuntimeError::invalid("conversation is not active"))?;
+            self.check_handoff_input(&context)?;
+            Self::check_input_access(context.actions.input_access)?;
+            Self::submission_admission(&self.session, &context)
                 .send
-                .err()
-                .unwrap_or("当前原生上下文不可用，请修复来源后重新打开；未自动重发");
-            return Err(RuntimeError::invalid(reason));
+                .map_err(RuntimeError::invalid)?;
         }
         self.validate_model_selection(self.runtime_instance(runtime_id)?, selection.as_ref())?;
         if let Some(effort) = effort {
@@ -152,22 +144,27 @@ impl CoreRuntime {
         if let Some(mode) = permission_mode {
             self.validate_permission_mode(self.runtime_instance(runtime_id)?, mode)?;
         }
+        let source = self
+            .session
+            .projected()
+            .expect("validated conversation")
+            .conversation
+            .clone();
+        let same_runtime = source.runtime_id == runtime_id;
         let unsubmitted = self
             .session
             .unsubmitted_draft
             .as_ref()
             .is_some_and(|draft| {
-                draft.native_id == snapshot.conversation.id
-                    && draft.runtime_id == snapshot.conversation.runtime_id
+                draft.native_id == source.id && draft.runtime_id == source.runtime_id
             });
         if unsubmitted {
             let supports_unpersisted_draft = velune_agent_runtime::version::variant(
-                self.runtime_instance(&snapshot.conversation.runtime_id)?
-                    .type_id,
+                self.runtime_instance(&source.runtime_id)?.type_id,
             )
             .persists_on_first_turn;
             let needs_new_target = supports_unpersisted_draft
-                && (snapshot.conversation.runtime_id != runtime_id
+                && (!same_runtime
                     || matches!(self.session.active_state, ActiveState::History(_))
                     || self.session.model_selection.as_ref() != Some(&selection));
             if needs_new_target {
@@ -184,14 +181,10 @@ impl CoreRuntime {
             }
         }
         let changes_provider = !unsubmitted
-            && snapshot.conversation.runtime_id == runtime_id
+            && same_runtime
             && self.runtime_instance(runtime_id)?.type_id == RuntimeKind::Codex166
             && {
-                let raw = self
-                    .native_snapshot()
-                    .ok_or_else(|| RuntimeError::invalid("会话上下文不可用"))?;
-                let native_id = raw
-                    .conversation
+                let native_id = source
                     .id
                     .strip_prefix(&format!("{runtime_id}:"))
                     .ok_or_else(|| RuntimeError::invalid("Codex 会话身份无效"))?;
@@ -199,11 +192,11 @@ impl CoreRuntime {
                     &self.history_config(self.runtime_instance(runtime_id)?)?,
                     native_id,
                     matches!(selection, Some(crate::ModelSelection::Managed { .. })),
-                    raw.conversation.cwd.as_deref(),
+                    source.cwd.as_deref(),
                 )
                 .map_err(|error| RuntimeError::context("检查 Codex 提供商切换", error))?
             };
-        if snapshot.conversation.runtime_id != runtime_id || changes_provider {
+        if !same_runtime || changes_provider {
             return self.continue_in_runtime(
                 selection.as_ref(),
                 Prompt {
@@ -217,6 +210,7 @@ impl CoreRuntime {
         if matches!(self.session.active_state, ActiveState::History(_))
             || self.session.model_selection.as_ref() != Some(&selection)
         {
+            let snapshot = self.native_snapshot().expect("validated conversation");
             self.prepare_with_selection(snapshot, selection.as_ref(), false)?;
         }
         self.send_action(Prompt {
@@ -748,10 +742,14 @@ impl CoreRuntime {
                 .begin_user_turn(&gateway_id, &session)
                 .map_err(|error| RuntimeError::context("CLI 新轮准备", error))?;
         }
+        // Preparation may have changed the native session. Capture the pre-send
+        // transcript once for inherited options and the new user-message boundary.
+        self.refresh_transcript();
+        let (effort, permission_mode) = self.turn_options(prompt.effort, prompt.permission_mode)?;
         let input = pi::TurnInput {
             text: text.into(),
-            effort: self.requested_effort(prompt.effort)?,
-            permission_mode: self.requested_permission_mode(prompt.permission_mode)?,
+            effort,
+            permission_mode,
             images,
         };
         // Requests bind to the next user message; a native resume has none.
@@ -905,7 +903,6 @@ impl CoreRuntime {
             permission_mode: input.permission_mode.clone(),
             model_selection: selection,
         };
-        let _ = self.current_snapshot();
         self.session.transcript_projection.request(settings);
     }
 }

@@ -1,7 +1,7 @@
 //! What the user chose for coming turns, and Velune's record of what it sent.
 use super::*;
 use crate::config::{ComposerChoices, RuntimeComposerChoices};
-use crate::conversation::{ConversationSnapshot, MessageBlock, MessageRole, TurnSettings};
+use crate::conversation::{ConversationSnapshot, Message, MessageBlock, MessageRole, TurnSettings};
 use sha2::{Digest, Sha256};
 use velune_agent_runtime::transcript::TranscriptProjection;
 
@@ -17,6 +17,15 @@ pub(crate) struct TurnKey {
 
 pub(crate) type TurnRequests = BTreeMap<String, BTreeMap<TurnKey, TurnSettings>>;
 
+impl TurnKey {
+    fn for_message(ordinal: usize, message: &Message) -> Self {
+        Self {
+            ordinal,
+            digest: text_digest(&message.blocks),
+        }
+    }
+}
+
 fn text_digest(blocks: &[MessageBlock]) -> String {
     let mut hash = Sha256::new();
     for block in blocks {
@@ -28,21 +37,12 @@ fn text_digest(blocks: &[MessageBlock]) -> String {
     format!("{:x}", hash.finalize())[..16].to_owned()
 }
 
-fn user_turns(snapshot: &ConversationSnapshot) -> impl Iterator<Item = (TurnKey, &str)> {
+fn user_turns(snapshot: &ConversationSnapshot) -> impl Iterator<Item = (usize, &Message)> {
     snapshot
         .messages
         .iter()
         .filter(|message| message.role == MessageRole::User)
         .enumerate()
-        .map(|(ordinal, message)| {
-            (
-                TurnKey {
-                    ordinal,
-                    digest: text_digest(&message.blocks),
-                },
-                message.id.as_str(),
-            )
-        })
 }
 
 /// Gives `transcript` what Velune recorded for turns it sent, before it
@@ -55,9 +55,10 @@ pub(super) fn recall_turn_requests(
     let Some(recorded) = requests.get(&snapshot.conversation.id) else {
         return;
     };
-    for (key, id) in user_turns(snapshot) {
+    for (ordinal, message) in user_turns(snapshot) {
+        let key = TurnKey::for_message(ordinal, message);
         if let Some(settings) = recorded.get(&key) {
-            transcript.recall_request(id, settings.clone());
+            transcript.recall_request(&message.id, settings.clone());
         }
     }
 }
@@ -75,8 +76,9 @@ impl CoreRuntime {
                 .cloned()
                 .unwrap_or_default()
         };
-        for (key, id) in user_turns(snapshot) {
-            if let Some(settings) = requested.get(id) {
+        for (ordinal, message) in user_turns(snapshot) {
+            if let Some(settings) = requested.get(&message.id) {
+                let key = TurnKey::for_message(ordinal, message);
                 next.insert(key, settings.clone());
             }
         }

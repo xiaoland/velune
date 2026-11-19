@@ -154,3 +154,54 @@ fn submission_receipt_preserves_admission_without_a_presentable_snapshot() {
         Some("accepted-no-view")
     );
 }
+
+// Run this test in a fresh process under /usr/bin/time -l to compare peak RSS.
+// The invalid ACP selection stops the real send after admission and before native IO.
+#[test]
+#[ignore = "manual long-history admission measurement"]
+fn synthetic_long_send_measurement() {
+    let mut fixture = Fixture::new();
+    let core = &mut fixture.application.runtime;
+    let ActiveState::History(snapshot) = &mut core.session.active_state else {
+        panic!()
+    };
+    for i in 0..192 {
+        snapshot.messages.push(velune_conversation::Message {
+            id: format!("m-{i}"),
+            completed: true,
+            role: if i % 2 == 0 {
+                velune_conversation::MessageRole::User
+            } else {
+                velune_conversation::MessageRole::Assistant
+            },
+            timestamp_unix_ms: None,
+            blocks: vec![velune_conversation::MessageBlock::Text {
+                text: "x".repeat(192 * 1024),
+            }],
+            turn_settings: None,
+            turn_usage: None,
+            branch_point: None,
+        });
+    }
+    for _ in 0..5 {
+        let start = std::time::Instant::now();
+        let result = core.send_turn(TurnRequest {
+            submission_id: None,
+            conversation_id: "runtime:synthetic".into(),
+            source_runtime_id: "runtime".into(),
+            runtime_id: "runtime".into(),
+            selection: Some(crate::ModelSelection::Managed {
+                model_record_key: "unsupported".into(),
+            }),
+            turn: ComposedTurn {
+                text: "hi".into(),
+                effort: None,
+                permission_mode: None,
+                attachments: vec![],
+            },
+        });
+        let err = result.err().expect("ACP cannot take a managed selection");
+        assert!(err.to_string().contains("通用 ACP"), "{err}");
+        eprintln!("send_admission_ms={}", start.elapsed().as_millis());
+    }
+}

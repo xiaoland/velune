@@ -1,12 +1,13 @@
 //! Model provenance stays explicit across discovery, preparation, and continuation.
 use super::*;
-use crate::conversation::{ConversationSnapshot, TurnSettings};
+use crate::conversation::ConversationSnapshot;
 use crate::{ModelSelection, RuntimeModel};
 use velune_agent_runtime::native::CLAUDE_EFFORT_LEVELS;
 
 #[cfg(test)]
 mod edit_model_tests {
     use super::*;
+    use crate::conversation::TurnSettings;
 
     #[test]
     fn managed_edit_model_keeps_identity_after_history_is_named() {
@@ -138,62 +139,48 @@ impl CoreRuntime {
         })
     }
 
-    /// The next turn's reasoning level, checked against the runtime and model
-    /// the turn runs on: the one asked for, or else the conversation's
-    /// current one while the model accepts it. Like a permission mode it is
-    /// session state that harnesses keep differently (Claude Code takes one
-    /// per launch, Codex resumes in its configured level, Pi keeps its own),
-    /// so the current level is sent again where Velune knows it.
-    pub(super) fn requested_effort(
-        &mut self,
-        requested: Option<&str>,
-    ) -> Result<Option<String>, RuntimeError> {
-        let runtime = self.active_instance()?.clone();
+    /// Explicit choices must validate. Reuse an omitted choice from the latest
+    /// turn on this runtime only while the selected model and runtime accept it.
+    pub(super) fn turn_options(
+        &self,
+        effort: Option<&str>,
+        permission_mode: Option<&str>,
+    ) -> Result<(Option<String>, Option<String>), RuntimeError> {
+        let runtime = self.active_instance()?;
         let selection = self
             .session
             .model_selection
-            .clone()
+            .as_ref()
             .ok_or_else(|| RuntimeError::invalid("请选择此会话的模型"))?;
-        if let Some(effort) = requested {
-            self.validate_effort(&runtime, selection.as_ref(), effort)?;
-            return Ok(Some(effort.into()));
-        }
-        let current = self
-            .current_turn_settings(&runtime)
-            .and_then(|settings| settings.effort);
-        Ok(current.filter(|effort| {
-            self.validate_effort(&runtime, selection.as_ref(), effort)
-                .is_ok()
-        }))
-    }
-
-    /// Settings of the conversation's latest turn on `runtime`.
-    fn current_turn_settings(&mut self, runtime: &RuntimeInstance) -> Option<TurnSettings> {
-        let snapshot = self.current_snapshot()?;
-        velune_application_api::latest_runtime_turn_settings(
-            &snapshot.transcript_turns,
-            &runtime.id,
-        )
-        .cloned()
-    }
-
-    /// The turn's permission mode: the one asked for, or else the
-    /// conversation's current one. A mode is session state, but a harness
-    /// does not always keep it (Codex resumes a thread in its configured
-    /// policy), so the current mode is sent again where Velune knows it.
-    pub(super) fn requested_permission_mode(
-        &mut self,
-        requested: Option<&str>,
-    ) -> Result<Option<String>, RuntimeError> {
-        let runtime = self.active_instance()?.clone();
-        if let Some(mode) = requested {
-            self.validate_permission_mode(&runtime, mode)?;
-            return Ok(Some(mode.into()));
-        }
-        let current = self
-            .current_turn_settings(&runtime)
-            .and_then(|settings| settings.permission_mode);
-        Ok(current.filter(|mode| self.validate_permission_mode(&runtime, mode).is_ok()))
+        let turns = (effort.is_none() || permission_mode.is_none())
+            .then(|| self.session.transcript_projection.turns());
+        let previous = turns.as_deref().and_then(|turns| {
+            velune_application_api::latest_runtime_turn_settings(turns, &runtime.id)
+        });
+        let effort = match effort {
+            Some(value) => {
+                self.validate_effort(runtime, selection.as_ref(), value)?;
+                Some(value.into())
+            }
+            None => previous
+                .and_then(|s| s.effort.as_ref())
+                .filter(|value| {
+                    self.validate_effort(runtime, selection.as_ref(), value)
+                        .is_ok()
+                })
+                .cloned(),
+        };
+        let permission_mode = match permission_mode {
+            Some(value) => {
+                self.validate_permission_mode(runtime, value)?;
+                Some(value.into())
+            }
+            None => previous
+                .and_then(|s| s.permission_mode.as_ref())
+                .filter(|value| self.validate_permission_mode(runtime, value).is_ok())
+                .cloned(),
+        };
+        Ok((effort, permission_mode))
     }
 
     /// A mode the runtime version declares; runtimes without modes take none.

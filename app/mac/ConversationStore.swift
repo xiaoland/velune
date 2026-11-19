@@ -29,8 +29,7 @@ final class ConversationStore: ObservableObject {
     @Published private(set) var selectedConversationIDs: Set<String> = []
     @Published private(set) var selectedConversationID: String?
     @Published private(set) var pendingConversationID: String?
-    /// A conversation on its way to opening before its loading starts: while
-    /// a new tab reads the list first, or one off the list is looked up.
+    /// A destination whose source is being resolved on this device.
     @Published private(set) var reachingConversationID: String?
     private var linkedConversationRequest: UUID?
     /// A tab's first destination (restored, listed or linked) may open while
@@ -83,6 +82,8 @@ final class ConversationStore: ObservableObject {
     @Published private var stopRequested = false
     /// A conversation chosen while an operation ran, opened when it ends.
     private var deferredSelection: (id: String, move: NavigationMove)?
+    private enum InitialSelection { case firstOrDraft, draft }
+    private var initialSelection: InitialSelection?
     private var started = false
     private var isDraft = false
     private var subscriptions: Set<AnyCancellable> = []
@@ -164,6 +165,7 @@ final class ConversationStore: ObservableObject {
             if searchResults != nil { refreshSearch() }
             let selected = selectedConversationIDs.filter { conversation(id: $0) != nil }
             if selected != selectedConversationIDs { selectedConversationIDs = selected }
+            applyInitialSelectionIfReady()
             retryOpeningIfNeeded()
         }
         let configurationChanged = device.configurationRevision != seenConfigurationRevision
@@ -634,9 +636,8 @@ final class ConversationStore: ObservableObject {
 
     // MARK: - Lifecycle
 
-    /// Begin reading. Once the list is read, a tab opens `conversationID`,
-    /// else the list's first conversation, or an unsent one when asked for
-    /// (`newConversation`) or when the list is empty.
+    /// An explicit destination can resolve on this tab's device immediately.
+    /// Selecting a first row or creating a draft needs that device's configuration.
     func start(loadFirstConversation: Bool = true, newConversation: Bool = false, opening conversationID: String? = nil) {
         guard !started else { return }; started = true; composerTargetClosed = false
         if let target = sideChatContext, let transport, let lease = sideChatLease {
@@ -660,35 +661,43 @@ final class ConversationStore: ObservableObject {
             else if newConversation { createConversation() }
             return
         }
-        guard let transport else { return }
-        reachingConversationID = conversationID
-        unopenedConversationID = conversationID
-        // A new tab shares the device's current list. Opening it must not
-        // scan every runtime again before reading the chosen conversation.
-        if device.listRevision > 0 {
-            schedulePolling()
-            if let conversationID { openLinkedConversation(id: conversationID) }
-            else if loadFirstConversation, let id = sidebarConversations.first?.id { selectConversation(id: id) }
-            else if newConversation || loadFirstConversation, snapshot == nil, pendingConversationID == nil { createConversation() }
-            return
+        guard transport != nil else { return }
+        schedulePolling()
+        if let conversationID {
+            unopenedConversationID = conversationID
+            if snapshot == nil { selectedConversationID = conversationID }
+            openLinkedConversation(id: conversationID)
+        } else if loadFirstConversation || newConversation {
+            initialSelection = loadFirstConversation ? .firstOrDraft : .draft
+            applyInitialSelectionIfReady()
         }
-        enqueue({ try transport.list() }, onFailure: { [weak self] error in
-            self?.reachingConversationID = nil
-            self?.noteOpeningFailure(error)
-            self?.selectedConversationID = self?.unopenedConversationID
-            self?.schedulePolling()
-        }) { [weak self] data in
-            guard let self else { return }
-            applyList(data)
-            schedulePolling()
-            if let conversationID { openLinkedConversation(id: conversationID) }
-            else if loadFirstConversation, let id = sidebarConversations.first?.id { selectConversation(id: id) }
-            // With nothing to show yet, a tab starts an unsent conversation.
-            else if newConversation || loadFirstConversation, snapshot == nil, pendingConversationID == nil { createConversation() }
+    }
+
+    private func applyInitialSelectionIfReady() {
+        guard let selection = initialSelection, device.listRevision > 0 else { return }
+        initialSelection = nil
+        guard started, !isShuttingDown, snapshot == nil else { return }
+        if selection == .firstOrDraft, let id = sidebarConversations.first?.id {
+            selectConversation(id: id)
+        } else {
+            createConversation()
         }
     }
     /// The tab closes: it stops following its conversation.
-    func close() { started = false; composerTargetClosed = true; composerTargetRequestID = nil; pendingComposerRuntime = nil; cancelOpeningRetry(); abandonLinkedConversationLookup(); generation += 1; subscriptions.removeAll(); timer?.invalidate(); timer = nil; sideChatLease?.release() }
+    func close() {
+        started = false
+        composerTargetClosed = true
+        composerTargetRequestID = nil
+        pendingComposerRuntime = nil
+        deferredSelection = nil
+        clearInitialOpening()
+        abandonLinkedConversationLookup()
+        generation += 1
+        subscriptions.removeAll()
+        timer?.invalidate()
+        timer = nil
+        sideChatLease?.release()
+    }
     /// Each tab follows the conversation it shows; the device follows the rest.
     private func schedulePolling() {
         timer?.invalidate()
@@ -817,7 +826,8 @@ final class ConversationStore: ObservableObject {
 
     // MARK: - Navigation
 
-    private func cancelOpeningRetry() {
+    private func clearInitialOpening() {
+        initialSelection = nil
         unopenedConversationID = nil
         openingNeedsRetry = false
         openingRetry.succeeded()
@@ -872,7 +882,7 @@ final class ConversationStore: ObservableObject {
     /// Open a conversation a link names, such as a sub-agent's, or one gone
     /// back to; an agent may have started it after the list was last read.
     func openLinkedConversation(id: String, move: NavigationMove = .new) {
-        if unopenedConversationID != id { cancelOpeningRetry() }
+        if unopenedConversationID != id { clearInitialOpening() }
         if conversation(id: id) != nil { selectConversation(id: id, move: move); return }
         guard !isPreview, !isShuttingDown, let transport else { abandonLinkedConversationLookup(); return }
         // Native links already carry the source instance. The history reader
@@ -909,7 +919,7 @@ final class ConversationStore: ObservableObject {
             offListConversations.append(reached)
             selectConversation(id: id, move: move)
         case .success(nil):
-            cancelOpeningRetry()
+            clearInitialOpening()
             openingFailure = "找不到这个会话；它可能已被删除或其运行时已停用"
             recordProblem("找不到这个会话；它可能已被删除或其运行时已停用", source: "打开会话")
         case .failure(let failure):
@@ -919,14 +929,14 @@ final class ConversationStore: ObservableObject {
     }
     func selectConversation(id: String, move: NavigationMove = .new) {
         guard let conversation = conversation(id: id) else {
-            if unopenedConversationID != id { cancelOpeningRetry() }
+            if unopenedConversationID != id { clearInitialOpening() }
             abandonLinkedConversationLookup()
             return
         }
         openConversation(id: id, runtimeID: conversation.runtimeID, move: move)
     }
     private func openConversation(id: String, runtimeID: String, move: NavigationMove) {
-        if unopenedConversationID != id { cancelOpeningRetry() }
+        if unopenedConversationID != id { clearInitialOpening() }
         abandonLinkedConversationLookup()
         // Chosen while another operation runs, it opens once that is done; the latest choice wins.
         guard !isLoading, !executionStarting else { deferredSelection = (id, move); return }
@@ -1058,7 +1068,7 @@ final class ConversationStore: ObservableObject {
         let enabled = device.enabledRuntimeInstances
         guard let runtimeID = requestedRuntimeID ?? enabled.first(where: { $0.id == nextTurnRuntimeID })?.id ?? enabled.first?.id,
               enabled.contains(where: { $0.id == runtimeID }) else { return false }
-        cancelOpeningRetry()
+        clearInitialOpening()
         abandonLinkedConversationLookup()
         let id = unsentContextID
         let conversation = Conversation(id: id, title: "新会话", updatedAtUnixMs: isPreview ? Int64(Date().timeIntervalSince1970 * 1000) : nil, runtimeID: runtimeID, cwd: project?.directories.first ?? cwd, creationProject: project, canRename: isPreview, canDelete: isPreview)
@@ -1557,7 +1567,7 @@ final class ConversationStore: ObservableObject {
     private func apply(_ value: ConversationSnapshot?, preserveSelection: Bool = false) {
         guard var value else { return }
         if value.conversation.id == unopenedConversationID {
-            cancelOpeningRetry()
+            clearInitialOpening()
         }
         let conversationChanged = value.conversation.id != snapshot?.conversation.id
         let targetFactsChanged = conversationChanged

@@ -244,6 +244,7 @@ final class DeviceStore: ObservableObject {
     private var subscriptions: Set<AnyCancellable> = []
     private let queue = DispatchQueue(label: "local.velune.device", qos: .userInitiated)
     private var lastConnectedEpoch: UInt64?
+    private var configurationRead: UUID?
     private var timer: Timer?
     private var started = false
     private var authenticationPollPending = false
@@ -310,13 +311,17 @@ final class DeviceStore: ObservableObject {
 
     /// Begin reading the list and following which conversations run.
     func start() {
-        guard !started else { return }; started = true
-        guard !isPreview, let transport else { return }
-        if NSApp.activationPolicy() != .prohibited { notifier = ConversationNotifier(application: self) }
-        loadComposerChoices(transport)
-        composerInputs.poll(force: true)
-        refreshConfiguration()
-        schedulePolling()
+        guard !isPreview, !isShuttingDown, let transport else { return }
+        if !started {
+            started = true
+            if NSApp.activationPolicy() != .prohibited { notifier = ConversationNotifier(application: self) }
+            loadComposerChoices(transport)
+            composerInputs.poll(force: true)
+            schedulePolling()
+        }
+        // A reconnect may already have supplied or requested the first list.
+        // A later start can retry a failed read without duplicating an active one.
+        if listRevision == 0, configurationRead == nil { refreshConfiguration() }
     }
 
     /// The same store survives a connection replacement. Its previous list
@@ -335,11 +340,16 @@ final class DeviceStore: ObservableObject {
 
     private func refreshConfiguration(forgetOpenFailure: Bool = false) {
         guard let transport, !isShuttingDown else { return }
+        let request = UUID()
+        configurationRead = request
         performOnQueue { [weak self] in
             if forgetOpenFailure { transport.retryOpen() }
             let result = Result { try transport.list() }
             DispatchQueue.main.async {
-                guard let self else { return }
+                // A reconnect or configuration change requested a newer read.
+                guard let self, self.configurationRead == request else { return }
+                self.configurationRead = nil
+                guard !self.isShuttingDown else { return }
                 switch result {
                 case .success(let value): self.applyList(value)
                 case .failure(let error): self.recordProblem(error, source: "刷新配置", activityKey: "configuration-list")

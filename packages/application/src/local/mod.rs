@@ -532,7 +532,8 @@ impl CoreRuntime {
             snapshot
         })
     }
-    fn current_snapshot(&mut self) -> Option<crate::conversation::ConversationSnapshot> {
+    /// Advance message identities and turn settings before a command or a delivery.
+    fn refresh_transcript(&mut self) -> Option<crate::conversation::ConversationSnapshot> {
         use velune_agent_runtime::transcript::{TranscriptEvent, TranscriptProjection};
         let Some(native) = self.native_snapshot() else {
             self.session.transcript_projection = TranscriptProjection::default();
@@ -580,6 +581,21 @@ impl CoreRuntime {
                 },
             ));
         self.keep_turn_requests(&snapshot);
+        Some(snapshot)
+    }
+
+    /// Both SendTurn and snapshot delivery derive admission from this logical context.
+    fn submission_context(&mut self) -> Option<crate::conversation::ConversationSnapshot> {
+        let mut snapshot = self.refresh_transcript()?;
+        self.apply_input_access(&mut snapshot);
+        if self.session.side.is_none() {
+            snapshot.follow_up.control_handoff = self.conversation_handoff(&snapshot);
+        }
+        Some(snapshot)
+    }
+
+    fn current_snapshot(&mut self) -> Option<crate::conversation::ConversationSnapshot> {
+        let mut snapshot = self.submission_context()?;
         snapshot.transcript_turns = self.session.transcript_projection.turns();
         self.name_turn_models(&mut snapshot.transcript_turns);
         self.stamp_forkable_turns(&mut snapshot);
@@ -587,9 +603,6 @@ impl CoreRuntime {
         snapshot.transcript_outline = self.session.transcript_projection.outline();
         snapshot.transcript_message_identities =
             self.session.transcript_projection.message_identities();
-        // Observe control once, before deriving any application admission.
-        // The source's can_send capability is still untouched at this point.
-        self.apply_input_access(&mut snapshot);
         if self.session.side.is_none() {
             snapshot.follow_up = self.follow_up(&snapshot);
             snapshot.sub_agents = self.sub_agents(&snapshot);

@@ -455,7 +455,7 @@ impl CoreRuntime {
             }
             return;
         }
-        if self.current_snapshot().is_some_and(|snapshot| {
+        if self.submission_context().is_some_and(|snapshot| {
             matches!(
                 snapshot.actions.input_access,
                 crate::conversation::InputAccess::CheckingControl
@@ -548,7 +548,7 @@ impl CoreRuntime {
         let queue = &self.session.send_queue;
         let admission = Self::submission_admission(&self.session, snapshot);
         FollowUp {
-            control_handoff: self.conversation_handoff(snapshot),
+            control_handoff: snapshot.follow_up.control_handoff,
             queue: queue.turns.iter().map(QueuedTurn::public).collect(),
             paused: queue.paused.clone(),
             waiting: queue.waiting.clone(),

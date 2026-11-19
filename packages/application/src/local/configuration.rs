@@ -394,11 +394,19 @@ impl CoreRuntime {
     }
 
     pub(crate) fn list(&self) -> Result<crate::ConfigurationSnapshot, RuntimeError> {
+        let start = std::time::Instant::now();
         let (sources, history_failures) = self.refresh_list_sources(false, self.shows_archived());
         // A source refresh can discover new active groups. Reallocate only its
         // initial budget; explicit additional pages remain owned by this view.
+        let indexed = std::time::Instant::now();
         self.reset_browser_allocation();
-        Ok(self.configuration_from_sources(sources, history_failures, false))
+        let result = self.configuration_from_sources(sources, history_failures, false);
+        let finished = std::time::Instant::now();
+        if (finished - start).as_millis() >= 100 {
+            tracing::info!(target: "velune_application", event = "conversation_list", archived = self.shows_archived(),
+                refresh_ms = (indexed - start).as_millis() as u64, build_page_ms = (finished - indexed).as_millis() as u64);
+        }
+        Ok(result)
     }
 
     /// Reapply list organization to the indexed history. A read receipt or

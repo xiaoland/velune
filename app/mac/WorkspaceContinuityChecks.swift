@@ -5,6 +5,7 @@ import Foundation
 /// All state stays in the caller's synthetic home; no windows are created.
 @MainActor func workspaceRecoveryChecks(home: URL) {
     func note(_ text: String) { FileHandle.standardError.write(Data((text + "\n").utf8)) }
+    try! workspaceColdOpeningChecks(home: home)
     let device = DeviceStore(preview: true)
     let local = ConversationWindowModel(application: device, kind: .workspace)
     let source = ConversationWindowModel(application: device, kind: .workspace, device: "synthetic-peer")
@@ -150,6 +151,60 @@ import Foundation
                  "系统重开的seeded窗口仍恢复有效scene，不退回最初导航")
     precondition(!NSApp.isActive && NSApp.activationPolicy() == .prohibited)
     note("PASS actual window start validates scene device/kind/structure before latest fallback; valid scenes and seeded-window recovery retain precedence")
+}
+
+/// Hold the device queue before startup. Tab queues can read the addressed
+/// histories, but no configuration has reached the Mac store yet.
+@MainActor private func workspaceColdOpeningChecks(home: URL) throws {
+    let directory = home.appendingPathComponent("cold-workspace-" + UUID().uuidString)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    let state = directory.appendingPathComponent("state")
+    try prepareMessageEditorFixture(home: directory, stateDirectory: state)
+    let transport = Transport(stateDirectory: state, resourcesDirectory: Bundle.main.resourceURL!)
+    let device = DeviceStore(transport: transport)
+    let fixture = try JSONDecoder().decode([String: String].self,
+        from: Data(contentsOf: directory.appendingPathComponent("fixture.json")))
+    let id = fixture["conversationID"]!
+    let otherID = "review:" + id.drop(while: { $0 != ":" }).dropFirst()
+    let release = DispatchSemaphore(value: 0)
+    device.performOnQueue { precondition(release.wait(timeout: .now() + 60) == .success) }
+    func wait(_ condition: () -> Bool) {
+        let deadline = Date().addingTimeInterval(25)
+        while !condition(), Date() < deadline { RunLoop.main.run(until: Date().addingTimeInterval(0.01)) }
+        precondition(condition(), "工作区冷启动检查超时")
+    }
+    let known = ConversationStore(device: device), other = ConversationStore(device: device)
+    let first = ConversationStore(device: device), draft = ConversationStore(device: device)
+    let closed = ConversationStore(device: device), list = ConversationStore(device: device)
+    list.start(loadFirstConversation: false)
+    first.start()
+    closed.start()
+    closed.close()
+    draft.start(loadFirstConversation: false, newConversation: true)
+    known.start(opening: id)
+    other.start()
+    other.openLinkedConversation(id: otherID)
+
+    wait { known.loadedConversationID == id && other.loadedConversationID == otherID }
+    precondition(known.conversation(id: id)?.runtimeID == fixture["runtimeID"]
+                 && other.conversation(id: otherID)?.runtimeID == "review")
+    precondition(device.listRevision == 0 && first.loadedConversationID == nil && draft.loadedConversationID == nil,
+                 "两个来源的详情应在设备首列表返回前打开；草稿须等待运行时配置")
+    let peer = DeviceStore(transport: Transport(stateDirectory: directory.appendingPathComponent("other-device"),
+                                               resourcesDirectory: Bundle.main.resourceURL!), peerID: "synthetic-other")
+    let switched = ConversationStore(device: peer)
+    switched.start(opening: id)
+    wait { switched.openingFailure != nil }
+    precondition(switched.loadedConversationID == nil && known.loadedConversationID == id,
+                 "切换设备后同一 ID 必须由目标设备解析，不能借用旧设备的详情")
+    switched.close()
+    release.signal()
+    wait { first.loadedConversationID != nil && draft.isUnsentConversation }
+    precondition(device.listRevision == 1 && first.loadedConversationID == first.sidebarConversations.first?.id)
+    precondition(closed.loadedConversationID == nil && list.loadedConversationID == nil
+                 && other.loadedConversationID == otherID, "迟到的首列表不能改变显式导航或关闭的标签")
+    for tab in [known, other, first, draft, list] { tab.close() }
+    FileHandle.standardError.write(Data("PASS 同设备一次首列表，两个指定来源先打开，初始选择、草稿、导航与关闭均正确\n".utf8))
 }
 
 /// Model checks for presentation ownership; no windows are shown or activated.

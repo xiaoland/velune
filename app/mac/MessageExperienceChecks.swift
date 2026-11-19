@@ -68,7 +68,11 @@ import VeluneBindings
     }
     if CommandLine.arguments.contains("--experience-fork-only") { forkExperienceChecks(home: home); exit(0) }
     if CommandLine.arguments.contains("--experience-drag-provider-only") { dragProviderChecks() }
-    if CommandLine.arguments.contains("--experience-workspace-only") { workspaceRecoveryChecks(home: home); exit(0) }
+    if CommandLine.arguments.contains("--experience-workspace-only") {
+        ConversationStore.checkColdOpeningRetryLifecycle(home: home)
+        workspaceRecoveryChecks(home: home)
+        exit(0)
+    }
     AppearancePreferences.shared.load(home: home) { fatalError($0) }
     if CommandLine.arguments.contains("--experience-message-editor-offscreen") { messageEditorOffscreenChecks(home: home) }
     if CommandLine.arguments.contains("--experience-runtime-editor-only") { runtimeEditorChecks(home: home) }

@@ -358,12 +358,13 @@ impl Owner {
                     span,
                     reply,
                 }) => {
+                    let dequeued = Instant::now();
                     if !matches!(command.as_ref(), Command::ReleaseView) {
                         self.with_view(&view, presentation_isolated || context.is_some(), |_| ());
                     }
                     tracing::dispatcher::with_default(&dispatch, || {
                         let _entered = span.enter();
-                        let elapsed_ms = queued_at.elapsed().as_millis() as u64;
+                        let elapsed_ms = (dequeued - queued_at).as_millis() as u64;
                         let kind = command.kind();
                         if elapsed_ms >= 100
                             || matches!(
@@ -396,6 +397,10 @@ impl Owner {
                                 let _ = reply.send(self.execute(view, context, command));
                             }
                         }
+                        let elapsed_ms = dequeued.elapsed().as_millis() as u64;
+                        if elapsed_ms >= 100 {
+                            tracing::info!(target: "velune_application", event = "application_command", phase = "owner_execute", command = ?kind, elapsed_ms);
+                        }
                     });
                     self.application.runtime.publish_execution();
                 }
@@ -418,10 +423,15 @@ impl Owner {
                 Err(mpsc::RecvTimeoutError::Disconnected) => break,
             }
             let mut advance = || {
+                let started = Instant::now();
                 if self.application.runtime.advance().is_err() {
                     tracing::warn!(target: "velune_application", event = "application_advance_failed");
                 }
                 self.application.runtime.publish_execution();
+                let elapsed_ms = started.elapsed().as_millis() as u64;
+                if elapsed_ms >= 100 {
+                    tracing::info!(target: "velune_application", event = "application_advance", elapsed_ms);
+                }
             };
             if let Some(telemetry) = &telemetry {
                 tracing::dispatcher::with_default(&telemetry.dispatch(), advance);

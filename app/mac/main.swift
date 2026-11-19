@@ -512,7 +512,9 @@ enum VeluneEntry {
             composerOwnershipCheck()
         }
         if CommandLine.arguments.contains("--check-message-experience"),
-           CommandLine.arguments.contains("--experience-runtime-recovery-only") || CommandLine.arguments.contains("--experience-message-editor-offscreen") {
+           CommandLine.arguments.contains("--experience-runtime-recovery-only")
+            || CommandLine.arguments.contains("--experience-message-editor-offscreen")
+            || CommandLine.arguments.contains("--experience-workspace-only") {
             admitMacExecution()
             messageExperienceChecks()
         }
