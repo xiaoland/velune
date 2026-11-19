@@ -103,7 +103,8 @@ import ObjectiveC
         windows.append(window)
         window.isReleasedWhenClosed = false; window.isRestorable = false
         window.contentViewController = host
-        func capture(_ name: String, width: CGFloat, mode: String, requestedSidebarWidth: CGFloat? = nil) {
+        func capture(_ name: String, width: CGFloat, mode: String, requestedSidebarWidth: CGFloat? = nil,
+                     restoreMisorderedToolbar: Bool = false) {
             window.setContentSize(NSSize(width: width, height: 760))
             for _ in 0..<5 { host.view.layoutSubtreeIfNeeded(); settle() }
             host.view.layoutSubtreeIfNeeded()
@@ -124,9 +125,49 @@ import ObjectiveC
             // Save the complete native drawing before any semantic assertion,
             // so unsupported hidden-host behavior never becomes a blind retry.
             let nativeFrame = window.contentView!.superview!
-            guard let drawing = nativeFrame.bitmapImageRepForCachingDisplay(in: nativeFrame.bounds) else { fail("native window capture unavailable") }
-            nativeFrame.cacheDisplay(in: nativeFrame.bounds, to: drawing)
-            try! drawing.representation(using: .png, properties: [:])!.write(to: directory.appendingPathComponent(name + ".png"))
+            func saveDrawing(_ artifact: String) {
+                guard let drawing = nativeFrame.bitmapImageRepForCachingDisplay(in: nativeFrame.bounds) else { fail("native window capture unavailable") }
+                nativeFrame.cacheDisplay(in: nativeFrame.bounds, to: drawing)
+                try! drawing.representation(using: .png, properties: [:])!.write(to: directory.appendingPathComponent(artifact + ".png"))
+            }
+            if restoreMisorderedToolbar && !toolbar.allowsUserCustomization {
+                let original = toolbar.itemIdentifiers
+                let items = toolbar.items
+                guard let partition = marker as? ConversationToolbarPartition.Anchor else { fail("missing production partition observer") }
+                let misplaced = items.filter { item in
+                    if let separator = item as? NSTrackingSeparatorToolbarItem { return separator.splitView === outer }
+                    guard let view = item.view else { return false }
+                    return !identifiers(view).isDisjoint(with: ["conversation-list-filter", "conversation-new-conversation"])
+                }.map(\.itemIdentifier)
+                let navigation = items.first { $0.view.map { identifiers($0).contains("conversation-forward") } ?? false }
+                require(misplaced.count == 3 && navigation != nil, "need two list actions, sidebar divider and forward button to recreate displacement")
+                var incorrect = original.filter { !misplaced.contains($0) }
+                let afterNavigation = incorrect.firstIndex(of: navigation!.itemIdentifier)! + 1
+                incorrect.insert(contentsOf: misplaced, at: afterNavigation)
+
+                // First let the bad native order settle without its observer.
+                partition.hasList = false
+                toolbar.itemIdentifiers = incorrect
+                for _ in 0..<5 { host.view.layoutSubtreeIfNeeded(); settle() }
+                require(toolbar.itemIdentifiers == incorrect, "native toolbar must retain the incorrect order without recovery")
+                saveDrawing(name + "-misordered")
+                partition.hasList = true
+                partition.scheduleCheck()
+                for _ in 0..<5 { host.view.layoutSubtreeIfNeeded(); settle() }
+                require(toolbar.itemIdentifiers == original, "initial check did not restore the sidebar partition")
+
+                // Also force a late native reorder with the observer installed.
+                // In this order the divider is in place and only the buttons drift.
+                guard let separatorID = misplaced.last else { fail("need outer split divider") }
+                var separated = original.filter { !misplaced.dropLast().contains($0) }
+                let contentIndex = separated.firstIndex(of: navigation!.itemIdentifier)! + 1
+                separated.insert(contentsOf: misplaced.dropLast(), at: contentIndex)
+                require(separated.contains(separatorID), "late reorder must retain sidebar divider")
+                toolbar.itemIdentifiers = separated
+                for _ in 0..<5 { host.view.layoutSubtreeIfNeeded(); settle() }
+                require(toolbar.itemIdentifiers == original, "observed reorder did not restore the sidebar partition")
+            }
+            saveDrawing(name)
             let hierarchy = descendants(nativeFrame).map { view in
                 "\(String(describing: type(of: view))) id=\(view.identifier?.rawValue ?? "") frame=\(NSStringFromRect(view.convert(view.bounds, to: nativeFrame)))"
             }.joined(separator: "\n")
@@ -191,6 +232,7 @@ import ObjectiveC
         }
         let tone = dark ? "dark" : "light"
         capture("sidebar-solo-\(tone)-1060", width: 1060, mode: "solo")
+        capture("sidebar-recovered-\(tone)", width: 1060, mode: "solo", restoreMisorderedToolbar: true)
         capture("sidebar-solo-\(tone)-720", width: 720, mode: "solo")
         capture("sidebar-solo-\(tone)-1440", width: 1440, mode: "solo")
         capture("sidebar-minimum-\(tone)-requested190", width: 1060, mode: "solo", requestedSidebarWidth: 190)
@@ -208,11 +250,17 @@ import ObjectiveC
         capture("sidebar-right-\(tone)", width: 1060, mode: "right")
         model.tools = ToolWindowLayout()
         capture("sidebar-return-left-\(tone)", width: 1060, mode: "solo")
+        var inspector = ToolWindowLayout()
+        inspector[.outline] = ToolWindowState(place: .docked(.right))
+        model.tools = inspector
+        capture("sidebar-with-inspector-\(tone)", width: 1060, mode: "solo")
+        model.split(.horizontal)
+        capture("sidebar-with-inspector-and-split-\(tone)", width: 1200, mode: "solo", restoreMisorderedToolbar: true)
         window.contentViewController = nil
         model.list.close(); model.focused.store.close()
     }
     UserDefaults.standard.setVolatileDomain(preferences, forName: UserDefaults.argumentDomain)
     safe()
-    print("PASS sidebar toolbar: 20 production native window captures, sidebar-owned outer split separator, unique action IDs, branch transitions, negative oracle calibration; no presentation or activation")
+    print("PASS sidebar toolbar: \(evidence.count) production layouts, native partition recovery, unique action IDs, branch transitions; no presentation or activation")
     exit(0)
 }

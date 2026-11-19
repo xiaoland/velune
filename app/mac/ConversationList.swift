@@ -661,7 +661,7 @@ struct ConversationFilterMenu: View {
         .sheet(item: $projectTarget) { ProjectEditorView(store: store, target: $0) }
         .accessibilityLabel("显示")
         .accessibilityIdentifier("conversation-list-filter")
-            .background(PaneAnchor { anchor in anchor()?.identifier = NSUserInterfaceItemIdentifier("conversation-list-filter") })
+        .background(ConversationToolbarPartition.itemAnchor("conversation-list-filter"))
         .disabled(store.device.conversationBrowserPreferences == nil)
     }
 }
@@ -673,7 +673,7 @@ struct NewConversationButton: View {
         Button { window.createConversation() } label: { Label("新建会话", systemImage: "square.and.pencil") }
             .help(KeyboardShortcutSettings.shared.help("新建会话", .newConversation)).disabled(window.application.enabledRuntimeInstances.isEmpty)
             .accessibilityIdentifier("conversation-new-conversation")
-            .background(PaneAnchor { anchor in anchor()?.identifier = NSUserInterfaceItemIdentifier("conversation-new-conversation") })
+            .background(ConversationToolbarPartition.itemAnchor("conversation-new-conversation"))
     }
 }
 
