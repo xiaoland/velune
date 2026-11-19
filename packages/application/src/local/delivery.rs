@@ -1,7 +1,7 @@
 //! Delivery history behind `crate::transcript_delivery`: stamps changed
 //! messages and answers cursor polls and payload reads.
 use crate::transcript_delivery::*;
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use velune_conversation::{ConversationSnapshot, ImageSource, Message, MessageBlock, MessageRole};
 
 /// Reasoning and tool output longer than this many UTF-8 bytes are read on demand.
@@ -92,6 +92,11 @@ impl TranscriptDelivery {
 
     fn record(&mut self, mut snapshot: ConversationSnapshot) -> &View {
         let messages = std::mem::take(&mut snapshot.messages);
+        let work_notifications: BTreeSet<_> = snapshot
+            .work_notification_ids
+            .iter()
+            .map(String::as_str)
+            .collect();
         let position = self.views.iter().position(|view| {
             view.context_runtime_id == snapshot.context_runtime_id
                 && view.conversation_id == snapshot.conversation.id
@@ -118,7 +123,14 @@ impl TranscriptDelivery {
             .collect::<Vec<_>>();
         let mut changed = view.sequence == 0 || view.header != snapshot || view.order != order;
         let mut retained = HashMap::with_capacity(messages.len());
-        for message in messages {
+        for mut message in messages {
+            // Use the same native classification as transcript grouping. The
+            // authoritative role and blocks remain available to history checks.
+            if message.role == MessageRole::Client
+                && work_notifications.contains(message.id.as_str())
+            {
+                message.role = MessageRole::Tool;
+            }
             let entry = match view.messages.remove(&message.id) {
                 Some((stamp, previous)) if previous == message => (stamp, previous),
                 _ => {
@@ -323,5 +335,82 @@ mod quota_tests {
             "pi"
         );
         assert!(delivery.quota_record("missing").is_none());
+    }
+
+    fn text_message(id: &str, text: &str) -> Message {
+        Message {
+            completed: true,
+            id: id.into(),
+            role: MessageRole::Assistant,
+            timestamp_unix_ms: None,
+            blocks: vec![MessageBlock::Text { text: text.into() }],
+            turn_settings: None,
+            turn_usage: None,
+            branch_point: None,
+        }
+    }
+
+    #[test]
+    fn work_notifications_are_delivered_as_tools_in_full_updates_and_payloads() {
+        let mut snapshot = header("pi");
+        let mut parent = text_message("directive", "parent asks child to check");
+        parent.role = MessageRole::User;
+        let mut returned = text_message("returned", "**child report**");
+        returned.role = MessageRole::Client;
+        let mut background = text_message("background", "task finished");
+        background.role = MessageRole::Client;
+        background.blocks = vec![MessageBlock::Notice {
+            text: "task finished".into(),
+        }];
+        let mut extension = text_message("independent", "other extension");
+        extension.role = MessageRole::Client;
+        snapshot.messages = vec![parent, returned, background, extension];
+        snapshot.work_notification_ids = vec!["returned".into()];
+
+        let mut delivery = TranscriptDelivery::new();
+        let full = delivery.snapshot(snapshot.clone());
+        assert_eq!(
+            full.message_ids,
+            ["directive", "returned", "background", "independent"]
+        );
+        assert_eq!(
+            full.messages
+                .iter()
+                .map(|m| m.role.clone())
+                .collect::<Vec<_>>(),
+            [
+                MessageRole::User,
+                MessageRole::Tool,
+                MessageRole::Client,
+                MessageRole::Client,
+            ]
+        );
+        assert_eq!(
+            full.messages[1].blocks,
+            [DeliveredBlock::Text {
+                text: "**child report**".into()
+            }]
+        );
+
+        snapshot.work_notification_ids.push("background".into());
+        let SnapshotUpdate::Changed { snapshot: delta } =
+            delivery.update(Some(snapshot), full.cursor)
+        else {
+            panic!("a change to the delivered role must update the cached message");
+        };
+        assert_eq!(delta.message_ids, full.message_ids);
+        assert_eq!(delta.messages.len(), 1);
+        assert_eq!(delta.messages[0].id, "background");
+        assert_eq!(delta.messages[0].role, MessageRole::Tool);
+        assert_eq!(
+            delta.messages[0].blocks,
+            [DeliveredBlock::Notice {
+                text: "task finished".into()
+            }]
+        );
+        assert_eq!(
+            delivery.payloads("pi", "conversation", &["background".into()]),
+            delta.messages
+        );
     }
 }

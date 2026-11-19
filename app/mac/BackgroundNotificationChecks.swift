@@ -168,7 +168,7 @@ private struct BackgroundNotificationFixture {
     }
     func notice(_ id: String, _ marker: String, long: Bool = false) -> DeliveredMessage {
         let body = "后台任务通知 \(marker)：合成任务已完成。" + (long ? "\n" + String(repeating: "这是用于检查窄窗口换行的长通知，保留任务完成顺序和可读内容。", count: 7) : "")
-        return DeliveredMessage(id: id, role: .client, blocks: [.notice(text: body)])
+        return DeliveredMessage(id: id, role: .tool, blocks: [.notice(text: body)])
     }
     let user = DeliveredMessage(id: "user", role: .user, blocks: [.text(text: "检查后台任务通知如何进入工作过程（合成消息）")])
     let before = tool("before", "工具前：启动后台任务")
@@ -210,7 +210,7 @@ private struct BackgroundNotificationFixture {
               turns: [turn(["before", "notification", "after"], closing: nil, running: true)], items: startItems,
               expandedIDs: ["user", "work:turn", "before", "notification", "after"], collapsedIDs: ["user", "work:turn"],
               notices: ["notification": "N_RUNNING"], groupedNoticeIDs: ["notification"]),
-        .init(id: "subagent-return", messages: [user, before, DeliveredMessage(id: "subagent-result", role: .client, blocks: [.text(text: subagentMarkdown)]), after],
+        .init(id: "subagent-return", messages: [user, before, DeliveredMessage(id: "subagent-result", role: .tool, blocks: [.text(text: subagentMarkdown)]), after],
               turns: [turn(["before", "subagent-result", "after"], closing: nil, running: true)], items: startItems,
               expandedIDs: ["user", "work:turn", "before", "subagent-result", "after"], collapsedIDs: ["user", "work:turn"],
               notices: ["subagent-result": "N_SUBAGENT"], groupedNoticeIDs: ["subagent-result"]),
@@ -303,6 +303,11 @@ private struct BackgroundNotificationFixture {
                     }
                     require(actualCells.map { $0.rowID! } == expected, "\(fixture.id): actual native row order \(actualCells.map { $0.rowID! }) must equal \(expected)")
                     require(zip(actualCells, actualCells.dropFirst()).allSatisfy { $0.0.frame.maxY <= $0.1.frame.minY + 0.5 }, "\(fixture.id): rows overlap or geometry disagrees with order")
+                    if let input = actualCells.first(where: { $0.rowID == presentationID("user") }),
+                       let text = visibleTexts(in: input).first {
+                        let column = TranscriptRowLayout.column(for: input.bounds.width)
+                        require(input.convert(text.bounds, from: text).minX > column.x + 20, "session input must keep its own bubble")
+                    }
                     var texts: [TranscriptTextView] = []
                     for cell in actualCells { texts.append(contentsOf: visibleTexts(in: cell)) }
                     for (id, marker) in fixture.notices {
@@ -315,6 +320,10 @@ private struct BackgroundNotificationFixture {
                             let frame = cell.convert(text.bounds, from: text)
                             require(frame.minX >= -0.5 && frame.maxX <= cell.bounds.width + 0.5 && frame.minY >= -0.5 && frame.maxY <= cell.bounds.height + 0.5,
                                     "\(fixture.id): notification text exceeds its measured native row")
+                            let column = TranscriptRowLayout.column(for: cell.bounds.width)
+                            if id != "unknown" && fixture.id != "bash-records" {
+                                require(abs(frame.minX - column.x) < 1, "\(fixture.id): \(id) must align with the tool side of the transcript")
+                            }
                         }
                     }
                     if isSummary {
@@ -349,7 +358,7 @@ private struct BackgroundNotificationFixture {
                               let resultText = visibleTexts(in: resultCell).first(where: { $0.string.contains("N_SUBAGENT") }),
                               let storage = resultText.textStorage,
                               let font = storage.attribute(.font, at: 0, effectiveRange: nil) as? NSFont,
-                              let color = storage.attribute(.foregroundColor, at: 0, effectiveRange: nil) as? NSColor else { fail("subagent Client Text must have a native attributed body") }
+                              let color = storage.attribute(.foregroundColor, at: 0, effectiveRange: nil) as? NSColor else { fail("subagent result must have a native attributed body") }
                         require(resultText.string == subagentMarkdown, "subagent result must preserve Markdown heading, emphasis, report URL and fenced code verbatim")
                         require(font.pointSize == TranscriptTypography.body.pointSize && color.isEqual(NSColor.labelColor), "subagent Text must keep body typography instead of Notice callout styling")
                     }
