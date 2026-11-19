@@ -18,6 +18,7 @@ use velune_application::{
 
 const CONVERSATION: &str = "synthetic:abcd";
 const NEW_TEXT: &str = "new question";
+const PAGED_MESSAGES: usize = 2500;
 
 const CODEX: &str = r#"#!/usr/bin/env python3
 import json, pathlib, sys
@@ -35,6 +36,8 @@ history = {'id': 'prior-turn', 'status': 'completed', 'items': [
     {'id': 'prior-user', 'type': 'userMessage', 'content': [{'type': 'text', 'text': 'old question'}]},
     {'id': 'prior-assistant', 'type': 'agentMessage', 'text': 'old answer'},
 ]}
+paged = (root / 'paged').is_file()
+count = int((root / 'paged').read_text()) if paged else 0
 for line in sys.stdin:
     request = json.loads(line)
     if 'id' not in request:
@@ -46,9 +49,23 @@ for line in sys.stdin:
         result = {'config': {'model_provider': 'openai'}}
     elif method in ('thread/read', 'thread/resume'):
         result = {'thread': {'id': 'abcd', 'cwd': str(root), 'name': 'Synthetic',
-                             'modelProvider': 'openai', 'historyMode': 'legacy'}}
+                             'modelProvider': 'openai', 'historyMode': 'paginated' if paged else 'legacy'}}
         if method == 'thread/read' and params.get('includeTurns'):
+            assert not paged
             result['thread']['turns'] = [history]
+    elif method == 'thread/items/list':
+        assert paged
+        start = int(params.get('cursor', '0'))
+        end = min(start + params['limit'], count)
+        result = {'data': [{'turnId': 'prior-turn', 'item':
+                            {'id': f'prior-{i}', 'type': 'agentMessage', 'text': f'old answer {i}'}}
+                           for i in range(start, end)],
+                  'nextCursor': str(end) if end < count else None}
+        if start == 0:
+            result['data'][0]['item'] = history['items'][0]
+    elif method == 'thread/turns/list':
+        assert paged
+        result = {'data': [{'id': 'prior-turn', 'status': 'completed'}], 'nextCursor': None}
     elif method == 'turn/start':
         with (root / 'turns.jsonl').open('a') as wire:
             wire.write(line)
@@ -69,6 +86,10 @@ struct Fixture {
 
 impl Fixture {
     fn new() -> Self {
+        Self::with_history(None)
+    }
+
+    fn with_history(paged: Option<usize>) -> Self {
         let root = std::env::temp_dir().join(format!(
             "velune-send-turn-{:016x}",
             getrandom::u64().unwrap()
@@ -79,6 +100,9 @@ impl Fixture {
         let binary = root.join("codex");
         fs::write(&binary, CODEX).unwrap();
         fs::set_permissions(&binary, fs::Permissions::from_mode(0o700)).unwrap();
+        if let Some(count) = paged {
+            fs::write(root.join("paged"), count.to_string()).unwrap();
+        }
         let service = ApplicationService::open(Options {
             home_directory: root.join("app"),
             resources_directory: root.clone(),
@@ -134,6 +158,39 @@ impl Fixture {
             std::thread::sleep(Duration::from_millis(10));
         }
     }
+}
+
+#[test]
+fn send_turn_keeps_long_paginated_history_and_dispatches_once() {
+    let fixture = Fixture::with_history(Some(PAGED_MESSAGES));
+    let before = fixture.snapshot_when(|snapshot| snapshot.actions.can_send);
+    assert_eq!(before.messages.len(), PAGED_MESSAGES);
+    let Response::SendTurn(result) = fixture.execute(Command::SendTurn {
+        submission_id: None,
+        source_runtime_id: "synthetic".into(),
+        target_runtime_id: "synthetic".into(),
+        conversation_id: CONVERSATION.into(),
+        selection: None,
+        turn: ComposedTurn {
+            text: NEW_TEXT.into(),
+            effort: None,
+            permission_mode: None,
+            attachments: vec![],
+        },
+    }) else {
+        panic!("expected a send response")
+    };
+    let settled = |snapshot: &DeliveredSnapshot| {
+        snapshot.run_state == RunState::Idle && snapshot.messages.len() == PAGED_MESSAGES + 1
+    };
+    let after = result
+        .snapshot
+        .filter(settled)
+        .unwrap_or_else(|| fixture.snapshot_when(settled));
+    assert_eq!(after.messages[..PAGED_MESSAGES], before.messages);
+    assert_eq!(after.messages.last().unwrap().id, "new-user");
+    let wire = fs::read_to_string(fixture.root.join("turns.jsonl")).unwrap();
+    assert_eq!(wire.lines().count(), 1);
 }
 
 impl Drop for Fixture {
