@@ -73,7 +73,6 @@ final class ConversationStore: ObservableObject {
     @Published private(set) var isLoading = false {
         didSet { if oldValue && !isLoading { refreshNextTurn() } }
     }
-    @Published private(set) var activity: TranscriptActivity?
     @Published private var snapshot: ConversationSnapshot?
     @Published private var executionStarting = false
     @Published private(set) var composerRequest: ComposerSubmission.Phase?
@@ -204,6 +203,20 @@ final class ConversationStore: ObservableObject {
     }
     var selectedConversationTitle: String? { selectedConversationID.flatMap { conversation(id: $0) }?.title ?? (snapshot?.conversation.id == selectedConversationID ? snapshot?.conversation.title : nil) }
     var isGenerating: Bool { snapshot?.runState == .running || snapshot?.runState == .stopping }
+    var activity: TranscriptActivity? {
+        guard let snapshot else { return nil }
+        switch snapshot.runState {
+        case .running, .elsewhere:
+            return TranscriptActivity(text: Self.currentWork(snapshot.messages.last), isLive: true)
+        case .stopping:
+            return TranscriptActivity(text: "正在停止", isLive: false)
+        case .idle, .failed:
+            // The device may observe the external turn before the addressed
+            // transcript can deliver its next native snapshot.
+            guard !isSideChat, !isDraft, device.elsewhereConversationIDs.contains(snapshot.conversation.id) else { return nil }
+            return TranscriptActivity(text: "正在运行", isLive: true)
+        }
+    }
     var isBusy: Bool { isLoading || applicationIsGenerating || isShuttingDown || device.authenticationRunning }
     var canManageConversations: Bool { !isSideChat && !isShuttingDown }
     /// A running conversation keeps its native session until the turn ends.
@@ -1574,7 +1587,7 @@ final class ConversationStore: ObservableObject {
 
     // MARK: - Projection
 
-    private func resetProjection() { composerTargetRetry = PollBackoff(); composerRequest = nil; stopRequested = false; executionStarting = false; preparedComposerTarget = nil; composerTargetRequestID = nil; nextTurn = nil; nextTurnRuntimeID = nil; loadedPayloads.removeAll(); isDraft = false; generation += 1; snapshot = nil; projectionRuntimeID = nil; selectedConversationID = nil; pendingConversationID = nil; abandonLinkedConversationLookup(); transcript.reset(); outgoing.reset(); activity = nil; sessionOptions = nil; sessionOptionsKey = nil }
+    private func resetProjection() { composerTargetRetry = PollBackoff(); composerRequest = nil; stopRequested = false; executionStarting = false; preparedComposerTarget = nil; composerTargetRequestID = nil; nextTurn = nil; nextTurnRuntimeID = nil; loadedPayloads.removeAll(); isDraft = false; generation += 1; snapshot = nil; projectionRuntimeID = nil; selectedConversationID = nil; pendingConversationID = nil; abandonLinkedConversationLookup(); transcript.reset(); outgoing.reset(); sessionOptions = nil; sessionOptionsKey = nil }
     private func apply(_ value: ConversationSnapshot?, preserveSelection: Bool = false) {
         guard var value else { return }
         if value.conversation.id == unopenedConversationID {
@@ -1601,12 +1614,6 @@ final class ConversationStore: ObservableObject {
         if !preserveSelection && conversationChanged && selectedConversationIDs.count <= 1 { selectedConversationIDs = [value.conversation.id] }
         let editable = !isPreview && !isDraft ? Set(value.followUp.editable.map(\.messageId)) : []
         transcript.apply(value.messages, turns: value.transcriptTurns, items: value.transcriptItems, outline: value.transcriptOutline, identities: value.transcriptMessageIdentities, editable: editable)
-        activity = switch value.runState {
-        // A turn that a Harness process outside this execution runs reads the same.
-        case .running, .elsewhere: TranscriptActivity(text: Self.currentWork(value.messages.last), isLive: true)
-        case .stopping: TranscriptActivity(text: "正在停止", isLive: false)
-        case .idle, .failed: nil
-        }
         if isPreview { device.keepPreviewSnapshot(value) }
         refreshSessionOptions()
     }
