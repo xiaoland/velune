@@ -125,6 +125,7 @@ struct TabContentView: View {
         VStack(spacing: 0) {
             Group {
                 if store.isOpeningConversation { ProgressView("正在加载会话…") }
+                else if let failure = store.coldOpeningProblem { openingError(failure) }
                 else if previewEmpty || (store.transcript.rows.isEmpty && store.activity == nil) { emptyState }
                 else { transcript }
             }
@@ -194,7 +195,7 @@ struct TabContentView: View {
             ContentUnavailableView {
                 Label { Text(tab.title) } icon: { VeluneLogo(size: 48) }
             } description: {
-                Text(store.openingFailure ?? "输入消息，开始工作。")
+                Text("输入消息，开始工作。")
             }
         } else {
             ContentUnavailableView {
@@ -204,6 +205,20 @@ struct TabContentView: View {
             } actions: {
                 if !store.canSend { SettingsTabLink(tab: store.device.enabledRuntimeInstances.isEmpty ? .runtimes : .providers, title: "打开设置") }
             }
+        }
+    }
+
+    private func openingError(_ failure: AppProblem) -> some View {
+        ContentUnavailableView {
+            Label(store.isSideChat ? "无法打开侧聊" : "无法打开会话", systemImage: "exclamationmark.triangle")
+        } description: {
+            VStack(spacing: 5) {
+                Text(failure.detail)
+                if let id = failure.operationID { Text("诊断编号 \(id)").font(.caption) }
+            }
+            .textSelection(.enabled)
+        } actions: {
+            if store.canRetryFailedOpening { Button("重试", action: store.retryFailedOpening) }
         }
     }
 

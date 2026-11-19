@@ -18,7 +18,7 @@ final class ConversationStore: ObservableObject {
     /// A temporary side chat owns its next-turn choices for its lifetime;
     /// neither its source conversation nor the shared composer directory does.
     private var temporaryChoices = ConversationChoices()
-    @Published private(set) var openingFailure: String?
+    @Published private(set) var openingFailure: AppProblem?
     @Published private(set) var creationFailure: String?
     /// This window's search: its text, and the matches once read.
     @Published private(set) var searchText = ""
@@ -649,7 +649,7 @@ final class ConversationStore: ObservableObject {
                 guard let id = result.snapshot?.conversation.id else { throw TransportError.rejected("运行时未返回侧聊") }
                 lease.hold(id)
                 return result
-            }, onFailure: { [weak self] error in self?.openingFailure = error.localizedDescription }) { [weak self] result in
+            }, onFailure: { [weak self] error in self?.openingFailure = AppProblem.failure(error, source: "打开侧聊") }) { [weak self] result in
                 self?.applySnapshotResult(result)
                 self?.schedulePolling()
             }
@@ -847,7 +847,17 @@ final class ConversationStore: ObservableObject {
         }
         openingNeedsRetry = retryable
         if retryable { openingRetry.failed(); openingFailure = nil }
-        else { openingFailure = AppProblem.failure(error).detail }
+        else { openingFailure = AppProblem.failure(error, source: "打开会话") }
+    }
+    var canRetryFailedOpening: Bool {
+        !isSideChat && !isLoading && !isShuttingDown && openingFailure != nil && unopenedConversationID != nil
+    }
+    var coldOpeningProblem: AppProblem? {
+        loadedConversationID == nil && !isOpeningConversation ? openingFailure : nil
+    }
+    func retryFailedOpening() {
+        guard canRetryFailedOpening, let id = unopenedConversationID else { return }
+        openLinkedConversation(id: id)
     }
     private func takeOpeningRetry() -> String? {
         guard started, !isShuttingDown, openingNeedsRetry, openingRetry.ready,
@@ -920,8 +930,9 @@ final class ConversationStore: ObservableObject {
             selectConversation(id: id, move: move)
         case .success(nil):
             clearInitialOpening()
-            openingFailure = "找不到这个会话；它可能已被删除或其运行时已停用"
-            recordProblem("找不到这个会话；它可能已被删除或其运行时已停用", source: "打开会话")
+            let error = TransportError.rejected("找不到这个会话，它可能已被删除或其运行时已停用")
+            openingFailure = AppProblem.failure(error, source: "打开会话")
+            recordProblem(error, source: "打开会话")
         case .failure(let failure):
             noteOpeningFailure(failure)
             recordProblem(failure, source: "打开会话")
@@ -1824,6 +1835,13 @@ extension ConversationStore {
         store.finishLinkedConversationLookup(.success(nil), id: sample.conversation.id, move: .new, request: lookup)
         precondition(store.unopenedConversationID == nil && !store.openingNeedsRetry && store.openingFailure != nil)
         note("PASS permanent failures and missing lookup stop retries; navigation cannot return to the abandoned destination")
+
+        store.unopenedConversationID = sample.conversation.id
+        store.noteOpeningFailure(TransportError.diagnostic(kind: "history", detail: "synthetic read error",
+                                                          code: "provider_read", phase: "native_read", operationID: "synthetic-read"))
+        precondition(store.coldOpeningProblem?.detail == "synthetic read error"
+                     && store.coldOpeningProblem?.operationID == "synthetic-read" && store.canRetryFailedOpening,
+                     "冷打开失败时，正文必须保留诊断和原会话的重试入口")
 
         let manual = ConversationStore(device: DeviceStore(transport: transport))
         manual.offListConversations = [sample.conversation]

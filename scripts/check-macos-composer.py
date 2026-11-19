@@ -25,8 +25,11 @@ def main():
     parser.add_argument('--app', type=Path, default=app_bundle_path(ROOT, 'dev'))
     parser.add_argument('--output', type=Path)
     parser.add_argument('--dark', action='store_true')
+    parser.add_argument('--workspace-only', action='store_true', help='run the experience cold-open and workspace recovery checks')
     parser.add_argument('--child-activity', action='store_true', help='check only the child conversation activity row')
     args = parser.parse_args()
+    if args.workspace_only and args.check != 'experience':
+        parser.error('--workspace-only requires experience')
     if args.child_activity and args.check != 'background-notifications':
         parser.error('--child-activity requires background-notifications')
     app = args.app.resolve()
@@ -101,6 +104,8 @@ def main():
             flags.append('--check-child-activity')
             if args.dark:
                 flags.append('--child-activity-dark')
+        if args.workspace_only:
+            flags = ['--check-message-experience', '--experience-workspace-only']
         with (output / 'native.log').open('w') as log:
             child = subprocess.Popen([str(copied / 'Contents/MacOS' / context['executable']), *flags], env=env,
                                      cwd=ROOT, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
