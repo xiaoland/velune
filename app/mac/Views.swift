@@ -644,8 +644,8 @@ private struct GeneralSettingsView: View {
                 }.pickerStyle(.segmented).disabled(store.isLoading || store.isShuttingDown)
             }
             Section("会话列表") {
-                LabeledContent("每次加载") { TextField("数量", value: $limit, format: .number).frame(width: 70); Text("个会话") }
-                LabeledContent("列表总数上限") { TextField("数量", value: $totalLimit, format: .number).frame(width: 70); Text("个会话") }
+                LabeledContent("每次加载") { limitField($limit) }
+                LabeledContent("列表总数上限") { limitField($totalLimit) }
                 Text("列表最多先读取总数上限个会话，按组依次分给各组，每组每次加载若干个；折叠的组不读取。之后可在各组中加载更多。").uiFont(.caption).foregroundStyle(.secondary)
                 if editedLimits == nil {
                     Text("每次加载和列表总数上限都必须在 1 到 \(UInt32.max.formatted()) 之间。")
@@ -657,6 +657,16 @@ private struct GeneralSettingsView: View {
             }
             if #unavailable(macOS 26) { ToolbarSettingsSection() }
         }.formStyle(.grouped).onAppear { limit = Int(store.conversationBrowserLimits.page); totalLimit = Int(store.conversationBrowserLimits.total) }
+    }
+
+    private func limitField(_ value: Binding<Int>) -> some View {
+        HStack(spacing: 6) {
+            TextField("数量", value: value, format: .number)
+                .labelsHidden()
+                .multilineTextAlignment(.trailing)
+                .frame(width: 112)
+            Text("个会话")
+        }
     }
 }
 
