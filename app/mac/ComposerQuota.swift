@@ -2,7 +2,7 @@ import Foundation
 import VeluneBindings
 
 /// A presentation value projected by application; no provider or runtime configuration.
-extension ComposerQuotaEntry: @retroactive Identifiable {
+extension ComposerQuotaEntry: Identifiable {
     var title: String {
         switch origin {
         case .provider: name

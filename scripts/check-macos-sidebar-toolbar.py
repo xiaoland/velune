@@ -30,9 +30,9 @@ def check(tree, placement, top_offset=150, surface='sidebar-titlebar'):
     # NSToolbar AX wrappers repeat their child's label; count actual controls.
     controls = [node for node in all_nodes if not any(
         child.get('name') == node.get('name') for child in node.get('children', []))]
-    # SwiftUI can expose this Menu by its observed SF Symbol AXIdentifier
-    # after the sidebar is restored; this is an identity alias, not geometry.
-    filter_ids = {'line.3.horizontal.decrease', 'line.3.horizontal.decrease.circle.fill'}
+    # A restored SwiftUI menu can expose its symbol as the AX name. Prefer
+    # the stable product identifier while accepting older symbol identifiers.
+    filter_ids = {'conversation-list-filter', 'line.3.horizontal.decrease', 'line.3.horizontal.decrease.circle.fill'}
     found = {'显示': [node for node in controls if node.get('name') == '显示' or
                     (node.get('role') == 'combobox' and node.get('native_id', {}).get('value') in filter_ids)],
              '新建会话': [node for node in controls if node.get('name') == '新建会话']}
@@ -148,7 +148,8 @@ def main():
     args.output.mkdir(parents=True, exist_ok=True)
     scope = ['--app', args.app, '--window-id', args.window_id]
     readiness = ['--wait-for-gone', 'button:新建会话'] if args.surface == 'hidden' or args.placement == 'absent' else ['--wait-for', 'button:新建会话']
-    snapshot = desktop('snapshot', *scope, '--include-bounds', '--max-depth', '24', '--timeout-ms', '15000', *readiness)
+    desktop('snapshot', *scope, '--wait-timeout', '15000', *readiness)
+    snapshot = desktop('snapshot', *scope, '--include-bounds', '--max-depth', '24', '--timeout-ms', '15000')
     (args.output / 'ax.json').write_text(json.dumps(snapshot, ensure_ascii=False, indent=2) + '\n')
     if not snapshot['data'].get('complete'):
         raise RuntimeError('Incomplete accessibility tree cannot establish action counts')

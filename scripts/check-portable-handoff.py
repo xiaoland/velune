@@ -642,6 +642,23 @@ def wait_source_input_ready(app, runtime_id: str, conversation_id: str, timeout:
     raise TimeoutError(f"source input admission did not settle; last access={access}")
 
 
+def wait_idle_shutdown(app, bindings, timeout: float):
+    # A final reply can precede native metadata settlement. Cold reopen must
+    # follow a normal idle close, with no forced stopping of pending work.
+    started = time.monotonic()
+    deadline = started + timeout
+    retries = 0
+    while True:
+        try:
+            app.shutdown()
+            return retries, time.monotonic() - started
+        except bindings.BindingError.Diagnostic as error:
+            if error.code != "invalid" or error.detail != "runtime is busy" or time.monotonic() >= deadline:
+                raise
+        retries += 1
+        time.sleep(0.1)
+
+
 def verify_send(provider: LoopbackProvider, root: Path, source_path: Path, source_before: bytes,
                 logical_id: str, snapshot, work_id: str, summary_model_id: str) -> dict:
     requests = list(provider.bodies)
@@ -877,7 +894,7 @@ def preaccepted_cancellation_flow(bindings, api, conversation, app, provider, ro
     app.send_turn("codex-source", cid, "codex-source", None,
         api.ComposedTurn(text=SOURCE_SEED_INPUT, effort=None, permission_mode=None, attachments=[]))
     wait_source_turn(app, "codex-source", cid, timeout)
-    app.shutdown()
+    seed_close_retries, seed_close_seconds = wait_idle_shutdown(app, bindings, timeout)
     path = find_rollout(root / "codex-home", native_id)
     original = append_encrypted_compaction(path)
     app = create_application(bindings, api, conversation, root, node, codex_cli, pi_cli)
@@ -935,6 +952,7 @@ def preaccepted_cancellation_flow(bindings, api, conversation, app, provider, ro
             raise AssertionError("a target prompt was sent after cancellation during SDK preparation")
         if path.read_bytes()!=original: raise AssertionError("pre-accept cancellation changed the source")
         return app, {"preacceptedCancellationBlockedTarget":True,"preacceptedCancellationPreservedQueue":True,
+                     "preacceptedSeedIdleCloseRetries":seed_close_retries,"preacceptedSeedIdleCloseSeconds":seed_close_seconds,
                      "committedTargetRecoveryUsesOrdinaryQueue":pending.context_runtime_id=="pi-target" and pending.follow_up.context_preparation is None}
     except BaseException:
         (root / "release-target-preparation").touch()
@@ -1023,7 +1041,7 @@ def main() -> int:
         seed_turn = api.ComposedTurn(text=SOURCE_SEED_INPUT, effort=None, permission_mode=None, attachments=[])
         app.send_turn("codex-source", source_conversation_id, "codex-source", None, seed_turn)
         seeded = wait_source_turn(app, "codex-source", source_conversation_id, args.timeout)
-        app.shutdown()
+        seed_close_retries, seed_close_seconds = wait_idle_shutdown(app, bindings, args.timeout)
         app = None
 
         source_path = find_rollout(codex_home, source_native_id)
@@ -1069,7 +1087,9 @@ def main() -> int:
             source_conversation_id, source_native_id, source_path, source_before,
             True, args.timeout,
         )
-        app.shutdown()
+        proof["seedIdleCloseRetries"] = seed_close_retries
+        proof["seedIdleCloseSeconds"] = seed_close_seconds
+        proof["idleCloseRetries"], proof["idleCloseElapsedSeconds"] = wait_idle_shutdown(app, bindings, args.timeout)
         app = None
         app = create_application(bindings, api, conversation, root, node, codex_cli, pi_cli)
         reopened = app.read_conversation("codex-source", source_conversation_id).snapshot

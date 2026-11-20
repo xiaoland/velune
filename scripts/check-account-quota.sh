@@ -11,7 +11,7 @@ library="$bundle/Contents/Frameworks"
 }
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
-xcrun swiftc -parse-as-library -whole-module-optimization -warnings-as-errors \
+xcrun swiftc -parse-as-library -whole-module-optimization -package-name velune -warnings-as-errors \
   app/mac/ComposerQuota.swift scripts/check-account-quota.swift \
   "$build/VeluneBindings_Module.o" -I "$build" -I target/swift-ffi \
   -L "$library" -lvelune_bindings -Xlinker -rpath -Xlinker "$library" -o "$work/check"
