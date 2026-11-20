@@ -12,7 +12,7 @@ use crate::{
 };
 use serde_json::{Value, json};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs,
     path::{Path, PathBuf},
     sync::Arc,
@@ -127,10 +127,11 @@ pub(crate) enum Login {
 enum ActiveState {
     #[default]
     Empty,
-    History(Box<crate::conversation::ConversationSnapshot>),
+    History(Box<browsing::HistorySnapshot>),
     Pi(Box<pi::PiSession>),
     Native(Box<NativeSession>),
     Acp(Box<velune_agent_runtime::acp::Client>),
+    Pending(Box<execution_workers::PendingExecution>),
 }
 
 impl ActiveState {
@@ -140,6 +141,7 @@ impl ActiveState {
             Self::Pi(session) => Some(session.as_ref()),
             Self::Native(session) => Some(session.as_ref()),
             Self::Acp(session) => Some(session.as_ref()),
+            Self::Pending(pending) => Some(pending.live()),
             Self::Empty | Self::History(_) => None,
         }
     }
@@ -148,6 +150,7 @@ impl ActiveState {
             Self::Pi(session) => Some(session.as_mut()),
             Self::Native(session) => Some(session.as_mut()),
             Self::Acp(session) => Some(session.as_mut()),
+            Self::Pending(_) => None,
             Self::Empty | Self::History(_) => None,
         }
     }
@@ -158,9 +161,11 @@ struct UnsubmittedDraft {
     original_runtime_id: String,
     runtime_id: String,
     native_id: String,
+    creation_token: Option<native_control::CreationToken>,
 }
 
 pub struct CoreRuntime {
+    pub(crate) submission_cancellation: Option<(String, Arc<std::sync::atomic::AtomicBool>)>,
     telemetry: Option<Arc<velune_telemetry::ClientTelemetry>>,
     options: RuntimeOptions,
     client_baseline: Option<Box<ClientState>>,
@@ -173,8 +178,23 @@ pub struct CoreRuntime {
     session: session::Session,
     /// Other open conversation sessions, most recently used last.
     parked: Vec<session::Session>,
+    /// Current visible logical views supplied by all client views. Both the
+    /// session and delivery caches use this same set for protected retention.
+    observed_conversations: BTreeSet<(String, String)>,
     /// One bounded observation lifetime per physical source, independent of history views.
     control_observations: control::ControlObservations,
+    execution_workers: execution_workers::ExecutionWorkers,
+    execution_command: Option<execution_workers::ExecutionCommand>,
+    execution_results: BTreeMap<
+        execution_workers::ExecutionTicket,
+        Result<execution_workers::ExecutionSuccess, RuntimeError>,
+    >,
+    /// Recoverable ownership records for temporary portable-summary forks.
+    /// Malformed records disable only this feature, never ordinary startup.
+    pub(crate) handoff_forks: handoff_summary::ForkRegistry,
+    handoff_compaction_events: Vec<handoff_events::HandoffCompactionEvent>,
+    /// Scoped provenance for the one prepared context currently being imported.
+    prepared_handoff_work_id: Option<String>,
     handoffs: handoff::Handoffs,
     elsewhere: live::ElsewhereScan,
     finished_turns: session::FinishedTurns,
@@ -186,6 +206,7 @@ pub struct CoreRuntime {
     pending_history_reads: BTreeMap<String, usize>,
     conversation_browser_limits: crate::ConversationBrowserLimits,
     organization: crate::config::ConversationOrganization,
+    async_question_marks_retry_at: Option<std::time::Instant>,
     browser_window: organization::BrowserWindow,
     /// The latest listing's conversations by public identity, for organizing
     /// what the list showed.
@@ -262,16 +283,22 @@ pub(crate) use conversations::TurnRequest;
 mod delivery;
 mod editing;
 mod execution;
+pub(crate) mod execution_workers;
 mod follow_up;
+pub(crate) use follow_up::PreparationState;
 mod handoff;
+pub(crate) mod handoff_events;
+pub(crate) mod handoff_summary;
 mod submission;
 use crate::SendQueueOperation;
 mod background_tasks;
 mod collaborators;
 mod control;
-mod live;
+pub(crate) mod live;
 mod model_selection;
 mod native_composition;
+mod native_control;
+mod native_initialization;
 mod organization;
 mod pi_composition;
 mod projects;
@@ -304,6 +331,7 @@ impl CoreRuntime {
         let organization = repository.load_conversation_organization()?;
         let (resource_templates, resource_bindings) = repository.load_resource_library()?;
         let handoffs = handoff::Handoffs::open(&options.home_directory);
+        let handoff_forks = handoff_summary::ForkRegistry::open(&options.home_directory);
         let scheduled_tasks = crate::scheduled_tasks::Store::open(&options.home_directory)?;
         let scheduling_state = velune_gateway::SchedulingState::default();
         let billing = Arc::new(crate::billing::Billing::default());
@@ -318,13 +346,21 @@ impl CoreRuntime {
             &persisted.gateways,
         );
         Ok(Self {
+            submission_cancellation: None,
             telemetry: None,
             options,
             collaboration: Default::default(),
             session: Default::default(),
             parked: Vec::new(),
+            observed_conversations: BTreeSet::new(),
             control_observations: control::ControlObservations::new()
                 .map_err(|error| RuntimeError::context("控制权观察服务无法启动", error))?,
+            handoff_forks,
+            execution_workers: execution_workers::ExecutionWorkers::start()?,
+            execution_command: None,
+            execution_results: BTreeMap::new(),
+            handoff_compaction_events: Vec::new(),
+            prepared_handoff_work_id: None,
             elsewhere: live::ElsewhereScan::default(),
             finished_turns: session::FinishedTurns::default(),
             scheduled_tasks,
@@ -340,6 +376,7 @@ impl CoreRuntime {
                 total: persisted.conversation_browser_total_limit,
             },
             organization,
+            async_question_marks_retry_at: None,
             browser_window: Default::default(),
             client_baseline: None,
             local_presentation_commit: std::cell::RefCell::new(None),
@@ -526,6 +563,35 @@ impl CoreRuntime {
     fn turn_running(&self) -> bool {
         self.session.turn_running()
     }
+    /// Owned read for cache/rollback, distinct from disposable wire projection.
+    /// Never turn a bare display clone back into a history cache owner.
+    fn owned_native_snapshot(&self) -> Result<Option<browsing::HistorySnapshot>, RuntimeError> {
+        if self.session.projected().is_none() {
+            return Ok(None);
+        }
+        let mut snapshot = match &self.session.active_state {
+            ActiveState::History(snapshot) => snapshot.try_clone()?,
+            ActiveState::Native(native) => browsing::HistorySnapshot::from_retained(
+                native
+                    .owned_snapshot()
+                    .map_err(|error| RuntimeError::context("native retained snapshot", error))?,
+            ),
+            ActiveState::Acp(acp) => browsing::HistorySnapshot::from_retained(
+                acp.owned_snapshot()
+                    .map_err(|error| RuntimeError::context("ACP retained snapshot", error))?,
+            ),
+            // Pi's existing receiver is not the newline RpcClient ledger.
+            ActiveState::Pi(_) => self
+                .session
+                .projected()
+                .expect("present Pi snapshot")
+                .clone()
+                .into(),
+            ActiveState::Empty | ActiveState::Pending(_) => return Ok(None),
+        };
+        snapshot.model_record_key = self.session.model_record_key.clone();
+        Ok(Some(snapshot))
+    }
     fn native_snapshot(&self) -> Option<crate::conversation::ConversationSnapshot> {
         self.session.projected().cloned().map(|mut snapshot| {
             snapshot.model_record_key = self.session.model_record_key.clone();
@@ -535,25 +601,48 @@ impl CoreRuntime {
     /// Advance message identities and turn settings before a command or a delivery.
     fn refresh_transcript(&mut self) -> Option<crate::conversation::ConversationSnapshot> {
         use velune_agent_runtime::transcript::{TranscriptEvent, TranscriptProjection};
+        self.retry_async_question_marks();
+        let external_turn = self.observe_current_external_turn();
         let Some(native) = self.native_snapshot() else {
             self.session.transcript_projection = TranscriptProjection::default();
             self.session.transcript_conversation_id = None;
             return None;
         };
+        let physical_id = native.conversation.id.clone();
+        let physical_anchor = native.messages.last().map(|message| message.id.clone());
         let mut snapshot = match &self.session.side {
             Some(side) => side_chat::shown(side, native),
             None => self.decorate_snapshot(native),
         };
+        if self.session.side.is_none() {
+            self.apply_handoff_compaction_events(
+                &mut snapshot,
+                &physical_id,
+                physical_anchor.as_deref(),
+            );
+        }
+        snapshot.pending_interactions.retain(|interaction| {
+            self.interaction_is_visible(&snapshot.conversation.id, interaction)
+        });
+        // Optional async questions must never conceal an approval that blocks execution.
+        snapshot
+            .pending_interactions
+            .sort_by_key(|interaction| !interaction.blocks_turn());
         self.apply_generated_title(&mut snapshot.conversation);
         let child_run_state = self.child_run_state(&snapshot);
         if let Some(state) = &child_run_state {
             snapshot.run_state = state.clone();
+        } else if external_turn
+            && matches!(snapshot.run_state, RunState::Idle | RunState::Elsewhere | RunState::Failed)
+        {
+            snapshot.run_state = RunState::Elsewhere;
         }
         continuation::stamp_turn_runtime(&mut snapshot.messages, &snapshot.context_runtime_id);
         if self.session.transcript_conversation_id.as_deref() != Some(&snapshot.conversation.id) {
             self.session.transcript_projection = TranscriptProjection::default();
             self.session.transcript_conversation_id = Some(snapshot.conversation.id.clone());
         }
+        self.refresh_native_accepted_settings();
         self.session
             .transcript_projection
             .apply(TranscriptEvent::ConfirmIdentities(
@@ -562,6 +651,9 @@ impl CoreRuntime {
         self.session
             .transcript_projection
             .apply(TranscriptEvent::ReplaceSnapshot(&snapshot));
+        self.session
+            .transcript_projection
+            .retain_reply_boundaries(&snapshot.retained_reply_ids);
         composer_choices::recall_turn_requests(
             &self.turn_requests,
             &mut self.session.transcript_projection,
@@ -609,13 +701,18 @@ impl CoreRuntime {
             snapshot.collaborators = self.collaborators(&snapshot);
         }
         self.apply_submission_admission(&mut snapshot);
+        self.apply_child_control(&mut snapshot);
         Some(snapshot)
     }
     fn snapshot_result(&mut self) -> Result<crate::SnapshotResult, RuntimeError> {
         let snapshot = self.current_snapshot();
         Ok(crate::SnapshotResult {
             submission_receipt: None,
-            snapshot: snapshot.map(|snapshot| self.delivery.snapshot(snapshot)),
+            snapshot: snapshot.map(|snapshot| {
+                self.delivery
+                    .snapshot(snapshot, &self.observed_conversations)
+            }),
+            submitted_message_id: None,
         })
     }
     /// Queue ownership has already changed. Presentation failure cannot revoke
@@ -628,6 +725,7 @@ impl CoreRuntime {
             tracing::warn!(target: "velune_application", event = "accepted_submission_projection_failed", detail = %error);
             crate::SnapshotResult {
                 snapshot: None,
+                submitted_message_id: None,
                 submission_receipt: None,
             }
         });
@@ -645,7 +743,11 @@ impl CoreRuntime {
         let snapshot = self.queried_snapshot(runtime_id, conversation_id)?;
         Ok(crate::SnapshotResult {
             submission_receipt: None,
-            snapshot: snapshot.map(|snapshot| self.delivery.snapshot(snapshot)),
+            snapshot: snapshot.map(|snapshot| {
+                self.delivery
+                    .snapshot(snapshot, &self.observed_conversations)
+            }),
+            submitted_message_id: None,
         })
     }
     /// Like `snapshot`, relative to a cursor from an earlier delivery of the
@@ -657,7 +759,9 @@ impl CoreRuntime {
         since: crate::TranscriptCursor,
     ) -> Result<crate::SnapshotUpdate, RuntimeError> {
         let snapshot = self.queried_snapshot(runtime_id, conversation_id)?;
-        Ok(self.delivery.update(snapshot, since))
+        Ok(self
+            .delivery
+            .update(snapshot, since, &self.observed_conversations))
     }
     /// Complete payloads of messages in a delivered view.
     pub(crate) fn message_payloads(
@@ -681,20 +785,9 @@ impl CoreRuntime {
             if !self.runtime_instance(runtime_id)?.enabled {
                 return Err(RuntimeError::invalid("此运行时已停用"));
             }
-            // A cold browse is already loading off-owner. An early poll
-            // must not start a second copy of the same IO on the owner.
-            if self.pending_history_reads.contains_key(conversation_id) {
-                return Ok(None);
-            }
-            // A conversation shown read-only has no session yet; its first
-            // poll opens one so the view can follow native changes.
-            match self.read_conversation_context(&address.context_runtime_id, conversation_id) {
-                Ok((snapshot, projection)) => self.present_history(snapshot, projection),
-                Err(error) => {
-                    tracing::warn!(target: "velune_application", event = "followed_conversation_read_failed", detail = %error);
-                    return Ok(None);
-                }
-            }
+            // Cold IO is prepared by ApplicationService and loaded by its
+            // bounded HistoryWorkers. A query never falls back to a sync read.
+            return Ok(None);
         }
         self.sync_projection()?;
         self.follow_source();
@@ -704,8 +797,65 @@ impl CoreRuntime {
         }))
     }
     fn drain_runtime(&mut self) -> Result<(), RuntimeError> {
+        if self
+            .session
+            .pi_io_cleanup
+            .as_ref()
+            .is_some_and(|pending| pending.abandoned_cleanup_complete())
+        {
+            self.session.pi_io_cleanup = None;
+        }
+        if (self.session.native_controls.cleanup_required
+            && matches!(self.session.active_state, ActiveState::Native(_)))
+            || (self.session.pi_cleanup_required
+                && matches!(self.session.active_state, ActiveState::Pi(_)))
+        {
+            // Saturation retains the exact failed resource for a later drain.
+            if self.session.pi_cleanup_required {
+                if let ActiveState::Pi(pi) = &mut self.session.active_state {
+                    pi.poll();
+                }
+                self.advance_pi_control();
+                self.advance_pi_edit();
+                if matches!(self.session.active_state, ActiveState::Pi(_)) {
+                    let _ = self.start_native_cleanup_worker();
+                }
+            } else {
+                let _ = self.schedule_native_cleanup();
+            }
+            return Ok(());
+        }
         let compacting = self.session.compacting;
         let was_executing = self.session.executing();
+        let changed_initialization = match &self.session.active_state {
+            ActiveState::Pending(pending) => pending
+                .initialization_source()
+                .is_some_and(|source| !source.is_current(self)),
+            _ => false,
+        };
+        if changed_initialization {
+            let ActiveState::Pending(pending) = &self.session.active_state else {
+                unreachable!()
+            };
+            let (ticket, error) = pending.discard_changed_initialization();
+            // Abandonment leaves adapter destruction and capacity on its worker.
+            self.session.active_state = ActiveState::Empty;
+            self.session.execution_runtime_id = None;
+            self.session.execution_configuration = None;
+            self.session.model_selection = None;
+            self.session.configuration_changed = false;
+            self.execution_results.insert(ticket, Err(error));
+            return Ok(());
+        }
+        if let ActiveState::Pending(pending) = &mut self.session.active_state {
+            let Some((ticket, state, outcome)) = pending.complete() else {
+                return Ok(());
+            };
+            self.session.active_state = state;
+            let result = self.apply_execution_outcome(outcome);
+            self.execution_results
+                .insert(ticket, result.map(|()| Default::default()));
+        }
         if was_executing {
             self.session.last_execution = Some(std::time::Instant::now());
         }
@@ -715,13 +865,76 @@ impl CoreRuntime {
                 .map_err(|error| RuntimeError::context("运行时事件读取失败", error)),
             None => Ok(()),
         };
+        self.harvest_native_controls();
+        self.advance_native_submissions();
+        self.advance_pi_control();
+        self.advance_pi_edit();
+        self.refresh_native_accepted_settings();
+        let pi_failure = matches!(&self.session.active_state,
+            ActiveState::Pi(pi) if pi.requires_failure_cleanup());
+        if pi_failure {
+            self.session.pi_cleanup_required = true;
+            self.session.send_queue.pause_after_stop();
+            if let Some(outcome) = self.record_finished_turn() {
+                self.follow_finished_turn(outcome);
+            }
+            let _ = self.start_native_cleanup_worker();
+            return result;
+        }
+        // A compatibility mutation or failed first admission may switch the
+        // native lifecycle before this drain. Cleanup remains owed even when
+        // no application ticket was returned and subsequent polls are Ok.
+        let native_failure = matches!(&self.session.active_state,
+            ActiveState::Native(native) if native.requires_failure_cleanup());
+        if native_failure || (self.session.native_controls.enabled && result.is_err()) {
+            self.session.native_controls.cleanup_required = true;
+            self.session.send_queue.pause_after_stop();
+            if let Some(outcome) = self.record_finished_turn() {
+                self.follow_finished_turn(outcome);
+            }
+            let _ = self.schedule_native_cleanup();
+            return result;
+        }
+        // A successful maintenance reply can race the user's stop request.
+        // record_finished_turn clears cancel_requested; retain the stop in
+        // the queue first, even if background metadata has not settled yet.
+        if compacting && self.session.cancel_requested {
+            self.session.send_queue.pause_after_stop();
+        }
+        let managed_pi = self.session.gateway_runner.is_some()
+            && self.session.side.is_none()
+            && matches!(self.session.active_state, ActiveState::Pi(_));
+        // Pi startup also consumes a work lease while discovering background
+        // tasks. Only a terminal activity in this connection can finish a turn.
+        if managed_pi
+            && self.session.projected().is_some_and(|view| {
+                view.executions
+                    .current
+                    .as_ref()
+                    .is_some_and(|activity| activity.ended)
+            })
+        {
+            if !self.session.executing() {
+                self.finish_managed_backend_turn();
+                self.session.pi_cleanup_required = true;
+                let _ = self.start_native_cleanup_worker();
+                // Consume the outcome when the worker returns the projection.
+                return result;
+            }
+            // A next turn can share a connection with actual background work.
+            // Settlement of metadata alone must finish before draining the queue.
+            if self.session.work().is_ok_and(|work| work.is_empty()) {
+                return result;
+            }
+        }
         let outcome = if !self.turn_running() || result.is_err() {
             self.record_finished_turn()
         } else {
             None
         };
         // A turn's gateway lasts until the turn and the work it started have ended.
-        if self.session.gateway_runner.is_some()
+        if !managed_pi
+            && self.session.gateway_runner.is_some()
             && ((was_executing && !self.session.executing()) || result.is_err())
         {
             self.finish_managed_turn()?;
@@ -741,6 +954,7 @@ impl CoreRuntime {
         if !self.session.executing() {
             if compacting {
                 self.session.compacting = false;
+                self.follow_finished_compaction(result.is_err());
             } else {
                 self.follow_ended_work();
             }
@@ -748,11 +962,15 @@ impl CoreRuntime {
         result
     }
 
-    fn finish_managed_turn(&mut self) -> Result<(), RuntimeError> {
+    fn finish_managed_backend_turn(&self) {
         if let Some((gateway_id, session)) = self.backend_session_identity() {
             self.session_backends()
                 .finish_user_turn(&gateway_id, &session);
         }
+    }
+
+    fn finish_managed_turn(&mut self) -> Result<(), RuntimeError> {
+        self.finish_managed_backend_turn();
         // A side chat's copy lives only in its runtime process; it ends when
         // the side chat closes.
         if self.session.side.is_some() {
@@ -776,9 +994,11 @@ impl CoreRuntime {
         self.session.model_selection = selection;
         if let Some(mut snapshot) = snapshot {
             self.session.model_record_key = snapshot.model_record_key.clone();
-            snapshot.pending_interactions.clear();
+            snapshot
+                .pending_interactions
+                .retain(|interaction| !interaction.requires_live_reply());
             snapshot.actions.can_cancel = false;
-            self.session.active_state = ActiveState::History(Box::new(snapshot));
+            self.session.set_history(snapshot);
         }
         synchronized.and(result)
     }
@@ -823,6 +1043,26 @@ impl CoreRuntime {
         {
             return Err(RuntimeError::invalid("runtime is busy"));
         }
+        if self.has_pending_execution() {
+            return Err(RuntimeError::Busy);
+        }
+        if stop_work
+            && std::iter::once(&self.session)
+                .chain(&self.parked)
+                .any(|session| matches!(session.active_state, ActiveState::Pi(_)))
+        {
+            self.for_each_session(|core| {
+                if matches!(core.session.active_state, ActiveState::Pi(_)) {
+                    core.session.pi_cleanup_required = true;
+                    // Saturation retains this exact adapter for owner drain to
+                    // retry. Explicit stopping close authorizes teardown, not
+                    // an owner-thread kill/join or early release of HOME.
+                    let _ = core.start_native_cleanup_worker();
+                }
+                Ok(())
+            })?;
+            return Err(RuntimeError::Busy);
+        }
         self.subscription_quota.stop();
         self.billing.stop();
         self.provider_account.stop();
@@ -832,6 +1072,7 @@ impl CoreRuntime {
         let result = self.for_each_session(Self::shutdown_active);
         self.parked.clear();
         result?;
+        self.execution_workers.shutdown();
         // Stopping work releases the last captured credential/backend leases too.
         self.retire_gateway_configurations();
         // Release the lock explicitly; a concurrent child spawn can briefly
@@ -896,6 +1137,7 @@ use velune_agent_runtime::authentication;
 
 impl Drop for CoreRuntime {
     fn drop(&mut self) {
+        self.shutdown_execution_workers();
         if let Some(owner) = &self.telemetry {
             owner.execution_owner_unavailable();
         }

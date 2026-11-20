@@ -16,7 +16,12 @@ impl CoreRuntime {
                 return Err(RuntimeError::invalid("后台任务来源运行时不匹配"));
             }
             if let Some(live) = session.active_state.live() {
-                return Ok(live.background_tasks());
+                // The public response is the DTO. Keep the receive charge on
+                // the owned observation until it crosses this boundary.
+                return live
+                    .background_tasks()
+                    .map(|result| result.into_parts().0)
+                    .map_err(|error| RuntimeError::context("读取后台任务", error));
             }
         }
         Ok(BackgroundTaskList {
@@ -56,6 +61,7 @@ impl CoreRuntime {
             .live_mut()
             .ok_or_else(|| RuntimeError::invalid("此历史任务没有可用的输出读取连接"))?
             .read_background_task_output(task, request)
+            .map(|result| result.into_parts().0)
             .map_err(|error| RuntimeError::context("读取后台任务输出", error))
     }
     pub(crate) fn stop_background_task(
@@ -92,7 +98,7 @@ mod tests {
         })
         .unwrap();
         fn history(id: &str) -> session::Session {
-            let snapshot = serde_json::from_value(serde_json::json!({
+            let snapshot: crate::conversation::ConversationSnapshot = serde_json::from_value(serde_json::json!({
                 "revision":1,"conversation":{"id":id,"title":{"source":"untitled"},"runtimeId":"synthetic"},
                 "contextRuntimeId":"synthetic","resourceId":null,"modelRecordKey":null,"runState":"idle",
                 "messages":[{"id":"launch","role":"tool","completed":true,"blocks":[{"kind":"tool","toolID":"receipt","title":"bg_delegate","state":"completed","output":"x".repeat(2*1024*1024)}]}],
@@ -100,7 +106,7 @@ mod tests {
                 "actions":{"canSend":true,"canCancel":false,"canSwitch":true}
             })).unwrap();
             session::Session {
-                active_state: ActiveState::History(Box::new(snapshot)),
+                active_state: ActiveState::History(Box::new(snapshot.into())),
                 ..Default::default()
             }
         }

@@ -2,11 +2,22 @@ import AppKit
 import Foundation
 
 /// Exercises journal selection and the real window-start candidate ordering.
-/// All state stays in the caller's synthetic home; no windows are created.
+/// All state stays in the caller's synthetic home; native navigation hosts stay hidden.
 @MainActor func workspaceRecoveryChecks(home: URL) {
+    workspaceNavigationChecks(home: home)
     func note(_ text: String) { FileHandle.standardError.write(Data((text + "\n").utf8)) }
     try! workspaceColdOpeningChecks(home: home)
     let device = DeviceStore(preview: true)
+    do {
+        let peer = DeviceStore(preview: true, peerID: "synthetic-peer")
+        let window = ConversationWindowModel(application: device, kind: .workspace)
+        window.start(restoring: nil, seed: WindowSeed(conversationID: "sample-1"))
+        window.open("sample-1", device: peer)
+        precondition(window.focused.store.device === peer && window.focused.store.loadedConversationID == "sample-1",
+                     "另一台设备的同名会话编号不能复用本机标签")
+        precondition(window.tab(showing: "sample-1", device: device) != nil)
+        note("PASS conversation tabs distinguish identical IDs on different devices")
+    }
     let local = ConversationWindowModel(application: device, kind: .workspace)
     let source = ConversationWindowModel(application: device, kind: .workspace, device: "synthetic-peer")
     let directory = home.appendingPathComponent("workspace-device-check", isDirectory: true)
@@ -71,6 +82,9 @@ import Foundation
     // older candidate; a valid empty layout remains an ordinary candidate.
     var invalidLayout = localLayout
     invalidLayout.focused = UUID()
+    let invalidBytes = try! JSONEncoder().encode(invalidLayout)
+    precondition((try? SavedWindowLayout.decodeKnown(invalidBytes)) == nil,
+                 "SceneStorage 与 journal 共用的解码入口拒绝不完整窗口")
     let invalidID = UUID().uuidString
     journal.save(invalidLayout, id: invalidID)
     journal.flush()
@@ -82,7 +96,7 @@ import Foundation
     precondition(tolerantJournal.restore(id: UUID().uuidString, recoverLatest: true, device: "synthetic-peer") == remoteLayout)
     let futureID = UUID().uuidString
     var future = try! JSONSerialization.jsonObject(with: JSONEncoder().encode(localLayout)) as! [String: Any]
-    future["futureField"] = ["preserve": true]
+    future["futureField"] = NSNull()
     let futureBytes = try! JSONSerialization.data(withJSONObject: future, options: [.sortedKeys])
     let futureFile = snapshots.appendingPathComponent(futureID + ".json")
     try! futureBytes.write(to: futureFile)
@@ -92,6 +106,33 @@ import Foundation
     precondition((try! Data(contentsOf: futureFile)) == futureBytes,
                  "未来恢复点在读取失败后仍保持原始字节，写回不会覆盖")
     note("PASS workspace journal filters incomplete layouts before exact/latest selection and keeps device isolation")
+
+    var currentLayout = localLayout
+    currentLayout.composerWorkspaceByDevice = ["synthetic-peer": localLayout.composerWorkspace!]
+    let currentBytes = try! JSONEncoder().encode(currentLayout)
+    precondition((try! SavedWindowLayout.decodeKnown(currentBytes)) == currentLayout,
+                 "当前窗口的本机及远端草稿恢复点均可解码")
+    let currentRecord = try! JSONSerialization.jsonObject(with: currentBytes) as! [String: Any]
+    let currentWorkspace = currentRecord["composerWorkspace"] as! [String: Any]
+    for (peer, version) in [(nil, 2), ("synthetic-peer", 4), (nil, nil)] as [(String?, Int?)] {
+        var record = currentRecord
+        var workspace = currentWorkspace
+        workspace["schemaVersion"] = version
+        if let peer { record["composerWorkspaceByDevice"] = [peer: workspace] }
+        else { record["composerWorkspace"] = workspace }
+        let bytes = try! JSONSerialization.data(withJSONObject: record, options: [.sortedKeys])
+        let id = UUID().uuidString
+        let file = snapshots.appendingPathComponent(id + ".json")
+        try! bytes.write(to: file)
+        tolerantJournal.save(currentLayout, id: id)
+        tolerantJournal.flush()
+        precondition((try! Data(contentsOf: file)) == bytes,
+                     "首次保存也必须保留草稿格式不受支持的原始记录")
+        precondition(tolerantJournal.restore(id: id, recoverLatest: false) == nil,
+                     "不受支持的本机或远端草稿不能成为恢复候选")
+        try! FileManager.default.removeItem(at: file)
+    }
+    note("PASS workspace journal accepts current drafts and preserves snapshots with unsupported local or remote draft schemas")
 
     let orderedDirectory = home.appendingPathComponent("workspace-legacy-order-check", isDirectory: true)
     let orderedJournal = WindowWorkspaceJournal(directory: orderedDirectory) { fatalError($0) }

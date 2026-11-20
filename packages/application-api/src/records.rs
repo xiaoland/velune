@@ -274,6 +274,11 @@ pub struct RuntimeModel {
 #[serde(rename_all = "camelCase")]
 pub struct SnapshotResult {
     pub snapshot: Option<crate::DeliveredSnapshot>,
+    /// User message reported synchronously by this submission. Queued turns and
+    /// runtimes that report the message asynchronously leave this empty.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[uniffi(default = None)]
+    pub submitted_message_id: Option<String>,
     /// What this request actually did, independent of snapshot/echo timing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[uniffi(default = None)]
@@ -291,7 +296,6 @@ pub enum SubmissionReceipt {
     Sending,
 }
 
-
 /// A conversation that executes or waits for the user, in any open session.
 #[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
@@ -302,6 +306,15 @@ pub struct ActiveConversation {
     pub pending_interactions: u32,
     /// The conversation this one is a native sub-agent of.
     pub parent_conversation_id: Option<String>,
+    /// Activity that revokes idle send/resume admission before a new snapshot
+    /// arrives. Background-only work remains active without revoking it.
+    #[serde(default = "default_activity_blocks_idle_submission")]
+    #[uniffi(default = true)]
+    pub blocks_idle_submission: bool,
+}
+
+fn default_activity_blocks_idle_submission() -> bool {
+    true
 }
 
 /// Uncommitted changes in a conversation's working directory.
@@ -824,6 +837,28 @@ pub struct ComposerQuotaCredits {
 }
 
 #[cfg(test)]
+mod active_conversation_tests {
+    use super::ActiveConversation;
+
+    #[test]
+    fn older_activity_is_conservative_but_explicit_background_activity_is_not() {
+        let mut value = serde_json::json!({
+            "contextRuntimeId":"pi", "conversationId":"pi:synthetic",
+            "runState":"running", "pendingInteractions":0, "parentConversationId":null,
+        });
+        let old: ActiveConversation = serde_json::from_value(value.clone()).unwrap();
+        assert!(old.blocks_idle_submission);
+        value["blocksIdleSubmission"] = false.into();
+        let background: ActiveConversation = serde_json::from_value(value).unwrap();
+        assert!(!background.blocks_idle_submission);
+        assert_eq!(
+            serde_json::to_value(background).unwrap()["blocksIdleSubmission"],
+            false
+        );
+    }
+}
+
+#[cfg(test)]
 mod submission_contract_tests {
     use super::*;
 
@@ -834,6 +869,7 @@ mod submission_contract_tests {
         }))
         .unwrap();
         assert!(old_reply.submission_receipt.is_none());
+        assert!(old_reply.submitted_message_id.is_none());
         let old_queue: crate::conversation::QueuedMessage = serde_json::from_value(
             serde_json::json!({"id":"q", "text":"same input", "attachments":[]}),
         )
@@ -850,6 +886,18 @@ mod submission_contract_tests {
         assert!(matches!(
             &command,
             crate::Command::SendTurn {
+                submission_id: None,
+                ..
+            }
+        ));
+        let mut old_handoff = old_command.clone();
+        old_handoff["command"] = "queueHandoffSummary".into();
+        old_handoff["parameters"]["summary_model"] = serde_json::Value::Null;
+        old_handoff["parameters"]["effort"] = serde_json::Value::Null;
+        let old_handoff: crate::Command = serde_json::from_value(old_handoff).unwrap();
+        assert!(matches!(
+            old_handoff,
+            crate::Command::QueueHandoffSummary {
                 submission_id: None,
                 ..
             }

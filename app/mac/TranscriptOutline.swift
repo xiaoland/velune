@@ -13,6 +13,7 @@ struct TranscriptOutlineView: View {
     var layout: ConversationWindowModel?
     /// Edits the user message of this ID, when it may be edited now.
     var editMessage: (String) -> (() -> Void)? = { _ in nil }
+    var deleteMessage: (String) -> (() -> Void)? = { _ in nil }
     /// The conversation is still running: the last message's answer is
     /// being written below it, so going to it means going to the end.
     var isRunning = false
@@ -69,6 +70,7 @@ struct TranscriptOutlineView: View {
             if let id = ids.first {
                 Button("前往消息") { go(to: id) }
                 if let edit = model.userRows.first(where: { $0.id == id }).flatMap({ editMessage($0.message.id) }) { Button("编辑消息…", action: edit) }
+                if let remove = model.userRows.first(where: { $0.id == id }).flatMap({ deleteMessage($0.message.id) }) { Button("删除消息…", role: .destructive, action: remove) }
             } else if let layout {
                 ToolPlaceSection(window: layout, kind: .outline)
             }

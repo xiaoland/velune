@@ -85,6 +85,14 @@ pub(crate) struct ConversationSegmentReference {
     /// continues to use the original sealed transcript segments.
     #[serde(default)]
     pub imported: Option<ConversationImport>,
+    /// Display tombstones for records removed from a rebuilt native context.
+    /// The source itself remains immutable for recovery.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub excluded_message_ids: Vec<String>,
+    /// Stable logical display identities mapped to this imported tail's exact
+    /// native prompt identities. Enables repeated deletions after reconstruction.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub message_origins: std::collections::BTreeMap<String, Vec<String>>,
     pub deleted: bool,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -93,6 +101,9 @@ pub(crate) struct ConversationImport {
     /// Native display records seeded by import, hidden from the joined
     /// transcript so compact summaries and retained content are not repeated.
     pub prefix: ConversationCutoff,
+    /// A portable-summary maintenance receipt; no summary or prompt content.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary_work_id: Option<String>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -227,7 +238,8 @@ impl GatewayConfig {
 
     /// Resolve model ownership from the already validated application
     /// configuration. A route resolves to its first member, whose protocol
-    /// and model parameters the runtime is given; members share a protocol.
+    /// and model parameters the runtime is given. Each dispatch translates
+    /// from that ingress protocol to the selected member's own protocol.
     pub fn resolve_dispatch(
         &self,
         model_record_key: &str,
@@ -392,6 +404,9 @@ pub struct ConversationMarks {
     /// Marked unread by the user, whatever the activity.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub marked_unread: bool,
+    /// Native async questions explicitly answered or dismissed in Velune.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub resolved_async_questions: Vec<String>,
     /// The project, by its primary folder, the user moved the conversation
     /// to; its working directory is unchanged.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -404,6 +419,7 @@ impl ConversationMarks {
             && self.seen_activity_unix_ms.is_none()
             && !self.marked_unread
             && self.project.is_none()
+            && self.resolved_async_questions.is_empty()
     }
 }
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -433,11 +449,9 @@ impl ProviderDefinition {
         {
             return Err("额度查询认证配置无效");
         }
-        if self.quota_source != ProviderQuotaSource::ArkCodingUsage
-            && self.quota_authentication.access_key().is_some()
-        {
-            return Err("此额度来源不接受独立 AK/SK");
-        }
+        // Switching collection off preserves private query credentials. Only
+        // the selected Ark collector can consume them; switching invalidates
+        // the account confirmation in QuotaAuthentication::apply.
         let source = self.authentication.source();
         if let crate::provider_authentication::AuthenticationMaterial::ClaudeCli {
             credential_id,
@@ -463,41 +477,42 @@ impl ProviderDefinition {
         {
             return Err("沿用的 Claude Code 登录位置无效");
         }
-        let kimi = self.request_profile == RequestProfile::KimiCoding
-            || self.quota_source == ProviderQuotaSource::KimiUsage;
-        if kimi
+        // Model request adaptation and quota collection have independent contracts.
+        if self.request_profile == RequestProfile::KimiCoding
             && (self.execution_backend != ExecutionBackend::Http
                 || self.protocol != Protocol::Messages
                 || source != Auth::ApiKey
-                || self.request_profile != RequestProfile::KimiCoding
-                || self.quota_source != ProviderQuotaSource::KimiUsage
                 || kimi_region(&self.endpoint).is_none())
         {
-            return Err(
-                "Kimi Coding Plan 必须组合 HTTP、Messages、API key、KimiCoding、KimiUsage 与官方 Coding 地址",
-            );
+            return Err("Kimi Coding 请求需要 HTTP、Messages、API key 与官方 Coding 地址");
         }
-        if (self.request_profile == RequestProfile::ArkCoding
-            || self.quota_source == ProviderQuotaSource::ArkCodingUsage)
+        if self.quota_source == ProviderQuotaSource::KimiUsage
             && (self.execution_backend != ExecutionBackend::Http
                 || source != Auth::ApiKey
-                || self.request_profile != RequestProfile::ArkCoding
-                || self.quota_source != ProviderQuotaSource::ArkCodingUsage
+                || kimi_quota_region(&self.endpoint).is_none())
+        {
+            return Err("Kimi Coding 额度查询需要 HTTP、API key 与官方 Coding 地址");
+        }
+        if self.request_profile == RequestProfile::ArkCoding
+            && (self.execution_backend != ExecutionBackend::Http
+                || source != Auth::ApiKey
                 || !ark_endpoint(&self.endpoint, &self.protocol))
         {
-            return Err(
-                "ARK Coding Plan 必须组合 HTTP、API key、ArkCoding、ArkCodingUsage 与官方 Coding 地址",
-            );
+            return Err("ARK Coding 请求需要 HTTP、API key 与官方 Coding 地址");
+        }
+        if self.quota_source == ProviderQuotaSource::ArkCodingUsage
+            && (self.execution_backend != ExecutionBackend::Http
+                || source != Auth::ApiKey
+                || !ark_endpoint(&self.endpoint, &self.protocol))
+        {
+            return Err("ARK Coding 额度查询需要 HTTP、API key 与官方 Coding 地址");
         }
         if self.quota_source == ProviderQuotaSource::ApiAccount
             && (self.execution_backend != ExecutionBackend::Http
                 || source != Auth::ApiKey
-                || self.request_profile != RequestProfile::Native
                 || velune_application_api::api_account_service(&self.endpoint).is_none())
         {
-            return Err(
-                "官方账户额度只适用于以 API key 直连 DeepSeek、Moonshot 或 OpenRouter 官方地址的提供商",
-            );
+            return Err("官方账户额度需要 HTTP、API key 与支持的官方服务地址");
         }
         match &self.execution_backend {
             ExecutionBackend::Http => {
@@ -605,6 +620,17 @@ pub(crate) fn kimi_region(endpoint: &str) -> Option<&'static str> {
         "https://api.kimi.ai/coding/" | "https://api.kimi.ai/coding" => Some("global"),
         _ => None,
     }
+}
+
+/// API-key users may configure the protocol's /v1 base explicitly. Quota
+/// requests still use a fixed official service, never the supplied URL itself.
+pub(crate) fn kimi_quota_region(endpoint: &str) -> Option<&'static str> {
+    kimi_region(endpoint).or_else(|| {
+        endpoint
+            .trim_end_matches('/')
+            .strip_suffix("/v1")
+            .and_then(kimi_region)
+    })
 }
 
 pub(crate) fn ark_endpoint(endpoint: &str, protocol: &Protocol) -> bool {

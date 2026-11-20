@@ -96,7 +96,8 @@ class MigrationTests(unittest.TestCase):
                     "effort": "high", "permissionMode": "read-only", "serviceTier": "priority"}
         self.write("turn-requests.json", {"schemaVersion": 1, "conversations": [
             {"conversationID": "synthetic", "turns": [{"ordinal": 0, "digest": "0123456789abcdef", "settings": settings}]}]})
-        self.write("mac-window-workspaces/synthetic.json", {"composerWorkspace": {"schemaVersion": 3,
+        self.write("mac-window-workspaces/synthetic.json", {"artifacts": {"synthetic": {"serviceTier": None}},
+                   "composerWorkspace": {"schemaVersion": 3,
                    "pendingTargets": {"synthetic": {"choices": {"choices": {"codex": {
                        "model": {"native": {"providerId": "native-provider", "modelId": "gpt-test"}},
                        "effort": "high", "permissionMode": None, "serviceTier": "priority"}}}}}}})
@@ -110,7 +111,9 @@ class MigrationTests(unittest.TestCase):
         recorded = self.read("turn-requests.json")["conversations"][0]["turns"][0]["settings"]
         self.assertEqual(recorded["modelSelection"]["native"]["model_id"], variant)
         self.assertEqual(recorded["model"], "gpt-test · priority")
-        mac = self.read("mac-window-workspaces/synthetic.json")["composerWorkspace"]["pendingTargets"]["synthetic"]["choices"]["choices"]["codex"]["model"]["native"]
+        window = self.read("mac-window-workspaces/synthetic.json")
+        self.assertEqual(window["artifacts"], {"synthetic": {"serviceTier": None}})
+        mac = window["composerWorkspace"]["pendingTargets"]["synthetic"]["choices"]["choices"]["codex"]["model"]["native"]
         self.assertEqual(mac, {"providerId": "native-provider", "modelId": variant})
         windows = self.read("composer-cache/synthetic.json")["TargetChoices"]["Choices"][0]["Choice"]["Model"]
         self.assertEqual(windows, {"kind": "native", "provider": None, "model": variant})
@@ -136,6 +139,30 @@ class MigrationTests(unittest.TestCase):
         original = self.sources()
         self.invoke(apply=True, success=False)
         self.assert_unchanged(original)
+
+    def test_future_window_versions_refuse_service_tier_batch(self):
+        for window in ({"schemaVersion": 2, "composerWorkspace": {"schemaVersion": 3}},
+                       {"composerWorkspace": {"schemaVersion": 4}},
+                       {"composerWorkspaceByDevice": {"peer": {"schemaVersion": 4}}}):
+            with self.subTest(window=window):
+                self.write("mac-window-workspaces/synthetic.json", window)
+                original = self.sources()
+                self.invoke(apply=True, success=False)
+                self.assert_unchanged(original)
+
+    def test_future_window_versions_refuse_target_intent_batch(self):
+        choice = {"runtimeId": "codex", "runtimeOwnerId": OWNER, "choices": [], "choiceEdited": False}
+        self.write("composer-inputs.json", {"schemaVersion": 2, "state": {"revision": 9, "targets": [
+            {"context": {"kind": "newConversation"}, "revision": 4, "choices": choice}]}})
+        script = SCRIPTS / "migrations/target-intent.py"
+        for outer, inner in ((2, 3), (1, 4)):
+            with self.subTest(outer=outer, inner=inner):
+                self.write("mac-window-workspaces/synthetic.json", {"schemaVersion": outer,
+                           "composerWorkspace": {"schemaVersion": inner, "pendingTargets": {
+                               "synthetic": {"choices": choice, "revision": None}}}})
+                original = self.sources()
+                self.invoke(script, apply=True, success=False)
+                self.assert_unchanged(original)
 
     @unittest.skipIf(os.name == "nt", "合成 CLI 使用 POSIX shell")
     def test_retired_codex_identity_and_binary_conversion(self):

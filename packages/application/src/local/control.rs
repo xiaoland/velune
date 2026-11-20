@@ -73,8 +73,11 @@ impl CoreRuntime {
         // Views of this session share its native handle. A different runtime
         // configuration parked here is another native client: do not borrow
         // its model, account, MCP services or approval context implicitly.
-        if matches!(&self.session.active_state, ActiveState::Native(native) if native.owns_control(&target))
-        {
+        if match &self.session.active_state {
+            ActiveState::Native(native) => native.owns_control(&target),
+            ActiveState::Pending(pending) => pending.owns_control(&target),
+            _ => false,
+        } {
             self.control_observations.suspend(&target);
             return InputAccess::Editable;
         }

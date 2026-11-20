@@ -86,7 +86,7 @@ struct TelemetrySettingsView: View {
                     }
                     ForEach(incoming, id: \.attemptId) { pairing in
                         VStack(alignment: .leading) {
-                            Text("\(pairing.name) · 遥测配置（含认证）")
+                            Text("\(pairing.name)的遥测配置（含认证）")
                             Text(pairing.verificationCode ?? "")
                                 #if os(macOS)
                                 .uiFont(.title.monospaced())
@@ -196,10 +196,10 @@ struct TelemetrySettingsView: View {
     private func statusText(_ state: TelemetrySnapshot) -> String {
         if state.status == "development_configuration_unavailable" { return "开发启动配置不可用，遥测未接入" }
         if !state.configurationAvailable { return "配置无法读取，遥测未启用；原文件已保留" }
-        let source = state.developmentOverride ? "开发启动配置 · " : ""
+        let source = state.developmentOverride ? "开发启动配置：" : ""
         if !state.applied { return source + "已保存，尚未应用" }
         if state.rustActiveRevision == nil { return "已关闭" }
-        return source + "已应用 · 修订 \(state.revision) · Rust：\(healthText(state.rustExport)) · Apple：\(healthText(state.nativeExport))"
+        return source + "已应用（修订 \(state.revision)），Rust：\(healthText(state.rustExport))；Apple：\(healthText(state.nativeExport))"
     }
     private func healthText(_ health: TelemetryExportHealth) -> String {
         switch health.lastTransportResult { case "rpc_completed": return "最近 RPC 完成"; case nil: return "尚无回执"; default: return "最近导出失败" }

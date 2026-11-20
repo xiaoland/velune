@@ -25,6 +25,7 @@ pub use transport_probe::*;
 pub use transport_trace::*;
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, MutexGuard};
 #[cfg(feature = "local-runtime")]
 use velune_application::{ApplicationService, Error, Options};
@@ -34,6 +35,29 @@ use velune_application_api::conversation::{EditPlacement, RuntimeInteractionRepl
 use velune_application_api::*;
 
 uniffi::setup_scaffolding!();
+
+/// A local submission's cancellation signal; setting it never waits for the
+/// application owner or a network response. It is not a claim of retraction.
+#[derive(uniffi::Object)]
+pub struct VeluneSendCancellation {
+    cancelled: Arc<AtomicBool>,
+}
+
+#[uniffi::export]
+impl VeluneSendCancellation {
+    #[uniffi::constructor]
+    pub fn new() -> Arc<Self> {
+        Arc::new(Self {
+            cancelled: Arc::new(AtomicBool::new(false)),
+        })
+    }
+    pub fn cancel(&self) {
+        self.cancelled.store(true, Ordering::Release);
+    }
+    pub fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::Acquire)
+    }
+}
 
 macro_rules! request {
     ($owner:ident, $name:literal, $variant:ident $( { $($field:ident),* } )?) => {
@@ -92,6 +116,7 @@ pub enum BindingError {
         detail: String,
         code: String,
         request_id: Option<velune_remote::RequestId>,
+        operation_id: String,
     },
     #[error("application has been closed")]
     Closed,
@@ -183,6 +208,15 @@ pub fn provider_subscription_template(
     )
 }
 
+/// Quota choices depend on execution/authentication, never the creation template.
+#[uniffi::export]
+pub fn provider_quota_sources(
+    execution_backend: ExecutionBackend,
+    authentication_source: ProviderAuthenticationSource,
+) -> Vec<ProviderQuotaSource> {
+    velune_application_api::provider_quota_sources(execution_backend, authentication_source)
+}
+
 /// The official API service an address belongs to, whose account balance or
 /// key limit the `apiAccount` quota source reads; None for any other address.
 #[uniffi::export]
@@ -252,7 +286,18 @@ impl VeluneApplication {
             .map_err(|_| BindingError::Unavailable)
     }
 
-    fn request(&self, name: &'static str, mut command: Command) -> Result<Response, BindingError> {
+    fn request(&self, name: &'static str, command: Command) -> Result<Response, BindingError> {
+        self.request_cancellable(name, command, None)
+    }
+
+    fn request_cancellable(
+        &self,
+        name: &'static str,
+        mut command: Command,
+        cancellation: Option<Arc<AtomicBool>>,
+    ) -> Result<Response, BindingError> {
+        #[cfg(not(feature = "local-runtime"))]
+        let _ = &cancellation;
         if matches!(
             command,
             Command::ManageComposerInputs { .. }
@@ -282,13 +327,23 @@ impl VeluneApplication {
                     let backend = self.lock()?.as_ref().ok_or(BindingError::Closed)?.clone();
                     match backend {
                         #[cfg(feature = "local-runtime")]
-                        Backend::Local(service) => {
-                            if self.owns_backend {
-                                service.execute(self.client_view.clone(), command)
-                            } else {
+                        Backend::Local(service) => match (self.owns_backend, cancellation) {
+                            (true, Some(flag)) => service.execute_cancellable(
+                                self.client_view.clone(),
+                                command,
+                                flag,
+                            ),
+                            (true, None) => service.execute(self.client_view.clone(), command),
+                            (false, Some(flag)) => service.execute_isolated_cancellable(
+                                self.client_view.clone(),
+                                command,
+                                flag,
+                            ),
+                            (false, None) => {
                                 service.execute_isolated(self.client_view.clone(), command)
                             }
-                        }.map_err(Into::into),
+                        }
+                        .map_err(Into::into),
                         #[cfg(feature = "remote")]
                         Backend::Remote(remote) => remote.request(command),
                     }
@@ -457,6 +512,22 @@ impl VeluneApplication {
     /// Release only this presentation view; running conversations are retained.
     pub fn release_view(&self) -> Result<(), BindingError> {
         request!(self, "release_view", ReleaseView; unit)
+    }
+
+    /// Replace the complete set of conversations currently visible in this view.
+    /// The observation keeps their in-memory projections available while the
+    /// client remains active; release the view or stop making requests to let
+    /// the bounded observation lease expire.
+    pub fn set_observed_conversations(
+        &self,
+        conversations: Vec<ObservedConversation>,
+    ) -> Result<(), BindingError> {
+        request!(
+            self,
+            "set_observed_conversations",
+            SetObservedConversations { conversations };
+            unit
+        )
     }
 
     pub fn list(&self) -> Result<ConfigurationSnapshot, BindingError> {
@@ -1378,6 +1449,144 @@ impl VeluneApplication {
         )
     }
 
+    pub fn read_handoff_requirements(
+        &self,
+        source_runtime_id: String,
+        conversation_id: String,
+        target_runtime_id: String,
+        request_id: Option<String>,
+    ) -> Result<HandoffRequirements, BindingError> {
+        request!(
+            self,
+            "read_handoff_requirements",
+            ReadHandoffRequirements {
+                source_runtime_id,
+                conversation_id,
+                target_runtime_id,
+                request_id
+            }
+        )
+    }
+
+    pub fn begin_handoff_summary(
+        &self,
+        source_runtime_id: String,
+        conversation_id: String,
+        target_runtime_id: String,
+        summary_model: Option<ModelSelection>,
+        effort: Option<String>,
+    ) -> Result<HandoffSummaryStart, BindingError> {
+        request!(
+            self,
+            "begin_handoff_summary",
+            BeginHandoffSummary {
+                source_runtime_id,
+                conversation_id,
+                target_runtime_id,
+                summary_model,
+                effort
+            }
+        )
+    }
+
+    #[uniffi::method(default(submission_id = None))]
+    pub fn queue_handoff_summary(
+        &self,
+        source_runtime_id: String,
+        conversation_id: String,
+        target_runtime_id: String,
+        selection: Option<ModelSelection>,
+        turn: ComposedTurn,
+        summary_model: Option<ModelSelection>,
+        effort: Option<String>,
+        submission_id: Option<String>,
+    ) -> Result<QueuedHandoffSummaryStart, BindingError> {
+        request!(
+            self,
+            "queue_handoff_summary",
+            QueueHandoffSummary {
+                submission_id,
+                source_runtime_id,
+                conversation_id,
+                target_runtime_id,
+                selection,
+                turn,
+                summary_model,
+                effort
+            }
+        )
+    }
+
+    pub fn retry_queued_handoff_summary(
+        &self,
+        source_runtime_id: String,
+        conversation_id: String,
+        queued_message_id: String,
+        summary_model: Option<ModelSelection>,
+        effort: Option<String>,
+    ) -> Result<QueuedHandoffSummaryStart, BindingError> {
+        request!(
+            self,
+            "retry_queued_handoff_summary",
+            RetryQueuedHandoffSummary {
+                source_runtime_id,
+                conversation_id,
+                queued_message_id,
+                summary_model,
+                effort
+            }
+        )
+    }
+
+    pub fn read_handoff_summary(
+        &self,
+        work_id: String,
+    ) -> Result<HandoffSummaryStatus, BindingError> {
+        request!(self, "read_handoff_summary", ReadHandoffSummary { work_id })
+    }
+
+    pub fn cancel_handoff_summary(
+        &self,
+        work_id: String,
+    ) -> Result<HandoffSummaryStatus, BindingError> {
+        request!(
+            self,
+            "cancel_handoff_summary",
+            CancelHandoffSummary { work_id }
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn send_prepared_handoff_cancellable(
+        &self,
+        source_runtime_id: String,
+        conversation_id: String,
+        target_runtime_id: String,
+        selection: Option<ModelSelection>,
+        turn: ComposedTurn,
+        prepared_token: String,
+        cancellation: Arc<VeluneSendCancellation>,
+    ) -> Result<SnapshotResult, BindingError> {
+        let command = Command::SendPreparedHandoff {
+            source_runtime_id,
+            conversation_id,
+            target_runtime_id,
+            selection,
+            turn,
+            prepared_token,
+        };
+        match self.request_cancellable(
+            "bindings.send_prepared_handoff",
+            command,
+            Some(cancellation.cancelled.clone()),
+        )? {
+            Response::SendPreparedHandoff(value) => Ok(value),
+            _ => Err(BindingError::Contract {
+                detail: "应用返回了不匹配的交接发送结果".into(),
+            }),
+        }
+    }
+
     pub fn reasoning_efforts(
         &self,
         runtime_id: String,
@@ -1391,6 +1600,64 @@ impl VeluneApplication {
                 model_record_key
             }
         )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    #[uniffi::method(default(submission_id = None))]
+    pub fn send_turn_cancellable(
+        &self,
+        source_runtime_id: String,
+        conversation_id: String,
+        target_runtime_id: String,
+        selection: Option<ModelSelection>,
+        turn: ComposedTurn,
+        cancellation: Arc<VeluneSendCancellation>,
+        submission_id: Option<String>,
+    ) -> Result<SnapshotResult, BindingError> {
+        let command = Command::SendTurn {
+            submission_id,
+            source_runtime_id,
+            conversation_id,
+            target_runtime_id,
+            selection,
+            turn,
+        };
+        match self.request_cancellable(
+            "bindings.send_turn",
+            command,
+            Some(cancellation.cancelled.clone()),
+        )? {
+            Response::SendTurn(value) => Ok(value),
+            _ => Err(BindingError::Contract {
+                detail: "应用返回了不匹配的发送结果".into(),
+            }),
+        }
+    }
+
+    pub fn send_side_chat_cancellable(
+        &self,
+        side_chat_id: String,
+        target_runtime_id: String,
+        selection: Option<ModelSelection>,
+        turn: ComposedTurn,
+        cancellation: Arc<VeluneSendCancellation>,
+    ) -> Result<SnapshotResult, BindingError> {
+        let command = Command::SendSideChat {
+            side_chat_id,
+            target_runtime_id,
+            selection,
+            turn,
+        };
+        match self.request_cancellable(
+            "bindings.send_side_chat",
+            command,
+            Some(cancellation.cancelled.clone()),
+        )? {
+            Response::SendSideChat(value) => Ok(value),
+            _ => Err(BindingError::Contract {
+                detail: "应用返回了不匹配的发送结果".into(),
+            }),
+        }
     }
 
     pub fn composer_quota(
@@ -1491,8 +1758,31 @@ impl VeluneApplication {
         )
     }
 
+    /// Delete native user content without submitting a new model turn.
+    pub fn delete_user_message(
+        &self,
+        runtime_id: String,
+        conversation_id: String,
+        message_id: String,
+        truncate: bool,
+        expected_revision: String,
+    ) -> Result<SnapshotResult, BindingError> {
+        request!(
+            self,
+            "delete_user_message",
+            DeleteUserMessage {
+                runtime_id,
+                conversation_id,
+                message_id,
+                truncate,
+                expected_revision
+            }
+        )
+    }
+
     /// Send `turn` in place of an editable user message; a fork answers
     /// with the new conversation's snapshot.
+    #[uniffi::method(default(expected_revision = None))]
     pub fn edit_message(
         &self,
         runtime_id: String,
@@ -1501,25 +1791,21 @@ impl VeluneApplication {
         placement: EditPlacement,
         selection: Option<ModelSelection>,
         turn: ComposedTurn,
+        expected_revision: Option<String>,
     ) -> Result<SnapshotResult, BindingError> {
-        let target_runtime_id = None;
-        let expected_revision = None;
-        request!(
-            self,
-            "edit_message",
-            EditMessage {
-                runtime_id,
-                conversation_id,
-                message_id,
-                placement,
-                target_runtime_id,
-                expected_revision,
-                selection,
-                turn
-            }
+        self.edit_message_with_runtime(
+            runtime_id,
+            conversation_id,
+            message_id,
+            placement,
+            None,
+            selection,
+            turn,
+            expected_revision,
         )
     }
 
+    /// Editing with a different runtime creates a translated branch.
     #[uniffi::method(default(expected_revision = None))]
     pub fn edit_message_with_runtime(
         &self,
@@ -1532,9 +1818,6 @@ impl VeluneApplication {
         turn: ComposedTurn,
         expected_revision: Option<String>,
     ) -> Result<SnapshotResult, BindingError> {
-        if expected_revision.is_none() {
-            return Err(BindingError::Invalid { detail: "编辑缺少会话版本，请重新打开消息编辑后再发送".into() });
-        }
         request!(
             self,
             "edit_message",

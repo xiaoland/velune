@@ -7,6 +7,14 @@ use std::collections::BTreeMap;
 pub struct ClientViewId(pub String);
 uniffi::custom_newtype!(ClientViewId, String);
 
+/// One conversation currently visible in a client view.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, uniffi::Record)]
+#[serde(rename_all = "camelCase")]
+pub struct ObservedConversation {
+    pub runtime_id: String,
+    pub conversation_id: String,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Revision(pub u64);
 uniffi::custom_newtype!(Revision, u64);
@@ -59,6 +67,7 @@ pub enum CommandKind {
     ReadComposerAttachment,
     ManageScheduledTasks,
     ReleaseView,
+    SetObservedConversations,
     ListResourceTemplates,
     ReadResourceTemplate,
     SaveResourceTemplate,
@@ -118,12 +127,20 @@ pub enum CommandKind {
     ReadSnapshotUpdate,
     ReadMessagePayloads,
     SendTurn,
+    ReadHandoffRequirements,
+    BeginHandoffSummary,
+    QueueHandoffSummary,
+    RetryQueuedHandoffSummary,
+    ReadHandoffSummary,
+    CancelHandoffSummary,
+    SendPreparedHandoff,
     ReadReasoningEfforts,
     EditSendQueue,
     SteerTurn,
     ResumeTurn,
     CompactConversation,
     EditMessage,
+    DeleteUserMessage,
     ForkConversation,
     Cancel,
     StopSubAgents,
@@ -168,9 +185,9 @@ pub enum CommandKind {
 }
 
 /// Variants are verb phrases (`ReadSnapshot`, not `Snapshot`), and `Response`
-/// and `CommandKind` repeat them. C# nests each variant as a class inside the
-/// enum, so a variant named like a contract type would shadow that type for
-/// its sibling variants.
+/// and `CommandKind` name the corresponding operation. C# nests each variant
+/// as a class inside the enum, so a variant named like a contract type would
+/// shadow that type for its sibling variants.
 #[derive(Clone, Serialize, Deserialize, uniffi::Enum)]
 #[serde(
     tag = "command",
@@ -208,6 +225,10 @@ pub enum Command {
     },
     /// Release this view's presentation state; running conversations are unaffected.
     ReleaseView,
+    /// Replace this view's complete set of visible conversations.
+    SetObservedConversations {
+        conversations: Vec<ObservedConversation>,
+    },
     ListResourceTemplates,
     ReadResourceTemplate {
         template_id: String,
@@ -427,6 +448,68 @@ pub enum Command {
         selection: Option<ModelSelection>,
         turn: ComposedTurn,
     },
+    /// Check native import requirements away from the application owner thread.
+    /// Poll by passing the returned `request_id`; omit it to start a fresh read.
+    ReadHandoffRequirements {
+        source_runtime_id: String,
+        conversation_id: String,
+        target_runtime_id: String,
+        request_id: Option<String>,
+    },
+    /// Explicitly request one source-side portable-summary model call.
+    BeginHandoffSummary {
+        source_runtime_id: String,
+        conversation_id: String,
+        target_runtime_id: String,
+        summary_model: Option<ModelSelection>,
+        effort: Option<String>,
+    },
+    QueueHandoffSummary {
+        /// Request identity only; never binds or invalidates a prepared summary.
+        #[serde(
+            default,
+            rename = "submissionId",
+            skip_serializing_if = "Option::is_none"
+        )]
+        #[uniffi(default = None)]
+        submission_id: Option<String>,
+        source_runtime_id: String,
+        conversation_id: String,
+        target_runtime_id: String,
+        selection: Option<ModelSelection>,
+        turn: ComposedTurn,
+        summary_model: Option<ModelSelection>,
+        effort: Option<String>,
+    },
+    RetryQueuedHandoffSummary {
+        source_runtime_id: String,
+        conversation_id: String,
+        queued_message_id: String,
+        summary_model: Option<ModelSelection>,
+        effort: Option<String>,
+    },
+    ReadHandoffSummary {
+        work_id: String,
+    },
+    CancelHandoffSummary {
+        work_id: String,
+    },
+    /// Submit a previously captured turn only after source-side summary preparation.
+    SendPreparedHandoff {
+        source_runtime_id: String,
+        conversation_id: String,
+        target_runtime_id: String,
+        selection: Option<ModelSelection>,
+        turn: ComposedTurn,
+        prepared_token: String,
+    },
+    /// Continue with the execution owner's current runtime and known model.
+    /// This returns the same response and operation kind as `SendTurn`.
+    SendCurrentTurn {
+        source_runtime_id: String,
+        conversation_id: String,
+        turn: ComposedTurn,
+    },
     ReadReasoningEfforts {
         runtime_id: String,
         model_record_key: String,
@@ -460,6 +543,13 @@ pub enum Command {
         selection: Option<ModelSelection>,
         effort: Option<String>,
         permission_mode: Option<String>,
+    },
+    DeleteUserMessage {
+        runtime_id: String,
+        conversation_id: String,
+        message_id: String,
+        truncate: bool,
+        expected_revision: String,
     },
     EditMessage {
         runtime_id: String,
@@ -678,6 +768,7 @@ pub enum Response {
     ReadComposerAttachment(crate::ComposerAttachmentContent),
     ManageScheduledTasks(crate::ScheduledTasksState),
     ReleaseView,
+    SetObservedConversations,
     ListResourceTemplates(Vec<crate::ResourceTemplateSummary>),
     ReadResourceTemplate(crate::ResourceTemplate),
     SaveResourceTemplate(crate::ResourceSaveResult),
@@ -737,12 +828,20 @@ pub enum Response {
     ReadSnapshotUpdate(crate::SnapshotUpdate),
     ReadMessagePayloads(Vec<crate::DeliveredMessage>),
     SendTurn(SnapshotResult),
+    ReadHandoffRequirements(crate::HandoffRequirements),
+    BeginHandoffSummary(crate::HandoffSummaryStart),
+    QueueHandoffSummary(crate::QueuedHandoffSummaryStart),
+    RetryQueuedHandoffSummary(crate::QueuedHandoffSummaryStart),
+    ReadHandoffSummary(crate::HandoffSummaryStatus),
+    CancelHandoffSummary(crate::HandoffSummaryStatus),
+    SendPreparedHandoff(SnapshotResult),
     ReadReasoningEfforts(Vec<String>),
     EditSendQueue(SnapshotResult),
     SteerTurn(SnapshotResult),
     ResumeTurn(SnapshotResult),
     CompactConversation(SnapshotResult),
     EditMessage(SnapshotResult),
+    DeleteUserMessage(SnapshotResult),
     ForkConversation(SnapshotResult),
     Cancel(SnapshotResult),
     StopSubAgents(SnapshotResult),
@@ -791,6 +890,9 @@ impl Command {
     pub fn composed_turn_mut(&mut self) -> Option<&mut ComposedTurn> {
         match self {
             Self::SendTurn { turn, .. }
+            | Self::QueueHandoffSummary { turn, .. }
+            | Self::SendPreparedHandoff { turn, .. }
+            | Self::SendCurrentTurn { turn, .. }
             | Self::SteerTurn { turn, .. }
             | Self::EditMessage { turn, .. }
             | Self::SendSideChat { turn, .. }
@@ -853,6 +955,8 @@ impl Command {
             | Self::ReadConversation { .. }
             | Self::ReadSnapshot { .. }
             | Self::ReadSnapshotUpdate { .. }
+            | Self::ReadHandoffRequirements { .. }
+            | Self::ReadHandoffSummary { .. }
             | Self::ReadMessagePayloads { .. }
             | Self::ReadReasoningEfforts { .. }
             | Self::ReadConversationActivity { .. }
@@ -867,6 +971,7 @@ impl Command {
             | Self::ReadQuotaAlerts { .. }
             | Self::ReadProviderApiKey { .. }
             | Self::FetchPublicModelCatalog
+            | Self::SetObservedConversations { .. }
             | Self::ReadAttachment { .. } => DeliveryClass::Observation,
             Self::ReleaseView
             | Self::SaveResourceTemplate { .. }
@@ -899,10 +1004,17 @@ impl Command {
             | Self::RenameConversation { .. }
             | Self::DeleteConversation { .. }
             | Self::SendTurn { .. }
+            | Self::BeginHandoffSummary { .. }
+            | Self::QueueHandoffSummary { .. }
+            | Self::RetryQueuedHandoffSummary { .. }
+            | Self::CancelHandoffSummary { .. }
+            | Self::SendPreparedHandoff { .. }
+            | Self::SendCurrentTurn { .. }
             | Self::EditSendQueue { .. }
             | Self::SteerTurn { .. }
             | Self::ResumeTurn { .. }
             | Self::CompactConversation { .. }
+            | Self::DeleteUserMessage { .. }
             | Self::EditMessage { .. }
             | Self::ForkConversation { .. }
             | Self::Cancel { .. }
@@ -943,6 +1055,7 @@ impl Command {
             Self::ReadComposerAttachment { .. } => CommandKind::ReadComposerAttachment,
             Self::ManageScheduledTasks { .. } => CommandKind::ManageScheduledTasks,
             Self::ReleaseView => CommandKind::ReleaseView,
+            Self::SetObservedConversations { .. } => CommandKind::SetObservedConversations,
             Self::ListResourceTemplates => CommandKind::ListResourceTemplates,
             Self::ReadResourceTemplate { .. } => CommandKind::ReadResourceTemplate,
             Self::SaveResourceTemplate { .. } => CommandKind::SaveResourceTemplate,
@@ -1005,12 +1118,20 @@ impl Command {
             Self::ReadSnapshot { .. } => CommandKind::ReadSnapshot,
             Self::ReadSnapshotUpdate { .. } => CommandKind::ReadSnapshotUpdate,
             Self::ReadMessagePayloads { .. } => CommandKind::ReadMessagePayloads,
-            Self::SendTurn { .. } => CommandKind::SendTurn,
+            Self::SendTurn { .. } | Self::SendCurrentTurn { .. } => CommandKind::SendTurn,
+            Self::ReadHandoffRequirements { .. } => CommandKind::ReadHandoffRequirements,
+            Self::BeginHandoffSummary { .. } => CommandKind::BeginHandoffSummary,
+            Self::QueueHandoffSummary { .. } => CommandKind::QueueHandoffSummary,
+            Self::RetryQueuedHandoffSummary { .. } => CommandKind::RetryQueuedHandoffSummary,
+            Self::ReadHandoffSummary { .. } => CommandKind::ReadHandoffSummary,
+            Self::CancelHandoffSummary { .. } => CommandKind::CancelHandoffSummary,
+            Self::SendPreparedHandoff { .. } => CommandKind::SendPreparedHandoff,
             Self::ReadReasoningEfforts { .. } => CommandKind::ReadReasoningEfforts,
             Self::EditSendQueue { .. } => CommandKind::EditSendQueue,
             Self::SteerTurn { .. } => CommandKind::SteerTurn,
             Self::ResumeTurn { .. } => CommandKind::ResumeTurn,
             Self::CompactConversation { .. } => CommandKind::CompactConversation,
+            Self::DeleteUserMessage { .. } => CommandKind::DeleteUserMessage,
             Self::EditMessage { .. } => CommandKind::EditMessage,
             Self::ForkConversation { .. } => CommandKind::ForkConversation,
             Self::Cancel { .. } => CommandKind::Cancel,
@@ -1073,6 +1194,7 @@ impl Command {
                 | Self::ApplyProviderImport { .. }
                 | Self::RenameConversation { .. }
                 | Self::DeleteConversation { .. }
+                | Self::DeleteUserMessage { .. }
                 | Self::EditMessage { .. }
                 | Self::SetAcpSessionConfig { .. }
                 | Self::SaveResourceTemplate { .. }
@@ -1092,6 +1214,12 @@ impl Command {
                 self,
                 Self::CreateConversation { .. }
                     | Self::SendTurn { .. }
+                    | Self::BeginHandoffSummary { .. }
+                    | Self::QueueHandoffSummary { .. }
+                    | Self::RetryQueuedHandoffSummary { .. }
+                    | Self::CancelHandoffSummary { .. }
+                    | Self::SendPreparedHandoff { .. }
+                    | Self::SendCurrentTurn { .. }
                     | Self::EditSendQueue { .. }
                     | Self::SteerTurn { .. }
                     | Self::ResumeTurn { .. }

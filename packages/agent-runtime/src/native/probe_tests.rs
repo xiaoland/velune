@@ -2,6 +2,89 @@ use super::*;
 use crate::probe::ProbeBudget;
 
 #[test]
+fn queued_request_keeps_protocol_notifications_live_while_stdin_is_blocked() {
+    let root = std::env::temp_dir().join(format!(
+        "velune-rpc-write-gate-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir(&root).unwrap();
+    let mut command = crate::process::command("python3");
+    command.args([
+        "-c",
+        r#"
+import json, pathlib, sys, time
+root = pathlib.Path(sys.argv[1])
+print(json.dumps({'method':'synthetic/notice','params':{'sequence':1}}), flush=True)
+deadline = time.monotonic() + 8
+while not (root / 'release').exists():
+    if time.monotonic() >= deadline: sys.exit(2)
+    time.sleep(0.005)
+for line in sys.stdin:
+    record = json.loads(line)
+    with (root / 'wire').open('a') as log: log.write(str(record['id']) + '\n')
+    print(json.dumps({'id':record['id'],'result':{}}), flush=True)
+"#,
+    ]);
+    command.arg(&root);
+    let mut rpc =
+        RpcClient::spawn_at(command, &crate::execution::ExecutionTarget::Local, None).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let id = rpc
+        .enqueue_request(
+            "synthetic/request",
+            &serde_json::json!({
+                "payload": "x".repeat(2 * 1024 * 1024),
+            }),
+            deadline,
+        )
+        .unwrap();
+    let mut observed = false;
+    while Instant::now() < deadline {
+        let records = rpc.poll().unwrap();
+        if records
+            .iter()
+            .any(|record| record["method"] == "synthetic/notice")
+        {
+            observed = true;
+            break;
+        }
+        thread::sleep(Duration::from_millis(5));
+    }
+    assert!(
+        observed,
+        "notification must arrive before stdin gate is released"
+    );
+    assert_eq!(
+        rpc.writes.len(),
+        1,
+        "the blocked frame must still own its receipt"
+    );
+    assert!(!root.join("wire").exists());
+    std::fs::write(root.join("release"), []).unwrap();
+    let mut answered = false;
+    while Instant::now() < deadline {
+        let records = rpc.poll().unwrap();
+        if records.iter().any(|record| record["id"] == id) {
+            answered = true;
+            break;
+        }
+        thread::sleep(Duration::from_millis(5));
+    }
+    rpc.shutdown();
+    assert!(answered);
+    assert_eq!(
+        std::fs::read_to_string(root.join("wire")).unwrap(),
+        format!("{id}\n"),
+        "write completion must not replay a request"
+    );
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn cancelled_probe_does_not_spawn_and_steps_share_the_deadline() {
     let cancelled = ProbeBudget::new(Duration::from_secs(2));
     cancelled.cancel();

@@ -32,7 +32,7 @@ struct QuotaWindowRow: View {
         parts.append(QuotaResetFormat.text(window.resetsAt))
         if runsShort, let empty = window.pace?.runsOutAt { parts.append("按目前的平均速度约\(empty.formatted(.relative(presentation: .named)))用尽") }
         if showsModels, let models = window.modelIds { parts.append("仅 " + models.joined(separator: "、")) }
-        return parts.joined(separator: " · ")
+        return parts.joined(separator: "，")
     }
 }
 

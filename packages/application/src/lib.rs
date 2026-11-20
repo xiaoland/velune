@@ -156,6 +156,48 @@ impl Error {
         Self::Invalid(format!("{message}：{cause}"))
     }
 
+    pub(crate) fn after_delivery(cause: impl std::fmt::Display) -> Self {
+        let mut failure = Failure::new(
+            FailureKind::Unavailable,
+            format!("输入已受理，但刷新结果失败；请先查看会话和队列，不要重复发送：{cause}"),
+        );
+        failure.code = "message_delivery_accepted".into();
+        Self::Contract(failure)
+    }
+    pub(crate) fn runtime_operation(message: &str, cause: velune_agent_runtime::LiveError) -> Self {
+        let indeterminate = cause.downcast_ref::<velune_agent_runtime::native::Error>()
+            .is_some_and(|error| matches!(error.code(), "timeout" | "transport"))
+            || cause.downcast_ref::<velune_agent_runtime::Error>().is_some_and(|error| matches!(
+                error,
+                velune_agent_runtime::Error::Timeout(_) | velune_agent_runtime::Error::ChildExited
+                    | velune_agent_runtime::Error::Transport(_)
+                    | velune_agent_runtime::Error::Io(_) | velune_agent_runtime::Error::Json(_)
+            ));
+        if indeterminate {
+            Self::operation_indeterminate(format!("{message}：{cause}"))
+        } else {
+            Self::context(message, cause)
+        }
+    }
+    pub(crate) fn operation_indeterminate(cause: impl std::fmt::Display) -> Self {
+        let mut failure = Failure::new(
+            FailureKind::Unavailable,
+            format!("运行时操作结果不确定，请先查看会话，不要重复提交：{cause}"),
+        );
+        failure.code = "runtime_operation_indeterminate".into();
+        Self::Contract(failure)
+    }
+    pub(crate) fn operation_completed(cause: impl std::fmt::Display) -> Self {
+        let mut failure = Failure::new(
+            FailureKind::Unavailable,
+            format!("运行时操作已完成，但刷新结果失败；请先查看会话，不要重复提交：{cause}"),
+        );
+        failure.code = "runtime_operation_completed".into();
+        Self::Contract(failure)
+    }
+    pub(crate) fn delivery_accepted(&self) -> bool {
+        matches!(self, Self::Contract(failure) if failure.code == "message_delivery_accepted")
+    }
     pub(crate) fn invalid(message: &'static str) -> Self {
         Self::Invalid(message.into())
     }
@@ -244,7 +286,7 @@ impl From<Error> for Failure {
                     "会话正在运行；请等当前 turn 结束后重试".to_owned(),
                 );
                 failure.code = "busy".into();
-                failure
+                return failure;
             }
             Error::Io(error) => Failure::new(Kind::Io, error.to_string()),
             Error::Json(error) => Failure::new(Kind::Contract, error.to_string()),
@@ -284,5 +326,18 @@ impl From<Error> for Failure {
         }
         .into();
         failure
+    }
+}
+
+#[cfg(test)]
+mod failure_tests {
+    use super::*;
+
+    #[test]
+    fn busy_preserves_its_code_instead_of_generic_invalid() {
+        let busy = Failure::from(Error::Busy);
+        assert_eq!(busy.kind, FailureKind::Invalid);
+        assert_eq!(busy.code, "busy");
+        assert_eq!(Failure::from(Error::invalid("local validation")).code, "invalid");
     }
 }

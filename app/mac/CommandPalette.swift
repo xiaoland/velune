@@ -20,8 +20,8 @@ enum PaletteMode: Hashable {
     }
 }
 
-/// One row of the palette. `run` receives whether ⌘Return chose it, which
-/// opens a conversation in a new tab. `aliases` are what it is also found
+/// One row of the palette. `run` receives whether ⌘Return chose it;
+/// conversation choices always preserve the current tab. `aliases` are what it is also found
 /// by, never shown (DESIGN.md, 检索别名).
 struct PaletteItem: Identifiable {
     let id: String
@@ -97,7 +97,7 @@ extension ConversationWindowModel {
             case .newConversation, .newWindow, .openConversation, .newTab, .reopenClosedTab, .closeTab, .closeWindow,
                  .splitRight, .splitDown, .commandPalette, .rightArea, .bottomArea, .editorOnly,
                  .problems, .shortcutHelp, .nextAttention, .nextTab, .previousTab, .moveTabToNewWindow,
-                 .closeSplit, .nextPane, .previousPane, .keepInFront, .showList: break
+                 .closeSplit, .nextPane, .previousPane, .keepInFront, .showList, .selectTab1, .selectTab2, .selectTab3, .selectTab4, .selectTab5, .selectTab6, .selectTab7, .selectTab8, .selectTab9: break
             default: return false
             }
         }
@@ -127,6 +127,7 @@ extension ConversationWindowModel {
         case .closeSplit, .nextPane, .previousPane: isSplit
         case .back: !store.backHistory.isEmpty
         case .forward: !store.forwardHistory.isEmpty
+        case .selectTab1, .selectTab2, .selectTab3, .selectTab4, .selectTab5, .selectTab6, .selectTab7, .selectTab8, .selectTab9: command.tabPosition.map { $0 <= focusedPane.tabs.count } == true
         case .nextTab, .previousTab: focusedPane.tabs.count > 1
         case .moveTabToNewWindow: canMoveTabToNewWindow
         case .keepInFront: WindowPinning.shared.canPin
@@ -170,6 +171,7 @@ extension ConversationWindowModel {
         case .closeSplit: closePane(focusedPaneID)
         case .back: focused.goBack()
         case .forward: focused.goForward()
+        case .selectTab1, .selectTab2, .selectTab3, .selectTab4, .selectTab5, .selectTab6, .selectTab7, .selectTab8, .selectTab9: selectTab(at: command.tabPosition!)
         case .nextPane: focusNeighbour(forward: true)
         case .previousPane: focusNeighbour(forward: false)
         case .nextTab: selectNeighbourTab(forward: true)
@@ -246,17 +248,18 @@ extension ConversationWindowModel {
             } ?? []
             return commands + queued + pages + windows
         case .conversations:
+            let sourceDevice = list.device
             let runtimes = Dictionary(list.device.runtimeInstances.map { ($0.id, $0.name) }, uniquingKeysWith: { first, _ in first })
             let waiting = application.waitingConversationIDs
             return list.conversations.filter { $0.parentConversationID == nil }.map { conversation in
                 let place = conversation.project ?? conversation.cwd
                 let state = waiting.contains(conversation.id) ? "等待回应" : list.isRunning(conversation) ? "运行中" : conversation.failed ? "失败" : conversation.unread ? "未读" : nil
-                let detail = [place.map { URL(fileURLWithPath: $0).lastPathComponent }, runtimes[conversation.runtimeID], state].compactMap { $0 }.joined(separator: " · ")
+                let detail = [place.map { URL(fileURLWithPath: $0).lastPathComponent }, runtimes[conversation.runtimeID], state].compactMap { $0 }.joined(separator: "，")
                 return PaletteItem(id: conversation.id, title: conversation.title.isEmpty ? "未命名会话" : conversation.title, detail: detail,
-                                   checked: conversation.id == store.loadedConversationID) { [weak self] newTab in
+                                   checked: store.device === sourceDevice && conversation.id == store.loadedConversationID) { [weak self] _ in
                     guard let self else { return }
                     closePalette(focusComposer: true)
-                    if newTab { openInNewTab(conversation.id) } else { open(conversation.id) }
+                    openInNewTab(conversation.id, device: sourceDevice)
                 }
             }
         case .runtime:
@@ -336,7 +339,7 @@ extension ConversationWindowModel {
 }
 
 /// The palette over the top of a window: a field and the rows it narrows.
-/// ↑↓ choose, Return runs (⌘Return opens a conversation in a new tab),
+/// ↑↓ choose, Return runs (conversation choices preserve the current tab),
 /// Escape or a click outside closes it.
 struct CommandPaletteView: View {
     @ObservedObject var window: ConversationWindowModel

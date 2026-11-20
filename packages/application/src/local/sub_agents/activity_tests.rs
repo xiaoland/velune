@@ -11,7 +11,7 @@ fn wait_for_child_work(
     let deadline = Instant::now() + Duration::from_secs(4);
     loop {
         parent.pi().unwrap().poll();
-        let work = parent.work();
+        let work = parent.work().unwrap();
         if work.iter().any(|task| task.conversation_id.is_none())
             && work
                 .iter()
@@ -158,7 +158,7 @@ while True:
     wait_for_child_work(&mut core.parked[0], &child_id, None);
     let ended = next_child_view(core, stopping.cursor);
     assert_child_view(&ended, RunState::Idle);
-    assert!(core.parked[0].work().iter().any(|task| {
+    assert!(core.parked[0].work().unwrap().iter().any(|task| {
         task.conversation_id.as_deref() == Some(sibling_id.as_str())
             && task.state == BackgroundState::Running
     }));

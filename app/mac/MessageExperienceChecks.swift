@@ -63,8 +63,34 @@ import VeluneBindings
         while !ready(), Date() < end { RunLoop.main.run(until: Date().addingTimeInterval(0.02)) }
         precondition(ready(), "合成检查超时")
     }
+    if CommandLine.arguments.contains("--experience-sidebar-only") {
+        sidebarActionsChecks(home: home)
+        exit(0)
+    }
+    if CommandLine.arguments.contains("--experience-compaction-only") {
+        compactionTranscriptChecks(home: home)
+        exit(0)
+    }
     if CommandLine.arguments.contains("--experience-runtime-recovery-only") {
         runtimeRecoveryNativeChecks(home: home)
+    }
+    if CommandLine.arguments.contains("--experience-file-links-only") {
+        let path = home.appendingPathComponent("document with space.md").path
+        try! Data("synthetic".utf8).write(to: URL(fileURLWithPath: path))
+        precondition(TranscriptFileLink.resolve(path + ":20:3", cwd: nil, remote: false)?.path == path)
+        precondition(TranscriptFileLink.resolve(URL(fileURLWithPath: path).absoluteString + ":20", cwd: nil, remote: false)?.path == path)
+        precondition(TranscriptFileLink.resolve("document%20with%20space.md:20", cwd: home.path, remote: false)?.path == path)
+        precondition(TranscriptFileLink.resolve(path + ":20", cwd: nil, remote: true) == nil)
+        precondition(TranscriptFileLink.resolve("https://example.com:8080/a:20", cwd: nil, remote: false)?.absoluteString == "https://example.com:8080/a:20")
+        let literal = path + ":20"
+        try! Data().write(to: URL(fileURLWithPath: literal))
+        precondition(TranscriptFileLink.resolve(literal, cwd: nil, remote: false)?.path == literal)
+        let segments = MarkdownAttributedRenderer.render("见 `/Users/example/document.md:20`。")
+        guard case .prose(let rendered) = segments.first else { fatalError("missing prose") }
+        let range = (rendered.string as NSString).range(of: "/Users/example/document.md:20")
+        precondition(rendered.attribute(.link, at: range.location, effectiveRange: nil) as? String == "/Users/example/document.md:20")
+        note("PASS source locations: absolute, relative, encoded/file URLs, literal colon filenames, remote isolation, inline link rendering")
+        exit(0)
     }
     if CommandLine.arguments.contains("--experience-fork-only") { forkExperienceChecks(home: home); exit(0) }
     if CommandLine.arguments.contains("--experience-drag-provider-only") { dragProviderChecks() }
@@ -73,7 +99,9 @@ import VeluneBindings
         workspaceRecoveryChecks(home: home)
         exit(0)
     }
+    if CommandLine.arguments.contains("--experience-native-row-order-only") { TranscriptTableController.checkMaterializedRowOrder(); exit(0) }
     AppearancePreferences.shared.load(home: home) { fatalError($0) }
+    if CommandLine.arguments.contains("--experience-admission-only") { DeviceStore.checkBackgroundSubmissionAdmission(); exit(0) }
     if CommandLine.arguments.contains("--experience-message-editor-offscreen") { messageEditorOffscreenChecks(home: home) }
     if CommandLine.arguments.contains("--experience-runtime-editor-only") { runtimeEditorChecks(home: home) }
     func stamp(_ date: Date) -> Int64 { Int64(date.timeIntervalSince1970 * 1000) }
@@ -198,6 +226,8 @@ import VeluneBindings
     precondition(outgoing.displayed.first?.status == "发送中")
     outgoing.fail(sending); precondition(outgoing.displayed.isEmpty)
     note("PASS unified local submissions: immediate send/queue/steer; canonical queue; repeated and renamed echoes do not consume another submission; failure removes only its placeholder")
+
+    if CommandLine.arguments.contains("--experience-submissions-only") { exit(0) }
 
     _ = try! transport.upsertRuntime(RuntimeInstance(enabled: true, id: "fixture", name: "Synthetic ACP", typeId: .acp, gatewayId: "default", settings: ["binary": "/usr/bin/true"]))
     device.start()
@@ -353,6 +383,28 @@ import VeluneBindings
         }
         add(.message(message, revision: 0, expanded: [], status: nil, copies: true, edits: message.role == .user, forks: message.role == .assistant), rendered: RenderedMessage(message), id: message.id)
     }
+    let editedMessage = DeliveredMessage(id: "user", role: .user, timestampUnixMs: now, blocks: [
+        .text(text: "请把刚才的方案再简化一些。\n\n保留现有的消息编辑入口，让我能直接修改正文，再决定是在原会话继续，还是另开一个会话。运行参数不需要一直展开。\n\n另外，发送失败时请保留我正在编辑的内容。"),
+    ])
+    for (name, height, appearance, revision) in [
+        ("message-editor", 450.0, NSAppearance.Name.aqua, String?.none),
+        ("message-editor-dark", 450.0, NSAppearance.Name.darkAqua, String?.none),
+        ("message-editor-dark-conflict", 520.0, NSAppearance.Name.darkAqua, Optional("synthetic-old-history")),
+    ] {
+        let request = MessageEditRequest(message: editedMessage, conversationID: nil, inPlace: true, isLast: false, revision: revision)
+        let session = MessageEditingSession(source: window.focused.store, request: request, presentation: .sheet)
+        capture(NSHostingView(rootView: MessageEditorView(session: session, window: window, source: window.focused)
+            .applicationAppearance().background(Color(nsColor: .windowBackgroundColor))),
+            name: name, size: NSSize(width: 620, height: height), appearance: appearance)
+    }
+    let attached = DeliveredMessage(id: "attachment-editor", role: .user, blocks:
+        [.text(text: String(repeating: "编辑长正文保留换行与执行配置。\n", count: 40))] +
+        (0..<12).map { .file(path: "/tmp/" + String(repeating: "very-long-attachment-name-", count: 5) + "\($0).md") })
+    let attachedSession = MessageEditingSession(source: window.focused.store,
+        request: MessageEditRequest(message: attached, conversationID: nil, inPlace: true, isLast: false, revision: nil), presentation: .sheet)
+    capture(NSHostingView(rootView: MessageEditorView(session: attachedSession, window: window, source: window.focused)
+        .applicationAppearance().background(Color(nsColor: .windowBackgroundColor))),
+        name: "message-editor-long-attachments", size: NSSize(width: 620, height: 520))
     capture(rows, name: "message-actions", size: NSSize(width: 1000, height: max(y, 500)))
     for width: CGFloat in [1100, 560] {
         let composer = ComposerView(store: window.focused.store, model: model, layout: window, send: {}, steer: {}, submission: { window.focused.submission(using: model) }, resume: {}, fillsHeight: true, recipient: "架构评审会话")

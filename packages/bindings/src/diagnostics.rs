@@ -53,13 +53,23 @@ impl Diagnostics {
                 Ok(value) => Ok(value),
                 Err(error) => {
                     #[cfg(feature = "remote")]
-                    if matches!(error, BindingError::RemoteRequest { .. }) { return Err(error); }
+                    if let BindingError::RemoteRequest { kind, detail, code, request_id, .. } = error {
+                        return Err(BindingError::RemoteRequest { kind, detail, code, request_id, operation_id });
+                    }
                     let (kind, code, phase, detail) = error.diagnostic_parts();
                     tracing::error!(target: "velune_bindings", event = "operation_failed", code, phase, failure_kind = kind.as_str(), detail = %detail, elapsed_ms = started.elapsed().as_millis() as u64);
                     Err(BindingError::Diagnostic { kind, code, phase, detail, operation_id })
                 }
             }
         });
+        #[cfg(feature = "remote")]
+        if let Err(BindingError::RemoteRequest {
+            request_id: Some(request),
+            ..
+        }) = &result
+        {
+            observation.request_identity(&request.incarnation, &request.client, request.sequence);
+        }
         let outcome = match &result {
             Ok(_) => velune_telemetry::Outcome::Success,
             Err(error) => {

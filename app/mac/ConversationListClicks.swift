@@ -7,14 +7,19 @@ import SwiftUI
 /// markers provide identity; no table traversal or title matching is needed.
 @MainActor final class ConversationListClicks: ObservableObject {
     private final class Row { weak var view: NSView?; init(_ view: NSView) { self.view = view } }
-    private var rows: [String: Row] = [:]
+    private var rows: [AggregatedRowID: Row] = [:]
     private weak var anchor: NSView?
     private var monitor: Any?
-    var single: ((String, NSEvent.ModifierFlags) -> Void)?
+    var single: ((AggregatedRowID, NSEvent.ModifierFlags, TimeInterval) -> Void)?
     var cancel: (() -> Void)?
 
-    func register(_ view: NSView, id: String) { rows[id] = Row(view) }
-    func unregister(_ view: NSView, id: String) { if rows[id]?.view === view { rows[id] = nil } }
+    static func openDelay(pressedAt: TimeInterval, now: TimeInterval = ProcessInfo.processInfo.systemUptime,
+                          interval: TimeInterval = NSEvent.doubleClickInterval) -> TimeInterval {
+        max(0, pressedAt + interval - now)
+    }
+
+    func register(_ view: NSView, id: AggregatedRowID) { rows[id] = Row(view) }
+    func unregister(_ view: NSView, id: AggregatedRowID?) { if let id, rows[id]?.view === view { rows[id] = nil } }
     func attach(_ view: NSView) {
         guard view.window != nil else { detach(view); return }
         anchor = view
@@ -29,7 +34,7 @@ import SwiftUI
         if let monitor { NSEvent.removeMonitor(monitor) }
         monitor = nil; anchor = nil; single = nil; cancel = nil
     }
-    private func row(at event: NSEvent) -> String? {
+    private func row(at event: NSEvent) -> AggregatedRowID? {
         guard event.window === anchor?.window else { return nil }
         return rows.first { _, row in
             guard let view = row.view, view.window === event.window, !view.isHiddenOrHasHiddenAncestor else { return false }
@@ -45,7 +50,7 @@ import SwiftUI
             // the press, then read native selection on the next main-loop turn.
             // The opener still waits for release and the system double-click
             // interval; native drag and double-click paths cancel that work.
-            DispatchQueue.main.async { [weak self] in self?.single?(id, flags) }
+            DispatchQueue.main.async { [weak self] in self?.single?(id, flags, event.timestamp) }
         case .leftMouseDragged: cancel?()
         default: break
         }
@@ -53,11 +58,11 @@ import SwiftUI
 }
 
 struct ConversationRowClickMarker: NSViewRepresentable {
-    let id: String
+    let id: AggregatedRowID
     let owner: ConversationListClicks
     final class Marker: NSView {
         weak var owner: ConversationListClicks?
-        var id = ""
+        var id: AggregatedRowID?
         override func hitTest(_ point: NSPoint) -> NSView? { nil }
     }
     func makeNSView(context: Context) -> Marker { Marker() }
@@ -70,7 +75,7 @@ struct ConversationRowClickMarker: NSViewRepresentable {
 
 struct ConversationListClickObserver: NSViewRepresentable {
     let owner: ConversationListClicks
-    let single: (String, NSEvent.ModifierFlags) -> Void
+    let single: (AggregatedRowID, NSEvent.ModifierFlags, TimeInterval) -> Void
     let cancel: () -> Void
     final class Anchor: NSView {
         weak var owner: ConversationListClicks?

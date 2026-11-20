@@ -2,12 +2,12 @@ import Foundation
 import VeluneBindings
 
 /// A presentation value projected by application; no provider or runtime configuration.
-extension ComposerQuotaEntry: Identifiable {
+extension ComposerQuotaEntry: @retroactive Identifiable {
     var title: String {
         switch origin {
         case .provider: name
-        case .runtimeLogin: "\(name) · 登录额度"
-        case .conversationRecord: "\(name) · 会话记录中的限额"
+        case .runtimeLogin: "\(name)的登录额度"
+        case .conversationRecord: "\(name)会话记录中的限额"
         }
     }
     var quota: QuotaObservation { observation }

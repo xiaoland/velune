@@ -64,15 +64,17 @@ impl CoreRuntime {
         }
         for session in std::iter::once(&self.session).chain(&self.parked) {
             if session.conversation_id() == Some(snapshot.conversation.id.as_str()) {
-                for task in session.work() {
-                    if let Some(id) = task.conversation_id {
-                        add(&id, "子 Agent");
+                if let Ok(work) = session.work() {
+                    for id in work.iter().filter_map(|task| task.conversation_id.as_deref()) {
+                        add(id, "子 Agent");
                     }
                 }
-                if let Some(live) = session.active_state.live() {
-                    for task in live.background_tasks().tasks {
-                        if let Some(id) = task.conversation_id {
-                            add(&id, &task.title);
+                if let Some(live) = session.active_state.live()
+                    && let Ok(background) = live.background_tasks()
+                {
+                    for task in &background.tasks {
+                        if let Some(id) = task.conversation_id.as_deref() {
+                            add(id, &task.title);
                         }
                     }
                 }
@@ -126,15 +128,14 @@ impl CoreRuntime {
         if let Some(parent) = std::iter::once(&self.session)
             .chain(&self.parked)
             .find(|session| {
-                session
-                    .work()
-                    .iter()
-                    .any(|task| task.conversation_id.as_deref() == Some(id))
+                session.work().is_ok_and(|work| {
+                    work.iter().any(|task| task.conversation_id.as_deref() == Some(id))
+                })
                     || session.active_state.live().is_some_and(|live| {
-                        live.background_tasks()
-                            .tasks
-                            .iter()
-                            .any(|task| task.conversation_id.as_deref() == Some(id))
+                        live.background_tasks().is_ok_and(|background| {
+                            background.tasks.iter()
+                                .any(|task| task.conversation_id.as_deref() == Some(id))
+                        })
                     })
             })
         {
@@ -160,15 +161,53 @@ impl CoreRuntime {
     pub(super) fn child_run_state(&self, snapshot: &ConversationSnapshot) -> Option<RunState> {
         snapshot.conversation.parent_conversation_id.as_ref()?;
         let child_id = snapshot.conversation.id.as_str();
-        let task = self
+        let state = self
             .parked
             .iter()
-            .flat_map(session::Session::work)
-            .find(|task| task.conversation_id.as_deref() == Some(child_id))?;
-        Some(match task.state {
+            .filter_map(|session| session.work().ok())
+            .find_map(|work| {
+                work.iter()
+                    .find(|task| task.conversation_id.as_deref() == Some(child_id))
+                    .map(|task| task.state)
+            })?;
+        Some(match state {
             velune_agent_runtime::work::BackgroundState::Stopping => RunState::Stopping,
             _ => RunState::Elsewhere,
         })
+    }
+}
+
+impl CoreRuntime {
+    pub(super) fn apply_child_control(&self, snapshot: &mut ConversationSnapshot) {
+        let Some(parent_id) = snapshot.conversation.parent_conversation_id.as_deref() else {
+            return;
+        };
+        let Some(parent) = self
+            .parked
+            .iter()
+            .find(|session| session.conversation_id() == Some(parent_id))
+        else {
+            return;
+        };
+        let child = &snapshot.conversation.id;
+        let state = parent.work().ok().and_then(|work| {
+            work.iter()
+                .find(|task| task.conversation_id.as_ref() == Some(child))
+                .map(|task| task.state)
+        });
+        if let Some(state) = state {
+            let stopping = state == velune_agent_runtime::work::BackgroundState::Stopping;
+            let controllable = parent
+                .active_state
+                .live()
+                .is_some_and(|live| live.can_stop_child(child));
+            if controllable && !stopping {
+                snapshot.run_state = RunState::Running;
+            }
+            snapshot.actions.can_cancel = controllable && !stopping;
+        } else {
+            snapshot.actions.can_cancel = false;
+        }
     }
 }
 
@@ -219,7 +258,7 @@ mod tests {
         app.runtime.last_listed.borrow_mut().entries.insert(
             child.id.clone(),
             organization::ListedSource {
-                summary: child.clone(),
+                summary: child.clone().into(),
                 archived_natively: false,
                 provisional: false,
             },
@@ -242,7 +281,7 @@ mod tests {
             child.title.display_text()
         );
         app.runtime.last_listed.borrow_mut().entries.clear();
-        app.runtime.session.active_state = ActiveState::History(Box::new(view.clone()));
+        app.runtime.session.active_state = ActiveState::History(Box::new(view.clone().into()));
         assert_eq!(
             app.runtime.sub_agent_parent(&child.id).as_deref(),
             Some(view.conversation.id.as_str())
@@ -264,7 +303,7 @@ mod tests {
             app.runtime.last_listed.borrow_mut().entries.insert(
                 summary.id.clone(),
                 organization::ListedSource {
-                    summary,
+                    summary: summary.into(),
                     archived_natively: false,
                     provisional: false,
                 },

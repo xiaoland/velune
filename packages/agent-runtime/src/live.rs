@@ -2,46 +2,47 @@
 //! it. Kind-specific operations stay on the concrete session types.
 use crate::conversation::{ConversationSnapshot, ConversationSummary, RuntimeInteractionReply};
 use crate::{TurnInput, acp, native, pi_session::PiSession};
+use crate::creation::{DataRetention, Retained};
 
 /// Failure of a runtime operation, for display.
 pub type LiveError = Box<dyn std::error::Error + Send + Sync>;
 pub type LiveResult = Result<(), LiveError>;
 
 pub trait LiveConversation {
-    fn background_tasks(&self) -> crate::conversation::BackgroundTaskList {
-        Default::default()
+    fn background_tasks(&self) -> Result<Retained<crate::conversation::BackgroundTaskList>, LiveError> {
+        Ok(Retained::from_parts(Default::default(), DataRetention::default()))
     }
     fn read_background_task_output(
         &mut self,
         _task: &str,
         _request: Option<&str>,
-    ) -> Result<crate::conversation::BackgroundTaskOutput, LiveError> {
+    ) -> Result<Retained<crate::conversation::BackgroundTaskOutput>, LiveError> {
         Err("此运行时不能读取后台任务输出".into())
     }
     fn stop_background_task(&mut self, _task: &str) -> LiveResult {
         Err("此运行时不能独立停止后台任务".into())
     }
-    fn can_stop_child(&self, _id: &str) -> bool {
-        false
-    }
-    fn stop_child(&mut self, _id: &str) -> LiveResult {
-        Err("此运行时不支持独立停止子会话".into())
-    }
     /// The conversation as the runtime shows it, once it has one.
     fn snapshot(&self) -> Option<&ConversationSnapshot>;
+    /// Reserve receive-data credit before making an owned display copy.
+    fn owned_snapshot(&self) -> Result<Option<Retained<ConversationSnapshot>>, LiveError>;
     fn turn_running(&self) -> bool;
     /// A persisted conversation can be reopened after closing this connection.
     /// The application checks whether the current identity has been persisted.
     fn supports_reopen(&self) -> bool;
     /// Work that outlives the parent turn, as observed by this adapter.
-    fn work(&self) -> Vec<crate::work::BackgroundTask> {
-        Vec::new()
+    fn work(&self) -> Result<Retained<Vec<crate::work::BackgroundTask>>, LiveError> {
+        Ok(Retained::from_parts(Vec::new(), DataRetention::default()))
     }
     /// True only once the adapter has observed that all background work and
     /// its completion delivery have settled. An empty but stale list is not
     /// enough to authorize replacing the process.
     fn work_settled(&self) -> bool {
-        self.work().is_empty()
+        self.work().is_ok_and(|work| work.is_empty())
+    }
+    /// A native request still needs this connection even if it doesn't block the turn.
+    fn has_pending_requests(&self) -> bool {
+        false
     }
     /// A best-effort metadata request still needs the current connection.
     fn has_pending_metadata(&self) -> bool {
@@ -54,7 +55,13 @@ pub trait LiveConversation {
             Err("此运行时没有后台工作停止接口".into())
         }
     }
-    fn set_conversation(&mut self, conversation: ConversationSummary);
+    fn can_stop_child(&self, _id: &str) -> bool {
+        false
+    }
+    fn stop_child(&mut self, _id: &str) -> LiveResult {
+        Err("此运行时不支持独立停止子会话".into())
+    }
+    fn set_conversation(&mut self, conversation: Retained<ConversationSummary>);
     /// Change native metadata without replacing the running conversation.
     fn rename(&mut self, _title: &str) -> LiveResult {
         Err("此运行时没有原生会话重命名接口".into())
@@ -85,15 +92,15 @@ pub trait LiveConversation {
 }
 
 impl LiveConversation for PiSession {
-    fn background_tasks(&self) -> crate::conversation::BackgroundTaskList {
-        PiSession::background_tasks(self)
+    fn background_tasks(&self) -> Result<Retained<crate::conversation::BackgroundTaskList>, LiveError> {
+        Ok(Retained::from_parts(PiSession::background_tasks(self), DataRetention::default()))
     }
     fn read_background_task_output(
         &mut self,
         task: &str,
         request: Option<&str>,
-    ) -> Result<crate::conversation::BackgroundTaskOutput, LiveError> {
-        Ok(PiSession::read_background_task_output(self, task, request)?)
+    ) -> Result<Retained<crate::conversation::BackgroundTaskOutput>, LiveError> {
+        Ok(Retained::from_parts(PiSession::read_background_task_output(self, task, request)?, DataRetention::default()))
     }
     fn stop_background_task(&mut self, task: &str) -> LiveResult {
         Ok(PiSession::stop_background_task(self, task)?)
@@ -104,9 +111,21 @@ impl LiveConversation for PiSession {
     fn stop_child(&mut self, id: &str) -> LiveResult {
         Ok(PiSession::stop_child(self, id)?)
     }
+    fn has_pending_requests(&self) -> bool {
+        self.snapshot().is_some_and(|snapshot| {
+            snapshot
+                .pending_interactions
+                .iter()
+                .any(crate::conversation::RuntimeInteraction::requires_live_reply)
+        })
+    }
 
     fn snapshot(&self) -> Option<&ConversationSnapshot> {
         PiSession::snapshot(self)
+    }
+    fn owned_snapshot(&self) -> Result<Option<Retained<ConversationSnapshot>>, LiveError> {
+        if PiSession::snapshot(self).is_none() { return Ok(None); }
+        Ok(Some(PiSession::owned_snapshot(self)?))
     }
     fn turn_running(&self) -> bool {
         PiSession::turn_running(self)
@@ -114,11 +133,11 @@ impl LiveConversation for PiSession {
     fn supports_reopen(&self) -> bool {
         true
     }
-    fn work(&self) -> Vec<crate::work::BackgroundTask> {
-        PiSession::work(self)
+    fn work(&self) -> Result<Retained<Vec<crate::work::BackgroundTask>>, LiveError> {
+        Ok(Retained::from_parts(PiSession::work(self), DataRetention::default()))
     }
     fn work_settled(&self) -> bool {
-        self.work().is_empty() && !PiSession::has_pending_metadata(self)
+        PiSession::work(self).is_empty() && !PiSession::has_pending_metadata(self)
     }
     fn has_pending_metadata(&self) -> bool {
         PiSession::has_pending_metadata(self)
@@ -126,7 +145,7 @@ impl LiveConversation for PiSession {
     fn stop_background(&mut self) -> LiveResult {
         Ok(PiSession::stop_background(self)?)
     }
-    fn set_conversation(&mut self, conversation: ConversationSummary) {
+    fn set_conversation(&mut self, conversation: Retained<ConversationSummary>) {
         PiSession::set_conversation(self, conversation)
     }
     fn rename(&mut self, title: &str) -> LiveResult {
@@ -157,17 +176,20 @@ impl LiveConversation for PiSession {
     fn compact(&mut self) -> LiveResult {
         Ok(PiSession::compact(self)?)
     }
+    fn reply(&mut self, interaction_id: &str, reply: RuntimeInteractionReply) -> LiveResult {
+        Ok(PiSession::reply(self, interaction_id, reply)?)
+    }
 }
 
 impl LiveConversation for native::NativeSession {
-    fn background_tasks(&self) -> crate::conversation::BackgroundTaskList {
-        native::NativeSession::background_tasks(self)
+    fn background_tasks(&self) -> Result<Retained<crate::conversation::BackgroundTaskList>, LiveError> {
+        Ok(native::NativeSession::background_tasks(self)?)
     }
     fn read_background_task_output(
         &mut self,
         task: &str,
         request: Option<&str>,
-    ) -> Result<crate::conversation::BackgroundTaskOutput, LiveError> {
+    ) -> Result<Retained<crate::conversation::BackgroundTaskOutput>, LiveError> {
         Ok(native::NativeSession::read_background_task_output(
             self, task, request,
         )?)
@@ -178,14 +200,21 @@ impl LiveConversation for native::NativeSession {
     fn snapshot(&self) -> Option<&ConversationSnapshot> {
         native::NativeSession::snapshot(self)
     }
+    fn owned_snapshot(&self) -> Result<Option<Retained<ConversationSnapshot>>, LiveError> {
+        if native::NativeSession::snapshot(self).is_none() { return Ok(None); }
+        Ok(Some(native::NativeSession::owned_snapshot(self)?))
+    }
     fn turn_running(&self) -> bool {
         native::NativeSession::turn_running(self)
     }
     fn supports_reopen(&self) -> bool {
         true
     }
-    fn work(&self) -> Vec<crate::work::BackgroundTask> {
-        native::NativeSession::work(self)
+    fn work(&self) -> Result<Retained<Vec<crate::work::BackgroundTask>>, LiveError> {
+        Ok(native::NativeSession::work(self)?)
+    }
+    fn has_pending_requests(&self) -> bool {
+        native::NativeSession::has_pending_requests(self)
     }
     fn has_pending_metadata(&self) -> bool {
         native::NativeSession::has_pending_metadata(self)
@@ -193,7 +222,7 @@ impl LiveConversation for native::NativeSession {
     fn stop_background(&mut self) -> LiveResult {
         Ok(native::NativeSession::stop_background(self)?)
     }
-    fn set_conversation(&mut self, conversation: ConversationSummary) {
+    fn set_conversation(&mut self, conversation: Retained<ConversationSummary>) {
         native::NativeSession::set_conversation(self, conversation)
     }
     fn rename(&mut self, title: &str) -> LiveResult {
@@ -229,8 +258,21 @@ impl LiveConversation for native::NativeSession {
 }
 
 impl LiveConversation for acp::Client {
+    fn has_pending_requests(&self) -> bool {
+        self.snapshot().is_some_and(|snapshot| {
+            snapshot
+                .pending_interactions
+                .iter()
+                .any(crate::conversation::RuntimeInteraction::requires_live_reply)
+        })
+    }
+
     fn snapshot(&self) -> Option<&ConversationSnapshot> {
         acp::Client::snapshot(self)
+    }
+    fn owned_snapshot(&self) -> Result<Option<Retained<ConversationSnapshot>>, LiveError> {
+        if acp::Client::snapshot(self).is_none() { return Ok(None); }
+        Ok(Some(acp::Client::owned_snapshot(self)?))
     }
     fn turn_running(&self) -> bool {
         acp::Client::turn_running(self)
@@ -239,7 +281,7 @@ impl LiveConversation for acp::Client {
         // Velune reopens generic ACP through session/load, which also replays history.
         self.capabilities().load_session
     }
-    fn set_conversation(&mut self, conversation: ConversationSummary) {
+    fn set_conversation(&mut self, conversation: Retained<ConversationSummary>) {
         acp::Client::set_conversation(self, conversation)
     }
     fn poll(&mut self) -> LiveResult {

@@ -9,9 +9,14 @@ use std::{
     io::Write,
     path::{Path, PathBuf},
 };
+pub(crate) mod links_metadata;
+mod migration;
+pub(crate) use migration::prepare_migrations;
+
 pub(crate) const CURRENT_SCHEMA_VERSION: u32 = 11;
-/// 2: projects with folders replace per-folder names.
-const ORGANIZATION_SCHEMA_VERSION: u64 = 2;
+const COMPOSER_CHOICES_SCHEMA: u64 = 2;
+/// 3: retains explicit acknowledgements of asynchronous agent questions.
+const ORGANIZATION_SCHEMA_VERSION: u64 = 3;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -91,31 +96,203 @@ impl Default for PersistedConfig {
     }
 }
 
+fn decode_config(raw: serde_json::Value) -> Result<PersistedConfig, RuntimeError> {
+    let version = raw["schemaVersion"]
+        .as_u64()
+        .ok_or_else(|| RuntimeError::invalid("configuration schema version is required"))?;
+    if version != u64::from(CURRENT_SCHEMA_VERSION) {
+        return Err(RuntimeError::Invalid(format!(
+            "普通配置 schema {version} 不受支持；请先执行适用的显式迁移或使用支持该格式的版本。原文件已保留。"
+        )));
+    }
+    if raw["runtimeInstances"].as_array().is_some_and(|instances| {
+        instances
+            .iter()
+            .any(|runtime| runtime["typeId"].as_str() == Some("codex-0.159"))
+    }) {
+        return Err(retired_codex());
+    }
+    let value: PersistedConfig = serde_json::from_value(raw.clone())?;
+    if serde_json::to_value(&value)? != raw {
+        return Err(RuntimeError::invalid(
+            "普通配置含当前 schema 未知字段；原文件保留",
+        ));
+    }
+    if value.conversation_browser_group_limit == 0 {
+        return Err(RuntimeError::invalid("每组会话加载数量必须大于零"));
+    }
+    for gateway in &value.gateways {
+        gateway.validate().map_err(RuntimeError::invalid)?;
+    }
+    for runtime in &value.runtime_instances {
+        runtime.new_conversation_choice()?;
+        if runtime.id.is_empty()
+            || runtime.name.is_empty()
+            || !value
+                .gateways
+                .iter()
+                .any(|item| item.id == runtime.gateway_id)
+        {
+            return Err(RuntimeError::invalid("invalid persisted runtime instance"));
+        }
+    }
+    let mut template_ids = std::collections::BTreeSet::new();
+    for template in &value.model_templates {
+        if template.id.is_empty()
+            || template.name.trim().is_empty()
+            || !template_ids.insert(&template.id)
+        {
+            return Err(RuntimeError::invalid("invalid model template identity"));
+        }
+        crate::provider_configuration::validate_template(template)?;
+    }
+    Ok(value)
+}
+
+fn retired_codex() -> RuntimeError {
+    RuntimeError::invalid(
+        "检测到 codex-0.159 实例或会话关联；原文件保留。请退出 Velune，参照数据迁移说明运行 scripts/migrations/codex-166.py",
+    )
+}
+
+fn decode_composer_choices(
+    value: serde_json::Value,
+) -> Result<crate::config::ComposerChoices, RuntimeError> {
+    if value["schemaVersion"].as_u64() != Some(COMPOSER_CHOICES_SCHEMA) {
+        return Err(RuntimeError::invalid(
+            "composer-choices.json schema 不受支持；原文件保留",
+        ));
+    }
+    reject_unknown_envelope_fields("composer-choices.json", &value, &["choices"])?;
+    serde_json::from_value(value["choices"].clone())
+        .map_err(|error| RuntimeError::context("无法读取 composer-choices.json；原文件保留", error))
+}
+
+fn decode_conversation_organization(
+    value: serde_json::Value,
+) -> Result<crate::config::ConversationOrganization, RuntimeError> {
+    match value["schemaVersion"].as_u64() {
+        Some(ORGANIZATION_SCHEMA_VERSION) => {}
+        Some(version) => {
+            return Err(RuntimeError::Invalid(format!(
+                "conversation-organization.json schema {version} 不受支持；请先执行适用的显式迁移或使用支持该格式的版本。原文件已保留。"
+            )));
+        }
+        None => {
+            return Err(RuntimeError::invalid(
+                "conversation-organization.json 缺少有效 schema 版本；原文件已保留。",
+            ));
+        }
+    }
+    reject_unknown_envelope_fields("conversation-organization.json", &value, &["organization"])?;
+    let organization: crate::config::ConversationOrganization =
+        serde_json::from_value(value["organization"].clone())?;
+    let mut ids = std::collections::BTreeSet::new();
+    let mut folders = std::collections::BTreeSet::new();
+    if organization.conversations.iter().any(|marks| {
+        marks.conversation_id.is_empty() || marks.is_empty() || !ids.insert(&marks.conversation_id)
+    }) || organization.projects.iter().any(|project| {
+        (project.name.is_none() && project.folders.is_empty())
+            || project
+                .name
+                .as_ref()
+                .is_some_and(|name| name.trim().is_empty())
+            || project
+                .all_folders()
+                .any(|folder| !Path::new(folder).is_absolute() || !folders.insert(folder))
+    }) {
+        return Err(RuntimeError::invalid("会话组织记录的会话或项目身份无效"));
+    }
+    Ok(organization)
+}
+
 pub(crate) struct Repository {
     home: PathBuf,
     home_lock: HomeLock,
 }
+
 /// The application owner keeps this lease from initial acquisition through
 /// execution cleanup, including failed startup before a Repository exists.
 pub(crate) struct HomeLock {
-    file: File,
-    unlocked: std::sync::atomic::AtomicBool,
+    inner: std::sync::Arc<HomeLockInner>,
 }
-impl HomeLock {
-    fn unlock(&self) -> Result<(), RuntimeError> {
-        if !self.unlocked.load(std::sync::atomic::Ordering::Acquire) {
+struct HomeLockInner {
+    file: File,
+    state: std::sync::Mutex<HomeLockState>,
+}
+#[derive(Default)]
+struct HomeLockState {
+    unlocked: bool,
+    owner_dropped: bool,
+    disk_leases: usize,
+    links_claimed: bool,
+}
+impl HomeLockInner {
+    fn release_if_unleased(&self, state: &mut HomeLockState) -> Result<(), RuntimeError> {
+        if !state.unlocked && state.disk_leases == 0 {
+            // Explicit unlock is essential even if a fork inherited this file description.
             self.file.unlock()?;
-            self.unlocked
-                .store(true, std::sync::atomic::Ordering::Release);
+            state.unlocked = true;
         }
         Ok(())
     }
 }
+impl HomeLock {
+    fn unlock(&self) -> Result<(), RuntimeError> {
+        let mut state = self.inner.state.lock().unwrap();
+        if state.disk_leases != 0 || state.links_claimed {
+            return Err(RuntimeError::invalid(
+                "conversation links metadata has not drained",
+            ));
+        }
+        self.inner.release_if_unleased(&mut state)
+    }
+    fn claim_links(&self) -> Result<std::sync::Arc<LinksHomeGate>, RuntimeError> {
+        let mut state = self.inner.state.lock().unwrap();
+        if state.unlocked || state.owner_dropped || state.links_claimed {
+            return Err(RuntimeError::invalid(
+                "conversation links target unavailable",
+            ));
+        }
+        state.links_claimed = true;
+        Ok(std::sync::Arc::new(LinksHomeGate(self.inner.clone())))
+    }
+}
 impl Drop for HomeLock {
     fn drop(&mut self) {
-        // close alone can leave a Unix open-file-description lock held by a
-        // descriptor inherited during another thread's fork/exec window.
-        if let Err(error) = self.unlock() {
+        let mut state = self.inner.state.lock().unwrap();
+        state.owner_dropped = true;
+        // Only controlled disk jobs extend an abnormal owner's lock lifetime.
+        // An ordinary inherited descriptor or idle worker does not.
+        if let Err(error) = self.inner.release_if_unleased(&mut state) {
+            tracing::warn!(target: "velune_application", event = "application_home_unlock_failed", detail = %error);
+        }
+    }
+}
+struct LinksHomeGate(std::sync::Arc<HomeLockInner>);
+impl LinksHomeGate {
+    fn disk_lease(&self) -> Result<LinksDiskLease, RuntimeError> {
+        let mut state = self.0.state.lock().unwrap();
+        if state.unlocked || state.owner_dropped {
+            return Err(RuntimeError::invalid("application HOME owner has closed"));
+        }
+        state.disk_leases += 1;
+        Ok(LinksDiskLease(self.0.clone()))
+    }
+}
+impl Drop for LinksHomeGate {
+    fn drop(&mut self) {
+        self.0.state.lock().unwrap().links_claimed = false;
+    }
+}
+struct LinksDiskLease(std::sync::Arc<HomeLockInner>);
+impl Drop for LinksDiskLease {
+    fn drop(&mut self) {
+        let mut state = self.0.state.lock().unwrap();
+        state.disk_leases -= 1;
+        if state.owner_dropped
+            && let Err(error) = self.0.release_if_unleased(&mut state)
+        {
             tracing::warn!(target: "velune_application", event = "application_home_unlock_failed", detail = %error);
         }
     }
@@ -151,8 +328,10 @@ impl Repository {
             Err(TryLockError::Error(error)) => return Err(error.into()),
         }
         Ok(HomeLock {
-            file: home_lock,
-            unlocked: std::sync::atomic::AtomicBool::new(false),
+            inner: std::sync::Arc::new(HomeLockInner {
+                file: home_lock,
+                state: std::sync::Mutex::new(HomeLockState::default()),
+            }),
         })
     }
 
@@ -165,48 +344,7 @@ impl Repository {
         let persisted = match fs::read(&persisted_path) {
             Ok(bytes) => {
                 let raw: serde_json::Value = serde_json::from_slice(&bytes)?;
-                let version = raw["schemaVersion"].as_u64().ok_or_else(|| {
-                    RuntimeError::invalid("configuration schema version is required")
-                })?;
-                if version != u64::from(CURRENT_SCHEMA_VERSION) {
-                    return Err(RuntimeError::Invalid(format!(
-                        "普通配置 schema {version} 不受支持；请先执行适用的显式迁移或使用支持该格式的版本。原文件已保留。"
-                    )));
-                }
-                let value: PersistedConfig = serde_json::from_value(raw.clone())?;
-                if serde_json::to_value(&value)? != raw {
-                    return Err(RuntimeError::invalid(
-                        "普通配置含当前 schema 未知字段；原文件保留",
-                    ));
-                }
-                if value.conversation_browser_group_limit == 0 {
-                    return Err(RuntimeError::invalid("每组会话加载数量必须大于零"));
-                }
-                for gateway in &value.gateways {
-                    gateway.validate().map_err(RuntimeError::invalid)?;
-                }
-                for runtime in &value.runtime_instances {
-                    runtime.new_conversation_choice()?;
-                    if runtime.id.is_empty()
-                        || runtime.name.is_empty()
-                        || !value
-                            .gateways
-                            .iter()
-                            .any(|item| item.id == runtime.gateway_id)
-                    {
-                        return Err(RuntimeError::invalid("invalid persisted runtime instance"));
-                    }
-                }
-                let mut template_ids = std::collections::BTreeSet::new();
-                for template in &value.model_templates {
-                    if template.id.is_empty()
-                        || template.name.trim().is_empty()
-                        || !template_ids.insert(&template.id)
-                    {
-                        return Err(RuntimeError::invalid("invalid model template identity"));
-                    }
-                    crate::provider_configuration::validate_template(template)?;
-                }
+                let value = decode_config(raw)?;
                 #[cfg(unix)]
                 {
                     use std::os::unix::fs::PermissionsExt;
@@ -228,6 +366,19 @@ impl Repository {
     pub(crate) fn unlock(&self) -> Result<(), RuntimeError> {
         self.home_lock.unlock()
     }
+    /// Construction only: callers must switch all links writes before installing this domain.
+    pub(crate) fn links_metadata(
+        &self,
+        limits: links_metadata::LinksLimits,
+        current: &Vec<crate::config::ConversationLink>,
+    ) -> Result<links_metadata::LinksMetadata, RuntimeError> {
+        links_metadata::LinksMetadata::new(
+            self.home.clone(),
+            self.home_lock.claim_links()?,
+            limits,
+            current,
+        )
+    }
     pub(crate) fn store(&self, config: &PersistedConfig) -> Result<(), RuntimeError> {
         commit(
             &self.home.join("generic-config.json"),
@@ -246,21 +397,14 @@ impl Repository {
             }
             Err(error) => return Err(error.into()),
         };
-        let value: serde_json::Value = serde_json::from_slice(&bytes)?;
-        if value["schemaVersion"].as_u64() != Some(2) {
-            return Err(RuntimeError::invalid(
-                "运行时默认配置需要显式迁移；请先执行 scripts/run-migrations.py",
-            ));
-        }
-        reject_unknown_envelope_fields("composer-choices.json", &value, &["choices"])?;
-        Ok(serde_json::from_value(value["choices"].clone())?)
+        decode_composer_choices(serde_json::from_slice(&bytes)?)
     }
 
     pub(crate) fn store_composer_choices(
         &self,
         choices: &crate::config::ComposerChoices,
     ) -> Result<(), RuntimeError> {
-        let value = serde_json::json!({"schemaVersion":2,"choices":choices});
+        let value = serde_json::json!({"schemaVersion":COMPOSER_CHOICES_SCHEMA,"choices":choices});
         commit(
             &self.home.join("composer-choices.json"),
             &serde_json::to_vec_pretty(&value)?,
@@ -398,8 +542,8 @@ impl Repository {
         )
     }
 
-    /// Velune's list organization; a missing file, or one of an older
-    /// schema, starts afresh with read state from now.
+    /// Velune's list organization. Only a missing file starts fresh; known
+    /// older versions are backed up and upgraded before this read.
     pub(crate) fn load_conversation_organization(
         &self,
     ) -> Result<crate::config::ConversationOrganization, RuntimeError> {
@@ -412,46 +556,7 @@ impl Repository {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(fresh()),
             Err(error) => return Err(error.into()),
         };
-        let value: serde_json::Value = serde_json::from_slice(&bytes)?;
-        match value["schemaVersion"].as_u64() {
-            Some(ORGANIZATION_SCHEMA_VERSION) => {}
-            Some(version) => {
-                return Err(RuntimeError::Invalid(format!(
-                    "conversation-organization.json schema {version} 不受支持；请先执行适用的显式迁移或使用支持该格式的版本。原文件已保留。"
-                )));
-            }
-            None => {
-                return Err(RuntimeError::invalid(
-                    "conversation-organization.json 缺少有效 schema 版本；原文件已保留。",
-                ));
-            }
-        }
-        reject_unknown_envelope_fields(
-            "conversation-organization.json",
-            &value,
-            &["organization"],
-        )?;
-        let organization: crate::config::ConversationOrganization =
-            serde_json::from_value(value["organization"].clone())?;
-        let mut ids = std::collections::BTreeSet::new();
-        let mut folders = std::collections::BTreeSet::new();
-        if organization.conversations.iter().any(|marks| {
-            marks.conversation_id.is_empty()
-                || marks.is_empty()
-                || !ids.insert(&marks.conversation_id)
-        }) || organization.projects.iter().any(|project| {
-            (project.name.is_none() && project.folders.is_empty())
-                || project
-                    .name
-                    .as_ref()
-                    .is_some_and(|name| name.trim().is_empty())
-                || project
-                    .all_folders()
-                    .any(|folder| !Path::new(folder).is_absolute() || !folders.insert(folder))
-        }) {
-            return Err(RuntimeError::invalid("会话组织记录的会话或项目身份无效"));
-        }
-        Ok(organization)
+        decode_conversation_organization(serde_json::from_slice(&bytes)?)
     }
 
     pub(crate) fn store_conversation_organization(
@@ -474,59 +579,27 @@ impl Repository {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
             Err(error) => return Err(error.into()),
         };
-        let value: serde_json::Value = serde_json::from_slice(&bytes)?;
-        if value["schemaVersion"].as_u64() != Some(1) {
-            return Err(RuntimeError::invalid("conversation links schema version"));
-        }
-        reject_unknown_envelope_fields("conversation-links.json", &value, &["links"])?;
-        let links: Vec<crate::config::ConversationLink> =
-            serde_json::from_value(value["links"].clone())?;
-        let mut ids = std::collections::BTreeSet::new();
-        let mut native_ids = std::collections::BTreeSet::new();
-        let valid_digest =
-            |digest: &str| digest.len() == 64 && digest.bytes().all(|b| b.is_ascii_hexdigit());
-        for link in &links {
-            // Replacing an unsubmitted draft preserves its public ID as an alias
-            // for the first real target, including after later handoffs.
-            if link.id.is_empty()
-                || !ids.insert(&link.id)
-                || link.segments.is_empty()
-                || link.segments.first().is_none_or(|s| {
-                    s.handoff.is_some()
-                        || (link.segments.len() == 1 && s.native_conversation_id == link.id)
-                })
-            {
-                return Err(RuntimeError::invalid("关联会话身份或段顺序无效"));
-            }
-            for (index, segment) in link.segments.iter().enumerate() {
-                if segment.runtime_instance_id.is_empty()
-                    || !segment
-                        .native_conversation_id
-                        .starts_with(&format!("{}:", segment.runtime_instance_id))
-                    || !native_ids.insert(&segment.native_conversation_id)
-                    || (index + 1 == link.segments.len()) != segment.cutoff.is_none()
-                    || segment
-                        .cutoff
-                        .as_ref()
-                        .is_some_and(|c| !valid_digest(&c.prefix_digest))
-                    || segment.handoff.as_ref().is_some_and(|h| {
-                        !valid_digest(&h.marker) || !valid_digest(&h.payload_digest)
-                    })
-                {
-                    return Err(RuntimeError::invalid(
-                        "关联会话原生引用、截止位置或交接定位无效",
-                    ));
-                }
-            }
-        }
-        Ok(links)
+        decode_conversation_links(serde_json::from_slice(&bytes)?)
     }
 
     pub(crate) fn store_conversation_links(
         &self,
         links: &[crate::config::ConversationLink],
     ) -> Result<(), RuntimeError> {
-        let value = serde_json::json!({"schemaVersion":1,"links":links});
+        // Known older files are migrated with their recoverable backup at open.
+        // A legacy file introduced externally afterwards must be reopened before write.
+        self.load_conversation_links()?;
+        if let Some(bytes) = crate::persistence_migrations::read_optional(
+            &self.home.join("conversation-links.json"),
+        )? && serde_json::from_slice::<serde_json::Value>(&bytes)?["schemaVersion"].as_u64()
+            != Some(3)
+        {
+            return Err(RuntimeError::invalid(
+                "会话关联需要先重新打开应用完成可恢复迁移；原文件保留",
+            ));
+        }
+        let schema = 3;
+        let value = serde_json::json!({"schemaVersion":schema,"links":links});
         commit(
             &self.home.join("conversation-links.json"),
             &serde_json::to_vec_pretty(&value)?,
@@ -663,11 +736,11 @@ mod persistence_version_tests {
     fn repository_drop_unlocks_even_while_an_inherited_description_survives() {
         let home = Home::new();
         let startup = Repository::lock_home(&home.0).unwrap();
-        let startup_description = startup.file.try_clone().unwrap();
+        let startup_description = startup.inner.file.try_clone().unwrap();
         drop(startup); // A failed startup has not constructed a Repository yet.
         let (repository, _) = Repository::open(&home.0).unwrap();
         drop(startup_description);
-        let inherited = repository.home_lock.file.try_clone().unwrap();
+        let inherited = repository.home_lock.inner.file.try_clone().unwrap();
         assert!(
             Repository::open(&home.0).is_err(),
             "a live owner retains its lock"
@@ -755,11 +828,11 @@ mod persistence_version_tests {
             ),
             (
                 "conversation-organization.json",
-                br#"{"schemaVersion":3,"synthetic":"preserve"}"#,
+                br#"{"schemaVersion":4,"synthetic":"preserve"}"#,
             ),
             (
                 "conversation-organization.json",
-                br#"{"schemaVersion":2,"organization":{"conversations":[],"projects":[],"readBaselineUnixMs":0},"future":"preserve"}"#,
+                br#"{"schemaVersion":3,"organization":{"conversations":[],"projects":[],"readBaselineUnixMs":0},"future":"preserve"}"#,
             ),
         ] {
             let path = home.0.join(name);
@@ -805,4 +878,112 @@ mod persistence_version_tests {
             assert_eq!(fs::read(path).unwrap(), bytes);
         }
     }
+}
+
+pub(crate) fn decode_conversation_links(
+    value: serde_json::Value,
+) -> Result<Vec<crate::config::ConversationLink>, RuntimeError> {
+    if !matches!(value["schemaVersion"].as_u64(), Some(1..=3)) {
+        return Err(RuntimeError::invalid("conversation links schema version"));
+    }
+    reject_unknown_envelope_fields("conversation-links.json", &value, &["links"])?;
+    if value["links"].as_array().is_some_and(|links| {
+        links.iter().any(|link| {
+            link["segments"].as_array().is_some_and(|segments| {
+                segments
+                    .iter()
+                    .any(|segment| segment["runtimeTypeId"].as_str() == Some("codex-0.159"))
+            })
+        })
+    }) {
+        return Err(retired_codex());
+    }
+    let links: Vec<crate::config::ConversationLink> =
+        serde_json::from_value(value["links"].clone())?;
+    let mut ids = std::collections::BTreeSet::new();
+    let mut native_ids = std::collections::BTreeSet::new();
+    let valid_digest =
+        |digest: &str| digest.len() == 64 && digest.bytes().all(|b| b.is_ascii_hexdigit());
+    if value["schemaVersion"].as_u64() == Some(1)
+        && links.iter().any(|link| {
+            link.segments.iter().any(|segment| {
+                !segment.excluded_message_ids.is_empty() || !segment.message_origins.is_empty()
+            })
+        })
+    {
+        return Err(RuntimeError::invalid(
+            "消息删除关联需要 schema 2；原文件保留",
+        ));
+    }
+    if value["schemaVersion"].as_u64() != Some(3)
+        && value["links"].as_array().is_some_and(|links| {
+            links.iter().any(|link| {
+                link["segments"].as_array().is_some_and(|segments| {
+                    segments.iter().any(|segment| {
+                        segment["imported"]
+                            .as_object()
+                            .is_some_and(|import| import.contains_key("summaryWorkId"))
+                    })
+                })
+            })
+        })
+    {
+        return Err(RuntimeError::invalid(
+            "接续压缩记录需要 schema 3；原文件保留",
+        ));
+    }
+    for link in &links {
+        // Replacing an unsubmitted draft preserves its public ID as an alias
+        // for the first real target, including after later handoffs.
+        if link.id.is_empty()
+            || !ids.insert(&link.id)
+            || link.segments.is_empty()
+            || link.segments.first().is_none_or(|s| {
+                // A quoted fork uses an explicit public alias so its
+                // wrapper never becomes the native thread's own identity.
+                (s.handoff.is_some() && s.native_conversation_id == link.id)
+                    || (link.segments.len() == 1 && s.native_conversation_id == link.id)
+            })
+        {
+            return Err(RuntimeError::invalid("关联会话身份或段顺序无效"));
+        }
+        for (index, segment) in link.segments.iter().enumerate() {
+            if segment.runtime_instance_id.is_empty()
+                || !segment
+                    .native_conversation_id
+                    .starts_with(&format!("{}:", segment.runtime_instance_id))
+                || !native_ids.insert(&segment.native_conversation_id)
+                || (index + 1 == link.segments.len()) != segment.cutoff.is_none()
+                || segment
+                    .cutoff
+                    .as_ref()
+                    .is_some_and(|c| !valid_digest(&c.prefix_digest))
+                || segment.excluded_message_ids.iter().any(|id| id.is_empty())
+                || (!segment.excluded_message_ids.is_empty() && segment.cutoff.is_none())
+                || segment.message_origins.iter().any(|(id, targets)| {
+                    id.is_empty() || targets.iter().any(|target| target.is_empty())
+                })
+                || segment
+                    .imported
+                    .as_ref()
+                    .and_then(|import| import.summary_work_id.as_ref())
+                    .is_some_and(|id| {
+                        id.is_empty()
+                            || id.len() > 128
+                            || !id
+                                .bytes()
+                                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+                    })
+                || segment
+                    .handoff
+                    .as_ref()
+                    .is_some_and(|h| !valid_digest(&h.marker) || !valid_digest(&h.payload_digest))
+            {
+                return Err(RuntimeError::invalid(
+                    "关联会话原生引用、截止位置或交接定位无效",
+                ));
+            }
+        }
+    }
+    Ok(links)
 }

@@ -2,6 +2,10 @@
 
 本 unit 实现通用 ACP v1 接入，以及 Pi RPC／SDK、Codex app-server、Claude Code stream-json 和 DeepSeek Harness ACP 的专用适配器。它负责原生控制、会话读取与消息 projection；真实会话由各 Harness 持久化，Velune 不复制为另一套会话历史。Pi 适配器另提供显式来源的认证交互和只读提供商发现。
 
+Claude Code 的展示历史沿 `parentUuid` 选择当前分支，并在压缩边界通过 `logicalParentUuid` 接回压缩前记录；`isCompactSummary` 只参与模型上下文，不冒充用户消息。导出上下文仍使用压缩后的原生链和保留片段，不能把完整展示历史重新塞回模型。手动压缩后上下文计数更新自原生压缩结果／持久边界，维护请求不累计到用户轮的输入输出用量。
+
+Codex 子 Agent 的原生 `inter_agent_communication`／带来源标记的 `response_item` 并未被 app-server 展示 API 暴露为用户条目。适配器从 `thread/read` 确认的 rollout 补充输入，只接受仍存在于原生历史 API 中的轮次，不从普通助手正文猜测来源；本机和 SSH 使用相同规则。主会话不把子 Agent 回报冒充用户输入。子会话详情通过父执行实例的后台任务状态显示执行中，Claude 子会话文件也参与定向刷新。
+
 Claude Code 执行子进程显式设置 `CLAUDE_CODE_ENTRYPOINT=velune`，保留 print / stream-json 与原生控制协议。2.1.292 已在隔离 HOME、合成凭据和回环上游下验证请求入口标签、流式输出、动态 MCP、审批拒绝、侧聊、中断后续发及跨进程 resume。入口变量属于未公开支持的 CLI 行为；该验证不证明真实订阅配额收益，也不扩大兼容版本区间。
 
 各适配器的模型目录返回 `ModelOption`：原生模型、该 Harness 对它接受的推理强度与速度档位，取自 Harness 自身目录（Codex `model/list` 的 `supportedReasoningEfforts`、Claude Code initialize 的 `supportsEffort`／`supportedEffortLevels`、Pi `reasoning` 模型的 `PI_THINKING_LEVELS`；DSH 与通用 ACP 暂无对应目录字段，为空）。
@@ -69,6 +73,8 @@ wire 类型采用官方 `agent-client-protocol-schema = 1.11.0` 的稳定 v1 模
 
 权限请求保留 Agent 公布的 opaque option ID，只有调用方的明确选择才会回复；不会默认批准。取消先将待答权限回复为 cancelled，再发送 `session/cancel`，继续消费更新直到原 prompt 响应确认结束。输入输出目前限于文本消息、文本资源、工具与计划 projection；图片、音频和二进制资源显示明确的内容占位。客户端不公布文件系统、终端或终端认证能力，不在 SSH 场景误把目标文件操作执行到本机。`auth_methods` 仅用于描述外部认证入口，本轮没有 `authenticate` API；认证不足的原生错误保留来源码与说明，由用户在外部完成登录或配置。
 
+会话内的标准 `elicitation/create` 表单投影为待回答交互，握手公布 `elicitation.form`。支持字符串、数值、整数、布尔及字符串枚举；回复保留原生 JSON 类型，校验必填项与数值/长度边界。原生取消、用户取消及 prompt 结束会清除交互并回复 cancel。URL、数组/嵌套表单和尚无会话界面的认证/配置 request scope 明确返回不支持，不阻塞同步握手或伪造答案。Codex MCP elicitation 复用同一表单解析与校验。
+
 会话列表来自 `session/list`，保留原生 ID、cwd、标题与 RFC 3339 更新时间，支持分页，不伪造创建时间。`load` 消费 Agent 实际回放的历史；`resume` 只恢复原生上下文并明确提示没有回放，不能当作历史读取。原生消息 ID 可直接确认本地投影身份；没有原生 ID 时使用会话 ID 与消息位置生成确定性投影 ID，同样的回放结构可重复得到同样的身份，但它不是原生持久 UUID。live 用户消息的首个原生回声按本轮位置替换待确认消息，不按正文匹配；若 Agent 改变历史顺序或消息分段，位置身份不能保证跨版本稳定。Velune 不为这些缺口建立另一套历史存储。
 
 通用 ACP 不假定任何 gateway 环境变量、提供商配置格式或认证来源，因而没有 Velune managed provider 注入能力；专用适配器继续负责已验证的注入路径。协议依据于 2026-10-10 复核：[官方初始化](https://agentclientprotocol.com/protocol/v1/initialization)、[会话配置](https://agentclientprotocol.com/protocol/v1/session-config-options)、[会话建立与加载](https://agentclientprotocol.com/protocol/v1/session-setup)。[acpsub](https://github.com/lexoliu/acpsub) 用于参考任意命令接入与已公布配置选项；其 daemon、自动安装、强制模型选择和自动批准策略不属于本包契约。
@@ -93,6 +99,12 @@ relay 只连接显式端口的 `http://127.0.0.1` 服务，忽略代理环境，
 
 ## 专用适配器行为
 
+Claude Code 的 `isCompactSummary` 原生记录归入对应 `compact_boundary`，不作为用户轮次；SDK 仅传 `isSynthetic` 时从该边界的只读原生历史补回摘要，不靠正文前缀识别。`refusedMessageId`／`refused_message_id` 和明确的 `stop_reason: refusal` 保留安全停止原因；最终状态以当前执行的原生 idle／result 及真正完成的安全回答为准，不以会话累计 `safety_stops` 计数判断本轮失败。
+
+Pi 的子会话发现覆盖 `pi-subagents` 的 `<父会话文件 stem>/forks/<run>/` 存储层级，只有子文件 header 的 `parentSession` 与已发现父文件一致时才建立父子关系，普通 fork 不据此混入子 Agent。文件头关联即可用于初始列表，读取正文仍交给 Pi SDK。后台 shell 任务保持为没有会话身份的后台工作。
+
+Pi 子会话的控制由持有它的父进程通过 `pi-subagents` 公开 EventBus RPC 执行。扩展状态隐藏逐子项的文件映射，因此只有原生 run 与唯一子会话文件能明确对应时，才向核心声明精确停止能力；多子项 run 可以浏览，但不把 run 级停止冒充单子会话停止。扩展缺失、外部进程或身份不明确时保留只读浏览。子会话不会为停止而创建另一条 Pi 执行连接。
+
 Codex 使用 app-server 的 thread／turn 控制；轮次以 interrupted 或 failed 结束时，Codex 不为被中止的工具调用发送 `item/completed`，历史也不保留它们，因此本轮仍在进行的工具块标为失败；DSH 使用 ACP v1 的 session/new、resume、prompt、cancel、set_config_option。DSH 的 agentInfo.version 是 ACP 插件版本，不用于判断 CLI 版本。Codex 历史由 app-server 的 thread/list、thread/read、thread/items/list 与 thread/turns/list 读取，原生服务负责逻辑身份和历史继承；spawn 的子 Agent 线程带父会话，`collabAgentToolCall` 在恰有一个 receiver 时链接该线程；DSH 历史通过 huihua `0.2.0` 公开 provider API 读取显式 home／roots，未知记录不原样输出。历史浏览不启动 turn 或模型网关，不替代原生 resume；Pi 保留 SDK SessionManager 的分支与模型选择语义。
 
 Codex 0.166 的 thread/revert 保留稳定 thread ID，同时创建新的 rollout 文件并更新当前历史；paginated 历史还可以引用旧文件的前缀。因此不能把 thread ID 当成物理文件唯一键，也不能按时间任选重复文件。列表使用原生 thread/list 的完整来源枚举与空提供商过滤；详情用 thread/read 核对身份，再按升序分页读取 thread/items/list 与 thread/turns/list。后者使用 notLoaded 的 itemsView，只补回合状态和错误。legacy 与 paginated 共用原生入口及实时消息的 item 投影，保留原生 item 时间，不自行解析 history_base 或扫描所有文件。短生命周期 app-server 与既有原生管理共用有界 RPC；原生读取失败明确诊断，不回退为文件选择。
@@ -100,6 +112,11 @@ Codex 0.166 的 thread/revert 保留稳定 thread ID，同时创建新的 rollou
 Codex 的实时 error 通知和 turn/completed 的最终错误使用同一回合消息身份，展示 message、非空 additionalDetails 与原生 codexErrorInfo，不把重复事件变成多条通知。willRetry 为 true 时标明正在自动重试，不提前结束执行；成功或中断后结束进行中的重试标签，错误记录仍按原顺序留在工作过程。最终失败优先使用 turn.error，缺失时保留本轮最近的错误详情。历史读取和 thread/resume 都把原生回合错误投影为系统通知，放在该回合内容之后；没有 item 的失败回合也保留顺序。上游标记 failed 却没有详情时明确说明未提供原因。此展示不新增原始响应日志或 Velune 历史存储，上游未保存的错误无法在重新打开时恢复。
 
 原生权限或回答请求映射为 conversation 的类型化交互，用户显式选择、回答或取消；adapter 不自动批准。执行模型选择区分运行时既有模型与 Velune managed 模型。`NativeConfig.gateway` 为空时保留原生 provider；`models` 返回运行时的模型身份，`select_native_model` 选择既有模型，`select_model` 只为下一轮提供网关注入。运行时配置不含 Velune 默认模型，不能凭 API model ID 猜测网关路由。Codex 从会话 cwd 的 `config/read` 捕获原有 provider，原生 resume 显式传入该 provider；DSH 原生选择必须显式包含 provider ID，严格匹配 ACP 公布的 provider/model 值，不能按同名模型猜测提供商或自行拼接未公布的 opaque option。DSH reasoningEfforts 需要实际 wire 映射，当前仅有能力等级列表，不猜测映射，保留 SDK 默认行为。
+
+Codex 的两种异步提问使用明确的回复路径：`item/tool/requestUserInput` 即使 `isBlocking=false` 仍通过原始 RPC 回复；`request_user_input_async` 产生的 `AgentMessage.questions` 没有等待中的 RPC，显式回答作为该会话的普通输入，运行时可插入则插入，压缩期间则排队。问题不阻止其它输入，也不会因普通后续消息被猜成已回答；只有显式回答受理或忽略才由 application 保存处理标记。原生 RPC 在关闭或失效后移除，不能降级成普通发言；需实时答复的请求仍保留控制连接。阻塞审批排在可选问题之前。子线程的同步 RPC 仍由父线程控制连接答复；只读子会话内的纯输出问题可见，但不支持直接发起回答。
+
+上述输出问题以原生 item 身份从实时流和历史共同投影；本地处理标记只影响呈现，不修改 Harness 的记录。输入已受理但刷新失败时明确报告结果，队列不重新放回已受理消息。标记落盘失败时保留内存状态并重试保存，进程在成功保存前退出仍可能再次显示旧问题。
+
 
 DSH 执行 overlay 只为 llm-pi-ai 追加网关目录，保留来源已有 provider、ACP 默认选择和其它设置；不通过禁用原来源 provider 来强制执行路径。CLI 会按上游行为准备其 ACP profile。实例的 CODEX_HOME／DSH_HOME 与会话 cwd 分开；网关注入文件属于 application 的运行时投影目录。DSH 的原生历史以最后一次请求 header 记住 provider/model，ACP 的 set_config_option 只改变当前进程。因此 app 私有 overlay 保留已使用模型的无凭据 metadata，恢复旧会话后再通过显式选择进入 native 或 managed 轮次；不重写真实会话以伪造 provider 恢复。原生轮次不创建网关，native 子进程的历史 overlay 不携带 token，并把派发地址设为不可监听的 loopback 端口 0；它只提供 resume 所需的模型 metadata，必须选择既有 native 模型后才可 prompt。
 
@@ -227,7 +244,11 @@ Pi 的工作目录来自 SessionManager／进程 cwd，不能把“无工作区�
 
 应用注入的 `velune/auto` 虚拟模型在扩展准入前就暴露所选物理模型的 contextWindow／maxTokens；不能使用 Pi 的未知默认值 0 代替已知规格。未知容量继续保持未知，由需要该能力的扩展明确拒绝，不伪造默认容量。应用模型切换重新准备对应目录及虚拟模型。Pi 扩展自行发起的 agent_start 与应用 prompt 拥有相同的运行／steering／停止生命周期。
 
-Pi 后台任务通过可选 `pi-background-tasks` 的公开 Host EventBus API v1 接入，不从插件的 TUI 状态文字推断。Velune 自有扩展桥接结构化订阅、任务查询与精确停止；`PiSession` 将任务及观察／通知交接状态投影到通用 `LiveConversation` 工作契约。后台任务不伪造独立会话。父轮次结束不代表可关闭进程或网关；任务终态也不代表完成通知已交给 Pi，须保留接收者直到交接及其自动后续轮次结束。此能力不安装插件、不修改其配置，也不承诺支持未提供该协议的任意扩展。
+Pi RPC 的 `extension_ui_request` 中 select、confirm、input、editor 使用共同交互卡，保留原生选项值、编辑器初值和多行输入，以同一原生 ID 单向发送 `extension_ui_response`。prompt 确认前的扩展对话也允许返回 UI 等待用户，晚到的 prompt 拒绝可恢复输入；超时、停止和结束移除过期交互。原生 setStatus 等通知仍由各自桥接消费。依据：[Pi RPC extension UI](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/rpc-extension-ui.md)。
+
+DeepSeek 官方 `dsh-acp` bridge 定位于 automation-only，当前仅转发权限请求，明确不提供 elicitation/交互 UI。专用适配器不能从普通文本猜造 question；需上游公开提问协议后才能完整接入。依据：[官方 ACP README](https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/acp/acp/README.md) 与[事件桥接实现](https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/acp/acp/src/index.ts)。
+
+Pi 后台任务通过可选 `pi-background-tasks` 的公开 Host EventBus API v1 接入，不从插件的 TUI 状态文字推断。Velune 自有扩展桥接结构化订阅、任务查询与精确停止；`PiSession` 将任务及观察／通知交接状态投影到通用 `LiveConversation` 工作契约。后台任务不伪造独立会话。父轮次结束不代表可关闭进程或网关；任务终态也不代表完成通知已交给 Pi，须保留接收者直到交接及其自动后续轮次结束。完成通知的投递收据从 Pi SessionManager 的完整原始条目读取，不从压缩后的模型上下文推断；接收收据前先应用同一 RPC 之前到达的运行事件，避免把已启动的后续轮次当成空闲。此能力不安装插件、不修改其配置，也不承诺支持未提供该协议的任意扩展。
 
 Claude 只读历史 helper 将原生 end_turn／stop_sequence、API failure 和明确中断投影为 executions 的终态。工具阶段或单个文本块完成不作为用户轮次的正常完成证据。
 

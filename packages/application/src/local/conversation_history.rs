@@ -1,8 +1,8 @@
 //! A cold conversation read captures native read inputs on the owner and
 //! installs a history-only session after IO. A live session always wins.
 use super::*;
-use crate::{SnapshotResult, config::ConversationLink};
-use browsing::{HistoryRead, LoadedHistory, history_read_changed};
+use crate::{SnapshotResult, config::ConversationLink, conversation::ConversationSnapshot};
+use browsing::{HistoryRead, HistorySnapshot, LoadedHistory, history_read_changed};
 
 pub(crate) enum ConversationRead {
     Ready(Box<SnapshotResult>),
@@ -132,6 +132,35 @@ impl CoreRuntime {
         if let Some(snapshot) = self.read_present_conversation(runtime_id, id)? {
             return Ok(ConversationRead::Ready(Box::new(snapshot)));
         }
+        self.prepare_cold_conversation_read(runtime_id, id)
+    }
+
+    /// Prepare a deliberate native refresh. A loaded, idle snapshot is not a
+    /// cache hit here; active work and live-only sessions are handled by the
+    /// caller before requesting the refresh.
+    pub(crate) fn prepare_conversation_refresh(
+        &mut self,
+        runtime_id: &str,
+        id: &str,
+    ) -> Result<ConversationRead, RuntimeError> {
+        // A refresh cannot replace an execution, approval, or live-only
+        // conversation that still owns native state.
+        if self.session.executing()
+            || self.session.requires_live_connection()
+            || self.session.pending_native_fork.is_some()
+            || self.session.unsubmitted_draft.is_some()
+            || self.session.side.is_some()
+        {
+            return Ok(ConversationRead::Ready(Box::new(self.snapshot_result()?)));
+        }
+        self.prepare_cold_conversation_read(runtime_id, id)
+    }
+
+    fn prepare_cold_conversation_read(
+        &self,
+        runtime_id: &str,
+        id: &str,
+    ) -> Result<ConversationRead, RuntimeError> {
         let started = std::time::Instant::now();
         let address = self.conversation_read_address(runtime_id, id)?;
         let runtime_id = address.source_runtime_id.as_str();
@@ -176,10 +205,35 @@ impl CoreRuntime {
         )))
     }
 
+    /// Install a loaded explicit refresh in the currently addressed session.
+    /// A turn that began while the read was in flight remains authoritative.
+    pub(crate) fn finish_conversation_refresh(
+        &mut self,
+        loaded: LoadedConversationHistory,
+    ) -> Result<SnapshotResult, RuntimeError> {
+        if self.session.executing() || self.session.requires_live_connection() {
+            return self.snapshot_result();
+        }
+        let (snapshot, projection, _) = self.finish_loaded_history(loaded)?;
+        // An explicit refresh invalidates the shared physical observation;
+        // a pending result from its previous generation cannot restore it.
+        let control_target = self
+            .read_control_target(&snapshot, projection.as_ref())
+            .ok()
+            .flatten();
+        self.invalidate_execution()?;
+        self.present_history(snapshot, projection);
+        if let Some(target) = control_target {
+            self.control_observations.invalidate(&target);
+        }
+        self.snapshot_result()
+    }
+
     pub(crate) fn finish_conversation_read(
         &mut self,
         loaded: LoadedConversationHistory,
     ) -> Result<SnapshotResult, RuntimeError> {
+        let started = std::time::Instant::now();
         let LoadedConversationHistory {
             runtime_id,
             id,
@@ -189,25 +243,8 @@ impl CoreRuntime {
         if let Some(snapshot) = self.read_present_conversation(&runtime_id, &id)? {
             return Ok(snapshot);
         }
-        if sources.iter().any(|source| !source.is_current(self)) {
-            return Err(history_read_changed());
-        }
-        let started = std::time::Instant::now();
-        let current_link = self.conversation_links.iter().find(|link| link.id == id);
-        let (snapshot, projection, reusable) = match parts {
-            HistoryParts::Native(part) if current_link.is_none() => {
-                (self.finish_history_read(part?)?, None, true)
-            }
-            HistoryParts::Linked { link, parts } if current_link == Some(&link) => {
-                let reusable = parts.iter().all(Result::is_ok);
-                let mut parts = parts.into_iter();
-                let (snapshot, projection) = self.read_link_with(&link, |_| {
-                    self.finish_history_read(parts.next().expect("each segment has a read result")?)
-                })?;
-                (snapshot, Some(projection), reusable)
-            }
-            _ => return Err(history_read_changed()),
-        };
+        let (snapshot, projection, reusable) =
+            self.finish_loaded_history_parts(id, parts, sources)?;
 
         // The browsing call leaves the caller's addressed session in place.
         // Subsequent snapshots or composer preparation find this history by id.
@@ -223,5 +260,56 @@ impl CoreRuntime {
         self.focus_key(previous);
         tracing::info!(target: "velune_application", event = "conversation_history_read", phase = "projection", elapsed_ms = started.elapsed().as_millis() as u64);
         response
+    }
+
+    pub(super) fn finish_loaded_history(
+        &self,
+        loaded: LoadedConversationHistory,
+    ) -> Result<
+        (
+            HistorySnapshot,
+            Option<continuation::LogicalProjection>,
+            bool,
+        ),
+        RuntimeError,
+    > {
+        let LoadedConversationHistory {
+            id, parts, sources, ..
+        } = loaded;
+        self.finish_loaded_history_parts(id, parts, sources)
+    }
+
+    fn finish_loaded_history_parts(
+        &self,
+        id: String,
+        parts: HistoryParts<Result<LoadedHistory, RuntimeError>>,
+        sources: Vec<runtime_source::RuntimeSourceKey>,
+    ) -> Result<
+        (
+            HistorySnapshot,
+            Option<continuation::LogicalProjection>,
+            bool,
+        ),
+        RuntimeError,
+    > {
+        if sources.iter().any(|source| !source.is_current(self)) {
+            return Err(history_read_changed());
+        }
+        let current_link = self.conversation_links.iter().find(|link| link.id == id);
+        let (snapshot, projection, reusable) = match parts {
+            HistoryParts::Native(part) if current_link.is_none() => {
+                (self.finish_history_read(part?)?, None, true)
+            }
+            HistoryParts::Linked { link, parts } if current_link == Some(&link) => {
+                let reusable = parts.iter().all(Result::is_ok);
+                let mut parts = parts.into_iter();
+                let (snapshot, projection) = self.read_link_with(&link, |_| {
+                    self.finish_history_read(parts.next().expect("each segment has a read result")?)
+                })?;
+                (snapshot, Some(projection), reusable)
+            }
+            _ => return Err(history_read_changed()),
+        };
+        Ok((snapshot, projection, reusable))
     }
 }

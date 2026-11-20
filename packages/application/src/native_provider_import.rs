@@ -268,7 +268,7 @@ pub(crate) fn apply(
                     quota_authentication: Default::default(),
                     billing: Default::default(),
                     id: id.clone(),
-                    name: format!("{} · {}", source.name, runtime.name),
+                    name: format!("{}（{}）", source.name, runtime.name),
                     protocol: Protocol::Messages,
                     endpoint: String::new(),
                     execution_backend: ExecutionBackend::ClaudeCli {

@@ -12,6 +12,7 @@ mod scheduled_tasks;
 pub use scheduled_tasks::*;
 pub mod config;
 mod failure;
+mod handoff;
 mod next_turn;
 mod provider_account;
 mod provider_analytics;
@@ -28,11 +29,13 @@ pub use catalog::*;
 pub use command::*;
 pub use config::*;
 pub use failure::*;
+pub use handoff::*;
 pub use next_turn::*;
 pub use provider_account::*;
 pub use provider_analytics::*;
 pub use provider_template::{
-    ProviderTemplate, ProviderTemplateKind, provider_subscription_template, provider_templates,
+    ProviderTemplate, ProviderTemplateKind, provider_quota_sources, provider_subscription_template,
+    provider_templates,
 };
 pub use records::*;
 pub use resource_library::*;
@@ -43,7 +46,6 @@ pub use transcript_delivery::*;
 pub use velune_conversation as conversation;
 pub use velune_conversation::bytes;
 pub use velune_conversation::resources as runtime_management;
-
 pub use velune_conversation::{
     BackgroundTaskInfo, BackgroundTaskList, BackgroundTaskOutput, BackgroundTaskOutputStatus,
     BackgroundTaskStatus,

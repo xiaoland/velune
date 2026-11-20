@@ -13,24 +13,24 @@ struct ConversationManagementMenu: View {
         let targets = ids.compactMap { store.conversation(id: $0) }
         if runMenu(targets) {
             if targets.count == 1, let target = targets.first {
-                Button("发送消息…") { window.openComposerSheet(target.id) }
+                Button("发送消息…") { window.openComposerSheet(target.id, device: store.device) }
                 if store.device.hasSideChats(target.runtimeID) {
-                    Button("侧聊") { window.openSideChat(on: target.id) }
+                    Button("侧聊") { window.openSideChat(on: target.id, device: store.device) }
                 }
                 if store.device.resumableConversations[target.id] != nil {
-                    Button("继续") { window.resumeFromList(target.id) }
+                    Button("继续") { window.resumeFromList(target.id, device: store.device) }
                 }
             }
             let stoppable = targets.filter { store.device.isStoppable($0.id) }
             if !stoppable.isEmpty {
                 Button(targets.count > 1 ? "停止所选会话" : "停止") { store.device.stop(stoppable.map(\.id)) }
             } else if targets.count == 1, let target = targets.first, store.device.subAgentRuntimeIDs[target.id] != nil {
-                Button("停止子 Agent") { store.device.stopSubAgents(of: target.id) }
+                Button("停止全部后台工作") { store.device.stopSubAgents(of: target.id) }
             }
             Divider()
         }
         if targets.count == 1, let target = targets.first {
-            Button("重命名…") { window.renameTarget = target }.disabled(!store.canManageConversations || !store.canRenameConversation(target))
+            Button("重命名…") { window.renameTarget = .init(conversation: target, device: store.device) }.disabled(!store.canManageConversations || !store.canRenameConversation(target))
         }
         if !targets.isEmpty {
             if !targets.contains(where: \.archived) {
@@ -49,10 +49,13 @@ struct ConversationManagementMenu: View {
         }
         if targets.count == 1, let target = targets.first {
             Divider()
-            Button("在新标签页中打开") { window.openInNewTab(target.id) }
-            Button("在右侧拆分打开") { window.split(.horizontal, opening: target.id) }
-            Button("在下方拆分打开") { window.split(.vertical, opening: target.id) }
-            Button("在新窗口中打开") { window.openInNewWindow(target.id) }
+            Button("在新标签页中打开") { window.openInNewTab(target.id, device: store.device) }
+            Button("在右侧拆分打开") { window.split(.horizontal, opening: target.id, device: store.device) }
+            Button("在下方拆分打开") { window.split(.vertical, opening: target.id, device: store.device) }
+            Button("在新窗口中打开") { window.openInNewWindow(target.id, device: store.device) }
+            if !store.isSideChat, let share = HapiShareTarget.local(target, device: store.device) {
+                Button("分享到 HAPI…") { window.hapiShareTarget = share }
+            }
             Divider()
             Menu("拷贝") {
                 Button("会话 ID") { copyToPasteboard(target.nativeID) }.disabled(target.nativeID.isEmpty)
@@ -63,7 +66,7 @@ struct ConversationManagementMenu: View {
             }
         }
         Divider()
-        Button(targets.count > 1 ? "删除所选会话…" : "删除…", role: .destructive) { window.deleteTargets = targets }
+        Button(targets.count > 1 ? "删除所选会话…" : "删除…", role: .destructive) { window.deleteTargets = targets.map { .init(conversation: $0, device: store.device) } }
             .disabled(targets.isEmpty || !store.canManageConversations || !targets.allSatisfy(store.canDeleteConversation))
         if targets.contains(where: { !store.canDeleteConversation($0) }) { Text("部分关联原生会话当前无法删除") }
         if targets.count == 1, let target = targets.first, !store.canRenameConversation(target) { Text("原生会话标题当前无法修改") }

@@ -5,6 +5,18 @@ import VeluneBindings
 /// A restored window keeps identities and associations, including displaced
 /// unfinished input. Layout changes move these identities; they never copy text.
 struct SavedComposerWorkspace: Codable, Equatable {
+    fileprivate enum SchemaVersion: Int, Codable {
+        case v3 = 3
+
+        init(from decoder: Decoder) throws {
+            let version = try decoder.singleValueContainer().decode(Int.self)
+            guard let schema = Self(rawValue: version) else {
+                throw NSError(domain: "VelunePersistence", code: 25, userInfo: [NSLocalizedDescriptionKey: "窗口草稿恢复点 schema \(version) 不受支持"])
+            }
+            self = schema
+        }
+    }
+
     struct Draft: Codable, Equatable {
         var id: UUID
         var name: String
@@ -14,7 +26,7 @@ struct SavedComposerWorkspace: Codable, Equatable {
         var pending: Bool? = nil
         var revision: UInt64? = nil
     }
-    var schemaVersion: Int? = 3
+    fileprivate var schemaVersion: SchemaVersion = .v3
     var drafts: [Draft]
     var conversations: [String: UUID]
     var shared: UUID
@@ -66,6 +78,15 @@ struct SavedComposerWorkspace: Codable, Equatable {
             device?.composerInputs.save(model.id, draft: model.savedDraft)
             changes.send()
         }
+    }
+
+    /// Preserve an independently edited input without changing the selected
+    /// conversation draft. Later edits use the existing registered save chain.
+    func retain(_ model: ComposerModel, name: String) {
+        register(model, name: name)
+        device?.composerInputs.save(model.id, draft: model.savedDraft)
+        keep(model.id)
+        changes.send()
     }
 
     private func keep(_ id: UUID) {
@@ -260,7 +281,7 @@ struct SavedComposerWorkspace: Codable, Equatable {
             guard id != current.id, let model = models[id], model.hasUnfinishedInput else { return nil }
             let first = model.submission.split(whereSeparator: \.isNewline).first.map(String.init)
             let summary = first.map { String($0.prefix(36)) } ?? "\(model.attachments.count) 个附件"
-            return (model, (names[id] ?? "保留的输入") + " · " + summary)
+            return (model, (names[id] ?? "保留的输入") + "：" + summary)
         }
     }
 

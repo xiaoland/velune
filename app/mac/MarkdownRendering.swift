@@ -267,11 +267,21 @@ struct MarkdownAttributedRenderer {
 
     private func inlines(_ markup: Markup, font: NSFont, context: Context) -> NSMutableAttributedString {
         let result = NSMutableAttributedString()
+        func append(_ text: String, _ attributes: [NSAttributedString.Key: Any]) {
+            let rendered = NSMutableAttributedString(string: text, attributes: attributes)
+            if attributes[.link] == nil,
+               let pattern = try? NSRegularExpression(pattern: #"(?<![\w:/])(?:/|~/)[^\s<>\[\]\"`]+?:[0-9]+(?::[0-9]+)?(?=$|[\s),.;])"#) {
+                for match in pattern.matches(in: text, range: NSRange(location: 0, length: rendered.length)) {
+                    rendered.addAttribute(.link, value: (text as NSString).substring(with: match.range), range: match.range)
+                }
+            }
+            result.append(rendered)
+        }
         func walk(_ node: Markup, _ attributes: [NSAttributedString.Key: Any]) {
             let font = attributes[.font] as? NSFont ?? TranscriptTypography.body
             switch node {
             case let text as Markdown.Text:
-                result.append(NSAttributedString(string: text.string, attributes: attributes))
+                append(text.string, attributes)
             case is SoftBreak:
                 result.append(NSAttributedString(string: " ", attributes: attributes))
             case is LineBreak:
@@ -280,7 +290,7 @@ struct MarkdownAttributedRenderer {
                 var attributes = attributes
                 attributes[.font] = TranscriptTypography.code
                 attributes[.backgroundColor] = NSColor.quaternarySystemFill
-                result.append(NSAttributedString(string: code.code, attributes: attributes))
+                append(code.code, attributes)
             case is Emphasis:
                 var attributes = attributes
                 attributes[.font] = font.adding(.italic)

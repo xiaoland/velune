@@ -18,12 +18,9 @@ use crate::{
     scheduling::{AdmissionReason, SchedulePermit, ScheduleUnavailable},
 };
 use serde_json::Value;
-use std::{
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
-    time::Duration,
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
 };
 use tokio::sync::mpsc;
 use tracing::{Instrument, instrument::WithSubscriber};

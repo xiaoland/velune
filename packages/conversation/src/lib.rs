@@ -137,6 +137,9 @@ pub enum InputAccess {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
 pub struct FollowUp {
+    #[serde(default)]
+    #[uniffi(default = None)]
+    pub context_preparation: Option<ContextPreparation>,
     /// The user's ability to hand this native conversation to another client.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[uniffi(default = None)]
@@ -197,7 +200,14 @@ pub struct EditableMessage {
     /// message and all after it; otherwise only a new conversation can
     /// continue from it.
     pub in_place: bool,
-    /// Native history version offered for this edit.
+    /// Native deletion changes effective context and does not send a turn.
+    #[serde(default)]
+    #[uniffi(default = false)]
+    pub delete_only: bool,
+    #[serde(default)]
+    #[uniffi(default = false)]
+    pub delete_following: bool,
+    /// The conversation history against which this edit was offered.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[uniffi(default = None)]
     pub revision: Option<String>,
@@ -246,10 +256,24 @@ pub struct QueuedMessageEditContext {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, uniffi::Enum)]
 #[serde(rename_all = "camelCase")]
 pub enum QueueWait {
+    /// A confirmed portable summary owns the queue's first message.
+    ContextPreparation,
     SubAgents,
     /// The execution handle was released; observe native control before
     /// dispatching the already accepted next message.
     Control,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, uniffi::Record)]
+#[serde(rename_all = "camelCase")]
+pub struct ContextPreparation {
+    pub queued_message_id: String,
+    pub work_id: String,
+    pub target_runtime_id: String,
+    pub is_preparing: bool,
+    pub is_dispatching: bool,
+    pub can_edit_message: bool,
+    pub can_retry_summary: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, uniffi::Enum)]
@@ -480,7 +504,8 @@ pub enum MessageBlock {
         detail: String,
         retry: Option<RuntimeRetry>,
     },
-    /// Native context maintenance, displayed independently of assistant work.
+    /// Context maintenance, including native compaction and runtime handoff
+    /// preparation, displayed independently of assistant work.
     ContextCompaction {
         text: String,
     },
@@ -530,6 +555,10 @@ pub struct ConversationSnapshot {
     /// work process. Internal projection input, absent from DeliveredSnapshot.
     #[serde(default)]
     pub work_notification_ids: Vec<String>,
+    /// Internal presentation input; not part of DeliveredSnapshot. A removed
+    /// prompt must not turn its retained closing reply into another turn's work.
+    #[serde(default)]
+    pub retained_reply_ids: Vec<String>,
     #[serde(default)]
     pub executions: Executions,
     #[serde(default)]
@@ -646,13 +675,57 @@ pub enum InteractionKind {
     UserInput {
         questions: Vec<InteractionQuestion>,
     },
+    /// An optional question while the agent continues; reply through normal input.
+    AsyncUserInput {
+        questions: Vec<InteractionQuestion>,
+        delivery: AsyncQuestionDelivery,
+    },
 }
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, uniffi::Enum)]
+#[serde(rename_all = "camelCase")]
+pub enum AsyncQuestionDelivery {
+    /// Reply to a native request on the still-live connection.
+    NativeReply,
+    /// Assistant output; an answer is a normal conversation input.
+    ConversationInput,
+}
+
+impl RuntimeInteraction {
+    pub fn requires_live_reply(&self) -> bool {
+        !matches!(
+            self.kind,
+            InteractionKind::AsyncUserInput {
+                delivery: AsyncQuestionDelivery::ConversationInput,
+                ..
+            }
+        )
+    }
+    pub fn blocks_turn(&self) -> bool {
+        !matches!(self.kind, InteractionKind::AsyncUserInput { .. })
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
 pub struct InteractionOption {
     pub id: String,
     pub label: String,
+    /// The runtime's declared approval effect. IDs and labels are opaque.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[uniffi(default = None)]
+    pub approval_kind: Option<ApprovalOptionKind>,
 }
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, uniffi::Enum)]
+#[serde(rename_all = "camelCase")]
+pub enum ApprovalOptionKind {
+    AllowOnce,
+    RejectOnce,
+    AllowAlways,
+    RejectAlways,
+    Cancel,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
 pub struct InteractionQuestion {
@@ -660,6 +733,21 @@ pub struct InteractionQuestion {
     pub text: String,
     pub options: Vec<InteractionOption>,
     pub secret: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[uniffi(default = None)]
+    pub default_text: Option<String>,
+    #[serde(default)]
+    #[uniffi(default = false)]
+    pub multiline: bool,
+    #[serde(default = "question_allows_other")]
+    #[uniffi(default = true)]
+    pub allow_other: bool,
+    #[serde(default)]
+    #[uniffi(default = false)]
+    pub multiple: bool,
+}
+fn question_allows_other() -> bool {
+    true
 }
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq, uniffi::Enum)]
 #[serde(tag = "type", rename_all = "camelCase")]

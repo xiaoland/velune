@@ -239,6 +239,98 @@ fn quota_window(reset_at_ms: Option<i64>) -> QuotaWindow {
 }
 
 #[tokio::test]
+async fn pending_hard_cap_waits_before_messages_to_responses_dispatch_and_never_replays() {
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::time::Duration;
+    struct PendingQuota {
+        ready: AtomicBool,
+        reads: AtomicUsize,
+    }
+    impl QuotaSource for PendingQuota {
+        fn snapshot(&self, _: &str) -> QuotaSnapshot {
+            self.reads.fetch_add(1, Ordering::Relaxed);
+            if !self.ready.load(Ordering::Acquire) {
+                return QuotaSnapshot::Unknown;
+            }
+            let mut window = quota_window(None);
+            window.used_percent = 0.0;
+            QuotaSnapshot::Known {
+                available: Some(true),
+                windows: vec![window],
+            }
+        }
+    }
+    let (upstream, address) = Upstream::start().await;
+    upstream.reply("a", Reply::json(200, Api::Responses.success()));
+    let mut config = gateway_config(Api::Responses, &address);
+    config.providers[0].quota_limits = vec![QuotaLimit {
+        window_id: "daily".into(),
+        max_used_percent: 80,
+    }];
+    let quota = Arc::new(PendingQuota {
+        ready: AtomicBool::new(false),
+        reads: AtomicUsize::new(0),
+    });
+    let runner = Arc::new(
+        Runner::start_with_scheduling(
+            config,
+            Arc::new(Keys),
+            BTreeMap::new(),
+            None,
+            SchedulingState::default(),
+            quota.clone(),
+            None,
+            Default::default(),
+        )
+        .unwrap(),
+    );
+    let request_runner = runner.clone();
+    let request = tokio::spawn(async move {
+        reqwest::Client::new()
+            .post(format!("{}/messages", request_runner.endpoint()))
+            .bearer_auth(request_runner.token())
+            .header("anthropic-version", "2023-06-01")
+            .json(&json!({"model":"velune/model/a-model","max_tokens":16,
+                "messages":[{"role":"user","content":"synthetic input"}]}))
+            .send()
+            .await
+            .unwrap()
+    });
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while quota.reads.load(Ordering::Acquire) == 0 {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(
+        upstream.hits().is_empty(),
+        "pending quota must not dispatch upstream"
+    );
+    assert!(
+        !request.is_finished(),
+        "cold quota must wait before rejecting"
+    );
+    quota.ready.store(true, Ordering::Release);
+    let response = tokio::time::timeout(Duration::from_secs(2), request)
+        .await
+        .unwrap()
+        .unwrap();
+    let status = response.status();
+    let body = response.text().await.unwrap();
+    assert_eq!(status.as_u16(), 200, "{body}");
+    assert_eq!(upstream.hits(), vec!["/a/v1/responses"]);
+    let requests = upstream.requests.lock().unwrap();
+    assert_eq!(
+        requests.len(),
+        1,
+        "only predispatch admission may be retried"
+    );
+    assert_eq!(requests[0]["model"], "a-native");
+    assert!(requests[0]["input"].is_array());
+}
+
+#[tokio::test]
 async fn quota_admission_reports_the_reason_across_all_protocols() {
     for protocol in Api::ALL {
         let (upstream, address) = Upstream::start().await;
@@ -746,6 +838,103 @@ async fn translated_attempts_use_the_selected_models_rules_and_limit() {
     }
 }
 
+/// Routing must convert each attempt independently, including a native first
+/// member followed by a different protocol and two differently translated ones.
+#[tokio::test]
+async fn mixed_protocol_routes_translate_each_selected_candidate() {
+    for ingress in Api::ALL {
+        for (index, first) in Api::ALL.into_iter().enumerate() {
+            let second = Api::ALL[(index + 1) % Api::ALL.len()];
+            for failover in [false, true] {
+                let (upstream, address) = Upstream::start().await;
+                let mut config = gateway_config(first, &address);
+                config.providers[1] = provider("b", second, &address);
+                for provider in &mut config.providers {
+                    provider.models[0].max_output_tokens = Some(128);
+                }
+                if !failover {
+                    config.routes[0].strategy = RoutingStrategy::Rotate;
+                }
+                let success = |protocol| match protocol {
+                    Api::Chat => json!({"id":"chat", "object":"chat.completion", "model":"fixture",
+                        "choices":[{"index":0,"message":{"role":"assistant","content":"answer"},"finish_reason":"stop"}]}),
+                    Api::Responses => {
+                        json!({"id":"resp", "object":"response", "model":"fixture", "status":"completed",
+                        "output":[{"id":"msg","type":"message","role":"assistant","status":"completed",
+                            "content":[{"type":"output_text","text":"answer","annotations":[]}]}]})
+                    }
+                    Api::Messages => {
+                        json!({"id":"msg", "type":"message", "role":"assistant", "model":"fixture",
+                        "content":[{"type":"text","text":"answer"}],"stop_reason":"end_turn"})
+                    }
+                };
+                upstream.reply(
+                    "a",
+                    if failover {
+                        Reply::json(429, json!({"error":{"message":"retry"}}))
+                    } else {
+                        Reply::json(200, success(first))
+                    },
+                );
+                upstream.reply("b", Reply::json(200, success(second)));
+                let runner = Runner::start(config, Arc::new(Keys), BTreeMap::new()).unwrap();
+                let mut body = match ingress {
+                    Api::Responses => {
+                        json!({"input":[{"role":"user","content":"question"}], "max_output_tokens":64})
+                    }
+                    _ => {
+                        json!({"messages":[{"role":"user","content":"question"}], "max_tokens":64})
+                    }
+                };
+                body["model"] = json!("velune/model/route");
+                for _ in 0..if failover { 1 } else { 2 } {
+                    let response = reqwest::Client::new()
+                        .post(format!("{}{}", runner.endpoint(), ingress.path()))
+                        .timeout(std::time::Duration::from_secs(5))
+                        .bearer_auth(runner.token())
+                        .header("anthropic-version", "2023-06-01")
+                        .json(&body)
+                        .send()
+                        .await
+                        .unwrap();
+                    assert_eq!(response.status(), 200);
+                    let response: Value = response.json().await.unwrap();
+                    let text = match ingress {
+                        Api::Chat => &response["choices"][0]["message"]["content"],
+                        Api::Responses => &response["output"][0]["content"][0]["text"],
+                        Api::Messages => &response["content"][0]["text"],
+                    };
+                    assert_eq!(text, "answer");
+                }
+                assert_eq!(
+                    upstream.hits(),
+                    vec![
+                        format!("/a/v1{}", first.path()),
+                        format!("/b/v1{}", second.path()),
+                    ]
+                );
+                let requests = upstream.requests.lock().unwrap();
+                for (i, protocol) in [first, second].into_iter().enumerate() {
+                    assert_eq!(
+                        requests[i]["model"],
+                        if i == 0 { "a-native" } else { "b-native" }
+                    );
+                    let field = match protocol {
+                        Api::Responses => "input",
+                        _ => "messages",
+                    };
+                    assert!(
+                        requests[i][field]
+                            .as_array()
+                            .is_some_and(|items| !items.is_empty())
+                    );
+                    assert!(requests[i].to_string().contains("question"));
+                }
+            }
+        }
+    }
+}
+
 fn gateway_config(protocol: Api, upstream: &str) -> GatewayConfig {
     GatewayConfig {
         id: "gateway".into(),
@@ -763,4 +952,28 @@ fn gateway_config(protocol: Api, upstream: &str) -> GatewayConfig {
             weights: BTreeMap::new(),
         }],
     }
+}
+
+#[tokio::test]
+async fn messages_metadata_is_preserved_for_standard_responses_api() {
+    let (upstream, address) = Upstream::start().await;
+    let config = gateway_config(Api::Responses, &address);
+    let runner = Runner::start(config, Arc::new(Keys), BTreeMap::new()).unwrap();
+    upstream.reply("a", Reply::stream(Api::Responses.events()));
+    let response = reqwest::Client::new()
+        .post(format!("{}/messages", runner.endpoint()))
+        .bearer_auth(runner.token())
+        .json(
+            &json!({"model":"velune/model/a-model", "stream":true, "max_tokens":32,
+            "metadata":{"user_id":"synthetic-user"},
+            "messages":[{"role":"user","content":"synthetic"}]}),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let _ = response.bytes().await.unwrap();
+    let requests = upstream.requests.lock().unwrap();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0]["metadata"]["user_id"], "synthetic-user");
 }

@@ -160,6 +160,9 @@ pub(crate) fn codex_request(body: &mut Value) -> Result<(), InvalidContract> {
         "top_p",
         "user",
         "safety_identifier",
+        // The ChatGPT subscription endpoint rejects API metadata, including
+        // metadata forwarded from an Anthropic Messages request.
+        "metadata",
         "prompt_cache_options",
         "prompt_cache_retention",
         "options",
@@ -247,6 +250,18 @@ mod tests {
     }
 
     #[test]
+    fn chatgpt_subscription_omits_unsupported_metadata_without_dropping_input() {
+        let mut request = json!({"model":"synthetic", "stream":true,
+            "metadata":{"user_id":"synthetic-user"},
+            "input":[{"role":"user","content":"keep this input"}]});
+        let input = request["input"].clone();
+        codex_request(&mut request).unwrap();
+        assert!(request.get("metadata").is_none());
+        assert_eq!(request["input"], input);
+        assert_eq!(request["store"], false);
+    }
+
+    #[test]
     fn codex_request_summarizes_omissions_once_and_preserves_inline_history() {
         let mut input =
             vec![json!({"role":"system","content":"synthetic instructions","id":null}); 256];
@@ -254,6 +269,7 @@ mod tests {
         let mut body = json!({
             "instructions":"caller instructions", "input":input,
             "temperature":0.5, "user":"synthetic user", "service_tier":"synthetic tier",
+            "metadata":{"user_id":"synthetic-user"},
             "synthetic extension":{"id":"keep-nested-id"}
         });
         let events = Arc::new(Events::default());
@@ -276,7 +292,7 @@ mod tests {
                 ("event", r#""codex_request_field_omitted""#.into()),
                 (
                     "top_level_fields",
-                    r#"["temperature", "user", "service_tier"]"#.into()
+                    r#"["temperature", "user", "metadata", "service_tier"]"#.into()
                 ),
                 ("input_ids_removed", "256".into()),
             ])

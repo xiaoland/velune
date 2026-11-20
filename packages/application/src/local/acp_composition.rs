@@ -102,7 +102,8 @@ impl CoreRuntime {
     pub(super) fn acp_summaries(
         &self,
         runtime: &RuntimeInstance,
-    ) -> Result<Vec<ConversationSummary>, RuntimeError> {
+    ) -> Result<velune_agent_runtime::creation::Retained<Vec<ConversationSummary>>, RuntimeError>
+    {
         let mut session = self.acp_client(runtime)?;
         if !session.capabilities().list_sessions {
             return Err(RuntimeError::Unsupported(
@@ -126,7 +127,7 @@ impl CoreRuntime {
         runtime: &RuntimeInstance,
         native_id: &str,
         cwd: &Path,
-    ) -> Result<ConversationSnapshot, RuntimeError> {
+    ) -> Result<browsing::HistorySnapshot, RuntimeError> {
         let request = self.prepare_acp_history(runtime, native_id, cwd)?;
         self.finish_history_read(request.load()?)
     }
@@ -262,7 +263,13 @@ pub(super) fn load_acp_history(
     runtime_id: &str,
     native_id: &str,
     cwd: &Path,
-) -> Result<(ConversationSnapshot, crate::AcpCapabilities), RuntimeError> {
+) -> Result<
+    (
+        velune_agent_runtime::creation::Retained<ConversationSnapshot>,
+        crate::AcpCapabilities,
+    ),
+    RuntimeError,
+> {
     if !cwd.is_absolute()
         || !config
             .execution

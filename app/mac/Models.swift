@@ -129,6 +129,6 @@ struct CatalogModel: Identifiable, Sendable {
     var reasoningLevels: [String]?
     var id: String { "\(sourceProviderID.count):\(sourceProviderID)\(modelID)" }
     var template: ModelTemplate {
-        ModelTemplate(id: "", name: "\(name) · \(sourceProviderName) (models.dev)", suggestedProviderModelId: modelID, nickname: name, contextWindow: contextWindow, maxOutputTokens: maxOutputTokens, reasoningLevels: reasoningLevels)
+        ModelTemplate(id: "", name: "\(name)（\(sourceProviderName)，models.dev）", suggestedProviderModelId: modelID, nickname: name, contextWindow: contextWindow, maxOutputTokens: maxOutputTokens, reasoningLevels: reasoningLevels)
     }
 }

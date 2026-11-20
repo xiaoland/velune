@@ -197,7 +197,7 @@ final class OpenCompletion: @unchecked Sendable {
 
 struct StartResult: Encodable { let application: ApplicationMetadata; let reused: Bool }
 
-func start(_ bundle: DevelopmentBundle, environmentPath: String) throws -> StartResult {
+func start(_ bundle: DevelopmentBundle, environmentPath: String, preview: Bool = false) throws -> StartResult {
     let before = try inspect(bundle)
     guard before.sameIdentityApplications.isEmpty, before.applications.count <= 1 else {
         throw refuse("存在其它路径的同身份应用或多个准确路径实例；拒绝启动，也不会退出它们。")
@@ -213,6 +213,7 @@ func start(_ bundle: DevelopmentBundle, environmentPath: String) throws -> Start
     // AppKit documents that the system may include additional variables. This
     // map supplies controlled values; it is not a complete OS credential sandbox.
     configuration.environment = environment
+    if preview { configuration.arguments = ["--preview"] }
     let completion = OpenCompletion()
     let deadline = Date().addingTimeInterval(30)
     NSWorkspace.shared.openApplication(at: bundle.url, configuration: configuration) { application, error in
@@ -294,11 +295,13 @@ do {
         options[arguments[index]] = arguments[index + 1]
     }
     let allowed = command == "inspect" ? Set(["--bundle"]) : command == "start" ? Set(["--bundle", "--environment"]) : Set(["--bundle", "--pid", "--launched-at"])
-    guard Set(options.keys) == allowed, let path = options["--bundle"] else { throw refuse("参数缺失或含不支持的参数。") }
+    let preview = command == "start" && options["--preview"] == "true"
+    let supplied = Set(options.keys).subtracting(preview ? ["--preview"] : [])
+    guard supplied == allowed, let path = options["--bundle"] else { throw refuse("参数缺失或含不支持的参数。") }
     let bundle = try DevelopmentBundle(path: path)
     switch command {
     case "inspect": try emit(inspect(bundle))
-    case "start": try emit(start(bundle, environmentPath: options["--environment"]!))
+    case "start": try emit(start(bundle, environmentPath: options["--environment"]!, preview: preview))
     default:
         guard let pid = pid_t(options["--pid"]!), pid > 0,
               let birth = Double(options["--launched-at"]!), birth.isFinite, birth > 0 else {

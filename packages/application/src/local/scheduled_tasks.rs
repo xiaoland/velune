@@ -316,9 +316,11 @@ impl CoreRuntime {
                 continue;
             };
             if session.executing()
-                || session
-                    .projected()
-                    .is_some_and(|s| !s.pending_interactions.is_empty())
+                || session.projected().is_some_and(|s| {
+                    s.pending_interactions
+                        .iter()
+                        .any(|interaction| interaction.blocks_turn())
+                })
             {
                 continue;
             }
@@ -452,7 +454,10 @@ impl CoreRuntime {
                 }
                 if snapshot.actions.input_access != crate::conversation::InputAccess::Editable
                     || self.session.executing()
-                    || !snapshot.pending_interactions.is_empty()
+                    || snapshot
+                        .pending_interactions
+                        .iter()
+                        .any(|interaction| interaction.blocks_turn())
                 {
                     run.detail = Some("等待会话空闲、审批结束或外部客户端释放控制权".into());
                     self.scheduled_tasks.put_run(run)?;

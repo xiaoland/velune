@@ -490,11 +490,10 @@ private final class ComposerInputWorker: @unchecked Sendable {
     /// entry — only while the entry's fresh input is still untouched; with
     /// newer content in it, the consumed input stays kept (保留的输入)
     /// rather than replacing that work.
-    func restoreConsumedNewConversationInput(_ consumed: ComposerModel, whileCreating store: ConversationStore) {
-        // Once native creation succeeds, failed dispatch belongs to that
-        // conversation. Check this submission's source, not historical
-        // creations: a content identity may be reused in a later new session.
-        guard store.isUnsentConversation else { return }
+    func restoreConsumedNewConversationInput(_ consumed: ComposerModel, whileCreating store: ConversationStore, createdConversationID: String? = nil) {
+        // A closed/navigated Store may still look unsent. The operation's
+        // created receipt, not that view, owns first-send failure recovery.
+        guard createdConversationID == nil, store.isUnsentConversation else { return }
         let draftID = ConversationStore.draftConversationPrefix + "new-conversation"
         guard let current = inputID(for: draftID), current != consumed.id else { return }
         if let currentDraft = draft(current), !currentDraft.text.isEmpty || !currentDraft.attachments.isEmpty { return }

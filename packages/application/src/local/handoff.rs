@@ -213,7 +213,7 @@ impl CoreRuntime {
                 .control_target()
                 .is_ok_and(|target| native.can_handoff_control(target.as_ref())),
             ActiveState::Pi(_) | ActiveState::Acp(_) => true,
-            ActiveState::Empty | ActiveState::History(_) => false,
+            ActiveState::Empty | ActiveState::History(_) | ActiveState::Pending(_) => false,
         };
         supported && !self.other_handle_owns(identity)
     }
@@ -363,7 +363,12 @@ impl CoreRuntime {
         let Some(snapshot) = self.session.projected() else {
             return Ok(());
         };
-        if !snapshot.pending_interactions.is_empty() || self.session.compacting {
+        if snapshot
+            .pending_interactions
+            .iter()
+            .any(|interaction| interaction.blocks_turn())
+            || self.session.compacting
+        {
             return Ok(());
         }
         let identity = self.handoff_identity_for_snapshot(snapshot, &self.session)?;

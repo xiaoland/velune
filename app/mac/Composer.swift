@@ -143,7 +143,8 @@ enum ComposerInputPolicy { case draft, messageEdit }
     /// ⌥↑ opens the last queue item in its own editor.
     func takeLastQueued() -> Bool {
         guard inputPolicy == .draft, let store, let last = store.followUp.queue.last else { return false }
-        guard last.editContext != nil else { return false }
+        guard last.editContext != nil,
+              store.followUp.contextPreparation.map({ $0.queuedMessageId != last.id || $0.canEditMessage }) ?? true else { return false }
         queueEditRequest = last
         return true
     }
@@ -279,6 +280,7 @@ struct ComposerEditor: NSViewRepresentable {
     @ObservedObject var model: ComposerModel
     let placeholder: String
     var editable: Bool = true
+    var sendMode: SendMode? = nil
     var heightChanged: (CGFloat) -> Void = { _ in }
     let submit: () -> Void
     /// ⌘Return (⌥⌘Return): into the running turn, when the runtime takes it.
@@ -309,7 +311,7 @@ struct ComposerEditor: NSViewRepresentable {
         // belongs to every view; attaching the active input remains separate.
         view.replace(model.submission)
         if model.textView == nil { model.attach(view) }
-        context.coordinator.update(placeholder: placeholder, submit: submit, steer: steer)
+        context.coordinator.update(placeholder: placeholder, submit: submit, steer: steer, sendMode: sendMode)
         return scroll
     }
 
@@ -331,7 +333,7 @@ struct ComposerEditor: NSViewRepresentable {
             if model.textView == nil || view.window?.firstResponder === view { model.attach(view) }
         }
         context.coordinator.placeMenu = placeMenu
-        context.coordinator.update(placeholder: placeholder, submit: submit, steer: steer)
+        context.coordinator.update(placeholder: placeholder, submit: submit, steer: steer, sendMode: sendMode)
     }
 
     @MainActor final class Coordinator: NSObject, NSTextViewDelegate {
@@ -342,11 +344,13 @@ struct ComposerEditor: NSViewRepresentable {
         var placeMenu: () -> NSMenuItem? = { nil }
         var bindTarget: () -> Void = {}
         var focused: () -> Void = {}
+        var sendMode: SendMode?
         var reportHeight: (CGFloat) -> Void = { _ in }
         private var pendingHeight: CGFloat?
         init(model: ComposerModel) { self.model = model }
 
-        func update(placeholder: String, submit: @escaping () -> Void, steer: @escaping () -> Void) {
+        func update(placeholder: String, submit: @escaping () -> Void, steer: @escaping () -> Void, sendMode: SendMode?) {
+            self.sendMode = sendMode
             self.submit = submit
             self.steer = steer
             if view?.placeholder != placeholder { view?.placeholder = placeholder }
@@ -542,7 +546,7 @@ struct ComposerEditor: NSViewRepresentable {
         let modifiers = event.modifierFlags.intersection([.command, .shift, .option, .control])
         switch event.keyCode {
         case 36, 76:
-            switch (KeyboardShortcutSettings.shared.sendMode, modifiers) {
+            switch (coordinator.sendMode ?? KeyboardShortcutSettings.shared.sendMode, modifiers) {
             case (.returnSends, []), (.commandReturnSends, .command): return coordinator.submit()
             case (.returnSends, .command), (_, [.command, .option]): return coordinator.steer()
             default: break
@@ -769,6 +773,7 @@ struct ComposerView: View {
         .onReceive(store.device.composerInputs.changes) { _ in
             if editingTarget == nil { refreshActiveCompletion() }
         }
+        .modifier(ContinuationPreparationPresentation(tab: context.tab, window: layout, enabled: editingTarget == nil))
     }
 
     private func refreshActiveCompletion() {
@@ -845,6 +850,7 @@ struct ComposerView: View {
     /// The keys as the send mode has them, and what they do now.
     private var placeholder: String {
         if editingTarget != nil { return "编辑消息内容…" }
+        if store.loadedParentConversationID != nil { return "子 Agent 会话由父会话继续" }
         if !store.inputSubmissionAllowed { return store.inputAccess.composerPlaceholder }
         let mode = shortcuts.sendMode
         guard store.isGenerating else { return mode == .returnSends ? "输入消息，Return 发送，⇧Return 换行，/ 命令" : "输入消息，⌘Return 发送，/ 命令" }
@@ -896,16 +902,25 @@ struct ComposerView: View {
     }
 
     @ViewBuilder private var ordinarySendButtons: some View {
+        if let preparation = context.tab.continuationPreparation {
+            ContinuationPreparationControl(session: preparation) {
+                layout.focusConversation(context.tab)
+                preparation.show()
+            }
+        }
+        ordinarySubmissionButtons
+    }
+
+    @ViewBuilder private var ordinarySubmissionButtons: some View {
         let current = submission()
         if store.canCancel {
-            Button("停止", action: store.cancel).disabled(store.isLoading).help("停止当前生成")
+            Button("停止", action: store.cancel).disabled(!store.canCancel)
+                .help(store.composerRequest == .sending ? "取消发送；已接纳的消息将停止生成" : "停止当前生成")
+                .accessibilityIdentifier("composer-stop")
         }
         if store.inputSubmissionAllowed, current.action == .queue && store.followUp.canSteer {
             Button("插入本轮", action: steer).disabled(!context.canSteer)
                 .help("将消息插入正在运行的本轮")
-        }
-        if store.followUp.canStopSubAgents && !store.isGenerating && !store.followUp.waitingForSubAgents {
-            Button("停止子 Agent", action: store.stopSubAgents).disabled(store.isLoading)
         }
         if store.controlHandoff == .releasing {
             Text("正在交还控制权…").uiFont(.callout).foregroundStyle(.secondary)
@@ -992,12 +1007,11 @@ struct ComposerView: View {
         // Levels show as the runtime receives them.
         let effort = context.nextTurnEffort ?? context.currentEffort
         // An unchosen level follows the conversation's, or is the runtime's own.
-        let unchosen = context.nextTurnHasCurrent ? "沿用当前" : "运行时默认"
+        let unchosen = store.loadedParentConversationID != nil ? "未记录" : context.nextTurnHasCurrent ? "沿用当前" : "运行时默认"
         let modelTitle = ([model] + (effort.map { [$0] } ?? [])).joined(separator: " · ")
         let title = "\(runtime) · \(modelTitle)"
-        let subject = editingTarget != nil ? "此消息" : "下一轮"
-        let unavailableHelp = editingTarget == nil ? "所选模型已不可用，下一轮改用\(model)" : "所选模型已不可用"
-        let modelHelp = context.retainedQueueModelName == nil ? unavailableHelp : ComposerModelChoiceContent.retainedModelExplanation
+        let subject = editingTarget != nil ? "此消息" : store.loadedParentConversationID == nil ? "下一轮" : "当前会话"
+        let modelHelp = context.retainedQueueModelName == nil ? "所选模型已不可用" : ComposerModelChoiceContent.retainedModelExplanation
         return Menu {
             Menu("运行时：\(runtime)") {
                 Picker("Agent 运行时", selection: Binding(get: { context.nextTurnRuntimeID }, set: { if let id = $0 { context.selectNextTurnRuntime(id) } })) {
@@ -1027,7 +1041,7 @@ struct ComposerView: View {
         }
         .fixedSize()
         .accessibilityLabel("\(subject)：运行时 \(runtime)，模型 \(model)，推理强度 \(effort ?? unchosen)")
-        .help(context.chosenModelUnavailable ? modelHelp : "\(subject)使用运行时 \(runtime)，模型 \(model)，推理强度 \(effort ?? unchosen)")
+        .help(store.loadedParentConversationID != nil ? "子 Agent 的执行配置只可查看，由父会话继续" : context.chosenModelUnavailable ? modelHelp : "\(subject)使用运行时 \(runtime)，模型 \(model)，推理强度 \(effort ?? unchosen)")
         .disabled(store.isShuttingDown || editingTarget?.editable == false)
     }
 
@@ -1039,6 +1053,7 @@ struct ComposerView: View {
         ComposerModelChoiceContent(next: context.nextTurn, catalog: context.modelCatalog,
                                    selection: Binding(get: { context.chosenModel }, set: { context.selectModel($0) }),
                                    enabled: context.canSwitchModel,
+                                   defaultTitle: store.loadedParentConversationID == nil ? nil : context.selectedModelName,
                                    retainedModelName: context.retainedQueueModelName)
     }
 
@@ -1079,12 +1094,13 @@ struct ComposerView: View {
         let mode = context.effectivePermissionMode
         let current = context.currentPermissionMode
         let hasModes = !context.permissionModeOptions.isEmpty
-        let title = hasModes ? (mode ?? current)?.label ?? "运行时默认权限" : "会话选项"
+        let child = editingTarget == nil && store.loadedParentConversationID != nil
+        let title = hasModes ? (mode ?? current)?.label ?? (child ? "权限未记录" : "运行时默认权限") : "会话选项"
         return Menu {
             if hasModes {
                 Picker("权限模式", selection: Binding(get: { mode?.id }, set: { context.selectPermissionMode($0) })) {
-                    Text(current.map { "沿用当前（\($0.label)）" } ?? (context.nextTurnHasCurrent ? "沿用当前" : "运行时默认")).tag(String?.none)
-                        .help(context.nextTurnHasCurrent ? "不更改：沿用会话当前的权限模式" : "不指定：由运行时使用自己的默认模式")
+                    Text(child ? current?.label ?? "权限未记录" : current.map { "沿用当前（\($0.label)）" } ?? (context.nextTurnHasCurrent ? "沿用当前" : "运行时默认")).tag(String?.none)
+                        .help(child ? "子 Agent 的权限只可查看，由父会话继续" : context.nextTurnHasCurrent ? "不更改：沿用会话当前的权限模式" : "不指定：由运行时使用自己的默认模式")
                     ForEach(context.permissionModeOptions) { option in Text(option.label).tag(Optional(option.id)).help(option.detail) }
                 }.pickerStyle(.inline).disabled(!context.executionChoicesEditable)
             }
@@ -1098,8 +1114,8 @@ struct ComposerView: View {
             else { Label(Self.pullDownTitle(title), systemImage: hasModes ? "lock.shield" : "slider.horizontal.3").lineLimit(1) }
         }
         .fixedSize()
-        .accessibilityLabel(hasModes ? "下一轮权限模式：\(title)" : "会话选项")
-        .help(hasModes ? (mode.map { "权限模式：\($0.label)。\($0.detail)" } ?? (context.nextTurnHasCurrent ? "权限模式：沿用会话当前的模式\(current.map { "（\($0.label)）" } ?? "")" : "权限模式：由运行时使用自己的默认模式")) : "此会话由 Agent 提供的选项，修改立即生效")
+        .accessibilityLabel(hasModes ? "\(child ? "当前会话" : "下一轮")权限模式：\(title)" : "会话选项")
+        .help(child ? "子 Agent 的权限只可查看；\(title)" : hasModes ? (mode.map { "权限模式：\($0.label)。\($0.detail)" } ?? (context.nextTurnHasCurrent ? "权限模式：沿用会话当前的模式\(current.map { "（\($0.label)）" } ?? "")" : "权限模式：由运行时使用自己的默认模式")) : "此会话由 Agent 提供的选项，修改立即生效")
         .disabled(store.isShuttingDown || editingTarget?.editable == false)
     }
 

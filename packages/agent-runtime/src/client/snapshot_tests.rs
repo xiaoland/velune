@@ -143,7 +143,7 @@ for line in sys.stdin:
         client
             .request_with_timeout(json!({"type":"get_state"}), Duration::from_secs(10))
             .unwrap();
-        let result = client.request_response(json!({"id":"failed-query","type":"prompt","message":"/velune-projection-sync failed-query"}), "prompt", Duration::from_millis(500));
+        let result = client.request_response(json!({"id":"failed-query","type":"prompt","message":"/velune-projection-sync failed-query"}), "prompt", Duration::from_millis(500), false);
         assert!(
             matches!(&result, Err(Error::Timeout(_))) == timeout,
             "timeout={timeout}, result={result:?}"

@@ -75,17 +75,17 @@ impl CoreRuntime {
         let view = std::iter::once(&self.session)
             .chain(&self.parked)
             .find(|session| session.conversation_id() == Some(id.as_str()))
-            .and_then(|session| session.projected())
-            .cloned();
-        let view = match view {
+            .and_then(|session| session.projected());
+        let history;
+        let view: &crate::conversation::ConversationSnapshot = match view {
             Some(view) => view,
             None => {
                 let summary = self
                     .find_conversation(id.to_owned())?
                     .ok_or_else(|| RuntimeError::invalid("没有这个会话"))?
                     .conversation;
-                self.read_conversation_source(&summary.runtime_id, &summary.id)?
-                    .0
+                history = self.read_conversation_source(&summary.runtime_id, &summary.id)?.0;
+                &history
             }
         };
         let mut text = String::new();

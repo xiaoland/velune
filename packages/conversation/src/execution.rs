@@ -97,6 +97,28 @@ impl Executions {
         }
     }
 
+    /// Refine only an ended activity's synthetic connection-failure outcome.
+    /// The adapter must retain proof that it, not a native terminal, supplied
+    /// that failure, and consume that proof after this identity-checked update.
+    pub fn refine_connection_failure(
+        &mut self,
+        activity_id: &str,
+        execution_id: &str,
+        outcome: TurnOutcome,
+    ) -> bool {
+        if self.current.as_ref().is_some_and(|activity| {
+            activity.ended && activity.id == activity_id && activity.execution_id == execution_id
+        }) && let Some(record) = self
+            .records
+            .iter_mut()
+            .find(|record| record.id == execution_id && record.outcome == Some(TurnOutcome::Failed))
+        {
+            record.outcome = Some(outcome);
+            return true;
+        }
+        false
+    }
+
     pub fn record(&self, message_id: &str) -> Option<&ExecutionRecord> {
         self.records
             .iter()
@@ -204,6 +226,48 @@ impl Executions {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn refine_connection_failure_requires_same_ended_activity_and_failed_record() {
+        let mut executions = Executions::default();
+        executions.begin(ExecutionKind::UserTurn, false);
+        let owner = executions.current.clone().unwrap();
+        assert!(!executions.refine_connection_failure(
+            &owner.id,
+            &owner.execution_id,
+            TurnOutcome::Completed
+        ));
+        executions.finish(Some(TurnOutcome::Failed));
+        assert!(!executions.refine_connection_failure(
+            "other-activity",
+            &owner.execution_id,
+            TurnOutcome::Completed
+        ));
+        assert!(!executions.refine_connection_failure(
+            &owner.id,
+            "other-execution",
+            TurnOutcome::Completed
+        ));
+        assert!(executions.refine_connection_failure(
+            &owner.id,
+            &owner.execution_id,
+            TurnOutcome::Completed
+        ));
+        assert!(!executions.refine_connection_failure(
+            &owner.id,
+            &owner.execution_id,
+            TurnOutcome::Failed
+        ));
+        executions.finish(Some(TurnOutcome::Failed));
+        assert_eq!(executions.records[0].outcome, Some(TurnOutcome::Completed));
+        executions.begin(ExecutionKind::UserTurn, true);
+        assert!(!executions.refine_connection_failure(
+            &owner.id,
+            &owner.execution_id,
+            TurnOutcome::Completed
+        ));
+        assert_eq!(executions.records[0].outcome, None);
+    }
+
     #[test]
     fn explicit_continue_has_new_activity_but_steer_and_identity_share_scope() {
         let mut executions = Executions::default();

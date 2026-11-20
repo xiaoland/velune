@@ -1,16 +1,47 @@
 // Fixed Pi SDK assembly: source PI_HOME owns its settings, credentials and sessions;
 // Velune appends its current gateway provider catalog for this execution.
 import { readFileSync } from "node:fs";
-import { isAbsolute, join } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
+import { createRequire } from "node:module";
+import { pathToFileURL } from "node:url";
 import { resolvePiSdk } from "./pi_sdk.mjs";
 const args = process.argv.slice(2);
 const value = (key) => { const index = args.indexOf(key); return index < 0 ? undefined : args[index + 1]; };
 const fail = (message) => { throw new Error(message); };
+// Resolve the optional integration from the extension which Pi actually loaded,
+// not the app's dependency tree or an unrelated global npm installation.
+async function childExtensionRegistration(resourceLoader) {
+  for (const loaded of resourceLoader.getExtensions().extensions) {
+    if (typeof loaded.resolvedPath !== "string" || !isAbsolute(loaded.resolvedPath)) continue;
+    let directory = dirname(loaded.resolvedPath);
+    for (;;) {
+      let manifest;
+      try { manifest = JSON.parse(readFileSync(join(directory, "package.json"), "utf8")); }
+      catch (error) { if (error.code !== "ENOENT") break; }
+      if (manifest) {
+        if (manifest.name !== "pi-subagents") break;
+        try {
+          const require = createRequire(join(directory, "package.json"));
+          const api = await import(pathToFileURL(require.resolve("pi-subagents/required-child-extensions")).href);
+          if (typeof api.registerRequiredChildExtensions === "function") return api.registerRequiredChildExtensions;
+        } catch { /* Older optional plugins do not expose this public API. */ }
+        return undefined;
+      }
+      const parent = dirname(directory);
+      if (parent === directory) break;
+      directory = parent;
+    }
+  }
+}
 async function main() {
   const cli = value("--cli");
   if (!cli || !isAbsolute(cli)) fail("Pi CLI 必须是绝对路径");
   const installation = resolvePiSdk({binary:cli,runtimeTypeId:value("--runtime-type")});
-  // Bind extensions to the converter from this already validated SDK installation.
+  // pi-subagents cannot infer Pi's host from this Node SDK entrypoint. Its
+  // public override also keeps detached runners on the selected installation.
+  process.env.PI_SUBAGENTS_PI_CODING_AGENT_PACKAGE_ROOT = installation.packageDirectory;
+  // Extensions need Pi's own entry converter to build display history. Bind it
+  // to this validated installation rather than resolving another global SDK.
   process.env.VELUNE_PI_SDK_PACKAGE_ROOT = installation.packageDirectory;
   if (args.includes("--validate")) return;
   const required = (key) => { const path = value(key); if (!path || !isAbsolute(path)) fail("Pi SDK 装配路径无效"); return path; };
@@ -41,24 +72,48 @@ async function main() {
     : sessionPath ? sdk.SessionManager.open(sessionPath, sessionDir) : sdk.SessionManager.create(process.cwd(), sessionDir);
   const trustStore = new sdk.ProjectTrustStore(agentDir), trustByCwd = new Map();
   const factory = async ({cwd,agentDir,sessionManager,sessionStartEvent,projectTrustContext}) => {
+    let registerChildExtensions;
+    let childExtensions;
+    const childExtensionHost = pi => {
+      pi.on("session_start", (_event, ctx) => {
+        childExtensions?.dispose(); childExtensions = undefined;
+        if (!selectionFile) return;
+        if (!registerChildExtensions) {
+          ctx.ui.setStatus("velune.child-capabilities", JSON.stringify({requiredExtensions:"unavailable"}));
+          return;
+        }
+        try {
+          childExtensions = registerChildExtensions({sessionId:ctx.sessionManager.getSessionId(),
+            extensions:[{id:"velune.virtual-model",path:extension}]});
+          ctx.ui.setStatus("velune.child-capabilities", JSON.stringify({requiredExtensions:"supported"}));
+        } catch (error) {
+          // Another host owns its registration, or this plugin is incompatible.
+          // Do not dispose its policy or prevent ordinary Pi from starting.
+          ctx.ui.setStatus("velune.child-capabilities", JSON.stringify({requiredExtensions:"unavailable",
+            detail:error instanceof Error ? error.message : "Required child extension registration failed"}));
+        }
+      });
+      pi.on("session_shutdown", () => { childExtensions?.dispose(); childExtensions = undefined; });
+    };
     const hasProjectResources = sdk.hasTrustRequiringProjectResources(cwd);
     const cached = trustByCwd.get(cwd);
     const shouldResolve = cached === undefined && hasProjectResources;
     const projectTrusted = shouldResolve ? false : (cached ?? (!hasProjectResources || trustStore.get(cwd) === true));
     const settingsManager = sdk.SettingsManager.create(cwd,agentDir,{projectTrusted});
     const services = await sdk.createAgentSessionServices({cwd,agentDir,settingsManager,modelRuntime,
-      resourceLoaderOptions:{additionalExtensionPaths:[extension],extensionFactories:mcpNames.length ? [
+      resourceLoaderOptions:{additionalExtensionPaths:[extension],extensionFactories:[childExtensionHost,...(mcpNames.length ? [
         sdk.createMcpExtension(),
         pi => {
           for (const [name, config] of Object.entries(injectedMcp)) pi.registerMcpServer(name,{...config,exposure:"direct"});
         },
-      ] : []},
+      ] : [])]},
       resourceLoaderReloadOptions:shouldResolve ? {resolveProjectTrust:async ({extensionsResult})=> {
         const trusted = await resolveProjectTrusted({cwd,trustStore,defaultProjectTrust:settingsManager.getDefaultProjectTrust(),extensionsResult,
           projectTrustContext:projectTrustContext ?? createProjectTrustContext({cwd,mode:"rpc",settingsManager,hasUI:false})});
         trustByCwd.set(cwd,trusted); return trusted;
       }} : undefined,
     });
+    registerChildExtensions = selectionFile ? await childExtensionRegistration(services.resourceLoader) : undefined;
     const provider = value("--provider"), modelId = value("--model");
     const model = provider && modelId ? services.modelRuntime.getModel(provider,modelId) : undefined;
     if (provider && modelId && !model) fail("所选运行时模型未注册");

@@ -2,16 +2,30 @@ import AppKit
 import SwiftUI
 import VeluneBindings
 
+/// A conversation's row identity in the aggregated list: its device and the
+/// conversation, so two devices' conversations never share a list row.
+struct AggregatedRowID: Hashable {
+    let section: String
+    let conversation: String
+    func belongs(to deviceID: String, conversations: Set<String>) -> Bool {
+        section.hasPrefix(deviceID + "‖") && conversations.contains(conversation)
+    }
+}
+
 /// A window's conversation list, in the sidebar or in a floating panel with
-/// its own search field. A conversation selected alone opens in the
-/// window's focused pane; several are a selection to manage.
+/// its own search field. The list aggregates every device the window shows:
+/// each section belongs to one device, and opening a row targets that
+/// device. A conversation selected alone opens in the window's focused pane;
+/// several are a selection to manage.
 struct ConversationListView: View {
     enum Placement { case sidebar, panel }
     @ObservedObject var window: ConversationWindowModel
-    /// The list's workspace.
+    /// The list's workspace on this Mac (problems, local loading state).
     @ObservedObject var store: ConversationStore
     /// The focused pane's workspace.
     @ObservedObject var focused: ConversationStore
+    /// The aggregated list: devices, merged groups, the merged view's choices.
+    @ObservedObject private var aggregated: AggregatedListModel
     let placement: Placement
     /// Sharing its area with other tools, the search is a button over a popover.
     var compact = false
@@ -23,31 +37,47 @@ struct ConversationListView: View {
         get { window.listBrowser }
         nonmutating set { window.listBrowser = newValue }
     }
+    /// Whether the merged "全部设备" view shows: its folding and ordering are
+    /// this Mac's own; a single-device view uses that device's preferences.
+    private var mergedChoices: Bool { aggregated.filter == .all }
     /// Wait for the system's double-click decision before a mouse selection opens.
     @State private var pendingOpen: Task<Void, Never>?
+    @State private var pendingOpenPress: (row: AggregatedRowID, time: TimeInterval)?
     @StateObject private var clicks = ConversationListClicks()
     @State private var projectTarget: ProjectEditorTarget?
     /// The group whose header was last dragged; the drop reads it after the
     /// button is up, so it stays until the next drag.
-    @State private var draggedGroup: ConversationGroupKey?
+    @State private var draggedGroup: String?
     /// The group dragged while the button is down, dimmed in place.
-    @State private var draggingGroup: ConversationGroupKey?
+    @State private var draggingGroup: String?
     /// Where the dragged group would land if dropped now.
     @State private var groupLanding: GroupLanding?
-    /// Groups moved here, shown in their new places until the core's list in
+    /// Groups moved here, shown in their new places until the read list in
     /// the saved order arrives.
     @State private var pendingGroupMoves: [GroupMove] = []
     /// A group just moved, marked for a moment so the eye finds it.
-    @State private var landedGroup: ConversationGroupKey?
+    @State private var landedGroup: String?
     @State private var groupHeaderHeight: CGFloat = 0
-    private var conversationSections: [ConversationBrowser.Section] {
-        pendingGroupMoves.reduce(store.conversationSections) { sections, move in
+    /// The devices waiting for a connection, shown with their state instead of groups.
+    private var pendingDevices: [AggregatedListModel.Device] { aggregated.pendingDevices() }
+    private var sections: [AggregatedListModel.Section] {
+        pendingGroupMoves.reduce(aggregated.sections) { sections, move in
             guard let from = sections.firstIndex(where: { $0.id == move.key }) else { return sections }
             var moved = sections
             let section = moved.remove(at: from)
             moved.insert(section, at: move.before.flatMap { before in moved.firstIndex { $0.id == before } } ?? moved.count)
             return moved
         }
+    }
+    @State private var selection: Set<AggregatedRowID> = []
+
+    init(window: ConversationWindowModel, store: ConversationStore, focused: ConversationStore, placement: Placement, compact: Bool = false) {
+        self.window = window
+        self.store = store
+        self.focused = focused
+        self.aggregated = window.aggregated
+        self.placement = placement
+        self.compact = compact
     }
 
     var body: some View {
@@ -76,7 +106,7 @@ struct ConversationListView: View {
             }
         }
         .background(PaneAnchor { [window] in window.registerFindArea(.list, anchor: $0) })
-        .onAppear { window.listKeyHandler = listKey }
+        .onAppear { window.listKeyHandler = listKey; synchronizeFocusedSelection() }
         .onDisappear { cancelPendingOpen() }
         .onChange(of: focused.selectedConversationID) { _, _ in synchronizeFocusedSelection() }
         .onChange(of: ObjectIdentifier(focused)) { _, _ in synchronizeFocusedSelection() }
@@ -89,21 +119,45 @@ struct ConversationListView: View {
         .task(id: window.listSearch) {
             // Searching reads every listed conversation; wait for typing to pause.
             if !window.listSearch.isEmpty { try? await Task.sleep(for: .milliseconds(250)) }
-            if !Task.isCancelled { store.setSearchText(window.listSearch) }
+            if !Task.isCancelled { aggregated.setSearchText(window.listSearch) }
         }
-        .onReceive(store.device.$conversationBrowserPreferences) { value in
+        // The filter menu edits the filtered device's own preferences, as a
+        // single-device window always did; the merged view only merges them.
+        .onReceive(filteredDevice.store.$conversationBrowserPreferences) { value in
             if let value, value != browser.preferences { pendingGroupMoves = []; browser.restore(value) }
         }
-        // The list waits while choices are saved; the first one after is the saved order.
-        .onReceive(store.device.$conversationGroups) { _ in pendingGroupMoves = [] }
-        .onChange(of: browser.preferences) { _, value in
-            if store.device.conversationBrowserPreferences != nil { store.device.setConversationBrowserPreferences(value) }
+        .onReceive(aggregated.$filter) { _ in
+            pendingGroupMoves = []
+            if let value = filteredDevice.store.conversationBrowserPreferences, value != browser.preferences { browser.restore(value) }
         }
-        .sheet(item: $projectTarget) { ProjectEditorView(store: store, target: $0) }
+        // The list waits while choices are saved; the first one after is the saved order.
+        .onReceive(aggregated.$sections) { _ in if !mergedChoices { pendingGroupMoves = [] } }
+        .onReceive(aggregated.managedConversations) { result in
+            cancelPendingOpen()
+            selection = selection.filter { !$0.belongs(to: result.deviceID, conversations: result.conversations) }
+            let grouped = selectedByDevice(selection)
+            for device in aggregated.visibleDevices {
+                aggregated.listStore(for: device).setListSelection(grouped[device.id] ?? [])
+            }
+        }
+        .onChange(of: browser.preferences) { _, value in
+            if filteredDevice.store.conversationBrowserPreferences != nil { filteredDevice.store.setConversationBrowserPreferences(value) }
+        }
+        .sheet(item: $projectTarget) { target in
+            ProjectEditorView(store: target.store, target: target)
+        }
+    }
+
+    /// The device the filter menu edits: the filtered one, or this Mac in the merged view.
+    private var filteredDevice: AggregatedListModel.Device {
+        switch aggregated.filter {
+        case .peer(let id): aggregated.devices.first { $0.peerID == id } ?? aggregated.devices[0]
+        default: aggregated.devices[0]
+        }
     }
 
     private var list: some View {
-        List(selection: Binding(get: { listSelection }, set: selectList)) {
+        List(selection: Binding(get: { selection }, set: selectList)) {
             if store.device.showsArchived {
                 HStack {
                     Label("已归档的会话", systemImage: "archivebox").foregroundStyle(.secondary)
@@ -111,39 +165,51 @@ struct ConversationListView: View {
                     Button("返回") { store.device.setShowsArchived(false) }.buttonStyle(.link)
                 }.selectionDisabled(true)
             }
-            if conversationSections.isEmpty && !store.isLoading && !focused.isLoading {
-                if store.searchResults != nil || (browser.hasFilters && !store.conversations.isEmpty) {
+            if sections.isEmpty && pendingDevices.isEmpty && !store.isLoading && !focused.isLoading {
+                if searchActive || (browser.hasFilters && !filteredDevice.store.conversations.isEmpty) {
                     Text("没有匹配的会话").foregroundStyle(.secondary).selectionDisabled(true)
                     if browser.hasFilters { Button("清除筛选") { browser.runtimeID = nil; browser.project = .all }.selectionDisabled(true) }
                 } else if store.device.showsArchived {
                     Text("没有已归档的会话").foregroundStyle(.secondary).selectionDisabled(true)
                 }
             }
-            ForEach(conversationSections) { section in
+            if aggregated.showsMultipleDevices || aggregated.filter != .all {
+                ForEach(pendingDevices) { device in
+                    DeviceStatusRow(name: device.name, status: DeviceHub.shared?.statusText(for: device.peerID ?? "") ?? "未连接") {
+                        aggregated.retry(device)
+                    }
+                    .selectionDisabled(true)
+                }
+            }
+            ForEach(sections) { section in
                 // Flat rows keep group lifetime out of NSOutlineView's
                 // disclosure tracking map when an archive removes the last child.
+                if aggregated.showsHeader(section) {
                 HStack(spacing: 6) {
                     Button {
-                        let expanded = expansion(section.id)
+                        let expanded = expansion(section)
                         expanded.wrappedValue.toggle()
                     } label: {
-                        Image(systemName: expansion(section.id).wrappedValue ? "chevron.down" : "chevron.right")
+                        Image(systemName: expansion(section).wrappedValue ? "chevron.down" : "chevron.right")
                             .frame(width: 12)
                     }
                     .buttonStyle(.borderless)
-                    .accessibilityLabel((expansion(section.id).wrappedValue ? "收起" : "展开") + groupTitle(section.id))
+                    .accessibilityLabel((expansion(section).wrappedValue ? "收起" : "展开") + sectionTitle(section))
                     sectionHeader(section)
                 }
                 .uiFont(.caption.weight(.semibold)).foregroundStyle(.secondary)
                 .selectionDisabled(true)
-                if expansion(section.id).wrappedValue {
+                }
+                if expansion(section).wrappedValue {
                     ForEach(section.conversations) { conversation in
-                        conversationRow(conversation)
-                            .tag(conversation.id)
-                            .background(ConversationRowClickMarker(id: conversation.id, owner: clicks))
+                        let row = AggregatedRowID(section: section.id, conversation: conversation.id)
+                        conversationRow(section: section, conversation: conversation)
+                            .help(section.crossProjectID == nil ? conversation.title : "\(conversation.title)\n执行设备：\(section.device.name)")
+                            .tag(row)
+                            .background(ConversationRowClickMarker(id: row, owner: clicks))
                             // Always selectable, also while the conversation pressed on
                             // opens: the rows do not change under the press.
-                            .contextMenu { conversationManagementMenu(store.selectedConversationIDs.contains(conversation.id) ? store.selectedConversationIDs : [conversation.id]) }
+                            .contextMenu { conversationManagementMenu(selection.isEmpty ? [] : selection) }
                             // Dropped on a pane, it opens there or beside it; outside
                             // every window, in a window of its own. The list's own drag
                             // (`itemProvider`), not a gesture on the row (`onDrag`): the
@@ -160,10 +226,11 @@ struct ConversationListView: View {
                             .opacity(draggingGroup == section.id ? 0.4 : 1)
                     }
                     if section.hasMore {
-                        if store.searchResults == nil {
+                        if !searchActive {
                             ConversationPaginationButton(loaded: section.group.loaded, total: section.group.total,
-                                isLoading: store.device.loadingConversationGroups.contains(section.id),
-                                load: { store.device.loadMoreConversations(in: section.id) })
+                                isLoading: section.device.store.loadingConversationGroups.contains(section.key),
+                                sourceName: section.crossProjectID == nil ? nil : section.device.name,
+                                load: { section.device.store.loadMoreConversations(in: section.key) })
                                 .selectionDisabled(true)
                                 .groupDrop(groupDropDelegate(section, .more), line: groupLines(section, .more))
                                 .opacity(draggingGroup == section.id ? 0.4 : 1)
@@ -174,68 +241,85 @@ struct ConversationListView: View {
                 }
             }
         }
-        .contextMenu(forSelectionType: String.self) { ids in conversationManagementMenu(ids) } primaryAction: { ids in
+        .contextMenu(forSelectionType: AggregatedRowID.self) { ids in conversationManagementMenu(ids) } primaryAction: { ids in
             cancelPendingOpen()
-            guard ids.count == 1, let id = ids.first, let target = store.conversation(id: id), store.canManageConversations, store.canRenameConversation(target) else { return }
-            window.renameTarget = target
+            guard ids.count == 1, let row = ids.first, let section = section(for: row),
+                  let target = section.conversations.first(where: { $0.id == row.conversation }),
+                  facadeStore(for: section).canManageConversations, facadeStore(for: section).canRenameConversation(target) else { return }
+            window.renameTarget = .init(conversation: target, device: section.device.store)
         }
         .listStyle(.sidebar)
         .background(ListDragLimit())
         .background(ConversationListClickObserver(owner: clicks, single: tappedRow, cancel: cancelPendingOpen))
-        .disabled(store.device.authenticationRunning || store.isShuttingDown)
+        .disabled(filteredDevice.store.authenticationRunning || store.isShuttingDown)
     }
 
-    private var listSelection: Set<String> {
-        store.selectedConversationIDs.isEmpty
-            ? Set([focused.selectedConversationID].compactMap { $0 }) : store.selectedConversationIDs
-    }
+    private var searchActive: Bool { !aggregated.searchText.isEmpty }
 
-    private func cancelPendingOpen() { pendingOpen?.cancel(); pendingOpen = nil }
+    private func cancelPendingOpen() { pendingOpen?.cancel(); pendingOpen = nil; pendingOpenPress = nil }
 
     private func synchronizeFocusedSelection() {
         cancelPendingOpen()
-        if store.selectedConversationIDs.count <= 1 {
-            store.setListSelection(Set([focused.selectedConversationID].compactMap { $0 }))
-        }
+        guard selection.count <= 1, let id = focused.selectedConversationID else { return }
+        guard let section = sections.first(where: { $0.device.store === focused.device && $0.conversations.contains(where: { $0.id == id }) }) else { return }
+        selection = [AggregatedRowID(section: section.id, conversation: id)]
     }
 
-    private func selectList(_ ids: Set<String>) { selectList(ids,event:NSApp.currentEvent) }
+    private func section(for row: AggregatedRowID) -> AggregatedListModel.Section? {
+        sections.first { $0.id == row.section && $0.conversations.contains { $0.id == row.conversation } }
+    }
 
-    private func selectList(_ ids: Set<String>, event: NSEvent?) {
+    private func selectList(_ ids: Set<AggregatedRowID>) {
         cancelPendingOpen()
-        store.setListSelection(ids)
-        guard ids.count == 1, let id = ids.first, id != focused.selectedConversationID else { return }
+        selection = ids
+        let grouped = selectedByDevice(ids)
+        // Keep each device's own list selection in step, for its management requests.
+        for device in aggregated.visibleDevices {
+            aggregated.listStore(for: device).setListSelection(grouped[device.id] ?? [])
+        }
+        guard ids.count == 1, let row = ids.first, let section = section(for: row),
+              focused.device !== section.device.store || row.conversation != focused.selectedConversationID else { return }
+        let event = NSApp.currentEvent
         let flags = event?.modifierFlags ?? NSEvent.modifierFlags
         if !flags.intersection([.command, .shift, .control]).isEmpty { return }
         let beside = flags.contains(.option)
         // Keyboard navigation is immediate; a context click or drag only selects.
         if let event, event.modifierFlags.contains(.control) || [.rightMouseDown, .rightMouseUp, .leftMouseDragged].contains(event.type) { return }
-        let open = { if beside { window.openInNewTab(id) } else { window.open(id) } }
+        let device = section.device.store
+        let open = { if beside { window.openInNewTab(row.conversation, device: device) } else { window.open(row.conversation, device: device) } }
         guard let event, [.leftMouseDown, .leftMouseUp].contains(event.type) else { open(); return }
         guard event.clickCount == 1 else { return }
-        scheduleMouseOpen(id, beside: beside)
+        scheduleMouseOpen(row, beside: beside, pressedAt: event.timestamp)
     }
 
-    private func tappedRow(_ id: String, flags: NSEvent.ModifierFlags) {
-        guard window.renameTarget == nil, listSelection == [id], id != focused.selectedConversationID,
+    private func tappedRow(_ row: AggregatedRowID, flags: NSEvent.ModifierFlags, pressedAt: TimeInterval) {
+        guard window.renameTarget == nil, selection == [row], let section = section(for: row),
+              focused.device !== section.device.store || row.conversation != focused.selectedConversationID,
               flags.intersection([.command, .shift, .control]).isEmpty else { return }
-        scheduleMouseOpen(id, beside: flags.contains(.option))
+        scheduleMouseOpen(row, beside: flags.contains(.option), pressedAt: pressedAt)
     }
 
-    private func scheduleMouseOpen(_ id: String, beside: Bool) {
+    private func scheduleMouseOpen(_ row: AggregatedRowID, beside: Bool, pressedAt: TimeInterval) {
+        let pressedAt = pendingOpenPress?.row == row ? min(pendingOpenPress!.time, pressedAt) : pressedAt
         cancelPendingOpen()
+        pendingOpenPress = (row, pressedAt)
         pendingOpen = Task { @MainActor in
-            do { try await Task.sleep(for: .seconds(NSEvent.doubleClickInterval)) }
+            // NSTableView's tracking can hold the main run loop. Count the
+            // double-click interval from the actual press, never from its
+            // delayed SwiftUI selection callback or duplicate native observer.
+            let remaining = ConversationListClicks.openDelay(pressedAt: pressedAt)
+            do { if remaining > 0 { try await Task.sleep(for: .seconds(remaining)) } }
             catch { return }
             // A held press may still become a drag; wait for release instead
             // of opening under the pointer while the button remains down.
             while NSEvent.pressedMouseButtons & 1 != 0 {
                 do { try await Task.sleep(for: .milliseconds(25)) } catch { return }
             }
-            guard !Task.isCancelled, store.selectedConversationIDs == [id],
-                  !store.isShuttingDown, !store.device.authenticationRunning else { return }
+            guard !Task.isCancelled, selection == [row], let device = section(for: row)?.device.store,
+                  !device.isShuttingDown, !device.authenticationRunning else { return }
             pendingOpen = nil
-            if beside { window.openInNewTab(id) } else { window.open(id) }
+            pendingOpenPress = nil
+            if beside { window.openInNewTab(row.conversation, device: device) } else { window.open(row.conversation, device: device) }
         }
     }
 
@@ -245,11 +329,13 @@ struct ConversationListView: View {
     private func listKey(_ event: NSEvent) -> Bool {
         let modifiers = event.modifierFlags.intersection([.command, .shift, .option, .control])
         if event.keyCode == 51, modifiers == .command {
-            let ids = listSelection
-            let targets = ids.compactMap { store.conversation(id: $0) }
-            guard !targets.isEmpty, store.canManageConversations, targets.allSatisfy(store.canDeleteConversation) else { NSSound.beep(); return true }
-            window.deleteTargets = targets
-            return true
+            window.deleteTargets = selection.compactMap { row -> ConversationWindowModel.ConversationActionTarget? in
+                guard let section = section(for: row),
+                      let conversation = section.conversations.first(where: { $0.id == row.conversation }),
+                      facadeStore(for: section).canDeleteConversation(conversation) else { return nil }
+                return .init(conversation: conversation, device: section.device.store)
+            }
+            return !window.deleteTargets.isEmpty
         }
         guard modifiers.isSubset(of: .shift), let text = event.characters, text.count == 1, let scalar = text.unicodeScalars.first,
               !CharacterSet.whitespacesAndNewlines.union(.controlCharacters).contains(scalar), !(0xF700...0xF8FF).contains(scalar.value) else { return false }
@@ -257,39 +343,58 @@ struct ConversationListView: View {
         return true
     }
 
-    private func expansion(_ key: ConversationGroupKey) -> Binding<Bool> {
-        Binding(get: { store.searchResults != nil || !browser.isCollapsed(key) },
-                set: { expanded in if store.searchResults == nil { browser.setCollapsed(key, !expanded) } })
-    }
-
-    private func groupTitle(_ key: ConversationGroupKey) -> String {
-        switch key {
-        case .all: "会话"
-        case .pinned: "置顶"
-        case .runtime(let id): store.device.runtimeInstances.first { $0.id == id }?.name ?? "Agent 运行时"
-        case .project(let path?): ConversationBrowser.projectName(path, projects: store.device.conversationProjects)
-        case .project(nil): "无项目"
+    private func expansion(_ section: AggregatedListModel.Section) -> Binding<Bool> {
+        if mergedChoices || section.crossProjectID != nil {
+            return Binding(get: { searchActive || !aggregated.isCollapsed(section) },
+                           set: { expanded in if !searchActive { aggregated.setCollapsed(section, !expanded) } })
         }
+        return Binding(get: { searchActive || !browser.isCollapsed(section.key) },
+                       set: { expanded in if !searchActive { browser.setCollapsed(section.key, !expanded) } })
     }
 
-    private func sectionHeader(_ section: ConversationBrowser.Section) -> some View {
-        let title = groupTitle(section.id)
-        let path: String? = if case .project(let path?) = section.id { path } else { nil }
-        let project = path.flatMap { key in store.device.conversationProjects.first { $0.path == key } }
-        let runtimeID: String? = if case .runtime(let id) = section.id { id } else { project?.nativeRuntimeId }
+    private func sectionTitle(_ section: AggregatedListModel.Section) -> String {
+        section.displayTitle(multipleDevices: aggregated.showsMultipleDevices)
+    }
+
+    @ViewBuilder private func sectionHeader(_ section: AggregatedListModel.Section) -> some View {
+        if let id = section.crossProjectID, let project = aggregated.crossProjects.projects.first(where: { $0.id == id }) {
+            Text(project.name).lineLimit(1).help(project.name)
+                .contextMenu {
+                    ForEach(aggregated.devices) { device in
+                        if let folder = project.folders.first(where: { $0.peerID == device.peerID }) {
+                            Button("在 \(device.name) 中新建会话") {
+                                _ = window.openNewConversationTab(device: device.store, runtimeID: nil, cwd: folder.path, project: nil)
+                            }
+                        }
+                    }
+                }
+        } else { sourceSectionHeader(section) }
+    }
+
+    private func sourceSectionHeader(_ section: AggregatedListModel.Section) -> some View {
+        let title = sectionTitle(section)
+        let path: String? = if case .project(let path?) = section.key { path } else { nil }
+        let projects = section.device.store.conversationProjects
+        let project = path.flatMap { key in projects.first { $0.path == key } }
+        let runtimeID: String? = if case .runtime(let id) = section.key { id } else { project?.nativeRuntimeId }
+        let device = section.device.store
         return HStack(spacing: 6) {
             Text(title).lineLimit(1).truncationMode(.middle)
             Spacer(minLength: 0)
         }
         .help(path.map { key in
-            guard let project = store.device.conversationProjects.first(where: { $0.path == key }) else { return key }
+            guard let project = projects.first(where: { $0.path == key }) else { return key }
             let folders = project.primaryFolder.map { [$0] + project.folders } ?? []
             return folders.isEmpty ? title : folders.map { ($0 as NSString).abbreviatingWithTildeInPath }.joined(separator: "\n")
         } ?? title)
         // Up and down over the spacing around the title in its row, so a group
         // dragged to the top of another lands before it there too.
         .contentShape(VerticalOutset(amount: 16))
-        .onTapGesture(count: 2) { if let path { projectTarget = ProjectEditorTarget(path: path) } }
+        .onTapGesture(count: 2) {
+            if let path {
+                projectTarget = ProjectEditorTarget(path: path, store: window.listStore(for: device))
+            }
+        }
         .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { groupHeaderHeight = $0 }
         .background {
             if landedGroup == section.id {
@@ -298,7 +403,7 @@ struct ConversationListView: View {
         }
         // Dragged over another group, its header or its rows, a group takes its place.
         .onDrag {
-            guard canOrder(section.id) else { draggedGroup = nil; return NSItemProvider() }
+            guard canOrder(section) else { draggedGroup = nil; return NSItemProvider() }
             draggedGroup = section.id
             watchGroupDrag(section.id)
             return ConversationLink.groupItemProvider()
@@ -308,59 +413,71 @@ struct ConversationListView: View {
         .contextMenu {
             Button("新建会话") {
                 cancelPendingOpen()
-                window.createConversation(in: section.id)
+                window.createConversation(in: section.key, device: device)
             }
-            .disabled(focused.isSideChat || focused.isLoading || !store.device.enabledRuntimeInstances.contains { runtimeID == nil || $0.id == runtimeID })
+            .disabled(focused.isSideChat || focused.isLoading || !device.enabledRuntimeInstances.contains { runtimeID == nil || $0.id == runtimeID })
             Divider()
             if let path {
-                Button("编辑项目…") { projectTarget = ProjectEditorTarget(path: path) }
-                if section.group.name != nil && store.device.conversationProjects.first(where: { $0.path == path })?.nativeRuntimeId == nil {
+                Button("编辑项目…") {
+                    projectTarget = ProjectEditorTarget(path: path, store: window.listStore(for: device))
+                }
+                if section.group.name != nil && projects.first(where: { $0.path == path })?.nativeRuntimeId == nil {
                     Button("恢复文件夹名称") {
-                        let folders = store.device.conversationProjects.first { $0.path == path }?.folders ?? []
-                        store.device.setProject(path: path, primaryFolder: path, name: nil, folders: folders)
+                        let folders = projects.first { $0.path == path }?.folders ?? []
+                        device.setProject(path: path, primaryFolder: path, name: nil, folders: folders)
                     }
                 }
-                if let folder = store.device.conversationProjects.first(where: { $0.path == path })?.primaryFolder {
+                if let folder = projects.first(where: { $0.path == path })?.primaryFolder {
                     Button("在 Finder 中显示") { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: folder)]) }
-                        .disabled(store.device.location(of: section.conversations.first?.runtimeID) != .local)
+                        .disabled(device.peerID != nil || device.location(of: section.conversations.first?.runtimeID) != .local)
                 }
                 Divider()
             }
-            if store.searchResults == nil {
-                Button(browser.isCollapsed(section.id) ? "展开" : "折叠") { browser.setCollapsed(section.id, !browser.isCollapsed(section.id)) }
+            if !searchActive {
+                let collapsedNow = mergedChoices ? aggregated.isCollapsed(section) : browser.isCollapsed(section.key)
+                Button(collapsedNow ? "展开" : "折叠") {
+                    if mergedChoices { aggregated.setCollapsed(section, !collapsedNow) }
+                    else { browser.setCollapsed(section.key, !collapsedNow) }
+                }
             }
-            if canOrder(section.id) {
+            if canOrder(section) {
                 let shown = orderableGroups
                 let index = shown.firstIndex(of: section.id) ?? 0
                 Divider()
-                Button("上移") { moveGroup(section.id, before: shown[index - 1]) }.disabled(index == 0)
-                Button("下移") { moveGroup(section.id, before: index + 2 < shown.count ? shown[index + 2] : nil) }
+                Button("上移") { moveGroup(section, before: shown[index - 1]) }.disabled(index == 0)
+                Button("下移") { moveGroup(section, before: index + 2 < shown.count ? shown[index + 2] : nil) }
                     .disabled(index == shown.count - 1)
-                Button("移到最前") { moveGroup(section.id, before: shown.first) }.disabled(index == 0)
-                Button("移到最后") { moveGroup(section.id, before: nil) }.disabled(index == shown.count - 1)
+                Button("移到最前") { moveGroup(section, before: shown.first) }.disabled(index == 0)
+                Button("移到最后") { moveGroup(section, before: nil) }.disabled(index == shown.count - 1)
             }
         }
     }
 
     /// Put a group before another (nil: last), in its new place at once and
-    /// marked for a moment; the core's list in the saved order follows.
-    private func moveGroup(_ key: ConversationGroupKey, before: ConversationGroupKey?) {
-        let shown = orderableGroups
+    /// marked for a moment; the saved order's list follows.
+    private func moveGroup(_ section: AggregatedListModel.Section, before target: String?) {
         withAnimation(.snappy(duration: 0.25)) {
-            pendingGroupMoves.append(GroupMove(key: key, before: before))
-            browser.move(key, before: before, shown: shown)
+            if mergedChoices {
+                // The merged model reorders its sections at once and persists the order.
+                aggregated.move(section, before: target.flatMap { id in sections.first(where: { $0.id == id }) })
+            } else {
+                pendingGroupMoves.append(GroupMove(key: section.id, before: target))
+                let shownKeys = orderableGroups.compactMap { id in sections.first(where: { $0.id == id })?.key }
+                let targetKey = target.flatMap { id in sections.first(where: { $0.id == id })?.key }
+                browser.move(section.key, before: targetKey, shown: shownKeys)
+            }
         }
-        landedGroup = key
+        landedGroup = section.id
         Task { @MainActor in
             try? await Task.sleep(for: .milliseconds(700))
-            guard landedGroup == key else { return }
+            guard landedGroup == section.id else { return }
             withAnimation(.easeOut(duration: 0.35)) { landedGroup = nil }
         }
     }
 
     /// The dragged group is dimmed in place until the button is released,
     /// dropped or not. Set after the drag has taken its picture of the header.
-    private func watchGroupDrag(_ key: ConversationGroupKey) {
+    private func watchGroupDrag(_ key: String) {
         Task { @MainActor in
             draggingGroup = key
             while NSEvent.pressedMouseButtons & 1 != 0 {
@@ -375,12 +492,12 @@ struct ConversationListView: View {
     /// (its header and rows), after it from the lower half. The pinned group
     /// leads the list; over it the group goes first. Nil when no group is
     /// dragged that may be put in order.
-    private func landing(over section: ConversationBrowser.Section, _ part: GroupDropPart, y: CGFloat) -> GroupLanding? {
+    private func landing(over section: AggregatedListModel.Section, _ part: GroupDropPart, y: CGFloat) -> GroupLanding? {
         let shown = orderableGroups
-        guard store.searchResults == nil, let dragged = draggedGroup, let from = shown.firstIndex(of: dragged), shown.count > 1 else { return nil }
-        let before: ConversationGroupKey?
+        guard !searchActive, let dragged = draggedGroup, let from = shown.firstIndex(of: dragged), shown.count > 1 else { return nil }
+        let before: String?
         if let index = shown.firstIndex(of: section.id) {
-            let rows = expansion(section.id).wrappedValue ? section.conversations.count + (section.hasMore ? 1 : 0) : 0
+            let rows = expansion(section).wrappedValue ? section.conversations.count + (section.hasMore ? 1 : 0) : 0
             let offset: Int = switch part {
             case .header: 0
             case .row(let id): 1 + (section.conversations.firstIndex { $0.id == id } ?? 0)
@@ -397,24 +514,26 @@ struct ConversationListView: View {
         return GroupLanding(group: section.id, part: part, before: before, moves: moves)
     }
 
-    private func groupDropDelegate(_ section: ConversationBrowser.Section, _ part: GroupDropPart) -> GroupDropDelegate {
+    private func groupDropDelegate(_ section: AggregatedListModel.Section, _ part: GroupDropPart) -> GroupDropDelegate {
         GroupDropDelegate(group: section.id, part: part, landing: $groupLanding,
                           land: { landing(over: section, part, y: $0.location.y) },
                           drop: { landing in
                               groupLanding = nil
                               draggingGroup = nil
-                              if landing.moves, let dragged = draggedGroup { moveGroup(dragged, before: landing.before) }
+                              if landing.moves, let dragged = draggedGroup, let source = sections.first(where: { $0.id == dragged }) {
+                                  moveGroup(source, before: landing.before)
+                              }
                           })
     }
 
     /// The insertion line `part` of `section` carries, between groups where
     /// the dragged group would land: over the header of the group it goes in
     /// front of, or under the list's last part when it goes last.
-    private func groupLines(_ section: ConversationBrowser.Section, _ part: GroupDropPart) -> Edge? {
+    private func groupLines(_ section: AggregatedListModel.Section, _ part: GroupDropPart) -> Edge? {
         guard let landing = groupLanding, landing.moves else { return nil }
         if case .header = part, landing.before == section.id { return .top }
-        guard landing.before == nil, section.id == conversationSections.last?.id else { return nil }
-        let expanded = expansion(section.id).wrappedValue
+        guard landing.before == nil, section.id == sections.last?.id else { return nil }
+        let expanded = expansion(section).wrappedValue
         let last: Bool = switch part {
         case .header: !expanded || (section.conversations.isEmpty && !section.hasMore)
         case .row(let id): !section.hasMore && section.conversations.last?.id == id
@@ -423,20 +542,27 @@ struct ConversationListView: View {
         return last ? .bottom : nil
     }
 
-    /// The shown groups the user may put in order, as the list shows them.
-    private var orderableGroups: [ConversationGroupKey] { conversationSections.map(\.id).filter(ConversationBrowser.orderable) }
+    /// Candidate groups in display order. Whether reordering is enabled also depends on search and count.
+    private var orderableGroups: [String] {
+        sections.filter { ConversationBrowser.orderable($0.key) }.map(\.id)
+    }
     /// Groups are put in order outside a search, among at least two.
-    private func canOrder(_ key: ConversationGroupKey) -> Bool {
-        store.searchResults == nil && ConversationBrowser.orderable(key) && orderableGroups.count > 1
+    private func canOrder(_ section: AggregatedListModel.Section) -> Bool {
+        !searchActive && ConversationBrowser.orderable(section.key) && orderableGroups.count > 1
     }
 
-    private func conversationRow(_ conversation: Conversation) -> some View {
+    private func facadeStore(for section: AggregatedListModel.Section) -> ConversationStore {
+        aggregated.listStore(for: section.device)
+    }
+
+    private func conversationRow(section: AggregatedListModel.Section, conversation: Conversation) -> some View {
+        let device = section.device.store
         // Who started the turn does not matter; running does, its own or a
         // native sub-agent's that outlives it.
-        let ownTurn = store.device.runningConversationIDs.contains(conversation.id) || store.device.elsewhereConversationIDs.contains(conversation.id)
-        let running = ownTurn || store.device.subAgentParentIDs.contains(conversation.id)
+        let ownTurn = device.runningConversationIDs.contains(conversation.id) || device.elsewhereConversationIDs.contains(conversation.id)
+        let running = ownTurn || device.subAgentParentIDs.contains(conversation.id)
         // An approval or question, its own or a sub-agent's, waits for the user.
-        let waiting = store.device.waitingConversationIDs.contains(conversation.id)
+        let waiting = device.waitingConversationIDs.contains(conversation.id)
         // A turn's end is news; its progress is not. The conversation the
         // focused window shows is being read.
         let unread = conversation.unread && !running && !(conversation.id == focused.loadedConversationID && activeState == .key)
@@ -451,7 +577,7 @@ struct ConversationListView: View {
                 }
             }.frame(width: 12).accessibilityHidden(true)
             Text(conversation.title).lineLimit(1).fontWeight(unread ? .semibold : nil).help(conversation.title)
-            if let request = store.device.conversationManagement.first(where: { $0.conversations.contains(conversation.id) }) {
+            if let request = device.conversationManagement.first(where: { $0.conversations.contains(conversation.id) }) {
                 Spacer(minLength: 0)
                 Image(systemName: request.running ? "arrow.triangle.2.circlepath" : "clock")
                     .foregroundStyle(.secondary).imageScale(.small)
@@ -470,10 +596,51 @@ struct ConversationListView: View {
         .accessibilityValue(unread ? (conversation.failed ? "未读，上一轮失败" : "未读") : "")
     }
 
-    private func conversationManagementMenu(_ ids: Set<String>) -> some View {
-        ConversationManagementMenu(window: window, store: store, ids: ids)
+    /// Selections spanning devices manage each device's conversations with
+    /// its own core; the menu names the device when several take part.
+    private func selectedByDevice(_ rows: Set<AggregatedRowID>) -> [String: Set<String>] {
+        var result: [String: Set<String>] = [:]
+        for row in rows {
+            if let section = section(for: row) {
+                result[section.device.id, default: []].insert(row.conversation)
+            }
+        }
+        return result
     }
 
+    private func conversationManagementMenu(_ rows: Set<AggregatedRowID>) -> some View {
+        let grouped = selectedByDevice(rows)
+        let groups = aggregated.visibleDevices.compactMap { device -> (device: AggregatedListModel.Device, ids: Set<String>)? in
+            grouped[device.id].map { (device, $0) }
+        }
+        return Group {
+            ForEach(Array(groups.enumerated()), id: \.offset) { index, group in
+                if groups.count > 1 {
+                    Text(group.device.name).uiFont(.headline).foregroundStyle(.secondary)
+                }
+                ConversationManagementMenu(window: window, store: aggregated.listStore(for: group.device), ids: group.ids)
+                if index < groups.count - 1 { Divider() }
+            }
+        }
+    }
+}
+
+/// A paired device that has no conversation list yet: its connection state
+/// and a retry, in place of its groups.
+private struct DeviceStatusRow: View {
+    let name: String
+    let status: String
+    let retry: () -> Void
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "desktopcomputer").frame(width: 12).accessibilityHidden(true)
+            Text(name).lineLimit(1)
+            Spacer(minLength: 0)
+            Text(status).foregroundStyle(.secondary)
+            Button("重试", action: retry).buttonStyle(.borderless).foregroundStyle(Color.accentColor)
+        }
+        .uiFont(.caption.weight(.semibold)).foregroundStyle(.secondary)
+    }
 }
 
 /// A view's bounds reaching `amount` beyond its top and bottom edges.
@@ -488,23 +655,23 @@ enum GroupDropPart: Hashable { case header, row(String), more }
 /// Where a dragged group would land: before `before` (nil: last), from the
 /// part of a group it is over. Not moving it, it shows no line.
 struct GroupLanding: Equatable {
-    var group: ConversationGroupKey
+    var group: String
     var part: GroupDropPart
-    var before: ConversationGroupKey?
+    var before: String?
     var moves: Bool
 }
 
 /// A group moved in the list, `key` put before `before` (nil: last).
 struct GroupMove: Equatable {
-    var key: ConversationGroupKey
-    var before: ConversationGroupKey?
+    var key: String
+    var before: String?
 }
 
 /// A dragged group over a part of a group. A drop that leaves the order as it
 /// is is still taken, so the picture does not fly back as if refused; the
 /// cursor shows a move, not a copy.
 struct GroupDropDelegate: DropDelegate {
-    let group: ConversationGroupKey
+    let group: String
     let part: GroupDropPart
     @Binding var landing: GroupLanding?
     let land: (DropInfo) -> GroupLanding?
@@ -606,18 +773,42 @@ struct SearchField: NSViewRepresentable {
 }
 
 /// The conversation list's grouping, filtering and sorting, in the window's
-/// toolbar or the list's title bar.
+/// toolbar or the list's title bar. The device picker chooses which device's
+/// conversations fill the list; the rest of the menu edits the filtered
+/// device's own preferences, as a single-device window always did.
 struct ConversationFilterMenu: View {
     @ObservedObject var window: ConversationWindowModel
     /// The list's workspace.
     @ObservedObject var store: ConversationStore
     @State private var projectTarget: ProjectEditorTarget?
+    @State private var crossProjectsPresented = false
+    @ObservedObject private var aggregated: AggregatedListModel
+
+    init(window: ConversationWindowModel, store: ConversationStore) {
+        self.window = window
+        self.store = store
+        self.aggregated = window.aggregated
+    }
+
+    /// The device the grouping menu edits: the filtered one, or this Mac.
+    private var device: AggregatedListModel.Device {
+        switch aggregated.filter {
+        case .peer(let id): aggregated.devices.first { $0.peerID == id } ?? aggregated.devices[0]
+        default: aggregated.devices[0]
+        }
+    }
 
     var body: some View {
         Menu {
+            Picker("设备", selection: deviceFilterBinding) {
+                ForEach(aggregated.filterChoices, id: \.self) { choice in
+                    Text(aggregated.name(for: choice)).tag(choice)
+                }
+            }
+            Divider()
             Picker("分组", selection: $window.listBrowser.grouping) { ForEach(ConversationBrowser.Grouping.allCases) { Text($0.title).tag($0) } }
             if window.listBrowser.grouping != .none {
-                Picker("组排序", selection: Binding(get: { window.listBrowser.groupSort }, set: { window.listBrowser.setGroupSort($0, shown: store.conversationSections.map(\.id).filter(ConversationBrowser.orderable)) })) {
+                Picker("组排序", selection: Binding(get: { window.listBrowser.groupSort }, set: { window.listBrowser.setGroupSort($0, shown: aggregated.sections.map(\.key).filter(ConversationBrowser.orderable)) })) {
                     ForEach(ConversationBrowser.GroupSort.allCases) { Text($0.title).tag($0) }
                 }
             }
@@ -626,26 +817,27 @@ struct ConversationFilterMenu: View {
             Divider()
             Picker("Agent 运行时", selection: $window.listBrowser.runtimeID) {
                 Text("所有运行时").tag(Optional<String>.none)
-                ForEach(store.device.enabledRuntimeInstances) { Text($0.name).tag(Optional($0.id)) }
-                if let id = window.listBrowser.runtimeID, !store.device.enabledRuntimeInstances.contains(where: { $0.id == id }) {
+                ForEach(device.store.enabledRuntimeInstances) { Text($0.name).tag(Optional($0.id)) }
+                if let id = window.listBrowser.runtimeID, !device.store.enabledRuntimeInstances.contains(where: { $0.id == id }) {
                     Text("当前筛选的运行时不可用").tag(Optional(id))
                 }
             }
             Picker("项目", selection: $window.listBrowser.project) {
                 Text("所有项目").tag(ConversationBrowser.ProjectFilter.all)
                 Text("无项目").tag(ConversationBrowser.ProjectFilter.unspecified)
-                ForEach(store.device.conversationProjects, id: \.path) { project in
-                    Text(ConversationBrowser.projectName(project.path, projects: store.device.conversationProjects)).tag(ConversationBrowser.ProjectFilter.path(project.path))
+                ForEach(device.store.conversationProjects, id: \.path) { project in
+                    Text(ConversationBrowser.projectName(project.path, projects: device.store.conversationProjects)).tag(ConversationBrowser.ProjectFilter.path(project.path))
                 }
-                if case .path(let path) = window.listBrowser.project, !store.device.conversationProjects.contains(where: { $0.path == path }) {
-                    Text(ConversationBrowser.projectName(path, projects: store.device.conversationProjects)).tag(ConversationBrowser.ProjectFilter.path(path))
+                if case .path(let path) = window.listBrowser.project, !device.store.conversationProjects.contains(where: { $0.path == path }) {
+                    Text(ConversationBrowser.projectName(path, projects: device.store.conversationProjects)).tag(ConversationBrowser.ProjectFilter.path(path))
                 }
             }
-            if !store.device.conversationProjects.isEmpty {
+            Button("跨设备项目…") { crossProjectsPresented = true }
+            if !device.store.conversationProjects.isEmpty {
                 Menu("编辑项目") {
-                    ForEach(store.device.conversationProjects, id: \.path) { project in
-                        Button(ConversationBrowser.projectName(project.path, projects: store.device.conversationProjects)) {
-                            projectTarget = ProjectEditorTarget(path: project.path)
+                    ForEach(device.store.conversationProjects, id: \.path) { project in
+                        Button(ConversationBrowser.projectName(project.path, projects: device.store.conversationProjects)) {
+                            projectTarget = ProjectEditorTarget(path: project.path, store: window.listStore(for: device.store))
                         }
                     }
                 }
@@ -657,12 +849,19 @@ struct ConversationFilterMenu: View {
             // Where the list itself is; the rest of the window's layout is in a tab's menu.
             Menu("布局") { ToolPlaceMenu(window: window, kind: .list) }
         } label: { Label("显示", systemImage: window.listBrowser.hasFilters ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease") }
-        .help("会话分组、筛选、排序、已归档会话与列表的位置")
-        .sheet(item: $projectTarget) { ProjectEditorView(store: store, target: $0) }
+        .help("设备、会话分组、筛选、排序、已归档会话与列表的位置")
+        .sheet(item: $projectTarget) { target in
+            ProjectEditorView(store: target.store, target: target)
+        }
+        .sheet(isPresented: $crossProjectsPresented) { CrossDeviceProjectsEditor(catalog: aggregated.crossProjects, devices: aggregated.devices) }
         .accessibilityLabel("显示")
         .accessibilityIdentifier("conversation-list-filter")
         .background(ConversationToolbarPartition.itemAnchor("conversation-list-filter"))
-        .disabled(store.device.conversationBrowserPreferences == nil)
+        .disabled(device.store.conversationBrowserPreferences == nil)
+    }
+
+    private var deviceFilterBinding: Binding<AggregatedListModel.DeviceFilter> {
+        Binding(get: { aggregated.filter }, set: { aggregated.setFilter($0) })
     }
 }
 
@@ -700,14 +899,6 @@ struct ConversationListHeaderActions: View {
         ConversationSearchButton(window: window)
         ConversationFilterMenu(window: window, store: window.list).menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize().labelStyle(.iconOnly)
         if side != .left { NewConversationButton(window: window).buttonStyle(.borderless).labelStyle(.iconOnly) }
-    }
-}
-
-extension ConversationStore {
-    /// The list's groups as shown, searching or not.
-    var conversationSections: [ConversationBrowser.Section] {
-        if let results = searchResults { return ConversationBrowser.sections(conversations: results.conversations, groups: results.groups) }
-        return ConversationBrowser.sections(conversations: conversations, groups: device.conversationGroups)
     }
 }
 

@@ -34,7 +34,7 @@ pub fn display_model_name(kind: RuntimeKind, model_id: &str) -> String {
     if kind == RuntimeKind::Codex166
         && let Some((base, tier)) = split_codex_speed(model_id)
     {
-        return format!("{base} · {tier}");
+        return format!("{base}（{tier}）");
     }
     model_id.to_owned()
 }
@@ -65,7 +65,7 @@ mod tests {
         }
         assert_eq!(
             display_model_name(RuntimeKind::Codex166, &id),
-            "gpt-5.1-codex · priority"
+            "gpt-5.1-codex（priority）"
         );
         assert_eq!(display_model_name(RuntimeKind::ClaudeCode, &id), id);
     }

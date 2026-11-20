@@ -85,10 +85,10 @@ struct RuntimeRecoveryView: View {
         switch recovery.retry {
         case .waiting(let attempt, let maximum, let at):
             let seconds = max(Int(ceil(Double(at) / 1000 - date.timeIntervalSince1970)), 0)
-            return seconds > 0 ? "将在 \(seconds) 秒后自动重试 · 第 \(attempt)/\(maximum) 次" : "正在开始自动重试 · 第 \(attempt)/\(maximum) 次"
-        case .attempted(let attempt, let maximum): return "正在自动重试 · 第 \(attempt)/\(maximum) 次"
+            return seconds > 0 ? "将在 \(seconds) 秒后自动重试（第 \(attempt)/\(maximum) 次）" : "正在开始自动重试（第 \(attempt)/\(maximum) 次）"
+        case .attempted(let attempt, let maximum): return "正在自动重试（第 \(attempt)/\(maximum) 次）"
         case .native: return "运行时正在自动重试"
-        case .exhausted(let attempts): return "自动重试已用尽 · 共 \(attempts) 次"
+        case .exhausted(let attempts): return "自动重试已用尽，共 \(attempts) 次"
         case .cancelled: return "自动重试已停止"
         case .recovered: return "重试成功，已恢复"
         case nil: return "当前没有待进行的自动重试"

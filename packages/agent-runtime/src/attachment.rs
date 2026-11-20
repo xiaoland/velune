@@ -78,6 +78,10 @@ impl TurnImage {
         })
     }
 
+    pub(crate) fn bytes(&self) -> &[u8] {
+        &self.data
+    }
+
     pub fn base64(&self) -> String {
         base64::engine::general_purpose::STANDARD.encode(&self.data)
     }

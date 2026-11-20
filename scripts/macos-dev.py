@@ -238,10 +238,12 @@ def source_fingerprint(bundle, context):
     return "sha256:" + fingerprint.hexdigest()
 
 
-def reuse(application, receipt, home, scope, source, profile, fingerprint):
+def reuse(application, receipt, home, scope, source, profile, fingerprint, preview=False):
     if not same_instance(receipt, application) or receipt["home"] != str(home):
         raise LauncherError("运行实例没有匹配的 PID／出生时间／开发目录记录；拒绝猜测环境或替换运行副本")
     differences = []
+    if receipt.get("preview", False) != preview:
+        differences.append("合成预览模式")
     for field, requested, label in (("profile", profile, "profile"), ("source", str(source), "source 路径"),
                                     ("sourceFingerprint", fingerprint, "产物内容指纹")):
         if receipt.get(field) != requested:
@@ -318,7 +320,9 @@ def clone_bundle(source, destination, scope, context, fingerprint):
         shutil.rmtree(staging)
 
 
-def start(workspace=ROOT, profile="dev", app=None, home=None, extra_environment=None):
+def start(workspace=ROOT, profile="dev", app=None, home=None, extra_environment=None, preview=False):
+    if type(preview) is not bool:
+        raise LauncherError("合成预览标志必须是布尔值")
     workspace = workspace_path(workspace, profile)
     extra_environment = validated_extra_environment(extra_environment)
     scope = common.identity(workspace, "development")["context"]["scope"]
@@ -342,7 +346,7 @@ def start(workspace=ROOT, profile="dev", app=None, home=None, extra_environment=
                 refuse_conflicts(observed)
                 if observed["applications"]:
                     receipt = read_receipt(receipt_path, scope, bundle, context)
-                    return reuse(observed["applications"][0], receipt, home, scope, source, profile, fingerprint)
+                    return reuse(observed["applications"][0], receipt, home, scope, source, profile, fingerprint, preview)
             else:
                 refuse_conflicts(inspect(source, context), source_only=True)
             private_directory(directory.parent)
@@ -353,7 +357,8 @@ def start(workspace=ROOT, profile="dev", app=None, home=None, extra_environment=
         try:
             with os.fdopen(descriptor, "w") as output:
                 json.dump(environment, output, sort_keys=True)
-            launched = native("start", bundle, "--environment", environment_path)
+            launched = native("start", bundle, "--environment", environment_path,
+                              *(["--preview", "true"] if preview else []))
         finally:
             os.unlink(environment_path)
         application = application_metadata(launched.get("application"), bundle, context)
@@ -361,9 +366,9 @@ def start(workspace=ROOT, profile="dev", app=None, home=None, extra_environment=
             raise LauncherError("原生启动结果缺少明确的复用状态")
         if launched["reused"]:
             return reuse(application, read_receipt(receipt_path, scope, bundle, context), home, scope,
-                         source, profile, fingerprint)
+                         source, profile, fingerprint, preview)
         receipt = dict(application, schemaVersion=1, purpose="development", scope=scope,
-                       home=str(home), source=str(source), profile=profile, sourceFingerprint=fingerprint)
+                       home=str(home), source=str(source), profile=profile, sourceFingerprint=fingerprint, preview=preview)
         try:
             private_json(receipt_path, receipt)
         except OSError as error:
@@ -404,7 +409,7 @@ def status(workspace=ROOT, profile="dev"):
             if same_instance(receipt, application):
                 result.update(home=receipt["home"], source=receipt["source"],
                               profile=receipt.get("profile"), sourceFingerprint=receipt.get("sourceFingerprint"),
-                              receiptState="matched")
+                              preview=receipt.get("preview", False), receiptState="matched")
             elif receipt is not None:
                 result["receiptState"] = "mismatch"
         elif receipt is not None:
@@ -449,6 +454,7 @@ def main():
         if name == "start":
             command.add_argument("--app", type=Path)
             command.add_argument("--home", type=Path)
+            command.add_argument("--preview", action="store_true", help="仅使用合成会话，不启动核心或远端连接")
     args = vars(parser.parse_args())
     command = args.pop("command")
     print(json.dumps(globals()[command](**args), ensure_ascii=False, sort_keys=True))

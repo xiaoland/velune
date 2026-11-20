@@ -21,12 +21,13 @@ def digest(path):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('check', choices=['editor', 'queued-editor', 'provider-analytics', 'archived', 'palette-ime', 'pagination', 'tabs', 'targets', 'ownership', 'background', 'experience', 'recovery', 'background-notifications', 'sidebar-toolbar', 'outgoing-submissions', 'credits'])
+    parser.add_argument('check', choices=['editor', 'queued-editor', 'archived', 'palette-ime', 'pagination', 'continuation', 'targets', 'tabs', 'ownership', 'geometry', 'controls', 'credits', 'background', 'experience', 'recovery', 'compaction', 'sidebar', 'provider-analytics', 'background-notifications', 'sidebar-toolbar', 'outgoing-submissions'])
     parser.add_argument('--app', type=Path, default=app_bundle_path(ROOT, 'dev'))
     parser.add_argument('--output', type=Path)
     parser.add_argument('--dark', action='store_true')
     parser.add_argument('--workspace-only', action='store_true', help='run the experience cold-open and workspace recovery checks')
     parser.add_argument('--child-activity', action='store_true', help='check only the child conversation activity row')
+    parser.add_argument('--child-open', action='store_true', help='check targeted child history on the headless request harness')
     args = parser.parse_args()
     if args.workspace_only and args.check != 'experience':
         parser.error('--workspace-only requires experience')
@@ -62,9 +63,10 @@ def main():
                    VELUNE_EXPERIENCE_CHECK_HOME=str(evidence),
                    CODEX_HOME=str(root / 'codex'), PI_CODING_AGENT_DIR=str(root / 'pi'), CLAUDE_CONFIG_DIR=str(root / 'claude'),
                    XDG_CONFIG_HOME=str(root / 'config'), XDG_DATA_HOME=str(root / 'data'), XDG_CACHE_HOME=str(root / 'cache'))
-        flags = ['--check-background-tasks'] if args.check == 'background' else ['--check-message-experience']
         if args.check == 'editor':
             env['VELUNE_HOME'] = str(evidence / 'state')
+        flags = ['--check-continuation-preparation'] if args.check == 'continuation' else ['--check-composer-ownership', '--composer-check-content-target']
+        if args.check == 'editor':
             flags = ['--check-message-experience', '--experience-message-editor-offscreen']
             if args.dark:
                 flags.append('--editor-check-dark')
@@ -76,30 +78,44 @@ def main():
             flags = ['--check-archived-conversations']
             if args.dark:
                 flags.append('--archived-check-dark')
-        if args.check == 'outgoing-submissions':
-            flags = ['--check-outgoing-submissions']
-        if args.check == 'sidebar-toolbar':
-            flags = ['--check-sidebar-toolbar']
-        if args.check == 'background-notifications':
-            flags = ['--check-background-notifications']
-        if args.check == 'credits':
-            flags = ['--check-composer-controls', '--check-credits']
-        if args.check == 'provider-analytics':
-            flags = ['--check-provider-analytics']
         if args.check == 'palette-ime':
             flags = ['--check-palette-ime']
         if args.check == 'pagination':
             flags = ['--check-list-pagination']
-        if args.check in ['tabs', 'targets', 'ownership']:
+        if args.check == 'tabs':
+            flags = ['--check-composer-ownership', '--composer-check-tab-state']
+        if args.check == 'ownership':
             flags = ['--check-composer-ownership']
-            if args.check == 'tabs':
-                flags.append('--composer-check-tab-state')
-            if args.check == 'targets':
-                flags.append('--composer-check-content-target')
+        if args.check == 'controls':
+            flags = ['--check-composer-controls']
+        if args.check == 'credits':
+            flags = ['--check-composer-controls', '--check-credits']
+        if args.check == 'geometry':
+            flags = ['--check-composer-controls', '--check-geometry']
+        if args.check == 'background':
+            flags = ['--check-background-tasks']
+            if args.dark:
+                flags.append('--background-check-dark')
+        if args.check == 'experience':
+            flags = ['--check-message-experience']
         if args.check == 'recovery':
-            flags.append('--experience-runtime-recovery-only')
-        if args.dark and args.check == 'background':
-            flags.append('--background-check-dark')
+            flags = ['--check-message-experience', '--experience-runtime-recovery-only']
+        if args.check == 'compaction':
+            flags = ['--check-message-experience', '--experience-compaction-only']
+        if args.check == 'background-notifications':
+            flags = ['--check-background-notifications']
+        if args.child_open:
+            flags = ['--check-conversation-requests', '--check-child-open']
+        if args.check == 'provider-analytics':
+            flags = ['--check-provider-analytics']
+        if args.check == 'outgoing-submissions':
+            flags = ['--check-outgoing-submissions']
+        if args.check == 'sidebar-toolbar':
+            flags = ['--check-sidebar-toolbar']
+        if args.check == 'sidebar':
+            flags = ['--check-message-experience', '--experience-sidebar-only']
+        if args.dark and args.check == 'continuation':
+            flags.append('--continuation-check-dark')
         if args.child_activity:
             flags.append('--check-child-activity')
             if args.dark:
@@ -125,7 +141,7 @@ def main():
         # Copy only explicit result artifacts; application state stays private.
         exported = []
         for result in evidence.iterdir():
-            if result.is_file() and (result.name in ['acceptance.json', 'render-measurements.json', 'editor-wire.jsonl', 'editor-native.json', 'fixture.json', 'archived-check.json', 'continuation-check.json', 'background-check.json', 'provider-analytics-check.json', 'background-notifications-check.json', 'sidebar-toolbar-check.json', 'outgoing-submissions-check.json', 'recovery-check.json'] or result.suffix in ['.png', '.csv', '.txt']):
+            if result.is_file() and (result.name in ['acceptance.json', 'render-measurements.json', 'editor-wire.jsonl', 'editor-native.json', 'fixture.json', 'archived-check.json', 'continuation-check.json', 'background-check.json', 'sidebar-check.json', 'provider-analytics-check.json', 'background-notifications-check.json', 'sidebar-toolbar-check.json', 'outgoing-submissions-check.json', 'recovery-check.json'] or result.suffix in ['.png', '.csv', '.txt']):
                 shutil.copy2(result, output / result.name)
                 exported.append(result.name)
         if args.check == 'editor':

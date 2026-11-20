@@ -162,10 +162,19 @@ import VeluneBindings
         require(ordinary.savedDraft == originalDraft && store.nextTurn == originalExecution, "queued edit must not touch ordinary input")
         capture("edited", session, workspace)
 
-        project(message, true)
+        let preparation = ContextPreparation(queuedMessageId: message.id, workId: "synthetic-preparation",
+            targetRuntimeId: context.runtimeId, isPreparing: true, isDispatching: false, canEditMessage: true, canRetrySummary: false)
+        project(message, preparation, false)
+        require(session.executionLocked, "context preparation must lock this queued instruction's execution settings")
+        let locked = QueuedMessageEditingSession(store: store, conversationID: conversationID, message: message, context: context)
+        locked.editor.receiveDraft(.init(text: message.text + "\n补充正在准备发送的内容。", attachments: []))
+        require(locked.canSave, "preparation may still allow editing the message before it binds the request")
+        capture("preparing", locked, workspace)
+
+        project(message, nil, true)
         require(!session.canSave && session.operation == nil, "another pending operation must block saving")
         capture("busy", session, workspace)
-        project(message, false)
+        project(message, nil, false)
         let disconnected = QueuedMessageEditingSession(store: store, conversationID: conversationID, message: message, context: context)
         disconnected.editor.receiveDraft(.init(text: "提交失败也保留这一版", attachments: [added]))
         disconnected.save { fail("a disconnected edit must not report success") }
@@ -174,10 +183,10 @@ import VeluneBindings
         capture("failed", disconnected, workspace)
         var changed = message
         changed.editContext?.revision += 1
-        project(changed, false)
+        project(changed, nil, false)
         require(!session.canSave && session.operation == nil && session.issue != nil, "a concurrent edit must block stale replacement")
         capture("stale", session, workspace)
-        project(nil, false)
+        project(nil, nil, false)
         require(!session.canSave && session.operation == nil && session.issue != nil, "an item that left the queue must not be resubmitted")
         require(session.editor.submission == turn.text && session.editor.attachments == [added] && ordinary.savedDraft == originalDraft,
                 "stale or dispatched item must leave the edit and ordinary composer intact")

@@ -35,6 +35,7 @@ struct TranscriptView: View {
     var openArtifact: (ArtifactDocument) -> Void = { _ in }
     /// Edits the user message of this ID, when it may be edited now.
     var editMessage: (String) -> (() -> Void)? = { _ in nil }
+    var deleteMessage: (String) -> (() -> Void)? = { _ in nil }
     /// Forks the conversation through the turn this user message ID starts.
     var forkConversation: (String) -> Void = { _ in }
     let describeSettings: (TranscriptTurn) -> TurnSettingsSummary?
@@ -43,6 +44,7 @@ struct TranscriptView: View {
     var canStopRecovery = false
     var stopRecovery: () -> Void = {}
     var forking = false
+    var deletingMessage = false
     @State private var dismissedRecovery: String?
     @State private var scrollerStyle = NSScroller.preferredScrollerStyle
 
@@ -57,7 +59,7 @@ struct TranscriptView: View {
                                cwd: cwd, remoteHost: remoteHost, bottomRequest: reading.bottomRequest, jump: navigation,
                                followingChanged: { [reading] value in if reading.following != value { reading.following = value } },
                                outlineToggle: { [reading] id in reading.outlineAnchorID = id; outlineCollapsed = false }, loadPayloads: loadPayloads,
-                               openConversation: openConversation, openAgentURI: openAgentURI, openArtifact: openArtifact, editMessage: editMessage, forkConversation: forkConversation, describeSettings: describeSettings)
+                               openConversation: openConversation, openAgentURI: openAgentURI, openArtifact: openArtifact, editMessage: editMessage, deleteMessage: deleteMessage, forkConversation: forkConversation, describeSettings: describeSettings)
             .background(Color(nsColor: .windowBackgroundColor))
             .overlay(alignment: .bottomTrailing) {
                 if !reading.following {
@@ -68,10 +70,10 @@ struct TranscriptView: View {
                 }
             }
             .safeAreaInset(edge: .bottom, spacing: 0) {
-                if forking {
+                if forking || deletingMessage {
                     HStack(spacing: 8) {
                         ProgressView().controlSize(.small)
-                        Text("正在创建分叉会话…").uiFont(.callout)
+                        Text(deletingMessage ? "正在删除消息…" : "正在创建分叉会话…").uiFont(.callout)
                     }
                     .foregroundStyle(.secondary)
                     .padding(.horizontal, 16).padding(.vertical, 8)

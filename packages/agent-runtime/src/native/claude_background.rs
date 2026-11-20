@@ -82,6 +82,7 @@ impl NativeSession {
                 .or_else(|| self.claude.task_runs.get(native_id).cloned())
                 .or_else(|| self.claude_observe_task(record));
             let Some(public) = public else { return };
+            self.data.retain(DataOwner::Task(public.clone()));
             if !self.claude.task_infos.contains_key(&public) {
                 self.claude.task_order.push_back(public.clone());
                 self.claude.task_infos.insert(
@@ -178,6 +179,7 @@ impl NativeSession {
         if !self.claude.task_infos.contains_key(&public) {
             self.claude.task_order.push_back(public.clone());
         }
+        self.data.retain(DataOwner::Task(public.clone()));
         let entry = self
             .claude
             .task_infos
@@ -206,9 +208,15 @@ impl NativeSession {
         Some(public)
     }
 
-    pub fn background_tasks(&self) -> BackgroundTaskList {
+    pub fn background_tasks(&self) -> Result<Retained<BackgroundTaskList>> {
+        let retention = self
+            .data
+            .try_clone(|owner| matches!(owner, DataOwner::Task(_) | DataOwner::TaskIssue))?;
         if self.config.kind != NativeKind::ClaudeCode {
-            return BackgroundTaskList::default();
+            return Ok(Retained::from_parts(
+                BackgroundTaskList::default(),
+                retention,
+            ));
         }
         let live = !self.failed && !self.process_ended;
         let tasks = self
@@ -229,57 +237,94 @@ impl NativeSession {
                 task
             })
             .collect();
-        BackgroundTaskList {
-            tasks,
-            live,
-            issue: self.claude.task_issue.clone(),
-        }
+        Ok(Retained::from_parts(
+            BackgroundTaskList {
+                tasks,
+                live,
+                issue: self.claude.task_issue.clone(),
+            },
+            retention,
+        ))
     }
     pub fn read_background_task_output(
         &mut self,
         task: &str,
         request: Option<&str>,
-    ) -> Result<BackgroundTaskOutput> {
+    ) -> Result<Retained<BackgroundTaskOutput>> {
         if let Some(request) = request {
+            let retention = self
+                .claude
+                .task_read_retention
+                .iter()
+                .find(|(id, _)| id == request)
+                .ok_or_else(|| Error::new("任务输出请求已失效，请重新读取"))?
+                .1
+                .try_clone()
+                .map_err(retention_error)?;
             return self
                 .claude
                 .task_reads
                 .read(task, request)
+                .map(|output| Retained::from_parts(output, retention))
                 .ok_or_else(|| Error::new("任务输出请求已失效，请重新读取"));
         }
+        // Reserve the cache copy before Reads::finish allocates any text.
+        let retention = self
+            .data
+            .try_clone(|owner| matches!(owner, DataOwner::Task(id) if id == task))?;
         let (value, truncated) = self
             .claude
             .task_outputs
             .get(task)
-            .ok_or_else(|| Error::new("运行时尚未提供此任务的输出"))?
-            .clone();
+            .ok_or_else(|| Error::new("运行时尚未提供此任务的输出"))?;
         let output = self.claude.task_reads.begin(task);
         self.claude
             .task_reads
-            .finish(&output.request_id, task, &value, truncated, None);
+            .finish(&output.request_id, task, value, *truncated, None);
+        // Reads retains exactly eight entries; evict the matching guard too.
+        while self.claude.task_read_retention.len() >= 8 {
+            self.claude.task_read_retention.pop_front();
+        }
+        let result_retention = retention.try_clone().map_err(retention_error);
+        self.claude
+            .task_read_retention
+            .push_back((output.request_id.clone(), retention));
+        let result_retention = result_retention?;
         self.claude
             .task_reads
             .read(task, &output.request_id)
+            .map(|output| Retained::from_parts(output, result_retention))
             .ok_or_else(|| Error::new("任务输出请求已失效"))
     }
     pub fn stop_background_task(&mut self, task: &str) -> Result<()> {
+        self.ensure_claude_sync_mutation()?;
+        let native = self.claude_stop_target(task)?;
+        self.claude.task_sequence = self
+            .claude
+            .task_sequence
+            .checked_add(1)
+            .ok_or_else(|| Error::new("Claude task sequence exhausted"))?;
+        let request = format!("velune-background-stop-{}", self.claude.task_sequence);
+        self.rpc.write(&json!({"type":"control_request","request_id":request,"request":{"subtype":"stop_task","task_id":native}}))?;
+        self.claude_mark_task_stopping(request, task);
+        Ok(())
+    }
+    pub(super) fn claude_stop_target(&self, task: &str) -> Result<String> {
         if !self
-            .background_tasks()
+            .background_tasks()?
             .tasks
             .iter()
             .any(|entry| entry.id == task && entry.can_stop)
         {
             return Err(Error::new("当前不能独立停止此后台任务"));
         }
-        let native = self
-            .claude
+        self.claude
             .task_runs
             .iter()
             .find_map(|(native, public)| (public == task).then_some(native.clone()))
-            .ok_or_else(|| Error::new("后台任务身份已改变"))?;
-        self.claude.task_sequence = self.claude.task_sequence.wrapping_add(1);
-        let request = format!("velune-background-stop-{}", self.claude.task_sequence);
-        self.rpc.write(&json!({"type":"control_request","request_id":request,"request":{"subtype":"stop_task","task_id":native}}))?;
+            .ok_or_else(|| Error::new("后台任务身份已改变"))
+    }
+    pub(super) fn claude_mark_task_stopping(&mut self, request: String, task: &str) {
         self.claude
             .task_stops
             .insert(request, (task.into(), std::time::Instant::now()));
@@ -287,7 +332,6 @@ impl NativeSession {
             entry.status = BackgroundTaskStatus::Stopping;
             entry.can_stop = false;
         }
-        Ok(())
     }
     pub(super) fn claude_task_run_matches(&self, record: &Value, native: &str) -> bool {
         record["run_id"].as_str().is_none_or(|run| {

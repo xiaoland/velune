@@ -28,7 +28,7 @@ pub(super) struct BrowserWindow {
 /// A listed conversation and whether its runtime archived it.
 #[derive(Clone)]
 pub(super) struct ListedSource {
-    pub(super) summary: ConversationSummary,
+    pub(super) summary: browsing::SharedSummary,
     pub(super) archived_natively: bool,
     /// Indexed but not read yet: identity, project, and file time only.
     pub(super) provisional: bool,
@@ -116,7 +116,10 @@ impl CoreRuntime {
                         if config.provider == "codex" {
                             self.read_codex_projects(runtime, true)
                         } else {
-                            Ok(history::list_archived(&config, &runtime.id)?)
+                            Ok(browsing::shared_summaries(history::list_archived(
+                                &config,
+                                &runtime.id,
+                            )?))
                         }
                     })
                     .map(|summaries| (source, summaries))
@@ -266,7 +269,7 @@ impl CoreRuntime {
 
     fn project_name(&self, path: &str) -> Option<String> {
         self.native_project(path)
-            .map(|(_, project)| project.name)
+            .map(|(_, project)| project.name.clone())
             .or_else(|| {
                 self.project_record(path)
                     .and_then(|project| project.name.clone())
@@ -356,7 +359,7 @@ impl CoreRuntime {
         let moved = marks.and_then(|m| m.project.clone());
         ListedConversation {
             conversation: {
-                let mut summary = summary.clone();
+                let mut summary = summary.as_ref().clone();
                 self.apply_generated_title(&mut summary);
                 summary
             },
@@ -721,12 +724,12 @@ impl CoreRuntime {
                         path,
                         primary_folder: project.roots.first().map(|root| root.path.clone()),
                         native_runtime_id: Some(runtime_id),
-                        name: Some(project.name),
+                        name: Some(project.name.clone()),
                         folders: project
                             .roots
-                            .into_iter()
+                            .iter()
                             .skip(1)
-                            .map(|root| root.path)
+                            .map(|root| root.path.clone())
                             .collect(),
                         worktrees: Vec::new(),
                         latest_activity_unix_ms: latest,
@@ -867,7 +870,11 @@ impl CoreRuntime {
             .history_config(runtime)
             .and_then(|config| Ok(history::read_summary(&config, &runtime.id, native_id)?));
         match read {
-            Ok(Some((summary, archived_natively))) if source_key.is_current(self) => {
+            Ok(Some(summary)) if source_key.is_current(self) => {
+                let (summary, archived) =
+                    summary.split_map(|(summary, archived)| (summary, archived));
+                let archived_natively = *archived;
+                let summary = browsing::SharedSummary::retained(summary);
                 let source = ListedSource {
                     summary,
                     archived_natively,
@@ -1006,7 +1013,7 @@ impl CoreRuntime {
                             RuntimeError::context("修改原生已读状态", error)
                         }
                     })?;
-                    self.keep_native_read_state(&result)?;
+                    self.keep_native_read_state(result)?;
                     native_updated.insert(summary.id.clone());
                 }
             }

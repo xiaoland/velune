@@ -60,7 +60,7 @@ struct AnalyticsProviderUsageSummary: View {
                             if let input = total.inputTokens { Text("输入 \(TokenCount.format(input))").monospacedDigit() }
                             if let output = total.outputTokens { Text("输出 \(TokenCount.format(output))").monospacedDigit() }
                         }.uiFont(.caption)
-                        Text("本月，UTC；查询至 \(ProviderReportFormatting.utcTimestamp(total.rangeEndMaxAtMs))")
+                        Text(ProviderReportFormatting.organizationOverviewCoverage(total))
                             .uiFont(.caption).foregroundStyle(.secondary)
                     }
                 }
@@ -308,6 +308,12 @@ extension ProviderReportFormatting {
         formatter.dateFormat = "yyyy-MM-dd HH:mm"
         func date(_ value: Int64) -> String { formatter.string(from: Date(timeIntervalSince1970: Double(value) / 1_000)) }
         return "\(date(start)) 至 \(date(end)) UTC"
+    }
+    static func organizationOverviewCoverage(_ total: ProviderAnalyticsOrganizationTotal) -> String {
+        if let end = total.rangeEndAtMs {
+            return "本月查询截至 \(utcTimestamp(end))"
+        }
+        return "本月已报告小计\n各来源查询截止时间 \(utcRange(total.rangeEndMinAtMs, total.rangeEndMaxAtMs))"
     }
     static func sourceKind(_ kind: ProviderAnalyticsSourceKind) -> String {
         switch kind {

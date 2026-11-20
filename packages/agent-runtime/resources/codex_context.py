@@ -1,7 +1,6 @@
 """Export a Codex rollout's effective Responses context, not display events."""
 import json
 import sys
-
 from pathlib import Path
 import uuid
 
@@ -48,48 +47,90 @@ def resolve_records(path, data, resolving):
         raise ValueError("Codex history base is missing or ambiguous")
     return candidates[0] + records
 
+source_path = option("--source-path")
+source = sys.stdin.buffer.read()
+legacy_boundary = None
+legacy_boundaries = {}
+legacy_turns = {}
 portable_summary = None
-if "--before-message-id" in sys.argv:
-    source_path = option("--source-path")
-    source = sys.stdin.buffer.read()
-    legacy_boundary = None
-    legacy_boundaries = {}
-    if "--request-envelope" in sys.argv:
-        request = json.loads(source)
-        source = request["rollout"].encode("utf-8")
-        legacy_boundary = request.get("legacyBoundary")
-        legacy_boundaries = request.get("legacyBoundaries", {})
-    records = resolve_records(Path(source_path).resolve(), source, {(str(Path(source_path).resolve()), len(source))}) if source_path else parse_records(source)
-    active = []
-    for record in records:
-        if record["type"] == "event_msg" and record["payload"].get("type") == "thread_rolled_back":
-            count = record["payload"].get("num_turns")
-            starts = [i for i, prior in enumerate(active) if prior["type"] == "event_msg" and prior["payload"].get("type") == "task_started"]
-            if not isinstance(count, int) or count < 0 or count > len(starts):
-                raise ValueError("Codex rollback boundary could not be resolved")
-            if count:
-                active = active[:starts[-count]]
+if "--request-envelope" in sys.argv:
+    request = json.loads(source)
+    source = request["rollout"].encode("utf-8")
+    legacy_boundary = request.get("legacyBoundary")
+    legacy_boundaries = request.get("legacyBoundaries", {})
+    legacy_turns = request.get("legacyTurns", {})
+    portable_summary = request.get("portableSummary")
+records = resolve_records(Path(source_path).resolve(), source, {(str(Path(source_path).resolve()), len(source))}) if source_path else parse_records(source)
+active = []
+for record in records:
+    if record["type"] == "event_msg" and record["payload"].get("type") == "thread_rolled_back":
+        count = record["payload"].get("num_turns")
+        starts = [i for i, prior in enumerate(active) if prior["type"] == "event_msg" and prior["payload"].get("type") == "task_started"]
+        if not isinstance(count, int) or count < 0 or count > len(starts):
+            raise ValueError("Codex rollback boundary could not be resolved")
+        if count:
+            active = active[:starts[-count]]
+    else:
+        active.append(record)
+records = active
+def user_content(content):
+    if isinstance(content, str):
+        content = [{"type":"text", "text":content}]
+    normalized = []
+    for block in content:
+        kind = block["type"]
+        if kind in ("text", "input_text"):
+            normalized.append(("text", block["text"]))
+        elif kind in ("image", "input_image"):
+            url = block.get("image_url", block.get("url"))
+            if not isinstance(url, str):
+                raise ValueError("Codex legacy image input cannot be associated")
+            normalized.append(("image", url))
         else:
-            active.append(record)
-    records = active
-    def user_content(content):
-        if isinstance(content, str):
-            content = [{"type":"text", "text":content}]
-        normalized = []
-        for block in content:
-            kind = block["type"]
-            if kind in ("text", "input_text"):
-                normalized.append(("text", block["text"]))
-            elif kind in ("image", "input_image"):
-                url = block.get("image_url", block.get("url"))
-                if not isinstance(url, str):
-                    raise ValueError("Codex legacy image input cannot be associated")
-                normalized.append(("image", url))
-            else:
-                raise ValueError("Codex legacy input cannot be associated: " + kind)
-        return normalized
+            raise ValueError("Codex legacy input cannot be associated: " + kind)
+    return normalized
 
-    before = option("--before-message-id")
+origin_by_object, origin_by_item_id = {}, {}
+previous_user = None
+for record in records:
+    payload = record["payload"]
+    if record["type"] == "response_item" and payload.get("type") == "message" and payload.get("role") == "user":
+        previous_user = payload
+        if payload.get("id"):
+            origin_by_object[id(payload)] = payload["id"]
+            origin_by_item_id[payload["id"]] = payload["id"]
+    elif record["type"] == "event_msg" and payload.get("type") == "item_completed" and payload.get("item", {}).get("type") == "UserMessage":
+        if previous_user is not None:
+            origin = payload["item"]["id"]
+            origin_by_object[id(previous_user)] = origin
+            if previous_user.get("id"):
+                origin_by_item_id[previous_user["id"]] = origin
+        previous_user = None
+# Resolve all legacy prompt origins before export, including prompts other
+# than the selected one, so subsequent imports retain their stable identity.
+for turn, users in legacy_turns.items():
+    starts = [i for i, record in enumerate(records) if record["type"] == "event_msg"
+              and record["payload"].get("type") == "task_started" and record["payload"].get("turn_id") == turn]
+    if not starts:
+        starts = [i for i, record in enumerate(records) if record["type"] == "turn_context" and record["payload"].get("turn_id") == turn]
+    if not starts:
+        continue
+    start = starts[-1]
+    end = next((i for i in range(start + 1, len(records)) if records[i]["type"] == "event_msg" and records[i]["payload"].get("type") == "task_started"), len(records))
+    inputs = [record["payload"] for record in records[start + 1:end] if record["type"] == "response_item" and record["payload"].get("type") == "message" and record["payload"].get("role") == "user"]
+    if len(inputs) != len(users) or any(user_content(native["content"]) != user_content(user["content"]) for native, user in zip(inputs, users)):
+        continue
+    for native, user in zip(inputs, users):
+        origin_by_object[id(native)] = user["id"]
+        if native.get("id"):
+            origin_by_item_id[native["id"]] = user["id"]
+omit_only = option("--without-message-id") is not None or option("--without-message-ids") is not None
+boundaries = json.loads(option("--without-message-ids")) if option("--without-message-ids") else [option("--without-message-id") if omit_only else option("--before-message-id")]
+omitted_input_ids = set()
+omitted_record_indices = set()
+for before in dict.fromkeys(boundaries):
+    if before is None:
+        continue
     legacy_boundary = legacy_boundaries.get(before, legacy_boundary)
     # Imported messages share their response/display identity. Native prompts
     # have a separate UserMessage event identity immediately after the input.
@@ -133,26 +174,36 @@ if "--before-message-id" in sys.argv:
         # validates the association; it never selects a duplicate by text.
         if len(expected) != len(actual) or expected != actual:
             raise ValueError("Codex legacy input identity cannot be associated exactly")
+        for index, item in enumerate(users):
+            native = records[inputs[index]]["payload"]
+            origin_by_object[id(native)] = item["id"]
+            if native.get("id"):
+                origin_by_item_id[native["id"]] = item["id"]
         boundary = inputs[ordinal]
     else:
         raise ValueError("Codex native user message boundary was not found")
-    records = records[:boundary]
-else:
-    data = sys.stdin.buffer.read()
-    if "--request-envelope" in sys.argv:
-        request = json.loads(data)
-        portable_summary = request.get("portableSummary")
-        data = request["rollout"].encode("utf-8")
-    records = parse_records(data)
+    if omit_only:
+        omitted_input_id = records[boundary]["payload"].get("id")
+        if omitted_input_id:
+            omitted_input_ids.add(omitted_input_id)
+        later_replacements = [record["payload"].get("replacement_history")
+                              for record in records[boundary + 1:] if record["type"] == "compacted"]
+        if later_replacements and not omitted_input_id:
+            # Native compaction may retain the old prompt alongside its summary.
+            # Id-less copied inputs cannot be identified by text or ordinal.
+            raise ValueError("compacted Codex input lacks stable identity for exact deletion")
+        omitted_record_indices.add(boundary)
+    else:
+        records = records[:boundary]
+if omitted_record_indices:
+    records = [record for index, record in enumerate(records) if index not in omitted_record_indices]
 # The newest full replacement already includes inherited and retained context.
 # Older records are no longer model input, including earlier compactions.
 start = next((index for index in range(len(records) - 1, -1, -1)
               if records[index]["type"] == "compacted"
               and records[index]["payload"].get("replacement_history") is not None), 0)
-if "--before-message-id" not in sys.argv and not start and any(record["type"] == "session_meta" and record["payload"].get("history_base")
-                     for record in records):
-    raise ValueError("Codex inherited context without a complete compact replacement requires native lineage resolution")
 items = []
+compaction_summary = None
 for record in records[start:]:
     kind, payload = record["type"], record["payload"]
     if kind == "response_item":
@@ -162,6 +213,7 @@ for record in records[start:]:
         if replacement is None:
             raise ValueError("legacy compaction without replacement history cannot be translated reliably")
         items = replacement.copy()
+        compaction_summary = payload.get("message")
     elif kind == "history_base" or (kind == "event_msg" and payload.get("type") == "thread_rolled_back"):
         raise ValueError("Codex inherited or reverted context requires native history resolution")
     elif kind == "inter_agent_communication_metadata":
@@ -173,6 +225,10 @@ for record in records[start:]:
     elif kind not in ("session_meta", "turn_context", "event_msg", "world_state", "token_usage_record"):
         raise ValueError("unsupported Codex rollout record: " + kind)
 
+# Codex's remote compaction item carries encrypted, provider-private state.
+# It cannot be replayed by Pi or another target runtime. Transfer only when
+# Codex persisted a portable plaintext summary; visible retained history is not
+# equivalent to the missing compacted context.
 def encrypted_agent_block(block):
     return (isinstance(block, dict) and block.get("type") == "encrypted_content"
             and set(block) == {"type", "encrypted_content"}
@@ -183,11 +239,35 @@ encrypted_agent_history = any(
     and any(encrypted_agent_block(block) for block in item["content"])
     for item in items
 )
+compaction_indices = [index for index, item in enumerate(items)
+                      if item.get("type") in ("compaction", "context_compaction")]
 if "--requires-portable-summary" in sys.argv:
-    print(json.dumps({"required": encrypted_agent_history}))
+    summary = compaction_summary.strip() if isinstance(compaction_summary, str) else ""
+    print(json.dumps({"required": encrypted_agent_history or bool(compaction_indices and not summary)}))
     sys.exit(0)
-if portable_summary is not None and not encrypted_agent_history:
+if compaction_indices:
+    candidate_summary = portable_summary if isinstance(portable_summary, str) else compaction_summary
+    summary = candidate_summary.strip() if isinstance(candidate_summary, str) else ""
+    if not summary:
+        print(json.dumps({"errorCode":"portable_summary_required"}))
+        sys.exit(0)
+    replacement = {
+        "type": "message",
+        "role": "assistant",
+        "content": [{"type": "output_text", "text": summary}],
+    }
+    last_compaction = compaction_indices[-1]
+    items = [replacement if index == last_compaction else item
+             for index, item in enumerate(items)
+             if index == last_compaction or index not in compaction_indices]
+elif portable_summary is not None and not encrypted_agent_history:
     raise ValueError("portable summary requires encrypted Codex context")
+
+if omit_only and omitted_input_ids:
+    # A compact replacement can retain the original response item. Remove that
+    # exact item too, while retaining all summaries and subsequent replies.
+    items = [item for item in items if not (item.get("type") == "message"
+             and item.get("role") == "user" and item.get("id") in omitted_input_ids)]
 
 def blocks(content):
     if isinstance(content, str):
@@ -257,7 +337,12 @@ for item in items:
     else:
         raise ValueError("unsupported Codex context item: " + kind)
     if content:
-        messages.append({"role": role, "content": content})
+        message = {"role": role, "content": content}
+        if role == "user" and kind == "message":
+            origin = origin_by_object.get(id(item)) or origin_by_item_id.get(item.get("id"))
+            if origin:
+                message["source_message_id"] = origin
+        messages.append(message)
 if encrypted_agent_history:
     summary = portable_summary.strip() if isinstance(portable_summary, str) else ""
     if not summary:

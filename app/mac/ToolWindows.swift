@@ -217,6 +217,7 @@ struct ToolWindowLayout: Codable, Equatable {
 /// passing state and is left out.
 @MainActor final class RememberedToolLayout {
     private struct File: Codable {
+        enum CodingKeys: String, CodingKey { case schema, tools }
         static let schema = 1
         var schema = File.schema
         var tools: ToolWindowLayout
@@ -236,7 +237,8 @@ struct ToolWindowLayout: Codable, Equatable {
             let file = data.flatMap { try? JSONDecoder().decode(File.self, from: $0) }
             let strict = data.flatMap { data -> Bool? in
                 guard let file else { return nil }
-                guard let source = try? JSONSerialization.jsonObject(with: data),
+                guard let source = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                      source.keys.allSatisfy({ File.CodingKeys(rawValue: $0) != nil }),
                       let encodedData = try? JSONEncoder().encode(file),
                       let encoded = try? JSONSerialization.jsonObject(with: encodedData) else { return nil }
                 return SavedWindowLayout.hasOnlyEncodedKeys(source, encoded: encoded)
@@ -444,6 +446,15 @@ final class ToolWindow: NSWindow, DetachedTool {
     }
 
     func isHost(_ window: NSWindow) -> Bool { hosts.values.contains { $0 === window } }
+
+    /// The independent composer may remain visible on its own Space after its
+    /// conversation window leaves the active Space. Count only the host that
+    /// actually presents this window's focused store.
+    func hasVisibleComposerWindow(for store: ConversationStore) -> Bool {
+        guard model.tools.isOpen(.composer), model.focused.store === store,
+              let host = hosts[.composer] as? ToolWindow else { return false }
+        return host.isVisible && host.isOnActiveSpace && !host.isMiniaturized
+    }
 
     /// A shown tool window comes forward and takes the keyboard.
     func bringForward(_ kind: ToolWindowKind) {

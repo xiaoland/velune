@@ -240,16 +240,18 @@ import VeluneBindings
     let home = URL(fileURLWithPath: path, isDirectory: true)
     try! FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
     let configuration = home.appendingPathComponent("generic-config.json")
+    let transport = Transport(stateDirectory: home, resourcesDirectory: Bundle.main.resourceURL!)
     if !FileManager.default.fileExists(atPath: configuration.path) {
         try! FileManager.default.createDirectory(at: home.appendingPathComponent("agent", isDirectory: true), withIntermediateDirectories: true)
         // Enabled runtime identity is real configuration; its deliberately
         // unavailable executable keeps this catalog-only fixture offline.
-        let execution = try! JSONSerialization.data(withJSONObject: ["transport": "local", "home": ["existing": ["path": home.path]], "remoteResourcesDirectory": NSNull()])
-        let seed: [String: Any] = ["schemaVersion": 11, "gateways": [["id": "g", "name": "synthetic", "providers": [], "routes": []]],
-            "runtimeInstances": [["id": "pi", "name": "synthetic Pi", "enabled": true, "typeId": "pi-1.0", "gatewayId": "g", "settings": ["binary": home.appendingPathComponent("unavailable-pi").path, "nodeBinary": "/usr/bin/false", "agentDir": home.appendingPathComponent("agent").path, "execution": String(decoding: execution, as: UTF8.self)]]], "modelTemplates": []]
-        try! JSONSerialization.data(withJSONObject: seed).write(to: configuration)
+        let defaults = try! transport.list()
+        let gateway = defaults.gateways.first?.id ?? "default"
+        _ = try! transport.upsertRuntime(RuntimeInstance(enabled: true, id: "pi", name: "synthetic Pi", typeId: .pi,
+            gatewayId: gateway, settings: ["binary": home.appendingPathComponent("unavailable-pi").path,
+                "nodeBinary": "/usr/bin/false", "agentDir": home.appendingPathComponent("agent").path]),
+            execution: RuntimeExecution(transport: .local, home: .existing(path: home.path), remoteResourcesDirectory: nil))
     }
-    let transport = Transport(stateDirectory: home, resourcesDirectory: Bundle.main.resourceURL!)
     let first = DeviceStore(transport: transport), second = DeviceStore(transport: transport)
     first.start(); second.start()
     first.composerInputs.poll(force: true); second.composerInputs.poll(force: true)
@@ -351,7 +353,47 @@ import VeluneBindings
     precondition(first.composerInputs.state!.inputs.first { $0.id == contentID.uuidString.lowercased() }!.revision == contentRevision)
     second.composerInputs.poll(force: true)
     wait { second.composerInputs.targetChoices(for: draftID)?.choices.first?.choice.effort == "high" }
+    // Historical-edit acceptance uses this same authority, but captures its
+    // baseline before the native send rather than adopting a later revision.
+    let beforeEdit = first.composerInputs.targetRecord(for: draftID)!
+    let editedChoices = conflictStore.messageEditingTargetChoices(
+        .init(runtimeID: "pi", choices: ["pi": .init(model: .native(providerId: "synthetic", modelId: "edited-model"), effort: "low", permissionMode: "full-access")]),
+        base: beforeEdit.choices)!
+    first.composerInputs.saveEditedTarget(draftID, choices: editedChoices, expectedRevision: beforeEdit.revision)
+    wait { first.composerInputs.targetRecord(for: draftID)?.choices == editedChoices && first.composerInputs.pendingTarget(for: draftID) == nil }
+    precondition(first.composerInputs.inputID(for: draftID) == contentID && first.composerInputs.draft(contentID)?.text == "synchronized body" && first.composerInputs.draft(contentID)?.attachments.count == 1)
+    precondition(first.composerInputs.state!.inputs.first { $0.id == contentID.uuidString.lowercased() }!.revision == contentRevision)
+    let forkID = "synthetic-edited-fork"
+    first.composerInputs.saveEditedTarget(forkID, choices: editedChoices, expectedRevision: nil)
+    wait { first.composerInputs.targetRecord(for: forkID)?.choices == editedChoices && first.composerInputs.pendingTarget(for: forkID) == nil }
+    precondition(first.composerInputs.inputID(for: forkID) == nil, "编辑执行配置不得新建或重绑定普通正文")
+    precondition(first.composerInputs.targetRecord(for: draftID)?.choices == editedChoices, "分叉只更新结果会话")
+    let forkRevision = first.composerInputs.targetRecord(for: forkID)!.revision
+    let competingForkChoices = ComposerTargetChoices(runtimeId: "pi", runtimeOwnerId: owner, choices: [], choiceEdited: true)
+    first.composerInputs.saveEditedTarget(forkID, choices: competingForkChoices, expectedRevision: nil)
+    wait { first.composerInputs.targetIssue(for: forkID)?.contains("重新选择") == true }
+    first.composerInputs.saveTarget(forkID, choices: competingForkChoices)
+    var retriedForkTarget = false
+    first.composerInputs.flush { retriedForkTarget = true }
+    wait { retriedForkTarget }
+    precondition(first.composerInputs.targetIssue(for: forkID)?.contains("重新选择") == true)
+    precondition(first.composerInputs.targetRecord(for: forkID)?.revision == forkRevision && first.composerInputs.pendingTarget(for: forkID)?.revision == nil,
+                 "不存在基线的失败重试不能采纳随后发现的目标修订")
+    let editBaseline = first.composerInputs.targetRecord(for: draftID)!.revision
+    second.composerInputs.poll(force: true)
+    wait { second.composerInputs.targetRecord(for: draftID)?.revision == editBaseline }
+    let newerChoices = ComposerTargetChoices(runtimeId: "pi", runtimeOwnerId: owner, choices: [], choiceEdited: true)
+    second.composerInputs.saveTarget(draftID, choices: newerChoices, userEdit: true)
+    wait { second.composerInputs.targetRecord(for: draftID)?.revision == editBaseline + 1 }
+    first.composerInputs.poll(force: true)
+    wait { first.composerInputs.targetRecord(for: draftID)?.revision == editBaseline + 1 }
+    first.composerInputs.saveEditedTarget(draftID, choices: editedChoices, expectedRevision: editBaseline)
+    wait { first.composerInputs.targetIssue(for: draftID)?.contains("重新选择") == true }
+    precondition(first.composerInputs.targetRecord(for: draftID)?.choices == newerChoices && first.composerInputs.targetChoices(for: draftID) == editedChoices,
+                 "编辑完成期间改选不能被成功回调静默覆盖，已发送的配置保留为待同步")
+    precondition(first.composerInputs.draft(contentID)?.text == "synchronized body" && first.composerInputs.draft(contentID)?.attachments.count == 1)
     conflictStore.close()
+    note("PASS accepted edit updates runtime/model/effort/permission target only; fork leaves source/input identity/content/attachments unchanged; post-send concurrent target update remains a visible CAS conflict")
     note("PASS real two-client target CAS conflict preserves local choices; background poll does not overwrite/rebase; explicitly reselecting the same model accepts the latest revision and recovers without editing content")
     composerNativeTargetRetryCheck()
     exit(0)

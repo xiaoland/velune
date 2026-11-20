@@ -12,7 +12,7 @@ Axum 负责 HTTP framing，当前只监听随机 loopback 端口并提供三条 
 
 提供商模型条目使用稳定 `recordKey` 和精确 `providerModelId`。入口自动派生为 `velune/model/<recordKey>`，运行时注入的别名另外传入；内部记录键本身不是 wire model 入口。网关完成目标解析后才传递 `ProviderModelId`，协议执行不再次映射。上下文／输出能力与协议推理声明均可未知，同协议网关不要求或补充请求 token 限制，也不以默认规格覆盖提供商实际能力。
 
-模型路由（`ModelRoute`）以自己的 `recordKey` 与提供商模型同列，入口同为 `velune/model/<recordKey>`，别名也可指向它。成员是提供商模型记录键，须同协议；校验拒绝空成员、重复成员与和模型冲突的键。`strategy` 有 `smart`、`order`、`rotate`、`weight` 四种，`sticky` 控制是否保持会话绑定。`weight` 必须为每个成员配置正整数权重，其它策略的 weights 必须为空。旧的、实际未参与派发的 `FailoverMode`／`FailoverPolicy`／GatewayConfig.failover 已删除，不保留兼容字段；平台配置和 bindings 消费方须采用新契约。
+模型路由（`ModelRoute`）以自己的 `recordKey` 与提供商模型同列，入口同为 `velune/model/<recordKey>`，别名也可指向它。成员是提供商模型记录键，可混合三种支持的协议；每个候选按自己的协议准备请求和响应转换。校验拒绝空成员、重复成员与和模型冲突的键。`strategy` 有 `smart`、`order`、`rotate`、`weight` 四种，`sticky` 控制是否保持会话绑定。`weight` 必须为每个成员配置正整数权重，其它策略的 weights 必须为空。旧的、实际未参与派发的 `FailoverMode`／`FailoverPolicy`／GatewayConfig.failover 已删除，不保留兼容字段；平台配置和 bindings 消费方须采用新契约。
 
 资格检查先于策略和会话黏性，也适用于直接选择的模型。提供商的 `quota_limits` 是用户显式指定的额度窗口与允许使用百分比上限；对应适用窗口的观测达到上限即暂停。它是基于新鲜观察的准入阈值，不预估单次消费或预留预算；并发请求和采集间隔可能使供应商实际使用越过阈值。中立只读 `QuotaSource` 返回 `Known`、`Unknown`、`Stale` 或 `Unsupported`，已知／过期状态可保留窗口和显式可用性。窗口包含适用的提供商模型 ID、实际使用百分比、重置时间、可选的窗口周期 `window_ms`、观察时间和有效期。gateway 不采集网络额度、不持久化、不修改来源；source 的 snapshot 必须是非阻塞读取。窗口只约束其声明适用的模型。已过有效期或重置时间的观察不能据此推断额度恢复；有上限却缺少新鲜适用窗口时暂停，无上限的未知额度成员作为 smart 后备。自动观测可能缺少 credits 或额外额度桶，因此 `available=false` 与未配置阈值的窗口达到 100% 均不单独拒绝请求；没有显式使用上限时继续派发，由上游实际结果决定是否可用。观测仍可用于显示与 Smart 排序，不把未知 credits 当作零或推断整个账户不可用；显式阈值继续执行。
 

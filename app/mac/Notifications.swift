@@ -2,26 +2,149 @@ import AppKit
 @preconcurrency import UserNotifications
 import VeluneBindings
 
+/// An empty device ID explicitly means this Mac. A missing device ID is an
+/// older notification whose execution device must be recovered separately.
+struct ConversationNotificationTarget: Equatable {
+    let conversationID: String
+    let peerID: String?
+
+    var userInfo: [String: String] {
+        ["conversationID": conversationID, "deviceID": peerID ?? ""]
+    }
+
+    var requestIdentifier: String {
+        let device = peerID ?? ""
+        return "conversation:\(device.utf8.count):\(device):\(conversationID)"
+    }
+
+    init(conversationID: String, peerID: String?) {
+        self.conversationID = conversationID
+        self.peerID = peerID
+    }
+
+    init?(userInfo: [AnyHashable: Any]) {
+        guard let conversation = userInfo["conversationID"] as? String, !conversation.isEmpty,
+              let device = userInfo["deviceID"] as? String else { return nil }
+        self.init(conversationID: conversation, peerID: device.isEmpty ? nil : device)
+    }
+}
+
+/// UserNotifications has one delegate per process. Device notifiers only
+/// contribute activity; this app-lifetime owner resolves every response.
+@MainActor
+final class ConversationNotificationRouter: NSObject, UNUserNotificationCenterDelegate {
+    static let shared = ConversationNotificationRouter()
+    private struct Source { weak var notifier: ConversationNotifier? }
+    private var sources: [String: Source] = [:]
+
+    private override init() {
+        super.init()
+        UNUserNotificationCenter.current().delegate = self
+        NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                for source in self.sources.values { source.notifier?.clearUnseenFinished() }
+                self.updateBadge()
+            }
+        }
+    }
+
+    fileprivate func register(_ notifier: ConversationNotifier, application: DeviceStore) {
+        sources[application.peerID ?? ""] = Source(notifier: notifier)
+    }
+
+    private var applications: [DeviceStore] {
+        sources = sources.filter { $0.value.notifier?.application != nil }
+        return sources.values.compactMap { $0.notifier?.application }
+    }
+
+    private func application(peerID: String?) -> DeviceStore? {
+        if let hub = DeviceHub.shared {
+            guard let peerID else { return hub.localStore }
+            guard let contact = hub.state?.contacts.first(where: { $0.peerId == peerID && $0.controlAuthorized }),
+                  case .confirmed = contact.confirmation else { return nil }
+            return hub.store(for: peerID)
+        }
+        return applications.first { $0.peerID == peerID }
+    }
+
+    /// Shared by the system callback and the isolated navigation checks.
+    /// Legacy notifications can be recovered only when the device is unique.
+    @discardableResult func open(userInfo: [AnyHashable: Any]) -> Bool {
+        let store: DeviceStore?
+        let conversationID: String
+        if let target = ConversationNotificationTarget(userInfo: userInfo) {
+            conversationID = target.conversationID
+            store = application(peerID: target.peerID)
+        } else {
+            guard userInfo["deviceID"] == nil,
+                  let id = userInfo["conversationID"] as? String, !id.isEmpty else { return false }
+            conversationID = id
+            let candidates = applications.filter { application in
+                application.conversations.contains { $0.id == id }
+                    || application.runningConversationIDs.contains(id)
+                    || application.waitingConversationIDs.contains(id)
+                    || ConversationWindowModel.openWindows.contains { $0.tab(showing: id, device: application) != nil }
+            }
+            store = candidates.count == 1 ? application(peerID: candidates[0].peerID) : nil
+        }
+        guard let store else {
+            (DeviceHub.shared?.localStore ?? applications.first { $0.peerID == nil })?
+                .recordProblem("通知的设备无法确定或已不可用，请从会话列表打开目标会话。", source: "打开通知")
+            return false
+        }
+        store.showConversation(conversationID)
+        return true
+    }
+
+    fileprivate func post(_ request: UNNotificationRequest) {
+        let center = UNUserNotificationCenter.current()
+        // The center remembers the user's decision. Requests arriving while
+        // authorization is pending all wait for that decision before delivery.
+        center.requestAuthorization(options: [.alert, .sound]) { granted, _ in
+            if granted { center.add(request) }
+        }
+    }
+
+    var badgeCount: Int {
+        _ = applications
+        return sources.values.reduce(0) { $0 + ($1.notifier?.attentionCount ?? 0) }
+    }
+
+    fileprivate func updateBadge() {
+        let count = badgeCount
+        let label = count > 0 ? String(count) : nil
+        if NSApp.dockTile.badgeLabel != label { NSApp.dockTile.badgeLabel = label }
+    }
+
+    nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification) async -> UNNotificationPresentationOptions {
+        [.banner, .sound]
+    }
+
+    nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse) async {
+        guard response.actionIdentifier == UNNotificationDefaultActionIdentifier else { return }
+        await MainActor.run {
+            NSApp.activate()
+            open(userInfo: response.notification.request.content.userInfo)
+        }
+    }
+}
+
 /// System notifications and the Dock badge for conversations that need the
 /// user: a Velune turn that ended, or a runtime request that waits for an
 /// answer. Nothing is shown for the conversation the user is looking at, and
 /// a turn the user stopped is not announced. Whether and how notifications
 /// appear is the user's choice in System Settings.
 @MainActor
-final class ConversationNotifier: NSObject, UNUserNotificationCenterDelegate {
-    private weak var application: DeviceStore?
-    private var authorizationRequested = false
+final class ConversationNotifier {
+    fileprivate weak var application: DeviceStore?
     private var pendingCounts: [String: UInt32] = [:]
     /// Conversations whose turn ended while Velune was in the background.
     private var unseenFinished: Set<String> = []
 
     init(application: DeviceStore) {
         self.application = application
-        super.init()
-        UNUserNotificationCenter.current().delegate = self
-        NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
-            MainActor.assumeIsolated { self?.unseenFinished.removeAll(); self?.updateBadge() }
-        }
+        ConversationNotificationRouter.shared.register(self, application: application)
     }
 
     func observe(_ activity: ConversationActivity) {
@@ -43,7 +166,7 @@ final class ConversationNotifier: NSObject, UNUserNotificationCenterDelegate {
             if !NSApp.isActive { unseenFinished.insert(turn.conversationId) }
             post(conversationID: turn.conversationId, runtimeID: turn.contextRuntimeId, body: body)
         }
-        updateBadge()
+        ConversationNotificationRouter.shared.updateBadge()
     }
 
     /// A provider newly paused by its quota. One notification per provider
@@ -64,19 +187,15 @@ final class ConversationNotifier: NSObject, UNUserNotificationCenterDelegate {
         content.title = provider.name
         content.subtitle = "额度提醒"
         content.body = body
-        let request = UNNotificationRequest(identifier: "quota:\(alert.providerId):\(alert.kind):\(alert.windowId ?? "")", content: content, trigger: nil)
-        let center = UNUserNotificationCenter.current()
-        if authorizationRequested { center.add(request); return }
-        authorizationRequested = true
-        center.requestAuthorization(options: [.alert, .sound]) { granted, _ in
-            if granted { center.add(request) }
-        }
+        let device = application.peerID ?? ""
+        let request = UNNotificationRequest(identifier: "quota:\(device.utf8.count):\(device):\(alert.providerId):\(alert.kind):\(alert.windowId ?? "")", content: content, trigger: nil)
+        ConversationNotificationRouter.shared.post(request)
     }
 
-    private func updateBadge() {
-        let count = Set(pendingCounts.keys).union(unseenFinished).count
-        let label = count > 0 ? String(count) : nil
-        if NSApp.dockTile.badgeLabel != label { NSApp.dockTile.badgeLabel = label }
+    fileprivate var attentionCount: Int { Set(pendingCounts.keys).union(unseenFinished).count }
+
+    fileprivate func clearUnseenFinished() {
+        unseenFinished.removeAll()
     }
 
     private func post(conversationID: String, runtimeID: String, body: String) {
@@ -86,26 +205,10 @@ final class ConversationNotifier: NSObject, UNUserNotificationCenterDelegate {
         if let runtime = application.runtimeInstances.first(where: { $0.id == runtimeID }) { content.subtitle = runtime.name }
         content.body = body
         content.sound = .default
-        content.userInfo = ["conversationID": conversationID]
+        let target = ConversationNotificationTarget(conversationID: conversationID, peerID: application.peerID)
+        content.userInfo = target.userInfo
         // One notification per conversation: a newer state replaces the older one.
-        let request = UNNotificationRequest(identifier: "conversation:" + conversationID, content: content, trigger: nil)
-        let center = UNUserNotificationCenter.current()
-        if authorizationRequested { center.add(request); return }
-        authorizationRequested = true
-        center.requestAuthorization(options: [.alert, .sound]) { granted, _ in
-            if granted { center.add(request) }
-        }
-    }
-
-    nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification) async -> UNNotificationPresentationOptions {
-        [.banner, .sound]
-    }
-
-    nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse) async {
-        guard let conversationID = response.notification.request.content.userInfo["conversationID"] as? String else { return }
-        await MainActor.run {
-            NSApp.activate()
-            application?.showConversation(conversationID)
-        }
+        let request = UNNotificationRequest(identifier: target.requestIdentifier, content: content, trigger: nil)
+        ConversationNotificationRouter.shared.post(request)
     }
 }

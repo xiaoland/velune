@@ -1,11 +1,15 @@
 //! Bounded stdio JSON-RPC transport. Native protocols remain in their adapters.
 use super::{Error, Result};
-use crate::process_tree::ProcessTree;
+use crate::creation::{CreationBudget, ReadAccount, ReadLease, ReadRecord, Retained};
+use crate::{
+    process_tree::ProcessTree,
+    transport::{NotAdmitted, OwnedFrame, WriteClass, WriteReceipt},
+};
 use serde_json::{Value, json};
+use std::collections::VecDeque;
 use std::{
-    collections::VecDeque,
-    io::{BufRead, BufReader, Read, Write},
-    process::{ChildStdin, Command, Stdio},
+    io::{BufReader, Read, Write},
+    process::{Command, Stdio},
     sync::{
         Arc, Mutex,
         mpsc::{self, Receiver, TryRecvError},
@@ -14,15 +18,48 @@ use std::{
     time::{Duration, Instant},
 };
 const MAX_STDERR_BYTES: usize = 1024 * 1024;
+const PENDING_WRITES: usize = 16;
 pub(crate) const CONTROL_TIMEOUT: Duration = Duration::from_secs(15);
+#[derive(serde::Serialize)]
+struct RequestFrame<'a> {
+    jsonrpc: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    id: Option<u64>,
+    method: &'a str,
+    params: &'a Value,
+}
+#[derive(serde::Serialize)]
+struct ResponseFrame<'a> {
+    jsonrpc: &'static str,
+    id: &'a Value,
+    result: &'a Value,
+}
+#[derive(serde::Serialize)]
+struct RejectionFrame<'a> {
+    jsonrpc: &'static str,
+    id: &'a Value,
+    error: Rejection<'a>,
+}
+#[derive(serde::Serialize)]
+struct Rejection<'a> {
+    code: i32,
+    message: &'a str,
+}
+
 pub(crate) struct RpcClient {
     /// None once handed to a thread that lets it end; see `retire`.
     child: Option<ProcessTree>,
-    input: Option<ChildStdin>,
-    records: Receiver<Result<Value>>,
-    queued: VecDeque<Value>,
+    input: Option<crate::transport::PipeWriter>,
+    writes: Vec<(&'static str, crate::transport::WriteReceipt)>,
+    records: Receiver<Result<ReadRecord>>,
+    read_account: Arc<ReadAccount>,
+    // Permits follow actual queued/deferred/delivered DOMs, not just raw lines.
+    deferred_permits: VecDeque<ReadLease>,
+    queued: crate::transport::DeferredRecords,
     next: u64,
     failed: Option<Error>,
+    /// Live command owners perform process cleanup explicitly, outside poll.
+    defer_cleanup: bool,
     stderr: Arc<Mutex<Vec<u8>>>,
 }
 /// Run a short-lived helper. `stderr_limit` only bounds retained diagnostics;
@@ -209,11 +246,14 @@ impl RpcClient {
             .stderr(Stdio::piped());
         let mut child = ProcessTree::spawn(&mut command)
             .map_err(|error| Error::new(format!("运行时进程无法启动：{error}")))?;
-        let mut input = child
-            .take_stdin()
-            .ok_or_else(|| Error::new("运行时输入不可用"))?;
+        let input = crate::transport::PipeWriter::new(
+            child
+                .take_stdin()
+                .ok_or_else(|| Error::new("运行时输入不可用"))?,
+        )
+        .map_err(|error| Error::new(format!("运行时写入服务无法启动：{error}")))?;
         input
-            .write_all(&prepared.input_prefix)
+            .write(prepared.input_prefix, Instant::now() + CONTROL_TIMEOUT)
             .map_err(|error| Error::new(format!("运行时启动请求发送失败：{error}")))?;
         let output = child
             .take_stdout()
@@ -241,19 +281,24 @@ impl RpcClient {
             }
         });
         let (tx, records) = mpsc::sync_channel(64);
+        let read_account = ReadAccount::new();
+        let reader_account = read_account.clone();
         let dispatcher = tracing::dispatcher::get_default(Clone::clone);
         thread::spawn(move || {
             tracing::dispatcher::with_default(&dispatcher, || {
                 let mut reader = BufReader::new(output);
                 loop {
-                    let mut bytes = Vec::new();
-                    let read = reader.by_ref().read_until(b'\n', &mut bytes);
-                    let result = match read {
-                        Ok(0) => Err(Error::new("运行时进程已退出")),
-                        Ok(_) => serde_json::from_slice(&bytes).map_err(|error| {
-                            Error::new(format!("运行时返回无效协议记录：{error}"))
-                        }),
-                        Err(error) => Err(Error::new(format!("运行时协议读取失败：{error}"))),
+                    let result = match crate::creation::read_record(&mut reader, &reader_account) {
+                        Ok(Some(record)) => Ok(record),
+                        Ok(None) => Err(Error::with_code("运行时进程已退出", "transport")),
+                        Err(error) => Err(Error::with_code(
+                            crate::creation::detail(error),
+                            if reader_account.active() {
+                                "creation_read_budget"
+                            } else {
+                                "transport"
+                            },
+                        )),
                     };
                     let failed = result.is_err();
                     if tx.send(result).is_err() || failed {
@@ -265,12 +310,42 @@ impl RpcClient {
         Ok(Self {
             child: Some(child),
             input: Some(input),
+            writes: Vec::new(),
             records,
-            queued: VecDeque::new(),
+            read_account,
+            deferred_permits: VecDeque::new(),
+            queued: Default::default(),
             next: 1,
             failed: None,
+            defer_cleanup: false,
             stderr,
         })
+    }
+    pub(crate) fn creation_cleanup_lease(&self) -> Arc<ReadAccount> {
+        self.read_account.clone()
+    }
+    pub(crate) fn arm_creation(&mut self, budget: &CreationBudget) -> Result<()> {
+        self.read_account
+            .arm(budget)
+            .map_err(|error| Error::with_code(error.to_string(), "queue_full"))
+    }
+    pub(crate) fn cancel_creation_admission(&mut self, budget: &CreationBudget) {
+        let _ = self.read_account.finish(budget, true);
+    }
+    pub(crate) fn complete_creation(&mut self, budget: &CreationBudget) -> Result<()> {
+        if !self.read_account.same(budget) || self.queued.iter().next().is_some() {
+            return Err(Error::with_code(
+                "creation has pending interleaved results",
+                "queue_full",
+            ));
+        }
+        // Returned values/native fields own their charges, not this poll call.
+        self.read_account
+            .finish(budget, false)
+            .map_err(|error| Error::with_code(error.to_string(), "queue_full"))
+    }
+    fn deliver(&mut self, record: ReadRecord) -> Retained<Value> {
+        Retained::from_record(record.value, record.lease)
     }
     fn with_stderr(&self, error: Error) -> Error {
         let detail = self
@@ -278,10 +353,17 @@ impl RpcClient {
             .lock()
             .ok()
             .map(|bytes| {
-                let mut text = String::from_utf8_lossy(&bytes[..bytes.len().min(MAX_STDERR_BYTES)])
+                // Creation keeps diagnostics in its finite retained policy too;
+                // legacy callers retain their existing diagnostic display limit.
+                let limit = if self.read_account.active() {
+                    1024
+                } else {
+                    MAX_STDERR_BYTES
+                };
+                let mut text = String::from_utf8_lossy(&bytes[..bytes.len().min(limit)])
                     .trim()
                     .to_owned();
-                if bytes.len() > MAX_STDERR_BYTES {
+                if bytes.len() > limit {
                     text.push_str("\n[stderr 已截断：诊断缓存达到上限]");
                 }
                 text
@@ -294,46 +376,481 @@ impl RpcClient {
         Error::with_code(format!("{}；原始错误：{}", error, detail), code)
     }
     pub(crate) fn write(&mut self, value: &Value) -> Result<()> {
-        let input = self
-            .input
-            .as_mut()
-            .ok_or_else(|| Error::new("运行时输入已关闭"))?;
-        serde_json::to_writer(&mut *input, value)
-            .map_err(|error| Error::new(format!("运行时请求编码失败：{error}")))?;
-        input
-            .write_all(b"\n")
-            .and_then(|_| input.flush())
-            .map_err(|error| Error::new(format!("运行时请求发送失败：{error}")))
+        self.write_until(value, Instant::now() + CONTROL_TIMEOUT)
     }
-    pub(crate) fn claude_control(&mut self, request: Value) -> Result<Value> {
+    pub(crate) fn write_with_class(&mut self, value: &Value, class: WriteClass) -> Result<()> {
+        self.write_until_class(value, class, Instant::now() + CONTROL_TIMEOUT)
+    }
+    fn write_until(&mut self, value: &impl serde::Serialize, deadline: Instant) -> Result<()> {
+        self.write_until_class(value, WriteClass::Ordinary, deadline)
+    }
+    fn write_until_class(
+        &mut self,
+        value: &impl serde::Serialize,
+        class: WriteClass,
+        deadline: Instant,
+    ) -> Result<()> {
+        // Local rejection is provably not dispatched; do not retire a healthy
+        // connection or misreport it as an unknown execution outcome.
+        let receipt = self.enqueue_owned_frame(value, class, deadline)?;
+        if let Err(error) = receipt.wait() {
+            self.transport_failed();
+            return Err(self.with_stderr(Error::with_code(
+                format!("运行时请求发送未确认：{error}"),
+                if error.kind() == std::io::ErrorKind::TimedOut {
+                    "timeout"
+                } else {
+                    "transport"
+                },
+            )));
+        }
+        Ok(())
+    }
+    fn defer(&mut self, record: Retained<Value>) -> Result<()> {
+        let (record, ownership) = record.into_parts();
+        let mut permit = ownership.into_record()
+            .map_err(|error| Error::with_code(error.to_string(), "transport"))?;
+        permit
+            .transfer_to_queue()
+            .map_err(|error| Error::with_code(error.to_string(), "transport"))?;
+        if let Err(error) = self.queued.push(record) {
+            self.shutdown();
+            return Err(Error::with_code(
+                format!("运行时通知缓冲已满；连接已停止，未自动重发：{error}"),
+                "transport",
+            ));
+        }
+        self.deferred_permits.push_back(permit);
+        Ok(())
+    }
+    pub(crate) fn claude_control(&mut self, request: Value) -> Result<Retained<Value>> {
+        self.claude_control_with_class(request, WriteClass::Ordinary)
+    }
+    pub(crate) fn claude_control_with_class(
+        &mut self,
+        request: Value,
+        class: WriteClass,
+    ) -> Result<Retained<Value>> {
         let method = request["subtype"].as_str().unwrap_or("control_request");
         observe_request(method, || {
             let id = format!("velune-{}", self.next);
-            self.next += 1;
-            self.write(&json!({"type":"control_request","request_id":id,"request":request}))?;
+            self.next = self
+                .next
+                .checked_add(1)
+                .ok_or_else(|| Error::new("运行时请求序号耗尽"))?;
             let deadline = Instant::now() + CONTROL_TIMEOUT;
+            self.write_until_class(
+                &json!({"type":"control_request","request_id":id,"request":request}),
+                class,
+                deadline,
+            )?;
             loop {
                 let record = self.wait_for_record(method, deadline)?;
                 if record["type"] == "control_response" && record["response"]["request_id"] == id {
                     if record["response"]["subtype"] != "success" {
                         return Err(Error::new("Claude 拒绝控制请求"));
                     }
-                    return Ok(record["response"]["response"].clone());
+                    return Ok(record.map(|mut value| value["response"]["response"].take()));
                 }
-                self.queued.push_back(record);
+                self.defer(record)?;
             }
         })
     }
-    pub(crate) fn begin(&mut self, method: &str, params: &Value) -> Result<u64> {
+    /// Admit a request without waiting for stdin or its protocol response.
+    /// The caller owns response correlation and the same absolute deadline;
+    /// poll reports terminal write failures, never replays the request.
+    pub(crate) fn enqueue_request(
+        &mut self,
+        method: &'static str,
+        params: &Value,
+        deadline: Instant,
+    ) -> Result<u64> {
+        self.enqueue_request_with_class(method, params, WriteClass::Ordinary, deadline)
+    }
+
+    pub(crate) fn enqueue_request_with_class(
+        &mut self,
+        method: &'static str,
+        params: &Value,
+        class: WriteClass,
+        deadline: Instant,
+    ) -> Result<u64> {
         let id = self.next;
         self.next = self
             .next
             .checked_add(1)
             .ok_or_else(|| Error::new("运行时请求序号耗尽"))?;
-        self.write(&json!({"jsonrpc":"2.0","id":id,"method":method,"params":params}))?;
+        self.enqueue_frame(
+            method,
+            &RequestFrame {
+                jsonrpc: "2.0",
+                id: Some(id),
+                method,
+                params,
+            },
+            class,
+            deadline,
+        )?;
         Ok(id)
     }
-    pub(crate) fn request(&mut self, method: &str, params: &Value) -> Result<Value> {
+
+    /// Typed command owners retain both request correlation and flush evidence.
+    pub(crate) fn enqueue_request_receipt(
+        &mut self,
+        method: &'static str,
+        params: &Value,
+        deadline: Instant,
+    ) -> Result<(u64, crate::transport::WriteReceipt)> {
+        self.enqueue_request_receipt_with_class(method, params, WriteClass::Ordinary, deadline)
+    }
+
+    pub(crate) fn enqueue_request_receipt_with_class(
+        &mut self,
+        method: &'static str,
+        params: &Value,
+        class: WriteClass,
+        deadline: Instant,
+    ) -> Result<(u64, crate::transport::WriteReceipt)> {
+        let id = self.next;
+        let next = id
+            .checked_add(1)
+            .ok_or_else(|| Error::new("运行时请求序号耗尽"))?;
+        let receipt = self.enqueue_owned_frame(
+            &RequestFrame {
+                jsonrpc: "2.0",
+                id: Some(id),
+                method,
+                params,
+            },
+            class,
+            deadline,
+        )?;
+        self.next = next;
+        Ok((id, receipt))
+    }
+
+    /// Claude stream-json has its own envelope, not JSON-RPC. The port
+    /// reserves the actual encoded allocation until the writer completes.
+    pub(crate) fn enqueue_claude_frame_receipt(
+        &self,
+        frame: &Value,
+        class: WriteClass,
+        deadline: Instant,
+        available_bytes: usize,
+    ) -> Result<(crate::transport::WriteReceipt, usize)> {
+        let frame = self
+            .encode_frame(
+                frame,
+                class,
+                available_bytes.min(crate::transport::writer_policy_limit()),
+                deadline,
+            )
+            .map_err(admission_error)?;
+        let retained = frame.bytes.capacity();
+        let receipt = self
+            .try_enqueue_owned_frame(frame, class, deadline)
+            .map_err(|rejected| admission_error(rejected.into_error()))?;
+        Ok((receipt, retained))
+    }
+
+    pub(crate) fn enqueue_claude_automatic_reply(&mut self, frame: &Value) -> Result<()> {
+        self.enqueue_automatic_reply(frame)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn enqueue_notification_receipt(
+        &mut self,
+        method: &'static str,
+        params: &Value,
+        deadline: Instant,
+    ) -> Result<crate::transport::WriteReceipt> {
+        self.enqueue_notification_receipt_with_class(method, params, WriteClass::Ordinary, deadline)
+    }
+
+    pub(crate) fn enqueue_notification_receipt_with_class(
+        &mut self,
+        method: &'static str,
+        params: &Value,
+        class: WriteClass,
+        deadline: Instant,
+    ) -> Result<crate::transport::WriteReceipt> {
+        self.enqueue_owned_frame(
+            &RequestFrame {
+                jsonrpc: "2.0",
+                id: None,
+                method,
+                params,
+            },
+            class,
+            deadline,
+        )
+    }
+
+    pub(crate) fn enqueue_rejection_receipt(
+        &mut self,
+        id: &Value,
+        message: &str,
+        deadline: Instant,
+    ) -> Result<crate::transport::WriteReceipt> {
+        self.enqueue_owned_frame(
+            &RejectionFrame {
+                jsonrpc: "2.0",
+                id,
+                error: Rejection {
+                    code: -32601,
+                    message,
+                },
+            },
+            WriteClass::ProtocolReplyCancel,
+            deadline,
+        )
+    }
+
+    /// Legacy receipt pressure hint only; physical count/byte admission is authoritative.
+    pub(crate) fn command_write_available(&self) -> bool {
+        self.writes.len() < PENDING_WRITES - 4
+    }
+
+    pub(crate) fn enqueue_notification_with_class(
+        &mut self,
+        method: &'static str,
+        params: &Value,
+        class: WriteClass,
+        deadline: Instant,
+    ) -> Result<()> {
+        self.enqueue_frame(
+            method,
+            &RequestFrame {
+                jsonrpc: "2.0",
+                id: None,
+                method,
+                params,
+            },
+            class,
+            deadline,
+        )
+    }
+
+    /// Automatic protocol replies do not wait for stdin.
+    pub(crate) fn enqueue_rejection(&mut self, id: &Value, message: &str) -> Result<()> {
+        self.enqueue_automatic_reply(&RejectionFrame {
+            jsonrpc: "2.0",
+            id,
+            error: Rejection {
+                code: -32601,
+                message,
+            },
+        })
+    }
+
+    pub(crate) fn enqueue_response(&mut self, id: &Value, result: &Value) -> Result<()> {
+        self.enqueue_automatic_reply(&ResponseFrame {
+            jsonrpc: "2.0",
+            id,
+            result,
+        })
+    }
+
+    fn enqueue_automatic_reply(&mut self, frame: &impl serde::Serialize) -> Result<()> {
+        self.enqueue_frame(
+            "protocol/reply",
+            frame,
+            WriteClass::ProtocolReplyCancel,
+            Instant::now() + CONTROL_TIMEOUT,
+        )
+    }
+
+    pub(crate) fn defer_cleanup(&mut self) {
+        self.defer_cleanup = true;
+    }
+
+    fn transport_failed(&mut self) {
+        if !self.defer_cleanup {
+            self.shutdown();
+        }
+    }
+
+    /// The command owner retains this receipt; flush is the only delivery
+    /// boundary a one-way JSON-RPC response can prove.
+    pub(crate) fn enqueue_reply_receipt(
+        &mut self,
+        id: &Value,
+        result: &Value,
+        deadline: Instant,
+    ) -> Result<crate::transport::WriteReceipt> {
+        self.enqueue_owned_frame(
+            &ResponseFrame {
+                jsonrpc: "2.0",
+                id,
+                result,
+            },
+            WriteClass::ProtocolReplyCancel,
+            deadline,
+        )
+    }
+
+    pub(crate) fn has_pending_writes(&self) -> bool {
+        !self.writes.is_empty()
+    }
+
+    fn enqueue_frame(
+        &mut self,
+        method: &'static str,
+        frame: &impl serde::Serialize,
+        class: WriteClass,
+        deadline: Instant,
+    ) -> Result<()> {
+        // Legacy synchronous facades retain eager harvesting. The command
+        // port harvests only from poll, so admission cannot trigger cleanup.
+        if !self.defer_cleanup {
+            self.reap_writes()?;
+        }
+        if self.writes.len() >= PENDING_WRITES {
+            return Err(Error::with_code(
+                "运行时写入回执队列已满；请求尚未派发",
+                "queue_full",
+            ));
+        }
+        let receipt = self.enqueue_owned_frame(frame, class, deadline)?;
+        self.writes.push((method, receipt));
+        Ok(())
+    }
+
+    fn enqueue_owned_frame(
+        &self,
+        frame: &impl serde::Serialize,
+        class: WriteClass,
+        deadline: Instant,
+    ) -> Result<crate::transport::WriteReceipt> {
+        let frame = self
+            .encode_frame(
+                frame,
+                class,
+                crate::transport::writer_policy_limit(),
+                deadline,
+            )
+            .map_err(admission_error)?;
+        self.try_enqueue_owned_frame(frame, class, deadline)
+            .map_err(|rejected| admission_error(rejected.into_error()))
+    }
+
+    /// Budget-aware codec bridge for typed owners. The borrowed source is not
+    /// copied into an intermediate Value; failure/slot checks precede encoding.
+    pub(crate) fn encode_frame(
+        &self,
+        frame: &impl serde::Serialize,
+        class: WriteClass,
+        allocation_limit: usize,
+        deadline: Instant,
+    ) -> std::io::Result<OwnedFrame> {
+        self.write_input()?
+            .encode_json(frame, class, allocation_limit, deadline)
+    }
+
+    /// Retry this owned frame unchanged after local rejection. Every class
+    /// crosses the same recorded terminal barrier before physical admission.
+    #[allow(clippy::result_large_err)]
+    pub(crate) fn try_enqueue_owned_frame(
+        &self,
+        frame: OwnedFrame,
+        class: WriteClass,
+        deadline: Instant,
+    ) -> std::result::Result<WriteReceipt, NotAdmitted> {
+        let mut frame = frame;
+        frame.retain_lifetime(self.read_account.clone());
+        match self.write_input() {
+            Ok(input) => input.try_enqueue(frame, class, deadline),
+            Err(error) => Err(NotAdmitted::new(frame, class, deadline, error)),
+        }
+    }
+
+    fn write_input(&self) -> std::io::Result<&crate::transport::PipeWriter> {
+        // The barrier precedes even bounded encoding for every class/facade.
+        if let Some(error) = &self.failed {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                error.to_string(),
+            ));
+        }
+        self.input
+            .as_ref()
+            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::BrokenPipe, "运行时输入已关闭"))
+    }
+
+    fn reap_writes(&mut self) -> Result<()> {
+        use crate::transport::WriteOutcome;
+        let mut index = 0;
+        while index < self.writes.len() {
+            let Some(outcome) = self.writes[index].1.try_outcome() else {
+                index += 1;
+                continue;
+            };
+            if matches!(outcome, WriteOutcome::Written(c) if c.met_deadline()) {
+                self.writes.remove(index);
+                continue;
+            }
+            let method = self.writes[index].0;
+            let (detail, code) = match outcome {
+                WriteOutcome::Written(c) => (format!("physically Written late: {c:?}"), "timeout"),
+                WriteOutcome::NotWritten(error) => {
+                    (format!("known not written: {error}"), "transport")
+                }
+                WriteOutcome::Indeterminate(error) => (
+                    format!("physical write indeterminate: {error}"),
+                    "transport",
+                ),
+                WriteOutcome::ObservationTimeout { .. } => (
+                    "outcome not yet observed; receipt retained".into(),
+                    "timeout",
+                ),
+            };
+            // A nonterminal observation never consumes the physical receipt. A
+            // failed terminal fact is retained too, until explicit owner cleanup.
+            self.transport_failed();
+            return Err(self.with_stderr(Error::with_code(
+                format!("Runtime {method}: {detail}; not replayed"),
+                code,
+            )));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn begin(&mut self, method: &str, params: &Value) -> Result<u64> {
+        self.begin_until(method, params, Instant::now() + CONTROL_TIMEOUT)
+    }
+    pub(crate) fn begin_until(
+        &mut self,
+        method: &str,
+        params: &Value,
+        deadline: Instant,
+    ) -> Result<u64> {
+        self.begin_until_with_class(method, params, WriteClass::Ordinary, deadline)
+    }
+    fn begin_until_with_class(
+        &mut self,
+        method: &str,
+        params: &Value,
+        class: WriteClass,
+        deadline: Instant,
+    ) -> Result<u64> {
+        let id = self.next;
+        self.next = self
+            .next
+            .checked_add(1)
+            .ok_or_else(|| Error::new("运行时请求序号耗尽"))?;
+        self.write_until_class(
+            &RequestFrame {
+                jsonrpc: "2.0",
+                id: Some(id),
+                method,
+                params,
+            },
+            class,
+            deadline,
+        )?;
+        Ok(id)
+    }
+    pub(crate) fn request(&mut self, method: &str, params: &Value) -> Result<Retained<Value>> {
         self.request_classified(method, params, |_| None)
     }
     pub(crate) fn request_classified(
@@ -341,12 +858,29 @@ impl RpcClient {
         method: &str,
         params: &Value,
         classify: impl Fn(&Value) -> Option<&'static str>,
-    ) -> Result<Value> {
+    ) -> Result<Retained<Value>> {
+        self.request_with_classified(method, params, WriteClass::Ordinary, classify)
+    }
+    pub(crate) fn request_with_class(
+        &mut self,
+        method: &str,
+        params: &Value,
+        class: WriteClass,
+    ) -> Result<Retained<Value>> {
+        self.request_with_classified(method, params, class, |_| None)
+    }
+    fn request_with_classified(
+        &mut self,
+        method: &str,
+        params: &Value,
+        class: WriteClass,
+        classify: impl Fn(&Value) -> Option<&'static str>,
+    ) -> Result<Retained<Value>> {
         observe_request(method, || {
-            let id = self.begin(method, params)?;
             let deadline = Instant::now() + CONTROL_TIMEOUT;
+            let id = self.begin_until_with_class(method, params, class, deadline)?;
             loop {
-                let mut record = self.wait_for_record(method, deadline)?;
+                let record = self.wait_for_record(method, deadline)?;
                 if record["id"].as_u64() == Some(id) && record.get("method").is_none() {
                     if let Some(error) = record.get("error") {
                         return Err(self.with_stderr(Error::with_code(
@@ -354,65 +888,126 @@ impl RpcClient {
                             classify(error).unwrap_or("internal"),
                         )));
                     }
-                    return record
-                        .as_object_mut()
-                        .and_then(|record| record.remove("result"))
-                        .ok_or_else(|| Error::new("运行时响应缺少结果"));
+                    return record.try_map(|mut value| {
+                        value.as_object_mut().and_then(|object| object.remove("result"))
+                            .ok_or_else(|| Error::with_code("运行时响应缺少结果", "transport"))
+                    });
                 }
-                self.queued.push_back(record);
+                self.defer(record)?;
             }
         })
     }
-    fn wait_for_record(&self, method: &str, deadline: Instant) -> Result<Value> {
-        self.records
-            .recv_timeout(deadline.saturating_duration_since(Instant::now()))
-            .map_err(|error| {
-                self.with_stderr(match error {
+    fn wait_for_record(&mut self, method: &str, deadline: Instant) -> Result<Retained<Value>> {
+        let result = if Instant::now() >= deadline {
+            Err(mpsc::RecvTimeoutError::Timeout)
+        } else {
+            self.records
+                .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+        };
+        match result {
+            Ok(Ok(record)) => Ok(self.deliver(record)),
+            Ok(Err(error)) => Err(self.with_stderr(error)),
+            Err(error) => {
+                // A late reply cannot be attributed safely to a retried command.
+                // Retire this connection rather than continuing on an ambiguous stream.
+                self.shutdown();
+                Err(self.with_stderr(match error {
                     mpsc::RecvTimeoutError::Timeout => Error::with_code(
-                        format!(
-                            "运行时控制请求 {method} 在 {} 秒内未响应",
-                            CONTROL_TIMEOUT.as_secs()
-                        ),
+                        format!("运行时控制请求 {method} 超时；连接已停止，未自动重发"),
                         "timeout",
                     ),
                     mpsc::RecvTimeoutError::Disconnected => Error::with_code(
                         format!("运行时控制请求 {method} 的响应通道已关闭"),
                         "transport",
                     ),
-                })
-            })?
-            .map_err(|error| self.with_stderr(error))
+                }))
+            }
+        }
     }
     /// Read one record while a protocol adapter services interleaved agent requests.
-    pub(crate) fn receive(&mut self, method: &str, deadline: Instant) -> Result<Value> {
-        if let Some(record) = self.queued.pop_front() {
-            return Ok(record);
+    pub(crate) fn receive(&mut self, method: &str, deadline: Instant) -> Result<Retained<Value>> {
+        if let Some(record) = self.queued.pop() {
+            let permit = self.deferred_permits.pop_front().expect("deferred record permit");
+            return Ok(Retained::from_record(record, permit));
         }
         self.wait_for_record(method, deadline)
     }
     pub(crate) fn notify(&mut self, method: &str, params: &Value) -> Result<()> {
-        self.write(&json!({"jsonrpc":"2.0","method":method,"params":params}))
+        self.notify_with_class(method, params, WriteClass::Ordinary)
+    }
+    pub(crate) fn notify_with_class(
+        &mut self,
+        method: &str,
+        params: &Value,
+        class: WriteClass,
+    ) -> Result<()> {
+        self.write_until_class(
+            &RequestFrame {
+                jsonrpc: "2.0",
+                id: None,
+                method,
+                params,
+            },
+            class,
+            Instant::now() + CONTROL_TIMEOUT,
+        )
     }
     pub(crate) fn respond(&mut self, id: &Value, result: &Value) -> Result<()> {
-        self.write(&json!({"jsonrpc":"2.0","id":id,"result":result}))
+        self.write_until_class(
+            &ResponseFrame {
+                jsonrpc: "2.0",
+                id,
+                result,
+            },
+            WriteClass::ProtocolReplyCancel,
+            Instant::now() + CONTROL_TIMEOUT,
+        )
     }
     pub(crate) fn reject(&mut self, id: &Value, message: &str) -> Result<()> {
-        self.write(&json!({"jsonrpc":"2.0","id":id,"error":{"code":-32601,"message":message}}))
+        self.write_until_class(
+            &RejectionFrame {
+                jsonrpc: "2.0",
+                id,
+                error: Rejection {
+                    code: -32601,
+                    message,
+                },
+            },
+            WriteClass::ProtocolReplyCancel,
+            Instant::now() + CONTROL_TIMEOUT,
+        )
     }
-    pub(crate) fn poll(&mut self) -> Result<Vec<Value>> {
+    /// `poll` preserves valid records before a terminal error in the same
+    /// batch. After consuming that evidence, adapters must cross this barrier
+    /// before dispatching more mutations. Reaping writes is nonblocking; live
+    /// command owners still perform process cleanup explicitly.
+    pub(crate) fn check_failure(&mut self) -> Result<()> {
         if let Some(error) = self.failed.take() {
             return Err(error);
         }
-        let mut values = self.queued.drain(..).collect::<Vec<_>>();
-        for _ in 0..64 {
+        self.reap_writes()
+    }
+
+    pub(crate) fn poll(&mut self) -> Result<Vec<Retained<Value>>> {
+        if let Some(error) = self.failed.take() {
+            return Err(error);
+        }
+        let write_error = self.reap_writes().err();
+        let mut values = self.queued.drain_batch(64).into_iter().map(|record| {
+            let permit = self.deferred_permits.pop_front().expect("deferred record permit");
+            Retained::from_record(record, permit)
+        }).collect::<Vec<_>>();
+        for _ in values.len()..64 {
             let error = match self.records.try_recv() {
-                Ok(Ok(value)) => {
-                    values.push(value);
+                Ok(Ok(record)) => {
+                    values.push(self.deliver(record));
                     continue;
                 }
                 Ok(Err(error)) => Some(error),
                 Err(TryRecvError::Empty) => None,
-                Err(TryRecvError::Disconnected) => Some(Error::new("运行时协议连接已关闭")),
+                Err(TryRecvError::Disconnected) => {
+                    Some(Error::with_code("运行时协议连接已关闭", "transport"))
+                }
             };
             if let Some(error) = error {
                 let error = self.with_stderr(error);
@@ -423,6 +1018,12 @@ impl RpcClient {
                 self.failed = Some(error);
             }
             break;
+        }
+        if let Some(error) = write_error {
+            if values.is_empty() {
+                return Err(error);
+            }
+            self.failed = Some(error);
         }
         Ok(values)
     }
@@ -449,7 +1050,9 @@ impl RpcClient {
         let Some(mut child) = self.child.take() else {
             return;
         };
+        let read_owner = self.read_account.clone();
         thread::spawn(move || {
+            let _read_owner = read_owner;
             for _ in 0..250 {
                 if child.try_wait().is_ok_and(|status| status.is_some()) {
                     return;
@@ -463,6 +1066,10 @@ impl RpcClient {
         if let Some(child) = &mut self.child {
             child.stop();
         }
+        // Explicit cleanup has reaped the process. Dropping receipt handles
+        // now cannot release a live process or move writes to a new stream.
+        self.input.take();
+        self.writes.clear();
     }
 }
 
@@ -487,5 +1094,163 @@ mod probe_tests;
 impl Drop for RpcClient {
     fn drop(&mut self) {
         self.shutdown();
+    }
+}
+
+pub(super) fn admission_error(error: std::io::Error) -> Error {
+    Error::with_code(
+        format!("运行时请求尚未派发：{error}"),
+        match error.kind() {
+            std::io::ErrorKind::WouldBlock => "queue_full",
+            std::io::ErrorKind::InvalidInput => "allocation_budget",
+            std::io::ErrorKind::TimedOut => "timeout",
+            _ => "transport",
+        },
+    )
+}
+
+#[cfg(test)]
+mod admission_tests {
+    use super::*;
+
+    struct Directory(std::path::PathBuf);
+    impl Drop for Directory {
+        fn drop(&mut self) {
+            std::fs::remove_dir_all(&self.0).unwrap();
+        }
+    }
+
+    #[test]
+    fn physical_reply_and_explicit_cancel_reserve_cross_rpc_barrier_and_poll() {
+        let root = Directory(std::env::temp_dir().join(format!(
+                "velune-rpc-admission-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            )));
+        std::fs::create_dir(&root.0).unwrap();
+        let mut command = crate::process::command("python3");
+        command.args(["-u", "-c", r#"
+import json, pathlib, sys, time
+root = pathlib.Path(sys.argv[1])
+print(json.dumps({'method':'synthetic/notice'}), flush=True)
+while not (root / 'release').exists(): time.sleep(.005)
+for line in sys.stdin:
+    record = json.loads(line)
+    print(json.dumps({'method':'synthetic/wire', 'params': {'method':record.get('method'), 'id':record.get('id'), 'reply':'result' in record, 'rejection':'error' in record}}), flush=True)
+"#]).arg(&root.0);
+        let mut rpc =
+            RpcClient::spawn_at(command, &crate::execution::ExecutionTarget::Local, None).unwrap();
+        rpc.defer_cleanup();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let (id, prompt) = rpc
+            .enqueue_request_receipt(
+                "synthetic/prompt",
+                &json!({"text":"x".repeat(9 * 1024 * 1024)}),
+                deadline,
+            )
+            .unwrap();
+        let reply = rpc
+            .enqueue_reply_receipt(&json!(900), &json!({}), deadline)
+            .unwrap();
+        let reject = rpc
+            .enqueue_rejection_receipt(&json!(901), "unsupported", deadline)
+            .unwrap();
+        let cancel = rpc
+            .enqueue_notification_receipt_with_class(
+                "synthetic/cancel",
+                &json!({}),
+                WriteClass::ProtocolReplyCancel,
+                deadline,
+            )
+            .unwrap();
+        let (_, interrupt) = rpc
+            .enqueue_request_receipt_with_class(
+                "synthetic/interrupt",
+                &json!({}),
+                WriteClass::ProtocolReplyCancel,
+                deadline,
+            )
+            .unwrap();
+        assert!(
+            rpc.enqueue_notification_receipt("synthetic/not-control", &json!({}), deadline)
+                .is_err()
+        );
+        // Control reserve is bounded too. Local rejection preserves the frame,
+        // deadline and a healthy connection; it never clears a failure barrier.
+        let frame = OwnedFrame::new(b"{}\n".to_vec(), 1024);
+        let pointer = frame.bytes.as_ptr();
+        let rejected = rpc
+            .try_enqueue_owned_frame(frame, WriteClass::ProtocolReplyCancel, deadline)
+            .err()
+            .unwrap();
+        assert_eq!(rejected.error.kind(), std::io::ErrorKind::WouldBlock);
+        assert_eq!(rejected.frame.bytes.as_ptr(), pointer);
+        assert_eq!(rejected.deadline, deadline);
+        assert!(rpc.input.is_some());
+        let mut noticed = false;
+        while !noticed && Instant::now() < deadline {
+            noticed = rpc
+                .poll()
+                .unwrap()
+                .iter()
+                .any(|v| v["method"] == "synthetic/notice");
+            thread::sleep(Duration::from_millis(2));
+        }
+        assert!(noticed);
+        for receipt in [&prompt, &reply, &reject, &cancel, &interrupt] {
+            assert!(receipt.try_complete().is_none());
+        }
+        // The same terminal barrier applies to ALL classes and synchronous helpers.
+        rpc.failed = Some(Error::with_code("synthetic recorded terminal", "transport"));
+        let rejected = rpc
+            .try_enqueue_owned_frame(rejected.frame, rejected.class, rejected.deadline)
+            .err()
+            .unwrap();
+        assert_eq!(rejected.error.kind(), std::io::ErrorKind::BrokenPipe);
+        assert_eq!(rejected.frame.bytes.as_ptr(), pointer);
+        assert!(rpc.respond(&json!(902), &json!({})).is_err());
+        assert!(rpc.failed.is_some());
+        assert!(rpc.check_failure().is_err());
+        std::fs::write(root.0.join("release"), []).unwrap();
+        let mut wire = Vec::new();
+        while wire.len() < 5 && Instant::now() < deadline {
+            wire.extend(rpc.poll().unwrap());
+            thread::sleep(Duration::from_millis(2));
+        }
+        assert_eq!(wire.len(), 5);
+        assert_eq!(wire[0]["params"]["id"], id);
+        assert_eq!(wire[1]["params"]["reply"], true);
+        assert_eq!(wire[2]["params"]["rejection"], true);
+        assert_eq!(wire[3]["params"]["method"], "synthetic/cancel");
+        assert_eq!(wire[4]["params"]["method"], "synthetic/interrupt");
+        for receipt in [prompt, reply, reject, cancel, interrupt] {
+            receipt.wait().unwrap();
+        }
+        rpc.shutdown();
+    }
+
+    #[test]
+    fn local_allocation_refusal_is_not_a_transport_failure() {
+        let mut command = crate::process::command("python3");
+        command.args(["-u", "-c", "import sys, json\nfor line in sys.stdin: print(json.dumps({'method':'synthetic/received'}), flush=True)"]);
+        let mut rpc =
+            RpcClient::spawn_at(command, &crate::execution::ExecutionTarget::Local, None).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let frame = OwnedFrame::new(Vec::with_capacity(1024), 512);
+        let pointer = frame.bytes.as_ptr();
+        let rejected = rpc
+            .try_enqueue_owned_frame(frame, WriteClass::Ordinary, deadline)
+            .err()
+            .unwrap();
+        assert_eq!(rejected.error.kind(), std::io::ErrorKind::InvalidInput);
+        assert_eq!(rejected.frame.bytes.as_ptr(), pointer);
+        assert!(rpc.failed.is_none());
+        rpc.write(&json!({"synthetic":"after-budget-refusal"}))
+            .unwrap();
+        assert!(rpc.input.is_some());
+        rpc.shutdown();
     }
 }

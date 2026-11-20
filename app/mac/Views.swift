@@ -2,9 +2,8 @@ import SwiftUI
 import AppKit
 import VeluneBindings
 
-/// The conversation window's toolbar. The list's column and the panes add
-/// their items to it; where it is customizable (macOS 26), the user's
-/// arrangement is kept under this name.
+/// The conversation window's toolbar. Sidebar and detail contribute their
+/// own items; native customization is saved under this name on macOS 26.
 enum ConversationToolbar {
     static let id = "conversation"
 }
@@ -14,6 +13,7 @@ enum ConversationToolbar {
 /// conversations in the focused pane, which the toolbar and commands act on.
 struct VeluneRootView: View {
     @ObservedObject var window: ConversationWindowModel
+    @ObservedObject private var aggregated: AggregatedListModel
     /// The list's workspace.
     @ObservedObject var store: ConversationStore
     /// The focused pane's shown tab.
@@ -32,8 +32,18 @@ struct VeluneRootView: View {
     /// (2026-10-11 decision); this keeps its entry closed.
     private static let changeReviewEnabled = false
 
+    init(window: ConversationWindowModel, store: ConversationStore, tab: ConversationTab, focused: ConversationStore,
+         previewEmpty: Bool, previewSettings: Bool) {
+        self.window = window
+        self.aggregated = window.aggregated
+        self.store = store
+        self.tab = tab
+        self.focused = focused
+        self.previewEmpty = previewEmpty
+        self.previewSettings = previewSettings
+    }
+
     var body: some View {
-        // The sidebar and the inspector are the left and right dock areas; collapsing one collapses the area.
         NavigationSplitView(columnVisibility: Binding(get: { window.tools.tools(in: .left).isEmpty ? .detailOnly : .all },
                                                       set: { $0 == .detailOnly ? window.tools.collapse(.left) : window.tools.showArea(.left) })) {
             DockAreaView(window: window, side: .left)
@@ -42,16 +52,15 @@ struct VeluneRootView: View {
                 .modifier(ConversationListSidebarToolbar(window: window))
         } detail: {
             withToolbar(panes)
-            // One inspector column: the right dock area, or change review while that is open.
-            .inspector(isPresented: Binding(get: { showsChanges || !window.tools.tools(in: .right).isEmpty },
-                                            set: { shown in
-                                                if shown { window.tools.showArea(.right) }
-                                                else if showsChanges { showsChanges = false }
-                                                else { window.tools.collapse(.right) }
-                                            })) {
-                if showsChanges { ChangeReviewView(store: focused).inspectorColumnWidth(min: 300, ideal: 440, max: 900) }
-                else { DockAreaView(window: window, side: .right).inspectorColumnWidth(min: 200, ideal: 260, max: 720) }
-            }
+                .inspector(isPresented: Binding(get: { showsChanges || !window.tools.tools(in: .right).isEmpty },
+                                                set: { shown in
+                                                    if shown { window.tools.showArea(.right) }
+                                                    else if showsChanges { showsChanges = false }
+                                                    else { window.tools.collapse(.right) }
+                                                })) {
+                    if showsChanges { ChangeReviewView(store: focused).inspectorColumnWidth(min: 300, ideal: 440, max: 900) }
+                    else { DockAreaView(window: window, side: .right).inspectorColumnWidth(min: 200, ideal: 260, max: 720) }
+                }
         }
         .navigationSplitViewStyle(.balanced)
         .background(WindowLevelSetter(pinned: window.pinned))
@@ -68,10 +77,16 @@ struct VeluneRootView: View {
         .sheet(item: Binding(get: { window.artifactSheet }, set: { if $0 == nil { window.closeArtifactSheet() } })) { tab in
             ArtifactSheet(window: window, tab: tab)
         }
-        .sheet(item: $window.renameTarget) { ConversationRenameView(store: window.list, conversation: $0) }
+        .sheet(item: $window.renameTarget) { target in ConversationRenameView(store: window.listStore(for: target.device), conversation: target.conversation) }
+        .sheet(item: $window.hapiShareTarget) { target in
+            if let hub = DeviceHub.shared { HapiShareView(sharing: hub.hapiSharing, target: target) }
+        }
         .alert(window.deleteTargets.count == 1 ? "删除会话？" : "删除 \(window.deleteTargets.count) 个会话？", isPresented: Binding(get: { !window.deleteTargets.isEmpty }, set: { if !$0 { window.deleteTargets = [] } })) {
             Button("取消", role: .cancel) { window.deleteTargets = [] }
-            Button("删除", role: .destructive) { window.list.deleteConversations(window.deleteTargets); window.deleteTargets = [] }
+            Button("删除", role: .destructive) {
+                for target in window.deleteTargets { window.listStore(for: target.device).deleteConversations([target.conversation]) }
+                window.deleteTargets = []
+            }
         } message: {
             Text("将永久删除所选 \(window.deleteTargets.count) 个会话，以及它们在各 Agent 运行时中的关联会话数据。此操作无法撤销。")
         }
@@ -134,7 +149,7 @@ struct VeluneRootView: View {
             if let deviceName { ToolbarItem(id: "device", placement: .navigation) { deviceLabel(deviceName) } }
         }
         // Without the title nothing holds the buttons to the trailing end.
-        if !store.device.conversationManagement.isEmpty { ToolbarItem(id: "operations") { ConversationOperationStatus(device: store.device) } }
+        if !aggregated.conversationManagement.isEmpty { ToolbarItem(id: "operations") { ConversationOperationStatus(aggregated: aggregated) } }
         ToolbarSpacer(.flexible)
         ToolbarItem(id: "reload") { reloadButton }
         Group {
@@ -154,7 +169,7 @@ struct VeluneRootView: View {
             forwardButton
             if let deviceName { deviceLabel(deviceName) }
         }
-        if !store.device.conversationManagement.isEmpty { ToolbarItem { ConversationOperationStatus(device: store.device) } }
+        if !aggregated.conversationManagement.isEmpty { ToolbarItem { ConversationOperationStatus(aggregated: aggregated) } }
         ToolbarItem { Spacer() }
         ToolbarItemGroup {
             ForEach(toolbarSettings.shown(in: .detail)) { button in
@@ -212,9 +227,10 @@ struct VeluneRootView: View {
     }
 
     private var reloadButton: some View {
-        Button { focused.reloadFromRuntimes() } label: { Label("重新读取", systemImage: "arrow.clockwise") }
+        Button { focused.reloadFromRuntimes() } label: { Label("刷新当前会话", systemImage: "arrow.clockwise") }
             .keyboardShortcut(shortcuts[.reload]).disabled(!focused.canReloadFromRuntimes)
-            .help(shortcuts.help("从 Agent 运行时重新读取会话列表和当前会话", .reload) + "；用于补上自动跟随遗漏的变化")
+            .help(shortcuts.help("重新读取会话、控制状态和输入执行配置；右键可刷新设备状态", .reload))
+            .background(PaneAnchor { [window] in window.registerRefreshToolbarButton(anchor: $0) })
     }
 
     private var pinToggle: some View {
@@ -299,6 +315,8 @@ struct VeluneRootView: View {
                 .popover(isPresented: Binding(get: { window.outlinePopover && !unavailable }, set: { window.outlinePopover = $0 }), arrowEdge: .bottom) {
                     TranscriptOutlineView(model: focused.transcript, layout: window, editMessage: { [focused, tab] id in
                         focused.editability(of: id) == nil ? nil : { window.outlinePopover = false; tab.edit(messageID: id) }
+                    }, deleteMessage: { [focused] id in
+                        focused.canDeleteMessage(id) ? { window.outlinePopover = false; focused.confirmDeleteMessage(id) } : nil
                     }, isRunning: focused.loadedConversationID.map(focused.device.isConversationRunning) ?? false,
                     goToBottom: { [tab] in window.outlinePopover = false; tab.scrollRequest &+= 1 }) { id in
                         window.outlinePopover = false
@@ -365,7 +383,8 @@ struct ConversationRenameView: View {
 struct ProjectEditorTarget: Identifiable {
     /// The project key, independent of its folders.
     let path: String
-    var id: String { path }
+    let store: ConversationStore
+    var id: String { "\(ObjectIdentifier(store.device)):\(path)" }
 }
 
 /// A project's name and folders in Velune's list. Conversations whose
@@ -380,12 +399,18 @@ struct ProjectEditorView: View {
     /// Every folder, the primary one first as it was opened.
     @State private var folders: [String]
     @State private var selection: String?
+    @State private var saving = false
+    @State private var saveFailure: String?
+    @State private var showsFolderEntry = false
+    @State private var folderEntry = ""
     @FocusState private var focused: Bool
     private let worktrees: [String]
     private let isNative: Bool
+    @State private var projectBasis: ConversationProject?
     init(store: ConversationStore, target: ProjectEditorTarget) {
         self.store = store; self.target = target
         let project = store.device.conversationProjects.first { $0.path == target.path }
+        _projectBasis = State(initialValue: project)
         _name = State(initialValue: project?.name ?? "")
         isNative = project?.nativeRuntimeId != nil
         _primary = State(initialValue: project?.primaryFolder ?? "")
@@ -413,6 +438,7 @@ struct ProjectEditorView: View {
                     if let folder = selected.first {
                         Button(isNative ? "移到首位" : "设为主文件夹") { primary = folder }.disabled(folder == primary)
                         Button("在 Finder 中显示") { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: folder)]) }
+                            .disabled(store.device.peerID != nil)
                         Divider()
                         Button("移除") { remove(folder) }.disabled(!isNative && folder == primary)
                     }
@@ -447,20 +473,47 @@ struct ProjectEditorView: View {
             }
             HStack {
                 Spacer()
-                Button("取消") { dismiss() }.keyboardShortcut(.cancelAction)
-                Button("存储", action: save).keyboardShortcut(.defaultAction).disabled(isNative && name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                Button("取消") { dismiss() }.keyboardShortcut(.cancelAction).disabled(saving)
+                Button(saving ? "正在存储…" : "存储", action: save).keyboardShortcut(.defaultAction)
+                    .disabled(saving || (isNative && name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty))
             }.padding(.top, 4)
+            if let saveFailure { Text(saveFailure).foregroundStyle(.red).textSelection(.enabled) }
         }.padding(20).frame(width: 440).onAppear { focused = true }
+        .disabled(saving)
+        .interactiveDismissDisabled(saving)
+        .sheet(isPresented: $showsFolderEntry) {
+            VStack(alignment: .leading, spacing: 12) {
+                Text("添加执行设备上的文件夹").uiFont(.headline)
+                TextField("绝对路径", text: $folderEntry)
+                HStack {
+                    Spacer()
+                    Button("取消") { showsFolderEntry = false }.keyboardShortcut(.cancelAction)
+                    Button("添加") {
+                        appendFolder(folderEntry.trimmingCharacters(in: .whitespacesAndNewlines))
+                        showsFolderEntry = false
+                    }.keyboardShortcut(.defaultAction)
+                        .disabled(folderEntry.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+            }.padding(20).frame(width: 400)
+        }
     }
     private static func folderName(_ path: String) -> String { URL(fileURLWithPath: path).lastPathComponent }
     private static func abbreviated(_ path: String) -> String { (path as NSString).abbreviatingWithTildeInPath }
     private func add() {
+        if store.device.peerID != nil {
+            folderEntry = ""
+            showsFolderEntry = true
+            return
+        }
         let panel = NSOpenPanel()
         panel.canChooseFiles = false; panel.canChooseDirectories = true; panel.allowsMultipleSelection = true
         panel.prompt = "添加到项目"
         guard panel.runModal() == .OK else { return }
-        for url in panel.urls where !folders.contains(url.path) { folders.append(url.path) }
-        if primary.isEmpty { primary = folders.first ?? "" }
+        for url in panel.urls { appendFolder(url.path) }
+    }
+    private func appendFolder(_ path: String) {
+        if !folders.contains(path) { folders.append(path) }
+        if primary.isEmpty { primary = path }
     }
     private func remove(_ folder: String) {
         guard isNative || folder != primary else { return }
@@ -469,10 +522,18 @@ struct ProjectEditorView: View {
         if selection == folder { selection = nil }
     }
     private func save() {
+        guard !saving else { return }
+        saving = true
+        saveFailure = nil
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         store.device.setProject(path: target.path, primaryFolder: primary, name: isNative ? trimmed : (trimmed.isEmpty || trimmed == Self.folderName(primary) ? nil : trimmed),
-                         folders: folders.filter { $0 != primary })
-        dismiss()
+                         folders: folders.filter { $0 != primary }, basis: projectBasis) { result in
+            saving = false
+            switch result {
+            case .success: dismiss()
+            case .failure(let error): saveFailure = error.localizedDescription
+            }
+        }
     }
 }
 
@@ -563,6 +624,12 @@ private struct GeneralSettingsView: View {
     @ObservedObject var store: DeviceStore
     @State private var limit = 20
     @State private var totalLimit = 200
+    private var editedLimits: ConversationBrowserLimits? {
+        guard let page = UInt32(exactly: limit), page > 0,
+              let total = UInt32(exactly: totalLimit), total > 0 else { return nil }
+        return ConversationBrowserLimits(page: page, total: total)
+    }
+
     var body: some View {
         Form {
             AppearanceSettingsSection()
@@ -580,8 +647,13 @@ private struct GeneralSettingsView: View {
                 LabeledContent("每次加载") { TextField("数量", value: $limit, format: .number).frame(width: 70); Text("个会话") }
                 LabeledContent("列表总数上限") { TextField("数量", value: $totalLimit, format: .number).frame(width: 70); Text("个会话") }
                 Text("列表最多先读取总数上限个会话，按组依次分给各组，每组每次加载若干个；折叠的组不读取。之后可在各组中加载更多。").uiFont(.caption).foregroundStyle(.secondary)
-                Button("保存") { store.setConversationBrowserLimits(ConversationBrowserLimits(page: UInt32(limit), total: UInt32(totalLimit))) }
-                    .disabled(limit < 1 || totalLimit < 1 || (limit == Int(store.conversationBrowserLimits.page) && totalLimit == Int(store.conversationBrowserLimits.total)) || store.isShuttingDown)
+                if editedLimits == nil {
+                    Text("每次加载和列表总数上限都必须在 1 到 \(UInt32.max.formatted()) 之间。")
+                        .uiFont(.caption).foregroundStyle(.secondary)
+                }
+                Button("保存") {
+                    if let editedLimits { store.setConversationBrowserLimits(editedLimits) }
+                }.disabled(editedLimits == nil || editedLimits == store.conversationBrowserLimits || store.isShuttingDown)
             }
             if #unavailable(macOS 26) { ToolbarSettingsSection() }
         }.formStyle(.grouped).onAppear { limit = Int(store.conversationBrowserLimits.page); totalLimit = Int(store.conversationBrowserLimits.total) }
@@ -688,9 +760,9 @@ struct ProviderSettingsView: View {
     /// A subscription is told apart by its account and login; others by their address.
     private func providerSummary(_ provider: ProviderSummary) -> String {
         let authentication = provider.authentication
-        guard let subscription = provider.composition.subscriptionName else { return "\(provider.models.count) 个模型 · \(provider.endpoint)" }
+        guard let subscription = provider.composition.subscriptionName else { return "\(provider.models.count) 个模型，地址：\(provider.endpoint)" }
         let status = authentication.method == .oAuth ? (authentication.configured ? "已登录" : "需要登录") : (authentication.configured ? "已配置" : "需要配置认证")
-        return (["\(provider.models.count) 个模型", subscription] + (authentication.accountLabel.map { ["账户 …\($0)"] } ?? []) + [status]).joined(separator: " · ")
+        return (["\(provider.models.count) 个模型", subscription] + (authentication.accountLabel.map { ["账户 …\($0)"] } ?? []) + [status]).joined(separator: "，")
     }
 }
 
@@ -732,7 +804,7 @@ private struct ProviderModelDraft: Identifiable {
     var efforts: [String]? { declaresReasoning ? reasoningLevels.split(separator: ",").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty } : nil }
     var capabilitySummary: String {
         let effortsSummary = efforts.map { $0.isEmpty ? "不支持推理 effort" : "支持 effort：" + $0.joined(separator: "、") } ?? "推理 effort 未知"
-        return effortsSummary + (contextWindow.isEmpty ? "" : " · 上下文 \(TokenCount.parse(contextWindow).map { TokenCount.format($0) } ?? contextWindow)") + (maxOutputTokens.isEmpty ? "" : " · 输出 \(TokenCount.parse(maxOutputTokens).map { TokenCount.format($0) } ?? maxOutputTokens)")
+        return effortsSummary + (contextWindow.isEmpty ? "" : "，上下文 \(TokenCount.parse(contextWindow).map { TokenCount.format($0) } ?? contextWindow)") + (maxOutputTokens.isEmpty ? "" : "，输出 \(TokenCount.parse(maxOutputTokens).map { TokenCount.format($0) } ?? maxOutputTokens)")
     }
     var parametersSummary: String { parameters.map { $0.isEmpty ? "未设置" : "\($0.count) 项参数：" + $0.keys.sorted().joined(separator: "、") } ?? "未设置" }
     var definition: ProviderModel { ProviderModel(recordKey: recordKey, providerModelId: providerModelID, nickname: nickname, icon: icon.isEmpty ? nil : icon, contextWindow: TokenCount.parse(contextWindow), maxOutputTokens: TokenCount.parse(maxOutputTokens), reasoningLevels: efforts, requestParameters: parameters) }
@@ -864,8 +936,6 @@ struct ProviderEditor: View {
     /// The command a CLI backend runs, from the template the composition comes from.
     private var executableCommand: String? { template?.executableCommand ?? composition.subscriptionTemplate?.executableCommand }
     private var usesHTTP: Bool { if case .http = composition.executionBackend { return true }; return false }
-    /// The official API service at this address, whose account quota the provider's key can read.
-    private var accountService: String? { usesSubscription || !usesHTTP ? nil : apiAccountServiceName(endpoint: endpoint.trimmingCharacters(in: .whitespacesAndNewlines)) }
     private var showsQuota: Bool { usesSubscription || composition.quotaSource != .none || !quotaLimits.isEmpty || (providerID.flatMap { store.providerQuotas[$0] }.map { $0.freshness != .unsupported } ?? false) }
     private var modelIndex: Int? { guard case .model(let id) = selection else { return nil }; return models.firstIndex { $0.id == id } }
     private var claudeBinary: String? { composition.claudeBinary?.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -944,6 +1014,16 @@ struct ProviderEditor: View {
             Button("退出登录", role: .destructive) { if let providerID { store.logoutAuthentication(providerID) } }
         } message: {
             Text("只退出此提供商独立的 CLI 登录，重新登录前路由不会使用它；终端中的 Claude Code 登录与其他提供商不受影响。")
+        }
+    }
+    private func quotaSourceTitle(_ source: ProviderQuotaSource) -> String {
+        switch source {
+        case .none: "不查询"
+        case .kimiUsage: "Kimi Coding 额度"
+        case .arkCodingUsage: "ARK Coding 额度"
+        case .apiAccount: "官方 API 账户额度"
+        case .codexUsage: "Codex 订阅额度"
+        case .claudeCliUsage: "Claude Code 订阅额度"
         }
     }
     private var claudeBinaryField: some View {
@@ -1052,13 +1132,17 @@ struct ProviderEditor: View {
                     ImmediateDisclosureGroup("来源详情") { Text(provenance.displayName).uiFont(.callout).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading).padding(.top, 8) }
                 }
             }
-            if let accountService {
-                Section {
-                    Toggle("读取 \(accountService) 账户额度", isOn: Binding(get: { composition.quotaSource == .apiAccount }, set: { composition.quotaSource = $0 ? .apiAccount : .none }))
-                } footer: {
-                    Text(accountService == "OpenRouter" ? "用这个 API key 向 OpenRouter 读取它的花费上限与剩余额度；没有设置上限的 Key 不报告额度。" : "用这个 API key 向 \(accountService) 官方地址读取账户余额；提供商表示余额不足时暂停新请求。")
-                        .formFooterStyle()
+            Section {
+                Picker("查询来源", selection: $composition.quotaSource) {
+                    ForEach(providerQuotaSources(executionBackend: composition.executionBackend, authenticationSource: composition.authenticationSource), id: \.self) { source in
+                        Text(quotaSourceTitle(source)).tag(source)
+                    }
                 }
+            } header: {
+                Text("额度查询")
+            } footer: {
+                Text("额度查询独立于模型请求协议与创建模板。Kimi、ARK 和官方账户查询需要相应官方服务地址及认证；更改后保存生效。")
+                    .formFooterStyle()
             }
             if usesHTTP && !usesSubscription && usesAPIKey && composition.requestProfile == .native && providerBillingService(endpoint: endpoint) != nil {
                 Section {
@@ -1106,8 +1190,6 @@ struct ProviderEditor: View {
         let quotaEdit: QuotaAuthenticationEdit? = clearingQuotaAuthentication ? .clear : !quotaAccessKeyID.isEmpty && !quotaSecret.isEmpty ? .setAccessKey(accessKeyId: quotaAccessKeyID, secretAccessKey: quotaSecret, confirmed: quotaConfirmed) : quotaConfirmed ? .confirmBinding : nil
         let existing = Set(store.providers.map(\.id))
         var saving = composition; if let claudeBinary { saving.claudeBinary = claudeBinary }
-        // The account source reads only from the official address; another address keeps none.
-        if saving.quotaSource == .apiAccount && accountService == nil { saving.quotaSource = .none }
         store.saveProvider(ProviderDraft(id: providerID ?? "", name: name.trimmingCharacters(in: .whitespacesAndNewlines), protocol: protocolID, endpoint: usesHTTP ? endpoint.trimmingCharacters(in: .whitespacesAndNewlines) : "", executionBackend: saving.executionBackend, requestProfile: saving.requestProfile, authenticationSource: saving.authenticationSource, quotaSource: saving.quotaSource, models: models.map(\.definition), quotaLimits: quotaLimits), authenticationEdit: edit, quotaAuthenticationEdit: quotaEdit) {
             apiKey = ""; originalAPIKey = nil; quotaAccessKeyID = ""; quotaSecret = ""
             guard signingIn, let saved = store.providers.first(where: { $0.id == providerID }) ?? store.providers.first(where: { !existing.contains($0.id) }) else { dismiss(); return }
@@ -1206,7 +1288,7 @@ struct RuntimeSettingsView: View {
                 ForEach(store.runtimeInstances) { instance in
                     VStack(alignment: .leading, spacing: 3) {
                         HStack { Text(instance.name); if !instance.enabled { Text("已停用").foregroundStyle(.secondary) } }
-                        Text((store.runtimeTypes.first { $0.id == instance.typeId }?.name ?? instance.typeId.description) + (store.location(of: instance.id).host.map { " · SSH \($0)" } ?? "")).uiFont(.caption).foregroundStyle(.secondary)
+                        Text((store.runtimeTypes.first { $0.id == instance.typeId }?.name ?? instance.typeId.description) + (store.location(of: instance.id).host.map { "（SSH \($0)）" } ?? "")).uiFont(.caption).foregroundStyle(.secondary)
                     }.tag(instance.id)
                 }
             }
@@ -1506,7 +1588,7 @@ struct RuntimeEditor: View {
                     Text("选择模型").tag("")
                     ForEach(store.gateway.providers) { provider in
                         ForEach(provider.models) { model in
-                            Text(provider.name + " · " + model.displayName).tag(model.recordKey)
+                            Text(model.displayName + "（" + provider.name + "）").tag(model.recordKey)
                         }
                     }
                 }
@@ -1902,156 +1984,3 @@ struct AuthenticationView: View {
 /// keyboard by itself (see 键盘操作 in the PRD). "转到待处理的会话" or a
 /// click gives it the keyboard; then 1–9 choose an approval's options and
 /// ⌘⌫ cancels the request. Questions move by Tab and submit with Return.
-struct RuntimeInteractionView: View {
-    @ObservedObject var store: ConversationStore
-    @ObservedObject var tab: ConversationTab
-    let interaction: RuntimeInteraction
-    @State private var values: [String: String] = [:]
-    @FocusState private var cardFocused: Bool
-    @FocusState private var focusedField: String?
-    /// The choice question 1–9 answer while the card has the keyboard.
-    @State private var current: String?
-    @Environment(\.controlActiveState) private var activeState
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            switch interaction.kind {
-            case .approval(let title, let detail, let options): approval(title: title, detail: detail, options: options)
-            case .userInput(let questions): input(questions)
-            }
-        }
-        .padding(12)
-        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
-        .overlay { border }
-        .focusable()
-        .focusEffectDisabled()
-        .focused($cardFocused)
-        .onKeyPress(phases: .down) { press in key(press) }
-        .onTapGesture { takeKeyboard() }
-        .frame(maxWidth: 760).padding(.horizontal, 16).padding(.top, 8)
-        .onChange(of: interaction.id) { _, _ in values = [:]; current = nil }
-        .onChange(of: tab.interactionFocusRequested, initial: true) { _, requested in
-            if requested != nil, tab.takeInteractionFocusRequest() { takeKeyboard() }
-        }
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel("运行时请求")
-    }
-
-    private var isApproval: Bool { if case .approval = interaction.kind { true } else { false } }
-
-    /// The system's focus ring colour while the card has the keyboard.
-    private var border: some View {
-        let ring = cardFocused && activeState == .key
-        return RoundedRectangle(cornerRadius: 8)
-            .strokeBorder(ring ? Color(nsColor: .keyboardFocusIndicatorColor) : Color(nsColor: .separatorColor), lineWidth: ring ? 3 : 1)
-    }
-
-    @ViewBuilder private func approval(title: String, detail: String, options: [InteractionOption]) -> some View {
-        header(title)
-        if !detail.isEmpty {
-            ScrollView { Text(detail).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }
-                .frame(maxHeight: 160).fixedSize(horizontal: false, vertical: true)
-        }
-        HStack(spacing: 8) {
-            Button("取消请求", role: .cancel) { reply(.cancel) }.help("取消请求（卡片有焦点时 ⌘⌫）")
-            Spacer()
-            ForEach(Array(options.enumerated()), id: \.element.id) { index, option in optionButton(option, index: index) }
-        }.disabled(store.isLoading)
-    }
-
-    private func optionButton(_ option: InteractionOption, index: Int) -> some View {
-        let numbered = index < 9
-        return Button(numbered ? "\(index + 1)  \(option.label)" : option.label) { reply(.decision(optionId: option.id)) }
-            .help(numbered ? "卡片有焦点时按 \(index + 1)" : option.label)
-    }
-
-    @ViewBuilder private func input(_ questions: [InteractionQuestion]) -> some View {
-        header("运行时需要输入")
-        ForEach(questions) { question in
-            VStack(alignment: .leading, spacing: 4) {
-                HStack {
-                    Text(question.text).textSelection(.enabled)
-                    if cardFocused, current == question.id {
-                        Text("按 1–\(min(question.options.count, 9)) 选择").uiFont(.callout).foregroundStyle(.secondary)
-                    }
-                }
-                field(question, questions: questions).focused($focusedField, equals: question.id)
-            }
-        }
-        HStack {
-            Button("取消请求", role: .cancel) { reply(.cancel) }
-            Spacer()
-            Button("提交") { submit(questions) }.disabled(!answered(questions)).help("回答完毕后按 Return")
-        }.disabled(store.isLoading)
-    }
-
-    @ViewBuilder private func field(_ question: InteractionQuestion, questions: [InteractionQuestion]) -> some View {
-        if !question.options.isEmpty {
-            Picker("选择", selection: value(question.id)) {
-                Text("请选择").tag("")
-                ForEach(Array(question.options.enumerated()), id: \.element.id) { index, option in
-                    Text(index < 9 ? "\(index + 1)  \(option.label)" : option.label).tag(option.id)
-                }
-            }.labelsHidden()
-        } else if question.secret {
-            SecureField("回答", text: value(question.id)).privacySensitive().onSubmit { submitOrAdvance(questions) }
-        } else {
-            TextField("回答", text: value(question.id)).onSubmit { submitOrAdvance(questions) }
-        }
-    }
-
-    private func header(_ title: String) -> some View {
-        HStack(spacing: 6) {
-            Image(systemName: "exclamationmark.circle.fill").foregroundStyle(.orange)
-            Text(title).uiFont(.headline).frame(maxWidth: .infinity, alignment: .leading)
-            if store.pendingInteractions.count > 1 { Text("还有 \(store.pendingInteractions.count - 1) 个请求").uiFont(.callout).foregroundStyle(.secondary) }
-        }
-    }
-
-    private func takeKeyboard() {
-        DispatchQueue.main.async { if case .userInput(let questions) = interaction.kind { advance(questions) } else { cardFocused = true } }
-    }
-
-    /// To the first unanswered question: its field, or the card for a choice. With all answered, the card, for Return.
-    private func advance(_ questions: [InteractionQuestion]) {
-        let next = questions.first { (values[$0.id] ?? "").isEmpty }
-        if let next, next.options.isEmpty {
-            current = nil
-            focusedField = next.id
-        } else {
-            current = next?.id
-            focusedField = nil
-            cardFocused = true
-        }
-    }
-
-    private func key(_ press: KeyPress) -> KeyPress.Result {
-        guard cardFocused, focusedField == nil, !store.isLoading else { return .ignored }
-        if press.key == .delete, press.modifiers == .command { reply(.cancel); return .handled }
-        switch interaction.kind {
-        case .approval(_, _, let options):
-            guard press.modifiers.isEmpty, let digit = Int(press.characters), (1...min(options.count, 9)).contains(digit) else { return .ignored }
-            reply(.decision(optionId: options[digit - 1].id))
-        case .userInput(let questions):
-            if press.key == .return, press.modifiers.isEmpty, answered(questions) { submit(questions); return .handled }
-            guard press.modifiers.isEmpty, let digit = Int(press.characters),
-                  let question = questions.first(where: { $0.id == current }), (1...min(question.options.count, 9)).contains(digit) else { return .ignored }
-            values[question.id] = question.options[digit - 1].id
-            advance(questions)
-        }
-        return .handled
-    }
-
-    private func answered(_ questions: [InteractionQuestion]) -> Bool { !questions.contains { (values[$0.id] ?? "").isEmpty } }
-    private func submit(_ questions: [InteractionQuestion]) {
-        guard answered(questions), !store.isLoading else { return }
-        reply(.answers(answers: questions.map { InteractionAnswer(questionId: $0.id, values: [values[$0.id] ?? ""]) }))
-    }
-    private func submitOrAdvance(_ questions: [InteractionQuestion]) { answered(questions) ? submit(questions) : advance(questions) }
-    private func value(_ id: String) -> Binding<String> { Binding(get: { values[id] ?? "" }, set: { values[id] = $0 }) }
-    private func reply(_ value: RuntimeInteractionReply) {
-        store.replyInteraction(interaction, reply: value)
-        // The keyboard goes back to the composer rather than nowhere.
-        if cardFocused || focusedField != nil { tab.composer.focusWhenShown() }
-    }
-}

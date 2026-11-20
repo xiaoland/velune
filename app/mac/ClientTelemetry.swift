@@ -29,7 +29,8 @@ final class ClientTelemetry: @unchecked Sendable {
         guard let error = error as? BindingError else { return error.localizedDescription }
         switch error {
         case .Diagnostic(_, let detail, _, _, let id): return id.isEmpty ? detail : "\(detail)（诊断编号：\(id)）"
-        case .RemoteRequest(_, let detail, _, _), .Invalid(let detail), .Io(let detail), .Contract(let detail), .Unsupported(let detail): return detail
+        case .RemoteRequest(_, let detail, _, _, let id): return id.isEmpty ? detail : "\(detail)（诊断编号：\(id)）"
+        case .Invalid(let detail), .Io(let detail), .Contract(let detail), .Unsupported(let detail): return detail
         case .Closed: return "客户端已关闭"
         case .Unavailable: return "遥测服务不可用"
         }
@@ -107,7 +108,7 @@ final class ClientTelemetry: @unchecked Sendable {
         if error is CancellationError { return "cancelled" }
         if let error = error as? BindingError {
             switch error {
-            case .Diagnostic(let kind, _, _, _, _), .RemoteRequest(let kind, _, _, _):
+            case .Diagnostic(let kind, _, _, _, _), .RemoteRequest(let kind, _, _, _, _):
                 if kind == .outcomeUnknown { return "unknown" }
             default: break
             }

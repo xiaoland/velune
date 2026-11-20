@@ -114,6 +114,14 @@ import ObjectiveC
     oldOrganization.rangeEndAtMs = end - 86_400_000
     secondOrganization.observedAtMs = now - 1_800_000
     let total = ProviderAnalyticsOrganizationTotal(services: [.openAi], organizationIds: ["report-demo", "second-demo"], providerIds: ["api-root", "api-second"], scope: .organization, scopeIds: [], rangeStartAtMs: start, rangeEndAtMs: nil, rangeEndMinAtMs: end - 86_400_000, rangeEndMaxAtMs: end - 3_600_000, rangeIsHeterogeneous: true, inputTokens: 6_000_000, outputTokens: 940_000, usageSourceCount: 2, sourceCount: 2, costs: [BilledCost(amount: 9.5, currency: "USD")], costSourceCount: 1)
+    guard ProviderReportFormatting.organizationOverviewCoverage(total) ==
+        "本月已报告小计\n各来源查询截止时间 2026-11-15 17:00 至 2026-11-16 16:00 UTC" else { fail("overview must display the span of contributing cutoffs") }
+    var sharedCutoff = total
+    sharedCutoff.rangeEndAtMs = total.rangeEndMaxAtMs
+    sharedCutoff.rangeEndMinAtMs = total.rangeEndMaxAtMs
+    sharedCutoff.rangeIsHeterogeneous = false
+    guard ProviderReportFormatting.organizationOverviewCoverage(sharedCutoff) ==
+        "本月查询截至 2026-11-16 16:00 UTC" else { fail("overview must display a shared cutoff once") }
     let profileTotal = ProviderAnalyticsChatgptProfileTotal(profileCount: 1, profileReportedCount: 1, lifetimeTokens: 1_524_000, lifetimeSourceCount: 1, dailyReportedProfileCount: 1, daily: [ProviderAnalyticsDailyTotal(date: "2026-11-15", tokens: 0, sourceCount: 1), ProviderAnalyticsDailyTotal(date: "2026-11-16", tokens: 32_001, sourceCount: 1)])
     let report = ProviderAnalyticsReport(observedAtMs: now, sources: [subscription, oldOrganization, secondOrganization, unconfigured], chatgptProfileTotals: profileTotal, organizationTotals: [total], comparisonSourceIds: ["subscription", "organization", "second-organization"])
     var longName = oldOrganization

@@ -37,10 +37,10 @@ pub(super) struct Retry {
     pub(super) native_reconnects: u32,
     pub(super) effort: Option<String>,
     pub(super) permission_mode: Option<String>,
-    pub(super) early: Vec<Value>,
+    pub(super) early: Vec<Retained<Value>>,
     /// Identity confirmed by an early turn/started, checked again against ack.
     pub(super) started: Option<String>,
-    pub(super) interrupt: Option<u64>,
+    pub(super) interrupt: Option<(u64, Instant)>,
 }
 
 fn delay(attempt: u32) -> Option<Duration> {
@@ -133,12 +133,13 @@ impl NativeSession {
                     permission_mode: self.codex.retry.permission_mode.clone(),
                 };
                 let params = self.codex_turn_params(&input)?;
-                let request = self.rpc.begin("turn/start", &params)?;
+                let deadline = Instant::now() + RESPONSE_TIMEOUT;
+                let request = self.rpc.enqueue_request("turn/start", &params, deadline)?;
                 self.codex.retry.native = false;
                 self.codex.retry.started = None;
                 self.codex.retry.phase = Phase::Starting {
                     request,
-                    deadline: Instant::now() + RESPONSE_TIMEOUT,
+                    deadline,
                     cancelled: false,
                 };
             }
@@ -164,7 +165,12 @@ impl NativeSession {
             if matches!(self.codex.retry.phase, Phase::Ended(_)) {
                 return Ok(true);
             }
-            if self.codex.retry.interrupt == Some(id) {
+            if self
+                .codex
+                .retry
+                .interrupt
+                .is_some_and(|(request, _)| request == id)
+            {
                 if record.get("error").is_some() {
                     return Err(Error::new(format!("Codex 未确认停止：{}", record["error"])));
                 }
@@ -228,7 +234,10 @@ impl NativeSession {
                 if self.codex.retry.early.len() >= MAX_EARLY_RECORDS {
                     return Err(Error::new("Codex 恢复通知在身份确认前超出上限"));
                 }
-                self.codex.retry.early.push(record.clone());
+                self.codex
+                    .retry
+                    .early
+                    .push(Retained::from_parts(record.clone(), self.data.branch()));
                 return Ok(true);
             }
         }
@@ -245,6 +254,7 @@ impl NativeSession {
         {
             return Err(Error::new("Codex 恢复应答与通知的轮次身份不一致"));
         }
+        self.data.retain(DataOwner::Turn);
         self.codex.retry.started = Some(turn.into());
         self.turn_id = Some(turn.into());
         Ok(())
@@ -252,7 +262,7 @@ impl NativeSession {
 
     fn codex_replay_early(&mut self) -> Result<()> {
         for record in std::mem::take(&mut self.codex.retry.early) {
-            self.codex_handle_record(record)?;
+            self.codex_receive_record(record)?;
         }
         Ok(())
     }
@@ -266,32 +276,33 @@ impl NativeSession {
             .turn_id
             .as_deref()
             .ok_or_else(|| Error::new("Codex 未确认恢复轮次"))?;
-        self.codex.retry.interrupt = Some(self.rpc.begin(
+        let deadline = Instant::now() + RESPONSE_TIMEOUT;
+        let request = self.rpc.enqueue_request_with_class(
             "turn/interrupt",
             &json!({"threadId":self.native_id,"turnId":turn}),
-        )?);
+            crate::transport::WriteClass::ProtocolReplyCancel,
+            deadline,
+        )?;
+        self.codex.retry.interrupt = Some((request, deadline));
         Ok(())
     }
 
     fn codex_interrupt_recovery(&mut self) -> Result<()> {
-        if let Some(request) = self.codex.retry.interrupt {
-            self.codex.retry.phase = Phase::Stopping {
-                request,
-                deadline: Instant::now() + RESPONSE_TIMEOUT,
-            };
+        if let Some((request, deadline)) = self.codex.retry.interrupt {
+            self.codex.retry.phase = Phase::Stopping { request, deadline };
         } else {
             let turn = self
                 .turn_id
                 .as_deref()
                 .ok_or_else(|| Error::new("Codex 未确认恢复轮次"))?;
-            let request = self.rpc.begin(
+            let deadline = Instant::now() + RESPONSE_TIMEOUT;
+            let request = self.rpc.enqueue_request_with_class(
                 "turn/interrupt",
                 &json!({"threadId":self.native_id,"turnId":turn}),
+                crate::transport::WriteClass::ProtocolReplyCancel,
+                deadline,
             )?;
-            self.codex.retry.phase = Phase::Stopping {
-                request,
-                deadline: Instant::now() + RESPONSE_TIMEOUT,
-            };
+            self.codex.retry.phase = Phase::Stopping { request, deadline };
         }
         Ok(())
     }

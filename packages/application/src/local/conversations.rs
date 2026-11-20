@@ -16,6 +16,11 @@ pub(crate) struct TurnRequest {
     pub turn: ComposedTurn,
 }
 
+enum SendTarget {
+    Selected,
+    Current,
+}
+
 /// What one send gives the active runtime. Without a message it resumes
 /// the native turn.
 pub(super) struct Prompt<'a> {
@@ -34,6 +39,24 @@ pub(super) enum ConversationChange<'a> {
 }
 
 impl CoreRuntime {
+    pub(super) fn check_submission_cancelled(
+        &self,
+        conversation_id: &str,
+    ) -> Result<(), RuntimeError> {
+        if self
+            .submission_cancellation
+            .as_ref()
+            .is_some_and(|(id, cancelled)| {
+                id == conversation_id && cancelled.load(std::sync::atomic::Ordering::Acquire)
+            })
+        {
+            let mut failure = crate::Failure::invalid("发送已取消，消息尚未交给运行时");
+            failure.code = "submission_cancelled".into();
+            return Err(RuntimeError::Contract(failure));
+        }
+        Ok(())
+    }
+
     /// A turn that needs another runtime process while sub-agents still run
     /// in the current one is queued; the queue sends it once they have ended.
     pub(crate) fn send_turn(
@@ -41,16 +64,10 @@ impl CoreRuntime {
         request: TurnRequest,
     ) -> Result<SnapshotResult, RuntimeError> {
         let result = self.send_and_restore(&request);
-        if matches!(&result, Err(RuntimeError::Contract(failure)) if failure.code == "control_held_elsewhere")
-        {
-            self.control_held_elsewhere();
-        } else if result.is_err()
-            && let Ok(Some(target)) = self.control_target()
-        {
-            self.control_observations.invalidate(&target);
-        }
+        self.update_send_control(&result);
         match result {
             Err(RuntimeError::OutstandingWork) => {
+                self.check_submission_cancelled(&request.conversation_id)?;
                 let queue_id = self.queue_after_work(request);
                 self.accepted_submission_result(crate::SubmissionReceipt::Queued { queue_id })
             }
@@ -61,12 +78,180 @@ impl CoreRuntime {
         }
     }
 
+    /// Continue the granted conversation in its existing execution context.
+    /// Resolve the target and submit in the same owner job.
+    pub(crate) fn send_current_turn(
+        &mut self,
+        source_runtime_id: String,
+        conversation_id: String,
+        turn: ComposedTurn,
+    ) -> Result<SnapshotResult, RuntimeError> {
+        if self.session.side.is_some()
+            || self.session.unsubmitted_draft.is_some()
+            || (self.session.projected().is_some()
+                && !self.addresses_source(&source_runtime_id, &conversation_id))
+        {
+            return Err(RuntimeError::invalid("会话来源与共享身份不匹配"));
+        }
+        let (runtime_id, selection) = if self.session.active_state.live().is_some() {
+            let runtime_id = self
+                .session
+                .projected()
+                .ok_or_else(|| RuntimeError::invalid("会话执行尚未准备"))?
+                .conversation
+                .runtime_id
+                .clone();
+            (runtime_id, self.session.model_selection.clone())
+        } else {
+            if self.observe_current_external_turn()
+                || self
+                    .session
+                    .projected()
+                    .is_some_and(|view| view.run_state == RunState::Elsewhere)
+            {
+                return Err(RuntimeError::invalid("另一个运行时进程正在执行此会话"));
+            }
+            let (history, projection) =
+                self.read_conversation_source(&source_runtime_id, &conversation_id)?;
+            let runtime_id = history.conversation.runtime_id.clone();
+            self.present_history(history, projection);
+            let selection = self.history_send_selection(&runtime_id)?;
+            (runtime_id, selection)
+        };
+        let selection = selection.ok_or_else(|| {
+            let mut failure = crate::Failure::new(
+                crate::FailureKind::Conflict,
+                "无法确认此会话的模型来源，请先在宿主选择模型并发送",
+            );
+            failure.code = "session_model_unconfirmed".into();
+            RuntimeError::Contract(failure)
+        })?;
+        let result = self.send_to_target(
+            &TurnRequest {
+                submission_id: None,
+                source_runtime_id,
+                conversation_id,
+                runtime_id,
+                selection,
+                turn,
+            },
+            SendTarget::Current,
+            None,
+        );
+        self.update_send_control(&result);
+        // A future send could see a different target; current-target sends
+        // return OutstandingWork instead of queuing the sampled selection.
+        result
+    }
+
+    pub(super) fn history_send_selection(
+        &self,
+        runtime_id: &str,
+    ) -> Result<Option<Option<ModelSelection>>, RuntimeError> {
+        // ACP loads the Agent's own session configuration. An absent override
+        // lets the Agent keep that configuration, including its selected model.
+        if self.runtime_instance(runtime_id)?.type_id == RuntimeKind::Acp {
+            return Ok(Some(None));
+        }
+        // Pi history can identify its current managed selection directly.
+        if let Some(model_record_key) = &self.session.model_record_key {
+            return Ok(Some(Some(ModelSelection::Managed {
+                model_record_key: model_record_key.clone(),
+            })));
+        }
+        let Some(native) = self.native_snapshot() else {
+            return Ok(None);
+        };
+        let Some(latest) = user_message_ids(&native).next() else {
+            return Ok(None);
+        };
+        let latest = self.projected_conversation_message_id(&native.conversation.id, latest);
+        let snapshot = self.decorate_snapshot(native);
+        // Only the active segment's latest user message can establish the
+        // current selection. A recorded None is an explicit native default.
+        let mut transcript = velune_agent_runtime::transcript::TranscriptProjection::default();
+        super::composer_choices::recall_turn_requests(
+            &self.turn_requests,
+            &mut transcript,
+            &snapshot,
+        );
+        let selection = transcript
+            .requested()
+            .get(&latest)
+            .filter(|request| request.runtime_id.as_deref() == Some(runtime_id))
+            .map(|request| request.model_selection.clone());
+        Ok(selection)
+    }
+
+    fn update_send_control(&mut self, result: &Result<SnapshotResult, RuntimeError>) {
+        if matches!(result, Err(RuntimeError::Contract(failure)) if failure.code == "control_held_elsewhere")
+        {
+            self.control_held_elsewhere();
+        } else if result.is_err()
+            && let Ok(Some(target)) = self.control_target()
+        {
+            self.control_observations.invalidate(&target);
+        }
+    }
+
     pub(super) fn send_and_restore(
         &mut self,
         request: &TurnRequest,
     ) -> Result<SnapshotResult, RuntimeError> {
-        let result = self.send_requested_turn(request);
-        if result.is_ok() {
+        self.send_to_target(request, SendTarget::Selected, None)
+    }
+
+    pub(crate) fn send_prepared_handoff(
+        &mut self,
+        request: TurnRequest,
+        context: &velune_agent_runtime::import::Context,
+        work_id: &str,
+        queued_message_id: Option<&str>,
+    ) -> Result<SnapshotResult, RuntimeError> {
+        let queued = self.take_prepared_queue_turn(work_id, &request, queued_message_id)?;
+        let previous = self.prepared_handoff_work_id.replace(work_id.to_owned());
+        let result = self.send_to_target(&request, SendTarget::Selected, Some(context));
+        self.prepared_handoff_work_id = previous;
+        self.finish_prepared_queue_turn(
+            queued,
+            result.is_ok()
+                || result
+                    .as_ref()
+                    .is_err_and(|error| error.delivery_accepted()),
+        );
+        let accepted = result.is_ok()
+            || result
+                .as_ref()
+                .is_err_and(|error| error.delivery_accepted());
+        let withdrawn = self
+            .submission_cancellation
+            .as_ref()
+            .is_some_and(|(id, flag)| {
+                id == &request.conversation_id && flag.load(std::sync::atomic::Ordering::Acquire)
+            });
+        if accepted && withdrawn {
+            self.session.send_queue.pause_after_stop();
+            if self.turn_running() {
+                let _ = self.cancel(&request.runtime_id);
+            }
+        }
+        self.update_send_control(&result);
+        match result {
+            Err(RuntimeError::OutstandingWork) => Err(RuntimeError::invalid(
+                "来源仍有子 Agent 工作，未创建目标会话；请等待后重新准备摘要",
+            )),
+            result => result,
+        }
+    }
+
+    fn send_to_target(
+        &mut self,
+        request: &TurnRequest,
+        target: SendTarget,
+        prepared_context: Option<&velune_agent_runtime::import::Context>,
+    ) -> Result<SnapshotResult, RuntimeError> {
+        let result = self.send_requested_turn(request, target, prepared_context);
+        if result.is_ok() && !self.execution_submission_started() {
             self.restore_archived(&request.conversation_id);
         }
         result
@@ -94,7 +279,10 @@ impl CoreRuntime {
     fn send_requested_turn(
         &mut self,
         request: &TurnRequest,
+        target: SendTarget,
+        prepared_context: Option<&velune_agent_runtime::import::Context>,
     ) -> Result<SnapshotResult, RuntimeError> {
+        self.check_submission_cancelled(&request.conversation_id)?;
         if self.turn_running() {
             return Err(RuntimeError::invalid("runtime is busy"));
         }
@@ -115,13 +303,16 @@ impl CoreRuntime {
         let effort = request.turn.effort.as_deref();
         let permission_mode = request.turn.permission_mode.as_deref();
         if !self.addresses_source(source_runtime_id, conversation_id) {
+            if matches!(target, SendTarget::Current) {
+                return Err(RuntimeError::invalid("会话来源与共享身份不匹配"));
+            }
             let (source, projection) =
                 self.read_conversation_source(source_runtime_id, conversation_id)?;
             self.invalidate_execution()?;
             self.session.logical_projection = projection;
             self.session.unsubmitted_draft = None;
             self.session.model_record_key = source.model_record_key.clone();
-            self.session.active_state = ActiveState::History(Box::new(source));
+            self.session.set_history(source);
         }
         {
             let context = self
@@ -143,6 +334,24 @@ impl CoreRuntime {
         }
         if let Some(mode) = permission_mode {
             self.validate_permission_mode(self.runtime_instance(runtime_id)?, mode)?;
+        }
+        if prepared_context.is_none()
+            && request.turn.attachments.is_empty()
+            && self.can_submit_native(
+                execution_workers::ExecutionCommandKind::Send,
+                runtime_id,
+                &selection,
+            )
+        {
+            let (effort, permission_mode) = self.turn_options(effort, permission_mode)?;
+            let input = pi::TurnInput {
+                text: text.into(),
+                effort,
+                permission_mode,
+                images: Vec::new(),
+            };
+            self.enqueue_native_submission(execution_workers::ExecutionCommandKind::Send, input)?;
+            return self.snapshot_result();
         }
         let source = self
             .session
@@ -197,15 +406,23 @@ impl CoreRuntime {
                 .map_err(|error| RuntimeError::context("检查 Codex 提供商切换", error))?
             };
         if !same_runtime || changes_provider {
-            return self.continue_in_runtime(
-                selection.as_ref(),
-                Prompt {
-                    runtime_id,
-                    message: Some((text, images)),
-                    effort,
-                    permission_mode,
-                },
-            );
+            if matches!(target, SendTarget::Current) {
+                return Err(RuntimeError::invalid(
+                    "会话当前执行来源已变更，请在宿主确认",
+                ));
+            }
+            let prompt = Prompt {
+                runtime_id,
+                message: Some((text, images)),
+                effort,
+                permission_mode,
+            };
+            return match prepared_context {
+                Some(context) => {
+                    self.continue_in_runtime_with_context(selection.as_ref(), prompt, Some(context))
+                }
+                None => self.continue_in_runtime(selection.as_ref(), prompt),
+            };
         }
         if matches!(self.session.active_state, ActiveState::History(_))
             || self.session.model_selection.as_ref() != Some(&selection)
@@ -242,6 +459,13 @@ impl CoreRuntime {
         let runtime = self.runtime_instance(runtime_id)?.clone();
         if !runtime.enabled {
             return Err(RuntimeError::invalid("此运行时已停用，请先启用"));
+        }
+        if self.dispatches_native_creation()
+            && runtime.type_id == RuntimeKind::Codex166
+            && project_key.is_none()
+            && !matches!(&selection, Some(ModelSelection::Managed { .. }))
+        {
+            return self.initialize_codex_conversation(runtime, cwd, selection);
         }
         let project = project_key
             .map(|key| self.creation_project(&runtime, &key))
@@ -292,7 +516,7 @@ impl CoreRuntime {
         })
         .snapshot
         .expect("new projection");
-        self.prepare_with_project(snapshot, selection.as_ref(), true, project.as_ref())?;
+        self.prepare_with_project(snapshot, selection.as_ref(), true, project.as_deref())?;
         self.session.logical_projection = None;
         let native = self
             .native_snapshot()
@@ -303,6 +527,7 @@ impl CoreRuntime {
             original_runtime_id: native.runtime_id.clone(),
             runtime_id: native.runtime_id,
             native_id: native.id,
+            creation_token: None,
         });
         self.snapshot_result()
     }
@@ -316,6 +541,8 @@ impl CoreRuntime {
         // Some idle conversations can only be reopened through the live handle.
         if (self.session.requires_live_connection() && self.addresses_source(runtime_id, id))
             || self.session.executing()
+            || self.session.unsubmitted_draft.is_some()
+            || self.session.side.is_some()
             || self
                 .session
                 .pending_native_fork
@@ -328,6 +555,12 @@ impl CoreRuntime {
                         })
                 })
         {
+            // An explicit refresh can resample input ownership without
+            // replacing a live or running session.
+            let control_target = self.control_target().ok().flatten();
+            if let Some(target) = control_target {
+                self.control_observations.invalidate(&target);
+            }
             return self.snapshot_result();
         }
         let (snapshot, projection) = self.read_conversation_source(runtime_id, id)?;
@@ -340,9 +573,10 @@ impl CoreRuntime {
     /// session, which holds no execution.
     pub(super) fn present_history(
         &mut self,
-        snapshot: ConversationSnapshot,
+        snapshot: impl Into<browsing::HistorySnapshot>,
         projection: Option<LogicalProjection>,
     ) {
+        let snapshot = snapshot.into();
         self.session.logical_projection = projection;
         self.session.unsubmitted_draft = None;
         self.session.pending_native_fork = None;
@@ -351,7 +585,7 @@ impl CoreRuntime {
             .model_record_key
             .clone()
             .map(|model_record_key| Some(crate::ModelSelection::Managed { model_record_key }));
-        self.session.active_state = ActiveState::History(Box::new(snapshot));
+        self.session.set_history(snapshot);
         // Follow the native file from this read on.
         self.session.source = None;
     }
@@ -360,7 +594,7 @@ impl CoreRuntime {
         &self,
         runtime_id: &str,
         id: &str,
-    ) -> Result<(ConversationSnapshot, Option<LogicalProjection>), RuntimeError> {
+    ) -> Result<(browsing::HistorySnapshot, Option<LogicalProjection>), RuntimeError> {
         if let Some(link) = self.conversation_links.iter().find(|link| link.id == id) {
             if link
                 .segments
@@ -368,29 +602,6 @@ impl CoreRuntime {
                 .is_none_or(|segment| segment.runtime_instance_id != runtime_id)
             {
                 return Err(RuntimeError::invalid("会话来源运行时不匹配"));
-            }
-            let (snapshot, projection) = self.read_link(link)?;
-            Ok((snapshot, Some(projection)))
-        } else {
-            Ok((self.read_history(runtime_id, id)?, None))
-        }
-    }
-
-    /// Reopen a queried view by its current native context. A continued
-    /// conversation keeps its source identity, but queries address its last
-    /// segment's runtime, including when no session is loaded yet.
-    pub(super) fn read_conversation_context(
-        &self,
-        runtime_id: &str,
-        id: &str,
-    ) -> Result<(ConversationSnapshot, Option<LogicalProjection>), RuntimeError> {
-        if let Some(link) = self.conversation_links.iter().find(|link| link.id == id) {
-            if link
-                .segments
-                .last()
-                .is_none_or(|segment| segment.runtime_instance_id != runtime_id)
-            {
-                return Err(RuntimeError::invalid("会话当前上下文运行时不匹配"));
             }
             let (snapshot, projection) = self.read_link(link)?;
             Ok((snapshot, Some(projection)))
@@ -596,6 +807,7 @@ impl CoreRuntime {
             let summary = listed_summary.expect("listed conversation");
             let cwd = summary
                 .cwd
+                .as_deref()
                 .ok_or_else(|| RuntimeError::invalid("Claude Code 会话没有工作目录，无法重命名"))?;
             let context = self.execution_context(&runtime)?;
             velune_agent_runtime::native::rename_claude_session_at(
@@ -642,7 +854,7 @@ impl CoreRuntime {
             let summaries = if config.provider == "codex" {
                 self.read_codex_projects(&runtime, true)?
             } else {
-                history::list_archived(&config, &runtime.id)?
+                browsing::shared_summaries(history::list_archived(&config, &runtime.id)?)
             };
             self.archived_listing.borrow_mut().insert(
                 runtime.id.clone(),
@@ -665,9 +877,14 @@ impl CoreRuntime {
             let summary = summary
                 .filter(|summary| summary.title.display_text() == title.expect("rename title"))
                 .ok_or_else(|| RuntimeError::invalid("运行时尚未确认会话重命名，请刷新后重试"))?;
-            if current && let ActiveState::History(snapshot) = &mut self.session.active_state {
-                snapshot.conversation = summary;
-                snapshot.revision = snapshot.revision.saturating_add(1);
+            if current {
+                let (summary, guard) = summary.into_retained()?.into_parts();
+                self.session.invalidate_history_cache_weight();
+                if let ActiveState::History(snapshot) = &mut self.session.active_state {
+                    snapshot.snapshot.conversation = summary;
+                    snapshot.retention = std::mem::take(&mut snapshot.retention).merge(guard);
+                    snapshot.revision = snapshot.revision.saturating_add(1);
+                }
             }
         }
         self.session.unsubmitted_draft = None;
@@ -682,7 +899,10 @@ impl CoreRuntime {
             .as_ref()
             .map(|op| op.operation_id.clone());
         let result = self.send_prompt(prompt);
-        if result.is_err() {
+        if result
+            .as_ref()
+            .is_err_and(|error| !error.delivery_accepted())
+        {
             self.session.transcript_projection.withdraw_request();
             if self
                 .session
@@ -708,6 +928,9 @@ impl CoreRuntime {
     }
 
     fn send_prompt(&mut self, prompt: Prompt) -> Result<SnapshotResult, RuntimeError> {
+        if self.session.pi_edit.is_some() || self.session.pi_cleanup_required {
+            return Err(RuntimeError::Busy);
+        }
         // Queued and collaboration turns can arrive without a command's Login::Blocks guard.
         if self.login_running() {
             return Err(RuntimeError::invalid("请先完成登录，再发送消息"));
@@ -736,6 +959,7 @@ impl CoreRuntime {
                 .ok_or_else(|| RuntimeError::invalid("请选择此会话的模型"))?;
             self.prepare_with_selection(snapshot, selection.as_ref(), false)?;
         }
+        self.retire_native_settings_for_submission();
         self.begin_turn_observation();
         if let Some((gateway_id, session)) = self.backend_session_identity() {
             self.session_backends()
@@ -765,7 +989,9 @@ impl CoreRuntime {
             self.bind_gateway_model()?;
         }
         self.drain_runtime()?;
+        self.check_submission_cancelled(self.session.conversation_id().unwrap_or_default())?;
         self.session.unsubmitted_draft = None;
+        let mut submitted = None;
         let sent =
             telemetry::observe(
                 self.telemetry.as_ref(),
@@ -775,30 +1001,66 @@ impl CoreRuntime {
                         .resume(input.effort.clone(), input.permission_mode.clone())
                         .map_err(Into::into),
                     state => match state.live_mut() {
-                        Some(live) => live.send(&input),
+                        Some(live) => {
+                            let before = live.snapshot().and_then(|snapshot| {
+                                user_message_ids(snapshot).next().map(str::to_owned)
+                            });
+                            let result = live.send(&input);
+                            if result.is_ok() && !resuming {
+                                submitted = live.snapshot().and_then(|snapshot| {
+                                    let mut ids = user_message_ids(snapshot);
+                                    let latest = ids.next()?;
+                                    (Some(latest) != before.as_deref()
+                                        && ids.next() == before.as_deref())
+                                    .then(|| latest.to_owned())
+                                });
+                            }
+                            result
+                        }
                         None => Err("会话执行尚未准备".into()),
                     },
                 },
             )
             .map_err(|error| RuntimeError::context("message send", error));
-        if let ActiveState::Native(session) = &self.session.active_state {
-            self.session.pending_native_fork = session.pending_fork();
-        }
+        let pending_fork = self.session.refresh_pending_native_fork();
         if sent.is_err() && self.session.gateway_runner.is_some() && !self.session.executing() {
             self.finish_managed_turn()?;
         }
         sent?;
+        pending_fork?;
         self.session.cancel_requested = false;
         self.follow_started_turn();
         // Pi handles some messages at once, without a turn.
         if self.turn_running() {
             self.started_turn_observation();
         }
-        self.sync_projection()?;
+        self.sync_projection()
+            .map_err(RuntimeError::after_delivery)?;
         if self.session.gateway_runner.is_some() && !self.session.executing() {
-            self.finish_managed_turn()?;
+            self.finish_managed_turn()
+                .map_err(RuntimeError::after_delivery)?;
         }
-        self.snapshot_result()
+        let mut result = self
+            .snapshot_result()
+            .map_err(RuntimeError::after_delivery)?;
+        if let (Some(id), Some(native), Some(snapshot)) = (
+            submitted,
+            self.session.projected(),
+            result.snapshot.as_ref(),
+        ) {
+            let id = self.projected_conversation_message_id(&native.conversation.id, &id);
+            let id = snapshot
+                .message_identity_confirmations
+                .iter()
+                .find(|confirmation| confirmation.previous_id == id)
+                .map_or(id.as_str(), |confirmation| &confirmation.current_id);
+            result.submitted_message_id = snapshot
+                .messages
+                .iter()
+                .find(|message| message.id == id)
+                .map(|message| message.id.clone());
+        }
+        Ok(result)
     }
 
     pub(super) fn bind_gateway_model(&mut self) -> Result<(), RuntimeError> {
@@ -819,25 +1081,81 @@ impl CoreRuntime {
     }
 
     pub(crate) fn cancel(&mut self, runtime_id: &str) -> Result<SnapshotResult, RuntimeError> {
+        if self.cancel_pi_edit(runtime_id)? {
+            return self.snapshot_result();
+        }
+        if self.session.pi_cleanup_required {
+            return Err(RuntimeError::operation_indeterminate(
+                "Pi 正在等待真实进程清理；停止结果未确认",
+            ));
+        }
         self.ensure_active(runtime_id)?;
-        if let Some((gateway_id, session)) = self.backend_session_identity() {
-            self.session_backends()
-                .cancel_session(&gateway_id, &session);
+        if let ActiveState::Pi(pi) = &self.session.active_state
+            && pi.requires_failure_cleanup()
+        {
+            self.session.pi_cleanup_required = true;
+            let _ = self.start_native_cleanup_worker();
+            return Err(RuntimeError::operation_indeterminate(
+                "Pi 连接已失败；停止未派发，真实进程清理尚未完成",
+            ));
         }
-        self.session
-            .active_state
-            .live_mut()
-            .ok_or_else(|| RuntimeError::invalid("会话执行尚未准备"))?
-            .cancel()
-            .map_err(|error| RuntimeError::context("message cancel", error))?;
-        self.session.cancel_requested = true;
-        // Stopping the turn stops the sub-agents it started too.
-        if let Some(session) = self.session.active_state.live_mut() {
-            session
-                .stop_background()
-                .map_err(|error| RuntimeError::context("message cancel", error))?;
+        if self.cancel_queued_preparation() {
+            return self.snapshot_result();
         }
-        self.sync_projection()?;
+        if let Some(view) = self.session.projected()
+            && let Some(parent_id) = view.conversation.parent_conversation_id.clone()
+        {
+            let child_id = view.conversation.id.clone();
+            let previous = self.session.key;
+            if !self.focus_existing(&parent_id) {
+                return Err(RuntimeError::invalid(
+                    "此子 Agent 没有本机可用的独立停止接口",
+                ));
+            }
+            let native =
+                self.start_native_control(velune_agent_runtime::native::CodexCommand::StopChild {
+                    conversation_id: child_id.clone(),
+                });
+            if !matches!(native, Ok(false)) {
+                self.focus_key(previous);
+                native?;
+                return self.snapshot_result();
+            }
+            let result = self.start_live_operation("stop_child", move |state| {
+                state
+                    .live_mut()
+                    .filter(|parent| parent.can_stop_child(&child_id))
+                    .ok_or_else(|| RuntimeError::invalid("此子 Agent 没有本机可用的独立停止接口"))?
+                    .stop_child(&child_id)
+                    .map_err(|error| RuntimeError::runtime_operation("子 Agent 停止", error))
+            });
+            self.focus_key(previous);
+            result?;
+            return self.snapshot_result();
+        }
+        if self.try_start_pi_control(None)? {
+            return self.snapshot_result();
+        }
+        if self.start_native_control(velune_agent_runtime::native::CodexCommand::Cancel)? {
+            return self.snapshot_result();
+        }
+        self.start_live_operation_with_outcome("cancel", |state| {
+            let Some(live) = state.live_mut() else {
+                return Err(RuntimeError::invalid("会话执行尚未准备")).into();
+            };
+            if let Err(error) = live.cancel() {
+                return Err(RuntimeError::runtime_operation("message cancel", error)).into();
+            }
+            let result = live.stop_background().map_err(|error| {
+                RuntimeError::operation_indeterminate(format!(
+                    "当前 turn 的停止请求已受理，但后台工作的停止结果未确认：{error}"
+                ))
+            });
+            execution_workers::OperationOutcome::after_cancellation(result)
+        })?;
+        if !matches!(self.session.active_state, ActiveState::Pending(_)) {
+            self.sync_projection()?;
+        }
         self.snapshot_result()
     }
 
@@ -848,11 +1166,20 @@ impl CoreRuntime {
         runtime_id: &str,
     ) -> Result<SnapshotResult, RuntimeError> {
         self.ensure_active(runtime_id)?;
-        if let Some(session) = self.session.active_state.live_mut() {
-            session
-                .stop_background()
-                .map_err(|error| RuntimeError::context("子 Agent 停止", error))?;
-            self.drain_runtime()?;
+        if self.start_native_control(velune_agent_runtime::native::CodexCommand::StopBackground)? {
+            return self.snapshot_result();
+        }
+        if self.session.active_state.live().is_some() {
+            self.start_live_operation("stop_background", |state| {
+                state
+                    .live_mut()
+                    .ok_or_else(|| RuntimeError::invalid("会话执行尚未准备"))?
+                    .stop_background()
+                    .map_err(|error| RuntimeError::runtime_operation("后台工作停止", error))
+            })?;
+            if !matches!(self.session.active_state, ActiveState::Pending(_)) {
+                self.drain_runtime()?;
+            }
         }
         self.snapshot_result()
     }
@@ -888,10 +1215,21 @@ impl CoreRuntime {
     }
 }
 
+fn user_message_ids(
+    snapshot: &crate::conversation::ConversationSnapshot,
+) -> impl Iterator<Item = &str> {
+    snapshot
+        .messages
+        .iter()
+        .rev()
+        .filter(|message| message.role == crate::conversation::MessageRole::User)
+        .map(|message| message.id.as_str())
+}
+
 impl CoreRuntime {
     /// Tells the transcript what this turn asks for, against the projection
     /// as it stands before the runtime shows the turn's user message.
-    fn request_turn_settings(&mut self, runtime_id: &str, input: &pi::TurnInput) {
+    pub(super) fn request_turn_settings(&mut self, runtime_id: &str, input: &pi::TurnInput) {
         let selection = self.session.model_selection.clone().flatten();
         let model = selection
             .as_ref()

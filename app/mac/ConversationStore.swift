@@ -75,6 +75,7 @@ final class ConversationStore: ObservableObject {
     }
     @Published private var snapshot: ConversationSnapshot?
     @Published private var executionStarting = false
+    private var pendingSendCancellation: VeluneSendCancellation?
     @Published private(set) var composerRequest: ComposerSubmission.Phase?
     /// Counts sends, queued messages, insertions and resumes the core took.
     @Published private(set) var acceptedSubmissions: UInt64 = 0
@@ -93,9 +94,21 @@ final class ConversationStore: ObservableObject {
     private var seenComposerChoicesRevision = 0
     private let queue = DispatchQueue(label: "local.velune.requests", qos: .userInitiated)
     private var generation = 0
+    /// Same-conversation refresh invalidates requests, not viewport demand.
+    private var navigationID = UUID()
     private var timer: Timer?
     private var pollPending = false
-    private var payloadRequests: Set<PayloadKey> = []
+    private var needsResync = false
+    private var projectionEpoch: UInt64 = 0
+    private let observationQueue = DispatchQueue(label: "local.velune.observation", qos: .userInitiated)
+    private let payloadQueue = DispatchQueue(label: "local.velune.payloads", qos: .userInitiated)
+    private let replyQueue = DispatchQueue(label: "local.velune.interaction", qos: .userInitiated)
+    private let controlQueue = DispatchQueue(label: "local.velune.control", qos: .userInitiated, attributes: .concurrent)
+    private var controlRequests: Set<String> = []
+    private var replyAttempt: UUID?
+    private var payloadPending = false
+    /// Coalesced IDs are bounded by the current projection, not by request count.
+    private var payloadDemand: Set<String> = []
     /// Complete messages read on demand, by message identifier.
     private var loadedPayloads: [String: DeliveredMessage] = [:]
     static let draftConversationPrefix = "draft:"
@@ -115,6 +128,7 @@ final class ConversationStore: ObservableObject {
         seenComposerChoicesRevision = device.composerChoicesRevision
         outgoing.changes.sink { [weak self] in
             guard let self else { return }
+            objectWillChange.send()
             transcript.showSubmissions(outgoing.displayed)
         }.store(in: &subscriptions)
         device.objectWillChange.sink { [weak self] in
@@ -155,6 +169,7 @@ final class ConversationStore: ObservableObject {
             }
             return
         }
+        for id in Set(interactionDrafts.keys.map(\.conversationID)).intersection(device.deletedConversationIDs) { discardInteractionDrafts(conversationID: id) }
         if let loadedConversationID, device.deletedConversationIDs.contains(loadedConversationID) { resetProjection() }
         if device.listRevision != seenListRevision {
             seenListRevision = device.listRevision
@@ -164,6 +179,7 @@ final class ConversationStore: ObservableObject {
             if searchResults != nil { refreshSearch() }
             let selected = selectedConversationIDs.filter { conversation(id: $0) != nil }
             if selected != selectedConversationIDs { selectedConversationIDs = selected }
+            // A later successful list can finish startup after the first read failed.
             applyInitialSelectionIfReady()
             retryOpeningIfNeeded()
         }
@@ -181,10 +197,16 @@ final class ConversationStore: ObservableObject {
     /// depends on cannot change meanwhile; other conversations stay usable.
     var applicationIsGenerating: Bool { isGenerating || executionStarting || device.hasRunningWork }
     var loadedConversationID: String? { snapshot?.conversation.id }
+    var loadedConversationRuntimeID: String? { snapshot?.conversation.runtimeID }
     var loadedConversationWorkingDirectory: String? { snapshot?.conversation.cwd }
     var loadedConversationProject: NewConversationProject? { isDraft ? snapshot?.conversation.creationProject : nil }
     /// Set while a native sub-agent's conversation is shown: the conversation that started it.
     var loadedParentConversationID: String? { snapshot?.conversation.parentConversationID }
+    var recordedChildModelName: String? {
+        guard let snapshot, snapshot.conversation.parentConversationID != nil else { return nil }
+        return snapshot.transcriptTurns.compactMap(\.settings).last { $0.runtimeId == snapshot.contextRuntimeID }?.model
+            ?? nextTurn?.modelName ?? snapshot.modelRecordKey
+    }
     /// The list's conversations, the open one with its runtime's fields, and
     /// first the open one when the list does not show it.
     var conversations: [Conversation] {
@@ -211,10 +233,7 @@ final class ConversationStore: ObservableObject {
         case .stopping:
             return TranscriptActivity(text: "正在停止", isLive: false)
         case .idle, .failed:
-            // The device may observe the external turn before the addressed
-            // transcript can deliver its next native snapshot.
-            guard !isSideChat, !isDraft, device.elsewhereConversationIDs.contains(snapshot.conversation.id) else { return nil }
-            return TranscriptActivity(text: "正在运行", isLive: true)
+            return nil
         }
     }
     var isBusy: Bool { isLoading || applicationIsGenerating || isShuttingDown || device.authenticationRunning }
@@ -222,9 +241,9 @@ final class ConversationStore: ObservableObject {
     /// A running conversation keeps its native session until the turn ends.
     func isRunning(_ conversation: Conversation) -> Bool { device.runningConversationIDs.contains(conversation.id) || (loadedConversationID == conversation.id && (isGenerating || executionStarting)) }
     /// The core validates the selection again; an unread catalog does not block sending.
-    var isStopping: Bool { stopRequested || snapshot?.runState == .stopping }
+    var isStopping: Bool { stopRequested || pendingSendCancellation?.isCancelled() == true || snapshot?.runState == .stopping }
     private var activityBlocksSending: Bool {
-        loadedConversationID.map(device.isConversationRunning) == true
+        loadedConversationID.map(device.isIdleSubmissionBusy) == true
     }
     var inputAccess: InputAccess { snapshot?.actions.inputAccess ?? .editable }
     var inputSubmissionAllowed: Bool { inputAccess == .editable }
@@ -234,16 +253,12 @@ final class ConversationStore: ObservableObject {
         return !isShuttingDown
     }
     var inputLockMessage: String? { inputAccess.message }
+    /// Early native turn activity revokes idle admission; background-only activity does not.
     var canSend: Bool { !executionStarting && !device.authenticationRunning && !isLoading && !isStopping && !activityBlocksSending && !isShuttingDown && (snapshot?.actions.canSend ?? false) }
-    var canCancel: Bool { !isStopping && snapshot?.runState == .running && (snapshot?.actions.canCancel ?? false) }
+    var canCancel: Bool { !isStopping && (pendingSendCancellation != nil || (snapshot?.runState == .running && (snapshot?.actions.canCancel ?? false))) }
     var pendingQueuedMessages: [QueuedMessage] { outgoing.queued }
-    var followUp: FollowUp {
-        var value = snapshot?.followUp ?? FollowUp()
-        let ids = Set(value.queue.map(\.id))
-        let tokens = Set(value.queue.compactMap(\.submissionId))
-        value.queue += outgoing.queued.filter { !ids.contains($0.id) && !($0.submissionId.map(tokens.contains) ?? false) }
-        return value
-    }
+    var hasQueuedMessages: Bool { !followUp.queue.isEmpty || !pendingQueuedMessages.isEmpty }
+    var followUp: FollowUp { snapshot?.followUp ?? FollowUp() }
     var controlHandoff: ControlHandoff? { isOpeningConversation || isSideChat ? nil : followUp.controlHandoff }
     /// The loaded conversation's native sub-agents.
     var subAgents: [SubAgent] { pendingConversationID == nil ? snapshot?.subAgents ?? [] : [] }
@@ -306,6 +321,7 @@ final class ConversationStore: ObservableObject {
     /// Reads the next-turn runtime's catalog again, e.g. after its native
     /// configuration or session changed outside Velune's settings.
     func reloadModelCatalog(runtimeID explicitRuntimeID: String? = nil) {
+        guard loadedParentConversationID == nil else { return }
         guard let runtimeID = explicitRuntimeID ?? nextTurnRuntimeID else { return }
         modelCatalogs[runtimeID] = nil
         loadModelCatalog(runtimeID: runtimeID)
@@ -321,7 +337,7 @@ final class ConversationStore: ObservableObject {
         // Its composer event must not start a runtime catalog ahead of that open.
         guard !isOpeningConversation, snapshot != nil, let runtimeID = explicitRuntimeID ?? nextTurnRuntimeID, device.enabledRuntimeInstances.contains(where: { $0.id == runtimeID }), modelCatalogs[runtimeID] == nil else { refreshNextTurn(); return }
         if isPreview {
-            let managed = device.gateway.providers.flatMap { provider in provider.models.map { RuntimeModel(selection: .managed(modelRecordKey: $0.recordKey), name: "\($0.displayName) · \(provider.name)", reasoningEfforts: $0.reasoningLevels ?? []) } }
+            let managed = device.gateway.providers.flatMap { provider in provider.models.map { RuntimeModel(selection: .managed(modelRecordKey: $0.recordKey), name: "\($0.displayName)（\(provider.name)）", reasoningEfforts: $0.reasoningLevels ?? []) } }
             modelCatalogs[runtimeID] = .ready([RuntimeModel(selection: .native(providerId: "sample", modelId: "sample-native"), name: "运行时示例模型", reasoningEfforts: ["low", "medium", "high"])] + managed)
             refreshNextTurn(); return
         }
@@ -389,7 +405,7 @@ final class ConversationStore: ObservableObject {
         refreshNextTurn()
     }
     func selectComposerRuntime(_ id: String) {
-        guard !isSideChat, let request = composerTargetRequest,
+        guard loadedParentConversationID == nil, !isSideChat, let request = composerTargetRequest,
               device.enabledRuntimeInstances.contains(where: { $0.id == id }) else { return }
         guard let owner = device.composerInputs.ownerID, let targetID = composerTargetID else {
             pendingComposerRuntime = (request, id)
@@ -402,6 +418,7 @@ final class ConversationStore: ObservableObject {
         refreshNextTurn()
     }
     func changeComposerChoice(_ change: TurnChoiceChange) {
+        guard loadedParentConversationID == nil else { return }
         if isSideChat { changeSideChatChoice(change); return }
         guard let nextTurn, let targetID = composerTargetID, let owner = device.composerInputs.ownerID,
               composerTargetRequest != nil else { return }
@@ -420,6 +437,23 @@ final class ConversationStore: ObservableObject {
     }
     private func refreshNextTurn() {
         if isSideChat { refreshSideChatNextTurn(); return }
+        if let value = snapshot, value.conversation.parentConversationID != nil {
+            // A child has no next submission. Project only its recorded facts;
+            // preparing a composer target would create persistent input state.
+            let runtimeID = value.contextRuntimeID
+            let typeID = device.runtimeInstances.first { $0.id == runtimeID }?.typeId
+            let settings = value.transcriptTurns.compactMap(\.settings)
+            var observed = resolveNextTurn(input: NextTurnInput(runtimeId: runtimeID,
+                runtimeType: device.runtimeTypes.first { $0.id == typeID }, providers: device.gateway.providers,
+                catalog: nil, turnSettings: settings, conversationRuntimeId: runtimeID,
+                modelRecordKey: value.modelRecordKey, kept: nil, runtimeChoices: nil,
+                newConversation: .chosen(choice: TurnChoice())))
+            // The catalog constrains editable choices, not a recorded effort.
+            observed.currentEffort = settings.last { $0.runtimeId == runtimeID }?.effort
+            if nextTurn != observed { nextTurn = observed }
+            if nextTurnRuntimeID != runtimeID { nextTurnRuntimeID = runtimeID }
+            return
+        }
         guard let request = composerTargetRequest else {
             if nextTurn != nil { nextTurn = nil }
             return
@@ -438,6 +472,7 @@ final class ConversationStore: ObservableObject {
         }
     }
     private func requestComposerTarget(refreshFacts: Bool = false) {
+        if loadedParentConversationID != nil { refreshNextTurn(); return }
         guard !isSideChat, let request = composerTargetRequest else { return }
         if !refreshFacts, composerTargetFailure != nil, !composerTargetRetry.ready { return }
         if composerTargetRequestID != nil {
@@ -600,7 +635,7 @@ final class ConversationStore: ObservableObject {
             && request.providerReportRevision == device.providerReportRevision
     }
     func observeComposerQuota(_ request: ComposerQuotaRequest) async {
-        guard !isPreview, !isShuttingDown, !request.runtimeID.isEmpty, let transport else { return }
+        guard loadedParentConversationID == nil, !isPreview, !isShuttingDown, !request.runtimeID.isEmpty, let transport else { return }
         while !Task.isCancelled && quotaTargetMatches(request) {
             let result: Result<[ComposerQuotaEntry], Error> = await withCheckedContinuation { continuation in
                 performOnQueue { continuation.resume(returning: Result { try transport.composerQuota(request) }) }
@@ -631,7 +666,7 @@ final class ConversationStore: ObservableObject {
             settings.effort.map { .init(label: "推理强度", value: $0) },
             settings.permissionMode.map { mode in .init(label: "权限", value: type?.permissionModes.first { $0.id == mode }?.label ?? mode) },
         ].compactMap { $0 }
-        let brief = [runtime?.name ?? settings.runtimeId, settings.model].compactMap { $0 }.joined(separator: " · ")
+        let brief = [runtime?.name ?? settings.runtimeId, settings.model].compactMap { $0 }.joined(separator: "，模型 ")
         let usage = turn.usage.map { usage -> [TurnSettingsSummary.Part] in
             let count = { (value: UInt64?) in value.map { TokenCount.format($0) } }
             return [
@@ -649,13 +684,14 @@ final class ConversationStore: ObservableObject {
 
     // MARK: - Lifecycle
 
-    /// An explicit destination can resolve on this tab's device immediately.
-    /// Selecting a first row or creating a draft needs that device's configuration.
+    /// Restored identities open independently of the sidebar's first scan.
+    /// The default conversation and new drafts wait for the device's configuration.
     func start(loadFirstConversation: Bool = true, newConversation: Bool = false, opening conversationID: String? = nil) {
         guard !started else { return }; started = true; composerTargetClosed = false
         if let target = sideChatContext, let transport, let lease = sideChatLease {
             nextTurnRuntimeID = target.runtimeID
             nextTurn = target.nextTurn
+            let scope = projectionScope()
             enqueue({
                 let result = try transport.openSideChat(runtimeID: target.runtimeID, conversationID: target.conversationID,
                     selection: target.selection, effort: target.effort, permissionMode: target.permissionMode)
@@ -663,7 +699,11 @@ final class ConversationStore: ObservableObject {
                 lease.hold(id)
                 return result
             }, onFailure: { [weak self] error in self?.openingFailure = AppProblem.failure(error, source: "打开侧聊") }) { [weak self] result in
-                self?.applySnapshotResult(result)
+                if let self {
+                    var opening = scope
+                    opening.destination = result.snapshot?.conversation.id
+                    self.applySnapshotResult(result, scope: opening)
+                }
                 self?.schedulePolling()
             }
             return
@@ -680,16 +720,26 @@ final class ConversationStore: ObservableObject {
             unopenedConversationID = conversationID
             if snapshot == nil { selectedConversationID = conversationID }
             openLinkedConversation(id: conversationID)
-        } else if loadFirstConversation || newConversation {
-            initialSelection = loadFirstConversation ? .firstOrDraft : .draft
-            applyInitialSelectionIfReady()
+            return
+        }
+        guard newConversation || loadFirstConversation else { return }
+        initialSelection = newConversation ? .draft : .firstOrDraft
+        let openingGeneration = generation
+        device.whenInitialConfigurationReady { [weak self] result in
+            guard let self, self.started, !self.isShuttingDown, self.generation == openingGeneration,
+                  self.initialSelection != nil else { return }
+            switch result {
+            case .success: self.applyInitialSelectionIfReady()
+            case .failure(let error): self.recordProblem(error, source: "读取初始会话列表")
+            }
         }
     }
 
     private func applyInitialSelectionIfReady() {
         guard let selection = initialSelection, device.listRevision > 0 else { return }
         initialSelection = nil
-        guard started, !isShuttingDown, snapshot == nil else { return }
+        guard started, !isShuttingDown, snapshot == nil, pendingConversationID == nil,
+              linkedConversationRequest == nil else { return }
         if selection == .firstOrDraft, let id = sidebarConversations.first?.id {
             selectConversation(id: id)
         } else {
@@ -698,6 +748,7 @@ final class ConversationStore: ObservableObject {
     }
     /// The tab closes: it stops following its conversation.
     func close() {
+        isDeletingMessage = false
         started = false
         composerTargetClosed = true
         composerTargetRequestID = nil
@@ -706,6 +757,7 @@ final class ConversationStore: ObservableObject {
         clearInitialOpening()
         abandonLinkedConversationLookup()
         generation += 1
+        navigationID = UUID()
         subscriptions.removeAll()
         timer?.invalidate()
         timer = nil
@@ -716,8 +768,9 @@ final class ConversationStore: ObservableObject {
         timer?.invalidate()
         timer = Timer.scheduledTimer(withTimeInterval: 0.6, repeats: true) { [weak self] _ in
             Task { @MainActor in
-                if self?.composerTargetFailure != nil { self?.requestComposerTarget() }
-                self?.poll()
+                guard let self, ConversationWindowModel.isConversationStoreVisible(self) else { return }
+                if self.composerTargetFailure != nil { self.requestComposerTarget() }
+                self.poll()
             }
         }
     }
@@ -726,10 +779,36 @@ final class ConversationStore: ObservableObject {
         guard !isSideChat else { return }
         device.focusedConversation = self; noteSeen()
     }
+    /// Selecting a pane or sheet should refresh a transcript that was paused
+    /// while hidden without waiting for the next timer tick.
+    /// Queue acceptance is independent of the tab's current editor. Apply its
+    /// projection only while this view still presents the same source, and do
+    /// not roll a newer delivery back to the acknowledgement's older cursor.
+    func acceptContextPreparationQueue(_ result: SnapshotResult, conversationID: String, sourceContext: String) {
+        guard loadedConversationID == conversationID, projectionRuntimeID == sourceContext else { return }
+        // This external receipt has no captured request base. Only a comparable
+        // delivery is installable; otherwise an independent authority read wins.
+        guard let incoming = result.snapshot.map(BindingMapping.snapshot),
+              let current = snapshot?.cursor, let cursor = incoming.cursor,
+              incoming.contextRuntimeID == sourceContext, current.generation == cursor.generation else { requestProjectionResync(); return }
+        guard cursor.sequence > current.sequence else {
+            if cursor.sequence == current.sequence { requestProjectionResync() }
+            return
+        }
+        installProjection(incoming, scope: projectionScope(), preserveSelection: true)
+    }
+    func cancelContextPreparation() {
+        guard let context = followUp.contextPreparation, context.isPreparing || context.isDispatching, let transport else { return }
+        requestControl("preparation", operation: { _ = try transport.cancelHandoffSummary(workID: context.workId); return nil })
+    }
+    func noteVisible() {
+        guard started, ConversationWindowModel.isConversationStoreVisible(self) else { return }
+        poll()
+    }
     /// The open conversation is read once it shows in the focused tab of the
     /// active application.
     private func noteSeen() {
-        guard !isSideChat, !isPreview, NSApp.isActive, device.focusedConversation === self,
+        guard !isSideChat, !isPreview, device.focusedConversation === self, NSApp?.isActive == true,
               let id = loadedConversationID, pendingConversationID == nil,
               var conversation = conversation(id: id) else { return }
         if let shown = snapshot?.conversation.nativeReadState {
@@ -744,22 +823,38 @@ final class ConversationStore: ObservableObject {
         device.applyList(data)
         deviceChanged()
     }
-    var canReloadFromRuntimes: Bool { !isSideChat && !isPreview && !isLoading && !isShuttingDown && !isGenerating && !executionStarting && pendingConversationID == nil }
+    var canReloadFromRuntimes: Bool { !isSideChat && !isPreview && !isLoading && !isShuttingDown && !executionStarting && pendingConversationID == nil }
     /// Runtimes own their sessions and can change them outside Velune (another
     /// client, a turn still running there). The core follows local native files
-    /// best-effort; this reads the conversation list and the open conversation
-    /// again for whatever that misses.
+    /// best-effort; this rereads the open conversation for whatever that misses.
+    /// Refresh also resamples control and
+    /// composer facts without stopping execution or replacing local drafts.
     func reloadFromRuntimes() {
         guard canReloadFromRuntimes, let transport else { return }
         let open = isDraft ? nil : snapshot?.conversation
+        reloadProjection { try open.map { try transport.refreshConversation(runtimeID: $0.runtimeID, conversationID: $0.id) } }
+    }
+    /// Refresh invalidates older RPC results without abandoning this viewport.
+    private func reloadProjection(_ read: @escaping () throws -> SnapshotResult?) {
         generation += 1
-        enqueue({ () -> (ConfigurationSnapshot, SnapshotResult?) in
-            (try transport.list(), try open.map { try transport.openConversation(runtimeID: $0.runtimeID, conversationID: $0.id) })
+        isDeletingMessage = false
+        device.composerInputs.resumePolling()
+        composerTargetRetry.succeeded()
+        let scope = projectionScope()
+        enqueue(read, onFailure: { [weak self] _ in
+            self?.requestComposerTarget(refreshFacts: true)
         }) { [weak self] result in
             guard let self else { return }
-            applyList(result.0)
-            if let conversation = result.1 { applySnapshotResult(conversation) }
+            if let result { applySnapshotResult(result, scope: scope) }
+            requestComposerTarget(refreshFacts: true)
         }
+    }
+    func reloadDeviceState() {
+        guard canReloadFromRuntimes else { return }
+        device.refreshRuntimeState()
+        modelCatalogs.removeAll()
+        modelCatalogRequests.removeAll()
+        reloadFromRuntimes()
     }
 
     // MARK: - Working directory
@@ -977,11 +1072,12 @@ final class ConversationStore: ObservableObject {
         let shown = isDraft ? nil : previousSelection
         isDraft = false
         generation += 1 // Invalidate any poll already queued for the old conversation.
+        navigationID = UUID()
         selectedConversationID = id
         pendingConversationID = id
         composerEvents.send(.conversation(id))
         openingFailure = nil
-        enqueue({ try transport.openConversation(runtimeID: runtimeID, conversationID: id) }, onFailure: { [weak self] error in
+        enqueueSnapshot({ try transport.openConversation(runtimeID: runtimeID, conversationID: id) }, scope: projectionScope(destination: id), onFailure: { [weak self] error in
             guard let self else { return }
             self.noteOpeningFailure(error)
             self.isDraft = previousWasDraft
@@ -989,9 +1085,8 @@ final class ConversationStore: ObservableObject {
             self.selectedConversationIDs = Set([self.selectedConversationID].compactMap { $0 })
             if let previousSelection { self.composerEvents.send(previousWasDraft ? .newConversation : .conversation(previousSelection)) }
             self.finishConversationLoading()
-        }) { [weak self] in
+        }) { [weak self] _ in
             if let shown, shown != id { self?.recordNavigation(from: shown, move) }
-            self?.applySnapshotResult($0)
             self?.finishConversationLoading()
         }
     }
@@ -1045,7 +1140,8 @@ final class ConversationStore: ObservableObject {
         }
         guard let transport else { recordProblem("本地核心未配置"); return }
         let loadedID = loadedConversationID
-        let contextID = snapshot?.contextRuntimeID
+        let contextID = snapshot?.conversation.runtimeID
+        let scope = projectionScope()
         // Runtime-owned deletions are independent operations. Preserve each
         // success and report failures rather than promising a transaction.
         device.manageConversations(source: "删除会话", ids: Set(targets.map(\.id)), deleting: true, operation: {
@@ -1056,7 +1152,7 @@ final class ConversationStore: ObservableObject {
             var lostContext = false
             for target in targets {
                 do { latest = try transport.deleteConversation(runtimeID: target.runtimeID, conversationID: target.id); deleted.insert(target.id) }
-                catch { failures.append(AppProblem.failure(error, source: "删除会话 · \(target.title)")) }
+                catch { failures.append(AppProblem.failure(error, source: "删除会话「\(target.title)」")) }
             }
             if !failures.isEmpty {
                 do { latest = try transport.list() }
@@ -1067,7 +1163,7 @@ final class ConversationStore: ObservableObject {
                 }
             }
             return (latest, deleted, failures, refreshed, lostContext)
-        }) { [weak self, weak device] result in
+        }, completedIDs: { $0.1 }) { [weak self, weak device] result in
             device?.noteDeleted(result.1)
             if let data = result.0 { device?.applyList(data) }
             device?.appendProblems(result.2)
@@ -1075,8 +1171,8 @@ final class ConversationStore: ObservableObject {
             selectedConversationIDs.subtract(result.1)
             if let loadedConversationID, result.1.contains(loadedConversationID) { resetProjection() }
             else if loadedConversationID == loadedID {
-                if result.4 { resetProjection() }
-                else if let refreshed = result.3 { applySnapshotResult(refreshed) }
+                if result.4 { requestProjectionResync() }
+                else if let refreshed = result.3 { applySnapshotResult(refreshed, scope: scope) }
             }
         }
     }
@@ -1160,9 +1256,12 @@ final class ConversationStore: ObservableObject {
     /// Returns whether the turn was sent; the message shows at once, marked as
     /// sending until the runtime accepts it. `onAccepted` receives the
     /// conversation that took the turn: sending in a new conversation replaces
-    /// its unsent identity with the created one. `onFailure` runs when it was not sent.
+    /// its unsent identity with the created one. `onFailure` runs when it was not
+    /// sent and receives any identity already created by this operation.
     @discardableResult
-    func send(text: String, attachments: [String] = [], next: NextTurn? = nil, input: ComposerModel? = nil, onAccepted: ((String?) -> Void)? = nil, onFailure: (() -> Void)? = nil) -> Bool {
+    func send(text: String, attachments: [String] = [], next: NextTurn? = nil, input: ComposerModel? = nil,
+              preparedHandoff: String? = nil, onAccepted: ((String?) -> Void)? = nil,
+              onFailure: ((String?) -> Void)? = nil, onDetailedFailure: ((Error) -> Void)? = nil) -> Bool {
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !attachments.isEmpty else { return false }
         guard allowsAttachments || attachments.isEmpty else { return false }
         guard canSend, let next = next ?? nextTurn, case let target = next.runtimeId, let source = snapshot?.conversation.runtimeID, let conversationID = loadedConversationID else { return false }
@@ -1170,6 +1269,7 @@ final class ConversationStore: ObservableObject {
             recordProblem("所选项目属于另一运行时，请重新选择项目或工作目录")
             return false
         }
+        guard preparedHandoff == nil || (!isDraft && !isSideChat) else { return false }
         let model = next.model
         if isPreview {
             guard var value = snapshot else { return false }
@@ -1185,55 +1285,105 @@ final class ConversationStore: ObservableObject {
         creationFailure = nil
         executionStarting = true
         composerRequest = .sending
+        let cancellation = VeluneSendCancellation()
+        pendingSendCancellation = cancellation
         let submission = outgoing.begin(.send, text: text, attachments: attachments, snapshot: snapshot)
-        let requestGeneration = generation
         let creating = isDraft
+        let ticket = SendProjectionTicket(scope: projectionScope(), input: input, device: device)
         let temporary = isSideChat
         let cwd = snapshot?.conversation.cwd
         let project = snapshot?.conversation.creationProject
         // Without a level or mode the core keeps the conversation's current one.
         let turn = ComposedTurn(text: text, effort: next.effort, permissionMode: next.permissionMode?.id, attachments: attachments)
         enqueue({
-            if temporary { return try transport.sendSideChat(sideChatID: conversationID, runtimeID: target, selection: model, turn: turn) }
+            if cancellation.isCancelled() { throw TransportError.submissionCancelled }
+            if temporary { return try transport.sendSideChat(sideChatID: conversationID, runtimeID: target, selection: model, turn: turn, cancellation: cancellation) }
             if creating {
-                return try transport.createAndSend(runtimeID: target, cwd: cwd, project: project?.key, selection: model, turn: turn, submissionId: submission) { [weak self] created in
+                return try transport.createAndSend(runtimeID: target, cwd: cwd, project: project?.key, selection: model, turn: turn, cancellation: cancellation, submissionId: submission) { [weak self] created in
                     DispatchQueue.main.async {
-                        guard let self, self.generation == requestGeneration, !self.composerTargetClosed else { return }
-                        self.isDraft = false
-                        // Text typed while sending and the next-turn choice follow the created conversation.
-                        if let id = created.snapshot?.conversation.id {
-                            if let input { self.composerEvents.send(.created(previous: conversationID, id: id, runtimeID: created.snapshot!.conversation.runtimeId, input: input)) }
-                        }
-                        self.applySnapshotResult(created)
+                        self?.publishCreatedIdentity(created, ticket: ticket, previous: conversationID)
                     }
                 }
             }
-            return try transport.sendTurn(sourceRuntimeID: source, conversationID: conversationID, targetRuntimeID: target, selection: model, turn: turn, submissionId: submission)
+            if let preparedHandoff {
+                return try transport.sendTurnWithPreparedHandoff(sourceRuntimeID: source, conversationID: conversationID,
+                                                                 targetRuntimeID: target, selection: model, turn: turn,
+                                                                 preparedToken: preparedHandoff, cancellation: cancellation)
+            }
+            return try transport.sendTurn(sourceRuntimeID: source, conversationID: conversationID, targetRuntimeID: target, selection: model, turn: turn, cancellation: cancellation, submissionId: submission)
+        // Retain this store through acknowledgement: closing its tab after a
+        // cancellation request must not lose the eventual native interrupt.
         }, consumeReceipt: { [self] result in
+            let acceptedID = ticket.createdID ?? conversationID
+            pendingSendCancellation = nil
             executionStarting = false
             composerRequest = nil
             switch result {
             case .success(let value):
                 acceptSubmission(submission, receipt: value)
-                acceptedSubmissions &+= 1
-                onAccepted?(value.snapshot?.conversation.id ?? conversationID)
-            case .failure(let error):
-                if AppProblem.failure(error).code == "message_delivery_accepted" {
-                    outgoing.accept(submission, snapshot: nil)
-                    acceptedSubmissions &+= 1
-                    onAccepted?(conversationID)
-                } else if outgoing.fail(submission) {
-                    if creating && isDraft { creationFailure = AppProblem.failure(error).detail }
-                    onFailure?()
+                if cancellation.isCancelled(), let operation = OutgoingSubmissions.queuedCancellation(value.submissionReceipt) {
+                    // No runtime received this message. Remove only its queue
+                    // identity, then recover the original revision-bound input.
+                    stopRequested = false
+                    let removing = requestControl("execution", operation: {
+                        try transport.sendQueue(runtimeID: source, conversationID: acceptedID, operation: operation)
+                    }, consumeReceipt: { [weak self] result in
+                        switch result {
+                        case .success: onFailure?(ticket.createdID)
+                        case .failure:
+                            self?.acceptedSubmissions &+= 1
+                            onAccepted?(acceptedID)
+                        }
+                    })
+                    if !removing {
+                        acceptedSubmissions &+= 1; onAccepted?(acceptedID)
+                        recordProblem("消息已排队；取消操作暂未执行，请在发送队列中删除该消息。")
+                    }
                 } else {
-                    acceptedSubmissions &+= 1; onAccepted?(conversationID)
+                    acceptedSubmissions &+= 1
+                    onAccepted?(acceptedID)
+                    if cancellation.isCancelled() {
+                        stopRequested = true
+                        requestControl("execution", operation: { try transport.cancel(runtimeID: target, conversationID: acceptedID) }, onFailure: { [weak self] in self?.stopRequested = false })
+                    }
                 }
+            case .failure(let error):
+            if AppProblem.failure(error).code == "message_delivery_accepted" {
+                // A failed projection is not an unsent draft. Keep the accepted
+                // placeholder until polling confirms it, and honour a stop even
+                // when no running snapshot reached the UI yet.
+                self.outgoing.accept(submission, snapshot: nil)
+                self.acceptedSubmissions &+= 1
+                onAccepted?(acceptedID)
+                if cancellation.isCancelled() {
+                    self.stopRequested = true
+                    self.requestControl("execution", operation: { try transport.cancel(runtimeID: target, conversationID: acceptedID) },
+                                        onFailure: { [weak self] in self?.stopRequested = false })
+                }
+                return
             }
-        }) { [weak self] value in self?.applySnapshotResult(value) }
+            let cancelled = (error as? TransportError)?.isSubmissionCancelled == true
+            if creating, ticket.createdID == nil, !cancelled, self.generation == ticket.scope.storeGeneration { self.creationFailure = AppProblem.failure(error).detail }
+            self.stopRequested = false
+            if self.outgoing.fail(submission) {
+                onFailure?(ticket.createdID)
+                onDetailedFailure?(error)
+            } else {
+                // A poll has already confirmed admission with this token.
+                self.acceptedSubmissions &+= 1
+                onAccepted?(acceptedID)
+            }
+            }
+        }) { [weak self] value in
+            self?.applySnapshotResult(value, scope: ticket.scope)
+        }
         return true
     }
     private func acceptSubmission(_ id: String, receipt: SnapshotResult) {
         outgoing.accept(id, receipt: receipt.submissionReceipt, snapshot: receipt.snapshot.map(BindingMapping.snapshot))
+        // An observation can have installed a newer projection before the ACK.
+        // A nil queued projection waits for the next installed observation;
+        // the current view may still predate that admission.
         if case .queued = receipt.submissionReceipt {} else { outgoing.reconcile(snapshot) }
     }
     /// Stop the sub-agents the loaded conversation started; they may run after its turn.
@@ -1241,19 +1391,23 @@ final class ConversationStore: ObservableObject {
         guard followUp.canStopSubAgents, !isPreview else { return }
         guard let runtimeID = projectionRuntimeID, let conversationID = loadedConversationID else { recordProblem("请选择会话"); return }
         guard let transport else { recordProblem("本地核心未配置"); return }
-        enqueue({ try transport.stopSubAgents(runtimeID: runtimeID, conversationID: conversationID) }) { [weak self] in self?.applySnapshotResult($0) }
+        requestControl("execution", operation: { try transport.stopSubAgents(runtimeID: runtimeID, conversationID: conversationID) })
     }
     func setConversationHandoff(release: Bool) {
         let handoff = controlHandoff
         guard (release ? handoff == .canRelease : handoff == .releasing || handoff == .released),
               !isLoading, !isPreview,
               let transport, let runtimeID = projectionRuntimeID, let conversationID = loadedConversationID else { return }
-        enqueue({ try transport.setConversationHandoff(runtimeID: runtimeID, conversationID: conversationID, release: release) }) { [weak self] in
-            self?.applySnapshotResult($0)
-        }
+        enqueueSnapshot({ try transport.setConversationHandoff(runtimeID: runtimeID, conversationID: conversationID, release: release) }, scope: projectionScope())
     }
     func cancel() {
-        guard canCancel, !isLoading else { return }
+        guard canCancel else { return }
+        if let pendingSendCancellation {
+            pendingSendCancellation.cancel()
+            stopRequested = true
+            return
+        }
+        guard !isLoading else { return }
         if isPreview {
             snapshot?.runState = .idle; snapshot?.actions.canCancel = false
             if var value = snapshot {
@@ -1272,7 +1426,7 @@ final class ConversationStore: ObservableObject {
         guard let runtimeID = projectionRuntimeID, let conversationID = loadedConversationID else { recordProblem("请选择运行时实例"); return }
         guard let transport else { recordProblem("本地核心未配置"); return }
         stopRequested = true
-        enqueue({ try transport.cancel(runtimeID: runtimeID, conversationID: conversationID) }, onFailure: { [weak self] _ in self?.stopRequested = false }) { [weak self] in self?.applySnapshotResult($0) }
+        requestControl("execution", operation: { try transport.cancel(runtimeID: runtimeID, conversationID: conversationID) }, onFailure: { [weak self] in self?.stopRequested = false })
     }
     /// Queue a message after the running turn, with the next-turn choices as
     /// they are now. `onFailure` runs when it was not queued.
@@ -1289,8 +1443,8 @@ final class ConversationStore: ObservableObject {
             else { acceptedSubmissions &+= 1; onAccepted?() }
         }) { [self] receipt in
             composerRequest = nil
-            acceptSubmission(submission, receipt: receipt)
-            acceptedSubmissions &+= 1; onAccepted?()
+            acceptSubmission(submission, receipt: receipt); acceptedSubmissions &+= 1
+            onAccepted?()
         }
         return true
     }
@@ -1298,9 +1452,8 @@ final class ConversationStore: ObservableObject {
         guard canCompact(next: next ?? nextTurn), let runtimeID = snapshot?.contextRuntimeID, let conversationID = loadedConversationID, let transport else { return }
         let selection = (next ?? nextTurn)?.model
         executionStarting = true
-        enqueue({ try transport.compactConversation(runtimeID: runtimeID, conversationID: conversationID, selection: selection) }, onFailure: { [weak self] _ in self?.executionStarting = false }) { [weak self] value in
+        enqueueSnapshot({ try transport.compactConversation(runtimeID: runtimeID, conversationID: conversationID, selection: selection) }, scope: projectionScope(), onFailure: { [weak self] _ in self?.executionStarting = false }) { [weak self] _ in
             self?.executionStarting = false
-            self?.applySnapshotResult(value)
         }
     }
     func continueTurn(next: NextTurn? = nil) {
@@ -1311,12 +1464,11 @@ final class ConversationStore: ObservableObject {
         let mode = (next ?? nextTurn)?.permissionMode?.id
         executionStarting = true
         composerRequest = .resuming
-        enqueue({ try transport.resumeTurn(runtimeID: runtimeID, conversationID: conversationID, selection: selection, effort: effort, permissionMode: mode) },
-                onFailure: { [weak self] _ in self?.executionStarting = false; self?.composerRequest = nil }) { [weak self] value in
+        enqueueSnapshot({ try transport.resumeTurn(runtimeID: runtimeID, conversationID: conversationID, selection: selection, effort: effort, permissionMode: mode) }, scope: projectionScope(),
+                consumeReceipt: { [weak self] result in if case .success = result { self?.acceptedSubmissions &+= 1 } },
+                onFailure: { [weak self] _ in self?.executionStarting = false; self?.composerRequest = nil }) { [weak self] _ in
             self?.executionStarting = false
             self?.composerRequest = nil
-            self?.acceptedSubmissions &+= 1
-            self?.applySnapshotResult(value)
         }
     }
     var canSteer: Bool { canQueue && followUp.canSteer }
@@ -1325,11 +1477,12 @@ final class ConversationStore: ObservableObject {
         guard canSteer, let runtimeID = projectionRuntimeID, let conversationID = loadedConversationID, let transport else { onFailure?(); return }
         let turn = ComposedTurn(text: text, effort: nil, permissionMode: nil, attachments: attachments)
         let submission = outgoing.begin(.steer, text: text, attachments: attachments, snapshot: snapshot)
-        enqueue({ try transport.steerTurn(runtimeID: runtimeID, conversationID: conversationID, turn: turn) }, onFailure: { [weak self] _ in self?.outgoing.fail(submission); onFailure?() }) { [weak self] in
-            self?.outgoing.accept(submission, snapshot: $0.snapshot.map(BindingMapping.snapshot))
-            self?.acceptedSubmissions &+= 1
-            self?.applySnapshotResult($0)
-        }
+        enqueueSnapshot({ try transport.steerTurn(runtimeID: runtimeID, conversationID: conversationID, turn: turn) }, scope: projectionScope(), consumeReceipt: { [weak self] result in
+            switch result {
+            case .success(let value): self?.acceptSubmission(submission, receipt: value); self?.acceptedSubmissions &+= 1
+            case .failure: self?.outgoing.fail(submission); onFailure?()
+            }
+        })
     }
     /// Whether the user message may be edited now, and how. The edit goes to
     /// the conversation's own runtime with the next turn's choices.
@@ -1374,6 +1527,7 @@ final class ConversationStore: ObservableObject {
             reloaded("原会话暂时无法重新读取，编辑副本仍保留。", nil)
             return
         }
+        let scope = projectionScope()
         enqueue({ try transport.refreshConversation(runtimeID: runtime, conversationID: conversation) },
                 consumeReceipt: { result in
             switch result {
@@ -1385,7 +1539,7 @@ final class ConversationStore: ObservableObject {
             case .failure(let error): reloaded(AppProblem.failure(error).detail, nil)
             }
         }) { [weak self] value in
-            self?.applySnapshotResult(value)
+            self?.applySnapshotResult(value, scope: scope)
         }
     }
     func restoreMessageEditingChoices(_ kept: ConversationChoices) -> Bool {
@@ -1416,6 +1570,38 @@ final class ConversationStore: ObservableObject {
     func isLastUserMessage(_ messageID: String) -> Bool { snapshot?.messages.last { $0.role == .user }?.id == messageID }
     /// Send `text` in place of a user message. In place the conversation
     /// shows the new turn here; a fork's new conversation goes to `forked`.
+    @Published private(set) var isDeletingMessage = false
+
+    func canDeleteMessage(_ id: String) -> Bool {
+        guard !composerTargetClosed, !isShuttingDown, !isLoading, !isForking, !isDeletingMessage, !isGenerating, let choice = editability(of: id) else { return false }
+        return choice.deleteOnly || choice.deleteFollowing
+    }
+
+    func confirmDeleteMessage(_ id: String) {
+        guard canDeleteMessage(id), let choice = editability(of: id), let revision = choice.revision,
+              let runtimeID = snapshot?.conversation.runtimeID, let conversationID = loadedConversationID,
+              let transport else { return }
+        let currentGeneration = generation
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "删除这条用户消息？"
+        alert.informativeText = "仅删除此条会保留后续回复和工具记录。删除此条及之后会截断后续历史。原始会话保留可恢复副本；此操作不会生成新回复。"
+        var modes: [Bool] = []
+        if choice.deleteOnly { alert.addButton(withTitle: "仅删除此条"); modes.append(false) }
+        if choice.deleteFollowing { alert.addButton(withTitle: "删除此条及之后"); modes.append(true) }
+        alert.addButton(withTitle: "取消")
+        let index = alert.runModal().rawValue - NSApplication.ModalResponse.alertFirstButtonReturn.rawValue
+        guard modes.indices.contains(index), generation == currentGeneration,
+              loadedConversationID == conversationID, snapshot?.conversation.runtimeID == runtimeID,
+              canDeleteMessage(id), editability(of: id)?.revision == revision else { return }
+        isDeletingMessage = true
+        enqueueSnapshot({ try transport.deleteUserMessage(runtimeID: runtimeID, conversationID: conversationID, messageID: id, truncate: modes[index], expectedRevision: revision) }, scope: projectionScope(),
+                onFailure: { [weak self] _ in self?.isDeletingMessage = false }) { [weak self] value in
+            guard let self, generation == currentGeneration, !composerTargetClosed else { return }
+            isDeletingMessage = false
+        }
+    }
+
     /// A fork runs independently; only an in-place replacement stops the
     /// source turn, as the user confirmed in the editor.
     func editMessage(_ messageID: String, placement: EditPlacement, text: String, attachments: [String], choices: ConversationChoices? = nil, expectedRevision: String? = nil, forked: @escaping (SnapshotResult) -> Void, accepted: @escaping () -> Void, failed: ((String) -> Void)? = nil) {
@@ -1438,6 +1624,7 @@ final class ConversationStore: ObservableObject {
         else if let pending = inputs.pendingTarget(for: conversationID) { targetRevision = pending.revision }
         else { targetRevision = inputs.targetRecord(for: conversationID)?.revision }
         let turn = ComposedTurn(text: text, effort: editNext?.effort, permissionMode: editNext?.permissionMode?.id, attachments: attachments)
+        let scope = projectionScope()
         enqueue({
             let result = try transport.editMessage(runtimeID: runtimeID, conversationID: conversationID, messageID: messageID, placement: placement, targetRuntimeID: editNext?.runtimeId, selection: model, turn: turn, expectedRevision: expectedRevision)
             if let snapshot = result.snapshot {
@@ -1458,7 +1645,7 @@ final class ConversationStore: ObservableObject {
             }
         }) { [weak self] value in
             guard let self else { return }
-            if placement == .fork { forked(value) } else { self.applySnapshotResult(value) }
+            if placement == .fork { forked(value) } else { self.applySnapshotResult(value, scope: scope) }
         }
     }
     /// Copy the completed prefix immediately, even while the source runs.
@@ -1475,7 +1662,7 @@ final class ConversationStore: ObservableObject {
         }
     }
     /// Show a conversation the core has already opened, as `result` gives it.
-    func adopt(_ result: SnapshotResult) { applySnapshotResult(result) }
+    func adopt(_ result: SnapshotResult) { applySnapshotResult(result, scope: projectionScope(destination: result.snapshot?.conversation.id)) }
     /// A fork is already open on the execution owner. Do not put a full
     /// runtime-list scan ahead of preparing this conversation's composer.
     func start(adopting result: SnapshotResult) {
@@ -1492,15 +1679,16 @@ final class ConversationStore: ObservableObject {
         projectionRuntimeID = creation.runtimeId
         selectedConversationID = creation.conversationId
         pendingConversationID = creation.conversationId
-        enqueue({ try transport.openConversation(runtimeID: creation.runtimeId, conversationID: creation.conversationId) }) { [weak self] result in
-            self?.applySnapshotResult(result); self?.finishConversationLoading()
-        }
+        enqueueSnapshot({ try transport.openConversation(runtimeID: creation.runtimeId, conversationID: creation.conversationId) }, scope: projectionScope(destination: creation.conversationId), completion: { [weak self] _ in
+            self?.finishConversationLoading()
+        })
     }
     func steerQueued(_ id: String) {
         guard let message = followUp.queue.first(where: { $0.id == id }) else { return }
         let submission = outgoing.begin(.steer, text: message.text, attachments: message.attachments, snapshot: snapshot)
         changeQueue(.steer(id: id), onFailure: { [weak self] in self?.outgoing.fail(submission) }) { [weak self] receipt in
-            self?.acceptSubmission(submission, receipt: receipt)
+            guard let self else { return }
+            acceptSubmission(submission, receipt: receipt)
         }
     }
     func replaceQueued(_ operation: SendQueueOperation, conversationID: String, completion: @escaping (String?) -> Void) {
@@ -1512,7 +1700,7 @@ final class ConversationStore: ObservableObject {
         guard !isPreview, let transport else { completion("执行端未连接，当前修改仍保留。"); return }
         enqueueSnapshot({
             try transport.sendQueue(runtimeID: runtimeID, conversationID: conversationID, operation: operation)
-        }, consumeReceipt: { result in
+        }, scope: projectionScope(), consumeReceipt: { result in
             switch result {
             case .success: completion(nil)
             case .failure(let error):
@@ -1524,21 +1712,148 @@ final class ConversationStore: ObservableObject {
     func removeQueued(_ id: String) { changeQueue(.remove(id: id)) }
     func moveQueued(_ id: String, to index: Int) { changeQueue(.move(id: id, index: UInt32(max(index, 0)))) }
     func resumeQueue() { guard inputSubmissionAllowed else { return }; changeQueue(.resume) }
-    private func changeQueue(_ operation: SendQueueOperation, submissionId: String? = nil,
-                             onFailure: (() -> Void)? = nil, onDone: ((SnapshotResult) -> Void)? = nil) {
+    private func changeQueue(_ operation: SendQueueOperation, submissionId: String? = nil, onFailure: (() -> Void)? = nil, onDone: ((SnapshotResult) -> Void)? = nil) {
         guard !isPreview else { return }
         guard let runtimeID = projectionRuntimeID, let conversationID = loadedConversationID else { recordProblem("请选择会话"); onFailure?(); return }
         guard let transport else { recordProblem("本地核心未配置"); onFailure?(); return }
-        enqueueSnapshot({ try transport.sendQueue(runtimeID: runtimeID, conversationID: conversationID, operation: operation, submissionId: submissionId) }, consumeReceipt: { result in
+        enqueueSnapshot({ try transport.sendQueue(runtimeID: runtimeID, conversationID: conversationID, operation: operation, submissionId: submissionId) }, scope: projectionScope(), consumeReceipt: { result in
             switch result { case .success(let receipt): onDone?(receipt); case .failure: onFailure?() }
         })
     }
+    private struct InteractionDraftKey: Hashable { let conversationID: String; let interactionID: String }
+    private var interactionDrafts: [InteractionDraftKey: RuntimeInteractionDraft] = [:]
+    func interactionDraft(for interaction: RuntimeInteraction) -> RuntimeInteractionDraft {
+        // SwiftUI may evaluate the outgoing form once more during navigation
+        // or removal. It must not recreate a resolved draft or attach that old
+        // form's answers to the newly selected conversation.
+        guard pendingInteractions.contains(interaction) else { return RuntimeInteractionDraft() }
+        let key = InteractionDraftKey(conversationID: loadedConversationID ?? "", interactionID: interaction.id)
+        if let draft = interactionDrafts[key] { return draft }
+        let draft = RuntimeInteractionDraft(interaction: interaction)
+        interactionDrafts[key] = draft
+        return draft
+    }
+    @Published private var interactionReplyFailures: [InteractionDraftKey: String] = [:]
+    @Published private var interactionReplyInFlight: (key: InteractionDraftKey, title: String, attempt: UUID, interaction: RuntimeInteraction)?
+    func interactionReplyStatus(_ id: String) -> String? {
+        guard let conversationID = loadedConversationID,
+              let flight = interactionReplyInFlight, pendingInteractions.contains(flight.interaction),
+              flight.key == InteractionDraftKey(conversationID: conversationID, interactionID: id) else { return nil }
+        return interactionReplyInFlight?.title
+    }
+    func interactionReplyFailure(_ id: String) -> String? {
+        guard let conversationID = loadedConversationID else { return nil }
+        return interactionReplyFailures[InteractionDraftKey(conversationID: conversationID, interactionID: id)]
+    }
+    private func discardInteractionDrafts(conversationID: String) {
+        if interactionReplyInFlight?.key.conversationID == conversationID { interactionReplyInFlight = nil }
+        for (key, draft) in interactionDrafts where key.conversationID == conversationID { draft.clear() }
+        interactionDrafts = interactionDrafts.filter { $0.key.conversationID != conversationID }
+        interactionReplyFailures = interactionReplyFailures.filter { $0.key.conversationID != conversationID }
+    }
     var pendingInteractions: [RuntimeInteraction] { snapshot?.pendingInteractions ?? [] }
+    static func checkInteractionDraftLifetime(_ inspect: (ConversationWindowModel, String) -> Void) {
+        let device = DeviceStore(preview: true)
+        var value = device.previewSnapshots["sample-0"]!
+        let request = RuntimeInteraction(id: "draft-lifetime", kind: .asyncUserInput(questions: [
+            InteractionQuestion(id: "choice", text: "选择接下来的一步", options: [InteractionOption(id: "a", label: "检查界面"), InteractionOption(id: "b", label: "核对数据")], secret: false),
+            InteractionQuestion(id: "text", text: "需要保留的约束", options: [], secret: false, defaultText: "默认正文", multiline: true)
+        ], delivery: .conversationInput))
+        value.pendingInteractions = [request]
+        device.keepPreviewSnapshot(value)
+        let window = ConversationWindowModel(application: device, kind: .workspace)
+        let source = window.focused
+        let store = source.store
+        store.selectConversation(id: value.conversation.id)
+        window.tools.move(.composer, to: .builtIn)
+        inspect(window, "initial")
+        let draft = store.interactionDraft(for: request)
+        draft.selectedOptions["choice"] = ["a"]
+        draft.values["text"] = "切换标签后仍保留的回答\n第二行"
+        draft.page = 1
+        inspect(window, "edited")
+        window.openInNewTab("sample-1")
+        inspect(window, "other-tab")
+        window.selectTab(source.id)
+        inspect(window, "returned")
+        precondition(store.interactionDraft(for: request) === draft && draft.page == 1 && draft.selectedOptions["choice"] == ["a"])
+        store.selectConversation(id: "sample-1")
+        inspect(window, "other-context")
+        store.selectConversation(id: value.conversation.id)
+        inspect(window, "context-returned")
+        precondition(store.interactionDraft(for: request) === draft && draft.page == 1)
+        let key = InteractionDraftKey(conversationID: value.conversation.id, interactionID: request.id)
+        store.interactionReplyFailures[key] = "连接暂时不可用，已保留回答。"
+        store.selectConversation(id: "sample-1")
+        precondition(store.interactionReplyFailure(request.id) == nil, "回答错误不能串到其他会话")
+        store.selectConversation(id: value.conversation.id)
+        precondition(store.interactionReplyFailure(request.id) != nil, "返回会话应保留该请求的错误")
+        inspect(window, "failed")
+        precondition(store.interactionDraft(for: request) === draft && draft.values["text"]?.hasPrefix("切换标签") == true)
+        value.pendingInteractions = []
+        store.apply(value)
+        inspect(window, "resolved")
+        precondition(store.interactionDrafts.isEmpty && store.interactionReplyFailures.isEmpty, "已完成/忽略/失效的问题应清理内存草稿：drafts=\(store.interactionDrafts.keys) pending=\(store.pendingInteractions.map(\.id)) failures=\(store.interactionReplyFailures)")
+        precondition(draft.values.isEmpty && draft.selectedOptions.isEmpty && draft.otherAnswers.isEmpty && draft.page == 0, "已移除的草稿引用也应清除回答")
+        value.pendingInteractions = [request]
+        store.apply(value)
+        let deletedDraft = store.interactionDraft(for: request)
+        deletedDraft.values["text"] = "删除会话时应清理的私有回答"
+        store.interactionReplyFailures[key] = "仅属于被删除会话的错误"
+        store.resetProjection()
+        inspect(window, "deleted")
+        precondition(store.interactionDrafts.isEmpty && store.interactionReplyFailures.isEmpty && deletedDraft.values.isEmpty, "删除/缺失会话应清理回答及错误")
+    }
+    static func checkInteractionVisualBusy(_ store: ConversationStore, _ busy: Bool, replying: Bool = true) {
+        precondition(store.isPreview, "视觉检查只能使用合成预览")
+        store.isLoading = busy
+        if busy, replying, let conversationID = store.loadedConversationID, let request = store.pendingInteractions.first {
+            store.interactionReplyInFlight = (InteractionDraftKey(conversationID: conversationID, interactionID: request.id), "正在提交回答", UUID(), request)
+        } else { store.interactionReplyInFlight = nil }
+    }
+    static func checkInteractionVisualFailure(_ store: ConversationStore, _ id: String, _ detail: String) {
+        precondition(store.isPreview)
+        guard let conversationID = store.loadedConversationID else { return }
+        store.interactionReplyFailures[InteractionDraftKey(conversationID: conversationID, interactionID: id)] = detail
+    }
+    func canReply(to interaction: RuntimeInteraction) -> Bool {
+        !isShuttingDown && !composerTargetClosed && pendingConversationID == nil && replyAttempt == nil
+            && pendingInteractions.contains(interaction)
+    }
     func replyInteraction(_ interaction: RuntimeInteraction, reply: RuntimeInteractionReply) {
-        guard pendingInteractions.contains(where: { $0.id == interaction.id }), let runtimeID = projectionRuntimeID, let conversationID = loadedConversationID, let transport else { return }
-        let currentGeneration = generation
-        enqueue({ try transport.replyRuntimeInteraction(runtimeID: runtimeID, conversationID: conversationID, interactionID: interaction.id, reply: reply) }) { [weak self] value in
-            guard let self, generation == currentGeneration else { return }; applySnapshotResult(value)
+        guard canReply(to: interaction),
+              let runtimeID = projectionRuntimeID, let conversationID = loadedConversationID, let transport else { return }
+        let scope = projectionScope(), attempt = UUID()
+        let key = InteractionDraftKey(conversationID: conversationID, interactionID: interaction.id)
+        interactionReplyFailures[key] = nil
+        let title: String
+        switch reply {
+        case .answers: title = "正在提交回答"
+        case .decision: title = "正在提交决定"
+        case .cancel: title = "正在取消请求"
+        }
+        replyAttempt = attempt
+        interactionReplyInFlight = (key, title, attempt, interaction)
+        replyQueue.async { [weak self] in
+            let result = Result { try transport.replyRuntimeInteraction(runtimeID: runtimeID, conversationID: conversationID, interactionID: interaction.id, reply: reply) }
+            DispatchQueue.main.async {
+                self?.finishInteractionReply(result, interaction: interaction, key: key, scope: scope, attempt: attempt)
+            }
+        }
+    }
+    private func finishInteractionReply(_ result: Result<SnapshotResult, Error>, interaction: RuntimeInteraction,
+                                        key: InteractionDraftKey, scope: ProjectionScope, attempt: UUID) {
+        if replyAttempt == attempt { replyAttempt = nil }
+        guard interactionReplyInFlight?.attempt == attempt else { return }
+        interactionReplyInFlight = nil
+        guard generation == scope.storeGeneration, !composerTargetClosed,
+              loadedConversationID == key.conversationID else { return }
+        switch result {
+        case .success(let value): applySnapshotResult(value, scope: scope)
+        case .failure(let error):
+            guard pendingInteractions.contains(interaction) else { return }
+            interactionReplyFailures[key] = error.localizedDescription
+            recordProblem(error)
         }
     }
 
@@ -1587,9 +1902,21 @@ final class ConversationStore: ObservableObject {
 
     // MARK: - Projection
 
-    private func resetProjection() { composerTargetRetry = PollBackoff(); composerRequest = nil; stopRequested = false; executionStarting = false; preparedComposerTarget = nil; composerTargetRequestID = nil; nextTurn = nil; nextTurnRuntimeID = nil; loadedPayloads.removeAll(); isDraft = false; generation += 1; snapshot = nil; projectionRuntimeID = nil; selectedConversationID = nil; pendingConversationID = nil; abandonLinkedConversationLookup(); transcript.reset(); outgoing.reset(); sessionOptions = nil; sessionOptionsKey = nil }
-    private func apply(_ value: ConversationSnapshot?, preserveSelection: Bool = false) {
+    private func resetProjection() {
+        if let loadedConversationID { discardInteractionDrafts(conversationID: loadedConversationID) }
+        projectionEpoch &+= 1
+        payloadDemand.removeAll()
+        initialSelection = nil
+        composerTargetRetry = PollBackoff(); composerRequest = nil; stopRequested = false; executionStarting = false; preparedComposerTarget = nil; composerTargetRequestID = nil; nextTurn = nil; nextTurnRuntimeID = nil; loadedPayloads.removeAll(); isDraft = false; generation += 1; snapshot = nil; projectionRuntimeID = nil; selectedConversationID = nil; pendingConversationID = nil; abandonLinkedConversationLookup(); transcript.reset(); outgoing.reset(); sessionOptions = nil; sessionOptionsKey = nil
+    }
+    private func apply(_ value: ConversationSnapshot?, preserveSelection: Bool = false, coreDelivery: Bool = true) {
         guard var value else { return }
+        initialSelection = nil
+        if coreDelivery { projectionEpoch &+= 1 }
+        if value.conversation.id != snapshot?.conversation.id || value.contextRuntimeID != snapshot?.contextRuntimeID || value.cursor?.generation != snapshot?.cursor?.generation {
+            loadedPayloads.removeAll()
+        }
+        if value.conversation.id != snapshot?.conversation.id { payloadDemand.removeAll(); navigationID = UUID() }
         if value.conversation.id == unopenedConversationID {
             clearInitialOpening()
         }
@@ -1602,8 +1929,18 @@ final class ConversationStore: ObservableObject {
         if value.conversation.id != snapshot?.conversation.id || (value.runState != .running && value.runState != .stopping) { stopRequested = false }
         if value.conversation.id != snapshot?.conversation.id || value.contextRuntimeID != snapshot?.contextRuntimeID { loadedPayloads.removeAll() }
         value.messages = withLoadedPayloads(value.messages)
+        payloadDemand.formIntersection(value.messages.filter(\.hasDeferredPayload).map(\.id))
         outgoing.reconcile(value)
         guard snapshot != value else { return }
+        for (key, draft) in interactionDrafts where key.conversationID == value.conversation.id && !value.pendingInteractions.contains(where: { $0.id == key.interactionID }) {
+            draft.clear()
+        }
+        interactionDrafts = interactionDrafts.filter { key, _ in
+            key.conversationID != value.conversation.id || value.pendingInteractions.contains { $0.id == key.interactionID }
+        }
+        interactionReplyFailures = interactionReplyFailures.filter { key, _ in
+            key.conversationID != value.conversation.id || value.pendingInteractions.contains { $0.id == key.interactionID }
+        }
         snapshot = value; projectionRuntimeID = value.contextRuntimeID; selectedConversationID = value.conversation.id
         if !isSideChat && !isDraft { device.rememberConversationTitle(value.conversation) }
         if isSideChat {
@@ -1622,7 +1959,7 @@ final class ConversationStore: ObservableObject {
     private static func currentWork(_ message: DeliveredMessage?) -> String {
         guard let message, let block = message.blocks.last else { return "正在思考" }
         if case .runtimeFailure(let failure, _, let retry?) = block {
-            return failure.title + " · " + retry.label
+            return failure.title + "，" + retry.label
         }
         if case .contextCompaction = block, !message.completed { return "正在压缩上下文" }
         guard message.role == .assistant else { return "正在思考" }
@@ -1633,19 +1970,92 @@ final class ConversationStore: ObservableObject {
         case .tool, .notice, .runtimeFailure, .contextCompaction, .image, .file, .agentSender: return "正在思考"
         }
     }
-    /// Preparation and operation results replace the projection; polling asks
-    /// the core only for changes after the current cursor (see `poll`).
-    private func applySnapshotResult(_ value: SnapshotResult) {
-        guard let incoming = value.snapshot else {
-            if value.submissionReceipt != nil { return }
-            resetProjection(); return
+    /// Cursors order only one delivery key within one opaque Core generation.
+    /// Epoch makes nil cursors and equal-cursor header changes safe CAS bases.
+    private struct ProjectionScope {
+        let storeGeneration: Int
+        let navigationID: UUID
+        let source: String?
+        let conversationID: String?
+        let context: String?
+        let cursor: TranscriptCursor?
+        let epoch: UInt64
+        var destination: String?
+    }
+    /// Only onCreated advances this operation's base; final Send never samples
+    /// a fresh base after an intervening poll.
+    @MainActor private final class SendProjectionTicket {
+        var scope: ProjectionScope
+        private(set) var createdID: String?
+        let input: ComposerModel?
+        private let device: DeviceStore?
+        init(scope: ProjectionScope, input: ComposerModel? = nil, device: DeviceStore? = nil) {
+            self.scope = scope; self.input = input; self.device = device
         }
-        let mapped = BindingMapping.snapshot(incoming)
-        if let current = snapshot, current.conversation.id == mapped.conversation.id,
-           current.contextRuntimeID == mapped.contextRuntimeID,
-           let previous = current.cursor, let next = mapped.cursor,
-           previous.generation == next.generation, next.sequence < previous.sequence { return }
-        apply(mapped)
+        func consumeCreated(_ identity: ConversationSummary) {
+            guard createdID == nil else { return }
+            createdID = identity.id
+            if let input { device?.composerInputs.promote(input, to: identity.id, runtimeID: identity.runtimeId) }
+        }
+    }
+    private func publishCreatedIdentity(_ created: SnapshotResult, ticket: SendProjectionTicket, previous: String) {
+        guard let identity = created.snapshot?.conversation else { return }
+        // Creation is a business fact, even after the tab/subscriber disappears.
+        ticket.consumeCreated(identity)
+        guard generation == ticket.scope.storeGeneration, !composerTargetClosed,
+              baseIsCurrent(ticket.scope), isDraft else { return }
+        var creation = ticket.scope
+        creation.destination = identity.id
+        isDraft = false
+        if let input = ticket.input { composerEvents.send(.created(previous: previous, id: identity.id, runtimeID: identity.runtimeId, input: input)) }
+        applySnapshotResult(created, scope: creation)
+        ticket.scope = projectionScope()
+    }
+    private func projectionScope(destination: String? = nil) -> ProjectionScope {
+        ProjectionScope(storeGeneration: generation, navigationID: navigationID, source: snapshot?.conversation.runtimeID,
+            conversationID: loadedConversationID, context: projectionRuntimeID, cursor: snapshot?.cursor,
+            epoch: projectionEpoch, destination: destination)
+    }
+    private func baseIsCurrent(_ scope: ProjectionScope) -> Bool {
+        scope.epoch == projectionEpoch && scope.conversationID == loadedConversationID
+            && scope.source == snapshot?.conversation.runtimeID && scope.context == projectionRuntimeID && scope.cursor == snapshot?.cursor
+    }
+    @discardableResult
+    private func installProjection(_ incoming: ConversationSnapshot?, scope: ProjectionScope, preserveSelection: Bool = false) -> Bool {
+        guard !composerTargetClosed, generation == scope.storeGeneration else { return false }
+        let baseCurrent = baseIsCurrent(scope)
+        guard let incoming else {
+            guard baseCurrent else { requestProjectionResync(); return false }
+            resetProjection(); return true
+        }
+        let sameIdentity = incoming.conversation.id == scope.conversationID && incoming.conversation.runtimeID == scope.source
+        guard sameIdentity || (scope.destination == incoming.conversation.id && baseCurrent) else { return false }
+        guard loadedConversationID == incoming.conversation.id || baseCurrent else { return false }
+        if sameIdentity, incoming.contextRuntimeID == snapshot?.contextRuntimeID,
+           let current = snapshot?.cursor, let next = incoming.cursor, current.generation == next.generation {
+            guard next.sequence >= current.sequence else { return false }
+            // Header-only changes may share a cursor. Without the captured base
+            // there is no delivery order for conflicting equal-cursor headers.
+            if next.sequence == current.sequence, !baseCurrent { requestProjectionResync(); return false }
+        } else if !baseCurrent {
+            requestProjectionResync(); return false
+        }
+        apply(incoming, preserveSelection: preserveSelection)
+        return true
+    }
+    private func applySnapshotResult(_ value: SnapshotResult, scope: ProjectionScope) {
+        if value.snapshot == nil, value.submissionReceipt != nil {
+            // Admission succeeded; unavailable projection data is not absence
+            // of the conversation and must not clear its transcript or input.
+            guard generation == scope.storeGeneration, !composerTargetClosed else { return }
+            requestProjectionResync()
+            return
+        }
+        installProjection(value.snapshot.map(BindingMapping.snapshot), scope: scope)
+    }
+    private func requestProjectionResync() {
+        needsResync = true
+        poll()
     }
     private enum PolledSnapshot: Sendable {
         case absent, unchanged
@@ -1654,20 +2064,29 @@ final class ConversationStore: ObservableObject {
         case changes(base: TranscriptCursor, header: ConversationSnapshot, order: [String], changed: [DeliveredMessage])
     }
     private func poll() {
-        // First-open recovery precedes the guard requiring an existing projection.
+        device.refreshConversationObservation()
+        // First-open failures have no snapshot or projection runtime yet.
+        // Their retry must run before the ordinary transcript polling guard.
+        guard started, ConversationWindowModel.isConversationStoreVisible(self) else { return }
         retryOpeningIfNeeded()
-        guard started, !isDraft, !isPreview, !isShuttingDown, snapshot != nil, !isLoading, !pollPending, let transport, let runtimeID = projectionRuntimeID else { return }
-        let revision = generation
-        let selected = selectedConversationID
-        let since = snapshot?.cursor
+        pollProjection()
+    }
+    /// Admission is separate from visibility so headless checks can exercise
+    /// the exact Store/Transport lane without constructing a window or scene.
+    private func pollProjection() {
+        guard started, !composerTargetClosed, !isDraft, !isPreview, !isShuttingDown, pendingConversationID == nil, !pollPending, let transport, let current = snapshot else { return }
+        let scope = projectionScope()
+        let runtimeID = current.conversation.runtimeID, selected = current.conversation.id
+        let since = needsResync ? nil : current.cursor
+        needsResync = false
         pollPending = true
-        performOnQueue { [weak self] in
+        observationQueue.async { [weak self] in
             // Only changed messages cross the boundary; mapping stays off the main thread.
             let result = Result { () throws -> PolledSnapshot in
                 guard let since else {
-                    return try transport.snapshot(runtimeID: runtimeID, conversationID: selected ?? "").snapshot.map { .complete(BindingMapping.snapshot($0)) } ?? .absent
+                    return try transport.snapshot(runtimeID: runtimeID, conversationID: selected).snapshot.map { .complete(BindingMapping.snapshot($0)) } ?? .absent
                 }
-                switch try transport.snapshotUpdate(runtimeID: runtimeID, conversationID: selected ?? "", since: since) {
+                switch try transport.snapshotUpdate(runtimeID: runtimeID, conversationID: selected, since: since) {
                 case .absent: return .absent
                 case .unchanged: return .unchanged
                 case .changed(let incoming):
@@ -1678,56 +2097,88 @@ final class ConversationStore: ObservableObject {
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.pollPending = false
-                guard self.generation == revision, self.selectedConversationID == selected else { return }
+                guard self.generation == scope.storeGeneration, !self.composerTargetClosed else { return }
+                defer { if self.needsResync { self.poll() } }
                 switch result {
                 case .success(let polled):
                     self.device.clearActivityProblem("poll:" + runtimeID)
-                    switch polled {
-                    case .absent, .unchanged: break
-                    case .complete(let value): self.apply(value, preserveSelection: true)
-                    case .changes(let base, var header, let order, let changed):
-                        // A newer complete delivery may have replaced the base; the
-                        // next poll then continues from that delivery's cursor.
-                        guard let current = self.snapshot, current.cursor == base else { return }
-                        var known = Dictionary(current.messages.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
-                        for message in changed { known[message.id] = message }
-                        let messages = order.compactMap { known[$0] }
-                        guard messages.count == order.count else { self.snapshot?.cursor = nil; return }
-                        header.messages = messages
-                        self.apply(header, preserveSelection: true)
-                    }
+                    self.consumePolledSnapshot(polled, scope: scope)
                 case .failure(let failure): self.recordProblem(failure, source: "读取会话", activityKey: "poll:" + runtimeID)
                 }
             }
         }
     }
+    private func consumePolledSnapshot(_ polled: PolledSnapshot, scope: ProjectionScope) {
+        guard generation == scope.storeGeneration, !composerTargetClosed else { return }
+        switch polled {
+        case .unchanged: break
+        case .absent: installProjection(nil, scope: scope, preserveSelection: true)
+        case .complete(let value): installProjection(value, scope: scope, preserveSelection: true)
+        case .changes(let base, var header, let order, let changed):
+            guard let current = snapshot, current.conversation.id == scope.conversationID,
+                  current.contextRuntimeID == scope.context, current.cursor == base else { needsResync = true; return }
+            var known = Dictionary(current.messages.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+            for message in changed { known[message.id] = message }
+            let messages = order.compactMap { known[$0] }
+            guard messages.count == order.count else { needsResync = true; return }
+            header.messages = messages
+            installProjection(header, scope: scope, preserveSelection: true)
+        }
+    }
     /// Read deferred reasoning and tool output of shown messages. Loaded content
     /// replaces a delivered message only while its stamp is current.
     func loadPayloads(messageIDs: [String]) {
-        guard !isPreview, let transport, let snapshot else { return }
+        guard !isPreview, !composerTargetClosed, pendingConversationID == nil, let snapshot else { return }
+        let deferred = Set(snapshot.messages.filter(\.hasDeferredPayload).map(\.id))
+        payloadDemand.formIntersection(deferred)
+        payloadDemand.formUnion(Set(messageIDs).intersection(deferred))
+        drainPayloadDemand()
+    }
+    private func drainPayloadDemand() {
+        guard !payloadPending, !composerTargetClosed, !isShuttingDown, pendingConversationID == nil, let transport, let snapshot else { return }
         let deferred = Dictionary(snapshot.messages.filter(\.hasDeferredPayload).map { ($0.id, $0.stamp) }, uniquingKeysWith: { first, _ in first })
-        let wanted = Set(messageIDs).filter { id in deferred[id].map { !payloadRequests.contains(PayloadKey(id: id, stamp: $0)) } ?? false }
+        payloadDemand.formIntersection(deferred.keys)
+        let wanted = Array(payloadDemand.prefix(32))
         guard !wanted.isEmpty else { return }
-        let keys = wanted.map { PayloadKey(id: $0, stamp: deferred[$0]!) }
-        payloadRequests.formUnion(keys)
+        payloadDemand.subtract(wanted)
+        let stamps = Dictionary(uniqueKeysWithValues: wanted.map { ($0, deferred[$0]!) })
+        let scope = projectionScope()
         let runtimeID = snapshot.contextRuntimeID, conversationID = snapshot.conversation.id
-        performOnQueue { [weak self] in
-            let result = Result { try transport.messagePayloads(runtimeID: runtimeID, conversationID: conversationID, messageIDs: Array(wanted)) }
+        payloadPending = true
+        payloadQueue.async { [weak self] in
+            let result = Result { try transport.messagePayloads(runtimeID: runtimeID, conversationID: conversationID, messageIDs: wanted) }
             DispatchQueue.main.async {
                 guard let self else { return }
-                self.payloadRequests.subtract(keys)
-                switch result {
-                case .success(let loaded):
-                    guard var current = self.snapshot, current.conversation.id == conversationID, current.contextRuntimeID == runtimeID else { return }
-                    for message in loaded { self.loadedPayloads[message.id] = message }
-                    current.messages = self.withLoadedPayloads(current.messages)
-                    self.apply(current, preserveSelection: true)
-                case .failure(let failure): self.recordProblem(failure, source: "读取消息内容")
-                }
+                self.payloadPending = false
+                defer { self.drainPayloadDemand() }
+                self.consumePayloads(result, scope: scope, stamps: stamps)
             }
         }
     }
-    private struct PayloadKey: Hashable { var id: String; var stamp: UInt64 }
+    private func consumePayloads(_ result: Result<[DeliveredMessage], Error>, scope: ProjectionScope, stamps: [String: UInt64]) {
+        guard !composerTargetClosed, pendingConversationID == nil, navigationID == scope.navigationID,
+              var current = snapshot, current.conversation.id == scope.conversationID,
+              current.conversation.runtimeID == scope.source else { return }
+        let deferred = current.messages.filter(\.hasDeferredPayload)
+        guard generation == scope.storeGeneration,
+              current.contextRuntimeID == scope.context, current.cursor?.generation == scope.cursor?.generation,
+              current.cursor != nil || projectionEpoch == scope.epoch else {
+            // A sole viewport request must survive delivery replacement while
+            // its batch was in flight. Re-resolve stamps against the new view.
+            payloadDemand.formUnion(deferred.filter { stamps[$0.id] != nil }.map(\.id))
+            return
+        }
+        switch result {
+        case .success(let loaded):
+            for message in loaded where stamps[message.id] == message.stamp {
+                loadedPayloads[message.id] = message
+            }
+            payloadDemand.formUnion(deferred.filter { stamps[$0.id] != nil && stamps[$0.id] != $0.stamp }.map(\.id))
+            current.messages = withLoadedPayloads(current.messages)
+            apply(current, preserveSelection: true, coreDelivery: false)
+        case .failure(let failure): recordProblem(failure, source: "读取消息内容")
+        }
+    }
     /// Substitute loaded payloads for deliveries of the same content; a newer
     /// stamp means the content changed and its old payload is dropped.
     private func withLoadedPayloads(_ messages: [DeliveredMessage]) -> [DeliveredMessage] {
@@ -1754,17 +2205,52 @@ final class ConversationStore: ObservableObject {
             work()
         }
     }
+    /// Snapshot-bearing operations name their base; business receipts settle
+    /// before projection arbitration, including after navigation or closure.
+    private func enqueueSnapshot(_ operation: @escaping () throws -> SnapshotResult, scope: ProjectionScope,
+                                 consumeReceipt: ((Result<SnapshotResult, Error>) -> Void)? = nil,
+                                 onFailure: ((Error) -> Void)? = nil, completion: @escaping (SnapshotResult) -> Void = { _ in }) {
+        enqueue(operation, consumeReceipt: consumeReceipt, onFailure: onFailure) { [weak self] value in
+            self?.applySnapshotResult(value, scope: scope)
+            completion(value)
+        }
+    }
+    /// Control calls have two bounded keys (turn/children and preparation),
+    /// independent of ordinary ACKs, polling and interaction replies.
+    @discardableResult
+    private func requestControl(_ key: String, operation: @escaping @Sendable () throws -> SnapshotResult?,
+                                consumeReceipt: ((Result<SnapshotResult?, Error>) -> Void)? = nil,
+                                onFailure: (() -> Void)? = nil) -> Bool {
+        guard !isShuttingDown, !controlRequests.contains(key), controlRequests.count < 2 else { return false }
+        let scope = projectionScope()
+        controlRequests.insert(key)
+        controlQueue.async { [weak self] in
+            let result = Result { try operation() }
+            DispatchQueue.main.async {
+                // Business ownership survives switching or closing the view.
+                consumeReceipt?(result)
+                guard let self else { return }
+                self.controlRequests.remove(key)
+                guard self.generation == scope.storeGeneration, !self.composerTargetClosed else { return }
+                switch result {
+                case .success(let value):
+                    if let value { self.applySnapshotResult(value, scope: scope) }
+                    else { self.requestProjectionResync() }
+                case .failure(let error): self.recordProblem(error); onFailure?()
+                }
+            }
+        }
+        return true
+    }
     /// One conversation operation at a time; one that finishes after the tab
     /// moved on is dropped, and a conversation chosen meanwhile then opens.
-    private func enqueueSnapshot(_ operation: @escaping () throws -> SnapshotResult,
-                                 consumeReceipt: ((Result<SnapshotResult, Error>) -> Void)? = nil) {
-        enqueue(operation, consumeReceipt: consumeReceipt) { [weak self] value in self?.applySnapshotResult(value) }
-    }
     private func enqueue<T: Sendable>(_ operation: @escaping () throws -> T, consumeReceipt: ((Result<T, Error>) -> Void)? = nil, onAccepted: (() -> Void)? = nil, onFailure: ((Error) -> Void)? = nil, apply: @escaping (T) -> Void) {
         guard !isLoading, !isShuttingDown else { recordProblem("请等待当前操作完成后重试"); return }
         guard transport != nil else { recordProblem("本地核心未配置"); return }
         enqueuePreparedOperation(operation, consumeReceipt: consumeReceipt, onAccepted: onAccepted, onFailure: onFailure, apply: apply)
     }
+    /// The serial operation/receipt runner has no backend dependency of its
+    /// own. Production validates its captured transport before entering it.
     private func enqueuePreparedOperation<T: Sendable>(_ operation: @escaping () throws -> T, consumeReceipt: ((Result<T, Error>) -> Void)? = nil, onAccepted: (() -> Void)? = nil, onFailure: ((Error) -> Void)? = nil, apply: @escaping (T) -> Void) {
         guard !isLoading, !isShuttingDown else { recordProblem("请等待当前操作完成后重试"); return }
         let revision = generation
@@ -1776,10 +2262,12 @@ final class ConversationStore: ObservableObject {
                 self.isLoading = false
                 defer { self.selectDeferredConversation() }
                 consumeReceipt?(result)
-                guard revision == self.generation else { return }
+                guard revision == self.generation, !self.composerTargetClosed else { return }
                 switch result {
                 case .success(let value): onAccepted?(); apply(value)
-                case .failure(let failure): self.recordProblem(failure); onFailure?(failure)
+                case .failure(let failure):
+                    if (failure as? TransportError)?.isSubmissionCancelled != true { self.recordProblem(failure) }
+                    onFailure?(failure)
                 }
             }
         }
@@ -1787,6 +2275,408 @@ final class ConversationStore: ObservableObject {
 }
 
 extension ConversationStore {
+    /// Real Store → Transport → Core → warm Codex owner. No AppKit lifecycle.
+    static func checkIndependentRequests(transport: Transport, seed: SnapshotResult, home: URL) throws {
+        func note(_ text: String) { FileHandle.standardError.write(Data(("PASS " + text + "\n").utf8)) }
+        func wait(_ label: String, _ condition: () -> Bool) {
+            let deadline = Date().addingTimeInterval(12)
+            while !condition(), Date() < deadline { RunLoop.main.run(until: Date().addingTimeInterval(0.01)) }
+            guard condition() else {
+                FileHandle.standardError.write(Data(("FAIL independent requests timeout: \(label)\n").utf8))
+                exit(1)
+            }
+        }
+        func require(_ condition: @autoclosure () -> Bool, _ detail: String = "synthetic invariant", line: UInt = #line) {
+            guard condition() else {
+                FileHandle.standardError.write(Data(("FAIL independent requests at line \(line): \(detail)\n").utf8))
+                exit(1)
+            }
+        }
+        let device = DeviceStore(transport: transport)
+        device.applyList(try transport.list())
+        let store = ConversationStore(device: device)
+        let native = ModelSelection.native(providerId: "openai", modelId: "synthetic-native")
+        store.modelCatalogs["synthetic-codex"] = .ready([RuntimeModel(selection: native, name: "Synthetic", reasoningEfforts: [])])
+        store.adopt(seed)
+        store.started = true
+        // Reuse the provider-confirmed owner from the completed seed turn.
+        wait("idle seed") { store.pollProjection(); return store.snapshot?.runState == .idle }
+        let target = resolveNextTurn(input: NextTurnInput(runtimeId: "synthetic-codex",
+            runtimeType: device.runtimeTypes.first { $0.id == .codex166 }, providers: [],
+            catalog: [RuntimeModel(selection: native, name: "Synthetic", reasoningEfforts: [])], turnSettings: [],
+            conversationRuntimeId: "synthetic-codex", modelRecordKey: nil, kept: TurnChoice(model: native), runtimeChoices: nil,
+            newConversation: .chosen(choice: TurnChoice(model: native))))
+        var accepted = 0
+        require(store.send(text: "one held warm submission", next: target, onAccepted: { _ in accepted += 1 }), "warm Send must be admitted")
+        require(store.isLoading, "ordinary Send must remain pending")
+        wait("send reached peer") { FileManager.default.fileExists(atPath: home.appendingPathComponent("send-entered").path) }
+        wait("poll installs question during ordinary ACK") {
+            store.pollProjection()
+            return !store.pendingInteractions.isEmpty
+        }
+        require(store.isLoading, "poll must finish before ordinary ACK")
+        let deferredIDs = store.snapshot!.messages.filter(\.hasDeferredPayload).map(\.id)
+        require(!deferredIDs.isEmpty, "real helper must deliver deferred payload")
+        store.loadPayloads(messageIDs: deferredIDs)
+        require(store.payloadPending && store.payloadDemand.count == max(0, deferredIDs.count - 32), "one payload batch must contain at most 32 messages")
+        for _ in 0..<20 { store.loadPayloads(messageIDs: deferredIDs) }
+        require(store.payloadPending && store.payloadDemand.count <= deferredIDs.count, "payload admission must coalesce")
+        wait("payload during held ACK") { !store.payloadPending && store.payloadDemand.isEmpty }
+        require(store.isLoading && store.snapshot!.messages.allSatisfy { !$0.hasDeferredPayload }, "shown message payload must read independently")
+        guard let interaction = store.pendingInteractions.first else { throw TransportError.rejected("synthetic question disappeared before reply") }
+        require(store.canReply(to: interaction), "card buttons/submit must remain admitted while ordinary loading")
+        var replaced = interaction
+        replaced.id += "-obsolete"
+        require(!store.canReply(to: replaced), "expired interaction must not be admitted")
+        store.replyInteraction(interaction, reply: .decision(optionId: "accept"))
+        store.replyInteraction(interaction, reply: .decision(optionId: "accept"))
+        require(!store.canReply(to: interaction), "independent reply admission must prevent double-submit")
+        wait("reply ACK consumed while ordinary ACK held") {
+            store.pollProjection()
+            return store.replyAttempt == nil && FileManager.default.fileExists(atPath: home.appendingPathComponent("reply-wire").path)
+        }
+        require(store.isLoading && accepted == 0, "ordinary ACK must still be held after reply settles")
+        let lines = try String(contentsOf: home.appendingPathComponent("reply-wire"), encoding: .utf8).split(separator: "\n")
+        require(lines.count == 1, "reply must reach wire exactly once")
+        store.cancel()
+        wait("native cancellation before send ACK") { FileManager.default.fileExists(atPath: home.appendingPathComponent("cancel-wire").path) }
+        require(store.isLoading, "native stop must reach peer before ordinary ACK release")
+        try Data().write(to: home.appendingPathComponent("release-send"))
+        wait("ordinary ACK release") { !store.isLoading }
+        require(accepted == 1 && store.acceptedSubmissions == 1, "Send receipt must settle exactly once")
+        let promptProcesses = try String(contentsOf: home.appendingPathComponent("prompt-wire"), encoding: .utf8).split(separator: "\n")
+        require(promptProcesses.count == 2 && Set(promptProcesses).count == 1, "warm Send must reuse the confirmed owner without replay")
+        note("Store/Core/helper: held warm Send ACK does not block poll/question, coalesced payload, one-shot reply or native stop; one accepted receipt, no replay")
+        store.close()
+        require(!store.canReply(to: interaction), "closed Store cannot reply")
+
+        // A real payload request captured before refresh must be retried using
+        // the new scope without another viewport notification. Only the refresh
+        // completion is gated/replayed from an actual identical Core delivery.
+        let payloadSeed = try transport.snapshot(runtimeID: "synthetic-codex", conversationID: seed.snapshot!.conversation.id)
+        let refreshing = ConversationStore(device: device)
+        refreshing.modelCatalogs["synthetic-codex"] = .ready([])
+        refreshing.adopt(payloadSeed)
+        guard let payloadMessage = refreshing.snapshot?.messages.first(where: \.hasDeferredPayload) else { throw TransportError.rejected("refresh gate needs real deferred content") }
+        let payloadScopeBeforeRefresh = refreshing.projectionScope()
+        let releaseOldPayload = DispatchSemaphore(value: 0), releaseRefresh = DispatchSemaphore(value: 0)
+        refreshing.payloadQueue.async { _ = releaseOldPayload.wait(timeout: .now() + 12) }
+        refreshing.loadPayloads(messageIDs: [payloadMessage.id])
+        require(refreshing.payloadPending && refreshing.payloadDemand.isEmpty, "sole demand must be owned by the held batch")
+        require(refreshing.canReloadFromRuntimes, "same-conversation refresh must be admitted during a payload read")
+        refreshing.reloadProjection {
+            guard releaseRefresh.wait(timeout: .now() + 12) == .success else { throw TransportError.rejected("refresh completion gate timed out") }
+            return payloadSeed
+        }
+        require(refreshing.generation != payloadScopeBeforeRefresh.storeGeneration && refreshing.navigationID == payloadScopeBeforeRefresh.navigationID, "refresh changes request generation without navigating")
+        releaseOldPayload.signal()
+        wait("payload automatically reread under refreshed scope") {
+            !refreshing.payloadPending && refreshing.payloadDemand.isEmpty
+                && refreshing.message(id: payloadMessage.id)?.hasDeferredPayload == false
+        }
+        require(refreshing.isLoading, "new-scope payload read must finish before refresh receipt")
+        releaseRefresh.signal()
+        wait("identical deferred refresh projection") { !refreshing.isLoading }
+        require(refreshing.message(id: payloadMessage.id)?.hasDeferredPayload == false, "identical refreshed projection must retain the independently loaded payload")
+        refreshing.payloadDemand.removeAll()
+        refreshing.generation += 1; refreshing.navigationID = UUID()
+        refreshing.loadedPayloads.removeAll()
+        if let delivered = payloadSeed.snapshot { refreshing.apply(BindingMapping.snapshot(delivered)) }
+        require(refreshing.message(id: payloadMessage.id)?.hasDeferredPayload == true, "navigation counterexample must still have deferred content to request")
+        refreshing.consumePayloads(.success([]), scope: payloadScopeBeforeRefresh, stamps: [payloadMessage.id: payloadMessage.stamp])
+        require(refreshing.payloadDemand.isEmpty, "navigation must not resurrect an old viewport demand")
+        refreshing.close()
+        note("held sole payload → same-conversation refresh → old callback → automatic new-scope read; no viewport repeat or cross-navigation demand")
+
+        device.composerInputs.poll(force: true)
+        wait("composer authority for operation-owned promotion") { device.composerInputs.ownerID != nil && device.composerInputs.state != nil }
+
+        // Hold the real createAndSend boundary after Core creation, before its
+        // Send dispatch. This exercises the production two-stage publisher and
+        // queue with an observable Core poll between creation and final receipt.
+        let creating = ConversationStore(device: device)
+        creating.modelCatalogs["synthetic-codex"] = .ready([RuntimeModel(selection: native, name: "Synthetic", reasoningEfforts: [])])
+        guard let seedSnapshot = seed.snapshot else { throw TransportError.rejected("synthetic seed omitted its projection") }
+        var creationDraft = BindingMapping.snapshot(seedSnapshot)
+        creationDraft.conversation = Conversation(id: "draft:real-create-gate", title: "Synthetic creation", updatedAtUnixMs: nil, runtimeID: "synthetic-codex", cwd: home.path)
+        creationDraft.messages = []; creationDraft.transcriptTurns = []; creationDraft.transcriptItems = []
+        creationDraft.transcriptOutline = []; creationDraft.transcriptMessageIdentities = []
+        creating.isDraft = true
+        creating.apply(creationDraft)
+        creating.started = true
+        let creationDraftID = creationDraft.conversation.id
+        let creationInput = ComposerModel()
+        device.composerInputs.bind(creationDraftID, input: creationInput)
+        wait("creation input binding") { device.composerInputs.inputID(for: creationDraftID) == creationInput.id }
+        let creationTicket = SendProjectionTicket(scope: creating.projectionScope(), input: creationInput, device: device)
+        let releaseCreation = DispatchSemaphore(value: 0)
+        var creationEvents = 0, creationReceipts = 0
+        let creationWatch = creating.composerEvents.sink { if case .created = $0 { creationEvents += 1 } }
+        creating.enqueue({
+            try transport.createAndSend(runtimeID: "synthetic-codex", cwd: home.path, selection: native,
+                turn: ComposedTurn(text: "one created submission", effort: nil, permissionMode: nil, attachments: [])) { created in
+                    DispatchQueue.main.async {
+                        creating.publishCreatedIdentity(created, ticket: creationTicket, previous: creationDraftID)
+                    }
+                    _ = releaseCreation.wait(timeout: .now() + 20)
+                }
+        }, consumeReceipt: { result in
+            if case .success = result { creationReceipts += 1; creating.acceptedSubmissions &+= 1 }
+        }) { value in creating.applySnapshotResult(value, scope: creationTicket.scope) }
+        wait("created identity before Send") { !creating.isDraft && creationEvents == 1 }
+        let createdEpoch = creating.projectionEpoch
+        creating.needsResync = true
+        creating.pollProjection()
+        wait("Core poll between onCreated and Send") { !creating.pollPending && creating.projectionEpoch > createdEpoch }
+        require(creating.isLoading && creationReceipts == 0, "created identity and a consumed Core poll must precede Send receipt")
+        let promptsBeforeCreatedSend = try String(contentsOf: home.appendingPathComponent("prompt-wire"), encoding: .utf8).split(separator: "\n")
+        require(promptsBeforeCreatedSend.count == promptProcesses.count, "onCreated and Core poll must finish before created Send reaches the wire")
+        releaseCreation.signal()
+        wait("created Send receipt") { !creating.isLoading }
+        require(creationReceipts == 1 && creating.acceptedSubmissions == 1 && !creating.isDraft
+                && creating.loadedConversationID == creationTicket.createdID && creationEvents == 1, "created identity and Accepted must survive the intermediate Core poll")
+        let promptsAfterCreation = try String(contentsOf: home.appendingPathComponent("prompt-wire"), encoding: .utf8).split(separator: "\n")
+        require(promptsAfterCreation.count == promptProcesses.count + 1, "created Send must reach wire once, never replay")
+        creationWatch.cancel(); creating.close()
+        note("real createAndSend: onCreated identity → completed Core poll → exactly one Send wire/receipt")
+
+        let client = device.composerInputs
+        let newEntry = Self.draftConversationPrefix + "new-conversation"
+        let submittedChoices = ComposerTargetChoices(runtimeId: "synthetic-codex", runtimeOwnerId: client.ownerID, choices: [], choiceEdited: true)
+        let closedInput = ComposerModel()
+        closedInput.restoreSavedDraft(.init(text: "closed-create", attachments: []))
+        client.bind(newEntry, input: closedInput)
+        wait("closed creation source binding") { client.inputID(for: newEntry) == closedInput.id }
+        client.captureTarget(closedInput.id, choices: submittedChoices)
+        let closedCreation = ConversationStore(device: device)
+        closedCreation.modelCatalogs["synthetic-codex"] = .ready([])
+        closedCreation.isDraft = true; closedCreation.apply(creationDraft)
+        let closedTicket = SendProjectionTicket(scope: closedCreation.projectionScope(), input: closedInput, device: device)
+        let releaseClosedSend = DispatchSemaphore(value: 0)
+        var closedEvents = 0, closedReceipts = 0, promotionStagedOnce = false
+        let closedWatch = closedCreation.composerEvents.sink { if case .created = $0 { closedEvents += 1 } }
+        closedCreation.enqueue({
+            try transport.createAndSend(runtimeID: "synthetic-codex", cwd: home.path, selection: native,
+                turn: ComposedTurn(text: "closed-create", effort: nil, permissionMode: nil, attachments: [])) { created in
+                    DispatchQueue.main.async {
+                        closedCreation.close()
+                        closedCreation.publishCreatedIdentity(created, ticket: closedTicket, previous: creationDraftID)
+                        closedCreation.publishCreatedIdentity(created, ticket: closedTicket, previous: creationDraftID)
+                        if let id = closedTicket.createdID { promotionStagedOnce = client.pendingPromotions[id]?.choices == submittedChoices }
+                    }
+                    _ = releaseClosedSend.wait(timeout: .now() + 20)
+                }
+        }, consumeReceipt: { result in
+            if case .success = result { closedReceipts += 1; closedCreation.acceptedSubmissions &+= 1 }
+        }) { value in closedCreation.applySnapshotResult(value, scope: closedTicket.scope) }
+        closedInput.clear(submitted: "closed-create", attachments: [])
+        client.consumeNewConversationInput(closedInput)
+        wait("closed onCreated promoted without a window subscriber") {
+            guard let id = closedTicket.createdID else { return false }
+            return client.state?.creations.contains { $0.conversationId == id && $0.inputId == closedInput.id.uuidString.lowercased() } == true
+                && client.pendingPromotions[id] == nil
+        }
+        guard let closedID = closedTicket.createdID else { throw TransportError.rejected("closed create lost identity") }
+        require(promotionStagedOnce && client.targetChoices(for: closedID) == submittedChoices, "duplicate created callback must not consume/overwrite submitted choices twice")
+        require(closedEvents == 0 && closedCreation.loadedConversationID == creationDraftID, "closed creation must not reopen the old view or emit navigation")
+        releaseClosedSend.signal()
+        wait("closed created Send receipt") { !closedCreation.isLoading }
+        require(closedReceipts == 1 && closedCreation.acceptedSubmissions == 1
+                && client.state?.creations.filter { $0.conversationId == closedID }.count == 1, "closed operation must retain one accepted receipt and one promotion")
+        closedWatch.cancel()
+
+        let failureInput = ComposerModel()
+        let failureText = "created-failure"
+        failureInput.restoreSavedDraft(.init(text: failureText, attachments: []))
+        client.bind(newEntry, input: failureInput)
+        wait("failed creation source binding") { client.inputID(for: newEntry) == failureInput.id }
+        client.captureTarget(failureInput.id, choices: submittedChoices)
+        let failedCreation = ConversationStore(device: device)
+        failedCreation.modelCatalogs["synthetic-codex"] = .ready([])
+        var failureDraft = creationDraft
+        failureDraft.runState = .idle
+        failureDraft.actions = ConversationActions(inputAccess: .editable, canSend: true, canCancel: false, canSwitch: true)
+        failedCreation.isDraft = true; failedCreation.apply(failureDraft)
+        var failedID: String?, failedReceipts = 0
+        var clearedRevision: UInt64?
+        require(failedCreation.send(text: failureText, next: target, input: failureInput, onFailure: { createdID in
+            failedID = createdID; failedReceipts += 1
+            failureInput.restoreFailed(failureText, attachments: [], revision: clearedRevision)
+            client.save(failureInput.id, draft: failureInput.savedDraft)
+            client.restoreConsumedNewConversationInput(failureInput, whileCreating: failedCreation, createdConversationID: createdID)
+        }), "created-failure Send must be admitted")
+        failureInput.clear(submitted: failureText, attachments: []); clearedRevision = failureInput.revision
+        client.consumeNewConversationInput(failureInput)
+        let untouchedNewInput = client.inputID(for: newEntry)
+        failedCreation.close()
+        wait("created then native Send rejection") { !failedCreation.isLoading && failedReceipts == 1 }
+        guard let failedID else { throw TransportError.rejected("failed Send omitted its created identity") }
+        wait("failed created input remains associated and saved") {
+            client.state?.creations.contains { $0.conversationId == failedID && $0.inputId == failureInput.id.uuidString.lowercased() } == true
+                && client.pendingPromotions[failedID] == nil && !client.isDirty(failureInput.id)
+        }
+        require(failedCreation.isUnsentConversation && failedCreation.loadedConversationID == creationDraftID, "closed failure must not reopen presentation")
+        require(client.inputID(for: newEntry) == untouchedNewInput && untouchedNewInput != failureInput.id,
+                "created failure must not restore the consumed input to a fresh creation entry even when the closed Store looks draft")
+        require(client.inputID(for: failedID) == failureInput.id && client.targetChoices(for: failedID) == submittedChoices
+                && client.draft(failureInput.id)?.text == failureText && failedCreation.acceptedSubmissions == 0,
+                "created identity, submitted choices and failed draft must survive independently of the closed view")
+        let promptsAfterClosedCases = try String(contentsOf: home.appendingPathComponent("prompt-wire"), encoding: .utf8).split(separator: "\n")
+        require(promptsAfterClosedCases.count == promptsAfterCreation.count + 2, "closed success and created rejection each dispatch once without recreation or resend")
+        note("closed before onCreated: one operation-owned input/choice promotion; created Send rejection preserves primary identity and failed draft, not a new creation")
+
+        let fixture = ConversationStore(device: DeviceStore(preview: true))
+        var base = fixture.snapshot!
+        base.cursor = TranscriptCursor(generation: 41, sequence: 10)
+        fixture.apply(base)
+        let old = fixture.projectionScope()
+        var newer = base; newer.cursor = TranscriptCursor(generation: 41, sequence: 12)
+        fixture.consumePolledSnapshot(.complete(newer), scope: old)
+        fixture.consumePolledSnapshot(.complete(base), scope: old)
+        require(fixture.snapshot?.cursor == newer.cursor, "late full cannot roll back sequence")
+        var delta = newer; delta.cursor = TranscriptCursor(generation: 41, sequence: 13)
+        fixture.consumePolledSnapshot(.changes(base: newer.cursor!, header: delta, order: newer.messages.map(\.id), changed: []), scope: fixture.projectionScope())
+        fixture.consumePolledSnapshot(.changes(base: base.cursor!, header: base, order: [], changed: []), scope: old)
+        require(fixture.snapshot?.cursor == delta.cursor && fixture.needsResync, "late delta must not merge into replaced base")
+        var otherGeneration = base; otherGeneration.cursor = TranscriptCursor(generation: 1, sequence: 99)
+        require(!fixture.installProjection(otherGeneration, scope: old), "opaque generations cannot be numerically ordered")
+        require(!fixture.installProjection(nil, scope: old) && fixture.snapshot != nil, "stale nil cannot reset projection")
+        fixture.needsResync = false
+        fixture.consumePolledSnapshot(.absent, scope: old)
+        require(fixture.snapshot?.cursor == delta.cursor && fixture.needsResync, "stale polled absence must preserve the newer view and request resync")
+        let absentFixture = ConversationStore(device: DeviceStore(preview: true))
+        var absentBase = base; absentBase.pendingInteractions = [interaction]
+        absentFixture.apply(absentBase)
+        let absentScope = absentFixture.projectionScope()
+        absentFixture.consumePolledSnapshot(.unchanged, scope: absentScope)
+        require(absentFixture.loadedConversationID != nil && absentFixture.pendingInteractions == [interaction], "unchanged must retain projection and interaction")
+        absentFixture.consumePolledSnapshot(.absent, scope: absentScope)
+        require(absentFixture.loadedConversationID == nil && absentFixture.pendingInteractions.isEmpty, "fresh polled absence must clear projection and interaction")
+        absentFixture.close()
+        let fresh = fixture.projectionScope()
+        otherGeneration.contextRuntimeID = "synthetic-new-tail"
+        require(fixture.installProjection(otherGeneration, scope: fresh), "unchanged base permits Core context/generation transition")
+        require(fixture.projectionScope().source == base.conversation.runtimeID && fixture.projectionRuntimeID == "synthetic-new-tail", "poll/resync addresses logical source, not obsolete tail")
+        note("full/delta ordering, stale nil, opaque-generation CAS, logical-source versus tail context")
+
+        var draft = base
+        draft.conversation = Conversation(id: "draft:synthetic-two-phase", title: "Synthetic draft", updatedAtUnixMs: nil, runtimeID: base.conversation.runtimeID, cwd: nil)
+        fixture.isDraft = true
+        fixture.apply(draft)
+        let ticket = SendProjectionTicket(scope: fixture.projectionScope())
+        fixture.publishCreatedIdentity(seed, ticket: ticket, previous: draft.conversation.id)
+        let createdBase = ticket.scope
+        var polled = fixture.snapshot!
+        polled.cursor = TranscriptCursor(generation: createdBase.cursor!.generation, sequence: createdBase.cursor!.sequence + 5)
+        fixture.consumePolledSnapshot(.complete(polled), scope: createdBase)
+        fixture.applySnapshotResult(seed, scope: ticket.scope)
+        require(!fixture.isDraft && fixture.loadedConversationID == seed.snapshot!.conversation.id
+                     && ticket.createdID == fixture.loadedConversationID && fixture.snapshot?.cursor == polled.cursor,
+                     "created identity survives onCreated → poll → final Send without using draft or completion-time base")
+        note("Create two-stage ticket: created identity is published before poll; late Send snapshot cannot revert poll")
+
+        let deferred = DeliveredMessage(stamp: 7, completed: true, id: "synthetic-payload", role: .assistant, timestampUnixMs: nil,
+            blocks: [.reasoning(summary: "synthetic", text: .deferred(bytes: 100))])
+        func setPayloadFixtureMessages(_ messages: [DeliveredMessage], in value: inout ConversationSnapshot) {
+            // These independent reasoning messages have no turn. Like a Core
+            // delivery, each still needs a stable presentation ID and item.
+            value.messages = messages
+            value.transcriptTurns = []
+            value.transcriptOutline = []
+            value.transcriptMessageIdentities = messages.map { .init(id: "payload-presentation:" + $0.id, messageId: $0.id) }
+            value.transcriptItems = messages.map { .message(id: "payload-presentation:" + $0.id, messageId: $0.id) }
+        }
+        var payloadView = polled
+        setPayloadFixtureMessages([deferred], in: &payloadView)
+        fixture.apply(payloadView)
+        let payloadScope = fixture.projectionScope(), payloadEpoch = fixture.projectionEpoch
+        var loaded = deferred; loaded.blocks = [.reasoning(summary: "synthetic", text: .inline(text: "complete payload"))]
+        fixture.consumePayloads(.success([loaded]), scope: payloadScope, stamps: [deferred.id: 7])
+        require(fixture.snapshot?.messages == [loaded] && fixture.projectionEpoch == payloadEpoch)
+        var changed = deferred; changed.stamp = 8
+        setPayloadFixtureMessages([changed], in: &payloadView)
+        fixture.apply(payloadView)
+        fixture.consumePayloads(.success([loaded]), scope: payloadScope, stamps: [deferred.id: 7])
+        require(fixture.snapshot?.messages == [changed], "payload stamp changes cannot receive old content")
+        setPayloadFixtureMessages([deferred], in: &payloadView)
+        payloadView.cursor = TranscriptCursor(generation: 987, sequence: 1)
+        fixture.apply(payloadView)
+        fixture.consumePayloads(.success([loaded]), scope: payloadScope, stamps: [deferred.id: 7])
+        require(fixture.snapshot?.messages == [deferred] && fixture.payloadDemand.contains(deferred.id), "new delivery generation may reuse a stamp and must retain viewport demand")
+        let previousContext = fixture.projectionScope()
+        payloadView.contextRuntimeID = "synthetic-payload-tail"
+        fixture.apply(payloadView)
+        fixture.consumePayloads(.success([loaded]), scope: previousContext, stamps: [deferred.id: 7])
+        require(fixture.snapshot?.messages == [deferred] && fixture.payloadDemand.contains(deferred.id), "old context payload cannot cross into new tail or discard the sole viewport demand")
+        note("payload: content stamp, delivery generation and context isolation; filling payload does not advance projection CAS epoch")
+
+        let bounded = ConversationStore(device: device)
+        bounded.modelCatalogs["synthetic-codex"] = .ready([])
+        bounded.payloadPending = true
+        var changingViewport = payloadView
+        for replacement in 0..<8 {
+            let messages = (0..<40).map { index in
+                var message = deferred
+                message.id = "viewport-\(replacement)-\(index)"
+                return message
+            }
+            setPayloadFixtureMessages(messages, in: &changingViewport)
+            bounded.apply(changingViewport)
+            require(bounded.payloadDemand.isEmpty, "replacing messages must remove obsolete queued demand even while a batch is in flight")
+            bounded.loadPayloads(messageIDs: changingViewport.messages.map(\.id) + ["not-in-projection"])
+            require(bounded.payloadDemand.count == 40, "busy demand must be bounded by the current projection, not accumulated request history")
+        }
+        setPayloadFixtureMessages([], in: &changingViewport)
+        bounded.apply(changingViewport)
+        require(bounded.payloadDemand.isEmpty, "removed messages cannot retain queued payload demand")
+        bounded.payloadPending = false; bounded.close()
+        note("payload demand: busy replacement retains only current deferred IDs; batch size is bounded at 32")
+
+        // Equal cursor header changes and payload fills have different CAS effects.
+        let equalScope = fixture.projectionScope()
+        var headerOnly = payloadView; headerOnly.conversation.title = "new header"
+        fixture.apply(headerOnly)
+        require(!fixture.installProjection(payloadView, scope: equalScope) && fixture.snapshot?.conversation.title == "new header")
+        let epoch = fixture.projectionEpoch
+        fixture.apply(otherGeneration, coreDelivery: false)
+        require(fixture.projectionEpoch == epoch)
+        fixture.apply(otherGeneration)
+        require(!fixture.baseIsCurrent(fresh))
+        let nav = fixture.projectionScope()
+        fixture.generation += 1
+        require(!fixture.installProjection(base, scope: nav))
+
+        // A late reply completion cannot clear a newer attempt for the same key.
+        let key = InteractionDraftKey(conversationID: fixture.loadedConversationID!, interactionID: interaction.id)
+        let oldAttempt = UUID(), newAttempt = UUID()
+        fixture.interactionReplyInFlight = (key, "new attempt", newAttempt, interaction)
+        fixture.replyAttempt = newAttempt
+        fixture.finishInteractionReply(.failure(TransportError.rejected("old failure")), interaction: interaction,
+            key: key, scope: fixture.projectionScope(), attempt: oldAttempt)
+        require(fixture.replyAttempt == newAttempt && fixture.interactionReplyInFlight?.attempt == newAttempt && fixture.interactionReplyFailures[key] == nil)
+        note("navigation invalidates late projections; old same-key reply attempt cannot clear or fail a newer attempt")
+
+        // Receipts settle even when a newer poll makes the operation's opaque
+        // generation snapshot unusable, and even when closure drops presentation.
+        let receiptStore = ConversationStore(device: device)
+        receiptStore.apply(base)
+        let release = DispatchSemaphore(value: 0)
+        var receipts = 0
+        receiptStore.enqueueSnapshot({
+            guard release.wait(timeout: .now() + 5) == .success else { throw TransportError.rejected("synthetic receipt release timed out") }
+            return SnapshotResult(snapshot: nil)
+        }, scope: receiptStore.projectionScope(), consumeReceipt: { result in
+            if case .success = result { receipts += 1 }
+        })
+        receiptStore.apply(newer)
+        receiptStore.close()
+        release.signal()
+        wait("late receipt") { !receiptStore.isLoading }
+        require(receipts == 1 && receiptStore.snapshot?.cursor == newer.cursor)
+        fixture.close()
+        note("business receipt settles exactly once before closed-view/stale-projection rejection")
+    }
+
     /// Native state/queue regression for cold-open recovery. All input is
     /// synthetic; the queue case owns only a transport in the supplied home.
     static func checkColdOpeningRetryLifecycle(home: URL) {
@@ -1885,8 +2775,94 @@ extension ConversationStore {
         note("PASS close: queued successful completion is discarded and no retry survives tab closure")
     }
 
+    /// Historical execution settings and a synthetic catalog drive the real
+    /// message-editor popover without reading or mutating a runtime.
+    static func inspectEditorVisualStates(_ inspect: (ConversationWindowModel, MessageEditingSession, String) -> Void) {
+        let matrix = CommandLine.arguments.contains("--editor-visual-matrix") || CommandLine.arguments.contains("--experience-message-editor-offscreen")
+        let requested = CommandLine.arguments.first(where: { $0.hasPrefix("--editor-visual-state=") }).map { String($0.dropFirst("--editor-visual-state=".count)) }
+        for state in ["empty", "long", "failed", "missing-model", "missing-runtime", "fork-only", "legacy-model", "legacy-model-loading", "legacy-model-missing", "catalog-loading", "busy", "failure", "failure-target-changed", "placement", "history-changed", "long-floating", "busy-floating", "failure-floating"] {
+            if let requested { if state != requested { continue } }
+            else if !matrix, state != "long", state != "failed" { continue }
+            let device = DeviceStore(preview: true)
+            let workspace = ConversationWindowModel(application: device, kind: .workspace)
+            let source = workspace.focused.store
+            var value = device.previewSnapshots["sample-0"]!
+            let message = value.messages.first(where: { $0.role == .user })!
+            let legacy = state.hasPrefix("legacy-model")
+            let selection: ModelSelection = legacy ? .managed(modelRecordKey: "synthetic-editor-route")
+                : .native(providerId: "sample", modelId: "visual-editor-model")
+            let recordedModel = legacy ? "GPT-6.1-Sol（ChatGPT1）" : "visual-editor-model"
+            value.transcriptTurns = [.init(id: "editor-turn", userMessageId: message.id, workMessageIds: [], lastMessageId: nil, replyStartBlock: 0, durationMs: nil, isRunning: false, canFork: false, settings: .init(runtimeId: value.contextRuntimeID, model: recordedModel, modelSelection: legacy ? nil : selection), usage: nil)]
+            device.keepPreviewSnapshot(value)
+            source.isDraft = false
+            source.apply(value)
+            let session = MessageEditingSession(source: source, request: .init(message: message, conversationID: value.conversation.id, inPlace: state != "fork-only", isLast: state != "placement", revision: ["history-changed", "failure-target-changed"].contains(state) ? "synthetic-old-revision" : nil), presentation: state.hasSuffix("floating") ? .floating : .sheet)
+            session.start()
+            let store = session.store
+            if state == "failed" { store.modelCatalogs[value.contextRuntimeID] = .failed("模型目录读取失败（合成错误）。请重新读取模型后重试。") }
+            else { store.modelCatalogs[value.contextRuntimeID] = .ready([.init(selection: selection, name: "视觉验收长模型 " + String(repeating: "Very Long Model Name ", count: 10), reasoningEfforts: ["low", "medium", "high"])]) }
+            store.refreshNextTurn()
+            if legacy {
+                store.modelCatalogs[value.contextRuntimeID] = .loading
+                precondition(session.next?.chosenModelUnavailable == false, "目录加载不能被判成模型不可用")
+                precondition(session.target.issue?.hasPrefix("正在确认原消息的模型") == true,
+                             "尚未恢复历史模型时不可悄悄按默认模型发送")
+                store.modelCatalogs[value.contextRuntimeID] = .ready([.init(selection: selection, name: recordedModel, reasoningEfforts: [])])
+                precondition(session.next?.model == selection && session.next?.chosenModelUnavailable == false,
+                             "历史显示名应恢复为目录中的可靠选择，而非伪造原生ID")
+                if state == "legacy-model-loading" {
+                    store.modelCatalogs[value.contextRuntimeID] = .loading
+                    let context = ComposerContext(tab: session.tab, model: session.editor, editingTarget: session.target)
+                    precondition(context.selectedModelName == recordedModel && !context.chosenModelUnavailable,
+                                 "确认原消息模型期间应保留记录名称，不能声称默认模型或不可用")
+                }
+                if state == "legacy-model-missing" {
+                    store.modelCatalogs[value.contextRuntimeID] = .ready([])
+                    precondition(session.next?.chosenModelUnavailable == true, "无法恢复历史模型时不得默认发送")
+                }
+            }
+            if state == "catalog-loading" {
+                let chosen = ModelSelection.native(providerId: "sample", modelId: "user-selected-model")
+                session.target.chooseModel(chosen)
+                store.modelCatalogs[value.contextRuntimeID] = .loading
+                precondition(session.next?.choice.model == chosen && session.next?.chosenModelUnavailable == false,
+                             "异步目录准备必须保留用户选择，loading不能判不可用")
+            }
+            if state == "empty" {
+                session.editor.receiveDraft(.init(text: "", attachments: []))
+                precondition(session.editor.isEmpty)
+            }
+            if state.hasPrefix("long") {
+                let text = String(repeating: "长正文保持原生字体与内边距，增长到上限后滚动。\n", count: 30)
+                session.editor.receiveDraft(.init(text: text, attachments: []))
+                precondition(session.editor.submission == text)
+            }
+            if state == "missing-model" {
+                let other = ModelSelection.native(providerId: "sample", modelId: "visual-removed-model")
+                store.modelCatalogs[value.contextRuntimeID] = .ready([.init(selection: other, name: "即将移除的模型", reasoningEfforts: [])])
+                session.target.chooseModel(other)
+                precondition(session.choices.choices[value.contextRuntimeID]?.model == other)
+                store.modelCatalogs[value.contextRuntimeID] = .ready([])
+                precondition(session.next?.chosenModelUnavailable == true)
+            }
+            if state == "missing-runtime" {
+                precondition(session.next != nil)
+                device.deleteRuntimeInstance(id: value.contextRuntimeID)
+                precondition(session.next == nil, "Removed runtimes must not resolve an editor execution target")
+                precondition(!session.canSubmit)
+            }
+            session.prepareVisualCheckState(state)
+            if state == "failure-target-changed" {
+                precondition(session.historyNotice != nil && session.failure != nil)
+                precondition(session.noticeText == session.failure && session.noticeHelp == session.failure,
+                             "回退后目标变化不能遮住尚未发送的真实失败详情")
+            }
+            inspect(workspace, session, state)
+        }
+    }
+
     /// Isolated fixture for the queue editor's attachment and receipt states.
-    static func inspectQueuedEditor(_ inspect: (ConversationWindowModel, QueuedMessage, (QueuedMessage?, Bool) -> Void, (RuntimeModelCatalog?) -> Void) -> Void) {
+    static func inspectQueuedEditor(_ inspect: (ConversationWindowModel, QueuedMessage, (QueuedMessage?, ContextPreparation?, Bool) -> Void, (RuntimeModelCatalog?) -> Void) -> Void) {
         let window = ConversationWindowModel(application: DeviceStore(preview: true), kind: .workspace)
         let store = window.focused.store
         var snapshot = store.device.previewSnapshots["sample-0"]!
@@ -1902,11 +2878,171 @@ extension ConversationStore {
         snapshot.followUp.paused = .turnStopped
         store.apply(snapshot)
         store.loadModelCatalog(runtimeID: runtimeID)
-        inspect(window, message, { item, busy in
+        inspect(window, message, { item, preparation, busy in
             snapshot.followUp.queue = item.map { [$0] } ?? []
+            snapshot.followUp.contextPreparation = preparation
             store.apply(snapshot)
             store.isLoading = busy
         }, { store.modelCatalogs[runtimeID] = $0 })
+    }
+
+    /// Full composer projections for native visual state-transition checks.
+    static func inspectComposerVisualStates(_ inspect: (ConversationWindowModel, String, ConversationSnapshot) -> Void) {
+        let window = ConversationWindowModel(application: DeviceStore(preview: true), kind: .workspace)
+        let store = window.focused.store
+        let base = store.device.previewSnapshots["sample-0"]!
+        for name in ["idle", "running", "compacting", "queue", "paused", "background", "external", "child", "compacted", "model-missing", "model-failed"] {
+            var value = base
+            value.conversation.title = "较长会话标题：检查标签截断后完整标题仍可查看，Composer 视觉验收"
+            value.followUp = .init()
+            value.runState = .idle
+            value.actions = .init(inputAccess: .editable, canSend: true, canCancel: false, canSwitch: true)
+            if ["running", "compacting", "queue", "paused", "background"].contains(name) {
+                value.followUp.canQueue = true
+                value.followUp.queue = (0..<5).map { .init(id: "visual-\($0)", text: "排队消息 \($0)：" + String(repeating: "较长的内容用于检查截断与布局。", count: 8), attachments: $0 == 1 ? ["/tmp/synthetic-attachment.md"] : []) }
+            }
+            if ["running", "queue", "child"].contains(name) { value.runState = .running; value.actions.canCancel = true }
+            if name == "compacting" { value.followUp.isCompacting = true }
+            if name == "paused" { value.followUp.paused = .sendFailed }
+            if name == "background" { value.followUp.waiting = .subAgents; value.followUp.canStopSubAgents = true }
+            if name == "external" { value.runState = .elsewhere; value.actions.inputAccess = .readOnly; value.actions.canSend = false }
+            if name == "child" { value.conversation.parentConversationID = "synthetic-parent"; value.actions.inputAccess = .readOnly; value.actions.canSend = false }
+            value.usage.contextTokens = name == "compacted" ? 12_000 : 150_000
+            value.usage.contextWindow = 200_000
+            if name == "compacted" || name == "child" {
+                value.messages = [.init(id: "parent-input", role: .user, blocks: [.text(text: "父 Agent 指令：核对这份设计并指出遗漏。")])]
+                if name == "compacted" {
+                    value.messages += [.init(id: "compact-notice", role: .client, blocks: [.text(text: "上下文已压缩")]), .init(id: "after-compact", role: .assistant, blocks: [.text(text: "压缩后继续核对，之前的用户消息仍保留。")])]
+                }
+                value.transcriptTurns = []
+                value.transcriptItems = value.messages.map { .message(id: $0.id, messageId: $0.id) }
+                value.transcriptMessageIdentities = value.messages.map { .init(id: $0.id, messageId: $0.id) }
+            }
+            store.isDraft = false
+            store.apply(value)
+            if name == "model-failed" {
+                ComposerContext(tab: window.focused, model: window.composer(for: window.focused)).selectModel(nil)
+                store.modelCatalogs[value.contextRuntimeID] = .failed("无法读取模型目录（合成失败），请重试。")
+                store.refreshNextTurn()
+            }
+            if name == "model-missing" {
+                let selection = ModelSelection.native(providerId: "sample", modelId: "synthetic-retired-model")
+                store.modelCatalogs[value.contextRuntimeID] = .ready([.init(selection: selection, name: String(repeating: "Long model name ", count: 8), reasoningEfforts: [])])
+                store.refreshNextTurn()
+                ComposerContext(tab: window.focused, model: window.composer(for: window.focused)).selectModel(selection)
+                precondition(store.nextTurn?.choice.model == selection, "Must select an actually offered model before removal")
+                store.modelCatalogs[value.contextRuntimeID] = .ready([])
+                store.refreshNextTurn()
+                precondition(store.nextTurn?.chosenModelUnavailable == true, "Removed selected model must retain unavailable state")
+            }
+            inspect(window, name, value)
+        }
+    }
+
+    /// Synthetic child projections exercise the same parent/child controls as
+    /// the core's delivered snapshots, without opening a runtime or history.
+    static func checkSubAgentControls(_ inspect: (ConversationWindowModel, Bool) -> Void) {
+        let device = DeviceStore(preview: true)
+        let window = ConversationWindowModel(application: device, kind: .workspace)
+        let store = window.focused.store
+        var parent = device.previewSnapshots["sample-0"]!
+        parent.runState = .idle
+        parent.actions.canCancel = false
+        parent.followUp.canStopSubAgents = true
+        parent.subAgents = [.init(conversationId: "synthetic-pi-child", title: "Pi advisor", failed: false)]
+        parent.collaborators = []
+        store.isDraft = false
+        store.apply(parent)
+        precondition(store.hasLinkedAgents && LinkedAgent.all(of: store).contains { $0.id == "synthetic-pi-child" })
+        precondition(!store.canCancel)
+        inspect(window, false)
+
+        var readOnlyParent = parent
+        readOnlyParent.actions.inputAccess = .readOnly
+        store.apply(readOnlyParent)
+        let readOnlyContext = ComposerContext(tab: window.focused, model: window.composer(for: window.focused))
+        precondition(!readOnlyContext.inputEditable && readOnlyContext.executionChoicesEditable && readOnlyContext.canSwitchModel,
+                     "非子会话的文本只读不能收紧原有的本地执行配置资格")
+        store.apply(parent)
+        store.selectComposerRuntime("sample-review")
+        var child = parent
+        child.conversation = Conversation(id: "synthetic-pi-child", title: "Pi advisor", updatedAtUnixMs: nil,
+            runtimeID: parent.conversation.runtimeID, cwd: parent.conversation.cwd,
+            parentConversationID: parent.conversation.id)
+        child.subAgents = []
+        child.followUp = .init()
+        child.actions.inputAccess = .readOnly
+        child.actions.canSend = false
+        child.actions.canCancel = true
+        child.runState = .running
+        let recordedModel = ModelSelection.native(providerId: "sample", modelId: "child-recorded-model")
+        child.transcriptTurns = [.init(id: "child-recorded-turn", userMessageId: "child-input", workMessageIds: [],
+            lastMessageId: nil, replyStartBlock: 0, durationMs: nil, isRunning: true, canFork: false,
+            outcome: nil, settings: .init(runtimeId: child.contextRuntimeID, model: "child-recorded-model", effort: "child-recorded-effort", modelSelection: recordedModel), usage: nil)]
+        store.apply(child)
+        precondition(store.hasLinkedAgents && store.canCancel && !store.canSend && !store.draftEditable)
+        let input = window.composer(for: window.focused)
+        let context = ComposerContext(tab: window.focused, model: input)
+        precondition(window.composerOwner(for: window.focused) == nil && input === window.focused.composer)
+        precondition(context.nextTurnRuntimeID == child.contextRuntimeID && context.nextTurnModel == recordedModel)
+        precondition(context.currentEffort == "child-recorded-effort" && !context.canSwitchModel && !context.inputEditable)
+        let before = device.composerInputs.state
+        context.selectNextTurnRuntime("sample-review")
+        context.selectModel(.managed(modelRecordKey: "sample-model"))
+        context.selectEffort("high")
+        context.selectPermissionMode(nil)
+        precondition(device.composerInputs.state == before && store.nextTurn == context.nextTurn,
+                     "只读子会话必须只显示自己的记录，不保存输入或执行选择")
+        inspect(window, true)
+        child.actions.canCancel = false
+        child.runState = .elsewhere
+        store.apply(child)
+        precondition(!store.canCancel, "外部进程或没有精确停止能力的子会话不能伪造停止入口")
+        FileHandle.standardError.write(Data("PASS child controls: parent links, running child stop, read-only input, external child not stoppable\n".utf8))
+    }
+
+    /// Synthetic pending operation; the observer presses the production native
+    /// stop button while the ordinary command queue is occupied.
+    static func checkPendingSendCancellation(_ inspect: (ConversationWindowModel) -> Void) {
+        let window = ConversationWindowModel(application: DeviceStore(preview: true), kind: .workspace)
+        let store = window.focused.store
+        let cancellation = VeluneSendCancellation()
+        store.pendingSendCancellation = cancellation
+        store.executionStarting = true
+        store.isLoading = true
+        store.composerRequest = .sending
+        precondition(store.canCancel && !store.canSend)
+        inspect(window)
+        precondition(cancellation.isCancelled() && store.isStopping && !store.canCancel,
+                     "发送等待期间原生停止按钮必须直接设置取消信号，不能等待操作队列")
+        if let value = store.snapshot { store.apply(value) }
+        precondition(store.isStopping, "创建会话的迟到空闲快照不能撤销取消意图")
+        store.pendingSendCancellation = nil
+        store.executionStarting = false
+        store.isLoading = false
+        store.stopRequested = false
+        store.composerRequest = nil
+        FileHandle.standardError.write(Data("PASS pending send: native stop remains enabled during loading, cancellation immediate and late idle snapshot preserved\n".utf8))
+    }
+
+    /// Check-only execution facts for a non-preview submission fixture. The
+    /// in-memory input authority and shared resolver prepare a real target
+    /// projection; empty native catalogs prevent any runtime transport call.
+    func prepareSyntheticComposerTargetForAdmissionCheck() {
+        precondition(!isPreview && !started && device.composerInputs.ownerID == "preview"
+                     && device.composerInputs.state == nil && composerTargetRequestID == nil
+                     && modelCatalogRequests.isEmpty,
+                     "合成提交检查不能混用真实输入权威或在途运行时请求")
+        precondition(device.runtimeTypes.allSatisfy { !$0.sessionOptions },
+                     "合成提交检查不能触发原生会话选项请求")
+        for runtime in device.enabledRuntimeInstances { modelCatalogs[runtime.id] = .ready([]) }
+        guard let request = composerTargetRequest else {
+            preconditionFailure("合成提交检查必须先采纳完整会话快照")
+        }
+        preparePreviewComposerTarget(request)
+        precondition(composerTargetIssue == nil && composerTargetRequestID == nil
+                     && modelCatalogRequests.isEmpty,
+                     "合成目标必须通过原有执行配置解析且不启动运行时请求")
     }
 
     /// The frontend must dispatch while the source runs, not retain a hidden
@@ -1951,22 +3087,33 @@ extension ConversationStore {
         let device = DeviceStore(preview: true)
         let store = ConversationStore(device: device)
         let source = device.previewSnapshots["sample-0"]!
+        let destination = device.previewSnapshots["sample-2"]!
+        let targetRuntime = destination.contextRuntimeID
+        precondition(targetRuntime != source.contextRuntimeID, "目录准入检查必须区分来源和目标运行时")
         store.apply(source)
         store.modelCatalogs.removeAll()
-        let targetRuntime = "sample-review"
-        store.pendingConversationID = "synthetic-opening-destination"
+        // Mirror production navigation: the selected destination changes while
+        // the source snapshot remains visible until the open result arrives.
+        store.selectedConversationID = destination.conversation.id
+        store.pendingConversationID = destination.conversation.id
         store.loadModelCatalog(runtimeID: targetRuntime)
-        precondition(store.modelCatalogs[targetRuntime] == nil, "打开会话前不应启动旧输入触发的模型目录")
-        store.nextTurnRuntimeID = targetRuntime
-        precondition(store.modelCatalogs[targetRuntime] == nil, "加载中的目标选择不应阻塞历史打开")
+        precondition(store.modelCatalogs.isEmpty, "打开会话前不应启动旧输入触发的模型目录")
+        store.selectComposerRuntime(targetRuntime)
+        precondition(store.modelCatalogs.isEmpty && store.nextTurn == nil,
+                     "加载中的目标选择不应阻塞历史打开或借用来源会话的执行配置")
+        store.apply(destination)
+        precondition(store.modelCatalogs.isEmpty, "目标快照到达但打开尚未结束时不能提前启动模型目录")
         store.deferredSelection = ("synthetic-next-destination", .new)
         store.finishConversationLoading()
-        precondition(store.modelCatalogs[targetRuntime] == nil, "已有更新导航时不能先排入旧目标模型目录")
+        precondition(store.modelCatalogs.isEmpty, "已有更新导航时不能先排入旧目标模型目录")
         store.deferredSelection = nil
         store.finishConversationLoading()
+        precondition(store.loadedConversationID == destination.conversation.id && store.nextTurn?.runtimeId == targetRuntime,
+                     "打开完成后必须通过目标权威配置解析实际执行运行时")
         guard case .ready? = store.modelCatalogs[targetRuntime] else {
             preconditionFailure("会话打开完成后应加载实际目标运行时的模型目录")
         }
+        precondition(store.modelCatalogs[source.contextRuntimeID] == nil, "完成目标打开不能补启动来源会话的模型目录")
         FileHandle.standardError.write(Data("PASS conversation opening: retained snapshot cannot start a catalog ahead of open; destination catalog loads after opening\n".utf8))
         checkOpeningFailureRecovery()
     }
@@ -2072,8 +3219,9 @@ extension ConversationStore {
         }
         func apply(_ value: DeliveredSnapshot) { store.apply(BindingMapping.snapshot(value)) }
         func enqueueFixture(_ operation: @escaping () throws -> SnapshotResult, consumeReceipt: @escaping (Result<SnapshotResult, Error>) -> Void) {
+            let scope = store.projectionScope()
             store.enqueuePreparedOperation(operation, consumeReceipt: consumeReceipt) { value in
-                store.applySnapshotResult(value)
+                store.applySnapshotResult(value, scope: scope)
             }
         }
         func receipt(_ id: String, _ value: SnapshotResult, beforeProjection: (() -> Void)? = nil) {
@@ -2239,93 +3387,4 @@ extension ConversationStore {
         precondition(!MacNativePersistenceGate.isEnabled && !store.started && !window.acceptsWorkspacePersistence)
         store.close(); window.list.close()
     }
-}
-
-@MainActor extension ConversationStore {
-    /// Historical execution settings and a synthetic catalog drive the real
-    /// message-editor popover without reading or mutating a runtime.
-    static func inspectEditorVisualStates(_ inspect: (ConversationWindowModel, MessageEditingSession, String) -> Void) {
-        let matrix = CommandLine.arguments.contains("--editor-visual-matrix") || CommandLine.arguments.contains("--experience-message-editor-offscreen")
-        let requested = CommandLine.arguments.first(where: { $0.hasPrefix("--editor-visual-state=") }).map { String($0.dropFirst("--editor-visual-state=".count)) }
-        for state in ["empty", "long", "failed", "missing-model", "missing-runtime", "fork-only", "legacy-model", "legacy-model-loading", "legacy-model-missing", "catalog-loading", "busy", "failure", "failure-target-changed", "placement", "history-changed", "long-floating", "busy-floating", "failure-floating"] {
-            if let requested { if state != requested { continue } }
-            else if !matrix, state != "long", state != "failed" { continue }
-            let device = DeviceStore(preview: true)
-            let workspace = ConversationWindowModel(application: device, kind: .workspace)
-            let source = workspace.focused.store
-            var value = device.previewSnapshots["sample-0"]!
-            let message = value.messages.first(where: { $0.role == .user })!
-            let legacy = state.hasPrefix("legacy-model")
-            let selection: ModelSelection = legacy ? .managed(modelRecordKey: "synthetic-editor-route")
-                : .native(providerId: "sample", modelId: "visual-editor-model")
-            let recordedModel = legacy ? "GPT-6.1-Sol（ChatGPT1）" : "visual-editor-model"
-            value.transcriptTurns = [.init(id: "editor-turn", userMessageId: message.id, workMessageIds: [], lastMessageId: nil, replyStartBlock: 0, durationMs: nil, isRunning: false, canFork: false, settings: .init(runtimeId: value.contextRuntimeID, model: recordedModel, modelSelection: legacy ? nil : selection), usage: nil)]
-            device.keepPreviewSnapshot(value)
-            source.isDraft = false
-            source.apply(value)
-            let session = MessageEditingSession(source: source, request: .init(message: message, conversationID: value.conversation.id, inPlace: state != "fork-only", isLast: state != "placement", revision: ["history-changed", "failure-target-changed"].contains(state) ? "synthetic-old-revision" : nil), presentation: state.hasSuffix("floating") ? .floating : .sheet)
-            session.start()
-            let store = session.store
-            if state == "failed" { store.modelCatalogs[value.contextRuntimeID] = .failed("模型目录读取失败（合成错误）。请重新读取模型后重试。") }
-            else { store.modelCatalogs[value.contextRuntimeID] = .ready([.init(selection: selection, name: "视觉验收长模型 " + String(repeating: "Very Long Model Name ", count: 10), reasoningEfforts: ["low", "medium", "high"])]) }
-            store.refreshNextTurn()
-            if legacy {
-                store.modelCatalogs[value.contextRuntimeID] = .loading
-                precondition(session.next?.chosenModelUnavailable == false, "目录加载不能被判成模型不可用")
-                precondition(session.target.issue?.hasPrefix("正在确认原消息的模型") == true,
-                             "尚未恢复历史模型时不可悄悄按默认模型发送")
-                store.modelCatalogs[value.contextRuntimeID] = .ready([.init(selection: selection, name: recordedModel, reasoningEfforts: [])])
-                precondition(session.next?.model == selection && session.next?.chosenModelUnavailable == false,
-                             "历史显示名应恢复为目录中的可靠选择，而非伪造原生ID")
-                if state == "legacy-model-loading" {
-                    store.modelCatalogs[value.contextRuntimeID] = .loading
-                    let context = ComposerContext(tab: session.tab, model: session.editor, editingTarget: session.target)
-                    precondition(context.selectedModelName == recordedModel && !context.chosenModelUnavailable,
-                                 "确认原消息模型期间应保留记录名称，不能声称默认模型或不可用")
-                }
-                if state == "legacy-model-missing" {
-                    store.modelCatalogs[value.contextRuntimeID] = .ready([])
-                    precondition(session.next?.chosenModelUnavailable == true, "无法恢复历史模型时不得默认发送")
-                }
-            }
-            if state == "catalog-loading" {
-                let chosen = ModelSelection.native(providerId: "sample", modelId: "user-selected-model")
-                session.target.chooseModel(chosen)
-                store.modelCatalogs[value.contextRuntimeID] = .loading
-                precondition(session.next?.choice.model == chosen && session.next?.chosenModelUnavailable == false,
-                             "异步目录准备必须保留用户选择，loading不能判不可用")
-            }
-            if state == "empty" {
-                session.editor.receiveDraft(.init(text: "", attachments: []))
-                precondition(session.editor.isEmpty)
-            }
-            if state.hasPrefix("long") {
-                let text = String(repeating: "长正文保持原生字体与内边距，增长到上限后滚动。\n", count: 30)
-                session.editor.receiveDraft(.init(text: text, attachments: []))
-                precondition(session.editor.submission == text)
-            }
-            if state == "missing-model" {
-                let other = ModelSelection.native(providerId: "sample", modelId: "visual-removed-model")
-                store.modelCatalogs[value.contextRuntimeID] = .ready([.init(selection: other, name: "即将移除的模型", reasoningEfforts: [])])
-                session.target.chooseModel(other)
-                precondition(session.choices.choices[value.contextRuntimeID]?.model == other)
-                store.modelCatalogs[value.contextRuntimeID] = .ready([])
-                precondition(session.next?.chosenModelUnavailable == true)
-            }
-            if state == "missing-runtime" {
-                precondition(session.next != nil)
-                device.deleteRuntimeInstance(id: value.contextRuntimeID)
-                precondition(session.next == nil, "Removed runtimes must not resolve an editor execution target")
-                precondition(!session.canSubmit)
-            }
-            session.prepareVisualCheckState(state)
-            if state == "failure-target-changed" {
-                precondition(session.historyNotice != nil && session.failure != nil)
-                precondition(session.noticeText == session.failure && session.noticeHelp == session.failure,
-                             "回退后目标变化不能遮住尚未发送的真实失败详情")
-            }
-            inspect(workspace, session, state)
-        }
-    }
-
 }

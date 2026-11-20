@@ -1,6 +1,7 @@
 //! Historical projection through native Codex APIs and the installed DSH reader.
 use crate::{
     conversation::*,
+    creation::{DataRetention, Retained},
     native::{Error, Result as NativeResult},
 };
 use serde::Deserialize;
@@ -101,6 +102,8 @@ pub struct History {
     pub cwd: Option<String>,
     pub messages: Vec<Message>,
     #[serde(default)]
+    pub pending_interactions: Vec<RuntimeInteraction>,
+    #[serde(default)]
     pub executions: Executions,
     /// The native history ends with a stopped or failed continuable turn.
     #[serde(default)]
@@ -184,6 +187,26 @@ fn execute_before(
     native_ids: &[String],
     before_message_id: Option<&str>,
 ) -> Result<Vec<u8>, HistoryError> {
+    execute_selection(
+        config,
+        operation,
+        runtime_id,
+        native_id,
+        native_ids,
+        before_message_id,
+        &[],
+    )
+}
+#[allow(clippy::too_many_arguments)]
+fn execute_selection(
+    config: &HistoryConfig,
+    operation: &str,
+    runtime_id: &str,
+    native_id: Option<&str>,
+    native_ids: &[String],
+    before_message_id: Option<&str>,
+    without_message_ids: &[String],
+) -> Result<Vec<u8>, HistoryError> {
     if !matches!(config.provider.as_str(), "deepseek" | "claude-code") {
         return Err(HistoryError::new(
             HistoryFailureKind::UnsupportedProvider,
@@ -204,7 +227,7 @@ fn execute_before(
             ));
         }
     }
-    let request = json!({"operation":operation,"provider":config.provider,"home":config.home,"roots":[config.root],"runtimeId":runtime_id,"nativeId":native_id,"nativeIds":native_ids,"beforeMessageId":before_message_id});
+    let request = json!({"operation":operation,"provider":config.provider,"home":config.home,"roots":[config.root],"runtimeId":runtime_id,"nativeId":native_id,"nativeIds":native_ids,"beforeMessageId":before_message_id,"withoutMessageIds":without_message_ids});
     let input = serde_json::to_vec(&request).map_err(|error| {
         HistoryError::new(HistoryFailureKind::BridgeContract, "request")
             .with_detail(error.to_string())
@@ -245,7 +268,7 @@ fn execute_before(
 pub fn list(
     config: &HistoryConfig,
     runtime_id: &str,
-) -> Result<Vec<ConversationSummary>, HistoryError> {
+) -> Result<Retained<Vec<ConversationSummary>>, HistoryError> {
     if config.provider == "codex" {
         return crate::native::list_codex_history_at(
             config.kind,
@@ -260,6 +283,7 @@ pub fn list(
     }
     let bytes = execute(config, "list", runtime_id, None, &[])?;
     listed_summaries(&bytes, runtime_id, "list")
+        .map(|summaries| Retained::from_parts(summaries, DataRetention::default()))
 }
 fn listed_summaries(
     bytes: &[u8],
@@ -337,9 +361,9 @@ pub fn summaries(
 pub fn list_archived(
     config: &HistoryConfig,
     runtime_id: &str,
-) -> Result<Vec<ConversationSummary>, HistoryError> {
+) -> Result<Retained<Vec<ConversationSummary>>, HistoryError> {
     if config.provider != "codex" {
-        return Ok(Vec::new());
+        return Ok(Retained::from_parts(Vec::new(), DataRetention::default()));
     }
     crate::native::list_codex_history_at(
         config.kind,
@@ -358,7 +382,7 @@ pub fn read_summary(
     config: &HistoryConfig,
     runtime_id: &str,
     native_id: &str,
-) -> Result<Option<(ConversationSummary, bool)>, HistoryError> {
+) -> Result<Option<Retained<(ConversationSummary, bool)>>, HistoryError> {
     if config.provider != "codex" {
         return Ok(None);
     }
@@ -378,13 +402,113 @@ pub fn read_summary(
 pub fn export_context(
     config: &HistoryConfig,
     native_id: &str,
-) -> NativeResult<crate::import::Context> {
+) -> NativeResult<Retained<crate::import::Context>> {
     if config.provider == "codex" {
         return crate::native::export_codex_context(config, native_id);
     }
     let bytes = execute(config, "export_context", "", Some(native_id), &[])
         .map_err(|error| Error::new(error.full_message()))?;
     crate::import::Context::parse(&bytes)
+        .map(|context| Retained::from_parts(context, DataRetention::default()))
+}
+
+/// Exports Codex's effective native context with a generated portable summary
+/// inserted at its compaction boundary.
+pub fn export_codex_context_with_summary(
+    config: &HistoryConfig,
+    native_id: &str,
+    summary: &str,
+) -> NativeResult<Retained<crate::import::Context>> {
+    if config.provider != "codex" || config.kind != crate::version::RuntimeKind::Codex166 {
+        return Err(Error::with_code(
+            "portable compaction summaries are only supported for Codex",
+            "unsupported",
+        ));
+    }
+    crate::native::export_codex_context_with_summary(config, native_id, summary)
+}
+
+/// Whether Codex context export needs a portable summary for encrypted
+/// compaction. This metadata-only result does not expose rollout contents.
+pub fn codex_requires_portable_summary(
+    config: &HistoryConfig,
+    native_id: &str,
+) -> NativeResult<bool> {
+    if config.provider != "codex" || config.kind != crate::version::RuntimeKind::Codex166 {
+        return Err(Error::with_code(
+            "portable compaction summary checks are only supported for Codex",
+            "unsupported",
+        ));
+    }
+    crate::native::codex_requires_portable_summary(config, native_id)
+}
+
+/// Gets the effective Codex model/provider identity without exposing history.
+pub fn codex_thread_model(
+    config: &HistoryConfig,
+    native_id: &str,
+) -> NativeResult<Retained<(String, String)>> {
+    if config.provider != "codex" || config.kind != crate::version::RuntimeKind::Codex166 {
+        return Err(Error::with_code(
+            "Codex thread model lookup is only supported for Codex",
+            "unsupported",
+        ));
+    }
+    crate::native::codex_thread_model(config, native_id)
+}
+
+/// Lists the model options visible to a source Codex provider, including its
+/// reasoning efforts. Run on a history worker; the result is provider-scoped.
+pub fn codex_models_for_provider(
+    config: &HistoryConfig,
+    provider_id: &str,
+) -> NativeResult<Retained<Vec<crate::native::ModelOption>>> {
+    if config.provider != "codex" || config.kind != crate::version::RuntimeKind::Codex166 {
+        return Err(Error::with_code(
+            "Codex model catalog is only supported for Codex",
+            "unsupported",
+        ));
+    }
+    crate::native::codex_models_for_provider(config, provider_id)
+}
+
+/// Archives a crash-abandoned summary fork only when its exact marker,
+/// source lineage, registered thread identity, fingerprint and child-free
+/// state still match.
+pub fn recover_codex_handoff_summary(
+    config: &HistoryConfig,
+    source_native_id: &str,
+    work_id: &str,
+    expected_temporary_thread_id: Option<&str>,
+    expected_temporary_fingerprint: Option<&str>,
+) -> NativeResult<crate::native::HandoffSummaryRecovery> {
+    crate::native::recover_codex_handoff_summary(
+        config,
+        source_native_id,
+        work_id,
+        expected_temporary_thread_id,
+        expected_temporary_fingerprint,
+    )
+}
+
+/// Checks whether a prepared summary's source is still the same immediately
+/// before target creation. Run this RPC/file check on a history worker.
+pub fn verify_codex_handoff_summary_source(
+    config: &HistoryConfig,
+    source_native_id: &str,
+    source_provider_id: &str,
+    source_model_id: &str,
+    source_turn_id: &str,
+    source_fingerprint: &str,
+) -> NativeResult<bool> {
+    crate::native::verify_codex_handoff_summary_source(
+        config,
+        source_native_id,
+        source_provider_id,
+        source_model_id,
+        source_turn_id,
+        source_fingerprint,
+    )
 }
 
 /// Effective model context immediately before one exact native user message.
@@ -394,7 +518,7 @@ pub fn export_context_before(
     config: &HistoryConfig,
     native_id: &str,
     message_id: &str,
-) -> NativeResult<crate::import::Context> {
+) -> NativeResult<Retained<crate::import::Context>> {
     if config.provider == "codex" {
         return crate::native::export_codex_context_before(config, native_id, message_id);
     }
@@ -414,6 +538,64 @@ pub fn export_context_before(
     )
     .map_err(|error| Error::new(error.full_message()))?;
     crate::import::Context::parse_before(&bytes)
+        .map(|context| Retained::from_parts(context, DataRetention::default()))
+}
+
+/// Effective context with exactly one native user prompt omitted. Later
+/// replies and tool records remain native context; no model turn is started.
+pub fn export_context_without(
+    config: &HistoryConfig,
+    native_id: &str,
+    message_id: &str,
+) -> NativeResult<Retained<crate::import::Context>> {
+    if config.provider == "codex" {
+        return crate::native::export_codex_context_without(config, native_id, message_id);
+    }
+    if config.provider != "claude-code" {
+        return Err(Error::with_code(
+            "此运行时尚未接入单条消息导出",
+            "unsupported",
+        ));
+    }
+    let bytes = execute_before(
+        config,
+        "export_context_without",
+        "",
+        Some(native_id),
+        &[],
+        Some(message_id),
+    )
+    .map_err(|error| Error::new(error.full_message()))?;
+    crate::import::Context::parse(&bytes)
+        .map(|context| Retained::from_parts(context, DataRetention::default()))
+}
+
+pub fn export_context_without_many(
+    config: &HistoryConfig,
+    native_id: &str,
+    message_ids: &[String],
+) -> NativeResult<Retained<crate::import::Context>> {
+    if config.provider == "codex" {
+        return crate::native::export_codex_context_without_many(config, native_id, message_ids);
+    }
+    if config.provider != "claude-code" || message_ids.is_empty() {
+        return Err(Error::with_code(
+            "此运行时尚未接入精确消息导出",
+            "unsupported",
+        ));
+    }
+    let bytes = execute_selection(
+        config,
+        "export_context_without_many",
+        "",
+        Some(native_id),
+        &[],
+        None,
+        message_ids,
+    )
+    .map_err(|error| Error::new(error.full_message()))?;
+    crate::import::Context::parse(&bytes)
+        .map(|context| Retained::from_parts(context, DataRetention::default()))
 }
 
 /// Resolve an exact Codex thread and read its display history in one
@@ -422,7 +604,7 @@ pub fn read_codex_with_summary(
     config: &HistoryConfig,
     runtime_id: &str,
     native_id: &str,
-) -> Result<(ConversationSummary, History), HistoryError> {
+) -> Result<Retained<(ConversationSummary, History)>, HistoryError> {
     if config.provider != "codex" {
         return Err(HistoryError::new(
             HistoryFailureKind::UnsupportedProvider,
@@ -437,7 +619,7 @@ pub fn read(
     config: &HistoryConfig,
     runtime_id: &str,
     native_id: &str,
-) -> Result<History, HistoryError> {
+) -> Result<Retained<History>, HistoryError> {
     if config.provider == "codex" {
         return crate::native::read_codex_history_at(
             config.kind,
@@ -450,7 +632,10 @@ pub fn read(
         )
         .map_err(|error| native_history_error(error, "native_read"));
     }
-    Ok(read_bridge(config, runtime_id, native_id)?.history)
+    Ok(Retained::from_parts(
+        read_bridge(config, runtime_id, native_id)?.history,
+        DataRetention::default(),
+    ))
 }
 
 /// A cold Claude read returns the history and its metadata in one helper.
@@ -458,16 +643,23 @@ pub fn read_claude_with_summary(
     config: &HistoryConfig,
     runtime_id: &str,
     native_id: &str,
-) -> Result<(ConversationSummary, History), HistoryError> {
+) -> Result<Retained<(ConversationSummary, History)>, HistoryError> {
     let read = read_bridge(config, runtime_id, native_id)?;
     let summary = read
         .summary
         .filter(|summary| summary.native_id == native_id)
         .ok_or_else(|| HistoryError::new(HistoryFailureKind::BridgeContract, "read_summary"))?;
-    Ok((summary.for_runtime(runtime_id), read.history))
+    Ok(Retained::from_parts(
+        (summary.for_runtime(runtime_id), read.history),
+        DataRetention::default(),
+    ))
 }
 
-fn read_bridge(config: &HistoryConfig, runtime_id: &str, native_id: &str) -> Result<Read, HistoryError> {
+fn read_bridge(
+    config: &HistoryConfig,
+    runtime_id: &str,
+    native_id: &str,
+) -> Result<Read, HistoryError> {
     let bytes = execute(config, "read", runtime_id, Some(native_id), &[])?;
     let value: serde_json::Value = serde_json::from_slice(&bytes).map_err(|error| {
         HistoryError::new(HistoryFailureKind::BridgeContract, "read").with_detail(error.to_string())
@@ -569,9 +761,12 @@ pub fn read_pi_with_summary(
 ) -> NativeResult<(PiSessionSummary, serde_json::Value)> {
     let mut value = execute_pi(config, PiOperation::Inspect(session, true), None)?;
     let summary: PiSessionSummary = serde_json::from_value(
-        value.get_mut("summary").map(serde_json::Value::take).unwrap_or_default(),
+        value
+            .get_mut("summary")
+            .map(serde_json::Value::take)
+            .unwrap_or_default(),
     )
-        .map_err(|error| Error::new(format!("Pi 历史摘要格式不匹配：{error}")))?;
+    .map_err(|error| Error::new(format!("Pi 历史摘要格式不匹配：{error}")))?;
     if Path::new(&summary.path).as_os_str() != session.as_os_str() {
         return Err(Error::new("Pi 返回不同的原生会话"));
     }
@@ -586,6 +781,7 @@ pub fn export_pi_context(
         &serde_json::to_vec(&value).map_err(|error| Error::new(error.to_string()))?,
     )
 }
+
 pub fn export_pi_context_before(
     config: &crate::Config,
     session: &std::path::Path,
@@ -601,6 +797,11 @@ pub fn export_pi_context_before(
 pub enum PiForkBoundary<'a> {
     ThroughEntry(&'a str),
     BeforeEntry(&'a str),
+    /// An in-place edit fallback retains active-branch context edits on the prefix.
+    BeforeEditedEntry {
+        entry: &'a str,
+        expected_digest: &'a str,
+    },
 }
 
 pub fn fork_pi_session(
@@ -608,11 +809,15 @@ pub fn fork_pi_session(
     source: &std::path::Path,
     boundary: PiForkBoundary<'_>,
 ) -> NativeResult<std::path::PathBuf> {
-    let (position, entry) = match boundary {
-        PiForkBoundary::ThroughEntry(entry) => ("at", entry),
-        PiForkBoundary::BeforeEntry(entry) => ("before", entry),
+    let (position, entry, expected_digest) = match boundary {
+        PiForkBoundary::ThroughEntry(entry) => ("at", entry, None),
+        PiForkBoundary::BeforeEntry(entry) => ("before", entry, None),
+        PiForkBoundary::BeforeEditedEntry {
+            entry,
+            expected_digest,
+        } => ("before", entry, Some(expected_digest)),
     };
-    let input = serde_json::to_vec(&json!({"position":position,"entryId":entry}))
+    let input = serde_json::to_vec(&json!({"position":position,"entryId":entry,"preservePrefixEdits":expected_digest.is_some(),"expectedDigest":expected_digest}))
         .map_err(|error| Error::new(error.to_string()))?;
     let value = execute_pi(config, PiOperation::Fork(source), Some(input))
         .map_err(|error| Error::with_code(error.to_string(), "fork_outcome_unknown"))?;
@@ -654,6 +859,26 @@ pub fn manage_pi(
     }
     Ok(())
 }
+/// Delete from Pi's effective native context without starting a model turn.
+pub fn delete_pi_message(
+    config: &crate::Config,
+    session: &std::path::Path,
+    message_id: &str,
+    truncate: bool,
+    expected_digest: &str,
+    backup_directory: &std::path::Path,
+) -> NativeResult<()> {
+    let input = serde_json::to_vec(&json!({
+        "messageId":message_id, "truncate":truncate,
+        "expectedDigest":expected_digest, "backupDirectory":backup_directory
+    }))
+    .map_err(|error| Error::new(error.to_string()))?;
+    let result = execute_pi(config, PiOperation::DeleteMessage(session), Some(input))?;
+    if result["ok"] != true {
+        return Err(Error::new("Pi 消息删除未确认"));
+    }
+    Ok(())
+}
 enum PiOperation<'a> {
     List,
     Inspect(&'a std::path::Path, bool),
@@ -662,6 +887,7 @@ enum PiOperation<'a> {
     Fork(&'a std::path::Path),
     Rename(&'a std::path::Path),
     Delete(&'a std::path::Path),
+    DeleteMessage(&'a std::path::Path),
 }
 fn execute_pi(
     config: &crate::Config,
@@ -718,6 +944,9 @@ fn execute_pi(
         }
         PiOperation::Delete(session) => {
             command.arg("--delete-session").arg(session);
+        }
+        PiOperation::DeleteMessage(session) => {
+            command.arg("--delete-message").arg(session);
         }
     }
     if let Some(root) = &config.session_dir {

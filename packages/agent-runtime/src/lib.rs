@@ -1,11 +1,15 @@
 //! Credential-blind Pi runtime adapter.
 
+pub mod creation;
 pub use velune_conversation as conversation;
 pub mod background;
 
 mod client;
+pub(crate) mod elicitation;
 pub mod model_projection;
 mod process_tree;
+mod transport;
+pub use transport::{WriteCompletion, WriteFact};
 /// Child processes for a host that may be a GUI app without a console.
 pub mod process {
     pub use crate::process_tree::{command, hide_console};
@@ -14,6 +18,7 @@ mod projection;
 
 pub use client::*;
 pub use projection::PiProjection;
+mod pi_dialogs;
 mod pi_session;
 pub use pi_session::PiSession;
 

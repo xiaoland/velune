@@ -6,8 +6,14 @@ pub(super) const NATIVE_RETRY_DETAIL: &str = "\nCodex 正在自动重试。";
 #[derive(Default)]
 pub(super) struct State {
     pub(super) title: super::codex_title::Title,
+    pub(super) commands: Commands,
+    pub(super) handoff_summary: Option<super::codex_handoff_summary::Job>,
+    pub(super) handoff_summary_hidden: std::collections::BTreeSet<String>,
     pub(super) retry: super::codex_retry::Retry,
     pub(super) cancel_pending: bool,
+    /// Accepted native async answers remain settled when an item is repeated.
+    /// Cold history reconstructs this from its ordered native answer records.
+    pub(super) resolved_async_questions: std::collections::BTreeSet<String>,
     /// Last error of the active turn, if its completion omits details.
     pub(super) turn_error: Option<Value>,
     /// Threads of this app-server besides the conversation's own, by thread
@@ -20,6 +26,1189 @@ pub(super) struct State {
     /// The speed tier of the selected speed variant, sent per turn; `None`
     /// is Codex's own default.
     pub(super) service_tier: Option<String>,
+}
+
+/// Rust-only commands for an initialized Codex connection. `Start` creates a
+/// thread using the cwd/config captured by `prepare_codex_commands`; `Resume`
+/// starts an empty-input turn, not a history load or a connection bootstrap.
+pub enum CodexCommand {
+    Start {
+        runtime_id: String,
+    },
+    Send(crate::TurnInput),
+    Resume {
+        effort: Option<String>,
+        permission_mode: Option<String>,
+    },
+    /// Requires a natively identified, steerable running turn.
+    Steer(crate::TurnInput),
+    /// Requires a natively identified running turn. Before turn/started or the
+    /// start result supplies its id (or during retry backoff), admission rejects
+    /// without dispatch; the owner may request cancellation once identity exists.
+    Cancel,
+    /// Interrupt only the currently identified native background turns. Each
+    /// child has an independent delivery result; successful ACKs are not work
+    /// completion. An empty target set is reported as an empty result set.
+    StopBackground,
+    /// Exact public runtime:thread identity from this connection's work ledger.
+    StopChild {
+        conversation_id: String,
+    },
+    Reply {
+        interaction_id: String,
+        reply: RuntimeInteractionReply,
+    },
+}
+
+/// Local admission failure: no frame for this command was dispatched. In
+/// particular, NeedsPreparation never performs bootstrap, filesystem or RPC IO.
+#[derive(Debug, thiserror::Error)]
+pub enum CodexAdmissionError {
+    #[error("Codex requires synchronous preparation at the initialization boundary")]
+    NeedsPreparation,
+    #[error("{0}")]
+    Rejected(#[from] Error),
+}
+
+/// Correlation belongs to one NativeSession, one connection generation and one
+/// checked local sequence. `request_id` is the actual client/server JSON-RPC id,
+/// or null for an aggregate whose child receipts retain their individual ids.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CodexOperationTicket {
+    pub session: String,
+    pub generation: u64,
+    pub sequence: u64,
+    pub request_id: Value,
+}
+
+#[derive(Debug)]
+pub struct CodexOperationReceipt {
+    pub ticket: CodexOperationTicket,
+    pub delivery: CodexDelivery,
+    pub physical_write: Option<crate::WriteFact>,
+}
+
+#[derive(Debug)]
+pub enum CodexDelivery {
+    /// A native RPC result, not turn completion (including for cancel).
+    Accepted {
+        thread_id: Option<String>,
+        turn_id: Option<String>,
+    },
+    /// A one-way reply was written and flushed. This is NOT evidence the
+    /// server applied it or that its approval/business operation completed.
+    Written,
+    /// An explicit native JSON-RPC error, distinct from local non-dispatch.
+    Rejected { error: Value },
+    /// Delivery cannot be proved. Never replay this mutation automatically.
+    Indeterminate { detail: String },
+    /// Aggregate interrupt operation, including partial acceptance. Never
+    /// flatten this to an all-or-nothing rejected or unsent result.
+    Interrupts {
+        children: Vec<CodexInterruptReceipt>,
+    },
+}
+
+#[derive(Debug)]
+pub struct CodexInterruptReceipt {
+    pub thread_id: String,
+    pub turn_id: String,
+    /// None means this child frame never entered the writer.
+    pub request_id: Option<u64>,
+    pub delivery: CodexInterruptDelivery,
+}
+#[derive(Debug)]
+pub enum CodexInterruptDelivery {
+    Accepted,
+    Rejected { error: Value },
+    Indeterminate { detail: String },
+    NotDispatched,
+}
+
+const MAX_INTERRUPT_TARGETS: usize = 64;
+const COMMAND_CAPACITY: usize = 16;
+const REPLY_RESERVE: usize = 4;
+
+#[derive(Default)]
+pub(super) struct Commands {
+    pub(super) enabled: bool,
+    generation: u64,
+    next: u64,
+    start_cwd: Option<Option<PathBuf>>,
+    pending: BTreeMap<u64, CommandOperation>,
+    receipts: std::collections::VecDeque<CodexOperationReceipt>,
+    retention: BTreeMap<u64, DataRetention>,
+    late_retention: BTreeMap<u64, DataRetention>,
+    early: super::retention::RetainedRecords,
+    failed_writes: BTreeMap<
+        u64,
+        (
+            Retained<CodexOperationTicket>,
+            crate::transport::WriteReceipt,
+        ),
+    >,
+}
+struct CommandOperation {
+    ticket: CodexOperationTicket,
+    deadline: std::time::Instant,
+    kind: CommandOperationKind,
+}
+enum CommandOperationKind {
+    Start {
+        cwd: Option<PathBuf>,
+        runtime_id: String,
+    },
+    Send {
+        title: String,
+        started: Option<String>,
+        ended: bool,
+        resuming: bool,
+        effort: Option<String>,
+        permission_mode: Option<String>,
+    },
+    Steer {
+        turn: String,
+    },
+    Cancel {
+        turn: String,
+    },
+    Reply {
+        interaction_id: String,
+        write: crate::transport::WriteReceipt,
+    },
+    Interrupts(Interrupts),
+}
+struct InterruptTarget {
+    thread: String,
+    turn: String,
+}
+struct Interrupts {
+    waiting: std::collections::VecDeque<InterruptTarget>,
+    pending: BTreeMap<u64, InterruptTarget>,
+    settled: Vec<CodexInterruptReceipt>,
+}
+impl InterruptTarget {
+    fn receipt(
+        self,
+        request_id: Option<u64>,
+        delivery: CodexInterruptDelivery,
+    ) -> CodexInterruptReceipt {
+        CodexInterruptReceipt {
+            thread_id: self.thread,
+            turn_id: self.turn,
+            request_id,
+            delivery,
+        }
+    }
+}
+impl Interrupts {
+    fn delivery(mut self, failure: &str) -> CodexDelivery {
+        self.settled
+            .extend(self.pending.into_iter().map(|(id, target)| {
+                target.receipt(
+                    Some(id),
+                    CodexInterruptDelivery::Indeterminate {
+                        detail: failure.into(),
+                    },
+                )
+            }));
+        self.settled.extend(
+            self.waiting
+                .into_iter()
+                .map(|target| target.receipt(None, CodexInterruptDelivery::NotDispatched)),
+        );
+        CodexDelivery::Interrupts {
+            children: self.settled,
+        }
+    }
+}
+impl Commands {
+    fn retain(&mut self, sequence: u64, retention: DataRetention) {
+        let old = self.retention.remove(&sequence).unwrap_or_default();
+        self.retention.insert(sequence, old.merge(retention));
+    }
+    pub(super) fn pending(&self) -> bool {
+        !self.pending.is_empty()
+    }
+    pub(super) fn starting_turn(&self) -> bool {
+        self.pending
+            .values()
+            .any(|op| matches!(op.kind, CommandOperationKind::Send { .. }))
+    }
+    fn finish(&mut self, sequence: u64, delivery: CodexDelivery) {
+        if let Some(op) = self.pending.remove(&sequence) {
+            self.late_retention.remove(&sequence);
+            self.receipts.push_back(CodexOperationReceipt {
+                ticket: op.ticket,
+                delivery,
+                physical_write: None,
+            });
+        }
+    }
+    pub(super) fn invalidate(&mut self, detail: &str) {
+        for (sequence, op) in std::mem::take(&mut self.pending) {
+            let delivery = match op.kind {
+                CommandOperationKind::Interrupts(group) => group.delivery(detail),
+                CommandOperationKind::Reply { write, .. } => {
+                    self.failed_writes.insert(
+                        sequence,
+                        (
+                            Retained::from_parts(
+                                op.ticket.clone(),
+                                self.late_retention.remove(&sequence).unwrap_or_default(),
+                            ),
+                            write,
+                        ),
+                    );
+                    CodexDelivery::Indeterminate {
+                        detail: detail.into(),
+                    }
+                }
+                _ => CodexDelivery::Indeterminate {
+                    detail: detail.into(),
+                },
+            };
+            self.late_retention.remove(&sequence);
+            self.receipts.push_back(CodexOperationReceipt {
+                ticket: op.ticket,
+                delivery,
+                physical_write: None,
+            });
+        }
+        self.early = Default::default();
+        self.start_cwd = None;
+    }
+    pub(super) fn next_generation(&mut self) -> Result<()> {
+        self.invalidate("Codex connection replaced; mutation was not replayed");
+        self.failed_writes.clear();
+        self.generation = self
+            .generation
+            .checked_add(1)
+            .ok_or_else(|| Error::new("Codex connection generation exhausted"))?;
+        Ok(())
+    }
+}
+
+impl NativeSession {
+    /// Explicitly synchronous initialization/restart boundary. Never call this
+    /// from an application's state-owner loop. Existing create/open also prepare
+    /// a loaded thread; this method additionally prepares async `Start`.
+    pub fn prepare_codex_commands(&mut self, cwd: Option<&Path>) -> Result<()> {
+        if self.config.kind != NativeKind::Codex166 {
+            return Err(Error::new("Not a Codex session"));
+        }
+        self.ensure_idle()?;
+        self.validate_cwd(cwd)?;
+        if self.native_id.is_some() {
+            if self.process_ended {
+                self.restart_required = true;
+            }
+            if self.restart_needed() && (self.has_background_work() || self.has_pending_requests())
+            {
+                return Err(Error::with_code(
+                    "Codex still owns native work",
+                    "outstanding_work",
+                ));
+            }
+            self.prepare_turn(None, None)?;
+        } else {
+            if self.failed || self.process_ended {
+                return Err(Error::with_code(
+                    "Reconnect Codex before preparation",
+                    "needs_preparation",
+                ));
+            }
+            if self.restart_required && (self.config.gateway.is_some() || self.gateway_turn) {
+                return Err(Error::with_code(
+                    "Reconnect Codex with the selected execution configuration before preparing a new thread",
+                    "needs_preparation",
+                ));
+            }
+            self.codex_capture_provider(cwd)?;
+            // Native model/provider selection is carried by thread/start's
+            // options; it does not require replacing an unbound native child.
+            self.restart_required = false;
+            self.codex.commands.start_cwd = Some(cwd.map(Path::to_path_buf));
+        }
+        Ok(())
+    }
+
+    fn codex_dispatch_deadline(&self, requested: std::time::Instant) -> std::time::Instant {
+        self.codex
+            .commands
+            .pending
+            .values()
+            .map(|op| op.deadline)
+            .fold(requested, std::cmp::min)
+    }
+
+    /// Admit one mutation without waiting for stdin, protocol response or
+    /// cleanup. The owner must keep calling `poll`, drain receipts, and retain
+    /// this session/process until explicit synchronous shutdown has returned.
+    /// A ticket is local admission, NOT native acceptance. Total pending plus
+    /// unconsumed receipts is at most 16; four slots are reserved for replies.
+    /// `poll` errors stop admission and settle unknown deliveries, but do not
+    /// kill/reap this owner's process or release its locks. The owner must call
+    /// synchronous `shutdown` outside its state loop, even if pending metadata
+    /// remains. Memory slot release is never a resource-lifecycle confirmation.
+    /// No application policy/history is owned here. Do not mix synchronous
+    /// mutations with outstanding commands; preparation and cleanup are explicit.
+    pub fn enqueue_codex_command(
+        &mut self,
+        command: CodexCommand,
+        deadline: std::time::Instant,
+    ) -> std::result::Result<Retained<CodexOperationTicket>, CodexAdmissionError> {
+        use std::time::Instant;
+        if self.config.kind != NativeKind::Codex166 {
+            return Err(Error::new("Not a Codex session").into());
+        }
+        if self.failed
+            || self.process_ended
+            || (self.restart_needed()
+                && matches!(
+                    command,
+                    CodexCommand::Start { .. }
+                        | CodexCommand::Send(_)
+                        | CodexCommand::Resume { .. }
+                ))
+        {
+            return Err(CodexAdmissionError::NeedsPreparation);
+        }
+        if let Err(error) = self
+            .codex_harvest_commands()
+            .and_then(|()| self.rpc.check_failure())
+        {
+            self.fail_connection();
+            return Err(error.into());
+        }
+        let is_reply = matches!(
+            command,
+            CodexCommand::Reply { .. }
+                | CodexCommand::Cancel
+                | CodexCommand::StopBackground
+                | CodexCommand::StopChild { .. }
+        );
+        let count = self.codex.commands.pending.len() + self.codex.commands.receipts.len();
+        if count
+            >= if is_reply {
+                COMMAND_CAPACITY
+            } else {
+                COMMAND_CAPACITY - REPLY_RESERVE
+            }
+        {
+            return Err(
+                Error::with_code("Codex command/receipt capacity full", "queue_full").into(),
+            );
+        }
+        if deadline <= Instant::now() {
+            return Err(Error::with_code(
+                "Codex command deadline already expired; not dispatched",
+                "timeout",
+            )
+            .into());
+        }
+        let sequence = self
+            .codex
+            .commands
+            .next
+            .checked_add(1)
+            .ok_or_else(|| Error::new("Codex operation sequence exhausted"))?;
+        let command_retention = self.data.try_clone(super::retention::command_data_owner)?;
+        let public_retention = command_retention.try_clone().map_err(retention_error)?;
+        let late_retention = command_retention.try_clone().map_err(retention_error)?;
+        let (method, params, kind) = match command {
+            CodexCommand::Start { runtime_id } => {
+                self.ensure_idle()?;
+                if self.native_id.is_some() {
+                    return Err(Error::new("Codex already has a thread").into());
+                }
+                let cwd = self
+                    .codex
+                    .commands
+                    .start_cwd
+                    .clone()
+                    .ok_or(CodexAdmissionError::NeedsPreparation)?;
+                let mut params = self.codex_options(cwd.as_deref());
+                if self.side {
+                    params["ephemeral"] = json!(true);
+                }
+                (
+                    "thread/start",
+                    params,
+                    CommandOperationKind::Start { cwd, runtime_id },
+                )
+            }
+            CodexCommand::Send(input) => self.codex_admit_turn(&input, false)?,
+            CodexCommand::Resume {
+                effort,
+                permission_mode,
+            } => {
+                if self.side {
+                    return Err(Error::new("Side contexts cannot resume").into());
+                }
+                self.codex_admit_turn(
+                    &crate::TurnInput {
+                        text: String::new(),
+                        images: vec![],
+                        effort,
+                        permission_mode,
+                    },
+                    true,
+                )?
+            }
+            CodexCommand::Steer(input) => {
+                if !self.can_steer() || self.turn_id.is_none() {
+                    return Err(Error::new("Codex has no steerable turn").into());
+                }
+                if input.text.trim().is_empty() && input.images.is_empty() {
+                    return Err(Error::new("Empty message").into());
+                }
+                (
+                    "turn/steer",
+                    json!({"threadId":self.native_id,"expectedTurnId":self.turn_id,"input":codex_input(&input)}),
+                    CommandOperationKind::Steer {
+                        turn: self.turn_id.clone().expect("validated steer turn"),
+                    },
+                )
+            }
+            CodexCommand::Cancel => {
+                let turn = self
+                    .turn_id
+                    .clone()
+                    .filter(|_| self.turn_running())
+                    .ok_or_else(|| Error::new("Codex has no identified running turn"))?;
+                (
+                    "turn/interrupt",
+                    json!({"threadId":self.native_id,"turnId":turn}),
+                    CommandOperationKind::Cancel { turn },
+                )
+            }
+            CodexCommand::StopBackground | CodexCommand::StopChild { .. } => {
+                let child = match command {
+                    CodexCommand::StopChild { conversation_id } => {
+                        let runtime = &self
+                            .snapshot
+                            .as_ref()
+                            .ok_or_else(|| Error::new("Codex has no snapshot"))?
+                            .conversation
+                            .runtime_id;
+                        let thread = conversation_id
+                            .strip_prefix(&format!("{runtime}:"))
+                            .filter(|id| Some(*id) != self.native_id.as_deref())
+                            .ok_or_else(|| {
+                                Error::new("Child identity does not belong to this execution")
+                            })?;
+                        if !self.codex.threads.contains_key(thread) {
+                            return Err(Error::new(
+                                "Child no longer belongs to this live work ledger",
+                            )
+                            .into());
+                        }
+                        Some(thread.to_owned())
+                    }
+                    _ => None,
+                };
+                let targets = self
+                    .codex
+                    .threads
+                    .iter()
+                    .filter(|(thread, _)| child.as_deref().is_none_or(|id| id == thread.as_str()))
+                    .filter(|(_, entry)| entry.state != BackgroundState::Stopping)
+                    .filter_map(|(thread, entry)| {
+                        Some(InterruptTarget {
+                            thread: thread.clone(),
+                            turn: entry.turn.clone()?,
+                        })
+                    })
+                    .take(MAX_INTERRUPT_TARGETS + 1)
+                    .collect::<std::collections::VecDeque<_>>();
+                if targets.len() > MAX_INTERRUPT_TARGETS {
+                    return Err(Error::with_code(
+                        "Codex interrupt target capacity full; nothing dispatched",
+                        "queue_full",
+                    )
+                    .into());
+                }
+                self.rpc.defer_cleanup();
+                self.codex.commands.enabled = true;
+                // An aggregate has no single native request id. Its receipt
+                // retains every child id, including undispatched targets.
+                return Ok(self.codex_install_retained_operation(
+                    command_retention,
+                    public_retention,
+                    late_retention,
+                    sequence,
+                    Value::Null,
+                    deadline,
+                    CommandOperationKind::Interrupts(Interrupts {
+                        waiting: targets,
+                        pending: BTreeMap::new(),
+                        settled: vec![],
+                    }),
+                ));
+            }
+            CodexCommand::Reply {
+                interaction_id,
+                reply,
+            } => {
+                if self.codex.commands.pending.values().any(|op| {
+                    matches!(&op.kind,
+                    CommandOperationKind::Reply { interaction_id: id, .. } if *id == interaction_id)
+                }) {
+                    return Err(Error::new("Reply already admitted; do not replay").into());
+                }
+                let pending = self
+                    .interactions
+                    .get(&interaction_id)
+                    .ok_or_else(|| Error::new("Interaction expired"))?;
+                let result = Self::codex_reply_result(pending, reply)?;
+                let id = pending.id.clone();
+                self.rpc.defer_cleanup();
+                self.codex.commands.enabled = true;
+                let dispatch_deadline = self.codex_dispatch_deadline(deadline);
+                let write = self
+                    .rpc
+                    .enqueue_reply_receipt(&id, &result, dispatch_deadline)?;
+                return Ok(self.codex_install_retained_operation(
+                    command_retention,
+                    public_retention,
+                    late_retention,
+                    sequence,
+                    id,
+                    deadline,
+                    CommandOperationKind::Reply {
+                        interaction_id,
+                        write,
+                    },
+                ));
+            }
+        };
+        self.rpc.defer_cleanup();
+        self.codex.commands.enabled = true;
+        if !is_reply && !self.rpc.command_write_available() {
+            return Err(Error::with_code(
+                "Codex ordinary writer capacity full; not dispatched",
+                "queue_full",
+            )
+            .into());
+        }
+        let class = if is_reply {
+            crate::transport::WriteClass::ProtocolReplyCancel
+        } else {
+            crate::transport::WriteClass::Ordinary
+        };
+        if let Err(error) = self
+            .codex_harvest_commands()
+            .and_then(|()| self.rpc.check_failure())
+        {
+            self.fail_connection();
+            return Err(error.into());
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err(Error::with_code(
+                "Codex dispatch deadline expired; not dispatched",
+                "timeout",
+            )
+            .into());
+        }
+        let dispatch_deadline = self.codex_dispatch_deadline(deadline);
+        let request =
+            self.rpc
+                .enqueue_request_with_class(method, &params, class, dispatch_deadline)?;
+        if let CommandOperationKind::Send {
+            effort,
+            permission_mode,
+            ..
+        } = &kind
+        {
+            self.codex.retry = super::codex_retry::Retry {
+                effort: effort.clone(),
+                permission_mode: permission_mode.clone(),
+                ..Default::default()
+            };
+        }
+        Ok(self.codex_install_retained_operation(
+            command_retention,
+            public_retention,
+            late_retention,
+            sequence,
+            json!(request),
+            deadline,
+            kind,
+        ))
+    }
+
+    fn codex_admit_turn(
+        &self,
+        input: &crate::TurnInput,
+        resuming: bool,
+    ) -> Result<(&'static str, Value, CommandOperationKind)> {
+        self.ensure_idle()?;
+        if !resuming && input.text.trim().is_empty() && input.images.is_empty() {
+            return Err(Error::new("Empty message"));
+        }
+        Ok((
+            "turn/start",
+            self.codex_turn_params(input)?,
+            CommandOperationKind::Send {
+                title: crate::conversation::attachment_list::strip(&input.text)
+                    .chars()
+                    .take(640)
+                    .collect(),
+                started: None,
+                ended: false,
+                resuming,
+                effort: input.effort.clone(),
+                permission_mode: input.permission_mode.clone(),
+            },
+        ))
+    }
+
+    fn codex_install_retained_operation(
+        &mut self,
+        command_retention: DataRetention,
+        public_retention: DataRetention,
+        late_retention: DataRetention,
+        sequence: u64,
+        request_id: Value,
+        deadline: std::time::Instant,
+        kind: CommandOperationKind,
+    ) -> Retained<CodexOperationTicket> {
+        self.codex.commands.retain(sequence, command_retention);
+        self.codex
+            .commands
+            .late_retention
+            .insert(sequence, late_retention);
+        let ticket = self.codex_install_operation(sequence, request_id, deadline, kind);
+        Retained::from_parts(ticket, public_retention)
+    }
+
+    fn codex_install_operation(
+        &mut self,
+        sequence: u64,
+        request_id: Value,
+        deadline: std::time::Instant,
+        kind: CommandOperationKind,
+    ) -> CodexOperationTicket {
+        let ticket = CodexOperationTicket {
+            session: self.epoch.clone(),
+            generation: self.codex.commands.generation,
+            sequence,
+            request_id,
+        };
+        self.codex.commands.next = sequence;
+        self.codex.commands.pending.insert(
+            sequence,
+            CommandOperation {
+                ticket: ticket.clone(),
+                deadline,
+                kind,
+            },
+        );
+        ticket
+    }
+
+    fn codex_begin_command_turn(&mut self, turn: &str, resuming: bool) {
+        self.data.replace(DataOwner::Turn);
+        self.turn_id = Some(turn.into());
+        self.codex.turn_error = None;
+        if let Some(snapshot) = &mut self.snapshot {
+            snapshot.executions.begin(ExecutionKind::UserTurn, resuming);
+            snapshot.follow_up.can_resume = false;
+        }
+        self.running();
+    }
+
+    /// Taking a receipt is pure memory access and releases its bounded result
+    /// slot, not native work, a home lock or process capacity.
+    pub(super) fn codex_clear_failed_writes(&mut self) {
+        self.codex.commands.failed_writes.clear();
+    }
+
+    pub fn take_codex_receipt(&mut self) -> Option<Retained<CodexOperationReceipt>> {
+        let receipt = self.codex.commands.receipts.pop_front()?;
+        let retention = self
+            .codex
+            .commands
+            .retention
+            .remove(&receipt.ticket.sequence)
+            .unwrap_or_default();
+        Some(Retained::from_parts(receipt, retention))
+    }
+
+    pub(super) fn codex_poll_commands(&mut self) -> Result<()> {
+        // Consume delivery evidence first, then enforce connection-wide
+        // failure/deadline barriers even when no interrupt group is pending.
+        self.codex_harvest_commands()?;
+        self.rpc.check_failure()?;
+        let groups: Vec<_> = self
+            .codex
+            .commands
+            .pending
+            .iter()
+            .filter_map(|(sequence, op)| {
+                matches!(op.kind, CommandOperationKind::Interrupts(_)).then_some(*sequence)
+            })
+            .collect();
+        for sequence in groups {
+            for _ in 0..REPLY_RESERVE {
+                // Another operation's deadline or a newly completed failed
+                // write must stop every group's still-undispatched targets.
+                self.codex_harvest_commands()?;
+                self.rpc.check_failure()?;
+                let dispatch_deadline =
+                    self.codex_dispatch_deadline(std::time::Instant::now() + rpc::CONTROL_TIMEOUT);
+                let Some(op) = self.codex.commands.pending.get_mut(&sequence) else {
+                    break;
+                };
+                let CommandOperationKind::Interrupts(group) = &mut op.kind else {
+                    unreachable!("captured interrupt group")
+                };
+                let Some(target) = group.waiting.front() else {
+                    break;
+                };
+                let request = match self.rpc.enqueue_request_with_class(
+                    "turn/interrupt",
+                    &json!({"threadId":target.thread,"turnId":target.turn}),
+                    crate::transport::WriteClass::ProtocolReplyCancel,
+                    op.deadline.min(dispatch_deadline),
+                ) {
+                    Ok(id) => id,
+                    Err(error) if error.code() == "queue_full" => break,
+                    Err(error) => return Err(error),
+                };
+                let target = group.waiting.pop_front().expect("front target");
+                group.pending.insert(request, target);
+            }
+        }
+        self.codex_harvest_commands()
+    }
+
+    /// Harvest delivery evidence only; failure/cleanup paths must never
+    /// dispatch another child mutation after the read side failed.
+    pub(super) fn codex_harvest_commands(&mut self) -> Result<()> {
+        use crate::transport::WriteOutcome;
+        let mut facts = Vec::new();
+        let mut failure = None;
+        for (sequence, op) in &self.codex.commands.pending {
+            if let CommandOperationKind::Reply { write, .. } = &op.kind {
+                let Some(outcome) = write.try_outcome() else {
+                    continue;
+                };
+                let (fact, delivery) = match outcome {
+                    WriteOutcome::Written(c) if c.met_deadline() => {
+                        (crate::WriteFact::Written(c), CodexDelivery::Written)
+                    }
+                    WriteOutcome::Written(c) => {
+                        failure = Some(Error::with_code(
+                            "Codex physically Written after deadline",
+                            "timeout",
+                        ));
+                        (
+                            crate::WriteFact::Written(c),
+                            CodexDelivery::Indeterminate {
+                                detail: "Reply physically Written late; cleanup required".into(),
+                            },
+                        )
+                    }
+                    WriteOutcome::NotWritten(error) => {
+                        failure = Some(Error::with_code(
+                            "Codex reply known not written",
+                            "transport",
+                        ));
+                        (
+                            crate::WriteFact::NotWritten,
+                            CodexDelivery::Indeterminate {
+                                detail: format!("Known not written: {error}"),
+                            },
+                        )
+                    }
+                    WriteOutcome::Indeterminate(error) => {
+                        failure = Some(Error::with_code(
+                            "Codex physical write indeterminate",
+                            "transport",
+                        ));
+                        (
+                            crate::WriteFact::Indeterminate,
+                            CodexDelivery::Indeterminate {
+                                detail: error.to_string(),
+                            },
+                        )
+                    }
+                    WriteOutcome::ObservationTimeout { .. } => {
+                        failure = Some(Error::with_code(
+                            "Codex reply not yet observed; receipt retained",
+                            "timeout",
+                        ));
+                        continue;
+                    }
+                };
+                facts.push((*sequence, fact, delivery));
+            }
+        }
+        for (sequence, fact, delivery) in facts {
+            let id = match &self.codex.commands.pending[&sequence].kind {
+                CommandOperationKind::Reply { interaction_id, .. } => interaction_id.clone(),
+                _ => unreachable!(),
+            };
+            let timely = matches!(delivery, CodexDelivery::Written);
+            self.codex.commands.finish(sequence, delivery);
+            self.codex
+                .commands
+                .receipts
+                .back_mut()
+                .unwrap()
+                .physical_write = Some(fact);
+            if timely {
+                self.interactions.remove(&id);
+                if let Some(snapshot) = &mut self.snapshot {
+                    snapshot.pending_interactions.retain(|i| i.id != id);
+                    snapshot.revision += 1;
+                }
+            }
+        }
+        let mut late = Vec::new();
+        for (sequence, (_, write)) in &self.codex.commands.failed_writes {
+            let fact = match write.try_outcome() {
+                Some(WriteOutcome::Written(c)) => Some(crate::WriteFact::Written(c)),
+                Some(WriteOutcome::NotWritten(_)) => Some(crate::WriteFact::NotWritten),
+                Some(WriteOutcome::Indeterminate(_)) => Some(crate::WriteFact::Indeterminate),
+                _ => None,
+            };
+            if let Some(fact) = fact {
+                late.push((*sequence, fact));
+            }
+        }
+        for (sequence, fact) in late {
+            let (ticket, _) = self.codex.commands.failed_writes.remove(&sequence).unwrap();
+            let (ticket, retention) = ticket.into_parts();
+            self.codex.commands.retain(sequence, retention);
+            if let Some(receipt) = self
+                .codex
+                .commands
+                .receipts
+                .iter_mut()
+                .find(|r| r.ticket == ticket)
+            {
+                receipt.physical_write = Some(fact);
+            } else {
+                self.codex
+                    .commands
+                    .receipts
+                    .push_back(CodexOperationReceipt {
+                        ticket,
+                        delivery: CodexDelivery::Indeterminate {
+                            detail: "Physical reply settled after failure; not replayed".into(),
+                        },
+                        physical_write: Some(fact),
+                    });
+            }
+        }
+        if self
+            .codex
+            .commands
+            .pending
+            .values()
+            .any(|op| std::time::Instant::now() >= op.deadline)
+        {
+            failure.get_or_insert_with(|| {
+                Error::with_code("Codex operation response deadline; not replayed", "timeout")
+            });
+        }
+        if let Some(error) = failure {
+            return Err(error);
+        }
+        self.codex_finish_interrupt_groups();
+        Ok(())
+    }
+
+    fn codex_finish_interrupt_groups(&mut self) {
+        let finished: Vec<_> = self.codex.commands.pending.iter().filter_map(|(sequence, op)|
+            matches!(&op.kind, CommandOperationKind::Interrupts(group) if group.pending.is_empty() && group.waiting.is_empty()).then_some(*sequence)).collect();
+        for sequence in finished {
+            let op = self
+                .codex
+                .commands
+                .pending
+                .remove(&sequence)
+                .expect("finished group");
+            self.codex.commands.late_retention.remove(&sequence);
+            let CommandOperationKind::Interrupts(group) = op.kind else {
+                unreachable!()
+            };
+            self.codex
+                .commands
+                .receipts
+                .push_back(CodexOperationReceipt {
+                    ticket: op.ticket,
+                    delivery: group.delivery(""),
+                    physical_write: None,
+                });
+        }
+    }
+
+    /// Called only for records from the currently owned RpcClient. An old
+    /// connection's receiver is never installed into its replacement.
+    fn codex_command_record(&mut self, record: &Value) -> Result<bool> {
+        if record.get("method").is_none() {
+            if let Some(id) = record["id"].as_u64() {
+                for (sequence, op) in self.codex.commands.pending.iter_mut() {
+                    if let CommandOperationKind::Interrupts(group) = &mut op.kind
+                        && group.pending.contains_key(&id)
+                    {
+                        let delivery = if let Some(error) = record.get("error") {
+                            CodexInterruptDelivery::Rejected {
+                                error: error.clone(),
+                            }
+                        } else if record.get("result").is_some() {
+                            CodexInterruptDelivery::Accepted
+                        } else {
+                            return Err(Error::with_code(
+                                "Codex interrupt response missing result",
+                                "transport",
+                            ));
+                        };
+                        let target = group
+                            .pending
+                            .remove(&id)
+                            .expect("correlated child interrupt");
+                        if matches!(delivery, CodexInterruptDelivery::Accepted)
+                            && let Some(entry) = self.codex.threads.get_mut(&target.thread)
+                            && entry.turn.as_deref() == Some(&target.turn)
+                        {
+                            entry.state = BackgroundState::Stopping;
+                        }
+                        group.settled.push(target.receipt(Some(id), delivery));
+                        let piece = self.data.branch();
+                        let old = self
+                            .codex
+                            .commands
+                            .retention
+                            .remove(sequence)
+                            .unwrap_or_default();
+                        self.codex
+                            .commands
+                            .retention
+                            .insert(*sequence, old.merge(piece));
+                        self.codex_finish_interrupt_groups();
+                        return Ok(true);
+                    }
+                }
+            }
+            let sequence = self
+                .codex
+                .commands
+                .pending
+                .iter()
+                .find_map(|(sequence, op)| {
+                    (!matches!(
+                        op.kind,
+                        CommandOperationKind::Reply { .. } | CommandOperationKind::Interrupts(_)
+                    ) && op.ticket.generation == self.codex.commands.generation
+                        && op.ticket.request_id == record["id"])
+                        .then_some(*sequence)
+                });
+            let Some(sequence) = sequence else {
+                return Ok(false);
+            };
+            self.codex.commands.retain(sequence, self.data.branch());
+            if let Some(error) = record.get("error") {
+                let contradictory = matches!(
+                    &self.codex.commands.pending[&sequence].kind,
+                    CommandOperationKind::Send {
+                        started: Some(_),
+                        ..
+                    }
+                ) || (matches!(
+                    self.codex.commands.pending[&sequence].kind,
+                    CommandOperationKind::Send { .. }
+                ) && self.codex.commands.early.iter().next().is_some());
+                if contradictory {
+                    return Err(Error::with_code(
+                        "Codex rejected a turn after emitting its facts",
+                        "transport",
+                    ));
+                }
+                let sending = matches!(
+                    self.codex.commands.pending[&sequence].kind,
+                    CommandOperationKind::Send { .. }
+                );
+                self.codex.commands.finish(
+                    sequence,
+                    CodexDelivery::Rejected {
+                        error: error.clone(),
+                    },
+                );
+                if sending {
+                    self.codex.commands.early = Default::default();
+                }
+                return Ok(true);
+            }
+            let result = record
+                .get("result")
+                .ok_or_else(|| Error::with_code("Codex response missing result", "transport"))?;
+            let mut op = self
+                .codex
+                .commands
+                .pending
+                .remove(&sequence)
+                .expect("correlated command");
+            // Keep the operation pending on malformed/contradictory acceptance,
+            // so the terminal failure path produces its indeterminate receipt.
+            let outcome = (|| -> Result<(Option<String>, Option<String>)> {
+                if std::time::Instant::now() >= op.deadline {
+                    return Err(Error::with_code(
+                        "Codex terminal crossed absolute deadline before install",
+                        "timeout",
+                    ));
+                }
+                match &mut op.kind {
+                    CommandOperationKind::Start { cwd, runtime_id } => {
+                        let thread = result["thread"]["id"].as_str().ok_or_else(|| {
+                            Error::with_code("Codex start missing thread identity", "transport")
+                        })?;
+                        self.codex_install_created(result, cwd.as_deref(), runtime_id)?;
+                        Ok((Some(thread.into()), None))
+                    }
+                    CommandOperationKind::Send {
+                        started,
+                        ended,
+                        resuming,
+                        ..
+                    } => {
+                        let turn = result["turn"]["id"].as_str().ok_or_else(|| {
+                            Error::with_code("Codex send missing turn identity", "transport")
+                        })?;
+                        if started.as_deref().is_some_and(|id| id != turn) {
+                            return Err(Error::with_code(
+                                "Codex ack and early turn identity disagree",
+                                "transport",
+                            ));
+                        }
+                        if started.is_none() && !*ended {
+                            self.codex_begin_command_turn(turn, *resuming);
+                        }
+                        Ok((self.native_id.clone(), Some(turn.into())))
+                    }
+                    CommandOperationKind::Cancel { turn } => {
+                        if self.turn_id.as_deref() == Some(turn)
+                            && self.turn_running()
+                            && let Some(snapshot) = &mut self.snapshot
+                        {
+                            snapshot.run_state = RunState::Stopping;
+                            snapshot.revision += 1;
+                        }
+                        Ok((self.native_id.clone(), Some(turn.clone())))
+                    }
+                    CommandOperationKind::Steer { turn } => {
+                        Ok((self.native_id.clone(), Some(turn.clone())))
+                    }
+                    CommandOperationKind::Reply { .. } | CommandOperationKind::Interrupts(_) => {
+                        unreachable!("not a single request operation")
+                    }
+                }
+            })();
+            self.codex.commands.pending.insert(sequence, op);
+            let (thread_id, turn_id) = outcome?;
+            let title = match &self.codex.commands.pending[&sequence].kind {
+                CommandOperationKind::Send { title, .. } => Some(title.clone()),
+                _ => None,
+            };
+            // Settle delivery before optional metadata. Its failure can never
+            // turn this accepted send back into an unsent/rejected operation.
+            self.codex
+                .commands
+                .finish(sequence, CodexDelivery::Accepted { thread_id, turn_id });
+            for early in self.codex.commands.early.drain_batch(256) {
+                self.codex_receive_record(early)?;
+            }
+            if let Some(text) = title {
+                self.codex_start_title(&crate::TurnInput {
+                    text,
+                    effort: None,
+                    permission_mode: None,
+                    images: vec![],
+                });
+            }
+            return Ok(true);
+        }
+        if record["params"]["threadId"].as_str() != self.native_id.as_deref() {
+            return Ok(false);
+        }
+        let Some(sequence) = self.codex.commands.pending.iter().find_map(|(seq, op)| {
+            matches!(op.kind, CommandOperationKind::Send { .. }).then_some(*seq)
+        }) else {
+            return Ok(false);
+        };
+        let method = record["method"].as_str().unwrap_or_default();
+        // Requests are serviced immediately even before turn/start's ack or
+        // turn/started. Only turn-scoped output waits for native identity.
+        if record.get("id").is_some() {
+            return Ok(false);
+        }
+        let turn = record["params"]["turnId"]
+            .as_str()
+            .or_else(|| record["params"]["turn"]["id"].as_str());
+        let CommandOperationKind::Send {
+            started,
+            ended,
+            resuming,
+            ..
+        } = &mut self
+            .codex
+            .commands
+            .pending
+            .get_mut(&sequence)
+            .expect("pending send")
+            .kind
+        else {
+            unreachable!()
+        };
+        if method == "turn/started" && started.is_none() {
+            let turn = turn.ok_or_else(|| {
+                Error::with_code("Codex turn/started missing identity", "transport")
+            })?;
+            let piece = self.data.branch();
+            let old = self
+                .codex
+                .commands
+                .retention
+                .remove(&sequence)
+                .unwrap_or_default();
+            self.codex
+                .commands
+                .retention
+                .insert(sequence, old.merge(piece));
+            *started = Some(turn.into());
+            let resuming = *resuming;
+            self.codex_begin_command_turn(turn, resuming);
+            for early in self.codex.commands.early.drain_batch(256) {
+                self.codex_receive_record(early)?;
+            }
+        } else if let Some(turn) = turn {
+            if let Some(started) = started {
+                if started != turn || *ended {
+                    return Ok(true);
+                }
+                if method == "turn/completed" {
+                    *ended = true;
+                }
+            } else {
+                self.codex
+                    .commands
+                    .early
+                    .push(Retained::from_parts(record.clone(), self.data.branch()))
+                    .map_err(|error| {
+                        Error::with_code(
+                            format!("Codex early event capacity: {error}"),
+                            "transport",
+                        )
+                    })?;
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
 }
 
 use velune_conversation::model_variant::codex_speed_model as speed_id;
@@ -62,6 +1251,14 @@ impl NativeSession {
                 self.shadowed_mcp_servers.insert(server.name.clone());
             }
         }
+        let (source, retention) = source.into_parts();
+        let (selection, retention) = retention.split();
+        if self.native_selection.is_none() {
+            self.data.insert(DataOwner::Selection, selection);
+        }
+        let (instructions, provider) = retention.split();
+        self.data.insert(DataOwner::Instructions, instructions);
+        self.data.insert(DataOwner::Provider, provider);
         self.codex.developer_instructions = source["config"]["developer_instructions"]
             .as_str()
             .map(str::to_owned);
@@ -222,10 +1419,27 @@ impl NativeSession {
             options["ephemeral"] = json!(true);
         }
         let result = self.rpc.request("thread/start", &options)?;
+        self.receive_native_record(result, |session, result| {
+            session.codex_install_created(&result, cwd, runtime_id)
+        })
+    }
+
+    fn codex_install_created(
+        &mut self,
+        result: &Value,
+        cwd: Option<&Path>,
+        runtime_id: &str,
+    ) -> Result<()> {
         if self.native_selection.is_none()
             && self.config.gateway.is_none()
             && let Some(model) = result["model"].as_str()
         {
+            let provider_retention = self
+                .data
+                .try_clone(|owner| matches!(owner, DataOwner::Provider))?;
+            self.data
+                .merge_owner(DataOwner::Selection, provider_retention);
+            self.data.retain(DataOwner::Selection);
             self.native_selection = Some(RuntimeModel {
                 provider_id: self.native_provider.clone(),
                 id: model.into(),
@@ -240,6 +1454,7 @@ impl NativeSession {
             .map(PathBuf::from)
             .or_else(|| cwd.map(Path::to_path_buf));
         self.replace_snapshot(id, resolved_cwd.as_deref(), runtime_id, Vec::new());
+        self.data.replace(DataOwner::Identity);
         self.codex.title.eligible = !self.side
             && result["thread"]["name"]
                 .as_str()
@@ -274,10 +1489,20 @@ impl NativeSession {
         if result["thread"]["id"].as_str() != Some(id) {
             return Err(Error::new("Codex 恢复了不同的会话"));
         }
+        let (result, retention) = result.into_parts();
+        if self.native_selection.is_none() && self.config.gateway.is_none() {
+            self.data.insert(DataOwner::Selection, retention);
+        }
         if self.native_selection.is_none()
             && self.config.gateway.is_none()
             && let Some(model) = result["model"].as_str()
         {
+            let provider_retention = self
+                .data
+                .try_clone(|owner| matches!(owner, DataOwner::Provider))?;
+            self.data
+                .merge_owner(DataOwner::Selection, provider_retention);
+            self.data.retain(DataOwner::Selection);
             self.native_selection = Some(RuntimeModel {
                 provider_id: self.native_provider.clone(),
                 id: model.into(),
@@ -302,14 +1527,20 @@ impl NativeSession {
             &self.config.execution,
             &metadata,
         )?;
+        let (history, retention) = metadata
+            .zip(history)
+            .map(|(_, history)| history)
+            .into_parts();
         let resolved_cwd = history.cwd.as_deref().map(Path::new).or(cwd);
         self.replace_snapshot(id, resolved_cwd, runtime_id, history.messages);
         if let Some(snapshot) = &mut self.snapshot {
             snapshot.conversation.title = history.title;
             snapshot.conversation.native_read_state = history.native_read_state;
             snapshot.executions = history.executions;
+            snapshot.pending_interactions = history.pending_interactions;
             snapshot.follow_up.can_resume = history.can_resume;
         }
+        self.install_history_data(retention);
         Ok(())
     }
     pub(super) fn codex_turn_params(&self, input: &crate::TurnInput) -> Result<Value> {
@@ -360,6 +1591,7 @@ impl NativeSession {
             .as_str()
             .ok_or_else(|| Error::new("Codex 未返回轮次身份"))?;
         self.turn_id = Some(turn_id.into());
+        self.data.insert(DataOwner::Turn, result.into_parts().1);
         self.codex.turn_error = None;
         self.codex.retry.native = false;
         if let Some(snapshot) = &mut self.snapshot {
@@ -499,7 +1731,7 @@ impl NativeSession {
     }
     /// The configured model first, then the catalog. Codex lists each
     /// model's `supportedReasoningEfforts`.
-    pub(super) fn codex_models(&mut self) -> Result<Vec<ModelOption>> {
+    pub(super) fn codex_models(&mut self) -> Result<Retained<Vec<ModelOption>>> {
         let cwd = self
             .snapshot
             .as_ref()
@@ -512,6 +1744,8 @@ impl NativeSession {
             .as_str()
             .unwrap_or("openai")
             .to_owned();
+        let config_retention = source.into_parts().1;
+        let mut retention = DataRetention::default();
         let mut catalog = Vec::new();
         let mut cursor = Value::Null;
         let mut seen = std::collections::BTreeSet::new();
@@ -520,6 +1754,7 @@ impl NativeSession {
                 "model/list",
                 &json!({"cursor":cursor,"limit":100,"includeHidden":false}),
             )?;
+            let (page, page_retention) = page.into_parts();
             for model in page["data"]
                 .as_array()
                 .ok_or_else(|| Error::new("Codex 模型目录格式无效"))?
@@ -543,29 +1778,34 @@ impl NativeSession {
                     .transpose()
                     .map_err(|error| Error::new(format!("Codex 速度档位目录格式无效：{error}")))?
                     .unwrap_or_default();
+                let mut variants = Vec::new();
+                for tier in tiers.into_iter().filter(|tier| !tier.id.is_empty()) {
+                    // Each tier owns a separate efforts Vec and display-name
+                    // string. Reserve that copy before allocating it.
+                    retention =
+                        retention.merge(page_retention.try_clone().map_err(retention_error)?);
+                    variants.push(ModelOption {
+                        model: RuntimeModel {
+                            provider_id: None,
+                            id: speed_id(id, &tier.id),
+                            name: format!("{name}（{}）", tier.name),
+                        },
+                        reasoning_efforts: efforts.clone(),
+                    });
+                }
                 catalog.push((
                     ModelOption {
                         model: RuntimeModel {
                             provider_id: None,
                             id: id.into(),
-                            name: name.clone(),
+                            name,
                         },
-                        reasoning_efforts: efforts.clone(),
+                        reasoning_efforts: efforts,
                     },
-                    tiers
-                        .into_iter()
-                        .filter(|tier| !tier.id.is_empty())
-                        .map(|tier| ModelOption {
-                            model: RuntimeModel {
-                                provider_id: None,
-                                id: speed_id(id, &tier.id),
-                                name: format!("{name} · {}", tier.name),
-                            },
-                            reasoning_efforts: efforts.clone(),
-                        })
-                        .collect::<Vec<_>>(),
+                    variants,
                 ));
             }
+            retention = retention.merge(page_retention);
             let Some(next) = page["nextCursor"].as_str() else {
                 break;
             };
@@ -575,18 +1815,22 @@ impl NativeSession {
             cursor = json!(next);
         }
         let Some(configured) = configured else {
-            return Ok(catalog
-                .into_iter()
-                .flat_map(|(base, variants)| std::iter::once(base).chain(variants))
-                .collect());
+            return Ok(Retained::from_parts(
+                catalog
+                    .into_iter()
+                    .flat_map(|(base, variants)| std::iter::once(base).chain(variants))
+                    .collect(),
+                retention,
+            ));
         };
-        let found = catalog
+        let (efforts, tiers) = catalog
             .iter()
-            .find(|(option, _)| option.model.id == configured);
-        let (efforts, tiers) = found
-            .map(|(option, variants)| (option.reasoning_efforts.clone(), variants.clone()))
+            .position(|(option, _)| option.model.id == configured)
+            .map(|index| {
+                let (option, tiers) = catalog.remove(index);
+                (option.reasoning_efforts, tiers)
+            })
             .unwrap_or_default();
-        catalog.retain(|(option, _)| option.model.id != configured);
         let mut catalog: Vec<ModelOption> = catalog
             .into_iter()
             .flat_map(|(base, variants)| std::iter::once(base).chain(variants))
@@ -600,14 +1844,18 @@ impl NativeSession {
                     id: configured.clone(),
                     name: configured.clone(),
                 },
-                reasoning_efforts: efforts.clone(),
+                reasoning_efforts: efforts,
             },
         );
         for (offset, mut variant) in tiers.into_iter().enumerate() {
+            retention = retention.merge(config_retention.try_clone().map_err(retention_error)?);
             variant.model.provider_id = provider.clone();
             catalog.insert(offset + 1, variant);
         }
-        Ok(catalog)
+        Ok(Retained::from_parts(
+            catalog,
+            retention.merge(config_retention),
+        ))
     }
     pub(super) fn codex_compact(&mut self) -> Result<()> {
         let thread = self
@@ -637,8 +1885,11 @@ impl NativeSession {
             return Ok(());
         }
         let turn = turn.ok_or_else(|| Error::new("Codex 没有可取消轮次"))?;
-        self.rpc
-            .request("turn/interrupt", &json!({"threadId":thread,"turnId":turn}))?;
+        self.rpc.request_with_class(
+            "turn/interrupt",
+            &json!({"threadId":thread,"turnId":turn}),
+            crate::transport::WriteClass::ProtocolReplyCancel,
+        )?;
         if let Some(snapshot) = &mut self.snapshot {
             snapshot.run_state = RunState::Stopping;
             snapshot.revision += 1;
@@ -653,6 +1904,22 @@ impl NativeSession {
         else {
             return;
         };
+        if let Some(interaction) = super::codex_questions::project(item)
+            && !self
+                .codex
+                .resolved_async_questions
+                .contains(&interaction.id)
+            && let Some(snapshot) = &mut self.snapshot
+            && !snapshot
+                .pending_interactions
+                .iter()
+                .any(|known| known.id == interaction.id)
+        {
+            self.data
+                .retain(DataOwner::Interaction(interaction.id.clone()));
+            snapshot.pending_interactions.push(interaction);
+            snapshot.revision += 1;
+        }
         if item["type"] == "contextCompaction" {
             self.compaction_message_id = item["id"].as_str().map(str::to_owned);
         }
@@ -662,8 +1929,61 @@ impl NativeSession {
             }
             self.message(message);
         }
+        if let Some(snapshot) = &mut self.snapshot {
+            let before = snapshot
+                .pending_interactions
+                .iter()
+                .filter(|interaction| interaction.id.starts_with("codex-async:"))
+                .map(|interaction| interaction.id.clone())
+                .collect::<Vec<_>>();
+            let changed =
+                super::codex_questions::resolve_item(&mut snapshot.pending_interactions, item)
+                    | (item["questions"].is_array()
+                        && super::codex_questions::reconcile(
+                            &mut snapshot.pending_interactions,
+                            &snapshot.messages,
+                        ));
+            if changed {
+                for id in &before {
+                    if !snapshot
+                        .pending_interactions
+                        .iter()
+                        .any(|interaction| &interaction.id == id)
+                    {
+                        self.data.move_owner(
+                            DataOwner::Interaction(id.clone()),
+                            DataOwner::ResolvedQuestions,
+                        );
+                    }
+                }
+                self.codex
+                    .resolved_async_questions
+                    .extend(before.into_iter().filter(|id| {
+                        !snapshot
+                            .pending_interactions
+                            .iter()
+                            .any(|interaction| &interaction.id == id)
+                    }));
+                snapshot.revision += 1;
+            }
+        }
+    }
+    pub(super) fn codex_receive_record(&mut self, record: Retained<Value>) -> Result<()> {
+        self.receive_native_record(record, Self::codex_handle_record)
     }
     pub(super) fn codex_handle_record(&mut self, record: Value) -> Result<()> {
+        if self.codex.commands.enabled {
+            self.codex_harvest_commands()?;
+            // RpcClient returns valid records preceding a terminal read error.
+            // Settle those facts before poll_commands consumes that error;
+            // every enqueue still crosses RpcClient's dispatch barrier.
+        }
+        if self.codex_command_record(&record)? {
+            return Ok(());
+        }
+        if self.codex_handoff_summary_record(&record)? {
+            return Ok(());
+        }
         if self.codex_title_record(&record) {
             return Ok(());
         }
@@ -672,6 +1992,28 @@ impl NativeSession {
         }
         let method = record["method"].as_str().unwrap_or_default();
         let params = &record["params"];
+        // Request ids belong to this RPC connection. A resolved request may
+        // come from a child thread or an earlier turn, so settle its exact id
+        // before filtering conversation/turn-specific output notifications.
+        if method == "serverRequest/resolved" {
+            let id = &params["requestId"];
+            let expired = self
+                .interactions
+                .iter()
+                .filter(|(_, pending)| &pending.id == id)
+                .map(|(key, _)| key.clone())
+                .collect::<Vec<_>>();
+            for key in expired {
+                self.interactions.remove(&key);
+                if let Some(snapshot) = &mut self.snapshot {
+                    snapshot
+                        .pending_interactions
+                        .retain(|interaction| interaction.id != key);
+                    snapshot.revision += 1;
+                }
+            }
+            return Ok(());
+        }
         if let Some(thread) = params["threadId"].as_str()
             && Some(thread) != self.native_id.as_deref()
         {
@@ -689,7 +2031,7 @@ impl NativeSession {
                 Some(_) if sub_agent && record.get("method").is_some() => {
                     return self.codex_request(&record, true);
                 }
-                Some(id) => self.rpc.reject(id, "Inactive conversation")?,
+                Some(id) => self.rpc.enqueue_rejection(id, "Inactive conversation")?,
                 None if sub_agent && params["item"]["type"] == "collabAgentToolCall" => {
                     let nested = params["item"]["receiverThreadIds"]
                         .as_array()
@@ -744,6 +2086,7 @@ impl NativeSession {
         }
         match method {
             "thread/readState/changed" => {
+                self.data.retain(DataOwner::Metadata);
                 if let Some(snapshot) = &mut self.snapshot {
                     snapshot.conversation.native_read_state = super::codex_history::read_state(
                         params.get("readState"),
@@ -790,12 +2133,12 @@ impl NativeSession {
                 {
                     let old = self
                         .snapshot
-                        .as_ref()
-                        .and_then(|s| s.messages.iter().find(|m| m.id == id))
-                        .and_then(|m| m.blocks.first())
+                        .as_mut()
+                        .and_then(|s| s.messages.iter_mut().find(|m| m.id == id))
+                        .and_then(|m| m.blocks.first_mut())
                         .and_then(|b| {
                             if let MessageBlock::Text { text } = b {
-                                Some(text.clone())
+                                Some(std::mem::take(text))
                             } else {
                                 None
                             }
@@ -867,6 +2210,7 @@ impl NativeSession {
                     let mut usage = codex_usage(last, APP_SERVER_KEYS);
                     usage.context_tokens = context_tokens(last, APP_SERVER_KEYS);
                     usage.context_window = params["tokenUsage"]["modelContextWindow"].as_u64();
+                    self.context_usage(usage.context_tokens, usage.context_window);
                     self.turn_usage(|total| match total {
                         Some(total) => total.add(&usage),
                         None => *total = Some(usage),
@@ -889,22 +2233,6 @@ impl NativeSession {
                     });
                 }
             }
-            "serverRequest/resolved" => {
-                let id = &params["requestId"];
-                let expired = self
-                    .interactions
-                    .iter()
-                    .filter(|(_, p)| &p.id == id)
-                    .map(|(k, _)| k.clone())
-                    .collect::<Vec<_>>();
-                for key in expired {
-                    self.interactions.remove(&key);
-                    if let Some(s) = &mut self.snapshot {
-                        s.pending_interactions.retain(|i| i.id != key);
-                        s.revision += 1;
-                    }
-                }
-            }
             "error" => {
                 if let Some(turn) = params["turnId"].as_str()
                     && Some(turn) == self.turn_id.as_deref()
@@ -919,6 +2247,7 @@ impl NativeSession {
                     self.codex.retry.native_view = retrying.then_some(RuntimeRetry::Native);
                     let error = project_error(turn, &params["error"], retrying, None)?;
                     self.codex_error_message(error);
+                    self.data.replace(DataOwner::TurnError);
                     self.codex.turn_error = Some(params["error"].clone());
                 }
             }
@@ -958,6 +2287,9 @@ impl NativeSession {
     /// active. Tracking every thread, not only those the spawning item
     /// names, does not depend on which of their events arrives first.
     fn codex_track_thread(&mut self, thread: &str, method: &str, params: &Value) {
+        if matches!(method, "thread/status/changed" | "turn/started") {
+            self.data.retain(DataOwner::Thread(thread.into()));
+        }
         match method {
             "thread/status/changed" => {
                 let status = &params["status"];
@@ -1023,8 +2355,11 @@ impl NativeSession {
             .filter_map(|(thread, entry)| Some((thread.clone(), entry.turn.clone()?)))
             .collect::<Vec<_>>();
         for (thread, turn) in turns {
-            self.rpc
-                .request("turn/interrupt", &json!({"threadId":thread,"turnId":turn}))?;
+            self.rpc.request_with_class(
+                "turn/interrupt",
+                &json!({"threadId":thread,"turnId":turn}),
+                crate::transport::WriteClass::ProtocolReplyCancel,
+            )?;
             if let Some(entry) = self.codex.threads.get_mut(&thread) {
                 entry.state = BackgroundState::Stopping;
             }
@@ -1038,31 +2373,37 @@ impl NativeSession {
         let id = record["id"].clone();
         // A sub-agent may outlive the turn that started it; its requests
         // still come to this conversation.
-        if !self.turn_running() && !sub_agent {
-            self.rpc.reject(&id, "No active turn")?;
+        if !self.turn_running()
+            && !sub_agent
+            && !self.codex.commands.enabled
+            && method != "mcpServer/elicitation/request"
+        {
+            self.rpc.enqueue_rejection(&id, "No active turn")?;
             return Ok(());
         }
         match method {
             "item/commandExecution/requestApproval" | "item/fileChange/requestApproval" => {
                 let allowed = [
-                    ("accept", "允许这一次"),
-                    ("decline", "拒绝"),
-                    ("cancel", "取消"),
+                    ("accept", "允许这一次", ApprovalOptionKind::AllowOnce),
+                    ("decline", "拒绝", ApprovalOptionKind::RejectOnce),
+                    ("cancel", "取消", ApprovalOptionKind::Cancel),
                 ];
                 let options = allowed
                     .iter()
-                    .filter(|(choice, _)| {
+                    .filter(|(choice, _, _)| {
                         params["availableDecisions"]
                             .as_array()
                             .is_none_or(|a| a.iter().any(|v| v.as_str() == Some(choice)))
                     })
-                    .map(|(choice, label)| InteractionOption {
+                    .map(|(choice, label, approval_kind)| InteractionOption {
                         id: (*choice).into(),
                         label: (*label).into(),
+                        approval_kind: Some(*approval_kind),
                     })
                     .collect::<Vec<_>>();
                 if options.is_empty() {
-                    self.rpc.reject(&id, "Unsupported approval decisions")?;
+                    self.rpc
+                        .enqueue_rejection(&id, "Unsupported approval decisions")?;
                     self.notice("此 Codex 审批方式尚不受支持。");
                     return Ok(());
                 }
@@ -1101,7 +2442,28 @@ impl NativeSession {
                     },
                 );
             }
+            "mcpServer/elicitation/request" => match crate::elicitation::questions(params) {
+                Ok(questions) => self.add_interaction(
+                    PendingRequest {
+                        background: true,
+                        id,
+                        method: method.into(),
+                        options: Vec::new(),
+                        question_ids: questions.iter().map(|q| q.id.clone()).collect(),
+                        payload: params.clone(),
+                    },
+                    InteractionKind::UserInput { questions },
+                ),
+                Err(error) => {
+                    self.rpc.enqueue_response(
+                        &id,
+                        &json!({"action":"cancel","content":null,"_meta":null}),
+                    )?;
+                    self.notice(error.detail());
+                }
+            },
             "item/tool/requestUserInput" => {
+                let blocking = params["isBlocking"].as_bool().unwrap_or(true);
                 let questions = params["questions"]
                     .as_array()
                     .ok_or_else(|| Error::new("Codex 用户输入请求缺少问题"))?
@@ -1115,6 +2477,7 @@ impl NativeSession {
                                 o["label"].as_str().map(|label| InteractionOption {
                                     id: label.into(),
                                     label: label.into(),
+                                    approval_kind: None,
                                 })
                             })
                             .collect();
@@ -1123,28 +2486,46 @@ impl NativeSession {
                             text: q["question"].as_str().unwrap_or_default().into(),
                             options,
                             secret: q["isSecret"].as_bool().unwrap_or(false),
+                            default_text: None,
+                            multiline: false,
+                            allow_other: q["isOther"].as_bool().unwrap_or(false),
+                            multiple: false,
                         }
                     })
                     .collect::<Vec<_>>();
-                if questions.is_empty() || questions.iter().any(|q| q.id.is_empty()) {
-                    self.rpc.reject(&id, "Invalid questions")?;
+                let unique = questions
+                    .iter()
+                    .map(|q| q.id.as_str())
+                    .collect::<std::collections::HashSet<_>>();
+                if questions.is_empty()
+                    || questions.iter().any(|q| q.id.is_empty())
+                    || unique.len() != questions.len()
+                {
+                    self.rpc.enqueue_rejection(&id, "Invalid questions")?;
                     return Ok(());
                 }
                 self.add_interaction(
                     PendingRequest {
-                        background: sub_agent,
+                        background: sub_agent || !blocking,
                         id,
                         method: method.into(),
                         options: Vec::new(),
                         question_ids: questions.iter().map(|q| q.id.clone()).collect(),
                         payload: Value::Null,
                     },
-                    InteractionKind::UserInput { questions },
+                    if blocking {
+                        InteractionKind::UserInput { questions }
+                    } else {
+                        InteractionKind::AsyncUserInput {
+                            questions,
+                            delivery: crate::conversation::AsyncQuestionDelivery::NativeReply,
+                        }
+                    },
                 );
             }
             _ => {
                 self.rpc
-                    .reject(&id, "This interaction is not supported by Velune")?;
+                    .enqueue_rejection(&id, "This interaction is not supported by Velune")?;
                 self.notice("运行时请求了一种尚未支持的交互，已明确拒绝。");
             }
         }
@@ -1155,7 +2536,17 @@ impl NativeSession {
         pending: &PendingRequest,
         reply: RuntimeInteractionReply,
     ) -> Result<()> {
-        let result = if pending.method == "item/tool/requestUserInput" {
+        let result = Self::codex_reply_result(pending, reply)?;
+        self.rpc.respond(&pending.id, &result)
+    }
+
+    fn codex_reply_result(
+        pending: &PendingRequest,
+        reply: RuntimeInteractionReply,
+    ) -> Result<Value> {
+        let result = if pending.method == "mcpServer/elicitation/request" {
+            crate::elicitation::reply(&pending.payload, reply)?
+        } else if pending.method == "item/tool/requestUserInput" {
             match reply {
                 RuntimeInteractionReply::Answers { answers } => {
                     let mut map = serde_json::Map::new();
@@ -1199,7 +2590,7 @@ impl NativeSession {
             };
             json!({"decision":decision})
         };
-        self.rpc.respond(&pending.id, &result)
+        Ok(result)
     }
 }
 
@@ -1252,12 +2643,34 @@ pub(super) fn history_client_at(
     execution: &crate::execution::ExecutionTarget,
     os_home: Option<&Path>,
 ) -> Result<rpc::RpcClient> {
+    history_client_at_with_provider(kind, binary, home, execution, os_home, None)
+}
+
+pub(super) fn history_client_at_with_provider(
+    kind: crate::version::RuntimeKind,
+    binary: &Path,
+    home: &Path,
+    execution: &crate::execution::ExecutionTarget,
+    os_home: Option<&Path>,
+    provider: Option<&str>,
+) -> Result<rpc::RpcClient> {
     if !binary.is_absolute() || !home.is_absolute() {
         return Err(Error::new("Codex 历史配置必须使用绝对路径"));
     }
     crate::version::check_version_at(kind, binary, None, execution, os_home)?;
     let mut command = crate::process_tree::command(binary);
     command.arg("app-server");
+    if let Some(provider) = provider {
+        command.arg("-c").arg(format!(
+            "model_provider={}",
+            serde_json::to_string(provider).map_err(|error| Error::new(error.to_string()))?
+        ));
+        if provider == "velune" {
+            // Only the import-indexing child gets this inert, unauthenticated
+            // endpoint. The execution child supplies the selected live gateway.
+            command.arg("-c").arg("model_providers.velune={name=\"Velune history materialization\",base_url=\"http://127.0.0.1:9/v1\",wire_api=\"responses\",requires_openai_auth=false}");
+        }
+    }
     command.env("CODEX_HOME", home);
     let mut rpc = rpc::RpcClient::spawn_at(command, execution, os_home)?;
     rpc.request("initialize", &json!({"clientInfo":{"name":"velune","version":"0.1.0-beta.1"},"capabilities":{"experimentalApi":true}}))?;
@@ -1645,7 +3058,7 @@ pub fn update_read_state(
     runtime: &str,
     receipt: &NativeReadState,
     read: bool,
-) -> Result<NativeReadState> {
+) -> Result<Retained<NativeReadState>> {
     let id = receipt
         .conversation_id
         .strip_prefix(&format!("{runtime}:"))
@@ -1666,13 +3079,1142 @@ pub fn update_read_state(
                 .then_some("read_state_conflict")
         },
     )?;
-    super::codex_history::read_state(result.get("readState"), runtime, id)?
-        .ok_or_else(|| Error::new("Codex 未返回已读状态"))
+    result.try_map(|result| {
+        super::codex_history::read_state(result.get("readState"), runtime, id)?
+            .ok_or_else(|| Error::new("Codex 未返回已读状态"))
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    struct CommandFixture {
+        root: PathBuf,
+        session: NativeSession,
+    }
+    #[cfg(unix)]
+    impl CommandFixture {
+        fn new(mode: &str) -> Self {
+            use std::os::unix::fs::PermissionsExt;
+            let mut nonce = [0; 8];
+            getrandom::fill(&mut nonce).unwrap();
+            let root = std::env::temp_dir().join(format!(
+                "velune-codex-commands-{:x}",
+                u64::from_le_bytes(nonce)
+            ));
+            std::fs::create_dir(&root).unwrap();
+            std::fs::write(root.join("mode"), mode).unwrap();
+            let binary = root.join("codex");
+            std::fs::write(&binary, r#"#!/usr/bin/python3
+import json, os, pathlib, select, sys, time
+root = pathlib.Path(__file__).parent
+if '--version' in sys.argv:
+    print('codex-cli 0.166.0'); sys.exit(0)
+def emit(method, params):
+    print(json.dumps({'method':method,'params':params}), flush=True)
+def ack(request, result):
+    print(json.dumps({'id':request['id'],'result':result}), flush=True)
+def approval(id):
+    print(json.dumps({'id':id,'method':'item/commandExecution/requestApproval','params':{'threadId':'thread','turnId':'turn','command':'true','availableDecisions':['accept','decline']}}), flush=True)
+held = None
+held_child = None
+replies = set()
+ended = False
+buffer = ''
+while True:
+    if held and (root / 'release').exists():
+        ack(held, {'turn':{'id':'turn'}}); held = None
+    if '\n' not in buffer:
+        ready, _, _ = select.select([sys.stdin], [], [], 0.005)
+        if not ready: continue
+        chunk = os.read(0, 65536)
+        if not chunk: break
+        buffer += chunk.decode()
+        if '\n' not in buffer: continue
+    line, buffer = buffer.split('\n', 1)
+    request = json.loads(line)
+    with (root / 'wire').open('a') as log: log.write(json.dumps(request) + '\n')
+    method = request.get('method')
+    if method == 'initialize': ack(request, {})
+    elif method == 'config/read': ack(request, {'config':{'model_provider':'openai','model':'synthetic'}})
+    elif method == 'thread/start':
+        ack(request, {'thread':{'id':'thread','name':'Synthetic','createdAt':12}})
+        if (root / 'mode').read_text().startswith('children-'):
+            for child in ('child-a', 'child-b'):
+                emit('thread/status/changed', {'threadId':child,'status':{'type':'active','activeFlags':[]}})
+                emit('turn/started', {'threadId':child,'turn':{'id':'turn-' + child}})
+        if (root / 'mode').read_text() == 'block-input':
+            emit('thread/status/changed', {'threadId':'child','status':{'type':'active','activeFlags':[]}})
+            deadline = time.monotonic() + 8
+            unknown_sent = False
+            while not (root / 'release-stdin').exists():
+                if (root / 'send-enqueued').exists() and not unknown_sent:
+                    unknown_sent = True
+                    print(json.dumps({'id':'unsupported','method':'synthetic/unsupported','params':{'threadId':'thread'}}), flush=True)
+                if time.monotonic() >= deadline: sys.exit(2)
+                time.sleep(0.005)
+    elif method == 'thread/resume': ack(request, {'thread':{'id':request['params']['threadId']}})
+    elif method == 'turn/start':
+        mode = (root / 'mode').read_text()
+        if mode == 'reject':
+            print(json.dumps({'id':request['id'],'error':{'code':-32600,'message':'explicit reject'}}), flush=True)
+        elif mode == 'disconnect': sys.exit(0)
+        elif mode == 'accept-disconnect':
+            ack(request, {'turn':{'id':'accepted'}}); sys.exit(0)
+        elif mode in ('hold', 'children-deadline'): held = request
+        elif mode == 'children-malformed':
+            sys.stdout.write(json.dumps({'id':request['id'],'result':{'turn':{'id':'accepted'}}}) + '\n{malformed\n')
+            sys.stdout.flush()
+            (root / 'malformed-written').touch()
+        elif mode == 'resume':
+            ack(request, {'turn':{'id':'resumed'}})
+            emit('turn/completed', {'threadId':'thread','turn':{'id':'resumed','status':'completed'}})
+        else:
+            held = request
+            emit('item/completed', {'threadId':'thread','turnId':'turn','item':{'id':'user','type':'userMessage','content':request['params']['input']}})
+            emit('turn/started', {'threadId':'thread','turn':{'id':'turn'}})
+            emit('item/started', {'threadId':'thread','turnId':'turn','item':{'id':'assistant','type':'agentMessage','text':'early output'}})
+            approval('approval-a'); approval('approval-b')
+            emit('thread/status/changed', {'threadId':'child','status':{'type':'active','activeFlags':[]}})
+    elif method == 'turn/interrupt' and request['params']['threadId'] == 'child-b':
+        mode = (root / 'mode').read_text()
+        if mode == 'children-disconnect': sys.exit(0)
+        held_child = request
+        print(json.dumps({'id':'child-approval','method':'item/commandExecution/requestApproval','params':{'threadId':'child-b','turnId':'turn-child-b','command':'true','availableDecisions':['accept']}}), flush=True)
+    elif method == 'turn/interrupt' and (root / 'mode').read_text() == 'cancel-reject':
+        print(json.dumps({'id':request['id'],'error':{'code':-32600,'message':'interrupt rejected'}}), flush=True)
+        emit('item/agentMessage/delta', {'threadId':'thread','turnId':'turn','itemId':'assistant','delta':' still running'})
+    elif method in ('turn/steer', 'turn/interrupt'): ack(request, {})
+    elif method is None:
+        if request['id'] == 'child-approval' and held_child:
+            if (root / 'mode').read_text() == 'children-reject':
+                print(json.dumps({'id':held_child['id'],'error':{'code':-32600,'message':'child interrupt rejected'}}), flush=True)
+                held_child = None
+            elif (root / 'mode').read_text() != 'children-hold':
+                ack(held_child, {}); held_child = None
+        replies.add(request['id'])
+        if {'approval-a', 'approval-b'} <= replies and not ended:
+            ended = True
+            emit('turn/completed', {'threadId':'thread','turn':{'id':'turn','status':'completed'}})
+            approval('approval-after-terminal')
+"#).unwrap();
+            std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
+            let session = NativeSession::connect(NativeConfig {
+                execution: crate::execution::ExecutionTarget::Local,
+                os_home: Some(root.clone()),
+                kind: NativeKind::Codex166,
+                binary,
+                node_binary: None,
+                agent_dir: root.clone(),
+                resources_directory: root.clone(),
+                projection_directory: root.clone(),
+                gateway: None,
+                mcp_servers: vec![],
+                session_agents: vec![],
+            })
+            .unwrap();
+            Self { root, session }
+        }
+        fn input(text: &str) -> crate::TurnInput {
+            crate::TurnInput {
+                text: text.into(),
+                effort: None,
+                permission_mode: None,
+                images: vec![],
+            }
+        }
+        fn enqueue(&mut self, command: CodexCommand) -> Retained<CodexOperationTicket> {
+            self.session
+                .enqueue_codex_command(
+                    command,
+                    std::time::Instant::now() + std::time::Duration::from_secs(4),
+                )
+                .unwrap()
+        }
+        fn poll_until(&mut self, condition: impl Fn(&NativeSession) -> bool) {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+            while !condition(&self.session) {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "condition did not settle"
+                );
+                self.session.poll().unwrap();
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+        }
+        fn start(&mut self) {
+            self.session
+                .prepare_codex_commands(Some(&self.root))
+                .unwrap();
+            let ticket = self.enqueue(CodexCommand::Start {
+                runtime_id: "codex".into(),
+            });
+            self.poll_until(|s| !s.codex.commands.pending());
+            let receipt = self.session.take_codex_receipt().unwrap();
+            assert_eq!(receipt.ticket, *ticket);
+            assert!(matches!(
+                receipt.delivery,
+                CodexDelivery::Accepted {
+                    thread_id: Some(_),
+                    turn_id: None
+                }
+            ));
+            assert_eq!(
+                self.session
+                    .snapshot()
+                    .unwrap()
+                    .conversation
+                    .created_at_unix_ms,
+                Some(12_000)
+            );
+        }
+        fn wire(&self) -> Vec<Value> {
+            std::fs::read_to_string(self.root.join("wire"))
+                .unwrap()
+                .lines()
+                .map(|line| serde_json::from_str(line).unwrap())
+                .collect()
+        }
+    }
+    #[cfg(unix)]
+    impl Drop for CommandFixture {
+        fn drop(&mut self) {
+            self.session.shutdown().unwrap();
+            std::fs::remove_dir_all(&self.root).unwrap();
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn codex_integration_late_reply_fact_survives_consumed_failure_receipt() {
+        use std::time::{Duration, Instant};
+        let mut fixture = CommandFixture::new("hold");
+        fixture.start();
+        let d = Instant::now() - Duration::from_millis(1);
+        let (sender, write) = crate::transport::WriteReceipt::test_pending(d);
+        let ticket = fixture.session.codex_install_operation(
+            100,
+            json!("synthetic-reply"),
+            d,
+            CommandOperationKind::Reply {
+                interaction_id: "synthetic".into(),
+                write,
+            },
+        );
+        assert!(fixture.session.codex_harvest_commands().is_err());
+        fixture.session.fail_connection();
+        while fixture.session.take_codex_receipt().is_some() {}
+        sender
+            .send(crate::transport::WriteOutcome::Written(
+                crate::WriteCompletion {
+                    started_at: d - Duration::from_millis(1),
+                    completed_at: d + Duration::from_millis(1),
+                    deadline: d,
+                },
+            ))
+            .unwrap();
+        fixture.session.poll().unwrap();
+        let receipt = fixture.session.take_codex_receipt().unwrap();
+        assert_eq!(receipt.ticket, ticket);
+        assert!(matches!(
+            receipt.delivery,
+            CodexDelivery::Indeterminate { .. }
+        ));
+        assert!(
+            matches!(receipt.physical_write,Some(crate::WriteFact::Written(c)) if !c.met_deadline())
+        );
+        assert!(fixture.session.requires_failure_cleanup());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn codex_commands_child_interrupts_keep_approvals_live_and_preserve_partial_delivery() {
+        for mode in ["children-reject", "children-disconnect", "children-hold"] {
+            let mut f = CommandFixture::new(mode);
+            f.start();
+            f.poll_until(|s| s.work().unwrap().len() == 2);
+            let ticket = f
+                .session
+                .enqueue_codex_command(
+                    CodexCommand::StopBackground,
+                    std::time::Instant::now() + std::time::Duration::from_millis(300),
+                )
+                .unwrap();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+            let mut replied = false;
+            while f.session.codex.commands.receipts.is_empty() {
+                assert!(std::time::Instant::now() < deadline);
+                let _ = f.session.poll();
+                if !replied && let Some(id) = f.session.interactions.keys().next().cloned() {
+                    f.enqueue(CodexCommand::Reply {
+                        interaction_id: id,
+                        reply: RuntimeInteractionReply::Decision {
+                            option_id: "accept".into(),
+                        },
+                    });
+                    replied = true;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            // A reply write receipt may precede the aggregate result.
+            while f
+                .session
+                .codex
+                .commands
+                .pending
+                .contains_key(&ticket.sequence)
+            {
+                assert!(std::time::Instant::now() < deadline);
+                let _ = f.session.poll();
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            let receipts: Vec<_> = std::iter::from_fn(|| f.session.take_codex_receipt()).collect();
+            let receipt = receipts.into_iter().find(|r| r.ticket == *ticket).unwrap();
+            let CodexDelivery::Interrupts { children } = &receipt.delivery else {
+                panic!("aggregate receipt")
+            };
+            assert_eq!(children.len(), 2);
+            assert!(children.iter().any(|r| r.thread_id == "child-a"
+                && matches!(r.delivery, CodexInterruptDelivery::Accepted)));
+            let b = children.iter().find(|r| r.thread_id == "child-b").unwrap();
+            if mode == "children-reject" {
+                assert!(matches!(
+                    b.delivery,
+                    CodexInterruptDelivery::Rejected { .. }
+                ));
+                assert!(replied);
+                assert_eq!(
+                    f.session.work().unwrap().len(),
+                    2,
+                    "interrupt ACK does not remove native work"
+                );
+            } else {
+                assert!(matches!(
+                    b.delivery,
+                    CodexInterruptDelivery::Indeterminate { .. }
+                ));
+                assert!(
+                    !f.session.process_ended,
+                    "failed group retains its process owner"
+                );
+            }
+            let wire = f.wire();
+            let interrupts: Vec<_> = wire
+                .iter()
+                .filter(|r| r["method"] == "turn/interrupt")
+                .collect();
+            assert_eq!(interrupts.len(), 2);
+            assert!(
+                interrupts
+                    .iter()
+                    .all(|r| r["params"]["threadId"] != "thread")
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn codex_commands_expired_send_blocks_longer_lived_child_interrupts() {
+        let mut f = CommandFixture::new("children-deadline");
+        f.start();
+        f.poll_until(|s| s.work().unwrap().len() == 2);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(150);
+        let send = f
+            .session
+            .enqueue_codex_command(CodexCommand::Send(CommandFixture::input("once")), deadline)
+            .unwrap();
+        let stop = f.enqueue(CodexCommand::StopBackground);
+        std::thread::sleep(
+            deadline.saturating_duration_since(std::time::Instant::now())
+                + std::time::Duration::from_millis(20),
+        );
+        assert!(f.session.poll().is_err());
+        assert!(f.session.failed);
+        assert!(
+            !f.session.process_ended,
+            "failure barrier must not perform cleanup"
+        );
+        let receipts: Vec<_> = std::iter::from_fn(|| f.session.take_codex_receipt()).collect();
+        assert!(
+            receipts
+                .iter()
+                .any(|r| r.ticket == *send
+                    && matches!(r.delivery, CodexDelivery::Indeterminate { .. }))
+        );
+        let receipt = receipts.into_iter().find(|r| r.ticket == *stop).unwrap();
+        let CodexDelivery::Interrupts { children } = &receipt.delivery else {
+            panic!()
+        };
+        assert_eq!(children.len(), 2);
+        assert!(children.iter().all(|child| child.request_id.is_none()
+            && matches!(child.delivery, CodexInterruptDelivery::NotDispatched)));
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        let wire = f.wire();
+        assert_eq!(
+            wire.iter().filter(|r| r["method"] == "turn/start").count(),
+            1
+        );
+        assert!(!wire.iter().any(|r| r["method"] == "turn/interrupt"));
+        f.session.shutdown().unwrap();
+        assert!(f.session.process_ended);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn codex_commands_valid_ack_before_malformed_record_blocks_child_dispatch_and_keeps_acceptance()
+    {
+        let mut f = CommandFixture::new("children-malformed");
+        f.start();
+        // An unnamed new conversation is eligible for the automatic title
+        // request triggered while processing its successful send acknowledgement.
+        f.session.codex.title.eligible = true;
+        f.session.snapshot.as_mut().unwrap().conversation.title = ConversationTitle::Untitled;
+        f.poll_until(|s| s.work().unwrap().len() == 2);
+        let send = f.enqueue(CodexCommand::Send(CommandFixture::input("once")));
+        let stop = f.enqueue(CodexCommand::StopBackground);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while !f.root.join("malformed-written").exists() {
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        // Let the existing reader queue both lines from this single flushed
+        // write. The helper remains alive and continues reading mutations.
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert!(
+            f.session.poll().is_err(),
+            "the valid-record batch must expose its detected terminal failure this round"
+        );
+        assert!(f.session.failed);
+        assert!(!f.session.process_ended);
+        let receipts: Vec<_> = std::iter::from_fn(|| f.session.take_codex_receipt()).collect();
+        assert!(receipts.iter().any(|r| r.ticket == *send
+            && matches!(r.delivery,
+            CodexDelivery::Accepted { turn_id: Some(ref id), .. } if id == "accepted")));
+        let receipt = receipts.into_iter().find(|r| r.ticket == *stop).unwrap();
+        let CodexDelivery::Interrupts { children } = &receipt.delivery else {
+            panic!()
+        };
+        assert_eq!(children.len(), 2);
+        assert!(children.iter().all(|child| child.request_id.is_none()
+            && matches!(child.delivery, CodexInterruptDelivery::NotDispatched)));
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        let wire = f.wire();
+        assert_eq!(
+            wire.iter().filter(|r| r["method"] == "turn/start").count(),
+            1
+        );
+        assert!(
+            !wire.iter().any(|r| r["method"] == "turn/interrupt"),
+            "a still-reading child must not receive mutations after detected malformed output"
+        );
+        assert_eq!(
+            wire.iter()
+                .filter(|r| r["method"] == "thread/start")
+                .count(),
+            1,
+            "accepted delivery must not launch an optional title thread after a known terminal failure"
+        );
+        f.session.shutdown().unwrap();
+        assert!(f.session.process_ended);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn codex_commands_stop_child_accepts_only_the_runtime_prefix_published_by_work() {
+        for restore in [false, true] {
+            let mut f = CommandFixture::new("children-reject");
+            f.start();
+            f.poll_until(|s| s.work().unwrap().len() == 2);
+            let source = f.session.owned_snapshot().unwrap().map(|mut source| {
+                source.conversation.runtime_id = "source-runtime".into();
+                source
+            });
+            if restore {
+                f.session.restore_context(&source).unwrap();
+            } else {
+                f.session.set_conversation(source.map(|s| s.conversation));
+            }
+            assert_eq!(f.session.snapshot().unwrap().context_runtime_id, "codex");
+            let work = f.session.work().unwrap();
+            let child = work
+                .iter()
+                .find_map(|task| {
+                    task.conversation_id
+                        .as_deref()
+                        .filter(|id| *id == "source-runtime:child-a")
+                })
+                .unwrap();
+            for invalid in [
+                "codex:child-a",
+                "other:child-a",
+                "source-runtime:thread",
+                "source-runtime:not-owned",
+            ] {
+                assert!(
+                    f.session
+                        .enqueue_codex_command(
+                            CodexCommand::StopChild {
+                                conversation_id: invalid.into(),
+                            },
+                            std::time::Instant::now() + std::time::Duration::from_secs(1)
+                        )
+                        .is_err(),
+                    "invalid child {invalid}"
+                );
+            }
+            f.enqueue(CodexCommand::StopChild {
+                conversation_id: child.into(),
+            });
+            f.poll_until(|s| !s.codex.commands.pending());
+            let receipt = f.session.take_codex_receipt().unwrap();
+            let CodexDelivery::Interrupts { children } = &receipt.delivery else {
+                panic!()
+            };
+            assert_eq!(children.len(), 1);
+            assert_eq!(children[0].thread_id, "child-a");
+            assert!(matches!(
+                children[0].delivery,
+                CodexInterruptDelivery::Accepted
+            ));
+            let wire = f.wire();
+            let interrupts: Vec<_> = wire
+                .iter()
+                .filter(|r| r["method"] == "turn/interrupt")
+                .collect();
+            assert_eq!(interrupts.len(), 1);
+            assert_eq!(interrupts[0]["params"]["threadId"], "child-a");
+            assert_eq!(
+                f.session.codex.threads["child-b"].state,
+                BackgroundState::Running
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn codex_commands_interrupt_batch_deadline_preserves_undispatched_targets_and_reply_capacity() {
+        let mut f = CommandFixture::new("block-input");
+        f.start();
+        f.enqueue(CodexCommand::Send(CommandFixture::input(
+            &"x".repeat(2 * 1024 * 1024),
+        )));
+        for index in 0..40 {
+            f.session
+                .codex_handle_record(json!({"method":"turn/started","params":{
+                    "threadId":format!("child-{index}"),"turn":{"id":format!("turn-{index}")}
+                }}))
+                .unwrap();
+        }
+        let ticket = f
+            .session
+            .enqueue_codex_command(
+                CodexCommand::StopBackground,
+                std::time::Instant::now() + std::time::Duration::from_millis(150),
+            )
+            .unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while !f.session.failed {
+            assert!(std::time::Instant::now() < deadline);
+            let _ = f.session.poll();
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let receipt = std::iter::from_fn(|| f.session.take_codex_receipt())
+            .find(|r| r.ticket == *ticket)
+            .unwrap();
+        let CodexDelivery::Interrupts { children } = &receipt.delivery else {
+            panic!()
+        };
+        assert_eq!(children.len(), 40);
+        let dispatched = children.iter().filter(|r| r.request_id.is_some()).count();
+        assert!(
+            dispatched > 0 && dispatched <= COMMAND_CAPACITY - REPLY_RESERVE - 1,
+            "one blocked send plus child batches must leave four ordinary writer slots free"
+        );
+        assert!(
+            children
+                .iter()
+                .any(|r| matches!(r.delivery, CodexInterruptDelivery::NotDispatched))
+        );
+        assert!(
+            children
+                .iter()
+                .any(|r| matches!(r.delivery, CodexInterruptDelivery::Indeterminate { .. }))
+        );
+        assert!(!f.session.process_ended);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn codex_commands_stop_child_is_exact_and_does_not_stop_parent_or_sibling() {
+        let mut f = CommandFixture::new("children-reject");
+        f.start();
+        f.poll_until(|s| s.work().unwrap().len() == 2);
+        assert!(
+            f.session
+                .enqueue_codex_command(
+                    CodexCommand::StopChild {
+                        conversation_id: "other:child-a".into()
+                    },
+                    std::time::Instant::now() + std::time::Duration::from_secs(1)
+                )
+                .is_err()
+        );
+        assert!(
+            f.session
+                .enqueue_codex_command(
+                    CodexCommand::StopChild {
+                        conversation_id: "codex:thread".into()
+                    },
+                    std::time::Instant::now() + std::time::Duration::from_secs(1)
+                )
+                .is_err()
+        );
+        f.enqueue(CodexCommand::StopChild {
+            conversation_id: "codex:child-a".into(),
+        });
+        f.poll_until(|s| !s.codex.commands.pending());
+        let receipt = f.session.take_codex_receipt().unwrap();
+        let CodexDelivery::Interrupts { children } = &receipt.delivery else {
+            panic!()
+        };
+        assert_eq!(children.len(), 1);
+        assert_eq!(children[0].thread_id, "child-a");
+        assert!(matches!(
+            children[0].delivery,
+            CodexInterruptDelivery::Accepted
+        ));
+        assert_eq!(
+            f.session.codex.threads["child-a"].state,
+            BackgroundState::Stopping
+        );
+        assert_eq!(
+            f.session.codex.threads["child-b"].state,
+            BackgroundState::Running
+        );
+        assert_eq!(f.session.work().unwrap().len(), 2);
+        let wire = f.wire();
+        let interrupts: Vec<_> = wire
+            .iter()
+            .filter(|r| r["method"] == "turn/interrupt")
+            .collect();
+        assert_eq!(interrupts.len(), 1);
+        assert_eq!(interrupts[0]["params"]["threadId"], "child-a");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn codex_commands_unknown_request_does_not_wait_for_blocked_stdin_or_cleanup() {
+        let mut f = CommandFixture::new("block-input");
+        f.start();
+        f.session
+            .enqueue_codex_command(
+                CodexCommand::Send(CommandFixture::input(&"x".repeat(2 * 1024 * 1024))),
+                std::time::Instant::now() + std::time::Duration::from_millis(250),
+            )
+            .unwrap();
+        std::fs::write(f.root.join("send-enqueued"), []).unwrap();
+        let began = std::time::Instant::now();
+        while !f.session.failed {
+            let _ = f.session.poll();
+            assert!(
+                began.elapsed() < std::time::Duration::from_secs(2),
+                "poll waited for stdin or cleanup"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(f.session.snapshot().unwrap().messages.iter().any(|message|
+            message.blocks.iter().any(|block| matches!(block, MessageBlock::Notice { text } if text.contains("尚未支持")))));
+        assert!(!f.session.process_ended);
+        f.session.shutdown().unwrap();
+        assert!(f.session.process_ended);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn codex_commands_rejected_cancel_preserves_running_turn_and_steering() {
+        let mut f = CommandFixture::new("cancel-reject");
+        f.start();
+        f.enqueue(CodexCommand::Send(CommandFixture::input("continue")));
+        f.poll_until(|s| s.turn_id.as_deref() == Some("turn"));
+        let cancel = f.enqueue(CodexCommand::Cancel);
+        assert!(
+            f.session.can_steer(),
+            "local cancel admission cannot assert Stopping"
+        );
+        f.poll_until(|s| !s.codex.commands.receipts.is_empty());
+        let receipt = f.session.take_codex_receipt().unwrap();
+        assert_eq!(receipt.ticket, *cancel);
+        assert!(matches!(receipt.delivery, CodexDelivery::Rejected { .. }));
+        assert!(f.session.can_steer());
+        let steer = f.enqueue(CodexCommand::Steer(CommandFixture::input(
+            "still steerable",
+        )));
+        f.poll_until(|s| !s.codex.commands.receipts.is_empty());
+        assert_eq!(f.session.take_codex_receipt().unwrap().ticket, *steer);
+        assert!(f.session.can_steer());
+        assert!(f.session.snapshot().unwrap().messages.iter().any(|message|
+            message.blocks.iter().any(|block| matches!(block, MessageBlock::Text { text } if text.contains("still running")))));
+        std::fs::write(f.root.join("mode"), "gated").unwrap();
+        f.enqueue(CodexCommand::Cancel);
+        f.poll_until(|s| s.snapshot().unwrap().run_state == RunState::Stopping);
+        std::fs::write(f.root.join("mode"), "cancel-reject").unwrap();
+        f.enqueue(CodexCommand::Cancel);
+        f.poll_until(|s| s.codex.commands.receipts.len() == 2);
+        assert_eq!(
+            f.session.snapshot().unwrap().run_state,
+            RunState::Stopping,
+            "another rejected cancel cannot undo an already accepted one"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn codex_commands_prepare_native_selection_before_async_start() {
+        let mut f = CommandFixture::new("hold");
+        f.session
+            .select_native_model(Retained::from_parts(
+                (Some("openai".into()), "selected-model".into()),
+                Default::default(),
+            ))
+            .unwrap();
+        f.start();
+        assert!(!f.session.restart_needed());
+        let wire = f.wire();
+        let start = wire.iter().find(|r| r["method"] == "thread/start").unwrap();
+        assert_eq!(start["params"]["model"], "selected-model");
+        assert_eq!(start["params"]["modelProvider"], "openai");
+        let mut changed = CommandFixture::new("hold");
+        changed
+            .session
+            .select_model(GatewayInjection {
+                endpoint: "http://127.0.0.1:9/v1".into(),
+                token: "synthetic-not-used".into(),
+                model_alias: "synthetic".into(),
+                protocol: "openai-responses".into(),
+                context_window: None,
+                max_output_tokens: None,
+                reasoning_levels: None,
+            })
+            .unwrap();
+        let error = changed
+            .session
+            .prepare_codex_commands(Some(&changed.root))
+            .unwrap_err();
+        assert_eq!(
+            error.code(),
+            "needs_preparation",
+            "preparation must not falsely promise an unsupported connection reconfiguration"
+        );
+        assert!(!changed.wire().iter().any(|r| r["method"] == "thread/start"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn codex_commands_admission_and_poll_do_not_wait_for_blocked_stdin() {
+        let mut f = CommandFixture::new("block-input");
+        f.start();
+        let ticket = f.enqueue(CodexCommand::Send(CommandFixture::input(
+            &"x".repeat(2 * 1024 * 1024),
+        )));
+        f.poll_until(|s| !s.work().unwrap().is_empty());
+        for _ in 0..3 {
+            f.session.poll().unwrap();
+        }
+        assert!(f.session.take_codex_receipt().is_none());
+        assert!(f.session.has_pending_metadata());
+        assert!(
+            !f.session.turn_running(),
+            "local admission is not native acceptance"
+        );
+        assert_eq!(
+            f.wire()
+                .iter()
+                .filter(|r| r["method"] == "turn/start")
+                .count(),
+            0,
+            "a real oversized stdin frame must remain blocked before gate release"
+        );
+        std::fs::write(f.root.join("mode"), "resume").unwrap();
+        std::fs::write(f.root.join("release-stdin"), []).unwrap();
+        f.poll_until(|s| !s.codex.commands.pending());
+        assert_eq!(f.session.take_codex_receipt().unwrap().ticket, *ticket);
+        assert_eq!(
+            f.wire()
+                .iter()
+                .filter(|r| r["method"] == "turn/start")
+                .count(),
+            1
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn codex_commands_service_approvals_output_steer_cancel_and_terminal_before_send_ack() {
+        let mut f = CommandFixture::new("gated");
+        assert!(matches!(
+            f.session.enqueue_codex_command(
+                CodexCommand::Start {
+                    runtime_id: "codex".into()
+                },
+                std::time::Instant::now() + std::time::Duration::from_secs(1)
+            ),
+            Err(CodexAdmissionError::NeedsPreparation)
+        ));
+        f.start();
+        let send = f.enqueue(CodexCommand::Send(CommandFixture::input("once")));
+        f.poll_until(|s| s.interactions.len() == 2 && s.snapshot().unwrap().messages.len() == 2);
+        assert!(f.session.take_codex_receipt().is_none());
+        assert_eq!(f.session.turn_id.as_deref(), Some("turn"));
+        assert_eq!(f.session.work().unwrap().len(), 1);
+        let steer = f.enqueue(CodexCommand::Steer(CommandFixture::input("steer once")));
+        let cancel = f.enqueue(CodexCommand::Cancel);
+        f.poll_until(|s| s.codex.commands.receipts.len() == 2);
+        assert!(
+            f.session.turn_running(),
+            "interrupt acceptance must not fabricate turn completion"
+        );
+        let receipts: Vec<_> = std::iter::from_fn(|| f.session.take_codex_receipt()).collect();
+        assert!(
+            receipts
+                .iter()
+                .any(|r| r.ticket == *steer && matches!(r.delivery, CodexDelivery::Accepted { .. }))
+        );
+        assert!(receipts.iter().any(|r| r.ticket == *cancel && matches!(r.delivery, CodexDelivery::Accepted { .. })));
+        let interactions: Vec<_> = f.session.interactions.keys().cloned().collect();
+        for id in interactions {
+            f.enqueue(CodexCommand::Reply {
+                interaction_id: id,
+                reply: RuntimeInteractionReply::Decision {
+                    option_id: "accept".into(),
+                },
+            });
+        }
+        f.poll_until(|s| !s.turn_running() && s.interactions.len() == 1);
+        assert!(f.session.codex.commands.starting_turn());
+        assert_eq!(
+            f.session.work().unwrap().len(),
+            1,
+            "parent terminal does not release background work"
+        );
+        let id = f.session.interactions.keys().next().unwrap().clone();
+        f.enqueue(CodexCommand::Reply {
+            interaction_id: id.clone(),
+            reply: RuntimeInteractionReply::Decision {
+                option_id: "accept".into(),
+            },
+        });
+        assert!(
+            f.session
+                .enqueue_codex_command(
+                    CodexCommand::Reply {
+                        interaction_id: id,
+                        reply: RuntimeInteractionReply::Decision {
+                            option_id: "accept".into()
+                        },
+                    },
+                    std::time::Instant::now() + std::time::Duration::from_secs(1)
+                )
+                .is_err(),
+            "do not duplicate a pending reply"
+        );
+        f.poll_until(|s| s.interactions.is_empty());
+        let replies: Vec<_> = std::iter::from_fn(|| f.session.take_codex_receipt()).collect();
+        assert_eq!(replies.len(), 3);
+        assert!(
+            replies
+                .iter()
+                .all(|r| matches!(r.delivery, CodexDelivery::Written))
+        );
+        std::fs::write(f.root.join("release"), []).unwrap();
+        f.poll_until(|s| !s.codex.commands.pending());
+        let receipt = f.session.take_codex_receipt().unwrap();
+        assert_eq!(receipt.ticket, *send);
+        assert!(
+            matches!(receipt.delivery, CodexDelivery::Accepted { turn_id: Some(ref id), .. } if id == "turn")
+        );
+        assert!(
+            !f.session.turn_running(),
+            "late ack must not revive a completed turn"
+        );
+        assert!(f.session.turn_id.is_none());
+        assert_eq!(
+            f.session
+                .snapshot()
+                .unwrap()
+                .messages
+                .iter()
+                .map(|m| m.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["user", "assistant"]
+        );
+        assert!(
+            f.session
+                .snapshot()
+                .unwrap()
+                .executions
+                .current
+                .as_ref()
+                .unwrap()
+                .ended
+        );
+        std::fs::write(f.root.join("mode"), "resume").unwrap();
+        let resume = f.enqueue(CodexCommand::Resume {
+            effort: Some("high".into()),
+            permission_mode: None,
+        });
+        f.poll_until(|s| !s.codex.commands.pending());
+        assert_eq!(f.session.take_codex_receipt().unwrap().ticket, *resume);
+        let wire = f.wire();
+        let turns: Vec<_> = wire
+            .iter()
+            .filter(|r| r["method"] == "turn/start")
+            .collect();
+        assert_eq!(turns.len(), 2);
+        assert_eq!(turns[0]["params"]["input"][0]["text"], "once");
+        assert_eq!(turns[1]["params"]["input"], json!([]));
+        assert_eq!(turns[1]["params"]["effort"], "high");
+        for id in ["approval-a", "approval-b", "approval-after-terminal"] {
+            assert_eq!(
+                wire.iter()
+                    .filter(|r| r.get("method").is_none() && r["id"] == id)
+                    .count(),
+                1
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn codex_commands_distinguish_native_reject_disconnect_timeout_without_replay() {
+        for mode in ["reject", "disconnect", "hold"] {
+            let mut f = CommandFixture::new(mode);
+            f.start();
+            f.session.snapshot.as_mut().unwrap().follow_up.can_resume = true;
+            let ticket = f
+                .session
+                .enqueue_codex_command(
+                    CodexCommand::Send(CommandFixture::input("once")),
+                    std::time::Instant::now() + std::time::Duration::from_millis(250),
+                )
+                .unwrap();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+            while f.session.codex.commands.receipts.is_empty() {
+                assert!(std::time::Instant::now() < deadline);
+                let _ = f.session.poll();
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            let receipt = f.session.take_codex_receipt().unwrap();
+            assert_eq!(receipt.ticket, *ticket);
+            if mode == "reject" {
+                assert!(
+                    matches!(&receipt.delivery, CodexDelivery::Rejected { error } if error["code"] == -32600)
+                );
+                assert!(!f.session.failed);
+                assert!(
+                    f.session.snapshot().unwrap().follow_up.can_resume,
+                    "native rejection must not consume the previous resumable context"
+                );
+                assert!(f.session.snapshot().unwrap().executions.current.is_none());
+            } else {
+                assert!(matches!(
+                    receipt.delivery,
+                    CodexDelivery::Indeterminate { .. }
+                ));
+                assert!(f.session.failed);
+                assert!(
+                    !f.session.process_ended,
+                    "deadline/failure is not process cleanup"
+                );
+                assert!(matches!(
+                    f.session.enqueue_codex_command(
+                        CodexCommand::Send(CommandFixture::input("never replay")),
+                        std::time::Instant::now() + std::time::Duration::from_secs(1)
+                    ),
+                    Err(CodexAdmissionError::NeedsPreparation)
+                ));
+            }
+            if mode == "hold" {
+                std::fs::write(f.root.join("release"), []).unwrap();
+                std::thread::sleep(std::time::Duration::from_millis(30));
+                f.session.poll().unwrap();
+                assert!(f.session.turn_id.is_none());
+                assert!(
+                    f.session.take_codex_receipt().is_none(),
+                    "late response cannot replace indeterminate"
+                );
+            }
+            assert_eq!(
+                f.wire()
+                    .iter()
+                    .filter(|r| r["method"] == "turn/start")
+                    .count(),
+                1
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn codex_commands_old_connection_late_ack_cannot_install_in_replacement_generation() {
+        let mut f = CommandFixture::new("hold");
+        f.start();
+        let old = f.enqueue(CodexCommand::Send(CommandFixture::input("old once")));
+        // Ensure the old helper actually received the mutation, then keep its
+        // process and receiver owned while constructing the replacement seam.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while !f.wire().iter().any(|r| r["method"] == "turn/start") {
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let mut retired = NativeSession::connect(f.session.config.clone()).unwrap();
+        f.session.codex.commands.next_generation().unwrap();
+        std::mem::swap(&mut f.session.rpc, &mut retired.rpc);
+        f.session.rpc.defer_cleanup();
+        f.session.settle(RunState::Idle);
+        f.session.codex_capture_provider(None).unwrap();
+        f.session
+            .rpc
+            .request("thread/resume", &json!({"threadId":"thread"}))
+            .unwrap();
+        std::fs::write(f.root.join("mode"), "resume").unwrap();
+        let new = f.enqueue(CodexCommand::Send(CommandFixture::input("new once")));
+        assert_eq!(
+            old.request_id, new.request_id,
+            "exercise reused wire ids across connections"
+        );
+        assert_ne!(old.generation, new.generation);
+        std::fs::write(f.root.join("release"), []).unwrap();
+        let mut late = false;
+        while !late {
+            assert!(std::time::Instant::now() < deadline);
+            late = retired
+                .rpc
+                .poll()
+                .unwrap()
+                .iter()
+                .any(|r| r["id"] == old.request_id && r["result"]["turn"]["id"] == "turn");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        f.poll_until(|s| !s.codex.commands.pending());
+        let receipt = f.session.take_codex_receipt().unwrap();
+        assert_eq!(receipt.ticket, *old);
+        assert!(matches!(
+            receipt.delivery,
+            CodexDelivery::Indeterminate { .. }
+        ));
+        let receipt = f.session.take_codex_receipt().unwrap();
+        assert_eq!(receipt.ticket, *new);
+        assert!(
+            matches!(&receipt.delivery, CodexDelivery::Accepted { turn_id: Some(id), .. } if id == "resumed")
+        );
+        assert!(f.session.turn_id.is_none());
+        retired.shutdown().unwrap();
+        assert_eq!(
+            f.wire()
+                .iter()
+                .filter(|r| r["method"] == "turn/start")
+                .count(),
+            2
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn codex_commands_accepted_delivery_survives_following_metadata_transport_failure() {
+        let mut f = CommandFixture::new("accept-disconnect");
+        f.start();
+        f.session.codex.title.eligible = true;
+        let ticket = f.enqueue(CodexCommand::Send(CommandFixture::input("accepted once")));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while !f.session.failed {
+            assert!(std::time::Instant::now() < deadline);
+            let _ = f.session.poll();
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let receipt = f.session.take_codex_receipt().unwrap();
+        assert_eq!(receipt.ticket, *ticket);
+        assert!(
+            matches!(&receipt.delivery, CodexDelivery::Accepted { turn_id: Some(id), .. } if id == "accepted")
+        );
+        assert!(f.session.take_codex_receipt().is_none());
+        assert!(!f.session.process_ended);
+        assert_eq!(
+            f.wire()
+                .iter()
+                .filter(|r| r["method"] == "turn/start")
+                .count(),
+            1
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn codex_commands_bound_unconsumed_results_and_check_sequences() {
+        let mut f = CommandFixture::new("reject");
+        f.start();
+        for _ in 0..COMMAND_CAPACITY - REPLY_RESERVE {
+            f.enqueue(CodexCommand::Send(CommandFixture::input("rejected once")));
+            f.poll_until(|s| !s.codex.commands.pending());
+        }
+        assert_eq!(
+            f.session.codex.commands.receipts.len(),
+            COMMAND_CAPACITY - REPLY_RESERVE
+        );
+        assert!(
+            matches!(f.session.enqueue_codex_command(CodexCommand::Send(CommandFixture::input("not dispatched")),
+            std::time::Instant::now() + std::time::Duration::from_secs(1)), Err(CodexAdmissionError::Rejected(error)) if error.code() == "queue_full")
+        );
+        // Reserved reply slots remain usable with twelve unread ordinary
+        // results, but cannot become an unbounded bypass around that budget.
+        for index in 0..REPLY_RESERVE + 1 {
+            f.session
+                .codex_handle_record(json!({"id":format!("reserved-{index}"),
+                "method":"item/commandExecution/requestApproval", "params":{
+                    "threadId":"thread", "command":"true", "availableDecisions":["accept"]
+                }}))
+                .unwrap();
+        }
+        let ids: Vec<_> = f.session.interactions.keys().cloned().collect();
+        for id in &ids[..REPLY_RESERVE] {
+            f.enqueue(CodexCommand::Reply {
+                interaction_id: id.clone(),
+                reply: RuntimeInteractionReply::Decision {
+                    option_id: "accept".into(),
+                },
+            });
+        }
+        assert!(
+            matches!(f.session.enqueue_codex_command(CodexCommand::Reply {
+            interaction_id: ids[REPLY_RESERVE].clone(),
+            reply: RuntimeInteractionReply::Decision { option_id: "accept".into() },
+        }, std::time::Instant::now() + std::time::Duration::from_secs(1)),
+            Err(CodexAdmissionError::Rejected(error)) if error.code() == "queue_full")
+        );
+        f.poll_until(|s| !s.codex.commands.pending());
+        assert_eq!(f.session.codex.commands.receipts.len(), COMMAND_CAPACITY);
+        // Make room for ordinary commands, then exercise checked arithmetic.
+        for _ in 0..REPLY_RESERVE + 1 {
+            f.session.take_codex_receipt().unwrap();
+        }
+        f.session.codex.commands.next = u64::MAX;
+        assert!(
+            f.session
+                .enqueue_codex_command(
+                    CodexCommand::Send(CommandFixture::input("not dispatched")),
+                    std::time::Instant::now() + std::time::Duration::from_secs(1)
+                )
+                .is_err()
+        );
+        assert_eq!(
+            f.wire()
+                .iter()
+                .filter(|r| r["method"] == "turn/start")
+                .count(),
+            COMMAND_CAPACITY - REPLY_RESERVE
+        );
+    }
 
     #[cfg(unix)]
     #[test]
@@ -1790,3 +4332,7 @@ for line in sys.stdin:
         assert!(project_error("turn", &json!({"message":42}), false, None).is_err());
     }
 }
+
+#[cfg(all(test, unix))]
+#[path = "question_reconciliation_tests.rs"]
+mod question_reconciliation_tests;

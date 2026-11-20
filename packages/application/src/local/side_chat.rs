@@ -130,7 +130,7 @@ impl CoreRuntime {
         self.session.side = Some(SideChat {
             id,
             title: velune_conversation::ConversationTitle::Native(format!(
-                "侧聊 · {}",
+                "侧聊：{}",
                 parent.conversation.title.display_text()
             )),
             reference: native.clone(),
@@ -174,6 +174,7 @@ impl CoreRuntime {
         selection: Option<crate::ModelSelection>,
         turn: crate::ComposedTurn,
     ) -> Result<crate::SnapshotResult, RuntimeError> {
+        self.check_submission_cancelled(side_chat_id)?;
         self.session
             .side
             .as_ref()
@@ -250,6 +251,7 @@ impl CoreRuntime {
         {
             self.bind_gateway_model()?;
         }
+        self.check_submission_cancelled(side_chat_id)?;
         self.session
             .active_state
             .live_mut()

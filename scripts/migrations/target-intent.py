@@ -36,7 +36,7 @@ def inherited(value, pascal=False):
     )
     if value.get(edited) is not False:
         return None
-    if not isinstance(value.get(choices), list):
+    if set(value) - {runtime, owner, choices, edited} or not isinstance(value.get(choices), list):
         raise ValueError("目标选择集合格式无效，原文件未修改")
     result = copy.deepcopy(value)
     result.update({runtime: None, owner: None, choices: []})
@@ -45,7 +45,7 @@ def inherited(value, pascal=False):
 
 def directory(value):
     result = copy.deepcopy(value)
-    if result.get("schemaVersion") != 2:
+    if type(result.get("schemaVersion")) is not int or result["schemaVersion"] != 2:
         raise ValueError("输入目录不是 schema 2，请先完成 composer-state 迁移")
     state = result["state"]
     changed = False
@@ -68,15 +68,30 @@ def advance_revision(value):
 
 def workspace(value):
     result = copy.deepcopy(value)
+    version = result.get("schemaVersion", 0)
+    if type(version) is not int or version not in {0, 1}:
+        raise ValueError("Mac 窗口恢复点不是已知 schema，原文件未修改")
+    peers = result.get("composerWorkspaceByDevice")
+    if peers is not None and (not isinstance(peers, dict) or any(
+        not isinstance(saved, dict) or type(saved.get("schemaVersion")) is not int
+        or saved["schemaVersion"] != 3 for saved in peers.values()
+    )):
+        raise ValueError("Mac 远端窗口输入不是已知 schema，原文件未修改")
     saved = result.get("composerWorkspace")
-    if not isinstance(saved, dict):
+    if saved is None:
+        return result
+    version = saved.get("schemaVersion") if isinstance(saved, dict) else None
+    if type(version) is not int or version not in {2, 3}:
+        raise ValueError("Mac 窗口输入不是已知 schema，原文件未修改")
+    if version == 2:
         return result
     pending = saved.get("pendingTargets")
     if isinstance(pending, dict):
-        saved["pendingTargets"] = {
-            key: record for key, record in pending.items()
-            if inherited(record.get("choices")) is None
-        }
+        for key, record in list(pending.items()):
+            if not isinstance(record, dict) or set(record) - {"choices", "revision"}:
+                raise ValueError("待同步目标格式无效，原文件未修改")
+            if inherited(record.get("choices")) is not None:
+                del pending[key]
     for promotion in (saved.get("pendingPromotions") or {}).values():
         choices = inherited(promotion.get("choices"))
         if choices is not None:
@@ -86,7 +101,10 @@ def workspace(value):
 
 def windows_cache(value):
     result = copy.deepcopy(value)
-    if result.get("Schema") != 2:
+    version = result.get("Schema")
+    if type(version) is not int or version not in {1, 2}:
+        raise ValueError("Windows 本机输入不是已知 schema，原文件未修改")
+    if version == 1:
         return result
     choices = inherited(result.get("TargetChoices"), pascal=True)
     if choices is not None:
@@ -144,6 +162,8 @@ def main():
                     continue
                 original = path.read_bytes()
                 value = load(path)
+                if not isinstance(value, dict):
+                    raise ValueError("目标文件格式无效，原文件未修改")
                 converted = convert(value)
                 if converted != value:
                     data = (json.dumps(converted, ensure_ascii=False, indent=2, allow_nan=False) + "\n").encode()

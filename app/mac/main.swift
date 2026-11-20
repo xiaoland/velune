@@ -115,6 +115,11 @@ struct ConversationCommands: Commands {
                 if let window = target?.window {
                     PreservedInputMenu(window: window, tab: window.commandTab, model: window.composerContext().model)
                 }
+                if let target, !target.store.isSideChat, let id = target.store.loadedConversationID,
+                   let conversation = target.store.conversation(id: id),
+                   let share = HapiShareTarget.local(conversation, device: target.store.device) {
+                    Button("分享到 HAPI…") { target.window.hapiShareTarget = share }
+                }
                 Divider()
                 item(.chooseRuntime)
                 item(.chooseModel)
@@ -127,7 +132,7 @@ struct ConversationCommands: Commands {
                 Button("停止生成") { target?.store.cancel() }
                     .keyboardShortcut(shortcuts[.stop])
                     .disabled(target?.store.canCancel != true)
-                Button("停止子 Agent") { target?.store.stopSubAgents() }
+                Button("停止全部后台工作") { target?.store.stopSubAgents() }
                     .keyboardShortcut(shortcuts[.stopSubAgents])
                     .disabled(target?.store.followUp.canStopSubAgents != true)
                 if let store = target?.store {
@@ -173,6 +178,11 @@ struct ConversationCommands: Commands {
                     .keyboardShortcut(shortcuts[.previousPane])
                     .disabled(target?.window.isSplit != true)
                 Divider()
+                ForEach(ShortcutCommand.numberedTabs) { command in
+                    Button(command.title) { target?.window.perform(command) }
+                        .keyboardShortcut(shortcuts[command])
+                        .disabled(target?.window.canPerform(command) != true)
+                }
                 Button("下一个标签页") { target?.window.selectNeighbourTab(forward: true) }
                     .keyboardShortcut(shortcuts[.nextTab])
                     .disabled((target?.window.focusedPane.tabs.count ?? 0) < 2)
@@ -190,8 +200,6 @@ struct ConversationCommands: Commands {
             Divider()
         }
         CommandGroup(before: .sidebar) { followingFocus {
-            Button("本机定时任务…") { openWindow(id: "scheduled-tasks") }
-            Divider()
             item(.commandPalette)
             Divider()
             item(.focusTranscript)
@@ -298,9 +306,10 @@ private struct ConversationWindowContent: View {
     let previewEmpty: Bool
     let previewSettings: Bool
     init(application: DeviceStore, kind: ConversationWindowKind, seed: WindowSeed?, savedLayout: Binding<String>, windowIdentity: String, previewEmpty: Bool, previewSettings: Bool) {
-        // A paired device's window shows that device's core through the same interface.
-        let target = seed?.device.flatMap { DeviceHub.shared?.store(for: $0) } ?? application
-        _window = StateObject(wrappedValue: ConversationWindowModel(application: target, kind: kind, device: seed?.device))
+        // A single-conversation window belongs to the device it opened for;
+        // a workspace window aggregates every device this Mac controls.
+        let target = kind == .single ? (seed?.device.flatMap { DeviceHub.shared?.store(for: $0) } ?? application) : application
+        _window = StateObject(wrappedValue: ConversationWindowModel(application: target, kind: kind, device: kind == .single ? seed?.device : nil, hub: DeviceHub.shared))
         _startsWindowed = State(initialValue: seed.map { WindowPresentation.windowed.contains($0.id) } ?? false)
         _savedLayout = savedLayout
         self.windowIdentity = windowIdentity
@@ -334,8 +343,12 @@ private struct ConversationWindowContent: View {
                     WindowPresentation.windowed.insert(seed.id)
                     openWindow(id: kind.sceneID, value: seed)
                 }
-                window.application.openConversationWindow = { [openWindow, device = window.device] seed in
-                    var seed = seed; seed.device = device
+                window.application.openConversationWindow = { [openWindow] seed in
+                    WindowPresentation.windowed.insert(seed.id)
+                    openWindow(id: ConversationWindowKind.workspace.sceneID, value: seed)
+                }
+                // The devices settings focus an existing aggregated window or open one.
+                DeviceHub.shared?.openWorkspaceWindow = { [openWindow] seed in
                     WindowPresentation.windowed.insert(seed.id)
                     openWindow(id: ConversationWindowKind.workspace.sceneID, value: seed)
                 }
@@ -356,6 +369,13 @@ private struct ConversationWindowContent: View {
                             let converted = try JSONEncoder().encode(decoded)
                             guard let text = String(data: converted, encoding: .utf8) else { throw CocoaError(.fileWriteInapplicableStringEncoding) }
                             savedLayout = text
+                        }
+                        if window.kind == .workspace, window.hub != nil, case .remote(_)? = decoded.windowDevice {
+                            let backupKey = "velune.before-aggregation.windowLayout.\(windowIdentity)"
+                            if let previous = UserDefaults.standard.string(forKey: backupKey), previous != savedLayout {
+                                throw NSError(domain: "VelunePersistence", code: 22, userInfo: [NSLocalizedDescriptionKey: "窗口聚合恢复副本与旧布局不一致"])
+                            }
+                            UserDefaults.standard.set(savedLayout, forKey: backupKey)
                         }
                         saved = decoded
                     } catch {
@@ -471,6 +491,10 @@ final class VeluneApplicationDelegate: NSObject, NSApplicationDelegate {
 @MainActor
 enum VeluneEntry {
     static func main() {
+        if CommandLine.arguments.contains("--check-conversation-requests") {
+            admitMacExecution()
+            conversationRequestChecks()
+        }
         if CommandLine.arguments.contains("--check-outgoing-submissions") {
             admitMacExecution()
             outgoingSubmissionChecks()
@@ -503,6 +527,10 @@ enum VeluneEntry {
             admitMacExecution()
             backgroundTaskChecks()
         }
+        if CommandLine.arguments.contains("--check-continuation-preparation") {
+            admitMacExecution()
+            continuationPreparationChecks()
+        }
         if CommandLine.arguments.contains("--check-queued-message-editor") {
             admitMacExecution()
             queuedMessageEditorChecks()
@@ -511,10 +539,23 @@ enum VeluneEntry {
             admitMacExecution()
             composerOwnershipCheck()
         }
+        if CommandLine.arguments.contains("--check-composer-controls"),
+           CommandLine.arguments.contains("--check-editor-visual") {
+            // Programmatic AppKit checks own their lifecycle independently;
+            // ordinary SwiftUI app, device and scene construction stays untouched.
+            admitMacExecution()
+            let directory = URL(fileURLWithPath: ProcessInfo.processInfo.environment["VELUNE_CHECK_OUTPUT"] ?? "/tmp/velune-next-ux/composer", isDirectory: true)
+            try! FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            messageEditorVisualCheck(directory: directory)
+            exit(0)
+        }
         if CommandLine.arguments.contains("--check-message-experience"),
-           CommandLine.arguments.contains("--experience-runtime-recovery-only")
-            || CommandLine.arguments.contains("--experience-message-editor-offscreen")
+           CommandLine.arguments.contains("--experience-message-editor-offscreen")
+            || CommandLine.arguments.contains("--experience-compaction-only")
+            || CommandLine.arguments.contains("--experience-sidebar-only")
+            || CommandLine.arguments.contains("--experience-runtime-recovery-only")
             || CommandLine.arguments.contains("--experience-workspace-only") {
+            // Enter before SwiftUI initializes its App/delegate/scene machinery.
             admitMacExecution()
             messageExperienceChecks()
         }
@@ -541,12 +582,7 @@ struct VeluneApp: App {
     init() {
         // Admit purpose and home before checks, telemetry, defaults-backed
         // preferences or any core/device object can be initialized.
-        do {
-            let context = try MacExecutionContext.application()
-            try context.activateDevelopmentEnvironment()
-            try context.validateDevelopmentChecks(CommandLine.arguments)
-            try context.validateCheckDirectories(environment: ProcessInfo.processInfo.environment)
-        } catch { MacExecutionContext.failAndExit(error) }
+        admitMacExecution()
         let retiredComposerChecks: Set<String> = ["--check-composer-state", "--check-composer-recovery-write", "--check-composer-recovery-read"]
         if !retiredComposerChecks.isDisjoint(with: CommandLine.arguments) {
             FileHandle.standardError.write(Data("旧 Composer 双所有权检查已退役；请使用 --check-composer-ownership --composer-check-content-target 与 --check-composer-controls。\n".utf8))
@@ -555,6 +591,9 @@ struct VeluneApp: App {
         if CommandLine.arguments.contains("--check-composer-ownership") { composerOwnershipCheck() }
         if CommandLine.arguments.contains("--check-new-tab") { composerOwnershipCheck() }
         if CommandLine.arguments.contains("--check-composer-controls") { composerControlsCheck() }
+        if CommandLine.arguments.contains("--check-runtime-interactions") { runtimeInteractionChecks() }
+        if CommandLine.arguments.contains("--check-notification-navigation") { notificationNavigationChecks() }
+        if CommandLine.arguments.contains("--check-aggregated-list") { aggregatedListChecks() }
         if CommandLine.arguments.contains("--check-message-experience") { messageExperienceChecks() }
         let preview = CommandLine.arguments.contains { $0.hasPrefix("--preview") }
         MacNativePersistenceGate.close()
@@ -581,7 +620,9 @@ struct VeluneApp: App {
         previewSettings = CommandLine.arguments.contains("--preview-settings")
         appDelegate.store = applicationStore
         if !preview, MacNativePersistenceGate.isEnabled, let transport = applicationStore.transport {
-            DeviceHub(local: transport).start()
+            let hub = DeviceHub(local: transport)
+            hub.localStore = applicationStore
+            hub.start()
         }
         KeyboardShortcutSettings.shared.load(home: nativeHome) { [weak applicationStore] in
             applicationStore?.recordProblem($0, source: "保存快捷键")
@@ -636,9 +677,10 @@ struct VeluneApp: App {
             ConversationCommands()
             CommandGroup(after: .sidebar) {
                 AnalyticsMenuItem()
-                ArchivedConversationsMenuItem()
                 ResourceLibraryMenuItem()
                 ProblemsMenuItem(store: store)
+                ScheduledTasksMenuItem()
+                ArchivedConversationsMenuItem()
             }
 
         }
@@ -651,10 +693,10 @@ struct VeluneApp: App {
         .defaultSize(width: 720, height: 760)
         .defaultLaunchBehavior(.suppressed)
         Window("问题", id: "problems") {
-            ProblemsView(store: store).frame(minWidth: 600, minHeight: 320)
+            ProblemsView(local: store, hub: DeviceHub.shared).frame(minWidth: 600, minHeight: 320)
         }.defaultSize(width: 760, height: 480)
-        Window("本机定时任务", id: "scheduled-tasks") {
-            ScheduledTasksView(store: store).frame(minWidth: 860, minHeight: 560)
+        Window("定时任务", id: "scheduled-tasks") {
+            ScheduledTasksView(local: store, hub: DeviceHub.shared).frame(minWidth: 860, minHeight: 560)
         }.defaultSize(width: 1040, height: 700)
         Window("已归档会话", id: "archived-conversations") {
             ArchivedConversationsView(local: store, hub: DeviceHub.shared).frame(minWidth: 680, minHeight: 420)

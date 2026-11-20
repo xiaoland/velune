@@ -50,13 +50,11 @@ for line in sys.stdin:
     fn event(&mut self, value: Value) {
         self.session.claude_handle_record(value).unwrap();
     }
-    fn task(&self, title: &str) -> BackgroundTaskInfo {
+    fn task(&self, title: &str) -> Retained<BackgroundTaskInfo> {
         self.session
             .background_tasks()
-            .tasks
-            .into_iter()
-            .find(|task| task.title == title)
             .unwrap()
+            .map(|list| list.tasks.into_iter().find(|task| task.title == title).unwrap())
     }
 }
 impl Drop for Fixture {
@@ -120,7 +118,7 @@ fn background_tasks_claude_exact_stop_preserves_parent_and_sibling_until_termina
     );
     let a = f.task("Shell A");
     assert!(!a.can_read_output, "description is not task output");
-    assert_eq!(f.session.work().len(), 2);
+    assert_eq!(f.session.work().unwrap().len(), 2);
     f.session.stop_background_task(&a.id).unwrap();
     assert_eq!(f.task("Shell A").status, BackgroundTaskStatus::Stopping);
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
@@ -184,7 +182,7 @@ fn background_tasks_claude_full_set_run_identity_and_verified_summary() {
         .unwrap();
     assert_eq!(output.status, BackgroundTaskOutputStatus::Ready);
     assert_eq!(output.text, "Old result");
-    let new_id = f.task("New run").id;
+    let new_id = f.task("New run").map(|task| task.id);
     assert!(
         f.session
             .read_background_task_output(&new_id, Some(&output.request_id))
@@ -196,7 +194,7 @@ fn background_tasks_claude_full_set_run_identity_and_verified_summary() {
         BackgroundTaskStatus::Unknown,
         "absence proves no active work, not successful outcome"
     );
-    assert!(f.session.work().is_empty());
+    assert!(f.session.work().unwrap().is_empty());
 }
 
 #[test]
@@ -210,7 +208,7 @@ fn background_tasks_claude_late_negative_stop_ack_cannot_revive_terminal_run() {
     f.event(json!({"type":"control_response","response":{"request_id":request,"subtype":"error","error":"already terminal"}}));
     assert_eq!(f.task("Shell A").status, BackgroundTaskStatus::Completed);
     assert!(!f.task("Shell A").can_stop);
-    assert!(f.session.work().is_empty());
+    assert!(f.session.work().unwrap().is_empty());
 }
 
 #[test]
@@ -240,9 +238,9 @@ fn background_tasks_claude_terminal_cache_and_stop_timeout_keep_live_work() {
         f.task("Active shell").status,
         BackgroundTaskStatus::Stopping
     );
-    assert!(f.session.background_tasks().issue.is_some());
+    assert!(f.session.background_tasks().unwrap().issue.is_some());
     assert_eq!(
-        f.session.work().len(),
+        f.session.work().unwrap().len(),
         1,
         "unconfirmed stop cannot release the live process"
     );
@@ -256,6 +254,337 @@ fn background_tasks_claude_old_cli_observes_without_unproven_stop_capability() {
     assert!(!task.can_stop);
     assert_eq!(task.status, BackgroundTaskStatus::Running);
     assert!(f.session.stop_background_task(&task.id).is_err());
+}
+
+#[test]
+fn claude_compact_synthetic_sdk_message_uses_native_boundary_and_keeps_history() {
+    let mut f = Fixture::new();
+    let native_id = "00000000-0000-4000-8000-000000000001";
+    f.session.native_id = Some(native_id.into());
+    let projects = f.root.join("projects");
+    std::fs::create_dir(&projects).unwrap();
+    // Synthetic native JSONL: the SDK drops the summary flag.
+    std::fs::write(projects.join(format!("{native_id}.jsonl")), [
+        json!({"type":"user","uuid":"u","parentUuid":null,"message":{"content":"old question"}}),
+        json!({"type":"system","uuid":"b","parentUuid":null,"logicalParentUuid":"u","subtype":"compact_boundary"}),
+        json!({"type":"user","uuid":"s","parentUuid":"b","isCompactSummary":true,"message":{"content":"native summary"}}),
+    ].into_iter().map(|r| format!("{r}\n")).collect::<String>()).unwrap();
+    f.session.message(Message {
+        id: "u".into(),
+        role: MessageRole::User,
+        timestamp_unix_ms: None,
+        blocks: vec![MessageBlock::Text {
+            text: "old question".into(),
+        }],
+        completed: true,
+        turn_settings: None,
+        turn_usage: None,
+        branch_point: None,
+    });
+    f.event(json!({"type":"system","subtype":"compact_boundary","uuid":"b"}));
+    f.event(
+        json!({"type":"user","uuid":"s","isSynthetic":true,"message":{"content":"native summary"}}),
+    );
+    let messages = &f.session.snapshot.as_ref().unwrap().messages;
+    assert_eq!(messages.len(), 2);
+    assert_eq!(messages[0].id, "u");
+    assert_eq!(messages[1].id, "b");
+    assert_eq!(
+        messages[1].blocks,
+        vec![MessageBlock::ContextCompaction {
+            text: "上下文已压缩\n\nnative summary".into()
+        }]
+    );
+    // Once the snapshot owns a full summary, unrelated synthetic messages
+    // must not reread history. Changing only this synthetic native fixture
+    // makes a redundant read observable as an incorrect detail replacement.
+    let path = projects.join(format!("{native_id}.jsonl"));
+    let native = std::fs::read_to_string(&path).unwrap();
+    std::fs::write(
+        &path,
+        native.replace("native summary", "changed native summary"),
+    )
+    .unwrap();
+    f.event(json!({"type":"user","isSynthetic":true,"message":{"content":"unrelated metadata"}}));
+    assert!(
+        matches!(&f.session.snapshot.as_ref().unwrap().messages[1].blocks[0],
+        MessageBlock::ContextCompaction {text} if text == "上下文已压缩\n\nnative summary")
+    );
+    assert_eq!(f.session.snapshot.as_ref().unwrap().messages.len(), 2);
+    f.event(json!({"type":"system","subtype":"status","compact_result":"success"}));
+    assert!(
+        matches!(&f.session.snapshot.as_ref().unwrap().messages[1].blocks[0], MessageBlock::ContextCompaction {text} if text == "上下文已压缩\n\nnative summary")
+    );
+}
+
+#[test]
+fn claude_compaction_order_matches_cold_history_through_repeated_boundaries() {
+    use crate::transcript::{TranscriptEvent, TranscriptProjection};
+    let mut f = Fixture::new();
+    let native_id = "00000000-0000-4000-8000-000000000002";
+    f.session.native_id = Some(native_id.into());
+    let projects = f.root.join("projects");
+    std::fs::create_dir(&projects).unwrap();
+    let mut records = Vec::new();
+    let user = json!({"type":"user","uuid":"u","parentUuid":null,"message":{"content":"question"}});
+    records.push(user);
+    f.session
+        .snapshot
+        .as_mut()
+        .unwrap()
+        .executions
+        .begin(ExecutionKind::UserTurn, false);
+    f.session.message(serde_json::from_value(json!({"id":"u","role":"user","completed":true,"blocks":[{"kind":"text","text":"question"}]})).unwrap());
+    let mut parent = "u".to_string();
+    for (id, content) in [
+        (
+            "a1",
+            json!([{"type":"text","text":"working"},{"type":"tool_use","id":"call1","name":"Shell"}]),
+        ),
+        (
+            "a2",
+            json!([{"type":"thinking","thinking":"checking"},{"type":"tool_use","id":"call2","name":"Read"}]),
+        ),
+        ("answer", json!([{"type":"text","text":"final answer"}])),
+    ] {
+        let record = json!({"type":"assistant","uuid":id,"parentUuid":parent,"message":{"id":id,"content":content,"stop_reason":if id == "answer" {"end_turn"} else {"tool_use"}}});
+        f.event(record.clone());
+        records.push(record);
+        parent = id.into();
+        if id == "answer" {
+            break;
+        }
+        let boundary = format!("b-{id}");
+        let summary = format!("s-{id}");
+        let result = json!({"type":"user","uuid":format!("r-{id}"),"parentUuid":parent,"message":{"content":[{"type":"tool_result","tool_use_id":if id == "a1" {"call1"} else {"call2"},"content":"tool output"}]}});
+        parent = format!("r-{id}");
+        f.event(result.clone());
+        records.push(result);
+        // The first compaction has provisional status; the second arrives as
+        // a native boundary directly, which must not rename the first one.
+        if id == "a1" {
+            f.event(json!({"type":"system","subtype":"status","status":"compacting"}));
+            let snapshot = f.session.snapshot.as_ref().unwrap();
+            let mut projection = TranscriptProjection::default();
+            projection.apply(TranscriptEvent::Replace {
+                messages: &snapshot.messages,
+                executions: &snapshot.executions,
+            });
+            assert_eq!(projection.turns()[0].work_message_ids.len(), 2);
+        }
+        let record = json!({"type":"system","subtype":"compact_boundary","uuid":boundary,"parentUuid":null,"logicalParentUuid":parent,"compactMetadata":{"trigger":"auto"}});
+        f.event(record.clone());
+        records.push(record);
+        let record = json!({"type":"user","uuid":summary,"parentUuid":boundary,"isCompactSummary":true,"message":{"content":format!("summary {id}")}});
+        f.event(record.clone());
+        records.push(record);
+        // Repeated delivery of the same boundary must update, not append.
+        f.event(json!({"type":"system","subtype":"compact_boundary","uuid":boundary}));
+        parent = summary;
+    }
+    let live = f.session.snapshot.as_ref().unwrap();
+    let mut live_projection = TranscriptProjection::default();
+    live_projection.apply(TranscriptEvent::Replace {
+        messages: &live.messages,
+        executions: &live.executions,
+    });
+    let turn = live_projection.turns().remove(0);
+    assert_eq!(turn.work_message_ids, ["a1", "b-a1", "a2", "b-a2"]);
+    assert_eq!(turn.last_message_id.as_deref(), Some("answer"));
+    assert_eq!(live.messages.len(), 6);
+    // A manual maintenance operation after the answer is independent, and a
+    // subsequent user turn must not absorb either earlier compaction.
+    f.session
+        .snapshot
+        .as_mut()
+        .unwrap()
+        .executions
+        .finish(Some(TurnOutcome::Completed));
+    f.session
+        .snapshot
+        .as_mut()
+        .unwrap()
+        .executions
+        .begin(ExecutionKind::ContextMaintenance, false);
+    for record in [
+        json!({"type":"system","uuid":"manual","parentUuid":null,"logicalParentUuid":"answer","subtype":"compact_boundary","compactMetadata":{"trigger":"manual"}}),
+        json!({"type":"user","uuid":"sm","parentUuid":"manual","isCompactSummary":true,"message":{"content":"manual summary"}}),
+    ] {
+        f.event(record.clone());
+        records.push(record);
+    }
+    f.session
+        .snapshot
+        .as_mut()
+        .unwrap()
+        .executions
+        .finish(Some(TurnOutcome::Completed));
+    f.session
+        .snapshot
+        .as_mut()
+        .unwrap()
+        .executions
+        .begin(ExecutionKind::UserTurn, false);
+    records.push(
+        json!({"type":"user","uuid":"u2","parentUuid":"sm","message":{"content":"next question"}}),
+    );
+    f.session.message(serde_json::from_value(json!({"id":"u2","role":"user","completed":true,"blocks":[{"kind":"text","text":"next question"}]})).unwrap());
+    let last = json!({"type":"assistant","uuid":"answer2","parentUuid":"u2","message":{"id":"answer2","content":"next answer","stop_reason":"end_turn"}});
+    f.event(last.clone());
+    records.push(last);
+    let live = f.session.snapshot.as_ref().unwrap();
+    live_projection.apply(TranscriptEvent::Replace {
+        messages: &live.messages,
+        executions: &live.executions,
+    });
+    let expanded: Vec<String> = live_projection
+        .items()
+        .into_iter()
+        .flat_map(|item| match item {
+            crate::conversation::TranscriptItem::Message { message_id, .. } => vec![message_id],
+            crate::conversation::TranscriptItem::Work { turn_id } => {
+                live_projection
+                    .turns()
+                    .into_iter()
+                    .find(|turn| turn.id == turn_id)
+                    .unwrap()
+                    .work_message_ids
+            }
+        })
+        .collect();
+    assert_eq!(
+        expanded,
+        [
+            "u", "a1", "b-a1", "a2", "b-a2", "answer", "manual", "u2", "answer2"
+        ]
+    );
+    assert!(live_projection.turns()[1].work_message_ids.is_empty());
+    std::fs::write(
+        projects.join(format!("{native_id}.jsonl")),
+        records
+            .into_iter()
+            .map(|record| format!("{record}\n"))
+            .collect::<String>(),
+    )
+    .unwrap();
+    let history = crate::history::read(
+        &crate::history::HistoryConfig {
+            kind: crate::version::RuntimeKind::ClaudeCode,
+            execution: f.session.config.execution.clone(),
+            os_home: Some(f.root.clone()),
+            provider: "claude-code".into(),
+            binary: f.session.config.binary.clone(),
+            node_binary: PathBuf::new(),
+            resources_directory: f.root.clone(),
+            root: projects,
+            home: f.root.clone(),
+        },
+        "runtime",
+        native_id,
+    )
+    .unwrap();
+    assert_eq!(
+        live.messages
+            .iter()
+            .map(|message| &message.id)
+            .collect::<Vec<_>>(),
+        history
+            .messages
+            .iter()
+            .map(|message| &message.id)
+            .collect::<Vec<_>>()
+    );
+    let mut cold_projection = TranscriptProjection::default();
+    cold_projection.apply(TranscriptEvent::Replace {
+        messages: &history.messages,
+        executions: &history.executions,
+    });
+    assert_eq!(
+        cold_projection.turns()[0].work_message_ids,
+        turn.work_message_ids
+    );
+    assert_eq!(
+        cold_projection.turns()[0].last_message_id,
+        turn.last_message_id
+    );
+    assert_eq!(cold_projection.items(), live_projection.items());
+}
+
+#[test]
+fn claude_safety_refusal_survives_success_result_and_native_idle() {
+    let mut f = Fixture::new();
+    f.session.turn_id = Some("turn".into());
+    f.event(
+        json!({"type":"user","isSynthetic":true,"refused_message_id":"msg_refused",
+        "message":{"content":"Synthetic reason: response stopped by safety classifier"}}),
+    );
+    f.event(json!({"type":"result","subtype":"success","is_error":false,"result":""}));
+    assert_eq!(
+        f.session.claude.result.as_ref().unwrap().0,
+        TurnOutcome::Failed
+    );
+    f.event(json!({"type":"system","subtype":"session_state_changed","state":"idle"}));
+    let snapshot = f.session.snapshot.as_ref().unwrap();
+    assert_eq!(snapshot.run_state, RunState::Failed);
+    assert!(
+        snapshot
+            .messages
+            .iter()
+            .flat_map(|m| &m.blocks)
+            .any(|b| matches!(b, MessageBlock::RuntimeFailure {detail: text, ..} if text.contains("Synthetic reason")))
+    );
+    assert!(
+        snapshot
+            .messages
+            .iter()
+            .all(|m| m.role != MessageRole::User)
+    );
+}
+
+#[test]
+fn claude_result_refusal_cannot_be_reported_as_success_or_retry() {
+    let mut f = Fixture::new();
+    f.session.turn_id = Some("turn".into());
+    f.event(json!({"type":"result","subtype":"success","is_error":false,"stop_reason":"refusal","result":""}));
+    assert_eq!(
+        f.session.claude.result.as_ref().unwrap().0,
+        TurnOutcome::Failed
+    );
+    assert!(
+        f.session
+            .snapshot
+            .as_ref()
+            .unwrap()
+            .messages
+            .iter()
+            .flat_map(|m| &m.blocks)
+            .any(|b| matches!(b, MessageBlock::RuntimeFailure {detail: text, ..} if text.contains("refusal")))
+    );
+}
+
+#[test]
+fn claude_native_safe_answer_can_recover_after_a_refused_response() {
+    let mut f = Fixture::new();
+    f.session.turn_id = Some("turn".into());
+    f.event(json!({"type":"user","isSynthetic":true,"refused_message_id":"msg_refused","message":{"content":"safety stop"}}));
+    f.event(json!({"type":"assistant","message":{"id":"safe-answer","stop_reason":"end_turn","content":[{"type":"text","text":"safe answer"}]}}));
+    f.event(json!({"type":"result","subtype":"success","is_error":false,"stop_reason":"end_turn","result":"safe answer"}));
+    assert_eq!(
+        f.session.claude.result.as_ref().unwrap().0,
+        TurnOutcome::Completed
+    );
+}
+
+#[test]
+fn claude_safety_marker_then_native_idle_needs_no_success_result() {
+    let mut f = Fixture::new();
+    f.session.turn_id = Some("turn".into());
+    f.event(json!({"type":"user","isSynthetic":true,"refused_message_id":"msg_refused","message":{"content":"safety stop"}}));
+    f.event(json!({"type":"system","subtype":"session_state_changed","state":"idle"}));
+    assert_eq!(
+        f.session.snapshot.as_ref().unwrap().run_state,
+        RunState::Failed
+    );
 }
 
 #[test]

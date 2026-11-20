@@ -35,6 +35,7 @@ impl PiProjection {
         Self {
             snapshot: Some(ConversationSnapshot {
                 work_notification_ids: Vec::new(),
+                retained_reply_ids: Vec::new(),
                 revision: 0,
                 context_runtime_id: conversation.runtime_id.clone(),
                 conversation,
@@ -85,6 +86,9 @@ impl PiProjection {
         snapshot
             .work_notification_ids
             .clone_from(&source.work_notification_ids);
+        snapshot
+            .retained_reply_ids
+            .clone_from(&source.retained_reply_ids);
         snapshot.sub_agents.clone_from(&source.sub_agents);
         snapshot
             .message_identity_confirmations
@@ -126,6 +130,47 @@ impl PiProjection {
         }
         if !matches!(self.lifecycle, Lifecycle::Running | Lifecycle::Closed) {
             self.lifecycle = Lifecycle::Idle;
+        }
+    }
+
+    /// A preflight question can precede the prompt acknowledgement. A later
+    /// rejection ends that attempt without marking the transport disconnected.
+    pub(crate) fn reject_prompt(&mut self, detail: &str) {
+        self.terminal = Some(TurnOutcome::Failed);
+        self.lifecycle = Lifecycle::Ended;
+        self.history_synchronized = false;
+        if let Some(snapshot) = &mut self.snapshot {
+            snapshot.executions.finish(Some(TurnOutcome::Failed));
+            snapshot.run_state = RunState::Failed;
+            snapshot.actions.can_send = true;
+            snapshot.actions.can_cancel = false;
+            snapshot.messages.push(Message {
+                id: format!("prompt-error-{}", self.next_message_id),
+                role: MessageRole::System,
+                timestamp_unix_ms: None,
+                blocks: vec![MessageBlock::Notice {
+                    text: detail.into(),
+                }],
+                turn_settings: None,
+                turn_usage: None,
+                branch_point: None,
+                completed: true,
+            });
+            self.next_message_id += 1;
+            snapshot.revision += 1;
+        }
+    }
+
+    pub(crate) fn finish_handled_prompt(&mut self) {
+        self.terminal = Some(TurnOutcome::Completed);
+        self.lifecycle = Lifecycle::Ended;
+        self.invalidate_history();
+        if let Some(snapshot) = &mut self.snapshot {
+            snapshot.executions.finish(Some(TurnOutcome::Completed));
+            snapshot.run_state = RunState::Idle;
+            snapshot.actions.can_send = true;
+            snapshot.actions.can_cancel = false;
+            snapshot.revision += 1;
         }
     }
 
@@ -218,8 +263,22 @@ impl PiProjection {
                 && let Some(model) = message["model"].as_str().filter(|model| !model.is_empty())
                 && let Some(settings) =
                     turn.and_then(|index| projected[index].turn_settings.as_mut())
+                && settings.model.is_none()
             {
-                settings.model.get_or_insert_with(|| model.to_owned());
+                settings.model = Some(model.to_owned());
+                // Pi's native catalogs key models by provider and id.
+                // Keep that identity for history editing; a bare id is
+                // not an explicit catalog selection. Velune's virtual
+                // routes are resolved from their managed request metadata.
+                settings.model_selection = message["provider"]
+                    .as_str()
+                    .filter(|provider| {
+                        !provider.is_empty() && !matches!(*provider, "velune" | "velune-gateway")
+                    })
+                    .map(|provider| crate::conversation::ModelSelection::Native {
+                        provider_id: Some(provider.to_owned()),
+                        model_id: model.to_owned(),
+                    });
             }
             if message["role"] == "assistant" {
                 cost += message["usage"]["cost"]["total"].as_f64().unwrap_or(0.0);
@@ -274,6 +333,28 @@ impl PiProjection {
             .confirm(&snapshot.message_identity_confirmations);
         snapshot.messages = projected;
         snapshot.work_notification_ids = work_notification_ids;
+        if let Some(ids) = response["retainedReplyIds"]
+            .as_array()
+            .or_else(|| response["data"]["retainedReplyIds"].as_array())
+        {
+            snapshot.retained_reply_ids = ids
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_owned)
+                .collect();
+        }
+        // Live get_messages has no native tombstone metadata. Retain the hints
+        // restored from the SDK history read and follow identity confirmations.
+        for confirmation in &snapshot.message_identity_confirmations {
+            for id in &mut snapshot.retained_reply_ids {
+                if *id == confirmation.previous_id {
+                    *id = confirmation.current_id.clone();
+                }
+            }
+        }
+        snapshot
+            .retained_reply_ids
+            .retain(|id| snapshot.messages.iter().any(|message| message.id == *id));
         snapshot.executions.retain(&snapshot.messages);
         let visible: std::collections::BTreeSet<_> = snapshot
             .messages
@@ -1314,6 +1395,65 @@ mod tests {
     }
 
     #[test]
+    fn native_model_identity_survives_history_and_transcript_without_claiming_gateway_routes() {
+        use crate::conversation::{ModelSelection, TurnSettings};
+        use crate::transcript::{TranscriptEvent, TranscriptProjection};
+        for provider in [
+            Some("synthetic"),
+            Some("velune"),
+            Some("velune-gateway"),
+            Some(""),
+            None,
+        ] {
+            let mut p = projection();
+            p.replace_history(&json!({"messages":[
+                {"id":"user","role":"user","content":"synthetic prompt"},
+                {"id":"reply","role":"assistant","provider":provider,"model":"alpha","content":"first reply","stopReason":"toolUse"},
+                {"id":"reply2","role":"assistant","provider":"other","model":"beta","content":"later reply","stopReason":"stop"}
+            ]}));
+            let snapshot = p.snapshot.as_ref().unwrap();
+            let expected = (provider == Some("synthetic")).then(|| ModelSelection::Native {
+                provider_id: Some("synthetic".into()),
+                model_id: "alpha".into(),
+            });
+            let settings = snapshot.messages[0].turn_settings.as_ref().unwrap();
+            assert_eq!(settings.model.as_deref(), Some("alpha"));
+            assert_eq!(settings.model_selection, expected);
+            let mut transcript = TranscriptProjection::default();
+            transcript.apply(TranscriptEvent::Replace {
+                messages: &snapshot.messages,
+                executions: &snapshot.executions,
+            });
+            assert_eq!(
+                transcript.turns()[0]
+                    .settings
+                    .as_ref()
+                    .unwrap()
+                    .model_selection,
+                expected
+            );
+            let managed = ModelSelection::Managed {
+                model_record_key: "synthetic-managed".into(),
+            };
+            transcript.recall_request(
+                "user",
+                TurnSettings {
+                    model_selection: Some(managed.clone()),
+                    ..Default::default()
+                },
+            );
+            assert_eq!(
+                transcript.turns()[0]
+                    .settings
+                    .as_ref()
+                    .unwrap()
+                    .model_selection,
+                Some(managed)
+            );
+        }
+    }
+
+    #[test]
     fn extension_notifications_are_visible_client_events_without_a_user_turn() {
         let mut p = projection();
         message(
@@ -1339,6 +1479,112 @@ mod tests {
             )
             .is_none()
         );
+    }
+
+    #[test]
+    fn background_notification_keeps_live_and_resynchronized_position() {
+        let mut p = projection();
+        let before = json!({
+            "id":"before",
+            "role":"assistant",
+            "content":[{"type":"text","text":"synthetic"}]
+        });
+        let notice = json!({
+            "id":"notice",
+            "role":"custom",
+            "customType":"background-task-notification",
+            "content":[{"type":"text","text":"synthetic"}],
+            "display":true,
+            "timestamp":1234
+        });
+        let reply = json!({
+            "id":"reply",
+            "role":"assistant",
+            "stopReason":"stop",
+            "content":[{"type":"text","text":"synthetic"}]
+        });
+
+        p.replace_history(&json!({"messages":[before.clone()]}));
+        message(&mut p, notice.clone());
+        message(&mut p, reply.clone());
+        let expected = ["before", "notice", "reply"];
+        let snapshot = p.snapshot.as_ref().unwrap();
+        assert_eq!(
+            snapshot
+                .messages
+                .iter()
+                .map(|message| message.id.as_str())
+                .collect::<Vec<_>>(),
+            expected
+        );
+
+        // Pi's authoritative context contains the same tree order. Replacing
+        // the live projection must not move the notification behind the reply.
+        p.replace_history(&json!({"messages":[before, notice, reply]}));
+        let snapshot = p.snapshot.as_ref().unwrap();
+        assert_eq!(
+            snapshot
+                .messages
+                .iter()
+                .map(|message| message.id.as_str())
+                .collect::<Vec<_>>(),
+            expected
+        );
+
+        let mut transcript = crate::transcript::TranscriptProjection::default();
+        transcript.apply(crate::transcript::TranscriptEvent::Replace {
+            messages: &snapshot.messages,
+            executions: &snapshot.executions,
+        });
+        let transcript_ids = transcript
+            .items()
+            .into_iter()
+            .filter_map(|item| match item {
+                crate::conversation::TranscriptItem::Message { message_id, .. } => Some(message_id),
+                crate::conversation::TranscriptItem::Work { .. } => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(transcript_ids, expected);
+    }
+
+    #[test]
+    fn compacted_sdk_context_hides_old_notification_without_reordering_kept_messages() {
+        let mut p = projection();
+        // This is the sanitized effective-message shape produced by Pi 1.4's
+        // pure buildSessionProjection for a branch with a prior notification
+        // before firstKeptEntryId, then a retained notification followed by a
+        // later reply. The old notification is absent from the SDK context;
+        // the retained one stays between its neighboring entries.
+        p.replace_history(&json!({"messages":[
+            {"id":"compaction","role":"compactionSummary","content":[{"type":"text","text":"synthetic"}]},
+            {"id":"kept","role":"assistant","content":[{"type":"text","text":"synthetic"}]},
+            {"id":"notice-new","role":"custom","customType":"background-task-notification","content":[{"type":"text","text":"synthetic"}],"display":true,"timestamp":2345},
+            {"id":"after","role":"assistant","content":[{"type":"text","text":"synthetic"}]}
+        ]}));
+
+        let snapshot = p.snapshot.as_ref().unwrap();
+        let ids = snapshot
+            .messages
+            .iter()
+            .map(|message| message.id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(ids, ["compaction", "kept", "notice-new", "after"]);
+        assert!(!ids.contains(&"notice-old"));
+
+        let mut transcript = crate::transcript::TranscriptProjection::default();
+        transcript.apply(crate::transcript::TranscriptEvent::Replace {
+            messages: &snapshot.messages,
+            executions: &snapshot.executions,
+        });
+        let transcript_ids = transcript
+            .items()
+            .into_iter()
+            .filter_map(|item| match item {
+                crate::conversation::TranscriptItem::Message { message_id, .. } => Some(message_id),
+                crate::conversation::TranscriptItem::Work { .. } => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(transcript_ids, ids);
     }
 
     #[test]
@@ -2228,5 +2474,54 @@ mod execution_tests {
             let record = snapshot.executions.record("segment-2:native-user").unwrap();
             assert_eq!(record.outcome, expected, "{stop}");
         }
+    }
+}
+
+#[cfg(test)]
+mod retained_reply_tests {
+    use serde_json::json;
+
+    #[test]
+    fn sdk_reply_boundaries_survive_live_resync_and_remain_visible_once() {
+        let mut projection = super::tests::projection();
+        let messages = json!([
+            {"id":"user1","role":"user","content":"first"},
+            {"id":"reply1","role":"assistant","stopReason":"stop","content":[{"type":"text","text":"first reply"}]},
+            {"id":"reply2","role":"assistant","stopReason":"stop","content":[{"type":"text","text":"second reply"}]}
+        ]);
+        projection
+            .replace_history(&json!({"messages":messages,"retainedReplyIds":["reply1","reply2"]}));
+        // RPC get_messages does not repeat the SDK inspect metadata.
+        for _ in 0..2 {
+            projection.replace_history(&json!({"data":{"messages":messages}}));
+            let snapshot = projection.snapshot.as_ref().unwrap();
+            assert_eq!(snapshot.retained_reply_ids, ["reply1", "reply2"]);
+            let mut transcript = crate::transcript::TranscriptProjection::default();
+            transcript.apply(crate::transcript::TranscriptEvent::Replace {
+                messages: &snapshot.messages,
+                executions: &snapshot.executions,
+            });
+            transcript.retain_reply_boundaries(&snapshot.retained_reply_ids);
+            let visible: Vec<_> = transcript
+                .items()
+                .into_iter()
+                .filter_map(|item| match item {
+                    crate::conversation::TranscriptItem::Message { message_id, .. } => {
+                        Some(message_id)
+                    }
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(visible, ["user1", "reply1", "reply2"]);
+            assert_eq!(
+                transcript.turns()[0].last_message_id.as_deref(),
+                Some("reply1")
+            );
+        }
+        projection.replace_history(&json!({"messages":[{"id":"user1","role":"user","content":"first"},{"id":"reply1","role":"assistant","stopReason":"stop","content":"first reply"}]}));
+        assert_eq!(
+            projection.snapshot.as_ref().unwrap().retained_reply_ids,
+            ["reply1"]
+        );
     }
 }

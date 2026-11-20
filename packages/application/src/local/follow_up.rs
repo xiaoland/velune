@@ -18,6 +18,30 @@ struct QueuedTurn {
     request: TurnRequest,
 }
 
+#[derive(Clone)]
+pub(super) struct ContextPreparationGate {
+    pub(super) work_id: String,
+    pub(super) queued_message_id: String,
+    pub(super) target_runtime_id: String,
+    pub(super) state: PreparationState,
+    pub(super) dispatching: bool,
+    pub(super) request_bound: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PreparationState {
+    Running,
+    Cancelling,
+    Ready,
+    Failed,
+    Cancelled,
+}
+
+pub(super) struct QueuedPreparedDispatch {
+    turn: QueuedTurn,
+    gate: ContextPreparationGate,
+}
+
 impl QueuedTurn {
     fn new(id: String, request: TurnRequest) -> Self {
         Self {
@@ -54,6 +78,7 @@ impl QueuedTurn {
 
 #[derive(Default)]
 pub(super) struct SendQueue {
+    preparation: Option<ContextPreparationGate>,
     turns: VecDeque<QueuedTurn>,
     paused: Option<QueuePause>,
     /// The next message waits for work besides the turn to end.
@@ -63,8 +88,26 @@ pub(super) struct SendQueue {
 }
 
 impl SendQueue {
+    pub(super) fn prepares_context(&self) -> bool {
+        self.preparation.is_some()
+    }
+    pub(super) fn preparation_cancellable(&self) -> bool {
+        self.preparation.as_ref().is_some_and(|gate| {
+            matches!(
+                gate.state,
+                PreparationState::Running | PreparationState::Cancelling | PreparationState::Ready
+            )
+        })
+    }
     pub(super) fn is_empty(&self) -> bool {
         self.turns.is_empty()
+    }
+
+    /// Preserve the stop decision before completion clears session flags.
+    /// This also covers a late enqueue after maintenance has already ended.
+    pub(super) fn pause_after_stop(&mut self) {
+        self.interrupted = Some(QueuePause::TurnStopped);
+        self.paused.get_or_insert(QueuePause::TurnStopped);
     }
 
     fn position(&self, id: &str) -> Result<usize, RuntimeError> {
@@ -73,6 +116,18 @@ impl SendQueue {
             .position(|turn| turn.id == id)
             .ok_or_else(|| RuntimeError::invalid("此排队消息已经发出或删除"))
     }
+
+    fn editable_position(&self, id: &str) -> Result<usize, RuntimeError> {
+        let index = self.position(id)?;
+        if self.preparation.as_ref().is_some_and(|gate| {
+            gate.queued_message_id == id && (gate.dispatching || gate.request_bound)
+        }) {
+            return Err(RuntimeError::invalid(
+                "此排队消息已进入派发流程，修改未保存",
+            ));
+        }
+        Ok(index)
+    }
 }
 
 fn queued_id() -> String {
@@ -80,7 +135,354 @@ fn queued_id() -> String {
     format!("queued-{}", crate::new_record_key())
 }
 
+fn same_turn(left: &TurnRequest, right: &TurnRequest) -> bool {
+    serde_json::to_vec(&(
+        &left.source_runtime_id,
+        &left.conversation_id,
+        &left.runtime_id,
+        &left.selection,
+        &left.turn,
+    ))
+    .ok()
+        == serde_json::to_vec(&(
+            &right.source_runtime_id,
+            &right.conversation_id,
+            &right.runtime_id,
+            &right.selection,
+            &right.turn,
+        ))
+        .ok()
+}
+
 impl CoreRuntime {
+    pub(crate) fn queued_handoff_execution(
+        &self,
+        conversation_id: &str,
+        target_runtime_id: &str,
+    ) -> Option<String> {
+        let session = std::iter::once(&self.session)
+            .chain(&self.parked)
+            .find(|session| session.conversation_id() == Some(conversation_id))?;
+        let snapshot = session.projected()?;
+        if snapshot.conversation.runtime_id != target_runtime_id {
+            return None;
+        }
+        snapshot
+            .executions
+            .current
+            .as_ref()
+            .map(|current| current.execution_id.clone())
+    }
+    pub(crate) fn pause_queued_conversation(&mut self, conversation_id: &str) {
+        if let Some(session) = std::iter::once(&mut self.session)
+            .chain(&mut self.parked)
+            .find(|session| session.conversation_id() == Some(conversation_id))
+        {
+            session.send_queue.pause_after_stop();
+        }
+    }
+    pub(crate) fn cancel_accepted_queued_handoff(
+        &mut self,
+        conversation_id: &str,
+        target_runtime_id: &str,
+        execution_id: Option<&str>,
+    ) -> Result<(), RuntimeError> {
+        if let Some(expected) = execution_id
+            && self
+                .queued_handoff_execution(conversation_id, target_runtime_id)
+                .as_deref()
+                == Some(expected)
+            && self.turn_running()
+        {
+            self.cancel(target_runtime_id)?;
+        }
+        Ok(())
+    }
+    pub(crate) fn handoff_queue_is_empty(&self, conversation_id: &str) -> bool {
+        std::iter::once(&self.session)
+            .chain(&self.parked)
+            .find(|session| session.conversation_id() == Some(conversation_id))
+            .is_none_or(|session| session.send_queue.is_empty())
+    }
+    pub(crate) fn queued_handoff_turn(
+        &self,
+        conversation_id: &str,
+        queued_id: &str,
+    ) -> Result<TurnRequest, RuntimeError> {
+        let session = std::iter::once(&self.session)
+            .chain(&self.parked)
+            .find(|session| session.conversation_id() == Some(conversation_id))
+            .ok_or_else(|| RuntimeError::invalid("排队会话已不可用"))?;
+        let first = session
+            .send_queue
+            .turns
+            .front()
+            .filter(|turn| turn.id == queued_id)
+            .ok_or_else(|| RuntimeError::invalid("此消息已不在队首，请刷新后重试"))?;
+        Ok(first.request.clone())
+    }
+
+    pub(crate) fn begin_queued_handoff(
+        &mut self,
+        request: TurnRequest,
+        work_id: &str,
+        retry: Option<&str>,
+    ) -> Result<(String, SnapshotResult), RuntimeError> {
+        self.require_input_access()?;
+        let source = self
+            .current_snapshot()
+            .ok_or_else(|| RuntimeError::invalid("请选择会话"))?;
+        if source.conversation.id != request.conversation_id
+            || source.conversation.runtime_id != request.source_runtime_id
+        {
+            return Err(RuntimeError::invalid("排队来源会话已改变"));
+        }
+        let native = self
+            .native_snapshot()
+            .ok_or_else(|| RuntimeError::invalid("来源上下文不可用"))?;
+        Self::submission_admission(&self.session, &native)
+            .accept_queue
+            .map_err(RuntimeError::invalid)?;
+        if request.turn.text.trim().is_empty() && request.turn.attachments.is_empty() {
+            return Err(RuntimeError::invalid("message text"));
+        }
+        let queue = &mut self.session.send_queue;
+        let id = if let Some(id) = retry {
+            if queue
+                .turns
+                .front()
+                .is_none_or(|turn| turn.id != id || !same_turn(&turn.request, &request))
+            {
+                return Err(RuntimeError::invalid(
+                    "排队消息或执行配置已改变，请重新打开确认",
+                ));
+            }
+            id.to_owned()
+        } else {
+            if !queue.turns.is_empty() {
+                return Err(RuntimeError::invalid(
+                    "已有排队消息，请处理现有队列后再开始运行时切换",
+                ));
+            }
+            let id = queued_id();
+            queue
+                .turns
+                .push_back(QueuedTurn::new(id.clone(), request.clone()));
+            id
+        };
+        queue.preparation = Some(ContextPreparationGate {
+            work_id: work_id.into(),
+            queued_message_id: id.clone(),
+            target_runtime_id: request.runtime_id,
+            state: PreparationState::Running,
+            dispatching: false,
+            request_bound: false,
+        });
+        queue.paused = None;
+        queue.waiting = Some(QueueWait::ContextPreparation);
+        let result = self.accepted_submission_result(crate::SubmissionReceipt::Queued {
+            queue_id: id.clone(),
+        })?;
+        Ok((id, result))
+    }
+
+    pub(crate) fn queued_preparation_state(&self, work_id: &str) -> Option<PreparationState> {
+        std::iter::once(&self.session)
+            .chain(&self.parked)
+            .find_map(|session| {
+                session
+                    .send_queue
+                    .preparation
+                    .as_ref()
+                    .filter(|gate| gate.work_id == work_id)
+                    .map(|gate| gate.state)
+            })
+    }
+
+    pub(crate) fn sync_queued_preparation(&mut self, work_id: &str, state: PreparationState) {
+        for session in std::iter::once(&mut self.session).chain(&mut self.parked) {
+            let queue = &mut session.send_queue;
+            let Some(gate) = queue
+                .preparation
+                .as_mut()
+                .filter(|gate| gate.work_id == work_id)
+            else {
+                continue;
+            };
+            if gate.state == PreparationState::Cancelled && state != PreparationState::Cancelled {
+                continue;
+            }
+            gate.state = state;
+            if matches!(
+                state,
+                PreparationState::Failed | PreparationState::Cancelled
+            ) {
+                gate.dispatching = false;
+                queue
+                    .paused
+                    .get_or_insert(if state == PreparationState::Cancelled {
+                        QueuePause::TurnStopped
+                    } else {
+                        QueuePause::SendFailed
+                    });
+            }
+        }
+    }
+
+    pub(crate) fn queued_prepared_candidate(&mut self, work_id: &str) -> Option<TurnRequest> {
+        for session in std::iter::once(&mut self.session).chain(&mut self.parked) {
+            let queue = &mut session.send_queue;
+            let Some(gate) = queue
+                .preparation
+                .as_mut()
+                .filter(|gate| gate.work_id == work_id)
+            else {
+                continue;
+            };
+            if gate.state != PreparationState::Ready || gate.dispatching || queue.paused.is_some() {
+                return None;
+            }
+            let turn = queue
+                .turns
+                .front()
+                .filter(|turn| turn.id == gate.queued_message_id)?;
+            gate.dispatching = true;
+            gate.request_bound = true;
+            return Some(turn.request.clone());
+        }
+        None
+    }
+
+    pub(crate) fn pause_queued_preparation(&mut self, work_id: &str) {
+        for session in std::iter::once(&mut self.session).chain(&mut self.parked) {
+            let queue = &mut session.send_queue;
+            if let Some(gate) = queue
+                .preparation
+                .as_mut()
+                .filter(|gate| gate.work_id == work_id)
+            {
+                gate.dispatching = false;
+                queue.paused = Some(QueuePause::SendFailed);
+            }
+        }
+    }
+
+    pub(crate) fn unbind_queued_preparation(&mut self, work_id: &str) {
+        for session in std::iter::once(&mut self.session).chain(&mut self.parked) {
+            if let Some(gate) = session
+                .send_queue
+                .preparation
+                .as_mut()
+                .filter(|gate| gate.work_id == work_id)
+            {
+                gate.request_bound = false;
+            }
+        }
+    }
+    pub(crate) fn require_queued_handoff_retry(
+        &self,
+        conversation_id: &str,
+        queued_id: &str,
+    ) -> Result<(), RuntimeError> {
+        let session = std::iter::once(&self.session)
+            .chain(&self.parked)
+            .find(|session| session.conversation_id() == Some(conversation_id))
+            .ok_or_else(|| RuntimeError::invalid("排队会话已不可用"))?;
+        let gate = session
+            .send_queue
+            .preparation
+            .as_ref()
+            .filter(|gate| gate.queued_message_id == queued_id)
+            .ok_or_else(|| RuntimeError::invalid("此消息不再需要摘要，请从现有队列继续"))?;
+        if gate.dispatching
+            || !matches!(
+                gate.state,
+                PreparationState::Failed | PreparationState::Cancelled
+            )
+        {
+            return Err(RuntimeError::invalid(
+                "接续准备仍在进行或可直接继续发送，请勿重复生成摘要",
+            ));
+        }
+        Ok(())
+    }
+    pub(super) fn cancel_queued_preparation(&mut self) -> bool {
+        let queue = &mut self.session.send_queue;
+        let Some(gate) = &mut queue.preparation else {
+            return false;
+        };
+        gate.state = PreparationState::Cancelled;
+        queue.paused = Some(QueuePause::TurnStopped);
+        true
+    }
+
+    pub(super) fn take_prepared_queue_turn(
+        &mut self,
+        work_id: &str,
+        request: &TurnRequest,
+        expected_queue_id: Option<&str>,
+    ) -> Result<Option<QueuedPreparedDispatch>, RuntimeError> {
+        let queue = &mut self.session.send_queue;
+        let Some(gate) = &queue.preparation else {
+            if expected_queue_id.is_some() {
+                return Err(RuntimeError::invalid(
+                    "拥有本次接续的排队消息已移除，未发送消息",
+                ));
+            }
+            return Ok(None);
+        };
+        if gate.work_id != work_id
+            || expected_queue_id.is_some_and(|id| gate.queued_message_id != id)
+            || gate.state != PreparationState::Ready
+            || queue.paused.is_some()
+            || queue.turns.front().is_none_or(|turn| {
+                turn.id != gate.queued_message_id || !same_turn(&turn.request, request)
+            })
+        {
+            return Err(RuntimeError::invalid(
+                "排队接续已取消、暂停或输入已改变；未发送消息",
+            ));
+        }
+        let gate = queue.preparation.take().expect("validated preparation");
+        let turn = queue.turns.pop_front().expect("validated queue head");
+        queue.waiting = None;
+        Ok(Some(QueuedPreparedDispatch { turn, gate }))
+    }
+
+    pub(super) fn finish_prepared_queue_turn(
+        &mut self,
+        dispatch: Option<QueuedPreparedDispatch>,
+        accepted: bool,
+    ) {
+        if let Some(mut dispatch) = dispatch
+            && !accepted
+        {
+            let committed = self
+                .session
+                .logical_projection
+                .as_ref()
+                .and_then(|projection| projection.link.segments.last())
+                .is_some_and(|segment| {
+                    segment.runtime_instance_id == dispatch.turn.request.runtime_id
+                        && segment
+                            .imported
+                            .as_ref()
+                            .and_then(|import| import.summary_work_id.as_deref())
+                            == Some(dispatch.gate.work_id.as_str())
+                });
+            dispatch.gate.dispatching = false;
+            let queue = &mut self.session.send_queue;
+            queue.turns.push_front(dispatch.turn);
+            queue.preparation = if committed { None } else { Some(dispatch.gate) };
+            queue.paused = Some(QueuePause::SendFailed);
+            queue.waiting = if committed {
+                None
+            } else {
+                Some(QueueWait::ContextPreparation)
+            };
+        }
+    }
+
     /// Continue the addressed context using its declared native or message strategy.
     pub(crate) fn resume_turn(
         &mut self,
@@ -104,6 +506,22 @@ impl CoreRuntime {
         }
         if let Some(mode) = &permission_mode {
             self.validate_permission_mode(&runtime, mode)?;
+        }
+        if self.can_submit_native(
+            execution_workers::ExecutionCommandKind::Resume,
+            runtime_id,
+            &selection,
+        ) {
+            let (effort, permission_mode) =
+                self.turn_options(effort.as_deref(), permission_mode.as_deref())?;
+            let input = pi::TurnInput {
+                text: String::new(),
+                effort,
+                permission_mode,
+                images: Vec::new(),
+            };
+            self.enqueue_native_submission(execution_workers::ExecutionCommandKind::Resume, input)?;
+            return self.snapshot_result();
         }
         if matches!(self.session.active_state, ActiveState::History(_))
             || self.session.model_selection.as_ref() != Some(&selection)
@@ -146,7 +564,7 @@ impl CoreRuntime {
         mut turn: ComposedTurn,
     ) -> Result<SnapshotResult, RuntimeError> {
         let queue = &self.session.send_queue;
-        let index = queue.position(id)?;
+        let index = queue.editable_position(id)?;
         let queued = &queue.turns[index];
         if queued.edit_revision != expected_revision {
             let mut failure = crate::Failure::new(
@@ -162,6 +580,16 @@ impl CoreRuntime {
             || previous.selection != selection
             || previous.turn.effort != turn.effort
             || previous.turn.permission_mode != turn.permission_mode;
+        if config_changed
+            && queue
+                .preparation
+                .as_ref()
+                .is_some_and(|gate| gate.queued_message_id == id)
+        {
+            return Err(RuntimeError::invalid(
+                "已为此消息准备接续，当前仅可修改正文和附件",
+            ));
+        }
         let mut retained = std::collections::HashSet::new();
         let mut attachments =
             Vec::with_capacity(retained_attachments.len() + turn.attachments.len());
@@ -221,9 +649,6 @@ impl CoreRuntime {
         operation: SendQueueOperation,
         submission_id: Option<String>,
     ) -> Result<SnapshotResult, RuntimeError> {
-        if self.session.compacting {
-            return Err(RuntimeError::invalid("上下文压缩期间不能修改发送队列"));
-        }
         if matches!(
             operation,
             SendQueueOperation::Add { .. } | SendQueueOperation::Resume
@@ -248,6 +673,42 @@ impl CoreRuntime {
         };
         let added_id = matches!(&operation, SendQueueOperation::Add { .. }).then(queued_id);
         let queue = &mut self.session.send_queue;
+        match &operation {
+            SendQueueOperation::Move { id, index } => {
+                queue.position(id)?;
+                if queue.preparation.as_ref().is_some_and(|gate| {
+                    gate.dispatching && (gate.queued_message_id == *id || *index == 0)
+                }) {
+                    return Err(RuntimeError::invalid("队首正在派发，暂不能改变顺序"));
+                }
+            }
+            SendQueueOperation::Remove { id } => {
+                queue.position(id)?;
+            }
+            SendQueueOperation::Steer { id } => {
+                queue.position(id)?;
+                if queue.preparation.is_some() {
+                    return Err(RuntimeError::invalid("接续准备期间不能插入消息"));
+                }
+            }
+            _ => {}
+        }
+        let affects_preparation = queue
+            .preparation
+            .as_ref()
+            .is_some_and(|gate| match &operation {
+                SendQueueOperation::Remove { id } => id == &gate.queued_message_id,
+                SendQueueOperation::Move { id, index } => {
+                    id == &gate.queued_message_id || *index == 0
+                }
+                _ => false,
+            });
+        if affects_preparation {
+            if let Some(gate) = &mut queue.preparation {
+                gate.state = PreparationState::Cancelled;
+            }
+            queue.paused = Some(QueuePause::TurnStopped);
+        }
         match operation {
             SendQueueOperation::Add {
                 source_runtime_id,
@@ -276,7 +737,7 @@ impl CoreRuntime {
                 ));
             }
             SendQueueOperation::Edit { id, text } => {
-                let index = queue.position(&id)?;
+                let index = queue.editable_position(&id)?;
                 let turn = &mut queue.turns[index];
                 if text.trim().is_empty() && turn.request.turn.attachments.is_empty() {
                     return Err(RuntimeError::invalid("message text"));
@@ -304,6 +765,15 @@ impl CoreRuntime {
             SendQueueOperation::Remove { id } => {
                 let index = queue.position(&id)?;
                 queue.turns.remove(index);
+                if queue
+                    .preparation
+                    .as_ref()
+                    .is_some_and(|gate| gate.queued_message_id == id)
+                {
+                    // The service observes this exact gate's disappearance and
+                    // revokes only its work/token; remaining items stay paused.
+                    queue.preparation = None;
+                }
                 if queue.turns.is_empty() {
                     queue.paused = None;
                     queue.waiting = None;
@@ -315,7 +785,18 @@ impl CoreRuntime {
                 let to = (index as usize).min(queue.turns.len());
                 queue.turns.insert(to, turn);
             }
-            SendQueueOperation::Resume => queue.paused = None,
+            SendQueueOperation::Resume => {
+                if queue
+                    .preparation
+                    .as_ref()
+                    .is_some_and(|gate| gate.state != PreparationState::Ready)
+                {
+                    return Err(RuntimeError::invalid(
+                        "接续压缩尚未完成；失败或取消后请明确重新准备摘要",
+                    ));
+                }
+                queue.paused = None;
+            }
             SendQueueOperation::Steer { id } => {
                 let index = queue.position(&id)?;
                 let turn = queue.turns.remove(index).expect("queued turn");
@@ -330,7 +811,8 @@ impl CoreRuntime {
             }
         }
         // A queue added to or resumed while nothing runs starts at once.
-        if !self.turn_running()
+        if !self.session.compacting
+            && !self.turn_running()
             && self.session.send_queue.paused.is_none()
             && self.session.send_queue.waiting.is_none()
         {
@@ -350,7 +832,7 @@ impl CoreRuntime {
             };
             self.accepted_submission_result(receipt)
         } else {
-            self.snapshot_result()
+            self.snapshot_result().map_err(RuntimeError::after_delivery)
         }
     }
 
@@ -362,13 +844,35 @@ impl CoreRuntime {
         turn: &ComposedTurn,
     ) -> Result<SnapshotResult, RuntimeError> {
         self.steer(turn)?;
-        self.snapshot_result()
+        self.snapshot_result().map_err(RuntimeError::after_delivery)
     }
 
     fn steer(&mut self, turn: &ComposedTurn) -> Result<(), RuntimeError> {
         self.require_input_access()?;
         if !self.can_steer() {
             return Err(RuntimeError::invalid("此运行时当前不能插入消息"));
+        }
+        let runtime_id = self.active_instance()?.id.clone();
+        let selection = self.session.model_selection.clone().flatten();
+        if turn.attachments.is_empty()
+            && self.can_submit_native(
+                execution_workers::ExecutionCommandKind::Steer,
+                &runtime_id,
+                &selection,
+            )
+        {
+            if turn.text.trim().is_empty() {
+                return Err(RuntimeError::invalid("message text"));
+            }
+            return self.enqueue_native_submission(
+                execution_workers::ExecutionCommandKind::Steer,
+                pi::TurnInput {
+                    text: turn.text.clone(),
+                    effort: None,
+                    permission_mode: None,
+                    images: Vec::new(),
+                },
+            );
         }
         let attachments = self.turn_attachments(self.active_instance()?, &turn.attachments)?;
         let text = super::attachments::compose_text(&turn.text, &attachments.files);
@@ -381,6 +885,7 @@ impl CoreRuntime {
             permission_mode: None,
             images: super::attachments::turn_images(&attachments.images)?,
         };
+        self.retire_native_settings_for_submission();
         self.session
             .active_state
             .live_mut()
@@ -398,7 +903,18 @@ impl CoreRuntime {
     /// The addressed session's turn ended with `outcome`: the queue goes on
     /// after a normal end and waits for the user otherwise.
     pub(super) fn follow_finished_turn(&mut self, outcome: crate::TurnOutcome) {
+        let withdrawn = self
+            .submission_cancellation
+            .as_ref()
+            .is_some_and(|(id, flag)| {
+                self.session.conversation_id() == Some(id.as_str())
+                    && flag.load(std::sync::atomic::Ordering::Acquire)
+            });
         let queue = &mut self.session.send_queue;
+        if withdrawn {
+            queue.pause_after_stop();
+            return;
+        }
         let pause = match outcome {
             crate::TurnOutcome::Completed => None,
             crate::TurnOutcome::Cancelled => Some(QueuePause::TurnStopped),
@@ -440,6 +956,31 @@ impl CoreRuntime {
         }
     }
 
+    /// Maintenance holds delivery, but accepts edits and new queued input.
+    pub(super) fn follow_finished_compaction(&mut self, failed: bool) {
+        let outcome = self.session.projected().and_then(|snapshot| {
+            let activity = snapshot.executions.current.as_ref()?;
+            snapshot
+                .executions
+                .records
+                .iter()
+                .find(|record| {
+                    record.id == activity.execution_id
+                        && record.kind == velune_conversation::ExecutionKind::ContextMaintenance
+                })
+                .and_then(|record| record.outcome)
+        });
+        let queue = &mut self.session.send_queue;
+        if self.session.cancel_requested || outcome == Some(crate::TurnOutcome::Cancelled) {
+            queue.pause_after_stop();
+        } else if failed || outcome == Some(crate::TurnOutcome::Failed) {
+            queue.interrupted = Some(QueuePause::TurnFailed);
+            queue.paused.get_or_insert(QueuePause::TurnFailed);
+        } else if queue.paused.is_none() && !queue.turns.is_empty() {
+            self.send_next_queued();
+        }
+    }
+
     /// A turn starts in the addressed session.
     pub(super) fn follow_started_turn(&mut self) {
         self.session.send_queue.interrupted = None;
@@ -448,6 +989,20 @@ impl CoreRuntime {
     /// Send the first queued message as its own turn. One that is not
     /// accepted stays first and the queue waits; it is never resent unasked.
     fn send_next_queued(&mut self) {
+        if self.session.native_controls.submission_pending() {
+            self.session
+                .send_queue
+                .waiting
+                .get_or_insert(QueueWait::Control);
+            return;
+        }
+        if self.session.send_queue.preparation.is_some() {
+            self.session.send_queue.waiting = Some(QueueWait::ContextPreparation);
+            return;
+        }
+        if self.session.compacting {
+            return;
+        }
         if self.current_handoff_blocks_dispatch() {
             let queue = &mut self.session.send_queue;
             if !queue.turns.is_empty() && queue.paused.is_none() {
@@ -485,6 +1040,10 @@ impl CoreRuntime {
                 let queue = &mut self.session.send_queue;
                 queue.turns.push_front(turn);
                 queue.waiting = Some(QueueWait::Control);
+            }
+            Err(error) if error.delivery_accepted() => {
+                tracing::warn!(target: "velune_application", event = "queued_turn_delivery_accepted_refresh_failed", detail = %error);
+                self.session.send_queue.paused = Some(QueuePause::SendFailed);
             }
             Err(error) => {
                 tracing::warn!(target: "velune_application", event = "queued_turn_not_sent", detail = %error);
@@ -548,15 +1107,31 @@ impl CoreRuntime {
         let queue = &self.session.send_queue;
         let admission = Self::submission_admission(&self.session, snapshot);
         FollowUp {
+            context_preparation: queue.preparation.as_ref().map(|gate| {
+                crate::conversation::ContextPreparation {
+                    queued_message_id: gate.queued_message_id.clone(),
+                    work_id: gate.work_id.clone(),
+                    target_runtime_id: gate.target_runtime_id.clone(),
+                    is_preparing: matches!(
+                        gate.state,
+                        PreparationState::Running | PreparationState::Cancelling
+                    ),
+                    is_dispatching: gate.dispatching,
+                    can_edit_message: !gate.dispatching && !gate.request_bound,
+                    can_retry_summary: matches!(
+                        gate.state,
+                        PreparationState::Failed | PreparationState::Cancelled
+                    ),
+                }
+            }),
             control_handoff: snapshot.follow_up.control_handoff,
             queue: queue.turns.iter().map(QueuedTurn::public).collect(),
             paused: queue.paused.clone(),
             waiting: queue.waiting.clone(),
-            can_stop_sub_agents: self
-                .session
-                .work()
-                .iter()
-                .any(|task| task.state != velune_agent_runtime::work::BackgroundState::Stopping),
+            can_stop_sub_agents: self.session.work().is_ok_and(|work| {
+                work.iter()
+                    .any(|task| task.state != velune_agent_runtime::work::BackgroundState::Stopping)
+            }),
             can_queue: admission.offer_queue,
             can_steer: admission.can_steer,
             can_resume: self.resumable(&self.session, snapshot),
@@ -576,11 +1151,198 @@ impl CoreRuntime {
     }
 }
 
-#[cfg(test)]
-mod submission_tests;
+#[cfg(all(test, unix))]
+mod maintenance_queue_tests {
+    use super::*;
+
+    fn drain_until(core: &mut CoreRuntime, ready: impl Fn(&CoreRuntime) -> bool) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(4);
+        loop {
+            core.drain_runtime().unwrap();
+            if ready(core) {
+                return;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "Pi maintenance did not reach the expected confirmed state"
+            );
+            std::thread::yield_now();
+        }
+    }
+
+    /// Exercise the actual Pi RPC reader, projection and core drain boundary:
+    /// queue admission while compacting is not enough to prove delivery safety.
+    #[test]
+    fn compaction_queue_lifecycle_dispatches_only_after_uninterrupted_success() {
+        for mode in ["success", "failed", "cancelled", "cancel-race", "paused"] {
+            let mut nonce = [0; 8];
+            getrandom::fill(&mut nonce).unwrap();
+            let root = std::env::temp_dir().join(format!(
+                "velune-maintenance-queue-{:x}",
+                u64::from_le_bytes(nonce)
+            ));
+            std::fs::create_dir(&root).unwrap();
+            std::fs::write(root.join("mode"), mode).unwrap();
+            let helper = root.join("rpc.py");
+            std::fs::write(&helper, r#"
+import json, pathlib, sys, threading, time
+root = pathlib.Path(__file__).parent
+mode = (root / 'mode').read_text()
+history = {'messages':[{'id':'source-user','role':'user','content':'source history'}]}
+lock = threading.Lock()
+def emit(value):
+    with lock:
+        print(json.dumps(value), flush=True)
+def complete(request):
+    while not (root / 'release').exists(): time.sleep(.005)
+    aborted = mode == 'cancelled'
+    emit({'type':'compaction_end','aborted':aborted,'result':{} if mode != 'failed' else None})
+    emit({'type':'response','id':request['id'],'command':'compact','success':mode != 'failed','data':{},'error':'synthetic failure'})
+for line in sys.stdin:
+    request = json.loads(line)
+    command = request['type']
+    data = {}
+    if command == 'compact':
+        emit({'type':'compaction_start'})
+        threading.Thread(target=complete, args=(request,), daemon=True).start()
+        continue
+    if command == 'get_commands': data = {'commands':[]}
+    elif command == 'prompt':
+        if request.get('message','').startswith('/velune-projection-sync '):
+            token = request['message'].split(' ',1)[1]
+            assert token == request['id']
+            messages = history['messages']
+            emit({'type':'extension_ui_request','method':'setStatus','statusKey':'velune.session-metadata',
+                  'statusText':json.dumps({'requestId':token,'snapshotVersion':1,'messages':messages,
+                      'messageIds':[m['id'] for m in messages],'identityConfirmations':[],
+                      'sessionFile':str(root/'session.jsonl'),'name':'Synthetic','cwd':str(root)})})
+        else:
+            with (root / 'sent').open('a') as output:
+                output.write(request['message'] + '\n')
+            (root / 'sent-recorded').touch()
+        data = {'disposition':'handled'}
+    elif command == 'get_messages': data = history
+    elif command == 'abort': (root / 'release').write_text('release')
+    emit({'type':'response','id':request['id'],'command':command,'success':True,'data':data})
+"#).unwrap();
+            let mut application = crate::Application::open(crate::Options {
+                home_directory: root.clone(),
+                resources_directory: root.clone(),
+            })
+            .unwrap();
+            let core = &mut application.runtime;
+            core.runtime_instances = vec![RuntimeInstance {
+                enabled: true,
+                id: "pi".into(),
+                name: "Synthetic Pi".into(),
+                type_id: RuntimeKind::Pi,
+                gateway_id: String::new(),
+                settings: Default::default(),
+            }];
+            let config: PiConfig = serde_json::from_value(json!({
+                "execution":{"kind":"local"}, "os_home":root,
+                "binary":"/usr/bin/python3", "node_binary":"/usr/bin/python3", "rpc_entry":helper,
+            }))
+            .unwrap();
+            let client = pi::Client::spawn(config.clone()).unwrap();
+            let conversation_id = format!("pi:{}", root.join("session.jsonl").display());
+            let mut projection = PiProjection::new(ConversationSummary {
+                native_read_state: None,
+                id: conversation_id.clone(),
+                runtime_id: "pi".into(),
+                title: crate::conversation::ConversationTitle::Untitled,
+                cwd: Some(root.to_string_lossy().into_owned()),
+                created_at_unix_ms: None,
+                updated_at_unix_ms: None,
+                can_rename: false,
+                can_delete: false,
+                parent_conversation_id: None,
+            });
+            projection.snapshot.as_mut().unwrap().messages = serde_json::from_value(json!([
+                {"id":"source-user","role":"user","completed":true,"blocks":[{"kind":"text","text":"source history"}]}
+            ])).unwrap();
+            let mut session = pi::PiSession::new(config);
+            session.start(client, projection);
+            core.session.active_state = ActiveState::Pi(Box::new(session));
+            core.session.execution_runtime_id = Some("pi".into());
+            core.session.model_selection = Some(None);
+            assert!(
+                !core.session.work_settled(),
+                "startup discovery is not settled"
+            );
+            drain_until(core, |core| core.session.work_settled());
+            assert_eq!(
+                core.native_snapshot().unwrap().messages[0].id,
+                "source-user"
+            );
+            if mode == "paused" {
+                core.session.send_queue.paused = Some(QueuePause::TurnFailed);
+            }
+            core.compact_conversation("pi", None).unwrap();
+            assert!(core.session.compacting, "{mode}");
+            core.send_queue(
+                &conversation_id,
+                SendQueueOperation::Add {
+                    source_runtime_id: "pi".into(),
+                    target_runtime_id: "pi".into(),
+                    selection: None,
+                    turn: ComposedTurn {
+                        text: "queued after maintenance".into(),
+                        attachments: vec![],
+                        effort: None,
+                        permission_mode: None,
+                    },
+                },
+            )
+            .unwrap();
+            assert_eq!(core.session.send_queue.turns.len(), 1);
+            assert!(
+                !root.join("sent").exists(),
+                "{mode}: sent during maintenance"
+            );
+            if matches!(mode, "cancelled" | "cancel-race") {
+                core.cancel("pi").unwrap();
+            } else {
+                std::fs::write(root.join("release"), "release").unwrap();
+            }
+            drain_until(core, |core| !core.session.compacting);
+            if mode == "success" {
+                drain_until(core, |core| {
+                    core.session.send_queue.turns.is_empty() && root.join("sent-recorded").exists()
+                });
+                assert!(core.session.send_queue.turns.is_empty());
+                assert!(core.session.send_queue.paused.is_none());
+                assert_eq!(
+                    std::fs::read_to_string(root.join("sent")).unwrap(),
+                    "queued after maintenance\n"
+                );
+            } else {
+                assert_eq!(
+                    core.session.send_queue.turns.len(),
+                    1,
+                    "{mode}: queue was consumed"
+                );
+                assert!(!root.join("sent").exists(), "{mode}: queue was dispatched");
+                assert_eq!(
+                    core.session.send_queue.paused,
+                    Some(if matches!(mode, "cancelled" | "cancel-race") {
+                        QueuePause::TurnStopped
+                    } else {
+                        QueuePause::TurnFailed
+                    }),
+                    "{mode}"
+                );
+            }
+            core.shutdown_active().unwrap();
+            application.close_stopping_work().unwrap();
+            drop(application);
+            std::fs::remove_dir_all(root).unwrap();
+        }
+    }
+}
 
 #[cfg(test)]
-mod edit_tests {
+mod preparation_tests {
     use super::*;
     struct Fixture {
         root: PathBuf,
@@ -588,8 +1350,10 @@ mod edit_tests {
     }
     impl Fixture {
         fn new() -> Self {
-            let root = std::env::temp_dir()
-                .join(format!("velune-queued-edit-{}", crate::new_record_key()));
+            let root = std::env::temp_dir().join(format!(
+                "velune-queued-preparation-{}",
+                crate::new_record_key()
+            ));
             std::fs::create_dir_all(&root).unwrap();
             let mut application = crate::Application::open(crate::Options {
                 home_directory: root.clone(),
@@ -604,7 +1368,7 @@ mod edit_tests {
                 gateway_id: String::new(),
                 settings: Default::default(),
             }];
-            let snapshot=serde_json::from_value(json!({"revision":1,"conversation":{"id":"source:one","runtimeId":"source","title":{"source":"untitled"}},"contextRuntimeId":"source","resourceId":null,"modelRecordKey":null,"runState":"idle","messages":[],"transcriptTurns":[],"transcriptItems":[],"transcriptOutline":[],"transcriptMessageIdentities":[],"actions":{"canSend":true,"canCancel":false,"canSwitch":true}})).unwrap();
+            let snapshot: crate::conversation::ConversationSnapshot=serde_json::from_value(json!({"revision":1,"conversation":{"id":"source:one","runtimeId":"source","title":{"source":"untitled"}},"contextRuntimeId":"source","resourceId":null,"modelRecordKey":null,"runState":"idle","messages":[],"transcriptTurns":[],"transcriptItems":[],"transcriptOutline":[],"transcriptMessageIdentities":[],"actions":{"canSend":true,"canCancel":false,"canSwitch":true}})).unwrap();
             application.runtime.session.set_history(snapshot);
             let request = TurnRequest {
                 submission_id: None,
@@ -626,7 +1390,15 @@ mod edit_tests {
             let mut tail = request;
             tail.turn.text = "tail".into();
             queue.turns.push_back(QueuedTurn::new("tail".into(), tail));
-            queue.waiting = Some(QueueWait::SubAgents);
+            queue.preparation = Some(ContextPreparationGate {
+                work_id: "work-1".into(),
+                queued_message_id: "head".into(),
+                target_runtime_id: "target".into(),
+                state: PreparationState::Running,
+                dispatching: false,
+                request_bound: false,
+            });
+            queue.waiting = Some(QueueWait::ContextPreparation);
             Self { root, application }
         }
     }
@@ -718,7 +1490,10 @@ mod edit_tests {
             })
         );
         assert_eq!(snapshot.follow_up.paused, Some(QueuePause::TurnStopped));
-        assert_eq!(snapshot.follow_up.waiting, Some(QueueWait::SubAgents));
+        assert_eq!(
+            snapshot.follow_up.waiting,
+            Some(QueueWait::ContextPreparation)
+        );
         assert_eq!(
             core.session.send_queue.turns[1].request.source_runtime_id,
             "source"
@@ -752,5 +1527,252 @@ mod edit_tests {
                 .is_err()
         );
         assert_eq!(core.session.send_queue.turns[1].id, new_id);
+    }
+
+    #[test]
+    fn replacing_prepared_queue_input_keeps_target_and_never_reuses_bound_input() {
+        let mut fixture = Fixture::new();
+        let core = &mut fixture.application.runtime;
+        let queue = &mut core.session.send_queue;
+        // This configured destination is intentionally gone. An edit may
+        // still preserve the accepted choices and attachments verbatim.
+        queue.turns[0].request.turn.attachments = vec!["/synthetic/captured.txt".into()];
+        let replace = |revision, runtime: &str, effort: Option<&str>| SendQueueOperation::Replace {
+            id: "head".into(),
+            expected_revision: revision,
+            target_runtime_id: runtime.into(),
+            selection: None,
+            retained_attachments: vec![0],
+            turn: ComposedTurn {
+                text: "edited before binding".into(),
+                attachments: vec![],
+                effort: effort.map(str::to_owned),
+                permission_mode: None,
+            },
+        };
+        for invalid in [
+            replace(1, "source", None),
+            replace(1, "target", Some("high")),
+        ] {
+            assert!(core.send_queue("source:one", invalid).is_err());
+        }
+        core.send_queue("source:one", replace(1, "target", None))
+            .unwrap();
+        assert_eq!(
+            core.queued_preparation_state("work-1"),
+            Some(PreparationState::Running)
+        );
+        core.sync_queued_preparation("work-1", PreparationState::Ready);
+        let prepared = core.queued_prepared_candidate("work-1").unwrap();
+        assert_eq!(prepared.turn.text, "edited before binding");
+        assert_eq!(prepared.turn.attachments, ["/synthetic/captured.txt"]);
+        assert!(
+            core.send_queue("source:one", replace(2, "target", None))
+                .is_err()
+        );
+        core.pause_queued_preparation("work-1");
+        assert!(
+            core.send_queue("source:one", replace(2, "target", None))
+                .is_err()
+        );
+        assert_eq!(core.session.send_queue.turns[0].edit_revision, 2);
+        core.unbind_queued_preparation("work-1");
+        core.send_queue("source:one", replace(2, "target", None))
+            .unwrap();
+        assert_eq!(core.session.send_queue.turns[0].edit_revision, 3);
+        assert_eq!(core.session.send_queue.paused, Some(QueuePause::SendFailed));
+    }
+
+    #[test]
+    fn submission_receipt_survives_missing_presentation_after_queue_acceptance() {
+        let mut fixture = Fixture::new();
+        let core = &mut fixture.application.runtime;
+        let mut request = core.queued_handoff_turn("source:one", "head").unwrap();
+        request.submission_id = Some("accepted-without-presentation".into());
+        let queue_id = core.queue_after_work(request);
+        // Queue acceptance belongs to the session even if its presentation
+        // becomes unavailable. The response must not invite a fresh submit.
+        core.session.active_state = ActiveState::default();
+        let result = core
+            .accepted_submission_result(crate::SubmissionReceipt::Queued {
+                queue_id: queue_id.clone(),
+            })
+            .unwrap();
+        assert!(result.snapshot.is_none());
+        assert_eq!(
+            result.submission_receipt,
+            Some(crate::SubmissionReceipt::Queued { queue_id })
+        );
+        assert_eq!(core.session.send_queue.turns.len(), 3);
+    }
+
+    #[test]
+    fn submission_tracking_does_not_change_prepared_turn_identity_or_input() {
+        let mut fixture = Fixture::new();
+        let core = &mut fixture.application.runtime;
+        let original = core.queued_handoff_turn("source:one", "head").unwrap();
+        let mut tracked = original.clone();
+        tracked.submission_id = Some("new-transport-attempt".into());
+        assert!(same_turn(&original, &tracked));
+        assert_eq!(
+            serde_json::to_value(&original.turn).unwrap(),
+            serde_json::to_value(&tracked.turn).unwrap()
+        );
+        assert_eq!(original.selection, tracked.selection);
+        // Prepared summary reuse binds semantic turn/configuration, not its
+        // client-side transport attempt identity.
+        core.sync_queued_preparation("work-1", PreparationState::Ready);
+        core.take_prepared_queue_turn("work-1", &tracked, Some("head"))
+            .unwrap();
+    }
+
+    #[test]
+    fn preparation_gate_keeps_native_idle_and_admits_queue_without_dispatching_or_paid_text_retry()
+    {
+        let mut fixture = Fixture::new();
+        let core = &mut fixture.application.runtime;
+        let native = core.native_snapshot().unwrap();
+        let admission = CoreRuntime::submission_admission(&core.session, &native);
+        assert!(
+            admission.send.is_err()
+                && admission.accept_queue.is_ok()
+                && admission.offer_queue
+                && !admission.can_steer
+        );
+        core.send_next_queued();
+        assert_eq!(core.session.send_queue.turns.len(), 2);
+        core.send_queue(
+            "source:one",
+            SendQueueOperation::Edit {
+                id: "head".into(),
+                text: "edited before binding".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            core.session
+                .send_queue
+                .preparation
+                .as_ref()
+                .unwrap()
+                .work_id,
+            "work-1"
+        );
+        assert_eq!(
+            core.session.send_queue.turns[0].request.turn.text,
+            "edited before binding"
+        );
+        assert!(
+            core.require_queued_handoff_retry("source:one", "head")
+                .is_err(),
+            "active work cannot replace its cancellation handle"
+        );
+        core.sync_queued_preparation("work-1", PreparationState::Ready);
+        assert!(core.queued_prepared_candidate("work-1").is_some());
+        assert!(
+            core.queued_prepared_candidate("work-1").is_none(),
+            "only one prepared dispatch may be outstanding"
+        );
+        assert!(
+            core.send_queue(
+                "source:one",
+                SendQueueOperation::Edit {
+                    id: "head".into(),
+                    text: "must not send this late edit".into()
+                }
+            )
+            .is_err()
+        );
+        core.pause_queued_preparation("work-1");
+        assert!(
+            core.send_queue(
+                "source:one",
+                SendQueueOperation::Edit {
+                    id: "head".into(),
+                    text: "bound input stays locked".into()
+                }
+            )
+            .is_err()
+        );
+        core.unbind_queued_preparation("work-1");
+        core.send_queue(
+            "source:one",
+            SendQueueOperation::Edit {
+                id: "head".into(),
+                text: "safe pre-target retry edit".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(core.native_snapshot().unwrap().run_state, RunState::Idle);
+    }
+    #[test]
+    fn removing_or_reordering_the_owned_head_revokes_only_that_gate_and_late_worker_cannot_send() {
+        let mut fixture = Fixture::new();
+        let core = &mut fixture.application.runtime;
+        assert!(
+            core.send_queue(
+                "source:one",
+                SendQueueOperation::Move {
+                    id: "missing".into(),
+                    index: 0
+                }
+            )
+            .is_err()
+        );
+        assert_eq!(
+            core.queued_preparation_state("work-1"),
+            Some(PreparationState::Running)
+        );
+        core.send_queue(
+            "source:one",
+            SendQueueOperation::Move {
+                id: "tail".into(),
+                index: 1,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            core.queued_preparation_state("work-1"),
+            Some(PreparationState::Running)
+        );
+        let request = core.queued_handoff_turn("source:one", "head").unwrap();
+        core.send_queue(
+            "source:one",
+            SendQueueOperation::Remove { id: "head".into() },
+        )
+        .unwrap();
+        assert_eq!(core.session.send_queue.turns.front().unwrap().id, "tail");
+        assert!(core.session.send_queue.paused.is_some());
+        assert!(
+            core.take_prepared_queue_turn("work-1", &request, Some("head"))
+                .is_err(),
+            "removed queued work cannot use the legacy direct-send path"
+        );
+    }
+    #[test]
+    fn failed_or_cancelled_work_keeps_head_and_tail_and_session_owner_survives_view_changes() {
+        for state in [PreparationState::Failed, PreparationState::Cancelled] {
+            let mut fixture = Fixture::new();
+            let core = &mut fixture.application.runtime;
+            core.sync_queued_preparation("work-1", state);
+            assert!(core.session.send_queue.paused.is_some());
+            assert_eq!(core.session.send_queue.turns.len(), 2);
+            core.require_queued_handoff_retry("source:one", "head")
+                .unwrap();
+            assert!(
+                core.session.pinned(),
+                "pending input is owned by core, independently of its windows"
+            );
+            let owned = std::mem::take(&mut core.session);
+            core.parked.push(owned);
+            assert_eq!(
+                core.queued_handoff_turn("source:one", "head")
+                    .unwrap()
+                    .turn
+                    .text,
+                "first"
+            );
+            assert_eq!(core.queued_preparation_state("work-1"), Some(state));
+        }
     }
 }

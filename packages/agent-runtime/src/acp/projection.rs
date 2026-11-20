@@ -344,6 +344,7 @@ impl Client {
         self.message_sequence = 0;
         self.snapshot = Some(ConversationSnapshot {
             work_notification_ids: Vec::new(),
+            retained_reply_ids: Vec::new(),
             revision: 1,
             conversation: ConversationSummary {
                 native_read_state: None,

@@ -21,6 +21,7 @@ struct ComposerEditingTarget {
     var canCancel = true
     var retryAttachment: ((URL) -> Void)? = nil
     var recordedModelName: String? = nil
+    var allowsExecutionChanges = true
     var allowsUnavailableModel = false
     var retainedAttachments: [ComposerRetainedAttachment] = []
     var removeRetainedAttachment: ((UInt32) -> Void)? = nil
@@ -49,6 +50,7 @@ struct ComposerEditingTarget {
     var chosenModelUnavailable: Bool { nextTurn?.chosenModelUnavailable ?? false }
     var inputIssue: String? {
         if let editingTarget { return editingTarget.issue ?? attachmentIssue }
+        if store.loadedParentConversationID != nil { return nil }
         if !targetReady { return "正在打开目标会话" }
         if let source = targetChoices?.runtimeOwnerId, source != store.device.composerInputs.ownerID { return "所选运行时位于另一设备，输入已保留" }
         if let runtime = targetChoices?.runtimeId, !store.device.enabledRuntimeInstances.contains(where: { $0.id == runtime }) { return "所选运行时在此设备不可用" }
@@ -71,6 +73,7 @@ struct ComposerEditingTarget {
     }
     var selectedModelName: String? {
         guard let nextTurn else { return nil }
+        if store.loadedParentConversationID != nil { return store.recordedChildModelName ?? "模型未记录" }
         if nextTurn.chosenModelUnavailable && retainedQueueModelName == nil { return "所选模型不可用" }
         if let recorded = editingTarget?.recordedModelName { return recorded }
         return nextTurn.model == nil ? "运行时默认" : nextTurn.modelName
@@ -85,6 +88,8 @@ struct ComposerEditingTarget {
     var modelCatalog: RuntimeModelCatalog? { nextTurnRuntimeID.flatMap { store.modelCatalogs[$0] } }
     var executionChoicesEditable: Bool {
         !store.isShuttingDown && editingTarget?.editable != false
+            && editingTarget?.allowsExecutionChanges != false
+            && (editingTarget != nil || store.loadedParentConversationID == nil)
     }
     var canSwitchModel: Bool { nextTurn != nil && executionChoicesEditable }
     var nextTurnSettled: Bool { nextTurn != nil && modelCatalog != .loading }

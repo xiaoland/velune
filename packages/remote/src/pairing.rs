@@ -64,23 +64,143 @@ impl PairingOffer {
         }
         Ok(encoded)
     }
+    /// Compact URL form for manual entry: `velune://pair/v3/<base64url(payload)>`.
+    /// The payload is a compact binary encoding of issuer, invite_id, token, name, and locator.
+    /// Locator is encoded as: relay_url_count(u8) + relay_urls + direct_addr_count(u8) + addrs.
+    pub fn encode_url(&self) -> Result<String> {
+        use base64::Engine as _;
+        let mut payload = Vec::new();
+        payload.extend_from_slice(self.issuer.as_bytes());
+        payload.push(0);
+        payload.extend_from_slice(&self.invite_id.as_bytes());
+        payload.push(0);
+        payload.extend_from_slice(&self.token);
+        payload.push(0);
+        payload.extend_from_slice(self.name.as_bytes());
+        payload.push(0);
+        // Compact locator: count-prefixed strings/addrs
+        payload.push(self.locator.relay_urls.len() as u8);
+        for url in &self.locator.relay_urls {
+            payload.extend_from_slice(url.as_bytes());
+            payload.push(0);
+        }
+        payload.push(self.locator.direct_addresses.len() as u8);
+        for addr in &self.locator.direct_addresses {
+            payload.extend_from_slice(addr.to_string().as_bytes());
+            payload.push(0);
+        }
+        payload.push(self.locator.lookup_urls.len() as u8);
+        for url in &self.locator.lookup_urls {
+            payload.extend_from_slice(url.as_bytes());
+            payload.push(0);
+        }
+        payload.push(0); // terminator for locator section
+        payload.extend_from_slice(&self.expires_at_unix_seconds.to_le_bytes());
+        let encoded = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&payload);
+        Ok(format!("velune://pair/v3/{encoded}"))
+    }
+    /// Decode either the JSON invitation or the compact URL form.
     pub fn decode(encoded: &str) -> Result<Self> {
+        let encoded = encoded.trim();
         if encoded.len() > OFFER_LIMIT {
             return Err(RemoteError::FrameTooLarge);
         }
+        if let Some(payload) = encoded.strip_prefix("velune://pair/v3/") {
+            return Self::decode_url_payload(payload);
+        }
         let offer: Self =
             serde_json::from_str(encoded).map_err(|_| RemoteError::InvalidInvitation)?;
-        if offer.version != PROTOCOL_VERSION || offer.purpose != "velunePairing" {
+        offer.validate()?;
+        Ok(offer)
+    }
+    fn decode_url_payload(payload: &str) -> Result<Self> {
+        use base64::Engine as _;
+        let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(payload)
+            .map_err(|_| RemoteError::InvalidInvitation)?;
+        let mut pos = 0;
+        fn take_until(bytes: &[u8], pos: &mut usize) -> Result<Vec<u8>> {
+            let start = *pos;
+            let end = bytes[start..]
+                .iter()
+                .position(|&b| b == 0)
+                .ok_or(RemoteError::InvalidInvitation)?
+                + start;
+            *pos = end + 1;
+            Ok(bytes[start..end].to_vec())
+        }
+        let issuer = String::from_utf8(take_until(&bytes, &mut pos)?)
+            .map_err(|_| RemoteError::InvalidInvitation)?;
+        let invite_id = String::from_utf8(take_until(&bytes, &mut pos)?)
+            .map_err(|_| RemoteError::InvalidInvitation)?;
+        let token: [u8; 32] = take_until(&bytes, &mut pos)?
+            .try_into()
+            .map_err(|_| RemoteError::InvalidInvitation)?;
+        let name = String::from_utf8(take_until(&bytes, &mut pos)?)
+            .map_err(|_| RemoteError::InvalidInvitation)?;
+        // Compact locator
+        let relay_count = bytes.get(pos).ok_or(RemoteError::InvalidInvitation)?;
+        pos += 1;
+        let mut relay_urls = Vec::new();
+        for _ in 0..*relay_count {
+            relay_urls.push(
+                String::from_utf8(take_until(&bytes, &mut pos)?)
+                    .map_err(|_| RemoteError::InvalidInvitation)?,
+            );
+        }
+        let addr_count = bytes.get(pos).ok_or(RemoteError::InvalidInvitation)?;
+        pos += 1;
+        let mut direct_addresses = Vec::new();
+        for _ in 0..*addr_count {
+            let s = String::from_utf8(take_until(&bytes, &mut pos)?)
+                .map_err(|_| RemoteError::InvalidInvitation)?;
+            direct_addresses.push(s.parse().map_err(|_| RemoteError::InvalidInvitation)?);
+        }
+        let lookup_count = bytes.get(pos).ok_or(RemoteError::InvalidInvitation)?;
+        pos += 1;
+        let mut lookup_urls = Vec::new();
+        for _ in 0..*lookup_count {
+            lookup_urls.push(
+                String::from_utf8(take_until(&bytes, &mut pos)?)
+                    .map_err(|_| RemoteError::InvalidInvitation)?,
+            );
+        }
+        pos += 1; // locator terminator
+        let expires_bytes: [u8; 8] = bytes
+            .get(pos..pos + 8)
+            .ok_or(RemoteError::InvalidInvitation)?
+            .try_into()
+            .map_err(|_| RemoteError::InvalidInvitation)?;
+        let offer = Self {
+            version: PROTOCOL_VERSION,
+            purpose: "velunePairing".into(),
+            permission: PairingPermission::Control,
+            issuer,
+            invite_id,
+            token,
+            name,
+            locator: DeviceLocator {
+                relay_urls,
+                direct_addresses,
+                lookup_urls,
+            },
+            expires_at_unix_seconds: u64::from_le_bytes(expires_bytes),
+        };
+        offer.validate()?;
+        Ok(offer)
+    }
+    fn validate(&self) -> Result<()> {
+        if self.version != PROTOCOL_VERSION || self.purpose != "velunePairing" {
             return Err(RemoteError::IncompatibleVersion);
         }
-        crate::store::parse_peer(&offer.issuer)?;
-        crate::protocol::validate_id(&offer.invite_id)?;
-        validate_name(&offer.name)?;
-        offer.locator.validate()?;
-        if offer.locator.relay_urls.len() > 1 || offer.locator.direct_addresses.len() > 2 {
+        crate::store::parse_peer(&self.issuer)?;
+        crate::protocol::validate_id(&self.invite_id)?;
+        validate_name(&self.name)?;
+        self.locator.validate()?;
+        if self.locator.relay_urls.len() > 1 || self.locator.direct_addresses.len() > 2 {
             return Err(RemoteError::InvalidInvitation);
         }
-        Ok(offer)
+        Ok(())
     }
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, uniffi::Enum)]

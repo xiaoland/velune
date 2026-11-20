@@ -330,21 +330,24 @@ impl CoreRuntime {
         for runtime in self.runtime_instances.iter().filter(|r| r.enabled) {
             for entry in self.indexed(runtime) {
                 match entry.state {
-                    browsing::EntryState::Read(summary) => conversations.push(*summary),
+                    browsing::EntryState::Read(summary) => conversations.push(summary),
                     browsing::EntryState::Unread => {
                         provisional.insert(entry.id.clone());
-                        conversations.push(ConversationSummary {
-                            native_read_state: None,
-                            id: entry.id,
-                            title: velune_conversation::ConversationTitle::Untitled,
-                            updated_at_unix_ms: entry.hint.activity_unix_ms,
-                            created_at_unix_ms: entry.hint.created_unix_ms,
-                            runtime_id: runtime.id.clone(),
-                            cwd: entry.hint.cwd,
-                            can_rename: false,
-                            can_delete: false,
-                            parent_conversation_id: entry.hint.parent_conversation_id,
-                        });
+                        conversations.push(
+                            ConversationSummary {
+                                native_read_state: None,
+                                id: entry.id,
+                                title: velune_conversation::ConversationTitle::Untitled,
+                                updated_at_unix_ms: entry.hint.activity_unix_ms,
+                                created_at_unix_ms: entry.hint.created_unix_ms,
+                                runtime_id: runtime.id.clone(),
+                                cwd: entry.hint.cwd,
+                                can_rename: false,
+                                can_delete: false,
+                                parent_conversation_id: entry.hint.parent_conversation_id,
+                            }
+                            .into(),
+                        );
                     }
                     browsing::EntryState::Unreadable => {}
                 }
@@ -361,7 +364,7 @@ impl CoreRuntime {
                     .iter()
                     .any(|item| item.id == view.conversation.id)
             {
-                conversations.push(view.conversation.clone());
+                conversations.push(view.conversation.clone().into());
             }
         }
         let mut sources: Vec<_> = self

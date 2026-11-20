@@ -2,7 +2,9 @@
 use super::*;
 use crate::conversation::ConversationSnapshot;
 use crate::{ModelSelection, RuntimeModel};
+use velune_agent_runtime::creation::{DataRetention, Retained};
 use velune_agent_runtime::native::CLAUDE_EFFORT_LEVELS;
+use velune_agent_runtime::native::codex_projects::NativeProject;
 
 #[cfg(test)]
 mod edit_model_tests {
@@ -77,7 +79,7 @@ mod edit_model_tests {
         }];
         core.name_turn_models(&mut turns);
         let settings = turns[0].settings.as_ref().unwrap();
-        assert_eq!(settings.model.as_deref(), Some("GPT-6.1-Sol · ChatGPT1"));
+        assert_eq!(settings.model.as_deref(), Some("GPT-6.1-Sol（ChatGPT1）"));
         assert_eq!(
             settings.model_selection,
             Some(ModelSelection::Managed {
@@ -274,7 +276,7 @@ impl CoreRuntime {
 
     pub(super) fn prepare_with_selection(
         &mut self,
-        snapshot: ConversationSnapshot,
+        snapshot: impl Into<browsing::HistorySnapshot>,
         selection: Option<&ModelSelection>,
         is_new: bool,
     ) -> Result<(), RuntimeError> {
@@ -282,10 +284,10 @@ impl CoreRuntime {
     }
     pub(super) fn prepare_with_project(
         &mut self,
-        snapshot: ConversationSnapshot,
+        snapshot: impl Into<browsing::HistorySnapshot>,
         selection: Option<&ModelSelection>,
         is_new: bool,
-        project: Option<&velune_agent_runtime::native::codex_projects::NativeProject>,
+        project: Option<&Retained<NativeProject>>,
     ) -> Result<(), RuntimeError> {
         let start = if is_new {
             ConversationStart::New
@@ -297,7 +299,7 @@ impl CoreRuntime {
 
     pub(super) fn prepare_codex_fork(
         &mut self,
-        source: ConversationSnapshot,
+        source: impl Into<browsing::HistorySnapshot>,
         selection: Option<&ModelSelection>,
         through_turn: &str,
     ) -> Result<(), RuntimeError> {
@@ -311,11 +313,12 @@ impl CoreRuntime {
 
     fn prepare_with_start(
         &mut self,
-        snapshot: ConversationSnapshot,
+        snapshot: impl Into<browsing::HistorySnapshot>,
         selection: Option<&ModelSelection>,
         start: ConversationStart<'_>,
-        project: Option<&velune_agent_runtime::native::codex_projects::NativeProject>,
+        project: Option<&Retained<NativeProject>>,
     ) -> Result<(), RuntimeError> {
+        let snapshot = snapshot.into().into_retained();
         let is_new = matches!(start, ConversationStart::New);
         self.ensure_work_ended()?;
         let conversation_id = snapshot.conversation.id.clone();
@@ -343,13 +346,13 @@ impl CoreRuntime {
                 }) => Some((provider_id.clone(), model_id.as_str())),
                 _ => None,
             };
-            let previous = self.native_snapshot();
+            let previous = self.owned_native_snapshot()?;
             let previous_selection = self.session.model_selection.clone();
             let result = self.prepare_native_snapshot(&snapshot, native, start, project);
             if let Err(error) = result {
                 let _ = self.shutdown_active();
                 if let Some(snapshot) = previous {
-                    self.session.active_state = ActiveState::History(Box::new(snapshot));
+                    self.session.set_history(snapshot);
                 }
                 self.session.model_selection = previous_selection;
                 if matches!(&error, RuntimeError::Contract(failure) if failure.code == "control_held_elsewhere")
@@ -358,6 +361,9 @@ impl CoreRuntime {
                 }
                 return Err(error);
             }
+        }
+        if let Some(configuration) = &mut self.session.execution_configuration {
+            configuration.native_project |= project.is_some();
         }
         self.session.model_selection = Some(selection.cloned());
         self.session.model_record_key = match selection {
@@ -388,10 +394,10 @@ impl CoreRuntime {
     /// and model, or else with its own default.
     fn prepare_native_snapshot(
         &mut self,
-        snapshot: &ConversationSnapshot,
+        snapshot: &Retained<ConversationSnapshot>,
         native: Option<(Option<String>, &str)>,
         start: ConversationStart<'_>,
-        project: Option<&velune_agent_runtime::native::codex_projects::NativeProject>,
+        project: Option<&Retained<NativeProject>>,
     ) -> Result<(), RuntimeError> {
         let is_new = matches!(start, ConversationStart::New);
         let runtime = self
@@ -456,7 +462,10 @@ impl CoreRuntime {
             .map_err(|error| RuntimeError::context("原生运行时连接", error))?;
             if let Some((provider_id, model_id)) = native {
                 session
-                    .select_native_model(provider_id, model_id.into())
+                    .select_native_model(Retained::from_parts(
+                        (provider_id, model_id.to_owned()),
+                        DataRetention::default(),
+                    ))
                     .map_err(|error| RuntimeError::context("原生模型选择", error))?;
             }
             if let ConversationStart::CodexFork(through_turn) = start {
@@ -496,11 +505,17 @@ impl CoreRuntime {
                         .open_side(native_id, cwd, &runtime.id)
                         .map_err(|error| RuntimeError::context("侧聊打开", error))?;
                 } else {
+                    let history = snapshot
+                        .try_clone()
+                        .map_err(|error| RuntimeError::context("会话历史保留额度", error))?
+                        .map(|snapshot| snapshot.messages);
                     telemetry::observe(self.telemetry.as_ref(), "harness.resume", || {
-                        session.open(native_id, cwd, &runtime.id, snapshot.messages.clone())
+                        session.open(native_id, cwd, &runtime.id, history)
                     })
                     .map_err(|error| RuntimeError::context("原生会话恢复", error))?;
-                    session.restore_context(snapshot);
+                    session.restore_context(snapshot).map_err(|error| {
+                        RuntimeError::context("native context retained credit", error)
+                    })?;
                 }
             }
             self.session.active_state = ActiveState::Native(Box::new(session));
@@ -534,7 +549,7 @@ impl CoreRuntime {
     pub(crate) fn runtime_models(
         &mut self,
         runtime_id: String,
-    ) -> Result<Vec<RuntimeModel>, RuntimeError> {
+    ) -> Result<Retained<Vec<RuntimeModel>>, RuntimeError> {
         let runtime = self.runtime_instance(&runtime_id)?.clone();
         if !runtime.enabled {
             return Err(RuntimeError::invalid("此运行时已停用"));
@@ -559,10 +574,9 @@ impl CoreRuntime {
                     reasoning_efforts: option.reasoning_efforts,
                 }));
             }
-            return Ok(models);
+            return Ok(Retained::from_parts(models, DataRetention::default()));
         }
-        let mut models = Vec::new();
-        if runtime.type_id == RuntimeKind::Pi {
+        let native = if runtime.type_id == RuntimeKind::Pi {
             let context = self.prepare_execution_context(&runtime)?;
             let mut config = self.pi_history_config(&runtime)?;
             config.rpc_entry = Some(context.resources.join("pi_rpc.mjs"));
@@ -573,14 +587,7 @@ impl CoreRuntime {
             let shutdown = client.shutdown();
             let native = result.map_err(|error| RuntimeError::context("Pi 模型目录", error))?;
             shutdown.map_err(|error| RuntimeError::context("Pi 模型目录连接关闭", error))?;
-            models.extend(native.into_iter().map(|option| RuntimeModel {
-                selection: ModelSelection::Native {
-                    provider_id: option.model.provider_id,
-                    model_id: option.model.id,
-                },
-                name: option.model.name,
-                reasoning_efforts: option.reasoning_efforts,
-            }));
+            Retained::from_parts(native, DataRetention::default())
         } else {
             let mut session = NativeSession::connect(self.native_config(&runtime, None)?)
                 .map_err(|error| RuntimeError::context("原生模型目录连接", error))?;
@@ -588,15 +595,20 @@ impl CoreRuntime {
             let shutdown = session.shutdown();
             let native = result.map_err(|error| RuntimeError::context("原生模型目录", error))?;
             shutdown.map_err(|error| RuntimeError::context("原生模型目录连接关闭", error))?;
-            models.extend(native.into_iter().map(|option| RuntimeModel {
+            native
+        };
+        let (native, retention) = native.into_parts();
+        let mut models: Vec<_> = native
+            .into_iter()
+            .map(|option| RuntimeModel {
                 selection: ModelSelection::Native {
                     provider_id: option.model.provider_id,
                     model_id: option.model.id,
                 },
                 name: option.model.name,
                 reasoning_efforts: option.reasoning_efforts,
-            }));
-        }
+            })
+            .collect();
         if let Some(gateway) = self
             .gateways
             .iter()
@@ -617,7 +629,7 @@ impl CoreRuntime {
                         model_record_key: model.record_key.clone(),
                     },
                     // Managed records may share a model name across providers.
-                    name: format!("{model_name} · {}", provider.name),
+                    name: format!("{model_name}（{}）", provider.name),
                     reasoning_efforts: self.reasoning_efforts(&runtime, &model.record_key)?,
                 });
             }
@@ -626,12 +638,12 @@ impl CoreRuntime {
                     selection: ModelSelection::Managed {
                         model_record_key: route.record_key.clone(),
                     },
-                    name: format!("{} · 模型路由", route.name),
+                    name: format!("模型路由：{}", route.name),
                     reasoning_efforts: self.reasoning_efforts(&runtime, &route.record_key)?,
                 });
             }
         }
-        Ok(models)
+        Ok(Retained::from_parts(models, retention))
     }
 
     /// How a turn names the model it was sent with: the managed model as the
@@ -649,7 +661,7 @@ impl CoreRuntime {
                     .iter()
                     .find(|gateway| gateway.id == runtime.gateway_id)?;
                 if let Some(route) = gateway.route(model_record_key) {
-                    return Some(format!("{} · 模型路由", route.name));
+                    return Some(format!("模型路由：{}", route.name));
                 }
                 gateway.providers.iter().find_map(|provider| {
                     let model = provider
@@ -661,7 +673,7 @@ impl CoreRuntime {
                     } else {
                         &model.nickname
                     };
-                    Some(format!("{name} · {}", provider.name))
+                    Some(format!("{name}（{}）", provider.name))
                 })
             }
             ModelSelection::Native { model_id, .. } => {

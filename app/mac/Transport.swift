@@ -17,6 +17,7 @@ enum TransportError: LocalizedError {
     case closed
     /// A read refused because the application is quitting.
     case quitting
+    case submissionCancelled
     case rejected(String)
     case diagnostic(kind: String, detail: String, code: String, phase: String, operationID: String)
 
@@ -28,8 +29,20 @@ enum TransportError: LocalizedError {
         case .incompatibleCore: return "应用与内嵌核心版本不匹配，请重新安装完整应用。"
         case .closed: return "本地核心已关闭，请重新打开应用。"
         case .quitting: return "应用正在退出。"
+        case .submissionCancelled: return "发送已取消。"
         case .rejected(let message): return message
-        case .diagnostic(_, let detail, let code, let phase, let operationID): return "操作失败（诊断编号：\(operationID)，阶段：\(phase)，代码：\(code)）：\(detail)"
+        case .diagnostic(_, let detail, let code, let phase, let operationID):
+            let id = operationID.isEmpty ? "" : "诊断编号：\(operationID)，"
+            return "操作失败（\(id)阶段：\(phase)，代码：\(code)）：\(detail)"
+        }
+    }
+
+    var isSubmissionCancelled: Bool {
+        switch self {
+        case .submissionCancelled: return true
+        case .operation(_, let cause): return cause.isSubmissionCancelled
+        case .diagnostic(_, _, let code, _, _): return code == "submission_cancelled"
+        default: return false
         }
     }
 }
@@ -41,10 +54,17 @@ enum TransportError: LocalizedError {
 /// calls or turn an unknown mutation result into a safe-to-retry rejection.
 enum OperationEffect {
     case reads
-    case writes
-    case changesConfiguration
     /// Browsing waits independently of other conversations' operations.
     case browsesConversation
+    /// Preparation can wait for native history while independent conversations
+    /// continue. Its persistent target initialization uses the core's CAS.
+    case preparesComposer
+    /// Handoff checks and owned summary jobs admit independent handles. Their
+    /// source CAS and job state remain owned by the application; cancellation
+    /// must not queue behind an unrelated long-running frontend write lock.
+    case preparesContinuation
+    case writes
+    case changesConfiguration
 }
 
 /// Typed UniFFI application boundary. The UI never constructs an action or
@@ -61,6 +81,13 @@ final class Transport: @unchecked Sendable {
     private let lock = NSLock()
     private static let logger = Logger(subsystem: "local.velune", category: "transport")
     private var application: VeluneApplication?
+    private let observationStateLock = NSLock()
+    private let observationSubmissionLock = NSLock()
+    private var desiredObservations: [ObservedConversation] = []
+    private var submittedObservations: [ObservedConversation]?
+    private var observationPending = false
+    private var observationsDirty = true
+    private var observationFailureLogged = false
     /// A failed open is retried at most once per interval; operations in between
     /// fail with the recorded reason instead of each opening and logging anew.
     private static let openRetryInterval: TimeInterval = 15
@@ -146,7 +173,7 @@ final class Transport: @unchecked Sendable {
         return try withApplication("composerInputs", reading ? .reads : .writes, reading ? .conversationRead : .conversationWrite) { try $0.manageComposerInputs(operation: operation) }
     }
     func prepareComposerTarget(_ request: ComposerTargetRequest, overlayChoices: ComposerTargetChoices?) throws -> PreparedComposerTarget {
-        try withApplication("prepareComposerTarget", .writes, .conversationRead) { try $0.prepareComposerTarget(request: request, overlayChoices: overlayChoices) }
+        try withApplication("prepareComposerTarget", .preparesComposer, .conversationRead) { try $0.prepareComposerTarget(request: request, overlayChoices: overlayChoices) }
     }
     func composerOwnerID() throws -> String { try withApplication("composerOwnerID", .reads, .conversationRead) { try $0.composerOwnerId() } }
     func uploadComposerAttachment(name: String, bytes: Data) throws -> ComposerAttachment { try withApplication("uploadComposerAttachment", .writes, .conversationWrite) { try $0.uploadComposerAttachment(name: name, bytes: bytes) } }
@@ -155,7 +182,19 @@ final class Transport: @unchecked Sendable {
     func setRuntimeComposerChoices(_ choices: VeluneBindings.RuntimeComposerChoices) throws { try withApplication("setRuntimeComposerChoices", .writes, .configurationWrite) { try $0.setRuntimeComposerChoices(choices: choices) } }
     func setConversationBrowserLimits(_ limits: ConversationBrowserLimits) throws -> ConversationBrowserLimits { try withApplication("setConversationBrowserLimits", .changesConfiguration, .configurationWrite) { try $0.setConversationBrowserLimits(limits: limits) } }
     func organizeConversations(_ conversations: [ConversationReference], _ change: ConversationOrganizationChange) throws -> ConfigurationSnapshot { try withApplication("organizeConversations", .writes, .conversationWrite) { try $0.organizeConversations(conversations: conversations, change: change) } }
-    func setProject(path: String, primaryFolder: String, name: String?, folders: [String]) throws -> ConfigurationSnapshot { try withApplication("setProject", .writes, .configurationWrite) { try $0.setProject(path: path, primaryFolder: primaryFolder, name: name, folders: folders) } }
+    func setProject(path: String, primaryFolder: String, name: String?, folders: [String], basis: ConversationProject? = nil) throws -> ConfigurationSnapshot {
+        try withApplication("setProject", .writes, .configurationWrite) { application in
+            // A fresh remote proxy carries the revision of this read. The
+            // shared browsing proxy may predate intervening conversation work.
+            let editor = remoteAttachments ? try open() : application
+            defer { if remoteAttachments { try? editor.shutdown() } }
+            let current = try editor.list()
+            if let basis, current.conversationProjects.first(where: { $0.path == path }) != basis {
+                throw TransportError.rejected("项目已在其他窗口或设备中修改。请保留当前输入，重新打开项目后核对再存储。")
+            }
+            return try editor.setProject(path: path, primaryFolder: primaryFolder, name: name, folders: folders)
+        }
+    }
     func loadMoreConversations(group: ConversationGroupKey) throws -> ConfigurationSnapshot { try withApplication("loadMoreConversations", .reads, .conversationRead) { try $0.loadMoreConversations(group: group) } }
     func showArchivedConversations(_ archived: Bool) throws -> ConfigurationSnapshot { try withApplication("showArchivedConversations", .writes, .conversationWrite) { try $0.showArchivedConversations(archived: archived) } }
     func searchConversations(_ text: String) throws -> ConversationSearch { try withApplication("searchConversations", .reads, .conversationRead) { try $0.searchConversations(text: text) } }
@@ -243,18 +282,20 @@ final class Transport: @unchecked Sendable {
     /// Keep dependent creation and dispatch on the same captured application.
     /// Publish the native identity first: closing or a failed dispatch must not
     /// erase successful creation or make a retry create another conversation.
-    func createAndSend(runtimeID: String, cwd: String?, project: String? = nil, selection: ModelSelection?, turn: ComposedTurn, submissionId: String? = nil, onCreated: (SnapshotResult) -> Void) throws -> SnapshotResult {
+    func createAndSend(runtimeID: String, cwd: String?, project: String? = nil, selection: ModelSelection?, turn: ComposedTurn, cancellation: VeluneSendCancellation? = nil, submissionId: String? = nil, onCreated: (SnapshotResult) -> Void) throws -> SnapshotResult {
         let selection = selection
         return try withApplication("sendTurn", .writes, .send) { application in
+            try checkCancellation(cancellation)
             let created: SnapshotResult
             if let project { created = try application.createConversationInProject(runtimeId: runtimeID, project: project, selection: selection) }
             else { created = try application.createConversation(runtimeId: runtimeID, cwd: cwd, selection: selection) }
             onCreated(created)
             guard let native = created.snapshot else { throw TransportError.rejected("运行时未返回新会话") }
-            return try application.sendTurn(sourceRuntimeId: native.conversation.runtimeId, conversationId: native.conversation.id, targetRuntimeId: runtimeID, selection: selection, turn: try deliver(turn, using: application), submissionId: submissionId)
+            return try dispatchTurn(application, sourceRuntimeID: native.conversation.runtimeId, conversationID: native.conversation.id, targetRuntimeID: runtimeID, selection: selection, turn: turn, cancellation: cancellation, submissionId: submissionId)
         }
     }
     func openConversation(runtimeID: String, conversationID: String) throws -> SnapshotResult { try withApplication("openConversation", .browsesConversation, .conversationRead) { try $0.readConversation(runtimeId: runtimeID, conversationId: conversationID) } }
+    func refreshConversation(runtimeID: String, conversationID: String) throws -> SnapshotResult { try withApplication("refreshConversation", .browsesConversation, .conversationRead) { try $0.openConversation(runtimeId: runtimeID, conversationId: conversationID) } }
     func renameConversation(runtimeID: String, conversationID: String, title: String) throws -> ConfigurationSnapshot { try withApplication("renameConversation", .writes, .conversationWrite) { try $0.renameConversation(runtimeId: runtimeID, conversationId: conversationID, title: title) } }
     func deleteConversation(runtimeID: String, conversationID: String) throws -> ConfigurationSnapshot { try withApplication("deleteConversation", .writes, .conversationWrite) { try $0.deleteConversation(runtimeId: runtimeID, conversationId: conversationID) } }
     func scheduledTasks(_ operation: ScheduledTasksOperation) throws -> ScheduledTasksState {
@@ -265,12 +306,139 @@ final class Transport: @unchecked Sendable {
             return try withApplication("scheduledTasks", .writes, .write) { try $0.scheduledTasks(operation: operation) }
         }
     }
-    func snapshot(runtimeID: String, conversationID: String) throws -> SnapshotResult { try withApplication("snapshot", .reads, .conversationRead) { try $0.snapshot(runtimeId: runtimeID, conversationId: conversationID) } }
-    func snapshotUpdate(runtimeID: String, conversationID: String, since: TranscriptCursor) throws -> SnapshotUpdate { try withApplication("snapshotUpdate", .reads, .conversationRead) { try $0.snapshotUpdate(runtimeId: runtimeID, conversationId: conversationID, since: since) } }
-    func refreshConversation(runtimeID: String, conversationID: String) throws -> SnapshotResult { try withApplication("refreshConversation", .browsesConversation, .conversationRead) { try $0.openConversation(runtimeId: runtimeID, conversationId: conversationID) } }
-    func readAttachment(runtimeID: String, conversationID: String, messageID: String, block: UInt32) throws -> AttachmentContent { try withApplication("readAttachment", .reads, .conversationRead) { try $0.readAttachment(runtimeId: runtimeID, conversationId: conversationID, messageId: messageID, blockIndex: block) } }
+    /// Visibility is aggregated on the main actor. Only this complete set may
+    /// replace the client view; snapshot readers never submit one pane's subset.
+    func observeConversations(_ conversations: [ObservedConversation]) {
+        let shouldSubmit = observationStateLock.withLock {
+            if desiredObservations != conversations { desiredObservations = conversations; observationsDirty = true }
+            guard observationsDirty, !observationPending else { return false }
+            observationPending = true; return true
+        }
+        guard shouldSubmit else { return }
+        DispatchQueue.global(qos: .utility).async { [self] in
+            while true {
+                do {
+                    let published = try withApplication("observedConversations", .reads, .conversationRead) { synchronizeObservations($0) }
+                    if !published {
+                        observationStateLock.withLock { observationPending = false }
+                        return
+                    }
+                } catch {
+                    // The next visibility/poll tick retries; a failed core must
+                    // not turn this into an unbounded immediate retry loop.
+                    observationStateLock.withLock { observationPending = false }
+                    return
+                }
+                let again = observationStateLock.withLock {
+                    if observationsDirty { return true }
+                    observationPending = false; return false
+                }
+                if !again { return }
+            }
+        }
+    }
+    @discardableResult
+    private func synchronizeObservations(_ application: VeluneApplication) -> Bool {
+        observationSubmissionLock.lock(); defer { observationSubmissionLock.unlock() }
+        let desired = observationStateLock.withLock { desiredObservations }
+        if submittedObservations != desired {
+            do {
+                try application.setObservedConversations(conversations: desired)
+                submittedObservations = desired
+                observationFailureLogged = false
+            } catch {
+                // Cache hints are optional across mixed-version remote peers.
+                // Keep the desired set dirty, but never prevent the real read.
+                observationStateLock.withLock { observationsDirty = true }
+                if !observationFailureLogged {
+                    observationFailureLogged = true
+                    logFailure(operation: "observedConversations", localCorrelation: nil, error: error)
+                }
+                return false
+            }
+        }
+        observationStateLock.withLock { observationsDirty = desiredObservations != desired }
+        return true
+    }
+    func snapshot(runtimeID: String, conversationID: String) throws -> SnapshotResult {
+        try withApplication("snapshot", .reads, .conversationRead) {
+            synchronizeObservations($0)
+            return try $0.snapshot(runtimeId: runtimeID, conversationId: conversationID)
+        }
+    }
+    func snapshotUpdate(runtimeID: String, conversationID: String, since: TranscriptCursor) throws -> SnapshotUpdate {
+        try withApplication("snapshotUpdate", .reads, .conversationRead) {
+            synchronizeObservations($0)
+            return try $0.snapshotUpdate(runtimeId: runtimeID, conversationId: conversationID, since: since)
+        }
+    }
     func messagePayloads(runtimeID: String, conversationID: String, messageIDs: [String]) throws -> [DeliveredMessage] { try withApplication("messagePayloads", .reads, .conversationRead) { try $0.messagePayloads(runtimeId: runtimeID, conversationId: conversationID, messageIds: messageIDs) } }
-    func sendTurn(sourceRuntimeID: String, conversationID: String, targetRuntimeID: String, selection: ModelSelection?, turn: ComposedTurn, submissionId: String? = nil) throws -> SnapshotResult { try withApplication("sendTurn", .writes, .send) { try $0.sendTurn(sourceRuntimeId: sourceRuntimeID, conversationId: conversationID, targetRuntimeId: targetRuntimeID, selection: selection, turn: try deliver(turn, using: $0), submissionId: submissionId) } }
+    func readAttachment(runtimeID: String, conversationID: String, messageID: String, block: UInt32) throws -> AttachmentContent { try withApplication("readAttachment", .reads, .conversationRead) { try $0.readAttachment(runtimeId: runtimeID, conversationId: conversationID, messageId: messageID, blockIndex: block) } }
+    func sendTurn(sourceRuntimeID: String, conversationID: String, targetRuntimeID: String, selection: ModelSelection?, turn: ComposedTurn, cancellation: VeluneSendCancellation? = nil, submissionId: String? = nil) throws -> SnapshotResult {
+        try withApplication("sendTurn", .writes, .send) {
+            try dispatchTurn($0, sourceRuntimeID: sourceRuntimeID, conversationID: conversationID, targetRuntimeID: targetRuntimeID, selection: selection, turn: turn, cancellation: cancellation, submissionId: submissionId)
+        }
+    }
+    func handoffRequirements(sourceRuntimeID: String, conversationID: String, targetRuntimeID: String, requestID: String?) throws -> HandoffRequirements {
+        try withApplication("handoffRequirements", .preparesContinuation, .conversationRead) {
+            try $0.readHandoffRequirements(sourceRuntimeId: sourceRuntimeID, conversationId: conversationID,
+                                           targetRuntimeId: targetRuntimeID, requestId: requestID)
+        }
+    }
+    func beginHandoffSummary(sourceRuntimeID: String, conversationID: String, targetRuntimeID: String, model: ModelSelection?, effort: String?) throws -> HandoffSummaryStart {
+        try withApplication("beginHandoffSummary", .preparesContinuation, .conversationWrite) {
+            try $0.beginHandoffSummary(sourceRuntimeId: sourceRuntimeID, conversationId: conversationID,
+                                      targetRuntimeId: targetRuntimeID, summaryModel: model, effort: effort)
+        }
+    }
+    func queueHandoffSummary(sourceRuntimeID: String, conversationID: String, targetRuntimeID: String,
+                             selection: ModelSelection?, turn: ComposedTurn, model: ModelSelection?, effort: String?, submissionId: String? = nil) throws -> QueuedHandoffSummaryStart {
+        try withApplication("queueHandoffSummary", .preparesContinuation, .send) { application in
+            let delivered = try deliver(turn, using: application)
+            return try application.queueHandoffSummary(sourceRuntimeId: sourceRuntimeID, conversationId: conversationID,
+                targetRuntimeId: targetRuntimeID, selection: selection, turn: delivered, summaryModel: model, effort: effort, submissionId: submissionId)
+        }
+    }
+    func retryQueuedHandoffSummary(sourceRuntimeID: String, conversationID: String, queuedMessageID: String,
+                                   model: ModelSelection?, effort: String?) throws -> QueuedHandoffSummaryStart {
+        try withApplication("retryQueuedHandoffSummary", .preparesContinuation, .send) {
+            try $0.retryQueuedHandoffSummary(sourceRuntimeId: sourceRuntimeID, conversationId: conversationID,
+                queuedMessageId: queuedMessageID, summaryModel: model, effort: effort)
+        }
+    }
+    func handoffSummary(workID: String) throws -> HandoffSummaryStatus {
+        try withApplication("handoffSummary", .preparesContinuation, .conversationRead) { try $0.readHandoffSummary(workId: workID) }
+    }
+    func cancelHandoffSummary(workID: String) throws -> HandoffSummaryStatus {
+        try withApplication("cancelHandoffSummary", .preparesContinuation, .cancel) { try $0.cancelHandoffSummary(workId: workID) }
+    }
+    func sendTurnWithPreparedHandoff(sourceRuntimeID: String, conversationID: String, targetRuntimeID: String,
+                                     selection: ModelSelection?, turn: ComposedTurn, preparedToken: String,
+                                     cancellation: VeluneSendCancellation) throws -> SnapshotResult {
+        try withApplication("sendTurnWithPreparedHandoff", .writes, .send) { application in
+            try checkCancellation(cancellation)
+            let delivered = try deliver(turn, using: application)
+            try checkCancellation(cancellation)
+            return try application.sendPreparedHandoffCancellable(sourceRuntimeId: sourceRuntimeID, conversationId: conversationID,
+                                                                   targetRuntimeId: targetRuntimeID, selection: selection, turn: delivered,
+                                                                   preparedToken: preparedToken, cancellation: cancellation)
+        }
+    }
+    private func checkCancellation(_ cancellation: VeluneSendCancellation?) throws {
+        if cancellation?.isCancelled() == true { throw TransportError.submissionCancelled }
+    }
+    private func dispatchTurn(_ application: VeluneApplication, sourceRuntimeID: String, conversationID: String, targetRuntimeID: String, selection: ModelSelection?, turn: ComposedTurn, cancellation: VeluneSendCancellation?, submissionId: String? = nil) throws -> SnapshotResult {
+        try checkCancellation(cancellation)
+        let delivered = try deliver(turn, using: application)
+        try checkCancellation(cancellation)
+        let result: SnapshotResult
+        if let cancellation {
+            result = try application.sendTurnCancellable(sourceRuntimeId: sourceRuntimeID, conversationId: conversationID, targetRuntimeId: targetRuntimeID, selection: selection, turn: delivered, cancellation: cancellation, submissionId: submissionId)
+        } else {
+            result = try application.sendTurn(sourceRuntimeId: sourceRuntimeID, conversationId: conversationID, targetRuntimeId: targetRuntimeID, selection: selection, turn: delivered, submissionId: submissionId)
+        }
+        return result
+    }
     /// The runtime's own models first, then the managed models; every entry
     /// carries the levels the runtime accepts for it.
     func runtimeModels(runtimeID: String) throws -> [RuntimeModel] { try withApplication("runtimeModels", .reads, .configurationRead) { try $0.runtimeModels(runtimeId: runtimeID) } }
@@ -305,14 +473,25 @@ final class Transport: @unchecked Sendable {
             return try application.sendQueue(runtimeId: runtimeID, conversationId: conversationID, operation: delivered, submissionId: submissionId)
         }
     }
+    func deleteUserMessage(runtimeID: String, conversationID: String, messageID: String, truncate: Bool, expectedRevision: String) throws -> SnapshotResult {
+        try withApplication("deleteUserMessage", .writes, .conversationWrite) { try $0.deleteUserMessage(runtimeId: runtimeID, conversationId: conversationID, messageId: messageID, truncate: truncate, expectedRevision: expectedRevision) }
+    }
     func editMessage(runtimeID: String, conversationID: String, messageID: String, placement: EditPlacement, targetRuntimeID: String? = nil, selection: ModelSelection?, turn: ComposedTurn, expectedRevision: String? = nil) throws -> SnapshotResult { try withApplication("editMessage", .writes, .conversationWrite) { try $0.editMessageWithRuntime(runtimeId: runtimeID, conversationId: conversationID, messageId: messageID, placement: placement, targetRuntimeId: targetRuntimeID, selection: selection, turn: try deliver(turn, using: $0), expectedRevision: expectedRevision) } }
     func forkConversation(runtimeID: String, conversationID: String, messageID: String) throws -> SnapshotResult { try withApplication("forkConversation", .writes, .conversationWrite) { try $0.forkConversation(runtimeId: runtimeID, conversationId: conversationID, messageId: messageID) } }
     func cancel(runtimeID: String, conversationID: String) throws -> SnapshotResult { try withApplication("cancel", .writes, .cancel) { try $0.cancel(runtimeId: runtimeID, conversationId: conversationID) } }
     func openSideChat(runtimeID: String, conversationID: String, selection: ModelSelection?, effort: String?, permissionMode: String?) throws -> SnapshotResult {
         try withApplication("openSideChat", .writes, .send) { try $0.openSideChat(runtimeId: runtimeID, conversationId: conversationID, selection: selection, effort: effort, permissionMode: permissionMode) }
     }
-    func sendSideChat(sideChatID: String, runtimeID: String, selection: ModelSelection?, turn: ComposedTurn) throws -> SnapshotResult {
-        try withApplication("sendSideChat", .writes, .send) { try $0.sendSideChat(sideChatId: sideChatID, targetRuntimeId: runtimeID, selection: selection, turn: try deliver(turn, using: $0)) }
+    func sendSideChat(sideChatID: String, runtimeID: String, selection: ModelSelection?, turn: ComposedTurn, cancellation: VeluneSendCancellation? = nil) throws -> SnapshotResult {
+        try withApplication("sendSideChat", .writes, .send) { application in
+            try checkCancellation(cancellation)
+            let delivered = try deliver(turn, using: application)
+            try checkCancellation(cancellation)
+            if let cancellation {
+                return try application.sendSideChatCancellable(sideChatId: sideChatID, targetRuntimeId: runtimeID, selection: selection, turn: delivered, cancellation: cancellation)
+            }
+            return try application.sendSideChat(sideChatId: sideChatID, targetRuntimeId: runtimeID, selection: selection, turn: delivered)
+        }
     }
     func closeSideChat(sideChatID: String) throws { try withApplication("closeSideChat", .writes, .cancel) { try $0.closeSideChat(sideChatId: sideChatID) } }
     func backgroundTasks(runtimeID: String, conversationID: String) throws -> BackgroundTaskList { try withApplication("backgroundTasks", .reads, .conversationRead) { try $0.backgroundTasks(runtimeId: runtimeID, conversationId: conversationID) } }
@@ -338,8 +517,12 @@ final class Transport: @unchecked Sendable {
     func authenticationCancel() throws -> AuthenticationProgress { try withApplication("authenticationCancel", .writes, .write) { try $0.authenticationCancel() } }
     func authenticationLogout(gatewayID: String, providerID: String) throws -> GatewayUpdate { try withApplication("authenticationLogout", .changesConfiguration, .configurationWrite) { try $0.authenticationLogout(gatewayId: gatewayID, providerId: providerID) } }
 
-    /// Explicit reconnects may open immediately after a cached connection failure.
-    func retryOpen() { lock.withLock { openFailure = nil } }
+    /// A retry the user asked for forgets the cached open failure, so the
+    /// next operation opens the connection again at once.
+    func retryOpen() {
+        lock.lock(); defer { lock.unlock() }
+        openFailure = nil
+    }
 
     /// Quitting stops new admissions; a busy refusal restores the same owner.
     func beginClosing() { closingLock.withLock { closingRequested = true } }
@@ -375,6 +558,8 @@ final class Transport: @unchecked Sendable {
             return value
         }
         catch {
+            if let error = error as? TransportError, error.isSubmissionCancelled { throw error }
+            if case .Diagnostic(_, _, let code, _, _)? = error as? BindingError, code == "submission_cancelled" { throw TransportError.submissionCancelled }
             // A cached open failure was already logged when the open itself failed.
             if let cached = error as? CachedOpenFailure { throw TransportError.operation(operation, map(cached.error)) }
             logFailure(operation: operation, localCorrelation: correlation, error: error); throw TransportError.operation(operation, map(error))
@@ -412,7 +597,7 @@ final class Transport: @unchecked Sendable {
     private func category(for error: Error) -> String {
         if let error = error as? BindingError {
             switch error {
-            case .Diagnostic(let kind, _, _, _, _), .RemoteRequest(let kind, _, _, _): return Self.kindName(kind)
+            case .Diagnostic(let kind, _, _, _, _), .RemoteRequest(let kind, _, _, _, _): return Self.kindName(kind)
             case .Invalid: return "invalid"
             case .Unsupported: return "unsupported"
             case .Io: return "io"
@@ -424,12 +609,12 @@ final class Transport: @unchecked Sendable {
         return "unknown"
     }
 
-    private static func transportError(for error: BindingError) -> TransportError {
+    static func transportError(for error: BindingError) -> TransportError {
         switch error {
         case .Diagnostic(let kind, let detail, let code, let phase, let operationID):
             return .diagnostic(kind: kindName(kind), detail: detail, code: code, phase: phase, operationID: operationID)
-        case .RemoteRequest(let kind, let detail, let code, _):
-            return .diagnostic(kind: kindName(kind), detail: detail, code: code, phase: "remote", operationID: "")
+        case .RemoteRequest(let kind, let detail, let code, _, let operationID):
+            return .diagnostic(kind: kindName(kind), detail: detail, code: code, phase: "remote", operationID: operationID)
         case .Invalid(let detail): return .rejected("请求无效：\(detail)")
         case .Unsupported(let detail): return .rejected("当前版本不支持此操作：\(detail)")
         case .Io(let detail): return .rejected("本地读写失败：\(detail)")
@@ -460,7 +645,7 @@ final class Transport: @unchecked Sendable {
     private static func fullFailureDetail(_ error: Error) -> String {
         if let error = error as? BindingError {
             switch error {
-            case .Diagnostic(_, let detail, _, _, _), .RemoteRequest(_, let detail, _, _), .Invalid(let detail), .Unsupported(let detail), .Io(let detail), .Contract(let detail): return detail
+            case .Diagnostic(_, let detail, _, _, _), .RemoteRequest(_, let detail, _, _, _), .Invalid(let detail), .Unsupported(let detail), .Io(let detail), .Contract(let detail): return detail
             case .Closed: return "本地核心已关闭"
             case .Unavailable: return "本地核心不可用"
             }
@@ -475,7 +660,7 @@ final class Transport: @unchecked Sendable {
             let native = cause as NSError
             guard visited.insert(ObjectIdentifier(native)).inserted else { details.append("原因链出现循环，已停止展开。"); break }
             retainedCauses.append(native)
-            details.append("\(String(reflecting: type(of: cause))) · \(native.domain)（\(native.code)）")
+            details.append("\(String(reflecting: type(of: cause)))，错误域：\(native.domain)（\(native.code)）")
             if Mirror(reflecting: cause).displayStyle != .class { details.append(String(reflecting: cause)) }
             let localized = cause as? LocalizedError
             let description = localized?.errorDescription ?? native.localizedDescription
@@ -491,13 +676,9 @@ final class Transport: @unchecked Sendable {
     private func logFailure(operation: String, localCorrelation: String?, error: Error, categoryOverride: String? = nil) {
         let detail = Self.fullFailureDetail(error)
         let local = localCorrelation.map { " localCorrelation=\($0)" } ?? ""
-        if let diagnostic = error as? BindingError {
-            switch diagnostic {
-            case .Diagnostic(let kind, _, let code, let phase, let operationID):
-                Self.logger.error("operation=\(operation, privacy: .public)\(local, privacy: .public) kind=\(Self.kindName(kind), privacy: .public) code=\(code, privacy: .public) phase=\(phase, privacy: .public) operationId=\(operationID, privacy: .public) detail=\(detail, privacy: .public)")
-            default:
-                Self.logger.error("operation=\(operation, privacy: .public)\(local, privacy: .public) category=\(categoryOverride ?? self.category(for: error), privacy: .public) detail=\(detail, privacy: .public)")
-            }
+        if let binding = error as? BindingError,
+           case .diagnostic(let kind, _, let code, let phase, let operationID) = Self.transportError(for: binding) {
+            Self.logger.error("operation=\(operation, privacy: .public)\(local, privacy: .public) kind=\(kind, privacy: .public) code=\(code, privacy: .public) phase=\(phase, privacy: .public) operationId=\(operationID, privacy: .public) detail=\(detail, privacy: .public)")
         } else {
             Self.logger.error("operation=\(operation, privacy: .public)\(local, privacy: .public) category=\(categoryOverride ?? self.category(for: error), privacy: .public) detail=\(detail, privacy: .public)")
         }

@@ -341,7 +341,7 @@ pub(crate) fn status(home: &Path, id: &str, generation: u64) -> (bool, Option<St
         .into_iter()
         .rev()
         .collect();
-    (!session.invalidated, Some(format!("账户 · {suffix}")))
+    (!session.invalidated, Some(format!("账户 {suffix}")))
 }
 pub(crate) fn remove(home: &Path, id: &str) -> Result<(), crate::Error> {
     let (path, _lock) = lock(home, id).map_err(|_| crate::Error::invalid("无法锁定订阅认证"))?;

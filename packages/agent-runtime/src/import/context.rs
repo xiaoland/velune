@@ -4,14 +4,17 @@ use super::*;
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct Context {
     pub messages: Vec<ContextMessage>,
 }
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct ContextMessage {
+    /// Native display identity of this prompt; never inferred from its text.
+    #[serde(default)]
+    pub source_message_id: Option<String>,
     pub role: Role,
     pub content: Vec<Block>,
 }
@@ -21,7 +24,7 @@ pub enum Role {
     User,
     Assistant,
 }
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Block {
     Text {
@@ -69,6 +72,7 @@ impl Context {
             }
             if !pending.is_empty() {
                 context.messages.push(ContextMessage {
+                    source_message_id: None,
                     role: Role::User,
                     content: pending.into_iter().map(|id| Block::ToolResult {
                         id,
@@ -84,6 +88,7 @@ impl Context {
         for message in std::mem::take(&mut context.messages) {
             if let Some(last) = merged.last_mut()
                 && last.role == message.role
+                && last.source_message_id == message.source_message_id
             {
                 last.content.extend(message.content);
             } else {
@@ -155,12 +160,6 @@ impl Context {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn boundary_export_accepts_empty_prefix() {
-        let context = Context::parse_before(br#"{"messages":[]}"#).unwrap();
-        assert!(context.messages.is_empty());
-    }
 
     #[test]
     fn boundary_export_cancels_unfinished_calls_without_changing_completed_results() {

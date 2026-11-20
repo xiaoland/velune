@@ -1,9 +1,9 @@
 //! Codex's project identities and ordered roots, independent of thread cwd.
 use super::{
     Error, Result, codex,
-    codex_history::{SOURCE_KINDS, pages, summary},
+    codex_history::{SOURCE_KINDS, is_handoff_summary_thread, pages, summary},
 };
-use crate::{conversation::ConversationSummary, history::HistoryConfig};
+use crate::{conversation::ConversationSummary, creation::Retained, history::HistoryConfig};
 use serde::Deserialize;
 use serde_json::json;
 use std::collections::{BTreeMap, BTreeSet};
@@ -28,7 +28,7 @@ pub fn list_projects(
     config: &HistoryConfig,
     runtime_id: &str,
     archived: bool,
-) -> Result<ProjectListing> {
+) -> Result<Retained<ProjectListing>> {
     let mut rpc = codex::history_client_at(
         config.kind,
         &config.binary,
@@ -36,7 +36,9 @@ pub fn list_projects(
         &config.execution,
         config.os_home.as_deref(),
     )?;
-    let projects = pages(&mut rpc, "project/list", json!({"limit":100}))?
+    let (project_values, mut retention) =
+        pages(&mut rpc, "project/list", json!({"limit":100}))?.into_parts();
+    let projects = project_values
         .into_iter()
         .map(|value| {
             serde_json::from_value(value)
@@ -55,10 +57,15 @@ pub fn list_projects(
         "thread/list",
         json!({"limit":100,"archived":archived,"modelProviders":[],"sourceKinds":SOURCE_KINDS,"sortKey":"updated_at","sortDirection":"desc"}),
     )?;
+    let (threads, thread_retention) = threads.into_parts();
+    retention = retention.merge(thread_retention);
     let mut assignments = BTreeMap::new();
     let mut conversations = Vec::new();
     let mut seen = BTreeSet::new();
     for thread in threads {
+        if is_handoff_summary_thread(&thread) {
+            continue;
+        }
         let conversation = summary(&thread, runtime_id)?;
         if !seen.insert(conversation.id.clone()) {
             return Err(Error::new("Codex 返回重复逻辑会话"));
@@ -71,11 +78,14 @@ pub fn list_projects(
         }
         conversations.push(conversation);
     }
-    Ok(ProjectListing {
-        projects,
-        assignments,
-        conversations,
-    })
+    Ok(Retained::from_parts(
+        ProjectListing {
+            projects,
+            assignments,
+            conversations,
+        },
+        retention,
+    ))
 }
 
 /// Update only the native name and roots; other clients' project metadata stays owned by Codex.
@@ -84,7 +94,7 @@ pub fn update_project(
     project_id: &str,
     name: &str,
     roots: &[String],
-) -> Result<NativeProject> {
+) -> Result<Retained<NativeProject>> {
     let mut rpc = codex::history_client_at(
         config.kind,
         &config.binary,
@@ -93,5 +103,7 @@ pub fn update_project(
         config.os_home.as_deref(),
     )?;
     let updated = rpc.request("project/update", &json!({"projectId":project_id,"name":name,"roots":roots.iter().map(|path| json!({"path":path})).collect::<Vec<_>>()}))?;
-    serde_json::from_value(updated["project"].clone()).map_err(|e| Error::new(e.to_string()))
+    updated.try_map(|mut value| {
+        serde_json::from_value(value["project"].take()).map_err(|e| Error::new(e.to_string()))
+    })
 }

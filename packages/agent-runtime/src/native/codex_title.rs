@@ -49,6 +49,9 @@ impl Phase {
     }
 }
 impl Title {
+    pub(super) fn retains_data(&self) -> bool {
+        self.job.is_some() || !self.hidden.is_empty()
+    }
     pub(super) fn pending(&self) -> bool {
         self.job.as_ref().is_some_and(|job| !job.cancelled)
     }
@@ -129,7 +132,8 @@ impl NativeSession {
             servers.entry(name.clone()).or_insert_with(|| json!({}))["enabled"] = json!(false);
         }
         options["config"]["mcp_servers"] = servers.into();
-        let request = match self.rpc.begin("thread/start", &options) {
+        let deadline = Instant::now() + TIMEOUT;
+        let request = match self.rpc.enqueue_request("thread/start", &options, deadline) {
             Ok(request) => request,
             Err(error) => {
                 tracing::debug!(%error, "Codex automatic title could not start");
@@ -142,21 +146,25 @@ impl NativeSession {
         );
         self.codex.title.job = Some(Job {
             source,
-            deadline: Instant::now() + TIMEOUT,
+            deadline,
             cancelled: false,
             phase: Phase::Starting { request, prompt },
         });
     }
 
     fn codex_detach_title(&mut self, thread: &str, turn: Option<&str>) {
+        let deadline = Instant::now() + rpc::CONTROL_TIMEOUT;
         if let Some(turn) = turn {
-            let _ = self
-                .rpc
-                .begin("turn/interrupt", &json!({"threadId":thread,"turnId":turn}));
+            let _ = self.rpc.enqueue_request_with_class(
+                "turn/interrupt",
+                &json!({"threadId":thread,"turnId":turn}),
+                crate::transport::WriteClass::ProtocolReplyCancel,
+                deadline,
+            );
         }
-        let _ = self
-            .rpc
-            .begin("thread/unsubscribe", &json!({"threadId":thread}));
+        let _ =
+            self.rpc
+                .enqueue_request("thread/unsubscribe", &json!({"threadId":thread}), deadline);
     }
 
     pub(super) fn codex_cancel_title(&mut self) {
@@ -198,6 +206,7 @@ impl NativeSession {
             && params["threadId"].as_str() == self.native_id.as_deref()
         {
             self.codex_cancel_title();
+            self.data.retain(DataOwner::Metadata);
             if let Some(snapshot) = &mut self.snapshot {
                 snapshot.conversation.title = conversation_title(
                     params["threadName"].as_str(),
@@ -211,7 +220,7 @@ impl NativeSession {
             && self.codex.title.hidden.contains(thread)
         {
             if let Some(id) = record.get("id") {
-                let _ = self.rpc.reject(
+                let _ = self.rpc.enqueue_rejection(
                     id,
                     "Title generation does not accept tool or approval requests",
                 );
@@ -221,6 +230,7 @@ impl NativeSession {
             let Some(mut job) = self.codex.title.job.take() else {
                 return true;
             };
+            self.data.retain(DataOwner::Title);
             if let Phase::Running {
                 thread: active,
                 turn,
@@ -248,9 +258,10 @@ impl NativeSession {
                     self.codex_detach_title(thread, None);
                     if let Some(title) = title
                         && self.native_id.as_deref() == Some(&job.source)
-                        && let Ok(request) = self.rpc.begin(
+                        && let Ok(request) = self.rpc.enqueue_request(
                             "thread/read",
                             &json!({"threadId":job.source,"includeTurns":false}),
+                            job.deadline,
                         )
                     {
                         job.phase = Phase::Checking { request, title };
@@ -273,6 +284,7 @@ impl NativeSession {
             return false;
         }
         let mut job = self.codex.title.job.take().expect("matched title request");
+        self.data.retain(DataOwner::Title);
         if record.get("error").is_some() {
             if let Phase::Running { thread, turn, .. } = &job.phase {
                 self.codex_detach_title(thread, turn.as_deref());
@@ -285,6 +297,7 @@ impl NativeSession {
                 let Some(thread) = record["result"]["thread"]["id"].as_str() else {
                     return true;
                 };
+                self.data.retain(DataOwner::TitleHidden);
                 self.codex.title.hidden.insert(thread.to_owned());
                 if job.cancelled || record["result"]["sandbox"]["type"] != "readOnly" {
                     self.codex_detach_title(thread, None);
@@ -292,7 +305,10 @@ impl NativeSession {
                 }
                 let params = json!({"threadId":thread,"input":[{"type":"text","text":prompt,"text_elements":[]}],
                     "outputSchema":{"type":"object","properties":{"title":{"type":"string","minLength":1,"maxLength":36}},"required":["title"],"additionalProperties":false}});
-                match self.rpc.begin("turn/start", &params) {
+                match self
+                    .rpc
+                    .enqueue_request("turn/start", &params, job.deadline)
+                {
                     Ok(request) => Phase::Running {
                         request,
                         thread: thread.into(),
@@ -340,20 +356,23 @@ impl NativeSession {
                     .is_some_and(|name| !name.trim().is_empty())
                 {
                     if let Some(snapshot) = &mut self.snapshot {
+                        self.data.retain(DataOwner::Metadata);
                         snapshot.conversation.title = super::codex_history::thread_title(stored);
                         snapshot.revision += 1;
                     }
                     return true;
                 }
-                let Ok(request) = self.rpc.begin(
+                let Ok(request) = self.rpc.enqueue_request(
                     "thread/name/set",
                     &json!({"threadId":job.source,"name":title}),
+                    job.deadline,
                 ) else {
                     return true;
                 };
                 Phase::Saving { request, title }
             }
             Phase::Saving { title, .. } => {
+                self.data.move_owner(DataOwner::Title, DataOwner::Metadata);
                 if let Some(snapshot) = &mut self.snapshot {
                     snapshot.conversation.title = conversation_title(Some(&title), None);
                     snapshot.revision += 1;

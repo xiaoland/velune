@@ -10,6 +10,14 @@ use velune_remote::{
 };
 #[cfg(unix)]
 mod cli;
+#[cfg(all(unix, feature = "external-control"))]
+mod control_ingress;
+#[cfg(all(unix, feature = "external-control"))]
+mod hapi;
+#[cfg(all(unix, feature = "external-control"))]
+mod session_control;
+#[cfg(all(unix, feature = "external-control"))]
+mod session_control_http;
 
 #[derive(Clone, uniffi::Record)]
 pub struct BindingRemoteOptions {
@@ -29,6 +37,60 @@ pub struct BindingRemoteInvitation {
     pub encoded: String,
     pub expires_at_unix_seconds: u64,
     pub issuer: String,
+}
+
+#[cfg(all(target_os = "macos", feature = "external-control"))]
+#[derive(uniffi::Record)]
+pub struct BindingHapiShare {
+    pub id: String,
+    pub access_token: String,
+}
+
+#[cfg(all(target_os = "macos", feature = "external-control"))]
+#[uniffi::export]
+impl VeluneRemoteEndpoint {
+    pub fn start_hapi_share(
+        &self,
+        port: u16,
+        runtime_id: String,
+        conversation_id: String,
+    ) -> Result<BindingHapiShare, BindingError> {
+        let ingress = self
+            .owner
+            .control_ingress
+            .as_ref()
+            .ok_or(BindingError::Unavailable)?;
+        let share = self.owner.runtime.block_on(ingress.start(
+            control_ingress::Protocol::Hapi,
+            port,
+            vec![session_control::SessionGrant {
+                runtime_id,
+                conversation_id,
+            }],
+        ))?;
+        Ok(BindingHapiShare {
+            id: share.id,
+            access_token: share.access_token,
+        })
+    }
+
+    pub fn active_hapi_share_id(&self) -> Result<Option<String>, BindingError> {
+        let ingress = self
+            .owner
+            .control_ingress
+            .as_ref()
+            .ok_or(BindingError::Unavailable)?;
+        Ok(ingress.active_id(control_ingress::Protocol::Hapi)?)
+    }
+
+    pub fn stop_hapi_share(&self, share_id: String) -> Result<(), BindingError> {
+        let ingress = self
+            .owner
+            .control_ingress
+            .as_ref()
+            .ok_or(BindingError::Unavailable)?;
+        Ok(ingress.stop_matching(control_ingress::Protocol::Hapi, Some(&share_id))?)
+    }
 }
 
 pub(crate) fn parse_addresses(
@@ -185,6 +247,8 @@ pub(crate) struct ServiceOwner {
     runtime: Arc<RemoteRuntime>,
     #[cfg(unix)]
     local_control: Mutex<Option<cli::LocalControl>>,
+    #[cfg(all(unix, feature = "external-control"))]
+    control_ingress: Option<control_ingress::ControlIngress>,
     #[cfg(feature = "local-runtime")]
     identity_file: String,
     #[cfg(feature = "local-runtime")]
@@ -198,6 +262,7 @@ impl ServiceOwner {
         runtime: Arc<RemoteRuntime>,
         handler: Option<Arc<dyn velune_remote::Handler>>,
         telemetry: Arc<velune_telemetry::ClientTelemetry>,
+        #[cfg(all(unix, feature = "external-control"))] application: Option<ApplicationService>,
     ) -> Result<Arc<Self>, BindingError> {
         let config = BindingRemoteNetworkOptions::from(&options).config()?;
         let identity = DeviceIdentity::load_or_create(
@@ -205,6 +270,7 @@ impl ServiceOwner {
             options.device_name.clone(),
         )?;
         let store = Arc::new(DeviceStore::open(Path::new(&options.state_file))?);
+        velune_remote::ensure_debug_subscriber();
         let service = Arc::new(runtime.block_on(RemoteAccessService::bind(
             identity,
             config.clone(),
@@ -222,6 +288,8 @@ impl ServiceOwner {
             telemetry,
             #[cfg(unix)]
             local_control: Mutex::new(None),
+            #[cfg(all(unix, feature = "external-control"))]
+            control_ingress: application.map(control_ingress::ControlIngress::new),
             #[cfg(feature = "local-runtime")]
             identity_file: options.identity_file,
             #[cfg(feature = "local-runtime")]
@@ -246,6 +314,11 @@ impl ServiceOwner {
         Ok(())
     }
     pub(crate) fn close(&self) -> Result<(), BindingError> {
+        #[cfg(all(unix, feature = "external-control"))]
+        if let Some(ingress) = &self.control_ingress {
+            ingress.stop(control_ingress::Protocol::Hapi)?;
+            ingress.stop(control_ingress::Protocol::Canonical)?;
+        }
         #[cfg(unix)]
         self.local_control
             .lock()
@@ -405,7 +478,7 @@ impl VeluneRemoteEndpoint {
             }
             let runtime = RemoteRuntime::new()?;
             let handler = Arc::new(ApplicationHandler {
-                application: local,
+                application: local.clone(),
                 _runtime: runtime.clone(),
             });
             if telemetry
@@ -421,6 +494,8 @@ impl VeluneRemoteEndpoint {
                 runtime,
                 Some(handler),
                 application.diagnostics.telemetry.clone(),
+                #[cfg(all(unix, feature = "external-control"))]
+                Some(local),
             )?;
             *cached = Some(owner.clone());
             return Ok(Arc::new(Self { owner }));
@@ -450,7 +525,14 @@ impl VeluneRemoteEndpoint {
                 None,
             )?
         };
-        let owner = ServiceOwner::bind(options, RemoteRuntime::new()?, None, telemetry)?;
+        let owner = ServiceOwner::bind(
+            options,
+            RemoteRuntime::new()?,
+            None,
+            telemetry,
+            #[cfg(all(unix, feature = "external-control"))]
+            None,
+        )?;
         Ok(Arc::new(Self { owner }))
     }
 }
@@ -779,6 +861,7 @@ impl RemoteApplication {
                         detail: failure.to_string(),
                         code: failure.code().into(),
                         request_id: error.request_id,
+                        operation_id: String::new(),
                     })
                 }
                 velune_remote::CallFailure::ResultUnavailable => Err(BindingError::RemoteRequest {
@@ -786,6 +869,7 @@ impl RemoteApplication {
                     detail: "请求结果已不可用；不得自动重发".into(),
                     code: "result_unavailable".into(),
                     request_id: error.request_id,
+                    operation_id: String::new(),
                 }),
             },
         }

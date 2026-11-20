@@ -212,6 +212,7 @@ checksum = "31b698c5f9a010f6573133b09e0de5408834d0c82f8d7475a89fc1867a71cd90"
 dependencies = [
  "axum-core",
  "bytes",
+ "form_urlencoded",
  "futures-util",
  "http",
  "http-body",
@@ -227,6 +228,7 @@ dependencies = [
  "serde_core",
  "serde_json",
  "serde_path_to_error",
+ "serde_urlencoded",
  "sync_wrapper",
  "tokio",
  "tower",
@@ -4967,10 +4969,17 @@ dependencies = [
 name = "velune-bindings"
 version = "0.1.0"
 dependencies = [
+ "axum",
+ "base64 0.22.1",
+ "futures-util",
+ "getrandom 0.4.3",
+ "hmac",
  "jni 0.22.4",
  "rustls-platform-verifier",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
+ "subtle",
  "thiserror 2.0.21",
  "tokio",
  "tracing",
@@ -5022,6 +5031,7 @@ dependencies = [
 name = "velune-remote"
 version = "0.1.0"
 dependencies = [
+ "base64 0.23.1",
  "futures-util",
  "getrandom 0.4.3",
  "iroh",
@@ -5029,13 +5039,16 @@ dependencies = [
  "n0-watcher",
  "netdev 0.46.3",
  "rustix",
+ "rustls",
  "serde",
  "serde_json",
  "sha2 0.10.9",
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
+ "tokio-rustls",
  "tracing",
+ "tracing-subscriber",
  "uniffi",
  "velune-application-api",
  "velune-telemetry",

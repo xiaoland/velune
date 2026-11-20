@@ -151,7 +151,9 @@ pub(super) struct WaitConversation {
 }
 
 pub(super) enum Operation {
-    Scheduled(Box<crate::ScheduledTasksOperation>),
+    // Resolve the MCP-only currentConversation target using the authenticated
+    // caller, before crossing into the durable scheduling API.
+    Scheduled(Value),
     ListAgents,
     XurlInstructions,
     ResolveUri(xurl::ResolveUri),
@@ -365,9 +367,15 @@ impl CoreRuntime {
     fn collaborate(&mut self, ticket: &str, operation: Operation) -> Result<Served, RuntimeError> {
         let caller = self.caller(ticket)?;
         match operation {
-            Operation::Scheduled(operation) => self
-                .scheduled_tasks(*operation)
-                .and_then(|state| Ok(Served::Now(serde_json::to_value(state)?))),
+            Operation::Scheduled(arguments) => {
+                let operation = mcp::scheduled_operation(
+                    arguments,
+                    &caller.runtime_id,
+                    &caller.conversation_id,
+                )?;
+                let state = self.scheduled_tasks(operation)?;
+                Ok(Served::Now(serde_json::to_value(state)?))
+            }
             Operation::XurlInstructions => {
                 Ok(Served::Now(json!({"instructions":include_str!("xurl.md")})))
             }
@@ -541,7 +549,9 @@ impl CoreRuntime {
                 }
             }));
         };
-        self.runtime_models(runtime_id.to_owned())?
+        let (models, _catalog_retention) =
+            self.runtime_models(runtime_id.to_owned())?.into_parts();
+        models
             .into_iter()
             .find(|model| {
                 model.name == named
@@ -565,6 +575,7 @@ impl CoreRuntime {
         message: &str,
         selection: Option<Option<crate::ModelSelection>>,
     ) -> Result<(), RuntimeError> {
+        let external_turn = self.observe_current_external_turn();
         let view = self
             .session
             .projected()
@@ -576,7 +587,7 @@ impl CoreRuntime {
                 "对方会话正在执行，未排队；请等待后再发送",
             ));
         }
-        if view.run_state == RunState::Elsewhere {
+        if external_turn || view.run_state == RunState::Elsewhere {
             return Err(RuntimeError::invalid(
                 "对方会话正在 Velune 之外运行，不能发送",
             ));
@@ -614,8 +625,8 @@ impl CoreRuntime {
     }
 
     /// Every listed conversation, newest first; agents see past the list's window.
-    fn all_conversations(&self) -> Result<Vec<ConversationSummary>, RuntimeError> {
-        let mut listed: Vec<ConversationSummary> = self
+    fn all_conversations(&self) -> Result<Vec<browsing::SharedSummary>, RuntimeError> {
+        let mut listed: Vec<browsing::SharedSummary> = self
             .list_sources(true)?
             .0
             .into_iter()
