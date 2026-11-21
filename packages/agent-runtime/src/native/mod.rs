@@ -1225,7 +1225,8 @@ impl NativeSession {
         if matches!(self.config.kind, NativeKind::Codex166) {
             self.codex_cancel_title();
         }
-        let saved_retention = self.data.try_clone(|_| true)?;
+        // Hold the duplicate receive charge until the rename finishes.
+        let _saved_retention = self.data.try_clone(|_| true)?;
         let id = self
             .native_id
             .as_deref()

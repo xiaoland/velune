@@ -9,6 +9,7 @@ use std::{
     io::Write,
     path::{Path, PathBuf},
 };
+#[allow(dead_code, reason = "Staged links metadata domain")]
 pub(crate) mod links_metadata;
 mod migration;
 pub(crate) use migration::prepare_migrations;
@@ -367,6 +368,7 @@ impl Repository {
         self.home_lock.unlock()
     }
     /// Construction only: callers must switch all links writes before installing this domain.
+    #[allow(dead_code, reason = "Staged links metadata domain")]
     pub(crate) fn links_metadata(
         &self,
         limits: links_metadata::LinksLimits,
