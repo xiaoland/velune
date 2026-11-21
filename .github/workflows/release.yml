@@ -143,7 +143,7 @@ jobs:
             ~/.cargo/git
             ~/go/pkg/mod
             ~/.cache/go-build
-          key: source-bundle-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'packages/ai-provider/relaykit-bridge/go.mod', 'packages/ai-provider/relaykit-bridge/go.sum', 'scripts/install-hapi-tunwg.sh') }}
+          key: source-bundle-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'packages/ai-provider/relaykit-bridge/go.mod', 'packages/ai-provider/relaykit-bridge/go.sum', 'app/mac/Licenses/Tunwg/UPSTREAM.json') }}
       - name: Create the exact-tag source bundle
         env:
           TAG: ${{ needs.release.outputs.tag }}
