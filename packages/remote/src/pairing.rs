@@ -72,7 +72,7 @@ impl PairingOffer {
         let mut payload = Vec::new();
         payload.extend_from_slice(self.issuer.as_bytes());
         payload.push(0);
-        payload.extend_from_slice(&self.invite_id.as_bytes());
+        payload.extend_from_slice(self.invite_id.as_bytes());
         payload.push(0);
         payload.extend_from_slice(&self.token);
         payload.push(0);

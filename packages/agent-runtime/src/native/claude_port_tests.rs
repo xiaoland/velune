@@ -225,7 +225,9 @@ for line in sys.stdin:
     }
     fn complete(&mut self) {
         self.permission();
-        self.poll_until(|session| !session.has_pending_requests() && session.work().unwrap().is_empty());
+        self.poll_until(|session| {
+            !session.has_pending_requests() && session.work().unwrap().is_empty()
+        });
         self.emit(json!({"type":"result","subtype":"success","is_error":false}));
         self.emit(json!({"type":"system","subtype":"session_state_changed","state":"idle"}));
         self.poll_until(|session| !session.turn_running());
@@ -257,7 +259,11 @@ fn claude_port_written_is_not_accepted_and_held_ack_does_not_block_permission() 
             .iter()
             .any(|r| r.ticket == *reply && matches!(r.delivery, ClaudeDelivery::Written))
     );
-    assert!(receipts.iter().any(|r| r.ticket == *interrupt && matches!(r.delivery, ClaudeDelivery::Accepted { .. })));
+    assert!(
+        receipts.iter().any(
+            |r| r.ticket == *interrupt && matches!(r.delivery, ClaudeDelivery::Accepted { .. })
+        )
+    );
     assert!(f.session.turn_running(), "control ACK is not completion");
     assert_eq!(
         f.requests().iter().filter(|r| r["type"] == "user").count(),
@@ -292,7 +298,8 @@ fn claude_port_blocked_stdin_keeps_poll_and_reserved_reply_admission_live() {
     assert!(started.elapsed() < Duration::from_millis(500));
     assert!(
         f.session
-            .background_tasks().unwrap()
+            .background_tasks()
+            .unwrap()
             .tasks
             .iter()
             .any(|task| task.title == "pulse")
@@ -312,7 +319,11 @@ fn claude_port_blocked_stdin_keeps_poll_and_reserved_reply_admission_live() {
             .iter()
             .any(|r| r.ticket == *reply && matches!(r.delivery, ClaudeDelivery::Written))
     );
-    assert!(receipts.iter().any(|r| r.ticket == *interrupt && matches!(r.delivery, ClaudeDelivery::Accepted { .. })));
+    assert!(
+        receipts.iter().any(
+            |r| r.ticket == *interrupt && matches!(r.delivery, ClaudeDelivery::Accepted { .. })
+        )
+    );
     assert_eq!(
         f.requests().iter().filter(|r| r["type"] == "user").count(),
         2
@@ -1078,7 +1089,9 @@ fn claude_port_checked_sequence_and_duplicate_reply_never_write_untracked_frames
             )
             .is_err()
     );
-    f.poll_until(|session| !session.claude.commands.pending() && session.work().unwrap().is_empty());
+    f.poll_until(|session| {
+        !session.claude.commands.pending() && session.work().unwrap().is_empty()
+    });
     assert_eq!(
         f.requests().iter().filter(|r| r["type"] == "user").count(),
         1
@@ -1181,8 +1194,7 @@ fn claude_port_rejected_create_side_context_preserves_prepared_user_routing() {
     let error = f
         .session
         .create_side_context(Some(&f.root), "runtime", "rejected context")
-        .err()
-        .expect("ordinary synchronous mutation must be rejected in port mode");
+        .expect_err("ordinary synchronous mutation must be rejected in port mode");
     assert_eq!(error.code(), "operation_pending");
     assert!(!f.session.side, "rejection must not enable side routing");
     assert_eq!(f.session.native_id, native_id);

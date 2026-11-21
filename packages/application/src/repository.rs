@@ -710,6 +710,114 @@ fn reject_unknown_envelope_fields(
     Ok(())
 }
 
+pub(crate) fn decode_conversation_links(
+    value: serde_json::Value,
+) -> Result<Vec<crate::config::ConversationLink>, RuntimeError> {
+    if !matches!(value["schemaVersion"].as_u64(), Some(1..=3)) {
+        return Err(RuntimeError::invalid("conversation links schema version"));
+    }
+    reject_unknown_envelope_fields("conversation-links.json", &value, &["links"])?;
+    if value["links"].as_array().is_some_and(|links| {
+        links.iter().any(|link| {
+            link["segments"].as_array().is_some_and(|segments| {
+                segments
+                    .iter()
+                    .any(|segment| segment["runtimeTypeId"].as_str() == Some("codex-0.159"))
+            })
+        })
+    }) {
+        return Err(retired_codex());
+    }
+    let links: Vec<crate::config::ConversationLink> =
+        serde_json::from_value(value["links"].clone())?;
+    let mut ids = std::collections::BTreeSet::new();
+    let mut native_ids = std::collections::BTreeSet::new();
+    let valid_digest =
+        |digest: &str| digest.len() == 64 && digest.bytes().all(|b| b.is_ascii_hexdigit());
+    if value["schemaVersion"].as_u64() == Some(1)
+        && links.iter().any(|link| {
+            link.segments.iter().any(|segment| {
+                !segment.excluded_message_ids.is_empty() || !segment.message_origins.is_empty()
+            })
+        })
+    {
+        return Err(RuntimeError::invalid(
+            "消息删除关联需要 schema 2；原文件保留",
+        ));
+    }
+    if value["schemaVersion"].as_u64() != Some(3)
+        && value["links"].as_array().is_some_and(|links| {
+            links.iter().any(|link| {
+                link["segments"].as_array().is_some_and(|segments| {
+                    segments.iter().any(|segment| {
+                        segment["imported"]
+                            .as_object()
+                            .is_some_and(|import| import.contains_key("summaryWorkId"))
+                    })
+                })
+            })
+        })
+    {
+        return Err(RuntimeError::invalid(
+            "接续压缩记录需要 schema 3；原文件保留",
+        ));
+    }
+    for link in &links {
+        // Replacing an unsubmitted draft preserves its public ID as an alias
+        // for the first real target, including after later handoffs.
+        if link.id.is_empty()
+            || !ids.insert(&link.id)
+            || link.segments.is_empty()
+            || link.segments.first().is_none_or(|s| {
+                // A quoted fork uses an explicit public alias so its
+                // wrapper never becomes the native thread's own identity.
+                (s.handoff.is_some() && s.native_conversation_id == link.id)
+                    || (link.segments.len() == 1 && s.native_conversation_id == link.id)
+            })
+        {
+            return Err(RuntimeError::invalid("关联会话身份或段顺序无效"));
+        }
+        for (index, segment) in link.segments.iter().enumerate() {
+            if segment.runtime_instance_id.is_empty()
+                || !segment
+                    .native_conversation_id
+                    .starts_with(&format!("{}:", segment.runtime_instance_id))
+                || !native_ids.insert(&segment.native_conversation_id)
+                || (index + 1 == link.segments.len()) != segment.cutoff.is_none()
+                || segment
+                    .cutoff
+                    .as_ref()
+                    .is_some_and(|c| !valid_digest(&c.prefix_digest))
+                || segment.excluded_message_ids.iter().any(|id| id.is_empty())
+                || (!segment.excluded_message_ids.is_empty() && segment.cutoff.is_none())
+                || segment.message_origins.iter().any(|(id, targets)| {
+                    id.is_empty() || targets.iter().any(|target| target.is_empty())
+                })
+                || segment
+                    .imported
+                    .as_ref()
+                    .and_then(|import| import.summary_work_id.as_ref())
+                    .is_some_and(|id| {
+                        id.is_empty()
+                            || id.len() > 128
+                            || !id
+                                .bytes()
+                                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+                    })
+                || segment
+                    .handoff
+                    .as_ref()
+                    .is_some_and(|h| !valid_digest(&h.marker) || !valid_digest(&h.payload_digest))
+            {
+                return Err(RuntimeError::invalid(
+                    "关联会话原生引用、截止位置或交接定位无效",
+                ));
+            }
+        }
+    }
+    Ok(links)
+}
+
 #[cfg(test)]
 mod persistence_version_tests {
     use super::*;
@@ -880,112 +988,4 @@ mod persistence_version_tests {
             assert_eq!(fs::read(path).unwrap(), bytes);
         }
     }
-}
-
-pub(crate) fn decode_conversation_links(
-    value: serde_json::Value,
-) -> Result<Vec<crate::config::ConversationLink>, RuntimeError> {
-    if !matches!(value["schemaVersion"].as_u64(), Some(1..=3)) {
-        return Err(RuntimeError::invalid("conversation links schema version"));
-    }
-    reject_unknown_envelope_fields("conversation-links.json", &value, &["links"])?;
-    if value["links"].as_array().is_some_and(|links| {
-        links.iter().any(|link| {
-            link["segments"].as_array().is_some_and(|segments| {
-                segments
-                    .iter()
-                    .any(|segment| segment["runtimeTypeId"].as_str() == Some("codex-0.159"))
-            })
-        })
-    }) {
-        return Err(retired_codex());
-    }
-    let links: Vec<crate::config::ConversationLink> =
-        serde_json::from_value(value["links"].clone())?;
-    let mut ids = std::collections::BTreeSet::new();
-    let mut native_ids = std::collections::BTreeSet::new();
-    let valid_digest =
-        |digest: &str| digest.len() == 64 && digest.bytes().all(|b| b.is_ascii_hexdigit());
-    if value["schemaVersion"].as_u64() == Some(1)
-        && links.iter().any(|link| {
-            link.segments.iter().any(|segment| {
-                !segment.excluded_message_ids.is_empty() || !segment.message_origins.is_empty()
-            })
-        })
-    {
-        return Err(RuntimeError::invalid(
-            "消息删除关联需要 schema 2；原文件保留",
-        ));
-    }
-    if value["schemaVersion"].as_u64() != Some(3)
-        && value["links"].as_array().is_some_and(|links| {
-            links.iter().any(|link| {
-                link["segments"].as_array().is_some_and(|segments| {
-                    segments.iter().any(|segment| {
-                        segment["imported"]
-                            .as_object()
-                            .is_some_and(|import| import.contains_key("summaryWorkId"))
-                    })
-                })
-            })
-        })
-    {
-        return Err(RuntimeError::invalid(
-            "接续压缩记录需要 schema 3；原文件保留",
-        ));
-    }
-    for link in &links {
-        // Replacing an unsubmitted draft preserves its public ID as an alias
-        // for the first real target, including after later handoffs.
-        if link.id.is_empty()
-            || !ids.insert(&link.id)
-            || link.segments.is_empty()
-            || link.segments.first().is_none_or(|s| {
-                // A quoted fork uses an explicit public alias so its
-                // wrapper never becomes the native thread's own identity.
-                (s.handoff.is_some() && s.native_conversation_id == link.id)
-                    || (link.segments.len() == 1 && s.native_conversation_id == link.id)
-            })
-        {
-            return Err(RuntimeError::invalid("关联会话身份或段顺序无效"));
-        }
-        for (index, segment) in link.segments.iter().enumerate() {
-            if segment.runtime_instance_id.is_empty()
-                || !segment
-                    .native_conversation_id
-                    .starts_with(&format!("{}:", segment.runtime_instance_id))
-                || !native_ids.insert(&segment.native_conversation_id)
-                || (index + 1 == link.segments.len()) != segment.cutoff.is_none()
-                || segment
-                    .cutoff
-                    .as_ref()
-                    .is_some_and(|c| !valid_digest(&c.prefix_digest))
-                || segment.excluded_message_ids.iter().any(|id| id.is_empty())
-                || (!segment.excluded_message_ids.is_empty() && segment.cutoff.is_none())
-                || segment.message_origins.iter().any(|(id, targets)| {
-                    id.is_empty() || targets.iter().any(|target| target.is_empty())
-                })
-                || segment
-                    .imported
-                    .as_ref()
-                    .and_then(|import| import.summary_work_id.as_ref())
-                    .is_some_and(|id| {
-                        id.is_empty()
-                            || id.len() > 128
-                            || !id
-                                .bytes()
-                                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
-                    })
-                || segment
-                    .handoff
-                    .as_ref()
-                    .is_some_and(|h| !valid_digest(&h.marker) || !valid_digest(&h.payload_digest))
-            {
-                return Err(RuntimeError::invalid(
-                    "关联会话原生引用、截止位置或交接定位无效",
-                ));
-            }
-        }
-    }
-    Ok(links)
 }

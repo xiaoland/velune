@@ -1732,9 +1732,19 @@ fn codex_send_ack_before_echo_never_selects_a_historical_user_and_binds_late_set
     else {
         panic!("send response")
     };
-    assert_eq!(result.submission_receipt, Some(crate::SubmissionReceipt::Sending));
-    assert_eq!(result.submission_receipt, Some(crate::SubmissionReceipt::Sending));
-    assert!(!serde_json::to_string(&fixture.wire()).unwrap().contains("late-echo-client-token"));
+    assert_eq!(
+        result.submission_receipt,
+        Some(crate::SubmissionReceipt::Sending)
+    );
+    assert_eq!(
+        result.submission_receipt,
+        Some(crate::SubmissionReceipt::Sending)
+    );
+    assert!(
+        !serde_json::to_string(&fixture.wire())
+            .unwrap()
+            .contains("late-echo-client-token")
+    );
     // The ACK is real acceptance, but it cannot identify an echo that has not
     // happened. In particular neither historical user is this submission.
     assert!(

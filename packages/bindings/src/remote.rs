@@ -860,7 +860,7 @@ impl RemoteApplication {
                         kind: remote_failure_kind(failure),
                         detail: failure.to_string(),
                         code: failure.code().into(),
-                        request_id: error.request_id,
+                        request_id: error.request_id.map(Box::new),
                         operation_id: String::new(),
                     })
                 }
@@ -868,7 +868,7 @@ impl RemoteApplication {
                     kind: BindingFailureKind::OutcomeUnknown,
                     detail: "请求结果已不可用；不得自动重发".into(),
                     code: "result_unavailable".into(),
-                    request_id: error.request_id,
+                    request_id: error.request_id.map(Box::new),
                     operation_id: String::new(),
                 }),
             },

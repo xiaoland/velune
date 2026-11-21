@@ -235,20 +235,29 @@ impl ClientTelemetry {
                 problems.insert(id, problem);
             }
         }
-        if let Some(health) = self.local_log_health().filter(|health| health.dropped_records > 0 || health.failed_writes > 0) {
-            problems.insert("local-log-health".into(), DiagnosticProblem {
-                id: "4F43414C-4C4F-4748-4541-4C5448000001".into(),
-                occurred_at_unix_ms: now(),
-                source: "本地诊断存储".into(),
-                detail: format!("本次进程拒绝或未确认 {} 条诊断记录，磁盘写入失败 {} 次；日志可能不完整。", health.dropped_records, health.failed_writes),
-                kind: "io".into(),
-                code: Some("local_log_incomplete".into()),
-                phase: Some("local_log".into()),
-                operation_id: None,
-                peer_id: None,
-                activity_key: Some("local-log-health".into()),
-                resolved_at_unix_ms: None,
-            });
+        if let Some(health) = self
+            .local_log_health()
+            .filter(|health| health.dropped_records > 0 || health.failed_writes > 0)
+        {
+            problems.insert(
+                "local-log-health".into(),
+                DiagnosticProblem {
+                    id: "4F43414C-4C4F-4748-4541-4C5448000001".into(),
+                    occurred_at_unix_ms: now(),
+                    source: "本地诊断存储".into(),
+                    detail: format!(
+                        "本次进程拒绝或未确认 {} 条诊断记录，磁盘写入失败 {} 次；日志可能不完整。",
+                        health.dropped_records, health.failed_writes
+                    ),
+                    kind: "io".into(),
+                    code: Some("local_log_incomplete".into()),
+                    phase: Some("local_log".into()),
+                    operation_id: None,
+                    peer_id: None,
+                    activity_key: Some("local-log-health".into()),
+                    resolved_at_unix_ms: None,
+                },
+            );
         }
         let mut values = problems.into_values().collect::<Vec<_>>();
         values.sort_by_key(|p| p.occurred_at_unix_ms);
@@ -374,7 +383,10 @@ mod tests {
         // A recurrence appended after the dismissal is a new problem; the
         // dismissed history does not come back.
         let second = open();
-        second.writer.as_ref().unwrap()
+        second
+            .writer
+            .as_ref()
+            .unwrap()
             .persist(failure(59, "late").into_bytes())
             .unwrap();
         let problems = second.problems("test").unwrap();

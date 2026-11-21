@@ -51,10 +51,12 @@ for line in sys.stdin:
         self.session.claude_handle_record(value).unwrap();
     }
     fn task(&self, title: &str) -> Retained<BackgroundTaskInfo> {
-        self.session
-            .background_tasks()
-            .unwrap()
-            .map(|list| list.tasks.into_iter().find(|task| task.title == title).unwrap())
+        self.session.background_tasks().unwrap().map(|list| {
+            list.tasks
+                .into_iter()
+                .find(|task| task.title == title)
+                .unwrap()
+        })
     }
 }
 impl Drop for Fixture {
@@ -601,11 +603,16 @@ fn claude_api_failure_preserves_reason_and_settles_on_native_idle() {
         f.event(json!({"type":"system","subtype":"session_state_changed","state":"idle"}));
         let snapshot = f.session.snapshot.as_ref().unwrap();
         assert_eq!(snapshot.run_state, RunState::Failed);
-        assert_eq!(snapshot.messages.last().unwrap().blocks, vec![MessageBlock::RuntimeFailure {
-            failure: RuntimeFailureKind::Other,
-            detail: "Login expired · Please run /login\nClaude Code 错误类型：authentication_failed".into(),
-            retry: None,
-        }]);
+        assert_eq!(
+            snapshot.messages.last().unwrap().blocks,
+            vec![MessageBlock::RuntimeFailure {
+                failure: RuntimeFailureKind::Other,
+                detail:
+                    "Login expired · Please run /login\nClaude Code 错误类型：authentication_failed"
+                        .into(),
+                retry: None,
+            }]
+        );
         let notices: Vec<_> = snapshot.messages.iter().flat_map(|m| &m.blocks).collect();
         assert!(notices.iter().any(|b| matches!(b, MessageBlock::RuntimeFailure {detail: text, ..} if text.contains("Login expired · Please run /login"))));
         assert!(notices.iter().any(|b| matches!(b, MessageBlock::RuntimeFailure {detail: text, ..} if text.contains("authentication_failed"))));
@@ -668,23 +675,44 @@ fn claude_api_failure_cold_history_deserializes_and_stays_in_failed_work() {
         json!({"type":"assistant","uuid":"error","parentUuid":"notification","isApiErrorMessage":true,"error":"authentication_failed","message":{"stop_reason":"stop_sequence","content":[{"type":"text","text":"Login expired · Please run /login"}]}}),
         json!({"type":"system","uuid":"duration","parentUuid":"error","subtype":"turn_duration","durationMs":2356}),
     ];
-    std::fs::write(projects.join(format!("{native_id}.jsonl")), records.iter().map(|r| format!("{r}\n")).collect::<String>()).unwrap();
-    let history = crate::history::read(&crate::history::HistoryConfig {
-        kind: crate::version::RuntimeKind::ClaudeCode,
-        execution: f.session.config.execution.clone(), os_home: Some(f.root.clone()),
-        provider: "claude-code".into(), binary: f.session.config.binary.clone(),
-        node_binary: PathBuf::new(), resources_directory: f.root.clone(),
-        root: projects, home: f.root.clone(),
-    }, "runtime", native_id).unwrap();
+    std::fs::write(
+        projects.join(format!("{native_id}.jsonl")),
+        records.iter().map(|r| format!("{r}\n")).collect::<String>(),
+    )
+    .unwrap();
+    let history = crate::history::read(
+        &crate::history::HistoryConfig {
+            kind: crate::version::RuntimeKind::ClaudeCode,
+            execution: f.session.config.execution.clone(),
+            os_home: Some(f.root.clone()),
+            provider: "claude-code".into(),
+            binary: f.session.config.binary.clone(),
+            node_binary: PathBuf::new(),
+            resources_directory: f.root.clone(),
+            root: projects,
+            home: f.root.clone(),
+        },
+        "runtime",
+        native_id,
+    )
+    .unwrap();
     let error = history.messages.last().unwrap();
     assert_eq!(error.role, MessageRole::System);
-    assert_eq!(error.blocks, vec![MessageBlock::RuntimeFailure {
-        failure: RuntimeFailureKind::Other,
-        detail: "Login expired · Please run /login\nClaude Code 错误类型：authentication_failed".into(),
-        retry: None,
-    }]);
+    assert_eq!(
+        error.blocks,
+        vec![MessageBlock::RuntimeFailure {
+            failure: RuntimeFailureKind::Other,
+            detail:
+                "Login expired · Please run /login\nClaude Code 错误类型：authentication_failed"
+                    .into(),
+            retry: None,
+        }]
+    );
     let mut projection = TranscriptProjection::default();
-    projection.apply(TranscriptEvent::Replace {messages: &history.messages, executions: &history.executions});
+    projection.apply(TranscriptEvent::Replace {
+        messages: &history.messages,
+        executions: &history.executions,
+    });
     let turns = projection.turns();
     assert_eq!(turns.len(), 1);
     assert_eq!(turns[0].outcome, Some(TurnOutcome::Failed));

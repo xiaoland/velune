@@ -159,7 +159,8 @@ pub struct CreatedIdentity {
 }
 impl std::fmt::Debug for CreatedIdentity {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.debug_struct("CreatedIdentity")
+        formatter
+            .debug_struct("CreatedIdentity")
             .field("native_id", &self.native_id)
             .field("within_policy", &self.within_policy)
             .field("budget_id", &self.budget_id)
@@ -182,9 +183,11 @@ impl CreatedIdentity {
     // The receive scanner already reserves decoder-derived identity/catalog
     // copies. Share that origin until both the result and installed data drop.
     pub(crate) fn projection_retention(&self) -> DataRetention {
-        self.retention.as_ref().map_or_else(DataRetention::default, |owner| {
-            DataRetention(owner.0.clone())
-        })
+        self.retention
+            .as_ref()
+            .map_or_else(DataRetention::default, |owner| {
+                DataRetention(owner.0.clone())
+            })
     }
     pub fn native_id(&self) -> &str {
         &self.native_id
@@ -453,7 +456,10 @@ impl ReadLease {
     }
     fn clone_data_charge(&self) -> io::Result<Self> {
         let mut usage = self.ledger.0.lock().unwrap();
-        let used = usage.used.checked_add(self.charge).ok_or_else(budget_error)?;
+        let used = usage
+            .used
+            .checked_add(self.charge)
+            .ok_or_else(budget_error)?;
         if used > usage.retained_limit {
             return Err(budget_error());
         }
@@ -554,7 +560,8 @@ pub struct Retained<T> {
 pub struct DataRetention(Vec<Arc<ReadLease>>);
 impl std::fmt::Debug for DataRetention {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.debug_struct("DataRetention")
+        formatter
+            .debug_struct("DataRetention")
             .field("source_records", &self.0.len())
             .finish()
     }
@@ -566,7 +573,9 @@ impl DataRetention {
         let mut leases = Vec::new();
         for source in &self.0 {
             let lease = source.clone_data_charge()?;
-            leases.try_reserve(1).map_err(|_| io::Error::other("receive clone bookkeeping allocation failed"))?;
+            leases
+                .try_reserve(1)
+                .map_err(|_| io::Error::other("receive clone bookkeeping allocation failed"))?;
             leases.push(Arc::new(lease));
         }
         Ok(Self(leases))
@@ -599,7 +608,10 @@ impl<T: Clone> Retained<T> {
     /// process/HOME or location IO lease.
     pub fn try_clone(&self) -> io::Result<Self> {
         let retention = self.retention.try_clone()?;
-        Ok(Self { value: self.value.clone(), retention })
+        Ok(Self {
+            value: self.value.clone(),
+            retention,
+        })
     }
 }
 impl<T> std::ops::Deref for Retained<T> {
@@ -608,17 +620,25 @@ impl<T> std::ops::Deref for Retained<T> {
         &self.value
     }
 }
-impl<T> Retained<T> {
-    pub fn as_ref(&self) -> &T {
+impl<T> AsRef<T> for Retained<T> {
+    fn as_ref(&self) -> &T {
         &self.value
     }
+}
+impl<T> Retained<T> {
     pub fn map<U>(self, map: impl FnOnce(T) -> U) -> Retained<U> {
         let Self { value, retention } = self;
-        Retained { value: map(value), retention }
+        Retained {
+            value: map(value),
+            retention,
+        }
     }
     pub fn try_map<U, E>(self, map: impl FnOnce(T) -> Result<U, E>) -> Result<Retained<U>, E> {
         let Self { value, retention } = self;
-        Ok(Retained { value: map(value)?, retention })
+        Ok(Retained {
+            value: map(value)?,
+            retention,
+        })
     }
     /// Move disjoint decoded fields into independent owners while retaining
     /// the original record's charge until both pieces are gone.
@@ -626,8 +646,14 @@ impl<T> Retained<T> {
         let (left, right) = map(self.value);
         let shared = DataRetention(self.retention.0.clone());
         (
-            Retained { value: left, retention: shared },
-            Retained { value: right, retention: self.retention },
+            Retained {
+                value: left,
+                retention: shared,
+            },
+            Retained {
+                value: right,
+                retention: self.retention,
+            },
         )
     }
     pub fn zip<U>(self, other: Retained<U>) -> Retained<(T, U)> {
@@ -638,7 +664,10 @@ impl<T> Retained<T> {
     }
     pub(crate) fn from_record(value: T, mut retention: ReadLease) -> Self {
         retention.transfer_to_native();
-        Self { value, retention: DataRetention(vec![Arc::new(retention)]) }
+        Self {
+            value,
+            retention: DataRetention(vec![Arc::new(retention)]),
+        }
     }
     pub fn from_parts(value: T, retention: DataRetention) -> Self {
         Self { value, retention }
@@ -659,7 +688,9 @@ impl Retained<Value> {
             return;
         };
         if let Some(lease) = Arc::get_mut(lease) {
-            lease.settle_history_page(RECORD_BASE.saturating_add(history_projection_cost(&self.value)));
+            lease.settle_history_page(
+                RECORD_BASE.saturating_add(history_projection_cost(&self.value)),
+            );
         }
     }
 }

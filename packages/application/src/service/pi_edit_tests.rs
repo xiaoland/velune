@@ -631,18 +631,46 @@ fn pi_edit_blocked_writer_is_not_native_acceptance_and_cancel_does_not_replay() 
             conversation_id: fixture.id("edit"),
         },
     );
-    assert!(matches!(cancel.recv_timeout(Duration::from_millis(150)), Err(mpsc::RecvTimeoutError::Timeout)),
-        "reserved admission is not a native stop ACK through a blocked pipe");
+    assert!(
+        matches!(
+            cancel.recv_timeout(Duration::from_millis(150)),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        ),
+        "reserved admission is not a native stop ACK through a blocked pipe"
+    );
     assert!(matches!(reply.try_recv(), Err(mpsc::TryRecvError::Empty)));
     // Release only after the no-false-acceptance assertions. The peer reads
     // the whole original prompt, ACKs ClearQueue, then reads Abort and exits
     // without its ACK: both remaining outcomes are genuinely indeterminate.
     fs::write(fixture.0.join("release"), []).unwrap();
     fixture.wait("writer-abort-read");
-    assert_eq!(cancel.recv_timeout(Duration::from_secs(3)).unwrap().err().expect("missing native Abort ACK").code, "runtime_operation_indeterminate");
-    assert_eq!(reply.recv_timeout(Duration::from_secs(3)).unwrap().err().expect("missing native preflight ACK").code, "runtime_operation_indeterminate");
+    assert_eq!(
+        cancel
+            .recv_timeout(Duration::from_secs(3))
+            .unwrap()
+            .err()
+            .expect("missing native Abort ACK")
+            .code,
+        "runtime_operation_indeterminate"
+    );
+    assert_eq!(
+        reply
+            .recv_timeout(Duration::from_secs(3))
+            .unwrap()
+            .err()
+            .expect("missing native preflight ACK")
+            .code,
+        "runtime_operation_indeterminate"
+    );
     assert!(fixture.0.join("writer-prompt-read").exists());
-    assert_eq!(fixture.requests("edit").iter().filter(|request| request["type"] == "abort").count(), 1);
+    assert_eq!(
+        fixture
+            .requests("edit")
+            .iter()
+            .filter(|request| request["type"] == "abort")
+            .count(),
+        1
+    );
     close_after_cleanup(&service);
 }
 
@@ -844,7 +872,7 @@ fn pi_failed_cancel_keeps_real_child_and_home_until_bounded_cleanup_capacity_ret
     let third = &fixtures[2];
     let pid = fs::read_to_string(third.0.join("edit-pid")).unwrap();
     let alive = || {
-        std::process::Command::new("/bin/kill")
+        velune_agent_runtime::process::command("/bin/kill")
             .args(["-0", pid.trim()])
             .status()
             .unwrap()
@@ -1423,7 +1451,7 @@ fn pi_edit_preparation_deadline_does_not_terminate_written_model_or_human_wait()
         );
         let pid = fs::read_to_string(fixture.0.join("edit-pid")).unwrap();
         let alive = || {
-            std::process::Command::new("/bin/kill")
+            velune_agent_runtime::process::command("/bin/kill")
                 .args(["-0", pid.trim()])
                 .status()
                 .unwrap()
@@ -1514,64 +1542,164 @@ fn pi_edit_preparation_deadline_does_not_terminate_written_model_or_human_wait()
 fn pi_same_session_reply_and_cancel_keep_edit_fact_channel_and_late_acceptance() {
     let fixture = Fixture::new("primary-controls", false);
     let service = fixture.open();
-    service.execute(ClientViewId("configuration".into()), Command::UpsertRuntimeWithExecution {
-        runtime: crate::config::RuntimeInstance {
-            enabled: true, id: "pi".into(), name: "Synthetic Pi".into(),
-            type_id: crate::conversation::RuntimeKind::Pi, gateway_id: "default".into(),
-            settings: BTreeMap::from([
-                ("binary".into(), fixture.0.join("pi").to_string_lossy().into_owned()),
-                ("nodeBinary".into(), fixture.0.join("node").to_string_lossy().into_owned()),
-                ("agentDir".into(), fixture.0.to_string_lossy().into_owned()),
-                ("sessionDir".into(), fixture.0.to_string_lossy().into_owned()),
-            ]),
-        },
-        execution: crate::RuntimeExecution { home: crate::RuntimeHome::Managed { remote_root: None }, ..Default::default() },
-    }).unwrap();
+    service
+        .execute(
+            ClientViewId("configuration".into()),
+            Command::UpsertRuntimeWithExecution {
+                runtime: crate::config::RuntimeInstance {
+                    enabled: true,
+                    id: "pi".into(),
+                    name: "Synthetic Pi".into(),
+                    type_id: crate::conversation::RuntimeKind::Pi,
+                    gateway_id: "default".into(),
+                    settings: BTreeMap::from([
+                        (
+                            "binary".into(),
+                            fixture.0.join("pi").to_string_lossy().into_owned(),
+                        ),
+                        (
+                            "nodeBinary".into(),
+                            fixture.0.join("node").to_string_lossy().into_owned(),
+                        ),
+                        ("agentDir".into(), fixture.0.to_string_lossy().into_owned()),
+                        (
+                            "sessionDir".into(),
+                            fixture.0.to_string_lossy().into_owned(),
+                        ),
+                    ]),
+                },
+                execution: crate::RuntimeExecution {
+                    home: crate::RuntimeHome::Managed { remote_root: None },
+                    ..Default::default()
+                },
+            },
+        )
+        .unwrap();
     let edit = start_edit(&service, &fixture, "replacement".into());
     fixture.wait("primary-prompt-read");
     let end = Instant::now() + Duration::from_secs(3);
     let question = loop {
         let view = snapshot(&service, fixture.id("edit"));
-        if let Some(interaction) = view.pending_interactions.first() { break interaction.clone(); }
-        assert!(Instant::now() < end); std::thread::sleep(Duration::from_millis(5));
+        if let Some(interaction) = view.pending_interactions.first() {
+            break interaction.clone();
+        }
+        assert!(Instant::now() < end);
+        std::thread::sleep(Duration::from_millis(5));
     };
-    let velune_conversation::InteractionKind::UserInput { questions } = &question.kind else { panic!("native form question") };
+    let velune_conversation::InteractionKind::UserInput { questions } = &question.kind else {
+        panic!("native form question")
+    };
     let answer = questions.first().unwrap();
-    let yes = answer.options.iter().find(|option| option.id == "yes").unwrap();
-    later(&service, "edit", Command::ReplyRuntimeInteraction {
-        runtime_id: "pi".into(), conversation_id: fixture.id("edit"), interaction_id: question.id.clone(),
-        reply: RuntimeInteractionReply::Answers { answers: vec![velune_conversation::InteractionAnswer {
-            question_id: answer.id.clone(), values: vec![yes.id.clone()],
-        }] },
-    }).recv_timeout(Duration::from_secs(2)).unwrap().unwrap();
+    let yes = answer
+        .options
+        .iter()
+        .find(|option| option.id == "yes")
+        .unwrap();
+    later(
+        &service,
+        "edit",
+        Command::ReplyRuntimeInteraction {
+            runtime_id: "pi".into(),
+            conversation_id: fixture.id("edit"),
+            interaction_id: question.id.clone(),
+            reply: RuntimeInteractionReply::Answers {
+                answers: vec![velune_conversation::InteractionAnswer {
+                    question_id: answer.id.clone(),
+                    values: vec![yes.id.clone()],
+                }],
+            },
+        },
+    )
+    .recv_timeout(Duration::from_secs(2))
+    .unwrap()
+    .unwrap();
     fixture.wait("primary-answered");
-    assert!(matches!(edit.try_recv(), Err(mpsc::TryRecvError::Empty)), "answer consumed the original edit wait");
+    assert!(
+        matches!(edit.try_recv(), Err(mpsc::TryRecvError::Empty)),
+        "answer consumed the original edit wait"
+    );
     let replies = fixture.requests("edit");
-    assert_eq!(replies.iter().filter(|r| r["type"] == "extension_ui_response").count(), 1);
-    let cancel = later(&service, "edit", Command::Cancel { runtime_id: "pi".into(), conversation_id: fixture.id("edit") });
+    assert_eq!(
+        replies
+            .iter()
+            .filter(|r| r["type"] == "extension_ui_response")
+            .count(),
+        1
+    );
+    let cancel = later(
+        &service,
+        "edit",
+        Command::Cancel {
+            runtime_id: "pi".into(),
+            conversation_id: fixture.id("edit"),
+        },
+    );
     fixture.wait("primary-clear-read");
     // The helper continues reading while withholding ClearQueue's ACK, so an
     // early Abort would actually be visible here, not hidden by a blocked stdin.
     snapshot(&service, fixture.id("edit"));
-    assert!(fixture.requests("edit").iter().all(|r| r["type"] != "abort"));
+    assert!(
+        fixture
+            .requests("edit")
+            .iter()
+            .all(|r| r["type"] != "abort")
+    );
     assert!(matches!(cancel.try_recv(), Err(mpsc::TryRecvError::Empty)));
     assert!(matches!(edit.try_recv(), Err(mpsc::TryRecvError::Empty)));
     fs::write(fixture.0.join("release-primary-clear"), []).unwrap();
     fixture.wait("primary-abort-read");
-    assert!(matches!(cancel.try_recv(), Err(mpsc::TryRecvError::Empty)), "ClearQueue ACK fabricated Abort acceptance");
+    assert!(
+        matches!(cancel.try_recv(), Err(mpsc::TryRecvError::Empty)),
+        "ClearQueue ACK fabricated Abort acceptance"
+    );
     assert!(matches!(edit.try_recv(), Err(mpsc::TryRecvError::Empty)));
     fs::write(fixture.0.join("release-primary-abort"), []).unwrap();
-    assert!(matches!(cancel.recv_timeout(Duration::from_secs(2)).unwrap().unwrap(), Response::Cancel(_)));
-    assert!(matches!(edit.try_recv(), Err(mpsc::TryRecvError::Empty)), "Cancel discarded the pending prompt fact channel");
-    assert_ne!(snapshot(&service, fixture.id("edit")).run_state, RunState::Running);
+    assert!(matches!(
+        cancel
+            .recv_timeout(Duration::from_secs(2))
+            .unwrap()
+            .unwrap(),
+        Response::Cancel(_)
+    ));
+    assert!(
+        matches!(edit.try_recv(), Err(mpsc::TryRecvError::Empty)),
+        "Cancel discarded the pending prompt fact channel"
+    );
+    assert_ne!(
+        snapshot(&service, fixture.id("edit")).run_state,
+        RunState::Running
+    );
     fs::write(fixture.0.join("release-primary-fact"), []).unwrap();
-    let Response::EditMessage(result) = edit.recv_timeout(Duration::from_secs(3)).unwrap().unwrap() else { panic!("late exact prompt fact") };
-    assert_eq!(result.submission_receipt, Some(crate::SubmissionReceipt::Sending));
-    assert_ne!(result.snapshot.unwrap().run_state, RunState::Running, "late preflight ACK restarted a cancelled native turn");
+    let Response::EditMessage(result) = edit.recv_timeout(Duration::from_secs(3)).unwrap().unwrap()
+    else {
+        panic!("late exact prompt fact")
+    };
+    assert_eq!(
+        result.submission_receipt,
+        Some(crate::SubmissionReceipt::Sending)
+    );
+    assert_ne!(
+        result.snapshot.unwrap().run_state,
+        RunState::Running,
+        "late preflight ACK restarted a cancelled native turn"
+    );
     let wire = fixture.requests("edit");
-    assert_eq!(wire.iter().filter(|r| r["message"] == "replacement").count(), 1);
-    assert_eq!(wire.iter().filter(|r| r["type"] == "clear_queue").count(), 1);
+    assert_eq!(
+        wire.iter()
+            .filter(|r| r["message"] == "replacement")
+            .count(),
+        1
+    );
+    assert_eq!(
+        wire.iter().filter(|r| r["type"] == "clear_queue").count(),
+        1
+    );
     assert_eq!(wire.iter().filter(|r| r["type"] == "abort").count(), 1);
-    assert_eq!(wire.iter().filter(|r| r["type"] == "extension_ui_response").count(), 1);
+    assert_eq!(
+        wire.iter()
+            .filter(|r| r["type"] == "extension_ui_response")
+            .count(),
+        1
+    );
     close_after_cleanup(&service);
 }

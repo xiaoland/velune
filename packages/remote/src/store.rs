@@ -531,13 +531,13 @@ impl DeviceStore {
         {
             return Ok(value);
         }
-        if let Some(path) = &self.path {
-            if atomic_write(path, &bytes).is_err() {
-                // rename may have succeeded before directory fsync failed. Do
-                // not keep serving from a possibly older in-memory grant set.
-                self.write_failed.store(true, Ordering::Release);
-                return Err(RemoteError::StateStorage);
-            }
+        if let Some(path) = &self.path
+            && atomic_write(path, &bytes).is_err()
+        {
+            // rename may have succeeded before directory fsync failed. Do
+            // not keep serving from a possibly older in-memory grant set.
+            self.write_failed.store(true, Ordering::Release);
+            return Err(RemoteError::StateStorage);
         }
         *current = next;
         drop(current);

@@ -452,7 +452,8 @@ struct Owner {
     revision: Revision,
     history: HistoryWorkers,
     pending_history: BTreeMap<u64, PendingHistory>,
-    pending_execution: BTreeMap<crate::local::execution_workers::ExecutionTicket, PendingExecutionReply>,
+    pending_execution:
+        BTreeMap<crate::local::execution_workers::ExecutionTicket, PendingExecutionReply>,
     handoff_requirements: BTreeMap<String, HandoffRequirementEntry>,
     pending_handoff_requirements: BTreeMap<u64, String>,
     handoff_summary_works: BTreeMap<String, HandoffSummaryWork>,
@@ -470,7 +471,7 @@ struct PendingExecutionReply {
 }
 
 enum ExecutionReplyDelivery {
-    Conversation(ConversationExecutionReply),
+    Conversation(Box<ConversationExecutionReply>),
     HandoffCancellation,
 }
 
@@ -682,38 +683,116 @@ impl Owner {
         reply: CommandReply,
     ) {
         let creation = matches!(&command, Command::CreateConversation { .. });
-        let (runtime_id, conversation_id, response): (_, _, fn(crate::SnapshotResult) -> Response) = match &command {
-            Command::CreateConversation { runtime_id, .. } =>
-                (runtime_id.clone(), String::new(), Response::CreateConversation),
-            Command::Cancel { runtime_id, conversation_id } =>
-                (runtime_id.clone(), conversation_id.clone(), Response::Cancel),
-            Command::StopSubAgents { runtime_id, conversation_id } =>
-                (runtime_id.clone(), conversation_id.clone(), Response::StopSubAgents),
-            Command::ReplyRuntimeInteraction { runtime_id, conversation_id, .. } =>
-                (runtime_id.clone(), conversation_id.clone(), Response::ReplyRuntimeInteraction),
-            Command::SendTurn { source_runtime_id, conversation_id, .. }
-            | Command::SendCurrentTurn { source_runtime_id, conversation_id, .. } =>
-                (source_runtime_id.clone(), conversation_id.clone(), Response::SendTurn),
-            Command::DeleteUserMessage { runtime_id, conversation_id, .. } =>
-                (runtime_id.clone(), conversation_id.clone(), Response::DeleteUserMessage),
-            Command::EditMessage { runtime_id, conversation_id, .. } =>
-                (runtime_id.clone(), conversation_id.clone(), Response::EditMessage),
-            Command::ResumeTurn { runtime_id, conversation_id, .. } =>
-                (runtime_id.clone(), conversation_id.clone(), Response::ResumeTurn),
-            Command::SteerTurn { runtime_id, conversation_id, .. } =>
-                (runtime_id.clone(), conversation_id.clone(), Response::SteerTurn),
-            _ => unreachable!("live command classification"),
-        };
+        let (runtime_id, conversation_id, response): (_, _, fn(crate::SnapshotResult) -> Response) =
+            match &command {
+                Command::CreateConversation { runtime_id, .. } => (
+                    runtime_id.clone(),
+                    String::new(),
+                    Response::CreateConversation,
+                ),
+                Command::Cancel {
+                    runtime_id,
+                    conversation_id,
+                } => (
+                    runtime_id.clone(),
+                    conversation_id.clone(),
+                    Response::Cancel,
+                ),
+                Command::StopSubAgents {
+                    runtime_id,
+                    conversation_id,
+                } => (
+                    runtime_id.clone(),
+                    conversation_id.clone(),
+                    Response::StopSubAgents,
+                ),
+                Command::ReplyRuntimeInteraction {
+                    runtime_id,
+                    conversation_id,
+                    ..
+                } => (
+                    runtime_id.clone(),
+                    conversation_id.clone(),
+                    Response::ReplyRuntimeInteraction,
+                ),
+                Command::SendTurn {
+                    source_runtime_id,
+                    conversation_id,
+                    ..
+                }
+                | Command::SendCurrentTurn {
+                    source_runtime_id,
+                    conversation_id,
+                    ..
+                } => (
+                    source_runtime_id.clone(),
+                    conversation_id.clone(),
+                    Response::SendTurn,
+                ),
+                Command::DeleteUserMessage {
+                    runtime_id,
+                    conversation_id,
+                    ..
+                } => (
+                    runtime_id.clone(),
+                    conversation_id.clone(),
+                    Response::DeleteUserMessage,
+                ),
+                Command::EditMessage {
+                    runtime_id,
+                    conversation_id,
+                    ..
+                } => (
+                    runtime_id.clone(),
+                    conversation_id.clone(),
+                    Response::EditMessage,
+                ),
+                Command::ResumeTurn {
+                    runtime_id,
+                    conversation_id,
+                    ..
+                } => (
+                    runtime_id.clone(),
+                    conversation_id.clone(),
+                    Response::ResumeTurn,
+                ),
+                Command::SteerTurn {
+                    runtime_id,
+                    conversation_id,
+                    ..
+                } => (
+                    runtime_id.clone(),
+                    conversation_id.clone(),
+                    Response::SteerTurn,
+                ),
+                _ => unreachable!("live command classification"),
+            };
         let kind = match &command {
-            Command::CreateConversation { .. } => crate::local::execution_workers::ExecutionCommandKind::Create,
+            Command::CreateConversation { .. } => {
+                crate::local::execution_workers::ExecutionCommandKind::Create
+            }
             Command::Cancel { .. } => crate::local::execution_workers::ExecutionCommandKind::Cancel,
-            Command::StopSubAgents { .. } => crate::local::execution_workers::ExecutionCommandKind::StopBackground,
-            Command::ReplyRuntimeInteraction { .. } => crate::local::execution_workers::ExecutionCommandKind::Reply,
-            Command::SendTurn { .. } | Command::SendCurrentTurn { .. } => crate::local::execution_workers::ExecutionCommandKind::Send,
-            Command::ResumeTurn { .. } => crate::local::execution_workers::ExecutionCommandKind::Resume,
-            Command::SteerTurn { .. } => crate::local::execution_workers::ExecutionCommandKind::Steer,
-            Command::EditMessage { .. } => crate::local::execution_workers::ExecutionCommandKind::Edit,
-            Command::DeleteUserMessage { .. } => crate::local::execution_workers::ExecutionCommandKind::Delete,
+            Command::StopSubAgents { .. } => {
+                crate::local::execution_workers::ExecutionCommandKind::StopBackground
+            }
+            Command::ReplyRuntimeInteraction { .. } => {
+                crate::local::execution_workers::ExecutionCommandKind::Reply
+            }
+            Command::SendTurn { .. } | Command::SendCurrentTurn { .. } => {
+                crate::local::execution_workers::ExecutionCommandKind::Send
+            }
+            Command::ResumeTurn { .. } => {
+                crate::local::execution_workers::ExecutionCommandKind::Resume
+            }
+            Command::SteerTurn { .. } => {
+                crate::local::execution_workers::ExecutionCommandKind::Steer
+            }
+            Command::EditMessage { .. } => {
+                crate::local::execution_workers::ExecutionCommandKind::Edit
+            }
+            Command::DeleteUserMessage { .. } => {
+                crate::local::execution_workers::ExecutionCommandKind::Delete
+            }
             _ => unreachable!("live command classification"),
         };
         if let Err(error) = self.application.runtime.begin_execution_command(kind) {
@@ -721,24 +800,44 @@ impl Owner {
             return;
         }
         self.application.runtime.submission_cancellation = cancellation
-            .filter(|_| kind.is_submission()).map(|flag| (conversation_id.clone(), flag));
+            .filter(|_| kind.is_submission())
+            .map(|flag| (conversation_id.clone(), flag));
         let result = self.execute(view.clone(), context.clone(), command);
         self.application.runtime.submission_cancellation = None;
         if let Some(ticket) = self.application.runtime.finish_execution_command() {
-            let view_created = self.views.get(&view).expect("command view retained").created;
+            let view_created = self
+                .views
+                .get(&view)
+                .expect("command view retained")
+                .created;
             let address = if creation {
                 self.application.runtime.execution_creation_address(ticket)
             } else {
-                self.application.runtime.execution_reply_address(&runtime_id, &conversation_id)
-            }.map_err(Failure::from);
-            self.pending_execution.insert(ticket, PendingExecutionReply {
-                dispatch_failure: result.err(),
-                delivery: ExecutionReplyDelivery::Conversation(ConversationExecutionReply {
-                    view, view_created, context, runtime_id, conversation_id, address,
-                    creation, submission: kind.is_submission(), response,
-                }),
-                reply,
-            });
+                self.application
+                    .runtime
+                    .execution_reply_address(&runtime_id, &conversation_id)
+            }
+            .map_err(Failure::from);
+            self.pending_execution.insert(
+                ticket,
+                PendingExecutionReply {
+                    dispatch_failure: result.err(),
+                    delivery: ExecutionReplyDelivery::Conversation(Box::new(
+                        ConversationExecutionReply {
+                            view,
+                            view_created,
+                            context,
+                            runtime_id,
+                            conversation_id,
+                            address,
+                            creation,
+                            submission: kind.is_submission(),
+                            response,
+                        },
+                    )),
+                    reply,
+                },
+            );
         } else {
             let _ = reply.send(result);
         }
@@ -746,8 +845,11 @@ impl Owner {
 
     fn finish_execution_commands(&mut self) {
         for (ticket, result) in self.application.runtime.drain_execution_results() {
-            let Some(PendingExecutionReply { dispatch_failure, delivery, reply }) =
-                self.pending_execution.remove(&ticket)
+            let Some(PendingExecutionReply {
+                dispatch_failure,
+                delivery,
+                reply,
+            }) = self.pending_execution.remove(&ticket)
             else {
                 if let Err(error) = result {
                     tracing::warn!(target: "velune_application", event = "runtime_operation_failed", detail = %error);
@@ -764,32 +866,43 @@ impl Owner {
                 let _ = reply.send(result);
                 continue;
             };
-            let refresh_error = |error: String| Failure::from(if pending.submission {
-                Error::after_delivery(error)
-            } else {
-                Error::operation_completed(error)
-            });
+            let submission = pending.submission;
+            let refresh_error = |error: String| {
+                Failure::from(if submission {
+                    Error::after_delivery(error)
+                } else {
+                    Error::operation_completed(error)
+                })
+            };
             let result = result.map_err(Failure::from).and_then(|success| {
                 if let Some(error) = dispatch_failure {
                     return Err(refresh_error(error.to_string()));
                 }
-                if self.views.get(&pending.view)
+                if self
+                    .views
+                    .get(&pending.view)
                     .is_none_or(|view| view.created != pending.view_created)
                 {
                     return Err(refresh_error("原请求视图已关闭".into()));
                 }
-                let address = pending.address.map_err(|error| refresh_error(error.to_string()))?;
+                let address = pending
+                    .address
+                    .map_err(|error| refresh_error(error.to_string()))?;
                 let remote = pending.context.is_some();
-                let mut response = self.with_view(&pending.view, remote, |application| {
-                    if pending.creation {
-                        application.runtime.completed_creation_snapshot(address)
-                    } else {
-                        application.runtime.completed_execution_snapshot(
-                            address, &pending.runtime_id, &pending.conversation_id,
-                            success.submitted_native_message_id,
-                        )
-                    }
-                }).map_err(|error| refresh_error(error.to_string()))?;
+                let mut response = self
+                    .with_view(&pending.view, remote, |application| {
+                        if pending.creation {
+                            application.runtime.completed_creation_snapshot(address)
+                        } else {
+                            application.runtime.completed_execution_snapshot(
+                                address,
+                                &pending.runtime_id,
+                                &pending.conversation_id,
+                                success.submitted_native_message_id,
+                            )
+                        }
+                    })
+                    .map_err(|error| refresh_error(error.to_string()))?;
                 if pending.submission {
                     response.submission_receipt = Some(crate::SubmissionReceipt::Sending);
                 }
@@ -1712,9 +1825,10 @@ impl Owner {
             )
         };
         let (work_id, source, facts, summary) = prepared;
-        let (Some(source_provider_id), Some(source_model_id)) =
-            (facts.source_provider_id.clone(), facts.source_model_id.clone())
-        else {
+        let (Some(source_provider_id), Some(source_model_id)) = (
+            facts.source_provider_id.clone(),
+            facts.source_model_id.clone(),
+        ) else {
             if let Some(work) = self.handoff_summary_works.get_mut(&work_id) {
                 work.send_pending = false;
             }
@@ -1892,7 +2006,11 @@ impl Owner {
             });
         if let Some((conversation_id, target_runtime_id, view, execution_id)) = accepted {
             use crate::local::execution_workers::ExecutionCommandKind;
-            if let Err(error) = self.application.runtime.begin_execution_command(ExecutionCommandKind::Cancel) {
+            if let Err(error) = self
+                .application
+                .runtime
+                .begin_execution_command(ExecutionCommandKind::Cancel)
+            {
                 let _ = reply.send(Err(Failure::from(error)));
                 return;
             }
@@ -1917,11 +2035,14 @@ impl Owner {
                 })
                 .map_err(Failure::from);
             if let Some(ticket) = self.application.runtime.finish_execution_command() {
-                self.pending_execution.insert(ticket, PendingExecutionReply {
-                    dispatch_failure: result.err(),
-                    delivery: ExecutionReplyDelivery::HandoffCancellation,
-                    reply,
-                });
+                self.pending_execution.insert(
+                    ticket,
+                    PendingExecutionReply {
+                        dispatch_failure: result.err(),
+                        delivery: ExecutionReplyDelivery::HandoffCancellation,
+                        reply,
+                    },
+                );
             } else {
                 let _ = reply.send(result.and_then(|()| self.handoff_cancelled_response()));
             }
@@ -2072,7 +2193,7 @@ impl Owner {
                         status.as_deref(),
                         Some(
                             velune_agent_runtime::native::HandoffSummaryStatus::Ready { .. }
-                            | velune_agent_runtime::native::HandoffSummaryStatus::Failed { .. }
+                                | velune_agent_runtime::native::HandoffSummaryStatus::Failed { .. }
                         )
                     ) =>
                 {
@@ -2566,7 +2687,13 @@ impl Owner {
                             | Command::SteerTurn { .. }
                             | Command::EditMessage { .. }
                             | Command::DeleteUserMessage { .. }) => {
-                                self.execute_live_command(view, context, command, cancellation, reply);
+                                self.execute_live_command(
+                                    view,
+                                    context,
+                                    command,
+                                    cancellation,
+                                    reply,
+                                );
                             }
                             command @ (Command::QueueHandoffSummary { .. }
                             | Command::RetryQueuedHandoffSummary { .. }) => {
@@ -3143,7 +3270,10 @@ mod usage_tests {
         .unwrap();
 
         assert_eq!(browser_preferences(&app, "local"), main);
-        assert_eq!(browser_preferences_isolated(&app, "archive-window"), archive);
+        assert_eq!(
+            browser_preferences_isolated(&app, "archive-window"),
+            archive
+        );
         app.execute(ClientViewId("archive-window".into()), Command::ReleaseView)
             .unwrap();
         assert_eq!(browser_preferences(&app, "local"), main);

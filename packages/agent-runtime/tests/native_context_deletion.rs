@@ -1,9 +1,7 @@
 //! Synthetic native records only: no CLI authentication or model requests.
 use serde_json::{Value, json};
-use std::{
-    io::Write,
-    process::{Command, Stdio},
-};
+use std::{io::Write, process::Stdio};
+use velune_agent_runtime::process::command;
 
 fn codex(records: &[Value], id: Option<&str>, omit: bool) -> std::process::Output {
     let mut args = vec!["-c", include_str!("../resources/codex_context.py")];
@@ -17,7 +15,7 @@ fn codex(records: &[Value], id: Option<&str>, omit: bool) -> std::process::Outpu
             id,
         ]);
     }
-    let mut child = Command::new("python3")
+    let mut child = command("python3")
         .args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -31,7 +29,7 @@ fn codex(records: &[Value], id: Option<&str>, omit: bool) -> std::process::Outpu
     child.wait_with_output().unwrap()
 }
 fn codex_summary_required(records: &[Value]) -> std::process::Output {
-    let mut child = Command::new("python3")
+    let mut child = command("python3")
         .args([
             "-c",
             include_str!("../resources/codex_context.py"),
@@ -55,7 +53,7 @@ fn codex_with_summary(records: &[Value], summary: &str) -> std::process::Output 
         .collect::<Vec<_>>()
         .join("\n");
     let request = json!({"rollout":rollout,"portableSummary":summary});
-    let mut child = Command::new("python3")
+    let mut child = command("python3")
         .args([
             "-c",
             include_str!("../resources/codex_context.py"),
@@ -402,10 +400,7 @@ with tempfile.TemporaryDirectory(prefix='velune-context-delete-') as root:
     assert export_context(path, without_message_id='selected')['messages'] == [{'role':'user','content':[{'type':'text','text':'summary'}]}]
 "#
     );
-    let output = Command::new("python3")
-        .args(["-c", script])
-        .output()
-        .unwrap();
+    let output = command("python3").args(["-c", script]).output().unwrap();
     assert!(
         output.status.success(),
         "{}",
@@ -455,7 +450,7 @@ fn native_imports_roundtrip_assistant_first_context_without_a_new_request() {
         include_str!("../resources/claude_context.py"),
         "\nimport json,sys\ndef local_command(content): return None\nprint(json.dumps(export_context(sys.argv[1])))\n"
     );
-    let output = Command::new("python3")
+    let output = command("python3")
         .args(["-c", script])
         .arg(path)
         .output()
@@ -493,7 +488,7 @@ fn native_imports_roundtrip_assistant_first_context_without_a_new_request() {
         None
     }
     let path = rollout(&home.join("sessions")).unwrap();
-    let mut child = Command::new("python3")
+    let mut child = command("python3")
         .args(["-c", include_str!("../resources/codex_context.py")])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -579,7 +574,7 @@ fn imports_preserve_prompt_origins_for_repeated_and_multimodal_deletion() {
         include_str!("../resources/claude_context.py"),
         "\nimport json,sys\ndef local_command(content): return None\nprint(json.dumps(export_context(sys.argv[1], without_message_ids=json.loads(sys.argv[2]))))\n"
     );
-    let output = Command::new("python3")
+    let output = command("python3")
         .args(["-c", script])
         .arg(path)
         .arg(serde_json::to_string(&ids).unwrap())
@@ -721,7 +716,7 @@ fn empty_claude_import_is_discoverable_and_fresh_cli_accepts_its_identity() {
     assert!(history.messages.is_empty());
     assert_eq!(history.cwd.as_deref(), root.to_str());
     if let Some(binary) = std::env::var_os("VELUNE_TEST_CLAUDE_BINARY") {
-        let mut child = Command::new(binary)
+        let mut child = command(binary)
             .env_clear()
             .env("PATH", "/opt/homebrew/bin:/usr/bin:/bin")
             .env("HOME", &root)
@@ -772,7 +767,7 @@ fn legacy_steer_duplicates_use_canonical_turn_ordinals_for_many_deletion() {
         json!({"id":"legacy-steer-one","type":"userMessage","content":[{"type":"text","text":"duplicate"}]}),
         json!({"id":"legacy-steer-two","type":"userMessage","content":[{"type":"text","text":"duplicate"}]}),
     ];
-    let records = vec![
+    let records = [
         json!({"type":"event_msg","payload":{"type":"task_started","turn_id":"turn"}}),
         json!({"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"duplicate"}]}}),
         json!({"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"duplicate"}]}}),
@@ -787,7 +782,7 @@ fn legacy_steer_duplicates_use_canonical_turn_ordinals_for_many_deletion() {
         "legacy-steer-one":{"turnId":"turn","ordinal":1,"users":users},
         "legacy-steer-two":{"turnId":"turn","ordinal":2,"users":users}
     }});
-    let mut child = Command::new("python3")
+    let mut child = command("python3")
         .args([
             "-c",
             include_str!("../resources/codex_context.py"),
