@@ -1904,7 +1904,10 @@ fn codex_first_admission_error_still_cleans_failed_owner_when_poll_returns_ok_an
             {
                 break;
             }
-            Err(error) => assert!(error.message.contains("无效协议记录"), "{error:?}"),
+            Err(error) => {
+                assert_eq!(error.code, "invalid", "{error:?}");
+                assert!(error.message.starts_with("运行时事件读取失败"), "{error:?}");
+            }
             _ => {}
         }
         assert!(Instant::now() < deadline);
