@@ -6,6 +6,16 @@ import VeluneBindings
 /// own items; native customization is saved under this name on macOS 26.
 enum ConversationToolbar {
     static let id = "conversation"
+
+    enum Item: String {
+        case listFilter = "list-filter"
+        case newConversation = "new-conversation"
+        case back, forward, device
+
+        var identifier: NSToolbarItem.Identifier { .init(rawValue) }
+        static let sidebar: Set<NSToolbarItem.Identifier> = [listFilter.identifier, newConversation.identifier]
+        static let detailNavigation: Set<NSToolbarItem.Identifier> = [back.identifier, forward.identifier, device.identifier]
+    }
 }
 
 /// A conversation window: the panes, with dock areas for tool windows at
@@ -144,9 +154,9 @@ struct VeluneRootView: View {
     @available(macOS 26, *)
     @ToolbarContentBuilder private var customizableToolbarItems: some CustomizableToolbarContent {
         Group {
-            ToolbarItem(id: "back", placement: .navigation) { backButton }
-            ToolbarItem(id: "forward", placement: .navigation) { forwardButton }
-            if let deviceName { ToolbarItem(id: "device", placement: .navigation) { deviceLabel(deviceName) } }
+            ToolbarItem(id: ConversationToolbar.Item.back.rawValue, placement: .navigation) { backButton }
+            ToolbarItem(id: ConversationToolbar.Item.forward.rawValue, placement: .navigation) { forwardButton }
+            if let deviceName { ToolbarItem(id: ConversationToolbar.Item.device.rawValue, placement: .navigation) { deviceLabel(deviceName) } }
         }
         // Without the title nothing holds the buttons to the trailing end.
         if !aggregated.conversationManagement.isEmpty { ToolbarItem(id: "operations") { ConversationOperationStatus(aggregated: aggregated) } }
@@ -164,11 +174,9 @@ struct VeluneRootView: View {
     }
 
     @ToolbarContentBuilder private var toolbarItems: some ToolbarContent {
-        ToolbarItemGroup(placement: .navigation) {
-            backButton
-            forwardButton
-            if let deviceName { deviceLabel(deviceName) }
-        }
+        ToolbarItem(id: ConversationToolbar.Item.back.rawValue, placement: .navigation) { backButton }
+        ToolbarItem(id: ConversationToolbar.Item.forward.rawValue, placement: .navigation) { forwardButton }
+        if let deviceName { ToolbarItem(id: ConversationToolbar.Item.device.rawValue, placement: .navigation) { deviceLabel(deviceName) } }
         if !aggregated.conversationManagement.isEmpty { ToolbarItem { ConversationOperationStatus(aggregated: aggregated) } }
         ToolbarItem { Spacer() }
         ToolbarItemGroup {
@@ -216,14 +224,12 @@ struct VeluneRootView: View {
         Button { tab.goBack() } label: { Label("后退", systemImage: "chevron.backward") }
             .help(shortcuts.help("回到之前查看的会话", .back)).disabled(!window.hasConversationFocus || focused.backHistory.isEmpty)
             .accessibilityIdentifier("conversation-back")
-            .background(ConversationToolbarPartition.itemAnchor("conversation-back"))
     }
 
     private var forwardButton: some View {
         Button { tab.goForward() } label: { Label("前进", systemImage: "chevron.forward") }
             .help(shortcuts.help("前往后退前的会话", .forward)).disabled(!window.hasConversationFocus || focused.forwardHistory.isEmpty)
             .accessibilityIdentifier("conversation-forward")
-            .background(ConversationToolbarPartition.itemAnchor("conversation-forward"))
     }
 
     private var reloadButton: some View {

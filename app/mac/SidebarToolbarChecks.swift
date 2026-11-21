@@ -125,47 +125,69 @@ import ObjectiveC
             // Save the complete native drawing before any semantic assertion,
             // so unsupported hidden-host behavior never becomes a blind retry.
             let nativeFrame = window.contentView!.superview!
+            var splitChild: NSView = marker
+            while let parent = splitChild.superview, parent !== outer { splitChild = parent }
+            require(outer.arrangedSubviews.first === splitChild, "anchor must identify outer sidebar column")
+            let sidebarRect = splitChild.convert(splitChild.bounds, to: nativeFrame)
+            func settleToolbar() {
+                for _ in 0..<5 {
+                    host.view.layoutSubtreeIfNeeded()
+                    nativeFrame.layoutSubtreeIfNeeded()
+                    settle()
+                }
+            }
             func saveDrawing(_ artifact: String) {
                 guard let drawing = nativeFrame.bitmapImageRepForCachingDisplay(in: nativeFrame.bounds) else { fail("native window capture unavailable") }
                 nativeFrame.cacheDisplay(in: nativeFrame.bounds, to: drawing)
                 try! drawing.representation(using: .png, properties: [:])!.write(to: directory.appendingPathComponent(artifact + ".png"))
             }
-            if restoreMisorderedToolbar && !toolbar.allowsUserCustomization {
+            if restoreMisorderedToolbar {
                 let original = toolbar.itemIdentifiers
-                let items = toolbar.items
                 guard let partition = marker as? ConversationToolbarPartition.Anchor else { fail("missing production partition observer") }
-                let misplaced = items.filter { item in
-                    if let separator = item as? NSTrackingSeparatorToolbarItem { return separator.splitView === outer }
-                    guard let view = item.view else { return false }
-                    return !identifiers(view).isDisjoint(with: ["conversation-list-filter", "conversation-new-conversation"])
-                }.map(\.itemIdentifier)
-                let navigation = items.first { $0.view.map { identifiers($0).contains("conversation-forward") } ?? false }
-                require(misplaced.count == 3 && navigation != nil, "need two list actions, sidebar divider and forward button to recreate displacement")
-                var incorrect = original.filter { !misplaced.contains($0) }
-                let afterNavigation = incorrect.firstIndex(of: navigation!.itemIdentifier)! + 1
-                incorrect.insert(contentsOf: misplaced, at: afterNavigation)
+                let listItems = original.filter(ConversationToolbar.Item.sidebar.contains)
+                let back = ConversationToolbar.Item.back.identifier
+                let forward = ConversationToolbar.Item.forward.identifier
+                guard let divider = toolbar.items.first(where: { ($0 as? NSTrackingSeparatorToolbarItem)?.splitView === outer })?.itemIdentifier,
+                      listItems.count == 2, original.contains(back), original.contains(forward) else {
+                    fail("need two list actions, the sidebar divider and navigation to recreate displacement")
+                }
+                var incorrect = original.filter { !listItems.contains($0) }
+                let afterNavigation = incorrect.firstIndex(of: forward)! + 1
+                incorrect.insert(contentsOf: listItems, at: afterNavigation)
 
                 // First let the bad native order settle without its observer.
                 partition.hasList = false
                 toolbar.itemIdentifiers = incorrect
-                for _ in 0..<5 { host.view.layoutSubtreeIfNeeded(); settle() }
+                settleToolbar()
                 require(toolbar.itemIdentifiers == incorrect, "native toolbar must retain the incorrect order without recovery")
                 saveDrawing(name + "-misordered")
+                for item in toolbar.items where listItems.contains(item.itemIdentifier) {
+                    guard let view = item.view else { fail("missing displaced sidebar action") }
+                    let rect = view.convert(view.bounds, to: nativeFrame)
+                    require(rect.width > 0 && rect.minX >= sidebarRect.maxX, "misordered action must actually render on the detail side: \(name), \(rect)")
+                }
                 partition.hasList = true
                 partition.scheduleCheck()
-                for _ in 0..<5 { host.view.layoutSubtreeIfNeeded(); settle() }
+                settleToolbar()
                 require(toolbar.itemIdentifiers == original, "initial check did not restore the sidebar partition")
 
-                // Also force a late native reorder with the observer installed.
-                // In this order the divider is in place and only the buttons drift.
-                guard let separatorID = misplaced.last else { fail("need outer split divider") }
-                var separated = original.filter { !misplaced.dropLast().contains($0) }
-                let contentIndex = separated.firstIndex(of: navigation!.itemIdentifier)! + 1
-                separated.insert(contentsOf: misplaced.dropLast(), at: contentIndex)
-                require(separated.contains(separatorID), "late reorder must retain sidebar divider")
-                toolbar.itemIdentifiers = separated
-                for _ in 0..<5 { host.view.layoutSubtreeIfNeeded(); settle() }
-                require(toolbar.itemIdentifiers == original, "observed reorder did not restore the sidebar partition")
+                // Restore reversed sidebar actions with Forward hidden using
+                // the native insert/remove APIs, as AppKit customization does.
+                toolbar.removeItem(identifier: forward)
+                for item in listItems { toolbar.removeItem(identifier: item) }
+                var expected = toolbar.itemIdentifiers
+                let oldDivider = expected.firstIndex(of: divider)!
+                let contentIndex = expected.firstIndex(of: back)! + 1
+                for (offset, item) in listItems.reversed().enumerated() {
+                    toolbar.insertItem(withItemIdentifier: item, at: contentIndex + offset)
+                }
+                require(toolbar.itemIdentifiers[contentIndex...].starts(with: listItems.reversed()),
+                        "native restoration must first put the reversed actions after Back")
+                expected.insert(contentsOf: listItems.reversed(), at: oldDivider)
+                settleToolbar()
+                require(toolbar.itemIdentifiers == expected, "native restore must fix the partition and preserve hidden and reordered controls")
+                toolbar.itemIdentifiers = original
+                settleToolbar()
             }
             saveDrawing(name)
             let hierarchy = descendants(nativeFrame).map { view in
@@ -180,12 +202,13 @@ import ObjectiveC
             require(separators.count == 1, "must bind exactly one separator to outer sidebar split: \(name)")
             let separator = separators[0]
             require(separator.1.dividerIndex == 0, "sidebar must be first outer split column")
-            let itemIDs = items.map { $0.view.map(identifiers) ?? [] }
-            func indices(_ id: String) -> [Int] { itemIDs.indices.filter { itemIDs[$0].contains(id) } }
-            let filter = indices("conversation-list-filter"), create = indices("conversation-new-conversation")
-            let back = indices("conversation-back"), forward = indices("conversation-forward")
+            func indices(_ id: ConversationToolbar.Item) -> [Int] {
+                items.indices.filter { items[$0].itemIdentifier == id.identifier }
+            }
+            let filter = indices(.listFilter), create = indices(.newConversation)
+            let back = indices(.back), forward = indices(.forward)
             if mode == "solo" {
-                require(filter.count == 1 && create.count == 1, "sidebar action identities must resolve uniquely: \(name), \(itemIDs)")
+                require(filter.count == 1 && create.count == 1, "sidebar action identities must resolve uniquely: \(name)")
                 for index in filter + create {
                     require(sidebarOwns(action: index, separator: separator.0, matchesOuterSplit: true), "action belongs to Content toolbar: \(name)")
                 }
@@ -198,31 +221,52 @@ import ObjectiveC
             }
             require(back.count == 1 && forward.count == 1, "navigation identities must resolve uniquely: \(name)")
             require(back[0] > separator.0 && forward[0] > separator.0, "navigation belongs to detail partition")
-            var splitChild: NSView = marker
-            while let parent = splitChild.superview, parent !== outer { splitChild = parent }
-            require(outer.arrangedSubviews.first === splitChild, "anchor must identify outer sidebar column")
-            let frame = window.contentView!.superview!
-            let sidebarRect = splitChild.convert(splitChild.bounds, to: frame)
-            if mode == "solo" {
+            if mode == "solo" || mode == "shared" {
+                for index in create {
+                    guard let view = items[index].view else { fail("missing new conversation view: \(name)") }
+                    require(descendants(view).contains(where: { $0 is NSButton && !$0.isHiddenOrHasHiddenAncestor }),
+                            "new conversation must render as a button: \(name)")
+                }
                 for index in filter + create {
                     require(toolbar.visibleItems?.contains(where: { $0 === items[index] }) == true,
                             "sidebar action must remain directly visible, not in global overflow: \(name)")
                     guard let view = items[index].view else { fail("missing visible sidebar action view") }
-                    let rect = view.convert(view.bounds, to: frame)
+                    let rect = view.convert(view.bounds, to: nativeFrame)
                     require(rect.width > 0 && rect.minX >= sidebarRect.minX && rect.maxX <= sidebarRect.maxX,
                             "visible action must fit the actual sidebar: \(name), \(rect), \(sidebarRect)")
                 }
+            }
+            if mode == "solo" {
+                guard let searchField = views.first(where: { $0 is NSSearchField && !$0.isHiddenOrHasHiddenAncestor }) else {
+                    fail("missing sidebar search field: \(name)")
+                }
+                let searchRect = searchField.convert(searchField.bounds, to: nativeFrame)
+                require(searchRect.minX >= sidebarRect.minX && searchRect.maxX <= sidebarRect.maxX,
+                        "search field must remain inside the sidebar: \(name)")
+                for index in filter + create {
+                    if let view = items[index].view {
+                        require(searchRect.maxY <= view.convert(view.bounds, to: nativeFrame).minY,
+                                "search must be below the toolbar actions: \(name)")
+                    }
+                }
                 if requestedSidebarWidth != nil { require(sidebarRect.width >= 220, "sole-list sidebar must honor toolbar minimum") }
             }
+            if mode == "solo" || mode == "shared" {
+                for index in back + forward {
+                    guard let view = items[index].view else { fail("missing navigation view: \(name)") }
+                    let rect = view.convert(view.bounds, to: nativeFrame)
+                    require(rect.minX >= sidebarRect.maxX, "navigation must fit outside the sidebar: \(name)")
+                }
+            }
             let rows = items.enumerated().map { index, item -> [String: Any] in
-                let rect = item.view.map { $0.convert($0.bounds, to: frame) } ?? .zero
-                return ["index": index, "itemID": item.itemIdentifier.rawValue, "actionIDs": itemIDs[index].sorted(),
+                let rect = item.view.map { $0.convert($0.bounds, to: nativeFrame) } ?? .zero
+                return ["index": index, "itemID": item.itemIdentifier.rawValue, "actionIDs": item.view.map(identifiers)?.sorted() ?? [],
                         "frame": NSStringFromRect(rect), "outerSidebarSeparator": index == separator.0,
                         "visibleItem": toolbar.visibleItems?.contains(where: { $0 === item }) == true]
             }
             evidence.append(["case": name, "hostOS": ProcessInfo.processInfo.operatingSystemVersionString,
                              "width": width, "mode": mode, "items": rows,
-                             "sidebarFrame": NSStringFromRect(splitChild.convert(splitChild.bounds, to: frame)),
+                             "sidebarFrame": NSStringFromRect(sidebarRect),
                              "outerSplit": String(describing: ObjectIdentifier(outer)),
                              "separatorSplit": String(describing: ObjectIdentifier(separator.1.splitView)),
                              "splitClass": String(describing: type(of: outer)), "dividerIndex": separator.1.dividerIndex,

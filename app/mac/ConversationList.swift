@@ -856,7 +856,6 @@ struct ConversationFilterMenu: View {
         .sheet(isPresented: $crossProjectsPresented) { CrossDeviceProjectsEditor(catalog: aggregated.crossProjects, devices: aggregated.devices) }
         .accessibilityLabel("显示")
         .accessibilityIdentifier("conversation-list-filter")
-        .background(ConversationToolbarPartition.itemAnchor("conversation-list-filter"))
         .disabled(device.store.conversationBrowserPreferences == nil)
     }
 
@@ -872,7 +871,6 @@ struct NewConversationButton: View {
         Button { window.createConversation() } label: { Label("新建会话", systemImage: "square.and.pencil") }
             .help(KeyboardShortcutSettings.shared.help("新建会话", .newConversation)).disabled(window.application.enabledRuntimeInstances.isEmpty)
             .accessibilityIdentifier("conversation-new-conversation")
-            .background(ConversationToolbarPartition.itemAnchor("conversation-new-conversation"))
     }
 }
 
@@ -898,6 +896,9 @@ struct ConversationListHeaderActions: View {
     var body: some View {
         ConversationSearchButton(window: window)
         ConversationFilterMenu(window: window, store: window.list).menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize().labelStyle(.iconOnly)
+            .background(PaneAnchor { anchor in
+                anchor()?.identifier = NSUserInterfaceItemIdentifier("conversation-list-filter")
+            })
         if side != .left { NewConversationButton(window: window).buttonStyle(.borderless).labelStyle(.iconOnly) }
     }
 }
@@ -911,26 +912,39 @@ struct ConversationListSidebarToolbar: ViewModifier {
 
     private var ownsList: Bool { window.tools.tools(in: .left).contains(.list) }
 
+    private var filterItem: some CustomizableToolbarContent {
+        ToolbarItem(id: ConversationToolbar.Item.listFilter.rawValue) {
+            ConversationFilterMenu(window: window, store: window.list)
+        }
+    }
+
+    private var newConversationItem: some CustomizableToolbarContent {
+        ToolbarItem(id: ConversationToolbar.Item.newConversation.rawValue) { NewConversationButton(window: window) }
+    }
+
     @ViewBuilder func body(content: Content) -> some View {
         // Keep the column and its toolbar host identical as tools are hidden,
         // shared or restored. Only the item collection changes ownership.
         if #available(macOS 26, *) {
             content.toolbar(id: ConversationToolbar.id) {
                 if ownsList {
-                    if !window.listIsBlock { ToolbarItem(id: "list-filter") { ConversationFilterMenu(window: window, store: window.list) } }
-                    ToolbarItem(id: "new-conversation") { NewConversationButton(window: window) }
+                    if !window.listIsBlock { filterItem }
+                    newConversationItem
                 }
             }
         } else {
+            let showsFilter = ownsList && !window.listIsBlock && toolbarSettings.isShown(.listFilter)
+            let showsNewConversation = ownsList && toolbarSettings.isShown(.newConversation)
+            // Keep each item at the same structural position when the
+            // filter moves between the native toolbar and the block header.
+            let newConversationFirst = toolbarSettings.buttons(in: .sidebar).first == .newConversation
             content.toolbar {
-                ToolbarItemGroup {
-                    ForEach(ownsList ? toolbarSettings.shown(in: .sidebar) : []) { button in
-                        switch button {
-                        case .listFilter: if !window.listIsBlock { ConversationFilterMenu(window: window, store: window.list) }
-                        case .newConversation: NewConversationButton(window: window)
-                        default: EmptyView()
-                        }
-                    }
+                if newConversationFirst {
+                    if showsNewConversation { newConversationItem }
+                    if showsFilter { filterItem }
+                } else {
+                    if showsFilter { filterItem }
+                    if showsNewConversation { newConversationItem }
                 }
             }
         }
