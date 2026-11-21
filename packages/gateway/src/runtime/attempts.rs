@@ -577,7 +577,9 @@ impl Attempt<'_> {
         }
         let unreachable = matches!(kind, Kind::Transport | Kind::Timeout);
         let cli = self.cli();
-        let next = if kind == Kind::Permission {
+        // A permission failure allows switching only on an actual upstream
+        // HTTP 403. A locally synthesized 403 keeps the terminal policy.
+        let next = if kind == Kind::Permission && status != Some(403) {
             NextCandidate::Stop { cooldown: None }
         } else {
             next_candidate(
