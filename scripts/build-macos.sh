@@ -140,7 +140,7 @@ python3 scripts/build-support.py copy "$hapi_tunwg" "$hapi_relay/tunwg"
 mkdir -p "$hapi_relay"
 xcrun clang -arch "$(uname -m)" -mmacosx-version-min=15.0 -Os -Wall -Wextra -Werror \
   scripts/hapi-relay-supervisor.c -o "$hapi_relay/supervisor"
-python3 scripts/build-support.py sync app/mac/Licenses/Tunwg "$resources/ThirdParty/Tunwg" --include '*.txt' --include '*.md' --prune
+python3 scripts/build-support.py sync app/mac/Licenses/Tunwg "$resources/ThirdParty/Tunwg" --include '*.txt' --include '*.md' --include 'UPSTREAM.json' --prune
 python3 - <<'PY' | python3 scripts/build-support.py write "$resources/ThirdParty/THIRD_PARTY_NOTICES.md"
 from pathlib import Path
 value = Path('THIRD_PARTY_NOTICES.md').read_text()
