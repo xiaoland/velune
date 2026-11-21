@@ -1,0 +1,160 @@
+#!/usr/bin/env python3
+"""Run production native composer checks in an owned background-only copy."""
+import argparse
+import hashlib
+import json
+import os
+from pathlib import Path
+import plistlib
+import shutil
+import signal
+import subprocess
+import tempfile
+import time
+from macos_identity import ROOT, app_bundle_path, validate_bundle
+
+
+def digest(path):
+    with path.open('rb') as stream:
+        return hashlib.file_digest(stream, 'sha256').hexdigest()
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('check', choices=['editor', 'queued-editor', 'archived', 'palette-ime', 'pagination', 'continuation', 'targets', 'tabs', 'ownership', 'geometry', 'controls', 'credits', 'background', 'experience', 'recovery', 'compaction', 'sidebar', 'provider-analytics', 'background-notifications', 'sidebar-toolbar', 'outgoing-submissions'])
+    parser.add_argument('--app', type=Path, default=app_bundle_path(ROOT, 'dev'))
+    parser.add_argument('--output', type=Path)
+    parser.add_argument('--dark', action='store_true')
+    parser.add_argument('--workspace-only', action='store_true', help='run the experience cold-open and workspace recovery checks')
+    parser.add_argument('--child-activity', action='store_true', help='check only the child conversation activity row')
+    parser.add_argument('--child-open', action='store_true', help='check targeted child history on the headless request harness')
+    args = parser.parse_args()
+    if args.workspace_only and args.check != 'experience':
+        parser.error('--workspace-only requires experience')
+    if args.child_activity and args.check != 'background-notifications':
+        parser.error('--child-activity requires background-notifications')
+    app = args.app.resolve()
+    context = validate_bundle(app, purpose='development')
+    output = (args.output or ROOT / 'target/checks' / ('macos-' + args.check + ('-dark' if args.dark else ''))).resolve()
+    output.mkdir(parents=True, exist_ok=True)
+    original = app / 'Contents/MacOS' / context['executable']
+    receipt = {'check': args.check, 'sourceApp': str(app), 'executableSHA256': digest(original),
+               'realModelCalls': 0, 'backgroundOnly': True, 'startedAt': time.time()}
+    library = app / 'Contents/Frameworks/libvelune_bindings.dylib'
+    if library.exists():
+        receipt['bindingsSHA256'] = digest(library)
+    with tempfile.TemporaryDirectory(prefix='velune-native-composer-', dir='/tmp') as temporary:
+        root = Path(temporary)
+        copied = root / 'Check.app'
+        copy_flag = '-cR' if app.stat().st_dev == root.stat().st_dev else '-R'
+        subprocess.run(['/bin/cp', copy_flag, str(app), str(copied)], check=True)
+        info_path = copied / 'Contents/Info.plist'
+        info = plistlib.loads(info_path.read_bytes())
+        info['LSBackgroundOnly'] = True
+        info_path.write_bytes(plistlib.dumps(info))
+        subprocess.run(['/usr/bin/codesign', '--force', '--sign', '-', str(copied)], check=True, stdout=subprocess.DEVNULL)
+        validate_bundle(copied, purpose='development')
+        private_home = root / 'user'; private_home.mkdir(mode=0o700)
+        private_tmp = root / 'tmp'; private_tmp.mkdir(mode=0o700)
+        env = {key: os.environ[key] for key in ['PATH', 'LANG', 'LC_ALL', 'TMPDIR'] if key in os.environ}
+        evidence = root / 'evidence'; evidence.mkdir(mode=0o700)
+        env.update(HOME=str(private_home), TMPDIR=str(private_tmp) + '/', VELUNE_HOME=str(root / 'state'), VELUNE_CHECK_OUTPUT=str(evidence),
+                   VELUNE_CONTINUATION_CHECK_HOME=str(root / 'continuation'), VELUNE_COMPOSER_CHECK_HOME=str(root / 'targets'),
+                   VELUNE_EXPERIENCE_CHECK_HOME=str(evidence),
+                   CODEX_HOME=str(root / 'codex'), PI_CODING_AGENT_DIR=str(root / 'pi'), CLAUDE_CONFIG_DIR=str(root / 'claude'),
+                   XDG_CONFIG_HOME=str(root / 'config'), XDG_DATA_HOME=str(root / 'data'), XDG_CACHE_HOME=str(root / 'cache'))
+        if args.check == 'editor':
+            env['VELUNE_HOME'] = str(evidence / 'state')
+        flags = ['--check-continuation-preparation'] if args.check == 'continuation' else ['--check-composer-ownership', '--composer-check-content-target']
+        if args.check == 'editor':
+            flags = ['--check-message-experience', '--experience-message-editor-offscreen']
+            if args.dark:
+                flags.append('--editor-check-dark')
+        if args.check == 'queued-editor':
+            flags = ['--check-queued-message-editor']
+            if args.dark:
+                flags.append('--queued-editor-dark')
+        if args.check == 'archived':
+            flags = ['--check-archived-conversations']
+            if args.dark:
+                flags.append('--archived-check-dark')
+        if args.check == 'palette-ime':
+            flags = ['--check-palette-ime']
+        if args.check == 'pagination':
+            flags = ['--check-list-pagination']
+        if args.check == 'tabs':
+            flags = ['--check-composer-ownership', '--composer-check-tab-state']
+        if args.check == 'ownership':
+            flags = ['--check-composer-ownership']
+        if args.check == 'controls':
+            flags = ['--check-composer-controls']
+        if args.check == 'credits':
+            flags = ['--check-composer-controls', '--check-credits']
+        if args.check == 'geometry':
+            flags = ['--check-composer-controls', '--check-geometry']
+        if args.check == 'background':
+            flags = ['--check-background-tasks']
+            if args.dark:
+                flags.append('--background-check-dark')
+        if args.check == 'experience':
+            flags = ['--check-message-experience']
+        if args.check == 'recovery':
+            flags = ['--check-message-experience', '--experience-runtime-recovery-only']
+        if args.check == 'compaction':
+            flags = ['--check-message-experience', '--experience-compaction-only']
+        if args.check == 'background-notifications':
+            flags = ['--check-background-notifications']
+        if args.child_open:
+            flags = ['--check-conversation-requests', '--check-child-open']
+        if args.check == 'provider-analytics':
+            flags = ['--check-provider-analytics']
+        if args.check == 'outgoing-submissions':
+            flags = ['--check-outgoing-submissions']
+        if args.check == 'sidebar-toolbar':
+            flags = ['--check-sidebar-toolbar']
+        if args.check == 'sidebar':
+            flags = ['--check-message-experience', '--experience-sidebar-only']
+        if args.dark and args.check == 'continuation':
+            flags.append('--continuation-check-dark')
+        if args.child_activity:
+            flags.append('--check-child-activity')
+            if args.dark:
+                flags.append('--child-activity-dark')
+        if args.workspace_only:
+            flags = ['--check-message-experience', '--experience-workspace-only']
+        with (output / 'native.log').open('w') as log:
+            child = subprocess.Popen([str(copied / 'Contents/MacOS' / context['executable']), *flags], env=env,
+                                     cwd=ROOT, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+            receipt['pid'] = child.pid
+            try:
+                receipt['exitCode'] = child.wait(timeout=180)
+            except BaseException:
+                os.killpg(child.pid, signal.SIGTERM)
+                try:
+                    child.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    os.killpg(child.pid, signal.SIGKILL); child.wait()
+                raise
+            finally:
+                receipt['finishedAt'] = time.time()
+                (output / 'receipt.json').write_text(json.dumps(receipt, indent=2) + '\n')
+        # Copy only explicit result artifacts; application state stays private.
+        exported = []
+        for result in evidence.iterdir():
+            if result.is_file() and (result.name in ['acceptance.json', 'render-measurements.json', 'editor-wire.jsonl', 'editor-native.json', 'fixture.json', 'archived-check.json', 'continuation-check.json', 'background-check.json', 'sidebar-check.json', 'provider-analytics-check.json', 'background-notifications-check.json', 'sidebar-toolbar-check.json', 'outgoing-submissions-check.json', 'recovery-check.json'] or result.suffix in ['.png', '.csv', '.txt']):
+                shutil.copy2(result, output / result.name)
+                exported.append(result.name)
+        if args.check == 'editor':
+            for native_log in (evidence / 'state' / 'logs').glob('*.jsonl'):
+                name = 'editor-core-' + native_log.name
+                shutil.copy2(native_log, output / name)
+                exported.append(name)
+        receipt['artifacts'] = sorted(exported)
+        (output / 'receipt.json').write_text(json.dumps(receipt, indent=2) + '\n')
+        print((output / 'native.log').read_text(), end='')
+        print('Evidence:', output)
+        return receipt['exitCode']
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

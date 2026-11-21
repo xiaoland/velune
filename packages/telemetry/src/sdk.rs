@@ -17,24 +17,7 @@ use opentelemetry_sdk::{
 use std::{sync::Arc, time::Duration};
 use tracing_subscriber::{Layer, layer::SubscriberExt};
 
-#[derive(Clone)]
-pub(crate) struct LocalWriter(
-    pub Arc<std::sync::Mutex<tracing_appender::rolling::RollingFileAppender>>,
-);
-impl std::io::Write for LocalWriter {
-    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-        self.0
-            .lock()
-            .map_err(|_| std::io::Error::other("diagnostics writer unavailable"))?
-            .write(bytes)
-    }
-    fn flush(&mut self) -> std::io::Result<()> {
-        self.0
-            .lock()
-            .map_err(|_| std::io::Error::other("diagnostics writer unavailable"))?
-            .flush()
-    }
-}
+pub(crate) use crate::local_log::LocalWriter;
 pub(crate) struct Generation {
     pub revision: u64,
     pub dispatch: tracing::Dispatch,
@@ -91,7 +74,7 @@ fn local_layer(writer: LocalWriter) -> impl Layer<tracing_subscriber::Registry> 
     tracing_subscriber::fmt::layer()
         .json()
         .with_ansi(false)
-        .with_writer(move || writer.clone())
+        .with_writer(move || writer.record())
         .with_filter(tracing_subscriber::filter::filter_fn(|metadata| {
             metadata.target().starts_with("velune_") && *metadata.level() <= tracing::Level::INFO
         }))

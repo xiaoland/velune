@@ -241,10 +241,13 @@ impl CoreRuntime {
             // Establish membership through the native lists, including archived children.
             let found = match self.listed_summary(runtime, &id) {
                 Some(summary) => Some((summary, false)),
-                None => history::list_archived(&self.history_config(runtime)?, &runtime.id)?
-                    .into_iter()
-                    .find(|summary| summary.id == id)
-                    .map(|summary| (summary, true)),
+                None => browsing::shared_summaries(history::list_archived(
+                    &self.history_config(runtime)?,
+                    &runtime.id,
+                )?)
+                .into_iter()
+                .find(|summary| summary.id == id)
+                .map(|summary| (summary, true)),
             };
             return Ok(found
                 .into_iter()

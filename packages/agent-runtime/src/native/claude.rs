@@ -41,12 +41,31 @@ fn claude_agents(agents: &[SessionAgent]) -> Value {
 /// What only a Claude Code session tracks.
 #[derive(Default)]
 pub(super) struct State {
+    pub(super) commands: super::claude_port::Commands,
     /// The turn's result, whether it failed, and the last activity since.
     pub(super) result: Option<(TurnOutcome, std::time::Instant)>,
+    /// A refused response can trigger a native follow-up before the result.
+    /// Keep the visible failure until a real completed response recovers it.
+    safety_stopped: bool,
+    /// An explicit API failure remains pending until native terminal/recovery evidence.
+    api_failed: bool,
     /// Background tasks the turn started.
     pub(super) tasks: std::collections::BTreeSet<String>,
+    pub(super) task_infos: BTreeMap<String, BackgroundTaskInfo>,
+    pub(super) task_order: std::collections::VecDeque<String>,
+    pub(super) task_runs: BTreeMap<String, String>,
+    pub(super) task_stops: BTreeMap<String, (String, std::time::Instant)>,
+    pub(super) task_outputs: BTreeMap<String, (String, bool)>,
+    pub(super) task_reads: crate::background::Reads,
+    pub(super) task_read_retention: std::collections::VecDeque<(String, DataRetention)>,
+    pub(super) task_issue: Option<String>,
+    pub(super) task_sequence: u64,
+    pub(super) task_stop_capable: bool,
     pub(super) requires_action: bool,
     pub(super) stream_id: Option<String>,
+    /// The session selected when this RPC child was launched, which can
+    /// differ from a newly represented, not-yet-started snapshot.
+    pub(super) bound_session_id: Option<String>,
     /// The model, input tokens (including cache), and final output tokens
     /// of the latest reply; streaming output usage can arrive after the reply.
     pub(super) context: Option<(String, u64, u64)>,
@@ -71,14 +90,18 @@ pub(super) enum ClaudeStart {
     #[default]
     Resume,
     /// Begin a new session under the conversation's identity.
-    Fresh,
+    Fresh { name: Option<String> },
     /// Resume with the history cut after record `at`: the new prompt follows
     /// it, and what came after stays in the file on another branch.
     ResumeAt { at: String },
     /// Begin the conversation's session as a copy of session `from` up to
     /// record `at`, or of its whole current branch without one; `from` is
     /// left as it is.
-    Fork { from: String, at: Option<String> },
+    Fork {
+        from: String,
+        at: Option<String>,
+        name: Option<String>,
+    },
     /// Read the session for a side question and save nothing.
     Side,
     /// A portable side context, with no native session to resume or save.
@@ -137,13 +160,21 @@ impl NativeSession {
             // `--resume-session-at` and `--fork-session` apply in print mode.
             match start {
                 ClaudeStart::Resume => command.arg("--resume").arg(id),
-                ClaudeStart::Fresh => command.arg("--session-id").arg(id),
+                ClaudeStart::Fresh { name } => {
+                    if let Some(name) = name {
+                        command.arg("--name").arg(name);
+                    }
+                    command.arg("--session-id").arg(id)
+                }
                 ClaudeStart::ResumeAt { at } => command
                     .arg("--resume")
                     .arg(id)
                     .arg("--resume-session-at")
                     .arg(at),
-                ClaudeStart::Fork { from, at } => {
+                ClaudeStart::Fork { from, at, name } => {
+                    if let Some(name) = name {
+                        command.arg("--name").arg(name);
+                    }
                     command.arg("--resume").arg(from);
                     if let Some(at) = at {
                         command.arg("--resume-session-at").arg(at);
@@ -190,6 +221,7 @@ impl NativeSession {
                 .env("ANTHROPIC_DEFAULT_SONNET_MODEL", &gateway.model_alias)
                 .env("ANTHROPIC_DEFAULT_OPUS_MODEL", &gateway.model_alias)
                 .env("ANTHROPIC_DEFAULT_HAIKU_MODEL", &gateway.model_alias)
+                .env("ANTHROPIC_SMALL_FAST_MODEL", &gateway.model_alias)
                 .env("CLAUDE_CODE_SUBAGENT_MODEL", &gateway.model_alias)
                 .arg("--model")
                 .arg(&gateway.model_alias);
@@ -210,7 +242,17 @@ impl NativeSession {
         let response = self
             .rpc
             .claude_control(json!({"subtype":"initialize","hooks":{}}))?;
-        self.available_models = response["models"].as_array().cloned().unwrap_or_default();
+        let (models, retention) = response
+            .map(|mut value| {
+                value["models"]
+                    .take()
+                    .as_array_mut()
+                    .map(std::mem::take)
+                    .unwrap_or_default()
+            })
+            .into_parts();
+        self.available_models = models;
+        self.data.insert(DataOwner::Catalog, retention);
         // Velune's services are optional for the conversation.
         if !self.config.mcp_servers.is_empty()
             && let Err(error) = self.claude_add_mcp_servers()
@@ -276,32 +318,37 @@ impl NativeSession {
     }
     /// Claude Code 2.1.286 lists `supportedEffortLevels` for models that
     /// `supportsEffort`.
-    pub(super) fn claude_models(&self) -> Result<Vec<ModelOption>> {
-        Ok(self
-            .available_models
-            .iter()
-            .filter_map(|model| {
-                let id = model["value"].as_str()?;
-                let efforts = if model["supportsEffort"] == true {
-                    model["supportedEffortLevels"]
-                        .as_array()
-                        .into_iter()
-                        .flatten()
-                        .filter_map(|level| level.as_str().map(str::to_owned))
-                        .collect()
-                } else {
-                    Vec::new()
-                };
-                Some(ModelOption {
-                    model: RuntimeModel {
-                        provider_id: None,
-                        id: id.into(),
-                        name: model["displayName"].as_str().unwrap_or(id).into(),
-                    },
-                    reasoning_efforts: efforts,
+    pub(super) fn claude_models(&self) -> Result<Retained<Vec<ModelOption>>> {
+        let retention = self
+            .data
+            .try_clone(|owner| matches!(owner, DataOwner::Catalog))?;
+        Ok(Retained::from_parts(
+            self.available_models
+                .iter()
+                .filter_map(|model| {
+                    let id = model["value"].as_str()?;
+                    let efforts = if model["supportsEffort"] == true {
+                        model["supportedEffortLevels"]
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .filter_map(|level| level.as_str().map(str::to_owned))
+                            .collect()
+                    } else {
+                        Vec::new()
+                    };
+                    Some(ModelOption {
+                        model: RuntimeModel {
+                            provider_id: None,
+                            id: id.into(),
+                            name: model["displayName"].as_str().unwrap_or(id).into(),
+                        },
+                        reasoning_efforts: efforts,
+                    })
                 })
-            })
-            .collect())
+                .collect(),
+            retention,
+        ))
     }
     pub(super) fn claude_create(&mut self, cwd: Option<&Path>, runtime_id: &str) -> Result<()> {
         let id = claude_session_id()?;
@@ -309,7 +356,7 @@ impl NativeSession {
             .map(Path::to_path_buf)
             .unwrap_or_else(|| self.default_cwd.clone());
         self.replace_snapshot(&id, Some(&cwd), runtime_id, Vec::new());
-        self.claude.start = ClaudeStart::Fresh;
+        self.claude.start = ClaudeStart::Fresh { name: None };
         Ok(())
     }
     /// The next turn child resumes at the record before the message; a fork
@@ -336,7 +383,11 @@ impl NativeSession {
                 let runtime_id = snapshot.conversation.runtime_id.clone();
                 let history = snapshot.messages[..index].to_vec();
                 self.replace_snapshot(&id, cwd.as_deref(), &runtime_id, history);
-                self.claude.start = ClaudeStart::Fork { from, at: Some(at) };
+                self.claude.start = ClaudeStart::Fork {
+                    from,
+                    at: Some(at),
+                    name: None,
+                };
             }
         }
         Ok(())
@@ -369,7 +420,11 @@ impl NativeSession {
         let runtime_id = snapshot.conversation.runtime_id.clone();
         let history = snapshot.messages[..next.unwrap_or(snapshot.messages.len())].to_vec();
         self.replace_snapshot(&id, cwd.as_deref(), &runtime_id, history);
-        self.claude.start = ClaudeStart::Fork { from, at };
+        self.claude.start = ClaudeStart::Fork {
+            from,
+            at,
+            name: None,
+        };
         Ok(())
     }
     pub(super) fn claude_open(
@@ -379,8 +434,24 @@ impl NativeSession {
         runtime_id: &str,
         history: Vec<Message>,
     ) -> Result<()> {
+        let empty_import = if history.is_empty() && !id.contains('/') {
+            if let Some(cwd) = cwd {
+                let path = crate::import::claude_project_directory(&self.config.agent_dir, cwd)
+                    .join(format!("{id}.jsonl"));
+                let bytes = self.config.execution.read_file(&path)?;
+                claude_empty_import(&bytes, id, cwd)
+            } else {
+                false
+            }
+        } else {
+            false
+        };
         self.replace_snapshot(id, cwd, runtime_id, history);
-        self.claude.start = ClaudeStart::Resume;
+        self.claude.start = if empty_import {
+            ClaudeStart::Fresh { name: None }
+        } else {
+            ClaudeStart::Resume
+        };
         Ok(())
     }
     /// A side chat answers each question in a child that reads the session
@@ -403,9 +474,16 @@ impl NativeSession {
         if !input.images.is_empty() {
             return Err(Error::new("Claude Code 侧聊不接受图片"));
         }
-        self.claude.steer_sequence += 1;
-        let request_id = format!("velune-side-{}", self.claude.steer_sequence);
-        self.rpc.write(
+        self.claude.steer_sequence = self
+            .claude
+            .steer_sequence
+            .checked_add(1)
+            .ok_or_else(|| Error::new("Claude message sequence exhausted"))?;
+        let request_id = format!(
+            "velune-side-{}-{}-{}",
+            self.epoch, self.claude.commands.generation, self.claude.steer_sequence
+        );
+        self.claude_write(
             &json!({"type":"control_request","request_id":request_id,"request":{
             "subtype":"side_question","question":input.text,"history":self.claude.side_history}}),
         )?;
@@ -436,6 +514,9 @@ impl NativeSession {
     /// The answer to the side question, which ends its turn. The child's
     /// other records belong to no turn.
     fn claude_side_record(&mut self, record: &Value) -> Result<()> {
+        if self.claude.commands.enabled && self.failed && !self.claude_has_failed_turn() {
+            return Ok(());
+        }
         let response = &record["response"];
         let Some(pending) = self.claude.side_question.take_if(|pending| {
             record["type"] == "control_response" && response["request_id"] == pending.request_id
@@ -452,20 +533,22 @@ impl NativeSession {
                     turn_usage: None,
                     branch_point: None,
                     completed: true,
-                    id: format!("{}:answer", self.turn_id.as_deref().unwrap_or_default()),
+                    id: format!(
+                        "{}:answer",
+                        self.claude_received_turn_id().unwrap_or_default()
+                    ),
                     role: MessageRole::Assistant,
                     timestamp_unix_ms: None,
                     blocks: vec![MessageBlock::Text {
                         text: answer.into(),
                     }],
                 });
+                self.data.retain(DataOwner::SideHistory);
                 self.claude
                     .side_history
                     .push(json!({"question": pending.question, "response": answer}));
-                if let Some(snapshot) = &mut self.snapshot {
-                    snapshot.executions.finish(Some(TurnOutcome::Completed));
-                }
-                self.finish_turn(RunState::Idle)
+                self.claude_finish_received_outcome(TurnOutcome::Completed);
+                self.claude_finish_received_turn(RunState::Idle)
             }
             None => {
                 let detail = response["error"]
@@ -475,7 +558,8 @@ impl NativeSession {
                 self.claude_error(vec![MessageBlock::Notice {
                     text: format!("Claude Code 未回答侧聊问题：{detail}"),
                 }]);
-                self.finish_turn(RunState::Failed)
+                self.claude_finish_received_outcome(TurnOutcome::Failed);
+                self.claude_finish_received_turn(RunState::Failed)
             }
         }
     }
@@ -483,12 +567,7 @@ impl NativeSession {
         if self.side {
             return self.claude_side_send(input);
         }
-        self.compaction_message_id = None;
         let text = input.text.as_str();
-        self.claude.result = None;
-        self.claude.tasks.clear();
-        self.claude.requires_action = false;
-        self.claude.stream_id = None;
         // Images go before the text, as Anthropic recommends.
         let content = input
             .images
@@ -496,7 +575,15 @@ impl NativeSession {
             .map(|image| json!({"type":"image","source":{"type":"base64","media_type":image.kind.media_type(),"data":image.base64()}}))
             .chain((!text.is_empty()).then(|| json!({"type":"text","text":text})))
             .collect::<Vec<_>>();
-        self.rpc.write(&json!({"type":"user","session_id":self.native_id,"parent_tool_use_id":null,"message":{"role":"user","content":content}}))?;
+        self.claude_write(&json!({"type":"user","session_id":self.native_id,"parent_tool_use_id":null,"message":{"role":"user","content":content}}))?;
+        self.compaction_message_id = None;
+        self.claude.result = None;
+        self.claude.commands.result_is_terminal = false;
+        self.claude.safety_stopped = false;
+        self.claude.api_failed = false;
+        self.claude.tasks.clear();
+        self.claude.requires_action = false;
+        self.claude.stream_id = None;
         self.turn_id = Some(format!(
             "{}:{}",
             self.epoch,
@@ -538,8 +625,12 @@ impl NativeSession {
             .map(|image| json!({"type":"image","source":{"type":"base64","media_type":image.kind.media_type(),"data":image.base64()}}))
             .chain((!text.is_empty()).then(|| json!({"type":"text","text":text})))
             .collect::<Vec<_>>();
-        self.rpc.write(&json!({"type":"user","session_id":self.native_id,"parent_tool_use_id":null,"message":{"role":"user","content":content}}))?;
-        self.claude.steer_sequence += 1;
+        self.claude.steer_sequence = self
+            .claude
+            .steer_sequence
+            .checked_add(1)
+            .ok_or_else(|| Error::new("Claude message sequence exhausted"))?;
+        self.claude_write(&json!({"type":"user","session_id":self.native_id,"parent_tool_use_id":null,"message":{"role":"user","content":content}}))?;
         let id = format!(
             "{}:steer:{}",
             self.turn_id.as_deref().unwrap_or_default(),
@@ -568,13 +659,16 @@ impl NativeSession {
         Ok(())
     }
     pub(super) fn claude_compact(&mut self) -> Result<()> {
-        self.claude.result = None;
-        self.compaction_message_id = None;
-        self.claude.context = None;
-        self.rpc.write(
+        self.claude_write(
             &json!({"type":"user","session_id":self.native_id,"parent_tool_use_id":null,
             "message":{"role":"user","content":[{"type":"text","text":"/compact"}]}}),
         )?;
+        self.claude.result = None;
+        self.claude.commands.result_is_terminal = false;
+        self.claude.safety_stopped = false;
+        self.claude.api_failed = false;
+        self.compaction_message_id = None;
+        self.claude.context = None;
         self.turn_id = Some(format!(
             "{}:compact:{}",
             self.epoch,
@@ -586,7 +680,19 @@ impl NativeSession {
     }
 
     fn claude_compaction_status(&mut self, text: String, completed: bool, native_id: Option<&str>) {
-        let previous = self.compaction_message_id.clone();
+        // Without a preceding `status: compacting`, a new native boundary
+        // still starts a new compaction. A provisional row can be renamed to
+        // this boundary; a completed native row is history.
+        let previous = self.compaction_message_id.clone().filter(|previous| {
+            native_id.is_none_or(|id| id == previous)
+                || previous.starts_with("claude-compaction:")
+                || self.snapshot.as_ref().is_some_and(|snapshot| {
+                    snapshot
+                        .messages
+                        .iter()
+                        .any(|message| &message.id == previous && !message.completed)
+                })
+        });
         let id = native_id
             .map(str::to_owned)
             .or_else(|| previous.clone())
@@ -619,6 +725,24 @@ impl NativeSession {
                 .executions
                 .confirm(&snapshot.message_identity_confirmations);
         }
+        // Status-only frames retain the summary already owned by this boundary.
+        let text = if !text.contains('\n') {
+            self.snapshot
+                .as_ref()
+                .and_then(|snapshot| snapshot.messages.iter().find(|message| message.id == id))
+                .and_then(|message| {
+                    message.blocks.iter().find_map(|block| match block {
+                        MessageBlock::ContextCompaction { text } => {
+                            text.split_once("\n\n").map(|(_, detail)| detail)
+                        }
+                        _ => None,
+                    })
+                })
+                .map(|detail| format!("{text}\n\n{detail}"))
+                .unwrap_or(text)
+        } else {
+            text
+        };
         self.compaction_message_id = Some(id.clone());
         self.message(Message {
             id,
@@ -644,17 +768,24 @@ impl NativeSession {
             }
             return self.finish_turn(RunState::Idle);
         }
-        self.rpc.claude_control(json!({"subtype":"interrupt"}))?;
+        self.rpc.claude_control_with_class(
+            json!({"subtype":"interrupt"}),
+            crate::transport::WriteClass::ProtocolReplyCancel,
+        )?;
         if let Some(snapshot) = &mut self.snapshot {
             snapshot.run_state = RunState::Stopping;
             snapshot.revision += 1;
         }
         Ok(())
     }
+    pub(super) fn claude_receive_record(&mut self, record: Retained<Value>) -> Result<()> {
+        self.receive_native_record(record, Self::claude_handle_record)
+    }
     pub(super) fn claude_handle_record(&mut self, record: Value) -> Result<()> {
         if self.side {
             return self.claude_side_record(&record);
         }
+        self.claude_background_record(&record);
         match record["type"].as_str() {
             Some("control_cancel_request") => {
                 let expired = self
@@ -696,6 +827,7 @@ impl NativeSession {
                                     option["label"].as_str().map(|label| InteractionOption {
                                         id: label.into(),
                                         label: label.into(),
+                                        approval_kind: None,
                                     })
                                 })
                                 .collect();
@@ -704,6 +836,10 @@ impl NativeSession {
                                 text: text.into(),
                                 options,
                                 secret: false,
+                                default_text: None,
+                                multiline: false,
+                                allow_other: true,
+                                multiple: question["multiSelect"].as_bool().unwrap_or(false),
                             })
                         })
                         .collect::<Result<Vec<_>>>()?;
@@ -741,16 +877,18 @@ impl NativeSession {
                                 InteractionOption {
                                     id: "allow".into(),
                                     label: "允许这一次".into(),
+                                    approval_kind: Some(ApprovalOptionKind::AllowOnce),
                                 },
                                 InteractionOption {
                                     id: "deny".into(),
                                     label: "拒绝".into(),
+                                    approval_kind: Some(ApprovalOptionKind::RejectOnce),
                                 },
                             ],
                         },
                     );
                 } else {
-                    self.rpc.write(&json!({"type":"control_response","response":{"subtype":"error","request_id":id,"error":"Unsupported control request"}}))?;
+                    self.claude_automatic_reply(&json!({"type":"control_response","response":{"subtype":"error","request_id":id,"error":"Unsupported control request"}}))?;
                 }
             }
             Some("system") => match record["subtype"].as_str() {
@@ -786,6 +924,14 @@ impl NativeSession {
                     self.claude_compaction_status(text, true, None);
                 }
                 Some("compact_boundary") => {
+                    // Compaction reports the current context independently of
+                    // user-turn billing. Keep it fresh even for manual /compact.
+                    let tokens = record["compact_metadata"]["post_tokens"]
+                        .as_u64()
+                        .or_else(|| record["compactMetadata"]["postTokens"].as_u64());
+                    if let Some(tokens) = tokens {
+                        self.context_usage(Some(tokens), None);
+                    }
                     self.claude_compaction_status(
                         "上下文已压缩".into(),
                         true,
@@ -795,13 +941,11 @@ impl NativeSession {
                 Some("session_state_changed") => {
                     self.claude.requires_action = record["state"] == "requires_action";
                     if record["state"] == "idle"
-                        && self.turn_running()
+                        && (self.turn_running() || self.claude_has_failed_turn())
                         && let Some((outcome, _)) = self.claude.result.take()
                     {
-                        if let Some(snapshot) = &mut self.snapshot {
-                            snapshot.executions.finish(Some(outcome));
-                        }
-                        self.finish_turn(if outcome == TurnOutcome::Failed {
+                        self.claude_finish_received_outcome(outcome);
+                        self.claude_finish_received_turn(if outcome == TurnOutcome::Failed {
                             RunState::Failed
                         } else {
                             RunState::Idle
@@ -819,12 +963,26 @@ impl NativeSession {
                         if record["task_type"] == "local_agent"
                             && let Some(conversation) = self.claude_agent_conversation(id)
                         {
-                            self.sub_agents.insert(conversation);
+                            self.sub_agents.insert(conversation.clone());
+                            // Background observation precedes relationship discovery.
+                            // Link the first task receipt immediately; a quiet agent
+                            // need not emit a later progress event to become openable.
+                            if let Some(task) = self
+                                .claude
+                                .task_runs
+                                .get(id)
+                                .and_then(|run| self.claude.task_infos.get_mut(run))
+                            {
+                                task.conversation_id = Some(conversation);
+                            }
                         }
                     }
                 }
                 Some("task_notification") => {
                     if let Some(id) = record["task_id"].as_str() {
+                        if !self.claude_task_run_matches(&record, id) {
+                            return Ok(());
+                        }
                         self.claude.tasks.remove(id);
                         let conversation = self.claude_agent_conversation(id);
                         if let Some(conversation) =
@@ -860,6 +1018,9 @@ impl NativeSession {
                     ) =>
                 {
                     if let Some(id) = record["task_id"].as_str() {
+                        if !self.claude_task_run_matches(&record, id) {
+                            return Ok(());
+                        }
                         self.claude.tasks.remove(id);
                     }
                 }
@@ -869,16 +1030,111 @@ impl NativeSession {
                 if let Some((_, last_activity)) = &mut self.claude.result {
                     *last_activity = std::time::Instant::now();
                 }
+                if !record["parent_tool_use_id"].is_string() && record["type"] == "user" {
+                    if claude_refused_message(&record) {
+                        self.claude.safety_stopped = true;
+                        if !self.claude_preserves_terminal_result() {
+                            self.claude.commands.result_is_terminal = false;
+                            self.claude.result =
+                                Some((TurnOutcome::Failed, std::time::Instant::now()));
+                        }
+                        self.claude_error(claude_refusal_blocks(&record));
+                        return Ok(());
+                    }
+                    if record["isCompactSummary"] == true || record["is_compact_summary"] == true {
+                        let summary = claude_plain_text(&record["message"]["content"]);
+                        if !summary.is_empty() {
+                            self.claude_compaction_status(
+                                format!("上下文已压缩\n\n{summary}"),
+                                true,
+                                None,
+                            );
+                        }
+                        return Ok(());
+                    }
+                    // Claude 2.1.292's SDK serializer replaces compact/meta flags
+                    // with isSynthetic. Resolve summary ownership from native
+                    // structured history, never from a user-text prefix.
+                    if record["isSynthetic"] == true
+                        && claude_blocks(&record["message"]["content"], None)
+                            .iter()
+                            .all(|block| matches!(block, MessageBlock::Text { .. }))
+                    {
+                        let has_summary = self.snapshot.as_ref().is_some_and(|snapshot| {
+                            snapshot.messages.iter().any(|message| {
+                                Some(&message.id) == self.compaction_message_id.as_ref()
+                                    && message.blocks.iter().any(|block| matches!(block,
+                                        MessageBlock::ContextCompaction { text }
+                                            if text.split_once("\n\n").is_some_and(|(_, detail)| !detail.trim().is_empty())
+                                    ))
+                            })
+                        });
+                        if self.compaction_message_id.is_some() && !has_summary {
+                            self.claude_refresh_context();
+                        }
+                        return Ok(());
+                    }
+                }
                 // A sub-agent's own messages belong to its conversation, as
                 // in the native history, not to this transcript.
-                if record["parent_tool_use_id"].is_string() {
+                if record["parent_tool_use_id"].is_string()
+                    || record["isCompactSummary"] == true
+                    || record["is_compact_summary"] == true
+                    || record["isMeta"] == true
+                    || record["is_meta"] == true
+                {
+                    return Ok(());
+                }
+                if record["type"] == "assistant" && record["message"]["stop_reason"] == "refusal" {
+                    self.claude.safety_stopped = true;
+                    if !self.claude_preserves_terminal_result() {
+                        self.claude.commands.result_is_terminal = false;
+                        self.claude.result = Some((TurnOutcome::Failed, std::time::Instant::now()));
+                    }
+                    self.claude_error(claude_refusal_blocks(&record));
                     return Ok(());
                 }
                 if record["type"] == "assistant"
-                    && (record["error"].is_string() || record["is_api_error_message"] == true)
+                    && (record["error"].is_string()
+                        || record["is_api_error_message"] == true
+                        || record["isApiErrorMessage"] == true)
                 {
+                    self.claude.api_failed = true;
+                    if !self.claude_preserves_terminal_result() {
+                        self.claude.commands.result_is_terminal = false;
+                        self.claude.result = Some((TurnOutcome::Failed, std::time::Instant::now()));
+                    }
                     self.claude_error(claude_error_blocks(&record)?);
                     return Ok(());
+                }
+                if record["type"] == "assistant"
+                    && matches!(
+                        record["message"]["stop_reason"].as_str(),
+                        Some("end_turn" | "stop_sequence")
+                    )
+                {
+                    self.claude.commands.result_is_terminal = false;
+                    self.claude.safety_stopped = false;
+                    if self.claude.api_failed {
+                        self.claude.result =
+                            Some((TurnOutcome::Completed, std::time::Instant::now()));
+                    }
+                    self.claude.api_failed = false;
+                    // A native successful response proves recovery; a success
+                    // envelope alone must not erase the preceding API failure.
+                    let id = format!("{}:error", self.turn_id.as_deref().unwrap_or_default());
+                    if let Some(message) = self.snapshot.as_mut().and_then(|snapshot| {
+                        snapshot
+                            .messages
+                            .iter_mut()
+                            .find(|message| message.id == id)
+                    }) {
+                        for block in &mut message.blocks {
+                            if let MessageBlock::RuntimeFailure { retry, .. } = block {
+                                *retry = Some(RuntimeRetry::Recovered);
+                            }
+                        }
+                    }
                 }
                 // Local /compact output belongs to maintenance; status/result carry its outcome.
                 if self.compacting && record["type"] == "assistant" {
@@ -894,6 +1150,7 @@ impl NativeSession {
                         (reply["model"].as_str(), claude_context(&reply["usage"]))
                     && !model.starts_with('<')
                 {
+                    self.data.replace(DataOwner::Stream);
                     self.claude.context = Some((model.to_owned(), input, output));
                 }
                 let role = if record["type"] == "assistant" {
@@ -931,6 +1188,7 @@ impl NativeSession {
                 }
                 let event = &record["event"];
                 if event["type"] == "message_start" {
+                    self.data.retain(DataOwner::Stream);
                     self.claude.stream_id = event["message"]["id"].as_str().map(str::to_owned);
                 }
                 if event["type"] == "message_delta"
@@ -955,21 +1213,17 @@ impl NativeSession {
                                 event["index"]
                             )
                         });
-                        let mut message = self
-                            .snapshot
-                            .as_ref()
-                            .and_then(|s| s.messages.iter().find(|m| m.id == id))
-                            .cloned()
-                            .unwrap_or(Message {
-                                turn_settings: None,
-                                turn_usage: None,
-                                branch_point: None,
-                                completed: false,
-                                id,
-                                role: MessageRole::Assistant,
-                                timestamp_unix_ms: None,
-                                blocks: Vec::new(),
-                            });
+                        let (position, previous) = self.take_message(&id);
+                        let mut message = previous.unwrap_or(Message {
+                            turn_settings: None,
+                            turn_usage: None,
+                            branch_point: None,
+                            completed: false,
+                            id,
+                            role: MessageRole::Assistant,
+                            timestamp_unix_ms: None,
+                            blocks: Vec::new(),
+                        });
                         match message.blocks.last_mut() {
                             Some(MessageBlock::Text { text }) if !thought => text.push_str(delta),
                             Some(MessageBlock::Reasoning { text }) if thought => {
@@ -981,13 +1235,16 @@ impl NativeSession {
                                 MessageBlock::Text { text: delta.into() }
                             }),
                         }
-                        self.message(message);
+                        self.message_at(message, position);
                     }
                 }
             }
             Some("result") => {
                 // Partial records are replaced by the authoritative assistant message before terminal delivery.
-                let prefix = format!("{}:stream:", self.turn_id.as_deref().unwrap_or_default());
+                let prefix = format!(
+                    "{}:stream:",
+                    self.claude_received_turn_id().unwrap_or_default()
+                );
                 if let Some(snapshot) = &mut self.snapshot {
                     snapshot
                         .messages
@@ -997,8 +1254,14 @@ impl NativeSession {
                     record["terminal_reason"].as_str(),
                     Some("aborted_streaming" | "aborted_tools")
                 );
-                let failed =
-                    !interrupted && (record["is_error"] == true || record["subtype"] != "success");
+                let refusal = record["stop_reason"] == "refusal" || self.claude.safety_stopped;
+                let failed = self.claude.api_failed
+                    || refusal
+                    || (!interrupted
+                        && (record["is_error"] == true || record["subtype"] != "success"));
+                if refusal {
+                    self.claude_error(claude_refusal_blocks(&record));
+                }
                 if self.compacting && self.compaction_message_id.is_none() {
                     let detail = record["result"]
                         .as_str()
@@ -1006,19 +1269,32 @@ impl NativeSession {
                         .unwrap_or("运行时未确认执行压缩");
                     self.claude_compaction_status(format!("上下文未压缩：{detail}"), true, None);
                 }
+                if self.compacting && !failed {
+                    // SDK boundary notifications can omit postTokens. The
+                    // persisted boundary owns that count; don't estimate it
+                    // from the summarizer's (pre-compaction) request usage.
+                    self.claude_refresh_context();
+                }
                 if failed {
                     self.claude_error(claude_error_blocks(&record)?);
                 }
-                self.claude.result = Some((
-                    if interrupted {
-                        TurnOutcome::Cancelled
-                    } else if failed {
-                        TurnOutcome::Failed
-                    } else {
-                        TurnOutcome::Completed
-                    },
-                    std::time::Instant::now(),
-                ));
+                // Protect an actual result as soon as the owner latches its
+                // barrier, before fail_connection runs at the end of the batch.
+                // API/refusal notices and new successful assistant responses
+                // are recovery evidence, not duplicate terminal envelopes.
+                if !self.claude_preserves_terminal_result() {
+                    self.claude.commands.result_is_terminal = true;
+                    self.claude.result = Some((
+                        if failed {
+                            TurnOutcome::Failed
+                        } else if interrupted {
+                            TurnOutcome::Cancelled
+                        } else {
+                            TurnOutcome::Completed
+                        },
+                        std::time::Instant::now(),
+                    ));
+                }
                 // The turn's usage over its requests, the context its last
                 // reply left with that model's window, and the session's cost
                 // while Claude Code knows every model's price.
@@ -1047,6 +1323,57 @@ impl NativeSession {
         }
         Ok(())
     }
+    fn claude_refresh_context(&mut self) {
+        if self.claude.commands.enabled {
+            self.claude.commands.context_refresh_required = true;
+            return;
+        }
+        if let Err(error) = self.claude_read_context() {
+            tracing::warn!(event = "claude_compaction_context_refresh_failed", %error);
+        }
+    }
+    pub(super) fn claude_read_context(&mut self) -> Result<()> {
+        let id = self
+            .native_id
+            .as_deref()
+            .ok_or_else(|| Error::new("No Claude session for history refresh"))?;
+        let runtime_id = self
+            .snapshot
+            .as_ref()
+            .map(|s| s.context_runtime_id.as_str())
+            .unwrap_or_default();
+        let config = crate::history::HistoryConfig {
+            kind: crate::version::RuntimeKind::ClaudeCode,
+            execution: self.config.execution.clone(),
+            os_home: self.config.os_home.clone(),
+            provider: "claude-code".into(),
+            binary: self.config.binary.clone(),
+            node_binary: self.config.node_binary.clone().unwrap_or_default(),
+            resources_directory: self.config.resources_directory.clone(),
+            root: self.config.agent_dir.join("projects"),
+            home: self.config.agent_dir.clone(),
+        };
+        let history = crate::history::read(&config, runtime_id, id)
+            .map_err(|error| Error::new(error.to_string()))?;
+        if let Some(message) = history
+            .messages
+            .iter()
+            .find(|message| Some(&message.id) == self.compaction_message_id.as_ref())
+        {
+            self.message(message.clone());
+        }
+        if let Some(usage) = history
+            .messages
+            .iter()
+            .rev()
+            .find(|m| m.role == MessageRole::User)
+            .and_then(|m| m.turn_usage.as_ref())
+        {
+            self.context_usage(usage.context_tokens, usage.context_window);
+        }
+        Ok(())
+    }
+
     fn claude_error(&mut self, blocks: Vec<MessageBlock>) {
         if self.compacting {
             let text = blocks
@@ -1062,32 +1389,42 @@ impl NativeSession {
         }
         let Some(turn) = &self.turn_id else { return };
         let id = format!("{turn}:error");
-        let mut message = self
-            .snapshot
-            .as_ref()
-            .and_then(|snapshot| snapshot.messages.iter().find(|message| message.id == id))
-            .cloned()
-            .unwrap_or(Message {
-                id,
-                role: MessageRole::System,
-                timestamp_unix_ms: None,
-                blocks: Vec::new(),
-                completed: true,
-                turn_settings: None,
-                turn_usage: None,
-                branch_point: None,
-            });
+        let (position, previous) = self.take_message(&id);
+        let mut message = previous.unwrap_or(Message {
+            id,
+            role: MessageRole::System,
+            timestamp_unix_ms: None,
+            blocks: Vec::new(),
+            completed: true,
+            turn_settings: None,
+            turn_usage: None,
+            branch_point: None,
+        });
+        let mut details = std::mem::take(&mut message.blocks)
+            .into_iter()
+            .filter_map(|block| match block {
+                MessageBlock::RuntimeFailure { detail, .. } => Some(detail),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
         for block in blocks {
-            if !message.blocks.contains(&block) {
-                message.blocks.push(block);
+            if let MessageBlock::Notice { text } | MessageBlock::Text { text } = block
+                && !details
+                    .iter()
+                    .any(|detail| format!("\n{detail}\n").contains(&format!("\n{text}\n")))
+            {
+                details.push(text);
             }
         }
-        if message.blocks.is_empty() {
-            message.blocks.push(MessageBlock::Notice {
-                text: "Claude Code 执行失败（上游未提供错误详情）。".into(),
-            });
+        if details.is_empty() {
+            details.push("Claude Code 执行失败（上游未提供错误详情）。".into());
         }
-        self.message(message);
+        message.blocks = vec![MessageBlock::RuntimeFailure {
+            failure: RuntimeFailureKind::Other,
+            detail: details.join("\n"),
+            retry: None,
+        }];
+        self.message_at(message, position);
     }
     /// Complete the call a tool result answers, as one row like the native
     /// transcript shows it; false when the call is not in this projection.
@@ -1105,6 +1442,9 @@ impl NativeSession {
         let Some(snapshot) = &mut self.snapshot else {
             return false;
         };
+        if let Some(message) = snapshot.messages.iter().rev().find(|message| message.blocks.iter().any(|block| matches!(block, MessageBlock::Tool { tool_id: Some(call), .. } if call == id))) {
+            self.data.retain(DataOwner::Message(message.id.clone()));
+        }
         let call = snapshot
             .messages
             .iter_mut()
@@ -1130,17 +1470,8 @@ impl NativeSession {
         self.sub_agents.extend(conversation_id.clone());
         true
     }
-    /// The sub-agents whose tasks have not ended.
-    pub(super) fn claude_running_sub_agents(&self) -> Vec<String> {
-        self.claude
-            .tasks
-            .iter()
-            .filter_map(|task| self.claude_agent_conversation(task))
-            .filter(|conversation| self.sub_agents.contains(conversation))
-            .collect()
-    }
     /// A sub-agent's session, as the history reader names it.
-    fn claude_agent_conversation(&self, agent: &str) -> Option<String> {
+    pub(super) fn claude_agent_conversation(&self, agent: &str) -> Option<String> {
         let runtime_id = &self.snapshot.as_ref()?.conversation.runtime_id;
         Some(format!(
             "{runtime_id}:{}/agent-{agent}",
@@ -1159,8 +1490,14 @@ impl NativeSession {
             && self.interactions.is_empty()
         {
             self.claude.result = None;
+            self.claude.commands.result_is_terminal = false;
+            self.claude.safety_stopped = false;
             self.settle(RunState::Failed);
-            self.notice("Claude Code 返回结果后未确认空闲；已结束本轮进程，请检查原生运行时状态。");
+            self.notice(if self.claude.commands.enabled {
+                "Claude Code 返回结果后未确认空闲；需要显式清理本轮进程，请检查原生运行时状态。"
+            } else {
+                "Claude Code 返回结果后未确认空闲；已结束本轮进程，请检查原生运行时状态。"
+            });
         }
     }
     pub(super) fn claude_reply(
@@ -1197,12 +1534,38 @@ impl NativeSession {
             }
             _ => return Err(Error::new("Claude 工具权限回复无效")),
         };
-        self.rpc.write(&json!({"type":"control_response","response":{"subtype":"success","request_id":pending.id,"response":response}}))
+        self.claude_write_with_class(&json!({"type":"control_response","response":{"subtype":"success","request_id":pending.id,"response":response}}), crate::transport::WriteClass::ProtocolReplyCancel)
     }
 }
 /// `agent` is the conversation of the sub-agent a tool result started.
 /// Blank text and thinking show nothing: Claude Code records omitted thinking
 /// as an empty block beside its signature.
+fn claude_plain_text(content: &Value) -> String {
+    claude_blocks(content, None)
+        .into_iter()
+        .filter_map(|block| match block {
+            MessageBlock::Text { text } => Some(text),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
+fn claude_refused_message(record: &Value) -> bool {
+    record["refused_message_id"].is_string() || record["refusedMessageId"].is_string()
+}
+
+fn claude_refusal_blocks(record: &Value) -> Vec<MessageBlock> {
+    let mut blocks = vec![MessageBlock::Notice {
+        text: "Claude Code 响应被安全系统停止（refusal）。".into(),
+    }];
+    let text = claude_plain_text(&record["message"]["content"]);
+    if !text.is_empty() {
+        blocks.push(MessageBlock::Notice { text });
+    }
+    blocks
+}
+
 fn claude_error_blocks(record: &Value) -> Result<Vec<MessageBlock>> {
     let mut details = Vec::new();
     if record["type"] == "assistant" {
@@ -1305,6 +1668,29 @@ fn claude_usage(usage: &Value) -> TurnUsage {
 }
 
 /// What one reply's request held: its input, cache included, and its output.
+/// Recognize only our single empty import metadata record. Other empty or
+/// damaged histories must never silently become a new model conversation.
+fn claude_empty_import(bytes: &[u8], id: &str, cwd: &Path) -> bool {
+    let Ok(text) = std::str::from_utf8(bytes) else {
+        return false;
+    };
+    let mut lines = text.lines().filter(|line| !line.trim().is_empty());
+    let Some(line) = lines.next() else {
+        return false;
+    };
+    if lines.next().is_some() {
+        return false;
+    }
+    let Ok(record) = serde_json::from_str::<Value>(line) else {
+        return false;
+    };
+    record["type"] == "queue-operation"
+        && record["operation"] == "dequeue"
+        && record["veluneEmptyImport"] == true
+        && record["sessionId"] == id
+        && record["cwd"].as_str() == cwd.to_str()
+}
+
 fn claude_context(usage: &Value) -> Option<(u64, u64)> {
     let read = usage["cache_read_input_tokens"].as_u64().unwrap_or(0);
     let write = usage["cache_creation_input_tokens"].as_u64().unwrap_or(0);
@@ -1429,6 +1815,66 @@ mod error_tests {
     use super::*;
 
     #[test]
+    fn named_fork_launch_keeps_its_source_and_boundary() {
+        let config = NativeConfig {
+            execution: crate::execution::ExecutionTarget::Local,
+            os_home: None,
+            kind: NativeKind::ClaudeCode,
+            binary: "/synthetic/claude".into(),
+            node_binary: None,
+            agent_dir: "/synthetic/home".into(),
+            resources_directory: "/synthetic/resources".into(),
+            projection_directory: "/synthetic/projection".into(),
+            gateway: None,
+            mcp_servers: Vec::new(),
+            session_agents: Vec::new(),
+        };
+        let pending = PendingFork {
+            conversation_id: "claude:copy".into(),
+            from: "source".into(),
+            at: Some("boundary".into()),
+            name: Some("Work (2)".into()),
+        };
+        let start = ClaudeStart::Fork {
+            from: pending.from,
+            at: pending.at,
+            name: pending.name,
+        };
+        let command =
+            NativeSession::claude_command(&config, None, Some(("copy", None, &start)), None, None)
+                .unwrap();
+        let args: Vec<_> = command
+            .get_args()
+            .map(|s| s.to_string_lossy().into_owned())
+            .collect();
+        for pair in [
+            ["--name", "Work (2)"],
+            ["--resume", "source"],
+            ["--resume-session-at", "boundary"],
+            ["--session-id", "copy"],
+        ] {
+            assert!(args.windows(2).any(|args| args == pair));
+        }
+        assert!(args.iter().any(|arg| arg == "--fork-session"));
+        let fresh = ClaudeStart::Fresh {
+            name: Some("Work (1)".into()),
+        };
+        let command =
+            NativeSession::claude_command(&config, None, Some(("fresh", None, &fresh)), None, None)
+                .unwrap();
+        let args: Vec<_> = command
+            .get_args()
+            .map(|s| s.to_string_lossy().into_owned())
+            .collect();
+        assert!(args.windows(2).any(|args| args == ["--name", "Work (1)"]));
+        assert!(
+            args.windows(2)
+                .any(|args| args == ["--session-id", "fresh"])
+        );
+        assert!(!args.iter().any(|arg| arg == "--resume"));
+    }
+
+    #[test]
     fn result_and_assistant_errors_preserve_native_details() {
         let assistant =
             claude_error_blocks(&json!({"type":"assistant","error":"authentication_failed",
@@ -1455,5 +1901,31 @@ mod error_tests {
             text: "maximum turns reached".into()
         }));
         assert!(claude_error_blocks(&json!({"type":"result","errors":[42]})).is_err());
+    }
+    #[test]
+    fn empty_import_detection_requires_exact_native_metadata() {
+        let marker = json!({"type":"queue-operation","operation":"dequeue","veluneEmptyImport":true,"sessionId":"empty","cwd":"/synthetic"});
+        let bytes = serde_json::to_vec(&marker).unwrap();
+        assert!(super::claude_empty_import(
+            &bytes,
+            "empty",
+            Path::new("/synthetic")
+        ));
+        assert!(!super::claude_empty_import(
+            &bytes,
+            "other",
+            Path::new("/synthetic")
+        ));
+        assert!(!super::claude_empty_import(
+            b"",
+            "empty",
+            Path::new("/synthetic")
+        ));
+        let with_other = format!("{marker}\n{{\"type\":\"user\"}}\n");
+        assert!(!super::claude_empty_import(
+            with_other.as_bytes(),
+            "empty",
+            Path::new("/synthetic")
+        ));
     }
 }

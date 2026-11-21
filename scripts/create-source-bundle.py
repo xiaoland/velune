@@ -25,6 +25,7 @@ from urllib.request import Request, urlopen
 ROOT = Path(__file__).resolve().parents[1]
 RELAYKIT_GO_MOD = Path("packages/ai-provider/relaykit-bridge/go.mod")
 RELAYKIT_MODULE = "github.com/QuantumNous/new-api/relaykit"
+TUNWG_PIN = Path("app/mac/Licenses/Tunwg/UPSTREAM.json")
 GO_MINIMUM = (1, 25, 1)
 SUPPORTED_PLATFORMS = {"macos", "windows", "android", "ios"}
 SOURCE_BUILD_OUTPUTS = {
@@ -161,6 +162,55 @@ def source_tree_digest(root: Path) -> str:
         elif path.is_dir():
             digest.update(b"D")
     return digest.hexdigest()
+
+
+def vendor_tunwg_sources(source_root: Path, environment: dict[str, str], go_version: str) -> dict[str, object]:
+    pin = json.loads((source_root / TUNWG_PIN).read_text(encoding="utf-8"))
+    if parse_go_version(go_version) < parse_go_version(f"go{pin['go_version']}"):
+        raise BundleError(f"Go {pin['go_version']} or later is required to vendor Tunwg; found {go_version}")
+
+    with tempfile.TemporaryDirectory(prefix="tunwg-", dir=source_root.parent) as temporary:
+        repository = Path(temporary)
+        run("git", "init", "--quiet", cwd=repository)
+        run("git", "fetch", "--quiet", "--depth=1", pin["repository"], f"refs/tags/{pin['release']}", cwd=repository)
+        revision = run("git", "rev-parse", "FETCH_HEAD^{commit}", cwd=repository)
+        if revision != pin["revision"]:
+            raise BundleError(f"Tunwg {pin['release']} points to {revision}, expected {pin['revision']}")
+        archive = repository / "tunwg.tar"
+        run("git", "archive", "--format=tar", "--prefix=tunwg-sources/", "--output", str(archive), revision, cwd=repository)
+        tunwg_root = safe_extract_git_archive(archive, source_root, "tunwg-sources")
+
+    go_mod = tunwg_root / "go.mod"
+    go_sum = tunwg_root / "go.sum"
+    original_mod = go_mod.read_bytes()
+    original_sum = go_sum.read_bytes()
+    run("go", "mod", "vendor", cwd=tunwg_root, env=environment)
+    if go_mod.read_bytes() != original_mod or go_sum.read_bytes() != original_sum:
+        raise BundleError("Tunwg vendoring changed the upstream Go module locks")
+    checksums = {(name, version): digest for name, version, digest in (line.split() for line in original_sum.decode().splitlines())}
+    vendor_dir = tunwg_root / "vendor"
+    vendored = {
+        (fields[1], fields[2])
+        for fields in (line.split() for line in (vendor_dir / "modules.txt").read_text(encoding="utf-8").splitlines())
+        if len(fields) == 3 and fields[0] == "#"
+    }
+    modules = []
+    for name, version in sorted(pin["linked_modules"].items()):
+        checksum = checksums.get((name, version))
+        if (name, version) not in vendored or not checksum:
+            raise BundleError(f"Tunwg linked module {name}@{version} is absent from the vendored locked source")
+        modules.append({"module": name, "version": version, "go_sum": checksum})
+
+    return {
+        "repository": pin["repository"],
+        "release": pin["release"],
+        "revision": revision,
+        "go_version": pin["go_version"],
+        "darwin_assets": pin["assets"],
+        "linked_modules": modules,
+        "source_path": tunwg_root.relative_to(source_root).as_posix(),
+        "source_tree_sha256": tree_digest(tunwg_root),
+    }
 
 
 def vendor_cargo_sources(source_root: Path) -> str:
@@ -905,6 +955,9 @@ def main() -> int:
         source_root = safe_extract_git_archive(git_archive, temporary_root, root_name)
 
         windows_sources = vendor_windows_sources(source_root) if "windows" in platforms else None
+        tunwg_sources = None
+        if "macos" in platforms and (source_root / "scripts/install-hapi-tunwg.sh").is_file():
+            tunwg_sources = vendor_tunwg_sources(source_root, environment, go_output)
 
         cargo_vendor_sha256 = vendor_cargo_sources(source_root)
         cargo_output = run("cargo", "--version", cwd=source_root)
@@ -935,6 +988,7 @@ def main() -> int:
             "npm_sources": npm_sources,
             "mermaid_sources": mermaid_sources,
             "preferred_js_sources": preferred_js_sources,
+            "tunwg_sources": tunwg_sources,
             "windows_sources": windows_sources,
             "go_version": go_output,
             "cargo_vendor_sha256": cargo_vendor_sha256,

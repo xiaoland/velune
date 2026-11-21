@@ -4,13 +4,17 @@
 //! Codex projects keep a runtime-scoped native identity and canonical membership.
 use super::*;
 use crate::config::{ConversationBrowserProject, ConversationGroupKey, ProjectRecord};
+use std::sync::Arc;
 use std::{collections::BTreeSet, path::Component};
+use velune_agent_runtime::creation::{DataRetention, Retained};
 
 pub(super) struct NativeProjects {
     source: runtime_source::RuntimeSourceKey,
-    projects: Vec<velune_agent_runtime::native::codex_projects::NativeProject>,
+    projects: Vec<Arc<Retained<velune_agent_runtime::native::codex_projects::NativeProject>>>,
     active_assignments: BTreeMap<String, String>,
     archived_assignments: BTreeMap<String, String>,
+    active_retention: DataRetention,
+    archived_retention: DataRetention,
 }
 
 fn native_key(runtime: &str, project: &str) -> String {
@@ -26,7 +30,10 @@ impl CoreRuntime {
         &self,
         runtime: &RuntimeInstance,
         key: &str,
-    ) -> Result<velune_agent_runtime::native::codex_projects::NativeProject, RuntimeError> {
+    ) -> Result<
+        Arc<Retained<velune_agent_runtime::native::codex_projects::NativeProject>>,
+        RuntimeError,
+    > {
         if runtime.type_id != RuntimeKind::Codex166 {
             return Err(RuntimeError::invalid(
                 "此运行时不支持整个 Codex 项目；请重新选择项目或工作目录",
@@ -53,7 +60,7 @@ impl CoreRuntime {
         &self,
         runtime: &RuntimeInstance,
         archived: bool,
-    ) -> Result<Vec<ConversationSummary>, RuntimeError> {
+    ) -> Result<Vec<browsing::SharedSummary>, RuntimeError> {
         let source = self.runtime_source_key(runtime)?;
         let listing = velune_agent_runtime::native::codex_projects::list_projects(
             &self.history_config(runtime)?,
@@ -70,12 +77,21 @@ impl CoreRuntime {
     pub(super) fn store_native_projects(
         &self,
         source: runtime_source::RuntimeSourceKey,
-        listing: velune_agent_runtime::native::codex_projects::ProjectListing,
+        listing: Retained<velune_agent_runtime::native::codex_projects::ProjectListing>,
         archived: bool,
-    ) -> Result<Vec<ConversationSummary>, RuntimeError> {
+    ) -> Result<Vec<browsing::SharedSummary>, RuntimeError> {
         if !source.is_current(self) {
             return Err(RuntimeError::invalid("运行时项目来源已改变，请刷新后重试"));
         }
+        let (projects, rest) = listing.split_map(|listing| {
+            (
+                listing.projects,
+                (listing.assignments, listing.conversations),
+            )
+        });
+        let (assignments, conversations) = rest.split_map(|parts| parts);
+        let (assignments, assignment_retention) = assignments.into_parts();
+        let conversations = browsing::shared_summaries(conversations);
         let mut catalogs = self.native_projects.borrow_mut();
         let catalog = catalogs
             .entry(source.runtime_id().to_owned())
@@ -84,25 +100,34 @@ impl CoreRuntime {
                 projects: Vec::new(),
                 active_assignments: BTreeMap::new(),
                 archived_assignments: BTreeMap::new(),
+                active_retention: DataRetention::default(),
+                archived_retention: DataRetention::default(),
             });
         if catalog.source != source {
             catalog.active_assignments.clear();
             catalog.archived_assignments.clear();
+            catalog.active_retention = DataRetention::default();
+            catalog.archived_retention = DataRetention::default();
             catalog.source = source;
         }
-        catalog.projects = listing.projects;
+        catalog.projects = browsing::retained_values(projects)
+            .into_iter()
+            .map(Arc::new)
+            .collect();
         if archived {
-            for summary in &listing.conversations {
+            for summary in &conversations {
                 catalog.active_assignments.remove(&summary.id);
             }
-            catalog.archived_assignments = listing.assignments;
+            catalog.archived_assignments = assignments;
+            catalog.archived_retention = assignment_retention;
         } else {
-            for summary in &listing.conversations {
+            for summary in &conversations {
                 catalog.archived_assignments.remove(&summary.id);
             }
-            catalog.active_assignments = listing.assignments;
+            catalog.active_assignments = assignments;
+            catalog.active_retention = assignment_retention;
         }
-        Ok(listing.conversations)
+        Ok(conversations)
     }
 
     pub(super) fn native_project(
@@ -110,7 +135,7 @@ impl CoreRuntime {
         key: &str,
     ) -> Option<(
         String,
-        velune_agent_runtime::native::codex_projects::NativeProject,
+        Arc<Retained<velune_agent_runtime::native::codex_projects::NativeProject>>,
     )> {
         let catalogs = self.native_projects.borrow();
         self.runtime_instances
@@ -265,7 +290,7 @@ impl CoreRuntime {
                     .iter_mut()
                     .find(|stored| stored.id == updated.id)
             {
-                *stored = updated;
+                *stored = Arc::new(updated);
             }
             return self.list();
         }

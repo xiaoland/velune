@@ -53,7 +53,7 @@ svc run start-macos-dev-release
 
 `start`通过LaunchServices后台打开当前worktree的运行副本，构建不会改写已加载的bundle。副本只在实例退出后更新，每scope保留一个；不复制编译缓存。当前实例与请求的目录、构建来源不一致时，工具拒绝猜测复用，也不会自动重启。`status`显示PID、出生时间、准确bundle／executable路径、scope与状态目录；`stop`重新核对当前进程身份后只请求正常Quit。取消、超时或歧义时停止，不追加SIGKILL、不删除lock、不按名称搜索和结束其它Velune。
 
-同worktree多Agent可复用构建和明确的开发实例；需要独立UI时使用不同worktree／scope。普通GUI不要裸执行bundle内文件，也不使用 `killall Velune`／`pkill -f Velune`，或通过退出日常实例来释放开发状态目录。既有 `--check-*` 程序化入口可直接运行开发可执行文件，但须显式使用私有合成目录、保留本次子进程句柄且只回收该子进程，不将其当作GUI启动方式。运行回执是观测结果，不是对某个PID永久有效的退出权限。原生日常重装仍须用户在应用外显式执行；同UID的任意外部shell依然能发SIGKILL，开发工具不声称构成OS安全沙箱。
+同一 scope 的开发实例可被复用，需要独立 UI 时使用不同 worktree／scope。工具的身份检查与有界停止不构成 OS 安全沙箱，同 UID 的外部 shell 仍有发送信号的能力。Agent 的进程操作范围及自动验收约束归[Mac 操作指引](../../app/mac/AGENTS.md)。
 
 ## 通道与本机覆盖
 

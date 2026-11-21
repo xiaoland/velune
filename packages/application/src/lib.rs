@@ -25,6 +25,8 @@ mod claude_quota;
 mod credential_helper;
 mod kimi_quota;
 mod native_quota_source;
+mod provider_account;
+mod provider_analytics;
 mod provider_authentication;
 mod provider_login;
 mod query_credential;
@@ -42,6 +44,18 @@ pub use provider_authentication::{
 pub use velune_application_api::{
     BilledCost, BillingAuthenticationEdit, BillingConfiguration, BillingRateLimit, BillingReport,
     BillingScope, BillingService, BillingSpendLimit, BillingUsage, ProviderBillingStatus,
+};
+pub use velune_application_api::{
+    ProviderAccountCredits, ProviderAccountDailyUsage, ProviderAccountFailure,
+    ProviderAccountProfile, ProviderAccountResetGrant, ProviderAccountResets,
+    ProviderAccountSource, ProviderAccountState, ProviderAccountStatus,
+    ProviderAccountTopInvocation,
+};
+pub use velune_application_api::{
+    ProviderAnalyticsArea, ProviderAnalyticsChatgptProfileTotal, ProviderAnalyticsDailyTotal,
+    ProviderAnalyticsFailure, ProviderAnalyticsOrganizationTotal, ProviderAnalyticsReport,
+    ProviderAnalyticsScope, ProviderAnalyticsSource, ProviderAnalyticsSourceKind,
+    ProviderAnalyticsSourceState, ProviderAnalyticsUsage,
 };
 pub use velune_application_api::{ProviderTemplate, ProviderTemplateKind, provider_templates};
 pub mod config;
@@ -126,8 +140,8 @@ pub enum Error {
     /// or background tasks still run.
     #[error("子 Agent 仍在运行；请等待其结束，或先停止子 Agent")]
     OutstandingWork,
-    /// The conversation's own turn runs; the asked branch would disturb it.
-    /// Fork requests hold for the turn to end instead of interrupting it.
+    /// A requested operation conflicts with the conversation's active turn.
+    /// Copying a completed prefix into an independent fork is not a conflict.
     #[error("会话正在运行；请等当前 turn 结束后重试")]
     Busy,
     #[error("application I/O failed: {0}")]
@@ -142,6 +156,48 @@ impl Error {
         Self::Invalid(format!("{message}：{cause}"))
     }
 
+    pub(crate) fn after_delivery(cause: impl std::fmt::Display) -> Self {
+        let mut failure = Failure::new(
+            FailureKind::Unavailable,
+            format!("输入已受理，但刷新结果失败；请先查看会话和队列，不要重复发送：{cause}"),
+        );
+        failure.code = "message_delivery_accepted".into();
+        Self::Contract(failure)
+    }
+    pub(crate) fn runtime_operation(message: &str, cause: velune_agent_runtime::LiveError) -> Self {
+        let indeterminate = cause.downcast_ref::<velune_agent_runtime::native::Error>()
+            .is_some_and(|error| matches!(error.code(), "timeout" | "transport"))
+            || cause.downcast_ref::<velune_agent_runtime::Error>().is_some_and(|error| matches!(
+                error,
+                velune_agent_runtime::Error::Timeout(_) | velune_agent_runtime::Error::ChildExited
+                    | velune_agent_runtime::Error::Transport(_)
+                    | velune_agent_runtime::Error::Io(_) | velune_agent_runtime::Error::Json(_)
+            ));
+        if indeterminate {
+            Self::operation_indeterminate(format!("{message}：{cause}"))
+        } else {
+            Self::context(message, cause)
+        }
+    }
+    pub(crate) fn operation_indeterminate(cause: impl std::fmt::Display) -> Self {
+        let mut failure = Failure::new(
+            FailureKind::Unavailable,
+            format!("运行时操作结果不确定，请先查看会话，不要重复提交：{cause}"),
+        );
+        failure.code = "runtime_operation_indeterminate".into();
+        Self::Contract(failure)
+    }
+    pub(crate) fn operation_completed(cause: impl std::fmt::Display) -> Self {
+        let mut failure = Failure::new(
+            FailureKind::Unavailable,
+            format!("运行时操作已完成，但刷新结果失败；请先查看会话，不要重复提交：{cause}"),
+        );
+        failure.code = "runtime_operation_completed".into();
+        Self::Contract(failure)
+    }
+    pub(crate) fn delivery_accepted(&self) -> bool {
+        matches!(self, Self::Contract(failure) if failure.code == "message_delivery_accepted")
+    }
     pub(crate) fn invalid(message: &'static str) -> Self {
         Self::Invalid(message.into())
     }
@@ -174,6 +230,17 @@ impl Application {
             runtime,
             analytics,
         })
+    }
+    /// Read a cached ChatGPT provider account report or request a background refresh.
+    /// This information is informational and never affects model admission.
+    pub fn provider_account(
+        &self,
+        gateway_id: &str,
+        provider_id: &str,
+        refresh: bool,
+    ) -> Result<ProviderAccountStatus, Error> {
+        self.runtime
+            .provider_account(gateway_id, provider_id, refresh)
     }
     /// Close unless a conversation's turn or its sub-agents still run.
     pub fn close(&mut self) -> Result<(), Error> {
@@ -219,7 +286,7 @@ impl From<Error> for Failure {
                     "会话正在运行；请等当前 turn 结束后重试".to_owned(),
                 );
                 failure.code = "busy".into();
-                failure
+                return failure;
             }
             Error::Io(error) => Failure::new(Kind::Io, error.to_string()),
             Error::Json(error) => Failure::new(Kind::Contract, error.to_string()),
@@ -259,5 +326,18 @@ impl From<Error> for Failure {
         }
         .into();
         failure
+    }
+}
+
+#[cfg(test)]
+mod failure_tests {
+    use super::*;
+
+    #[test]
+    fn busy_preserves_its_code_instead_of_generic_invalid() {
+        let busy = Failure::from(Error::Busy);
+        assert_eq!(busy.kind, FailureKind::Invalid);
+        assert_eq!(busy.code, "busy");
+        assert_eq!(Failure::from(Error::invalid("local validation")).code, "invalid");
     }
 }

@@ -29,11 +29,13 @@ struct ScheduledScheduleEditor: View {
                     }
                 }
                 if mode == "daily" || mode == "weekly" {
-                    HStack {
-                        Text("时间"); Spacer()
-                        Picker("小时", selection: $hour) { ForEach(0..<24, id: \.self) { Text(String(format: "%02d", $0)).tag($0) } }.labelsHidden().frame(width: 72)
-                        Text(":")
-                        Picker("分钟", selection: $minute) { ForEach(0..<60, id: \.self) { Text(String(format: "%02d", $0)).tag($0) } }.labelsHidden().frame(width: 72)
+                    LabeledContent("时间") {
+                        DatePicker("时间", selection: time, displayedComponents: .hourAndMinute)
+                            .datePickerStyle(.field)
+                            .labelsHidden()
+                            .fixedSize()
+                            .environment(\.locale, Locale(identifier: "en_GB"))
+                            .environment(\.timeZone, TimeZone(secondsFromGMT: 0)!)
                     }
                 }
                 if mode == "hourly" { Stepper("每 \(interval) 小时，在整点执行", value: $interval, in: 1...168) }
@@ -47,7 +49,7 @@ struct ScheduledScheduleEditor: View {
             if !ready && error == nil { HStack { ProgressView().controlSize(.small); Text("正在计算触发时间…").foregroundStyle(.secondary) } }
             if let preview, ready {
                 VStack(alignment: .leading, spacing: 5) {
-                    Text("接下来三次 · \(preview.timeZone)").uiFont(.caption).foregroundStyle(.secondary)
+                    Text("接下来三次（\(preview.timeZone)）").uiFont(.caption).foregroundStyle(.secondary)
                     if preview.nextAtUnixMs.isEmpty { Text("规则已无未来触发，不能启用。").foregroundStyle(.secondary) }
                     ForEach(preview.nextAtUnixMs, id: \.self) { Text(scheduleDate($0, zone: preview.timeZone)).monospacedDigit() }
                 }
@@ -87,6 +89,21 @@ struct ScheduledScheduleEditor: View {
             }
         }
     }
+    // The picker edits wall-clock components, not an instant in the task's time zone.
+    private static var timeCalendar: Calendar {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        return calendar
+    }
+    private var time: Binding<Date> {
+        let calendar = Self.timeCalendar
+        return Binding(get: {
+            calendar.date(from: DateComponents(year: 2001, month: 1, day: 1, hour: hour, minute: minute))!
+        }, set: { value in
+            let components = calendar.dateComponents([.hour, .minute], from: value)
+            hour = components.hour!; minute = components.minute!
+        })
+    }
     private func adopt(_ pattern: SchedulePattern) {
         switch pattern {
         case .daily(let h, let m): hour = Int(h); minute = Int(m); mode = "daily"
@@ -103,23 +120,60 @@ struct ScheduledScheduleSummary: View {
     @State private var preview: SchedulePreview?
     @State private var error: String?
     var body: some View {
-        VStack(alignment: .leading, spacing: 5) {
-            if let preview { Text(preview.pattern.scheduleTitle + " · " + task.timeZone) }
-            if let next = task.nextRunAtUnixMs, task.status == .active { Text("下次执行：" + scheduleDate(next, zone: task.timeZone)).foregroundStyle(.secondary) }
-            if let error { Text("日程需要处理：" + error).foregroundStyle(.secondary) }
-            DisclosureGroup("日程详情") {
-                if let preview { ForEach(preview.nextAtUnixMs, id: \.self) { Text(scheduleDate($0, zone: task.timeZone)).uiFont(.callout) } }
-                Text(task.rrule).uiFont(.caption.monospaced()).textSelection(.enabled)
-            }.uiFont(.callout)
+        VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(preview?.pattern.scheduleTitle ?? (error == nil ? "正在读取日程…" : "日程不可用")).fontWeight(.medium)
+                Text("时区：" + task.timeZone).uiFont(.callout).foregroundStyle(.secondary)
+            }
+            if let error {
+                Label("日程需要处理：" + error, systemImage: "exclamationmark.circle")
+                    .foregroundStyle(.secondary).textSelection(.enabled)
+            }
+            if let next = task.nextRunAtUnixMs, task.status == .active {
+                scheduleTimes("下次执行", times: [next])
+            }
+            if let preview {
+                let upcoming = preview.nextAtUnixMs.filter { task.status != .active || $0 != task.nextRunAtUnixMs }
+                if preview.nextAtUnixMs.isEmpty {
+                    Text("此日程已无后续执行时间。")
+                        .uiFont(.callout).foregroundStyle(.secondary)
+                } else if !upcoming.isEmpty {
+                    scheduleTimes(task.status == .active ? "后续时间" : "规则预览", times: upcoming)
+                }
+            }
+            DisclosureGroup("查看原始规则") {
+                Text(task.rrule)
+                    .uiFont(.caption.monospaced())
+                    .multilineTextAlignment(.leading)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.top, 6)
+            }
+            .uiFont(.callout)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .task {
             guard let transport = store.transport else { return }
             let result = await withCheckedContinuation { continuation in
                 store.performOnQueue { continuation.resume(returning: Result { try transport.scheduledTasks(.previewSchedule(rrule: task.rrule, timeZone: task.timeZone, pattern: nil)) }) }
             }
             guard !Task.isCancelled else { return }
-            switch result { case .success(let value): preview = value.schedulePreview; case .failure(let failure): error = AppProblem.failure(failure, source: "定时任务").detail }
+            switch result {
+            case .success(let value):
+                preview = value.schedulePreview
+                if preview == nil { error = "核心未返回日程预览" }
+            case .failure(let failure): error = AppProblem.failure(failure, source: "定时任务").detail
+            }
         }
+    }
+    private func scheduleTimes(_ title: String, times: [Int64]) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 16) {
+            Text(title).foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 4) {
+                ForEach(times, id: \.self) { Text(scheduleDate($0, zone: task.timeZone)).monospacedDigit() }
+            }
+        }
+        .uiFont(.callout)
     }
 }
 

@@ -127,6 +127,9 @@ pub struct BillingReport {
     /// Upstream data refresh time; absent stays unknown, distinct from our fetch time.
     pub data_refreshed_at_ms: Option<i64>,
     pub usage: Option<BillingUsage>,
+    /// Upstream usage by model and time bucket, within the same scope as the usage total.
+    #[serde(default)]
+    pub model_usage: Option<Vec<crate::ProviderAnalyticsModelUsage>>,
     pub costs: Option<Vec<BilledCost>>,
     pub spend_limit: Option<BillingSpendLimit>,
     pub rate_limits: Option<Vec<BillingRateLimit>>,

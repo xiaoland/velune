@@ -8,10 +8,11 @@ publish = false
 crate-type = ["rlib", "cdylib"]
 
 [features]
-default = ["local-runtime", "remote"]
+default = ["local-runtime", "remote", "external-control"]
 local-runtime = ["dep:velune-application", "dep:tracing-subscriber", "dep:tracing-appender"]
 remote = ["dep:velune-remote", "dep:tokio", "dep:jni", "dep:rustls-platform-verifier"]
 remote-diagnostics = ["remote", "velune-remote/diagnostics", "dep:tracing-subscriber"]
+external-control = ["local-runtime", "remote", "dep:axum", "dep:base64", "dep:futures-util", "dep:getrandom", "dep:hmac", "dep:sha2", "dep:subtle"]
 
 [dependencies]
 velune-telemetry = { path = "../telemetry" }
@@ -27,6 +28,15 @@ thiserror = "2"
 tracing = { version = "0.1", default-features = false, features = ["std"] }
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "json", "registry"], optional = true }
 tracing-appender = { version = "0.2", optional = true }
+
+[target.'cfg(unix)'.dependencies]
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "query", "tokio"], optional = true }
+base64 = { version = "0.22", optional = true }
+futures-util = { version = "0.3", default-features = false, features = ["std"], optional = true }
+getrandom = { version = "0.4", optional = true }
+hmac = { version = "0.12", optional = true }
+sha2 = { version = "=0.10.9", optional = true }
+subtle = { version = "2", optional = true }
 
 [target.'cfg(target_os = "android")'.dependencies]
 jni = { version = "=0.22.4", optional = true }

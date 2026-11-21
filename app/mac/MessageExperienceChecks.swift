@@ -2,6 +2,55 @@ import AppKit
 import SwiftUI
 import VeluneBindings
 
+/// Receive a fork on a non-default device and immediately change its next
+/// turn's settings. No runtime or daily state directory is opened.
+@MainActor private func forkExperienceChecks(home: URL) {
+    ConversationStore.checkConcurrentForkDispatch(home: home)
+    let local = DeviceStore(preview: true)
+    let source = DeviceStore(preview: true)
+    let window = ConversationWindowModel(application: local, kind: .workspace)
+    let summary = ConversationSummary(id: "synthetic-fork", title: .native("Synthetic (1)"), updatedAtUnixMs: nil,
+        createdAtUnixMs: nil, runtimeId: "sample-instance", cwd: nil, canRename: true, canDelete: true,
+        parentConversationId: nil, nativeReadState: nil)
+    let messages = [DeliveredMessage(id: "u", role: .user, blocks: [.text(text: "Synthetic request")]),
+                    DeliveredMessage(id: "a", role: .assistant, blocks: [.text(text: "Synthetic reply")])]
+    let identities = messages.map { TranscriptMessageIdentity(id: $0.id, messageId: $0.id) }
+    let items = messages.map { TranscriptItem.message(id: $0.id, messageId: $0.id) }
+    let result = SnapshotResult(snapshot: DeliveredSnapshot(cursor: .init(generation: 1, sequence: 1), base: nil,
+        messageIds: messages.map(\.id), messages: messages, revision: 1, conversation: summary,
+        contextRuntimeId: "sample-instance", resourceId: nil, modelRecordKey: nil, runState: .idle,
+        transcriptTurns: [], usage: .init(), transcriptItems: items, transcriptOutline: [],
+        transcriptMessageIdentities: identities, messageIdentityConfirmations: [], pendingInteractions: [],
+        actions: .init(inputAccess: .editable, canSend: true, canCancel: false, canSwitch: true),
+        followUp: .init(), subAgents: [], collaborators: []))
+    window.openInNewTab(adopting: result, device: source)
+    let store = window.focused.store
+    precondition(store.device === source && store.device !== local, "fork 必须留在发起设备")
+    precondition(store.loadedConversationID == "synthetic-fork" && !store.isLoading)
+    precondition(store.nextTurn != nil, "接收快照后立即提供执行配置，不等待列表扫描")
+    store.selectComposerRuntime("sample-review")
+    precondition(store.nextTurnRuntimeID == "sample-review", "新分支可立即更改执行运行时")
+    store.selectComposerRuntime("sample-instance")
+    store.changeComposerChoice(.effort(level: "high"))
+    precondition(store.nextTurn?.choice.effort == "high", "新分支可立即更改推理配置")
+    let transcript = TranscriptModel()
+    transcript.apply(messages, turns: [], items: items, outline: [], identities: identities, editable: [])
+    let view = NSHostingView(rootView: TranscriptView(model: transcript, reading: TranscriptReading(),
+        conversationID: "synthetic-fork", scrollRequest: 0, cwd: nil, outlineCollapsed: .constant(false), navigation: nil,
+        activity: nil, loadPayloads: { _ in }, openConversation: { _ in }, openAgentURI: { _ in },
+        describeSettings: { _ in nil }, forking: true))
+    view.frame = NSRect(x: 0, y: 0, width: 720, height: 420)
+    let host = NSWindow(contentRect: view.frame, styleMask: [.borderless], backing: .buffered, defer: false)
+    host.contentView = view
+    view.layoutSubtreeIfNeeded()
+    RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+    guard let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { fatalError("无法绘制 fork 加载态") }
+    view.cacheDisplay(in: view.bounds, to: bitmap)
+    try! bitmap.representation(using: .png, properties: [:])!.write(to: home.appendingPathComponent("fork-loading.png"))
+    store.close()
+    FileHandle.standardError.write(Data("PASS fork: original device, adopted snapshot, immediate runtime/effort edits and native loading presentation; the sidebar entry comes from the core list alone\n".utf8))
+}
+
 /// Synthetic, hidden checks: no scenes, hotkeys, orderFront, activation or input injection.
 @MainActor func messageExperienceChecks() -> Never {
     NSApplication.shared.setActivationPolicy(.prohibited)
@@ -14,9 +63,46 @@ import VeluneBindings
         while !ready(), Date() < end { RunLoop.main.run(until: Date().addingTimeInterval(0.02)) }
         precondition(ready(), "合成检查超时")
     }
+    if CommandLine.arguments.contains("--experience-sidebar-only") {
+        sidebarActionsChecks(home: home)
+        exit(0)
+    }
+    if CommandLine.arguments.contains("--experience-compaction-only") {
+        compactionTranscriptChecks(home: home)
+        exit(0)
+    }
+    if CommandLine.arguments.contains("--experience-runtime-recovery-only") {
+        runtimeRecoveryNativeChecks(home: home)
+    }
+    if CommandLine.arguments.contains("--experience-file-links-only") {
+        let path = home.appendingPathComponent("document with space.md").path
+        try! Data("synthetic".utf8).write(to: URL(fileURLWithPath: path))
+        precondition(TranscriptFileLink.resolve(path + ":20:3", cwd: nil, remote: false)?.path == path)
+        precondition(TranscriptFileLink.resolve(URL(fileURLWithPath: path).absoluteString + ":20", cwd: nil, remote: false)?.path == path)
+        precondition(TranscriptFileLink.resolve("document%20with%20space.md:20", cwd: home.path, remote: false)?.path == path)
+        precondition(TranscriptFileLink.resolve(path + ":20", cwd: nil, remote: true) == nil)
+        precondition(TranscriptFileLink.resolve("https://example.com:8080/a:20", cwd: nil, remote: false)?.absoluteString == "https://example.com:8080/a:20")
+        let literal = path + ":20"
+        try! Data().write(to: URL(fileURLWithPath: literal))
+        precondition(TranscriptFileLink.resolve(literal, cwd: nil, remote: false)?.path == literal)
+        let segments = MarkdownAttributedRenderer.render("见 `/Users/example/document.md:20`。")
+        guard case .prose(let rendered) = segments.first else { fatalError("missing prose") }
+        let range = (rendered.string as NSString).range(of: "/Users/example/document.md:20")
+        precondition(rendered.attribute(.link, at: range.location, effectiveRange: nil) as? String == "/Users/example/document.md:20")
+        note("PASS source locations: absolute, relative, encoded/file URLs, literal colon filenames, remote isolation, inline link rendering")
+        exit(0)
+    }
+    if CommandLine.arguments.contains("--experience-fork-only") { forkExperienceChecks(home: home); exit(0) }
     if CommandLine.arguments.contains("--experience-drag-provider-only") { dragProviderChecks() }
-    if CommandLine.arguments.contains("--experience-workspace-only") { workspaceRecoveryChecks(home: home); exit(0) }
+    if CommandLine.arguments.contains("--experience-workspace-only") {
+        ConversationStore.checkColdOpeningRetryLifecycle(home: home)
+        workspaceRecoveryChecks(home: home)
+        exit(0)
+    }
+    if CommandLine.arguments.contains("--experience-native-row-order-only") { TranscriptTableController.checkMaterializedRowOrder(); exit(0) }
     AppearancePreferences.shared.load(home: home) { fatalError($0) }
+    if CommandLine.arguments.contains("--experience-admission-only") { DeviceStore.checkBackgroundSubmissionAdmission(); exit(0) }
+    if CommandLine.arguments.contains("--experience-message-editor-offscreen") { messageEditorOffscreenChecks(home: home) }
     if CommandLine.arguments.contains("--experience-runtime-editor-only") { runtimeEditorChecks(home: home) }
     func stamp(_ date: Date) -> Int64 { Int64(date.timeIntervalSince1970 * 1000) }
     if CommandLine.arguments.contains("--experience-navigation-only") {
@@ -43,11 +129,54 @@ import VeluneBindings
         undo.undo()
         precondition(editor.string == "保留当前输入" && model.submission == editor.string)
         precondition(!NSApp.isActive)
+        // Transcript chrome (activity line, attachment name, code label and
+        // controls) must read its fonts on every apply: views are reused
+        // across appearance changes, so a font snapshotted at creation would
+        // keep a stale size after switching back.
+        let transcriptDelegate = TranscriptTableController()
+        let chromeMessage = DeliveredMessage(id: "chrome", role: .assistant, timestampUnixMs: nil, blocks: [
+            .text(text: "```swift\nlet size = 1\n```"),
+            .file(path: "/tmp/velune-typography-合成.txt"),
+        ])
+        let activityCell = TranscriptCellView()
+        let chromeCell = TranscriptCellView()
+        func chromeFonts(activity: Bool) -> [CGFloat] {
+            let content: TranscriptRowContent = activity
+                ? .activity(.init(text: "正在思考", isLive: true))
+                : .message(chromeMessage, revision: 0, expanded: [], status: nil, copies: false, edits: false, forks: false)
+            let layout = TranscriptRowLayout.make(content, rendered: activity ? nil : RenderedMessage(chromeMessage), width: 640, measurer: TextMeasurer())
+            let cell = activity ? activityCell : chromeCell
+            cell.frame = NSRect(x: 0, y: 0, width: 640, height: layout.height)
+            cell.apply(layout, rowID: activity ? "activity" : "chrome", outlineToggle: nil, edit: nil, fork: nil, toggleHelp: nil, textDelegate: transcriptDelegate, openArtifact: { _ in }, toggle: { _ in })
+            func descendants(_ root: NSView) -> [NSView] { [root] + root.subviews.flatMap(descendants) }
+            // Chrome labels now draw attributed strings baked at measurement
+            // time; the check reads the baked font, falling back to the field's.
+            return descendants(cell).compactMap { $0 as? NSTextField }.map { field in
+                let attributes = field.attributedStringValue.length > 0 ? field.attributedStringValue.attributes(at: 0, effectiveRange: nil) : [:]
+                return (attributes[.font] as? NSFont ?? field.font)?.pointSize ?? 0
+            }.sorted()
+        }
+        // The composer leg above leaves the message size at .extraLarge.
+        AppearancePreferences.shared.values.messages = .standard
+        AppearancePreferences.shared.values.ui = .standard
+        let chromeBase = chromeFonts(activity: true) + chromeFonts(activity: false)
+        AppearancePreferences.shared.values.messages = .extraLarge
+        AppearancePreferences.shared.values.ui = .extraLarge
+        let chromeLarge = chromeFonts(activity: true) + chromeFonts(activity: false)
+        AppearancePreferences.shared.values.messages = .standard
+        AppearancePreferences.shared.values.ui = .standard
+        let chromeRestored = chromeFonts(activity: true) + chromeFonts(activity: false)
+        precondition(chromeBase == chromeRestored && chromeBase.count == chromeLarge.count && !chromeBase.isEmpty, "转录静态标签字体必须随外观恢复默认")
+        precondition(zip(chromeBase, chromeLarge).allSatisfy { $1 > $0 }, "转录静态标签字体必须随超大增大")
         note("PASS live typography: native composer text, selection and undo survive message font changes without recreating the editor")
+        note("PASS transcript chrome typography: activity, attachment, code label and control fonts follow appearance changes on reused cells")
         exit(0)
     }
     if !CommandLine.arguments.contains("--experience-visual-only") {
+    ConversationStore.checkColdOpeningRetryLifecycle(home: home)
     let transport = Transport(stateDirectory: home.appendingPathComponent("application"), resourcesDirectory: Bundle.main.resourceURL!)
+    try! transport.prepareForLaunch()
+    MacNativePersistenceGate.open()
     let device = DeviceStore(transport: transport)
     let savedFile = home.appendingPathComponent("expected-window.json")
     if CommandLine.arguments.contains("--experience-reopen") {
@@ -90,13 +219,15 @@ import VeluneBindings
     snapshot.transcriptMessageIdentities.append(.init(id: "stable-b", messageId: "native-b"))
     outgoing.reconcile(snapshot); precondition(outgoing.displayed.isEmpty)
     let queued = outgoing.begin(.queue, text: "queued", attachments: [], snapshot: snapshot)
-    precondition(outgoing.displayed.first?.status == "排队中")
-    snapshot.followUp.queue = [.init(id: "canonical-queue", text: "queued", attachments: [])]
-    outgoing.accept(queued, snapshot: snapshot); precondition(outgoing.displayed.isEmpty)
+    precondition(outgoing.displayed.isEmpty && outgoing.queued.isEmpty, "未受理的排队请求保留输入，不先制造队列行")
+    snapshot.followUp.queue = [.init(id: "canonical-queue", submissionId: queued, text: "queued", attachments: [])]
+    outgoing.accept(queued, receipt: .queued(queueId: "canonical-queue"), snapshot: snapshot); precondition(outgoing.displayed.isEmpty && outgoing.queued.isEmpty)
     let sending = outgoing.begin(.send, text: "failed send", attachments: [], snapshot: snapshot)
     precondition(outgoing.displayed.first?.status == "发送中")
     outgoing.fail(sending); precondition(outgoing.displayed.isEmpty)
     note("PASS unified local submissions: immediate send/queue/steer; canonical queue; repeated and renamed echoes do not consume another submission; failure removes only its placeholder")
+
+    if CommandLine.arguments.contains("--experience-submissions-only") { exit(0) }
 
     _ = try! transport.upsertRuntime(RuntimeInstance(enabled: true, id: "fixture", name: "Synthetic ACP", typeId: .acp, gatewayId: "default", settings: ["binary": "/usr/bin/true"]))
     device.start()
@@ -118,6 +249,80 @@ import VeluneBindings
     single.start(restoring: nil, seed: nil, persistenceID: UUID().uuidString)
     precondition(single.tools[.composer].place == .builtIn && single.tools[.composer].shown)
     single.persistWorkspace(); device.windowWorkspaceJournal.flush()
+    let closedIdentity = UUID().uuidString
+    let closing = ConversationWindowModel(application: device, kind: .single)
+    precondition(!closing.acceptsWorkspacePersistence)
+    closing.start(restoring: nil, seed: nil, persistenceID: closedIdentity)
+    closing.persistWorkspace(); device.windowWorkspaceJournal.flush()
+    let lastOpenLayout = device.windowWorkspaceJournal.restore(id: closedIdentity, recoverLatest: false, kind: .single)!
+    closing.noteWindowClosed()
+    precondition(!closing.acceptsWorkspacePersistence)
+    closing.tools.move(.outline, to: .docked(.right))
+    precondition(closing.savedLayout != lastOpenLayout)
+    closing.persistWorkspace(); device.windowWorkspaceJournal.flush()
+    precondition(device.windowWorkspaceJournal.restore(id: closedIdentity, recoverLatest: false, kind: .single) == lastOpenLayout,
+                 "关闭后迟到的布局／草稿发布不得改写最后恢复点")
+    closing.start(restoring: nil, seed: nil, persistenceID: closedIdentity)
+    precondition(closing.acceptsWorkspacePersistence, "原生 scene 合法重用时可重新保存")
+    closing.persistWorkspace(); device.windowWorkspaceJournal.flush()
+    precondition(device.windowWorkspaceJournal.restore(id: closedIdentity, recoverLatest: false, kind: .single) == closing.savedLayout)
+    closing.noteWindowClosed()
+    note("PASS closed window persistence: late publications preserve the last open recovery point; reopening re-enables writes")
+    let firstSeed = WindowSeed(tab: single.focused.id)
+    let firstSeeded = ConversationWindowModel(application: device, kind: .single)
+    firstSeeded.start(restoring: single.savedLayout, seed: firstSeed, persistenceID: UUID().uuidString)
+    firstSeeded.persistWorkspace()
+    firstSeeded.noteWindowClosed()
+    let keptSeed = WindowSeed(tab: closing.focused.id)
+    let keptSeeded = ConversationWindowModel(application: device, kind: .single)
+    keptSeeded.start(restoring: closing.savedLayout, seed: keptSeed, persistenceID: UUID().uuidString)
+    keptSeeded.persistWorkspace(); device.windowWorkspaceJournal.flush()
+    let keptLayout = keptSeeded.savedLayout
+    let archivedSeed = try! JSONDecoder().decode(WindowSeed.self, from: JSONEncoder().encode(keptSeed))
+    let coldSeeded = ConversationWindowModel(application: device, kind: .single)
+    coldSeeded.start(restoring: firstSeeded.savedLayout, seed: archivedSeed, persistenceID: UUID().uuidString)
+    precondition(coldSeeded.savedLayout.panes == keptLayout.panes && coldSeeded.savedLayout.tools == keptLayout.tools,
+                 "恢复值仍指向保留的窗口；SceneStorage丢失或串入已关闭窗口的布局不能改变归属")
+    precondition(device.windowWorkspaceJournal.restore(id: keptSeed.id.uuidString, recoverLatest: false, kind: .single)?.panes == keptLayout.panes)
+    let replacedStartingTab = ConversationWindowModel(application: device, kind: .single)
+    replacedStartingTab.start(restoring: firstSeeded.savedLayout, seed: WindowSeed(id: keptSeed.id, tab: UUID()), persistenceID: UUID().uuidString)
+    precondition(replacedStartingTab.savedLayout.panes == keptLayout.panes,
+                 "canonical窗口身份仍可恢复已合法替换起始tab的布局")
+    let legacyLayout = ConversationWindowModel(application: device, kind: .single).savedLayout
+    let legacyID = UUID().uuidString
+    device.windowWorkspaceJournal.save(legacyLayout, id: legacyID)
+    device.windowWorkspaceJournal.flush()
+    let legacySeed = WindowSeed(tab: legacyLayout.panes.values.first!.tabs[0])
+    let legacyRecovery = ConversationWindowModel(application: device, kind: .single)
+    legacyRecovery.start(restoring: nil, seed: legacySeed, persistenceID: UUID().uuidString)
+    precondition(legacyRecovery.savedLayout.panes == legacyLayout.panes,
+                 "旧handoff恢复点可由同设备、同窗口类型的精确tab身份迁移，不借用latest")
+    let missingSeed = ConversationWindowModel(application: device, kind: .single)
+    missingSeed.start(restoring: firstSeeded.savedLayout, seed: WindowSeed(tab: UUID()), persistenceID: UUID().uuidString)
+    precondition(missingSeed.focused.store.reachingConversationID == nil,
+                 "丢失handoff和恢复点时不得自动载入首个无关会话")
+    note("PASS seeded window recovery: archived seed wins over fresh SceneStorage identity and wrong scene contents; exact legacy tab recovery; missing handoff stays blank")
+    let draftSeed = WindowSeed(tab: legacyLayout.panes.values.first!.tabs[0])
+    var draftLayout = legacyLayout
+    let draftText = "恢复中的非空草稿\n保留执行前输入"
+    draftLayout.composer = SavedComposerDraft(text: draftText, attachments: [])
+    draftLayout.composerWorkspace = nil
+    device.windowWorkspaceJournal.save(draftLayout, id: draftSeed.id.uuidString)
+    device.windowWorkspaceJournal.flush()
+    let firstDraftRestore = ConversationWindowModel(application: device, kind: .single)
+    firstDraftRestore.start(restoring: nil, seed: draftSeed, persistenceID: UUID().uuidString)
+    firstDraftRestore.noteWindowClosed()
+    let afterDraftRestore = device.windowWorkspaceJournal.restore(id: draftSeed.id.uuidString, recoverLatest: false, kind: .single)!
+    precondition(afterDraftRestore.panes == draftLayout.panes,
+                 "非空草稿的同步发布不能在替换pane前覆盖canonical恢复点")
+    let secondDraftRestore = ConversationWindowModel(application: device, kind: .single)
+    secondDraftRestore.start(restoring: nil, seed: draftSeed, persistenceID: UUID().uuidString)
+    precondition(secondDraftRestore.savedLayout.panes == draftLayout.panes,
+                 "SceneStorage紧接着重新挂载时仍恢复原tab，不读取半恢复布局")
+    let draftSaved = secondDraftRestore.savedLayout
+    precondition(draftSaved.composer?.text == draftText || draftSaved.composerWorkspace?.drafts.contains(where: { $0.state.text == draftText }) == true,
+                 "抑制恢复中写入后仍须完整保留草稿")
+    note("PASS restoration write transaction: nonempty legacy draft publication cannot replace the original tab; immediate second mount retains panes and draft")
     let fallback = device.windowWorkspaceJournal.restore(id: UUID().uuidString, recoverLatest: true)!
     precondition(fallback.layout == expected.layout && fallback.panes == expected.panes)
     note("PASS actual window lifecycle: structural edits persist without a text edit; two groups/four tabs; independent composer default; latest single window cannot replace workspace recovery")
@@ -137,9 +342,10 @@ import VeluneBindings
 }
 
 @MainActor private func renderExperienceSamples(home: URL, window: ConversationWindowModel, model: ComposerModel, now: Int64) {
-    func capture(_ view: NSView, name: String, size: NSSize) {
+    func capture(_ view: NSView, name: String, size: NSSize, appearance: NSAppearance.Name = .aqua) {
         view.frame = NSRect(origin: .zero, size: size)
         let host = NSWindow(contentRect: view.frame, styleMask: [.borderless], backing: .buffered, defer: false)
+        host.appearance = NSAppearance(named: appearance)
         host.contentView = view
         view.layoutSubtreeIfNeeded()
         RunLoop.main.run(until: Date().addingTimeInterval(0.15))
@@ -150,6 +356,8 @@ import VeluneBindings
         precondition(!host.isVisible && !host.isKeyWindow)
         host.contentView = nil
     }
+    capture(NSHostingView(rootView: WindowRestorationPendingView()), name: "window-restoration-pending-light", size: NSSize(width: 520, height: 300))
+    capture(NSHostingView(rootView: WindowRestorationPendingView().environment(\.colorScheme, .dark)), name: "window-restoration-pending-dark", size: NSSize(width: 520, height: 300), appearance: .darkAqua)
     let rows = MessageSampleCanvas(frame: NSRect(x: 0, y: 0, width: 1000, height: 780))
     rows.wantsLayer = true; rows.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
     let delegate = TranscriptTableController()
@@ -175,6 +383,28 @@ import VeluneBindings
         }
         add(.message(message, revision: 0, expanded: [], status: nil, copies: true, edits: message.role == .user, forks: message.role == .assistant), rendered: RenderedMessage(message), id: message.id)
     }
+    let editedMessage = DeliveredMessage(id: "user", role: .user, timestampUnixMs: now, blocks: [
+        .text(text: "请把刚才的方案再简化一些。\n\n保留现有的消息编辑入口，让我能直接修改正文，再决定是在原会话继续，还是另开一个会话。运行参数不需要一直展开。\n\n另外，发送失败时请保留我正在编辑的内容。"),
+    ])
+    for (name, height, appearance, revision) in [
+        ("message-editor", 450.0, NSAppearance.Name.aqua, String?.none),
+        ("message-editor-dark", 450.0, NSAppearance.Name.darkAqua, String?.none),
+        ("message-editor-dark-conflict", 520.0, NSAppearance.Name.darkAqua, Optional("synthetic-old-history")),
+    ] {
+        let request = MessageEditRequest(message: editedMessage, conversationID: nil, inPlace: true, isLast: false, revision: revision)
+        let session = MessageEditingSession(source: window.focused.store, request: request, presentation: .sheet)
+        capture(NSHostingView(rootView: MessageEditorView(session: session, window: window, source: window.focused)
+            .applicationAppearance().background(Color(nsColor: .windowBackgroundColor))),
+            name: name, size: NSSize(width: 620, height: height), appearance: appearance)
+    }
+    let attached = DeliveredMessage(id: "attachment-editor", role: .user, blocks:
+        [.text(text: String(repeating: "编辑长正文保留换行与执行配置。\n", count: 40))] +
+        (0..<12).map { .file(path: "/tmp/" + String(repeating: "very-long-attachment-name-", count: 5) + "\($0).md") })
+    let attachedSession = MessageEditingSession(source: window.focused.store,
+        request: MessageEditRequest(message: attached, conversationID: nil, inPlace: true, isLast: false, revision: nil), presentation: .sheet)
+    capture(NSHostingView(rootView: MessageEditorView(session: attachedSession, window: window, source: window.focused)
+        .applicationAppearance().background(Color(nsColor: .windowBackgroundColor))),
+        name: "message-editor-long-attachments", size: NSSize(width: 620, height: 520))
     capture(rows, name: "message-actions", size: NSSize(width: 1000, height: max(y, 500)))
     for width: CGFloat in [1100, 560] {
         let composer = ComposerView(store: window.focused.store, model: model, layout: window, send: {}, steer: {}, submission: { window.focused.submission(using: model) }, resume: {}, fillsHeight: true, recipient: "架构评审会话")

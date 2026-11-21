@@ -31,6 +31,7 @@ struct SplitSash: NSViewRepresentable {
         var drag: (CGFloat) -> Void = { _ in }
         var end: () -> Void = {}
         var reset: () -> Void = {}
+        private var cursorTrackingArea: NSTrackingArea?
         private var cursor: NSCursor { axis == .horizontal ? .resizeLeftRight : .resizeUpDown }
 
         override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
@@ -39,8 +40,10 @@ struct SplitSash: NSViewRepresentable {
 
         override func updateTrackingAreas() {
             super.updateTrackingAreas()
-            trackingAreas.forEach(removeTrackingArea)
-            addTrackingArea(NSTrackingArea(rect: .zero, options: [.cursorUpdate, .activeInActiveApp, .inVisibleRect], owner: self))
+            if let cursorTrackingArea { removeTrackingArea(cursorTrackingArea) }
+            let area = NSTrackingArea(rect: .zero, options: [.cursorUpdate, .activeInActiveApp, .inVisibleRect], owner: self)
+            cursorTrackingArea = area
+            addTrackingArea(area)
         }
 
         override func cursorUpdate(with event: NSEvent) { cursor.set() }

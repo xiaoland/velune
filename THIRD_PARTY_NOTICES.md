@@ -18,6 +18,7 @@ Velune's integration bridge is in `packages/ai-provider/relaykit-bridge`. The Ne
 
 - Rust crate license inventory and texts are generated for each application target and feature set as `ThirdParty/rust-licenses.txt`. UniFFI uses MPL-2.0; its full text is included in the inventory.
 - macOS Swift packages and Mermaid's bundled JavaScript component have notices and license texts under `ThirdParty/Swift` and `ThirdParty/Mermaid`. The package lock files are retained with desktop application notices. The source archive carries the Mermaid source map plus its exact upstream snapshot and preferred-source supplements for generated JavaScript inputs; the source and version inventory is documented under `app/mac/Licenses/Mermaid`.
+- macOS bundles the MIT-licensed tiann/tunwg executable for the optional HAPI relay. The fixed upstream release and notices for its statically linked Go modules are documented under `ThirdParty/Tunwg` in the bundle and `app/mac/Licenses/Tunwg` in the source tree.
 - The bundled xURL command-line tool is built from the source revision pinned in `scripts/install-xurl.sh` and `scripts/install-xurl.ps1`; its Apache-2.0 license is shipped with the tool.
 - Runtime-support JavaScript notices and license texts are under `ThirdParty/licenses`. Windows OpenTelemetry notices are under `ThirdParty/OpenTelemetry`.
 - Windows NuGet package license texts, notices, and `packages.lock.json` are under `ThirdParty/NuGet` in the Windows application bundle. That collection is generated from the package graph restored for the build.

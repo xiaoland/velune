@@ -16,7 +16,7 @@ use crate::{
     },
     config::{ExecutionBackend, Protocol},
     observation::Observation,
-    scheduling::{Candidate, QuotaSource, ScheduleUnavailable, SchedulingState, SessionIdentity},
+    scheduling::{AdmissionReason, Candidate, QuotaSource, ScheduleUnavailable, SchedulingState, SessionIdentity},
 };
 use axum::{
     Router,
@@ -365,10 +365,21 @@ async fn ingress_observed(
         }
     };
     tracing::Span::current().record("stream", stream);
-    let candidates = match state.candidates(&route) {
-        Ok(candidates) => candidates,
-        Err(unavailable) => {
-            return admission.reject_scheduling(observation, unavailable, Some(&route[0]));
+    // Only wait before dispatch: no upstream request or tool side effect has
+    // happened yet. Cold quota reads share one bounded admission interval.
+    let quota_deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    let candidates = loop {
+        match state.candidates(&route) {
+            Ok(candidates) => break candidates,
+            Err(unavailable) if unavailable.reason == AdmissionReason::QuotaPending
+                && tokio::time::Instant::now() < quota_deadline
+                && !state.stopping.load(Ordering::Acquire) =>
+            {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            Err(unavailable) => {
+                return admission.reject_scheduling(observation, unavailable, Some(&route[0]));
+            }
         }
     };
     let (sender, mut receiver) = mpsc::channel(1);

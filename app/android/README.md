@@ -1,5 +1,7 @@
 # Android 控制端
 
+本文面向 Android 端开发者，记录平台实现、构建与验证。安装和配对操作见[用户指南](../../docs/usage.md)，代码 Agent 的 ADB 操作约束见 [AGENTS.md](AGENTS.md)。
+
 Android 是只控制、不执行的端。它不运行 Agent、Harness、网关或 Node，所有会话都在被控的完整端（Mac、Windows）上运行。应用使用 Kotlin、Jetpack Compose 与 Material 3，经 remote-only UniFFI／iroh 调用被控端的 `VeluneApplication`，与完整端自己的界面使用同一组具名业务方法。支持 API 28 及以上的 arm64-v8a 设备，应用 ID 为 `app.velune.android`。
 
 ## 界面
@@ -46,7 +48,7 @@ adb shell am start -n app.velune.android/.MainActivity
 
 设备身份和远控状态位于 `noBackupFilesDir/remote`。应用禁用系统备份与设备转移，避免在另一台手机上复制出同一身份；卸载或清除数据后需要重新配对。邀请只留在内存中，用过即丢弃。
 
-端点使用 iroh 公共开发 relay 与 discovery，路径策略为 Automatic。`NetworkMonitor` 把默认网络和 LAN 的变化合并成具名快照报告给 Rust；连接恢复由 Rust 的控制器负责，应用只报告当前查看的设备和前后台状态。写操作的结果不明时，Rust 保留未决记录，不会自动重发。
+设备页的“连接设置”管理本机中继：可选公共预设、自定义地址列表或关闭中继，并按服务地址添加、替换或移除 Bearer 访问凭据。已有令牌不读回表单，留空保持；更换中继地址不会携带旧地址的凭据。保存由共享 Rust 核心持久化并应用网络换代，重开后沿用，设备身份与配对保持。设置应用状态与设施实际可达状态分别显示；应用失败可重试，修订冲突或字段错误保留编辑。地址查找保持现有设置，默认使用公共 discovery，路径策略为 Automatic。`NetworkMonitor` 把默认网络和 LAN 的变化合并成具名快照报告给 Rust；连接恢复由 Rust 的控制器负责，应用只报告当前查看的设备和前后台状态。写操作的结果不明时，Rust 保留未决记录，不会自动重发。
 
 Debug 应用还提供[本地配对 CLI](../../docs/development.md#本地配对-cli)，通过 ADB 的 `run-as` 调用当前应用服务；不需要操作界面或重开远控实例。
 

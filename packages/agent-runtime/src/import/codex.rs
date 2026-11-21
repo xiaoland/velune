@@ -8,6 +8,41 @@ pub fn import_codex_conversation(
     cli_version: &str,
     provider: &str,
 ) -> Result<ImportedConversation> {
+    import_codex_conversation_with_origins(
+        execution,
+        codex_home,
+        cwd,
+        context,
+        cli_version,
+        provider,
+    )
+    .map(|(imported, _)| imported)
+}
+
+pub fn import_codex_conversation_with_origins(
+    execution: &ExecutionTarget,
+    codex_home: &Path,
+    cwd: &Path,
+    context: &Context,
+    cli_version: &str,
+    provider: &str,
+) -> Result<(
+    ImportedConversation,
+    std::collections::BTreeMap<String, Vec<String>>,
+)> {
+    import_codex_conversation_owned(execution, codex_home, cwd, context, cli_version, provider)
+        .map(|(imported, origins, _)| (imported, origins))
+}
+
+pub fn import_codex_conversation_owned(
+    execution: &ExecutionTarget,
+    codex_home: &Path,
+    cwd: &Path,
+    context: &Context,
+    cli_version: &str,
+    provider: &str,
+) -> Result<OwnedImport> {
+    let mut origins = std::collections::BTreeMap::<String, Vec<String>>::new();
     let now = now_unix_ms();
     let thread_id = uuid7(now)?;
     let ids = context.tool_ids("call_")?;
@@ -53,12 +88,13 @@ pub fn import_codex_conversation(
             let (item, display) = match block {
                 Block::Text { text } => {
                     let id = prefixed_id("msg_")?;
+                    // The translated context does not carry assistant message phases.
                     (
-                        json!({"type":"message","id":id,"role":role,"content":[{"type":if role == "user" {"input_text"} else {"output_text"},"text":text}],"phase":"commentary"}),
+                        json!({"type":"message","id":id,"role":role,"content":[{"type":if role == "user" {"input_text"} else {"output_text"},"text":text}]}),
                         Some(if role == "user" {
                             json!({"type":"UserMessage","id":id,"content":[{"type":"text","text":text,"text_elements":[]}]})
                         } else {
-                            json!({"type":"AgentMessage","id":id,"content":[{"type":"Text","text":text}],"phase":"commentary"})
+                            json!({"type":"AgentMessage","id":id,"content":[{"type":"Text","text":text}]})
                         }),
                     )
                 }
@@ -121,6 +157,19 @@ pub fn import_codex_conversation(
                     )
                 }
             };
+            if message.role == Role::User
+                && matches!(block, Block::Text { .. } | Block::Image { .. })
+                && let Some(source) = &message.source_message_id
+            {
+                let id = display
+                    .as_ref()
+                    .and_then(|item| item["id"].as_str())
+                    .expect("imported user identity");
+                origins
+                    .entry(source.clone())
+                    .or_default()
+                    .push(id.to_owned());
+            }
             push("response_item", item);
             if let Some(display) = display {
                 push(
@@ -147,5 +196,7 @@ pub fn import_codex_conversation(
         ))
         .join(codex_rollout_name(now, &thread_id));
     write_jsonl(execution, &path, &records)?;
-    Ok(ImportedConversation::Codex { thread_id })
+    let imported = ImportedConversation::Codex { thread_id };
+    let ownership = ImportOwnership::capture(execution, path, imported.clone())?;
+    Ok((imported, origins, ownership))
 }

@@ -21,7 +21,7 @@ struct ComposerSheet: View {
             .padding([.horizontal, .top], 16)
             if store.isOpeningConversation {
                 ProgressView("正在加载会话…").frame(maxWidth: .infinity).padding(.top, 12)
-            } else if !store.pendingInteractions.isEmpty {
+            } else if store.pendingInteractions.contains(where: { if case .asyncUserInput = $0.kind { false } else { true } }) {
                 Text("此会话有待处理的请求，打开会话处理后才能发送。").foregroundStyle(.secondary).padding([.horizontal, .top], 16)
             }
             ComposerView(store: store, model: window.composer(for: tab), layout: window, send: { window.composerContext(for: tab).send() }, steer: { window.composerContext(for: tab).steer() }, submission: { window.composerContext(for: tab).submission() }, resume: { window.composerContext(for: tab).resume() })

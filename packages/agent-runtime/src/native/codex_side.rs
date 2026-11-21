@@ -72,6 +72,11 @@ impl NativeSession {
             && self.config.gateway.is_none()
             && let Some(model) = result["model"].as_str()
         {
+            let provider_retention = self
+                .data
+                .try_clone(|owner| matches!(owner, DataOwner::Provider))?;
+            self.data
+                .merge_owner(DataOwner::Selection, provider_retention);
             self.native_selection = Some(RuntimeModel {
                 provider_id: self.native_provider.clone(),
                 id: model.into(),
@@ -83,6 +88,9 @@ impl NativeSession {
             .map(PathBuf::from)
             .or_else(|| cwd.map(Path::to_path_buf));
         self.replace_snapshot(&id, resolved_cwd.as_deref(), runtime_id, Vec::new());
+        let (identity, selection) = result.into_parts().1.split();
+        self.data.insert(DataOwner::Identity, identity);
+        self.data.merge_owner(DataOwner::Selection, selection);
         Ok(())
     }
 }

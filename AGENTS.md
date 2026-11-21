@@ -9,6 +9,8 @@
 - **界面原则与平台约束**：[`DESIGN.md`](DESIGN.md)；平台实现细节见对应子树的 `AGENTS.md`、README 或 TDD。
 - **开发构建复用与缓存**：[`docs/development/builds.md`](docs/development/builds.md)。同工作树用具名SVC入口共享在途构建，按影响层验收并复用最终证据。
 - **构建、运行与验证**：[`docs/development.md`](docs/development.md) 和对应 unit 的说明。
+- **Android ADB 操作**：[`app/android/AGENTS.md`](app/android/AGENTS.md)，面向 Agent 的设备选择、文本粘贴、排障验收与临时资源恢复。
+- **Mac 自动验收与焦点**：[`app/mac/AGENTS.md`](app/mac/AGENTS.md)，开发进程范围、前台操作与视觉证据要求。
 - **当前任务、临时证据与未决事项**：任务对应的 `tasks/<name>/packet.md`。
 - **需要追溯用户决定时**：[`docs/sources.md`](docs/sources.md)。
 
@@ -20,6 +22,14 @@
 - 开发验证使用合成数据；真实凭据、账户状态、支付信息和会话记录的处理边界与授权例外见 [`docs/development.md`](docs/development.md)。
 - 项目文档和任务包直接用 Markdown 维护。开发资源和构建／重装命令归 `svc.json`，使用 `svc dev` 与 `svc run`；见 [开发环境](docs/development.md#开发环境)。重装日常应用会退出当前 Velune，由用户在应用外执行。
 - 修改文档后检查相对链接与标题锚点，并运行 `git diff --check`。
+
+## 文档归属
+
+修改文档前区分产品使用者、人类开发者和代码 Agent，按[贡献指南的受众表](CONTRIBUTING.md#documentation-audiences)选择归属。用户步骤不夹带内部验证或协作指令，工程机制不因用于 Agent 验收就搬入 `AGENTS.md`；PRD/TDD 仍分别维护产品规则和技术契约。来源中的“本轮”“当前切片”和操作授权只属于历史上下文，不能推定为当前任务授权或交付状态。
+
+## 构建与验收协作
+
+多 Agent 各验证自己影响的层；稳定集成后由一个负责人取得共同构建，其它 Agent 复用证据。仅改 UI 先验证对应 App，共享 ABI 改变才编译受影响消费者，不把每个 Agent 的完成都变成一次全平台完整构建。构建请求、输入身份与回执机制见[并行构建](docs/development/builds.md#并行构建与结果来源)。
 
 <!-- svc:begin -->
 ## SVC

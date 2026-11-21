@@ -217,7 +217,7 @@ struct ProviderImportView: View {
     private var footer: some View {
         VStack(alignment: .leading, spacing: 10) {
             if let preview, !preview.warnings.isEmpty {
-                ImmediateDisclosureGroup("读取提示 · \(preview.warnings.count)") {
+                ImmediateDisclosureGroup("读取提示（\(preview.warnings.count)）") {
                     ScrollView { issueList(preview.warnings).frame(maxWidth: .infinity, alignment: .leading) }
                         .frame(maxHeight: 80)
                 }.uiFont(.callout)
@@ -257,8 +257,8 @@ struct ProviderImportView: View {
     }
     private func providerStatus(_ provider: ImportProviderCandidate) -> String {
         let count = provider.models.filter(\.canImport).count
-        if !provider.canImport || count == 0 { return "不可导入 · \(provider.models.count) 个模型" }
-        return provider.alreadyImported ? "已存在 · \(count) 个可用模型" : "\(count) 个可导入模型"
+        if !provider.canImport || count == 0 { return "\(provider.models.count) 个模型不可导入" }
+        return provider.alreadyImported ? "已存在，\(count) 个可用模型" : "\(count) 个可导入模型"
     }
     private func modelStatus(_ model: ImportModelCandidate, provider: ImportProviderCandidate) -> String {
         if !provider.canImport || !model.canImport { return "不支持" }

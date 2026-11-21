@@ -2,6 +2,14 @@
 
 `velune-application` 是平台 app 共用的应用用例 unit。公开 DTO 与具名 `Command`／`Response` 归 [application-api](../application-api/README.md)，本 unit 实现用例。`ApplicationService` 为平台和远控入口持有唯一执行 owner；原有 `Application` 类型化方法保留为同一用例实现。平台不自行协调文件提交、子进程状态与投影失败清理。
 
+会话详情读取复用 `HistoryWorkers`（两个 worker，有限待处理队列）。`ReadConversation`、cold `ReadSnapshot`／`ReadSnapshotUpdate`、`OpenConversation` 显式刷新、composer 目标准备和以快照为依据的交接／侧聊先在 owner 上准备来源，再由 worker 执行完整原生历史读取；owner 可在此期间接受其它会话命令。结果回到 owner 后按 view generation 与 RuntimeSourceKey 校验，再安装投影或重试原请求。满载明确返回读取繁忙，查询不在 owner 上退回同步 `read_history`。source-follow 检测同样使用队列，保持一个会话一个在途代际，并拒绝旧结果覆盖新来源。
+
+闲置 live runtime 仍最多保留 8 个；超出时只关闭 idle adapter，先把其完整投影保留为 history-only session。history-only 投影缓存上限 128，按 parked/LRU 顺序淘汰；控制观察不属于 Session，由共享 `ControlObservations` 按物理来源去重。达到历史上限后，最旧视图会被回收，之后的查询重新走有界 HistoryWorkers。执行中、有待交互或 source refresh 在途的会话按原有 pinned 规则保护，不因刷新停止。
+
+`ControlObservations` 的缓存查询不做原生 IO；一个调度线程向四个固定 worker 的有界队列派发，缓存最多 256 个来源，等待队列深度 32。同一完整 `Target` 只允许一个在途探测，身份包含执行位置、HOME、版本类型、原生目录与 ID、Node 和辅助资源。最近查询续租 15 秒后台需求，正常结果约每 2 秒刷新，未知结果退避 5 秒；首次等待超过 5 秒或可写事实过期均返回检查不可用。本机 native handle 已确认持锁时暂停后台采样；失去句柄后的首次查询重新检查，不沿用持锁前的缓存。失效请求、交接与原生拒绝递增代际并取消旧探测；旧结果不能恢复可写。超时不释放尚未结束的 worker／在途名额，避免用新任务掩盖阻塞资源。helper 的共享截止时间和进程回收归 [agent-runtime](../agent-runtime/README.md#控制探测预算)；不可中断文件 IO 会占住固定 worker，不创建替代线程。
+
+`OpenConversation` 是显式刷新：空闲普通或关联会话强制重读并使共享控制观察失效；忙会话、live-only session、草稿和侧聊返回现有快照，保留执行和编辑状态。source-follow 在 worker 中读取后重采样原生运行状态，只有来源代际仍匹配且会话未进入 live execution 时才安装结果；失败、冲突和队列满的同代请求保留重试标记并受退避限制。
+
 提交状态政策归 [`local/submission.rs`](src/local/submission.rs)。快照先保留原生 `can_send` 能力并观察一次控制权，再派生 follow-up，最后写入公开准入；已交付的 `can_send` 不作为原生能力回灌重算。普通发送使用本次最终投影，队列与 steer 的命令和展示共用纯政策；队列分别计算当前可提供的 `offer_queue` 和允许迟到请求的 `accept_queue`，由前者投影 `FollowUp.can_queue`。跨端消费边界与停止后迟到请求的语义归[会话输入准入契约](../../docs/product-tdd/conversations.md#会话输入准入与调度)，此处不维护第二份状态表。原生自动重试、目标模型／推理／权限校验和继续策略仍各有其实际执行 owner。
 
 多个会话可以同时执行。每个打开的会话有自己的执行、模型选择、投影与协作票据；以会话 ID 寻址的操作（打开、发送、取消、回复交互、重命名、删除、snapshot）作用于该会话，每次操作都推进所有会话。每个会话同一时刻最多一个 turn；`cancel` 与 `reply_runtime_interaction` 需要会话 ID。重开正在执行的会话返回其运行中的视图，结束后再打开才重读原生历史。执行中或有待处理交互的会话保持打开，空闲会话按最近使用保留 8 个。同一运行时的并发执行各用一个 lane 目录（`runtime-projections/<运行时>/lane-<n>`）存放网关模型与选择文件。`conversation_activity(since)` 列出执行中或待处理交互的会话，并返回游标之后结束的 Velune turn 及其结果（完成、失败、用户停止；Pi 以错误结束模型响应也算失败），最近 64 个可补读，另列出打开的会话中当前可无新消息恢复的会话（资格同 snapshot 的 `can_resume`，恢复请求仍重新判定）；可频繁轮询。运行时保存、提供商、导入与登录配置在任一会话执行时拒绝变更。运行时删除只在依赖该实例的会话或后台任务执行时拒绝；其他实例执行不阻止删除失效实例，删除不改动 Harness 原生文件。并行会话手动验收 用隔离 Pi 1.0.2 与本机 loopback 上游检查同时执行、独立结束、取消与配置门禁。
@@ -12,9 +20,9 @@
 
 每个会话另有 Velune 的发送队列（`local/follow_up.rs`），只在应用运行期间保存：`send_queue` 加入（保存发送时的完整选择）、编辑正文、删除、移动与继续发送；turn 正常结束时推进会话即发出队首，各自成轮，停止或失败暂停，未被接受的一条留在队首并暂停、不自动重发；空闲时加入或继续发送立即发出。有排队消息的会话保持打开。快照的 `followUp` 给出队列、暂停原因、能否 steer 与能否继续（本会话上一轮停止或失败）。`steer_turn` 与队列操作 `Steer` 经运行时原生通道把消息插入正在运行的轮次（Pi `steer`、Codex `turn/steer`、Claude Code 轮次中的 stdin 用户消息），不另起一轮、不带下一轮选择；ACP 与 DSH 不提供。发送队列手动验收、steer 手动验收。
 
-编辑用户消息归 `local/editing.rs`：`followUp.editable` 列出当前可编辑的用户消息及能否原地替换（sub-agent 与未发送会话均无；运行中可编辑——选择在新会话中继续等当前 turn 结束后自动发送，选择在原会话中继续会先停止当前 turn；Codex 插入本轮的消息随所在轮次，不单独原地替换；Claude Code 第一条只能 fork）。`edit_message` 先按发送同样的规则检查附件、模型、推理与权限，再重新读取原生历史，按用户消息序号与正文认出这条消息（不一致时拒绝，提示在别处已改变），之后经原生机制分叉并作为新一轮发出：Codex `thread/revert`／`thread/fork`（复制到前一轮），Claude Code 下一轮子进程 `--resume-session-at`（fork 另加 `--fork-session --session-id`），Pi 扩展命令 `velune-rewind`（`navigateTree`，旧分支留在会话树）／RPC `fork`。第一条消息 fork 时 Codex 与 Claude Code 在同一目录新建会话。没有原生边界时（Codex 同轮 steer、跨 Harness 关联会话）改走翻译分叉 `translated_branch`：逐段导出原生有效上下文（Pi／Codex／Claude Code 的 export），在边界消息处截断（按正文在导出上下文中定位，压缩或改写则拒绝），整体翻译写入当前上下文运行时的新原生会话，再发送编辑后的消息；新会话独立，原会话与关联图谱不变。fork 在新的会话（session）中进行，原会话保持不变，结果是新会话的快照；分叉前失败时回到原会话。消息编辑手动验收。
+编辑用户消息归 `local/editing.rs`：`followUp.editable` 列出当前可编辑的用户消息及能否原地替换（sub-agent 与未发送会话均无；运行中可编辑——选择在新会话中继续独立分叉并发送，不等待源 turn，选择在原会话中继续会先停止当前 turn；Codex 插入本轮的消息随所在轮次，不单独原地替换；Claude Code 第一条只能 fork）。`edit_message` 先按发送同样的规则检查附件、模型、推理与权限，再重新读取原生历史，按用户消息序号与正文认出这条消息（不一致时拒绝，提示在别处已改变），之后经原生机制分叉并作为新一轮发出：Codex `thread/revert`／`thread/fork`（复制到前一轮），Claude Code 下一轮子进程 `--resume-session-at`（fork 另加 `--fork-session --session-id`），Pi 原地编辑用扩展命令 `velune-rewind`（`navigateTree`，旧分支留在会话树），新会话继续则用独立 SDK SessionManager 复制被替换消息之前的固定 entry 前缀。第一条消息 fork 时 Codex 与 Claude Code 在同一目录新建会话。没有原生边界时（Codex 同轮 steer、跨 Harness 关联会话）改走翻译分叉 `translated_branch`：导出边界所在原生段的有效模型上下文（包含该段已导入的上下文），在边界消息之前截断（按正文在导出上下文中定位，压缩或改写则拒绝），翻译写入当前上下文运行时的新原生会话，再发送编辑后的消息；新会话独立，原会话与关联图谱不变。fork 在新的会话（session）中进行，原会话保持不变，结果是新会话的快照；分叉前失败时回到原会话。消息编辑手动验收。
 
-会话分叉（不带新消息）同为 `local/editing.rs`：`TranscriptTurn.can_fork` 按 turn 给出（每个已完成 turn 在可分叉来源上为真，未完成的 turn 为假；跨 Harness 关联会话在可翻译时为真），`fork_message` 以某轮起始用户消息为界重新读取原生历史认出该消息；单源会话走 `NativeSession::fork_through`（Codex `thread/fork` 复制到该轮；Claude Code `--resume-session-at` 取下一用户消息前一条记录，最后一轮不设置 `at` 复制整个分支；Pi RPC `fork`／末轮 `clone`），关联会话走与编辑相同的翻译分叉。分叉不发送新轮次，结果是新会话的快照；原会话不变，失败时回到原会话。
+会话分叉（不带新消息）同为 `local/editing.rs`：`TranscriptTurn.can_fork` 按 turn 给出（每个已完成 turn 在可分叉来源上为真，未完成的 turn 为假；跨 Harness 关联会话在可翻译时为真），`fork_message` 以某轮起始用户消息为界重新读取原生历史认出该消息。单源和仍在当前运行时实例内的关联段优先原生复制：Codex 通过 `fork_codex_from` 在独立配置连接中直接 `thread/fork` 到该轮；Claude Code 用 `fork_through` 保存固定来源及 `--resume-session-at` 边界；Pi 通过 `history::fork_pi_session` 用独立 SDK SessionManager 复制固定 entry 前缀。原生不可用或明确拒绝且没有创建副本时，改走有效上下文翻译；关联段需要换运行时实例时直接翻译。翻译保留至所选 turn 的结束，不把工具结果的 user role 误作下一条用户请求。超时、断连或已创建副本后的失败不再自动创建第二份。分支名称写回原生元数据，以来源名称加 ` (n)` 区分已知分支；Claude 未首发的名称随 `PendingFork` 和首次启动的 `--name` 保留。分叉不发送新轮次，结果是新会话的快照；原会话不变，创建前失败时回到原会话。运行中的源留在原 Session 中，`focus_new` 仅停放而不关闭它。配置装配以 `ConversationStart::CodexFork` 区分分叉与 resume，复用原有 native／managed 选择、网关和 MCP；独立 Codex 连接直接 fork 已完成边界，只接管新目标。Pi 先由只读 SDK helper 复制固定 entry，再准备新文件；不会为分叉而配置源模型或切换源宿主。源会话的只读／外部控制权只禁止源上的写入，不清除 `editing.rs` 已推导的整会话与逐 turn fork 资格；显式控制交接仍保持其独立策略，未完成的 turn 不因此获得 fork。
 
 会话的权威在 Harness；Velune 对本机 Codex、Claude Code 与 Pi 运行时 best-effort 跟随原生文件。被 snapshot 轮询的会话在没有会话通道时（例如只读打开的视图）由首次轮询读入并打开通道；其后约每秒检查原生文件，未在 Velune 中执行且文件被改动时重新读取，空闲的执行先释放，下一 turn 从改动后的会话继续；读取较慢时按耗时放宽间隔。自身执行期间及结束后 5 秒内的写入视为自己的。Harness 自己的存活记录（见 agent-runtime `activity`）显示另一进程正在运行该会话时，视图的 `run_state` 为 `Elsewhere`（展示为运行中，不可由 Velune 取消或提交输入）；文件变化时及之后每 5 秒重新判断，进程中途退出后即回到空闲，不依赖时间窗。活动列表另外每 5 秒读取这些运行时的存活记录，附加未被 Velune 执行的 `Elsewhere` 会话。SSH、ACP、DeepSeek Harness 与跨 Harness 续接的会话不跟随，仍靠手动重新读取。实时会话手动验收 以实际 Pi CLI 作为另一客户端检查上述行为，实际 Harness 实时脚本 检查 Codex 与 Claude Code，包括进程中途被杀后不再运行。
 
@@ -56,7 +64,7 @@ Codex 订阅由 application 自身管理，与 Harness 登录独立。保存提�
 
 公开 DTO、`Command`／`Response` 与静态提供商模板目录定义在 `application-api`，`api.rs` 实现类型化的本地用例方法，没有平台 JSON dispatcher。内部用例仍有 JSON 投影转换，不构成跨语言契约。隐藏稳定 `recordKey` 用于模型选择引用；`providerModelId` 是可编辑的精确上游标识，修改它不改变内部身份。能力可以未知，只有具体运行时准备边界检查必需字段。模板不复制内部键、认证、服务地址或 Pi 执行元数据。
 
-只接受 schema 11，升级前必须完成[显式手动迁移](../../docs/development.md#破坏性变更与手动迁移)。当前加载器仍将未迁移的更低版本普通配置原子覆盖为空配置，不在应用内迁移或备份；此行为不能代替迁移交付。原 Harness 会话、认证或既有平台秘密不在重置范围内；未来版本、损坏 JSON 和当前版本中的未知字段明确报错。
+当前普通配置为 schema 11。持久存储负责已知旧格式的备份与迁移，未知版本、损坏 JSON 和当前版本的未知字段保留原文件并报错，不以空配置覆盖。原 Harness 会话、认证与既有平台秘密保持原有归属。转换范围、锁与恢复步骤统一见[数据迁移](../../docs/development/migrations.md)。
 
 运行时描述包含 familyId、versioned variant ID 与兼容版本区间文字（compatibleVersions），配置实例引用 variant。专用适配器支持 `pi-1.0`、`codex-0.159`、`codex-0.166`、`claude-code-2.1` 与 `dsh-acp-0.2`；通用 `acp-v1` 表示协商的协议版本，不限定 Agent 品牌或 CLI 版本。family 不参与控制协议派发。应用协调 Codex app-server／DSH ACP 与 huihua 历史读取，原生 ID 与 runtimeId 共同形成公开会话身份；读取成功不等于原生恢复成功。运行时添加后直接可读历史，不要求模型或执行准备。新建显式给出会话模型并自动准备；历史视图选择模型后，在发送时按需恢复执行。Pi 历史中的 Velune 模型标记只恢复 managed 引用；原生目录提供的模型通过显式 native 选择发送，不另存会话状态。
 
@@ -72,7 +80,7 @@ Codex 订阅由 application 自身管理，与 Harness 登录独立。保存提�
 
 跨运行时发送通过同一 `send_turn` 接纳下一轮目标。Pi、Claude Code 与 Codex 由来源 adapter 导出 compact 后的有效模型上下文，翻译成目标原生消息后恢复发送；摘要、保留消息及工具参数／结果成对交接，不按固定预算截断。展示仍读取封闭来源段，目标导入前缀按目标自身历史的数量与内容摘要校验、隐藏。逻辑会话保持公开身份，并以首个实际原生段的标题为权威，`context_runtime_id` 表示当前原生查询／执行上下文，不能从列表的来源实例推断。`local/continuation.rs` 装配有序投影；原生前缀变更明确拒绝，截止后的追加不进入旧段。每次回切创建新原生段，不恢复旧执行状态。
 
-首次 snapshot／snapshot update 或侧聊创建即使尚无载入的 session，也按关联最后一段的 `context_runtime_id` 校验并载入当前上下文。列表的只读打开不建立 session，不能用它是否曾展示过来假定上下文已载入。按列表来源打开、发送与管理会话仍校验第一段的来源实例；不把来源实例与当前上下文互相替代。
+首次 snapshot／snapshot update 或侧聊创建即使尚无载入的 session，也解析关联最后一段的 `context_runtime_id` 并载入当前上下文。只读历史和快照接受首段来源或当前末段地址，拒绝中间段及无关实例；列表是否曾展示不决定地址是否有效。composer／发送与管理会话仍校验第一段的来源实例，下一轮目标单独选择，不能将它当作来源地址。
 
 `conversation-links.json` 是 schema 1 的关联文件，独立于 schema 11 普通配置，只保存原生引用、截止位置及交接记录定位，不保存消息或凭据。公开身份可以是单目标别名；后续交接继续向同一关联追加原生段。目标导入和准备成功后原子保存关联，再发送；未知发送结果不自动重试。重开以各原生历史重建展示，不递归复制交接包。工具执行、审批和签名推理状态不重放。ACP／DeepSeek 目标仍使用既有引用路径；旧引用载荷、无法完整解析的 Codex 继承／回滚上下文明确拒绝原生翻译，不能静默丢失内容。composer 的完整输入持久化与同步见[状态设计](../../docs/product-tdd/composer-state.md)，旧文字文件由显式脚本迁移。
 
@@ -158,7 +166,7 @@ Claude 认证失败的公开 `AuthenticationEvent::Finished` 的 `error` 只包�
 
 远程回复包含当前 `Revision`。配置修改、删除和消息替换要求 `expected_revision` 与当前值相同；配置之外的发送等共享写入也使旧版本失效。这个版本是进程内串行观察版本，不是 Harness 的持久会话版本，也不承诺跨崩溃 exactly-once。原生资源另有文件 revision。审批在派发前重新读取当前 pending interaction，另一端已经答复或运行时已撤回的审批返回 `StaleInteraction`。请求 ID、接受／结果查询与去重由 remote 唯一维护，application 不建立第二套命令记录。公开 `interaction.id` 已由 adapter 绑定真实待决请求的寿命：原生 Harness 统一经 [`NativeSession::add_interaction`](../agent-runtime/src/native/mod.rs) 生成随机会话 epoch 加跨 turn 单调序号，ACP 经 [`Client::next_id`](../agent-runtime/src/acp/projection.rs) 生成相同性质的公开 ID；私有映射才保存 Harness 原始请求 ID。答复成功后立即消费映射，取消、失效或结束时按真实请求清理；下一轮即使复用原始 ID，也获得新的公开 ID。两台设备观察同一待决请求时取得同一公开 ID，轮询不会换号。重建 adapter 生成新随机 epoch，旧 ID 不会恢复权限。不在应用投影处再发行第二套审批 token，也不用与审批无关的全局配置版本代替请求寿命。
 
-每个 view 分别保留所选会话、列表筛选／分组排序／归档／分页、outline／关联会话打开方式／用量显示方式／状态栏。远程这些呈现选择不写入执行设备的默认界面配置；会话、项目组织和实际配置仍共享。`ReleaseView` 释放临时状态，不取消会话、不删除历史或已上传文件；最多保留 128 个 view，超出时回收最久未访问者的临时状态，所以长期 headless 运行不因累计窗口耗尽视图。会话按自身运行／审批／队列与空闲保留规则管理，视图回收不会改变工作寿命。
+每个 view 分别保留所选会话、列表筛选／分组排序／归档／分页、outline／关联会话打开方式／用量显示方式／状态栏。平台将该 view 所有 pane 的当前可见 snapshot 身份汇总成 `ObservedConversation` 列表，调用 `set_observed_conversations` 完整替换。活动 view 的任一真实客户端请求续租观察 90 秒；远程断线没有可靠的服务端通知，故闲置观察最迟 90 秒退出活动集合，view 仍保存最后一份集合供下次请求恢复。`ReleaseView` 或 view LRU 淘汰立即清除；最多保留 128 个 view，超出时回收最久未访问者的临时状态。观察集合同时保护 session history 与 delivery payload／cursor；128 个 history、8 个 delivery view 和 64 MiB 是非观察对象的软目标，所有可见历史可超过这些目标，未观察项优先回收。视图观察仅影响历史缓存寿命，不取消会话、不删除原生历史或已上传文件，也不改变运行／审批／队列的工作寿命。
 
 未发送正文／附件、目标明确选择与恢复关联由 `ComposerInputs` 在 `ClientState` 之外共享持有；内容按稳定 InputID，选择按 ContextKey，二者及恢复关联各自 CAS，目录提供条件修订。全局新建只有一份内容关联和一套选择。原生身份交接记录同时服务幂等恢复和其他编辑视图接续，详见 [Composer 契约](../../docs/product-tdd/composer-state.md)。
 

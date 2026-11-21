@@ -1,6 +1,14 @@
 import AppKit
 import VeluneBindings
 
+/// A compaction status may carry native details after its first line.
+func contextCompactionParts(_ text: String) -> (status: String, detail: String?) {
+    guard let newline = text.firstIndex(where: \.isNewline) else { return (text, nil) }
+    let detail = String(text[text.index(after: newline)...].drop(while: \.isNewline))
+    guard !detail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return (text, nil) }
+    return (String(text[..<newline]), detail)
+}
+
 /// Width-independent native content of one message revision. Built once per
 /// revision (normally off the main thread) and shared by measurement and display.
 final class RenderedMessage: @unchecked Sendable {
@@ -33,8 +41,15 @@ final class RenderedMessage: @unchecked Sendable {
                     case .code(let language, let text, let source, let indent): return .code(language: language, text: text, source: source, indent: indent)
                     }
                 }
-            case .notice(let text), .contextCompaction(let text):
+            case .notice(let text):
                 return [.text(TranscriptTypography.plain(text, font: TranscriptTypography.callout, color: .secondaryLabelColor, alignment: alignment))]
+            case .contextCompaction(let text):
+                let parts = contextCompactionParts(text)
+                guard let detail = parts.detail else {
+                    return [.text(TranscriptTypography.plain(text, font: TranscriptTypography.callout, color: .secondaryLabelColor, alignment: alignment))]
+                }
+                return [.disclosure(key: Self.disclosureKey(block, at: index)!, title: parts.status, symbol: nil,
+                    detail: TranscriptTypography.plain(detail, font: TranscriptTypography.callout, color: .secondaryLabelColor), detailMaxWidth: nil)]
             case .runtimeFailure(let failure, let detail, let retry):
                 let title = failure.title
                 return [.disclosure(key: "failure:\(index)", title: title, symbol: retry == .recovered ? "checkmark.circle" : "exclamationmark.circle", detail: TranscriptTypography.plain(detail, font: TranscriptTypography.callout, color: .secondaryLabelColor), detailMaxWidth: 560)]
@@ -70,13 +85,14 @@ final class RenderedMessage: @unchecked Sendable {
 }
 
 extension RenderedMessage {
-    /// Local disclosure identity of a reasoning or tool block within its message.
+    /// Local disclosure identity within its message, also used to reveal search results.
     static func disclosureKey(_ block: DeliveredBlock, at index: Int) -> String? {
         switch block {
         case .reasoning: return "reasoning:\(index)"
         case .tool(let id, _, _, _, _): return "tool:" + (id ?? String(index))
         case .runtimeFailure: return "failure:\(index)"
-        case .text, .notice, .contextCompaction, .image, .file, .agentSender: return nil
+        case .contextCompaction: return "compaction:\(index)"
+        case .text, .notice, .image, .file, .agentSender: return nil
         }
     }
     /// Disclosures whose content has not been read from the core yet.
@@ -125,13 +141,16 @@ struct TranscriptRowLayout: @unchecked Sendable {
         case text(NSAttributedString, frame: NSRect, inBubble: Bool)
         case bubble(NSRect)
         /// Background frame; the code text sits below a label row inside it.
-        case code(language: String?, source: String, text: NSAttributedString, frame: NSRect, textFrame: NSRect)
-        /// `expanded` is nil when there is nothing to expand.
-        case disclosure(key: String, title: String, symbol: String?, expanded: Bool?, frame: NSRect)
-        case activity(TranscriptActivity, frame: NSRect)
-        case attachment(TranscriptAttachment, frame: NSRect)
+        /// `label` and `controlsFont` carry the chrome typography baked at
+        /// measurement time; the code view holds no fonts of its own.
+        case code(language: String?, label: NSAttributedString, source: String, text: NSAttributedString, frame: NSRect, textFrame: NSRect, controlsFont: NSFont)
+        /// `expanded` is nil when there is nothing to expand. `title` carries
+        /// its own typography; the disclosure view only draws it.
+        case disclosure(key: String, title: NSAttributedString, symbol: String?, expanded: Bool?, frame: NSRect)
+        case activity(TranscriptActivity, text: NSAttributedString, frame: NSRect)
+        case attachment(TranscriptAttachment, name: NSAttributedString, frame: NSRect)
         /// A turn's settings at the trailing end of its header row.
-        case turnSettings(TurnSettingsSummary, frame: NSRect)
+        case turnSettings(TurnSettingsSummary, brief: NSAttributedString, frame: NSRect)
         /// The copy button under a message, shown while the pointer is on the row.
         case copy(String, frame: NSRect)
         /// The edit and fork buttons beside it, shown while the pointer is on the row.
@@ -164,23 +183,24 @@ struct TranscriptRowLayout: @unchecked Sendable {
     /// Attachments flow in rows of chips, against the trailing edge for the
     /// user's own messages.
     static func attachmentElements(_ items: [TranscriptAttachment], column: (x: CGFloat, width: CGFloat), trailing: Bool, y: inout CGFloat, measurer: TextMeasurer) -> [Element] {
-        var rows: [[(TranscriptAttachment, CGFloat)]] = [[]]
+        var rows: [[(TranscriptAttachment, NSAttributedString, CGFloat)]] = [[]]
         var used: CGFloat = 0
         for item in items {
-            let name = measurer.size(of: TranscriptTypography.plain(item.name, font: TranscriptTypography.callout), width: 10_000).width
+            let name = TranscriptTypography.chrome(item.name, font: TranscriptTypography.callout)
+            let measuredName = measurer.size(of: name, width: 10_000).width
             // A label draws its text inset by a few points on each side.
-            let width = min(4 + attachmentThumbnail + 8 + min(ceil(name) + 6, attachmentNameMaxWidth) + 10, column.width)
+            let width = min(4 + attachmentThumbnail + 8 + min(ceil(measuredName) + 6, attachmentNameMaxWidth) + 10, column.width)
             if !rows[rows.count - 1].isEmpty, used + attachmentSpacing + width > column.width { rows.append([]); used = 0 }
             used += (rows[rows.count - 1].isEmpty ? 0 : attachmentSpacing) + width
-            rows[rows.count - 1].append((item, width))
+            rows[rows.count - 1].append((item, name, width))
         }
         var elements: [Element] = []
         for (index, row) in rows.enumerated() {
             if index > 0 { y += attachmentSpacing }
-            let total = row.map(\.1).reduce(0, +) + attachmentSpacing * CGFloat(max(row.count - 1, 0))
+            let total = row.map(\.2).reduce(0, +) + attachmentSpacing * CGFloat(max(row.count - 1, 0))
             var x = trailing ? column.x + column.width - total : column.x
-            for (item, width) in row {
-                elements.append(.attachment(item, frame: NSRect(x: x, y: y, width: width, height: attachmentHeight)))
+            for (item, name, width) in row {
+                elements.append(.attachment(item, name: name, frame: NSRect(x: x, y: y, width: width, height: attachmentHeight)))
                 x += width + attachmentSpacing
             }
             y += attachmentHeight
@@ -202,11 +222,11 @@ struct TranscriptRowLayout: @unchecked Sendable {
         switch content {
         case .work(let label, let expanded, let settings):
             let frame = NSRect(x: column.x, y: y, width: column.width, height: headerHeight)
-            elements.append(.disclosure(key: "", title: label, symbol: nil, expanded: expanded, frame: frame))
-            if let settings { elements.append(.turnSettings(settings, frame: frame)) }
+            elements.append(.disclosure(key: "", title: TranscriptTypography.chrome(label, font: TranscriptTypography.callout, color: .secondaryLabelColor), symbol: nil, expanded: expanded, frame: frame))
+            if let settings { elements.append(.turnSettings(settings, brief: TranscriptTypography.chrome(settings.brief, font: TranscriptTypography.callout, color: .secondaryLabelColor, alignment: .right), frame: frame)) }
             y += headerHeight
         case .activity(let activity):
-            elements.append(.activity(activity, frame: NSRect(x: column.x, y: y, width: column.width, height: headerHeight)))
+            elements.append(.activity(activity, text: TranscriptTypography.chrome(activity.text, font: TranscriptTypography.callout, color: .secondaryLabelColor), frame: NSRect(x: column.x, y: y, width: column.width, height: headerHeight)))
             y += headerHeight
         case .end:
             break
@@ -274,13 +294,14 @@ struct TranscriptRowLayout: @unchecked Sendable {
                         let textHeight = measurer.size(of: text, width: textWidth).height
                         let frame = NSRect(x: column.x + indent, y: y, width: frameWidth, height: codePadding * 2 + codeLabelHeight + codeLabelGap + textHeight)
                         let textFrame = NSRect(x: frame.minX + codePadding, y: y + codePadding + codeLabelHeight + codeLabelGap, width: textWidth, height: textHeight)
-                        elements.append(.code(language: language, source: source, text: text, frame: frame, textFrame: textFrame))
+                        let label = TranscriptTypography.chrome(language ?? "代码", font: TranscriptTypography.caption, color: .secondaryLabelColor)
+                        elements.append(.code(language: language, label: label, source: source, text: text, frame: frame, textFrame: textFrame, controlsFont: TranscriptTypography.caption))
                         y += frame.height
                     case .attachment(let item):
                         elements += attachmentElements([item], column: column, trailing: false, y: &y, measurer: measurer)
                     case .disclosure(let key, let title, let symbol, let detail, let detailMaxWidth):
                         let isExpanded = detail != nil && expanded.contains(key)
-                        elements.append(.disclosure(key: key, title: title, symbol: symbol, expanded: detail == nil ? nil : isExpanded, frame: NSRect(x: column.x, y: y, width: column.width, height: headerHeight)))
+                        elements.append(.disclosure(key: key, title: TranscriptTypography.chrome(title, font: TranscriptTypography.callout, color: .secondaryLabelColor), symbol: symbol, expanded: detail == nil ? nil : isExpanded, frame: NSRect(x: column.x, y: y, width: column.width, height: headerHeight)))
                         y += headerHeight
                         if isExpanded, let detail {
                             y += 12
@@ -337,7 +358,7 @@ struct TranscriptRowLayout: @unchecked Sendable {
             for (index, block) in message.blocks.enumerated() {
                 if index > 0 { height += blockSpacing }
                 switch block {
-                case .text(let text), .notice(let text), .contextCompaction(let text):
+                case .text(let text), .notice(let text):
                     // Linear byte scans only: this runs for every row on reload.
                     var newlines = 0
                     for byte in text.utf8 where byte == 10 { newlines += 1 }
@@ -346,6 +367,9 @@ struct TranscriptRowLayout: @unchecked Sendable {
                 case .reasoning, .tool, .runtimeFailure:
                     height += headerHeight
                     if !expanded.isEmpty { height += 60 }
+                case .contextCompaction:
+                    height += headerHeight
+                    if let key = RenderedMessage.disclosureKey(block, at: index), expanded.contains(key) { height += 60 }
                 case .agentSender:
                     height += 16
                 case .image, .file:

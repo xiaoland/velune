@@ -40,6 +40,7 @@ pub(crate) struct ServiceState {
     pub(crate) access: Mutex<Access>,
     tasks: Mutex<Vec<JoinHandle<()>>>,
 }
+
 impl ServiceState {
     pub(crate) fn access(&self) -> Result<MutexGuard<'_, Access>> {
         self.access.lock().map_err(|_| RemoteError::Unavailable)
@@ -69,6 +70,7 @@ impl ServiceState {
     ) -> Result<Reply> {
         let mut access = self.access()?;
         Self::check_generation(&access, generation)?;
+        tracing::warn!(target: "velune_remote_debug", peer = %peer, request = ?request_variant(&request), ingress = access.ingress, profile_ingress = access.profile_ingress, "remote.dispatch.enter");
         if !access.ingress && !access.profile_ingress {
             return Err(RemoteError::Closed);
         }
@@ -89,17 +91,14 @@ impl ServiceState {
                     .map_err(|_| RemoteError::Configuration)?,
             ));
         }
-        if matches!(request, Request::Hello)
-            && access.profile_ingress
-            && self.store.profile_grant(&peer)?.is_some()
-        {
-            return Ok(Reply::Hello(descriptor));
+        // Authenticate the original operator against this target's current
+        // member roots and local exclusions, independently of the chosen route.
+        if !self.store.allows_control(&self.identity.id(), &peer)? {
+            tracing::warn!(target: "velune_remote_debug", peer = %peer, "remote.dispatch.reject.no_grant");
+            return Err(RemoteError::Unauthorized);
         }
         if !access.ingress {
-            return Err(RemoteError::Unauthorized);
-        }
-        if self.store.grant(&peer)?.is_none() {
-            return Err(RemoteError::Unauthorized);
+            return Err(RemoteError::Closed);
         }
         match request {
             Request::Hello => Ok(Reply::Hello(descriptor)),
@@ -317,6 +316,8 @@ impl RemoteAccessService {
         store: Arc<DeviceStore>,
         handler: Option<Arc<dyn Handler>>,
     ) -> Result<Self> {
+        store.initialize_trust(&identity)?;
+        store.set_local_execution_capability(handler.is_some())?;
         let ingress = handler.is_some();
         let profile_ingress = !store.snapshot()?.telemetry_profile_grants.is_empty();
         Ok(Self {
@@ -501,6 +502,9 @@ impl RemoteAccessService {
         if access.closed {
             return Err(RemoteError::Closed);
         }
+        if enabled && self.state.handler.is_none() {
+            return Err(RemoteError::NoHandler);
+        }
         access.ingress = enabled;
         self.state.store.touch();
         if !enabled {
@@ -523,11 +527,18 @@ impl RemoteAccessService {
         access
             .pairing
             .revoke_permission(id, PairingPermission::Control);
-        if self.state.store.profile_grant(id)?.is_none()
-            && let Ok(network) = self.network()
+        if let Some(controller) = self
+            .controllers
+            .lock()
+            .map_err(|_| RemoteError::Unavailable)?
+            .get(id)
         {
-            network.revoke(id);
+            controller.trust_revoked()?;
         }
+        if let Ok(network) = self.network() {
+            network.revoke_member(id, self.state.store.profile_grant(id)?.is_some());
+        }
+        self.state.store.touch();
         Ok(())
     }
     pub fn attach_telemetry(&self, owner: Arc<velune_telemetry::ClientTelemetry>) -> Result<()> {
@@ -693,5 +704,19 @@ fn wake_controllers(controllers: &Mutex<std::collections::BTreeMap<String, Arc<C
         for controller in controllers.values() {
             controller.network_changed();
         }
+    }
+}
+
+/// 临时诊断用：不泄漏请求体，只标识变体名。
+fn request_variant(request: &Request) -> &'static str {
+    match request {
+        Request::Hello => "hello",
+        Request::PairBegin { .. } => "pair_begin",
+        Request::PairReady { .. } => "pair_ready",
+        Request::PairStatus { .. } => "pair_status",
+        Request::PairCancel { .. } => "pair_cancel",
+        Request::Submit { .. } => "submit",
+        Request::Query { .. } => "query",
+        Request::ReadTelemetryProfile => "read_telemetry_profile",
     }
 }

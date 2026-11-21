@@ -198,7 +198,7 @@ struct MacExecutionContext {
         let temporaryRoots = [URL(fileURLWithPath: "/tmp", isDirectory: true), FileManager.default.temporaryDirectory]
             .map { $0.standardizedFileURL.resolvingSymlinksInPath() }
         let daily = userHome.appendingPathComponent(".velune", isDirectory: true).resolvingSymlinksInPath()
-        for key in ["VELUNE_COMPOSER_CHECK_HOME", "VELUNE_COMPOSER_NATIVE_HOME", "VELUNE_EXPERIENCE_CHECK_HOME", "VELUNE_CHECK_OUTPUT"] {
+        for key in ["VELUNE_CONTINUATION_CHECK_HOME", "VELUNE_COMPOSER_CHECK_HOME", "VELUNE_COMPOSER_NATIVE_HOME", "VELUNE_EXPERIENCE_CHECK_HOME", "VELUNE_CHECK_OUTPUT"] {
             guard let value = environment[key] else { continue }
             let directory = URL(fileURLWithPath: value, isDirectory: true).standardizedFileURL.resolvingSymlinksInPath()
             guard value.hasPrefix("/"), !value.contains("\u{0}"),

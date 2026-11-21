@@ -109,6 +109,7 @@ fun AddDeviceScreen(hub: DeviceHub, back: () -> Unit, paired: (String) -> Unit) 
                     Tab(selected = !manual, onClick = { manual = false; failure = null }, text = { Text("扫码") })
                     Tab(selected = manual, onClick = { manual = true; failure = null }, text = { Text("手动输入") })
                 }
+                Text("如果对方使用需要认证的中继，请先在本机“连接设置”添加对应访问令牌；邀请不包含中继令牌。", style = MaterialTheme.typography.bodySmall)
                 if (manual) {
                     OutlinedTextField(
                         value = invitation,

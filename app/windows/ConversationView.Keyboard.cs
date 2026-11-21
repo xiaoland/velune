@@ -20,8 +20,6 @@ namespace Velune;
 // request card's numbers and the transcript's rows.
 public sealed partial class ConversationView
 {
-    // Each queued message's in-place editor, by ID, for Alt+↑.
-    readonly Dictionary<string, Action> queueEdits = [];
     // The / or @ list: what it offers, from where in the text, and the text
     // Esc dismissed it for.
     sealed record Completion(string Id, string Title, string? Detail, string? Shortcut, bool Enabled);
@@ -132,36 +130,7 @@ public sealed partial class ConversationView
 
     internal bool HasQueued => Model.FollowUp?.Queue is { Length: > 0 };
 
-    // TakeLastQueued edits the last queued message: into the empty composer,
-    // out of the queue, or in its own editor when the composer holds a draft.
-    internal bool TakeLastQueued()
-    {
-        if (Model.FollowUp?.Queue is not { Length: > 0 } queue || Model.Busy)
-        {
-            return false;
-        }
-        var last = queue[^1];
-        if (Input.Text.Length > 0 || Model.Attached.Count > 0)
-        {
-            if (queueEdits.TryGetValue(last.Id, out var edit))
-            {
-                edit();
-            }
-            return true;
-        }
-        TakeBack(last);
-        return true;
-    }
-
-    async void TakeBack(QueuedMessage message)
-    {
-        if (await Model.TakeQueued(message) && Input.Text.Length == 0)
-        {
-            SetInput(message.Text);
-            Input.SelectionStart = Input.Text.Length;
-            FocusInput();
-        }
-    }
+    internal bool TakeLastQueued() => Model.FollowUp?.Queue is { Length: > 0 } queue && OpenQueuedEdit(queue[^1].Id);
 
     internal async void Attach()
     {

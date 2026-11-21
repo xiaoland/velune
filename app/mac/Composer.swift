@@ -10,6 +10,10 @@ struct SavedComposerDraft: Codable, Equatable {
     var attachments: [URL]
 }
 
+/// History edits share the input implementation and attachment directory,
+/// while their eligibility is independent of the ordinary draft.
+enum ComposerInputPolicy { case draft, messageEdit }
+
 /// One input's editing state in a window. Navigation selects another model;
 /// changing the execution target never loads or saves different content here.
 @MainActor final class ComposerModel: ObservableObject {
@@ -17,7 +21,6 @@ struct SavedComposerDraft: Codable, Equatable {
     init(id: UUID = UUID()) { self.id = id }
     @Published private(set) var isEmpty = true
     @Published private(set) var isFocused = false
-    @Published fileprivate(set) var height = ComposerTextView.minimumHeight
     /// Files owned by this input, independently of its next execution target.
     @Published private(set) var attachments: [URL] = [] { didSet { if attachments != oldValue { draftChanged() } } }
     private(set) weak var textView: ComposerTextView?
@@ -51,8 +54,18 @@ struct SavedComposerDraft: Codable, Equatable {
     private(set) var text = "" { didSet { if text != oldValue { draftChanged() } } }
     private let undo = UndoManager()
     private(set) weak var store: ConversationStore?
+    private var inputPolicy = ComposerInputPolicy.draft
+    var inputEditable: Bool { inputPolicy == .messageEdit ? store?.isShuttingDown != true : store?.draftEditable != false }
+    var allowsAttachments: Bool { store?.isSideChat != true && inputEditable }
     /// The `/` command or `@` path list over the text (see `ComposerCompletion`).
-    @Published var completion: ComposerCompletion? { didSet { if completion != oldValue { showCompletion() } } }
+    @Published var completion: ComposerCompletion? {
+        didSet {
+            // A history edit sends literal text; window commands target the
+            // ordinary input. File completion still uses the source Store.
+            if inputPolicy == .messageEdit, completion?.kind == .command { completion = nil }
+            if completion != oldValue { showCompletion() }
+        }
+    }
     /// Where the list shows: a window of its own above the text.
     private let completionPanel = ComposerCompletionPanel()
     /// The text Escape closed the list for; it stays closed until the text changes.
@@ -73,6 +86,17 @@ struct SavedComposerDraft: Codable, Equatable {
             setAttachments(saved.attachments)
         }
     }
+    /// Navigation replaces the visible composer state. Undo copies the prior
+    /// state into the current tab; it never edits or navigates the source tab.
+    func registerNavigationUndo(_ draft: SavedComposerDraft, choices: ComposerTargetChoices?, context: String, client: ComposerInputClient, currentChoices: @escaping () -> ComposerTargetChoices?) {
+        undo.registerUndo(withTarget: self) { model in
+            let current = currentChoices() ?? client.targetChoices(for: context)
+            model.registerNavigationUndo(model.savedDraft, choices: current, context: context, client: client, currentChoices: currentChoices)
+            model.restoreSavedDraft(draft)
+            if let choices { client.saveTarget(context, choices: choices, userEdit: true) }
+        }
+        undo.setActionName("切换输入")
+    }
     func receiveDraft(_ saved: SavedComposerDraft) {
         if saved.text != text { undo.removeAllActions() }
         // A synchronized projection invalidates an older failure snapshot,
@@ -89,13 +113,14 @@ struct SavedComposerDraft: Codable, Equatable {
         if isComposing != value { isComposing = value }
     }
 
-    func attach(_ store: ConversationStore) {
+    func attach(_ store: ConversationStore, policy: ComposerInputPolicy = .draft) {
         self.store = store
+        inputPolicy = policy
     }
 
     /// Adds regular files; folders and files already attached are skipped.
     func addAttachments(_ urls: [URL]) {
-        guard store?.allowsAttachments != false else { return }
+        guard allowsAttachments else { return }
         let files = urls.map(\.standardizedFileURL).filter { url in
             var directory: ObjCBool = false
             return url.isFileURL && FileManager.default.fileExists(atPath: url.path, isDirectory: &directory) && !directory.boolValue
@@ -105,7 +130,7 @@ struct SavedComposerDraft: Codable, Equatable {
         setAttachments(added)
     }
 
-    func removeAttachment(_ url: URL) { guard store?.draftEditable != false else { return }; setAttachments(attachments.filter { $0 != url }) }
+    func removeAttachment(_ url: URL) { guard inputEditable else { return }; setAttachments(attachments.filter { $0 != url }) }
 
     func chooseAttachments() {
         let panel = NSOpenPanel()
@@ -115,21 +140,19 @@ struct SavedComposerDraft: Codable, Equatable {
         focus()
     }
 
-    /// ⌥↑: the queue's last message back into an empty box, to edit and
-    /// queue again; with text in the box, its editor instead.
+    /// ⌥↑ opens the last queue item in its own editor.
     func takeLastQueued() -> Bool {
-        guard let store, let last = store.followUp.queue.last else { return false }
-        guard isEmpty, attachments.isEmpty else { queueEditRequest = last; return true }
-        store.removeQueued(last.id) { [weak self] in
-            self?.restore(last.text, attachments: last.attachments.map { URL(fileURLWithPath: $0) })
-        }
+        guard inputPolicy == .draft, let store, let last = store.followUp.queue.last else { return false }
+        guard last.editContext != nil,
+              store.followUp.contextPreparation.map({ $0.queuedMessageId != last.id || $0.canEditMessage }) ?? true else { return false }
+        queueEditRequest = last
         return true
     }
 
     /// Keeps a pasted image as a PNG file in the application's attachment
     /// folder, so it can be attached by path like any other file.
     fileprivate func attachPastedImage(_ data: Data) {
-        guard let store, store.allowsAttachments else { return }
+        guard let store, allowsAttachments else { return }
         do {
             let directory = store.attachmentsDirectory
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -257,6 +280,8 @@ struct ComposerEditor: NSViewRepresentable {
     @ObservedObject var model: ComposerModel
     let placeholder: String
     var editable: Bool = true
+    var sendMode: SendMode? = nil
+    var heightChanged: (CGFloat) -> Void = { _ in }
     let submit: () -> Void
     /// ⌘Return (⌥⌘Return): into the running turn, when the runtime takes it.
     var steer: () -> Void = {}
@@ -278,15 +303,20 @@ struct ComposerEditor: NSViewRepresentable {
         view.coordinator = context.coordinator
         scroll.documentView = view
         context.coordinator.view = view
+        context.coordinator.reportHeight = heightChanged
         context.coordinator.placeMenu = placeMenu
         context.coordinator.bindTarget = bindTarget
         context.coordinator.focused = focused
+        // A previous host may still own input during a move. Initial content
+        // belongs to every view; attaching the active input remains separate.
+        view.replace(model.submission)
         if model.textView == nil { model.attach(view) }
-        context.coordinator.update(placeholder: placeholder, submit: submit, steer: steer)
+        context.coordinator.update(placeholder: placeholder, submit: submit, steer: steer, sendMode: sendMode)
         return scroll
     }
 
     func updateNSView(_ scroll: NSScrollView, context: Context) {
+        context.coordinator.reportHeight = heightChanged
         context.coordinator.view?.isEditable = editable
         if !editable, model.completion != nil { model.completion = nil }
         let previous = context.coordinator.model
@@ -303,7 +333,7 @@ struct ComposerEditor: NSViewRepresentable {
             if model.textView == nil || view.window?.firstResponder === view { model.attach(view) }
         }
         context.coordinator.placeMenu = placeMenu
-        context.coordinator.update(placeholder: placeholder, submit: submit, steer: steer)
+        context.coordinator.update(placeholder: placeholder, submit: submit, steer: steer, sendMode: sendMode)
     }
 
     @MainActor final class Coordinator: NSObject, NSTextViewDelegate {
@@ -314,9 +344,13 @@ struct ComposerEditor: NSViewRepresentable {
         var placeMenu: () -> NSMenuItem? = { nil }
         var bindTarget: () -> Void = {}
         var focused: () -> Void = {}
+        var sendMode: SendMode?
+        var reportHeight: (CGFloat) -> Void = { _ in }
+        private var pendingHeight: CGFloat?
         init(model: ComposerModel) { self.model = model }
 
-        func update(placeholder: String, submit: @escaping () -> Void, steer: @escaping () -> Void) {
+        func update(placeholder: String, submit: @escaping () -> Void, steer: @escaping () -> Void, sendMode: SendMode?) {
+            self.sendMode = sendMode
             self.submit = submit
             self.steer = steer
             if view?.placeholder != placeholder { view?.placeholder = placeholder }
@@ -339,8 +373,17 @@ struct ComposerEditor: NSViewRepresentable {
             model.updateCompletion()
         }
         fileprivate func heightChanged(_ value: CGFloat) {
-            // Reported after layout; SwiftUI resizes the editor in the next pass.
-            DispatchQueue.main.async { [model] in if model.height != value { model.height = value } }
+            // Width proposals during one layout pass can produce several sizes.
+            // Only this host's latest measurement may resize its SwiftUI field.
+            let alreadyPending = pendingHeight != nil
+            pendingHeight = value
+            guard !alreadyPending else { return }
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                guard let value = self.pendingHeight else { return }
+                self.pendingHeight = nil
+                self.reportHeight(value)
+            }
         }
     }
 }
@@ -478,7 +521,7 @@ struct ComposerEditor: NSViewRepresentable {
     /// Also handles Finder's file URLs and image representations accompanied by text.
     func pasteAttachments(from board: NSPasteboard) -> Bool {
         coordinator?.bindTarget()
-        guard let model = coordinator?.model, model.store?.allowsAttachments == true else { return false }
+        guard let model = coordinator?.model, model.store != nil, model.allowsAttachments else { return false }
         let urls = Self.fileURLs(board)
         if !urls.isEmpty { model.addAttachments(urls); return true }
         if let data = Self.pngData(board) {
@@ -503,7 +546,7 @@ struct ComposerEditor: NSViewRepresentable {
         let modifiers = event.modifierFlags.intersection([.command, .shift, .option, .control])
         switch event.keyCode {
         case 36, 76:
-            switch (KeyboardShortcutSettings.shared.sendMode, modifiers) {
+            switch (coordinator.sendMode ?? KeyboardShortcutSettings.shared.sendMode, modifiers) {
             case (.returnSends, []), (.commandReturnSends, .command): return coordinator.submit()
             case (.returnSends, .command), (_, [.command, .option]): return coordinator.steer()
             default: break
@@ -600,7 +643,11 @@ struct ComposerView: View {
     let submission: () -> ComposerSubmission
     let resume: () -> Void
     var fillsHeight = false
+    var editorMinimumHeight: CGFloat = 0
     var recipient: String? = nil
+    var editingTarget: ComposerEditingTarget? = nil
+    /// Detached history editors retain their source tab outside navigation.
+    var inputTab: ConversationTab? = nil
     @State private var columns = false
     @Environment(\.controlActiveState) private var activeState
     @Environment(\.openWindow) private var openWindow
@@ -610,6 +657,9 @@ struct ComposerView: View {
     @State private var showingAccessories = false
     @State private var accessoriesHeight: CGFloat = 64
     @State private var availableHeight: CGFloat = .infinity
+    // Geometry belongs to this host: another pane/sheet may show the same
+    // input at a different width and therefore need a different line count.
+    @State private var editorHeight = ComposerTextView.minimumHeight
     /// Keep the choices beside the send button while the proportionally sized
     /// editor has room; their intrinsic measurement is independent of resizing.
     @State private var oneRow = true
@@ -618,6 +668,7 @@ struct ComposerView: View {
     private final class RowFit {
         /// What the choices take at full length.
         var controlsWidth: CGFloat = 0
+        var actionsWidth: CGFloat = 0
     }
     /// The send button and a little of the status line beside the choices.
     private static let sendWidth: CGFloat = 130
@@ -628,15 +679,17 @@ struct ComposerView: View {
         let sideWidth = wingWidth > 0 ? 2 * (wingWidth + 16) : 0
         let wide = sideWidth > 0 && availableWidth >= 640 + sideWidth
         if columns != wide { columns = wide }
-        let value = appearance.values.composerWidth(available: availableWidth, reserved: wide ? sideWidth : 0) >= fit.controlsWidth + Self.sendWidth
+        let actions = editingTarget == nil ? Self.sendWidth : max(Self.sendWidth, fit.actionsWidth + 16)
+        let value = appearance.values.composerWidth(available: availableWidth, reserved: wide ? sideWidth : 0) >= fit.controlsWidth + actions
         if oneRow != value { oneRow = value }
     }
-    private var wingWidth: CGFloat { max(recipient == nil ? 0 : 156, model.attachments.isEmpty ? 0 : 208) }
+    private var wingWidth: CGFloat { max(recipient == nil ? 0 : 156, hasAttachments ? 208 : 0) }
 
-    private var context: ComposerContext { ComposerContext(tab: layout.conversationTab(for: store), model: model) }
+    private var context: ComposerContext { ComposerContext(tab: inputTab ?? layout.conversationTab(for: store), model: model, editingTarget: editingTarget) }
     private var nextTurnRuntime: RuntimeInstance? { store.device.runtimeInstances.first { $0.id == context.nextTurnRuntimeID } }
 
-    private var hasAccessories: Bool { (store.isUnsentConversation && store.creationFailure != nil) || (!columns && !model.attachments.isEmpty) }
+    private var hasAttachments: Bool { !model.attachments.isEmpty || !(editingTarget?.retainedAttachments.isEmpty ?? true) }
+    private var hasAccessories: Bool { (editingTarget == nil && store.isUnsentConversation && store.creationFailure != nil) || (!columns && hasAttachments) }
     private var compactAccessories: Bool {
         fillsHeight && availableHeight <= ComposerTextView.minimumHeight + 62 + (oneRow ? 0 : 30) + min(accessoriesHeight, 64)
     }
@@ -645,8 +698,8 @@ struct ComposerView: View {
     }
     private var accessories: some View {
         VStack(alignment: .leading, spacing: 8) {
-            if store.isUnsentConversation, let failure = store.creationFailure { Text(failure).uiFont(.callout).foregroundStyle(.red).textSelection(.enabled) }
-            if !model.attachments.isEmpty && !columns { attachmentRow }
+            if editingTarget == nil, store.isUnsentConversation, let failure = store.creationFailure { Text(failure).uiFont(.callout).foregroundStyle(.red).textSelection(.enabled) }
+            if hasAttachments && !columns { attachmentRow }
         }.frame(maxWidth: .infinity, alignment: .leading)
     }
 
@@ -663,30 +716,32 @@ struct ComposerView: View {
             editorColumn.frame(maxWidth: editorMaximumWidth)
             if columns {
                 VStack(alignment: .leading, spacing: 6) {
-                    if !model.attachments.isEmpty {
+                    if hasAttachments {
                         Text("附件").uiFont(.caption).foregroundStyle(.secondary)
                         ScrollView { VStack(alignment: .leading, spacing: 6) { attachmentChips }.frame(maxWidth: .infinity, alignment: .leading) }
                     }
-                }.frame(width: wingWidth).frame(height: fillsHeight ? nil : max(model.height + 30, 64))
+                }.frame(width: wingWidth).frame(height: fillsHeight ? nil : max(editorHeight + 30, 64))
             }
         }
         .frame(maxWidth: columns ? editorMaximumWidth + 2 * (wingWidth + 16) : editorMaximumWidth)
         .contentShape(Rectangle())
         .contextMenu {
-            PreservedInputMenu(window: layout, tab: layout.conversationTab(for: store), model: model)
-            Divider()
-            ToolPlaceSection(window: layout, kind: .composer)
+            if editingTarget == nil {
+                PreservedInputMenu(window: layout, tab: layout.conversationTab(for: store), model: model)
+                Divider()
+                ToolPlaceSection(window: layout, kind: .composer)
+            }
         }
         .background(alignment: .leading) {
             nextTurnControls(compact: false).fixedSize().hidden().id(controlsKey)
                 .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { fit.controlsWidth = $0; refit() }
         }
         .onDrop(of: [.fileURL], isTargeted: nil) { providers in
-            guard store.allowsAttachments else { return false }
+            guard context.allowsAttachments else { return false }
             for provider in providers {
                 _ = provider.loadObject(ofClass: NSURL.self) { url, _ in
                     guard let url = url as? URL else { return }
-                    Task { @MainActor in model.attach(store); model.addAttachments([url]) }
+                    Task { @MainActor in context.bindInput(); model.addAttachments([url]) }
                 }
             }
             return !providers.isEmpty
@@ -696,26 +751,29 @@ struct ComposerView: View {
         .onGeometryChange(for: CGFloat.self) { max(0, $0.size.width - 32) } action: { availableWidth = $0; refit() }
         .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { availableHeight = $0 }
         .onChange(of: model.attachments.count) { _, _ in refit() }
+        .onChange(of: hasAttachments) { _, _ in refit() }
         .onChange(of: recipient) { _, _ in refit() }
         .onChange(of: appearance.values) { _, _ in refit() }
         .onChange(of: store.inputLockMessage) { _, _ in showingInputAccess = false }
         .onChange(of: minimumHeight, initial: true) { _, value in
-            if fillsHeight, layout.composerMinimumHeight != value { layout.composerMinimumHeight = value }
+            if editingTarget == nil, fillsHeight, layout.composerMinimumHeight != value { layout.composerMinimumHeight = value }
         }
         .onChange(of: [ObjectIdentifier(store), ObjectIdentifier(model)], initial: true) { _, _ in
+            if editingTarget != nil { bindEditorContext() }
             refreshActiveCompletion()
             if model.firstShown() { DispatchQueue.main.async { model.focus() } }
         }
         .onChange(of: store.loadedConversationID) { _, _ in
             refreshActiveCompletion()
-            if store.isUnsentConversation { DispatchQueue.main.async { model.focus() } }
+            if editingTarget == nil, store.isUnsentConversation { DispatchQueue.main.async { model.focus() } }
         }
-        .onChange(of: store.nextTurn) { _, _ in
+        .onChange(of: context.nextTurn) { _, _ in
             refreshActiveCompletion()
         }
         .onReceive(store.device.composerInputs.changes) { _ in
-            refreshActiveCompletion()
+            if editingTarget == nil { refreshActiveCompletion() }
         }
+        .modifier(ContinuationPreparationPresentation(tab: context.tab, window: layout, enabled: editingTarget == nil))
     }
 
     private func refreshActiveCompletion() {
@@ -724,7 +782,12 @@ struct ComposerView: View {
     }
 
     private func bindEditorContext() {
-        model.attach(store)
+        context.bindInput()
+        if editingTarget != nil {
+            model.perform = nil
+            model.canPerform = { _ in false }
+            return
+        }
         model.perform = { [weak layout, weak store] command in layout?.perform(command, for: store) }
         model.canPerform = { [weak layout, weak store] command in layout?.canPerform(command, composerCommand: true, for: store) ?? false }
     }
@@ -742,17 +805,19 @@ struct ComposerView: View {
                 }
                 else { accessories }
             }
-            ComposerEditor(model: model, placeholder: placeholder, editable: store.draftEditable, submit: send, steer: steer,
-                           placeMenu: { [layout] in layout.placeMenuItem(for: .composer) },
+            ComposerEditor(model: model, placeholder: placeholder, editable: context.inputEditable,
+                           heightChanged: { if editorHeight != $0 { editorHeight = $0 } }, submit: submit,
+                           steer: { if editingTarget == nil { steer() } },
+                           placeMenu: { [layout] in editingTarget == nil ? layout.placeMenuItem(for: .composer) : nil },
                            bindTarget: bindEditorContext,
-                           focused: { layout.focusConversation(layout.conversationTab(for: store)) })
-                .frame(height: fillsHeight ? nil : model.height)
+                           focused: { if editingTarget == nil { layout.focusConversation(layout.conversationTab(for: store)) } })
+                .frame(height: fillsHeight ? nil : max(editorHeight, editorMinimumHeight))
                 .frame(minHeight: fillsHeight ? ComposerTextView.minimumHeight : nil, maxHeight: fillsHeight ? .infinity : nil)
                 // The text view sits in a clipping scroll view, which hides its
                 // own ring; this follows the system ring: focus colour, just
                 // outside the field, only while the window is key.
                 .overlay {
-                    if store.draftEditable && model.isFocused && activeState == .key {
+                    if context.inputEditable && model.isFocused && activeState == .key {
                         RoundedRectangle(cornerRadius: ComposerEditor.cornerRadius + 2)
                             .strokeBorder(Color(nsColor: .keyboardFocusIndicatorColor), lineWidth: 3).padding(-3)
                             .allowsHitTesting(false)
@@ -784,6 +849,8 @@ struct ComposerView: View {
 
     /// The keys as the send mode has them, and what they do now.
     private var placeholder: String {
+        if editingTarget != nil { return "编辑消息内容…" }
+        if store.loadedParentConversationID != nil { return "子 Agent 会话由父会话继续" }
         if !store.inputSubmissionAllowed { return store.inputAccess.composerPlaceholder }
         let mode = shortcuts.sendMode
         guard store.isGenerating else { return mode == .returnSends ? "输入消息，Return 发送，⇧Return 换行，/ 命令" : "输入消息，⌘Return 发送，/ 命令" }
@@ -795,8 +862,8 @@ struct ComposerView: View {
     private var controlsKey: [String] {
         let context = self.context
         return [nextTurnRuntime?.name ?? "", context.selectedModelName ?? "", context.nextTurnEffort ?? context.currentEffort ?? "",
-         (context.effectivePermissionMode ?? context.currentPermissionMode)?.label ?? "", "\(context.permissionModeOptions.isEmpty)\(store.editableSessionOptions.isEmpty)",
-         store.isUnsentConversation ? store.loadedConversationWorkingDirectory ?? "-" : ""]
+         (context.effectivePermissionMode ?? context.currentPermissionMode)?.label ?? "", "\(context.permissionModeOptions.isEmpty)\(context.sessionOptions.isEmpty)",
+         editingTarget == nil && store.isUnsentConversation ? store.loadedConversationWorkingDirectory ?? "-" : ""]
     }
 
     /// The status line and send button, at the trailing end.
@@ -804,26 +871,65 @@ struct ComposerView: View {
         let context = self.context
         return HStack(spacing: 8) {
             Spacer(minLength: 8)
-            if let issue = context.inputIssue { Text(issue).uiFont(.callout).foregroundStyle(.secondary).lineLimit(1).help(issue) }
-            else if context.chosenModelUnavailable { Text("所选模型已不可用").uiFont(.callout).foregroundStyle(.secondary).lineLimit(1) }
-            else { ComposerStatusLine(store: store, context: context).layoutPriority(-1).padding(.trailing, 4) }
-            sendButton
+            if editingTarget == nil, let issue = context.inputIssue { Text(issue).uiFont(.callout).foregroundStyle(.secondary).lineLimit(1).help(issue) }
+            else if editingTarget == nil && context.chosenModelUnavailable { Text("所选模型已不可用").uiFont(.callout).foregroundStyle(.secondary).lineLimit(1) }
+            else if editingTarget == nil { ComposerStatusLine(store: store, context: context).layoutPriority(-1).padding(.trailing, 4) }
+            if editingTarget != nil {
+                sendButton.fixedSize()
+                    .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { fit.actionsWidth = $0; refit() }
+            } else { sendButton }
         }.frame(minHeight: 22)
     }
 
     @ViewBuilder private var sendButton: some View {
+        if let editingTarget {
+            HStack(spacing: 8) {
+                if let cancel = editingTarget.cancel {
+                    Button("取消", action: cancel).keyboardShortcut(.cancelAction)
+                        .disabled(!editingTarget.canCancel)
+                }
+                Button(editingTarget.submitTitle, action: submit)
+                    .accessibilityIdentifier("message-editor-submit")
+                    .buttonStyle(.borderedProminent).disabled(!context.submission().canSubmitDraft)
+                    .help(editingTarget.submitTitle)
+            }
+        } else { ordinarySendButtons }
+    }
+
+    private func submit() {
+        if editingTarget != nil, !context.submission().canSubmitDraft { return }
+        send()
+    }
+
+    @ViewBuilder private var ordinarySendButtons: some View {
+        if let preparation = context.tab.continuationPreparation {
+            ContinuationPreparationControl(session: preparation) {
+                layout.focusConversation(context.tab)
+                preparation.show()
+            }
+        }
+        ordinarySubmissionButtons
+    }
+
+    @ViewBuilder private var ordinarySubmissionButtons: some View {
         let current = submission()
         if store.canCancel {
-            Button("停止", action: store.cancel).disabled(store.isLoading).help("停止当前生成")
+            Button("停止", action: store.cancel).disabled(!store.canCancel)
+                .help(store.composerRequest == .sending ? "取消发送；已接纳的消息将停止生成" : "停止当前生成")
+                .accessibilityIdentifier("composer-stop")
         }
         if store.inputSubmissionAllowed, current.action == .queue && store.followUp.canSteer {
             Button("插入本轮", action: steer).disabled(!context.canSteer)
                 .help("将消息插入正在运行的本轮")
         }
-        if store.followUp.canStopSubAgents && !store.isGenerating && !store.followUp.waitingForSubAgents {
-            Button("停止子 Agent", action: store.stopSubAgents).disabled(store.isLoading)
-        }
-        if let message = store.inputLockMessage {
+        if store.controlHandoff == .releasing {
+            Text("正在交还控制权…").uiFont(.callout).foregroundStyle(.secondary)
+            Button("取消交接") { store.setConversationHandoff(release: false) }.disabled(store.isLoading)
+        } else if store.controlHandoff == .released {
+            Button("恢复 Velune 执行") { store.setConversationHandoff(release: false) }
+                .disabled(store.isLoading).help("控制权已交还，草稿可继续编辑")
+                .accessibilityHint("控制权已交还，草稿可继续编辑")
+        } else if let message = store.inputLockMessage {
             Button { showingInputAccess = true } label: {
                 Label(store.inputAccess.composerTitle, systemImage: "lock.fill")
                     .uiFont(.callout).lineLimit(1)
@@ -846,25 +952,44 @@ struct ComposerView: View {
         }.scrollIndicators(.never)
     }
 
-    private var attachmentChips: some View {
+    @ViewBuilder private var attachmentChips: some View {
+        if let editingTarget {
+            ForEach(editingTarget.retainedAttachments) { attachment in
+                HStack(spacing: 6) {
+                    Label(attachment.name, systemImage: "doc")
+                        .lineLimit(1).truncationMode(.middle).frame(maxWidth: 160, alignment: .leading)
+                    Button {
+                        editingTarget.removeRetainedAttachment?(attachment.id)
+                    } label: { Image(systemName: "xmark.circle.fill") }
+                    .buttonStyle(.borderless).foregroundStyle(.secondary).disabled(!context.inputEditable)
+                    .accessibilityLabel("移除附件 \(attachment.name)").help("移除附件")
+                }
+                .padding(4).padding(.trailing, 2).frame(minHeight: 36)
+                .background(.quaternary, in: RoundedRectangle(cornerRadius: 6))
+                .help(attachment.name)
+            }
+        }
         ForEach(model.attachments, id: \.self) { url in
-            AttachmentChip(url: url, canRemove: store.draftEditable, retry: { store.device.composerInputs.poll(force: true) }) { model.removeAttachment(url) }
+            AttachmentChip(url: url, canRemove: context.inputEditable, retry: {
+                if let editingTarget { editingTarget.retryAttachment?(url) }
+                else { store.device.composerInputs.poll(force: true) }
+            }) { context.bindInput(); model.removeAttachment(url) }
         }
     }
 
     /// `compact` shortens the choices' titles to fit a narrow pane.
     private func nextTurnControls(compact: Bool) -> some View {
         HStack(spacing: 10) {
-            if store.allowsAttachments {
+            if context.allowsAttachments {
                 Button(action: context.chooseAttachments) { Image(systemName: "paperclip") }
                     .buttonStyle(.borderless)
                     .accessibilityLabel("添加附件")
                     .help(KeyboardShortcutSettings.shared.help("添加附件：图片随消息发送，其他文件以路径告知 Agent", .attach))
-                    .disabled(store.isShuttingDown)
+                    .disabled(store.isShuttingDown || editingTarget?.editable == false)
             }
-            agentMenu(compact: compact)
-            if !context.permissionModeOptions.isEmpty || !store.editableSessionOptions.isEmpty { permissionMenu(compact: compact) }
-            if store.isUnsentConversation { workingDirectoryMenu(compact: compact) }
+            agentMenu(compact: compact).disabled(editingTarget?.editable == false)
+            if !context.permissionModeOptions.isEmpty || !context.sessionOptions.isEmpty { permissionMenu(compact: compact).disabled(editingTarget?.editable == false) }
+            if editingTarget == nil, store.isUnsentConversation { workingDirectoryMenu(compact: compact) }
         }
         // Borderless pull-downs in the system's own colours: the label is the
         // current choice, so the row reads as a sentence rather than a toolbar.
@@ -877,18 +1002,21 @@ struct ComposerView: View {
     /// the reasoning level, with the settings that belong to each inside it.
     private func agentMenu(compact: Bool) -> some View {
         let context = self.context
-        let runtime = nextTurnRuntime?.name ?? "选择运行时"
+        let runtime = nextTurnRuntime?.name ?? context.nextTurnRuntimeID ?? "选择运行时"
         let model = context.selectedModelName ?? "选择模型"
         // Levels show as the runtime receives them.
-        let effort = context.reasoningEffortOptions.isEmpty ? nil : context.nextTurnEffort ?? context.currentEffort
+        let effort = context.nextTurnEffort ?? context.currentEffort
         // An unchosen level follows the conversation's, or is the runtime's own.
-        let unchosen = context.nextTurnHasCurrent ? "沿用当前" : "运行时默认"
-        let title = ([runtime, model] + (effort.map { [$0] } ?? [])).joined(separator: " · ")
+        let unchosen = store.loadedParentConversationID != nil ? "未记录" : context.nextTurnHasCurrent ? "沿用当前" : "运行时默认"
+        let modelTitle = ([model] + (effort.map { [$0] } ?? [])).joined(separator: " · ")
+        let title = "\(runtime) · \(modelTitle)"
+        let subject = editingTarget != nil ? "此消息" : store.loadedParentConversationID == nil ? "下一轮" : "当前会话"
+        let modelHelp = context.retainedQueueModelName == nil ? "所选模型已不可用" : ComposerModelChoiceContent.retainedModelExplanation
         return Menu {
             Menu("运行时：\(runtime)") {
                 Picker("Agent 运行时", selection: Binding(get: { context.nextTurnRuntimeID }, set: { if let id = $0 { context.selectNextTurnRuntime(id) } })) {
                     ForEach(store.device.enabledRuntimeInstances.filter { !store.isSideChat || store.device.hasSideChats($0.id) }) { runtime in Text(runtime.name).tag(Optional(runtime.id)) }
-                }.pickerStyle(.inline).labelsHidden()
+                }.pickerStyle(.inline).labelsHidden().disabled(!context.executionChoicesEditable)
                 Divider()
                 if let runtime = nextTurnRuntime { Button("在资源库中查看 \(runtime.name)…") { ResourceLibraryNavigator.shared.show(runtime.id, openWindow) } }
                 SettingsTabLink(tab: .runtimes, title: "Agent 运行时设置…")
@@ -899,24 +1027,22 @@ struct ComposerView: View {
                 Button("重新读取模型", action: context.reloadModelCatalog).disabled(!context.canSwitchModel || context.modelCatalog == .loading)
                 SettingsTabLink(tab: .providers, title: "AI 提供商设置…")
             }
-            if !context.reasoningEffortOptions.isEmpty {
+            if !context.reasoningEffortOptions.isEmpty || context.currentEffort != nil {
                 Menu("推理强度：\(effort ?? unchosen)") {
-                    Picker("推理强度", selection: Binding(get: { context.nextTurnEffort }, set: { context.selectEffort($0) })) {
-                        Text(context.currentEffort.map { "沿用当前（\($0)）" } ?? unchosen).tag(String?.none)
-                            .help(context.nextTurnHasCurrent ? "不更改：沿用会话当前的推理强度" : "不指定：由运行时自己决定")
-                        ForEach(context.reasoningEffortOptions, id: \.self) { level in Text(level).tag(Optional(level)) }
-                    }.pickerStyle(.inline).labelsHidden()
+                    ComposerEffortChoiceContent(next: context.nextTurn,
+                                                selection: Binding(get: { context.nextTurnEffort }, set: { context.selectEffort($0) }),
+                                                enabled: context.executionChoicesEditable)
                 }
             }
         } label: {
             // Short by characters: a frame's limit does not hold where the menu takes its ideal width.
-            Text(Self.pullDownTitle(compact ? Self.shortened(([model] + (effort.map { [$0] } ?? [])).joined(separator: " · "), to: 16) : title))
+            Text(Self.pullDownTitle(compact ? Self.shortened(modelTitle, to: 16) : title))
                 .lineLimit(1).truncationMode(.middle).frame(maxWidth: 360, alignment: .leading)
         }
         .fixedSize()
-        .accessibilityLabel("下一轮：运行时 \(runtime)，模型 \(model)，推理强度 \(effort ?? unchosen)")
-        .help(context.chosenModelUnavailable ? "所选模型已不可用，下一轮改用\(model)" : "下一轮：\(runtime) · \(model) · 推理强度 \(effort ?? unchosen)")
-        .disabled(store.isShuttingDown)
+        .accessibilityLabel("\(subject)：运行时 \(runtime)，模型 \(model)，推理强度 \(effort ?? unchosen)")
+        .help(store.loadedParentConversationID != nil ? "子 Agent 的执行配置只可查看，由父会话继续" : context.chosenModelUnavailable ? modelHelp : "\(subject)使用运行时 \(runtime)，模型 \(model)，推理强度 \(effort ?? unchosen)")
+        .disabled(store.isShuttingDown || editingTarget?.editable == false)
     }
 
     /// No choice first (the conversation's current model, or the runtime's
@@ -924,28 +1050,11 @@ struct ComposerView: View {
     /// providers serve through the gateway.
     @ViewBuilder private var modelMenuContent: some View {
         let context = self.context
-        let choices = context.modelChoices
-        let runtimeChoices = choices.filter { if case .managed = $0.selection { false } else { true } }
-        let managedChoices = choices.filter { if case .managed = $0.selection { true } else { false } }
-        let selection = Binding(get: { context.chosenModel }, set: { context.selectModel($0) })
-        switch context.modelCatalog {
-        case .loading: Text("正在读取运行时的模型…")
-        case .failed(let detail): Text("无法读取运行时的模型：\(detail)")
-        case .ready, nil: EmptyView()
-        }
-        if context.chosenModelUnavailable { Text("所选模型不可用，草稿已保留；请重新选择后发送。") }
-        Picker("运行时模型", selection: selection) {
-            Group {
-                if context.nextTurnHasCurrent, context.nextTurnModel != nil { Text("沿用当前（\(context.selectedModelName ?? "")）") } else { Text("运行时默认") }
-            }.tag(ModelSelection?.none)
-                .help(context.nextTurnHasCurrent ? "不更改：沿用会话当前的模型" : "不指定：由运行时使用自己的默认模型")
-            ForEach(runtimeChoices) { model in Text(model.name).tag(Optional(model.selection)) }
-        }.pickerStyle(.inline).disabled(!context.canSwitchModel)
-        if !managedChoices.isEmpty {
-            Picker("Velune 提供商", selection: selection) {
-                ForEach(managedChoices) { model in Text(model.name).tag(Optional(model.selection)) }
-            }.pickerStyle(.inline).disabled(!context.canSwitchModel)
-        }
+        ComposerModelChoiceContent(next: context.nextTurn, catalog: context.modelCatalog,
+                                   selection: Binding(get: { context.chosenModel }, set: { context.selectModel($0) }),
+                                   enabled: context.canSwitchModel,
+                                   defaultTitle: store.loadedParentConversationID == nil ? nil : context.selectedModelName,
+                                   retainedModelName: context.retainedQueueModelName)
     }
 
     @ViewBuilder private func sessionOptionControl(_ option: AcpConfigOption) -> some View {
@@ -985,18 +1094,19 @@ struct ComposerView: View {
         let mode = context.effectivePermissionMode
         let current = context.currentPermissionMode
         let hasModes = !context.permissionModeOptions.isEmpty
-        let title = hasModes ? (mode ?? current)?.label ?? "运行时默认权限" : "会话选项"
+        let child = editingTarget == nil && store.loadedParentConversationID != nil
+        let title = hasModes ? (mode ?? current)?.label ?? (child ? "权限未记录" : "运行时默认权限") : "会话选项"
         return Menu {
             if hasModes {
                 Picker("权限模式", selection: Binding(get: { mode?.id }, set: { context.selectPermissionMode($0) })) {
-                    Text(current.map { "沿用当前（\($0.label)）" } ?? (context.nextTurnHasCurrent ? "沿用当前" : "运行时默认")).tag(String?.none)
-                        .help(context.nextTurnHasCurrent ? "不更改：沿用会话当前的权限模式" : "不指定：由运行时使用自己的默认模式")
+                    Text(child ? current?.label ?? "权限未记录" : current.map { "沿用当前（\($0.label)）" } ?? (context.nextTurnHasCurrent ? "沿用当前" : "运行时默认")).tag(String?.none)
+                        .help(child ? "子 Agent 的权限只可查看，由父会话继续" : context.nextTurnHasCurrent ? "不更改：沿用会话当前的权限模式" : "不指定：由运行时使用自己的默认模式")
                     ForEach(context.permissionModeOptions) { option in Text(option.label).tag(Optional(option.id)).help(option.detail) }
-                }.pickerStyle(.inline)
+                }.pickerStyle(.inline).disabled(!context.executionChoicesEditable)
             }
-            if !store.editableSessionOptions.isEmpty {
+            if !context.sessionOptions.isEmpty {
                 Section("会话选项") {
-                    ForEach(store.editableSessionOptions) { option in sessionOptionControl(option) }
+                    ForEach(context.sessionOptions) { option in sessionOptionControl(option) }
                 }.disabled(!store.canChangeSessionOptions)
             }
         } label: {
@@ -1004,9 +1114,9 @@ struct ComposerView: View {
             else { Label(Self.pullDownTitle(title), systemImage: hasModes ? "lock.shield" : "slider.horizontal.3").lineLimit(1) }
         }
         .fixedSize()
-        .accessibilityLabel(hasModes ? "下一轮权限模式：\(title)" : "会话选项")
-        .help(hasModes ? (mode.map { "权限模式：\($0.label)。\($0.detail)" } ?? (context.nextTurnHasCurrent ? "权限模式：沿用会话当前的模式\(current.map { "（\($0.label)）" } ?? "")" : "权限模式：由运行时使用自己的默认模式")) : "此会话由 Agent 提供的选项，修改立即生效")
-        .disabled(store.isShuttingDown)
+        .accessibilityLabel(hasModes ? "\(child ? "当前会话" : "下一轮")权限模式：\(title)" : "会话选项")
+        .help(child ? "子 Agent 的权限只可查看；\(title)" : hasModes ? (mode.map { "权限模式：\($0.label)。\($0.detail)" } ?? (context.nextTurnHasCurrent ? "权限模式：沿用会话当前的模式\(current.map { "（\($0.label)）" } ?? "")" : "权限模式：由运行时使用自己的默认模式")) : "此会话由 Agent 提供的选项，修改立即生效")
+        .disabled(store.isShuttingDown || editingTarget?.editable == false)
     }
 
     /// The system draws a borderless pull-down's chevron right against its

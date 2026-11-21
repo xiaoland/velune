@@ -18,6 +18,7 @@ pub(crate) struct RemoteClient {
     pub(crate) registration: u64,
     pub(crate) descriptor: EndpointDescriptor,
     pub(crate) session: ClientSession,
+    pub(crate) route: Option<Arc<crate::mesh::RoutedConnection>>,
     pub(crate) authorized: bool,
     pub(crate) timeout: Duration,
 }
@@ -26,13 +27,33 @@ impl RemoteClient {
         &self.descriptor
     }
     pub fn peer_id(&self) -> String {
-        self.connection.status().peer_id
+        self.descriptor.endpoint_id.clone()
     }
     pub fn connection_status(&self) -> ConnectionStatus {
-        self.connection.status()
+        let mut status = self.connection.status();
+        status.peer_id = self.peer_id();
+        if let Some(route) = &self.route {
+            status.closed |= route.is_closed();
+            // Native statistics belong to the first hop, not an A-to-C IP path.
+            if !route.via_device_ids().is_empty() {
+                for path in &mut status.paths {
+                    path.kind = PathKind::Other;
+                }
+            }
+        }
+        status
+    }
+    pub(crate) fn via_device_ids(&self) -> Vec<String> {
+        self.route
+            .as_ref()
+            .map_or_else(Vec::new, |route| route.via_device_ids())
     }
     pub fn observe_paths(&self) -> PathObserver {
-        PathObserver::from_slot(self.connection.clone())
+        let observer = PathObserver::from_slot(self.connection.clone());
+        match &self.route {
+            Some(route) => observer.with_route(self.peer_id(), route.clone()),
+            None => observer,
+        }
     }
     /// Allocate before transmitting so a lost reply can be reconciled by ID.
     pub fn next_request_id(&self) -> Result<RequestId> {
@@ -130,7 +151,11 @@ impl RemoteClient {
         })
     }
     pub fn close(&self) {
-        self.connection.close(b"client closed");
+        if let Some(route) = &self.route {
+            route.close();
+        } else {
+            self.connection.close(b"client closed");
+        }
     }
     pub(crate) async fn rpc(&self, mut request: Request) -> Result<Reply> {
         if self.authorized && !self.store.is_pinned(&self.peer_id())? {
@@ -171,6 +196,19 @@ impl RemoteClient {
             MAX_FRAME_BYTES
         };
         let future = async {
+            if let Some(route) = &self.route {
+                let result = tokio::select! {
+                    biased;
+                    _ = network.cancelled() => Err(RemoteError::Closed),
+                    result = tokio::time::timeout(self.timeout, route.rpc(&network, request)) => {
+                        result.map_err(|_| RemoteError::Timeout)?
+                    }
+                };
+                if result.is_err() {
+                    route.close();
+                }
+                return result;
+            }
             let _operation = network.operation().await?;
             let connection = self.connection.native().ok_or(RemoteError::Closed)?;
             tokio::select! {
@@ -212,7 +250,9 @@ impl RemoteClient {
 impl Drop for RemoteClient {
     fn drop(&mut self) {
         self.close();
-        if let Some(network) = self.network.upgrade() {
+        if self.registration != 0
+            && let Some(network) = self.network.upgrade()
+        {
             network.remove(self.registration);
         }
     }

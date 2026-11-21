@@ -13,6 +13,7 @@ struct ConversationInspector: View {
     let open: (String, Bool) -> Void
     let close: () -> Void
     @Environment(\.supportsMultipleWindows) private var supportsMultipleWindows
+    @State private var completedExpanded = false
     var body: some View {
         VStack(spacing: 0) {
             HStack {
@@ -27,6 +28,7 @@ struct ConversationInspector: View {
             if panel == .outline { outline } else { agents }
         }
         .background(Color(.systemBackground))
+        .onChange(of: model.snapshot?.conversation.id) { _, _ in completedExpanded = false }
     }
     private var outline: some View {
         List {
@@ -44,12 +46,22 @@ struct ConversationInspector: View {
         .accessibilityIdentifier("conversationOutline")
     }
     private var agents: some View {
-        List {
+        let activeIDs = Set(active.lazy.filter { $0.pendingInteractions > 0 || isWorking($0) }.map(\.conversationId))
+        return List {
             if let parent = model.snapshot?.conversation.parentConversationId {
                 Section("父会话") { agent(parent, "打开父会话", failed: false) }
             }
             if let children = model.snapshot?.subAgents, !children.isEmpty {
-                Section("子 Agent") { ForEach(children, id: \.conversationId) { agent($0.conversationId, $0.title, failed: $0.failed) } }
+                let working = children.filter { activeIDs.contains($0.conversationId) }
+                let completed = children.filter { !activeIDs.contains($0.conversationId) }
+                Section("子 Agent") {
+                    ForEach(working, id: \.conversationId) { agent($0.conversationId, $0.title, failed: $0.failed) }
+                    if !completed.isEmpty {
+                        DisclosureGroup("已结束（\(completed.count)）", isExpanded: $completedExpanded) {
+                            ForEach(completed, id: \.conversationId) { agent($0.conversationId, $0.title, failed: $0.failed) }
+                        }
+                    }
+                }
             }
             if let collaborators = model.snapshot?.collaborators, !collaborators.isEmpty {
                 Section("协作") {
@@ -67,12 +79,16 @@ struct ConversationInspector: View {
             }
         }.accessibilityIdentifier("linkedAgents")
     }
+    private func isWorking(_ activity: ActiveConversation) -> Bool {
+        activity.runState == .running || activity.runState == .stopping || activity.runState == .elsewhere
+    }
+
     private func agent(_ id: String, _ title: String, failed: Bool, detail: String? = nil) -> some View {
         let activity = active.first { $0.conversationId == id }
         return Button { open(id, false) } label: {
             HStack(alignment: .top, spacing: 10) {
                 if let activity, activity.pendingInteractions > 0 { Image(systemName: "hand.raised.fill").foregroundStyle(.orange).accessibilityLabel("等待回复") }
-                else if let activity, activity.runState == .running || activity.runState == .stopping { ProgressView().controlSize(.small).accessibilityLabel("正在运行") }
+                else if let activity, isWorking(activity) { ProgressView().controlSize(.small).accessibilityLabel("正在运行") }
                 else { Image(systemName: failed ? "exclamationmark.circle" : "checkmark.circle").foregroundStyle(failed ? .red : .secondary).accessibilityLabel(failed ? "执行失败" : "已结束") }
                 VStack(alignment: .leading, spacing: 4) {
                     Text(title.isEmpty ? "未命名会话" : title).font(.callout).foregroundStyle(.primary).lineLimit(2)

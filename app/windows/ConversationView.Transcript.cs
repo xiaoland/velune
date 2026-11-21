@@ -386,6 +386,11 @@ public sealed partial class ConversationView
             case DeliveredBlock.RuntimeFailure failure:
                 return Muted(failure.Detail);
             case DeliveredBlock.ContextCompaction compaction:
+                var (compactionStatus, compactionDetail) = ContextCompactionParts(compaction.TextValue);
+                if (compactionDetail != null)
+                {
+                    return Disclosure(message.Id, key, compactionStatus, new MessagePayload.Inline(compactionDetail), prose: true);
+                }
                 var status = Muted(compaction.TextValue);
                 status.HorizontalAlignment = HorizontalAlignment.Center;
                 status.TextAlignment = TextAlignment.Center;
@@ -435,9 +440,18 @@ public sealed partial class ConversationView
         Style = Ui.Style("SecondaryTextStyle"),
     };
 
-    // Disclosure keeps reasoning and tool output folded; large ones are read
+    // The runtime supplies a status line followed by the native summary, if any.
+    static (string Status, string? Detail) ContextCompactionParts(string text)
+    {
+        var newline = text.IndexOf('\n');
+        if (newline < 0) return (text, null);
+        var detail = text[(newline + 1)..].TrimStart('\r', '\n');
+        return string.IsNullOrWhiteSpace(detail) ? (text, null) : (text[..newline].TrimEnd('\r'), detail);
+    }
+
+    // Disclosure keeps reasoning, compaction details and tool output folded; large ones are read
     // when unfolded.
-    UIElement Disclosure(string messageID, string key, string title, MessagePayload? payload)
+    UIElement Disclosure(string messageID, string key, string title, MessagePayload? payload, bool prose = false)
     {
         if (payload == null)
         {
@@ -445,13 +459,18 @@ public sealed partial class ConversationView
         }
         var expander = new Expander
         {
-            Header = new TextBlock { Text = title, FontSize = 13, TextTrimming = TextTrimming.CharacterEllipsis },
+            Header = new TextBlock
+            {
+                Text = title, FontSize = 13,
+                TextWrapping = prose ? TextWrapping.Wrap : TextWrapping.NoWrap,
+                TextTrimming = prose ? TextTrimming.None : TextTrimming.CharacterEllipsis,
+            },
             HorizontalAlignment = HorizontalAlignment.Stretch,
             HorizontalContentAlignment = HorizontalAlignment.Stretch,
             IsExpanded = expanded.Contains(key),
             Content = payload switch
             {
-                MessagePayload.Inline inline => Markdown.Code(inline.Text, 12),
+                MessagePayload.Inline inline => prose ? Markdown.View(inline.Text, OpenLink) : Markdown.Code(inline.Text, 12),
                 _ => new ProgressRing { IsActive = true, Width = 20, Height = 20 },
             },
         };

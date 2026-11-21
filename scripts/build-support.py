@@ -189,11 +189,12 @@ def source_snapshot(platform):
              "scripts/build-support.py", "scripts/build_lock.py", "scripts/android-licenses.py", "scripts/version.py"]
     if platform == "macos":
         paths = ["app/mac" if p == "app/macos" else p for p in paths]
-        paths += ["Package.swift", "Package.resolved", "assets", "scripts/build-macos.sh", "scripts/macos_identity.py", "scripts/render-app-icon.swift"]
+        paths += ["Package.swift", "Package.resolved", "assets", "scripts/build-macos.sh", "scripts/macos_identity.py", "scripts/render-app-icon.swift",
+                  "scripts/install-hapi-tunwg.sh", "scripts/hapi-relay-supervisor.c"]
     elif platform == "windows":
         paths += ["assets", "app/mac/Licenses", "scripts/build-windows.ps1"]
     elif platform == "ios":
-        paths += ["app/mac/Licenses", "app/mac/ClientTelemetry.swift", "app/mac/TelemetryExporters.swift", "app/mac/TelemetrySettings.swift", "scripts/build-ios.sh", "scripts/build-ios-native.sh"]
+        paths += ["app/mac/Licenses", "app/mac/ClientTelemetry.swift", "app/mac/TelemetryExporters.swift", "app/mac/TelemetrySettings.swift", "app/mac/RemoteNetworkSettings.swift", "scripts/build-ios.sh", "scripts/build-ios-native.sh"]
     elif platform == "android":
         paths += ["scripts/build-android.sh", "scripts/build-android-native.sh"]
     if is_git_checkout():
@@ -416,7 +417,7 @@ def main():
     p = actions.add_parser("write"); p.add_argument("path")
     actions.add_parser("source-provenance")
     for name in ("bindgen", "verify-bindings"):
-        p = actions.add_parser(name); p.add_argument("--library", required=True); p.add_argument("--language", choices=("swift", "kotlin", "cs"), required=True); p.add_argument("--generator"); p.add_argument("--out-dir", required=True); p.add_argument("--artifact", action="append")
+        p = actions.add_parser(name); p.add_argument("--library", required=True); p.add_argument("--language", choices=("swift", "kotlin", "python", "cs"), required=True); p.add_argument("--generator"); p.add_argument("--out-dir", required=True); p.add_argument("--artifact", action="append")
     p = actions.add_parser("run"); p.add_argument("--platform", choices=("macos", "ios", "android", "windows"), required=True); p.add_argument("--profile", choices=("dev", "release"), required=True); p.add_argument("--purpose", choices=("development", "daily"), default="development"); p.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args()
     try:

@@ -8,10 +8,18 @@ use time::OffsetDateTime;
 mod claude;
 mod codex;
 mod context;
+mod ownership;
 mod pi;
-pub use claude::import_claude_conversation;
-pub use codex::import_codex_conversation;
+pub use claude::{
+    import_claude_conversation, import_claude_conversation_owned,
+    import_claude_conversation_with_origins,
+};
+pub use codex::{
+    import_codex_conversation, import_codex_conversation_owned,
+    import_codex_conversation_with_origins,
+};
 pub use context::{Block, Context, ContextMessage, Role};
+pub use ownership::{ImportOwnership, OwnedImport, cleanup_owned_import};
 pub use pi::import_pi_conversation;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -132,7 +140,7 @@ fn tool_name(name: &str) -> String {
 
 /// Claude Code keeps a session under the project folder named after the
 /// process's physical working directory, non-alphanumerics replaced.
-fn claude_project_directory(config_dir: &Path, cwd: &Path) -> PathBuf {
+pub(crate) fn claude_project_directory(config_dir: &Path, cwd: &Path) -> PathBuf {
     let slug: String = cwd
         .to_string_lossy()
         .chars()

@@ -26,10 +26,18 @@ extension ConversationWindowModel {
 /// Isolated, hidden native checks. Never registers hotkeys, creates scenes or activates a window.
 @MainActor func composerOwnershipCheck() -> Never {
     NSApplication.shared.setActivationPolicy(.prohibited)
+    if CommandLine.arguments.contains("--composer-check-tab-state") { composerTabStateCheck() }
     if CommandLine.arguments.contains("--composer-check-content-target") { composerContentTargetCheck() }
     func wait(_ condition: () -> Bool) {
         let deadline = Date().addingTimeInterval(15)
         while !condition(), Date() < deadline { RunLoop.main.run(until: Date().addingTimeInterval(0.02)) }
+        if !condition() {
+            for window in ConversationWindowModel.openWindows {
+                for problem in window.application.problems {
+                    FileHandle.standardError.write(Data((problem.diagnosticText + "\n").utf8))
+                }
+            }
+        }
         precondition(condition(), "等待共享输入超时")
     }
     func note(_ value: String) { FileHandle.standardError.write(Data((value + "\n").utf8)) }
@@ -50,9 +58,9 @@ extension ConversationWindowModel {
     note("step: created tab")
     precondition(window.tabCount == baseTabs + 2 && window.focused !== source, "新建会话必须新开并选中自己的标签")
     precondition(source.store.loadedConversationID == "sample-0", "原会话标签的内容不变")
-    precondition(window.focused.store.loadedConversationID == ConversationStore.draftConversationPrefix + "new-conversation", "新标签承载未发送的新会话")
+    precondition(window.focused.store.loadedConversationID == window.focused.store.unsentContextID, "新标签承载独立未发送的新会话")
     note("step: tab state ok")
-    precondition(window.composer(for: window.focused).id == draftInput.id && draftInput.submission == "GLOBAL NEW INPUT", "新标签恢复唯一的全局新建输入")
+    precondition(window.composer(for: window.focused).id != draftInput.id && window.composer(for: window.focused).isEmpty && draftInput.submission == "GLOBAL NEW INPUT", "新标签拥有独立空输入，原标签草稿保留")
     note("step: global input ok")
     let runtime = device.enabledRuntimeInstances.last!
     window.selectTab(source.id)
@@ -82,7 +90,7 @@ extension ConversationWindowModel {
     let closedDraft = reopen.focused
     reopen.closeTab(closedDraft.id)
     reopen.reopenClosedTab()
-    precondition(reopen.focused !== closedDraft && reopen.focused.store.loadedConversationID == ConversationStore.draftConversationPrefix + "new-conversation", "关闭的未发送新会话重开为新的新会话")
+    precondition(reopen.focused !== closedDraft && reopen.focused.id == closedDraft.id && reopen.focused.store.loadedConversationID == closedDraft.store.unsentContextID, "关闭的未发送标签恢复原身份")
     reopen.openInNewTab("sample-2")
     reopen.closeTab(reopen.focused.id)
     device.deleteInPreview(["sample-2"])
@@ -96,8 +104,11 @@ extension ConversationWindowModel {
     // to the next empty input at once.
     let raceHome = FileManager.default.temporaryDirectory.appendingPathComponent("velune-new-tab-\(UUID().uuidString)", isDirectory: true)
     try! FileManager.default.createDirectory(at: raceHome, withIntermediateDirectories: true)
-    try! Data(#"{"schemaVersion":11,"gateways":[{"id":"g","name":"g","providers":[],"routes":[]}],"runtimeInstances":[{"enabled":true,"id":"synthetic-runtime","name":"合成","typeId":"pi-1.0","gatewayId":"g","settings":{}}],"modelTemplates":[]}"#.utf8).write(to: raceHome.appendingPathComponent("generic-config.json"))
     let raceTransport = Transport(stateDirectory: raceHome, resourcesDirectory: Bundle.main.resourceURL!)
+    try! raceTransport.prepareForLaunch()
+    let agentDirectory = raceHome.appendingPathComponent("agent", isDirectory: true)
+    try! FileManager.default.createDirectory(at: agentDirectory, withIntermediateDirectories: true)
+    _ = try! raceTransport.upsertRuntime(RuntimeInstance(id: "synthetic-runtime", name: "合成", typeId: .pi, gatewayId: "default", settings: ["binary": "/usr/bin/false", "nodeBinary": "/usr/bin/false", "agentDir": agentDirectory.path]))
     let raceDevice = DeviceStore(transport: raceTransport)
     let raceWindow = ConversationWindowModel(application: raceDevice, kind: .workspace)
     raceWindow.focused.store.restoreUnsentConversation(Conversation(id: ConversationStore.draftConversationPrefix + "new-conversation", title: "新会话", updatedAtUnixMs: nil, runtimeID: "synthetic-runtime", cwd: nil, canRename: false, canDelete: false))
@@ -186,23 +197,24 @@ extension ConversationWindowModel {
     window.selectTab(a.id)
     window.split(.horizontal)
     let right = window.focused, rightPane = window.focusedPaneID
-    precondition(window.isSplit && window.composer(for: right).id == x.id, "拆分布局延续输入")
+    let rightInput = window.composer(for: right)
+    precondition(window.isSplit && rightInput.id != x.id && rightInput.id != n.id && rightInput.isEmpty,
+                 "拆分后的新Tab拥有独立空输入")
+    rightInput.restore("右组的输入", attachments: [])
     window.selectTab(b.id)
     precondition(window.sharedComposer.id == y.id)
     window.focus(rightPane)
-    precondition(window.composer(for: right).id == y.id, "跨组聚焦只换目标")
+    precondition(window.composer(for: right) === rightInput && rightInput.submission == "右组的输入", "跨组聚焦恢复目的输入")
     precondition(right.store.createConversation(), "显式新建必须成功")
-    precondition(window.composer(for: right).id == n.id && window.sharedComposer.submission == "全局新建输入", "显式新建恢复唯一新建项")
+    precondition(window.composer(for: right).id != n.id && n.submission == "全局新建输入", "不同新建Tab各自保留输入")
     window.selectTab(a.id)
     window.focus(rightPane)
-    precondition(window.composer(for: right).id == x.id)
-    // The exact submitted model, not the new target's parked input, is promoted.
-    window.composerDrafts.reassociate(x, from: ConversationStore.draftConversationPrefix + "new-conversation", to: "native-created")
-    precondition(device.composerInputs.inputID(for: ConversationStore.draftConversationPrefix + "new-conversation") == n.id)
-    precondition(window.sharedComposer.id == x.id)
+    precondition(window.composer(for: right) === rightInput)
+    window.composerDrafts.reassociate(rightInput, from: right.store.unsentContextID, to: "native-created", targetTab: right)
+    precondition(window.sharedComposer === rightInput && n.submission == "全局新建输入")
     window.closePane(rightPane)
     precondition(!window.isSplit && window.composer(for: window.focused).id == x.id)
-    note("PASS native window actions: tab navigation; group focus; split/close continuity; explicit new; borrowed input identity")
+    note("PASS native window actions: tab navigation and group focus restore each tab; independent blank drafts; split/close continuity and creation identity")
     }
 
     guard let path = ProcessInfo.processInfo.environment["VELUNE_COMPOSER_CHECK_HOME"], path.hasPrefix("/tmp/") else { fatalError("必须指定隔离的 /tmp 检查目录") }
@@ -228,7 +240,7 @@ extension ConversationWindowModel {
         window.focusedPane.insert(ConversationTab(store: secondStore, start: { secondStore.restoreUnsentConversation(unsent) }))
         let secondTab = window.focused
         secondTab.store.setUnsentWorkingDirectory("/tmp/creation-b")
-        precondition(window.composer(for: secondTab).id == firstInput.id)
+        precondition(window.composer(for: secondTab).id != firstInput.id)
         let saved = try! JSONDecoder().decode(SavedWindowLayout.self, from: JSONEncoder().encode(window.savedLayout))
         precondition(saved.creationTargets?[firstTab.id]?.cwd == "/tmp/creation-a" && saved.creationTargets?[secondTab.id]?.cwd == "/tmp/creation-b")
         let restored = ConversationWindowModel(application: device, kind: .workspace)
@@ -239,7 +251,7 @@ extension ConversationWindowModel {
         note("CHECK restored new tab: cwd=\(restored.focused.store.loadedConversationWorkingDirectory ?? "nil"); input=\(restoredInput.id); expected=\(firstInput.id)")
         precondition(restored.focused.store.loadedConversationWorkingDirectory == "/tmp/creation-a")
         precondition(restoredInput.id == firstInput.id)
-        note("PASS new tabs: one shared InputID; separate creation targets survive native window snapshot roundtrip")
+        note("PASS new tabs: independent InputIDs and creation targets survive native window snapshot roundtrip")
         exit(0)
     }
     let snapshot = home.appendingPathComponent("check-workspace.json")

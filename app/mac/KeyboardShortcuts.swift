@@ -105,14 +105,17 @@ extension View {
 /// `SendMode`); the global ones work while another app is active.
 enum ShortcutCommand: String, CaseIterable, Identifiable {
     case newConversation, openConversation, newTab, newWindow, reopenClosedTab, closeTab, closeWindow
+    case selectTab1, selectTab2, selectTab3, selectTab4, selectTab5, selectTab6, selectTab7, selectTab8, selectTab9
     case find
     case stop, stopSubAgents, continueTurn, compactContext, sideChat, attach, chooseRuntime, chooseModel, chooseEffort, choosePermission, chooseWorkingDirectory, nextAttention, reload
     case splitRight, splitDown, closeSplit, back, forward, nextPane, previousPane, nextTab, previousTab, moveTabToNewWindow, keepInFront
-    case commandPalette, focusTranscript, showList, showOutline, focusComposer, showAgents, rightArea, bottomArea, editorOnly, problems
+    case commandPalette, focusTranscript, showList, showOutline, focusComposer, showAgents, showBackgroundTasks, rightArea, bottomArea, editorOnly, problems
     case shortcutHelp
     case globalShow, globalNewConversation
 
     var id: Self { self }
+    static let numberedTabs: [Self] = [.selectTab1, .selectTab2, .selectTab3, .selectTab4, .selectTab5, .selectTab6, .selectTab7, .selectTab8, .selectTab9]
+    var tabPosition: Int? { Self.numberedTabs.firstIndex(of: self).map { $0 + 1 } }
 
     /// The menu it is in, which the settings group it by.
     enum Menu: String, CaseIterable, Identifiable {
@@ -124,10 +127,11 @@ enum ShortcutCommand: String, CaseIterable, Identifiable {
     var menu: Menu {
         switch self {
         case .newConversation, .openConversation, .newTab, .newWindow, .reopenClosedTab, .closeTab, .closeWindow: .file
+        case .selectTab1, .selectTab2, .selectTab3, .selectTab4, .selectTab5, .selectTab6, .selectTab7, .selectTab8, .selectTab9: .window
         case .find: .edit
         case .stop, .stopSubAgents, .continueTurn, .compactContext, .sideChat, .attach, .chooseRuntime, .chooseModel, .chooseEffort, .choosePermission, .chooseWorkingDirectory, .nextAttention, .reload: .conversation
         case .splitRight, .splitDown, .closeSplit, .back, .forward, .nextPane, .previousPane, .nextTab, .previousTab, .moveTabToNewWindow, .keepInFront: .window
-        case .commandPalette, .focusTranscript, .showList, .showOutline, .focusComposer, .showAgents, .rightArea, .bottomArea, .editorOnly, .problems: .view
+        case .commandPalette, .focusTranscript, .showList, .showOutline, .focusComposer, .showAgents, .showBackgroundTasks, .rightArea, .bottomArea, .editorOnly, .problems: .view
         case .shortcutHelp: .help
         case .globalShow, .globalNewConversation: .global
         }
@@ -144,9 +148,10 @@ enum ShortcutCommand: String, CaseIterable, Identifiable {
         case .reopenClosedTab: "重新打开关闭的标签页"
         case .closeTab: "关闭标签页"
         case .closeWindow: "关闭窗口"
+        case .selectTab1, .selectTab2, .selectTab3, .selectTab4, .selectTab5, .selectTab6, .selectTab7, .selectTab8, .selectTab9: "转到组内第\(tabPosition!)个标签页"
         case .find: "查找…"
         case .stop: "停止生成"
-        case .stopSubAgents: "停止子 Agent"
+        case .stopSubAgents: "停止全部后台工作"
         case .continueTurn: "继续"
         case .compactContext: "压缩上下文"
         case .sideChat: "侧聊"
@@ -175,6 +180,7 @@ enum ShortcutCommand: String, CaseIterable, Identifiable {
         case .showOutline: "显示／隐藏会话大纲"
         case .focusComposer: "转到输入区"
         case .showAgents: "显示／隐藏关联 Agent"
+        case .showBackgroundTasks: "显示／隐藏后台任务"
         case .rightArea: "显示／隐藏右侧区域"
         case .bottomArea: "显示／隐藏底部区域"
         case .editorOnly: "只显示编辑区"
@@ -189,6 +195,7 @@ enum ShortcutCommand: String, CaseIterable, Identifiable {
     /// by; never shown (DESIGN.md, 检索别名). Every command has one.
     var englishName: String {
         switch self {
+        case .selectTab1, .selectTab2, .selectTab3, .selectTab4, .selectTab5, .selectTab6, .selectTab7, .selectTab8, .selectTab9: "Go to Tab \(tabPosition!) in Group"
         case .newConversation: "New Conversation"
         case .openConversation: "Open Conversation"
         case .newTab: "New Tab"
@@ -198,7 +205,7 @@ enum ShortcutCommand: String, CaseIterable, Identifiable {
         case .closeWindow: "Close Window"
         case .find: "Find"
         case .stop: "Stop"
-        case .stopSubAgents: "Stop Sub-agents"
+        case .stopSubAgents: "Stop All Background Work"
         case .continueTurn: "Continue"
         case .compactContext: "Compact context"
         case .sideChat: "Side Chat"
@@ -227,6 +234,7 @@ enum ShortcutCommand: String, CaseIterable, Identifiable {
         case .showOutline: "Toggle Outline"
         case .focusComposer: "Go to Composer"
         case .showAgents: "Toggle Linked Agents"
+        case .showBackgroundTasks: "Toggle Background Tasks"
         case .rightArea: "Toggle Right Area"
         case .bottomArea: "Toggle Bottom Area"
         case .editorOnly: "Editor Only"
@@ -263,6 +271,7 @@ enum ShortcutCommand: String, CaseIterable, Identifiable {
         case .showList: ["sidebar", "侧栏"]
         case .focusComposer: ["input", "prompt", "输入框"]
         case .showAgents: ["subagent", "子 Agent"]
+        case .showBackgroundTasks: ["background", "task", "shell", "后台", "任务"]
         case .editorOnly: ["zen", "maximize", "专注"]
         case .problems: ["errors", "diagnostics", "issues", "错误"]
         case .shortcutHelp: ["keys", "keybindings", "cheat sheet", "help", "快捷键"]
@@ -281,6 +290,7 @@ enum ShortcutCommand: String, CaseIterable, Identifiable {
         case .newConversation: Shortcut("n")
         // As VS Code's Quick Open.
         case .openConversation: Shortcut("p")
+        case .selectTab1, .selectTab2, .selectTab3, .selectTab4, .selectTab5, .selectTab6, .selectTab7, .selectTab8, .selectTab9: Shortcut(String(tabPosition!), .control)
         case .newTab: Shortcut("t")
         case .newWindow: Shortcut("n", [.command, .option])
         // As in browsers and VS Code.
@@ -320,7 +330,7 @@ enum ShortcutCommand: String, CaseIterable, Identifiable {
         case .editorOnly: Shortcut("return", [.command, .shift])
         case .problems: Shortcut("m", [.command, .shift])
         // Global ones are the user's to choose: any default would take a key from other apps.
-        case .stopSubAgents, .continueTurn, .compactContext, .sideChat, .chooseWorkingDirectory, .closeSplit, .moveTabToNewWindow, .keepInFront, .globalShow, .globalNewConversation: nil
+        case .showBackgroundTasks, .stopSubAgents, .continueTurn, .compactContext, .sideChat, .chooseWorkingDirectory, .closeSplit, .moveTabToNewWindow, .keepInFront, .globalShow, .globalNewConversation: nil
         }
     }
 
@@ -331,6 +341,7 @@ enum ShortcutCommand: String, CaseIterable, Identifiable {
         case .outline: .showOutline
         case .composer: .focusComposer
         case .agents: .showAgents
+        case .backgroundTasks: .showBackgroundTasks
         }
     }
 }
@@ -342,6 +353,7 @@ enum ShortcutCommand: String, CaseIterable, Identifiable {
     static let shared = KeyboardShortcutSettings()
 
     private struct File: Codable {
+        enum CodingKeys: String, CodingKey { case schema, shortcuts, sendMode }
         static let schema = 1
         var schema = File.schema
         /// By command; null where the user removed the shortcut.
@@ -374,7 +386,8 @@ enum ShortcutCommand: String, CaseIterable, Identifiable {
         guard let url, FileManager.default.fileExists(atPath: url.path) else { canWrite = true; return }
         guard let data = try? Data(contentsOf: url),
               let file = try? JSONDecoder().decode(File.self, from: data), file.schema == File.schema,
-              let source = try? JSONSerialization.jsonObject(with: data),
+              let source = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              source.keys.allSatisfy({ File.CodingKeys(rawValue: $0) != nil }),
               let encoded = try? JSONSerialization.jsonObject(with: JSONEncoder().encode(file)),
               file.shortcuts.keys.allSatisfy({ ShortcutCommand(rawValue: $0) != nil }),
               SavedWindowLayout.hasOnlyEncodedKeys(source, encoded: encoded) else {

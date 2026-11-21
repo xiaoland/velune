@@ -20,6 +20,7 @@ pub struct Controller {
 struct ControllerConnection {
     client: Option<Arc<RemoteClient>>,
     epoch: u64,
+    last_route_probe: Instant,
 }
 #[derive(Clone)]
 pub struct ControllerConnectionInfo {
@@ -34,6 +35,15 @@ impl Controller {
         &self.peer
     }
     pub(crate) fn client(&self) -> Result<Arc<RemoteClient>> {
+        if !self
+            .owner()?
+            .state
+            .store
+            .contact(&self.peer)?
+            .control_authorized
+        {
+            return Err(RemoteError::Unauthorized);
+        }
         self.connection
             .lock()
             .map_err(|_| RemoteError::Unavailable)?
@@ -43,6 +53,15 @@ impl Controller {
             .ok_or(RemoteError::Closed)
     }
     pub fn connection_info(&self) -> Result<ControllerConnectionInfo> {
+        if !self
+            .owner()?
+            .state
+            .store
+            .contact(&self.peer)?
+            .control_authorized
+        {
+            return Err(RemoteError::Unauthorized);
+        }
         let connection = self
             .connection
             .lock()
@@ -121,6 +140,9 @@ impl Controller {
         if effect {
             let service = self.owner()?;
             let _access = service.state.access()?;
+            if !service.state.store.contact(&self.peer)?.control_authorized {
+                return Err(RemoteError::Unauthorized);
+            }
             let (runtime_id, conversation_id) = operation_targets(&command);
             service.state.store.record_pending(PendingOperation {
                 peer_id: self.peer.clone(),
@@ -239,6 +261,8 @@ pub struct RemoteServiceSnapshot {
     pub control_ingress: bool,
     pub descriptor: Option<EndpointDescriptor>,
     pub contacts: Vec<DeviceContact>,
+    /// Current local device-network trust, including discovered members.
+    pub members: Vec<DeviceMember>,
     pub incoming_grants: Vec<IncomingControlGrant>,
     pub telemetry_profile_grants: Vec<IncomingControlGrant>,
     pub incoming_pairings: Vec<PairingStatus>,
@@ -296,6 +320,7 @@ impl RemoteAccessService {
             connection: Mutex::new(ControllerConnection {
                 client: None,
                 epoch: 0,
+                last_route_probe: Instant::now(),
             }),
             dial: tokio::sync::Mutex::new(()),
             recovery: recovery::Recovery::new(self.state.store.contact(peer)?.paused),
@@ -318,6 +343,7 @@ impl RemoteAccessService {
             control_ingress: access.ingress && !access.closed,
             descriptor: self.descriptor().ok(),
             contacts: stored.contacts,
+            members: stored.members,
             incoming_grants: stored.incoming_grants,
             telemetry_profile_grants: stored.telemetry_profile_grants,
             incoming_pairings: before,
@@ -432,6 +458,11 @@ fn operation_targets(command: &Command) -> (Option<String>, Option<String>) {
         | Command::StopSubAgents {
             runtime_id,
             conversation_id,
+        }
+        | Command::SetConversationHandoff {
+            runtime_id,
+            conversation_id,
+            ..
         }
         | Command::OpenSideChat {
             runtime_id,

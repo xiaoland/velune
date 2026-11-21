@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import SwiftUI
 import VeluneBindings
 
@@ -14,9 +15,9 @@ struct AppProblem: Identifiable, Sendable, Equatable {
     let activityKey: String?
     var resolvedAt: Date? = nil
 
-    var record: DiagnosticProblem {
+    func record(peerID: String?) -> DiagnosticProblem {
         DiagnosticProblem(id: id.uuidString, occurredAtUnixMs: Int64(occurredAt.timeIntervalSince1970 * 1000), source: source, detail: detail, kind: kind,
-                          code: code, phase: phase, operationId: operationID, activityKey: activityKey,
+                          code: code, phase: phase, operationId: operationID, peerId: peerID, activityKey: activityKey,
                           resolvedAtUnixMs: resolvedAt.map { Int64($0.timeIntervalSince1970 * 1000) })
     }
     static func restored(_ value: DiagnosticProblem) -> AppProblem? {
@@ -32,7 +33,7 @@ struct AppProblem: Identifiable, Sendable, Equatable {
             case .operation(let operation, let cause):
                 return failure(cause, source: source == "操作" ? operationName(operation) : source, activityKey: activityKey)
             case .diagnostic(let kind, let detail, let code, let phase, let operationID):
-                return AppProblem(id: UUID(), occurredAt: Date(), source: source, detail: detail, kind: kind, code: code, phase: phase, operationID: operationID, activityKey: activityKey)
+                return AppProblem(id: UUID(), occurredAt: Date(), source: source, detail: detail, kind: kind, code: code, phase: phase, operationID: operationID.isEmpty ? nil : operationID, activityKey: activityKey)
             default: break
             }
         }
@@ -105,11 +106,17 @@ struct AppProblem: Identifiable, Sendable, Equatable {
 
 struct ProblemsButton: View {
     @ObservedObject var store: DeviceStore
+    @ObservedObject private var model: MergedProblemsModel
     @Environment(\.openWindow) private var openWindow
+    private var activeCount: Int { model.entries.filter { $0.problem.resolvedAt == nil }.count }
+    init(store: DeviceStore) {
+        self.store = store
+        model = MergedProblemsModel(local: store, hub: DeviceHub.shared)
+    }
     var body: some View {
         Button { openWindow(id: "problems") } label: {
-            HStack(spacing: 5) { Image(systemName: "exclamationmark.triangle"); if store.activeProblemCount > 0 { Text(store.activeProblemCount, format: .number).monospacedDigit() } }
-        }.accessibilityLabel("问题，\(store.activeProblemCount) 项未恢复").help("查看问题与历史诊断")
+            HStack(spacing: 5) { Image(systemName: "exclamationmark.triangle"); if activeCount > 0 { Text(activeCount, format: .number).monospacedDigit() } }
+        }.accessibilityLabel("问题，\(activeCount) 项未恢复").help("查看问题与历史诊断")
     }
 }
 
@@ -122,10 +129,66 @@ struct ProblemsMenuItem: View {
     }
 }
 
+/// One problem in the merged list: which device it belongs to and the record.
+struct MergedProblem: Identifiable {
+    let store: DeviceStore
+    let device: String
+    let problem: AppProblem
+    var id: UUID { problem.id }
+}
+
+/// The problems window's model: this Mac and every controlled device
+/// contribute their records, labeled by device, merged newest last.
+@MainActor final class MergedProblemsModel: ObservableObject {
+    @Published private(set) var entries: [MergedProblem] = []
+    private let local: DeviceStore
+    private let hub: DeviceHub?
+    private var watches: Set<AnyCancellable> = []
+    private var storeWatches: Set<AnyCancellable> = []
+    init(local: DeviceStore, hub: DeviceHub?) {
+        self.local = local
+        self.hub = hub
+        hub?.$state.receive(on: RunLoop.main).sink { [weak self] _ in self?.rebuild() }.store(in: &watches)
+        rebuild()
+    }
+    private func rebuild() {
+        storeWatches.removeAll()
+        let stores = [local] + (hub?.state?.contacts ?? []).filter(\.controlAuthorized).compactMap { hub?.store(for: $0.peerId) }
+        let multiple = stores.count > 1
+        var merged: [MergedProblem] = []
+        for store in stores {
+            let label = store.peerID.map { hub?.name(of: $0) ?? $0 } ?? (multiple ? "这台 Mac" : "")
+            store.$problems.receive(on: RunLoop.main).sink { [weak self] _ in
+                self?.merge(store: store, label: label)
+            }.store(in: &storeWatches)
+            merged += store.problems.map { MergedProblem(store: store, device: label, problem: $0) }
+        }
+        entries = merged.sorted { $0.problem.occurredAt < $1.problem.occurredAt }
+    }
+    private func merge(store: DeviceStore, label: String) {
+        entries.removeAll { $0.store === store }
+        entries += store.problems.map { MergedProblem(store: store, device: label, problem: $0) }
+        entries.sort { $0.problem.occurredAt < $1.problem.occurredAt }
+    }
+    /// Clear the record in this Mac's journal through its owning store.
+    func clear(id: UUID) {
+        entries.first { $0.id == id }?.store.clearProblem(id)
+    }
+    func clearAll() {
+        let stores = [local] + (hub?.state?.contacts ?? []).filter(\.controlAuthorized).compactMap { hub?.store(for: $0.peerId) }
+        for store in stores { store.clearProblems() }
+    }
+}
+
 struct ProblemsView: View {
-    @ObservedObject var store: DeviceStore
+    /// This Mac's store; the controlled devices' stores come from the hub.
+    @StateObject private var model: MergedProblemsModel
     @State private var selection: UUID?
-    private var selected: AppProblem? { store.problems.first { $0.id == selection } }
+    private var problems: [MergedProblem] { model.entries }
+    private var selected: MergedProblem? { problems.first { $0.id == selection } }
+    init(local: DeviceStore, hub: DeviceHub?) {
+        _model = StateObject(wrappedValue: MergedProblemsModel(local: local, hub: hub))
+    }
     var body: some View {
         HSplitView { problemList; problemDetail }
         .toolbar(id: "problems") {
@@ -133,26 +196,31 @@ struct ProblemsView: View {
                 Button("复制诊断", systemImage: "doc.on.doc") {
                     guard let selected else { return }
                     NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(selected.diagnosticText, forType: .string)
+                    let text = selected.device.isEmpty ? selected.problem.diagnosticText : "设备：\(selected.device)\n\(selected.problem.diagnosticText)"
+                    NSPasteboard.general.setString(text, forType: .string)
                 }.disabled(selected == nil)
             }
             ToolbarItem(id: "clear-selected") {
-                Button("清除所选", systemImage: "trash") { if let selection { store.clearProblem(selection) } }.disabled(selected == nil)
+                Button("清除所选", systemImage: "trash") {
+                    guard let selection else { return }
+                    model.clear(id: selection)
+                }.disabled(selected == nil)
             }
-            ToolbarItem(id: "clear-all") { Button("全部清除") { store.clearProblems() }.disabled(store.problems.isEmpty) }
+            ToolbarItem(id: "clear-all") { Button("全部清除") { model.clearAll() }.disabled(problems.isEmpty) }
         }
-        .onChange(of: store.problems) { _, values in
-            if let selection, !values.contains(where: { $0.id == selection }) { self.selection = nil }
+        .onChange(of: problems.map(\.id)) { _, ids in
+            if let selection, !ids.contains(selection) { self.selection = nil }
         }
     }
     private var problemList: some View {
             List(selection: $selection) {
-                ForEach(store.problems.reversed()) { problem in
+                ForEach(problems.reversed()) { entry in
                     VStack(alignment: .leading, spacing: 4) {
-                        Label(problem.source, systemImage: problem.resolvedAt == nil ? "exclamationmark.triangle" : "checkmark.circle").uiFont(.headline).lineLimit(1)
-                        Text(problem.detail).lineLimit(2).foregroundStyle(.secondary)
-                        Text(problem.occurredAt, format: .dateTime.month().day().hour().minute().second()).uiFont(.caption).foregroundStyle(.secondary)
-                    }.padding(.vertical, 3).tag(problem.id)
+                        Label(entry.problem.source, systemImage: entry.problem.resolvedAt == nil ? "exclamationmark.triangle" : "checkmark.circle").uiFont(.headline).lineLimit(1)
+                        if !entry.device.isEmpty { Text(entry.device).uiFont(.caption).foregroundStyle(.secondary).lineLimit(1) }
+                        Text(entry.problem.detail).lineLimit(2).foregroundStyle(.secondary)
+                        Text(entry.problem.occurredAt, format: .dateTime.month().day().hour().minute().second()).uiFont(.caption).foregroundStyle(.secondary)
+                    }.padding(.vertical, 3).tag(entry.id)
                 }
             }.frame(minWidth: 230, idealWidth: 280)
     }
@@ -160,22 +228,23 @@ struct ProblemsView: View {
             ScrollView {
                 if let selected {
                     VStack(alignment: .leading, spacing: 16) {
-                        Text(selected.source).uiFont(.headline)
-                        Text(selected.detail).textSelection(.enabled)
+                        Text(selected.problem.source).uiFont(.headline)
+                        Text(selected.problem.detail).textSelection(.enabled)
                         Grid(alignment: .leading, horizontalSpacing: 14, verticalSpacing: 10) {
-                            diagnosticRow("时间", selected.occurredAt.formatted())
-                            if let at = selected.resolvedAt { diagnosticRow("已恢复", at.formatted()) }
-                            diagnosticRow("类别", selected.kind)
-                            if let value = selected.code { diagnosticRow("代码", value) }
-                            if let value = selected.phase { diagnosticRow("阶段", value) }
-                            if let value = selected.operationID { diagnosticRow("操作编号", value) }
+                            if !selected.device.isEmpty { diagnosticRow("设备", selected.device) }
+                            diagnosticRow("时间", selected.problem.occurredAt.formatted())
+                            if let at = selected.problem.resolvedAt { diagnosticRow("已恢复", at.formatted()) }
+                            diagnosticRow("类别", selected.problem.kind)
+                            if let value = selected.problem.code { diagnosticRow("代码", value) }
+                            if let value = selected.problem.phase { diagnosticRow("阶段", value) }
+                            if let value = selected.problem.operationID { diagnosticRow("操作编号", value) }
                         }.uiFont(.callout).textSelection(.enabled)
-                        if selected.activityKey?.hasPrefix("history:") == true {
-                            Button("重新读取会话列表") { store.refreshConversations() }.disabled(store.isBusy)
+                        if selected.problem.activityKey?.hasPrefix("history:") == true {
+                            Button("重新读取会话列表") { selected.store.refreshConversations() }.disabled(selected.store.isBusy)
                         }
                     }.frame(maxWidth: .infinity, alignment: .leading).padding(20)
                 } else {
-                    ContentUnavailableView(store.problems.isEmpty ? "没有问题" : "选择一个问题", systemImage: "checkmark.circle")
+                    ContentUnavailableView(problems.isEmpty ? "没有问题" : "选择一个问题", systemImage: "checkmark.circle")
                         .frame(maxWidth: .infinity, minHeight: 240)
                 }
             }.frame(minWidth: 320, idealWidth: 440)

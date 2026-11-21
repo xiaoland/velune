@@ -93,7 +93,8 @@ private struct MessageView: View {
                         if (message.role == .user || message.role == .client) { Text(text).textSelection(.enabled) }
                         else { MarkdownText(source: text) }
                     case .runtimeFailure(_, let detail, _): Text(detail).font(.callout).foregroundStyle(.secondary)
-                    case .notice(let text), .contextCompaction(let text): Text(text).font(.callout).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading)
+                    case .notice(let text): Text(text).font(.callout).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading)
+                    case .contextCompaction(let text): ContextCompactionView(text: text)
                     case .reasoning(let summary, let payload):
                         DisclosureGroup(summary.isEmpty ? "思考" : summary) { PayloadView(payload: payload, messageID: message.id, model: model) }
                     case .tool(_, let title, let state, let payload, let linked):
@@ -126,6 +127,31 @@ private struct MessageView: View {
             Button("复制消息", systemImage: "doc.on.doc") {
                 UIPasteboard.general.string = blocks.compactMap { if case .text(let text) = $0 { return text }; return nil }.joined(separator: "\n\n")
             }
+        }
+    }
+}
+
+// The runtime supplies a status line followed by the native summary, if any.
+func contextCompactionParts(_ text: String) -> (status: String, detail: String?) {
+    guard let newline = text.firstIndex(where: \.isNewline) else { return (text, nil) }
+    let detail = String(text[text.index(after: newline)...].drop(while: \.isNewline))
+    guard !detail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return (text, nil) }
+    return (String(text[..<newline]), detail)
+}
+
+private struct ContextCompactionView: View {
+    let text: String
+    var body: some View {
+        let parts = contextCompactionParts(text)
+        if let detail = parts.detail {
+            DisclosureGroup {
+                MarkdownText(source: detail)
+            } label: {
+                Text(parts.status).font(.callout).foregroundStyle(.secondary)
+            }
+            .tint(.secondary)
+        } else {
+            Text(text).font(.callout).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 }

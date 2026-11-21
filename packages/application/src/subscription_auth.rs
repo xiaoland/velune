@@ -2,6 +2,7 @@
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use std::{
     fs::{self, File, OpenOptions},
     io::{Read, Write},
@@ -340,7 +341,7 @@ pub(crate) fn status(home: &Path, id: &str, generation: u64) -> (bool, Option<St
         .into_iter()
         .rev()
         .collect();
-    (!session.invalidated, Some(format!("账户 · {suffix}")))
+    (!session.invalidated, Some(format!("账户 {suffix}")))
 }
 pub(crate) fn remove(home: &Path, id: &str) -> Result<(), crate::Error> {
     let (path, _lock) = lock(home, id).map_err(|_| crate::Error::invalid("无法锁定订阅认证"))?;
@@ -668,6 +669,307 @@ pub(crate) async fn read_usage(
     Err(failure())
 }
 
+/// The only ChatGPT OAuth account-data resources this module will request.
+/// Keeping the target as an enum prevents credentials from reaching a provider-supplied URL.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AccountDataEndpoint {
+    Usage,
+    Resets,
+    Profile,
+    ModelUsage {
+        kind: AccountAnalyticsKind,
+        start: chrono::NaiveDate,
+        end: chrono::NaiveDate,
+    },
+    ModelTurns {
+        start: chrono::NaiveDate,
+        end: chrono::NaiveDate,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AccountAnalyticsKind {
+    Personal,
+    Business,
+    Enterprise,
+}
+
+impl AccountAnalyticsKind {
+    fn from_plan(plan: Option<&str>) -> Self {
+        match plan {
+            Some(
+                "team"
+                | "self_serve_business_prolite"
+                | "self_serve_business_usage_based"
+                | "sci"
+                | "sci_plus",
+            ) => Self::Business,
+            Some(
+                "business"
+                | "ent26"
+                | "enterprise"
+                | "enterprise_cbp_automation"
+                | "enterprise_cbp_usage_based"
+                | "edu"
+                | "edu_plus"
+                | "edu_pro",
+            ) => Self::Enterprise,
+            _ => Self::Personal,
+        }
+    }
+}
+
+impl AccountDataEndpoint {
+    fn url(self) -> &'static str {
+        match self {
+            Self::Usage => "https://chatgpt.com/backend-api/wham/usage",
+            Self::Resets => "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits",
+            Self::Profile => "https://chatgpt.com/backend-api/wham/profiles/me",
+            Self::ModelUsage {
+                kind: AccountAnalyticsKind::Personal,
+                ..
+            } => "https://chatgpt.com/backend-api/wham/usage/daily-token-usage-breakdown",
+            Self::ModelUsage { .. } => {
+                "https://chatgpt.com/backend-api/wham/usage/daily-workspace-user-token-usage-breakdown"
+            }
+            Self::ModelTurns { .. } => {
+                "https://chatgpt.com/backend-api/wham/analytics/daily-workspace-usage-counts"
+            }
+        }
+    }
+
+    fn body_limit(self) -> usize {
+        match self {
+            Self::ModelUsage { .. } | Self::ModelTurns { .. } => 2 * 1024 * 1024,
+            _ => LIMIT as usize,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AccountIdentity {
+    pub account_scope_key: String,
+    pub profile_subject_key: String,
+    pub analytics_kind: AccountAnalyticsKind,
+}
+
+/// Return opaque deduplication keys without exposing email, JWTs, or raw account IDs.
+pub(crate) fn account_identity(
+    home: &Path,
+    id: &str,
+    generation: u64,
+) -> Result<AccountIdentity, CredentialResolutionError> {
+    let (file, _lock) = lock(home, id)?;
+    let session = read(&file)?;
+    if session.generation != generation {
+        return Err(CredentialResolutionError::StaleBinding);
+    }
+    if session.invalidated {
+        return Err(CredentialResolutionError::AuthenticationExpired);
+    }
+    let id_claims = claims(&session.id_token).ok_or(CredentialResolutionError::InvalidContract)?;
+    let subject = id_claims["sub"]
+        .as_str()
+        .filter(|value| nonempty(value))
+        .ok_or(CredentialResolutionError::InvalidContract)?;
+    let hash = |scope: &str| {
+        let mut digest = Sha256::new();
+        digest.update(b"velune-provider-account-v1\0");
+        digest.update(scope.as_bytes());
+        format!("sha256:{:x}", digest.finalize())
+    };
+    let profile_subject_key = hash(&format!("profile\0{subject}"));
+    let account_scope_key = hash(&format!("account\0{subject}\0{}", session.account_id));
+    let auth = "https://api.openai.com/auth";
+    let plan = id_claims[auth]["chatgpt_plan_type"].as_str();
+    let analytics_kind = if plan.is_some() {
+        AccountAnalyticsKind::from_plan(plan)
+    } else {
+        let access_claims = claims(&session.access_token);
+        let plan = access_claims
+            .as_ref()
+            .and_then(|claims| claims[auth]["chatgpt_plan_type"].as_str());
+        AccountAnalyticsKind::from_plan(plan)
+    };
+    Ok(AccountIdentity {
+        account_scope_key,
+        profile_subject_key,
+        analytics_kind,
+    })
+}
+
+/// Perform a fixed, read-only provider account GET using the provider's owned OAuth session.
+/// Only a first 401 refresh is retried; limits, errors, and redirects never trigger replay.
+pub(crate) async fn read_provider_account_data(
+    home: PathBuf,
+    id: String,
+    generation: u64,
+    endpoint: AccountDataEndpoint,
+) -> Result<Value, CredentialResolutionError> {
+    read_provider_account_data_at(home, id, generation, endpoint.url(), endpoint).await
+}
+
+async fn read_provider_account_data_at(
+    home: PathBuf,
+    id: String,
+    generation: u64,
+    url: &str,
+    endpoint: AccountDataEndpoint,
+) -> Result<Value, CredentialResolutionError> {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(20))
+        .redirect(reqwest::redirect::Policy::none())
+        .retry(reqwest::retry::never())
+        .build()
+        .map_err(|_| failure())?;
+    let mut auth = resolve(home.clone(), id.clone(), generation, None).await?;
+    for attempt in 0..2 {
+        let velune_gateway::CredentialMaterial::Http {
+            authorization,
+            account_id: Some(account_id),
+        } = &auth.material
+        else {
+            return Err(CredentialResolutionError::UnauthorizedTarget);
+        };
+        let mut bearer =
+            reqwest::header::HeaderValue::from_str(&format!("Bearer {}", authorization.secret()))
+                .map_err(|_| CredentialResolutionError::InvalidContract)?;
+        bearer.set_sensitive(true);
+        let response = account_data_request(&client, url, bearer, account_id, endpoint)
+            .send()
+            .await
+            .map_err(|_| failure())?;
+        if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+            if attempt == 0 {
+                auth = resolve(
+                    home.clone(),
+                    id.clone(),
+                    generation,
+                    Some(
+                        auth.token()
+                            .ok_or(CredentialResolutionError::InvalidContract)?
+                            .to_owned(),
+                    ),
+                )
+                .await?;
+                continue;
+            }
+            invalidate(
+                home,
+                id,
+                generation,
+                auth.token()
+                    .ok_or(CredentialResolutionError::InvalidContract)?
+                    .to_owned(),
+            )
+            .await;
+            return Err(CredentialResolutionError::AuthenticationExpired);
+        }
+        if !response.status().is_success() {
+            return Err(failure());
+        }
+        let mut response = response;
+        let mut bytes = Vec::new();
+        while let Some(chunk) = response.chunk().await.map_err(|_| failure())? {
+            if bytes.len() + chunk.len() > endpoint.body_limit() {
+                return Err(CredentialResolutionError::InvalidContract);
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+        return serde_json::from_slice(&bytes)
+            .map_err(|_| CredentialResolutionError::InvalidContract);
+    }
+    Err(failure())
+}
+
+#[cfg(test)]
+pub(crate) async fn read_provider_account_data_at_for_test(
+    url: &str,
+    endpoint: AccountDataEndpoint,
+    access_token: &str,
+    account_id: &str,
+) -> Result<Value, CredentialResolutionError> {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(2))
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .retry(reqwest::retry::never())
+        .build()
+        .map_err(|_| failure())?;
+    let mut bearer = reqwest::header::HeaderValue::from_str(&format!("Bearer {access_token}"))
+        .map_err(|_| CredentialResolutionError::InvalidContract)?;
+    bearer.set_sensitive(true);
+    let response = account_data_request(&client, url, bearer, account_id, endpoint)
+        .send()
+        .await
+        .map_err(|_| failure())?;
+    if !response.status().is_success() {
+        return Err(failure());
+    }
+    let mut response = response;
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(|_| failure())? {
+        if bytes.len() + chunk.len() > endpoint.body_limit() {
+            return Err(CredentialResolutionError::InvalidContract);
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    serde_json::from_slice(&bytes).map_err(|_| CredentialResolutionError::InvalidContract)
+}
+
+fn account_data_request(
+    client: &reqwest::Client,
+    url: &str,
+    bearer: reqwest::header::HeaderValue,
+    account_id: &str,
+    endpoint: AccountDataEndpoint,
+) -> reqwest::RequestBuilder {
+    match endpoint {
+        AccountDataEndpoint::Resets => client
+            .get(url)
+            .header("authorization", bearer)
+            .header("chatgpt-account-id", account_id)
+            .header("accept", "application/json")
+            .header("openai-beta", "codex-1")
+            .header("originator", "Codex Desktop")
+            .header("user-agent", "codex-cli/1.0.0"),
+        _ => {
+            let request = client
+                .get(url)
+                .header("authorization", bearer)
+                .header("chatgpt-account-id", account_id)
+                .header("accept", "application/json")
+                .header("originator", "codex_cli_rs")
+                .header("user-agent", "codex_cli_rs/0.162.0 Velune/0.1");
+            match endpoint {
+                AccountDataEndpoint::ModelUsage { kind, start, end } => {
+                    let request = request.query(&[
+                        ("start_date", start.to_string()),
+                        ("end_date", end.to_string()),
+                        ("group_by", "day".into()),
+                    ]);
+                    if kind == AccountAnalyticsKind::Enterprise {
+                        request.query(&[
+                            ("breakdown_by", "model"),
+                            ("modes", "codex"),
+                            ("modes", "work"),
+                        ])
+                    } else {
+                        request
+                    }
+                }
+                AccountDataEndpoint::ModelTurns { start, end } => request.query(&[
+                    ("start_date", start.to_string()),
+                    ("end_date", end.to_string()),
+                    ("group_by", "day".into()),
+                    ("workspace_user", "true".into()),
+                ]),
+                _ => request,
+            }
+        }
+    }
+}
+
 /// The full subscription identity stays private; email is never used for deduplication.
 pub(crate) fn same_subscription(home: &Path, left: &str, right: &str) -> bool {
     let identity = |id: &str| -> Option<(String, String)> {
@@ -681,5 +983,75 @@ pub(crate) fn same_subscription(home: &Path, left: &str, right: &str) -> bool {
     match (identity(left), identity(right)) {
         (Some(a), Some(b)) => a == b,
         _ => false,
+    }
+}
+
+#[cfg(test)]
+mod account_analytics_tests {
+    use super::{
+        AccountAnalyticsKind as Kind, AccountDataEndpoint as Endpoint, account_data_request,
+    };
+    use chrono::NaiveDate;
+
+    #[test]
+    fn analytics_get_routes_use_plan_and_fixed_account_scope() {
+        let start = NaiveDate::from_ymd_opt(2026, 10, 21).unwrap();
+        let end = NaiveDate::from_ymd_opt(2026, 11, 19).unwrap();
+        let client = reqwest::Client::new();
+        for (plan, kind, path) in [
+            ("pro", Kind::Personal, "usage/daily-token-usage-breakdown"),
+            (
+                "team",
+                Kind::Business,
+                "usage/daily-workspace-user-token-usage-breakdown",
+            ),
+            (
+                "business",
+                Kind::Enterprise,
+                "usage/daily-workspace-user-token-usage-breakdown",
+            ),
+        ] {
+            assert_eq!(Kind::from_plan(Some(plan)), kind);
+            let endpoint = Endpoint::ModelUsage { kind, start, end };
+            let request = account_data_request(
+                &client,
+                endpoint.url(),
+                reqwest::header::HeaderValue::from_static("Bearer synthetic"),
+                "synthetic-account",
+                endpoint,
+            )
+            .build()
+            .unwrap();
+            assert_eq!(request.method(), reqwest::Method::GET);
+            assert_eq!(request.url().scheme(), "https");
+            assert_eq!(request.url().host_str(), Some("chatgpt.com"));
+            assert_eq!(request.url().path(), format!("/backend-api/wham/{path}"));
+            assert_eq!(request.headers()["chatgpt-account-id"], "synthetic-account");
+            let extra = if kind == Kind::Enterprise {
+                "&breakdown_by=model&modes=codex&modes=work"
+            } else {
+                ""
+            };
+            let query = format!("start_date=2026-10-21&end_date=2026-11-19&group_by=day{extra}");
+            assert_eq!(request.url().query(), Some(query.as_str()));
+        }
+        let endpoint = Endpoint::ModelTurns { start, end };
+        let request = account_data_request(
+            &client,
+            endpoint.url(),
+            reqwest::header::HeaderValue::from_static("Bearer synthetic"),
+            "synthetic-account",
+            endpoint,
+        )
+        .build()
+        .unwrap();
+        assert_eq!(
+            request.url().path(),
+            "/backend-api/wham/analytics/daily-workspace-usage-counts",
+        );
+        assert_eq!(
+            request.url().query(),
+            Some("start_date=2026-10-21&end_date=2026-11-19&group_by=day&workspace_user=true"),
+        );
     }
 }

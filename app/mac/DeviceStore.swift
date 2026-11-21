@@ -36,6 +36,7 @@ final class DeviceStore: ObservableObject {
     @Published private(set) var conversations: [Conversation] = []
     /// The list's groups in display order, as the core windows them.
     @Published private(set) var conversationGroups: [ConversationGroup] = []
+    @Published private(set) var loadingConversationGroups: Set<ConversationGroupKey> = []
     @Published private(set) var conversationProjects: [ConversationProject] = []
     @Published private(set) var workingDirectoryProjects: [String: [WorkingDirectoryProject]] = [:]
     @Published private(set) var showsArchived = false
@@ -55,9 +56,16 @@ final class DeviceStore: ObservableObject {
         let source: String
         let conversations: Set<String>
         let deleting: Bool
+        let gate = ConversationManagementGate()
         var running = false
     }
     @Published private(set) var conversationManagement: [ConversationManagement] = []
+    /// Successful management clears the processed sidebar selections on this device.
+    let managedConversations = PassthroughSubject<Set<String>, Never>()
+    /// A fork completed: the core already lists the new conversation, so
+    /// republish the core's grouped list. The sidebar adds nothing on its
+    /// own — no provisional entry with a second lifecycle.
+    func noteForkCompleted() { refreshConversations() }
     /// A live native or generated name can arrive before the next list scan.
     func rememberConversationTitle(_ conversation: Conversation) {
         if let index = conversations.firstIndex(where: { $0.id == conversation.id }), conversations[index].title != conversation.title {
@@ -79,11 +87,16 @@ final class DeviceStore: ObservableObject {
 
     /// Accept independent user intentions immediately; serialization belongs
     /// to the device, and never locks navigation or another management action.
-    func manageConversations<T: Sendable>(source: String, ids: Set<String>, deleting: Bool = false, operation: @escaping () throws -> T, apply: @escaping (T) -> Void) {
+    func manageConversations<T: Sendable>(source: String, ids: Set<String>, deleting: Bool = false,
+                                         operation: @escaping () throws -> T, completedIDs: ((T) -> Set<String>)? = nil,
+                                         apply: @escaping (T) -> Void) {
         guard !isShuttingDown else { return }
         let request = ConversationManagement(id: UUID(), source: source, conversations: ids, deleting: deleting)
         conversationManagement.append(request)
         performOnQueue { [weak self] in
+            // Cancellation and the first native operation have one atomic
+            // boundary. A delayed main-loop status update cannot fake a cancel.
+            guard request.gate.begin() else { return }
             DispatchQueue.main.async {
                 guard let self, let index = self.conversationManagement.firstIndex(where: { $0.id == request.id }) else { return }
                 self.conversationManagement[index].running = true
@@ -93,16 +106,29 @@ final class DeviceStore: ObservableObject {
                 guard let self else { return }
                 self.conversationManagement.removeAll { $0.id == request.id }
                 switch result {
-                case .success(let value): apply(value)
+                case .success(let value):
+                    apply(value)
+                    let completed = completedIDs?(value) ?? ids
+                    if !completed.isEmpty { self.managedConversations.send(completed) }
                 case .failure(let error): self.recordProblem(error, source: source); self.refreshConversations()
                 }
             }
         }
     }
+    @discardableResult func cancelConversationManagement(_ id: UUID) -> Bool {
+        guard let index = conversationManagement.firstIndex(where: { $0.id == id }) else { return false }
+        guard conversationManagement[index].gate.cancel() else {
+            conversationManagement[index].running = true
+            return false
+        }
+        conversationManagement.remove(at: index)
+        return true
+    }
     /// Deleted from any tab; a tab showing one closes it.
     @Published private(set) var deletedConversationIDs: Set<String> = []
     /// Conversations executing on this device, across windows.
     @Published private(set) var runningConversationIDs: Set<String> = []
+    @Published private(set) var idleSubmissionBusyIDs: Set<String> = []
     /// Best-effort: conversations whose native records show a turn running outside Velune.
     @Published private(set) var elsewhereConversationIDs: Set<String> = []
     /// Conversations a native sub-agent of which runs, here or elsewhere.
@@ -120,7 +146,7 @@ final class DeviceStore: ObservableObject {
     @Published private(set) var stoppingConversationIDs: Set<String> = []
     /// Conversations running elsewhere that the list did not contain when last read again.
     private var unlistedElsewhereIDs: Set<String> = []
-    @Published private(set) var gateway = GatewaySummary(id: "default", name: "默认网关", providers: [], routes: []) { didSet { if oldValue != gateway { configurationRevision &+= 1 } } }
+    @Published private(set) var gateway = GatewaySummary(id: "default", name: "默认网关", providers: [], routes: []) { didSet { if oldValue != gateway { configurationRevision &+= 1; invalidateProviderReports() } } }
     @Published private(set) var runtimeInstances: [RuntimeInstance] = [] {
         didSet {
             if oldValue != runtimeInstances {
@@ -132,6 +158,11 @@ final class DeviceStore: ObservableObject {
     /// Counts changes to providers and runtime instances; model catalogs and
     /// quota read before one are stale.
     @Published private(set) var configurationRevision: UInt64 = 0
+    /// Public account descriptions can stay identical when credentials change.
+    /// This epoch invalidates view-owned reports without exposing credential identity.
+    @Published private(set) var providerReportRevision: UInt64 = 0
+    func invalidateProviderReports() { providerReportRevision &+= 1 }
+
     /// Where each instance runs, read with its saved execution; unknown ones count as local.
     @Published private(set) var runtimeLocations: [String: RuntimeTransport] = [:]
     private var runtimeLocationsRequest = UUID()
@@ -174,9 +205,11 @@ final class DeviceStore: ObservableObject {
     private func loadProblems() {
         guard let transport, !isPreview else { return }
         let scope = transport.stateDirectory.path
+        let peerID = peerID
         problemQueue.async { [weak self] in
             do {
-                let history = try transport.telemetryResult.get().binding.problems(scope: scope).compactMap(AppProblem.restored)
+                let history = try transport.telemetryResult.get().binding.problems(scope: scope)
+                    .filter { $0.peerId == peerID }.compactMap(AppProblem.restored)
                 DispatchQueue.main.async {
                     guard let self else { return }
                     var loaded = Dictionary(history.map { ($0.id, $0) }, uniquingKeysWith: { _, latest in latest })
@@ -209,18 +242,30 @@ final class DeviceStore: ObservableObject {
 
     let transport: Transport?
     let isPreview: Bool
+    let peerID: String?
     /// The tool windows as last arranged, for windows without a layout of their own.
     private(set) lazy var rememberedToolLayout = RememberedToolLayout(home: isPreview || !MacNativePersistenceGate.isEnabled ? nil : transport?.stateDirectory) { [weak self] in
         self?.recordProblem($0, source: "保存布局")
     }
     private var subscriptions: Set<AnyCancellable> = []
+    private lazy var conversationObservation = ConversationObservation(device: self)
+    func refreshConversationObservation() {
+        guard started, !isPreview, !isShuttingDown else { return }
+        conversationObservation.refresh()
+    }
     private let queue = DispatchQueue(label: "local.velune.device", qos: .userInitiated)
+    private var lastConnectedEpoch: UInt64?
+    private var configurationReadPending = false
+    private var configurationReadAgain = false
+    private var configurationRetryOpen = false
+    private var initialConfigurationWaiters: [(Result<Void, Error>) -> Void] = []
     private var timer: Timer?
     private var started = false
     private var authenticationPollPending = false
     private(set) var hasGateway = false
     private(set) lazy var composerInputs = ComposerInputClient(device: self, transport: transport)
     let conversationRenamed = PassthroughSubject<(id: String, title: String), Never>()
+    let backgroundTaskDismissals = BackgroundTaskDismissals()
     /// Next-turn choices per conversation; the core keeps them across restarts.
     private var conversationChoices: [String: ConversationChoices] = [:]
     /// Each runtime instance's last choices and what its new conversations
@@ -229,6 +274,8 @@ final class DeviceStore: ObservableObject {
     /// Counts reads of the kept choices, for tabs to take them up.
     @Published private(set) var composerChoicesRevision = 0
     private var activePollPending = false
+    private var activePollBackoff = PollBackoff()
+    private var quotaAlertBackoff = PollBackoff()
     private var activityCursor: UInt64 = 0
     private var quotaAlertPollPending = false
     private var quotaAlertCursor: UInt64 = 0
@@ -242,8 +289,9 @@ final class DeviceStore: ObservableObject {
     /// Sample conversations shown instead of a core's.
     private(set) var previewSnapshots: [String: ConversationSnapshot] = [:]
 
-    init(transport: Transport? = nil, preview: Bool = false) {
+    init(transport: Transport? = nil, preview: Bool = false, peerID: String? = nil) {
         isPreview = preview
+        self.peerID = peerID
         if preview { self.transport = nil }
         else if let transport { self.transport = transport }
         else {
@@ -253,7 +301,9 @@ final class DeviceStore: ObservableObject {
         if preview { seedPreview() }
         else { loadProblems() }
         transport?.configurationChanged.receive(on: DispatchQueue.main).sink { [weak self] in
-            guard let self, self.started else { return }
+            guard let self else { return }
+            self.invalidateProviderReports()
+            guard self.started else { return }
             self.refreshConfiguration()
         }.store(in: &subscriptions)
     }
@@ -266,44 +316,101 @@ final class DeviceStore: ObservableObject {
     /// checks which running sessions actually depend on the edited resource.
     var isBusy: Bool { isLoading || isShuttingDown || authenticationRunning }
     /// A conversation runs here or elsewhere, by identity, listed or not.
+    func isIdleSubmissionBusy(_ id: String) -> Bool { idleSubmissionBusyIDs.contains(id) || elsewhereConversationIDs.contains(id) }
     func isConversationRunning(_ id: String) -> Bool { runningConversationIDs.contains(id) || elsewhereConversationIDs.contains(id) }
     func location(of runtimeID: String?) -> RuntimeTransport { runtimeID.flatMap { runtimeLocations[$0] } ?? .local }
     /// Velune's models by record key, named as the composer names them.
     var veluneModelNames: [(key: String, name: String)] {
-        gateway.providers.flatMap { provider in provider.models.map { (key: $0.recordKey, name: "\($0.displayName) · \(provider.name)") } }
+        gateway.providers.flatMap { provider in provider.models.map { (key: $0.recordKey, name: "\($0.displayName)（\(provider.name)）") } }
     }
 
     /// Begin reading the list and following which conversations run.
     func start() {
-        guard !started else { return }; started = true
-        guard !isPreview, let transport else { return }
-        if NSApp.activationPolicy() != .prohibited { notifier = ConversationNotifier(application: self) }
-        loadComposerChoices(transport)
-        composerInputs.poll(force: true)
-        refreshConfiguration()
-        schedulePolling()
+        guard !isPreview, !isShuttingDown, let transport else { return }
+        if !started {
+            started = true
+            if NSApp.activationPolicy() != .prohibited { notifier = ConversationNotifier(application: self) }
+            loadComposerChoices(transport)
+            composerInputs.poll(force: true)
+            schedulePolling()
+            refreshConversationObservation()
+        }
+        // A reconnect may already have supplied or requested the first list.
+        // A later start can retry a failed read without duplicating an active one.
+        if listRevision == 0, !configurationReadPending { refreshConfiguration() }
     }
 
-    private func refreshConfiguration() {
+    /// The same store survives a connection replacement. Its previous list
+    /// read may have failed or may predate the new connection.
+    func connected(epoch: UInt64) {
+        guard lastConnectedEpoch != epoch else { return }
+        lastConnectedEpoch = epoch
+        retryConnection()
+    }
+
+    func retryConnection() {
+        // A new connection is worth reading at once, whatever earlier failures waited for.
+        activePollBackoff.succeeded(); quotaAlertBackoff.succeeded(); composerInputs.resumePolling()
+        refreshConfiguration(forgetOpenFailure: true)
+    }
+
+    /// Explicit recovery also rereads defaults and shared inputs. Dirty content
+    /// and target choices keep their existing CAS baselines.
+    func refreshRuntimeState() {
+        retryConnection()
+        if let transport { loadComposerChoices(transport) }
+    }
+
+    /// Tabs share the device's first list read instead of each scanning all runtimes.
+    func whenInitialConfigurationReady(_ completion: @escaping (Result<Void, Error>) -> Void) {
+        if listRevision > 0 { completion(.success(())); return }
+        guard transport != nil, !isShuttingDown else { completion(.failure(TransportError.unavailable)); return }
+        initialConfigurationWaiters.append(completion)
+        if !configurationReadPending { refreshConfiguration() }
+    }
+
+    private func refreshConfiguration(forgetOpenFailure: Bool = false) {
         guard let transport, !isShuttingDown else { return }
+        configurationRetryOpen = configurationRetryOpen || forgetOpenFailure
+        guard !configurationReadPending else { configurationReadAgain = true; return }
+        configurationReadPending = true
+        let retryOpen = configurationRetryOpen
+        configurationRetryOpen = false
         performOnQueue { [weak self] in
+            if retryOpen { transport.retryOpen() }
             let result = Result { try transport.list() }
             DispatchQueue.main.async {
                 guard let self else { return }
-                switch result {
-                case .success(let value): self.applyList(value)
-                case .failure(let error): self.recordProblem(error, source: "刷新配置")
+                self.configurationReadPending = false
+                if self.configurationReadAgain, !self.isShuttingDown {
+                    self.configurationReadAgain = false
+                    self.refreshConfiguration()
+                    return
                 }
+                let outcome: Result<Void, Error>
+                if self.isShuttingDown { outcome = .failure(TransportError.unavailable) }
+                else {
+                    switch result {
+                    case .success(let value): self.applyList(value); outcome = .success(())
+                    case .failure(let error):
+                        self.recordProblem(error, source: "刷新配置", activityKey: "configuration-list")
+                        outcome = .failure(error)
+                    }
+                }
+                let waiters = self.initialConfigurationWaiters
+                self.initialConfigurationWaiters.removeAll()
+                for waiter in waiters { waiter(outcome) }
             }
         }
     }
 
     func refreshConversations() {
-        guard !isPreview, !isLoading, !isShuttingDown, let transport else { return }
-        enqueue({ try transport.list() }) { [weak self] in self?.applyList($0) }
+        guard !isPreview, !isLoading, !isShuttingDown else { return }
+        refreshConfiguration()
     }
 
     func applyList(_ data: ConfigurationSnapshot) {
+        clearActivityProblem("configuration-list")
         for conversation in data.conversations.map(BindingMapping.listed) where rememberedConversations[conversation.id] != nil {
             rememberedConversations[conversation.id] = conversation
         }
@@ -393,8 +500,20 @@ final class DeviceStore: ObservableObject {
         }
     }
     func loadMoreConversations(in group: ConversationGroupKey) {
-        guard let transport else { return }
-        browse({ try transport.loadMoreConversations(group: group) }, source: "加载会话")
+        guard let transport, !isPreview, !isShuttingDown,
+              loadingConversationGroups.insert(group).inserted else { return }
+        let preferences = conversationBrowserPreferences
+        browse({
+            // A merged list can show this group while its source view still
+            // has it folded. An explicit page request must read that group.
+            if var expanded = preferences, expanded.collapsed.contains(group) {
+                expanded.collapsed.removeAll { $0 == group }
+                _ = try transport.setConversationBrowserPreferences(expanded)
+            }
+            return try transport.loadMoreConversations(group: group)
+        }, source: "加载会话", finished: { [weak self] _ in
+            self?.loadingConversationGroups.remove(group)
+        })
     }
     func setShowsArchived(_ archived: Bool) {
         guard let transport, archived != showsArchived else { return }
@@ -402,9 +521,15 @@ final class DeviceStore: ObservableObject {
         browse({ try transport.showArchivedConversations(archived) }, source: "切换已归档会话")
     }
     /// Shapes the project whose primary folder is `path`.
-    func setProject(path: String, primaryFolder: String, name: String?, folders: [String]) {
-        guard let transport else { return }
-        browse({ try transport.setProject(path: path, primaryFolder: primaryFolder, name: name, folders: folders) }, source: "编辑项目")
+    func setProject(path: String, primaryFolder: String, name: String?, folders: [String], basis: ConversationProject? = nil, finished: ((Result<ConfigurationSnapshot, Error>) -> Void)? = nil) {
+        guard let transport, !isPreview, !isShuttingDown else {
+            finished?(.failure(TransportError.unavailable))
+            return
+        }
+        browse({ try transport.setProject(path: path, primaryFolder: primaryFolder, name: name, folders: folders, basis: basis) }, source: "编辑项目") { [weak self] result in
+            if case .failure = result { self?.refreshConversations() }
+            finished?(result)
+        }
     }
     /// Marks the conversation read once, while no mark is on its way.
     func markRead(_ conversation: Conversation) {
@@ -513,6 +638,7 @@ final class DeviceStore: ObservableObject {
         timer = Timer.scheduledTimer(withTimeInterval: 0.6, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 guard let self else { return }
+                self.refreshConversationObservation()
                 self.pollAuthentication(); self.pollActiveConversations(); self.pollQuotaAlerts(); self.composerInputs.poll()
             }
         }
@@ -524,23 +650,26 @@ final class DeviceStore: ObservableObject {
               let owner = ConversationWindowModel.owning(window: keyWindow)
                 ?? ConversationWindowModel.owning(detached: keyWindow)
                 ?? keyWindow.sheetParent.flatMap({ ConversationWindowModel.owning(window: $0) }),
-              owner.application === self else { return false }
-        return owner.visibleConversation?.store.loadedConversationID == id
+              owner.canShow(self) else { return false }
+        guard let visible = owner.visibleConversation else { return false }
+        return visible.store.device === self && visible.store.loadedConversationID == id
     }
     func showConversation(_ id: String) {
         if let window = ConversationWindowModel.openNotificationConversation(id, application: self) {
             window.window?.deminiaturize(nil)
             window.window?.makeKeyAndOrderFront(nil)
             window.focusNotificationTarget(id)
-        } else if let openConversationWindow {
-            let seed = WindowSeed(conversationID: id)
+        } else if let open = openConversationWindow ?? DeviceHub.shared?.openWorkspaceWindow {
+            // Opening intent owns the full target, independently of whichever
+            // window last installed the scene action.
+            let seed = WindowSeed(conversationID: id, device: peerID)
             WindowPresentation.notificationTargets.insert(seed.id)
-            openConversationWindow(seed)
+            open(seed)
         }
     }
     /// Quota conditions the core raised since the last poll, announced by the notifier.
     private func pollQuotaAlerts() {
-        guard started, !isPreview, !isShuttingDown, !quotaAlertPollPending, Date().timeIntervalSince(lastQuotaAlertPoll) >= 3, let transport else { return }
+        guard started, !isPreview, !isShuttingDown, !quotaAlertPollPending, quotaAlertBackoff.ready, Date().timeIntervalSince(lastQuotaAlertPoll) >= 3, let transport else { return }
         quotaAlertPollPending = true
         lastQuotaAlertPoll = Date()
         let since = quotaAlertCursor
@@ -551,16 +680,19 @@ final class DeviceStore: ObservableObject {
                 self.quotaAlertPollPending = false
                 switch result {
                 case .success(let alerts):
+                    self.quotaAlertBackoff.succeeded()
                     self.clearActivityProblem("quota-alerts")
                     self.quotaAlertCursor = alerts.cursor
                     for alert in alerts.alerts { self.notifier?.observe(alert) }
-                case .failure(let failure): self.recordProblem(failure, source: "读取额度提醒", activityKey: "quota-alerts")
+                case .failure(let failure):
+                    self.quotaAlertBackoff.failed()
+                    self.recordProblem(failure, source: "读取额度提醒", activityKey: "quota-alerts")
                 }
             }
         }
     }
     private func pollActiveConversations() {
-        guard started, !isPreview, !isShuttingDown, !activePollPending, let transport else { return }
+        guard started, !isPreview, !isShuttingDown, !activePollPending, activePollBackoff.ready, let transport else { return }
         activePollPending = true
         let since = activityCursor
         performOnQueue { [weak self] in
@@ -570,9 +702,12 @@ final class DeviceStore: ObservableObject {
                 self.activePollPending = false
                 switch result {
                 case .success(let activity):
+                    self.activePollBackoff.succeeded()
                     self.clearActivityProblem("active-conversations")
                     self.activityCursor = activity.cursor
                     let active = activity.active
+                    let inputBusy = Set(active.filter { $0.blocksIdleSubmission }.map(\.conversationId))
+                    if self.idleSubmissionBusyIDs != inputBusy { self.idleSubmissionBusyIDs = inputBusy }
                     let running = Set(active.filter { $0.runState == .running || $0.runState == .stopping }.map(\.conversationId))
                     if self.runningConversationIDs != running { self.runningConversationIDs = running }
                     let elsewhere = Set(active.filter { $0.runState == .elsewhere }.map(\.conversationId))
@@ -602,7 +737,9 @@ final class DeviceStore: ObservableObject {
                     if finishedUnlisted || !unlisted.isSubset(of: self.unlistedElsewhereIDs) { self.refreshConversations() }
                     self.unlistedElsewhereIDs = unlisted
                     self.notifier?.observe(activity)
-                case .failure(let failure): self.recordProblem(failure, source: "读取运行状态", activityKey: "active-conversations")
+                case .failure(let failure):
+                    self.activePollBackoff.failed()
+                    self.recordProblem(failure, source: "读取运行状态", activityKey: "active-conversations")
                 }
             }
         }
@@ -634,7 +771,7 @@ final class DeviceStore: ObservableObject {
             let result = Result { try transport.stopSubAgents(runtimeID: runtimeID, conversationID: id) }
             DispatchQueue.main.async {
                 guard let self else { return }
-                if case .failure(let failure) = result { self.recordProblem(failure, source: "停止子 Agent") }
+                if case .failure(let failure) = result { self.recordProblem(failure, source: "停止全部后台工作") }
                 self.pollActiveConversations()
             }
         }
@@ -762,6 +899,21 @@ final class DeviceStore: ObservableObject {
         guard !isPreview, let transport else { recordProblem("预览不会读取 API key"); return }
         enqueue({ try transport.readProviderAPIKey(gatewayID: self.gateway.id, providerID: providerID) }, apply: completion)
     }
+    func readProviderAccount(_ providerID: String, refresh: Bool, completion: @escaping (Result<ProviderAccountStatus, Error>) -> Void) {
+        guard let transport, !isPreview else { completion(.failure(TransportError.rejected("预览不读取账户；请在已配置的执行设备上查询。"))); return }
+        let gatewayID = gateway.id
+        performOnQueue {
+            let result = Result { try transport.providerAccount(gatewayID: gatewayID, providerID: providerID, refresh: refresh) }
+            DispatchQueue.main.async { completion(result) }
+        }
+    }
+    func readProviderAnalytics(refresh: Bool, completion: @escaping (Result<ProviderAnalyticsReport, Error>) -> Void) {
+        guard let transport, !isPreview else { completion(.failure(TransportError.rejected("预览不查询提供商报告；请在已配置的执行设备上查询。"))); return }
+        performOnQueue {
+            let result = Result { try transport.providerAnalytics(refresh: refresh) }
+            DispatchQueue.main.async { completion(result) }
+        }
+    }
     func readProviderBilling(_ providerID: String, refresh: Bool, completion: @escaping (Result<ProviderBillingStatus, Error>) -> Void) {
         guard let transport, !isPreview else { completion(.failure(TransportError.rejected("预览不读取组织账单；请在已配置的执行设备上查询。"))); return }
         let gatewayID = gateway.id
@@ -793,7 +945,7 @@ final class DeviceStore: ObservableObject {
             var failures: [AppProblem] = []
             for value in values {
                 do { templates = try transport.saveTemplate(value); count += 1 }
-                catch { failures.append(AppProblem.failure(error, source: "添加模型模板 · \(value.name)")) }
+                catch { failures.append(AppProblem.failure(error, source: "添加模型模板「\(value.name)」")) }
             }
             return (templates, count, failures)
         }) { [weak self] result in
@@ -922,6 +1074,7 @@ final class DeviceStore: ObservableObject {
                 // A sign-in page opens in the browser; the sheet keeps a link to open it again.
                 if notification.kind == "url", let address = notification.url, let url = URL(string: address), url.scheme == "https" { NSWorkspace.shared.open(url) }
             case .finished(let ok, let error, let cancelled):
+                if ok { invalidateProviderReports() }
                 authenticationPrompt = nil
                 authenticationResult = ok ? "登录完成。" : cancelled ? "登录已取消。" : nil
                 if !ok && !cancelled { recordProblem(error ?? "登录未完成。", source: "登录") }
@@ -949,7 +1102,7 @@ final class DeviceStore: ObservableObject {
             for candidate in candidates {
                 var runtime = candidate.runtime; runtime.gatewayId = gatewayID
                 do { _ = try transport.upsertRuntime(runtime); imported.insert(runtime.id) }
-                catch { failures.append(AppProblem.failure(error, source: "导入运行时 · \(runtime.name)")) }
+                catch { failures.append(AppProblem.failure(error, source: "导入运行时「\(runtime.name)」")) }
             }
             return (try transport.list(), imported, failures)
         }) { [weak self] result in
@@ -1047,8 +1200,9 @@ final class DeviceStore: ObservableObject {
     func recordProblem(_ message: String, source: String = "操作") { recordProblem(TransportError.rejected(message), source: source) }
     func appendProblems(_ values: [AppProblem]) {
         problems.append(contentsOf: values)
+        let peerID = peerID
         problemJournal { journal, scope in
-            for value in values { try journal.recordProblem(scope: scope, problem: value.record) }
+            for value in values { try journal.recordProblem(scope: scope, problem: value.record(peerID: peerID)) }
         }
     }
     /// Recovery closes an incident; it never erases its diagnostic history.
@@ -1077,7 +1231,7 @@ final class DeviceStore: ObservableObject {
         for key in Set(problems.compactMap(\.activityKey)).filter({ $0.hasPrefix("history:") && !keys.contains($0) }) { clearActivityProblem(key) }
         for failure in failures {
             let key = "history:" + failure.runtimeId
-            recordProblem(TransportError.rejected(failure.detail), source: "会话列表 · " + (runtimeInstances.first { $0.id == failure.runtimeId }?.name ?? failure.runtimeId), activityKey: key)
+            recordProblem(TransportError.rejected(failure.detail), source: "会话列表：" + (runtimeInstances.first { $0.id == failure.runtimeId }?.name ?? failure.runtimeId), activityKey: key)
         }
     }
 
@@ -1116,13 +1270,104 @@ final class DeviceStore: ObservableObject {
     func renameInPreview(_ id: String, title: String) {
         if let index = conversations.firstIndex(where: { $0.id == id }) { conversations[index].title = title }
         previewSnapshots[id]?.conversation.title = title
+        managedConversations.send([id])
     }
     func deleteInPreview(_ ids: Set<String>) {
         conversations.removeAll { ids.contains($0.id) }
         for id in ids { previewSnapshots.removeValue(forKey: id) }
         noteDeleted(ids)
+        managedConversations.send(ids)
     }
     func keepPreviewSnapshot(_ value: ConversationSnapshot) { previewSnapshots[value.conversation.id] = value }
+
+    /// A background-only activity record must not override core submission admission.
+    static func checkBackgroundSubmissionAdmission() {
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent("velune-background-admission-\(UUID())", isDirectory: true)
+        let transport = Transport(stateDirectory: home, telemetry: .failure(TransportError.unavailable), remote: {
+            throw TransportError.rejected("synthetic background admission has no runtime")
+        })
+        let device = DeviceStore(transport: transport)
+        device.seedPreview()
+        // Keep production queue admission while supplying an in-memory input
+        // authority. No runtime or composer transport is started by this check.
+        device.composerInputs = ComposerInputClient(device: device, transport: nil)
+        var idle = device.previewSnapshots["sample-0"]!
+        idle.runState = .idle
+        idle.actions.canSend = true
+        idle.actions.canCancel = false
+        idle.followUp = .init()
+        device.keepPreviewSnapshot(idle)
+        let window = ConversationWindowModel(application: device, kind: .workspace)
+        let store = window.focused.store
+        var sequence: UInt64 = 0
+        func adopt(_ value: ConversationSnapshot) {
+            sequence += 1
+            let conversation = value.conversation
+            store.adopt(SnapshotResult(snapshot: DeliveredSnapshot(
+                cursor: .init(generation: 1, sequence: sequence), base: nil,
+                messageIds: [], messages: [], revision: sequence,
+                conversation: .init(id: conversation.id, title: .native(conversation.title),
+                    updatedAtUnixMs: nil, createdAtUnixMs: nil, runtimeId: conversation.runtimeID,
+                    cwd: nil, canRename: false, canDelete: false, parentConversationId: nil, nativeReadState: nil),
+                contextRuntimeId: value.contextRuntimeID, resourceId: nil, modelRecordKey: nil,
+                runState: value.runState, transcriptTurns: [], usage: .init(),
+                transcriptItems: [], transcriptOutline: [], transcriptMessageIdentities: [],
+                messageIdentityConfirmations: [], pendingInteractions: [], actions: value.actions,
+                followUp: value.followUp, subAgents: [], collaborators: [])))
+            store.prepareSyntheticComposerTargetForAdmissionCheck()
+            let context = window.composerContext(for: window.focused)
+            precondition(context.inputIssue == nil,
+                         "提交准入检查必须先具备完整有效的输入和执行目标：\(context.inputIssue ?? "")")
+        }
+        adopt(idle)
+        var model = window.composer(for: window.focused)
+        model.restore("背景任务运行时的新输入", attachments: [])
+        device.runningConversationIDs = [idle.conversation.id]
+        precondition(store.isRunning(idle.conversation), "后台活动仍应显示在会话列表")
+        precondition(!store.isGenerating && store.canSend && !store.canQueue,
+                     "后台活动不等于 LLM 正在回答，空闲核心快照应允许直接发送")
+        let send = window.focused.submission(using: model)
+        precondition(send.action == .send && send.canSubmitDraft, "有正文时必须提供可用的发送按钮")
+        device.idleSubmissionBusyIDs = [idle.conversation.id]
+        precondition(!store.canSend && !window.focused.submission(using: model).canSubmitDraft,
+                     "新轮次活动先到时必须撤销旧空闲快照的发送资格")
+        device.idleSubmissionBusyIDs = []
+        device.elsewhereConversationIDs = [idle.conversation.id]
+        precondition(!store.canSend, "外部活动先到时必须撤销旧空闲快照的发送资格")
+        device.elsewhereConversationIDs = []
+        precondition(store.canSend, "仅后台活动仍应允许直接发送")
+
+        var running = idle
+        running.conversation = device.previewSnapshots["sample-1"]!.conversation
+        running.contextRuntimeID = running.conversation.runtimeID
+        running.runState = .running
+        running.actions.canSend = false
+        running.actions.canCancel = true
+        running.followUp.canQueue = true
+        device.keepPreviewSnapshot(running)
+        adopt(running)
+        model = window.composer(for: window.focused)
+        model.restore("正在回答时的新输入", attachments: [])
+        let queued = window.focused.submission(using: model)
+        precondition(!store.canSend && store.canQueue && queued.action == .queue && queued.canSubmitDraft,
+                     "真正的 LLM 运行仍应排队")
+
+        var external = idle
+        external.conversation = device.previewSnapshots["sample-2"]!.conversation
+        external.contextRuntimeID = external.conversation.runtimeID
+        external.runState = .elsewhere
+        external.actions.canSend = false
+        external.actions.inputAccess = .externalController
+        device.keepPreviewSnapshot(external)
+        adopt(external)
+        model = window.composer(for: window.focused)
+        model.restore("外部运行时的新输入", attachments: [])
+        precondition(!store.canSend && !store.canQueue && !window.focused.submission(using: model).canSubmitDraft,
+                     "核心判定外部运行仍必须禁止提交")
+        store.close()
+        try? FileManager.default.removeItem(at: home)
+        FileHandle.standardError.write(Data("PASS background admission: background body sends, early turn/external activity blocks stale idle, actual turn queues, external snapshot blocks\n".utf8))
+    }
 
     private func seedPreview() {
         conversationBrowserPreferences = ConversationBrowser().preferences
@@ -1179,4 +1424,18 @@ final class DeviceStore: ObservableObject {
         }
         conversationGroups = [ConversationGroup(key: .all, name: nil, total: UInt32(topics.count), loaded: UInt32(topics.count), latestActivityUnixMs: conversations.first?.updatedAtUnixMs, collapsed: false)]
     }
+}
+
+/// A failing background read waits longer before each retry, so a closed
+/// connection or missing target is not retried several times a second. A
+/// success or a new connection returns it to the normal pace.
+struct PollBackoff {
+    private(set) var failures = 0
+    private var notBefore = Date.distantPast
+    var ready: Bool { Date() >= notBefore }
+    mutating func failed() {
+        failures += 1
+        notBefore = Date().addingTimeInterval(min(30, 0.6 * pow(2, Double(min(failures, 6)))))
+    }
+    mutating func succeeded() { failures = 0; notBefore = .distantPast }
 }

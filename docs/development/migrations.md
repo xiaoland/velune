@@ -55,6 +55,15 @@ python3 scripts/migrations/codex-166.py --home <VELUNE_HOME> --binary <Codex-0.1
 
 ## Composer 未手选默认
 
+退出使用该 HOME 的 Velune 后，先预览旧默认意图的清理，再由 runner 执行相应的开发格式转换：
+
+```sh
+python3 scripts/migrations/target-intent.py --home /absolute/VELUNE_HOME
+python3 scripts/run-migrations.py --home /absolute/VELUNE_HOME
+```
+
+真实 HOME 的迁移应在获准的范围内执行并单独记录结果；合成验证不表示已迁移日常数据。
+
 `target-intent.py` 在既有 schema 2 上清理 `choiceEdited=false` 记录中的旧自动 seed，让运行时、owner 与各字段重新继承实际目标事实。修改的目标 revision 加一，目录 revision 每批加一。脚本同时移出 Mac 恢复点和 Windows 缓存中的自动初始化待写记录，完整私有备份先于任何修改。正文、附件及绑定保留。`choiceEdited=true` 原样保留，不能可靠反推旧客户端曾随手选项一并固化了哪些默认值。
 
 该清理转换尚未移植到启动 preflight；命中旧自动 seed 的恢复缓存会保留，不作猜测或写回。

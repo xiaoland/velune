@@ -30,6 +30,8 @@ impl QuotaWindow {
     }
 }
 #[derive(Debug, Clone)]
+/// Observed windows may omit credits or additional quota buckets. Availability
+/// is advisory; only caller-configured limits are admission constraints.
 pub enum QuotaSnapshot {
     Known {
         available: Option<bool>,
@@ -102,8 +104,73 @@ pub(crate) struct Candidate<'a> {
     pub limits: &'a [QuotaLimit],
     pub weight: u32,
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum AdmissionReason {
+    QuotaPending,
+    QuotaExhausted,
+    QuotaWindowMissing,
+    ProviderUnavailable,
+    BindingInvalidated,
+}
+impl AdmissionReason {
+    pub(crate) fn code(self) -> &'static str {
+        match self {
+            Self::QuotaPending => "quota_pending",
+            Self::QuotaExhausted => "quota_exhausted",
+            Self::QuotaWindowMissing => "quota_window_missing",
+            Self::ProviderUnavailable => "provider_unavailable",
+            Self::BindingInvalidated => "binding_invalidated",
+        }
+    }
+}
+#[derive(Clone, Copy, Debug)]
 pub(crate) struct ScheduleUnavailable {
+    pub reason: AdmissionReason,
     pub retry_after: Option<Duration>,
+}
+impl ScheduleUnavailable {
+    fn new(reason: AdmissionReason, retry_after: Option<Duration>) -> Self {
+        Self {
+            reason,
+            retry_after,
+        }
+    }
+    pub(crate) fn pending() -> Self {
+        Self::new(AdmissionReason::QuotaPending, Some(Duration::from_secs(1)))
+    }
+    pub(crate) fn merge(&mut self, other: Self) {
+        if self.retry_after.is_none()
+            || other
+                .retry_after
+                .is_some_and(|delay| self.retry_after.is_some_and(|old| delay < old))
+        {
+            *self = other;
+        }
+    }
+    pub(crate) fn status(self) -> u16 {
+        if self.reason == AdmissionReason::QuotaExhausted {
+            429
+        } else {
+            503
+        }
+    }
+    pub(crate) fn message(self) -> &'static str {
+        match self.reason {
+            AdmissionReason::QuotaPending => {
+                "provider quota observation is refreshing; retry shortly"
+            }
+            AdmissionReason::QuotaExhausted => "configured provider usage limit is reached",
+            AdmissionReason::QuotaWindowMissing => {
+                "configured quota window is absent from provider observations"
+            }
+            AdmissionReason::ProviderUnavailable => {
+                "provider is cooling down after an upstream failure"
+            }
+            AdmissionReason::BindingInvalidated => {
+                "provider binding changed; prepare a new execution"
+            }
+        }
+    }
 }
 struct Eligible {
     index: usize,
@@ -175,7 +242,7 @@ impl SchedulingState {
         let now = Instant::now();
         let mut state = self.0.lock().expect("scheduling state");
         let mut eligible = Vec::new();
-        let mut retry_after = None;
+        let mut unavailable = ScheduleUnavailable::new(AdmissionReason::BindingInvalidated, None);
         for (index, candidate) in candidates.iter().enumerate() {
             let provider = state
                 .providers
@@ -191,17 +258,19 @@ impl SchedulingState {
                     .until
                     .saturating_duration_since(now)
                     .max(Duration::from_secs(1));
-                earliest(&mut retry_after, delay);
+                unavailable.merge(ScheduleUnavailable::new(
+                    AdmissionReason::ProviderUnavailable,
+                    Some(delay),
+                ));
                 continue;
             }
             match facts[index] {
                 Ok(margin) => eligible.push(Eligible { index, margin }),
-                Err(Some(delay)) => earliest(&mut retry_after, delay),
-                Err(None) => {}
+                Err(blocked) => unavailable.merge(blocked),
             }
         }
         if eligible.is_empty() {
-            return Err(ScheduleUnavailable { retry_after });
+            return Err(unavailable);
         }
         if strategy == RoutingStrategy::Smart {
             eligible.sort_by(|a, b| match (a.margin, b.margin) {
@@ -308,8 +377,10 @@ impl SchedulingState {
             }
             let quota_delay = match quota {
                 Ok(_) => Duration::ZERO,
-                Err(Some(delay)) => delay,
-                Err(None) => continue,
+                Err(blocked) => match blocked.retry_after {
+                    Some(delay) => delay,
+                    None => continue,
+                },
             };
             let health_delay = provider
                 .cooldown
@@ -334,19 +405,22 @@ impl SchedulingState {
             candidate,
             quotas.snapshot(candidate.provider),
             crate::analytics::now_ms(),
-        )
-        .map_err(|retry_after| ScheduleUnavailable { retry_after })?;
+        )?;
         let mut state = self.0.lock().expect("scheduling state");
         let provider = state
             .providers
             .entry((gateway.into(), candidate.provider.into()))
             .or_default();
         if provider.epoch != candidate.epoch {
-            return Err(ScheduleUnavailable { retry_after: None });
+            return Err(ScheduleUnavailable::new(
+                AdmissionReason::BindingInvalidated,
+                None,
+            ));
         }
         let probe = if let Some(cooldown) = &mut provider.cooldown {
             if cooldown.until > Instant::now() || cooldown.probing {
                 return Err(ScheduleUnavailable {
+                    reason: AdmissionReason::ProviderUnavailable,
                     retry_after: Some(
                         cooldown
                             .until
@@ -384,6 +458,22 @@ pub(crate) struct SchedulePermit {
     probe: bool,
 }
 impl SchedulePermit {
+    /// A successful upstream response makes the provider reachable again. The
+    /// model may keep streaming for minutes; that does not extend half-open
+    /// admission or establish a successful session binding.
+    pub(crate) fn responded(&self, status: u16) {
+        if !self.probe || !(200..300).contains(&status) {
+            return;
+        }
+        let mut state = self.state.0.lock().expect("scheduling state");
+        let provider = state
+            .providers
+            .get_mut(&(self.gateway.clone(), self.provider.clone()))
+            .expect("captured provider");
+        if provider.epoch == self.epoch && provider.cooldown_generation == self.generation {
+            provider.cooldown = None;
+        }
+    }
     pub(crate) fn cool(&self, duration: Duration) {
         let mut state = self.state.0.lock().expect("scheduling state");
         let provider = state
@@ -455,17 +545,18 @@ fn quota_margin(
     candidate: &Candidate<'_>,
     snapshot: QuotaSnapshot,
     now: i64,
-) -> Result<Option<f64>, Option<Duration>> {
-    let QuotaSnapshot::Known { available, windows } = snapshot else {
+) -> Result<Option<f64>, ScheduleUnavailable> {
+    let QuotaSnapshot::Known { windows, .. } = snapshot else {
         return if candidate.limits.is_empty() {
             Ok(None)
         } else {
-            Err(None)
+            Err(if matches!(snapshot, QuotaSnapshot::Unsupported) {
+                ScheduleUnavailable::new(AdmissionReason::QuotaWindowMissing, None)
+            } else {
+                ScheduleUnavailable::pending()
+            })
         };
     };
-    if available == Some(false) {
-        return Err(None);
-    }
     let applicable: Vec<_> = windows
         .iter()
         .filter(|window| {
@@ -495,15 +586,21 @@ fn quota_margin(
             .filter(|window| window.id == limit.window_id)
             .collect();
         if matching.is_empty() {
-            return Err(None);
+            return Err(ScheduleUnavailable::new(
+                AdmissionReason::QuotaWindowMissing,
+                None,
+            ));
         }
         for window in matching {
             if !fresh(window) {
-                return Err(None);
+                return Err(ScheduleUnavailable::pending());
             }
             let remaining = f64::from(limit.max_used_percent) - window.used_percent;
             if remaining <= 0.0 {
-                return Err(reset_delay(window, now));
+                return Err(ScheduleUnavailable::new(
+                    AdmissionReason::QuotaExhausted,
+                    reset_delay(window, now),
+                ));
             }
             let remaining = paced(remaining / f64::from(limit.max_used_percent), window, now);
             margin = Some(margin.map_or(remaining, |old| old.min(remaining)));
@@ -511,9 +608,8 @@ fn quota_margin(
     }
     for window in applicable.into_iter().filter(|window| fresh(window)) {
         let remaining = (100.0 - window.used_percent) / 100.0;
-        if remaining <= 0.0 {
-            return Err(reset_delay(window, now));
-        }
+        // Ordinary windows do not describe every credit/bucket the upstream
+        // can use. A depleted observation lowers rank, but cannot deny a call.
         let remaining = paced(remaining, window, now);
         margin = Some(margin.map_or(remaining, |old| old.min(remaining)));
     }
@@ -531,4 +627,294 @@ fn reset_delay(window: &QuotaWindow, now: i64) -> Option<Duration> {
         .reset_at_ms
         .filter(|reset| *reset > now)
         .map(|reset| Duration::from_millis((reset - now) as u64))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_candidate(limits: &[QuotaLimit]) -> Candidate<'_> {
+        Candidate {
+            provider: "provider",
+            model: "model",
+            model_id: "native",
+            epoch: 0,
+            limits,
+            weight: 1,
+        }
+    }
+
+    fn window(used_percent: f64) -> QuotaWindow {
+        QuotaWindow {
+            id: "daily".into(),
+            model_ids: None,
+            used_percent,
+            reset_at_ms: Some(2000),
+            window_ms: None,
+            observed_at_ms: 0,
+            expires_at_ms: 2000,
+        }
+    }
+
+    fn half_open(state: &SchedulingState) -> SchedulePermit {
+        let initial = state
+            .acquire("gateway", &test_candidate(&[]), &UnknownQuotaSource)
+            .unwrap();
+        initial.cool(Duration::ZERO);
+        drop(initial);
+        state
+            .acquire("gateway", &test_candidate(&[]), &UnknownQuotaSource)
+            .unwrap()
+    }
+
+    #[test]
+    fn probe_response_restores_admission_without_binding_model_success() {
+        let state = SchedulingState::default();
+        let probe = half_open(&state);
+        assert!(
+            state
+                .acquire("gateway", &test_candidate(&[]), &UnknownQuotaSource)
+                .is_err()
+        );
+        probe.responded(200);
+        // The original probe is still alive and has no model terminal event.
+        let concurrent = state
+            .acquire("gateway", &test_candidate(&[]), &UnknownQuotaSource)
+            .unwrap();
+        assert!(!concurrent.probe);
+        assert!(state.0.lock().unwrap().sessions.is_empty());
+        // A later transport failure still establishes a fresh cooldown.
+        probe.cool(Duration::from_secs(5));
+        probe.responded(200);
+        assert!(
+            state
+                .acquire("gateway", &test_candidate(&[]), &UnknownQuotaSource)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn cancelled_or_rejected_probe_releases_only_its_lease() {
+        let state = SchedulingState::default();
+        let probe = half_open(&state);
+        probe.responded(429);
+        assert!(
+            state
+                .acquire("gateway", &test_candidate(&[]), &UnknownQuotaSource)
+                .is_err()
+        );
+        drop(probe);
+        let replacement = state
+            .acquire("gateway", &test_candidate(&[]), &UnknownQuotaSource)
+            .unwrap();
+        assert!(replacement.probe);
+        assert!(
+            state
+                .acquire("gateway", &test_candidate(&[]), &UnknownQuotaSource)
+                .is_err()
+        );
+        drop(replacement);
+        assert!(
+            state
+                .acquire("gateway", &test_candidate(&[]), &UnknownQuotaSource)
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn old_response_or_drop_cannot_release_new_authentication_probe() {
+        let state = SchedulingState::default();
+        let old = half_open(&state);
+        state.invalidate_credentials("gateway", "provider");
+        let candidate = Candidate {
+            epoch: 1,
+            ..test_candidate(&[])
+        };
+        let current = state
+            .acquire("gateway", &candidate, &UnknownQuotaSource)
+            .unwrap();
+        old.responded(200);
+        drop(old);
+        assert!(
+            state
+                .acquire("gateway", &candidate, &UnknownQuotaSource)
+                .is_err()
+        );
+        current.responded(200);
+        assert!(
+            state
+                .acquire("gateway", &candidate, &UnknownQuotaSource)
+                .is_ok()
+        );
+        // Changing the provider binding also isolates any late result.
+        state.invalidate_provider("gateway", "provider");
+        let candidate = Candidate {
+            epoch: 2,
+            ..test_candidate(&[])
+        };
+        let next = state
+            .acquire("gateway", &candidate, &UnknownQuotaSource)
+            .unwrap();
+        next.cool(Duration::from_secs(5));
+        current.responded(200);
+        current.completed("route", "model", None);
+        assert!(
+            state
+                .acquire("gateway", &candidate, &UnknownQuotaSource)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn quota_rejections_keep_their_reason_and_retry_time() {
+        let limits = [QuotaLimit {
+            window_id: "daily".into(),
+            max_used_percent: 80,
+        }];
+        let candidate = test_candidate(&limits);
+        for snapshot in [
+            QuotaSnapshot::Unknown,
+            QuotaSnapshot::Stale {
+                available: Some(true),
+                windows: vec![window(10.0)],
+            },
+        ] {
+            let blocked = quota_margin(&candidate, snapshot, 1000).unwrap_err();
+            assert_eq!(blocked.reason, AdmissionReason::QuotaPending);
+            assert_eq!(blocked.retry_after, Some(Duration::from_secs(1)));
+        }
+        for snapshot in [
+            QuotaSnapshot::Unsupported,
+            QuotaSnapshot::Known {
+                available: Some(false),
+                windows: vec![],
+            },
+            QuotaSnapshot::Known {
+                available: Some(true),
+                windows: vec![],
+            },
+        ] {
+            let blocked = quota_margin(&candidate, snapshot, 1000).unwrap_err();
+            assert_eq!(blocked.reason, AdmissionReason::QuotaWindowMissing);
+            assert_eq!(blocked.retry_after, None);
+        }
+        for snapshot in [
+            QuotaSnapshot::Known {
+                available: Some(false),
+                windows: vec![window(80.0)],
+            },
+            QuotaSnapshot::Known {
+                available: Some(true),
+                windows: vec![window(80.0)],
+            },
+        ] {
+            let blocked = quota_margin(&candidate, snapshot, 1000).unwrap_err();
+            assert_eq!(blocked.reason, AdmissionReason::QuotaExhausted);
+            assert_eq!(blocked.status(), 429);
+        }
+        let mut expired = window(10.0);
+        expired.expires_at_ms = 1000;
+        assert_eq!(
+            quota_margin(
+                &candidate,
+                QuotaSnapshot::Known {
+                    available: Some(true),
+                    windows: vec![expired]
+                },
+                1000
+            )
+            .unwrap_err()
+            .reason,
+            AdmissionReason::QuotaPending
+        );
+        let blocked = quota_margin(
+            &candidate,
+            QuotaSnapshot::Known {
+                available: Some(true),
+                windows: vec![window(80.0)],
+            },
+            1000,
+        )
+        .unwrap_err();
+        assert_eq!(blocked.retry_after, Some(Duration::from_secs(1)));
+        assert_eq!(
+            quota_margin(&test_candidate(&[]), QuotaSnapshot::Unknown, 1000).unwrap(),
+            None
+        );
+        for available in [Some(false), Some(true), None] {
+            assert_eq!(
+                quota_margin(
+                    &test_candidate(&[]),
+                    QuotaSnapshot::Known {
+                        available,
+                        windows: vec![window(100.0)]
+                    },
+                    1000
+                )
+                .unwrap(),
+                Some(0.0)
+            );
+            assert!(
+                quota_margin(
+                    &candidate,
+                    QuotaSnapshot::Known {
+                        available,
+                        windows: vec![window(10.0)]
+                    },
+                    1000
+                )
+                .is_ok()
+            );
+        }
+    }
+
+    #[test]
+    fn scheduling_preserves_quota_health_and_binding_rejections() {
+        let state = SchedulingState::default();
+        let limits = [QuotaLimit {
+            window_id: "daily".into(),
+            max_used_percent: 80,
+        }];
+        let limited = test_candidate(&limits);
+        let blocked = state
+            .acquire("gateway", &limited, &UnknownQuotaSource)
+            .err()
+            .unwrap();
+        assert_eq!(blocked.reason, AdmissionReason::QuotaPending);
+        let rank_error = state
+            .rank(
+                "gateway",
+                "route",
+                RoutingStrategy::Order,
+                false,
+                None,
+                &[limited],
+                &UnknownQuotaSource,
+            )
+            .unwrap_err();
+        assert_eq!(rank_error.reason, AdmissionReason::QuotaPending);
+        assert_eq!(
+            state.next_retry("gateway", &[test_candidate(&limits)], &UnknownQuotaSource),
+            Some(Duration::from_secs(1))
+        );
+
+        let unrestricted = test_candidate(&[]);
+        let permit = state
+            .acquire("gateway", &unrestricted, &UnknownQuotaSource)
+            .unwrap();
+        permit.cool(Duration::from_secs(5));
+        let blocked = state
+            .acquire("gateway", &unrestricted, &UnknownQuotaSource)
+            .err()
+            .unwrap();
+        assert_eq!(blocked.reason, AdmissionReason::ProviderUnavailable);
+        assert!(blocked.retry_after.is_some());
+        state.invalidate_provider("gateway", "provider");
+        let blocked = state
+            .acquire("gateway", &unrestricted, &UnknownQuotaSource)
+            .err()
+            .unwrap();
+        assert_eq!(blocked.reason, AdmissionReason::BindingInvalidated);
+        assert_eq!(blocked.retry_after, None);
+    }
 }

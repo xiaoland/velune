@@ -226,7 +226,7 @@ final class ConversationModel: ObservableObject {
     func open() async {
         do {
             if let id = target.conversation {
-                apply(try await client.application(peer, operation: .conversationRead) { try $0.readConversation(runtimeId: self.target.runtime, conversationId: id) })
+                apply(try await client.readConversation(peer, runtimeID: target.runtime, conversationID: id))
             }
             failure = nil
         } catch { report(error, source: "读取会话") }
@@ -248,7 +248,7 @@ final class ConversationModel: ObservableObject {
             switch update {
             case .changed(let next): merge(next)
             case .absent:
-                apply(try await client.application(peer, operation: .conversationRead) { try $0.readConversation(runtimeId: current.contextRuntimeId, conversationId: current.conversation.id) })
+                apply(try await client.readConversation(peer, runtimeID: current.conversation.runtimeId, conversationID: current.conversation.id))
             case .unchanged: break
             }
             failure = nil
@@ -321,6 +321,22 @@ final class ConversationModel: ObservableObject {
         guard let current = self.snapshot else { return }
         self.apply(try await self.client.application(self.peer, operation: .cancel) { try $0.cancel(runtimeId: current.contextRuntimeId, conversationId: current.conversation.id) })
     } }
+
+    func setConversationHandoff(release: Bool) {
+        guard let current = snapshot else { return }
+        let source: String
+        switch (release, current.followUp.controlHandoff) {
+        case (true, .canRelease): source = "释放会话控制权"
+        case (false, .releasing): source = "取消交接"
+        case (false, .released): source = "恢复 Velune 执行"
+        default: return
+        }
+        act(source) {
+            self.apply(try await self.client.application(self.peer, operation: .conversationWrite) {
+                try $0.setConversationHandoff(runtimeId: current.contextRuntimeId, conversationId: current.conversation.id, release: release)
+            })
+        }
+    }
 
     func reply(_ id: String, _ reply: RuntimeInteractionReply) { act("回复运行时请求") {
         guard let current = self.snapshot else { return }
@@ -454,7 +470,7 @@ extension ConversationModel {
         guard let creation = pendingCreation else { return }
         guard creation.ownerID == composerOwner else { throw MobileError.unavailable }
         if snapshot == nil {
-            let result = try await client.application(peer, operation: .conversationRead) { try $0.readConversation(runtimeId: creation.runtimeID, conversationId: creation.conversationID) }
+            let result = try await client.readConversation(peer, runtimeID: creation.runtimeID, conversationID: creation.conversationID)
             apply(result)
         }
         if let choices = creation.choices {
@@ -499,7 +515,7 @@ extension ConversationModel {
                 if isNew, let input = sharedInput,
                    let creation = state.creations.first(where: { creation in creation.inputId == input.id && creation.ownerId == owner && creation.revision > baseline && state.bindings.contains { $0.inputId == input.id && $0.context == .conversation(ownerId: owner, conversationId: creation.conversationId) } }) {
                     composerLoaded = false
-                    let created = try await client.application(peer, operation: .conversationRead) { try $0.readConversation(runtimeId: creation.runtimeId, conversationId: creation.conversationId) }
+                    let created = try await client.readConversation(peer, runtimeID: creation.runtimeId, conversationID: creation.conversationId)
                     apply(created)
                     preparedComposerTarget = nil
                     return

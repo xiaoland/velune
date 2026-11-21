@@ -1,8 +1,104 @@
 //! Model provenance stays explicit across discovery, preparation, and continuation.
 use super::*;
-use crate::conversation::{ConversationSnapshot, TurnSettings};
+use crate::conversation::ConversationSnapshot;
 use crate::{ModelSelection, RuntimeModel};
+use velune_agent_runtime::creation::{DataRetention, Retained};
 use velune_agent_runtime::native::CLAUDE_EFFORT_LEVELS;
+use velune_agent_runtime::native::codex_projects::NativeProject;
+
+#[cfg(test)]
+mod edit_model_tests {
+    use super::*;
+    use crate::conversation::TurnSettings;
+
+    #[test]
+    fn managed_edit_model_keeps_identity_after_history_is_named() {
+        let root =
+            std::env::temp_dir().join(format!("velune-edit-model-{}", crate::new_record_key()));
+        std::fs::create_dir_all(&root).unwrap();
+        let mut app = crate::Application::open(crate::Options {
+            home_directory: root.clone(),
+            resources_directory: root.clone(),
+        })
+        .unwrap();
+        let core = &mut app.runtime;
+        core.runtime_instances = vec![RuntimeInstance {
+            enabled: true,
+            id: "pi".into(),
+            name: "Synthetic Pi".into(),
+            type_id: RuntimeKind::Pi,
+            gateway_id: "synthetic".into(),
+            settings: Default::default(),
+        }];
+        core.gateways = vec![GatewayConfig {
+            id: "synthetic".into(),
+            name: "Synthetic".into(),
+            routes: Vec::new(),
+            providers: vec![crate::config::ProviderDefinition {
+                id: "provider".into(),
+                name: "ChatGPT1".into(),
+                protocol: Protocol::Responses,
+                endpoint: "http://127.0.0.1:1/v1".into(),
+                execution_backend: crate::config::ExecutionBackend::Http,
+                request_profile: crate::config::RequestProfile::Native,
+                quota_source: crate::config::ProviderQuotaSource::None,
+                authentication: Default::default(),
+                quota_authentication: Default::default(),
+                billing: Default::default(),
+                quota_limits: Vec::new(),
+                models: vec![crate::config::ProviderModel {
+                    record_key: "managed-model".into(),
+                    provider_model_id: "gpt-6.1-sol".into(),
+                    nickname: "GPT-6.1-Sol".into(),
+                    icon: None,
+                    context_window: None,
+                    max_output_tokens: None,
+                    reasoning_levels: None,
+                    request_parameters: None,
+                    pi_projection: None,
+                }],
+            }],
+        }];
+        let alias = core.gateways[0].pi_binding_id("managed-model", 0).unwrap();
+        let mut turns = vec![crate::conversation::TranscriptTurn {
+            id: "turn".into(),
+            user_message_id: "user".into(),
+            work_message_ids: vec![],
+            last_message_id: Some("reply".into()),
+            reply_start_block: 0,
+            duration_ms: None,
+            is_running: false,
+            can_fork: false,
+            outcome: Some(crate::conversation::TurnOutcome::Completed),
+            usage: None,
+            settings: Some(TurnSettings {
+                runtime_id: Some("pi".into()),
+                model: Some(alias),
+                ..Default::default()
+            }),
+        }];
+        core.name_turn_models(&mut turns);
+        let settings = turns[0].settings.as_ref().unwrap();
+        assert_eq!(settings.model.as_deref(), Some("GPT-6.1-Sol（ChatGPT1）"));
+        assert_eq!(
+            settings.model_selection,
+            Some(ModelSelection::Managed {
+                model_record_key: "managed-model".into()
+            }),
+            "a display label must not erase the managed identity needed by the editor"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+}
+
+/// How this execution acquires history. A fork connects with the target's
+/// configuration but must never resume or close the source writer.
+#[derive(Clone, Copy)]
+pub(super) enum ConversationStart<'a> {
+    New,
+    Resume,
+    CodexFork(&'a str),
+}
 
 impl CoreRuntime {
     /// Reasoning levels a turn may request for a managed model on this
@@ -45,62 +141,48 @@ impl CoreRuntime {
         })
     }
 
-    /// The next turn's reasoning level, checked against the runtime and model
-    /// the turn runs on: the one asked for, or else the conversation's
-    /// current one while the model accepts it. Like a permission mode it is
-    /// session state that harnesses keep differently (Claude Code takes one
-    /// per launch, Codex resumes in its configured level, Pi keeps its own),
-    /// so the current level is sent again where Velune knows it.
-    pub(super) fn requested_effort(
-        &mut self,
-        requested: Option<&str>,
-    ) -> Result<Option<String>, RuntimeError> {
-        let runtime = self.active_instance()?.clone();
+    /// Explicit choices must validate. Reuse an omitted choice from the latest
+    /// turn on this runtime only while the selected model and runtime accept it.
+    pub(super) fn turn_options(
+        &self,
+        effort: Option<&str>,
+        permission_mode: Option<&str>,
+    ) -> Result<(Option<String>, Option<String>), RuntimeError> {
+        let runtime = self.active_instance()?;
         let selection = self
             .session
             .model_selection
-            .clone()
+            .as_ref()
             .ok_or_else(|| RuntimeError::invalid("请选择此会话的模型"))?;
-        if let Some(effort) = requested {
-            self.validate_effort(&runtime, selection.as_ref(), effort)?;
-            return Ok(Some(effort.into()));
-        }
-        let current = self
-            .current_turn_settings(&runtime)
-            .and_then(|settings| settings.effort);
-        Ok(current.filter(|effort| {
-            self.validate_effort(&runtime, selection.as_ref(), effort)
-                .is_ok()
-        }))
-    }
-
-    /// Settings of the conversation's latest turn on `runtime`.
-    fn current_turn_settings(&mut self, runtime: &RuntimeInstance) -> Option<TurnSettings> {
-        let snapshot = self.current_snapshot()?;
-        velune_application_api::latest_runtime_turn_settings(
-            &snapshot.transcript_turns,
-            &runtime.id,
-        )
-        .cloned()
-    }
-
-    /// The turn's permission mode: the one asked for, or else the
-    /// conversation's current one. A mode is session state, but a harness
-    /// does not always keep it (Codex resumes a thread in its configured
-    /// policy), so the current mode is sent again where Velune knows it.
-    pub(super) fn requested_permission_mode(
-        &mut self,
-        requested: Option<&str>,
-    ) -> Result<Option<String>, RuntimeError> {
-        let runtime = self.active_instance()?.clone();
-        if let Some(mode) = requested {
-            self.validate_permission_mode(&runtime, mode)?;
-            return Ok(Some(mode.into()));
-        }
-        let current = self
-            .current_turn_settings(&runtime)
-            .and_then(|settings| settings.permission_mode);
-        Ok(current.filter(|mode| self.validate_permission_mode(&runtime, mode).is_ok()))
+        let turns = (effort.is_none() || permission_mode.is_none())
+            .then(|| self.session.transcript_projection.turns());
+        let previous = turns.as_deref().and_then(|turns| {
+            velune_application_api::latest_runtime_turn_settings(turns, &runtime.id)
+        });
+        let effort = match effort {
+            Some(value) => {
+                self.validate_effort(runtime, selection.as_ref(), value)?;
+                Some(value.into())
+            }
+            None => previous
+                .and_then(|s| s.effort.as_ref())
+                .filter(|value| {
+                    self.validate_effort(runtime, selection.as_ref(), value)
+                        .is_ok()
+                })
+                .cloned(),
+        };
+        let permission_mode = match permission_mode {
+            Some(value) => {
+                self.validate_permission_mode(runtime, value)?;
+                Some(value.into())
+            }
+            None => previous
+                .and_then(|s| s.permission_mode.as_ref())
+                .filter(|value| self.validate_permission_mode(runtime, value).is_ok())
+                .cloned(),
+        };
+        Ok((effort, permission_mode))
     }
 
     /// A mode the runtime version declares; runtimes without modes take none.
@@ -194,7 +276,7 @@ impl CoreRuntime {
 
     pub(super) fn prepare_with_selection(
         &mut self,
-        snapshot: ConversationSnapshot,
+        snapshot: impl Into<browsing::HistorySnapshot>,
         selection: Option<&ModelSelection>,
         is_new: bool,
     ) -> Result<(), RuntimeError> {
@@ -202,11 +284,42 @@ impl CoreRuntime {
     }
     pub(super) fn prepare_with_project(
         &mut self,
-        snapshot: ConversationSnapshot,
+        snapshot: impl Into<browsing::HistorySnapshot>,
         selection: Option<&ModelSelection>,
         is_new: bool,
-        project: Option<&velune_agent_runtime::native::codex_projects::NativeProject>,
+        project: Option<&Retained<NativeProject>>,
     ) -> Result<(), RuntimeError> {
+        let start = if is_new {
+            ConversationStart::New
+        } else {
+            ConversationStart::Resume
+        };
+        self.prepare_with_start(snapshot, selection, start, project)
+    }
+
+    pub(super) fn prepare_codex_fork(
+        &mut self,
+        source: impl Into<browsing::HistorySnapshot>,
+        selection: Option<&ModelSelection>,
+        through_turn: &str,
+    ) -> Result<(), RuntimeError> {
+        self.prepare_with_start(
+            source,
+            selection,
+            ConversationStart::CodexFork(through_turn),
+            None,
+        )
+    }
+
+    fn prepare_with_start(
+        &mut self,
+        snapshot: impl Into<browsing::HistorySnapshot>,
+        selection: Option<&ModelSelection>,
+        start: ConversationStart<'_>,
+        project: Option<&Retained<NativeProject>>,
+    ) -> Result<(), RuntimeError> {
+        let snapshot = snapshot.into().into_retained();
+        let is_new = matches!(start, ConversationStart::New);
         self.ensure_work_ended()?;
         let conversation_id = snapshot.conversation.id.clone();
         if self
@@ -214,14 +327,17 @@ impl CoreRuntime {
             .type_id
             == RuntimeKind::Acp
         {
-            self.prepare_acp_snapshot(&snapshot, selection, is_new)?;
+            let owner = self.telemetry.clone();
+            telemetry::observe(owner.as_ref(), "harness.prepare", || {
+                self.prepare_acp_snapshot(&snapshot, selection, is_new)
+            })?;
             self.session.model_selection = Some(selection.cloned());
             self.session.model_record_key = None;
             self.session.pending_native_fork = None;
             return Ok(());
         }
         if let Some(ModelSelection::Managed { model_record_key }) = selection {
-            self.prepare_snapshot(snapshot, model_record_key, is_new, project)?;
+            self.prepare_snapshot(snapshot, model_record_key, start, project)?;
         } else {
             let native = match selection {
                 Some(ModelSelection::Native {
@@ -230,13 +346,13 @@ impl CoreRuntime {
                 }) => Some((provider_id.clone(), model_id.as_str())),
                 _ => None,
             };
-            let previous = self.native_snapshot();
+            let previous = self.owned_native_snapshot()?;
             let previous_selection = self.session.model_selection.clone();
-            let result = self.prepare_native_snapshot(&snapshot, native, is_new, project);
+            let result = self.prepare_native_snapshot(&snapshot, native, start, project);
             if let Err(error) = result {
                 let _ = self.shutdown_active();
                 if let Some(snapshot) = previous {
-                    self.session.active_state = ActiveState::History(Box::new(snapshot));
+                    self.session.set_history(snapshot);
                 }
                 self.session.model_selection = previous_selection;
                 if matches!(&error, RuntimeError::Contract(failure) if failure.code == "control_held_elsewhere")
@@ -245,6 +361,9 @@ impl CoreRuntime {
                 }
                 return Err(error);
             }
+        }
+        if let Some(configuration) = &mut self.session.execution_configuration {
+            configuration.native_project |= project.is_some();
         }
         self.session.model_selection = Some(selection.cloned());
         self.session.model_record_key = match selection {
@@ -275,11 +394,12 @@ impl CoreRuntime {
     /// and model, or else with its own default.
     fn prepare_native_snapshot(
         &mut self,
-        snapshot: &ConversationSnapshot,
+        snapshot: &Retained<ConversationSnapshot>,
         native: Option<(Option<String>, &str)>,
-        is_new: bool,
-        project: Option<&velune_agent_runtime::native::codex_projects::NativeProject>,
+        start: ConversationStart<'_>,
+        project: Option<&Retained<NativeProject>>,
     ) -> Result<(), RuntimeError> {
+        let is_new = matches!(start, ConversationStart::New);
         let runtime = self
             .runtime_instance(&snapshot.conversation.runtime_id)?
             .clone();
@@ -291,13 +411,17 @@ impl CoreRuntime {
         if let Some(cwd) = cwd {
             self.validate_runtime_cwd(&runtime, cwd)?;
         }
-        velune_agent_runtime::version::check_version_at(
-            runtime.type_id,
-            &setting_path(&runtime, "binary")?,
-            setting_path_optional(&runtime, "nodeBinary").as_deref(),
-            &context.target,
-            context.os_home.as_deref(),
-        )
+        let binary = setting_path(&runtime, "binary")?;
+        let node = setting_path_optional(&runtime, "nodeBinary");
+        telemetry::observe(self.telemetry.as_ref(), "harness.version", || {
+            velune_agent_runtime::version::check_version_at(
+                runtime.type_id,
+                &binary,
+                node.as_deref(),
+                &context.target,
+                context.os_home.as_deref(),
+            )
+        })
         .map_err(|error| RuntimeError::context("运行时版本检查", error))?;
         self.shutdown_active()?;
         self.capture_execution_configuration(&runtime, None);
@@ -311,23 +435,14 @@ impl CoreRuntime {
             config.rpc_entry = Some(context.resources.join("pi_rpc.mjs"));
             config.extension = Some(context.resources.join("pi_virtual_model.mjs"));
             self.session.active_state = ActiveState::Pi(Box::new(pi::PiSession::new(config)));
-            let native_id = (!is_new)
-                .then(|| {
-                    snapshot
-                        .conversation
-                        .id
-                        .strip_prefix(&format!("{}:", runtime.id))
-                        .ok_or_else(|| RuntimeError::invalid("conversation id"))
-                })
-                .transpose()?;
-            self.start_pi_for_session(cwd, native_id.map(Path::new), None, None)?;
+            self.start_pi_for_session(cwd, (!is_new).then_some(snapshot), None, None)?;
             let persistent = self.session.side.is_none();
             let session = self.session.pi()?;
             if is_new && persistent {
                 session
                     .new_session()
                     .map_err(|error| RuntimeError::context("会话创建", error))?;
-            } else {
+            } else if !persistent {
                 session.restore_context(snapshot);
             }
             if let Some((_, model_id)) = native {
@@ -341,14 +456,28 @@ impl CoreRuntime {
             let servers = self.collaboration_servers();
             let mut config = self.native_config(&runtime, None)?;
             config.mcp_servers = servers;
-            let mut session = NativeSession::connect(config)
-                .map_err(|error| RuntimeError::context("原生运行时连接", error))?;
+            let mut session = telemetry::observe(self.telemetry.as_ref(), "harness.start", || {
+                NativeSession::connect(config)
+            })
+            .map_err(|error| RuntimeError::context("原生运行时连接", error))?;
             if let Some((provider_id, model_id)) = native {
                 session
-                    .select_native_model(provider_id, model_id.into())
+                    .select_native_model(Retained::from_parts(
+                        (provider_id, model_id.to_owned()),
+                        DataRetention::default(),
+                    ))
                     .map_err(|error| RuntimeError::context("原生模型选择", error))?;
             }
-            if is_new {
+            if let ConversationStart::CodexFork(through_turn) = start {
+                let source_id = snapshot
+                    .conversation
+                    .id
+                    .strip_prefix(&format!("{}:", runtime.id))
+                    .ok_or_else(|| RuntimeError::invalid("conversation id"))?;
+                session
+                    .fork_codex_from(source_id, cwd, &runtime.id, through_turn)
+                    .map_err(super::native_composition::fork_failure)?;
+            } else if is_new {
                 if let Some(side) = &self.session.side {
                     session
                         .create_side_context(cwd, &runtime.id, &side.context)
@@ -376,10 +505,17 @@ impl CoreRuntime {
                         .open_side(native_id, cwd, &runtime.id)
                         .map_err(|error| RuntimeError::context("侧聊打开", error))?;
                 } else {
-                    session
-                        .open(native_id, cwd, &runtime.id, snapshot.messages.clone())
-                        .map_err(|error| RuntimeError::context("原生会话恢复", error))?;
-                    session.restore_context(snapshot);
+                    let history = snapshot
+                        .try_clone()
+                        .map_err(|error| RuntimeError::context("会话历史保留额度", error))?
+                        .map(|snapshot| snapshot.messages);
+                    telemetry::observe(self.telemetry.as_ref(), "harness.resume", || {
+                        session.open(native_id, cwd, &runtime.id, history)
+                    })
+                    .map_err(|error| RuntimeError::context("原生会话恢复", error))?;
+                    session.restore_context(snapshot).map_err(|error| {
+                        RuntimeError::context("native context retained credit", error)
+                    })?;
                 }
             }
             self.session.active_state = ActiveState::Native(Box::new(session));
@@ -413,7 +549,7 @@ impl CoreRuntime {
     pub(crate) fn runtime_models(
         &mut self,
         runtime_id: String,
-    ) -> Result<Vec<RuntimeModel>, RuntimeError> {
+    ) -> Result<Retained<Vec<RuntimeModel>>, RuntimeError> {
         let runtime = self.runtime_instance(&runtime_id)?.clone();
         if !runtime.enabled {
             return Err(RuntimeError::invalid("此运行时已停用"));
@@ -438,10 +574,9 @@ impl CoreRuntime {
                     reasoning_efforts: option.reasoning_efforts,
                 }));
             }
-            return Ok(models);
+            return Ok(Retained::from_parts(models, DataRetention::default()));
         }
-        let mut models = Vec::new();
-        if runtime.type_id == RuntimeKind::Pi {
+        let native = if runtime.type_id == RuntimeKind::Pi {
             let context = self.prepare_execution_context(&runtime)?;
             let mut config = self.pi_history_config(&runtime)?;
             config.rpc_entry = Some(context.resources.join("pi_rpc.mjs"));
@@ -452,14 +587,7 @@ impl CoreRuntime {
             let shutdown = client.shutdown();
             let native = result.map_err(|error| RuntimeError::context("Pi 模型目录", error))?;
             shutdown.map_err(|error| RuntimeError::context("Pi 模型目录连接关闭", error))?;
-            models.extend(native.into_iter().map(|option| RuntimeModel {
-                selection: ModelSelection::Native {
-                    provider_id: option.model.provider_id,
-                    model_id: option.model.id,
-                },
-                name: option.model.name,
-                reasoning_efforts: option.reasoning_efforts,
-            }));
+            Retained::from_parts(native, DataRetention::default())
         } else {
             let mut session = NativeSession::connect(self.native_config(&runtime, None)?)
                 .map_err(|error| RuntimeError::context("原生模型目录连接", error))?;
@@ -467,15 +595,20 @@ impl CoreRuntime {
             let shutdown = session.shutdown();
             let native = result.map_err(|error| RuntimeError::context("原生模型目录", error))?;
             shutdown.map_err(|error| RuntimeError::context("原生模型目录连接关闭", error))?;
-            models.extend(native.into_iter().map(|option| RuntimeModel {
+            native
+        };
+        let (native, retention) = native.into_parts();
+        let mut models: Vec<_> = native
+            .into_iter()
+            .map(|option| RuntimeModel {
                 selection: ModelSelection::Native {
                     provider_id: option.model.provider_id,
                     model_id: option.model.id,
                 },
                 name: option.model.name,
                 reasoning_efforts: option.reasoning_efforts,
-            }));
-        }
+            })
+            .collect();
         if let Some(gateway) = self
             .gateways
             .iter()
@@ -496,7 +629,7 @@ impl CoreRuntime {
                         model_record_key: model.record_key.clone(),
                     },
                     // Managed records may share a model name across providers.
-                    name: format!("{model_name} · {}", provider.name),
+                    name: format!("{model_name}（{}）", provider.name),
                     reasoning_efforts: self.reasoning_efforts(&runtime, &model.record_key)?,
                 });
             }
@@ -505,12 +638,12 @@ impl CoreRuntime {
                     selection: ModelSelection::Managed {
                         model_record_key: route.record_key.clone(),
                     },
-                    name: format!("{} · 模型路由", route.name),
+                    name: format!("模型路由：{}", route.name),
                     reasoning_efforts: self.reasoning_efforts(&runtime, &route.record_key)?,
                 });
             }
         }
-        Ok(models)
+        Ok(Retained::from_parts(models, retention))
     }
 
     /// How a turn names the model it was sent with: the managed model as the
@@ -528,7 +661,7 @@ impl CoreRuntime {
                     .iter()
                     .find(|gateway| gateway.id == runtime.gateway_id)?;
                 if let Some(route) = gateway.route(model_record_key) {
-                    return Some(format!("{} · 模型路由", route.name));
+                    return Some(format!("模型路由：{}", route.name));
                 }
                 gateway.providers.iter().find_map(|provider| {
                     let model = provider
@@ -540,7 +673,7 @@ impl CoreRuntime {
                     } else {
                         &model.nickname
                     };
-                    Some(format!("{name} · {}", provider.name))
+                    Some(format!("{name}（{}）", provider.name))
                 })
             }
             ModelSelection::Native { model_id, .. } => {
@@ -594,10 +727,16 @@ impl CoreRuntime {
                         .is_ok_and(|alias| &alias == model)
                 })
                 .map(str::to_owned);
-            if let Some(name) = key.and_then(|model_record_key| {
-                self.turn_model_name(runtime_id, &ModelSelection::Managed { model_record_key })
-            }) {
-                settings.model = Some(name);
+            if let Some(model_record_key) = key {
+                let selection = ModelSelection::Managed { model_record_key };
+                if let Some(name) = self.turn_model_name(runtime_id, &selection) {
+                    settings.model = Some(name);
+                    // The readable title is presentation; retain the matched
+                    // route identity so editing never reconstructs it from text.
+                    if settings.model_selection.is_none() {
+                        settings.model_selection = Some(selection);
+                    }
+                }
             }
         }
         for turn in turns.iter_mut() {

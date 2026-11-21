@@ -1,61 +1,13 @@
-//! One observation lifetime per physical context, shared by every view and caller.
+//! Native facts are shared across every logical view of a physical context.
 use super::*;
 use crate::conversation::{ConversationSnapshot, InputAccess};
-use std::{
-    sync::mpsc,
-    time::{Duration, Instant},
-};
-use velune_agent_runtime::control::{Observation, Target};
+use velune_agent_runtime::control::Target;
 
-pub(super) struct ControlWatch {
-    target: Target,
-    observation: Option<Observation>,
-    pending: Option<mpsc::Receiver<Observation>>,
-    next: Instant,
-}
-impl ControlWatch {
-    fn new(target: Target) -> Self {
-        Self {
-            target,
-            observation: None,
-            pending: None,
-            next: Instant::now(),
-        }
-    }
-    fn poll(&mut self) -> InputAccess {
-        if let Some(receiver) = &self.pending {
-            match receiver.try_recv() {
-                Ok(observation) => {
-                    self.observation = Some(observation);
-                    self.pending = None;
-                    self.next = Instant::now() + Duration::from_secs(2);
-                }
-                Err(mpsc::TryRecvError::Disconnected) => {
-                    self.observation = Some(Observation::Unknown);
-                    self.pending = None;
-                    self.next = Instant::now() + Duration::from_secs(2);
-                }
-                Err(mpsc::TryRecvError::Empty) => {}
-            }
-        }
-        if self.pending.is_none() && Instant::now() >= self.next {
-            let target = self.target.clone();
-            let (sender, receiver) = mpsc::channel();
-            self.pending = Some(receiver);
-            std::thread::spawn(move || {
-                let _ = sender.send(target.observe());
-            });
-        }
-        match self.observation {
-            None => InputAccess::CheckingControl,
-            Some(Observation::HeldElsewhere) => InputAccess::ExternalController,
-            Some(Observation::Unknown) => InputAccess::ControlUnavailable,
-            Some(Observation::Available | Observation::NotReported) => InputAccess::Editable,
-        }
-    }
-}
+mod observations;
+pub(super) use observations::ControlObservations;
+
 impl CoreRuntime {
-    fn control_target(&self) -> Result<Option<Target>, RuntimeError> {
+    pub(super) fn control_target(&self) -> Result<Option<Target>, RuntimeError> {
         if self.session.side.is_some() || self.session.unsubmitted_draft.is_some() {
             return Ok(None);
         }
@@ -104,41 +56,34 @@ impl CoreRuntime {
         }))
     }
     fn observed_input_access(&mut self) -> InputAccess {
+        if self.current_handoff_is_released() {
+            return InputAccess::Editable;
+        }
         self.observe_control_target(self.control_target())
     }
-    fn observe_control_target(
+    pub(super) fn observe_control_target(
         &mut self,
         target: Result<Option<Target>, RuntimeError>,
     ) -> InputAccess {
         let target = match target {
-            Ok(None) => {
-                self.session.control = None;
-                return InputAccess::Editable;
-            }
-            Err(_) => {
-                self.session.control = None;
-                return InputAccess::ControlUnavailable;
-            }
+            Ok(None) => return InputAccess::Editable,
+            Err(_) => return InputAccess::ControlUnavailable,
             Ok(Some(target)) => target,
         };
         // Views of this session share its native handle. A different runtime
         // configuration parked here is another native client: do not borrow
         // its model, account, MCP services or approval context implicitly.
-        if matches!(&self.session.active_state, ActiveState::Native(native) if native.owns_control(&target))
-        {
-            self.session.control = None;
+        if match &self.session.active_state {
+            ActiveState::Native(native) => native.owns_control(&target),
+            ActiveState::Pending(pending) => pending.owns_control(&target),
+            _ => false,
+        } {
+            self.control_observations.suspend(&target);
             return InputAccess::Editable;
         }
-        if self
-            .session
-            .control
-            .as_ref()
-            .is_none_or(|watch| watch.target != target)
-        {
-            self.session.control = Some(ControlWatch::new(target));
-        }
-        self.session.control.as_mut().expect("control watch").poll()
+        self.control_observations.access(target)
     }
+
     pub(super) fn apply_input_access(&mut self, snapshot: &mut ConversationSnapshot) {
         let access = self.observed_input_access();
         Self::decorate_input_access(
@@ -146,14 +91,6 @@ impl CoreRuntime {
             access,
             matches!(self.session.active_state, ActiveState::History(_)),
         );
-    }
-    pub(super) fn apply_read_input_access(
-        &mut self,
-        snapshot: &mut ConversationSnapshot,
-        target: Result<Option<Target>, RuntimeError>,
-    ) {
-        let access = self.observe_control_target(target);
-        Self::decorate_input_access(snapshot, access, true);
     }
     fn decorate_input_access(
         snapshot: &mut ConversationSnapshot,
@@ -171,17 +108,15 @@ impl CoreRuntime {
     }
     pub(super) fn control_held_elsewhere(&mut self) {
         if let Ok(Some(target)) = self.control_target() {
-            let mut watch = ControlWatch::new(target);
-            watch.observation = Some(Observation::HeldElsewhere);
-            watch.next = Instant::now() + Duration::from_secs(2);
-            self.session.control = Some(watch);
+            self.control_observations.held_elsewhere(target);
         }
     }
     /// All writers use the same admission, including queued and scheduled turns.
     pub(super) fn require_input_access(&mut self) -> Result<(), RuntimeError> {
-        let Some(snapshot) = self.current_snapshot() else {
+        let Some(snapshot) = self.submission_context() else {
             return Ok(());
         };
+        self.check_handoff_input(&snapshot)?;
         Self::check_input_access(snapshot.actions.input_access)
     }
     /// Validate the observation already captured for a command's projection.

@@ -193,22 +193,13 @@ impl GatewayConfig {
                 return Err("weights only apply to weighted routes");
             }
             let mut members = BTreeSet::new();
-            let mut protocol = None;
             for key in &route.members {
-                let provider = self
-                    .providers
+                self.providers
                     .iter()
                     .find(|p| p.models.iter().any(|m| &m.record_key == key))
                     .ok_or("model route member is not a provider model")?;
                 if !members.insert(key) {
                     return Err("model route member is duplicated");
-                }
-                // Same protocol is necessary for the request to stay as sent.
-                if protocol
-                    .replace(provider.protocol)
-                    .is_some_and(|p| p != provider.protocol)
-                {
-                    return Err("model route members must share a protocol");
                 }
             }
         }

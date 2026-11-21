@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """显式迁移旧 composer 文件；不读取 Harness 历史，写入前保留原数据备份。需先退出 Velune。
 
-预览为默认，--apply 写入。已迁移或没有旧格式数据时以 0 退出，供
-scripts/run-migrations.py 在重装时自动执行。
+预览为默认，--apply 写入。已迁移或没有旧格式数据时以 0 退出。
+手动运行 scripts/run-migrations.py 时会按顺序执行此脚本。
 """
 import argparse
 import copy
@@ -14,6 +14,74 @@ import tempfile
 from urllib.parse import unquote, urlparse
 import uuid
 import xml.etree.ElementTree as ET
+
+
+def decode_json(data):
+    def unique_object(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("JSON 含重复字段，原文件未修改")
+            result[key] = value
+        return result
+
+    def reject_constant(_):
+        raise ValueError("JSON 含非标准数值，原文件未修改")
+
+    return json.loads(data, object_pairs_hook=unique_object, parse_constant=reject_constant)
+
+
+def read_json(path):
+    try:
+        return decode_json(path.read_bytes())
+    except (json.JSONDecodeError, UnicodeError):
+        raise ValueError(f"{path.name} 不是有效 JSON，原文件未修改") from None
+
+
+def require_schema(value, key, allowed, label, default=None):
+    version = value.get(key, default) if isinstance(value, dict) else None
+    if type(version) is not int or version not in allowed:
+        raise ValueError(f"{label}不是已知 schema，原文件未修改")
+    return version
+
+
+def mac_workspace(window):
+    # The pre-beta journal had no envelope version. Its combined and split
+    # composer writers used workspace schemas 2 and 3 respectively.
+    require_schema(window, "schemaVersion", (0, 1), "Mac 窗口恢复点", default=0)
+    peers = window.get("composerWorkspaceByDevice")
+    if peers is not None:
+        if not isinstance(peers, dict):
+            raise ValueError("Mac 远端窗口输入结构无效，原文件未修改")
+        for saved in peers.values():
+            require_schema(saved, "schemaVersion", (3,), "Mac 远端窗口输入")
+    workspace = window.get("composerWorkspace")
+    if workspace is not None:
+        require_schema(workspace, "schemaVersion", (2, 3), "Mac 窗口输入")
+    return workspace
+
+
+def legacy_mac_content(draft):
+    if not isinstance(draft, dict) or set(draft) - {"text", "attachments", "choices", "choiceEdited", "runtimeOwnerID", "foreignChoices"}:
+        raise ValueError("Mac 旧草稿含未知字段，原文件未修改")
+    if not isinstance(draft.get("text"), str) or not isinstance(draft.get("attachments"), list):
+        raise ValueError("Mac 旧草稿正文或附件格式无效，原文件未修改")
+    return {name: draft[name] for name in ("text", "attachments")}
+
+
+def validate_mac_workspace(window, workspace):
+    if workspace is None or workspace["schemaVersion"] != 2:
+        return
+    if "pendingTargets" in workspace:
+        raise ValueError("Mac schema 2 窗口包含未知目标结构，原文件未修改")
+    shared = uuid.UUID(workspace["shared"])
+    projected = []
+    for draft in workspace["drafts"]:
+        legacy_mac_content(draft["state"])
+        if uuid.UUID(draft["id"]) == shared:
+            projected.append(draft["state"])
+    if window.get("composer") is not None and projected != [window["composer"]]:
+        raise ValueError("Mac 顶层草稿与共享草稿不一致，原文件未修改")
 
 
 def pairs(value):
@@ -29,16 +97,20 @@ def model(value):
         return None
     if set(value) == {"managed"}:
         fields = value["managed"]
-        return {"managed": {"model_record_key": fields.get("model_record_key", fields.get("modelRecordKey"))}}
+        if set(fields) in ({"model_record_key"}, {"modelRecordKey"}):
+            return {"managed": {"model_record_key": fields.get("model_record_key", fields.get("modelRecordKey"))}}
     if set(value) == {"native"}:
         fields = value["native"]
-        return {"native": {"model_id": fields.get("model_id", fields.get("modelId")), "provider_id": fields.get("provider_id", fields.get("providerId"))}}
+        if ("model_id" in fields and set(fields) <= {"model_id", "provider_id"}) or ("modelId" in fields and set(fields) <= {"modelId", "providerId"}):
+            return {"native": {"model_id": fields.get("model_id", fields.get("modelId")), "provider_id": fields.get("provider_id", fields.get("providerId"))}}
     raise ValueError("无法识别保存的模型选择；原文件保持不变")
 
 
 def choice(value):
     if "serviceTier" in value:
         raise ValueError("旧按轮档位尚未迁移；请先运行 python3 scripts/migrations/01-service-tier-model-variants.py --home <VELUNE_HOME> --apply，原文件保持不变")
+    if set(value) - {"model", "effort", "permissionMode"}:
+        raise ValueError("旧运行选择含未知字段，原文件未修改")
     return {"model": model(value.get("model")), "effort": value.get("effort"), "permissionMode": value.get("permissionMode")}
 
 
@@ -49,10 +121,9 @@ def empty():
 def read_versioned(path, field, default):
     if not path.exists():
         return default
-    value = json.loads(path.read_text())
+    value = read_json(path)
     allowed = (1, 2) if path.name == "composer-choices.json" else (1,)
-    if value["schemaVersion"] not in allowed:
-        raise ValueError(f"不支持的旧格式：{path.name}")
+    require_schema(value, "schemaVersion", allowed, path.name)
     return value[field]
 
 
@@ -61,6 +132,11 @@ def split_combined(value):
     result = copy.deepcopy(value)
     old_inputs = {item["id"]: item for item in value["state"]["inputs"]}
     names = ("runtimeId", "runtimeOwnerId", "choices", "choiceEdited")
+    if "targets" in value["state"] or any(
+        not isinstance(item["content"], dict) or set(item["content"]) != {"text", "attachments", *names}
+        for item in value["state"]["inputs"]
+    ):
+        raise ValueError("schema 1 输入含未知或缺失字段，原文件未修改")
     targets = []
     for binding in result["state"]["bindings"]:
         content = old_inputs[binding["inputId"]]["content"]
@@ -93,8 +169,8 @@ def windows_caches(home, old, apply):
     for path in sorted((home / "composer-cache").glob("*.json")):
         if path.name.endswith(".backup.json"):
             continue
-        cache = json.loads(path.read_text())
-        if cache.get("Schema") != 1:
+        cache = read_json(path)
+        if cache["Schema"] != 1:
             continue
         content = cache["Input"]["Content"]
         choices = {name: copy.deepcopy(content.get(name)) for name in ("RuntimeId", "RuntimeOwnerId", "Choices", "ChoiceEdited")}
@@ -121,12 +197,12 @@ def mac_workspaces(home, old, apply):
     for path in sorted((home / "mac-window-workspaces").glob("*.json")):
         if path.name.endswith(".backup.json"):
             continue
-        window = json.loads(path.read_text())
-        workspace = window.get("composerWorkspace")
-        if not workspace or workspace.get("schemaVersion") == 3:
+        window = read_json(path)
+        workspace = mac_workspace(window)
+        if workspace is None or workspace["schemaVersion"] != 2:
             continue
         drafts = {str(uuid.UUID(item["id"])): item for item in workspace["drafts"]}
-        targets = workspace.get("pendingTargets") or {}
+        targets = {}
         for context, input_id in workspace.get("conversations", {}).items():
             if context.startswith(("side-chat:", "tab:")):
                 continue
@@ -142,7 +218,9 @@ def mac_workspaces(home, old, apply):
             baseline = 1 if source and draft.get("revision") == source["revision"] else None
             targets[context] = {"choices": choices, "revision": baseline}
         for draft in workspace["drafts"]:
-            draft["state"] = {name: draft["state"][name] for name in ("text", "attachments")}
+            draft["state"] = legacy_mac_content(draft["state"])
+        if window.get("composer") is not None:
+            window["composer"] = legacy_mac_content(window["composer"])
         workspace["pendingTargets"] = targets
         workspace["schemaVersion"] = 3
         if apply:
@@ -162,11 +240,9 @@ def android_preferences(paths, old, apply):
         tree = ET.parse(path)
         changed = 0
         for entry in tree.getroot().findall("string"):
-            value = json.loads(entry.text or "null")
-            if value.get("version") == 2:
+            value = decode_json(entry.text or "null")
+            if value["version"] == 2:
                 continue
-            if value.get("version") != 1:
-                raise ValueError("不支持的 Android 本机输入格式，原文件保持不变")
             source = inputs.get(value["id"])
             observed = value.get("baseline") if value["pending"] else value["revision"]
             baseline = 1 if source and value["id"] in bound and observed is not None and int(observed) == source["revision"] else None
@@ -193,25 +269,23 @@ def android_preferences(paths, old, apply):
 
 
 def migrate_combined(home, target, value, apply):
-    if value.get("schemaVersion") == 2:
+    if require_schema(value, "schemaVersion", (1, 2), "输入目录") == 2:
         # A prior interruption may have committed the catalog before caches.
         backup = home / "composer-inputs.schema1.backup.json"
         # Older first-time imports did not preserve a combined catalog. Their
         # cache choices are still recoverable, but their CAS baseline is unknown.
-        old = json.loads(backup.read_text()) if backup.exists() else {
+        old = read_json(backup) if backup.exists() else {
             "state": {"ownerId": value["state"]["ownerId"], "inputs": [], "bindings": []}
         }
         windows_caches(home, old, apply)
         mac_workspaces(home, old, apply)
         print("composer-inputs.json 已为分离格式，未覆盖")
         return
-    if value.get("schemaVersion") != 1:
-        raise ValueError("不支持的 composer 目录格式，原文件保持不变")
     result = split_combined(value)
     print(f"内容 {len(result['state']['inputs'])} 份；目标配置 {len(result['state']['targets'])} 份；孤立内容保留，旧选择保存在完整备份")
     if apply:
         backup = home / "composer-inputs.schema1.backup.json"
-        if backup.exists() and json.loads(backup.read_text()) != value:
+        if backup.exists() and read_json(backup) != value:
             raise ValueError("已有不同的 schema1 备份，未覆盖；请先人工核对")
         if not backup.exists():
             shutil.copy2(target, backup)
@@ -244,27 +318,46 @@ def main():
                 return bool({"serviceTier", "ServiceTier"} & value.keys()) or any(has_old_tier(item) for item in value.values())
             return isinstance(value, list) and any(has_old_tier(item) for item in value)
 
-        sources = [home / "composer-inputs.json", home / "composer-choices.json"]
-        sources += list((home / "mac-window-workspaces").glob("*.json"))
-        sources += list((home / "composer-cache").glob("*.json"))
+        journal = home / "mac-window-workspaces"
+        sources = [target, home / "composer-choices.json", *journal.glob("*.json"),
+                   *(home / "composer-cache").glob("*.json")]
         for path in sources:
-            if path.exists() and not path.name.endswith(".backup.json") and has_old_tier(json.loads(path.read_text())):
+            if not path.exists() or path.name.endswith(".backup.json"):
+                continue
+            value = read_json(path)
+            if path.parent == journal:
+                validate_mac_workspace(value, mac_workspace(value))
+                value = [value.get("composer"), value.get("composerWorkspace")]
+            elif path.parent == home / "composer-cache":
+                if require_schema(value, "Schema", (1, 2), "Windows 本机输入") == 1:
+                    content = value["Input"]["Content"]
+                    if not isinstance(content, dict) or set(content) != {"Text", "Attachments", "RuntimeId", "RuntimeOwnerId", "Choices", "ChoiceEdited"}:
+                        raise ValueError("Windows 旧输入含未知字段，原文件未修改")
+            if has_old_tier(value):
                 parser.error("旧按轮档位尚未迁移；请先运行 python3 scripts/migrations/01-service-tier-model-variants.py --home <VELUNE_HOME> --apply，原文件保持不变")
+        for path in args.android_preferences:
+            for entry in ET.parse(path.expanduser().resolve(strict=True)).getroot().findall("string"):
+                require_schema(decode_json(entry.text or "null"), "version", (1, 2), "Android 本机输入")
         backup = home / "composer-inputs.schema1.backup.json"
+        saved = read_json(backup) if backup.exists() else None
+        if backup.exists():
+            require_schema(saved, "schemaVersion", (1,), "旧输入目录备份")
         if target.exists() or backup.exists():
             # The checkpoint precedes the catalog commit. Reuse its identities
             # when an interrupted first import has not written the catalog yet.
-            value = json.loads((target if target.exists() else backup).read_text())
+            value = read_json(target) if target.exists() else saved
             migrate_combined(home, target, value, args.apply)
-            source = value if value.get("schemaVersion") == 1 else json.loads(backup.read_text()) if backup.exists() else {}
+            source = value if value["schemaVersion"] == 1 else saved or {}
             android_preferences(args.android_preferences, source, args.apply)
             return
-        journal = home / "mac-window-workspaces"
         legacy = [(home / name).exists() for name in ("composer-choices.json", "composer-drafts.json")]
         if not any(legacy):
             for path in sorted(journal.glob("*.json")):
-                window = json.loads(path.read_text())
-                if window.get("composerWorkspace") or window.get("composer"):
+                if path.name.endswith(".backup.json"):
+                    continue
+                window = read_json(path)
+                workspace = mac_workspace(window)
+                if (workspace is not None and workspace["schemaVersion"] == 2) or (workspace is None and window.get("composer") is not None):
                     legacy.append(True)
                     break
         if not any(legacy):
@@ -311,11 +404,15 @@ def main():
             return reference
 
         for path in sorted(journal.glob("*.json")):
-            window = json.loads(path.read_text())
-            workspace = window.get("composerWorkspace")
-            if not workspace:
+            if path.name.endswith(".backup.json"):
+                continue
+            window = read_json(path)
+            workspace = mac_workspace(window)
+            if workspace is None:
                 if window.get("composer"):
                     raise ValueError("发现更早的无输入身份窗口格式，请先保留并人工核对，未重置")
+                continue
+            if workspace["schemaVersion"] != 2:
                 continue
             when = path.stat().st_mtime
             for draft in workspace["drafts"]:

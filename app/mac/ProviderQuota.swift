@@ -32,7 +32,7 @@ struct QuotaWindowRow: View {
         parts.append(QuotaResetFormat.text(window.resetsAt))
         if runsShort, let empty = window.pace?.runsOutAt { parts.append("按目前的平均速度约\(empty.formatted(.relative(presentation: .named)))用尽") }
         if showsModels, let models = window.modelIds { parts.append("仅 " + models.joined(separator: "、")) }
-        return parts.joined(separator: " · ")
+        return parts.joined(separator: "，")
     }
 }
 
@@ -67,6 +67,7 @@ enum UsageFormat {
 
 /// When the quota was observed, or why it is missing.
 struct QuotaStatusText: View {
+    static let limitedObservation = "额度观测显示受限；额外额度尚未完整查询，实际可用性以服务商响应为准。"
     let quota: QuotaObservation?
     var body: some View {
         Text(Self.summary(quota)).uiFont(.caption).foregroundStyle(.secondary)
@@ -154,7 +155,7 @@ struct ProviderQuotaForm: View {
                     Text("配置认证后读取额度。").foregroundStyle(.secondary)
                 } else {
                     if let quota, quota.available == false {
-                        Label("提供商表示此账户当前不可用，暂停新请求。", systemImage: "pause.circle").foregroundStyle(.orange)
+                        Label(QuotaStatusText.limitedObservation, systemImage: "info.circle").foregroundStyle(.secondary)
                     }
                     ForEach(Array((quota?.windows ?? []).enumerated()), id: \.offset) { _, window in
                         QuotaWindowRow(window: window, limit: limit(window.id), fresh: quota?.freshness == .fresh, display: store.usageDisplay, showsModels: true)
@@ -173,6 +174,9 @@ struct ProviderQuotaForm: View {
                         Button("刷新") { store.readProviderQuotas([providerID], refresh: true) }.disabled(quota?.refreshing == true).controlSize(.small)
                     }
                 }
+            }
+            if let providerID, let provider = store.providers.first(where: { $0.id == providerID }), provider.composition.authenticationSource == .codexOAuth {
+                ProviderAccountSection(store: store, providerID: providerID)
             }
             if !balancesOnly { Section {
                 if windowIDs.isEmpty {

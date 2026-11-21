@@ -21,7 +21,7 @@ impl Owner {
             "{:x}",
             sha2::Sha256::digest(format!("{}\0{}", self.region, self.user_id).as_bytes())
         );
-        format!("账户 · {}", &digest[digest.len() - 8..])
+        format!("账户 {}", &digest[digest.len() - 8..])
     }
 }
 impl Capture {

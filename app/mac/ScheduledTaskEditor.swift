@@ -29,7 +29,16 @@ struct ScheduledTaskEditor: View {
         Form {
             Section("做什么") {
                 TextField("名称", text: $task.name)
-                LabeledContent("指令") { TextEditor(text: $task.prompt).uiFont(.body).frame(minHeight: 110).border(.quaternary).accessibilityLabel("任务指令") }
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("指令")
+                    TextEditor(text: $task.prompt)
+                        .uiFont(.body)
+                        .multilineTextAlignment(.leading)
+                        .frame(maxWidth: .infinity, minHeight: 140, alignment: .leading)
+                        .border(.quaternary)
+                        .accessibilityLabel("任务指令")
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
             Section("何时执行") { ScheduledScheduleEditor(task: $task, ready: $scheduleReady, store: store) }
             Section("在哪里执行") {
@@ -150,7 +159,7 @@ private struct ScheduledConversationPicker: View {
                 Button { selected(conversation); dismiss() } label: {
                     VStack(alignment: .leading, spacing: 3) {
                         Text(conversation.title)
-                        Text((store.runtimeInstances.first { $0.id == conversation.runtimeID }?.name ?? "运行时不可用") + " · " + (conversation.cwd ?? "默认目录")).uiFont(.caption).foregroundStyle(.secondary)
+                        Text((store.runtimeInstances.first { $0.id == conversation.runtimeID }?.name ?? "运行时不可用") + "，目录：" + (conversation.cwd ?? "默认目录")).uiFont(.caption).foregroundStyle(.secondary)
                     }.frame(maxWidth: .infinity, alignment: .leading)
                 }.buttonStyle(.plain)
             }

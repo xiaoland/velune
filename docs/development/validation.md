@@ -18,6 +18,8 @@
 
 ## 验证方式
 
+资源同步验证使用隔离 HOME 和实际安装的 Harness，确认 Claude Code、Codex、Pi 能识别写入的内容，不调用模型或读取真实配置。定时任务接管使用合成任务，不启用或运行真实任务；真实联调另按数据授权边界执行。
+
 Rust 工作区的静态检查：
 
 ```sh
@@ -33,6 +35,8 @@ cargo tree --locked -p velune-bindings --no-default-features --features remote
 
 根目录 [`clippy.toml`](../../clippy.toml) 禁止直接调用 `Command::new`。子进程经 `velune_agent_runtime::process::command` 创建（ai-provider 不依赖 agent-runtime，使用自己的 `hidden_command`），长期运行的进程树经 agent-runtime 的 `process_tree` 创建：Unix 使用独立进程组，Windows 使用 kill-on-close 的 Job Object 并加 `CREATE_NO_WINDOW`，避免 GUI 宿主为每个子进程弹出控制台。
 
-平台代码的检查是各平台构建本身（Swift、Kotlin、C# 均把警告视为错误）。平台中可脱离界面的逻辑放在独立文件，以脚本单独编译检查：`bash scripts/check-token-units.sh` 用同一组样例检查 Mac 与 Windows 的 token 数量格式化与解析；`bash scripts/check-account-quota.sh` 在 `build-macos.sh --build-only` 之后，以实际 Swift 绑定检查 Mac 的额度呈现。
+平台代码的检查是各平台构建本身（Swift、Kotlin、C# 均把警告视为错误）。Apple 原生控件的系统明暗适配不另设完整验收矩阵，自绘 logo、固定色位图、阴影与边框则按所在背景核对可见性。平台中可脱离界面的逻辑放在独立文件，以脚本单独编译检查：`bash scripts/check-token-units.sh` 用同一组样例检查 Mac 与 Windows 的 token 数量格式化与解析；`bash scripts/check-account-quota.sh` 在 `build-macos.sh --build-only` 之后，以实际 Swift 绑定检查 Mac 的额度呈现。
 
 端到端行为用临时脚本验收：先构建动态库，并按 [bindings unit](../../packages/bindings/README.md#生成绑定) 生成匹配的 Python 绑定，再在临时 `VELUNE_HOME` 与临时 Harness HOME 中，以合成凭据和本机回环上游驱动实际 application。需要实际 Harness 时传入已安装 CLI 的绝对路径。脚本随任务使用，不提交到仓库；所用版本、覆盖范围与结果记录在该任务的 Task Packet。验证前先遵守[隔离验证与敏感数据边界](../development.md#隔离验证与敏感数据)。界面检查使用隔离的应用实例或 [Mac 预览模式](platforms.md#mac-构建)。
+
+Mac 自动化的进程、焦点和前台操作约束见[平台 Agent 指引](../../app/mac/AGENTS.md)。

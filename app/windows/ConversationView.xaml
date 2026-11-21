@@ -147,6 +147,7 @@
                         </Border>
                     </Popup>
                     <TextBlock x:Name="InputLock" TextWrapping="Wrap" IsTextSelectionEnabled="True" Visibility="Collapsed" />
+                    <Button x:Name="HandoffActionButton" Visibility="Collapsed" />
                     <TextBox
                         x:Name="Input"
                         MinHeight="64"

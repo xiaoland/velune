@@ -88,7 +88,7 @@ impl ProviderAuthentication {
                 AuthenticationMethod::OAuth,
                 *configured,
                 Some(AuthenticationProvenance {
-                    display_name: "Velune · Codex 订阅".into(),
+                    display_name: "Velune 管理的 Codex 订阅".into(),
                 }),
                 vec![crate::conversation::SettingAction {
                     id: "login".into(),
@@ -153,7 +153,7 @@ impl ProviderAuthentication {
                     *configured,
                     Some(AuthenticationProvenance {
                         display_name: format!(
-                            "{} · {}",
+                            "运行时 {}，提供商 {}",
                             source.harness_type_id, source.provider_id
                         ),
                     }),

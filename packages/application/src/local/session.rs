@@ -1,9 +1,14 @@
 //! One open conversation's execution and projection state. The core keeps
 //! several; requests address one at a time through `CoreRuntime::session`.
 use super::*;
+use velune_agent_runtime::{
+    creation::{DataRetention, Retained},
+    LiveError,
+    work::BackgroundTask,
+};
 
 /// Identifies a session while it moves between addressed and parked.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) struct SessionKey(u64);
 
 impl Default for SessionKey {
@@ -15,6 +20,11 @@ impl Default for SessionKey {
 
 #[derive(Default)]
 pub(super) struct Session {
+    pub(super) pi_io_cleanup: Option<Box<execution_workers::PendingExecution>>,
+    pub(super) pi_control: Option<editing::PiControl>,
+    pub(super) pi_edit: Option<editing::PiEdit>,
+    pub(super) pi_edit_advancing: bool,
+    pub(super) pi_cleanup_required: bool,
     pub(super) naming: Option<super::naming::Job>,
     pub(super) naming_attempted: bool,
     pub(super) finished_activity: Option<String>,
@@ -26,7 +36,12 @@ pub(super) struct Session {
     pub(super) logical_projection: Option<continuation::LogicalProjection>,
     pub(super) transcript_projection: velune_agent_runtime::transcript::TranscriptProjection,
     pub(super) transcript_conversation_id: Option<String>,
+    pub(super) edit_revision_cache: std::cell::RefCell<Option<editing::RevisionCache>>,
+    /// Cached estimate for a parked history projection. Cleared whenever an
+    /// addressed session re-enters the cache; never serialized on each poll.
+    pub(super) history_cache_weight: Option<(u64, usize, usize)>,
     pub(super) active_state: ActiveState,
+    pub(super) native_controls: super::native_control::NativeControls,
     pub(super) gateway_runner: Option<Runner>,
     pub(super) execution_runtime_id: Option<String>,
     /// Immutable launch/provider configuration of the prepared execution.
@@ -41,18 +56,18 @@ pub(super) struct Session {
     /// A native fork that is only persisted when its first turn starts.
     /// Unlike an empty new conversation, reconfiguration must keep its
     /// inherited source and boundary instead of replacing it with a blank one.
-    pub(super) pending_native_fork: Option<velune_agent_runtime::native::PendingFork>,
+    pub(super) pending_native_fork:
+        Option<velune_agent_runtime::creation::Retained<velune_agent_runtime::native::PendingFork>>,
     /// One new Codex thread's quoted context, consumed during creation.
     pub(super) reference_context: Option<String>,
     pub(super) gateway_tunnel: Option<velune_agent_runtime::execution::LoopbackTunnel>,
     /// Private execution files of this session's runtime; see `CoreRuntime::lane`.
     pub(super) lane: Option<usize>,
     pub(super) source: Option<live::SourceWatch>,
-    pub(super) control: Option<control::ControlWatch>,
     /// When this session was last seen executing; its native writes until
     /// shortly after that are Velune's own.
     pub(super) last_execution: Option<std::time::Instant>,
-    /// The user asked to stop the current turn.
+    /// The adapter accepted a request to stop the current turn.
     pub(super) cancel_requested: bool,
     /// Context maintenance must not complete a user turn or advance its queue.
     pub(super) compacting: bool,
@@ -71,6 +86,7 @@ pub(super) struct SideChat {
     pub(super) reference: crate::conversation::ConversationSnapshot,
     pub(super) prior: Vec<crate::conversation::Message>,
     pub(super) prior_executions: velune_conversation::Executions,
+    pub(super) prior_work_notification_ids: Vec<String>,
     pub(super) segment: u64,
     pub(super) context: String,
     pub(super) context_pending: bool,
@@ -79,6 +95,15 @@ pub(super) struct SideChat {
 }
 
 impl Session {
+    /// Keep the unpersisted fork's actual recovery provenance across reconfiguration.
+    pub(super) fn refresh_pending_native_fork(&mut self) -> Result<(), RuntimeError> {
+        if let ActiveState::Native(native) = &self.active_state {
+            self.pending_native_fork = native.pending_fork()
+                .map_err(|error| RuntimeError::context("保留待创建原生分支", error))?;
+        }
+        Ok(())
+    }
+
     /// The conversation's own turn runs.
     pub(super) fn turn_running(&self) -> bool {
         self.active_state
@@ -97,11 +122,11 @@ impl Session {
     /// Work the session's runtime process does besides the turn, such as
     /// native sub-agents the turn started. The process, and the gateway a
     /// turn used, last until it has ended too.
-    pub(super) fn work(&self) -> Vec<velune_agent_runtime::work::BackgroundTask> {
-        self.active_state
-            .live()
-            .map(LiveConversation::work)
-            .unwrap_or_default()
+    pub(super) fn work(&self) -> Result<Retained<Vec<BackgroundTask>>, LiveError> {
+        self.active_state.live().map_or_else(
+            || Ok(Retained::from_parts(Vec::new(), DataRetention::default())),
+            LiveConversation::work,
+        )
     }
 
     pub(super) fn work_settled(&self) -> bool {
@@ -113,7 +138,17 @@ impl Session {
     /// Its runtime connection is still needed by execution or metadata;
     /// visible activity remains the user turn and native background work.
     pub(super) fn executing(&self) -> bool {
-        self.turn_running()
+        self.pi_io_cleanup.is_some()
+            || self.pi_edit.is_some()
+            || self.pi_edit_advancing
+            || self.pi_cleanup_required
+            || self.pi_control.is_some()
+            || self.native_controls.pending()
+            || self
+                .active_state
+                .live()
+                .is_some_and(LiveConversation::has_pending_requests)
+            || self.turn_running()
             || !self.work_settled()
             || self
                 .active_state
@@ -136,16 +171,37 @@ impl Session {
                 .is_some_and(|snapshot| snapshot.conversation.runtime_id == id)
     }
 
-    /// Must stay open: closing it would end work, drop a request the user
-    /// has not answered or drop queued messages.
+    /// Whether closing execution preserves the ability to continue this conversation.
+    pub(super) fn can_reopen_execution(&self) -> bool {
+        self.side.is_none()
+            && self.unsubmitted_draft.is_none()
+            && self.pending_native_fork.is_none()
+            && !self.requires_live_connection()
+    }
+
+    pub(super) fn requires_live_connection(&self) -> bool {
+        self.active_state
+            .live()
+            .is_some_and(|live| !live.supports_reopen())
+    }
+
+    /// Retain continuation that depends on this connection, active work,
+    /// approvals and queued messages.
     pub(super) fn pinned(&self) -> bool {
-        self.side.is_some()
+        !self.can_reopen_execution()
+            || self
+                .source
+                .as_ref()
+                .is_some_and(|watch| watch.refresh_pending)
             || self.naming.is_some()
             || self.executing()
             || !self.send_queue.is_empty()
-            || self
-                .projected()
-                .is_some_and(|snapshot| !snapshot.pending_interactions.is_empty())
+            || self.projected().is_some_and(|snapshot| {
+                snapshot
+                    .pending_interactions
+                    .iter()
+                    .any(|interaction| interaction.blocks_turn())
+            })
     }
 
     /// The native view this session shows, before Velune decoration.
@@ -173,6 +229,12 @@ impl Session {
             || self
                 .projected()
                 .is_some_and(|snapshot| snapshot.conversation.id == id)
+    }
+
+    pub(super) fn observes(&self, runtime_id: &str, conversation_id: &str) -> bool {
+        self.projected().is_some_and(|snapshot| {
+            snapshot.context_runtime_id == runtime_id && self.presents(conversation_id)
+        })
     }
 
     /// The identity clients know this conversation by when it differs from
@@ -205,11 +267,86 @@ impl Session {
             && self.unsubmitted_draft.is_none()
             && self.logical_projection.is_none()
     }
+
+    /// Replace the active history projection and invalidate its parked-size
+    /// estimate. Callers use this at every history reload/reprojection path.
+    pub(super) fn set_history(&mut self, snapshot: impl Into<browsing::HistorySnapshot>) {
+        self.active_state = ActiveState::History(Box::new(snapshot.into()));
+        self.invalidate_history_cache_weight();
+    }
+
+    /// Access history for an in-place mutation. Invalidating before the borrow
+    /// makes same-revision, same-count body/header changes safe to account.
+    pub(super) fn history_mut(&mut self) -> Option<&mut crate::conversation::ConversationSnapshot> {
+        self.invalidate_history_cache_weight();
+        match &mut self.active_state {
+            ActiveState::History(snapshot) => Some(snapshot),
+            _ => None,
+        }
+    }
+
+    fn history_cache_weight(&mut self) -> usize {
+        let key = match &self.active_state {
+            ActiveState::History(snapshot) => (snapshot.revision, snapshot.messages.len()),
+            _ => {
+                self.history_cache_weight = None;
+                return 0;
+            }
+        };
+        if let Some((revision, messages, bytes)) = self.history_cache_weight
+            && (revision, messages) == key
+        {
+            return bytes;
+        }
+        let bytes = match &self.active_state {
+            ActiveState::History(snapshot) => serialized_size_estimate(&snapshot.snapshot),
+            _ => 0,
+        };
+        self.history_cache_weight = Some((key.0, key.1, bytes));
+        bytes
+    }
+
+    pub(super) fn invalidate_history_cache_weight(&mut self) {
+        self.history_cache_weight = None;
+    }
 }
 
 /// Idle sessions kept open besides pinned ones, so several windows can each
 /// keep showing their conversation.
 const RETAINED_IDLE_SESSIONS: usize = 8;
+/// History-only projections are cheap to reopen and back the bounded set of
+/// conversation views that may be polling concurrently. Live runtimes remain
+/// separately capped by `RETAINED_IDLE_SESSIONS`.
+const RETAINED_HISTORY_SESSIONS: usize = 128;
+/// A count cap alone lets a handful of very long conversations retain many
+/// gigabytes. This is a serialized-size estimate for parked history snapshots,
+/// not a claim about allocator or resident memory.
+const RETAINED_HISTORY_BYTES: usize = 64 * 1024 * 1024;
+
+/// Count serialized bytes without allocating a second copy of a full history.
+/// The estimate is computed only when a history projection changes.
+#[derive(Default)]
+struct ByteCounter(usize);
+
+impl std::io::Write for ByteCounter {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0 = self.0.saturating_add(bytes.len());
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+fn serialized_size_estimate(value: &impl serde::Serialize) -> usize {
+    let mut counter = ByteCounter::default();
+    if serde_json::to_writer(&mut counter, value).is_ok() {
+        counter.0
+    } else {
+        0
+    }
+}
 
 /// Turns that ended recently, for clients that poll activity.
 #[derive(Default)]
@@ -222,6 +359,37 @@ pub(super) struct FinishedTurns {
 const RETAINED_FINISHED_TURNS: usize = 64;
 
 impl CoreRuntime {
+    /// Replace the complete set observed by active client views. The same
+    /// projection identities protect both parked history and delivered payloads.
+    pub(crate) fn replace_observed_conversations(
+        &mut self,
+        observed: std::collections::BTreeSet<(String, String)>,
+    ) {
+        if self.observed_conversations == observed {
+            return;
+        }
+        self.observed_conversations = observed;
+        self.trim_history_projections();
+        self.delivery
+            .trim_for_observations(&self.observed_conversations);
+    }
+
+    /// Configuration for new connections can change while a live-only session
+    /// keeps the configuration it was created with.
+    pub(super) fn preserves_connection_configuration(&self) -> bool {
+        self.session.requires_live_connection()
+            && self
+                .session
+                .execution_configuration
+                .as_ref()
+                .is_some_and(|saved| {
+                    self.runtime_instance(&saved.runtime.id)
+                        .is_ok_and(|current| {
+                            current.enabled && current.type_id == saved.runtime.type_id
+                        })
+                })
+    }
+
     /// Address the open session of conversation `id`, if there is one.
     pub(super) fn focus_existing(&mut self, id: &str) -> bool {
         if self.session.presents(id) {
@@ -268,6 +436,9 @@ impl CoreRuntime {
 
     fn park(&mut self, session: Session) {
         if !session.is_empty() {
+            // History writers invalidate at their authoritative replacement
+            // or mutation point; preserving the weight here avoids rescanning
+            // every unchanged client-view enter/leave cycle.
             self.parked.push(session);
         }
     }
@@ -318,7 +489,7 @@ impl CoreRuntime {
         let ActiveState::Native(native) = &session.active_state else {
             return false;
         };
-        !native.work().is_empty()
+        native.work().map_or(true, |work| !work.is_empty())
             || native.snapshot().is_some_and(|view| {
                 view.messages
                     .iter()
@@ -329,30 +500,71 @@ impl CoreRuntime {
             })
     }
 
-    /// Close the least recently used idle sessions beyond the retained number.
-    /// One whose native sub-agents still run is not idle.
+    /// Close the least recently used reopenable idle sessions beyond the
+    /// retained number. Sessions with outstanding work stay connected.
     pub(super) fn trim_sessions(&mut self) {
-        let mut kept: Vec<bool> = self
+        let kept: Vec<bool> = self
             .parked
             .iter()
             .map(|session| session.pinned() || self.runs_sub_agents(session))
             .collect();
-        let mut idle = kept.iter().filter(|kept| !**kept).count();
+        let mut live_idle = self
+            .parked
+            .iter()
+            .zip(&kept)
+            .filter(|(session, pinned)| !**pinned && session.active_state.live().is_some())
+            .count();
         let mut index = 0;
-        while idle > RETAINED_IDLE_SESSIONS && index < self.parked.len() {
+        while live_idle > RETAINED_IDLE_SESSIONS && index < self.parked.len() {
             if kept[index] {
                 index += 1;
                 continue;
             }
-            kept.remove(index);
-            let session = self.parked.remove(index);
-            let previous = std::mem::replace(&mut self.session, session);
-            if let Err(error) = self.shutdown_active() {
-                tracing::warn!(target: "velune_application", event = "session_close_failed", detail = %error);
+            if self.parked[index].active_state.live().is_some() {
+                let session = self.parked.remove(index);
+                let previous = std::mem::replace(&mut self.session, session);
+                let snapshot = match self.owned_native_snapshot() {
+                    Ok(snapshot) => snapshot,
+                    Err(error) => {
+                        tracing::warn!(target:"velune_application",event="session_history_credit_refused",detail=%error);
+                        let session = std::mem::replace(&mut self.session, previous);
+                        self.parked.insert(index, session);
+                        index += 1;
+                        continue;
+                    }
+                };
+                if let Err(error) = self.shutdown_active() {
+                    tracing::warn!(target: "velune_application", event = "session_close_failed", detail = %error);
+                }
+                if let Some(snapshot) = snapshot {
+                    self.session.set_history(snapshot);
+                    self.session.history_cache_weight();
+                }
+                let mut previous = std::mem::replace(&mut self.session, previous);
+                previous.invalidate_history_cache_weight();
+                self.parked.insert(index, previous);
+                live_idle -= 1;
             }
-            self.session = previous;
-            idle -= 1;
+            index += 1;
         }
+        self.trim_history_projections();
+    }
+
+    fn trim_history_projections(&mut self) {
+        // Live-to-history conversion swaps the addressed session back into
+        // `parked`; recompute protection against the new order so work,
+        // approvals and accepted queue entries remain pinned. This method is
+        // also used by visibility updates and performs no native IO.
+        let mut history_kept: Vec<bool> = self
+            .parked
+            .iter()
+            .map(|session| session.pinned() || self.runs_sub_agents(session))
+            .collect();
+        trim_history_sessions(
+            &mut self.parked,
+            &mut history_kept,
+            &self.observed_conversations,
+        );
     }
 
     /// Execution files private to the addressed session, below the runtime's
@@ -373,6 +585,9 @@ impl CoreRuntime {
 
     /// Record how the addressed session's turn ended.
     pub(super) fn record_finished_turn(&mut self) -> Option<crate::TurnOutcome> {
+        if self.session.native_controls.awaiting_turn_acceptance() {
+            return None;
+        }
         let view = self.session.projected()?;
         let activity = view.executions.current.as_ref()?.clone();
         if !activity.ended || self.session.finished_activity.as_ref() == Some(&activity.id) {
@@ -452,9 +667,17 @@ impl CoreRuntime {
                 continue;
             };
             let id = session.conversation_id().unwrap_or_default();
-            let pending = view.pending_interactions.len();
-            let work = session.work();
-            let local_work = work.iter().any(|task| task.conversation_id.is_none())
+            let pending = view
+                .pending_interactions
+                .iter()
+                .filter(|interaction| {
+                    interaction.blocks_turn() && self.interaction_is_visible(id, interaction)
+                })
+                .count();
+            let observation = session.work();
+            let work = observation.as_ref().map_or(&[][..], |tasks| tasks.as_slice());
+            let local_work = observation.is_err()
+                || work.iter().any(|task| task.conversation_id.is_none())
                 || (work.is_empty() && !session.work_settled());
             if session.turn_running() || pending > 0 || local_work {
                 active.push(crate::ActiveConversation {
@@ -475,10 +698,11 @@ impl CoreRuntime {
                     },
                     pending_interactions: pending as u32,
                     parent_conversation_id: None,
+                    blocks_idle_submission: session.turn_running() || pending > 0,
                 });
             }
-            active.extend(work.into_iter().filter_map(|task| {
-                task.conversation_id
+            active.extend(work.iter().filter_map(|task| {
+                task.conversation_id.as_ref().cloned()
                     .map(|conversation_id| crate::ActiveConversation {
                         context_runtime_id: view.conversation.runtime_id.clone(),
                         conversation_id,
@@ -490,6 +714,7 @@ impl CoreRuntime {
                         },
                         pending_interactions: 0,
                         parent_conversation_id: Some(id.into()),
+                        blocks_idle_submission: true,
                     })
             }));
         }
@@ -499,9 +724,242 @@ impl CoreRuntime {
                 .any(|known| known.conversation_id == item.conversation_id)
             {
                 item.parent_conversation_id = self.sub_agent_parent(&item.conversation_id);
-                active.push(item);
+                if !self.child_finished_by_local_runtime(
+                    item.parent_conversation_id.as_deref(),
+                    &item.conversation_id,
+                ) {
+                    active.push(item);
+                }
             }
         }
         active
+    }
+}
+
+/// Drop least-recently-used reopenable history sessions until both limits
+/// hold. The addressed session and every pinned parked session are protected.
+pub(super) fn trim_history_sessions(
+    parked: &mut Vec<Session>,
+    kept: &mut Vec<bool>,
+    observed: &std::collections::BTreeSet<(String, String)>,
+) {
+    let mut history_count = 0usize;
+    let mut history_bytes = 0usize;
+    for session in parked.iter_mut() {
+        if matches!(session.active_state, ActiveState::History(_)) {
+            history_count += 1;
+            history_bytes = history_bytes.saturating_add(session.history_cache_weight());
+        }
+    }
+    let mut index = 0;
+    while (history_count > RETAINED_HISTORY_SESSIONS || history_bytes > RETAINED_HISTORY_BYTES)
+        && index < parked.len()
+    {
+        if kept[index]
+            || !matches!(parked[index].active_state, ActiveState::History(_))
+            || observed
+                .iter()
+                .any(|(runtime_id, id)| parked[index].observes(runtime_id, id))
+        {
+            index += 1;
+            continue;
+        }
+        let removed = parked.remove(index);
+        kept.remove(index);
+        history_count -= 1;
+        history_bytes = history_bytes.saturating_sub(
+            removed
+                .history_cache_weight
+                .map_or(0, |(_, _, bytes)| bytes),
+        );
+        index = 0;
+    }
+}
+
+#[cfg(test)]
+mod history_cache_tests {
+    use super::*;
+
+    fn history_session(id: &str, weight: usize) -> Session {
+        let mut snapshot: crate::conversation::ConversationSnapshot = serde_json::from_value(
+            serde_json::json!({
+                "revision": 1,
+                "conversation": {"id": id, "title": {"source": "untitled"}, "runtimeId": "synthetic"},
+                "contextRuntimeId": "synthetic", "resourceId": null, "modelRecordKey": null,
+                "runState": "idle", "messages": [], "transcriptTurns": [], "transcriptItems": [],
+                "transcriptOutline": [], "transcriptMessageIdentities": [],
+                "actions": {"canSend": true, "canCancel": false, "canSwitch": true}
+            }),
+        )
+        .unwrap();
+        snapshot.messages.push(crate::conversation::Message {
+            completed: true,
+            id: "synthetic-message".into(),
+            role: crate::conversation::MessageRole::Assistant,
+            timestamp_unix_ms: None,
+            blocks: vec![crate::conversation::MessageBlock::Text {
+                text: "x".repeat(weight),
+            }],
+            turn_settings: None,
+            turn_usage: None,
+            branch_point: None,
+        });
+        Session {
+            active_state: ActiveState::History(Box::new(snapshot.into())),
+            ..Session::default()
+        }
+    }
+
+    #[test]
+    fn byte_budget_evicts_oldest_reopenable_history_and_preserves_pinned_views() {
+        let mut parked = vec![
+            history_session("protected", 20 * 1024 * 1024),
+            history_session("oldest", 30 * 1024 * 1024),
+            history_session("newest", 20 * 1024 * 1024),
+        ];
+        let mut kept = vec![true, false, false];
+
+        trim_history_sessions(&mut parked, &mut kept, &std::collections::BTreeSet::new());
+
+        let ids: Vec<_> = parked
+            .iter()
+            .filter_map(|session| {
+                session
+                    .projected()
+                    .map(|view| view.conversation.id.as_str())
+            })
+            .collect();
+        assert_eq!(ids, ["protected", "newest"]);
+        let retained_bytes: usize = parked
+            .iter()
+            .filter_map(|session| session.history_cache_weight.map(|(_, _, bytes)| bytes))
+            .sum();
+        assert!(retained_bytes <= RETAINED_HISTORY_BYTES);
+        let content_length = |index: usize| {
+            let snapshot = parked[index].projected().unwrap();
+            let crate::conversation::MessageBlock::Text { text } = &snapshot.messages[0].blocks[0]
+            else {
+                panic!("synthetic history message should remain complete")
+            };
+            text.len()
+        };
+        assert_eq!(content_length(0), 20 * 1024 * 1024);
+        assert_eq!(content_length(1), 20 * 1024 * 1024);
+    }
+
+    #[test]
+    fn visible_history_exceeds_soft_byte_budget_until_its_observation_is_removed() {
+        let mut first = history_session("visible-first", 1);
+        let mut second = history_session("visible-second", 1);
+        let mut hidden = history_session("hidden", 1);
+        first.history_cache_weight = Some((1, 1, 40 * 1024 * 1024));
+        second.history_cache_weight = Some((1, 1, 40 * 1024 * 1024));
+        hidden.history_cache_weight = Some((1, 1, 1 * 1024 * 1024));
+        let mut parked = vec![first, second, hidden];
+        let mut kept = vec![false; parked.len()];
+        let visible = std::collections::BTreeSet::from([
+            ("synthetic".into(), "visible-first".into()),
+            ("synthetic".into(), "visible-second".into()),
+        ]);
+
+        trim_history_sessions(&mut parked, &mut kept, &visible);
+        assert_eq!(parked.len(), 2);
+        let retained = parked
+            .iter()
+            .filter_map(|session| session.history_cache_weight.map(|(_, _, bytes)| bytes))
+            .sum::<usize>();
+        assert_eq!(retained, 80 * 1024 * 1024);
+        assert!(
+            parked
+                .iter()
+                .all(|session| session.projected().is_some_and(|snapshot| {
+                    visible.contains(&(
+                        snapshot.context_runtime_id.clone(),
+                        session.conversation_id().unwrap().to_owned(),
+                    ))
+                }))
+        );
+
+        let remaining =
+            std::collections::BTreeSet::from([("synthetic".into(), "visible-second".into())]);
+        kept = vec![false; parked.len()];
+        trim_history_sessions(&mut parked, &mut kept, &remaining);
+        assert_eq!(parked.len(), 1);
+        assert_eq!(parked[0].conversation_id(), Some("visible-second"));
+    }
+
+    #[test]
+    fn parked_weight_is_invalidated_after_same_revision_message_growth() {
+        let mut session = history_session("synthetic", 32);
+        let before = session.history_cache_weight();
+        let ActiveState::History(snapshot) = &session.active_state else {
+            unreachable!()
+        };
+        let mut replacement = snapshot.try_clone().unwrap();
+        let crate::conversation::MessageBlock::Text { text } =
+            &mut replacement.messages[0].blocks[0]
+        else {
+            unreachable!()
+        };
+        text.push_str(&"y".repeat(1024));
+        assert_eq!(replacement.revision, 1, "the source may reuse its revision");
+        assert_eq!(
+            replacement.messages.len(),
+            1,
+            "the message count is unchanged"
+        );
+
+        session.set_history(replacement);
+        assert!(session.history_cache_weight.is_none());
+        assert!(session.history_cache_weight() > before);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn history_eviction_does_not_reset_shared_control_observation() {
+        use std::{
+            fs,
+            time::{Duration, Instant},
+        };
+
+        let agent_dir =
+            std::env::temp_dir().join(format!("velune-memory-control-{}", std::process::id()));
+        let locks = agent_dir.join("thread-writer-locks");
+        fs::create_dir_all(&locks).unwrap();
+        let native_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+        let target = velune_agent_runtime::control::Target {
+            execution: velune_agent_runtime::execution::ExecutionTarget::Local,
+            os_home: None,
+            kind: velune_agent_runtime::version::RuntimeKind::Codex166,
+            agent_dir: agent_dir.clone(),
+            native_id: native_id.into(),
+            node_binary: PathBuf::from("/usr/bin/node"),
+            resources: PathBuf::from("/synthetic/resources"),
+        };
+        let oversized = history_session("oversized", RETAINED_HISTORY_BYTES + 1);
+        let observations = control::ControlObservations::new().unwrap();
+        assert_eq!(
+            observations.access(target.clone()),
+            crate::conversation::InputAccess::CheckingControl
+        );
+        let mut parked = vec![oversized];
+        let mut kept = vec![false];
+        trim_history_sessions(&mut parked, &mut kept, &std::collections::BTreeSet::new());
+        assert!(
+            parked.is_empty(),
+            "the transcript exceeded the byte budget and was evicted"
+        );
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let status = loop {
+            let status = observations.access(target.clone());
+            if status != crate::conversation::InputAccess::CheckingControl
+                || Instant::now() >= deadline
+            {
+                break status;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        assert_eq!(status, crate::conversation::InputAccess::Editable);
+        fs::remove_dir_all(agent_dir).unwrap();
     }
 }

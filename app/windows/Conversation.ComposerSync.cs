@@ -146,7 +146,7 @@ sealed partial class Conversation
         }
         else if (preparedComposerTarget is { } prepared) Next = prepared.DefaultRuntimeId;
         else if (Snapshot != null) FollowCurrentRuntime();
-        else Next = Target.RuntimeID;
+        else Next = DefaultNewComposerRuntime();
         intent.Clear(); foreach (var choice in choices.Choices.Where(choice => choice.OwnerId == composerOwner || composerOwner == null && choice.OwnerId.Length == 0)) intent[choice.RuntimeId] = choice.Choice;
         Notify(); LoadCatalog(Next, false);
     }
@@ -155,9 +155,14 @@ sealed partial class Conversation
         composerTargetRevision = target.Revision; composerTargetLoaded = true;
         ReceiveTargetChoices(target.Choices);
     }
-    ComposerTargetRequest ComposerTargetRequest() => new(
-        Snapshot?.Conversation.RuntimeId ?? Target.RuntimeID,
-        Target.Unsent ? null : Target.ConversationID);
+    // A restored empty tab can be constructed before its device's configuration arrives.
+    string DefaultNewComposerRuntime() => Configuration.Runtimes.Any(runtime => runtime.Enabled && runtime.Id == Target.RuntimeID)
+        ? Target.RuntimeID
+        : Configuration.Runtimes.FirstOrDefault(runtime => runtime.Enabled)?.Id ?? "";
+
+    ComposerTargetRequest ComposerTargetRequest() => Target.Unsent
+        ? new(DefaultNewComposerRuntime(), null)
+        : new(Snapshot?.Conversation.RuntimeId ?? Target.RuntimeID, Target.ConversationID);
     NextTurn? PreparedNextTurn()
     {
         if (preparedComposerTarget is not { } prepared || prepared.Request != ComposerTargetRequest()
@@ -325,14 +330,27 @@ sealed partial class Conversation
                 if (state.Targets.FirstOrDefault(target => target.Context == context) is { } target) ObserveComposerTarget(target);
             }
             composerLoaded = true;
-            var overlay = composerTargetDirty ? ComposerTargetContent() : null;
-            var prepared = await Call(NativeOperation.ConversationWrite, application => application.PrepareComposerTarget(request, overlay));
-            if (closed || request != ComposerTargetRequest()) return;
-            if (prepared.OwnerId != composerOwner) throw new InvalidOperationException("执行端身份已改变，请重新打开会话，输入已保留");
-            preparedComposerTarget = prepared;
-            ObserveComposerTarget(prepared.Target);
+            request = ComposerTargetRequest();
+            var runtimeId = intentRuntime ?? request.RuntimeId;
+            var canPrepare = !Target.Unsent || Configuration.Runtimes.Any(runtime => runtime.Enabled && runtime.Id == runtimeId);
+            if (canPrepare)
+            {
+                var overlay = composerTargetDirty ? ComposerTargetContent() : null;
+                var prepared = await Call(NativeOperation.ConversationWrite, application => application.PrepareComposerTarget(request, overlay));
+                if (closed || request != ComposerTargetRequest()) return;
+                if (prepared.OwnerId != composerOwner) throw new InvalidOperationException("执行端身份已改变，请重新打开会话，输入已保留");
+                preparedComposerTarget = prepared;
+                ObserveComposerTarget(prepared.Target);
+            }
+            else
+            {
+                preparedComposerTarget = null;
+                if (intentRuntime == null) Next = request.RuntimeId;
+            }
             await FlushComposer();
-            CacheComposer(); composerFailure = null;
+            CacheComposer();
+            composerFailure = !canPrepare && intentRuntime != null ? "所选运行时不可用，输入已保留。" : null;
+            Problems.Recovered("composer:" + ComposerCachePath);
         }
         catch (Exception failure) { composerReadRequired = true; composerFailure = Core.Describe(failure); Problems.Failing("composer:" + ComposerCachePath, "接续输入", failure, Device); }
         finally { composerPolling = false; if (!closed) Notify(); }

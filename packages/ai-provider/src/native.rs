@@ -67,9 +67,9 @@ impl NativeHttp {
         })
     }
 
-    /// The body to send, or why it may not be sent.
-    fn prepare(&self, request: &NativeRequest) -> Result<Value, NativeErrorKind> {
-        let mut body = request.body.get().clone();
+    /// Adapt the owned body and build the outgoing request before dispatch.
+    fn prepare(&self, request: NativeRequest) -> Result<reqwest::Request, NativeErrorKind> {
+        let mut body = request.body.into_inner();
         if !body.is_object() || body["model"].as_str() != Some(request.model.as_str()) {
             return Err(NativeErrorKind::InvalidInput);
         }
@@ -77,7 +77,7 @@ impl NativeHttp {
             if !request.stream || responses::codex_request(&mut body).is_err() {
                 return Err(NativeErrorKind::Unsupported);
             }
-            return Ok(body);
+            return self.build(&body, &request.headers, request.stream);
         }
         let output_caps: &[&str] = match self.target.protocol() {
             Protocol::ChatCompletions => &["max_tokens", "max_completion_tokens"],
@@ -99,7 +99,7 @@ impl NativeHttp {
         {
             return Err(NativeErrorKind::InvalidInput);
         }
-        Ok(body)
+        self.build(&body, &request.headers, request.stream)
     }
 
     fn build(
@@ -200,17 +200,14 @@ impl NativeProvider for NativeHttp {
         request: NativeRequest,
         events: NativeSink,
     ) -> OperationFuture<NativeCompletion> {
-        let prepared = self
-            .prepare(&request)
-            .and_then(|body| self.build(&body, &request.headers, request.stream));
-        let http = match prepared {
+        let stream = request.stream;
+        let http = match self.prepare(request) {
             Ok(http) => http,
             Err(kind) => return Box::pin(async move { Err(NativeFailure::unsent(kind)) }),
         };
         let client = self.client.inner.clone();
         let protocol = self.target.protocol();
         let profile = self.target.request_profile();
-        let stream = request.stream;
         Box::pin(async move {
             let response = client.execute(http).await.map_err(|error| {
                 NativeFailure::sent(

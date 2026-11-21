@@ -25,7 +25,7 @@ Codex 订阅的前端接入复用 `authentication_start`／`authentication_poll`
 
 邀请、wire 与 ALPN 为 v2，普通状态为 schema 3，身份文件仍为 schema 1；不保留旧契约兼容。`decode_remote_offer(encoded)` 无需服务即可离线解析最多 1024 字节的邀请；`begin_pairing` 由 Rust 固定公钥、派生八位码、原子保存 pin/attempt，再发送 Ready。`PairingStatus` 投影 AwaitingReady、AwaitingApproval、Granted、Rejected、Expired、Disconnected；代码是 String，保留前导零。执行端本地 `approve_pairing(attempt_id, expected_peer_id)`／`reject_pairing` 只处理这个不可变候选，不接受网络业务批准。Granted 才调用 `connect(peer_id, view_id)` 取得完整业务代理。`pairing_status(peer_id)` 查询原事务，最终回执丢失或冷启仍可恢复；执行端不回调，因此 `begin_pairing` 之后以及服务打开时，Rust 会对未确认的联系人每 2 秒查询一次，直到得到答复、事务失效或超过 10 分钟，确认结果经 `observe_state` 送达，平台无需自行轮询；名称不是身份，入站 grant 不由联系人 pin 推导。
 
-`read_state`／`observe_state().next(timeout_ms)` 提供 contacts、incoming_grants、incoming/outgoing_pairings、controllers、network、多个 pending 与 reset_notice 的版本化安全快照。观察等待为 1–5000 毫秒，落后读取完整投影，不把快照当全部事件。联系人不保存 incarnation；pending 的完整请求 ID 固定原 incarnation，但不保存业务正文或 Completed payload。版本低于当前 schema 4 的状态文件重置为空并留下 `reset_notice`，更高版本拒绝打开且不覆盖。
+`read_state`／`observe_state().next(timeout_ms)` 提供 contacts、members、incoming_grants、incoming/outgoing_pairings、controllers、network、多个 pending 与 reset_notice 的版本化安全快照。`members` 是当前有效的本机设备网成员及可执行能力提示，供发现成员管理；`incoming_grants` 保留直接完成配对的事实与旧回执栅栏，不等于当前信任，不用虚构 attempt 表示传递成员。观察等待为 1–5000 毫秒，落后读取完整投影，不把快照当全部事件。联系人不保存 incarnation；pending 的完整请求 ID 固定原 incarnation，但不保存业务正文或 Completed payload。普通状态使用 schema 6；已知 v3／v4／v5 先核验备份，保留授权、排除与未决记录后迁移有效直接 Control 成员关系，未知版本或损坏格式拒绝打开且不覆盖。`controllers.via_device_ids` 提供实际中转设备，业务目标与请求身份仍属于最终目的设备和原控制者。
 
 远程代理与本地应用使用同一组具名方法，平台界面不区分本地和远端。普通方法调用 Effect 时，Rust 自动分配请求 ID，在发送前保存 peer、完整 ID、view、execution、CommandKind 及安全定位；保存失败或容量已满时零发送。结果确定（成功或业务失败）后自动确认，结果不明时保留 pending，不自动重发。代理不关闭共享 Controller／view：base proxy shutdown 只关闭该 view。停止执行仍使用具名 cancel／stop_sub_agents。
 
@@ -34,6 +34,8 @@ Running、Unknown、ResultExpired、ServerRestarted 与传输不明保留 pendin
 `VeluneApplication.connection_status` 返回远程连接的路径快照与连接标识，不包含原始地址或正文；平台网络事实通过 `report_network_change(snapshot)` 输入，返回序号仅代表通知收到。网络替换后由 Rust 的同一 Controller 恢复连接。`set_controller_activity(peer_id, selected, foreground)` 报告选中／前后台，`controller_status` 返回 Disconnected、Suspended、Discovering、Connecting、Connected、Recovering、Blocked 及准确 epoch／安全错误码。活动事实不解除 Blocked；显式 `connect` 才恢复。调用方按 epoch 刷新业务投影，不另建重连器或重发写操作。
 
 `read_state` 的 `network`（`NetworkState`）区分保存目标、网络代际已应用与实际观察的设施可达性；Unknown 不表示可达，lookup 注册也不是发布证明。普通摘要只给中继 URL 和是否已配置凭据。启动时保存目标动态不可应用也保留可读的稳定对象。
+
+各端连接设置使用 `read_network_state()` 读取同一安全摘要，`apply_relay_settings(expected_revision, relay, credentials)` 提交中继和完整资格表，保留已保存的 discovery、mDNS、路径策略、绑定地址和超时。`RelayCredentialEdit` 按 URL 指定 `CredentialEdit.Keep`／`Set { value }`／`Remove`，省略条目表示移除；平台必须保留未编辑的资格，不能把旧 token 自动转移到新 URL。修订冲突返回错误并保留编辑内容。`retry_network()` 重试当前保存目标，不回退旧设施。三者不关闭业务 owner 或重置配对。
 
 `BindingRemoteNetworkOptions.local_discovery` 控制生产 mDNS，公网预设与自定义 lookup 并行；本地接口变化由 `report_network_change` 带入。lookup 为有界 `lookup_urls`；联系人投影带线索来源（配对邀请或已认证对端）。被明确撤除的 lookup 跨冷启动保留禁用，Hello 不能恢复。
 

@@ -45,7 +45,7 @@ impl From<std::io::Error> for Error {
     }
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(
     tag = "kind",
     content = "ssh",
@@ -58,7 +58,7 @@ pub enum ExecutionTarget {
     Ssh(SshTarget),
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(deny_unknown_fields)]
 pub struct SshTarget {
     pub binary: PathBuf,
@@ -158,6 +158,31 @@ impl ExecutionTarget {
     ) -> Result<Vec<u8>> {
         let prepared = self.prepare_lifetime(command, os_home, false)?;
         run_prepared(prepared, input)
+    }
+
+    /// A multi-step observation shares one budget, including SSH and helper startup.
+    pub(crate) fn probe_output(
+        &self,
+        command: Command,
+        input: Option<Vec<u8>>,
+        os_home: Option<&Path>,
+        budget: &crate::probe::ProbeBudget,
+    ) -> Result<Vec<u8>> {
+        let prepared = self.prepare_lifetime(command, os_home, false)?;
+        let mut bytes = prepared.input_prefix;
+        if let Some(input) = input {
+            bytes.extend(input);
+        }
+        crate::native::rpc::bounded_process_with_budget(
+            prepared.command,
+            (!bytes.is_empty()).then_some(bytes),
+            32768,
+            budget,
+        )
+        .map_err(|error| Error {
+            code: error.code(),
+            detail: error.to_string(),
+        })
     }
 
     pub fn create_dir_all(&self, path: &Path) -> Result<()> {
@@ -325,7 +350,9 @@ pub fn install_resources(target: &ExecutionTarget, local: &Path, remote: &Path) 
         "pi_sessions.mjs",
         "pi_rpc.mjs",
         "pi_virtual_model.mjs",
+        "pi_transcript.mjs",
         "pi_background_work.mjs",
+        "pi_subagents.mjs",
         "pi_auth.mjs",
         "pi_provider_import.mjs",
         "huihua_sessions.mjs",

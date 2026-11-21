@@ -145,6 +145,12 @@ pub struct PathObserver {
     closed: tokio::sync::watch::Receiver<bool>,
     initial: bool,
     ended: bool,
+    route: Option<RoutedObservation>,
+}
+struct RoutedObservation {
+    peer: String,
+    connection: Arc<crate::mesh::RoutedConnection>,
+    closed: tokio::sync::watch::Receiver<bool>,
 }
 impl PathObserver {
     #[cfg(feature = "diagnostics")]
@@ -160,7 +166,21 @@ impl PathObserver {
             closed,
             initial: true,
             ended: false,
+            route: None,
         }
+    }
+    pub(crate) fn with_route(
+        mut self,
+        peer: String,
+        connection: Arc<crate::mesh::RoutedConnection>,
+    ) -> Self {
+        let closed = connection.subscribe_closed();
+        self.route = Some(RoutedObservation {
+            peer,
+            connection,
+            closed,
+        });
+        self
     }
     /// Returns the initial snapshot, then native path changes; Lagged retains its original count.
     /// A withdrawn generation yields one final closed snapshot and releases native resources.
@@ -171,14 +191,26 @@ impl PathObserver {
         let missed_events = if self.initial {
             self.initial = false;
             0
-        } else if *self.closed.borrow() {
+        } else if *self.closed.borrow()
+            || self
+                .route
+                .as_ref()
+                .is_some_and(|route| route.connection.is_closed())
+        {
             self.ended = true;
             0
         } else {
             let event = match &mut self.events {
-                Some(events) => tokio::select! {
-                    event = events.next() => event,
-                    _ = self.closed.changed() => None,
+                Some(events) => match self.route.as_mut() {
+                    Some(route) => tokio::select! {
+                        event = events.next() => event,
+                        _ = self.closed.changed() => None,
+                        _ = route.closed.changed() => None,
+                    },
+                    None => tokio::select! {
+                        event = events.next() => event,
+                        _ = self.closed.changed() => None,
+                    },
                 },
                 None => None,
             };
@@ -192,10 +224,21 @@ impl PathObserver {
             }
         };
         let mut status = self.connection.status();
+        if let Some(route) = &self.route {
+            status.peer_id = route.peer.clone();
+            status.closed |= route.connection.is_closed();
+            if !route.connection.via_device_ids().is_empty() {
+                for path in &mut status.paths {
+                    path.kind = PathKind::Other;
+                }
+            }
+        }
         if self.ended || status.closed {
             self.ended = true;
             status.closed = true;
-            self.connection.close(b"observation ended");
+            if self.route.is_none() {
+                self.connection.close(b"observation ended");
+            }
             self.events = None;
         }
         Some(PathObservation {
