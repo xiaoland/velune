@@ -11,12 +11,20 @@ impl CoreRuntime {
         request: &ComposerTargetRequest,
     ) -> Result<Option<crate::conversation::ConversationSnapshot>, RuntimeError> {
         match &request.conversation_id {
+            // A stable unsent-tab identity owns choices before a native
+            // conversation exists. It must never query a runtime transcript.
+            Some(id) if id.starts_with("draft:") => Ok(None),
             Some(id) => {
                 if id.starts_with("side-chat:") {
                     return Err(RuntimeError::invalid("侧聊使用自己的临时执行选择"));
                 }
+                // The request names the logical source, while snapshots are
+                // addressed in the runtime of the current native segment.
+                let context_runtime_id = self
+                    .conversation_source_address(&request.runtime_id, id)?
+                    .context_runtime_id;
                 Ok(Some(
-                    self.queried_snapshot(&request.runtime_id, id)?
+                    self.queried_snapshot(&context_runtime_id, id)?
                         .ok_or_else(|| RuntimeError::invalid("目标会话尚不可用"))?,
                 ))
             }
@@ -58,13 +66,37 @@ impl CoreRuntime {
         if !runtime.enabled {
             return Err(RuntimeError::invalid("所选运行时已停用，输入已保留"));
         }
+        let input = self.conversation_next_turn_input(
+            &runtime,
+            snapshot.as_ref(),
+            choices
+                .choices
+                .iter()
+                .find(|choice| choice.owner_id == owner_id && choice.runtime_id == runtime.id)
+                .map(|choice| choice.choice.clone()),
+        )?;
+        Ok(ComposerTargetBasis {
+            request,
+            owner_id,
+            context,
+            default_runtime_id,
+            input,
+        })
+    }
+
+    pub(super) fn conversation_next_turn_input(
+        &self,
+        runtime: &RuntimeInstance,
+        snapshot: Option<&crate::conversation::ConversationSnapshot>,
+        kept: Option<crate::config::TurnChoice>,
+    ) -> Result<NextTurnInput, RuntimeError> {
         let providers = self
             .public_gateways()
             .into_iter()
             .find(|gateway| gateway.id == runtime.gateway_id)
             .map(|gateway| gateway.providers)
             .ok_or_else(|| RuntimeError::invalid("所选运行时的网关不可用"))?;
-        let input = NextTurnInput {
+        Ok(NextTurnInput {
             runtime_id: runtime.id.clone(),
             runtime_type: runtime_types()
                 .into_iter()
@@ -87,11 +119,7 @@ impl CoreRuntime {
             model_record_key: snapshot
                 .as_ref()
                 .and_then(|snapshot| snapshot.model_record_key.clone()),
-            kept: choices
-                .choices
-                .iter()
-                .find(|choice| choice.owner_id == owner_id && choice.runtime_id == runtime.id)
-                .map(|choice| choice.choice.clone()),
+            kept,
             runtime_choices: self
                 .composer_choices
                 .runtimes
@@ -99,13 +127,6 @@ impl CoreRuntime {
                 .find(|choice| choice.runtime_id == runtime.id)
                 .cloned(),
             new_conversation: runtime.new_conversation_choice()?,
-        };
-        Ok(ComposerTargetBasis {
-            request,
-            owner_id,
-            context,
-            default_runtime_id,
-            input,
         })
     }
 }

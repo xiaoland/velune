@@ -15,9 +15,8 @@ while [[ $# -gt 0 ]]; do
 done
 [[ "$(uname -s)" == Darwin ]] || { echo '重装需要 macOS 与 Xcode 工具链。' >&2; exit 1; }
 
-# Resolve the same OS-user home used by a normal LaunchServices launch before
-# any build, quit, migration, or installation. Shell development homes fail here.
-home=$(python3 scripts/macos_identity.py daily-home)
+# Validate the daily launch environment before building or quitting the old app.
+python3 scripts/macos_identity.py daily-home >/dev/null
 
 # Keep the current app available throughout the build. A failed build or
 # signature check must not interrupt the conversation it is hosting.
@@ -33,10 +32,6 @@ echo '重装阶段：请求旧版正常退出'
 xcrun swift scripts/quit-macos.swift "$identifier" "$destination"
 echo '重装阶段：安装新版'
 python3 scripts/install-macos.py "$app" --destination "$destination"
-if [[ -d $home ]]; then
-  echo '重装阶段：执行数据迁移'
-  python3 scripts/run-migrations.py --home "$home"
-fi
-echo '重装阶段：后台启动新版'
+echo '重装阶段：请求后台启动新版'
 open -g "$destination"
-printf '已在后台启动：%s\n' "$destination"
+printf '已安装新版并请求后台启动：%s\n' "$destination"

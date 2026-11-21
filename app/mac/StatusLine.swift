@@ -127,10 +127,12 @@ struct ComposerStatusLine: View {
                 return (account.isRecorded && window.period == nil ? "限额" : QuotaWindowObservation.name(window.id)) + " " + label + (short ? "" : "，" + QuotaResetFormat.text(window.resetsAt))
             }
             let balances = (account.quota.balances).map { $0.title + " " + $0.formatted }
-            let values = windows + balances
-            let state = !account.isRecorded && account.quota.freshness == .stale ? "（额度已过期）" : ""
-            return account.title + state + "：" + (values.isEmpty ? QuotaStatusText.summary(account.quota) : values.joined(separator: " · "))
-        }.joined(separator: short ? " · " : "\n")
+            let credits = account.credits.map { short ? $0.compactValue : "credits 余额 \($0.detailValue)" }
+            let values = (credits.map { [$0] } ?? []) + windows + balances
+            let scope = account.credits == nil ? "额度" : "窗口数据"
+            let state = !account.isRecorded && account.quota.freshness == .stale ? "（\(scope)已过期）" : ""
+            return account.title + state + "：" + (values.isEmpty ? QuotaStatusText.summary(account.quota) : values.joined(separator: "，"))
+        }.joined(separator: short ? "；" : "\n")
     }
 }
 
@@ -211,7 +213,7 @@ struct StatusDetails: View {
             ForEach(accounts) { account in
                 Divider()
                 Text(account.title).uiFont(.subheadline.weight(.semibold))
-                if account.quota.available == false { Text("账户当前不可用").uiFont(.caption).foregroundStyle(.orange) }
+                if account.quota.available == false { Text(QuotaStatusText.limitedObservation).uiFont(.caption).foregroundStyle(.secondary) }
                 ForEach(Array(account.windows.enumerated()), id: \.offset) { _, window in
                     QuotaWindowRow(window: window, limit: account.limit(for: window.id),
                                    fresh: account.quota.freshness == .fresh, display: quotaDisplay, showsModels: true, title: account.isRecorded && window.period == nil ? "限额" : nil)
@@ -221,7 +223,13 @@ struct StatusDetails: View {
                 }
                 if account.isRecorded {
                     Text("会话记录，非实时账户查询").uiFont(.caption).foregroundStyle(.secondary)
-                } else { QuotaStatusText(quota: account.quota) }
+                } else if account.credits == nil || account.quota.freshness != .unsupported {
+                    QuotaStatusText(quota: account.quota)
+                }
+                if let credits = account.credits {
+                    LabeledContent("credits 余额", value: credits.detailValue)
+                        .monospacedDigit().textSelection(.enabled)
+                }
             }
             Text("会话用量取自运行时记录；累计为已记录各轮之和，输入含缓存，输出含推理；费用为运行时估算，不代表实际账单。")
                 .uiFont(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)

@@ -16,6 +16,7 @@ import app.velune.bindings.application.TurnChoice
 import java.util.UUID
 import app.velune.bindings.application.ComposedTurn
 import app.velune.bindings.application.DeliveredSnapshot
+import app.velune.bindings.conversation.ControlHandoff
 import app.velune.bindings.conversation.ConversationSummary
 import app.velune.bindings.application.DeliveredMessage
 import app.velune.bindings.conversation.ModelSelection
@@ -56,6 +57,7 @@ data class ConversationState(
     val inputAccess: InputAccess = InputAccess.EDITABLE,
     val canCancel: Boolean = false,
     val canCompact: Boolean = false,
+    val controlHandoff: ControlHandoff? = null,
     val models: List<RuntimeModel> = emptyList(),
     /** None: the runtime's own default. */
     val selection: ModelSelection? = null,
@@ -203,6 +205,7 @@ class ConversationModel(
                 canSend = next.actions.canSend,
                 inputAccess = next.actions.inputAccess,
                 canCompact = next.followUp.canCompact,
+                controlHandoff = next.followUp.controlHandoff,
                 canCancel = next.actions.canCancel,
                 selection = state.selection,
             )
@@ -426,6 +429,14 @@ class ConversationModel(
     fun stop() = act {
         val current = snapshot ?: return@act
         apply(io(NativeOperation.CANCEL) { it.cancel(current.contextRuntimeId, current.conversation.id) })
+    }
+
+    fun setConversationHandoff(release: Boolean) = act {
+        val current = snapshot ?: return@act
+        val handoff = current.followUp.controlHandoff
+        val available = if (release) handoff == ControlHandoff.CAN_RELEASE else handoff == ControlHandoff.RELEASING || handoff == ControlHandoff.RELEASED
+        if (!available) return@act
+        apply(io(NativeOperation.CONVERSATION_WRITE) { it.setConversationHandoff(current.contextRuntimeId, current.conversation.id, release) })
     }
 
     fun reply(interactionId: String, reply: RuntimeInteractionReply) = act {

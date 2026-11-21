@@ -1,18 +1,48 @@
 //! Delivery history behind `crate::transcript_delivery`: stamps changed
 //! messages and answers cursor polls and payload reads.
 use crate::transcript_delivery::*;
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
+use std::io::Write;
 use velune_conversation::{ConversationSnapshot, ImageSource, Message, MessageBlock, MessageRole};
 
 /// Reasoning and tool output longer than this many UTF-8 bytes are read on demand.
 const INLINE_PAYLOAD_LIMIT: usize = 2048;
 /// Conversation views a client may show at once, such as several workspaces.
 const RETAINED_VIEWS: usize = 8;
+/// Delivery keeps full messages for cursor comparison and deferred payload
+/// reads. Bound that duplicate cache independently from parked session views.
+const RETAINED_MESSAGE_BYTES: usize = 64 * 1024 * 1024;
+
+#[derive(Default)]
+struct ByteCounter(usize);
+
+impl Write for ByteCounter {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0 = self.0.saturating_add(bytes.len());
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// A serialized-size estimate, counted without constructing a temporary JSON
+/// buffer. Call only for a new or changed message, never for an unchanged poll.
+fn message_size_estimate(message: &Message) -> usize {
+    let mut counter = ByteCounter::default();
+    if serde_json::to_writer(&mut counter, message).is_ok() {
+        counter.0
+    } else {
+        0
+    }
+}
 
 /// Delivery history of recently presented views, keyed by runtime context and conversation.
 pub(super) struct TranscriptDelivery {
     next_generation: u64,
     views: Vec<View>,
+    retained_message_bytes: usize,
 }
 struct View {
     context_runtime_id: String,
@@ -22,7 +52,8 @@ struct View {
     /// The delivered snapshot without messages, for change detection.
     header: ConversationSnapshot,
     order: Vec<String>,
-    messages: HashMap<String, (u64, Message)>,
+    messages: HashMap<String, (u64, Message, usize)>,
+    message_bytes: usize,
 }
 
 impl TranscriptDelivery {
@@ -35,31 +66,43 @@ impl TranscriptDelivery {
         Self {
             next_generation,
             views: Vec::new(),
+            retained_message_bytes: 0,
         }
     }
 
     /// A complete delivered snapshot; it also becomes the base for later updates.
-    pub(super) fn snapshot(&mut self, snapshot: ConversationSnapshot) -> DeliveredSnapshot {
-        self.record(snapshot).deliver(None)
+    pub(super) fn snapshot(
+        &mut self,
+        snapshot: ConversationSnapshot,
+        observed: &BTreeSet<(String, String)>,
+    ) -> DeliveredSnapshot {
+        let result = self.record(snapshot).deliver(None);
+        self.trim(observed, true);
+        result
     }
 
     pub(super) fn update(
         &mut self,
         snapshot: Option<ConversationSnapshot>,
         since: TranscriptCursor,
+        observed: &BTreeSet<(String, String)>,
     ) -> SnapshotUpdate {
         let Some(snapshot) = snapshot else {
             return SnapshotUpdate::Absent;
         };
         let view = self.record(snapshot);
-        if since.generation == view.generation && since.sequence == view.sequence {
+        let unchanged = since.generation == view.generation && since.sequence == view.sequence;
+        if unchanged {
+            self.trim(observed, true);
             return SnapshotUpdate::Unchanged;
         }
         let base = (since.generation == view.generation && since.sequence < view.sequence)
             .then_some(since);
-        SnapshotUpdate::Changed {
+        let result = SnapshotUpdate::Changed {
             snapshot: view.deliver(base),
-        }
+        };
+        self.trim(observed, true);
+        result
     }
 
     /// Latest delivered header; quota reads do not launch a runtime or scan history.
@@ -86,18 +129,29 @@ impl TranscriptDelivery {
         message_ids
             .iter()
             .filter_map(|id| view.messages.get(id))
-            .map(|(stamp, message)| delivered(*stamp, message, usize::MAX))
+            .map(|(stamp, message, _)| delivered(*stamp, message, usize::MAX))
             .collect()
     }
 
     fn record(&mut self, mut snapshot: ConversationSnapshot) -> &View {
         let messages = std::mem::take(&mut snapshot.messages);
+        let work_notifications: BTreeSet<_> = snapshot
+            .work_notification_ids
+            .iter()
+            .map(String::as_str)
+            .collect();
         let position = self.views.iter().position(|view| {
             view.context_runtime_id == snapshot.context_runtime_id
                 && view.conversation_id == snapshot.conversation.id
         });
         let mut view = match position {
-            Some(index) => self.views.remove(index),
+            Some(index) => {
+                let view = self.views.remove(index);
+                self.retained_message_bytes = self
+                    .retained_message_bytes
+                    .saturating_sub(view.message_bytes);
+                view
+            }
             None => {
                 self.next_generation += 1;
                 View {
@@ -108,6 +162,7 @@ impl TranscriptDelivery {
                     header: snapshot.clone(),
                     order: Vec::new(),
                     messages: HashMap::new(),
+                    message_bytes: 0,
                 }
             }
         };
@@ -118,14 +173,24 @@ impl TranscriptDelivery {
             .collect::<Vec<_>>();
         let mut changed = view.sequence == 0 || view.header != snapshot || view.order != order;
         let mut retained = HashMap::with_capacity(messages.len());
-        for message in messages {
+        let mut message_bytes = 0usize;
+        for mut message in messages {
+            // Use the same native classification as transcript grouping. The
+            // authoritative role and blocks remain available to history checks.
+            if message.role == MessageRole::Client
+                && work_notifications.contains(message.id.as_str())
+            {
+                message.role = MessageRole::Tool;
+            }
             let entry = match view.messages.remove(&message.id) {
-                Some((stamp, previous)) if previous == message => (stamp, previous),
+                Some((stamp, previous, bytes)) if previous == message => (stamp, previous, bytes),
                 _ => {
                     changed = true;
-                    (next, message)
+                    let bytes = message_size_estimate(&message);
+                    (next, message, bytes)
                 }
             };
+            message_bytes = message_bytes.saturating_add(entry.2);
             retained.insert(entry.1.id.clone(), entry);
         }
         if changed {
@@ -134,10 +199,56 @@ impl TranscriptDelivery {
         view.header = snapshot;
         view.order = order;
         view.messages = retained;
-        // Most recently presented first; the oldest view is forgotten.
+        view.message_bytes = message_bytes;
+        self.retained_message_bytes = self.retained_message_bytes.saturating_add(message_bytes);
+        // Most recently presented first. The later trim preserves observed views.
         self.views.insert(0, view);
-        self.views.truncate(RETAINED_VIEWS);
         &self.views[0]
+    }
+
+    /// Reapply soft count and byte targets after a view's observation lease changes.
+    pub(super) fn trim_for_observations(&mut self, observed: &BTreeSet<(String, String)>) {
+        self.trim_to(RETAINED_MESSAGE_BYTES, observed, false);
+    }
+
+    /// Keep the most recent delivery for an immediate payload read. A single
+    /// oversized current view may exceed the estimate budget by itself.
+    fn trim(&mut self, observed: &BTreeSet<(String, String)>, preserve_current: bool) {
+        self.trim_to(RETAINED_MESSAGE_BYTES, observed, preserve_current);
+    }
+
+    fn trim_to(
+        &mut self,
+        budget: usize,
+        observed: &BTreeSet<(String, String)>,
+        preserve_current: bool,
+    ) {
+        while self.views.len() > RETAINED_VIEWS || self.retained_message_bytes > budget {
+            let candidate = self
+                .views
+                .iter()
+                .enumerate()
+                .rev()
+                .find_map(|(index, view)| {
+                    let current = preserve_current && index == 0;
+                    let visible = observed.contains(&(
+                        view.context_runtime_id.clone(),
+                        view.conversation_id.clone(),
+                    ));
+                    (!current && !visible).then_some(index)
+                });
+            let Some(index) = candidate else {
+                // Visible views may exceed the soft targets; preserve them
+                // until a view releases or its observation lease expires. The
+                // sole oversized recent view is retained only on the snapshot
+                // path, never after its observation has been released.
+                break;
+            };
+            let removed = self.views.remove(index);
+            self.retained_message_bytes = self
+                .retained_message_bytes
+                .saturating_sub(removed.message_bytes);
+        }
     }
 }
 
@@ -156,8 +267,8 @@ impl View {
                 .order
                 .iter()
                 .map(|id| &self.messages[id])
-                .filter(|(stamp, _)| base.is_none() || *stamp > after)
-                .map(|(stamp, message)| delivered(*stamp, message, INLINE_PAYLOAD_LIMIT))
+                .filter(|(stamp, _, _)| base.is_none() || *stamp > after)
+                .map(|(stamp, message, _)| delivered(*stamp, message, INLINE_PAYLOAD_LIMIT))
                 .collect(),
             revision: header.revision,
             conversation: header.conversation.clone(),
@@ -313,8 +424,9 @@ mod quota_tests {
     #[test]
     fn quota_uses_the_latest_delivered_context_of_a_logical_conversation() {
         let mut delivery = TranscriptDelivery::new();
-        delivery.snapshot(header("codex"));
-        delivery.snapshot(header("pi"));
+        let observed = BTreeSet::new();
+        delivery.snapshot(header("codex"), &observed);
+        delivery.snapshot(header("pi"), &observed);
         assert_eq!(
             delivery
                 .quota_record("conversation")
@@ -323,5 +435,191 @@ mod quota_tests {
             "pi"
         );
         assert!(delivery.quota_record("missing").is_none());
+    }
+
+    fn text_message(id: &str, text: &str) -> Message {
+        Message {
+            completed: true,
+            id: id.into(),
+            role: MessageRole::Assistant,
+            timestamp_unix_ms: None,
+            blocks: vec![MessageBlock::Text { text: text.into() }],
+            turn_settings: None,
+            turn_usage: None,
+            branch_point: None,
+        }
+    }
+
+    #[test]
+    fn work_notifications_are_delivered_as_tools_in_full_updates_and_payloads() {
+        let mut snapshot = header("pi");
+        let mut parent = text_message("directive", "parent asks child to check");
+        parent.role = MessageRole::User;
+        let mut returned = text_message("returned", "**child report**");
+        returned.role = MessageRole::Client;
+        let mut background = text_message("background", "task finished");
+        background.role = MessageRole::Client;
+        background.blocks = vec![MessageBlock::Notice {
+            text: "task finished".into(),
+        }];
+        let mut extension = text_message("independent", "other extension");
+        extension.role = MessageRole::Client;
+        snapshot.messages = vec![parent, returned, background, extension];
+        snapshot.work_notification_ids = vec!["returned".into()];
+
+        let mut delivery = TranscriptDelivery::new();
+        let observed = BTreeSet::new();
+        let full = delivery.snapshot(snapshot.clone(), &observed);
+        assert_eq!(
+            full.message_ids,
+            ["directive", "returned", "background", "independent"]
+        );
+        assert_eq!(
+            full.messages
+                .iter()
+                .map(|m| m.role.clone())
+                .collect::<Vec<_>>(),
+            [
+                MessageRole::User,
+                MessageRole::Tool,
+                MessageRole::Client,
+                MessageRole::Client,
+            ]
+        );
+        assert_eq!(
+            full.messages[1].blocks,
+            [DeliveredBlock::Text {
+                text: "**child report**".into()
+            }]
+        );
+
+        snapshot.work_notification_ids.push("background".into());
+        let SnapshotUpdate::Changed { snapshot: delta } =
+            delivery.update(Some(snapshot), full.cursor, &observed)
+        else {
+            panic!("a change to the delivered role must update the cached message");
+        };
+        assert_eq!(delta.message_ids, full.message_ids);
+        assert_eq!(delta.messages.len(), 1);
+        assert_eq!(delta.messages[0].id, "background");
+        assert_eq!(delta.messages[0].role, MessageRole::Tool);
+        assert_eq!(
+            delta.messages[0].blocks,
+            [DeliveredBlock::Notice {
+                text: "task finished".into()
+            }]
+        );
+        assert_eq!(
+            delivery.payloads("pi", "conversation", &["background".into()]),
+            delta.messages
+        );
+    }
+
+    #[test]
+    fn delivery_budget_evicts_oldest_complete_messages_but_keeps_newest_payloads() {
+        let mut first = header("synthetic");
+        first.conversation.id = "first".into();
+        first.messages = vec![text_message("message", "old payload")];
+        let mut latest = header("synthetic");
+        latest.conversation.id = "latest".into();
+        latest.messages = vec![text_message("message", "new payload")];
+        let mut delivery = TranscriptDelivery::new();
+        let observed = BTreeSet::new();
+        delivery.snapshot(first, &observed);
+        delivery.snapshot(latest, &observed);
+        delivery.views[0].message_bytes = 40;
+        delivery.views[1].message_bytes = 40;
+        delivery.retained_message_bytes = 80;
+
+        delivery.trim_to(64, &observed, true);
+
+        assert_eq!(delivery.views.len(), 1);
+        assert_eq!(delivery.views[0].conversation_id, "latest");
+        let payloads = delivery.payloads("synthetic", "latest", &["message".into()]);
+        assert_eq!(payloads.len(), 1);
+        assert_eq!(
+            payloads[0].blocks,
+            vec![DeliveredBlock::Text {
+                text: "new payload".into()
+            }]
+        );
+        assert!(
+            delivery
+                .payloads("synthetic", "first", &["message".into()])
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn visible_delivery_views_exceed_soft_count_and_byte_targets_until_released() {
+        let mut first = header("runtime");
+        first.conversation.id = "first".into();
+        let mut second = header("runtime");
+        second.conversation.id = "second".into();
+        let visible = BTreeSet::from([
+            ("runtime".into(), "first".into()),
+            ("runtime".into(), "second".into()),
+        ]);
+        let mut delivery = TranscriptDelivery::new();
+        delivery.snapshot(first, &visible);
+        delivery.snapshot(second, &visible);
+        delivery.views[0].message_bytes = 40;
+        delivery.views[1].message_bytes = 40;
+        delivery.retained_message_bytes = 80;
+
+        delivery.trim_to(64, &visible, false);
+        assert_eq!(delivery.views.len(), 2);
+        assert_eq!(delivery.retained_message_bytes, 80);
+
+        let remaining = BTreeSet::from([("runtime".into(), "second".into())]);
+        delivery.trim_to(64, &remaining, false);
+        assert_eq!(delivery.views.len(), 1);
+        assert_eq!(delivery.views[0].conversation_id, "second");
+        assert_eq!(delivery.retained_message_bytes, 40);
+
+        let mut all_visible = BTreeSet::new();
+        for index in 0..RETAINED_VIEWS + 1 {
+            all_visible.insert(("runtime".into(), format!("visible-{index}")));
+        }
+        let mut many = TranscriptDelivery::new();
+        for index in 0..RETAINED_VIEWS + 1 {
+            let mut snapshot = header("runtime");
+            snapshot.conversation.id = format!("visible-{index}");
+            many.snapshot(snapshot, &all_visible);
+        }
+        assert_eq!(many.views.len(), RETAINED_VIEWS + 1);
+    }
+
+    #[test]
+    fn last_oversized_view_is_reclaimed_on_release_but_current_payload_is_retained() {
+        let mut snapshot = header("runtime");
+        snapshot.conversation.id = "large".into();
+        let observed = BTreeSet::from([("runtime".into(), "large".into())]);
+        let mut delivery = TranscriptDelivery::new();
+        delivery.snapshot(snapshot.clone(), &observed);
+        delivery.views[0].message_bytes = RETAINED_MESSAGE_BYTES + 1;
+        delivery.retained_message_bytes = RETAINED_MESSAGE_BYTES + 1;
+
+        delivery.trim_for_observations(&observed);
+        assert_eq!(
+            delivery.views.len(),
+            1,
+            "visible oversized view is protected"
+        );
+        delivery.trim_for_observations(&BTreeSet::new());
+        assert!(
+            delivery.views.is_empty(),
+            "released oversized view is reclaimed"
+        );
+
+        delivery.snapshot(snapshot, &BTreeSet::new());
+        delivery.views[0].message_bytes = RETAINED_MESSAGE_BYTES + 1;
+        delivery.retained_message_bytes = RETAINED_MESSAGE_BYTES + 1;
+        delivery.trim(&BTreeSet::new(), true);
+        assert_eq!(
+            delivery.views.len(),
+            1,
+            "a just-read payload stays available"
+        );
     }
 }

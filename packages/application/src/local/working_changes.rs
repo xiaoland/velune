@@ -46,7 +46,7 @@ impl CoreRuntime {
             .chain(&self.parked)
             .find(|session| session.presents(id))
             .and_then(|session| session.projected()?.conversation.cwd.clone())
-            .or_else(|| self.listed_summary(runtime, id)?.cwd)
+            .or_else(|| self.listed_summary(runtime, id)?.cwd.clone())
             .map(PathBuf::from)
             .ok_or_else(|| RuntimeError::invalid("此会话没有工作目录"))
     }

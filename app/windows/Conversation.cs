@@ -70,15 +70,11 @@ sealed partial class Conversation
     // An unsent conversation has no conversation ID; its first message starts it.
     public Conversation(Core core, Device device, Target target, Configuration configuration)
     {
-        if (target.Unsent && target.RuntimeID.Length == 0 && configuration.Runtimes.Count > 0)
-        {
-            target = target with { RuntimeID = configuration.Runtimes[0].Id };
-        }
         this.core = core;
         Device = device;
         Target = target;
         Configuration = configuration;
-        Next = target.RuntimeID;
+        Next = target.Unsent ? DefaultNewComposerRuntime() : target.RuntimeID;
         Loading = !target.Unsent;
         RestoreComposerCache();
         LoadChoices();

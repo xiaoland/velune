@@ -18,13 +18,13 @@ Velune 已取代 Factory26 的继续推进；Beluna 是独立的非 Coding 通�
 
 订阅账户、API 账户、模型供应商与 Harness 原生认证分别构成身份和权益边界。“多订阅”不意味着额度合并、无限使用、免 token 计费或可用于任意第三方工具。支持能力须按供应商、账户类型、地区／计划与官方规则验证；具体已知边界归[模型路由](model-routing.md)。接管模型路由不自动授权接管凭据。
 
-应用配置根目录由 `VELUNE_HOME` 指定，默认 `~/.velune`。提供商与 Harness 配置持久保存；API key 可在本机提供商表单查看、修改，订阅认证保留必要的来源与刷新能力。该配置不改变 Harness 对会话历史的权威；开发方不读取、输出或提交真实秘密。操作与授权例外见[开发边界](../development.md)（[S15](../sources/first-loop.md#s15)）。
+应用配置根目录由 `VELUNE_HOME` 指定，默认 `~/.velune`。提供商与 Harness 配置持久保存；API key 可在本机提供商表单查看、修改，订阅认证保留必要的来源与刷新能力。该配置不改变 Harness 对会话历史的权威。来源见 [S15](../sources/first-loop.md#s15)。
 
 ## 已确认的技术方向
 
 Rust 是共享产品核心，SQLite 是已认可的存储技术；具体配置可用 JSON／TOML 或 SQLite，不意味着所有状态必须进同一个数据库。共享领域能力与平台 app 分离，平台通过 UniFFI 类型绑定在进程内消费共享库；不保留手写 JSON／C ABI 产品入口。MCP 提供协作工具，ACP 是可替换接入方式（[S10](../sources/foundations.md#s10)、[S17](../sources/early-integration.md#s17)）。
 
-UI 使用原生技术，不采用 Web 前端。当前 Apple、Windows 与 Android 的框架及覆盖范围见[平台与界面](platforms.md)，不再用早期“Apple-universal 待定”描述后续已明确的平台。每个 package 和平台 app 有自己的契约与知识归属；内部模块不必独立成 unit，unit、语言 SDK 与二进制产物不要求一一对应。装配细节归[架构](../product-tdd/architecture.md)。
+UI 使用原生技术，不采用 Web 前端。当前 Apple、Windows 与 Android 的框架及覆盖范围见[平台与界面](platforms.md)，不再用早期“Apple-universal 待定”描述后续已明确的平台。共享核心与平台的装配、unit 与语言绑定的关系归[架构](../product-tdd/architecture.md)。
 
 ## 参考项目
 

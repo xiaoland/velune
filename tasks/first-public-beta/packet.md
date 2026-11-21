@@ -10,12 +10,13 @@
 
 ## 当前结果
 
-- 源码提交 `6ff6c6759500eca449ce35108ad6bee1a4af2888` 已通过 [PR #1](https://github.com/xiaoland/velune/pull/1) 合入 develop，集成 SHA 为 `710418f5ad1ce2a3708821da35c493ede6d9faf1`。
-- [提升 PR #2](https://github.com/xiaoland/velune/pull/2) 已通过真实 CI 合入 main，SHA 为 `03ab14a46abd7728834682b66074d9750017eaae`。合并消息保留首轮 `Release-As: 0.1.0-beta.1`。
-- [Release workflow](https://github.com/xiaoland/velune/actions/runs/42382826182) 成功生成 [版本 PR #3](https://github.com/xiaoland/velune/pull/3)，目标为 `0.1.0-beta.1`。
-- 版本 PR head 为 `ef6c855c269dcfefe5a8ba538d5a1ccad5c64a89`，仅变更 release-please 基线和 CHANGELOG。产品 `version.txt` 在候选中已为该版本。
-- 机器人 PR 的原生 pull_request workflow 起初为 action_required。核对仓库、PR、head 和 workflow 后，使用登录维护者的 workflow approval API 成功批准。[实际 validate](https://github.com/xiaoland/velune/actions/runs/42383076285) 已通过，PR mergeStateStatus 为 CLEAN。
-- 版本 PR 保持待合并。当前没有公开 tag／Release，最终发行包仍待正式 tag 构建及验证。
+首个公开 prerelease [v0.1.0-beta.1](https://github.com/xiaoland/velune/releases/tag/v0.1.0-beta.1) 已于 2026-11-08 01:59（上海时间）发布，GitHub 已读回 immutable=true。产品源码与 tag 均为 `afd3ea74aa555f2aae00fed45b019078d9affb48`，构建号 3。
+
+- 发布资产包含 macOS arm64／x86_64、固定密钥签名的 Android arm64 APK、Mac／Android 对应源码、四份构建 metadata、原始发行身份及 SHA256SUMS。
+- [原构建](https://github.com/xiaoland/velune/actions/runs/42393786648) 的源码和两个 Mac 包通过，Android Rust／assembleRelease／lintRelease 成功，验签解析失败。[恢复流程](https://github.com/xiaoland/velune/actions/runs/42397129726) 仅补编 Android 并复用原 Mac／源码资产，四组完整门禁通过后公开。tag 与构建号始终保持不变。
+- 最小实际 Runner 诊断确认 SDK 36／37 均验签成功，但 SDK 37 把证书行前缀改为 `V3.0 Signer`，原脚本自动选择预装最新版后读得空指纹。永久修复 [PR #6](https://github.com/xiaoland/velune/pull/6) 已通过 native CI 合入 develop，固定已安装的 SDK 36，保留验签日志和失败 APK。局部真实验签、YAML 与 18 个 shell 语法检查通过。
+- [发布回流 PR #7](https://github.com/xiaoland/velune/pull/7) 已通过维护者批准后的原生 validate 并合入 develop，SHA 为 `8ad2dae2ff502785c568495b3813b92b0b82ff2a`。版本、changelog 和验签修正均已在 develop。
+- 候选准备经 [PR #1](https://github.com/xiaoland/velune/pull/1)／[PR #4](https://github.com/xiaoland/velune/pull/4) 集成 develop，经 [PR #2](https://github.com/xiaoland/velune/pull/2)／[PR #5](https://github.com/xiaoland/velune/pull/5) 提升 main，再经 [版本 PR #3](https://github.com/xiaoland/velune/pull/3) 产生 tag。所有 main 变更均走 PR。
 
 ## 已确认的首发范围
 
@@ -55,8 +56,10 @@ Bifrost Apache-2.0 固定提交 `6e640279b36337820f2088fb85f6e78f339063c3` 的�
 
 ## 工作树与后续
 
-当前分支 feat/windows-beta-delivery，从 develop 创建。保留另一条调试会话的 8 个未提交路径，未纳入候选。路径清单见证据 `candidate-paths.json`。包含 Cargo.lock、Android AddDeviceScreen、bindings remote 和 remote crate 的 URL／subscriber 调试改动。不得恢复或混入发布资产。
+当前工作树已跟随发布回流至 develop 的源码基线。保留另一条调试会话的 8 个未提交路径，未纳入候选。路径清单见证据 `candidate-paths.json`。包含 Cargo.lock、Android AddDeviceScreen、bindings remote 和 remote crate 的 URL／subscriber 调试改动。不得恢复或混入发布资产。
 
-Windows 构建从干净提交 21e34db 建立私有 worktree `F:\CODING\.worktrees\windows-beta-delivery-20261108\velune`，仅 target/host-rust、tools、runtime-support junction 复用已有缓存。前两次尝试停在工具准备，未进入编译，旧 SVC 16 不支持 schema 5，PyPI 没有 18.3；已把 Mac 当前使用的确切 18.3 wheel 安装至本任务私有 venv，未改 Windows 全局工具。实际 execution 53f67574-e40c-4e8e-8098-ac12d980d416 用时 275 秒，`windows-build-3.log` 记录成功。打包验证复用相同编译输入，未重编 App。远端临时 bundle、ps1、wheel 位于 `F:\CODING` 对应命名，结束后先用 cmd rmdir（不加 /S）解除三个 junction，再移除本任务 worktree 和 parent；保留其它既有 worktree。
+Windows 构建从干净提交 21e34db 建立私有 worktree，仅 target/host-rust、tools、runtime-support junction 复用已有缓存。前两次尝试停在工具准备，未进入编译，旧 SVC 16 不支持 schema 5，PyPI 没有 18.3；已把 Mac 当前使用的确切 18.3 wheel 安装至本任务私有 venv，未改 Windows 全局工具。实际 execution 53f67574-e40c-4e8e-8098-ac12d980d416 用时 275 秒，`windows-build-3.log` 记录成功。打包验证复用相同编译输入，未重编 App。已安全解除三个 junction、移除本任务 worktree／parent及远端临时 bundle、ps1、wheel，共享缓存保留，日常仓库 HEAD 前后均为 872989b7。证据为 windows-delivery-cleanup.log。
 
-下一步将最终 Mac／Android 范围及源材料收尾提交至 PR #4，集成 develop 并提升 main，更新现有版本 PR #3。随后合并版本 PR，跟随固定 tag 的发行构建，验证最终包和安装入口，公开 prerelease 并回流 develop。
+独立 owner beta_artifact_acceptance 已完成两个实际 Mac 包的 deep／strict 签名、架构、版本／构建号／源码身份、资源和动态链接检查，以及实际对应源码归档核验。Android 实际 APK 的固定证书、版本／构建号、五份 AArch64 native 库检查通过，公开 10 项资产及四个实际主资产摘要与 Release API／metadata／SHA256SUMS 一致。完整证据入口为 `target/verification/first-public-beta/artifact-acceptance/summary.md`。本轮产物检查未运行 GUI、安装 APK 或启动模拟器，源码依赖载荷复用已归档证据，未重新全量解包。发布 controller 的独立审阅通过。Mac／源码只编译一次，验签恢复仅重编 Android。
+
+恢复 controller 精确记录于 `recovery-controller.yml`，未合入产品。两个诊断／恢复远端分支、对应本机私有 worktree 已清理，证据保留。发布与独立最终核对已完成，任务记录收敛后保留本机 develop 和另外 8 个未提交路径。

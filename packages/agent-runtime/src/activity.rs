@@ -77,6 +77,94 @@ pub fn signature(path: &Path) -> Option<Signature> {
     })
 }
 
+fn pi_header(path: &Path) -> Option<Value> {
+    let mut line = String::new();
+    BufReader::new(File::open(path).ok()?.take(65536))
+        .read_line(&mut line)
+        .ok()?;
+    let value: Value = serde_json::from_str(&line).ok()?;
+    (value["type"] == "session" && value["id"].as_str().is_some_and(|id| !id.is_empty()))
+        .then_some(value)
+}
+
+fn pi_run_id(name: &std::ffi::OsStr) -> bool {
+    name.to_str().is_some_and(|name| {
+        name.len() == 36
+            && name.bytes().enumerate().all(|(index, value)| {
+                if matches!(index, 8 | 13 | 18 | 23) {
+                    value == b'-'
+                } else {
+                    value.is_ascii_hexdigit()
+                }
+            })
+    })
+}
+
+fn pi_run_slot(name: &std::ffi::OsStr) -> bool {
+    name.to_str()
+        .and_then(|name| name.strip_prefix("run-"))
+        .is_some_and(|slot| {
+            slot.parse::<u32>()
+                .is_ok_and(|index| index.to_string() == slot)
+        })
+}
+
+/// The parent path implied by a supported child layout, independently of its
+/// header. Both facts must agree before admitting a nested native session.
+fn pi_layout_parent(path: &Path) -> Option<PathBuf> {
+    let source = |stem: &Path| {
+        let mut file = stem.as_os_str().to_os_string();
+        file.push(".jsonl");
+        PathBuf::from(file)
+    };
+    let directory = path.parent()?;
+    let run = directory.parent()?;
+    if path.file_name()? == "session.jsonl"
+        && pi_run_slot(directory.file_name()?)
+        && pi_run_id(run.file_name()?)
+    {
+        return Some(source(run.parent()?));
+    }
+    if run.file_name()? == "forks" {
+        return Some(source(run.parent()?));
+    }
+    None
+}
+
+fn pi_path_admitted(path: &Path, root: &Path, depth: usize) -> bool {
+    if depth > 16 || !fs::symlink_metadata(path).is_ok_and(|metadata| metadata.is_file()) {
+        return false;
+    }
+    let Ok(within) = path.strip_prefix(root) else {
+        return false;
+    };
+    if within
+        .components()
+        .any(|part| !matches!(part, std::path::Component::Normal(_)))
+    {
+        return false;
+    }
+    let mut directory = path.parent();
+    while let Some(current) = directory.filter(|directory| *directory != root) {
+        if !fs::symlink_metadata(current).is_ok_and(|metadata| metadata.is_dir()) {
+            return false;
+        }
+        directory = current.parent();
+    }
+    if within.components().count() == 2 {
+        return path
+            .extension()
+            .is_some_and(|extension| extension == "jsonl");
+    }
+    let Some(parent) = pi_layout_parent(path) else {
+        return false;
+    };
+    pi_header(path).is_some_and(|header| {
+        header["parentSession"].as_str().map(Path::new) == Some(parent.as_path())
+    }) && pi_header(&parent).is_some()
+        && pi_path_admitted(&parent, root, depth + 1)
+}
+
 /// Session files below `root`, skipping links and Claude Code sub-agent
 /// transcripts, which are not conversations of their own.
 fn session_files(format: SessionFormat, root: &Path, mut visit: impl FnMut(&Path, &fs::Metadata)) {
@@ -101,7 +189,92 @@ fn session_files(format: SessionFormat, root: &Path, mut visit: impl FnMut(&Path
             }
         }
     }
-    walk(root, format.depth(), &mut visit);
+    if format == SessionFormat::Pi {
+        fn pi_walk(
+            directory: &Path,
+            workspace: bool,
+            depth: usize,
+            parent: Option<&Path>,
+            modern: bool,
+            visit: &mut dyn FnMut(&Path, &fs::Metadata),
+        ) {
+            if depth > 16 {
+                return;
+            }
+            let Ok(entries) = fs::read_dir(directory) else {
+                return;
+            };
+            for entry in entries.flatten() {
+                let Ok(kind) = entry.file_type() else {
+                    continue;
+                };
+                let path = entry.path();
+                if workspace && kind.is_dir() {
+                    pi_walk(&path, false, depth + 1, None, false, visit);
+                }
+                if !kind.is_file() || path.extension().is_none_or(|ext| ext != "jsonl") {
+                    continue;
+                }
+                if modern && entry.file_name() != "session.jsonl" {
+                    continue;
+                }
+                let header = pi_header(&path);
+                if let Some(parent) = parent
+                    && header.as_ref().is_none_or(|header| {
+                        header["parentSession"].as_str().map(Path::new) != Some(parent)
+                    })
+                {
+                    continue;
+                }
+                if let Ok(metadata) = entry.metadata() {
+                    visit(&path, &metadata);
+                }
+                if header.is_none() {
+                    continue;
+                }
+                let stem = path.with_extension("");
+                if !fs::symlink_metadata(&stem).is_ok_and(|meta| meta.is_dir()) {
+                    continue;
+                }
+                let forks = stem.join("forks");
+                if fs::symlink_metadata(&forks).is_ok_and(|meta| meta.is_dir())
+                    && let Ok(runs) = fs::read_dir(forks)
+                {
+                    for run in runs.flatten() {
+                        if run.file_type().is_ok_and(|kind| kind.is_dir()) {
+                            pi_walk(&run.path(), false, depth + 1, Some(&path), false, visit);
+                        }
+                    }
+                }
+                if let Ok(runs) = fs::read_dir(stem) {
+                    for run in runs.flatten() {
+                        if pi_run_id(&run.file_name())
+                            && run.file_type().is_ok_and(|kind| kind.is_dir())
+                            && let Ok(slots) = fs::read_dir(run.path())
+                        {
+                            for slot in slots.flatten() {
+                                if pi_run_slot(&slot.file_name())
+                                    && slot.file_type().is_ok_and(|kind| kind.is_dir())
+                                {
+                                    pi_walk(
+                                        &slot.path(),
+                                        false,
+                                        depth + 1,
+                                        Some(&path),
+                                        true,
+                                        visit,
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        pi_walk(root, true, 0, None, false, &mut visit);
+    } else {
+        walk(root, format.depth(), &mut visit);
+    }
 }
 
 /// Keep in `found` whichever of it and `path` was written last.
@@ -128,7 +301,26 @@ impl SessionStore {
     pub fn locate(&self, native_id: &str) -> Option<PathBuf> {
         if self.format == SessionFormat::Pi {
             let path = Path::new(native_id);
-            return (path.starts_with(&self.sessions) && path.is_file()).then(|| path.to_owned());
+            return pi_path_admitted(path, &self.sessions, 0).then(|| path.to_owned());
+        }
+        if self.format == SessionFormat::ClaudeCode
+            && let Some((session, agent)) = native_id.split_once("/agent-")
+        {
+            if agent.is_empty()
+                || !agent
+                    .bytes()
+                    .all(|c| c.is_ascii_alphanumeric() || c == b'_' || c == b'-')
+            {
+                return None;
+            }
+            let parent = self.locate(session)?;
+            let directory = parent.parent()?.join(session).join("subagents");
+            let path = directory.join(format!("agent-{agent}.jsonl"));
+            return (path.is_file()
+                && !path.is_symlink()
+                && !directory.is_symlink()
+                && !directory.parent().is_some_and(|parent| parent.is_symlink()))
+            .then_some(path);
         }
         let mut found: Option<(PathBuf, SystemTime)> = None;
         session_files(self.format, &self.sessions, |path, metadata| {
@@ -573,4 +765,123 @@ fn pi_boundary(records: impl Iterator<Item = Value>) -> Option<bool> {
             "assistant" => Some(record["message"]["stopReason"] == "toolUse"),
             _ => None,
         })
+}
+
+#[cfg(test)]
+mod pi_fork_discovery_tests {
+    use super::*;
+    #[test]
+    fn pi_activity_scans_nested_children_without_entering_artifact_trees() {
+        let mut nonce = [0; 8];
+        getrandom::fill(&mut nonce).unwrap();
+        let root = std::env::temp_dir().join(format!(
+            "velune-pi-activity-{:x}",
+            u64::from_le_bytes(nonce)
+        ));
+        let workspace = root.join("--synthetic--");
+        let child = workspace.join("parent.with.dot/forks/run/child.jsonl");
+        let grandchild =
+            workspace.join("parent.with.dot/forks/run/child/forks/next/grandchild.jsonl");
+        let run = "01234567-89ab-4cde-8fab-0123456789ab";
+        let modern = workspace.join(format!("parent.with.dot/{run}/run-0/session.jsonl"));
+        let modern_second = workspace.join(format!("parent.with.dot/{run}/run-1/session.jsonl"));
+        let overflow_slot = workspace.join(format!(
+            "parent.with.dot/{run}/run-4294967296/session.jsonl"
+        ));
+        let padded_slot = workspace.join(format!("parent.with.dot/{run}/run-01/session.jsonl"));
+        let negative_slot = workspace.join(format!("parent.with.dot/{run}/run--1/session.jsonl"));
+        let nested = modern
+            .with_extension("")
+            .join(run)
+            .join("run-0/session.jsonl");
+        let mismatch = workspace.join("parent.with.dot/forks/run/mismatch.jsonl");
+        let modern_mismatch = workspace.join(format!(
+            "parent.with.dot/11234567-89ab-4cde-8fab-0123456789ab/run-0/session.jsonl"
+        ));
+        let wrong_run = workspace.join("parent.with.dot/not-a-run-uuid/run-0/session.jsonl");
+        let wrong_name = modern.parent().unwrap().join("intruder.jsonl");
+        let unrelated = workspace.join("artifacts/unrelated.jsonl");
+        let parent = workspace.join("parent.with.dot.jsonl");
+        let ordinary = workspace.join("ordinary.jsonl");
+        for (path, ancestor) in [
+            (&parent, None),
+            (&ordinary, Some(&parent)),
+            (&child, Some(&parent)),
+            (&grandchild, Some(&child)),
+            (&modern, Some(&parent)),
+            (&modern_second, Some(&parent)),
+            (&nested, Some(&modern)),
+            (&mismatch, Some(&ordinary)),
+            (&modern_mismatch, Some(&ordinary)),
+            (&wrong_run, Some(&parent)),
+            (&wrong_name, Some(&parent)),
+            (&unrelated, Some(&parent)),
+            (&overflow_slot, Some(&parent)),
+            (&padded_slot, Some(&parent)),
+            (&negative_slot, Some(&parent)),
+        ] {
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            let mut header = serde_json::json!({"type":"session","version":3,"id":"synthetic","cwd":"/synthetic"});
+            if let Some(ancestor) = ancestor {
+                header["parentSession"] = serde_json::json!(ancestor);
+            }
+            fs::write(path, format!("{header}\n")).unwrap();
+        }
+        let mut rejected = vec![
+            mismatch,
+            modern_mismatch,
+            wrong_run,
+            wrong_name,
+            unrelated,
+            overflow_slot,
+            padded_slot,
+            negative_slot,
+        ];
+        #[cfg(unix)]
+        {
+            let linked = workspace.join("parent.with.dot/21234567-89ab-4cde-8fab-0123456789ab");
+            std::os::unix::fs::symlink(modern.parent().unwrap().parent().unwrap(), &linked)
+                .unwrap();
+            rejected.push(linked.join("run-0/session.jsonl"));
+            let linked_file = child.parent().unwrap().join("linked.jsonl");
+            std::os::unix::fs::symlink(&child, &linked_file).unwrap();
+            rejected.push(linked_file);
+            let linked_workspace = root.join("--linked-workspace--");
+            std::os::unix::fs::symlink(&workspace, &linked_workspace).unwrap();
+            rejected.push(linked_workspace.join("parent.with.dot.jsonl"));
+        }
+        let mut found = Vec::new();
+        session_files(SessionFormat::Pi, &root, |path, _| {
+            found.push(path.to_path_buf())
+        });
+        found.sort();
+        let mut expected = vec![
+            parent,
+            ordinary,
+            child,
+            grandchild,
+            modern,
+            modern_second,
+            nested,
+        ];
+        expected.sort();
+        assert_eq!(found, expected);
+        let store = SessionStore {
+            format: SessionFormat::Pi,
+            agent_dir: root.clone(),
+            sessions: root.clone(),
+        };
+        for file in &expected {
+            assert_eq!(store.locate(file.to_str().unwrap()).as_ref(), Some(file));
+        }
+        rejected.push(workspace.join("../--synthetic--/parent.with.dot.jsonl"));
+        for file in rejected {
+            assert!(
+                store.locate(file.to_str().unwrap()).is_none(),
+                "unverified source admitted: {}",
+                file.display()
+            );
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
 }

@@ -26,6 +26,15 @@ pub(super) fn shown(side: &SideChat, mut snapshot: ConversationSnapshot) -> Conv
         .messages
         .retain(|message| !side.inherited.contains(&message.id));
     snapshot.executions.retain(&snapshot.messages);
+    snapshot
+        .work_notification_ids
+        .retain(|id| snapshot.messages.iter().any(|message| &message.id == id));
+    for id in &mut snapshot.work_notification_ids {
+        *id = format!("side-{}:{id}", side.segment);
+    }
+    snapshot
+        .work_notification_ids
+        .extend(side.prior_work_notification_ids.iter().cloned());
     for message in &mut snapshot.messages {
         message.id = format!("side-{}:{}", side.segment, message.id);
         for block in &mut message.blocks {
@@ -90,6 +99,7 @@ impl CoreRuntime {
         let parent = self
             .queried_snapshot(runtime_id, conversation_id)?
             .ok_or_else(|| RuntimeError::invalid("此会话不可用"))?;
+        self.check_handoff_input(&parent)?;
         if self.session.side.is_some() || parent.conversation.parent_conversation_id.is_some() {
             return Err(RuntimeError::invalid("此会话不提供侧聊"));
         }
@@ -120,12 +130,13 @@ impl CoreRuntime {
         self.session.side = Some(SideChat {
             id,
             title: velune_conversation::ConversationTitle::Native(format!(
-                "侧聊 · {}",
+                "侧聊：{}",
                 parent.conversation.title.display_text()
             )),
             reference: native.clone(),
             prior: Vec::new(),
             prior_executions: Default::default(),
+            prior_work_notification_ids: Vec::new(),
             segment: 0,
             context: String::new(),
             context_pending: false,
@@ -163,6 +174,7 @@ impl CoreRuntime {
         selection: Option<crate::ModelSelection>,
         turn: crate::ComposedTurn,
     ) -> Result<crate::SnapshotResult, RuntimeError> {
+        self.check_submission_cancelled(side_chat_id)?;
         self.session
             .side
             .as_ref()
@@ -201,10 +213,12 @@ impl CoreRuntime {
             let mut target = side.reference.clone();
             target.conversation.runtime_id = target_runtime_id.into();
             target.messages.clear();
+            target.work_notification_ids.clear();
             let previous = self.session.side.clone();
             let side = self.session.side.as_mut().expect("checked side");
             side.prior = visible.messages;
             side.prior_executions = visible.executions;
+            side.prior_work_notification_ids = visible.work_notification_ids;
             side.segment += 1;
             side.context = context;
             side.context_pending = true;
@@ -237,6 +251,7 @@ impl CoreRuntime {
         {
             self.bind_gateway_model()?;
         }
+        self.check_submission_cancelled(side_chat_id)?;
         self.session
             .active_state
             .live_mut()
@@ -298,5 +313,47 @@ mod tests {
             runtime.enabled = false;
             assert!(require_side_chat(&runtime).is_err());
         }
+    }
+    #[test]
+    fn side_chat_notifications_follow_current_and_prior_message_namespaces() {
+        let mut snapshot: ConversationSnapshot = serde_json::from_value(json!({
+            "revision":1,"conversation":{"id":"pi:native","title":{"source":"untitled"},"runtimeId":"pi"},
+            "contextRuntimeId":"pi","resourceId":null,"modelRecordKey":null,"runState":"idle",
+            "messages":[
+                {"id":"inherited","role":"client","completed":true,"blocks":[]},
+                {"id":"user","role":"user","completed":true,"blocks":[]},
+                {"id":"notice","role":"client","completed":true,"blocks":[{"kind":"text","text":"completed"}]}
+            ],
+            "transcriptTurns":[],"transcriptItems":[],"transcriptOutline":[],"transcriptMessageIdentities":[],
+            "actions":{"canSend":true,"canCancel":false,"canSwitch":true}
+        })).unwrap();
+        snapshot.work_notification_ids = vec!["inherited".into(), "notice".into()];
+        let prior = serde_json::from_value(json!([
+            {"id":"prior-user","role":"user","completed":true,"blocks":[]},
+            {"id":"prior-notice","role":"client","completed":true,"blocks":[]}
+        ]))
+        .unwrap();
+        let side = SideChat {
+            id: "side".into(),
+            title: snapshot.conversation.title.clone(),
+            reference: snapshot.clone(),
+            prior,
+            prior_executions: Default::default(),
+            prior_work_notification_ids: vec!["prior-notice".into()],
+            segment: 1,
+            context: String::new(),
+            context_pending: false,
+            inherited: ["inherited".into()].into_iter().collect(),
+        };
+        let shown = shown(&side, snapshot);
+        assert_eq!(
+            shown.work_notification_ids,
+            ["side-1:notice", "prior-notice"]
+        );
+        let mut transcript = velune_agent_runtime::transcript::TranscriptProjection::default();
+        transcript
+            .apply(velune_agent_runtime::transcript::TranscriptEvent::ReplaceSnapshot(&shown));
+        assert_eq!(transcript.turns()[0].work_message_ids, ["prior-notice"]);
+        assert_eq!(transcript.turns()[1].work_message_ids, ["side-1:notice"]);
     }
 }

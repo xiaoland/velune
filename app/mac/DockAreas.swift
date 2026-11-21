@@ -213,6 +213,10 @@ struct ToolContent: View {
             }
         case .agents:
             ToolAgents(window: window, tab: tab, store: tab.store, inSidebar: side == .left).id(tab.id)
+        case .backgroundTasks:
+            BackgroundTasksView(store: tab.store, inPopover: false, inSidebar: side == .left, layout: window) {
+                window.openLinked($0, from: tab, opening: $1)
+            }.id(tab.id)
         }
     }
 }
@@ -254,6 +258,7 @@ struct ToolOutline: View {
         } else {
             TranscriptOutlineView(model: store.transcript, inPopover: false, inSidebar: inSidebar, layout: window,
                                   editMessage: { [store, tab] id in store.editability(of: id) == nil ? nil : { tab.edit(messageID: id) } },
+                                  deleteMessage: { [store] id in store.canDeleteMessage(id) ? { store.confirmDeleteMessage(id) } : nil },
                                   isRunning: store.loadedConversationID.map(store.device.isConversationRunning) ?? false,
                                   goToBottom: { [tab] in tab.scrollRequest &+= 1 }) { tab.navigate(to: $0) }
         }
@@ -283,11 +288,10 @@ private struct ToolComposer: View {
             if store.loadedParentConversationID != nil, store.pendingConversationID == nil {
                 Text("这是原生 sub-agent 的会话，由启动它的会话继续。").foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity).padding(16)
-            } else {
-                ComposerView(store: store, model: window.composer(for: tab), layout: window, send: { window.send() }, steer: { window.composerContext().steer() }, submission: { window.composerContext().submission() }, resume: { window.resume() },
+            }
+            ComposerView(store: store, model: window.composer(for: tab), layout: window, send: { window.send() }, steer: { window.composerContext().steer() }, submission: { window.composerContext().submission() }, resume: { window.resume() },
                              fillsHeight: window.tools[.composer].place == .docked(.bottom),
                              recipient: window.composerOwner(for: tab) == .shared ? store.selectedConversationTitle ?? "新会话" : nil)
-            }
         }
         .fixedSize(horizontal: false, vertical: window.tools[.composer].place != .docked(.bottom))
         .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { contentHeight?($0) }

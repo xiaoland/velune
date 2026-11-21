@@ -110,27 +110,73 @@ def history(path, native_id, runtime_id, sidechain=False):
                         modes[record["uuid"]] = mode
     entries = {entry["uuid"]: entry for entry in records if isinstance(entry.get("uuid"), str) and bool(entry.get("isSidechain")) == sidechain}
     leaf = next((entry["uuid"] for entry in reversed(records) if entry.get("uuid") in entries and entry.get("type") in ("user", "assistant")), None)
-    chain, seen = [], set()
+    chain, seen, retained_parents = [], set(), {}
     while leaf in entries:
         if leaf in seen:
             raise ValueError("cycle in native session")
         seen.add(leaf)
         entry = entries[leaf]
         chain.append(entry)
-        leaf = entry.get("parentUuid")
+        # The model's context starts afresh at a compact boundary, but the
+        # transcript remains linked to the preceding conversation. Never use
+        # this logical link when exporting the model's effective context.
+        if entry.get("subtype") == "compact_boundary":
+            # A repeated compaction can replay older UUIDs with their original
+            # parents. Its explicit retained order reconnects those records;
+            # following physical file order would revive abandoned branches.
+            kept = (entry.get("compactMetadata") or {}).get("preservedMessages") or {}
+            ids = kept.get("allUuids") or kept.get("uuids") or []
+            for before, after in zip(ids, ids[1:]):
+                if before in entries and after in entries:
+                    retained_parents[after] = before
+            leaf = entry.get("logicalParentUuid") or entry.get("parentUuid")
+        else:
+            leaf = retained_parents.get(leaf, entry.get("parentUuid"))
+    chain = claude_tool_result_branches(list(reversed(chain)), entries, records)
     messages, first_user, calls, turn = [], None, {}, None
     # The current turn's prompt and the usage of each model response in it,
     # by message id: a response's records repeat it, the last one complete.
     prompt, usages, prompt_id, can_resume = None, {}, None, False
     executions, execution = [], None
-    for entry in reversed(chain):
+    post_compact_tokens = None
+    compaction = None
+    safety_stopped = False
+    api_failures = []
+    for entry in chain:
         role = entry.get("type")
         if role == "system" and entry.get("subtype") == "compact_boundary":
+            post_compact_tokens = (entry.get("compactMetadata") or {}).get("postTokens")
             messages.append({"id": entry["uuid"], "role": "system", "completed": True,
                              "timestamp_unix_ms": timestamp(entry.get("timestamp")),
                              "blocks": [{"kind": "contextCompaction", "text": "上下文已压缩"}]})
+            compaction = messages[-1]
+            # Auto compaction is work within the current user execution. A
+            # manual /compact has its own maintenance execution and must not
+            # be folded into the preceding reply's work.
+            if (entry.get("compactMetadata") or {}).get("trigger") == "manual":
+                executions.append({"id": "claude-history:" + entry["uuid"],
+                                   "kind": "ContextMaintenance", "message_ids": [entry["uuid"]],
+                                   "outcome": "completed"})
+            elif execution is not None:
+                execution["message_ids"].append(entry["uuid"])
             continue
         if role not in ("user", "assistant"):
+            continue
+        if role == "user" and entry.get("isCompactSummary"):
+            summary = "\n\n".join(b["text"] for b in blocks(entry.get("message", {}).get("content")) if b["kind"] == "text")
+            if summary and compaction is not None:
+                compaction["blocks"][0]["text"] = "上下文已压缩\n\n" + summary
+            continue
+        if role == "user" and isinstance(entry.get("refusedMessageId"), str):
+            safety_stopped = True
+            if execution is not None:
+                execution["outcome"] = "failed"
+            detail = [dict(kind="notice", text=b["text"]) for b in blocks(entry.get("message", {}).get("content")) if b["kind"] == "text"]
+            messages.append(dict(id=entry["uuid"], role="system", completed=True,
+                                 timestamp_unix_ms=timestamp(entry.get("timestamp")),
+                                 blocks=[dict(kind="notice", text="Claude Code 响应被安全系统停止（refusal）。")] + detail))
+            if execution is not None:
+                execution["message_ids"].append(entry["uuid"])
             continue
         if role == "user" and entry.get("isMeta"):
             # Context the Harness injected, which its own transcript does not show.
@@ -142,7 +188,7 @@ def history(path, native_id, runtime_id, sidechain=False):
                 and entry.get("message", {}).get("content") == [{"type": "text", "text": "[Request interrupted by user]"}]:
             can_resume = True
             if execution is not None:
-                execution["outcome"] = "cancelled"
+                execution["outcome"] = "failed" if safety_stopped or api_failures else "cancelled"
             continue
         content = entry.get("message", {}).get("content")
         if role == "user" and (entry.get("origin") or {}).get("kind") == "task-notification" and isinstance(content, str):
@@ -172,18 +218,26 @@ def history(path, native_id, runtime_id, sidechain=False):
         else:
             calls.update((b["tool_id"], b) for b in content if b["kind"] == "tool" and b["tool_id"])
         model = entry.get("message", {}).get("model")
-        api_error = role == "assistant" and entry.get("isApiErrorMessage") is True
+        api_error = role == "assistant" and (entry.get("isApiErrorMessage") is True or entry.get("message", {}).get("stop_reason") == "refusal")
         if role == "assistant" and execution is not None:
             # stop_reason is the native turn boundary; completed text blocks
             # before tool_use are progress, not a successful execution.
             stop = entry.get("message", {}).get("stop_reason")
-            execution["outcome"] = "failed" if api_error else "completed" if stop in ("end_turn", "stop_sequence") else None
+            if stop in ("end_turn", "stop_sequence") and not api_error:
+                safety_stopped = False
+            execution["outcome"] = "failed" if api_error or safety_stopped or stop == "refusal" else "completed" if stop in ("end_turn", "stop_sequence") else None
         if api_error:
-            content = [{"kind": "notice", "text": block["text"]} for block in content if block["kind"] == "text"]
+            details = [block["text"] for block in content if block["kind"] == "text"]
             if isinstance(entry.get("error"), str):
-                content.append({"kind": "notice", "text": "Claude Code 错误类型：" + entry["error"]})
-            if not content:
-                content.append({"kind": "notice", "text": "Claude Code 执行失败（上游未提供错误详情）。"})
+                details.append("Claude Code 错误类型：" + entry["error"])
+            content = [{"kind": "runtimeFailure", "failure": "other", "retry": None,
+                        "detail": "\n".join(details) or "Claude Code 执行失败（上游未提供错误详情）。"}]
+            api_failures.extend(content)
+        elif role == "assistant" and entry.get("message", {}).get("stop_reason") in ("end_turn", "stop_sequence") and execution is not None:
+            # Only a native completed response within this execution proves recovery.
+            for failure in api_failures:
+                failure["retry"] = {"kind": "recovered"}
+            api_failures.clear()
         # The turn's model is the first its replies name; Claude Code marks
         # replies it wrote itself (errors and the like) with "<synthetic>".
         if role == "assistant" and turn is not None and "model" not in turn and isinstance(model, str) and not model.startswith("<"):
@@ -194,6 +248,7 @@ def history(path, native_id, runtime_id, sidechain=False):
         usage = entry.get("message", {}).get("usage")
         if role == "assistant" and isinstance(usage, dict) and isinstance(entry["message"].get("id"), str):
             usages[entry["message"]["id"]] = usage
+            post_compact_tokens = None
         if not content:
             continue
         if role == "assistant" and isinstance(model, str) and not model.startswith("<"):
@@ -207,6 +262,9 @@ def history(path, native_id, runtime_id, sidechain=False):
             executions.append(execution)
             prompt_id = entry.get("promptId")
             can_resume = False
+            safety_stopped = False
+            api_failures.clear()
+            compaction = None
             # A replacement resumes at the nearest message record before the
             # prompt (`--resume-session-at`); the first prompt has none.
             parent = entries.get(entry.get("parentUuid"))
@@ -225,6 +283,8 @@ def history(path, native_id, runtime_id, sidechain=False):
         if execution is not None:
             execution["message_ids"].append(message["id"])
     close_turn(prompt, usages)
+    if prompt is not None and isinstance(post_compact_tokens, int):
+        prompt.setdefault("turn_usage", {})["contextTokens"] = post_compact_tokens
     # The session's cost so far, written after each run; only while Claude
     # Code knows every model's price.
     cost = next((r for r in reversed(records) if r.get("type") == "cost-state"), None)
@@ -399,7 +459,7 @@ def main():
     runtime_id = request["runtimeId"]
     operation = request["operation"]
     requested = request.get("nativeId")
-    found = sessions(roots, requested.partition("/")[0] if operation in ("read", "export_context") else None)
+    found = sessions(roots, requested.partition("/")[0] if operation in ("read", "export_context", "export_context_without", "export_context_without_many") else None)
     if operation == "index":
         # File state only: which sessions exist, when their files changed,
         # and each project folder's working directory from its newest session.
@@ -442,7 +502,7 @@ def main():
             except (ValueError, OSError) as error:
                 failures.append({"code": "provider_read", "detail": type(error).__name__})
         return {"contractVersion": 1, "sessions": result, "failures": failures}
-    if operation in ("read", "export_context"):
+    if operation in ("read", "export_context", "export_context_without", "export_context_without_many"):
         session, _, agent = requested.partition("/")
         uuid.UUID(session)
         if agent and not (agent.startswith("agent-") and AGENT_ID.fullmatch(agent[len("agent-"):])):
@@ -453,8 +513,17 @@ def main():
         if path is None:
             return {"error": {"code": "session_not_found"}}
         if operation == "export_context":
-            return export_context(path, sidechain=bool(agent))
-        return {"contractVersion": 1, "history": history(path, requested, runtime_id, sidechain=bool(agent))}
+            return export_context(path, sidechain=bool(agent), before_message_id=request.get("beforeMessageId"))
+        if operation == "export_context_without_many":
+            return export_context(path, sidechain=bool(agent), without_message_ids=request["withoutMessageIds"])
+        if operation == "export_context_without":
+            return export_context(path, sidechain=bool(agent), without_message_id=request["beforeMessageId"])
+        detail = history(path, requested, runtime_id, sidechain=bool(agent))
+        # This read has already located and validated the native session.
+        overview = {key: detail[key] for key in ("nativeId", "title", "cwd", "createdAtUnixMs", "updatedAtUnixMs")}
+        if agent:
+            overview = subagent_summary(requested, path, {"nativeId": session, "cwd": detail["cwd"]})
+        return {"contractVersion": 1, "history": detail, "summary": overview}
     raise ValueError("unknown operation")
 
 try:

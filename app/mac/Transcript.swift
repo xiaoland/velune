@@ -35,6 +35,7 @@ struct TranscriptView: View {
     var openArtifact: (ArtifactDocument) -> Void = { _ in }
     /// Edits the user message of this ID, when it may be edited now.
     var editMessage: (String) -> (() -> Void)? = { _ in nil }
+    var deleteMessage: (String) -> (() -> Void)? = { _ in nil }
     /// Forks the conversation through the turn this user message ID starts.
     var forkConversation: (String) -> Void = { _ in }
     let describeSettings: (TranscriptTurn) -> TurnSettingsSummary?
@@ -42,8 +43,8 @@ struct TranscriptView: View {
     var stoppingRecovery = false
     var canStopRecovery = false
     var stopRecovery: () -> Void = {}
-    /// A fork the user asked for while a turn ran; it fires when the turn ends.
-    var heldForkNotice: String? = nil
+    var forking = false
+    var deletingMessage = false
     @State private var dismissedRecovery: String?
     @State private var scrollerStyle = NSScroller.preferredScrollerStyle
 
@@ -54,11 +55,11 @@ struct TranscriptView: View {
             visibleRows = model.rows.filter { userIDs.contains($0.id) }
         } else { visibleRows = model.rows }
         return TranscriptTable(controller: reading.table, conversationID: conversationID, items: model.items(for: visibleRows, turnHeaders: !outlineCollapsed), revision: model.contentRevision,
-                               activity: recovery?.active == true ? nil : activity, outlineCollapsed: outlineCollapsed, outlineAnchorID: reading.outlineAnchorID,
+                               activity: recovery?.active == true && recovery?.isVisible(dismissed: dismissedRecovery) == true ? nil : activity, outlineCollapsed: outlineCollapsed, outlineAnchorID: reading.outlineAnchorID,
                                cwd: cwd, remoteHost: remoteHost, bottomRequest: reading.bottomRequest, jump: navigation,
                                followingChanged: { [reading] value in if reading.following != value { reading.following = value } },
                                outlineToggle: { [reading] id in reading.outlineAnchorID = id; outlineCollapsed = false }, loadPayloads: loadPayloads,
-                               openConversation: openConversation, openAgentURI: openAgentURI, openArtifact: openArtifact, editMessage: editMessage, forkConversation: forkConversation, describeSettings: describeSettings)
+                               openConversation: openConversation, openAgentURI: openAgentURI, openArtifact: openArtifact, editMessage: editMessage, deleteMessage: deleteMessage, forkConversation: forkConversation, describeSettings: describeSettings)
             .background(Color(nsColor: .windowBackgroundColor))
             .overlay(alignment: .bottomTrailing) {
                 if !reading.following {
@@ -69,14 +70,17 @@ struct TranscriptView: View {
                 }
             }
             .safeAreaInset(edge: .bottom, spacing: 0) {
-                if let recovery, recovery.active || dismissedRecovery != recovery.id {
-                    RuntimeRecoveryView(recovery: recovery, stopping: stoppingRecovery, canStop: canStopRecovery, stop: stopRecovery) { dismissedRecovery = recovery.id }
-                } else if let heldForkNotice {
-                    Label(heldForkNotice, systemImage: "clock")
-                        .uiFont(.callout).foregroundStyle(.secondary)
-                        .padding(.horizontal, 16).padding(.vertical, 8)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(.bar)
+                if forking || deletingMessage {
+                    HStack(spacing: 8) {
+                        ProgressView().controlSize(.small)
+                        Text(deletingMessage ? "正在删除消息…" : "正在创建分叉会话…").uiFont(.callout)
+                    }
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 16).padding(.vertical, 8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(.bar)
+                } else if let recovery, recovery.isVisible(dismissed: dismissedRecovery) {
+                    RuntimeRecoveryView(recovery: recovery, stopping: stoppingRecovery, canStop: canStopRecovery, stop: stopRecovery) { dismissedRecovery = recovery.dismissalID }
                 }
             }
             .onReceive(NotificationCenter.default.publisher(for: NSScroller.preferredScrollerStyleDidChangeNotification)

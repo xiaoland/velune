@@ -55,6 +55,59 @@ impl Application {
         }
     }
 
+    pub(crate) fn execute_prepared_handoff(
+        &mut self,
+        mut command: Command,
+        remote: bool,
+        view: &ClientViewId,
+        context: &velune_agent_runtime::import::Context,
+        work_id: &str,
+        queued_message_id: Option<&str>,
+    ) -> Result<Response, Failure> {
+        self.resolve_input_attachments(&mut command, view, remote)?;
+        let Command::SendPreparedHandoff {
+            source_runtime_id,
+            conversation_id,
+            target_runtime_id,
+            selection,
+            turn,
+            ..
+        } = command
+        else {
+            return Err(Failure::new(
+                FailureKind::Contract,
+                "prepared handoff command did not match",
+            ));
+        };
+        let result = self
+            .runtime
+            .serve(
+                Focus::Conversation(conversation_id.clone()),
+                Login::Blocks,
+                |core| {
+                    core.send_prepared_handoff(
+                        TurnRequest {
+                            submission_id: None,
+                            source_runtime_id,
+                            conversation_id,
+                            runtime_id: target_runtime_id,
+                            selection,
+                            turn,
+                        },
+                        context,
+                        work_id,
+                        queued_message_id,
+                    )
+                },
+            )
+            .map_err(Failure::from)?;
+        if remote {
+            self.remote_response(Response::SendPreparedHandoff(result), None)
+        } else {
+            Ok(Response::SendPreparedHandoff(result))
+        }
+    }
+
     fn dispatch_command(
         &mut self,
         command: Command,
@@ -107,6 +160,7 @@ impl Application {
                 Response::ManageScheduledTasks(application.runtime.scheduled_tasks(operation)?)
             }
             Command::ReleaseView => Response::ReleaseView,
+            Command::SetObservedConversations { .. } => Response::SetObservedConversations,
             Command::ListResourceTemplates => {
                 Response::ListResourceTemplates(application.runtime.serve(
                     Focus::None,
@@ -206,6 +260,9 @@ impl Application {
             }
             Command::QueryAnalytics { query } => {
                 Response::QueryAnalytics(application.analytics_query(query)?)
+            }
+            Command::ReadProviderAnalytics { refresh } => {
+                Response::ReadProviderAnalytics(application.provider_analytics(refresh)?)
             }
             Command::ReadRuntimeDiscoveryHints {
                 user_home,
@@ -460,9 +517,8 @@ impl Application {
                 cwd,
                 project,
                 selection,
-            } => Response::CreateConversation(application.runtime.serve(
+            } => Response::CreateConversation(application.runtime.serve_live_control(
                 Focus::New,
-                Login::Blocks,
                 |core| core.create_conversation_target(&runtime_id, cwd, project, selection),
             )?),
             Command::ReadComposerQuota { context, refresh } => {
@@ -476,7 +532,7 @@ impl Application {
                 Response::ReadRuntimeModels(application.runtime.serve(
                     Focus::None,
                     Login::Blocks,
-                    |core| core.runtime_models(runtime_id),
+                    |core| core.runtime_models(runtime_id).map(|models| models.into_parts().0),
                 )?)
             }
             Command::OpenConversation {
@@ -550,16 +606,17 @@ impl Application {
                 |core| Ok(core.message_payloads(&runtime_id, &conversation_id, &message_ids)),
             )?),
             Command::SendTurn {
+                submission_id,
                 source_runtime_id,
                 conversation_id,
                 target_runtime_id,
                 selection,
                 turn,
-            } => Response::SendTurn(application.runtime.serve(
+            } => Response::SendTurn(application.runtime.serve_live_control(
                 Focus::Conversation(conversation_id.clone()),
-                Login::Blocks,
                 |core| {
                     core.send_turn(TurnRequest {
+                        submission_id,
                         source_runtime_id,
                         conversation_id,
                         runtime_id: target_runtime_id,
@@ -567,6 +624,25 @@ impl Application {
                         turn,
                     })
                 },
+            )?),
+            Command::ReadHandoffRequirements { .. }
+            | Command::BeginHandoffSummary { .. }
+            | Command::QueueHandoffSummary { .. }
+            | Command::RetryQueuedHandoffSummary { .. }
+            | Command::ReadHandoffSummary { .. }
+            | Command::CancelHandoffSummary { .. }
+            | Command::SendPreparedHandoff { .. } => {
+                return Err(Error::invalid(
+                    "handoff work must be handled by the application owner",
+                ));
+            }
+            Command::SendCurrentTurn {
+                source_runtime_id,
+                conversation_id,
+                turn,
+            } => Response::SendTurn(application.runtime.serve_live_control(
+                Focus::Conversation(conversation_id.clone()),
+                |core| core.send_current_turn(source_runtime_id, conversation_id, turn),
             )?),
             Command::ReadReasoningEfforts {
                 runtime_id,
@@ -577,21 +653,21 @@ impl Application {
                 |core| core.runtime_reasoning_efforts(runtime_id, model_record_key),
             )?),
             Command::EditSendQueue {
+                submission_id,
                 runtime_id: _,
                 conversation_id,
                 operation,
             } => Response::EditSendQueue(application.runtime.serve(
                 Focus::Conversation(conversation_id.clone()),
                 Login::Blocks,
-                |core| core.send_queue(&conversation_id, operation),
+                |core| core.send_queue_submission(&conversation_id, operation, submission_id),
             )?),
             Command::SteerTurn {
                 runtime_id: _,
                 conversation_id,
                 turn,
-            } => Response::SteerTurn(application.runtime.serve(
+            } => Response::SteerTurn(application.runtime.serve_live_control(
                 Focus::Conversation(conversation_id.clone()),
-                Login::Blocks,
                 |core| core.steer_turn(&turn),
             )?),
             Command::CompactConversation {
@@ -609,27 +685,47 @@ impl Application {
                 selection,
                 effort,
                 permission_mode,
-            } => Response::ResumeTurn(application.runtime.serve(
+            } => Response::ResumeTurn(application.runtime.serve_live_control(
                 Focus::Conversation(conversation_id.clone()),
-                Login::Blocks,
                 |core| core.resume_turn(&runtime_id, selection, effort, permission_mode),
+            )?),
+            Command::DeleteUserMessage {
+                runtime_id,
+                conversation_id,
+                message_id,
+                truncate,
+                expected_revision,
+            } => Response::DeleteUserMessage(application.runtime.serve_live_control(
+                Focus::Conversation(conversation_id.clone()),
+                |core| {
+                    core.delete_user_message(
+                        &runtime_id,
+                        &conversation_id,
+                        &message_id,
+                        truncate,
+                        &expected_revision,
+                    )
+                },
             )?),
             Command::EditMessage {
                 runtime_id,
                 conversation_id,
                 message_id,
                 placement,
+                target_runtime_id,
+                expected_revision,
                 selection,
                 turn,
-            } => Response::EditMessage(application.runtime.serve(
+            } => Response::EditMessage(application.runtime.serve_live_control(
                 Focus::Conversation(conversation_id.clone()),
-                Login::Blocks,
                 |core| {
-                    core.edit_message(
+                    core.edit_message_with_revision(
                         &runtime_id,
                         &conversation_id,
                         &message_id,
                         placement,
+                        target_runtime_id.as_deref(),
+                        expected_revision.as_deref(),
                         selection,
                         turn,
                     )
@@ -647,9 +743,8 @@ impl Application {
             Command::Cancel {
                 runtime_id,
                 conversation_id,
-            } => Response::Cancel(application.runtime.serve(
+            } => Response::Cancel(application.runtime.serve_live_control(
                 Focus::Conversation(conversation_id.clone()),
-                Login::Blocks,
                 |core| core.cancel(&runtime_id),
             )?),
             Command::OpenSideChat {
@@ -689,13 +784,51 @@ impl Application {
                 )?;
                 Response::CloseSideChat
             }
+            Command::ReadBackgroundTasks {
+                runtime_id,
+                conversation_id,
+            } => Response::ReadBackgroundTasks(
+                application
+                    .runtime
+                    .background_tasks(&runtime_id, &conversation_id)?,
+            ),
+            Command::ReadBackgroundTaskOutput {
+                runtime_id,
+                conversation_id,
+                task_id,
+                request_id,
+            } => Response::ReadBackgroundTaskOutput(
+                application.runtime.read_background_task_output(
+                    &runtime_id,
+                    &conversation_id,
+                    &task_id,
+                    request_id.as_deref(),
+                )?,
+            ),
+            Command::StopBackgroundTask {
+                runtime_id,
+                conversation_id,
+                task_id,
+            } => Response::StopBackgroundTask(application.runtime.stop_background_task(
+                &runtime_id,
+                &conversation_id,
+                &task_id,
+            )?),
             Command::StopSubAgents {
                 runtime_id,
                 conversation_id,
-            } => Response::StopSubAgents(application.runtime.serve(
+            } => Response::StopSubAgents(application.runtime.serve_live_control(
                 Focus::Conversation(conversation_id.clone()),
-                Login::Blocks,
                 |core| core.stop_sub_agents(&runtime_id),
+            )?),
+            Command::SetConversationHandoff {
+                runtime_id,
+                conversation_id,
+                release,
+            } => Response::SetConversationHandoff(application.runtime.set_conversation_handoff(
+                &runtime_id,
+                &conversation_id,
+                release,
             )?),
             Command::ReadConversationActivity { since } => {
                 Response::ReadConversationActivity(application.runtime.serve(
@@ -764,6 +897,15 @@ impl Application {
                 Focus::None,
                 Login::Allows,
                 |core| core.provider_billing(gateway_id, provider_id, refresh),
+            )?),
+            Command::ReadProviderAccount {
+                gateway_id,
+                provider_id,
+                refresh,
+            } => Response::ReadProviderAccount(application.provider_account(
+                &gateway_id,
+                &provider_id,
+                refresh,
             )?),
             Command::SaveProviderBilling {
                 gateway_id,
@@ -889,9 +1031,8 @@ impl Application {
                 conversation_id,
                 interaction_id,
                 reply,
-            } => Response::ReplyRuntimeInteraction(application.runtime.serve(
+            } => Response::ReplyRuntimeInteraction(application.runtime.serve_live_control(
                 Focus::Conversation(conversation_id.clone()),
-                Login::Blocks,
                 |core| core.reply_runtime_interaction(&runtime_id, &interaction_id, reply),
             )?),
             Command::InspectAuthentication {
@@ -1019,7 +1160,7 @@ impl Application {
         })
     }
 
-    fn resolve_input_attachments(
+    pub(crate) fn resolve_input_attachments(
         &self,
         command: &mut Command,
         view: &ClientViewId,
@@ -1118,7 +1259,7 @@ impl Application {
         }
     }
 
-    fn remote_response(
+    pub(crate) fn remote_response(
         &mut self,
         mut response: Response,
         payload_runtime: Option<String>,
@@ -1137,6 +1278,7 @@ impl Application {
             | Response::ForkConversation(result)
             | Response::Cancel(result)
             | Response::StopSubAgents(result)
+            | Response::SetConversationHandoff(result)
             | Response::OpenSideChat(result)
             | Response::SendSideChat(result)
             | Response::ReplyRuntimeInteraction(result) => result.snapshot.as_mut(),

@@ -114,7 +114,7 @@ struct ProviderBillingView: View {
                 VStack(alignment: .leading, spacing: 8) {
                     ForEach(Array(limits.enumerated()), id: \.offset) { _, limit in
                         VStack(alignment: .leading, spacing: 2) {
-                            Text("\(limit.name) · \(limit.limitType)：\(limit.value.formatted())")
+                            Text("\(limit.name)（\(limit.limitType)）：\(limit.value.formatted())")
                             if !limit.modelIds.isEmpty { Text(limit.modelIds.joined(separator: ", ")).uiFont(.caption).foregroundStyle(.secondary) }
                         }.textSelection(.enabled)
                     }
@@ -131,7 +131,7 @@ struct ProviderBillingView: View {
         case .workspace(let id): suffix = "Workspace \(id)"
         case .apiKey(let id): suffix = "API key \(id)"
         }
-        return "\(configuration.organizationId) · \(suffix)"
+        return "组织 \(configuration.organizationId)，范围：\(suffix)"
     }
     private func date(_ milliseconds: Int64) -> String {
         let formatter = DateFormatter()

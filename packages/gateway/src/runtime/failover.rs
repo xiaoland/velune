@@ -12,7 +12,6 @@ use velune_ai::{
 pub(super) enum AttemptEnd {
     Completed,
     Settled,
-    Interrupted { cooldown: Option<Duration> },
     Failed(PendingFailure),
 }
 pub(super) struct PendingFailure {

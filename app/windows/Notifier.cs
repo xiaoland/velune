@@ -199,8 +199,8 @@ sealed class Notifier(Shell shell, DispatcherQueue dispatcher)
         var detail = alert.Kind switch
         {
             QuotaAlertKind.CapReached => window + Quota.Ceiling(alert.MaxUsedPercent ?? 100, snapshot.UsageDisplay, true) + "，直到额度回到上限以内。",
-            QuotaAlertKind.Exhausted => window + "已用尽，重置前暂停向它发送新请求。",
-            _ => "提供商表示此账户当前不可用（例如余额不足），暂停新请求。",
+            QuotaAlertKind.Exhausted => window + "已用完；额外额度尚未完整查询，实际可用性以服务商响应为准。",
+            _ => Quota.LimitedObservation,
         };
         var notification = new AppNotificationBuilder()
             .AddText(provider.Name)

@@ -20,3 +20,19 @@ Do not commit real account state, tokens, API keys, payment data, Harness histor
 ## Pull requests
 
 Keep each pull request focused. Explain the user problem, what changed, and how you checked it. Link relevant discussions or issues when available. Update the owning documentation when a durable product behavior or development rule changes. Never include secrets, real session data, or unredacted diagnostics in a patch or screenshot.
+
+## Documentation audiences
+
+Choose the reader before choosing a file:
+
+| Reader and purpose | Owner |
+| --- | --- |
+| Product users installing, configuring, or using Velune | Root READMEs and [`docs/usage.md`](docs/usage.md) |
+| Contributors building, testing, releasing, or debugging | [`docs/development.md`](docs/development.md) and its topic pages |
+| Developers understanding a unit or a cross-unit contract | Unit README/TDD and [`docs/product-tdd/`](docs/product-tdd/index.md) |
+| Product and implementation work referring to behavior requirements | [`docs/prd/`](docs/prd/index.md) |
+| Coding agents following task authority, collaboration, or automation constraints | Root or scoped `AGENTS.md` |
+
+User instructions describe the task and visible result. Developer documentation describes prerequisites, commands, implementation, and diagnostic limits. Coding-agent instructions describe how the agent must operate. A build command can be necessary for a user-facing source-install workflow; its purpose and reader determine placement, not the mere presence of technical terms. Product agents and Harnesses are domain concepts, not coding-agent instructions.
+
+Keep each rule at one owner and link to it elsewhere. PRD owns product behavior; Product TDD owns cross-unit contracts; unit README/TDD owns internal design. Documentation indexes route readers rather than duplicating the rules. Merge superseded statements at their owner and preserve source links; resolve unclear differences before presenting them as current truth. Historical sources and task evidence are not current operating instructions. Beluna is an independent sister project.

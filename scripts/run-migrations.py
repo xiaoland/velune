@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
-"""按文件名顺序执行 scripts/migrations/ 的一次性迁移；全部自检且幂等。
+"""Velune 退出后，手动执行旧开发格式的过渡迁移或数据恢复。
 
-重装脚本在安装新版后、启动前对本机状态目录调用本入口；也可单独显式执行。
-每个迁移脚本接受 --home 与 --apply，无事可迁移时以 0 退出；任一脚本失败
-即停止并以非 0 退出，由调用方决定中止启动。
+按文件名顺序对指定状态目录运行 scripts/migrations/ 下的脚本，并传入 --apply。
+任一脚本失败时停止，处理所报问题后可重试。正常更新由应用在启动时迁移。
 """
 import argparse
 import os
@@ -32,7 +31,7 @@ def probe_lock(root):
         print(f"状态目录仍被进程占用：{root}", file=sys.stderr)
         if os.name != "nt":
             subprocess.run(["/usr/sbin/lsof", str(lock_path)], check=False)
-        print("请退出占用该目录的进程后再重装或启动新版；占用期间新版将无法打开此目录。", file=sys.stderr)
+        print("请退出占用该目录的进程后重试迁移。", file=sys.stderr)
         return False
     return True
 
@@ -56,7 +55,7 @@ def main():
         print(f"迁移：{script.name}", flush=True)
         result = subprocess.run([sys.executable, str(script), "--home", str(root), "--apply"], check=False)
         if result.returncode != 0:
-            sys.exit(f"迁移 {script.name} 未完成；按其上输出处理后再重装或启动新版。")
+            sys.exit(f"迁移 {script.name} 未完成。请按上述输出处理后重试，完成后再启动新版。")
 
 
 if __name__ == "__main__":

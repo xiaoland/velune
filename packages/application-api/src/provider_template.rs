@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, uniffi::Enum)]
 #[serde(rename_all = "camelCase")]
 pub enum ProviderTemplateKind {
-    /// Signs in to one subscription account; the composition stays fixed.
+    /// Uses one subscription account with its model-request composition.
     Subscription,
     /// Reaches an API with a key; protocol and address remain editable.
     Api,
@@ -176,7 +176,8 @@ fn api_template(
     }
 }
 
-/// Describe a saved subscription composition using the same catalog as creation.
+/// Describe saved model-request metadata using the same catalog as creation.
+/// Quota collection is independently editable and never changes this identity.
 /// The template is presentation metadata, never a live configuration reference:
 /// saved values remain authoritative and application validates their full composition.
 /// Neither protocol, endpoint nor API key authentication alone identifies a subscription.
@@ -184,7 +185,7 @@ pub fn provider_subscription_template(
     execution_backend: &ExecutionBackend,
     request_profile: RequestProfile,
     authentication_source: ProviderAuthenticationSource,
-    quota_source: ProviderQuotaSource,
+    _quota_source: ProviderQuotaSource,
 ) -> Option<ProviderTemplate> {
     provider_templates().into_iter().find(|template| {
         template.kind == ProviderTemplateKind::Subscription
@@ -192,6 +193,54 @@ pub fn provider_subscription_template(
                 == std::mem::discriminant(execution_backend)
             && template.request_profile == request_profile
             && template.authentication_source == authentication_source
-            && template.quota_source == quota_source
     })
+}
+
+/// Quota collection is selected independently of the creation template and
+/// model request profile. Saving validates the chosen service address/auth.
+pub fn provider_quota_sources(
+    execution_backend: ExecutionBackend,
+    authentication_source: ProviderAuthenticationSource,
+) -> Vec<ProviderQuotaSource> {
+    use ProviderAuthenticationSource as Auth;
+    use ProviderQuotaSource as Quota;
+    match (execution_backend, authentication_source) {
+        (ExecutionBackend::Http, Auth::ApiKey) => vec![
+            Quota::None,
+            Quota::KimiUsage,
+            Quota::ArkCodingUsage,
+            Quota::ApiAccount,
+        ],
+        (ExecutionBackend::Http, Auth::CodexOAuth) => vec![Quota::None, Quota::CodexUsage],
+        (ExecutionBackend::ClaudeCli { .. }, Auth::ClaudeCli) => {
+            vec![Quota::None, Quota::ClaudeCliUsage]
+        }
+        _ => vec![Quota::None],
+    }
+}
+
+#[cfg(test)]
+mod quota_composition_tests {
+    use super::*;
+
+    #[test]
+    fn disabling_quota_does_not_turn_subscription_request_metadata_into_api_metadata() {
+        for template in provider_templates()
+            .into_iter()
+            .filter(|t| t.kind == ProviderTemplateKind::Subscription)
+        {
+            let found = provider_subscription_template(
+                &template.execution_backend,
+                template.request_profile,
+                template.authentication_source,
+                ProviderQuotaSource::None,
+            )
+            .unwrap();
+            assert_eq!(found.id, template.id);
+            assert!(
+                provider_quota_sources(template.execution_backend, template.authentication_source)
+                    .contains(&template.quota_source)
+            );
+        }
+    }
 }

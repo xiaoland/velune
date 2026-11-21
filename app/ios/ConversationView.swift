@@ -131,6 +131,16 @@ struct ConversationContent: View {
                     Button("发送消息", systemImage: "arrow.up") { model.send() }.disabled(!model.canSend)
                     Button("压缩上下文", systemImage: "arrow.down.right.and.arrow.up.left") { model.compact() }.disabled(model.snapshot?.followUp.canCompact != true || model.busy)
                     Button("停止生成", systemImage: "stop") { model.stop() }.disabled(model.snapshot?.actions.canCancel != true || model.busy)
+                    switch model.snapshot?.followUp.controlHandoff {
+                    case .canRelease:
+                        Button("释放会话控制权", systemImage: "lock.open") { model.setConversationHandoff(release: true) }.disabled(model.busy)
+                    case .released:
+                        Button("恢复 Velune 执行") { model.setConversationHandoff(release: false) }.disabled(model.busy)
+                    case .releasing:
+                        Button("取消交接") { model.setConversationHandoff(release: false) }.disabled(model.busy)
+                    case nil:
+                        EmptyView()
+                    }
                     Button("回到最新", systemImage: "arrow.down") { following = true; position.scrollTo(edge: .bottom) }
                     if supportsMultipleWindows, model.snapshot != nil {
                         Button("在新窗口中打开", systemImage: "macwindow.badge.plus") {

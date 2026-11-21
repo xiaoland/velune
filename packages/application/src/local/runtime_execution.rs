@@ -12,6 +12,29 @@ pub(super) struct ExecutionContext {
     pub projection: PathBuf,
 }
 
+/// Captured on the owner without IO; executed by the owner of the native work.
+pub(super) struct ExecutionPreparation {
+    target: ExecutionTarget,
+    directories: Vec<PathBuf>,
+    resources: Option<(String, PathBuf, PathBuf)>,
+}
+
+impl ExecutionPreparation {
+    pub(super) fn prepare(&self) -> Result<Option<String>, RuntimeError> {
+        for directory in &self.directories {
+            self.target
+                .create_dir_all(directory)
+                .map_err(|error| RuntimeError::context("managed HOME 初始化", error))?;
+        }
+        if let Some((key, local, remote)) = &self.resources {
+            velune_agent_runtime::execution::install_resources(&self.target, local, remote)
+                .map_err(|error| RuntimeError::context("远端辅助资源安装", error))?;
+            return Ok(Some(key.clone()));
+        }
+        Ok(None)
+    }
+}
+
 impl CoreRuntime {
     pub(super) fn runtime_location(
         &self,
@@ -49,17 +72,30 @@ impl CoreRuntime {
         Ok((target, os_home))
     }
 
+    pub(super) fn runtime_preparation(
+        &self,
+        runtime: &RuntimeInstance,
+    ) -> Result<ExecutionPreparation, RuntimeError> {
+        let (target, home) = self.runtime_location(runtime)?;
+        let directories = if matches!(runtime.execution()?.home, RuntimeHome::Managed { .. }) {
+            vec![home.expect("managed HOME")]
+        } else {
+            Vec::new()
+        };
+        Ok(ExecutionPreparation {
+            target,
+            directories,
+            resources: None,
+        })
+    }
+
     pub(super) fn prepare_runtime_location(
         &self,
         runtime: &RuntimeInstance,
     ) -> Result<(ExecutionTarget, Option<PathBuf>), RuntimeError> {
-        let (target, home) = self.runtime_location(runtime)?;
-        if matches!(runtime.execution()?.home, RuntimeHome::Managed { .. }) {
-            target
-                .create_dir_all(home.as_deref().expect("managed HOME"))
-                .map_err(|error| RuntimeError::context("managed HOME 初始化", error))?;
-        }
-        Ok((target, home))
+        let location = self.runtime_location(runtime)?;
+        self.runtime_preparation(runtime)?.prepare()?;
+        Ok(location)
     }
 
     pub(super) fn execution_context(
@@ -125,17 +161,14 @@ impl CoreRuntime {
         }
     }
 
-    pub(super) fn prepare_execution_context(
+    pub(super) fn execution_preparation(
         &self,
         runtime: &RuntimeInstance,
-    ) -> Result<ExecutionContext, RuntimeError> {
+    ) -> Result<(ExecutionContext, ExecutionPreparation), RuntimeError> {
         let context = self.execution_context(runtime)?;
-        if matches!(runtime.execution()?.home, RuntimeHome::Managed { .. }) {
-            context
-                .target
-                .create_dir_all(context.os_home.as_deref().expect("managed HOME"))
-                .and_then(|()| context.target.create_dir_all(&context.agent_dir))
-                .map_err(|error| RuntimeError::context("managed HOME 初始化", error))?;
+        let mut preparation = self.runtime_preparation(runtime)?;
+        if !preparation.directories.is_empty() {
+            preparation.directories.push(context.agent_dir.clone());
         }
         if !context.target.is_local() {
             if context.resources.starts_with(&context.agent_dir)
@@ -150,14 +183,23 @@ impl CoreRuntime {
             }
             let key = serde_json::to_string(&runtime.execution()?)?;
             if !self.prepared_remote_resources.borrow().contains(&key) {
-                velune_agent_runtime::execution::install_resources(
-                    &context.target,
-                    &self.options.resources_directory,
-                    &context.resources,
-                )
-                .map_err(|error| RuntimeError::context("远端辅助资源安装", error))?;
-                self.prepared_remote_resources.borrow_mut().insert(key);
+                preparation.resources = Some((
+                    key,
+                    self.options.resources_directory.clone(),
+                    context.resources.clone(),
+                ));
             }
+        }
+        Ok((context, preparation))
+    }
+
+    pub(super) fn prepare_execution_context(
+        &self,
+        runtime: &RuntimeInstance,
+    ) -> Result<ExecutionContext, RuntimeError> {
+        let (context, preparation) = self.execution_preparation(runtime)?;
+        if let Some(key) = preparation.prepare()? {
+            self.prepared_remote_resources.borrow_mut().insert(key);
         }
         Ok(context)
     }

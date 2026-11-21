@@ -1,5 +1,7 @@
 //! Same-user pairing control for the service already owned by the native application.
 use super::*;
+#[cfg(feature = "external-control")]
+use super::{control_ingress::Protocol, session_control::SessionGrant};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
@@ -21,7 +23,7 @@ pub(super) struct LocalControl {
 }
 
 impl LocalControl {
-    pub(super) fn bind(owner: &ServiceOwner, directory: &Path) -> Result<Self, BindingError> {
+    pub(super) fn bind(owner: &Arc<ServiceOwner>, directory: &Path) -> Result<Self, BindingError> {
         let setup = || -> std::io::Result<(std::os::unix::net::UnixListener, PathBuf, u64)> {
             let directory = directory.join("cli");
             match fs::DirBuilder::new().mode(0o700).create(&directory) {
@@ -58,7 +60,7 @@ impl LocalControl {
         })?;
         let _context = owner.runtime.enter();
         let listener = UnixListener::from_std(listener).map_err(|_| BindingError::Unavailable)?;
-        let service = Arc::downgrade(&owner.service);
+        let live_owner = Arc::downgrade(owner);
         let task = owner.runtime.spawn(async move {
             let mut requests = JoinSet::new();
             loop {
@@ -66,9 +68,9 @@ impl LocalControl {
                     accepted = listener.accept() => {
                         let Ok((stream, _)) = accepted else { break };
                         if requests.len() >= 8 { continue; }
-                        let Some(service) = service.upgrade() else { break };
+                        let Some(owner) = live_owner.upgrade() else { break };
                         requests.spawn(async move {
-                            let _ = tokio::time::timeout(Duration::from_secs(65), serve(stream, service)).await;
+                            let _ = tokio::time::timeout(Duration::from_secs(65), serve(stream, owner)).await;
                         });
                     }
                     _ = requests.join_next(), if !requests.is_empty() => {}
@@ -107,19 +109,31 @@ enum Command {
     Connect {
         peer: String,
     },
+    #[cfg(feature = "external-control")]
+    HapiStart {
+        port: u16,
+        sessions: Vec<SessionGrant>,
+    },
+    #[cfg(feature = "external-control")]
+    HapiStop,
+    #[cfg(feature = "external-control")]
+    ControlStart {
+        port: u16,
+        sessions: Vec<SessionGrant>,
+    },
+    #[cfg(feature = "external-control")]
+    ControlStop,
 }
 
-async fn execute(
-    service: Arc<RemoteAccessService>,
-    command: Command,
-) -> Result<Value, RemoteError> {
+async fn execute(owner: &ServiceOwner, command: Command) -> Result<Value, RemoteError> {
+    let service = &owner.service;
     let value = match command {
         Command::Status => json!(service.read_state()?),
         Command::Invite => {
             // Match the explicit "add controlling device" action in the native app.
             service.set_control_ingress(true)?;
             let offer = service.create_invitation(Duration::from_secs(300))?;
-            json!({"invitation": offer.encode()?})
+            json!({"invitation": offer.encode()?, "url": offer.encode_url()?})
         }
         Command::Begin { invitation } => json!(
             service
@@ -153,11 +167,52 @@ async fn execute(
             controller.connect().await?;
             json!(controller.status()?)
         }
+        #[cfg(feature = "external-control")]
+        Command::HapiStart { port, sessions } => {
+            start_control(owner, Protocol::Hapi, port, sessions).await?
+        }
+        #[cfg(feature = "external-control")]
+        Command::HapiStop => {
+            let ingress = owner
+                .control_ingress
+                .as_ref()
+                .ok_or(RemoteError::NoHandler)?;
+            ingress.stop(Protocol::Hapi)?;
+            Value::Null
+        }
+        #[cfg(feature = "external-control")]
+        Command::ControlStart { port, sessions } => {
+            start_control(owner, Protocol::Canonical, port, sessions).await?
+        }
+        #[cfg(feature = "external-control")]
+        Command::ControlStop => {
+            let ingress = owner
+                .control_ingress
+                .as_ref()
+                .ok_or(RemoteError::NoHandler)?;
+            ingress.stop(Protocol::Canonical)?;
+            Value::Null
+        }
     };
     Ok(value)
 }
 
-async fn serve(mut stream: UnixStream, service: Arc<RemoteAccessService>) -> std::io::Result<()> {
+#[cfg(feature = "external-control")]
+async fn start_control(
+    owner: &ServiceOwner,
+    protocol: Protocol,
+    port: u16,
+    sessions: Vec<SessionGrant>,
+) -> Result<Value, RemoteError> {
+    let ingress = owner
+        .control_ingress
+        .as_ref()
+        .ok_or(RemoteError::NoHandler)?;
+    let share = ingress.start(protocol, port, sessions).await?;
+    Ok(json!({"address": share.address.to_string(), "accessToken": share.access_token}))
+}
+
+async fn serve(mut stream: UnixStream, owner: Arc<ServiceOwner>) -> std::io::Result<()> {
     let mut bytes = Vec::new();
     tokio::time::timeout(
         Duration::from_secs(5),
@@ -168,7 +223,7 @@ async fn serve(mut stream: UnixStream, service: Arc<RemoteAccessService>) -> std
         Err(RemoteError::FrameTooLarge)
     } else {
         match serde_json::from_slice::<Command>(&bytes) {
-            Ok(command) => execute(service, command).await,
+            Ok(command) => execute(&owner, command).await,
             Err(_) => Err(RemoteError::Protocol),
         }
     };

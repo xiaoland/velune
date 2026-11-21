@@ -347,7 +347,7 @@ fn managed_models(providers: &[ProviderSummary]) -> Vec<RuntimeModel> {
                 selection: ModelSelection::Managed {
                     model_record_key: model.record_key.clone(),
                 },
-                name: format!("{} · {}", model.display_name(), provider.name),
+                name: format!("{}（{}）", model.display_name(), provider.name),
                 reasoning_efforts: Vec::new(),
             })
         })
@@ -376,7 +376,13 @@ fn latest_turn_model(
         return Some(selection.clone());
     }
     let recorded = settings.model.as_deref()?;
-    if let Some(model) = catalog.iter().find(|model| model.name == recorded) {
+    if let Some(model) = catalog.iter().find(|model| {
+        model.name == recorded
+            // Old route labels were recorded before display punctuation changed.
+            || matches!(&model.selection, ModelSelection::Managed { .. }
+                if model.name.strip_prefix("模型路由：")
+                    .is_some_and(|name| format!("{name} · 模型路由") == recorded))
+    }) {
         return Some(model.selection.clone());
     }
     if let Some(model) = catalog.iter().find(
@@ -388,16 +394,24 @@ fn latest_turn_model(
     if let Some(kind) = runtime_kind
         && let Some(model) = catalog.iter().find(|model| {
             matches!(&model.selection, ModelSelection::Native { model_id, .. }
-                if velune_conversation::model_variant::display_model_name(kind, model_id) == recorded)
+                if velune_conversation::model_variant::display_model_name(kind, model_id) == recorded
+                    // Read the old label without producing it for new UI or turns.
+                    || kind == crate::RuntimeKind::Codex166
+                        && velune_conversation::model_variant::split_codex_speed(model_id)
+                            .is_some_and(|(base, tier)| format!("{base} · {tier}") == recorded))
         })
     {
         return Some(model.selection.clone());
     }
     let keys: Vec<&str> = providers
         .iter()
-        .flat_map(|provider| &provider.models)
-        .filter(|model| model.provider_model_id == recorded)
-        .map(|model| model.record_key.as_str())
+        .flat_map(|provider| provider.models.iter().map(move |model| (provider, model)))
+        .filter(|(provider, model)| {
+            model.provider_model_id == recorded
+                // Preserve selection of managed models recorded under the old label.
+                || format!("{} · {}", model.display_name(), provider.name) == recorded
+        })
+        .map(|(_, model)| model.record_key.as_str())
         .collect();
     let mut managed = catalog.iter().filter(|model| {
         matches!(&model.selection, ModelSelection::Managed { model_record_key } if keys.contains(&model_record_key.as_str()))
@@ -607,7 +621,7 @@ mod tests {
         let next = resolve_next_turn(unread);
         assert_eq!(
             next.models,
-            vec![model(managed("key"), "gpt · Provider", &[])]
+            vec![model(managed("key"), "gpt（Provider）", &[])]
         );
         assert_eq!(next.model, Some(native("elsewhere")));
         assert_eq!(next.model_name.as_deref(), Some("elsewhere"));

@@ -45,7 +45,7 @@ Rust 的同一许可锁覆盖连接接纳和 TLS 下的 socket I/O。Swift 关�
 
 每个 Operation 只有一个完成 owner。完成后释放自己的 span，后台子操作通过 carrier 关联，不克隆父 span 来延长时长。受控 tracing span 不采用隐式 registry 父引用，避免跨 dispatcher 析构旧父引用。父 span 可以先于子操作结束；网络超时不会终止已运行的阻塞 handler，因此 CLIENT 等待失败与 SERVER 随后成功可以同时成立。
 
-命名业务事件只导出为关联 trace 的日志；trace layer 仅导出批准 span，不再重复生成 span events。本地完整诊断仍留在本地。标准 eventName 为 `velune.operation.completed` 和上述三个轮次事件；轮次专用终态替代通用 completed，不对同一终态重复记录。failure 使用 ERROR，其余结果与 started 使用 INFO。body 仅供阅读，不能解析源码行号或消息文本识别事件。成功 snapshot、snapshot_update、authentication_poll 和 remote 查询不产生常规完成日志；失败、取消和未知仍记录。原生成功 application.read／conversation.read 同样降噪。
+命名业务事件只导出为关联 trace 的日志；trace layer 仅导出批准 span，不再重复生成 span events。本地完整诊断仍留在本地。标准 eventName 为 `velune.operation.completed` 和上述三个轮次事件；轮次专用终态替代通用 completed，不对同一终态重复记录。failure 使用 ERROR，其余结果与 started 使用 INFO。body 仅供阅读，不能解析源码行号或消息文本识别事件。成功 snapshot、snapshot_update、authentication_poll、remote 查询与请求，以及后台轮询 conversation_activity、quota_alerts、composer_quota、manage_composer_inputs 不产生常规完成日志，只计入指标；失败、取消和未知仍记录。远控写操作的成功由其 bindings 操作记录 request ID。原生成功 application.read／conversation.read 同样降噪。
 
 | 属性 | 类型与含义 |
 | --- | --- |
@@ -86,19 +86,25 @@ Rust 只外传固定 target、固定事件名及受控字段。`otel.name`／`ot
 
 分享只返回保存的 profile；临时开发覆盖、开关、修订和身份均不复制。`TelemetryProfileRead` 与控制授权独立，邀请与核对材料绑定用途。读取在入站权限锁内与撤销排序，不进入业务账本或重试缓存。目的端取得后仍走本机准备／提交路径，保留自己的偏好与 expected revision；失败保留原配置。
 
-agent 通过本地状态与接收端的 Tempo、Loki、Prometheus API 联合判断。报告必须限定 run、实例、时间与数量，说明采样、查询截断、保留期和外部 Harness 内部不可见范围。未找到数据不足以证明没有失败。
+本地状态与接收端查询分别提供客户端和存储侧的证据，查询步骤及报告范围见[开发诊断](../development/telemetry.md#诊断查询)。
 
 ## 扩展埋点与读取范例
 
 新增埋点先说明谁拥有起止或终态、它回答什么诊断问题，再使用已有 owner 和官方 SDK。普通同机调用是 `ui.* → bindings.*`；发送受理后 `execution.turn` 继续到 Session 终态，UI 返回不替它结束。跨设备调用在 bindings 后经过 `remote.request → remote.submit → remote.execute`；查询是独立的 client/server 对，以 RequestId 查找执行。Gateway 在同一 request 下记录每次 attempt，因此一次失败后重试成功应看到失败 attempt、成功 attempt 和成功 request，而不能把整个 trace 归为失败。
 
-排障先限定 run、实例、时间与契约版本，再检查 trace 的父子、kind 和结果。没有采样到 span 时，以完成日志的 operation ID、RequestId 与终态字段继续查；缺失的 finished 不能推出仍在执行，需结合 owner_available、observation.age 与业务查询。跨设备时钟可能有偏差，不能将两端时间戳相减当网络延迟。
+完成日志的 operation ID、RequestId 与终态字段可在未采样 span 时提供关联；缺失的 finished 不表达“仍在执行”，需结合 owner_available、observation.age 与业务查询。跨设备时钟可能有偏差，两端时间戳之差不表示网络延迟。
 
 新增字段同时维护外传准入、类型、单位、指标基数和查询方。改变名称、kind、触发或结果含义属于契约演进，需要说明版本影响；普通源码移动不能改变 eventName。实际输出检查能发现表达偏差，但是否值得新增 span、操作边界是否清楚，仍需按业务语义和维护成本审查。
 
 
 ## 本地问题历史
 
-Mac 问题面板是既有 `logs/velune.<UTC日期>.jsonl` 的跨进程投影，不按 run ID 过滤。`DiagnosticProblem` 带时间、来源、详情、错误类别／代码、阶段、operation ID 和恢复时间；新增、恢复、显式清理是同一 rolling writer 的日志事件，写入后 flush。恢复不删除记录，用户清理的记录在重启后不复活。旧 ERROR 与带详情的 WARN 可回填，重复 operation ID 收敛到完整问题记录，断裂或无效单行不遮蔽其他记录。旧日志缺少原始详情时只报告原有证据。保留沿用本地滚动日志的 7 个文件上限，不另建问题数据库或保留第二份错误日志；此限制与重启无关。
+Mac 问题面板是既有 `logs/velune.*.jsonl` 的跨进程投影，不按 run ID 过滤。`DiagnosticProblem` 带时间、来源、详情、错误类别／代码、阶段、operation ID 和恢复时间；新增、恢复、显式清理是同一物理日志序列的事件，成功回执确认 write＋flush，不表达 fsync。恢复不删除记录，用户清理的记录在重启后不复活。超时属于不确定结果，不自动重放。
+
+同目录 writer 在同一稳定目录锁内重新选择末片、追加、轮转并关闭数据句柄；不长期持有私有旧分片。新分片以固定宽度递增序号排序，不依赖墙钟决定事件先后。读取从枚举到回放完成持有同一锁，只处理以换行结束的记录。中断的尾行保留原字节，若在同片继续追加则先隔离坏尾行，避免吞掉后续成功事件。保留只能删除完整最旧前缀，不能留下来源问题却先淘汰其后的恢复或清理事件。该保证适用于采用当前锁协议的新读写；旧版非协作 writer 及既有跨文件交错不能被追溯重排。
+
+旧 ERROR 与带详情的 WARN 可回填，重复 operation ID 收敛到完整问题记录；来源、类别、代码、阶段和详情相同的回填失败在恢复或清理前合并为一条，时间取最近一次，后台重试不放大成多条问题。断裂或无效单行不遮蔽其他记录。旧日志缺少原始详情时只报告原有证据。日志最多保留 7 个文件、56 MiB 数据，不另建问题数据库或保留第二份错误日志；此限制与重启无关。读取一致性会串行阻塞追加；慢盘和较长回放可导致有界队列丢弃或回执超时，不能以成功返回隐藏这些失败。
 
 这些本地详细事件不进入 OTLP 导出。FFI 提供本地 `problems/record_problem/resolve_problems/dismiss_problems`，无需应用控制锁或连接其他设备；本机状态路径区分投影 scope，日志读写故障在面板明确显示，不递归写入。
+
+Mac 聚合面板仍读取控制端本机日志。由远控操作产生的界面记录保存目标设备公钥，用于重启后恢复归属；没有设备字段的历史记录仍保留。远控调用失败时，bindings 返回本机操作编号；日志可用该编号定位失败，并在已分配 RequestId 时继续关联请求。聚合面板不读取远端设备的日志。

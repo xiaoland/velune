@@ -1,8 +1,8 @@
 //! Ordered, disposable message-list projection. Native snapshots remain authoritative.
 use crate::conversation::{
-    ExecutionKind, Executions, Message, MessageBlock, MessageIdentityConfirmation, MessageRole,
-    RunState, TranscriptItem, TranscriptMessageIdentity, TranscriptOutlineEntry, TranscriptTurn,
-    TurnOutcome, TurnSettings, TurnUsage,
+    ConversationSnapshot, ExecutionKind, Executions, Message, MessageBlock,
+    MessageIdentityConfirmation, MessageRole, RunState, TranscriptItem, TranscriptMessageIdentity,
+    TranscriptOutlineEntry, TranscriptTurn, TurnOutcome, TurnSettings, TurnUsage,
 };
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -11,6 +11,8 @@ use std::{
 
 /// Forward consumption includes replacement: native branching and compaction are not append-only.
 pub enum TranscriptEvent<'a> {
+    /// Consume canonical content and its native presentation semantics together.
+    ReplaceSnapshot(&'a ConversationSnapshot),
     ConfirmIdentities(&'a [MessageIdentityConfirmation]),
     Replace {
         messages: &'a [Message],
@@ -23,6 +25,8 @@ struct MessageAnchor {
     id: String,
     role: MessageRole,
     standalone: bool,
+    work_notification: bool,
+    compaction: bool,
     outcome: Option<TurnOutcome>,
     /// Index of the first block of the trailing visible text, which is the
     /// agent's reply; `None` when an assistant message does not end in text.
@@ -36,6 +40,10 @@ struct MessageAnchor {
 #[derive(Default)]
 pub struct TranscriptProjection {
     messages: Vec<MessageAnchor>,
+    work_notification_ids: BTreeSet<String>,
+    /// Closing replies recovered from native history before user tombstones.
+    /// These delimit surviving user ranges without inventing another user.
+    retained_reply_ids: BTreeSet<String>,
     running: bool,
     /// The native record shows the last turn unfinished outside Velune. It is
     /// presented as running but not timed: no execution was observed.
@@ -51,8 +59,20 @@ pub struct TranscriptProjection {
     pending_request: Option<(TurnSettings, usize)>,
 }
 impl TranscriptProjection {
+    pub fn retain_reply_boundaries(&mut self, ids: &[String]) {
+        self.retained_reply_ids = ids.iter().cloned().collect();
+    }
+
     pub fn apply(&mut self, event: TranscriptEvent<'_>) {
         match event {
+            TranscriptEvent::ReplaceSnapshot(snapshot) => {
+                self.work_notification_ids =
+                    snapshot.work_notification_ids.iter().cloned().collect();
+                self.apply(TranscriptEvent::Replace {
+                    messages: &snapshot.messages,
+                    executions: &snapshot.executions,
+                });
+            }
             TranscriptEvent::ConfirmIdentities(confirmations) => {
                 let identities: BTreeMap<_, _> = confirmations
                     .iter()
@@ -74,6 +94,14 @@ impl TranscriptProjection {
                     *id = (*current).into();
                 }
                 for confirmation in confirmations {
+                    if self.work_notification_ids.remove(&confirmation.previous_id) {
+                        self.work_notification_ids
+                            .insert(confirmation.current_id.clone());
+                    }
+                    if self.retained_reply_ids.remove(&confirmation.previous_id) {
+                        self.retained_reply_ids
+                            .insert(confirmation.current_id.clone());
+                    }
                     if let Some(id) = self.presentation_ids.remove(&confirmation.previous_id) {
                         self.presentation_ids
                             .insert(confirmation.current_id.clone(), id);
@@ -107,7 +135,13 @@ impl TranscriptProjection {
                     .map(|message| MessageAnchor {
                         id: message.id.clone(),
                         role: message.role.clone(),
-                        standalone: message.role == MessageRole::Client
+                        compaction: message
+                            .blocks
+                            .iter()
+                            .any(|block| matches!(block, MessageBlock::ContextCompaction { .. })),
+                        work_notification: self.work_notification_ids.contains(&message.id),
+                        standalone: (message.role == MessageRole::Client
+                            && !self.work_notification_ids.contains(&message.id))
                             || membership
                                 .get(message.id.as_str())
                                 .is_some_and(|(kind, _)| {
@@ -115,8 +149,7 @@ impl TranscriptProjection {
                                 })
                             || (message.blocks.iter().any(|block| {
                                 matches!(block, MessageBlock::ContextCompaction { .. })
-                            }) && (!message.completed
-                                || !membership.contains_key(message.id.as_str()))),
+                            }) && !membership.contains_key(message.id.as_str())),
                         outcome: membership
                             .get(message.id.as_str())
                             .and_then(|(_, outcome)| *outcome),
@@ -251,7 +284,9 @@ impl TranscriptProjection {
                 native.and_then(|n| n.permission_mode.as_ref()),
                 requested.and_then(|r| r.permission_mode.as_ref()),
             ),
-            model_selection: requested.and_then(|r| r.model_selection.clone()),
+            model_selection: requested
+                .and_then(|r| r.model_selection.clone())
+                .or_else(|| native.and_then(|n| n.model_selection.clone())),
         })
     }
 
@@ -273,20 +308,39 @@ impl TranscriptProjection {
                     .get(ordinal + 1)
                     .copied()
                     .unwrap_or(self.messages.len());
-                let responses: Vec<_> = self.messages[start + 1..next_user]
+                // A deleted prompt must not merge its preceding closing reply
+                // into a later turn's work. Close at the first native retained
+                // reply; orphaned messages following it stay individually
+                // accessible in their original order until the next real user.
+                let end = self.messages[start + 1..next_user]
                     .iter()
-                    .filter(|message| !message.standalone)
+                    .position(|message| {
+                        self.retained_reply_ids.contains(&message.id)
+                            && message.reply_start.is_some()
+                    })
+                    .map_or(next_user, |offset| start + 1 + offset + 1);
+                // An independent compaction ends the available ownership
+                // evidence. Later notifications must not attach backwards.
+                let mut independent_compaction = false;
+                let responses: Vec<_> = self.messages[start + 1..end]
+                    .iter()
+                    .filter(|message| {
+                        independent_compaction |= message.compaction && message.standalone;
+                        !message.standalone
+                            && !(message.work_notification && independent_compaction)
+                    })
                     .collect();
                 // The reply is the text at the end of the closing assistant
                 // message. Everything before it, including that message's own
                 // reasoning and tool blocks, is work; a turn that does not end
                 // in text folds fully.
-                let visible = responses
+                let closing_index = responses
                     .iter()
-                    .rev()
-                    .find(|message| message.role != MessageRole::System)
-                    .copied()
-                    .filter(|message| message.reply_start.is_some());
+                    .rposition(|message| {
+                        message.role != MessageRole::System && !message.work_notification
+                    })
+                    .filter(|index| responses[*index].reply_start.is_some());
+                let visible = closing_index.map(|index| responses[index]);
                 let reply_start = visible.and_then(|message| message.reply_start).unwrap_or(0);
                 let user = &self.messages[*start];
                 let duration_ms = self
@@ -300,10 +354,19 @@ impl TranscriptProjection {
                     user_message_id: user.id.clone(),
                     work_message_ids: responses
                         .iter()
-                        .filter(|message| {
-                            reply_start > 0 || visible.is_none_or(|reply| reply.id != message.id)
+                        .enumerate()
+                        .filter(|(index, message)| {
+                            (reply_start > 0 || visible.is_none_or(|reply| reply.id != message.id))
+                                // Truly late notifications remain standalone.
+                                && !(message.work_notification
+                                    && closing_index.is_some_and(|closing| *index > closing))
+                                // Maintenance after a closing reply stays after
+                                // it, even if an older adapter attached it to
+                                // the preceding user execution.
+                                && !(message.compaction
+                                    && closing_index.is_some_and(|closing| *index > closing))
                         })
-                        .map(|message| message.id.clone())
+                        .map(|(_, message)| message.id.clone())
                         .collect(),
                     last_message_id: visible.map(|message| message.id.clone()),
                     reply_start_block: u32::try_from(reply_start).unwrap_or(u32::MAX),
@@ -323,6 +386,14 @@ impl TranscriptProjection {
         let by_user: BTreeMap<_, _> = turns
             .iter()
             .map(|turn| (turn.user_message_id.as_str(), turn))
+            .collect();
+        let closing: BTreeMap<_, _> = turns
+            .iter()
+            .filter_map(|turn| {
+                turn.last_message_id
+                    .as_deref()
+                    .map(|id| (id, turn.reply_start_block > 0))
+            })
             .collect();
         let grouped: BTreeSet<_> = turns
             .iter()
@@ -349,9 +420,11 @@ impl TranscriptProjection {
                         turn_id: turn.id.clone(),
                     });
                 }
-                if let Some(reply) = &turn.last_message_id {
-                    items.push(item(reply, turn.reply_start_block > 0));
-                }
+            } else if let Some(mixed) = closing.get(message.id.as_str()) {
+                // A closing reply stays at its native position. Emitting it
+                // with the user anchor moves intervening standalone notices
+                // after the answer, despite their earlier source position.
+                items.push(item(&message.id, *mixed));
             } else if !grouped.contains(&message.id) {
                 items.push(item(&message.id, false));
             }
@@ -409,9 +482,12 @@ mod tests {
         ])).unwrap();
         let mut executions = Executions::default();
         executions.begin(ExecutionKind::UserTurn, false);
-        for message in &messages {
+        for message in &messages[..2] {
             executions.attach(&message.id);
         }
+        executions.finish(Some(TurnOutcome::Completed));
+        executions.begin(ExecutionKind::ContextMaintenance, false);
+        executions.attach("compact");
         let mut projection = TranscriptProjection::default();
         projection.apply(TranscriptEvent::Replace {
             messages: &messages,
@@ -455,7 +531,122 @@ mod tests {
     }
 
     #[test]
-    fn completed_statuses_join_work_before_the_reply_and_keep_outcome() {
+    fn standalone_notifications_keep_their_native_position_before_closing_replies() {
+        for (mixed, notice) in [
+            (
+                false,
+                serde_json::json!({"id":"notice","role":"client","completed":true,"blocks":[{"kind":"text","text":"background task complete"}]}),
+            ),
+            (
+                true,
+                serde_json::json!({"id":"notice","role":"client","completed":true,"blocks":[{"kind":"text","text":"background task complete"}]}),
+            ),
+            (
+                false,
+                serde_json::json!({"id":"notice","role":"system","completed":false,"blocks":[{"kind":"contextCompaction","text":"compacting"}]}),
+            ),
+        ] {
+            let blocks = if mixed {
+                serde_json::json!([{"kind":"reasoning","text":"finishing"},{"kind":"text","text":"done"}])
+            } else {
+                serde_json::json!([{"kind":"text","text":"done"}])
+            };
+            let messages: Vec<Message> = serde_json::from_value(serde_json::json!([
+                {"id":"user","role":"user","completed":true,"blocks":[{"kind":"text","text":"run background work"}]},
+                {"id":"progress","role":"assistant","completed":true,"blocks":[{"kind":"text","text":"checking"}]},
+                notice,
+                {"id":"notice2","role":"client","completed":true,"blocks":[{"kind":"text","text":"another background task complete"}]},
+                {"id":"closing","role":"assistant","completed":true,"blocks":blocks},
+                {"id":"late","role":"client","completed":true,"blocks":[{"kind":"text","text":"arrived after the reply"}]}
+            ])).unwrap();
+            let mut projection = TranscriptProjection::default();
+            projection.apply(TranscriptEvent::Replace {
+                messages: &messages,
+                executions: &Executions::default(),
+            });
+            let turn = projection.turns().remove(0);
+            assert_eq!(turn.last_message_id.as_deref(), Some("closing"));
+            assert_eq!(
+                turn.work_message_ids,
+                if mixed {
+                    vec!["progress", "closing"]
+                } else {
+                    vec!["progress"]
+                }
+            );
+            let identities: BTreeMap<_, _> = projection
+                .message_identities()
+                .into_iter()
+                .map(|identity| (identity.message_id, identity.id))
+                .collect();
+            let items = projection.items();
+            assert!(matches!(&items[1], TranscriptItem::Work { turn_id } if turn_id == &turn.id));
+            for item in &items {
+                if let TranscriptItem::Message { id, message_id } = item {
+                    let prefix = if mixed && message_id == "closing" {
+                        "reply:"
+                    } else {
+                        ""
+                    };
+                    assert_eq!(id, &format!("{prefix}{}", identities[message_id]));
+                }
+            }
+            let order: Vec<_> = projection
+                .items()
+                .into_iter()
+                .map(|item| match item {
+                    TranscriptItem::Message { message_id, .. } => message_id,
+                    TranscriptItem::Work { .. } => "work".into(),
+                })
+                .collect();
+            assert_eq!(
+                order,
+                ["user", "work", "notice", "notice2", "closing", "late"]
+            );
+        }
+    }
+
+    #[test]
+    fn standalone_notifications_do_not_split_or_reorder_pure_work() {
+        let messages: Vec<Message> = serde_json::from_value(serde_json::json!([
+            {"id":"user","role":"user","completed":true,"blocks":[{"kind":"text","text":"run background work"}]},
+            {"id":"before","role":"assistant","completed":true,"blocks":[{"kind":"reasoning","text":"checking"}]},
+            {"id":"notice","role":"client","completed":true,"blocks":[{"kind":"text","text":"background task complete"}]},
+            {"id":"after","role":"assistant","completed":true,"blocks":[{"kind":"reasoning","text":"still checking"}]},
+            {"id":"notice2","role":"client","completed":true,"blocks":[{"kind":"text","text":"another background task complete"}]}
+        ])).unwrap();
+        let mut projection = TranscriptProjection::default();
+        projection.apply(TranscriptEvent::Replace {
+            messages: &messages,
+            executions: &Executions::default(),
+        });
+        let turn = projection.turns().remove(0);
+        assert_eq!(turn.last_message_id, None);
+        assert_eq!(turn.work_message_ids, ["before", "after"]);
+        assert_eq!(
+            projection
+                .items()
+                .iter()
+                .filter(|item| matches!(item, TranscriptItem::Work { .. }))
+                .count(),
+            1
+        );
+        let order: Vec<_> = projection
+            .items()
+            .into_iter()
+            .map(|item| match item {
+                TranscriptItem::Message { message_id, .. } => message_id,
+                TranscriptItem::Work { turn_id } => {
+                    assert_eq!(turn_id, turn.id);
+                    "work".into()
+                }
+            })
+            .collect();
+        assert_eq!(order, ["user", "work", "notice", "notice2"]);
+    }
+
+    #[test]
+    fn completed_errors_join_work_but_compaction_after_reply_keeps_its_position() {
         let messages: Vec<Message> = serde_json::from_value(serde_json::json!([
             {"id":"user","role":"user","completed":true,"blocks":[{"kind":"text","text":"hello"}]},
             {"id":"answer","role":"assistant","completed":true,"blocks":[{"kind":"text","text":"done"}]},
@@ -479,13 +670,16 @@ mod tests {
         });
         let turn = &projection.turns()[0];
         assert_eq!(turn.last_message_id.as_deref(), Some("answer"));
-        assert_eq!(turn.work_message_ids, ["error", "compact"]);
+        assert_eq!(turn.work_message_ids, ["error"]);
         assert!(matches!(
             &projection.items()[1],
             TranscriptItem::Work { .. }
         ));
         assert!(
             matches!(&projection.items()[2], TranscriptItem::Message { message_id, .. } if message_id == "answer")
+        );
+        assert!(
+            matches!(&projection.items()[3], TranscriptItem::Message { message_id, .. } if message_id == "compact")
         );
         projection.apply(TranscriptEvent::Replace {
             messages: &messages,
@@ -548,6 +742,63 @@ mod tests {
                     .all(|t| !t.work_message_ids.contains(&"manual".into()))
             );
             assert!(projection.items().iter().any(|i| matches!(i, TranscriptItem::Message { message_id, .. } if message_id == "manual")));
+        }
+    }
+    #[test]
+    fn deleted_users_preserve_original_closing_replies_in_visible_order() {
+        let original: Vec<Message> = serde_json::from_value(serde_json::json!([
+            {"id":"user1","role":"user","completed":true,"blocks":[{"kind":"text","text":"first"}]},
+            {"id":"work1","role":"assistant","completed":true,"blocks":[{"kind":"reasoning","text":"checking"}]},
+            {"id":"notice","role":"client","completed":true,"blocks":[{"kind":"text","text":"background complete"}]},
+            {"id":"reply1","role":"assistant","completed":true,"blocks":[{"kind":"text","text":"first answer"}]},
+            {"id":"user2","role":"user","completed":true,"blocks":[{"kind":"text","text":"second"}]},
+            {"id":"work2","role":"assistant","completed":true,"blocks":[{"kind":"reasoning","text":"checking"}]},
+            {"id":"reply2","role":"assistant","completed":true,"blocks":[{"kind":"text","text":"second answer"}]},
+            {"id":"user3","role":"user","completed":true,"blocks":[{"kind":"text","text":"third"}]},
+            {"id":"reply3","role":"assistant","completed":true,"blocks":[{"kind":"text","text":"third answer"}]}
+        ])).unwrap();
+        for removed in [["user2", ""], ["user1", "user2"]] {
+            let messages: Vec<_> = original
+                .iter()
+                .filter(|message| !removed.contains(&message.id.as_str()))
+                .cloned()
+                .collect();
+            let hints = ["reply1".into(), "reply2".into(), "reply3".into()];
+            let mut projection = TranscriptProjection::default();
+            // Restore both orders used by cold decoration and live resync.
+            projection.retain_reply_boundaries(&hints);
+            for _ in 0..2 {
+                projection.apply(TranscriptEvent::Replace {
+                    messages: &messages,
+                    executions: &Executions::default(),
+                });
+                let visible: Vec<_> = projection
+                    .items()
+                    .into_iter()
+                    .filter_map(|item| match item {
+                        TranscriptItem::Message { message_id, .. } => Some(message_id),
+                        _ => None,
+                    })
+                    .collect();
+                let replies: Vec<_> = visible
+                    .iter()
+                    .filter(|id| id.starts_with("reply"))
+                    .map(String::as_str)
+                    .collect();
+                assert_eq!(replies, ["reply1", "reply2", "reply3"]);
+                assert!(
+                    visible.iter().position(|id| id == "notice").unwrap()
+                        < visible.iter().position(|id| id == "reply1").unwrap(),
+                    "retained closing boundary must not move a standalone notification"
+                );
+                assert_eq!(visible.iter().collect::<BTreeSet<_>>().len(), visible.len());
+                assert!(
+                    projection
+                        .turns()
+                        .iter()
+                        .all(|turn| !turn.work_message_ids.contains(&"reply2".into()))
+                );
+            }
         }
     }
 }

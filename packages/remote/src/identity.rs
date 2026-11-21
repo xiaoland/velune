@@ -56,7 +56,7 @@ impl DeviceIdentity {
                 };
                 let bytes =
                     serde_json::to_vec(&stored).map_err(|_| RemoteError::IdentityStorage)?;
-                create_identity_file(path, &bytes).map_err(|_| RemoteError::IdentityStorage)?;
+                publish_new_private(path, &bytes).map_err(|_| RemoteError::IdentityStorage)?;
                 Ok(identity)
             }
             Err(_) => Err(RemoteError::IdentityStorage),
@@ -171,15 +171,17 @@ pub(crate) fn read_private(path: &Path) -> std::io::Result<Vec<u8>> {
     }
     Ok(bytes)
 }
-fn create_identity_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+pub(crate) fn publish_new_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let suffix = random_id().map_err(|_| std::io::ErrorKind::Other)?;
     let parent = path
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
         .unwrap_or(Path::new("."));
-    let temporary = parent.join(format!(".velune-identity-{suffix}"));
+    let temporary = parent.join(format!(".velune-private-{suffix}"));
+    let mut created = false;
     let result = (|| {
         let mut file = private_options().create_new(true).open(&temporary)?;
+        created = true;
         file.write_all(bytes)?;
         file.sync_all()?;
         // Android sandboxes deny hard links; NOREPLACE keeps publication atomic without replacement.
@@ -197,7 +199,9 @@ fn create_identity_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
         fs::File::open(parent)?.sync_all()?;
         Ok(())
     })();
-    let _ = fs::remove_file(&temporary);
+    if created {
+        let _ = fs::remove_file(&temporary);
+    }
     result
 }
 

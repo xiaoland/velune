@@ -19,9 +19,8 @@ public sealed partial class ConversationView
     bool restoringDraft;
     ulong composerVersion;
     bool composing;
-    // The queue as last shown, and the queued message being edited in place.
+    // The queue as last shown.
     string shownQueue = "";
-    string? editingQueued;
     bool sessionOptionsRead;
 
     void AttachComposer()
@@ -59,6 +58,7 @@ public sealed partial class ConversationView
         };
         ComposerPanel.Drop += Drop;
         CompactButton.Click += async (_, _) => await Model.Compact();
+        HandoffActionButton.Click += (_, _) => Model.SetConversationHandoff(false);
         StatusButton.Click += (_, _) => ShowStatus();
         RestoreDraft();
     }
@@ -184,26 +184,31 @@ public sealed partial class ConversationView
         if (!Model.DraftEditable) return;
         try
         {
-            using var source = await (await content.GetBitmapAsync()).OpenReadAsync();
-            var decoder = await Windows.Graphics.Imaging.BitmapDecoder.CreateAsync(source);
-            using var bitmap = await decoder.GetSoftwareBitmapAsync();
-            using var png = new Windows.Storage.Streams.InMemoryRandomAccessStream();
-            var encoder = await Windows.Graphics.Imaging.BitmapEncoder.CreateAsync(Windows.Graphics.Imaging.BitmapEncoder.PngEncoderId, png);
-            encoder.SetSoftwareBitmap(bitmap);
-            await encoder.FlushAsync();
-            var bytes = new byte[png.Size];
-            png.Seek(0);
-            using (var reader = new Windows.Storage.Streams.DataReader(png.GetInputStreamAt(0)))
-            {
-                await reader.LoadAsync((uint)png.Size);
-                reader.ReadBytes(bytes);
-            }
-            await Model.Attach($"粘贴的图片 {DateTime.Now:HHmmss}.png", bytes);
+            await Model.Attach($"粘贴的图片 {DateTime.Now:HHmmss}.png", await ReadPastedImage(content));
         }
         catch (Exception problem)
         {
             Problems.Report("粘贴图片", problem);
         }
+    }
+
+    static async Task<byte[]> ReadPastedImage(DataPackageView content)
+    {
+        using var source = await (await content.GetBitmapAsync()).OpenReadAsync();
+        var decoder = await Windows.Graphics.Imaging.BitmapDecoder.CreateAsync(source);
+        using var bitmap = await decoder.GetSoftwareBitmapAsync();
+        using var png = new Windows.Storage.Streams.InMemoryRandomAccessStream();
+        var encoder = await Windows.Graphics.Imaging.BitmapEncoder.CreateAsync(Windows.Graphics.Imaging.BitmapEncoder.PngEncoderId, png);
+        encoder.SetSoftwareBitmap(bitmap);
+        await encoder.FlushAsync();
+        var bytes = new byte[png.Size];
+        png.Seek(0);
+        using (var reader = new Windows.Storage.Streams.DataReader(png.GetInputStreamAt(0)))
+        {
+            await reader.LoadAsync((uint)png.Size);
+            reader.ReadBytes(bytes);
+        }
+        return bytes;
     }
 
     void RenderComposer()
@@ -213,8 +218,18 @@ public sealed partial class ConversationView
             restoringDraft = true; Input.Text = Model.ComposerText; restoringDraft = false;
         }
         Input.IsReadOnly = !Model.DraftEditable;
-        InputLock.Text = Model.InputLockMessage ?? Model.ComposerIssue ?? "";
-        InputLock.Visibility = Visible(!Model.InputEditable || Model.ComposerIssue != null);
+        var handoff = Model.FollowUp?.ControlHandoff;
+        var handoffMessage = handoff switch
+        {
+            ControlHandoff.Releasing => "正在交还控制权…",
+            ControlHandoff.Released => "控制权已交还",
+            _ => null,
+        };
+        InputLock.Text = handoffMessage ?? Model.InputLockMessage ?? Model.ComposerIssue ?? "";
+        InputLock.Visibility = Visible(handoffMessage != null || !Model.InputEditable || Model.ComposerIssue != null);
+        HandoffActionButton.Visibility = Visible(handoffMessage != null);
+        HandoffActionButton.Content = handoff == ControlHandoff.Releasing ? "取消交接" : "恢复 Velune 执行";
+        HandoffActionButton.IsEnabled = !Model.Busy;
         if (!Model.DraftEditable) CompletionPopup.IsOpen = false;
         if (!sessionOptionsRead && Model.Snapshot != null && Model.SessionOpen)
         {
@@ -269,27 +284,20 @@ public sealed partial class ConversationView
         return new Border { Padding = new Thickness(8, 4, 4, 4), CornerRadius = new CornerRadius(4), Style = Ui.Style("CardStyle"), Child = row };
     }
 
-    // RenderQueue shows the queued messages, and why the queue waits when
-    // no turn runs. It keeps the panel while one message is edited.
+    // RenderQueue shows the queued messages, and why the queue is waiting.
     void RenderQueue()
     {
         var followUp = Model.FollowUp;
         var queue = followUp?.Queue ?? [];
         ShowQueueBar(followUp);
         var steer = Model.CanSteer;
-        var signature = string.Join("\n", queue.Select(message => message.Id + "\t" + message.Text + "\t" + message.Attachments.Length)) + (steer ? "\nsteer" : "") + (Model.Busy ? "\nbusy" : "");
-        if (editingQueued != null && queue.Any(message => message.Id == editingQueued))
-        {
-            return;
-        }
-        editingQueued = null;
+        var signature = string.Join("\n", queue.Select(message => $"{message.Id}\t{message.EditContext?.Revision}\t{message.Text}\t{message.Attachments.Length}")) + (steer ? "\nsteer" : "") + (Model.Busy ? "\nbusy" : "");
         if (signature == shownQueue)
         {
             return;
         }
         shownQueue = signature;
         QueuePanel.Children.Clear();
-        queueEdits.Clear();
         for (var i = 0; i < queue.Length; i++)
         {
             QueuePanel.Children.Add(Queued(queue[i], i, queue.Length, steer));
@@ -299,7 +307,7 @@ public sealed partial class ConversationView
 
     Border Queued(QueuedMessage message, int index, int count, bool steer)
     {
-        var text = new TextBlock { Text = message.Text, TextWrapping = TextWrapping.Wrap, MaxLines = 2, TextTrimming = TextTrimming.CharacterEllipsis };
+        var text = new TextBlock { Text = message.Text.Length == 0 ? "（仅附件）" : message.Text, TextWrapping = TextWrapping.Wrap, MaxLines = 2, TextTrimming = TextTrimming.CharacterEllipsis };
         var lines = new StackPanel { Spacing = 2, VerticalAlignment = VerticalAlignment.Center };
         lines.Children.Add(text);
         if (message.Attachments.Length > 0)
@@ -314,13 +322,14 @@ public sealed partial class ConversationView
             into.Click += (_, _) => Model.SteerQueued(message.Id);
             actions.Children.Add(into);
         }
-        var edit = Ui.IconButton("\uE70F", "编辑");
+        var edit = Ui.IconButton("\uE70F", message.EditContext == null ? "更新执行端后可编辑排队消息" : "编辑排队消息");
         var up = Ui.IconButton("\uE70E", "上移");
         var down = Ui.IconButton("\uE70D", "下移");
         var remove = Ui.IconButton("\uE711", "从队列删除");
         up.IsEnabled = index > 0 && !Model.Busy;
         down.IsEnabled = index < count - 1 && !Model.Busy;
-        edit.IsEnabled = remove.IsEnabled = !Model.Busy;
+        edit.IsEnabled = message.EditContext != null && !Model.Busy;
+        remove.IsEnabled = !Model.Busy;
         up.Click += (_, _) => Model.MoveQueued(message.Id, index - 1);
         down.Click += (_, _) => Model.MoveQueued(message.Id, index + 1);
         remove.Click += (_, _) => Model.RemoveQueued(message.Id);
@@ -335,38 +344,8 @@ public sealed partial class ConversationView
         Grid.SetColumn(actions, 1);
         row.Children.Add(actions);
         var card = new Border { Padding = new Thickness(12, 6, 8, 6), CornerRadius = new CornerRadius(4), Style = Ui.Style("CardStyle"), Child = row };
-        void StartEdit()
-        {
-            editingQueued = message.Id;
-            var box = new TextBox { Text = message.Text, AcceptsReturn = true, TextWrapping = TextWrapping.Wrap, MaxHeight = 160 };
-            var save = new Button { Content = "保存", Style = Ui.Style("AccentButtonStyle") };
-            var cancel = new Button { Content = "取消" };
-            void Done()
-            {
-                editingQueued = null;
-                shownQueue = "";
-                RenderQueue();
-            }
-            save.Click += (_, _) =>
-            {
-                if (box.Text.Trim().Length > 0)
-                {
-                    Model.EditQueued(message.Id, box.Text.Trim());
-                }
-                Done();
-            };
-            cancel.Click += (_, _) => Done();
-            var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, HorizontalAlignment = HorizontalAlignment.Right };
-            buttons.Children.Add(cancel);
-            buttons.Children.Add(save);
-            var editor = new StackPanel { Spacing = 8 };
-            editor.Children.Add(box);
-            editor.Children.Add(buttons);
-            card.Child = editor;
-            box.Focus(FocusState.Programmatic);
-        }
-        edit.Click += (_, _) => StartEdit();
-        queueEdits[message.Id] = StartEdit;
+        edit.Click += (_, _) => OpenQueuedEdit(message.Id);
+        card.DoubleTapped += (_, _) => OpenQueuedEdit(message.Id);
         return card;
     }
 

@@ -131,10 +131,18 @@ pub(crate) fn edit_provider(
                 .unwrap_or_default();
             if draft.quota_source == ProviderQuotaSource::ArkCodingUsage {
                 quota_authentication.apply(quota_edit, authentication.generation, matches!(&authentication.material, AuthenticationMaterial::ApiKey { value } if !value.is_empty()), target_changed)?;
-            } else if quota_edit.is_some() {
-                return Err(Error::invalid("此提供商不使用独立额度查询认证"));
+            } else if quota_edit
+                .as_ref()
+                .is_some_and(|edit| !matches!(edit, crate::QuotaAuthenticationEdit::Clear))
+            {
+                return Err(Error::invalid("此额度来源不接受新的独立额度查询认证"));
             } else {
-                quota_authentication = Default::default();
+                quota_authentication.apply(
+                    quota_edit,
+                    authentication.generation,
+                    false,
+                    target_changed,
+                )?;
             }
             let models = draft
                 .models
@@ -206,7 +214,6 @@ pub(crate) fn edit_provider(
             }
             gateway.validate().map_err(|error| {
                 Error::invalid(match error {
-                    "model route members must share a protocol" => "路由中的模型必须使用同一协议",
                     "model route member is duplicated" => "路由中的模型不能重复",
                     "model route member is not a provider model" => "路由中的模型已不存在",
                     other => other,
@@ -307,11 +314,15 @@ impl From<&GatewayConfig> for GatewaySummary {
                         .description(p.authentication.generation),
                     authentication: {
                         let mut description = p.authentication.description();
-                        if p.request_profile == crate::config::RequestProfile::KimiCoding {
+                        if p.request_profile == crate::config::RequestProfile::KimiCoding
+                            || p.quota_source == ProviderQuotaSource::KimiUsage
+                        {
                             description.disclosure =
                                 Some(crate::SubscriptionDisclosure::kimi_coding_plan());
                         }
-                        if p.request_profile == crate::config::RequestProfile::ArkCoding {
+                        if p.request_profile == crate::config::RequestProfile::ArkCoding
+                            || p.quota_source == ProviderQuotaSource::ArkCodingUsage
+                        {
                             description.disclosure =
                                 Some(crate::SubscriptionDisclosure::ark_coding_plan());
                         }
@@ -322,6 +333,177 @@ impl From<&GatewayConfig> for GatewaySummary {
                 })
                 .collect(),
             routes: g.routes.clone(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod quota_composition_tests {
+    use super::*;
+
+    #[test]
+    fn switching_quota_source_preserves_private_credentials_but_revokes_confirmation() {
+        let template = crate::provider_templates()
+            .into_iter()
+            .find(|t| t.id == "arkCodingPlan")
+            .unwrap();
+        let mut draft = ProviderDraft {
+            id: "ark".into(),
+            name: "Synthetic".into(),
+            protocol: template.protocol,
+            endpoint: template.endpoint,
+            execution_backend: template.execution_backend,
+            request_profile: template.request_profile,
+            authentication_source: template.authentication_source,
+            quota_source: template.quota_source,
+            models: vec![],
+            quota_limits: vec![],
+        };
+        let mut gateways = Vec::new();
+        edit_provider(
+            &mut gateways,
+            "default",
+            ProviderEdit::Save {
+                provider: draft.clone(),
+                authentication: AuthenticationEdit::SetApiKey {
+                    value: "synthetic-model-key".into(),
+                },
+                quota_authentication: Some(crate::QuotaAuthenticationEdit::SetAccessKey {
+                    access_key_id: "synthetic-id".into(),
+                    secret_access_key: "synthetic-secret".into(),
+                    confirmed: true,
+                }),
+            },
+            &|_| unreachable!(),
+        )
+        .unwrap();
+        assert!(
+            gateways[0].providers[0]
+                .quota_authentication
+                .description(gateways[0].providers[0].authentication.generation)
+                .binding_confirmed
+        );
+        draft.quota_source = ProviderQuotaSource::None;
+        edit_provider(
+            &mut gateways,
+            "default",
+            ProviderEdit::Save {
+                provider: draft,
+                authentication: AuthenticationEdit::Keep,
+                quota_authentication: None,
+            },
+            &|_| unreachable!(),
+        )
+        .unwrap();
+        let saved = &gateways[0].providers[0];
+        let status = saved
+            .quota_authentication
+            .description(saved.authentication.generation);
+        assert!(status.configured);
+        assert!(!status.binding_confirmed);
+        saved.validate_composition().unwrap();
+    }
+
+    #[test]
+    fn quota_edit_is_independent_of_creation_template_and_survives_reload() {
+        let templates = crate::provider_templates();
+        let mut gateways = Vec::new();
+        for (id, template_id) in [("from-api", "api"), ("from-kimi", "kimiCodingPlan")] {
+            let template = templates
+                .iter()
+                .find(|item| item.id == template_id)
+                .unwrap();
+            let mut draft = ProviderDraft {
+                id: id.into(),
+                name: id.into(),
+                protocol: template.protocol,
+                endpoint: "https://api.kimi.com/coding/".into(),
+                execution_backend: template.execution_backend.clone(),
+                request_profile: template.request_profile,
+                authentication_source: template.authentication_source,
+                quota_source: template.quota_source,
+                models: vec![],
+                quota_limits: vec![],
+            };
+            edit_provider(
+                &mut gateways,
+                "default",
+                ProviderEdit::Save {
+                    provider: draft.clone(),
+                    authentication: AuthenticationEdit::SetApiKey {
+                        value: "synthetic-only".into(),
+                    },
+                    quota_authentication: None,
+                },
+                &|_| unreachable!(),
+            )
+            .unwrap();
+            draft.quota_source = ProviderQuotaSource::KimiUsage;
+            if template_id == "api" {
+                draft.endpoint = "https://api.kimi.com/coding/v1".into();
+            }
+            edit_provider(
+                &mut gateways,
+                "default",
+                ProviderEdit::Save {
+                    provider: draft.clone(),
+                    authentication: AuthenticationEdit::Keep,
+                    quota_authentication: None,
+                },
+                &|_| unreachable!(),
+            )
+            .unwrap();
+            let saved = gateways[0].providers.iter().find(|p| p.id == id).unwrap();
+            assert_eq!(saved.quota_source, ProviderQuotaSource::KimiUsage);
+            assert_eq!(saved.request_profile, template.request_profile);
+            // The selected model protocol is independent of quota collection.
+            assert_eq!(saved.protocol, template.protocol);
+            let home = std::env::temp_dir().join(format!(
+                "velune-quota-composition-{}",
+                crate::new_record_key()
+            ));
+            let quota = crate::subscription_quota::SubscriptionQuota::new(
+                home.clone(),
+                &gateways,
+                Default::default(),
+            );
+            // Check the production query binding without starting a network
+            // request. A configured Kimi /v1 API provider must await its first
+            // sample, rather than silently becoming an unsupported source.
+            quota.stop();
+            let observation = quota.query("default", id, false).unwrap().observation;
+            assert!(matches!(
+                observation.freshness,
+                crate::QuotaFreshness::Unknown
+            ));
+            assert!(!observation.refreshing);
+            drop(quota);
+            if home.exists() {
+                std::fs::remove_dir_all(home).unwrap();
+            }
+            draft.quota_source = ProviderQuotaSource::None;
+            edit_provider(
+                &mut gateways,
+                "default",
+                ProviderEdit::Save {
+                    provider: draft,
+                    authentication: AuthenticationEdit::Keep,
+                    quota_authentication: None,
+                },
+                &|_| unreachable!(),
+            )
+            .unwrap();
+        }
+        let reloaded: Vec<GatewayConfig> =
+            serde_json::from_slice(&serde_json::to_vec(&gateways).unwrap()).unwrap();
+        for provider in &reloaded[0].providers {
+            assert_eq!(provider.quota_source, ProviderQuotaSource::None);
+            provider.validate_composition().unwrap();
+            let mut foreign = provider.clone();
+            foreign.request_profile = RequestProfile::Native;
+            foreign.quota_source = ProviderQuotaSource::KimiUsage;
+            foreign.endpoint = "https://example.invalid/coding/".into();
+            assert!(foreign.validate_composition().is_err());
         }
     }
 }

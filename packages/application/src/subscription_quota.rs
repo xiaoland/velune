@@ -87,6 +87,7 @@ struct Entry {
     running: bool,
     resample: bool,
     retry_at: Instant,
+    demand_until: Option<Instant>,
     problem: Option<String>,
     cancel: tokio::sync::watch::Sender<bool>,
 }
@@ -147,6 +148,7 @@ impl SubscriptionQuota {
             state: Mutex::new(State::default()),
         });
         service.configure(gateways);
+        Self::start_refresh(&service);
         service
     }
     /// Keep unchanged observations and account claims; workers/cancellation belong
@@ -178,7 +180,38 @@ impl SubscriptionQuota {
         });
         drop(state);
         service.configure(gateways);
+        Self::start_refresh(&service);
         service
+    }
+
+    fn start_refresh(service: &Arc<Self>) {
+        let weak = Arc::downgrade(service);
+        if std::thread::Builder::new()
+            .name("velune-quota-refresh".into())
+            .spawn(move || loop {
+                std::thread::sleep(Duration::from_secs(1));
+                let Some(service) = weak.upgrade() else { break };
+                let due = {
+                    let state = service.state.lock().expect("quota state");
+                    if state.stopped { break; }
+                    let now = Instant::now();
+                    state.entries.iter()
+                        .filter(|(_, entry)| !entry.running
+                            && entry.demand_until.is_some_and(|until| until > now)
+                            && entry.retry_at <= now)
+                        .map(|(key, entry)| (key.clone(), ViewBinding {
+                            binding: entry.binding.clone(),
+                            incarnation: entry.incarnation.clone(),
+                        }))
+                        .collect::<Vec<_>>()
+                };
+                for ((gateway, provider), binding) in due {
+                    let _ = service.query_binding_inner(&gateway, &provider, false, Some(&binding), false);
+                }
+            }).is_err()
+        {
+            tracing::warn!(target: "velune_application", event = "quota_refresh_unavailable");
+        }
     }
 
     pub(crate) fn take_identity_changes(&self) -> BTreeSet<Key> {
@@ -239,18 +272,20 @@ impl SubscriptionQuota {
                             (
                                 AuthenticationMaterial::ApiKey { value },
                                 crate::config::ProviderQuotaSource::KimiUsage,
-                            ) => crate::config::kimi_region(&p.endpoint).map(|region| Binding {
-                                id: p.id.clone(),
-                                generation: p.authentication.generation,
-                                source: p.quota_source,
-                                binary: None,
-                                directory: LoginDirectory::Owned,
-                                ark: None,
-                                account: None,
-                                kimi: Some(crate::kimi_quota::Capture {
-                                    region,
-                                    key: value.clone(),
-                                }),
+                            ) => crate::config::kimi_quota_region(&p.endpoint).map(|region| {
+                                Binding {
+                                    id: p.id.clone(),
+                                    generation: p.authentication.generation,
+                                    source: p.quota_source,
+                                    binary: None,
+                                    directory: LoginDirectory::Owned,
+                                    ark: None,
+                                    account: None,
+                                    kimi: Some(crate::kimi_quota::Capture {
+                                        region,
+                                        key: value.clone(),
+                                    }),
+                                }
                             }),
                             (
                                 AuthenticationMaterial::ApiKey { .. },
@@ -351,6 +386,7 @@ impl SubscriptionQuota {
                 running: false,
                 resample: false,
                 retry_at: Instant::now(),
+                demand_until: None,
                 problem: None,
                 cancel: tokio::sync::watch::channel(false).0,
             });
@@ -524,6 +560,17 @@ impl SubscriptionQuota {
         force: bool,
         expected: Option<&ViewBinding>,
     ) -> Result<ProviderQuotaStatus, crate::Error> {
+        self.query_binding_inner(gateway_id, provider_id, force, expected, true)
+    }
+
+    fn query_binding_inner(
+        self: &Arc<Self>,
+        gateway_id: &str,
+        provider_id: &str,
+        force: bool,
+        expected: Option<&ViewBinding>,
+        renew_demand: bool,
+    ) -> Result<ProviderQuotaStatus, crate::Error> {
         let key = (gateway_id.to_owned(), provider_id.to_owned());
         let mut state = self.state.lock().expect("quota state");
         let may_start = !state.stopped && state.inflight < 4;
@@ -536,16 +583,21 @@ impl SubscriptionQuota {
         }) {
             return Err(crate::Error::invalid("quota binding changed"));
         }
+        // A query renews observation demand; the scheduler does not renew its
+        // own lease. Idle providers stop polling after the final caller leaves.
+        if renew_demand {
+            entry.demand_until = Some(Instant::now() + Duration::from_secs(120));
+        }
+        let refresh_due = !fresh(entry)
+            || entry.expires_at_ms.saturating_sub(now_ms()) <= 10_000
+            || (entry.binding.as_ref().is_some_and(|binding| binding.kimi.is_some())
+                && entry.owner.is_none());
         let start = may_start
             && entry.binding.as_ref().is_some_and(|b| {
                 b.source != crate::config::ProviderQuotaSource::ArkCodingUsage || b.ark.is_some()
             })
             && !entry.running
-            && (force
-                || ((!fresh(entry)
-                    || (entry.binding.as_ref().is_some_and(|b| b.kimi.is_some())
-                        && entry.owner.is_none()))
-                    && entry.retry_at <= Instant::now()));
+            && (force || (refresh_due && entry.retry_at <= Instant::now()));
         if start {
             entry.running = true;
             entry.resample = false;
@@ -647,11 +699,8 @@ impl SubscriptionQuota {
                     let observation = match result {
                         Ok(observation) => observation,
                         Err(()) => {
-                            let expired = now_ms();
-                            entry.expires_at_ms = entry.expires_at_ms.min(expired);
-                            for window in &mut entry.windows {
-                                window.expires_at_ms = window.expires_at_ms.min(expired);
-                            }
+                            // A failed early refresh does not revoke a still
+                            // fresh observation. Its original expiry remains final.
                             entry.problem =
                                 Some("额度暂不可用；保留上次观测，稍后可重新读取。".into());
                             return;
@@ -674,9 +723,11 @@ impl SubscriptionQuota {
                     entry.expires_at_ms = expires;
                     entry.problem = None;
                     if expires > observed {
+                        let lifetime = expires.saturating_sub(now_ms()).max(1);
+                        let lead = (lifetime / 5).clamp(1, 10_000);
                         entry.retry_at = Instant::now()
                             + Duration::from_millis(
-                                u64::try_from(expires - observed).expect("future expiry"),
+                                u64::try_from((lifetime - lead).max(1000)).expect("future expiry"),
                             );
                     }
                     for (kind, window_id, max_used_percent) in fresh_alerts {

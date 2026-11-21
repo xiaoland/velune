@@ -810,6 +810,9 @@ public sealed partial class WorkspaceWindow : Window
             case Command.Problems:
                 Shell.OpenProblems();
                 break;
+            case Command.ArchivedConversations:
+                Shell.OpenArchivedConversations(Device);
+                break;
             case Command.Analytics:
                 Shell.OpenAnalytics();
                 break;
@@ -881,7 +884,19 @@ public sealed partial class WorkspaceWindow : Window
     void FillMoreMenu()
     {
         MoreMenu.Items.Clear();
-        foreach (var (command, name) in new[] { (Command.CompactContext, "压缩上下文"), (Command.Library, "资源库…"), (Command.Analytics, "分析…"), (Command.Problems, "问题…") })
+        if (FocusedView?.Model is { } conversation && conversation.FollowUp?.ControlHandoff is { } handoff)
+        {
+            var item = handoff switch
+            {
+                ControlHandoff.CanRelease => Ui.MenuItem("释放会话控制权", () => conversation.SetConversationHandoff(true)),
+                ControlHandoff.Released => Ui.MenuItem("恢复 Velune 执行", () => conversation.SetConversationHandoff(false)),
+                _ => Ui.MenuItem("取消交接", () => conversation.SetConversationHandoff(false)),
+            };
+            item.IsEnabled = !conversation.Busy;
+            MoreMenu.Items.Add(item);
+            MoreMenu.Items.Add(new MenuFlyoutSeparator());
+        }
+        foreach (var (command, name) in new[] { (Command.CompactContext, "压缩上下文"), (Command.Library, "资源库…"), (Command.Analytics, "分析…"), (Command.ArchivedConversations, "已归档会话…"), (Command.Problems, "问题…") })
         {
             var item = Ui.MenuItem(name, () => Run(command));
             item.IsEnabled = command != Command.CompactContext || FocusedView?.Model.CanCompact == true;

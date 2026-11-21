@@ -53,6 +53,7 @@ enum Command
     Stop,
     GlobalShow,
     GlobalNewConversation,
+    ArchivedConversations,
 }
 
 // How the composer sends: Enter, with Shift+Enter for a new line, or
@@ -145,6 +146,7 @@ sealed class Commands
         [Command.Settings] = ("设置", "Settings", new(Ctrl, (VirtualKey)188)),
         [Command.Problems] = ("问题", "Problems", new(Ctrl | Shift, VirtualKey.M)),
         [Command.Analytics] = ("分析", "Analytics", null),
+        [Command.ArchivedConversations] = ("已归档会话", "Archived Conversations", null),
         [Command.Library] = ("资源库", "Resource Library", null),
         [Command.CommandPalette] = ("命令面板", "Command Palette", new(Ctrl, VirtualKey.K)),
         [Command.OpenConversation] = ("打开会话…", "Open Conversation", new(Ctrl, VirtualKey.P)),

@@ -138,8 +138,10 @@ private final class ComposerInputWorker: @unchecked Sendable {
     private var runningPromotions: Set<String> = []
     private var previewBindings: [ComposerContextKey: UUID] = [:]
     private var deferred: [() -> Void] = []
+    private var legacyBlankContexts: Set<String> = []
     private var pollPending = false
     private var lastPoll = Date.distantPast
+    private var pollBackoff = PollBackoff()
     let changes = PassthroughSubject<Void, Never>()
 
     init(device: DeviceStore, transport: Transport?) {
@@ -149,9 +151,22 @@ private final class ComposerInputWorker: @unchecked Sendable {
     }
 
     func context(_ conversationID: String) -> ComposerContextKey? {
-        if conversationID.hasPrefix(ConversationStore.draftConversationPrefix) { return .newConversation }
+        if conversationID == ConversationStore.draftConversationPrefix + "new-conversation" { return .newConversation }
         guard !conversationID.hasPrefix("tab:"), !conversationID.hasPrefix("side-chat:"), let ownerID else { return nil }
         return .conversation(ownerId: ownerID, conversationId: conversationID)
+    }
+    /// Upgrade a restored old blank tab without deleting its global source.
+    /// Wait for the authority before deciding whether there is a target to keep.
+    func restoreLegacyTarget(to conversationID: String) {
+        legacyBlankContexts.insert(conversationID)
+        guard worker == nil || (state != nil && ownerID != nil) else {
+            deferred.append { [weak self] in self?.restoreLegacyTarget(to: conversationID) }
+            poll(force: true)
+            return
+        }
+        guard targetChoices(for: conversationID)?.choiceEdited != true,
+              let choices = targetChoices(for: ConversationStore.draftConversationPrefix + "new-conversation") else { return }
+        saveTarget(conversationID, choices: choices)
     }
     func targetChoices(for conversationID: String) -> ComposerTargetChoices? {
         guard let context = context(conversationID) else { return nil }
@@ -218,11 +233,26 @@ private final class ComposerInputWorker: @unchecked Sendable {
         let latest = state?.targets.first { $0.context == context }?.revision
         // Only a new explicit choice can accept the latest observed target.
         // Reconnect, restoration and queued retries keep their original CAS.
-        let baseline = userEdit ? latest : targetDirty[context]?.revision ?? latest
+        let baseline: UInt64?
+        if userEdit { baseline = latest }
+        else if let pending = targetDirty[context] { baseline = pending.revision }
+        else { baseline = latest }
+        saveTarget(context: context, choices: choices, baseline: baseline, chainOwnWrites: userEdit, worker: worker)
+    }
+    /// Editing has already sent its turn. Preserve the pre-send CAS baseline:
+    /// a concurrent choice must remain a visible configuration conflict, never
+    /// turn a successful message into an apparent failed send.
+    func saveEditedTarget(_ conversationID: String, choices: ComposerTargetChoices, expectedRevision: UInt64?) {
+        guard let context = context(conversationID) else { return }
+        let choices = normalizeComposerTargetChoices(choices: choices)
+        guard let worker else { previewTargets[context] = choices; changes.send(); return }
+        saveTarget(context: context, choices: choices, baseline: expectedRevision, chainOwnWrites: false, worker: worker)
+    }
+    private func saveTarget(context: ComposerContextKey, choices: ComposerTargetChoices, baseline: UInt64?, chainOwnWrites: Bool, worker: ComposerInputWorker) {
         targetDirty[context] = .init(choices: choices, revision: baseline)
         changes.send()
         worker.queue.async { [weak self] in
-            let result = Result { try worker.saveTarget(context: context, observed: baseline, choices: choices, chainOwnWrites: userEdit) }
+            let result = Result { try worker.saveTarget(context: context, observed: baseline, choices: choices, chainOwnWrites: chainOwnWrites) }
             DispatchQueue.main.async {
                 guard let self else { return }
                 switch result {
@@ -242,6 +272,36 @@ private final class ComposerInputWorker: @unchecked Sendable {
         if let pending = optimisticBindings[context] { return pending.inputID }
         guard let key = state?.bindings.first(where: { $0.context == context })?.inputId else { return nil }
         return UUID(uuidString: key)
+    }
+    /// Same-context views share content; distinct contexts keep independent drafts.
+    /// Include pending bindings so navigation cannot join them again before I/O finishes.
+    func isBoundElsewhere(_ inputID: UUID, than conversationID: String) -> Bool {
+        guard let context = context(conversationID) else { return false }
+        guard worker != nil else { return previewBindings.contains { $0.key != context && $0.value == inputID } }
+        let contexts = Set((state?.bindings.map(\.context) ?? []) + Array(optimisticBindings.keys))
+        return contexts.contains { other in
+            guard other != context, !isCreationTransfer(inputID, between: context, and: other) else { return false }
+            if let pending = optimisticBindings[other] { return pending.inputID == inputID }
+            return state?.bindings.contains { $0.context == other && UUID(uuidString: $0.inputId) == inputID } == true
+        }
+    }
+    func isCreationTransfer(_ inputID: UUID, between first: String, and second: String) -> Bool {
+        guard let first = context(first), let second = context(second) else { return false }
+        return isCreationTransfer(inputID, between: first, and: second)
+    }
+    private func isCreationTransfer(_ inputID: UUID, between first: ComposerContextKey, and second: ComposerContextKey) -> Bool {
+        func isDraft(_ context: ComposerContextKey) -> Bool {
+            switch context {
+            case .newConversation: true
+            case .conversation(_, let id): id.hasPrefix(ConversationStore.draftConversationPrefix)
+            }
+        }
+        func isCreated(_ context: ComposerContextKey) -> Bool {
+            guard case .conversation(let owner, let id) = context else { return false }
+            return owner == ownerID && promotions[id]?.inputID == inputID
+                || state?.creations.contains { $0.ownerId == owner && $0.conversationId == id && UUID(uuidString: $0.inputId) == inputID } == true
+        }
+        return isDraft(first) && isCreated(second) || isDraft(second) && isCreated(first)
     }
     func draft(_ id: UUID) -> SavedComposerDraft? { dirty[id] ?? contents[id] }
     func isDirty(_ id: UUID) -> Bool { dirty[id] != nil }
@@ -268,8 +328,11 @@ private final class ComposerInputWorker: @unchecked Sendable {
         saveNow(id, draft: draft)
     }
 
+    /// A reconnected device is read at once instead of after its failure backoff.
+    func resumePolling() { pollBackoff.succeeded() }
+
     func poll(force: Bool = false) {
-        guard let worker, !pollPending, force || Date().timeIntervalSince(lastPoll) > 0.6 else { return }
+        guard let worker, !pollPending, force || (pollBackoff.ready && Date().timeIntervalSince(lastPoll) > 0.6) else { return }
         pollPending = true; lastPoll = Date()
         worker.queue.async { [weak self] in
             let result = Result { try worker.poll(force: force) }
@@ -277,8 +340,9 @@ private final class ComposerInputWorker: @unchecked Sendable {
                 guard let self else { return }
                 self.pollPending = false
                 switch result {
-                case .success(let result): self.apply(result); if force { self.changes.send() }
+                case .success(let result): self.pollBackoff.succeeded(); self.apply(result); if force { self.changes.send() }
                 case .failure(let error):
+                    self.pollBackoff.failed()
                     self.available = false; self.changes.send()
                     if force { self.device?.recordProblem(error, source: "读取共享输入") }
                 }
@@ -292,6 +356,9 @@ private final class ComposerInputWorker: @unchecked Sendable {
         available = true
         state = result.0; contents = result.1
         if ownerID == nil { ownerID = result.2 }
+        // Bind restored copies before publishing the first authoritative state;
+        // otherwise synchronization can adopt the old aliases over those copies.
+        if !deferred.isEmpty { let waiting = deferred; deferred.removeAll(); waiting.forEach { $0() } }
         if previous != state || !wasAvailable { changes.send() }
         // Reconnect can acknowledge a write whose response was lost, or retry
         // the same baseline. A newer, different revision is never overwritten.
@@ -313,7 +380,6 @@ private final class ComposerInputWorker: @unchecked Sendable {
                 saveTarget(id, choices: pending.choices)
             }
         }
-        if !deferred.isEmpty { let waiting = deferred; deferred.removeAll(); waiting.forEach { $0() } }
         retryAssociations()
     }
 
@@ -331,6 +397,11 @@ private final class ComposerInputWorker: @unchecked Sendable {
                 poll(force: true)
             }
             return
+        }
+        if legacyBlankContexts.remove(conversationID) != nil, model.savedDraft.text.isEmpty, model.attachments.isEmpty,
+           let previous = inputID(for: ConversationStore.draftConversationPrefix + "new-conversation"),
+           let saved = draft(previous) {
+            model.restoreSavedDraft(saved)
         }
         let seed = model.savedDraft
         let id = model.id
@@ -389,7 +460,13 @@ private final class ComposerInputWorker: @unchecked Sendable {
         optimisticBindings[context] = nil
     }
     func bind(_ conversationID: String, input: ComposerModel) {
-        guard let context = context(conversationID) else { return }
+        guard let context = context(conversationID) else {
+            if ownerID == nil {
+                deferred.append { [weak self, weak input] in if let self, let input { self.bind(conversationID, input: input) } }
+                poll(force: true)
+            }
+            return
+        }
         guard worker != nil else {
             previewBindings[context] = input.id; contents[input.id] = input.savedDraft; changes.send(); return
         }
@@ -413,11 +490,10 @@ private final class ComposerInputWorker: @unchecked Sendable {
     /// entry — only while the entry's fresh input is still untouched; with
     /// newer content in it, the consumed input stays kept (保留的输入)
     /// rather than replacing that work.
-    func restoreConsumedNewConversationInput(_ consumed: ComposerModel, whileCreating store: ConversationStore) {
-        // Once native creation succeeds, failed dispatch belongs to that
-        // conversation. Check this submission's source, not historical
-        // creations: a content identity may be reused in a later new session.
-        guard store.isUnsentConversation else { return }
+    func restoreConsumedNewConversationInput(_ consumed: ComposerModel, whileCreating store: ConversationStore, createdConversationID: String? = nil) {
+        // A closed/navigated Store may still look unsent. The operation's
+        // created receipt, not that view, owns first-send failure recovery.
+        guard createdConversationID == nil, store.isUnsentConversation else { return }
         let draftID = ConversationStore.draftConversationPrefix + "new-conversation"
         guard let current = inputID(for: draftID), current != consumed.id else { return }
         if let currentDraft = draft(current), !currentDraft.text.isEmpty || !currentDraft.attachments.isEmpty { return }

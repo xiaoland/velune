@@ -127,7 +127,7 @@ impl ServerHandler for Handler {
     fn get_info(&self) -> ServerConfig {
         ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(Implementation::new("velune", env!("CARGO_PKG_VERSION")))
-            .with_instructions("Velune 让你与本机其他 Agent 会话交流，可跨不同 Harness。list_agents 列出可用运行时，list_conversations 查找已有会话；start_conversation 新建会话并发送首条消息，send_message 给空闲会话发消息；随后用 wait_conversation 等待对方回复。xurl_instructions 提供官方 xurl CLI 用法与实例环境；resolve_agent_uri 查询 agents:// 地址，read_conversation 分页读取文字历史。conversation_id 也接受具体 agents:// 地址，歧义时指定 runtime_id。对方都是普通会话，用户可以看到并继续。对方的回复是它自己的报告，不代表已验证；对方等待审批时由用户处理。")
+            .with_instructions("Velune 提供本机定时任务与跨 Harness 会话协作。scheduled_tasks 创建和管理定时任务；持续跟进默认继续当前会话，不必查询或猜测自己的会话 ID。list_agents 列出可用运行时，list_conversations 查找已有会话；start_conversation 新建会话并发送首条消息，send_message 给空闲会话发消息；随后用 wait_conversation 等待对方回复。xurl_instructions 提供官方 xurl CLI 用法与实例环境；resolve_agent_uri 查询 agents:// 地址，read_conversation 分页读取文字历史。conversation_id 也接受具体 agents:// 地址，歧义时指定 runtime_id。对方都是普通会话，用户可以看到并继续。对方的回复是它自己的报告，不代表已验证；对方等待审批时由用户处理。")
     }
 
     async fn list_tools(
@@ -221,18 +221,7 @@ fn parse(name: &str, args: Value) -> Result<Operation, Error> {
     #[serde(deny_unknown_fields)]
     struct Empty {}
     Ok(match name {
-        "scheduled_tasks" => {
-            let operation: crate::ScheduledTasksOperation = decode(args)?;
-            if matches!(
-                operation,
-                crate::ScheduledTasksOperation::ConfirmHandover { .. }
-                    | crate::ScheduledTasksOperation::Import { .. }
-                    | crate::ScheduledTasksOperation::PreviewImport { .. }
-            ) {
-                return Err(Error::invalid("来源导入和宿主交接由用户在定时任务窗口处理"));
-            }
-            Operation::Scheduled(Box::new(operation))
-        }
+        "scheduled_tasks" => Operation::Scheduled(args),
         "list_agents" => {
             let _: Empty = decode(args)?;
             Operation::ListAgents
@@ -253,11 +242,75 @@ fn parse(name: &str, args: Value) -> Result<Operation, Error> {
     })
 }
 
+/// A recurring follow-up belongs to its calling conversation unless the agent
+/// explicitly selects another target. Never persist the relative identity: a
+/// later trigger runs without an MCP caller and must use this exact session.
+pub(super) fn scheduled_operation(
+    mut args: Value,
+    runtime_id: &str,
+    conversation_id: &str,
+) -> Result<crate::ScheduledTasksOperation, Error> {
+    if args.get("operation").and_then(Value::as_str) == Some("save")
+        && let Some(task) = args
+            .get_mut("parameters")
+            .and_then(|parameters| parameters.get_mut("task"))
+            .and_then(Value::as_object_mut)
+    {
+        let target = task.get("target");
+        let current = target
+            .and_then(|target| target.get("kind"))
+            .and_then(Value::as_str)
+            == Some("currentConversation");
+        // Updates remain full replacements. An omitted target must never
+        // silently move a saved task into the conversation editing it.
+        let new_without_target = target.is_none()
+            && task
+                .get("id")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .is_empty();
+        if current || new_without_target {
+            if current
+                && target
+                    .and_then(Value::as_object)
+                    .is_none_or(|target| target.len() != 1)
+            {
+                return Err(Error::invalid(
+                    "currentConversation 只接受 kind；运行时和会话由调用方身份确定",
+                ));
+            }
+            if runtime_id.is_empty() || conversation_id.is_empty() {
+                return Err(Error::invalid(
+                    "调用方会话尚未确定，无法创建继续当前会话的定时任务",
+                ));
+            }
+            task.insert(
+                "target".into(),
+                json!({
+                    "kind": "existingConversation",
+                    "runtimeId": runtime_id,
+                    "conversationId": conversation_id,
+                }),
+            );
+        }
+    }
+    let operation: crate::ScheduledTasksOperation = serde_json::from_value(args)?;
+    if matches!(
+        operation,
+        crate::ScheduledTasksOperation::ConfirmHandover { .. }
+            | crate::ScheduledTasksOperation::Import { .. }
+            | crate::ScheduledTasksOperation::PreviewImport { .. }
+    ) {
+        return Err(Error::invalid("来源导入和宿主交接由用户在定时任务窗口处理"));
+    }
+    Ok(operation)
+}
+
 fn tools() -> Vec<Tool> {
     let text = json!({"type":"string","minLength":1});
     let conversation = json!({"conversation_id":text,"runtime_id":text});
     [
-        ("scheduled_tasks", "管理 Velune 执行设备的本地定时任务。operation=list 返回完整定义和 revision；save 的 parameters.task 传完整定义（新建 id 为空、revision=0；更新必须保留当前 revision）。支持 delete、runNow（parameters 为 id/revision）、setEnabled（另加 enabled 布尔值，暂停无需修复配置）、previewSchedule（parameters 为 rrule/timeZone 和可选 pattern，仅预览）。规则为 RFC5545 RRULE、timeZone 为 IANA 时区，状态 active/paused；新建 task 必填 name、prompt、rrule、timeZone、status、target，其他项可省略。target={kind:newConversation,runtimeId,workingDirectories:[绝对路径],worktree:false}，或 {kind:existingConversation,runtimeId,conversationId}；model 可省略为运行时默认，也可用 list_agents 给出的模型身份。任务随 Velune 启停，退出错过的触发不补跑。原宿主交接只能由用户在窗口确认。", json!({"operation":{"type":"string","enum":["list","save","delete","runNow","setEnabled","previewSchedule"]},"parameters":{"type":"object"}}), vec!["operation"]),
+        ("scheduled_tasks", "管理 Velune 执行设备的本地定时任务。operation=list 返回完整定义和 revision；save 的 parameters.task 传完整定义（新建 id 为空、revision=0；更新必须保留当前 revision）。支持 delete、runNow（parameters 为 id/revision）、setEnabled（另加 enabled 布尔值，暂停无需修复配置）、previewSchedule（parameters 为 rrule/timeZone 和可选 pattern，仅预览）。规则为 RFC5545 RRULE、timeZone 为 IANA 时区，状态 active/paused；新建 task 必填 name、prompt、rrule、timeZone、status。定期检查、提醒或持续跟进当前工作的任务应继续当前会话：新建时省略 target，或传 target={kind:currentConversation}，服务会绑定调用方身份并在结果中返回确定的 existingConversation 目标。不必查询自己的会话 ID。只有用户要求每次独立会话时才传 target={kind:newConversation,runtimeId,workingDirectories:[绝对路径],worktree:false}；指定另一个已有会话用 {kind:existingConversation,runtimeId,conversationId}。更新必须保留已保存 target，除非明确改换执行会话；model 可省略为运行时默认，也可用 list_agents 给出的模型身份。任务随 Velune 启停，退出错过的触发不补跑。原宿主交接只能由用户在窗口确认。", json!({"operation":{"type":"string","enum":["list","save","delete","runNow","setEnabled","previewSchedule"]},"parameters":{"type":"object"}}), vec!["operation"]),
         ("xurl_instructions", "取得 Xuanwo/xurl 官方 CLI 的查询、读取、发现与独立续接指引；先读指引，再用 list_agents 的可执行文件和环境。", json!({}), vec![]),
         ("resolve_agent_uri", "在当前设备已启用实例中定位 agents://codex、claude、pi 会话或查询 collection。q 按标题搜索，limit 为 1–100。返回 conversations 与 failures；多匹配需选 runtime_id，不要猜。路径、角色和全文搜索使用官方 CLI。", json!({"uri":text,"runtime_id":text}), vec!["uri"]),
         ("read_conversation", "分页读取会话文字历史（正文、思考、工具记录，不含图片字节）。conversation_id 接受 Velune ID 或具体 agents:// 地址。offset/limit 按 Unicode 字符计数，后续页传 expected_revision 避免历史变化导致错页。", json!({"conversation_id":text,"runtime_id":text,"offset":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1,"maximum":64000},"expected_revision":text}), vec!["conversation_id"]),
@@ -271,4 +324,89 @@ fn tools() -> Vec<Tool> {
     ].into_iter().map(|(name, description, properties, required)| {
         Tool::new(name, description, json!({"type":"object","properties":properties,"required":required,"additionalProperties":false}).as_object().expect("static tool schema").clone())
     }).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{ScheduledTarget, ScheduledTasksOperation};
+
+    fn create() -> Value {
+        json!({"operation":"save","parameters":{"task":{
+            "name":"合成跟进", "prompt":"合成指令，不执行模型请求",
+            "rrule":"FREQ=HOURLY;INTERVAL=1", "timeZone":"Asia/Shanghai",
+            "status":"paused"
+        }}})
+    }
+
+    fn saved(args: Value) -> crate::ScheduledTask {
+        match scheduled_operation(args, "caller-runtime", "caller-runtime:caller-session").unwrap()
+        {
+            ScheduledTasksOperation::Save { task } => task,
+            _ => panic!("expected save"),
+        }
+    }
+
+    #[test]
+    fn scheduled_follow_up_binds_authenticated_caller_and_survives_reopen() {
+        let expected = ScheduledTarget::ExistingConversation {
+            runtime_id: "caller-runtime".into(),
+            conversation_id: "caller-runtime:caller-session".into(),
+        };
+        let implicit = saved(create());
+        assert_eq!(implicit.target, expected);
+        let mut explicit = create();
+        explicit["parameters"]["task"]["target"] = json!({"kind":"currentConversation"});
+        assert_eq!(saved(explicit).target, expected);
+
+        let home = std::env::temp_dir().join(format!(
+            "velune-scheduled-caller-{}",
+            crate::scheduled_tasks::id().unwrap()
+        ));
+        std::fs::create_dir_all(&home).unwrap();
+        {
+            let mut store = crate::scheduled_tasks::Store::open(&home).unwrap();
+            store.save(implicit).unwrap();
+        }
+        {
+            let store = crate::scheduled_tasks::Store::open(&home).unwrap();
+            let tasks = store.tasks().unwrap();
+            assert_eq!(tasks.len(), 1);
+            assert_eq!(tasks[0].target, expected);
+        }
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn scheduled_explicit_targets_are_preserved() {
+        for target in [
+            json!({"kind":"newConversation","runtimeId":"other","workingDirectories":["/tmp"]}),
+            json!({"kind":"existingConversation","runtimeId":"other","conversationId":"other:session"}),
+        ] {
+            let mut args = create();
+            args["parameters"]["task"]["target"] = target.clone();
+            let expected: ScheduledTarget = serde_json::from_value(target).unwrap();
+            assert_eq!(saved(args).target, expected);
+        }
+    }
+
+    #[test]
+    fn scheduled_updates_cannot_implicitly_retarget_to_editor() {
+        let mut args = create();
+        args["parameters"]["task"]["id"] = json!("saved-task");
+        args["parameters"]["task"]["revision"] = json!(4);
+        assert!(scheduled_operation(args, "runtime", "session").is_err());
+        let mut args = create();
+        args["parameters"]["task"]["target"] = json!({
+            "kind":"currentConversation", "conversationId":"spoofed-session"
+        });
+        assert!(scheduled_operation(args, "runtime", "session").is_err());
+        assert!(scheduled_operation(create(), "runtime", "").is_err());
+    }
+
+    #[test]
+    fn scheduled_source_handover_stays_user_owned() {
+        let args = json!({"operation":"confirmHandover","parameters":{"id":"task","revision":1}});
+        assert!(scheduled_operation(args, "runtime", "session").is_err());
+    }
 }

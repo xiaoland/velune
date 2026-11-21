@@ -28,4 +28,10 @@ python3 scripts/dev-telemetry.py query /absolute/path/run.json metrics
 
 查询默认选择 `velune.telemetry.schema.version="2"`。历史数据使用 `python3 scripts/dev-telemetry.py query <manifest> traces --schema-version legacy`，混合版本用 `--schema-version all`；logs 和 metrics 支持同一选项。旧属性 operation／operation_id／outcome 与 v2 的 velune.operation／velune.operation.id／velune.outcome 分开解释，不能把新查询无结果理解为旧记录消失。trace 可能跨版本，查看详细记录时按各自 resource 判断。legacy trace 的缺属性条件使用 Tempo 的 `= nil`，接收端需支持该语法。
 
-语义与扩展范例归[遥测契约](../product-tdd/telemetry.md#扩展埋点与读取范例)。先限定 run、实例、时间和版本，再沿 trace、operation ID、RequestId 检查受理与执行。Loki 中点号属性会按其映射显示为下划线名称；查询应使用接收端实际字段，不解析日志 body。指标按操作层分别统计，不能将 UI、bindings 与 RPC 次数相加。Gateway 本地诊断的 transport_completed 仍表示传输结束，OTLP 的 outcome 则同时考虑 HTTP 结果；返回完整 503 在 OTLP 中是 failure。
+## 诊断查询
+
+联合读取本地无秘密状态与接收端的 Tempo、Loki、Prometheus API。先限定 run、实例、时间和契约版本，再沿 trace 的父子、kind、结果及 operation ID、RequestId 检查受理与执行。报告同时注明采样率、数量限制、查询截断、保留期及外部 Harness 内部不可见的范围；未找到数据不足以证明没有失败。
+
+没有采样到 span 时，继续检查完成日志的 operation ID、RequestId 与终态字段。缺失的 finished 不能推出仍在执行，需结合 owner_available、observation.age 与业务查询。跨设备时钟可能有偏差，不以两端时间戳之差计算网络延迟。SDK 未提供的队列深度或丢弃计数保留为未知。
+
+Loki 中点号属性会按其映射显示为下划线名称；查询应使用接收端实际字段，不解析日志 body。指标按操作层分别统计，不能将 UI、bindings 与 RPC 次数相加。Gateway 本地诊断的 transport_completed 仍表示传输结束，OTLP 的 outcome 则同时考虑 HTTP 结果；返回完整 503 在 OTLP 中是 failure。语义与扩展范例归[遥测契约](../product-tdd/telemetry.md#扩展埋点与读取范例)。

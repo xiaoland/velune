@@ -19,12 +19,17 @@
 
 ### 运行时工作的生命周期
 
-运行时进程与一轮的临时网关覆盖持续到该轮工作全部结束；原生子 Agent 与后台任务也算工作（[PRD](../prd/agent-runtimes.md)）。检测归 adapter，寿命策略归 application：
+适配器报告历史读取、执行复用、冷恢复和外部控制权各自的原生能力。application 决定何时准备、保留或释放执行，按执行环境和配置判断复用资格。读取历史只需读取来源，创建或接续执行另行准备。运行时进程与一轮的临时网关覆盖持续到该轮工作全部结束，原生子 Agent 与后台任务也算工作（[PRD](../prd/agent-runtimes.md)）。
 
 - agent-runtime 的 `LiveConversation` 以 `turn_running()`、`work()` 与 `work_settled()` 区分父轮次、已知后台任务及工作／通知交接是否已结束。Codex 跟踪同一 app-server 中其他线程，Claude Code 取未结束的任务；Pi 消费 `pi-background-tasks` 的公开 Host EventBus v1，ACP、DSH 暂无轮次外工作。后台任务不一定具有可独立打开的会话身份，没有时活动属于父会话。查询尚未确认或通知仍在交接时，空任务列表不授权重准备或收尾；尽力元数据请求另行保留连接，不阻止重准备。
-- application 以“轮次运行或仍有工作”判定会话执行中。经网关的轮次在两者都结束时才结束进程；Codex 随后以短生命周期 app-server 把该进程运行过的线程用原生提供商 `thread/resume` 一次，使线程回到原生提供商，再释放 runner 与隧道。回收、退出、跟随来源、删除、归档与编辑都把这种会话视为执行中。
+- application 以轮次运行或仍有工作判定会话执行中。经网关的工作结清后关闭本轮执行并释放 runner 与隧道。会话原生 provider 身份由 Harness 保有，跨 provider 继续走会话接续。
+- 空闲容量回收只适用于工作已结清、没有待答交互且释放后仍可接续的会话。仅能在当前连接继续的会话保留执行。用户主动交还控制权走[会话输入准入与调度](conversations.md#会话输入准入与调度)。
 - 下一轮能复用进程时照常发送。需要另起进程（选择、提供商或会话变化；Claude Code 每轮都是）时，`restart_needed` 与 `ensure_work_ended` 以 `Error::OutstandingWork` 拒绝，不结束子 Agent；消息进入发送队列并标记 `FollowUp.waiting = SubAgents`，工作结束后自动发出。
 - 停止父会话同时中断其子 Agent；`stop_sub_agents` 只停止子 Agent。退出时若有轮次或子 Agent 在 Velune 的进程中运行，平台先确认，再以 `shutdown_stopping_work` 结束它们。
+
+原生失败的类别与原始详情由 adapter 归一化为 `MessageBlock::RuntimeFailure`，一般通知继续使用 `Notice`。冷历史、实时观测与重新打开须保留同一失败原因；平台消费类型化事实，在工作过程折叠时仍呈现当前故障，不通过正文关键词猜测错误。已知登录失效等非重试失败不伪造重试计划，原生没有提供详情时明确保留未知。
+
+错误记录与执行终态分别处理：通知本身不能证明轮次已结束，已有明确失败证据再由原生结束信号结算。真实后续成功应撤下该次当前故障提示，历史原因仍可查看；新的用户轮次也不继承旧的静态失败提示。忽略展示不等于中断或停止重试。
 
 ### 通用 ACP
 

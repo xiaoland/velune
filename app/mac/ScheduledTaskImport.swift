@@ -44,7 +44,7 @@ struct ScheduledTaskImport: View {
                         if let source = task.source {
                             VStack(alignment: .leading, spacing: 4) {
                                 Text(task.name)
-                                Text(imported[source.path] != nil ? "已导入，保持暂停" : (model.state?.tasks.contains { $0.source?.path == source.path } == true ? "已存在 · 更新需确认" : "来源：\(source.originalStatus)")).uiFont(.caption).foregroundStyle(.secondary)
+                                Text(imported[source.path] != nil ? "已导入，保持暂停" : (model.state?.tasks.contains { $0.source?.path == source.path } == true ? "已存在，更新需确认" : "来源：\(source.originalStatus)")).uiFont(.caption).foregroundStyle(.secondary)
                             }.tag(source.path)
                         }
                     }
@@ -66,7 +66,7 @@ struct ScheduledTaskImport: View {
                                 VStack(alignment: .leading, spacing: 6) {
                                     Text("运行时：\(store.runtimeInstances.first { $0.id == runtime }?.name ?? "未选择")")
                                     Text("模型：执行运行时的默认模型，未沿用来源模型。导入后可编辑选择。")
-                                    Text("推理：\(task.effort ?? "默认") · 权限：运行时默认")
+                                    Text("推理：\(task.effort ?? "默认")，权限：运行时默认")
                                     Text(target(task))
                                     Text("导入后保持暂停，交接确认也不会自动启用。")
                                 }.frame(maxWidth: .infinity, alignment: .leading).padding(4)

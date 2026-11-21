@@ -66,13 +66,15 @@ class BuildSupportChecks(unittest.TestCase):
         try:
             subprocess.run(['git','init','-q',str(self.root)],check=True)
             source=self.root/'app/mac/Probe.swift'; source.parent.mkdir(parents=True); source.write_text('before')
-            args=argparse.Namespace(platform='macos',profile='dev',command=[sys.executable,'-c','pass'])
+            args=argparse.Namespace(platform='macos',profile='dev',purpose='development',command=[sys.executable,'-c','pass'])
             self.assertEqual(support.run(args),0)
-            success=(support.STATE/'results/macos-dev-success.json').read_bytes()
+            result = support.STATE/'results/macos-dev-development.json'
+            successful_result = support.STATE/'results/macos-dev-development-success.json'
+            success=successful_result.read_bytes()
             args.command=[sys.executable,'-c',f'from pathlib import Path; Path({str(source)!r}).write_text("after")']
             self.assertEqual(support.run(args),3)
-            self.assertEqual((support.STATE/'results/macos-dev-success.json').read_bytes(),success)
-            self.assertFalse(json.loads((support.STATE/'results/macos-dev.json').read_text())['current'])
+            self.assertEqual(successful_result.read_bytes(),success)
+            self.assertFalse(json.loads(result.read_text())['current'])
             args.command=[sys.executable,'-c',f'from pathlib import Path; p=Path({str(source)!r}); old=p.read_bytes(); p.write_bytes(b"temporary edit"); p.write_bytes(old)']
             self.assertEqual(support.run(args),3, 'Restored bytes must not hide a source edit during compilation')
         finally:

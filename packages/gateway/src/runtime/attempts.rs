@@ -9,21 +9,18 @@ use super::{
     failover::{AttemptEnd, NextCandidate, PendingFailure, next_candidate, structured_quota_error},
     ingress::Ingress,
     routes::RouteTarget,
-    wire::{WireEvent, retry_seconds, send_failure, send_json},
+    wire::{WireEvent, retry_seconds, scheduling_failure, send_failure, send_json},
 };
 use crate::{
     analytics::{AnalyticsOutcome, SharedTracker, Tracker, now_ms},
     config::{ExecutionBackend, Protocol},
     observation::Observation,
-    scheduling::ScheduleUnavailable,
+    scheduling::{AdmissionReason, SchedulePermit, ScheduleUnavailable},
 };
 use serde_json::Value;
-use std::{
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
-    time::Duration,
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
 };
 use tokio::sync::mpsc;
 use tracing::{Instrument, instrument::WithSubscriber};
@@ -52,14 +49,17 @@ pub(super) async fn dispatch(
     telemetry: TelemetryContext,
 ) {
     let mut last_failure = None;
-    let mut unavailable = ScheduleUnavailable { retry_after: None };
+    let mut unavailable = ScheduleUnavailable {
+        reason: AdmissionReason::BindingInvalidated,
+        retry_after: None,
+    };
     for (index, target) in candidates.iter().enumerate() {
         let permit = match state.health.acquire(
             &state.gateway_id,
             &state.candidate(target),
             state.quotas.as_ref(),
         ) {
-            Ok(permit) => permit,
+            Ok(permit) => Arc::new(permit),
             Err(blocked) => {
                 if target.continuation_required {
                     let headers = blocked
@@ -74,10 +74,7 @@ pub(super) async fn dispatch(
                         "Claude tool continuation is paused by quota, health or an invalidated provider binding").await;
                     return;
                 }
-                if let Some(delay) = blocked.retry_after {
-                    unavailable.retry_after =
-                        Some(unavailable.retry_after.map_or(delay, |old| old.min(delay)));
-                }
+                unavailable.merge(blocked);
                 continue;
             }
         };
@@ -116,6 +113,7 @@ pub(super) async fn dispatch(
             .map(|guard| guard.tracker.clone())
             .unwrap_or_else(|| Tracker::new(target.protocol));
         let end = Attempt {
+            permit: &permit,
             state: &state,
             target,
             tracker: &tracker,
@@ -142,12 +140,6 @@ pub(super) async fn dispatch(
         drop(analytics);
         let failure = match end {
             AttemptEnd::Failed(failure) => failure,
-            AttemptEnd::Interrupted { cooldown } => {
-                if let Some(duration) = cooldown {
-                    permit.cool(duration);
-                }
-                return;
-            }
             AttemptEnd::Completed | AttemptEnd::Settled => return,
         };
         match &failure.next {
@@ -213,32 +205,18 @@ pub(super) async fn dispatch(
         )
         .await;
     } else {
-        let status = if unavailable.retry_after.is_some() {
-            429
-        } else {
-            503
-        };
-        let headers = unavailable
-            .retry_after
-            .into_iter()
-            .map(|delay| Header {
-                name: "retry-after".into(),
-                value: retry_seconds(delay).to_string(),
-            })
-            .collect();
-        send_failure(
-            &sender,
-            Some(ResponseMeta { status, headers }),
-            None,
-            status,
-            "no eligible provider: quota or health observations do not permit a request",
-        )
-        .await;
+        tracing::warn!(
+            event = "gateway_scheduling_unavailable",
+            http_status = unavailable.status(),
+            reason = unavailable.reason.code()
+        );
+        send_json(&sender, scheduling_failure(unavailable)).await;
     }
 }
 
 /// One attempt against one route target.
 struct Attempt<'a> {
+    permit: &'a Arc<SchedulePermit>,
     state: &'a Arc<Ingress>,
     target: &'a RouteTarget,
     tracker: &'a SharedTracker,
@@ -459,7 +437,12 @@ impl Attempt<'_> {
         let completion = adapter
             .send(
                 request,
-                sink(self.sender.clone(), self.tracker.clone(), sent.clone()),
+                sink(
+                    self.sender.clone(),
+                    self.tracker.clone(),
+                    sent.clone(),
+                    self.permit.clone(),
+                ),
             )
             .await;
         self.settle(completion, sent.load(Ordering::Acquire)).await
@@ -524,6 +507,7 @@ impl Attempt<'_> {
                 output: NativeOutput::Json(body),
                 completed,
             }) => {
+                self.permit.responded(body.meta.status);
                 tracing::info!(
                     event = "gateway_upstream_headers",
                     http_status = body.meta.status
@@ -557,6 +541,7 @@ impl Attempt<'_> {
     async fn failed(&mut self, failure: NativeFailure, headers_sent: bool) -> AttemptEnd {
         use NativeErrorKind as Kind;
         let kind = failure.kind;
+        let status = failure.response.as_ref().map(|meta| meta.status);
         if kind == Kind::Cancelled {
             tracing::info!(event = "gateway_dispatch_canceled");
         } else {
@@ -565,9 +550,14 @@ impl Attempt<'_> {
                 Protocol::Responses => "responses",
                 Protocol::Messages => "messages",
             };
-            tracing::warn!(event="gateway_dispatch_failed",protocol,kind=?kind);
+            tracing::warn!(
+                event = "gateway_dispatch_failed",
+                protocol,
+                kind = ?kind,
+                http_status = status,
+                response_started = headers_sent,
+            );
         }
-        let status = failure.response.as_ref().map(|meta| meta.status);
         self.track(|tracker| match (&failure.body, status) {
             (Some(body), _) => tracker.json(status.unwrap_or(502), body.get()),
             (None, Some(status)) => tracker.headers(status),
@@ -579,13 +569,13 @@ impl Attempt<'_> {
         if kind == Kind::QuotaExhausted {
             self.state.quotas.quota_exhausted(&self.target.provider_id);
         }
-        let unreachable = matches!(kind, Kind::Transport | Kind::Timeout);
         if headers_sent {
+            // A broken body after a valid response only failed this exchange.
+            // The committed stream ends without replay or a provider-wide pause.
             let _ = self.sender.send(WireEvent::Failed).await;
-            return AttemptEnd::Interrupted {
-                cooldown: unreachable.then_some(Duration::from_secs(5)),
-            };
+            return AttemptEnd::Settled;
         }
+        let unreachable = matches!(kind, Kind::Transport | Kind::Timeout);
         let cli = self.cli();
         let next = if kind == Kind::Permission {
             NextCandidate::Stop { cooldown: None }
@@ -651,14 +641,17 @@ fn sink(
     sender: mpsc::Sender<WireEvent>,
     tracker: SharedTracker,
     sent: Arc<AtomicBool>,
+    permit: Arc<SchedulePermit>,
 ) -> NativeSink {
     Box::new(move |event| {
         let sender = sender.clone();
         let tracker = tracker.clone();
         let sent = sent.clone();
+        let permit = permit.clone();
         Box::pin(async move {
             let event = match event {
                 NativeEvent::Headers(meta) => {
+                    permit.responded(meta.status);
                     tracker
                         .lock()
                         .expect("owned analytics tracker")

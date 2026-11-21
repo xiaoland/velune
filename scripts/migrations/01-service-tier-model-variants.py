@@ -148,13 +148,23 @@ def validate_schema(path, value):
         if type(value.get("Schema")) is not int or value["Schema"] not in {1, 2}:
             raise ValueError("Windows 本机输入不是已知 schema，原文件未修改")
     elif path.parent.name == "mac-window-workspaces":
+        # The pre-beta window writer omitted the outer version; beta journals use 1.
+        version = value.get("schemaVersion", 0)
+        if type(version) is not int or version not in {0, 1}:
+            raise ValueError("Mac 窗口恢复点不是已知 schema，原文件未修改")
         workspace = value.get("composerWorkspace")
         if workspace is not None:
             if not isinstance(workspace, dict):
                 raise ValueError("Mac 窗口输入不是已知结构，原文件未修改")
             version = workspace.get("schemaVersion")
-            if version is not None and (type(version) is not int or version not in {1, 2, 3}):
+            if type(version) is not int or version not in {2, 3}:
                 raise ValueError("Mac 窗口输入不是已知 schema，原文件未修改")
+        peers = value.get("composerWorkspaceByDevice")
+        if peers is not None and (not isinstance(peers, dict) or any(
+            not isinstance(saved, dict) or type(saved.get("schemaVersion")) is not int
+            or saved["schemaVersion"] != 3 for saved in peers.values()
+        )):
+            raise ValueError("Mac 远端窗口输入不是已知 schema，原文件未修改")
 
 
 def atomic_json(path, value):
@@ -193,6 +203,8 @@ def main():
             config = read_json(config_path) if config_path.exists() else {}
             if not isinstance(config, dict) or not isinstance(config.get("runtimeInstances", []), list):
                 raise ValueError("普通配置中的运行时目录无效，原文件未修改")
+            if config_path.exists() and (type(config.get("schemaVersion")) is not int or config["schemaVersion"] not in {10, 11}):
+                raise ValueError("普通配置不是已知 schema，原文件未修改")
             runtimes = {}
             for item in config.get("runtimeInstances", []):
                 if not isinstance(item, dict) or not isinstance(item.get("id"), str) or not isinstance(item.get("typeId"), str) or item["id"] in runtimes:
@@ -212,7 +224,9 @@ def main():
                 original = path.read_bytes()
                 value = read_json(path)
                 validate_schema(path, value)
-                empty, variants = convert(value, runtimes, local_owner)
+                # The retired setting belongs to input, not to other window data.
+                choices = [value.get("composer"), value.get("composerWorkspace")] if path.parent.name == "mac-window-workspaces" else value
+                empty, variants = convert(choices, runtimes, local_owner)
                 if empty or variants:
                     changes.append((path, original, value))
                     print(f"{path.relative_to(home)}：移除 {empty} 个空档位，转换 {variants} 个原生模型变体")

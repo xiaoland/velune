@@ -6,7 +6,7 @@ struct RouteMember: Identifiable {
     let provider: ProviderSummary
     let model: ProviderModel
     var id: String { model.recordKey }
-    var title: String { "\(model.displayName) · \(provider.name)" }
+    var title: String { "\(model.displayName)（\(provider.name)）" }
 }
 
 extension DeviceStore {
@@ -46,7 +46,7 @@ struct ModelRouteSettingsView: View {
                     ForEach(routes) { route in
                         VStack(alignment: .leading, spacing: 3) {
                             Text(route.name).lineLimit(1)
-                            Text("\(route.strategy.label) · \(route.members.count) 个模型").uiFont(.caption).foregroundStyle(.secondary)
+                            Text("\(route.strategy.label)，共 \(route.members.count) 个模型").uiFont(.caption).foregroundStyle(.secondary)
                         }.tag(route.recordKey)
                     }
                 }.contextMenu(forSelectionType: String.self) { ids in
@@ -160,13 +160,14 @@ private struct RouteMemberStatus: View {
                     Text(account).uiFont(.caption).foregroundStyle(.secondary).lineLimit(1)
                 }
                 Spacer()
-                if let weight, totalWeight > 0 { Text("权重 \(weight) · \(Int((Double(weight) / Double(totalWeight) * 100).rounded()))%").uiFont(.caption).foregroundStyle(.secondary).monospacedDigit() }
+                if let weight, totalWeight > 0 { Text("权重 \(weight)（占 \(Int((Double(weight) / Double(totalWeight) * 100).rounded()))%）").uiFont(.caption).foregroundStyle(.secondary).monospacedDigit() }
                 if needsSignIn, let action = authentication.loginAction {
                     Button(action.label) { store.startAuthentication(member.provider.id) }.controlSize(.small).disabled(store.isBusy)
                 }
             }
             Group {
                 if let notice { Label(notice, systemImage: "pause.circle").uiFont(.caption).foregroundStyle(.orange) }
+                if quota?.available == false { Label(QuotaStatusText.limitedObservation, systemImage: "info.circle").uiFont(.caption).foregroundStyle(.secondary) }
                 ForEach(Array(windows.enumerated()), id: \.offset) { _, window in
                     QuotaWindowRow(window: window, limit: member.provider.quotaLimits.first { $0.windowId == window.id }?.maxUsedPercent, fresh: quota?.freshness == .fresh, display: store.usageDisplay)
                 }
@@ -183,13 +184,12 @@ private struct RouteMemberStatus: View {
         if let name = member.provider.composition.subscriptionName { parts.append(name) } else if authentication.method != .unconfigured { parts.append(authentication.method.label) }
         if let label = authentication.accountLabel { parts.append("账户 …\(label)") }
         parts.append(needsSignIn ? "需要登录" : authentication.method == .unconfigured ? "尚未配置认证" : authentication.method == .oAuth ? "已登录" : "")
-        return parts.filter { !$0.isEmpty }.joined(separator: " · ")
+        return parts.filter { !$0.isEmpty }.joined(separator: "，")
     }
     /// Why the gateway will not send this member new requests, as far as login and quota tell.
     private var notice: String? {
         if needsSignIn { return "登录前路由不会使用它" }
         if authentication.method == .unconfigured { return "配置认证前路由不会使用它" }
-        if quota?.available == false { return "提供商表示此账户当前不可用" }
         let limits = member.provider.quotaLimits
         guard !limits.isEmpty else { return nil }
         if member.provider.composition.quotaSource == .arkCodingUsage && !member.provider.quotaAuthentication.bindingConfirmed { return "额度来源未确认关联，暂停派发" }
@@ -209,8 +209,6 @@ private struct ModelRouteEditor: View {
     @State private var weights: [String: UInt32] = [:]
     @State private var selection: String?
     @FocusState private var nameFocused: Bool
-    /// Members share the first member's protocol.
-    private var memberProtocol: ApiProtocol? { members.first.flatMap { store.routeMember($0)?.provider.protocol } }
     private var totalWeight: UInt32 { members.reduce(0) { $0 + weight($1) } }
     private var valid: Bool { !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !members.isEmpty }
     var body: some View {
@@ -252,7 +250,7 @@ private struct ModelRouteEditor: View {
                                 Section(provider.name) {
                                     ForEach(provider.models) { model in
                                         Button(model.displayName) { members.append(model.recordKey); selection = model.recordKey }
-                                            .disabled(members.contains(model.recordKey) || (memberProtocol.map { $0 != provider.protocol } ?? false))
+                                            .disabled(members.contains(model.recordKey))
                                     }
                                 }
                             }
@@ -284,7 +282,7 @@ private struct ModelRouteEditor: View {
     }
     private var membersFooter: String {
         let order = strategy == .order ? "按列表顺序使用" : "列表顺序在同等条件下优先"
-        return "\(order)，拖动以调整。路由中的模型须使用同一协议，菜单中其他协议的模型不可选；会话使用第一个模型的上下文窗口与 reasoning effort。"
+        return "\(order)，拖动以调整。可混合不同协议的模型，网关按实际选中的模型转换请求和回复；会话使用第一个模型的上下文窗口与 reasoning effort。"
     }
     private func weight(_ key: String) -> UInt32 { weights[key] ?? 1 }
     private func weightBinding(_ key: String) -> Binding<UInt32> {

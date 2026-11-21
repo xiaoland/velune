@@ -17,13 +17,13 @@ impl std::fmt::Debug for RelayCredential {
         formatter.write_str("RelayCredential([REDACTED])")
     }
 }
-#[derive(Clone, Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize, uniffi::Enum)]
 pub enum CredentialEdit {
     Keep,
     Set { value: String },
     Remove,
 }
-#[derive(Clone, Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize, uniffi::Record)]
 pub struct RelayCredentialEdit {
     pub url: String,
     pub credential: CredentialEdit,

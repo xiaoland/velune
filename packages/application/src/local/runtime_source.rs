@@ -2,7 +2,7 @@
 use super::*;
 
 #[derive(Clone, PartialEq, Eq)]
-enum Reader {
+pub(super) enum Reader {
     Pi(Box<PiConfig>),
     Native(HistoryConfig),
     Acp(velune_agent_runtime::acp::Config),
@@ -22,6 +22,14 @@ pub(super) struct RuntimeSourceKey(Arc<RuntimeSource>);
 impl RuntimeSourceKey {
     pub(super) fn runtime_id(&self) -> &str {
         &self.0.runtime_id
+    }
+
+    pub(super) fn reader(&self) -> &Reader {
+        &self.0.reader
+    }
+
+    pub(super) fn kind(&self) -> RuntimeKind {
+        self.0.kind
     }
 
     pub(super) fn is_current(&self, core: &CoreRuntime) -> bool {

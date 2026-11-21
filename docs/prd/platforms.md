@@ -10,19 +10,19 @@ Windows 端 2026-10-21 由用户交开发方选择，定为 C#／.NET＋WinUI 3�
 
 ## Apple
 
-2026-10-23 用户授权最基础的 iPad 控制端，能力以 Android 为范围，并希望可直接构建 iPhone app，要求快速交付、避免过度实现与验证（[S48](../sources/remote-platforms.md#s48)）。实现采用单一 SwiftUI 通用 iOS target，iPad 分栏、iPhone 紧凑导航，复用远控核心；具体能力与限制见 [iOS 说明](../../app/ios/README.md)。
+iPad 与 iPhone 均为移动控制端；iPad 使用分栏，iPhone 使用紧凑导航，共用远控能力。最初范围见 [S48](../sources/remote-platforms.md#s48)，具体平台实现与限制见 [iOS 说明](../../app/ios/README.md)。
 
-Mac 应用提供“设置 → 设备 → 安装到 iPad…”入口。准备 Xcode、Rust、对应版本源码及自己的 Apple 签名团队后，选择设备即可构建、签名和安装。后续沿用签名团队及应用身份覆盖安装，保留数据。具体准备步骤归 [iPad 安装](../../app/ios/README.md#从-mac-应用安装到-ipad)。
+Mac 应用提供“设置 → 设备 → 安装到 iPad…”入口。准备 Xcode、Rust、对应版本源码及自己的 Apple 签名团队后，选择设备即可构建、签名和安装。后续沿用签名团队及应用身份覆盖安装，保留数据。具体准备步骤归[用户指南](../usage.md#从-mac-应用安装到-ipad)。
 
-2026-10-25 用户将 iPad 定位扩展为可承担高强度工作的控制工作台，要求问题面板、原生多窗口、已读未读、大纲、Agent 协作和键盘操作，并授权从 PoC 推进到 MVP／MLP。验收优先真实主要路径和明显视觉问题，不扩展边界矩阵（[S49](../sources/remote-platforms.md#s49)）。窗口独立保持工作上下文，远控与协作规则继续复用核心，iPhone 使用同一套自适应界面。2026-10-26 用户要求借助适合 SwiftUI 的技能深入改善 UI／UX，并明确本轮先改进可从源码判断的问题，以模拟器集中检查主要界面，控制验收成本。
+iPad 定位为可承担高强度工作的控制工作台，提供问题面板、原生多窗口、已读未读、大纲、Agent 协作和键盘操作（[S49](../sources/remote-platforms.md#s49)）。窗口独立保持工作上下文，远控与协作规则继续复用核心，iPhone 使用同一套自适应界面。
 
-Apple app 使用 UIKit／AppKit／SwiftUI 的原生组件与真实系统视觉，采用系统语义颜色和样式，不模拟平台皮肤。原生控件的深色模式由系统适配，不设完整的独立深色验收流程；Core Graphics、自定义 logo、固定色位图、阴影、渐变和边框等自绘内容仍须按所在背景处理颜色与可见性。应用内 logo 浅色背景使用 graphite，暗色背景使用品牌素材提供的中性反色版本。此验收决定见 [S15](../sources/first-loop.md#s15)。
+Apple app 使用 UIKit／AppKit／SwiftUI 的原生组件与真实系统视觉，采用系统语义颜色和样式，不模拟平台皮肤。原生控件的深色模式由系统适配；Core Graphics、自定义 logo、固定色位图、阴影、渐变和边框等自绘内容按所在背景处理颜色与可见性。应用内 logo 浅色背景使用 graphite，暗色背景使用品牌素材提供的中性反色版本。来源见 [S15](../sources/first-loop.md#s15)。
 
 Mac 应用最低支持 macOS 15；2026-10-09 用户明确允许提高平台底线，以采用适合原生体验的组件。该决定不自动改变其它 Apple 平台的覆盖范围。
 
-Mac 产品显示版本与 ABI、投影契约、配置 schema 和构建版本独立维护。开发安装与源码版本须可关联；当前构建、安装及日常应用重装的执行边界统一见[开发说明](../development.md)，不以早期安装授权替代当前流程。原始决定见 [S15](../sources/first-loop.md#s15)。
+Mac 产品显示版本与 ABI、投影契约、配置 schema 和构建版本独立维护。安装版本与源码版本须可关联，构建与重装机制见[开发说明](../development.md)。原始决定见 [S15](../sources/first-loop.md#s15)。
 
-用户随后要求完全重写 Mac app，并明确避免与任何提供商或 Agent Harness 耦合。Mac 界面消费共享 application 的通用会话、消息、运行状态和设置描述；具体 Harness 协议、消息映射和配置转换由适配器封装。运行时或资源名称可作为数据展示，不能成为 UI 的专用命令、字段分支或协议解析。视觉使用用户提供的 Velune 光学校准 SVG logo，默认选择 graphite 配色而非 theme，真实资源验收仍由用户执行。
+Mac 界面使用通用的会话、消息、运行状态和设置描述，不与特定提供商或 Harness 耦合。运行时或资源名称可作为数据展示，不成为专用界面流程。具体协议与适配器责任见[架构](../product-tdd/architecture.md)。视觉使用 Velune 光学校准 SVG logo，默认选择 graphite 配色而非 theme。
 
 ## Windows 分发与更新
 

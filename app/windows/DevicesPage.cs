@@ -168,11 +168,34 @@ sealed class DevicesPage : UserControl
         panel.Children.Add(Ui.Text("设备", "SubtitleTextBlockStyle"));
         Ui.Show(failure, failure.Message.Length > 0 ? failure.Message : hub.Failure);
         panel.Children.Add(failure);
+        var network = new Button { Content = "连接设置…", IsEnabled = state != null && !busy };
+        network.Click += (_, _) => OpenNetworkSettings();
+        panel.Children.Add(Ui.Card(Ui.TwoLines("本机连接设置", "中继服务器与访问凭据；保留设备身份和现有配对。", wrap: true), network));
         ThisPC(state);
         Others(state);
         if (keep)
         {
             invite.Focus(FocusState.Programmatic);
+        }
+    }
+
+    async void OpenNetworkSettings()
+    {
+        try
+        {
+            var editor = new RemoteNetworkSettings(core);
+            var dialog = new ContentDialog
+            {
+                Title = "本机连接设置", Content = editor, CloseButtonText = "完成",
+                RequestedTheme = (window.Content as FrameworkElement)?.ActualTheme ?? ElementTheme.Default,
+            };
+            dialog.Closing += (_, args) => { if (editor.Busy) args.Cancel = true; };
+            await window.ShowDialog(dialog);
+        }
+        catch (Exception problem)
+        {
+            Problems.Report("打开连接设置", problem);
+            Ui.Show(failure, Core.Describe(problem));
         }
     }
 
@@ -285,7 +308,7 @@ sealed class DevicesPage : UserControl
         row.Children.Add(invite);
         Grid.SetColumn(connect, 1);
         row.Children.Add(connect);
-        return Ui.Card(Ui.Field(row, "粘贴来源设备的控制或遥测分享邀请，核对两端数字，并在来源设备上批准对应权限。"));
+        return Ui.Card(Ui.Field(row, "粘贴来源设备的控制或遥测分享邀请，核对两端数字，并在来源设备上批准对应权限。\n如果对方使用需要认证的中继，请先在本机“连接设置”添加对应访问令牌；邀请不包含中继令牌。"));
     }
 
     // ContactStatus is where pairing with a device stands, or its connection

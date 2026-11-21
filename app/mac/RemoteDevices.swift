@@ -34,7 +34,13 @@ final class RemoteEndpointBox: @unchecked Sendable {
     @Published private(set) var invitation: BindingRemoteInvitation?
     private let local: Transport
     private let endpoint = RemoteEndpointBox()
+    lazy var hapiSharing = HapiSharing(endpoint: endpoint, stateDirectory: local.stateDirectory)
+    let networkSettings = RemoteNetworkSettingsModel()
     private var stores: [String: DeviceStore] = [:]
+    /// This Mac's own store, for window-facing actions that need it.
+    weak var localStore: DeviceStore?
+    /// Opens a workspace window when none can show a device (set by the app).
+    var openWorkspaceWindow: ((WindowSeed) -> Void)?
     private var prompted: Set<String> = []
     private let queue = DispatchQueue(label: "local.velune.remote", qos: .userInitiated)
 
@@ -90,6 +96,9 @@ final class RemoteEndpointBox: @unchecked Sendable {
 
     private func apply(_ snapshot: RemoteServiceSnapshot) {
         state = snapshot
+        let knownPeers = Set(snapshot.contacts.map(\.peerId))
+        stores = stores.filter { knownPeers.contains($0.key) }
+        prepareStores(snapshot)
         // The invitation has done its job once a device answers it, or is no longer usable.
         if let invitation, Date().timeIntervalSince1970 > Double(invitation.expiresAtUnixSeconds) || snapshot.incomingPairings.contains(where: { $0.phase == .awaitingApproval }) {
             self.invitation = nil
@@ -100,13 +109,82 @@ final class RemoteEndpointBox: @unchecked Sendable {
         }
     }
 
+    /// Every device this Mac is authorized to control keeps a live store,
+    /// so the aggregated list reads it without waiting for a window. Called
+    /// on the first snapshot and whenever pairing changes the contact set.
+    private func prepareStores(_ snapshot: RemoteServiceSnapshot) {
+        for contact in snapshot.contacts where contact.controlAuthorized {
+            guard case .confirmed = contact.confirmation else { continue }
+            let store = store(for: contact.peerId)
+            store.start()
+            if let status = snapshot.controllers.first(where: { $0.peerId == contact.peerId }), status.phase == .connected {
+                store.connected(epoch: status.connectionEpoch)
+            }
+        }
+    }
+
+    /// The user asked to try a device again: forget the cached open failure
+    /// and read its list, which opens the connection again.
+    func retryConnection(_ peerID: String) {
+        stores[peerID]?.retryConnection()
+    }
+
+    /// The paired device a store belongs to, if it is one of the hub's.
+    func peerID(of store: DeviceStore) -> String? {
+        stores.first { $0.value === store }?.key
+    }
+
+    /// Present this Mac's aggregated window showing `peerID`: an existing
+    /// workspace window comes forward and filters to the device; none opens.
+    /// Devices no longer get a window of their own.
+    func openDevice(_ peerID: String) {
+        if let window = ConversationWindowModel.openWorkspaceWindow() {
+            window.showDevice(peerID)
+            window.window?.deminiaturize(nil)
+            window.window?.makeKeyAndOrderFront(nil)
+            return
+        }
+        var seed = WindowSeed()
+        seed.device = peerID
+        openWorkspaceWindow?(seed)
+    }
+
+    /// The status line a device's row shows, shared by the settings list and
+    /// the aggregated conversation list.
+    func statusText(for peerID: String) -> String {
+        if let outgoing = state?.outgoingPairings.first(where: { $0.peerId == peerID }), outgoing.phase != .granted {
+            switch outgoing.phase {
+            case .awaitingReady, .awaitingApproval:
+                let scope = outgoing.permission == .telemetryProfileRead ? "遥测配置（含认证）：" : ""
+                return scope + "等待对方允许，核对码 \(Self.grouped(outgoing.verificationCode ?? ""))"
+            case .rejected: return "对方已拒绝"
+            case .expired: return "邀请已过期"
+            case .disconnected: return "配对时连接中断"
+            case .granted: break
+            }
+        }
+        guard let controller = controller(peerID) else { return "未连接" }
+        switch controller.phase {
+        case .connected:
+            guard let first = controller.viaDeviceIds.first else { return "已连接" }
+            let name = self.name(of: first)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let device = name.isEmpty ? "设备" : name
+            let via = controller.viaDeviceIds.count == 1 ? device : "\(device)等\(controller.viaDeviceIds.count)台设备"
+            return "已连接，经\(via)中转"
+        case .connecting, .discovering: return "正在连接"
+        case .recovering: return "正在重新连接"
+        case .suspended, .disconnected: return "未连接"
+        case .blocked: return "无法连接" + (controller.errorCode.map { "（\($0)）" } ?? "")
+        }
+    }
+
     /// Approval happens on the controlled device, after the user compares the codes both devices show.
     private func promptApproval(_ pairing: PairingStatus) {
         NSApp.requestUserAttention(.criticalRequest)
         let alert = NSAlert()
         let sharing = pairing.permission == .telemetryProfileRead
-        alert.messageText = sharing ? "“\(pairing.name)”请求读取本机遥测配置（含认证）" : "“\(pairing.name)”请求控制这台 Mac"
-        let scope = sharing ? "允许后，它可以复制接收地址、认证与采样率。" : "允许后，它可以使用这台 Mac 上的会话、运行时与配置。"
+        alert.messageText = sharing ? "“\(pairing.name)”请求读取本机遥测配置（含认证）" : "“\(pairing.name)”请求加入可信设备网"
+        let scope = sharing ? "允许后，它可以复制接收地址、认证与采样率。" : "允许后，两台设备将加入同一可信设备网。网内的 Mac、Windows 可相互控制，使用目标电脑的会话、运行时与配置；运行中的可信设备可中转。\n\n手机不执行 Agent，手机端应用不保证后台持续运行；遥测配置共享需单独允许。"
         alert.informativeText = "请确认对方设备上显示的核对码与下面一致：\n\n\(Self.grouped(pairing.verificationCode ?? ""))\n\n\(scope)"
         alert.addButton(withTitle: "允许")
         alert.addButton(withTitle: "拒绝")
@@ -177,10 +255,9 @@ final class RemoteEndpointBox: @unchecked Sendable {
     }
 
     func cancelPairing(_ peerID: String) { perform("取消配对") { _ = try $0.cancelPairing(peerId: peerID) } }
-    func revoke(_ peerID: String) { perform("撤销控制") { try $0.revokeControl(peerId: peerID) } }
+    func revoke(_ peerID: String) { perform("在本机撤销信任") { try $0.revokeControl(peerId: peerID) } }
     func forget(_ peerID: String) {
         perform("移除设备") { try $0.forgetDevice(peerId: peerID) }
-        stores[peerID] = nil
     }
 
     /// The application store of a paired device, shared by its windows.
@@ -199,7 +276,7 @@ final class RemoteEndpointBox: @unchecked Sendable {
             try? opened.setControllerActivity(peerId: peerID, selected: true, foreground: true)
             return application
         }
-        let store = DeviceStore(transport: transport)
+        let store = DeviceStore(transport: transport, peerID: peerID)
         stores[peerID] = store
         return store
     }
@@ -215,6 +292,7 @@ struct DeviceSettingsView: View {
     @Environment(\.openWindow) private var openWindow
     @State private var offer = ""
     @State private var showsIPadInstallation = false
+    @State private var showsNetworkSettings = false
     @StateObject private var iPadInstallation = IPadInstallationModel()
     var body: some View {
         Form {
@@ -228,22 +306,28 @@ struct DeviceSettingsView: View {
                     Button("添加控制设备…") { hub.createInvitation() }.disabled(hub.state == nil)
                     Text("在另一台设备上扫描二维码或粘贴邀请，两台设备显示的核对码一致时，在这台 Mac 上允许。").uiFont(.caption).foregroundStyle(.secondary)
                 }
-                ForEach(hub.state?.incomingGrants ?? [], id: \.peerId) { grant in
+                ForEach(hub.state?.members ?? [], id: \.peerId) { member in
                     LabeledContent {
-                        Button("撤销") { hub.revoke(grant.peerId) }
+                        Button("在本机撤销信任") { hub.revoke(member.peerId) }
                     } label: {
-                        Text(grant.name)
-                        Text("可以控制这台 Mac").foregroundStyle(.secondary)
+                        Text(member.name)
+                        Text("本机已信任的设备网成员").foregroundStyle(.secondary)
                     }
                 }
+                Text("撤销信任会阻止此设备控制本机及在本机传递信任；其他设备上的关系保持不变。")
+                    .uiFont(.caption).foregroundStyle(.secondary)
+            }
+            HapiSharingSettings(sharing: hub.hapiSharing)
+            Section("本机连接") {
+                Button("连接设置…") { showsNetworkSettings = true }.disabled(hub.state == nil)
             }
             Section {
                 Button("安装到 iPad…") { showsIPadInstallation = true }
             }
             Section("其他设备") {
                 ForEach(hub.state?.contacts ?? [], id: \.peerId) { contact in
-                    DeviceRow(contact: contact, controller: hub.controller(contact.peerId), outgoing: hub.state?.outgoingPairings.first { $0.peerId == contact.peerId }) {
-                        openWindow(id: ConversationWindowKind.workspace.sceneID, value: WindowSeed(device: contact.peerId))
+                    DeviceRow(contact: contact, member: hub.state?.members.first(where: { $0.peerId == contact.peerId }), status: hub.statusText(for: contact.peerId)) {
+                        hub.openDevice(contact.peerId)
                     } forget: { hub.forget(contact.peerId) } cancel: { hub.cancelPairing(contact.peerId) }
                 }
                 HStack {
@@ -251,19 +335,27 @@ struct DeviceSettingsView: View {
                     Button("连接") { hub.beginPairing(offer); offer = "" }.disabled(offer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || hub.state == nil)
                 }
                 Text("粘贴来源设备的控制或遥测分享邀请，核对两端数字，并在来源设备上批准对应权限。").uiFont(.caption).foregroundStyle(.secondary)
+                Text("控制配对会让设备加入同一可信设备网。网内的 Mac、Windows 可相互控制，运行中的可信设备可中转。手机不执行 Agent，手机端应用不保证后台持续运行。").uiFont(.caption).foregroundStyle(.secondary)
+                Text("如果对方使用需要认证的中继，请先在本机“连接设置”添加对应访问令牌；邀请不包含中继令牌。").uiFont(.caption).foregroundStyle(.secondary)
+                Text("在本机移除后，此设备不再由普通发现重新加入；其他设备上的关系保持不变。")
+                    .uiFont(.caption).foregroundStyle(.secondary)
             }
             if let failure = hub.failure {
                 Section { Text(failure).foregroundStyle(.red) }
             }
         }.formStyle(.grouped)
         .sheet(isPresented: $showsIPadInstallation) { IPadInstallationPanel(model: iPadInstallation) }
+        .sheet(isPresented: $showsNetworkSettings) {
+            RemoteNetworkSettingsView(model: hub.networkSettings, endpoint: { [hub] in try hub.telemetryEndpoint() }, onClose: { showsNetworkSettings = false })
+                .frame(width: 620, height: 620)
+        }
     }
 }
 
 private struct DeviceRow: View {
     let contact: DeviceContact
-    let controller: ControllerStatus?
-    let outgoing: PairingStatus?
+    let member: DeviceMember?
+    let status: String
     let open: () -> Void
     let forget: () -> Void
     let cancel: () -> Void
@@ -271,38 +363,22 @@ private struct DeviceRow: View {
         LabeledContent {
             if case .confirmed = contact.confirmation {
                 if contact.controlAuthorized { Button("打开") { open() } }
-                else { SettingsTabLink(tab: .telemetry, title: "遥测设置") }
+                else if member != nil { Text(member?.canExecute == false ? "仅控制与中转" : "等待设备信息").foregroundStyle(.secondary) }
+                else if contact.pairingPermission == .telemetryProfileRead { SettingsTabLink(tab: .telemetry, title: "遥测设置") }
+                else { Text("信任已撤销").foregroundStyle(.secondary) }
             } else {
                 Button("取消") { cancel() }
             }
         } label: {
             Text(contact.name)
-            if !contact.controlAuthorized { Text("遥测来源").foregroundStyle(.secondary) }
-            Text(status).foregroundStyle(.secondary)
-        }
-        .contextMenu { Button("移除此设备", role: .destructive) { forget() } }
-    }
-
-    private var status: String {
-        if let outgoing, outgoing.phase != .granted {
-            switch outgoing.phase {
-            case .awaitingReady, .awaitingApproval:
-                let scope = outgoing.permission == .telemetryProfileRead ? "遥测配置（含认证） · " : ""
-                return scope + "等待对方允许 · 核对码 \(DeviceHub.grouped(outgoing.verificationCode ?? ""))"
-            case .rejected: return "对方已拒绝"
-            case .expired: return "邀请已过期"
-            case .disconnected: return "配对时连接中断"
-            case .granted: break
+            if let member, !contact.controlAuthorized {
+                Text(member.canExecute == false ? "可信网络成员，不执行 Agent" : "可信网络成员，正在同步设备能力").foregroundStyle(.secondary)
+            } else {
+                if !contact.controlAuthorized, contact.pairingPermission == .telemetryProfileRead { Text("遥测来源").foregroundStyle(.secondary) }
+                Text(status).foregroundStyle(.secondary)
             }
         }
-        guard let controller else { return "未连接" }
-        switch controller.phase {
-        case .connected: return "已连接"
-        case .connecting, .discovering: return "正在连接"
-        case .recovering: return "正在重新连接"
-        case .suspended, .disconnected: return "未连接"
-        case .blocked: return "无法连接" + (controller.errorCode.map { "（\($0)）" } ?? "")
-        }
+        .contextMenu { Button("在本机移除此设备", role: .destructive) { forget() } }
     }
 }
 
@@ -312,7 +388,7 @@ private struct InvitationView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .top, spacing: 16) {
-                if let image = Self.qrCode(invitation.encoded) {
+                if let image = pairingQRCode(invitation.encoded) {
                     Image(nsImage: image).interpolation(.none).resizable().frame(width: 180, height: 180)
                 }
                 VStack(alignment: .leading, spacing: 8) {
@@ -330,14 +406,15 @@ private struct InvitationView: View {
         }
     }
 
-    static func qrCode(_ text: String) -> NSImage? {
-        let filter = CIFilter.qrCodeGenerator()
-        filter.message = Data(text.utf8)
-        filter.correctionLevel = "M"
-        guard let output = filter.outputImage else { return nil }
-        let representation = NSCIImageRep(ciImage: output)
-        let image = NSImage(size: representation.size)
-        image.addRepresentation(representation)
-        return image
-    }
+}
+
+func pairingQRCode(_ text: String) -> NSImage? {
+    let filter = CIFilter.qrCodeGenerator()
+    filter.message = Data(text.utf8)
+    filter.correctionLevel = "M"
+    guard let output = filter.outputImage else { return nil }
+    let representation = NSCIImageRep(ciImage: output)
+    let image = NSImage(size: representation.size)
+    image.addRepresentation(representation)
+    return image
 }

@@ -115,15 +115,20 @@ struct TabContentView: View {
     @ObservedObject var window: ConversationWindowModel
     @ObservedObject var tab: ConversationTab
     @ObservedObject var store: ConversationStore
+    @ObservedObject private var appearance = AppearancePreferences.shared
     let previewEmpty: Bool
     /// Over the window, where a composer the window shares does not reach.
     var inSheet = false
+    @State private var forkMessageID: String?
+    @State private var editingQueue: QueuedMessageEditingSession?
 
     var body: some View {
+        GeometryReader { geometry in
         VStack(spacing: 0) {
             Group {
                 if store.isOpeningConversation { ProgressView("正在加载会话…") }
-                else if previewEmpty || store.transcript.rows.isEmpty { emptyState }
+                else if let failure = store.coldOpeningProblem { openingError(failure) }
+                else if previewEmpty || (store.transcript.rows.isEmpty && store.activity == nil) { emptyState }
                 else { transcript }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -131,27 +136,46 @@ struct TabContentView: View {
                 TranscriptFindHost(find: tab.find, model: store.transcript, jump: tab.navigate(to:))
             }
             if let interaction = store.pendingInteractions.first {
-                RuntimeInteractionView(store: store, tab: tab, interaction: interaction).id(interaction.id)
+                RuntimeInteractionView(store: store, tab: tab, interaction: interaction, maximumBodyHeight: min(220, max(64, geometry.size.height * 0.38)), contentWidth: appearance.values.composerWidth(available: max(0, geometry.size.width - 32))).id(interaction.id)
             }
-            if !store.followUp.queue.isEmpty {
-                SendQueueView(store: store, composer: window.composer(for: tab))
+            if store.hasQueuedMessages || store.followUp.isCompacting {
+                SendQueueView(store: store, composer: window.composer(for: tab),
+                              prepareContext: tab.showQueuedContextPreparation, editing: $editingQueue)
                     .padding(.horizontal, 16).padding(.vertical, 8)
                 Divider()
             }
             footer
         }
+        }
         .background(PaneAnchor { [weak window, weak tab] anchor in
             guard let tab else { return }; window?.registerConversation(tab, anchor: anchor)
         })
-        .sheet(item: $tab.editing) { request in
-            MessageEditorSheet(store: store, request: request, forked: window.openInNewTab(adopting:))
+        .sheet(item: Binding(get: { tab.editing?.presentation == .sheet ? tab.editing : nil }, set: { value in
+            if value == nil, tab.editing?.presentation == .sheet { tab.finishMessageEditing() }
+        }), onDismiss: {
+            // SwiftUI has now ended the native modal sheet. Ordering a panel
+            // before this callback lets sheet teardown steal its key state.
+            tab.showFloatingMessageEditor(in: window)
+        }) { session in
+            MessageEditorView(session: session, window: window, source: tab).frame(width: 560)
         }
-        .onChange(of: store.loadedConversationID) { _, _ in tab.outlineCollapsed = false }
+        .onChange(of: tab.editing?.id) { _, _ in tab.showFloatingMessageEditor(in: window) }
+        .sheet(item: $editingQueue) { session in
+            QueuedMessageEditor(session: session, window: window, tab: tab)
+        }
+        .alert("创建分叉会话？", isPresented: Binding(get: { forkMessageID != nil }, set: { if !$0 { forkMessageID = nil } }), presenting: forkMessageID) { id in
+            Button("取消", role: .cancel) {}
+            Button("创建分叉") {
+                store.forkConversation(through: id) { window.openInNewTab(adopting: $0, device: store.device) }
+            }
+        } message: { _ in
+            Text("新会话将包含截至这一轮结束的内容，并在新标签页打开；原会话保持不变。原会话正在执行的工作会继续，不必等待它结束。")
+        }
+        .onChange(of: store.loadedConversationID) { _, _ in tab.outlineCollapsed = false; forkMessageID = nil }
         .onChange(of: store.device.outlinePresentation) { _, _ in tab.outlineCollapsed = false }
     }
 
-    /// A native sub-agent is continued by the agent that started it, so its
-    /// conversation has no composer.
+    /// Child sessions retain their execution details while the parent owns input.
     @ViewBuilder private var footer: some View {
         if let parent = store.loadedParentConversationID, store.pendingConversationID == nil {
             VStack(spacing: 0) {
@@ -164,7 +188,8 @@ struct TabContentView: View {
                 .padding(.horizontal, 16).padding(.vertical, 10)
             }
             .background(.bar)
-        } else if inSheet || window.tools.panesHaveComposer {
+        }
+        if inSheet || window.tools.panesHaveComposer {
             ComposerView(store: store, model: window.composer(for: tab), layout: window, send: { window.composerContext(for: tab).send() }, steer: { window.composerContext(for: tab).steer() }, submission: { window.composerContext(for: tab).submission() }, resume: { window.composerContext(for: tab).resume() })
         }
     }
@@ -174,7 +199,7 @@ struct TabContentView: View {
             ContentUnavailableView {
                 Label { Text(tab.title) } icon: { VeluneLogo(size: 48) }
             } description: {
-                Text(store.openingFailure ?? "输入消息，开始工作。")
+                Text("输入消息，开始工作。")
             }
         } else {
             ContentUnavailableView {
@@ -187,6 +212,20 @@ struct TabContentView: View {
         }
     }
 
+    private func openingError(_ failure: AppProblem) -> some View {
+        ContentUnavailableView {
+            Label(store.isSideChat ? "无法打开侧聊" : "无法打开会话", systemImage: "exclamationmark.triangle")
+        } description: {
+            VStack(spacing: 5) {
+                Text(failure.detail)
+                if let id = failure.operationID { Text("诊断编号 \(id)").font(.caption) }
+            }
+            .textSelection(.enabled)
+        } actions: {
+            if store.canRetryFailedOpening { Button("重试", action: store.retryFailedOpening) }
+        }
+    }
+
     private var transcript: some View {
         TranscriptView(model: store.transcript, reading: tab.reading, conversationID: store.loadedConversationID, scrollRequest: tab.scrollRequest,
                        cwd: store.loadedConversationWorkingDirectory, remoteHost: store.loadedConversationLocation.host, outlineCollapsed: $tab.outlineCollapsed, navigation: tab.outlineNavigation,
@@ -194,11 +233,12 @@ struct TabContentView: View {
                        openConversation: { [window, tab] id in window.openLinked(id, from: tab) },
                        openAgentURI: window.openAgentURI, openArtifact: window.openArtifact,
                        editMessage: { [store, tab] id in store.editability(of: id) == nil ? nil : { tab.edit(messageID: id) } },
-                       forkConversation: { [store, window] id in store.forkConversation(through: id, forked: window.openInNewTab(adopting:)) },
+                       deleteMessage: { [store] id in store.canDeleteMessage(id) ? { store.confirmDeleteMessage(id) } : nil },
+                       forkConversation: { id in if store.canFork { forkMessageID = id } },
                        describeSettings: { [store] in store.describe($0) },
                        recovery: store.runtimeRecovery, stoppingRecovery: store.isStopping,
                        canStopRecovery: store.canCancel, stopRecovery: store.cancel,
-                       heldForkNotice: store.heldForkNotice)
+                       forking: store.isForking, deletingMessage: store.isDeletingMessage)
     }
 }
 
@@ -560,6 +600,7 @@ struct TabHandle: NSViewRepresentable {
         private var pressedClose = false
         private var hovering = false
         private var sliding = false
+        private var hoverTrackingArea: NSTrackingArea?
         private var closePointer: ClosePointer = .outside {
             didSet { if closePointer != oldValue { actions?.closePointer(closePointer) } }
         }
@@ -569,8 +610,10 @@ struct TabHandle: NSViewRepresentable {
         // SwiftUI's hover does not reach through an AppKit view; the handle tracks it.
         override func updateTrackingAreas() {
             super.updateTrackingAreas()
-            trackingAreas.forEach(removeTrackingArea)
-            addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .mouseMoved, .activeInActiveApp, .inVisibleRect], owner: self))
+            if let hoverTrackingArea { removeTrackingArea(hoverTrackingArea) }
+            let area = NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .mouseMoved, .activeInActiveApp, .inVisibleRect], owner: self)
+            hoverTrackingArea = area
+            addTrackingArea(area)
         }
 
         override func mouseEntered(with event: NSEvent) { setHovering(true); trackClose(event) }
@@ -598,6 +641,12 @@ struct TabHandle: NSViewRepresentable {
         }
 
         override func mouseDown(with event: NSEvent) {
+            // Control-click is a context menu gesture, including on an
+            // unselected tab. It must not select or start dragging the tab.
+            if event.modifierFlags.contains(.control) {
+                if let menu = menu(for: event) { NSMenu.popUpContextMenu(menu, with: event, for: self) }
+                return
+            }
             if overClose(event) {
                 pressedClose = true
                 closePointer = .pressed

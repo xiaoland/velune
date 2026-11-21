@@ -52,7 +52,7 @@ final class WindowWorkspaceJournal: @unchecked Sendable {
     }
     func flush() { queue.sync {} }
 
-    func restore(id: String, recoverLatest: Bool, kind: ConversationWindowKind = .workspace, device: String? = nil) -> SavedWindowLayout? {
+    func restore(id: String, recoverLatest: Bool, kind: ConversationWindowKind = .workspace, device: String? = nil, aggregatingDevices: Bool = false, legacyTabID: UUID? = nil) -> SavedWindowLayout? {
         guard let directory else { return nil }
         flush()
         do {
@@ -63,11 +63,6 @@ final class WindowWorkspaceJournal: @unchecked Sendable {
                 let fileID = url.deletingPathExtension().lastPathComponent
                 do {
                     var layout = try SavedWindowLayout.decodeKnown(Data(contentsOf: url))
-                    guard layout.isWhole else {
-                        block(fileID)
-                        report("恢复点 \(url.lastPathComponent) 的窗口布局不完整；原文件保留，后续保存已禁用")
-                        return nil
-                    }
                     if layout.schemaVersion == 0 {
                         let bytes = try Data(contentsOf: url)
                         let date = try url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
@@ -76,11 +71,16 @@ final class WindowWorkspaceJournal: @unchecked Sendable {
                         try JSONEncoder().encode(layout).write(to: url, options: .atomic)
                         if let date { try FileManager.default.setAttributes([.modificationDate: date], ofItemAtPath: url.path) }
                     }
+                    if aggregatingDevices, kind == .workspace, device == nil, layout.windowKind != .single,
+                       case .remote(_)? = layout.windowDevice {
+                        try backupLegacy(Data(contentsOf: url), id: fileID, suffix: "before-aggregation")
+                        layout = layout.migratingToAggregatedWorkspace()
+                    }
                     lock.withLock { _ = checkedIDs.insert(fileID) }
                     return (fileID, try url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate ?? .distantPast, layout)
                 } catch {
                     block(url.deletingPathExtension().lastPathComponent)
-                    report("无法读取恢复点 \(url.lastPathComponent)：\(error.localizedDescription)；原文件保留，后续保存已禁用。升级到支持该格式的版本，或在确认后恢复 \(url.lastPathComponent).before-beta.bak")
+                    report("无法读取恢复点 \(url.lastPathComponent)：\(error.localizedDescription)；原文件保留，后续保存已禁用。升级到支持该格式的版本，或在确认后使用对应的 .bak 副本恢复")
                     return nil
                 }
             }.sorted { $0.date < $1.date }
@@ -90,6 +90,13 @@ final class WindowWorkspaceJournal: @unchecked Sendable {
             // An explicit old scene identity may still restore a pre-kind
             // snapshot. Unqualified recovery must never borrow another kind.
             let chosen = snapshots.first { $0.id == id && ($0.layout.windowDevice == nil || $0.layout.windowDevice == scope) && ($0.layout.windowKind == nil || $0.layout.windowKind == kind) }
+                // Older handoff windows used a SceneStorage-only identity.
+                // Their archived seed still carries the exact tab UUID; use
+                // that proof within the same device/kind, never a nearby window.
+                ?? legacyTabID.flatMap { tabID in
+                    snapshots.last { $0.layout.windowDevice == scope && $0.layout.windowKind == kind
+                        && $0.layout.panes.values.contains { $0.tabs.contains(tabID) } }
+                }
                 ?? (recoverLatest ? snapshots.last { $0.layout.windowDevice == scope && $0.layout.windowKind == kind } : nil)
             // Shared content is authoritative. A window snapshot restores its cursor
             // and any explicitly pending edit; never copy text between input identities.
@@ -114,7 +121,6 @@ final class WindowWorkspaceJournal: @unchecked Sendable {
         do {
             let bytes = try Data(contentsOf: target)
             var layout = try SavedWindowLayout.decodeKnown(bytes)
-            guard layout.isWhole else { throw NSError(domain: "VelunePersistence", code: 23, userInfo: [NSLocalizedDescriptionKey: "恢复点布局不完整"]) }
             if layout.schemaVersion == 0 {
                 let date = try target.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
                 try backupLegacy(bytes, id: id)
@@ -131,9 +137,9 @@ final class WindowWorkspaceJournal: @unchecked Sendable {
         }
     }
 
-    private func backupLegacy(_ bytes: Data, id: String) throws {
+    private func backupLegacy(_ bytes: Data, id: String, suffix: String = "before-beta") throws {
         guard let directory else { return }
-        let backup = directory.appendingPathComponent(id + ".json.before-beta.bak")
+        let backup = directory.appendingPathComponent(id + ".json.\(suffix).bak")
         if FileManager.default.fileExists(atPath: backup.path) {
             guard try Data(contentsOf: backup) == bytes else {
                 throw NSError(domain: "VelunePersistence", code: 24, userInfo: [NSLocalizedDescriptionKey: "恢复点备份与原文件不一致"])

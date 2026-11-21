@@ -316,9 +316,11 @@ impl CoreRuntime {
                 continue;
             };
             if session.executing()
-                || session
-                    .projected()
-                    .is_some_and(|s| !s.pending_interactions.is_empty())
+                || session.projected().is_some_and(|s| {
+                    s.pending_interactions
+                        .iter()
+                        .any(|interaction| interaction.blocks_turn())
+                })
             {
                 continue;
             }
@@ -379,6 +381,18 @@ impl CoreRuntime {
                 self.scheduled_tasks.put_run(&run)?;
                 continue;
             };
+            if let Target::ExistingConversation {
+                conversation_id, ..
+            } = &task.target
+                && self.scheduled_handoff_blocks_dispatch(conversation_id)
+            {
+                let detail = "等待用户恢复 Velune 会话控制";
+                if run.detail.as_deref() != Some(detail) {
+                    run.detail = Some(detail.into());
+                    self.scheduled_tasks.put_run(&run)?;
+                }
+                continue;
+            }
             if let Err(error) = self
                 .validate_scheduled_target(task)
                 .and_then(|_| self.check_handover(task))
@@ -422,6 +436,14 @@ impl CoreRuntime {
                 let Some(snapshot) = self.current_snapshot() else {
                     return Ok(());
                 };
+                if self.check_handoff_input(&snapshot).is_err() {
+                    let detail = "等待用户恢复 Velune 会话控制";
+                    if run.detail.as_deref() != Some(detail) {
+                        run.detail = Some(detail.into());
+                        self.scheduled_tasks.put_run(run)?;
+                    }
+                    return Ok(());
+                }
                 if snapshot.actions.input_access == crate::conversation::InputAccess::ReadOnly {
                     run.phase = Phase::Failed;
                     let detail = "目标会话只可阅读；请选择可继续的会话".to_owned();
@@ -432,7 +454,10 @@ impl CoreRuntime {
                 }
                 if snapshot.actions.input_access != crate::conversation::InputAccess::Editable
                     || self.session.executing()
-                    || !snapshot.pending_interactions.is_empty()
+                    || snapshot
+                        .pending_interactions
+                        .iter()
+                        .any(|interaction| interaction.blocks_turn())
                 {
                     run.detail = Some("等待会话空闲、审批结束或外部客户端释放控制权".into());
                     self.scheduled_tasks.put_run(run)?;
@@ -475,6 +500,7 @@ impl CoreRuntime {
         run.conversation_id = Some(snapshot.conversation.id.clone());
         self.scheduled_tasks.put_run(run)?;
         let request = conversations::TurnRequest {
+            submission_id: None,
             source_runtime_id: snapshot.conversation.runtime_id.clone(),
             conversation_id: snapshot.conversation.id,
             runtime_id: task.target.runtime_id().into(),

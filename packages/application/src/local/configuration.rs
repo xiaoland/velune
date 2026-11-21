@@ -153,6 +153,11 @@ impl CoreRuntime {
             return Err(error);
         }
         let current = &self.conversation_browser_preferences;
+        for group in &current.collapsed {
+            if !previous.collapsed.contains(group) {
+                self.release_collapsed_browser_capacity(group);
+            }
+        }
         if (
             current.grouping,
             current.sort,
@@ -168,7 +173,7 @@ impl CoreRuntime {
         ) {
             self.reset_browser_pages();
         }
-        self.list()
+        Ok(self.cached_list())
     }
 
     pub(crate) fn set_outline_presentation(
@@ -249,19 +254,40 @@ impl CoreRuntime {
             self.conversation_browser_limits = previous;
             return Err(error);
         }
+        if limits != previous {
+            self.reset_browser_pages();
+        }
         Ok(limits)
     }
 
-    /// Every enabled runtime's conversations, continued ones by their link,
-    /// with the runtimes' own archives in the archive view. Indexes each
-    /// runtime's history again and reads all of it only when `complete`.
+    /// The full catalog, including active history needed by identity lookup.
     pub(super) fn list_sources(
         &self,
         complete: bool,
     ) -> Result<(Vec<organization::ListedSource>, Vec<crate::HistoryFailure>), RuntimeError> {
+        Ok(self.refresh_list_sources(complete, false))
+    }
+
+    fn refresh_list_sources(
+        &self,
+        complete: bool,
+        archive_only: bool,
+    ) -> (Vec<organization::ListedSource>, Vec<crate::HistoryFailure>) {
+        let marked = archive_only.then(|| self.locally_archived_ids());
+        let segments = self.link_segment_ids(marked.as_ref());
+        let active_runtimes = marked.as_ref().map(|ids| {
+            ids.iter()
+                .chain(&segments)
+                .filter_map(|id| id.split_once(':').map(|(runtime_id, _)| runtime_id))
+                .collect::<std::collections::BTreeSet<_>>()
+        });
         let mut history_failures = Vec::new();
         for (slot, runtime) in self.runtime_instances.iter().enumerate() {
-            if !runtime.enabled {
+            if !runtime.enabled
+                || active_runtimes
+                    .as_ref()
+                    .is_some_and(|ids| !ids.contains(runtime.id.as_str()))
+            {
                 continue;
             }
             let indexed = self.index_history(runtime).and_then(|()| {
@@ -284,14 +310,16 @@ impl CoreRuntime {
                 });
             }
         }
-        self.read_link_segments();
+        self.read_link_segments(&segments);
         *self.archived_listing.borrow_mut() = if self.shows_archived() {
-            self.natively_archived()
+            let (archived, failures) = self.natively_archived();
+            history_failures.extend(failures);
+            archived
         } else {
             BTreeMap::new()
         };
         *self.history_failures.borrow_mut() = history_failures.clone();
-        Ok((self.cached_sources(), history_failures))
+        (self.cached_sources(), history_failures)
     }
 
     /// The listing from the indexes as they stand. A conversation not read
@@ -302,21 +330,24 @@ impl CoreRuntime {
         for runtime in self.runtime_instances.iter().filter(|r| r.enabled) {
             for entry in self.indexed(runtime) {
                 match entry.state {
-                    browsing::EntryState::Read(summary) => conversations.push(*summary),
+                    browsing::EntryState::Read(summary) => conversations.push(summary),
                     browsing::EntryState::Unread => {
                         provisional.insert(entry.id.clone());
-                        conversations.push(ConversationSummary {
-                            native_read_state: None,
-                            id: entry.id,
-                            title: velune_conversation::ConversationTitle::Untitled,
-                            updated_at_unix_ms: entry.hint.activity_unix_ms,
-                            created_at_unix_ms: entry.hint.created_unix_ms,
-                            runtime_id: runtime.id.clone(),
-                            cwd: entry.hint.cwd,
-                            can_rename: false,
-                            can_delete: false,
-                            parent_conversation_id: None,
-                        });
+                        conversations.push(
+                            ConversationSummary {
+                                native_read_state: None,
+                                id: entry.id,
+                                title: velune_conversation::ConversationTitle::Untitled,
+                                updated_at_unix_ms: entry.hint.activity_unix_ms,
+                                created_at_unix_ms: entry.hint.created_unix_ms,
+                                runtime_id: runtime.id.clone(),
+                                cwd: entry.hint.cwd,
+                                can_rename: false,
+                                can_delete: false,
+                                parent_conversation_id: entry.hint.parent_conversation_id,
+                            }
+                            .into(),
+                        );
                     }
                     browsing::EntryState::Unreadable => {}
                 }
@@ -333,7 +364,7 @@ impl CoreRuntime {
                     .iter()
                     .any(|item| item.id == view.conversation.id)
             {
-                conversations.push(view.conversation.clone());
+                conversations.push(view.conversation.clone().into());
             }
         }
         let mut sources: Vec<_> = self
@@ -366,25 +397,39 @@ impl CoreRuntime {
     }
 
     pub(crate) fn list(&self) -> Result<crate::ConfigurationSnapshot, RuntimeError> {
-        let (sources, history_failures) = self.list_sources(false)?;
-        Ok(self.configuration_from_sources(sources, history_failures))
+        let start = std::time::Instant::now();
+        let (sources, history_failures) = self.refresh_list_sources(false, self.shows_archived());
+        // A source refresh can discover new active groups. Reallocate only its
+        // initial budget; explicit additional pages remain owned by this view.
+        let indexed = std::time::Instant::now();
+        self.reset_browser_allocation();
+        let result = self.configuration_from_sources(sources, history_failures, false);
+        let finished = std::time::Instant::now();
+        if (finished - start).as_millis() >= 100 {
+            tracing::info!(target: "velune_application", event = "conversation_list", archived = self.shows_archived(),
+                refresh_ms = (indexed - start).as_millis() as u64, build_page_ms = (finished - indexed).as_millis() as u64);
+        }
+        Ok(result)
     }
 
     /// Reapply list organization to the indexed history. A read receipt or
     /// pin changes no native files and must not wait for unrelated runtimes.
-    pub(super) fn cached_list(&self) -> crate::ConfigurationSnapshot {
+    pub(crate) fn cached_list(&self) -> crate::ConfigurationSnapshot {
         self.configuration_from_sources(
             self.cached_sources(),
             self.history_failures.borrow().clone(),
+            true,
         )
     }
 
     fn configuration_from_sources(
         &self,
         sources: Vec<organization::ListedSource>,
-        history_failures: Vec<crate::HistoryFailure>,
+        mut history_failures: Vec<crate::HistoryFailure>,
+        extend_index: bool,
     ) -> crate::ConfigurationSnapshot {
-        let page = self.browse_read(sources, None);
+        let page = self.browse_read(sources, None, extend_index);
+        history_failures.extend(page.history_failures);
         let runtime_types = runtime_types();
         let provider_import_types = std::iter::once(provider_import::descriptor())
             .chain(
@@ -714,6 +759,9 @@ impl CoreRuntime {
                     .execution_runtime_id
                     .as_ref()
                     .is_some_and(|id| changed(id, true));
+            if invalidated && core.preserves_connection_configuration() {
+                return Ok(());
+            }
             if invalidated && core.session.executing() {
                 core.session.configuration_changed = true;
                 return Ok(());

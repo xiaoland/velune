@@ -2,6 +2,10 @@
 
 [返回来源索引](../sources.md)。本页保留原始决定与当时的授权边界；它不是当前实现状态或本次任务的授权清单。现行规则从[文档入口](../index.md)按主题查阅。
 
+## S86
+
+2026-11-11 用户要求“搭建 Velune 的远程控制中继服务器”，使用 `~/Development/homelab` 管理资源，建议部署在 `ec1_gz`，也允许选择其他主机；并询问是否需要更新各 App 使中继服务器可自定义，授权必要的实现。初始授权包含中继部署与客户端设置，不包含提交代码或重装日常 App；交付后用户明确回复“可以提交”，授权提交本任务改动。产品规则见 [远控 PRD](../prd/remote-access.md#范围与连接)，客户端契约见 [远控接口](../product-tdd/remote-access.md#共享接口与持久化)；基础设施运维参数归 homelab。
+
 ## S40
 
 2026-10-17 用户要求参考 [liguobao/ds-harness-remote](https://github.com/liguobao/ds-harness-remote)，共同梳理远程控制需求、厘清架构后实现 Rust packages。随后明确有 GUI 与无 GUI 两种宿主都需要，应用装配相同共享核心，不能按第一批界面形态缩窄远控架构；公网使用不依赖预配 VPN 或端口转发。远控范围为完整 Velune 业务能力，信任对象为同一个人的多台设备。产品归 [PRD](../prd/remote-access.md)，方案与证据归 远控任务（git 历史：tasks/remote-control）。

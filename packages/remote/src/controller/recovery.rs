@@ -22,6 +22,8 @@ pub struct ControllerStatus {
     pub paused: bool,
     pub intent_revision: u64,
     pub connection_epoch: u64,
+    /// Actual intermediate Velune devices; native direct/infra-relay paths have none.
+    pub via_device_ids: Vec<String>,
     pub error_code: Option<String>,
 }
 struct Intent {
@@ -71,6 +73,19 @@ impl Controller {
             .intent
             .lock()
             .map_err(|_| RemoteError::Unavailable)?;
+        let (connection_epoch, via_device_ids) = {
+            let connection = self
+                .connection
+                .lock()
+                .map_err(|_| RemoteError::Unavailable)?;
+            (
+                connection.epoch,
+                connection
+                    .client
+                    .as_ref()
+                    .map_or_else(Vec::new, |client| client.via_device_ids()),
+            )
+        };
         Ok(ControllerStatus {
             peer_id: self.peer.clone(),
             phase: intent.phase,
@@ -78,11 +93,8 @@ impl Controller {
             foreground: intent.foreground,
             paused: intent.paused,
             intent_revision: intent.revision,
-            connection_epoch: self
-                .connection
-                .lock()
-                .map_err(|_| RemoteError::Unavailable)?
-                .epoch,
+            connection_epoch,
+            via_device_ids,
             error_code: intent.error.map(|error| error.code().into()),
         })
     }
@@ -194,6 +206,30 @@ impl Controller {
         self.recovery.wake.send_replace(intent.revision);
         Ok(())
     }
+    // The caller holds the service access lock, ordering this against pairing
+    // confirmation and new submissions. Retire only this destination's client.
+    pub(crate) fn trust_revoked(&self) -> Result<()> {
+        let mut intent = self
+            .recovery
+            .intent
+            .lock()
+            .map_err(|_| RemoteError::Unavailable)?;
+        intent.blocked = true;
+        intent.error = Some(RemoteError::Unauthorized);
+        intent.phase = ControllerPhase::Blocked;
+        intent.revision = intent.revision.wrapping_add(1);
+        if let Some(client) = self
+            .connection
+            .lock()
+            .map_err(|_| RemoteError::Unavailable)?
+            .client
+            .take()
+        {
+            client.close();
+        }
+        self.recovery.wake.send_replace(intent.revision);
+        Ok(())
+    }
     pub(crate) fn network_changed(&self) {
         if let Ok(mut intent) = self.recovery.intent.lock() {
             intent.revision = intent.revision.wrapping_add(1);
@@ -244,16 +280,58 @@ impl Controller {
                 return Err(RemoteError::Closed);
             }
         }
-        if self.client().is_ok() {
-            self.phase(revision, ControllerPhase::Connected, None);
-            return Ok(());
-        }
         let owner = self.owner()?;
-        let client = Arc::new(
-            owner
-                .connect_client(&self.peer, self.session.clone())
-                .await?,
-        );
+        if !owner.state.store.contact(&self.peer)?.control_authorized {
+            if let Some(client) = self
+                .connection
+                .lock()
+                .map_err(|_| RemoteError::Unavailable)?
+                .client
+                .take()
+            {
+                client.close();
+            }
+            return Err(RemoteError::Unauthorized);
+        }
+        let client = if let Ok(current) = self.client() {
+            let probe = {
+                let mut connection = self
+                    .connection
+                    .lock()
+                    .map_err(|_| RemoteError::Unavailable)?;
+                if !current.via_device_ids().is_empty()
+                    && connection.last_route_probe.elapsed() >= Duration::from_secs(10)
+                {
+                    connection.last_route_probe = Instant::now();
+                    true
+                } else {
+                    false
+                }
+            };
+            if !probe {
+                self.phase(revision, ControllerPhase::Connected, None);
+                return Ok(());
+            }
+            match tokio::time::timeout(
+                Duration::from_secs(1),
+                owner.connect_direct_client(&self.peer, self.session.clone()),
+            )
+            .await
+            {
+                Ok(Ok(direct)) => Arc::new(direct),
+                _ => {
+                    // A failed upgrade probe never tears down a usable routed path.
+                    self.phase(revision, ControllerPhase::Connected, None);
+                    return Ok(());
+                }
+            }
+        } else {
+            Arc::new(
+                owner
+                    .connect_client(&self.peer, self.session.clone())
+                    .await?,
+            )
+        };
         // The authenticated result and refreshed locator belong only to this still-current intent.
         let access = owner.state.access()?;
         let intent = self
@@ -261,7 +339,11 @@ impl Controller {
             .intent
             .lock()
             .map_err(|_| RemoteError::Unavailable)?;
-        if access.closed || intent.revision != revision || intent.paused {
+        if access.closed
+            || intent.revision != revision
+            || intent.paused
+            || !owner.state.store.contact(&self.peer)?.control_authorized
+        {
             client.close();
             return Err(RemoteError::Closed);
         }
@@ -283,9 +365,13 @@ impl Controller {
             old.close();
         }
         connection.epoch = connection.epoch.wrapping_add(1);
+        connection.last_route_probe = Instant::now();
         drop(connection);
         drop(intent);
         drop(access);
+        // A route upgrade can keep the Connected phase while changing its
+        // path and epoch. Snapshot consumers still need a new version.
+        owner.state.store.touch();
         self.phase(revision, ControllerPhase::Connected, None);
         Ok(())
     }

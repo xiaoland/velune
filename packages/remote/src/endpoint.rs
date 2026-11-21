@@ -129,7 +129,11 @@ async fn bind_transport_observed(
     }
     let mut builder = Endpoint::builder(presets::Minimal)
         .secret_key(key)
-        .alpns(vec![alpn.to_vec()])
+        .alpns(if alpn == ALPN {
+            vec![alpn.to_vec(), crate::mesh::ALPN.to_vec()]
+        } else {
+            vec![alpn.to_vec()]
+        })
         .relay_mode(relay)
         .relay_auth_tokens(
             config
@@ -199,6 +203,7 @@ async fn bind_transport_observed(
 
 struct RegisteredConnection {
     incoming: bool,
+    mesh: bool,
     slot: Arc<ConnectionSlot>,
 }
 /// Only this generation and its tracked IO own native endpoint/connection references.
@@ -207,6 +212,9 @@ pub(crate) struct NetworkGeneration {
     pub(crate) service: Arc<ServiceState>,
     pub(crate) id: u64,
     pub(crate) timeout: Duration,
+    pub(crate) mesh: crate::mesh::MeshNetwork,
+    #[cfg(test)]
+    blocked_outgoing: Mutex<std::collections::BTreeSet<String>>,
     lookup_urls: Vec<String>,
     withdrawn_lookup_urls: std::collections::BTreeSet<String>,
     peer_lookup: crate::lookup::PeerLookup,
@@ -284,6 +292,9 @@ impl NetworkGeneration {
             service,
             id,
             timeout: config.request_timeout,
+            mesh: crate::mesh::MeshNetwork::default(),
+            #[cfg(test)]
+            blocked_outgoing: Mutex::new(std::collections::BTreeSet::new()),
             withdrawn_lookup_urls,
             lookup_urls,
             peer_lookup,
@@ -305,6 +316,7 @@ impl NetworkGeneration {
         self.track(tokio::spawn(async move {
             accept_loop(owner).await;
         }));
+        crate::mesh::start(self.clone());
     }
     pub(crate) fn endpoint(&self) -> Result<Endpoint> {
         self.endpoint
@@ -312,6 +324,55 @@ impl NetworkGeneration {
             .map_err(|_| RemoteError::Unavailable)?
             .clone()
             .ok_or(RemoteError::Closed)
+    }
+    pub(crate) fn prepare_peer(&self, peer: &str, locator: &DeviceLocator) -> Result<Endpoint> {
+        #[cfg(test)]
+        if self
+            .blocked_outgoing
+            .lock()
+            .map_err(|_| RemoteError::Unavailable)?
+            .contains(peer)
+        {
+            return Err(RemoteError::Unavailable);
+        }
+        let endpoint = self.endpoint()?;
+        self.peer_lookup.configure(
+            peer,
+            locator,
+            &endpoint,
+            &self.lookup_observations,
+            &self.withdrawn_lookup_urls,
+        )?;
+        Ok(endpoint)
+    }
+    /// Synthetic topology isolation: neither business nor device-mesh dialing can
+    /// reach this identity from this source. Existing outgoing transports retire too.
+    #[cfg(test)]
+    pub(crate) fn block_outgoing_for_test(&self, peer: &str, blocked: bool) -> Result<()> {
+        crate::store::parse_peer(peer)?;
+        let mut peers = self
+            .blocked_outgoing
+            .lock()
+            .map_err(|_| RemoteError::Unavailable)?;
+        if blocked {
+            peers.insert(peer.into());
+        } else {
+            peers.remove(peer);
+        }
+        drop(peers);
+        if blocked {
+            let connections = self
+                .connections
+                .lock()
+                .map_err(|_| RemoteError::Unavailable)?;
+            for registered in connections
+                .values()
+                .filter(|entry| !entry.incoming && entry.slot.status().peer_id == peer)
+            {
+                registered.slot.close(b"synthetic source topology block");
+            }
+        }
+        Ok(())
     }
     pub(crate) fn facility_status(&self) -> Result<Vec<FacilityStatus>> {
         use n0_watcher::Watcher;
@@ -423,8 +484,9 @@ impl NetworkGeneration {
     ) -> Result<(u64, Arc<ConnectionSlot>)> {
         let access = self.service.access()?;
         ServiceState::check_generation(&access, self.id)?;
+        let mesh = connection.alpn() == crate::mesh::ALPN;
         if self.closed.load(Ordering::Acquire)
-            || (incoming && !access.ingress && !access.profile_ingress)
+            || (incoming && !mesh && !access.ingress && !access.profile_ingress)
         {
             connection.close(0u8.into(), b"ingress closed");
             return Err(RemoteError::Closed);
@@ -443,6 +505,7 @@ impl NetworkGeneration {
             id,
             RegisteredConnection {
                 incoming,
+                mesh,
                 slot: slot.clone(),
             },
         );
@@ -455,22 +518,24 @@ impl NetworkGeneration {
     }
     pub(crate) fn close_incoming(&self) {
         if let Ok(connections) = self.connections.lock() {
-            for connection in connections.values().filter(|value| value.incoming) {
+            for connection in connections
+                .values()
+                .filter(|value| value.incoming && !value.mesh)
+            {
                 connection.slot.close(b"ingress closed");
             }
         }
     }
-    pub(crate) fn revoke(&self, peer: &str) {
+    pub(crate) fn revoke_member(&self, peer: &str, preserve_profile: bool) {
         if let Ok(connections) = self.connections.lock() {
-            for connection in connections
-                .values()
-                .filter(|value| value.incoming && value.slot.status().peer_id == peer)
-            {
+            for connection in connections.values().filter(|value| {
+                value.slot.status().peer_id == peer && (value.mesh || !preserve_profile)
+            }) {
                 connection.slot.close(b"authorization revoked");
             }
         }
     }
-    fn track(&self, task: JoinHandle<()>) {
+    pub(crate) fn track(&self, task: JoinHandle<()>) {
         let mut tasks = self
             .tasks
             .lock()
@@ -567,6 +632,39 @@ impl RemoteAccessService {
         {
             return Err(RemoteError::Unauthorized);
         }
+        let direct = self.connect_direct_client(peer, session.clone());
+        let routed = async {
+            // Give the ordinary authenticated target connection a head start.
+            // A dead target address must not consume the full timeout before a
+            // working trusted intermediary can be used.
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            crate::mesh::connect(self.network()?, peer, session.clone()).await
+        };
+        tokio::pin!(direct, routed);
+        tokio::select! {
+            result = &mut direct => match result {
+                Ok(client) => Ok(client),
+                Err(error) if matches!(error, RemoteError::Unavailable | RemoteError::Timeout
+                    | RemoteError::Closed | RemoteError::Unauthorized) => routed.await,
+                Err(error) => Err(error),
+            },
+            result = &mut routed => match result {
+                Ok(client) => Ok(client),
+                Err(_) => direct.await,
+            },
+        }
+    }
+    pub(crate) async fn connect_direct_client(
+        &self,
+        peer: &str,
+        session: ClientSession,
+    ) -> Result<RemoteClient> {
+        let contact = self.state.store.contact(peer)?;
+        if !contact.control_authorized
+            || !matches!(contact.confirmation, ContactConfirmation::Confirmed { .. })
+        {
+            return Err(RemoteError::Unauthorized);
+        }
         let mut client = self
             .dial_locator(peer, contact.name, &contact.locator, session, true)
             .await?;
@@ -593,14 +691,7 @@ impl RemoteAccessService {
         let address = locator.address(peer)?;
         let network = self.network()?;
         let _operation = network.operation().await?;
-        let endpoint = network.endpoint()?;
-        network.peer_lookup.configure(
-            peer,
-            locator,
-            &endpoint,
-            &network.lookup_observations,
-            &network.withdrawn_lookup_urls,
-        )?;
+        let endpoint = network.prepare_peer(peer, locator)?;
         let connection = tokio::select! {
             biased;
             _=network.cancelled()=>return Err(RemoteError::Closed),
@@ -622,6 +713,7 @@ impl RemoteAccessService {
                 lookup_urls: locator.lookup_urls.clone(),
             },
             session,
+            route: None,
             authorized,
             timeout: network.timeout,
         })
@@ -633,11 +725,10 @@ async fn accept_loop(network: Arc<NetworkGeneration>) {
     };
     let permits = Arc::new(Semaphore::new(64));
     while let Some(incoming) = endpoint.accept().await {
-        let allowed = network.service.access().is_ok_and(|access| {
-            (access.ingress || access.profile_ingress)
-                && access.generation == Some(network.id)
-                && !access.closed
-        });
+        let allowed = network
+            .service
+            .access()
+            .is_ok_and(|access| access.generation == Some(network.id) && !access.closed);
         if !allowed {
             incoming.refuse();
             continue;
@@ -656,7 +747,14 @@ async fn accept_loop(network: Arc<NetworkGeneration>) {
                 return;
             };
             let connection_id = connection.status().connection_id;
-            serve_connection(owner.clone(), connection).await;
+            if connection
+                .native()
+                .is_some_and(|native| native.alpn() == crate::mesh::ALPN)
+            {
+                crate::mesh::serve(owner.clone(), connection).await;
+            } else {
+                serve_connection(owner.clone(), connection).await;
+            }
             owner.service.pairing_disconnected(connection_id);
             owner.remove(registration);
         });
@@ -690,7 +788,11 @@ async fn serve_connection(network: Arc<NetworkGeneration>, slot: Arc<ConnectionS
                     .acquire()
                     .await
                     .map_err(|_| RemoteError::Closed)?;
-                let limit = if owner.service.store.grant(&peer)?.is_some() {
+                let limit = if owner
+                    .service
+                    .store
+                    .allows_control(&owner.service.identity.id(), &peer)?
+                {
                     MAX_FRAME_BYTES
                 } else {
                     16 * 1024

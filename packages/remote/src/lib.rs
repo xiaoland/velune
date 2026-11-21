@@ -9,6 +9,9 @@ mod error;
 mod identity;
 mod ledger;
 mod lookup;
+mod mesh;
+#[cfg(test)]
+mod mesh_acceptance;
 mod network;
 mod pairing;
 mod paths;
@@ -18,8 +21,23 @@ mod protocol;
 mod service;
 mod settings;
 mod store;
+mod trust;
+mod tunnel_tls;
 mod wire;
 pub(crate) use client::RemoteClient;
+pub fn ensure_debug_subscriber() {
+    use std::sync::Once;
+    static ONCE: Once = Once::new();
+    ONCE.call_once(|| {
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter(
+                tracing_subscriber::EnvFilter::try_from_default_env()
+                    .unwrap_or_else(|_| "velune_remote_debug=info".into()),
+            )
+            .try_init();
+    });
+}
+
 pub use client::{CallError, CallFailure};
 pub use controller::*;
 pub use error::{RemoteError, Result};
@@ -43,6 +61,7 @@ pub use protocol::{
 pub use service::{Handler, HandlerFuture, RemoteAccessService};
 pub use settings::*;
 pub use store::*;
+pub use trust::{MembershipProof, MembershipStatement, TrustBundle, TrustContact, TrustStatement};
 
 uniffi::setup_scaffolding!();
 

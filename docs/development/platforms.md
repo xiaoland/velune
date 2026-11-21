@@ -51,3 +51,13 @@ Windows 使用 MSVC 目标（`x86_64-pc-windows-msvc`，工具链版本同 `rust
 先安装 runtime-support，并执行 `powershell -ExecutionPolicy Bypass -File scripts\install-xurl.ps1` 准备官方 xURL CLI。`scripts/build-windows.ps1` 先构建 `velune_bindings.dll`，再由固定提交且已核实SHA的 `uniffi-bindgen-cs` 从中增量生成 C# 绑定，最后 `dotnet publish` 出自包含的 `Velune.exe`。界面、运行与已知限制见 [Windows README](../../app/windows/README.md)。
 
 开发用 Windows 机（SSH 别名 `win-ws.localhost`）上只有一个仓库 `F:\CODING\Velune`：main 的普通克隆，origin 指向 GitHub。未推送的提交以 bundle 送达：Mac 上 `git bundle create <文件> <对方 main>..main`，复制过去后在该仓库 `git pull --ff-only <文件> main`，再删除 bundle。runtime-support、xURL 与 `uniffi-bindgen-cs` 在被忽略的 `target\` 中，新克隆或 worktree 需从已有的 `target\runtime-support`、`target\tools` 复制。并行或临时的验证副本用 `git worktree add F:\CODING\.worktrees\<任务>\velune`，用完即 `git worktree remove`。日常使用的版本先退出正在运行的 Velune，再 `robocopy target\windows\Velune %LOCALAPPDATA%\Programs\Velune /MIR` 安装，桌面快捷方式指向那里，因此重新构建不受运行中的应用影响。
+
+从 Mac 工作区更新 YYH-WS 上的手动安装：
+
+```sh
+svc run reinstall-yyh-win
+```
+
+命令通过 `win-ws.localhost` 传输当前 Git 提交；未提交的修复不会进入安装，更新前须确认修复已纳入该提交。Windows 在 `F:\CODING\.worktrees\yyh-win-install\velune` 中执行开发构建并保留增量缓存。专用检出首次从主检出复制已准备的 runtime-support、xURL 和绑定生成器。依赖变化时，按本节说明在专用检出中更新构建依赖。
+
+构建和暂存校验通过后，命令在 SSH 用户已登录的 Windows 桌面请求旧应用正常退出、替换安装目录，再打开新版。短暂目录占用仅对指定 IO 错误最多重试 15 秒，保留完整目录交换与失败回滚；不改变访问权限。应用拒绝退出时，在 Windows 桌面处理提示后重试。安装根目录的 `velune-source-revision.txt` 记录实际源码提交，数据迁移由应用启动时处理。

@@ -5,6 +5,18 @@ import VeluneBindings
 /// A restored window keeps identities and associations, including displaced
 /// unfinished input. Layout changes move these identities; they never copy text.
 struct SavedComposerWorkspace: Codable, Equatable {
+    fileprivate enum SchemaVersion: Int, Codable {
+        case v3 = 3
+
+        init(from decoder: Decoder) throws {
+            let version = try decoder.singleValueContainer().decode(Int.self)
+            guard let schema = Self(rawValue: version) else {
+                throw NSError(domain: "VelunePersistence", code: 25, userInfo: [NSLocalizedDescriptionKey: "窗口草稿恢复点 schema \(version) 不受支持"])
+            }
+            self = schema
+        }
+    }
+
     struct Draft: Codable, Equatable {
         var id: UUID
         var name: String
@@ -14,7 +26,7 @@ struct SavedComposerWorkspace: Codable, Equatable {
         var pending: Bool? = nil
         var revision: UInt64? = nil
     }
-    var schemaVersion: Int? = 3
+    fileprivate var schemaVersion: SchemaVersion = .v3
     var drafts: [Draft]
     var conversations: [String: UUID]
     var shared: UUID
@@ -68,33 +80,51 @@ struct SavedComposerWorkspace: Codable, Equatable {
         }
     }
 
+    /// Preserve an independently edited input without changing the selected
+    /// conversation draft. Later edits use the existing registered save chain.
+    func retain(_ model: ComposerModel, name: String) {
+        register(model, name: name)
+        device?.composerInputs.save(model.id, draft: model.savedDraft)
+        keep(model.id)
+        changes.send()
+    }
+
     private func keep(_ id: UUID) {
         if let model = models[id], model.hasUnfinishedInput, !retained.contains(id) { retained.append(id) }
     }
 
     func focus(_ tab: ConversationTab) {
-        targetTab = tab
-        targetContext = tab.store.selectedConversationID ?? tab.store.loadedConversationID ?? "tab:\(tab.id)"
+        let id = tab.store.selectedConversationID ?? tab.store.loadedConversationID ?? "tab:\(tab.id)"
+        guard targetTab !== tab || targetContext != id || activeContext != id else { return }
+        navigate(to: id, tab: tab)
     }
 
-    /// Navigation is the only ordinary action that changes the shared input.
-    /// Merely focusing a selected tab does not call this method.
+    /// Tab navigation and group focus both select the destination input.
     func checkpoint() {
-        if let previous = targetContext, !previous.hasPrefix("tab:"), !previous.hasPrefix(ConversationStore.draftConversationPrefix) {
+        if let previous = activeContext, !previous.hasPrefix("tab:") {
             conversations[previous] = shared.id
             device?.composerInputs.bind(previous, input: shared)
         }
     }
-    func navigate(to id: String, tab: ConversationTab, sharedInput: Bool = true, checkpointPrevious: Bool = true) {
-        if sharedInput, checkpointPrevious { checkpoint() }
+    func navigate(to id: String, tab: ConversationTab, checkpointPrevious: Bool = true) {
+        if checkpointPrevious { checkpoint() }
         device?.composerInputs.beginNavigation(id)
         if let old = conversations[id], let current = device?.composerInputs.inputID(for: id), old != current {
             keep(old); conversations[id] = nil
         }
         let model = conversation(id, tab: tab)
-        if sharedInput, shared.id != model.id, !conversations.values.contains(shared.id) { keep(shared.id) }
-        if sharedInput { shared = model; activeContext = id; sharedInitialized = true }
-        focus(tab)
+        if sharedInitialized, shared.id != model.id, let device {
+            var choices = activeContext.flatMap { device.composerInputs.targetChoices(for: $0) }
+                ?? ComposerTargetChoices(runtimeId: nil, runtimeOwnerId: nil, choices: [], choiceEdited: false)
+            if let previous = targetTab?.store, previous.loadedConversationID == activeContext {
+                choices = previous.composerNavigationChoices ?? choices
+            }
+            model.registerNavigationUndo(shared.savedDraft, choices: choices, context: id, client: device.composerInputs,
+                                         currentChoices: { [weak store = tab.store] in store?.composerNavigationChoices })
+        }
+        if shared.id != model.id, !conversations.values.contains(shared.id) { keep(shared.id) }
+        shared = model; activeContext = id; sharedInitialized = true
+        targetTab = tab
         targetContext = id
         changes.send()
     }
@@ -103,21 +133,32 @@ struct SavedComposerWorkspace: Codable, Equatable {
         let synced = device?.composerInputs.inputID(for: id)
         let local = conversations[id]
         let key = local.flatMap { device?.composerInputs.isDirty($0) == true ? $0 : nil } ?? synced ?? local
+        let needsCopy = key.map { isBoundElsewhere($0, than: id) } ?? false
         let model: ComposerModel
-        if let key, let kept = models[key] { model = kept }
+        if !needsCopy, let key, let kept = models[key] { model = kept }
         else {
-            model = ComposerModel(id: key ?? UUID())
-            let state = key.flatMap { device?.composerInputs.draft($0) }
-                ?? SavedComposerDraft(text: "", attachments: [])
+            model = ComposerModel(id: needsCopy ? UUID() : key ?? UUID())
+            let legacyID = ConversationStore.draftConversationPrefix + "new-conversation"
+            let legacy = tab.store.restoresLegacyUnsentInput && id == tab.store.unsentContextID
+                ? conversations[legacyID].flatMap { models[$0]?.savedDraft }
+                    ?? device?.composerInputs.inputID(for: legacyID).flatMap { device?.composerInputs.draft($0) }
+                : nil
+            let state = key.flatMap { models[$0]?.savedDraft ?? device?.composerInputs.draft($0) }
+                ?? legacy ?? SavedComposerDraft(text: "", attachments: [])
             model.restoreSavedDraft(state)
             register(model, name: tab.title + " 的输入")
         }
         conversations[id] = model.id
-        if !id.hasPrefix("tab:"), !id.hasPrefix("side-chat:"), synced == nil, !resolving.contains(id), let device {
+        if needsCopy {
+            // Old shared composers could leave multiple session bindings to
+            // one input. Retain the original and rebind only this copy via CAS.
+            device?.composerInputs.bind(id, input: model)
+        } else if !id.hasPrefix("tab:"), !id.hasPrefix("side-chat:"), synced == nil, !resolving.contains(id), let device {
             resolving.insert(id)
             device.composerInputs.ensure(id, model: model) { [weak self, weak model] resolved in
                 guard let self, let model else { return }
                 self.resolving.remove(id)
+                guard self.conversations[id] == model.id else { return }
                 if resolved != model.id, self.device?.composerInputs.isDirty(model.id) == true {
                     // Editing before loading completes remains the same visible work.
                     self.device?.composerInputs.bind(id, input: model)
@@ -128,6 +169,14 @@ struct SavedComposerWorkspace: Codable, Equatable {
             }
         }
         return model
+    }
+
+    private func isBoundElsewhere(_ input: UUID, than context: String) -> Bool {
+        conversations.contains {
+            $0.key != context && $0.value == input
+                && device?.composerInputs.isCreationTransfer(input, between: context, and: $0.key) != true
+        }
+            || device?.composerInputs.isBoundElsewhere(input, than: context) == true
     }
 
     func model(for owner: Owner, tab: ConversationTab) -> ComposerModel {
@@ -203,15 +252,19 @@ struct SavedComposerWorkspace: Codable, Equatable {
             if shared !== model { keep(shared.id) }
             shared = model
             sharedInitialized = true
-            activeContext = conversations.first { $0.value == model.id }?.key ?? activeContext
+            let id = tab.store.selectedConversationID ?? tab.store.loadedConversationID ?? "tab:\(tab.id)"
+            conversations[id] = model.id
+            device?.composerInputs.bind(id, input: model)
+            activeContext = id
         case .conversation(let id):
             if let previous = conversations[id], previous != model.id { keep(previous) }
             conversations[id] = model.id
-            // A borrowed input never overwrites the global new-conversation slot.
-            if !id.hasPrefix(ConversationStore.draftConversationPrefix) { device?.composerInputs.bind(id, input: model) }
+            if activeContext == id { shared = model }
+            if id != ConversationStore.draftConversationPrefix + "new-conversation" { device?.composerInputs.bind(id, input: model) }
         }
         retained.removeAll { $0 == model.id }
-        focus(tab)
+        targetTab = tab
+        targetContext = tab.store.selectedConversationID ?? tab.store.loadedConversationID ?? "tab:\(tab.id)"
         changes.send()
     }
 
@@ -228,22 +281,37 @@ struct SavedComposerWorkspace: Codable, Equatable {
             guard id != current.id, let model = models[id], model.hasUnfinishedInput else { return nil }
             let first = model.submission.split(whereSeparator: \.isNewline).first.map(String.init)
             let summary = first.map { String($0.prefix(36)) } ?? "\(model.attachments.count) 个附件"
-            return (model, (names[id] ?? "保留的输入") + " · " + summary)
+            return (model, (names[id] ?? "保留的输入") + "：" + summary)
         }
     }
 
-    func select(_ model: ComposerModel, replacing current: ComposerModel, owner: Owner, tab: ConversationTab) {
-        if current !== model { keep(current.id) }
+    func select(_ selected: ComposerModel, replacing current: ComposerModel, owner: Owner, tab: ConversationTab) {
+        if current !== selected { keep(current.id) }
+        let context: String? = if case .conversation(let id) = owner { id } else { activeContext }
+        let model: ComposerModel
+        if let context, isBoundElsewhere(selected.id, than: context) {
+            model = ComposerModel()
+            model.restoreSavedDraft(selected.savedDraft)
+            if let device {
+                model.registerNavigationUndo(current.savedDraft, choices: tab.store.composerNavigationChoices,
+                    context: context, client: device.composerInputs,
+                    currentChoices: { [weak store = tab.store] in store?.composerNavigationChoices })
+            }
+        } else { model = selected }
         register(model, name: tab.title + " 的输入")
         switch owner {
         case .shared:
             shared = model
             sharedInitialized = true
             if let context = activeContext { conversations[context] = model.id; device?.composerInputs.bind(context, input: model) }
-        case .conversation(let id): conversations[id] = model.id; device?.composerInputs.bind(id, input: model)
+        case .conversation(let id):
+            conversations[id] = model.id
+            if activeContext == id { shared = model }
+            device?.composerInputs.bind(id, input: model)
         }
         retained.removeAll { $0 == model.id }
-        focus(tab)
+        targetTab = tab
+        targetContext = tab.store.selectedConversationID ?? tab.store.loadedConversationID ?? "tab:\(tab.id)"
         changes.send()
     }
     func newDraft(replacing current: ComposerModel, owner: Owner, tab: ConversationTab) {
@@ -315,8 +383,21 @@ struct SavedComposerWorkspace: Codable, Equatable {
         register(shared, name: "共享输入")
         device?.composerInputs.poll(force: true)
     }
+    /// Legacy shared content has no reliable current context. Stage it in an
+    /// unbound input instead of writing through the initial tab's live model.
+    func restoreLegacy(_ saved: SavedComposerDraft?) {
+        guard let saved else { return }
+        let model = ComposerModel()
+        model.restoreSavedDraft(saved)
+        register(model, name: "恢复的输入")
+        shared = model; sharedInitialized = true
+        activeContext = nil; targetContext = nil; targetTab = nil
+    }
     func existing(_ inputID: String) -> ComposerModel? { UUID(uuidString: inputID).flatMap { models[$0] } }
-    func isNewInput(_ model: ComposerModel) -> Bool { shared === model && activeContext?.hasPrefix(ConversationStore.draftConversationPrefix) == true }
+    func owns(_ model: ComposerModel, for tab: ConversationTab) -> Bool {
+        let context = tab.store.selectedConversationID ?? tab.store.loadedConversationID ?? tab.store.unsentContextID
+        return conversations[context] == model.id
+    }
     func removeConversations(_ ids: Set<String>) {
         for id in ids { conversations[id] = nil }
     }

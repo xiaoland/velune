@@ -15,7 +15,7 @@ pub enum Observation {
 }
 
 /// Physical context identity: aliases of one runtime must not lock their owner out.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Target {
     pub execution: ExecutionTarget,
     pub os_home: Option<PathBuf>,
@@ -34,41 +34,66 @@ impl Target {
         reports_control(self.kind)
     }
     pub fn observe(&self) -> Observation {
+        self.observe_with_budget(&crate::probe::ProbeBudget::new(
+            std::time::Duration::from_secs(5),
+        ))
+    }
+    /// The caller retains the worker slot until this returns, even after cancellation.
+    /// Filesystem syscalls cannot be force-cancelled; subprocesses are stopped and reaped.
+    pub fn observe_with_budget(&self, budget: &crate::probe::ProbeBudget) -> Observation {
         if !self.reports_control() {
             return Observation::NotReported;
         }
-        self.try_observe().unwrap_or(Observation::Unknown)
+        if budget.finished() {
+            return Observation::Unknown;
+        }
+        let observation = self.try_observe(budget).unwrap_or(Observation::Unknown);
+        if budget.finished() {
+            Observation::Unknown
+        } else {
+            observation
+        }
     }
-    fn try_observe(&self) -> Option<Observation> {
-        let path =
-            match self.kind {
-                RuntimeKind::Codex166 => {
-                    // Native IDs are opaque, never caller-controlled filesystem paths.
-                    if self.native_id.is_empty()
-                        || !self
-                            .native_id
-                            .bytes()
-                            .all(|b| b.is_ascii_hexdigit() || b == b'-')
-                    {
-                        return None;
-                    }
-                    self.agent_dir
-                        .join("thread-writer-locks")
-                        .join(format!("{}.lock", self.native_id))
+    fn try_observe(&self, budget: &crate::probe::ProbeBudget) -> Option<Observation> {
+        let path = match self.kind {
+            RuntimeKind::Codex166 => {
+                // Native IDs are opaque, never caller-controlled filesystem paths.
+                if self.native_id.is_empty()
+                    || !self
+                        .native_id
+                        .bytes()
+                        .all(|b| b.is_ascii_hexdigit() || b == b'-')
+                {
+                    return None;
                 }
-                RuntimeKind::DeepSeek => {
-                    let mut command = crate::process::command(&self.node_binary);
-                    command.arg(self.resources.join("huihua_sessions.mjs"));
-                    let bytes = self.execution.output(command, Some(serde_json::to_vec(&json!({
-                    "operation":"locate", "provider":"deepseek", "home":self.agent_dir,
-                    "roots":[self.agent_dir.join("sessions")], "nativeId":self.native_id
-                })).ok()?), self.os_home.as_deref()).ok()?;
-                    let value: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
-                    let source = PathBuf::from(value["path"].as_str()?);
-                    source.parent()?.to_owned()
-                }
-                _ => return Some(Observation::NotReported),
-            };
+                self.agent_dir
+                    .join("thread-writer-locks")
+                    .join(format!("{}.lock", self.native_id))
+            }
+            RuntimeKind::DeepSeek => {
+                let mut command = crate::process::command(&self.node_binary);
+                command.arg(self.resources.join("huihua_sessions.mjs"));
+                let bytes = self
+                    .execution
+                    .probe_output(
+                        command,
+                        Some(
+                            serde_json::to_vec(&json!({
+                                "operation":"locate", "provider":"deepseek", "home":self.agent_dir,
+                                "roots":[self.agent_dir.join("sessions")], "nativeId":self.native_id
+                            }))
+                            .ok()?,
+                        ),
+                        self.os_home.as_deref(),
+                        budget,
+                    )
+                    .ok()?;
+                let value: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+                let source = PathBuf::from(value["path"].as_str()?);
+                source.parent()?.to_owned()
+            }
+            _ => return Some(Observation::NotReported),
+        };
         #[cfg(unix)]
         if self.execution.is_local() {
             let path = if self.kind == RuntimeKind::DeepSeek {
@@ -87,9 +112,9 @@ impl Target {
         command
             .arg("-c")
             .arg(include_str!("../resources/control_probe.py"));
-        let bytes = self.execution.output(command, Some(serde_json::to_vec(&json!({
+        let bytes = self.execution.probe_output(command, Some(serde_json::to_vec(&json!({
             "kind":if self.kind == RuntimeKind::DeepSeek {"deepseek"} else {"codex"}, "path":path
-        })).ok()?), self.os_home.as_deref()).ok()?;
+        })).ok()?), self.os_home.as_deref(), budget).ok()?;
         serde_json::from_slice(&bytes).ok()
     }
 }

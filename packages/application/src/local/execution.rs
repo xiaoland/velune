@@ -1,9 +1,12 @@
 //! On-demand execution preparation and process/gateway lifecycle.
 use super::*;
+use crate::conversation::ConversationSnapshot;
 
 pub(super) struct ExecutionConfiguration {
     pub(super) runtime: RuntimeInstance,
     pub(super) gateway: Option<GatewayConfig>,
+    /// Project preparation remains on the compatibility submission path.
+    pub(super) native_project: bool,
     pub(super) gateway_session: Option<velune_gateway::SessionIdentity>,
     pub(super) backends: velune_gateway::ExecutionBackends,
 }
@@ -17,6 +20,7 @@ impl CoreRuntime {
         self.session.execution_configuration = Some(ExecutionConfiguration {
             runtime: runtime.clone(),
             gateway: gateway.as_ref().map(|(gateway, _)| (*gateway).clone()),
+            native_project: false,
             gateway_session: gateway.map(|(_, session)| session),
             backends: self.execution_backends.clone(),
         });
@@ -224,7 +228,7 @@ impl CoreRuntime {
     pub(super) fn start_pi_for_session(
         &mut self,
         cwd: Option<&Path>,
-        session: Option<&Path>,
+        source: Option<&ConversationSnapshot>,
         model_record_key: Option<&str>,
         physical_model_id: Option<&str>,
     ) -> Result<(), RuntimeError> {
@@ -257,6 +261,17 @@ impl CoreRuntime {
             self.validate_runtime_cwd(&runtime, cwd)?;
         }
         let cwd = cwd.map(Path::to_owned);
+        let session = source
+            .map(|source| {
+                source
+                    .conversation
+                    .id
+                    .strip_prefix(&format!("{}:", runtime.id))
+                    .filter(|path| !path.is_empty())
+                    .map(Path::new)
+                    .ok_or_else(|| RuntimeError::invalid("conversation id"))
+            })
+            .transpose()?;
         let mut config = self.session.pi()?.config().clone();
         self.shutdown_pi()?;
         config.working_dir = cwd.clone();
@@ -273,28 +288,40 @@ impl CoreRuntime {
         // Establish readiness through RPC before exposing bootstrap events to
         // the projection. Pi can emit initialization records before its first
         // command response; those records must not settle a new turn.
-        client
+        let (_, readiness) = client
             .state()
             .map_err(|error| runtime_start_error("startup", error))?;
+        if !config.side
+            && let (Some(expected), Some(reported)) =
+                (session, readiness["nativeSession"]["sessionFile"].as_str())
+            && Path::new(reported) != expected
+        {
+            return Err(super::browsing::history_read_changed());
+        }
+        drop(readiness);
         let runtime_id = self
             .session
             .execution_runtime_id
             .as_deref()
             .unwrap_or_default();
-        let mut projection = PiProjection::new(ConversationSummary {
-            native_read_state: None,
-            can_rename: false,
-            can_delete: false,
-            id: session
-                .map(|path| format!("{runtime_id}:{}", path.display()))
-                .unwrap_or_else(|| "active".into()),
-            title: velune_conversation::ConversationTitle::Untitled,
-            updated_at_unix_ms: None,
-            created_at_unix_ms: None,
-            runtime_id: runtime_id.into(),
-            cwd: cwd.as_ref().map(|path| path.to_string_lossy().into_owned()),
-            parent_conversation_id: None,
-        });
+        let mut projection = if let Some(source) = source.filter(|_| !config.side) {
+            PiProjection::from_history(source)
+        } else {
+            PiProjection::new(ConversationSummary {
+                native_read_state: None,
+                can_rename: false,
+                can_delete: false,
+                id: session
+                    .map(|path| format!("{runtime_id}:{}", path.display()))
+                    .unwrap_or_else(|| "active".into()),
+                title: velune_conversation::ConversationTitle::Untitled,
+                updated_at_unix_ms: None,
+                created_at_unix_ms: None,
+                runtime_id: runtime_id.into(),
+                cwd: cwd.as_ref().map(|path| path.to_string_lossy().into_owned()),
+                parent_conversation_id: None,
+            })
+        };
         if let Some(snapshot) = projection.snapshot.as_mut() {
             snapshot.model_record_key = model_record_key.map(str::to_owned);
         }
@@ -322,13 +349,15 @@ impl CoreRuntime {
         })
     }
     fn shutdown_active_inner(&mut self) -> Result<(), RuntimeError> {
-        let cancellation_requested = self.session.cancel_requested;
-        if let ActiveState::Native(session) = &self.session.active_state
-            && let Some(pending) = session.pending_fork()
+        if matches!(self.session.active_state, ActiveState::Pending(_))
+            || self.session.native_controls.pending()
         {
-            self.session.pending_native_fork = Some(pending);
+            return Err(RuntimeError::Busy);
         }
+        let cancellation_requested = self.session.cancel_requested;
+        self.session.refresh_pending_native_fork()?;
         let mut state = std::mem::replace(&mut self.session.active_state, ActiveState::Empty);
+        self.session.native_controls = Default::default();
         self.session.compacting = false;
         let result = match state.live_mut() {
             Some(live) => live
@@ -410,6 +439,333 @@ mod gateway_execution_tests {
         })
         .snapshot
         .unwrap()
+    }
+
+    #[test]
+    fn managed_pi_terminal_settles_queue_after_cleanup() {
+        use crate::conversation::QueuePause;
+        use crate::local::execution_workers::cleanup_test_gate;
+        use std::time::Instant;
+
+        const PEER: &str = r#"#!/usr/bin/python3
+import json, pathlib, sys, threading
+root = pathlib.Path(__file__).resolve().parent
+if '--validate' in sys.argv:
+    sys.exit(0)
+if '--version' in sys.argv:
+    print('1.4.0')
+    sys.exit(0)
+mode = (root / 'mode').read_text()
+session_file = root / 'session.jsonl'
+history_file = root / 'messages.json'
+messages = json.loads(history_file.read_text()) if history_file.exists() else []
+release = threading.Event()
+output = threading.Lock()
+
+def emit(value):
+    with output:
+        print(json.dumps(value), flush=True)
+
+def message(value):
+    messages.append(value)
+    history_file.write_text(json.dumps(messages))
+    emit({'type':'message_start', 'message':value})
+    emit({'type':'message_end', 'message':value})
+
+def finish(number):
+    if number == 1:
+        while not (root / 'release').exists() and not release.wait(.01):
+            pass
+    reason = {'failed':'error', 'stopped':'aborted'}.get(mode, 'stop') if number == 1 else 'stop'
+    message({'id':f'reply-{number}', 'role':'assistant', 'stopReason':reason,
+             'errorMessage':'synthetic model failure' if reason == 'error' else None,
+             'content':[{'type':'text', 'text':f'reply {number}'}]})
+    emit({'type':'agent_settled', 'aborted':reason == 'aborted'})
+
+for line in sys.stdin:
+    request = json.loads(line)
+    command, identity = request['type'], request['id']
+    data = {}
+    if command == 'get_state':
+        data = {'nativeSession': {'sessionFile':str(session_file)}}
+    elif command == 'get_commands':
+        data = {'commands':[]}
+    elif command == 'get_messages':
+        data = {'messages':messages}
+    elif command == 'prompt':
+        text = request['message']
+        if text.startswith('/velune-projection-sync '):
+            emit({'type':'extension_ui_request', 'method':'setStatus',
+                  'statusKey':'velune.session-metadata',
+                  'statusText':json.dumps({'requestId':identity, 'snapshotVersion':1,
+                      'messages':messages, 'messageIds':[m['id'] for m in messages],
+                      'identityConfirmations':[], 'sessionFile':str(session_file),
+                      'name':'Synthetic Pi queue', 'cwd':str(root)})})
+            data = {'disposition':'handled'}
+        elif text.startswith('/velune-background-work '):
+            frame = {'version':1, 'kind':'snapshot', 'parentSessionFile':str(session_file),
+                     'tasks':[]}
+            emit({'type':'extension_ui_request', 'method':'setStatus',
+                  'statusKey':'velune.background-work-v1', 'statusText':json.dumps(frame)})
+            data = {'disposition':'handled'}
+        else:
+            wire = root / 'wire'
+            with wire.open('a') as out:
+                out.write(text + '\n')
+            number = len(wire.read_text().splitlines())
+            emit({'type':'agent_start'})
+            message({'id':f'user-{number}', 'role':'user', 'content':text})
+            threading.Thread(target=finish, args=(number,), daemon=True).start()
+            data = {'disposition':'started'}
+    elif command == 'abort':
+        release.set()
+    emit({'type':'response', 'id':identity, 'command':command, 'success':True, 'data':data})
+"#;
+
+        fn until(core: &mut CoreRuntime, stage: &str, condition: impl Fn(&CoreRuntime) -> bool) {
+            let deadline = Instant::now() + Duration::from_secs(4);
+            while !condition(core) {
+                assert!(
+                    Instant::now() < deadline,
+                    "synthetic Pi did not reach {stage}"
+                );
+                core.drain_runtime().unwrap();
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        }
+
+        for (mode, pause) in [
+            ("completed", None),
+            ("failed", Some(QueuePause::TurnFailed)),
+            ("stopped", Some(QueuePause::TurnStopped)),
+        ] {
+            let root = std::env::temp_dir().join(format!(
+                "velune-managed-pi-queue-{}",
+                crate::new_record_key()
+            ));
+            fs::create_dir(&root).unwrap();
+            let root = root.canonicalize().unwrap();
+            fs::write(root.join("mode"), mode).unwrap();
+            let cli = root.join("pi");
+            fs::write(&cli, PEER).unwrap();
+            fs::set_permissions(&cli, fs::Permissions::from_mode(0o700)).unwrap();
+            let node = root.join("node");
+            fs::write(
+                &node,
+                r#"#!/usr/bin/python3
+import json, os, sys
+if sys.argv[1] == '--input-type=module':
+    print(json.dumps({'binary':sys.argv[-1]}))
+else:
+    os.execv(sys.executable, [sys.executable, *sys.argv[1:]])
+"#,
+            )
+            .unwrap();
+            fs::set_permissions(&node, fs::Permissions::from_mode(0o700)).unwrap();
+            fs::write(root.join("pi_rpc.mjs"), PEER).unwrap();
+            let mut app = crate::Application::open(crate::Options {
+                home_directory: root.clone(),
+                resources_directory: root.clone(),
+            })
+            .unwrap();
+            let core = &mut app.runtime;
+            core.upsert_runtime_with_execution(
+                RuntimeInstance {
+                    enabled: true,
+                    id: "pi".into(),
+                    name: "Synthetic Pi".into(),
+                    type_id: RuntimeKind::Pi,
+                    gateway_id: "default".into(),
+                    settings: BTreeMap::from([
+                        ("binary".into(), cli.display().to_string()),
+                        ("nodeBinary".into(), node.display().to_string()),
+                        ("agentDir".into(), root.join("agent").display().to_string()),
+                    ]),
+                },
+                crate::RuntimeExecution {
+                    home: crate::RuntimeHome::Existing {
+                        path: root.display().to_string(),
+                    },
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            save(core, provider("synthetic", "http://127.0.0.1:9/v1"), "fake");
+            let selection = Some(crate::ModelSelection::Managed {
+                model_record_key: "synthetic".into(),
+            });
+            let id = format!("pi:{}", root.join("session.jsonl").display());
+            let mut summary = snapshot(&id).conversation;
+            summary.cwd = Some(root.display().to_string());
+            let mut existing = PiProjection::new(summary);
+            let prior = [
+                json!({"id":"older-user", "role":"user", "content":"earlier question"}),
+                json!({"id":"older-reply", "role":"assistant", "content":"earlier reply",
+                       "stopReason":"stop"}),
+            ];
+            existing.begin_turn();
+            existing.apply_event(&json!({"type":"agent_start"}));
+            for message in &prior {
+                existing.apply_event(&json!({"type":"message_start", "message":message}));
+                existing.apply_event(&json!({"type":"message_end", "message":message}));
+            }
+            existing.apply_event(&json!({"type":"agent_settled"}));
+            assert!(existing.turn_ended());
+            fs::write(
+                root.join("messages.json"),
+                serde_json::to_vec(&prior).unwrap(),
+            )
+            .unwrap();
+            core.session.set_history(existing.snapshot.unwrap());
+            let turn = |text: &str| crate::ComposedTurn {
+                text: text.into(),
+                effort: None,
+                permission_mode: None,
+                attachments: Vec::new(),
+            };
+            core.send_turn(crate::local::TurnRequest {
+                submission_id: None,
+                source_runtime_id: "pi".into(),
+                conversation_id: id.clone(),
+                runtime_id: "pi".into(),
+                selection: selection.clone(),
+                turn: turn("first"),
+            })
+            .unwrap();
+            until(core, "running first turn", |core| {
+                core.turn_running()
+                    && core.session.projected().is_some_and(|view| {
+                        view.messages.iter().any(|message| message.id == "user-1")
+                    })
+            });
+            core.send_queue(
+                &id,
+                crate::SendQueueOperation::Add {
+                    source_runtime_id: "pi".into(),
+                    target_runtime_id: "pi".into(),
+                    selection,
+                    turn: turn("queued"),
+                },
+            )
+            .unwrap();
+            let (entered, release) = cleanup_test_gate::register(&cli);
+            if mode == "stopped" {
+                core.cancel("pi").unwrap();
+            } else {
+                fs::write(root.join("release"), "").unwrap();
+            }
+            until(core, "cleanup worker admission", |core| {
+                matches!(core.session.active_state, ActiveState::Pending(_))
+            });
+            entered.recv_timeout(Duration::from_secs(2)).unwrap();
+            assert_eq!(fs::read_to_string(root.join("wire")).unwrap(), "first\n");
+            assert_eq!(core.current_snapshot().unwrap().follow_up.queue.len(), 1);
+            release.send(()).unwrap();
+
+            until(core, "idle after cleanup", |core| {
+                matches!(core.session.active_state, ActiveState::History(_))
+                    && core.session.gateway_runner.is_none()
+            });
+            let shown = core.current_snapshot().unwrap();
+            assert!(
+                shown
+                    .messages
+                    .iter()
+                    .any(|message| message.id == "older-user")
+            );
+            assert_eq!(shown.follow_up.paused, pause, "{mode}");
+            assert_eq!(
+                shown.follow_up.queue.len(),
+                usize::from(pause.is_some()),
+                "{mode}"
+            );
+            let expected = if pause.is_some() {
+                "first\n"
+            } else {
+                "first\nqueued\n"
+            };
+            assert_eq!(
+                fs::read_to_string(root.join("wire")).unwrap(),
+                expected,
+                "{mode}"
+            );
+            app.close().unwrap();
+            fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[test]
+    fn pi_resume_publishes_existing_transcript_before_another_native_sync() {
+        let root =
+            std::env::temp_dir().join(format!("velune-pi-resume-{}", crate::new_record_key()));
+        fs::create_dir(&root).unwrap();
+        let helper = root.join("rpc.py");
+        fs::write(
+            &helper,
+            r#"
+import json, pathlib, sys
+def emit(record): print(json.dumps(record), flush=True)
+session = sys.argv[sys.argv.index('--session') + 1]
+for line in sys.stdin:
+    request = json.loads(line)
+    command, request_id = request['type'], request['id']
+    data = {}
+    if command == 'prompt':
+        assert request['message'].startswith('/velune-projection-sync ')
+        old = {'id':'pi:session:old:0','role':'user','content':'synthetic earlier prompt'}
+        frame = {'requestId':request_id, 'snapshotVersion':1, 'sessionFile':session,
+                 'messages':[old], 'messageIds':[old['id']], 'identityConfirmations':[]}
+        emit({'type':'extension_ui_request','method':'setStatus',
+              'statusKey':'velune.session-metadata','statusText':json.dumps(frame)})
+        data = {'disposition':'handled'}
+    emit({'type':'response','id':request_id,'command':command,'success':True,'data':data})
+"#,
+        )
+        .unwrap();
+        let mut app = crate::Application::open(crate::Options {
+            home_directory: root.clone(),
+            resources_directory: root.clone(),
+        })
+        .unwrap();
+        let core = &mut app.runtime;
+        core.runtime_instances.push(RuntimeInstance {
+            enabled: true,
+            id: "pi".into(),
+            name: "Synthetic Pi".into(),
+            type_id: RuntimeKind::Pi,
+            gateway_id: "default".into(),
+            settings: Default::default(),
+        });
+        let config: PiConfig = serde_json::from_value(json!({
+            "execution":{"kind":"local"}, "os_home":root,
+            "binary":"/usr/bin/python3", "node_binary":"/usr/bin/python3", "rpc_entry":helper,
+        }))
+        .unwrap();
+        core.session.execution_runtime_id = Some("pi".into());
+        core.session.active_state = ActiveState::Pi(Box::new(pi::PiSession::new(config)));
+        let id = format!("pi:{}", root.join("existing.jsonl").display());
+        let mut source = PiProjection::new(snapshot(&id).conversation);
+        source.replace_history(&json!({"messages":[
+            {"id":"pi:session:old:0","role":"user","content":"synthetic earlier prompt"}
+        ]}));
+        let source = source.snapshot.unwrap();
+        core.start_pi_for_session(None, Some(&source), None, None)
+            .unwrap();
+        let live = core.native_snapshot().expect("started Pi view");
+        assert_eq!(live.conversation.id, source.conversation.id);
+        assert_eq!(live.messages, source.messages);
+        assert!(
+            !core
+                .session
+                .pi()
+                .unwrap()
+                .projection()
+                .unwrap()
+                .history_synchronized()
+        );
+        core.shutdown_active().unwrap();
+        drop(app);
+        fs::remove_dir_all(root).unwrap();
     }
 
     async fn send(endpoint: &str, token: &str, model: &str) -> reqwest::Response {
@@ -522,7 +878,7 @@ for line in sys.stdin:
         }
         save(core, provider("a", &format!("{origin}/old/v1")), "old-key");
         save(core, provider("b", &format!("{origin}/b/v1")), "b-key");
-        core.session.active_state = ActiveState::History(Box::new(snapshot("pi:first")));
+        core.session.active_state = ActiveState::History(Box::new(snapshot("pi:first").into()));
         core.prepare_runtime("pi", "a").unwrap();
         assert_eq!(core.backend_session_identity().unwrap().1.id, "pi:first");
         let old_gateway = core

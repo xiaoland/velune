@@ -30,6 +30,10 @@ struct DevicesView: View {
                     .contextMenu { Button("移除", role: .destructive) { forgetting = contact } }
                 }
                 Section {
+                    NavigationLink("连接设置") {
+                        RemoteNetworkSettingsView(endpoint: { try RemoteService.shared.resources.endpoint() })
+                            .navigationTitle("连接设置")
+                    }
                     NavigationLink("遥测") {
                         TelemetrySettingsView(coordinator: { try RemoteService.shared.resources.telemetry() }, remote: { try RemoteService.shared.resources.endpoint() })
                             .navigationTitle("遥测")
@@ -89,6 +93,8 @@ private struct AddDeviceView: View {
                                 else { failure = "无法使用相机，请在系统设置允许相机访问，或粘贴邀请。" }
                             }
                         }
+                        Text("如果对方使用需要认证的中继，请先在本机“连接设置”添加对应访问令牌；邀请不包含中继令牌。")
+                            .font(.caption).foregroundStyle(.secondary)
                     }
                     if let decoded {
                         Section("连接设备") {

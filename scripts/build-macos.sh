@@ -40,6 +40,7 @@ app_base=$(dirname "$app")
   echo 'xURL is missing; run bash scripts/install-xurl.sh first.' >&2
   exit 1
 }
+hapi_tunwg=$(bash scripts/install-hapi-tunwg.sh)
 cargo build --locked --target-dir target/host-rust --profile "$profile" -p velune-bindings --lib
 bindings="$PWD/target/bindings/swift"
 mkdir -p "$bindings"
@@ -125,7 +126,7 @@ python3 scripts/build-support.py copy "$swift_binary_directory/VeluneMac" "$app/
 # JavaScript is a sealed resource, not a nested macOS executable.
 resources="$app/Contents/Resources"
 python3 scripts/build-support.py copy LICENSE "$resources/ThirdParty/LICENSE"
-for script in pi_sdk pi_sessions pi_rpc pi_virtual_model pi_background_work pi_auth pi_provider_import huihua_sessions; do
+for script in pi_sdk pi_sessions pi_rpc pi_virtual_model pi_transcript pi_background_work pi_subagents pi_auth pi_provider_import huihua_sessions; do
   python3 scripts/build-support.py copy "packages/agent-runtime/resources/$script.mjs" "$resources/$script.mjs"
 done
 python3 scripts/build-support.py sync target/runtime-support/node_modules "$resources/node_modules" --include '*' --prune
@@ -134,6 +135,12 @@ python3 scripts/build-support.py copy target/runtime-support/xurl/LICENSE "$reso
 python3 scripts/build-support.py copy target/runtime-support/xurl/REVISION "$resources/xurl/REVISION"
 python3 scripts/build-support.py copy target/runtime-support/xurl/LICENSE "$resources/ThirdParty/xurl/LICENSE"
 python3 scripts/build-support.py copy target/runtime-support/xurl/REVISION "$resources/ThirdParty/xurl/REVISION"
+hapi_relay="$resources/HapiRelay"
+python3 scripts/build-support.py copy "$hapi_tunwg" "$hapi_relay/tunwg"
+mkdir -p "$hapi_relay"
+xcrun clang -arch "$(uname -m)" -mmacosx-version-min=15.0 -Os -Wall -Wextra -Werror \
+  scripts/hapi-relay-supervisor.c -o "$hapi_relay/supervisor"
+python3 scripts/build-support.py sync app/mac/Licenses/Tunwg "$resources/ThirdParty/Tunwg" --include '*.txt' --include '*.md' --include 'UPSTREAM.json' --prune
 python3 - <<'PY' | python3 scripts/build-support.py write "$resources/ThirdParty/THIRD_PARTY_NOTICES.md"
 from pathlib import Path
 value = Path('THIRD_PARTY_NOTICES.md').read_text()
@@ -185,7 +192,7 @@ plist['VeluneDisplayVersion']=version
 plist['CFBundleGetInfoString']=version
 sys.stdout.buffer.write(plistlib.dumps(plist))
 PY
-python3 - "$profile" "$purpose" "$app/Contents/Info.plist" "$product_version" <<'PY' | python3 scripts/build-support.py write "$resources/build-manifest.json"
+python3 - "$profile" "$purpose" "$app/Contents/Info.plist" "$product_version" "$hapi_tunwg" <<'PY' | python3 scripts/build-support.py write "$resources/build-manifest.json"
 import hashlib,json,platform,plistlib,re,subprocess,sys
 from pathlib import Path
 def cmd(*args): return subprocess.check_output(args,text=True).strip()
@@ -197,6 +204,8 @@ schema=int(re.search(r'const CURRENT_SCHEMA_VERSION: u32 = (\d+);', Path('packag
 manifest={'source_commit':provenance['source_commit'],'dirty':provenance['dirty'],'lock_sha256':hashlib.sha256(Path('Cargo.lock').read_bytes()).hexdigest(),'bindings_version':'0.1.0','uniffi_version':'0.32.2','ui_version':version,'simulation':False,'control_transport':'uniffi','language_contract':'typed','config_schema_version':schema,'supported_modes':['conversation_projection','llm_gateway','runtime_instances','synthetic_preview'],'native_verified':False,'rust':cmd('rustc','--version'),'swift':cmd('xcrun','swiftc','--version'),'xcode':cmd('xcodebuild','-version'),'architecture':platform.machine(),'macos':platform.mac_ver()[0],'build_command':f'bash scripts/build-macos.sh --profile {profile} --purpose {purpose}','profile':profile,'purpose':purpose,'execution_context':context}
 manifest['go']=cmd('go','version')
 manifest['xurl_revision']=Path('target/runtime-support/xurl/REVISION').read_text().strip()
+manifest['hapi_tunwg_revision']=Path(sys.argv[5]).parent.name
+manifest['hapi_tunwg_sha256']=hashlib.sha256(Path(sys.argv[5]).read_bytes()).hexdigest()
 manifest['relaykit_go_mod_sha256']=hashlib.sha256(Path('packages/ai-provider/relaykit-bridge/go.mod').read_bytes()).hexdigest()
 manifest['relaykit_go_sum_sha256']=hashlib.sha256(Path('packages/ai-provider/relaykit-bridge/go.sum').read_bytes()).hexdigest()
 print(json.dumps(manifest,ensure_ascii=False,indent=2))
@@ -206,6 +215,8 @@ PY
 # its signature stays the same app to macOS privacy permissions across
 # builds. Unset, the build is signed ad hoc, a new app to them each build.
 codesign --force --sign "$identity" "$app/Contents/Resources/xurl/bin/xurl"
+codesign --force --sign "$identity" "$hapi_relay/tunwg"
+codesign --force --sign "$identity" "$hapi_relay/supervisor"
 codesign --force --sign "$identity" "$app"
 codesign --verify --deep --strict "$app"
 shasum -a 256 "$app/Contents/MacOS/$executable" "$app/Contents/Frameworks/libvelune_bindings.dylib" | python3 scripts/build-support.py write "$app_base/binary-sha256.txt"

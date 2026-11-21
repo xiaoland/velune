@@ -3,10 +3,11 @@ import SwiftUI
 import VeluneBindings
 
 /// The parts of a conversation window that can leave their place: the list,
-/// the outline, the composer and the linked agents. Everything else stays where it is.
+/// the outline, the composer, linked agents and background tasks.
 enum ToolWindowKind: String, Codable, CodingKeyRepresentable, CaseIterable {
     /// The linked agents keep the name saved layouts know them by, from when they listed sub-agents alone.
     case list, outline, composer, agents = "subAgents"
+    case backgroundTasks
 
     var title: String {
         switch self {
@@ -14,6 +15,7 @@ enum ToolWindowKind: String, Codable, CodingKeyRepresentable, CaseIterable {
         case .outline: "会话大纲"
         case .composer: "输入区"
         case .agents: "关联 Agent"
+        case .backgroundTasks: "后台任务"
         }
     }
 }
@@ -84,7 +86,7 @@ enum ToolChoice: Hashable {
         case .list: docked + detached
         case .outline: [(.outline(.popover), "弹出"), (.outline(.inPlace), "就地折叠")] + docked + detached
         case .composer: [(.place(.builtIn), "在每个面板中")] + docked + detached
-        case .agents: [(.place(.builtIn), "弹出")] + docked + detached
+        case .agents, .backgroundTasks: [(.place(.builtIn), "弹出")] + docked + detached
         }
     }
 }
@@ -215,6 +217,7 @@ struct ToolWindowLayout: Codable, Equatable {
 /// passing state and is left out.
 @MainActor final class RememberedToolLayout {
     private struct File: Codable {
+        enum CodingKeys: String, CodingKey { case schema, tools }
         static let schema = 1
         var schema = File.schema
         var tools: ToolWindowLayout
@@ -234,7 +237,8 @@ struct ToolWindowLayout: Codable, Equatable {
             let file = data.flatMap { try? JSONDecoder().decode(File.self, from: $0) }
             let strict = data.flatMap { data -> Bool? in
                 guard let file else { return nil }
-                guard let source = try? JSONSerialization.jsonObject(with: data),
+                guard let source = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                      source.keys.allSatisfy({ File.CodingKeys(rawValue: $0) != nil }),
                       let encodedData = try? JSONEncoder().encode(file),
                       let encoded = try? JSONSerialization.jsonObject(with: encodedData) else { return nil }
                 return SavedWindowLayout.hasOnlyEncodedKeys(source, encoded: encoded)
@@ -325,7 +329,7 @@ struct ToolFrame: Codable, Equatable {
         // Inside, it leaves the window's title bar uncovered.
         case .list: window.minX - width >= screen.minX ? NSRect(x: window.minX - width, y: window.minY, width: width, height: window.height)
             : NSRect(x: window.minX, y: window.minY, width: width, height: window.height - 52)
-        case .outline, .agents: window.maxX + width <= screen.maxX ? NSRect(x: window.maxX, y: window.minY, width: width, height: window.height)
+        case .outline, .agents, .backgroundTasks: window.maxX + width <= screen.maxX ? NSRect(x: window.maxX, y: window.minY, width: width, height: window.height)
             : NSRect(x: window.maxX - width, y: window.minY, width: width, height: window.height - 52)
         case .composer: NSRect(x: window.midX - 320, y: window.minY + 24, width: 640, height: 120)
         }
@@ -442,6 +446,15 @@ final class ToolWindow: NSWindow, DetachedTool {
     }
 
     func isHost(_ window: NSWindow) -> Bool { hosts.values.contains { $0 === window } }
+
+    /// The independent composer may remain visible on its own Space after its
+    /// conversation window leaves the active Space. Count only the host that
+    /// actually presents this window's focused store.
+    func hasVisibleComposerWindow(for store: ConversationStore) -> Bool {
+        guard model.tools.isOpen(.composer), model.focused.store === store,
+              let host = hosts[.composer] as? ToolWindow else { return false }
+        return host.isVisible && host.isOnActiveSpace && !host.isMiniaturized
+    }
 
     /// A shown tool window comes forward and takes the keyboard.
     func bringForward(_ kind: ToolWindowKind) {
@@ -762,6 +775,8 @@ extension ConversationWindowModel {
     }
 
     func choose(_ choice: ToolChoice, for kind: ToolWindowKind) {
+        if kind == .agents { agentsPopover = false }
+        if kind == .backgroundTasks { backgroundTasksPopover = false }
         switch choice {
         case .place(let place): tools.move(kind, to: place)
         case .outline(let presentation):
@@ -774,7 +789,11 @@ extension ConversationWindowModel {
     /// own place pop over from a toolbar button offered only while the
     /// focused conversation has some.
     func canToggle(_ kind: ToolWindowKind) -> Bool {
-        kind != .agents || tools[.agents].place != .builtIn || agentsPopover || focused.store.hasLinkedAgents
+        switch kind {
+        case .agents: tools[kind].place != .builtIn || agentsPopover || focused.store.hasLinkedAgents
+        case .backgroundTasks: tools[kind].place != .builtIn || backgroundTasksPopover || focused.store.canShowBackgroundTasks
+        default: true
+        }
     }
 
     /// Show a tool, or hide it when it shows. The outline in its own place
@@ -785,8 +804,15 @@ extension ConversationWindowModel {
         if kind == .agents, tools[.agents].place == .builtIn {
             if agentsPopover { agentsPopover = false }
             else if !focused.store.hasLinkedAgents { return }
-            else if hasToolbarItem("sub-agents") { agentsPopover = true }
+            else if hasToolbarItem("sub-agents", fallback: .subAgents) { agentsPopover = true }
             else { tools.move(.agents, to: .floating); detached.bringForward(.agents) }
+            return
+        }
+        if kind == .backgroundTasks, tools[kind].place == .builtIn {
+            if backgroundTasksPopover { backgroundTasksPopover = false }
+            else if !focused.store.canShowBackgroundTasks { return }
+            else if hasToolbarItem("background-tasks", fallback: .backgroundTasks) { backgroundTasksPopover = true }
+            else { tools.move(kind, to: .floating); detached.bringForward(kind) }
             return
         }
         if kind == .outline, tools[.outline].place == .builtIn {
@@ -801,9 +827,9 @@ extension ConversationWindowModel {
 
     /// The window's toolbar shows the item: as the user arranged it where
     /// the toolbar is customizable (macOS 26), else whenever it is visible.
-    private func hasToolbarItem(_ id: String) -> Bool {
+    private func hasToolbarItem(_ id: String, fallback: ToolbarButton) -> Bool {
         guard let toolbar = window?.toolbar, toolbar.isVisible else { return false }
-        if !toolbar.allowsUserCustomization { return ToolbarSettings.shared.isShown(.subAgents) }
+        if !toolbar.allowsUserCustomization { return ToolbarSettings.shared.isShown(fallback) }
         return toolbar.items.contains { $0.itemIdentifier.rawValue == id }
     }
 

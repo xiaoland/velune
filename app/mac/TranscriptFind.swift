@@ -138,13 +138,16 @@ struct TranscriptFindBar: View {
 /// the text cursor of the messages beneath it until clicked.
 private struct ArrowCursorArea: NSViewRepresentable {
     final class CursorView: NSView {
+        private var cursorTrackingArea: NSTrackingArea?
         override func resetCursorRects() { addCursorRect(bounds, cursor: .arrow) }
         override func hitTest(_ point: NSPoint) -> NSView? { nil }
         // The messages' text views take the cursor with tracking areas of their own, not only cursor rects.
         override func updateTrackingAreas() {
             super.updateTrackingAreas()
-            for area in trackingAreas { removeTrackingArea(area) }
-            addTrackingArea(NSTrackingArea(rect: .zero, options: [.cursorUpdate, .activeAlways, .inVisibleRect], owner: self))
+            if let cursorTrackingArea { removeTrackingArea(cursorTrackingArea) }
+            let area = NSTrackingArea(rect: .zero, options: [.cursorUpdate, .activeAlways, .inVisibleRect], owner: self)
+            cursorTrackingArea = area
+            addTrackingArea(area)
         }
         override func cursorUpdate(with event: NSEvent) { NSCursor.arrow.set() }
     }

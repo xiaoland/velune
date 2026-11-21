@@ -58,15 +58,16 @@ actor RemoteService {
     }
 
     func application<T>(_ peer: String, viewID: String, carrier: TraceCarrier?, _ body: (VeluneApplication) throws -> T) throws -> T {
+        try body(applicationHandle(peer, viewID: viewID).withTraceContext(carrier: carrier))
+    }
+
+    func applicationHandle(_ peer: String, viewID: String) throws -> VeluneApplication {
         guard let endpoint else { throw MobileError.unavailable }
         let key = ViewKey(peer: peer, view: viewID)
-        let application: VeluneApplication
-        if let cached = applications[key] { application = cached }
-        else {
-            application = try endpoint.connect(peerId: peer, viewId: viewID)
-            applications[key] = application
-        }
-        return try body(application.withTraceContext(carrier: carrier))
+        if let cached = applications[key] { return cached }
+        let application = try endpoint.connect(peerId: peer, viewId: viewID)
+        applications[key] = application
+        return application
     }
 
     func activity(viewID: String, peer: String?, foreground: Bool) throws {
@@ -133,6 +134,22 @@ final class RemoteClient: @unchecked Sendable {
         let telemetry = try RemoteService.shared.resources.telemetry()
         return try await telemetry.operation(operation) { carrier in
             try await RemoteService.shared.application(peer, viewID: viewID, carrier: carrier, body)
+        }
+    }
+    /// Browse outside the service actor so the native wait leaves other
+    /// windows free to send approvals and stop running conversations.
+    func readConversation(_ peer: String, runtimeID: String, conversationID: String) async throws -> SnapshotResult {
+        let telemetry = try RemoteService.shared.resources.telemetry()
+        return try await telemetry.operation(.conversationRead) { carrier in
+            let application = try await RemoteService.shared.applicationHandle(peer, viewID: viewID)
+            let traced = try application.withTraceContext(carrier: carrier)
+            return try await withCheckedThrowingContinuation { continuation in
+                DispatchQueue.global(qos: .userInitiated).async {
+                    continuation.resume(with: Result {
+                        try traced.readConversation(runtimeId: runtimeID, conversationId: conversationID)
+                    })
+                }
+            }
         }
     }
     func activity(peer: String?, foreground: Bool) async throws { try await RemoteService.shared.activity(viewID: viewID, peer: peer, foreground: foreground) }

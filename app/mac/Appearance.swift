@@ -1,4 +1,5 @@
 import AppKit
+import CoreFoundation
 import SwiftUI
 
 enum AppearanceSize: String, Codable, CaseIterable, Sendable {
@@ -80,7 +81,7 @@ extension Notification.Name {
         guard var object = try JSONSerialization.jsonObject(with: original) as? [String: Any] else {
             throw NSError(domain: "VelunePersistence", code: 2, userInfo: [NSLocalizedDescriptionKey: "mac-appearance.json 结构未知"])
         }
-        if let ratio = object["composerWidthRatio"] as? Double {
+        if let ratio = widthNumber(object["composerWidthRatio"]) {
             let current: Set<String> = ["ui", "messages", "code", "density", "composerWidthRatio"]
             guard Set(object.keys).isSubset(of: current), ratio.isFinite, (0.5...1.0).contains(ratio) else {
                 throw NSError(domain: "VelunePersistence", code: 5, userInfo: [NSLocalizedDescriptionKey: "mac-appearance.json 含未知字段或宽度无效"])
@@ -88,7 +89,7 @@ extension Notification.Name {
             return
         }
         let allowed: Set<String> = ["ui", "messages", "code", "density", "composerWidth"]
-        guard Set(object.keys).isSubset(of: allowed), let width = object.removeValue(forKey: "composerWidth") as? Double, width.isFinite else {
+        guard Set(object.keys).isSubset(of: allowed), let width = widthNumber(object.removeValue(forKey: "composerWidth")), width.isFinite else {
             throw NSError(domain: "VelunePersistence", code: 3, userInfo: [NSLocalizedDescriptionKey: "mac-appearance.json 不是已知 pre-beta 外观格式"])
         }
         object["composerWidthRatio"] = min(1, max(0.5, width / 1280))
@@ -104,6 +105,10 @@ extension Notification.Name {
             try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: backup.path)
         }
         try converted.write(to: target, options: .atomic)
+    }
+    private static func widthNumber(_ value: Any?) -> Double? {
+        guard let number = value as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID() else { return nil }
+        return number.doubleValue
     }
     private func persist(_ target: URL) {
         let result = Result {

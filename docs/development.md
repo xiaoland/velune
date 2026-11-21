@@ -1,6 +1,6 @@
 # 开发与复验
 
-本页按操作导航；构建命令从仓库根目录执行。产品与跨单元契约见[知识导航](index.md)，各端内部设计见平台 README。这里的操作说明不代表已执行或验收，具体版本与结果归对应 Task Packet。
+本页面向开发者，按构建、运行与排障操作导航，命令从仓库根目录执行。安装和普通使用见[用户指南](usage.md)，代码 Agent 的任务操作约束见 [AGENTS.md](../AGENTS.md)。产品与跨单元契约见[知识导航](index.md)，各端内部设计见平台 README。这里的操作说明不代表已执行或验收，具体版本与结果归对应 Task Packet。
 
 ## 隔离验证与敏感数据
 
@@ -56,9 +56,17 @@
 
 ## 本地诊断
 
-Mac 使用 `OSLog.Logger`，subsystem 为 `local.velune`，系统 Console 可按它筛选。Rust 的 `tracing` subscriber 由客户端遥测 owner 装配，JSON Lines 日志位于 `VELUNE_HOME/logs/velune.<日期>.jsonl`，按 UTC 日期轮转并保留最近 7 个文件；只限制文件数量，没有总字节上限。日志目录在 Unix 上为 0700 权限。领域包只发事件，不创建 subscriber；跨线程显式传播 dispatcher 和 span。
+Mac 使用 `OSLog.Logger`，subsystem 为 `local.velune`，系统 Console 可按它筛选。Rust 的 `tracing` subscriber 由客户端遥测 owner 装配，JSON Lines 日志位于 `VELUNE_HOME/logs/velune.*.jsonl`。新分片按递增序号排序，按 UTC 日期或单文件 8 MiB 轮转，最多保留 7 个文件、56 MiB 日志数据；保留清理只删除最旧前缀。旧日期命名文件保留原始内容，随正常保留策略淘汰。日志目录在 Unix 上为 0700 权限。领域包只发事件，不创建 subscriber；跨线程显式传播 dispatcher 和 span。
+
+普通 tracing 只将完整记录交给有界磁盘 worker，不在调用线程写文件。每个 writer 的 formatter、队列和在途记录共用 512 条／2 MiB 保留 payload capacity 预算，单记录上限 256 KiB；这不代表瞬时分配或 RSS 有严格上界。问题新增、恢复和清理等待 write＋flush 回执，不保证 fsync。2 秒未确认的回执是不确定结果，不能自动重放。`telemetry/status.json` 的 `localLog` 提供排队、拒绝／未确认记录、写失败及关闭状态；快照仍须按其 run ID 和新鲜度判断。
+
+同目录的协作 writer 在稳定目录锁内选择最新分片、追加和轮转，读取问题历史也在该锁内取得一致边界。慢盘或较长回放会阻塞追加，可能产生回执超时或明确的队列丢弃；不创建替代 worker 绕过上限。该协议不能逆推出旧日志中已有的跨文件交错，也不协调仍运行的旧版 writer。切换版本时应通过既有实例生命周期正常结束旧 writer，不通过删除日志来伪装修复。
 
 失败信息带诊断编号；用它查找日志中的 `operation_id`，可定位操作、错误代码、阶段、耗时与底层原因。Swift 的本地操作编号另行命名，不是 Rust trace ID。常规 snapshot 和认证轮询不产生成功日志。诊断保存实际错误链、helper stderr 与失败上下文，默认不采集请求、配置或会话正文；显式启用的 OTLP 只导出批准的操作元数据。
+
+诊断界面卡顿时，先按时间对齐 `application_command` 的 `owner_queue`（等待应用线程）与 `owner_execute`（该命令占用应用线程）。冷历史命令可能在投递读取任务后就归还线程，正文读取另看 `runtime_history_read`。`application_advance` 记录轮询和维护占用的时间。`conversation_list` 将全量列表拆成刷新来源的 `refresh_ms` 和生成返回页的 `build_page_ms`，后者包含可见条目按需补读。执行、维护和列表分段在耗时达到 100 毫秒时写入本地日志。
+
+历史读取及关联前缀检查同时记录逻辑会话和原生来源身份、运行时与已知段索引。标准 Claude／Codex UUID、Pi JSONL 文件名中的 UUID 可直接检索；其它标识只记录 SHA-256，定位字段不复制原生绝对路径。前缀失败另带 `prefix_kind`、`failure_kind`、预期／实际消息数及摘要，区分长度不足和内容摘要不符。没有明确段上下文时不猜索引为零；一个操作涉及多个来源时按上述身份和段索引关联，不再仅凭运行时类型要求用户补充会话。
 
 网关请求另有 `gateway_request` span 的 `request_id`，与建立执行准备时的 `operation_id` 不同；入口、路由、单次派发与结束事件的含义见 [AI 服务](product-tdd/ai-service.md)。运行时 stderr 持续排空并在有界缓存中保留用于失败诊断，超出时明确标记截断。
 

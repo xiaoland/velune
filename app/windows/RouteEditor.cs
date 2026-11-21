@@ -460,9 +460,9 @@ sealed class RouteEditor : UserControl
                 }
                 if (quota.Available == false)
                 {
-                    reasons.Add("已达到使用上限、余额不足或暂停，路由暂不使用它。");
+                    status.Children.Add(Ui.Muted(Quota.LimitedObservation));
                 }
-                else if (limited && quota.Freshness != QuotaFreshness.Fresh)
+                if (limited && quota.Freshness != QuotaFreshness.Fresh)
                 {
                     reasons.Add("设有使用上限而缺少最新额度，路由暂不使用它。");
                 }

@@ -1,6 +1,26 @@
 use super::*;
 
+struct PairingTestHandler;
+impl crate::Handler for PairingTestHandler {
+    fn execute(
+        &self,
+        _: crate::RequestContext,
+        _: velune_application_api::Command,
+    ) -> crate::HandlerFuture<'_> {
+        Box::pin(async {
+            Err(velune_application_api::Failure::new(
+                velune_application_api::FailureKind::Unsupported,
+                "配对夹具不执行业务",
+            ))
+        })
+    }
+}
+
 async fn device(name: &str) -> Arc<RemoteAccessService> {
+    device_with_execution(name, true).await
+}
+
+async fn device_with_execution(name: &str, executable: bool) -> Arc<RemoteAccessService> {
     let service = RemoteAccessService::bind(
         DeviceIdentity::generate(name.into()).unwrap(),
         EndpointConfig {
@@ -12,11 +32,10 @@ async fn device(name: &str) -> Arc<RemoteAccessService> {
             ..EndpointConfig::default()
         },
         Arc::new(DeviceStore::memory()),
-        None,
+        executable.then(|| Arc::new(PairingTestHandler) as Arc<dyn crate::Handler>),
     )
     .await
     .unwrap();
-    service.set_control_ingress(true).unwrap();
     Arc::new(service)
 }
 
@@ -63,8 +82,8 @@ fn mobile_profile_pairing_has_its_own_consent_ingress_and_revocation() {
         .build()
         .unwrap()
         .block_on(async {
-            let source = device("source-phone").await;
-            let destination = device("destination-phone").await;
+            let source = device_with_execution("source-phone", false).await;
+            let destination = device_with_execution("destination-phone", false).await;
             source.set_control_ingress(false).unwrap();
             destination.set_control_ingress(false).unwrap();
             let source_home = tempfile::tempdir().unwrap();
@@ -130,8 +149,10 @@ fn mobile_profile_pairing_has_its_own_consent_ingress_and_revocation() {
                 .await,
                 Err(RemoteError::Unauthorized)
             ));
-            source.set_control_ingress(true).unwrap();
-            source.set_control_ingress(false).unwrap();
+            assert_eq!(
+                source.set_control_ingress(true),
+                Err(RemoteError::NoHandler)
+            );
             source.revoke_control(&destination_id).unwrap();
             assert!(
                 destination

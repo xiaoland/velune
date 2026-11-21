@@ -2,7 +2,7 @@
 
 `velune-application-api` 保存本地原生界面与远程客户端共用的业务输入、结果、错误和投影。它只依赖中立的 `conversation`、Serde、base64 与错误显示库，不连接 Harness、网关或提供商，也不读取配置、环境或机器文件。执行实现归 [application](../application/README.md)，网络身份与请求接纳归 [remote](../remote/README.md)。
 
-`Command` 穷尽现有应用公开业务：会话、发送队列、消息编辑、审批、变更、分析、提供商／模型／运行时、认证编辑及资源管理；每项有同名 `Response` 结果。`ReleaseView` 只释放当前视图的临时状态。`ApplicationReply` 同时给出本次执行后的 `Revision`；远程修改配置、删除或替换内容时，`ExecutionContext.expected_revision` 必须引用最近观察的版本。版本不匹配返回 `FailureKind::Conflict` 与当前版本，不覆盖另一设备的改动。原生资源写入继续使用它自己的内容 revision。
+`Command` 穷尽现有应用公开业务：会话、发送队列、消息编辑、审批、变更、分析、提供商／模型／运行时、认证编辑及资源管理；每项有同名 `Response` 结果。`SetObservedConversations` 按当前 `ClientViewId` 完整替换可见的 `(runtime_id, conversation_id)` 集合，用于保护仍在显示的历史和交付游标；调用方应汇总该 view 的所有 pane 一次提交，空集合撤销保护。`ReleaseView` 释放当前视图的临时状态。`ApplicationReply` 同时给出本次执行后的 `Revision`；远程修改配置、删除或替换内容时，`ExecutionContext.expected_revision` 必须引用最近观察的版本。版本不匹配返回 `FailureKind::Conflict` 与当前版本，不覆盖另一设备的改动。原生资源写入继续使用它自己的内容 revision。
 
 `Command::delivery_class()` 以穷尽匹配将命令分为可重新发起的 `Observation` 与需要写前记录的 `Effect`。这项交付分类独立于配置修订检查：打开会话、选择视图、上传附件和认证检查等操作即使不修改配置，也会改变执行状态。`CommandKind` 是不携带正文的对应枚举，供远程 pending 安全摘要使用；不能从它重建业务命令或重放调用。远程库负责操作作用域与落盘门禁，本 unit 不执行网络或持久化。
 

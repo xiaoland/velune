@@ -1,4 +1,5 @@
 import AppKit
+import OSLog
 import Combine
 import SwiftUI
 import VeluneBindings
@@ -27,8 +28,13 @@ import VeluneBindings
     @Published var outlineNavigation: TranscriptJump?
     /// Searching the conversation's messages (see `TranscriptFindBar`).
     let find = TranscriptFind()
-    /// The user message being edited, in a sheet over the tab.
-    @Published var editing: MessageEditRequest?
+    /// One independent edit, regardless of its configured surface.
+    @Published var editing: MessageEditingSession?
+    /// Preparation belongs to this captured submission, never a global blank tab.
+    @Published var continuationPreparation: ContinuationPreparationSession? {
+        didSet { store.objectWillChange.send() }
+    }
+    var messageEditingPanel: MessageEditingPanel?
     /// When the keyboard was asked to go to the request waiting for an
     /// answer; its card takes it on showing, which may follow loading the
     /// conversation. A request older than a few seconds has lapsed.
@@ -46,13 +52,25 @@ import VeluneBindings
     /// A side chat opened from this tab ends when its source changes or closes.
     var sideChatParentID: UUID?
     var canOpenSideChat: Bool { store.sideChatTarget != nil }
+    /// Blank is a navigation identity even before a runtime is available to
+    /// create an unsent projection (and in synthetic previews).
+    var isBlank: Bool {
+        guard !store.isSideChat else { return false }
+        let destination = store.reachingConversationID ?? store.selectedConversationID ?? store.loadedConversationID
+        return store.isUnsentConversation || destination == nil || destination?.hasPrefix(ConversationStore.draftConversationPrefix) == true
+    }
 
-    override func close() { store.close() }
+    override func close() {
+        continuationPreparation?.close()
+        continuationPreparation = nil
+        finishMessageEditing(); store.close()
+    }
     /// Reading starts when the tab is first shown, so restored background tabs cost nothing.
     private var pendingStart: (() -> Void)?
 
     init(id: UUID = UUID(), store: ConversationStore, start: @escaping () -> Void) {
         self.store = store
+        store.unsentTabID = id
         pendingStart = start
         super.init(id: id)
         reading.table.observeFind(find)
@@ -71,11 +89,15 @@ import VeluneBindings
     /// A slash command consumes its own token before executing; attachments remain input.
     var canResumeAfterCommand: Bool { submission(using: composer, ignoringText: true).canResume }
     private func submission(hasInput: Bool, model: ComposerModel, next: NextTurn?) -> ComposerSubmission {
+        if continuationPreparation != nil {
+            return ComposerSubmission(phase: .sending, hasInput: hasInput, isComposing: model.isComposing,
+                                      canSend: false, canQueue: false, canResume: false)
+        }
         let configured = (next ?? store.nextTurn)?.chosenModelUnavailable != true && ComposerContext(tab: self, model: model).inputIssue == nil
         let phase: ComposerSubmission.Phase
         if store.isStopping { phase = .stopping }
         else if let pending = store.composerRequest { phase = pending }
-        else if store.isGenerating { phase = .running }
+        else if store.followUp.contextPreparation != nil || store.isGenerating || store.followUp.isCompacting { phase = .running }
         else { phase = store.canSend ? .idle : .blocked }
         return ComposerSubmission(phase: phase, hasInput: hasInput,
                                   isComposing: model.isComposing, canSend: configured && store.canSend && (store.allowsAttachments || model.attachments.isEmpty),
@@ -94,23 +116,40 @@ import VeluneBindings
         let attachments = composer.attachments
         let text = submitted.trimmingCharacters(in: .whitespacesAndNewlines)
         guard submission(using: composer, next: next).canSubmitDraft, store.allowsAttachments || attachments.isEmpty else { return }
-        // While a turn runs the message waits in the queue above the composer.
+        if !(store.followUp.contextPreparation != nil && store.canQueue),
+           let target = next ?? store.nextTurn, prepareContinuationIfNeeded(using: composer, target: target) { return }
+        // A queue request keeps its original input until the core admits it.
+        // Edits made while waiting belong to the next input, even if identical.
         if store.canQueue {
-            guard store.queue(text: text, attachments: attachments.map(\.path), next: next, onFailure: { [composer] in
-                composer.restoreFailed(submitted, attachments: attachments, revision: clearedRevision)
-            }) else { return }
-            composer.clear(submitted: submitted, attachments: attachments); clearedRevision = composer.revision
+            let submittedRevision = composer.revision
+            _ = store.queue(text: text, attachments: attachments.map(\.path), next: next, onAccepted: { [composer] in
+                guard composer.revision == submittedRevision else { return }
+                composer.clear(submitted: submitted, attachments: attachments)
+            })
             return
         }
         guard store.canSend else { return }
         // The message moves to the transcript at once; a turn that is not
         // sent hands its text and attachments back to the composer.
         let createsConversation = store.isUnsentConversation
-        let sent = store.send(text: text, attachments: attachments.map(\.path), next: next, input: composer, onFailure: { [composer, store] in
+        let requestedTarget = next ?? store.nextTurn
+        let sourceID = store.loadedConversationID
+        var restoredForPreparation = false
+        let sent = store.send(text: text, attachments: attachments.map(\.path), next: next, input: composer, onFailure: { [composer, store] createdID in
+            restoredForPreparation = clearedRevision == composer.revision
             composer.restoreFailed(submitted, attachments: attachments, revision: clearedRevision)
+            store.device.composerInputs.save(composer.id, draft: composer.savedDraft)
             // The global new entry takes the consumed input back, unless its
             // fresh input has gained newer content meanwhile.
-            if createsConversation { store.device.composerInputs.restoreConsumedNewConversationInput(composer, whileCreating: store) }
+            if createsConversation { store.device.composerInputs.restoreConsumedNewConversationInput(composer, whileCreating: store, createdConversationID: createdID) }
+        }, onDetailedFailure: { [weak self, composer, store] error in
+            guard let self, restoredForPreparation, !createsConversation,
+                  AppProblem.failure(error).code == "portable_summary_required",
+                  store.loadedConversationID == sourceID, let requestedTarget, let current = store.nextTurn,
+                  current.runtimeId == requestedTarget.runtimeId, current.model == requestedTarget.model,
+                  current.effort == requestedTarget.effort, current.permissionMode == requestedTarget.permissionMode
+            else { return }
+            _ = self.prepareContinuationIfNeeded(using: composer, target: requestedTarget, afterProviderRejection: true)
         })
         guard sent else { return }
         composer.clear(submitted: submitted, attachments: attachments); clearedRevision = composer.revision; scrollRequest &+= 1
@@ -181,8 +220,44 @@ import VeluneBindings
 
     /// Edit a user message of the transcript, when it may be edited now.
     func edit(messageID: String) {
+        guard editing == nil else { messageEditingPanel?.showFromUserAction(); return }
         guard let editable = store.editability(of: messageID), let message = store.message(id: messageID) else { return }
-        editing = MessageEditRequest(message: message, inPlace: editable.inPlace, isLast: store.isLastUserMessage(messageID))
+        let request = MessageEditRequest(message: message, conversationID: store.loadedConversationID, inPlace: editable.inPlace, isLast: store.isLastUserMessage(messageID), revision: editable.revision)
+        let session = MessageEditingSession(source: store, request: request)
+        let identity = session.id
+        session.onClose = { [weak self] in self?.finishMessageEditing(identity) }
+        editing = session
+        session.start()
+    }
+
+    func finishMessageEditing(_ identity: UUID? = nil) {
+        guard let session = editing, identity == nil || session.id == identity else { return }
+        editing = nil
+        session.cancel()
+        let panel = messageEditingPanel
+        messageEditingPanel = nil
+        panel?.closeEditor()
+    }
+
+    func changeMessageEditorPresentation(in window: ConversationWindowModel) {
+        guard let editing else { return }
+        objectWillChange.send()
+        let destination: MessageEditPresentation = editing.presentation == .sheet ? .floating : .sheet
+        if destination == .sheet {
+            window.selectTab(id)
+            let panel = messageEditingPanel
+            messageEditingPanel = nil
+            panel?.closeForTransfer()
+        }
+        editing.setPresentation(destination)
+        // Sheet -> panel is ordered by the sheet's onDismiss callback, after
+        // AppKit has finished tearing down its modal session.
+    }
+
+    func showFloatingMessageEditor(in window: ConversationWindowModel) {
+        guard let editing, editing.presentation == .floating else { return }
+        if messageEditingPanel == nil { messageEditingPanel = MessageEditingPanel(session: editing, window: window, source: self) }
+        messageEditingPanel?.showFromUserAction()
     }
 
     /// The link a drag carries to other apps; an unsent conversation has none yet.
@@ -193,7 +268,7 @@ import VeluneBindings
     }
 
     override var title: String {
-        if let context = store.sideChatContext { return store.selectedConversationTitle ?? "侧聊 · " + context.title }
+        if let context = store.sideChatContext { return store.selectedConversationTitle ?? "侧聊：" + context.title }
         return store.selectedConversationTitle ?? store.reachingConversationID.map { store.conversation(id: $0)?.title ?? "正在打开…" } ?? "新会话"
     }
 }
@@ -218,17 +293,22 @@ import VeluneBindings
     let id: UUID
     @Published private(set) var tabs: [EditorTab]
     @Published private(set) var selectedID: UUID
+    /// Most recently shown last. Restored, never-activated siblings have no history.
+    private var activationHistory: [UUID] = []
 
     init(id: UUID = UUID(), tabs: [EditorTab], selected: UUID? = nil) {
         self.id = id
         self.tabs = tabs
         selectedID = selected.flatMap { id in tabs.contains { $0.id == id } ? id : nil } ?? tabs[0].id
+        activationHistory = [selectedID]
     }
 
     var selected: EditorTab { tabs.first { $0.id == selectedID } ?? tabs[0] }
 
     func select(_ id: UUID) {
         guard let tab = tabs.first(where: { $0.id == id }) else { return }
+        activationHistory.removeAll { $0 == id }
+        activationHistory.append(id)
         if selectedID != id {
             // Typing that went to the tab put behind goes to the one shown.
             if let previous = selected as? ConversationTab, let next = tab as? ConversationTab, previous.composer.isFocused { next.composer.focusWhenShown() }
@@ -239,16 +319,19 @@ import VeluneBindings
 
     /// `tab` at `index` (the end when nil), shown.
     func insert(_ tab: EditorTab, at index: Int? = nil) {
-        tabs.insert(tab, at: min(index ?? tabs.count, tabs.count))
+        tabs.insert(tab, at: max(0, min(index ?? tabs.count, tabs.count)))
         select(tab.id)
     }
 
-    /// Without `id`; the tab after it shows, or the one before when it was
-    /// last. False when it was the only tab, which stays.
+    /// Closing the selected tab returns to the group's last active tab,
+    /// otherwise its left neighbour. False when it was the only tab.
     @discardableResult func remove(_ id: UUID) -> Bool {
         guard tabs.count > 1, let index = tabs.firstIndex(where: { $0.id == id }) else { return false }
         tabs.remove(at: index)
-        if selectedID == id { select(tabs[min(index, tabs.count - 1)].id) }
+        activationHistory.removeAll { $0 == id }
+        if selectedID == id {
+            select(activationHistory.last ?? tabs[max(0, index - 1)].id)
+        }
         return true
     }
 
@@ -456,15 +539,21 @@ struct SavedWindowLayout: Codable, Equatable {
     var unsentConversations: [String: Conversation]? = nil
     /// Creation destinations belong to tabs; their input belongs to the global slot.
     var creationTargets: [UUID: Conversation]? = nil
+    /// Each tab's paired device (its peer id) when not this Mac; tabs absent here are local.
+    var conversationDevices: [UUID: String]? = nil
+    /// Kept input state of tabs on paired devices, by peer id; the local
+    /// device keeps the legacy single fields below.
+    var composerByDevice: [String: SavedComposerDraft]? = nil
+    var composerWorkspaceByDevice: [String: SavedComposerWorkspace]? = nil
     var windowKind: ConversationWindowKind? = nil
     /// Absent only in legacy snapshots whose execution device is unknown.
     var windowDevice: ExecutionDevice? = nil
 
     private enum CodingKeys: String, CodingKey {
-        case schemaVersion, layout, panes, conversations, focused, tools, pinned, composer, composerWorkspace, artifacts, unsentConversations, creationTargets, windowKind, windowDevice
+        case schemaVersion, layout, panes, conversations, focused, tools, pinned, composer, composerWorkspace, artifacts, unsentConversations, creationTargets, conversationDevices, composerByDevice, composerWorkspaceByDevice, windowKind, windowDevice
     }
 
-    init(schemaVersion: Int = 1, layout: PaneLayout, panes: [UUID: SavedPane], conversations: [UUID: String], focused: UUID, tools: ToolWindowLayout, pinned: Bool, composer: SavedComposerDraft? = nil, composerWorkspace: SavedComposerWorkspace? = nil, artifacts: [UUID: ArtifactDocument]? = nil, unsentConversations: [String: Conversation]? = nil, creationTargets: [UUID: Conversation]? = nil, windowKind: ConversationWindowKind? = nil, windowDevice: ExecutionDevice? = nil) {
+    init(schemaVersion: Int = 1, layout: PaneLayout, panes: [UUID: SavedPane], conversations: [UUID: String], focused: UUID, tools: ToolWindowLayout, pinned: Bool, composer: SavedComposerDraft? = nil, composerWorkspace: SavedComposerWorkspace? = nil, artifacts: [UUID: ArtifactDocument]? = nil, unsentConversations: [String: Conversation]? = nil, creationTargets: [UUID: Conversation]? = nil, conversationDevices: [UUID: String]? = nil, composerByDevice: [String: SavedComposerDraft]? = nil, composerWorkspaceByDevice: [String: SavedComposerWorkspace]? = nil, windowKind: ConversationWindowKind? = nil, windowDevice: ExecutionDevice? = nil) {
         self.schemaVersion = schemaVersion
         self.layout = layout
         self.panes = panes
@@ -477,13 +566,16 @@ struct SavedWindowLayout: Codable, Equatable {
         self.artifacts = artifacts
         self.unsentConversations = unsentConversations
         self.creationTargets = creationTargets
+        self.conversationDevices = conversationDevices
+        self.composerByDevice = composerByDevice
+        self.composerWorkspaceByDevice = composerWorkspaceByDevice
         self.windowKind = windowKind
         self.windowDevice = windowDevice
     }
 
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
-        schemaVersion = try values.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 0
+        schemaVersion = values.contains(.schemaVersion) ? try values.decode(Int.self, forKey: .schemaVersion) : 0
         layout = try values.decode(PaneLayout.self, forKey: .layout)
         panes = try values.decode([UUID: SavedPane].self, forKey: .panes)
         conversations = try values.decode([UUID: String].self, forKey: .conversations)
@@ -495,19 +587,54 @@ struct SavedWindowLayout: Codable, Equatable {
         artifacts = try values.decodeIfPresent([UUID: ArtifactDocument].self, forKey: .artifacts)
         unsentConversations = try values.decodeIfPresent([String: Conversation].self, forKey: .unsentConversations)
         creationTargets = try values.decodeIfPresent([UUID: Conversation].self, forKey: .creationTargets)
+        conversationDevices = try values.decodeIfPresent([UUID: String].self, forKey: .conversationDevices)
+        composerByDevice = try values.decodeIfPresent([String: SavedComposerDraft].self, forKey: .composerByDevice)
+        composerWorkspaceByDevice = try values.decodeIfPresent([String: SavedComposerWorkspace].self, forKey: .composerWorkspaceByDevice)
         windowKind = try values.decodeIfPresent(ConversationWindowKind.self, forKey: .windowKind)
         windowDevice = try values.decodeIfPresent(ExecutionDevice.self, forKey: .windowDevice)
     }
 
+    /// A pre-aggregation workspace window of one paired device becomes an
+    /// aggregated window: its tabs' conversations belong to that device, and
+    /// the window itself no longer names one. Idempotent.
+    func migratingToAggregatedWorkspace() -> SavedWindowLayout {
+        var layout = self
+        if layout.windowKind != .single, case .remote(let peer)? = layout.windowDevice {
+            var devices = layout.conversationDevices ?? [:]
+            for tab in layout.panes.values.flatMap(\.tabs) where layout.artifacts?[tab] == nil && devices[tab] == nil {
+                devices[tab] = peer
+            }
+            layout.conversationDevices = devices
+            if let composer = layout.composer {
+                var composers = layout.composerByDevice ?? [:]
+                if composers[peer] == nil { composers[peer] = composer }
+                layout.composerByDevice = composers
+                layout.composer = nil
+            }
+            if let workspace = layout.composerWorkspace {
+                var workspaces = layout.composerWorkspaceByDevice ?? [:]
+                if workspaces[peer] == nil { workspaces[peer] = workspace }
+                layout.composerWorkspaceByDevice = workspaces
+                layout.composerWorkspace = nil
+            }
+            layout.windowDevice = .local
+        }
+        return layout
+    }
+
     static func decodeKnown(_ data: Data) throws -> SavedWindowLayout {
-        let raw = try JSONSerialization.jsonObject(with: data)
+        let raw = try JSONSerialization.jsonObject(with: data) as? [String: Any]
         let layout = try JSONDecoder().decode(SavedWindowLayout.self, from: data)
         guard layout.schemaVersion == 0 || layout.schemaVersion == 1 else {
             throw NSError(domain: "VelunePersistence", code: 20, userInfo: [NSLocalizedDescriptionKey: "窗口恢复点 schema 不受支持"])
         }
         let current = try JSONSerialization.jsonObject(with: JSONEncoder().encode(layout))
-        guard hasOnlyEncodedKeys(raw, encoded: current) else {
+        guard let raw, raw.keys.allSatisfy({ CodingKeys(rawValue: $0) != nil }),
+              hasOnlyEncodedKeys(raw, encoded: current) else {
             throw NSError(domain: "VelunePersistence", code: 21, userInfo: [NSLocalizedDescriptionKey: "窗口恢复点含未知字段"])
+        }
+        guard layout.isWhole else {
+            throw NSError(domain: "VelunePersistence", code: 23, userInfo: [NSLocalizedDescriptionKey: "恢复点布局不完整"])
         }
         return layout
     }
@@ -519,12 +646,17 @@ struct SavedWindowLayout: Codable, Equatable {
     private static func hasOnlyEncodedKeys(_ source: Any, encoded: Any, field: String?) -> Bool {
         if let source = source as? [String: Any], let encoded = encoded as? [String: Any] {
             return source.keys.allSatisfy { key in
-                guard let current = encoded[key] else { return source[key] is NSNull }
+                guard let current = encoded[key] else {
+                    guard source[key] is NSNull else { return false }
+                    // Older migration tools encode absent values as null. Keep only
+                    // declared optional turn-choice fields, including in remote drafts.
+                    return field != "choice" || ["model", "effort", "permissionMode"].contains(key)
+                }
                 return hasOnlyEncodedKeys(source[key]!, encoded: current, field: key)
             }
         }
         if let source = source as? [Any], let encoded = encoded as? [Any] {
-            if ["panes", "artifacts", "creationTargets"].contains(field ?? "") {
+            if ["panes", "artifacts", "creationTargets", "conversationDevices"].contains(field ?? "") {
                 guard let sourceMap = uuidDictionaryEntries(source),
                       let encodedMap = uuidDictionaryEntries(encoded),
                       Set(sourceMap.keys) == Set(encodedMap.keys) else { return false }
@@ -596,8 +728,16 @@ struct WindowSeed: Codable, Hashable {
 /// whose tabs show conversations. The list opens conversations in the
 /// focused pane's tab; the window's toolbar and commands act on it.
 @MainActor final class ConversationWindowModel: ObservableObject {
-    @Published var renameTarget: Conversation?
-    @Published var deleteTargets: [Conversation] = []
+    /// A conversation and the device it belongs to, for renames and deletes asked outside its tab.
+    struct ConversationActionTarget: Equatable, Identifiable {
+        var conversation: Conversation
+        var device: DeviceStore
+        var id: String { conversation.id }
+        static func == (lhs: Self, rhs: Self) -> Bool { lhs.conversation == rhs.conversation && lhs.device === rhs.device }
+    }
+    @Published var renameTarget: ConversationActionTarget?
+    @Published var hapiShareTarget: HapiShareTarget?
+    @Published var deleteTargets: [ConversationActionTarget] = []
     @Published var showsAgentURI = false
     @Published var agentURIMatches: [Conversation] = []
     @Published var agentURIFailure: String?
@@ -618,7 +758,7 @@ struct WindowSeed: Codable, Hashable {
                     open(match.id)
                     return
                 }
-                for failure in value.failures { list.recordProblem(failure.detail, source: "打开会话 · " + failure.runtimeId) }
+                for failure in value.failures { list.recordProblem(failure.detail, source: "打开会话：" + failure.runtimeId) }
                 if !value.failures.isEmpty { agentURIFailure = "部分运行时无法读取，详见问题。" }
                 else if agentURIMatches.isEmpty { agentURIFailure = "当前设备的已配置实例中找不到该会话。" }
             case .failure(let error):
@@ -630,8 +770,15 @@ struct WindowSeed: Codable, Hashable {
     }
 
     let application: DeviceStore
-    /// The paired device the window shows; nil for this Mac.
+    /// The paired device the window shows; non-nil only on a window opened
+    /// for one conversation of a paired device. Workspace windows aggregate
+    /// every device and keep this nil.
     let device: String?
+    /// The paired-device hub; nil in previews.
+    let hub: DeviceHub?
+    /// This window's aggregated conversation list: this Mac and every paired
+    /// device it controls, in one sidebar.
+    private(set) lazy var aggregated = AggregatedListModel(local: application, hub: hub)
     /// The list's workspace: list, search and selection; it opens no conversation.
     let list: ConversationStore
     @Published private(set) var layout: PaneLayout
@@ -639,9 +786,26 @@ struct WindowSeed: Codable, Hashable {
     @Published private(set) var focusedPaneID: UUID
     /// Each tab's conversation as last selected, for the layout the window restores.
     @Published private(set) var tabConversations: [UUID: String] = [:]
+    /// Each tab's paired device (peer id) as last shown; tabs absent here are local.
+    @Published private(set) var tabDevices: [UUID: String] = [:]
+    private func noteTabDevice(_ tab: ConversationTab) {
+        if let peer = tab.store.device.peerID { tabDevices[tab.id] = peer }
+        else { tabDevices[tab.id] = nil }
+    }
     /// Closed conversation tabs' targets (nil for an unsent new
-    /// conversation), latest last, for 重新打开关闭的标签页.
-    @Published private(set) var recentlyClosed: [String?] = []
+    /// conversation) and the device each belongs to, latest last, for
+    /// 重新打开关闭的标签页.
+    struct ClosedTarget: Equatable {
+        var device: String?
+        var conversation: String?
+        var tabID: UUID
+        var paneID: UUID
+        var index: Int
+        var layout: PaneLayout
+        var creation: Conversation?
+        var artifact: ArtifactDocument?
+    }
+    @Published private(set) var recentlyClosed: [ClosedTarget] = []
     /// Bumped when a pane's tabs change, for the layout the window restores.
     @Published private(set) var tabsRevision = 0
     private var subscriptions: [UUID: Set<AnyCancellable>] = [:]
@@ -649,17 +813,46 @@ struct WindowSeed: Codable, Hashable {
     private var paneSubscriptions: [UUID: AnyCancellable] = [:]
     private var started = false
     private var closed = false
-    func noteWindowClosed() { closed = true }
+    private var workspaceRestored = false
+    let restorationLifecycleID = UUID()
+    /// SwiftUI can retain a closed scene while other windows keep changing.
+    /// Its last recovery point must stop following those later publications.
+    var acceptsWorkspacePersistence: Bool { started && workspaceRestored && !closed }
+    func noteWindowClosed() {
+        closed = true
+        for tab in conversationTabs { tab.finishMessageEditing() }
+        refreshConversationObservations()
+    }
     private var persistenceID: String?
-    private var draftPersistence: AnyCancellable?
-    private var composerCursorWatch: AnyCancellable?
-    private var composerCreationWatch: AnyCancellable?
     private var workspacePersistence: AnyCancellable?
+    private var conversationObservation: AnyCancellable?
     private var restoredCreationTargets: [UUID: Conversation] = [:]
     func persistWorkspace() {
-        guard started, let persistenceID else { return }
-        application.windowWorkspaceJournal.save(savedLayout, id: persistenceID)
+        guard acceptsWorkspacePersistence, let persistenceID else { return }
+        let layout = savedLayout
+        application.windowWorkspaceJournal.save(layout, id: persistenceID)
     }
+    /// Every device's draft directory drives the window the same way:
+    /// changes persist the workspace, cursor moves refresh the UI, and a
+    /// native creation re-points the unsent tabs that hold its input.
+    private func attachDraftHandlers(_ drafts: ComposerDrafts) {
+        drafts.changes.sink { [weak self] _ in self?.persistWorkspace() }.store(in: &draftHandlers)
+        drafts.cursorChanges.sink { [weak self] _ in self?.objectWillChange.send() }.store(in: &draftHandlers)
+        drafts.creations.sink { [weak self] creation in
+            guard let self, let input = drafts.existing(creation.inputId) else { return }
+            let tabs = self.conversationTabs.filter { tab in
+                tab.store.isUnsentConversation && drafts.owns(input, for: tab)
+            }
+            guard !tabs.isEmpty else { return }
+            for tab in tabs {
+                let previous = tab.store.selectedConversationID ?? tab.store.loadedConversationID ?? ConversationStore.draftConversationPrefix + "new-conversation"
+                drafts.reassociate(input, from: previous, to: creation.conversationId, targetTab: tab, publish: false)
+            }
+            tabs.forEach { $0.store.followComposerCreation(creation) }
+            self.objectWillChange.send()
+        }.store(in: &draftHandlers)
+    }
+
     /// The pane views by pane, for telling which one a click lands in.
     private var anchors: [UUID: () -> NSView?] = [:]
     private var conversationAnchors: [UUID: () -> NSView?] = [:]
@@ -688,13 +881,35 @@ struct WindowSeed: Codable, Hashable {
         conversationAnchors[tab.id] = anchor
     }
     private var mouseMonitor: Any?
+    private var draftHandlers: [AnyCancellable] = []
     private(set) lazy var composerDrafts = ComposerDrafts(device: application)
+    private var remoteDrafts: [String: ComposerDrafts] = [:]
+    /// The kept-input directory of the device a tab's conversations live on.
+    /// Each device owns its own composer input directory; a window with tabs
+    /// on several devices keeps one directory client per device.
+    func drafts(for store: DeviceStore) -> ComposerDrafts {
+        if store === application { return composerDrafts }
+        guard let peer = hub?.peerID(of: store) else { return composerDrafts }
+        if let drafts = remoteDrafts[peer] { return drafts }
+        let drafts = ComposerDrafts(device: store)
+        remoteDrafts[peer] = drafts
+        attachDraftHandlers(drafts)
+        return drafts
+    }
+    /// A list-type store over any device this window shows.
+    func listStore(for store: DeviceStore) -> ConversationStore {
+        if store === application { return list }
+        if let device = aggregated.devices.first(where: { $0.store === store }) { return aggregated.listStore(for: device) }
+        return list
+    }
     @Published var composerMinimumHeight = ComposerTextView.minimumHeight + 54
     private var restoredComposerDraft: ComposerModel?
     var sharedComposer: ComposerModel { composerDrafts.shared }
+    /// The shared input of the focused tab's device.
+    func sharedComposer(for tab: ConversationTab) -> ComposerModel { drafts(for: tab.store.device).shared }
     /// Temporary side-chat inputs stay with their tab and never enter the registry.
     func composerOwner(for tab: ConversationTab, tools placement: ToolWindowLayout? = nil) -> ComposerDrafts.Owner? {
-        if tab.store.isSideChat { return nil }
+        if tab.store.isSideChat || tab.store.loadedParentConversationID != nil { return nil }
         let placement = placement ?? tools
         if tab === sheetTab || tab === composerSheetTab { return .conversation(tab.store.selectedConversationID ?? tab.store.loadedConversationID ?? "tab:\(tab.id)") }
         switch placement[.composer].place {
@@ -702,55 +917,63 @@ struct WindowSeed: Codable, Hashable {
         default: return .conversation(tab.store.selectedConversationID ?? tab.store.loadedConversationID ?? "tab:\(tab.id)")
         }
     }
+    /// A shared panel is only a presentation host. Looking up another visible
+    /// tab's input must never return the currently focused tab's draft.
+    private func composerInputOwner(for tab: ConversationTab) -> ComposerDrafts.Owner? {
+        guard composerOwner(for: tab) != nil else { return nil }
+        return .conversation(tab.store.selectedConversationID ?? tab.store.loadedConversationID ?? "tab:\(tab.id)")
+    }
     func composer(for tab: ConversationTab) -> ComposerModel {
-        guard let owner = composerOwner(for: tab) else { return tab.composer }
-        let model = composerDrafts.model(for: owner, tab: tab)
-        if case .conversation = owner { tab.composer = model }
+        guard let owner = composerInputOwner(for: tab) else { return tab.composer }
+        let model = drafts(for: tab.store.device).model(for: owner, tab: tab)
+        tab.composer = model
         return model
     }
     func existingComposer(for tab: ConversationTab) -> ComposerModel? {
-        guard let owner = composerOwner(for: tab) else { return tab.composer }
-        return composerDrafts.existingModel(for: owner)
+        guard let owner = composerInputOwner(for: tab) else { return tab.composer }
+        return drafts(for: tab.store.device).existingModel(for: owner)
     }
     func selectComposerDraft(_ model: ComposerModel, for tab: ConversationTab) {
-        guard let owner = composerOwner(for: tab) else { return }
-        composerDrafts.select(model, replacing: composer(for: tab), owner: owner, tab: tab)
+        guard let owner = composerInputOwner(for: tab) else { return }
+        drafts(for: tab.store.device).select(model, replacing: composer(for: tab), owner: owner, tab: tab)
         objectWillChange.send()
         composer(for: tab).focusWhenShown()
     }
     func newComposerDraft(for tab: ConversationTab) {
-        guard let owner = composerOwner(for: tab) else { return }
-        composerDrafts.newDraft(replacing: composer(for: tab), owner: owner, tab: tab)
+        guard let owner = composerInputOwner(for: tab) else { return }
+        drafts(for: tab.store.device).newDraft(replacing: composer(for: tab), owner: owner, tab: tab)
         objectWillChange.send()
         composer(for: tab).focusWhenShown()
     }
     private func navigateComposer(to id: String, tab: ConversationTab, checkpointPrevious: Bool = true) {
-        guard let owner = composerOwner(for: tab) else { return }
-        composerDrafts.navigate(to: id, tab: tab, sharedInput: owner == .shared, checkpointPrevious: checkpointPrevious)
+        guard composerOwner(for: tab) != nil else { return }
+        drafts(for: tab.store.device).navigate(to: id, tab: tab, checkpointPrevious: checkpointPrevious)
     }
     /// A new conversation opens in a new tab after the focused pane's shown
     /// one; a focused tab already holding an unsent conversation is restored
-    /// in place instead, not stacked under another empty tab. The one global
-    /// new-conversation input restores as the tab is selected.
+    /// in place instead, not stacked under another empty tab. Every blank tab
+    /// restores its own content and execution choices when selected.
     @discardableResult
     func createConversation() -> ConversationTab? {
-        if let shown = focusedEditor as? ConversationTab, shown.store.isUnsentConversation {
+        if let shown = focusedEditor as? ConversationTab, shown.store.device === application, shown.store.isUnsentConversation {
             return shown.store.createConversation() ? shown : nil
         }
         return openNewConversationTab()
     }
-    /// Group creation is an explicit target choice, including for a shared
-    /// composer whose unfinished input otherwise keeps its own intent. The
-    /// conversation opens as `createConversation()` does: in a new tab.
-    func createConversation(in group: ConversationGroupKey) {
+    /// Group creation is an explicit target choice on the device the group
+    /// belongs to, including for a shared composer whose unfinished input
+    /// otherwise keeps its own intent. The conversation opens as
+    /// `createConversation()` does: in a new tab.
+    func createConversation(in group: ConversationGroupKey, device target: DeviceStore? = nil) {
+        let device = target ?? application
         let project: ConversationProject? = if case .project(let path?) = group {
-            application.conversationProjects.first { $0.path == path }
+            device.conversationProjects.first { $0.path == path }
         } else { nil }
         let runtimeID: String? = if case .runtime(let id) = group { id } else { project?.nativeRuntimeId }
-        let targetRuntimeID = runtimeID ?? composerContext(for: focused).nextTurnRuntimeID
+        let targetRuntimeID = runtimeID ?? (focused.store.device === device ? composerContext(for: focused).nextTurnRuntimeID : nil)
         let selectedProject: NewConversationProject? = project.flatMap { project in
             guard let runtimeID = project.nativeRuntimeId,
-                  let choice = application.workingDirectoryProjects[runtimeID]?.first(where: { $0.project == project.path && $0.canSelectProject }) else { return nil }
+                  let choice = device.workingDirectoryProjects[runtimeID]?.first(where: { $0.project == project.path && $0.canSelectProject }) else { return nil }
             return NewConversationProject(key: choice.project, name: choice.name, runtimeID: runtimeID, directories: choice.directories)
         }
         // A native project's group means that whole project; do not quietly
@@ -760,10 +983,10 @@ struct WindowSeed: Codable, Hashable {
             return
         }
         let tab: ConversationTab?
-        if let shown = focusedEditor as? ConversationTab, shown.store.isUnsentConversation {
+        if let shown = focusedEditor as? ConversationTab, shown.store.device === device, shown.store.isUnsentConversation {
             tab = shown.store.createConversation(runtimeID: targetRuntimeID, cwd: project?.primaryFolder, project: selectedProject) ? shown : nil
         } else {
-            tab = openNewConversationTab(runtimeID: targetRuntimeID, cwd: project?.primaryFolder, project: selectedProject)
+            tab = openNewConversationTab(device: device, runtimeID: targetRuntimeID, cwd: project?.primaryFolder, project: selectedProject)
         }
         guard let tab else { return }
         if let runtimeID { composerContext(for: tab).selectNextTurnRuntime(runtimeID) }
@@ -773,8 +996,9 @@ struct WindowSeed: Codable, Hashable {
     /// was followed, so the shared input is navigated to as selecting the tab
     /// would. `start` only reads; the snapshot already exists (the preview
     /// branch would otherwise recreate it with the default target).
-    private func openNewConversationTab(runtimeID: String? = nil, cwd: String? = nil, project: NewConversationProject? = nil) -> ConversationTab? {
-        let store = ConversationStore(device: application)
+    func openNewConversationTab(device: DeviceStore? = nil, runtimeID: String? = nil, cwd: String? = nil, project: NewConversationProject? = nil) -> ConversationTab? {
+        let device = device ?? application
+        let store = ConversationStore(device: device)
         guard store.createConversation(runtimeID: runtimeID, cwd: cwd, project: project) else { return nil }
         let tab = ConversationTab(store: store, start: {
             store.start(loadFirstConversation: false, newConversation: false)
@@ -791,8 +1015,8 @@ struct WindowSeed: Codable, Hashable {
         didSet {
             guard tools != oldValue else { return }
             if let previousOwner = composerOwner(for: focused, tools: oldValue), let owner = composerOwner(for: focused), previousOwner != owner {
-                let previous = composerDrafts.model(for: previousOwner, tab: focused)
-                composerDrafts.move(previous, to: owner, tab: focused)
+                let previous = drafts(for: focused.store.device).model(for: previousOwner, tab: focused)
+                drafts(for: focused.store.device).move(previous, to: owner, tab: focused)
             }
             detached.sync()
             if kind == .workspace { application.rememberedToolLayout.remember(tools) }
@@ -803,6 +1027,7 @@ struct WindowSeed: Codable, Hashable {
     /// The outline popover from the toolbar button.
     @Published var outlinePopover = false
     @Published var agentsPopover = false
+    @Published var backgroundTasksPopover = false
     /// A conversation opened over the window from one linked to it, and the sheet's size.
     @Published private(set) var artifactSheet: ArtifactTab?
     @Published private(set) var sheetTab: ConversationTab?
@@ -841,6 +1066,42 @@ struct WindowSeed: Codable, Hashable {
         return all.compactMap(\.model).filter { !$0.closed }
     }
 
+    /// A transcript is polled only while its selected pane or conversation
+    /// sheet is actually on screen. Split panes are independently visible;
+    /// an unselected tab in either pane is not.
+    static func isConversationStoreVisible(_ store: ConversationStore) -> Bool {
+        // Programmatic checks use synthetic homes and often create window
+        // models without a native NSWindow; keep their data-driven polling
+        // paths active while ordinary app windows remain visibility-gated.
+        if MacExecutionContext.admitted.isDevelopment,
+           CommandLine.arguments.contains(where: { $0.hasPrefix("--check-") }) {
+            return true
+        }
+        return isConversationStoreSelectedAndVisible(store)
+    }
+
+    /// Pure app-window visibility predicate, kept separate from the explicit
+    /// development-check polling override above.
+    static func isConversationStoreSelectedAndVisible(_ store: ConversationStore) -> Bool {
+        guard !NSApp.isHidden else { return false }
+        return openWindows.contains { model in
+            if model.detached.hasVisibleComposerWindow(for: store) { return true }
+            guard let native = model.window, native.isVisible, native.isOnActiveSpace, !native.isMiniaturized else { return false }
+            return isConversationStoreSelected(store, in: model)
+        }
+    }
+
+    /// Model-only selection predicate for synthetic window checks; it does
+    /// not require the model to own a native NSWindow.
+    static func isConversationStoreSelected(_ store: ConversationStore, in model: ConversationWindowModel) -> Bool {
+        guard !model.closed else { return false }
+        let paneIsSelected = model.orderedPanes.contains { pane in
+            (pane.selected as? ConversationTab)?.store === store
+        }
+        let sheetIsSelected = model.sheetTab?.store === store || model.composerSheetTab?.store === store
+        return paneIsSelected || sheetIsSelected
+    }
+
     static func isConversationWindow(_ window: NSWindow) -> Bool {
         all.contains { $0.model?.window === window }
     }
@@ -858,36 +1119,29 @@ struct WindowSeed: Codable, Hashable {
 
     static func owning(tab: UUID) -> ConversationWindowModel? {
         all.removeAll { $0.model == nil }
-        return all.lazy.compactMap(\.model).first { $0.pane(holding: tab) != nil || $0.artifactSheet?.id == tab }
+        return all.lazy.compactMap(\.model).first { $0.pane(holding: tab) != nil || $0.artifactSheet?.id == tab || $0.sheetTab?.id == tab || $0.composerSheetTab?.id == tab }
     }
 
-    init(application: DeviceStore, kind: ConversationWindowKind, device: String? = nil) {
+    init(application: DeviceStore, kind: ConversationWindowKind, device: String? = nil, hub: DeviceHub? = nil) {
         self.application = application
         self.kind = kind
         self.device = device
+        self.hub = hub
         list = ConversationStore(device: application)
         let store = ConversationStore(device: application)
-        let first = Pane(tabs: [ConversationTab(store: store, start: { store.start() })])
+        let first = Pane(tabs: [ConversationTab(store: store, start: {
+            store.start(loadFirstConversation: kind == .workspace, newConversation: kind == .single)
+        })])
         layout = .pane(first.id)
         panes = [first.id: first]
         focusedPaneID = first.id
         follow(first)
         Self.all.append(WeakWindow(model: self))
-        draftPersistence = composerDrafts.changes.sink { [weak self] in self?.persistWorkspace() }
-        composerCursorWatch = composerDrafts.cursorChanges.sink { [weak self] in self?.objectWillChange.send() }
-        composerCreationWatch = composerDrafts.creations.sink { [weak self] creation in
-            guard let self, let input = self.composerDrafts.existing(creation.inputId) else { return }
-            let tabs = self.conversationTabs.filter { tab in
-                tab.store.isUnsentConversation && (self.composerOwner(for: tab) == .shared ? self.composerDrafts.isNewInput(input) : tab.composer === input)
-            }
-            guard !tabs.isEmpty else { return }
-            for tab in tabs {
-                let previous = tab.store.selectedConversationID ?? tab.store.loadedConversationID ?? ConversationStore.draftConversationPrefix + "new-conversation"
-                self.composerDrafts.reassociate(input, from: previous, to: creation.conversationId, targetTab: tab, publish: false)
-            }
-            tabs.forEach { $0.store.followComposerCreation(creation) }
-            self.objectWillChange.send()
+        conversationObservation = objectWillChange.sink { [weak self] in
+            // Published properties announce before committing selection/layout.
+            DispatchQueue.main.async { self?.refreshConversationObservations() }
         }
+        attachDraftHandlers(composerDrafts)
         // Window recovery belongs to the model, including changes made before
         // SwiftUI observes a scene. Read after @Published has committed its value.
         workspacePersistence = Publishers.MergeMany([
@@ -902,6 +1156,13 @@ struct WindowSeed: Codable, Hashable {
             .sink { [weak self] in self?.persistWorkspace() }
     }
 
+    private func refreshConversationObservations() {
+        var seen: Set<ObjectIdentifier> = []
+        for device in [application] + conversationTabs.map({ $0.store.device }) {
+            if seen.insert(ObjectIdentifier(device)).inserted { device.refreshConversationObservation() }
+        }
+    }
+
     var focusedPane: Pane { panes[focusedPaneID]! }
     /// The focused pane's tab, which the toolbar, commands and tool windows act on.
     var focusedEditor: EditorTab { focusedPane.selected }
@@ -914,8 +1175,9 @@ struct WindowSeed: Codable, Hashable {
     private func noteSelected(_ editor: EditorTab) {
         guard let tab = editor as? ConversationTab else { return }
         lastConversation = tab
-        if composerOwner(for: tab) != nil { composerDrafts.focus(tab) }
+        if composerOwner(for: tab) != nil { drafts(for: tab.store.device).focus(tab) }
         tab.store.noteFocused()
+        tab.store.noteVisible()
     }
     var isSplit: Bool { panes.count > 1 }
     var orderedPanes: [Pane] { layout.paneIDs.compactMap { panes[$0] } }
@@ -939,13 +1201,20 @@ struct WindowSeed: Codable, Hashable {
             kept[pane.id] = .init(tabs: [pane.selectedID], selected: pane.selectedID)
         }
         let ids = Set(kept.values.flatMap(\.tabs))
+        let remoteComposers = Dictionary(uniqueKeysWithValues: remoteDrafts
+            .filter { !$0.value.saved.drafts.isEmpty || !$0.value.saved.retained.isEmpty || $0.value.shared.hasUnfinishedInput }
+            .map { ($0.key, $0.value) })
         return SavedWindowLayout(layout: keptLayout, panes: kept,
                                  conversations: tabConversations.filter { ids.contains($0.key) },
                                  focused: kept[focusedPaneID] == nil ? keptLayout.paneIDs[0] : focusedPaneID,
                                  tools: tools, pinned: pinned, composer: sharedComposer.savedDraft,
                                  composerWorkspace: composerDrafts.saved,
                                  artifacts: Dictionary(uniqueKeysWithValues: allTabs.compactMap { editor in (editor as? ArtifactTab).map { ($0.id, $0.document) } }),
-                                 creationTargets: restoredCreationTargets.filter { ids.contains($0.key) }.merging(Dictionary(uniqueKeysWithValues: conversationTabs.compactMap { tab in tab.store.unsentConversation.map { (tab.id, $0) } }), uniquingKeysWith: { _, current in current }), windowKind: kind, windowDevice: SavedWindowLayout.ExecutionDevice(device))
+                                 creationTargets: restoredCreationTargets.filter { ids.contains($0.key) }.merging(Dictionary(uniqueKeysWithValues: conversationTabs.compactMap { tab in tab.store.unsentConversation.map { (tab.id, $0) } }), uniquingKeysWith: { _, current in current }),
+                                 conversationDevices: tabDevices.filter { ids.contains($0.key) },
+                                 composerByDevice: remoteComposers.isEmpty ? nil : remoteComposers.mapValues { $0.shared.savedDraft },
+                                 composerWorkspaceByDevice: remoteComposers.isEmpty ? nil : remoteComposers.mapValues { $0.saved },
+                                 windowKind: kind, windowDevice: SavedWindowLayout.ExecutionDevice(device))
     }
 
     /// Restore a saved arrangement, take a handed-over tab, or open `seed`'s
@@ -955,13 +1224,32 @@ struct WindowSeed: Codable, Hashable {
         closed = false
         guard !started else { return }
         started = true
-        self.persistenceID = persistenceID
-        let sceneSaved = saved.flatMap {
-            $0.isWhole && ($0.windowKind == nil || $0.windowKind == kind)
-                && ($0.windowDevice == nil || $0.windowDevice == SavedWindowLayout.ExecutionDevice(device)) ? $0 : nil
+        // Restoring the composer synchronously publishes draft changes. They
+        // must not save the initial blank panes over the snapshot being read.
+        defer {
+            workspaceRestored = true
+            persistWorkspace()
         }
-        let saved = persistenceID.flatMap { application.windowWorkspaceJournal.restore(id: $0, recoverLatest: seed == nil && sceneSaved == nil && kind == .workspace, kind: kind, device: device) }
-            ?? sceneSaved
+        // The archived WindowGroup value survives native window renumbering.
+        // SceneStorage may be absent on restoration, so its fresh UUID cannot
+        // be the only address of a seeded window's recovery point.
+        let recoveryID = seed?.id.uuidString ?? persistenceID
+        self.persistenceID = recoveryID
+        let aggregatingDevices = kind == .workspace && device == nil && hub != nil
+        let sceneSaved: SavedWindowLayout? = saved.flatMap {
+            let candidate = aggregatingDevices ? $0.migratingToAggregatedWorkspace() : $0
+            if let tab = seed?.tab, Self.handoff[tab] == nil,
+               !candidate.panes.values.contains(where: { $0.tabs.contains(tab) }) { return nil }
+            return candidate.isWhole && (candidate.windowKind == nil || candidate.windowKind == kind)
+                && (candidate.windowDevice == nil || candidate.windowDevice == SavedWindowLayout.ExecutionDevice(device)) ? candidate : nil
+        }
+        let journalSaved = recoveryID.flatMap { application.windowWorkspaceJournal.restore(id: $0, recoverLatest: seed == nil && sceneSaved == nil && kind == .workspace, kind: kind, device: device, aggregatingDevices: aggregatingDevices, legacyTabID: seed?.tab) }
+        let saved = journalSaved ?? sceneSaved
+        let recoveryBranch = seed?.tab.flatMap { Self.handoff[$0] } != nil ? "handoff" : saved != nil ? "snapshot" : seed?.conversationID != nil ? "conversation" : seed?.tab != nil ? "missingHandoff" : "default"
+        let recoveryKind = kind.sceneID
+        let modelID = restorationLifecycleID.uuidString
+        let journalTabs = journalSaved?.panes.values.flatMap(\.tabs).map(\.uuidString).sorted().joined(separator: ",") ?? "none"
+        windowRecoveryLogger.debug("phase=modelStart model=\(modelID, privacy: .public) kind=\(recoveryKind, privacy: .public) recovery=\(recoveryID ?? "none", privacy: .public) branch=\(recoveryBranch, privacy: .public) journal=\(journalSaved != nil) journalTabs=\(journalTabs, privacy: .public) scene=\(sceneSaved != nil)")
         list.start(loadFirstConversation: false)
         // A layout the system restores below replaces this one.
         switch kind {
@@ -971,20 +1259,29 @@ struct WindowSeed: Codable, Hashable {
             tools.toggleEditorOnly()
         }
         if let id = seed?.tab, let tab = Self.handoff.removeValue(forKey: id) {
-            if let tab = tab as? ConversationTab, !tab.store.isSideChat, let conversationID = tab.store.loadedConversationID { composerDrafts.adopt(tab.composer, conversationID: conversationID, tab: tab) }
+            if let tab = tab as? ConversationTab, !tab.store.isSideChat, let conversationID = tab.store.loadedConversationID { drafts(for: tab.store.device).adopt(tab.composer, conversationID: conversationID, tab: tab) }
             replacePanes(with: [Pane(tabs: [tab])], layout: nil)
             tab.activate()
             noteSelected(tab)
         } else if let saved, saved.isWhole {
-            sharedComposer.restoreSavedDraft(saved.composer)
-            composerDrafts.restore(saved.composerWorkspace)
+            if let workspace = saved.composerWorkspace { composerDrafts.restore(workspace) }
+            else { composerDrafts.restoreLegacy(saved.composer) }
+            for (peer, draft) in saved.composerByDevice ?? [:] {
+                guard saved.composerWorkspaceByDevice?[peer] == nil, let store = hub?.store(for: peer) else { continue }
+                drafts(for: store).restoreLegacy(draft)
+            }
+            for (peer, workspace) in saved.composerWorkspaceByDevice ?? [:] {
+                guard let store = hub?.store(for: peer) else { continue }
+                drafts(for: store).restore(workspace)
+            }
             if saved.composerWorkspace == nil, sharedComposer.hasUnfinishedInput { restoredComposerDraft = sharedComposer }
             let lone = saved.layout.paneIDs.count == 1 && saved.panes.values.first?.tabs.count == 1
             let restored = saved.layout.paneIDs.map { paneID in
                 let savedPane = saved.panes[paneID]!
                 let tabs: [EditorTab] = savedPane.tabs.map { tabID in
                     if let document = saved.artifacts?[tabID] { return ArtifactTab(id: tabID, document: document) }
-                    let store = ConversationStore(device: application)
+                    let deviceStore = saved.conversationDevices?[tabID].flatMap { hub?.store(for: $0) } ?? application
+                    let store = ConversationStore(device: deviceStore)
                     let conversationID = saved.conversations[tabID]
                     let draft = saved.creationTargets?[tabID] ?? conversationID.flatMap({ saved.unsentConversations?[$0] })
                     // A restored tab shows its conversation's title before it
@@ -1001,21 +1298,34 @@ struct WindowSeed: Codable, Hashable {
             }
             replacePanes(with: restored, layout: saved.layout)
             tabConversations = saved.conversations
+            tabDevices = saved.conversationDevices ?? [:]
             restoredCreationTargets = saved.creationTargets ?? [:]
             focusedPaneID = saved.focused
             tools = saved.tools.normalized()
             pinned = saved.pinned
             for pane in restored { pane.selected.activate() }
         } else if let id = seed?.conversationID {
-            let store = ConversationStore(device: application)
-            replacePanes(with: [Pane(tabs: [ConversationTab(store: store, start: { store.start(loadFirstConversation: false, opening: id) })])], layout: nil)
+            // A seed may name the paired device the conversation lives on;
+            // a workspace window then binds the tab to that device's store.
+            let deviceStore = seed?.device.flatMap { hub?.store(for: $0) } ?? application
+            replacePanes(with: [Pane(tabs: [makeTab(device: deviceStore, opening: id)])], layout: nil)
             focused.activate()
+        } else if seed?.tab != nil {
+            // An in-process handoff is not a cold-start recovery source.
+            // A missing snapshot must not impersonate the list's first session.
+            replacePanes(with: [Pane(tabs: [makeTab(opening: nil)])], layout: nil)
+            focused.activate()
+            application.recordProblem("此窗口的内容未能恢复，已打开空白标签页。", source: "窗口恢复")
         } else {
             focused.activate()
         }
         installMouseMonitor()
         detached.sync()
         if let seed, WindowPresentation.notificationTargets.remove(seed.id) != nil, let id = seed.conversationID {
+            // A restored layout retains the user's editors. The notification
+            // is a new navigation intent applied after that restoration.
+            let target = seed.device.flatMap { hub?.store(for: $0) } ?? application
+            openInNewTab(id, device: target)
             focusNotificationTarget(id)
         }
     }
@@ -1034,26 +1344,50 @@ struct WindowSeed: Codable, Hashable {
     // MARK: Opening
 
     /// Open a conversation in the focused tab; one a tab of this window
-    /// already shows is selected there instead.
-    func open(_ conversationID: String) {
-        guard hasConversationFocus else { return openInNewTab(conversationID) }
-        if select(showing: conversationID) { return }
-        if focused.store.isSideChat { openInNewTab(conversationID) }
-        else { focused.store.openLinkedConversation(id: conversationID) }
+    /// already shows is selected there instead. The device the conversation
+    /// lives on comes from the aggregated list; unknown conversations open
+    /// on this Mac and resolve there.
+    func open(_ conversationID: String, device target: DeviceStore? = nil) {
+        let target = target ?? aggregated.device(of: conversationID)?.store ?? application
+        guard hasConversationFocus else { return openInNewTab(conversationID, device: target) }
+        if select(showing: conversationID, device: target) { return }
+        if focused.store.isSideChat { openInNewTab(conversationID, device: target) }
+        else if focused.store.device === target { focused.store.openLinkedConversation(id: conversationID) }
+        else { openInNewTab(conversationID, device: target) }
     }
 
     /// Notifications preserve the current editor. Reuse a conversation tab
-    /// in this device's windows, otherwise add one in its last focused window.
+    /// in a window that can show the device, otherwise add one in its last
+    /// focused window.
     static func openNotificationConversation(_ conversationID: String, application: DeviceStore) -> ConversationWindowModel? {
-        let windows = openWindows.filter { $0.application === application }
-        let existing = windows.first { $0.tab(showing: conversationID) != nil }
+        let windows = openWindows.filter { $0.canShow(application) }
+        let existing = windows.first { $0.tab(showing: conversationID, device: application) != nil }
         guard let target = existing ?? windows.first(where: { $0.focused.store === application.focusedConversation }) ?? windows.first else { return nil }
-        target.openInNewTab(conversationID)
+        target.openInNewTab(conversationID, device: application)
         return target
     }
 
+    /// Whether this window can present the given device's conversations:
+    /// its own, or any paired device the aggregated list reaches.
+    func canShow(_ store: DeviceStore) -> Bool {
+        if application === store { return true }
+        return kind == .workspace && (hub?.peerID(of: store) != nil || aggregated.devices.contains { $0.store === store })
+    }
+
+    /// A workspace window that can present any device, for the devices list to focus.
+    static func openWorkspaceWindow() -> ConversationWindowModel? {
+        openWindows.first { $0.kind == .workspace && !$0.closed }
+    }
+
+    /// Show one device's conversations in the aggregated list.
+    func showDevice(_ peerID: String) {
+        aggregated.setFilter(.peer(peerID))
+    }
+
+    /// The waiting conversation's turn wants the user: focus its answer
+    /// field; otherwise the composer takes the keyboard.
     func focusNotificationTarget(_ conversationID: String) {
-        if application.waitingConversationIDs.contains(conversationID) { focused.focusInteraction() }
+        if focused.store.device.waitingConversationIDs.contains(conversationID) { focused.focusInteraction() }
         else { composer(for: focused).focusWhenShown() }
     }
 
@@ -1065,13 +1399,13 @@ struct WindowSeed: Codable, Hashable {
     }
 
     /// A list action opens over the current editor, without selecting its target.
-    func openSideChat(on conversationID: String) {
+    func openSideChat(on conversationID: String, device target: DeviceStore? = nil) {
         endSideChatOpening()
         if let source = conversationTabs.first(where: { $0.store.loadedConversationID == conversationID }),
            let target = source.store.sideChatTarget {
             return openSideChat(target, presentation: .sheet, parent: nil)
         }
-        let request = BackgroundSideChat(tab: makeTab(opening: conversationID))
+        let request = BackgroundSideChat(tab: makeTab(device: target, opening: conversationID))
         pendingSideChat = request
         request.watch = request.tab.store.objectWillChange.receive(on: RunLoop.main).sink { [weak self] _ in self?.advanceSideChat() }
         request.timeout = Timer.scheduledTimer(withTimeInterval: 30, repeats: false) { [weak self] _ in
@@ -1136,11 +1470,11 @@ struct WindowSeed: Codable, Hashable {
     }
 
     /// Open a conversation, or a new one, in a new tab after the focused pane's shown tab.
-    func openInNewTab(_ conversationID: String? = nil) {
-        if let conversationID, select(showing: conversationID) { return }
+    func openInNewTab(_ conversationID: String? = nil, device target: DeviceStore? = nil) {
+        if let conversationID, select(showing: conversationID, device: target) { return }
         let pane = focusedPane
         let index = pane.tabs.firstIndex { $0.id == pane.selectedID }.map { $0 + 1 }
-        pane.insert(makeTab(opening: conversationID), at: index)
+        pane.insert(makeTab(device: target, opening: conversationID), at: index)
         focused.store.noteFocused()
     }
 
@@ -1149,25 +1483,29 @@ struct WindowSeed: Codable, Hashable {
     /// setting does. From the sheet, a sheet is the sheet itself, and a tab
     /// or window takes its place.
     func openLinked(_ conversationID: String, from tab: ConversationTab, opening: LinkedConversationOpening? = nil) {
-        if tab.store.isSideChat { openInNewTab(conversationID); return }
+        if tab.store.isSideChat { openInNewTab(conversationID, device: aggregated.device(of: conversationID)?.store); return }
         let opening = opening ?? application.linkedConversationOpening
+        // Native child and parent links are on the device that owns their history.
+        let nativeRelation = tab.store.loadedParentConversationID == conversationID
+            || tab.store.subAgents.contains { $0.id == conversationID }
+        let target = nativeRelation ? tab.store.device : nil
         if tab === sheetTab {
             if opening == .currentTab || opening == .sheet { return tab.store.openLinkedConversation(id: conversationID) }
             closeSheet()
         }
         switch opening {
         case .currentTab: tab.store.openLinkedConversation(id: conversationID)
-        case .newTab: openInNewTab(conversationID)
-        case .sheet: openInSheet(conversationID)
-        case .newWindow: openInNewWindow(conversationID)
+        case .newTab: openInNewTab(conversationID, device: target)
+        case .sheet: openInSheet(conversationID, device: tab.store.device)
+        case .newWindow: openInNewWindow(conversationID, device: target)
         }
     }
 
     /// Open a conversation in a sheet over the window; one a tab of this
     /// window shows is selected there instead.
-    func openInSheet(_ conversationID: String) {
-        if select(showing: conversationID) { return }
-        presentInSheet(makeTab(opening: conversationID))
+    func openInSheet(_ conversationID: String, device target: DeviceStore? = nil) {
+        if select(showing: conversationID, device: target) { return }
+        presentInSheet(makeTab(device: target, opening: conversationID))
     }
 
     private func presentInSheet(_ tab: ConversationTab) {
@@ -1191,9 +1529,9 @@ struct WindowSeed: Codable, Hashable {
 
     /// Open `conversationID`'s composer in a sheet over the window; the list
     /// selection and the shown conversations stay.
-    func openComposerSheet(_ conversationID: String) {
+    func openComposerSheet(_ conversationID: String, device target: DeviceStore? = nil) {
         closeComposerSheet()
-        let tab = makeTab(opening: conversationID)
+        let tab = makeTab(device: target, opening: conversationID)
         tab.activate()
         tab.composer.focusWhenShown()
         composerSheetTab = tab
@@ -1202,7 +1540,7 @@ struct WindowSeed: Codable, Hashable {
     func closeComposerSheet() {
         guard let tab = composerSheetTab else { return }
         composerSheetTab = nil
-        tab.store.close()
+        tab.close()
     }
 
     /// The composer sheet's conversation in a tab of this window, one that shows it or a new one.
@@ -1215,12 +1553,13 @@ struct WindowSeed: Codable, Hashable {
     /// Resume a conversation's stopped or failed turn from the list, as its
     /// composer's Continue does, with the next-turn choices it keeps. A tab
     /// showing it does it; otherwise one that does not show opens it first.
-    func resumeFromList(_ conversationID: String) {
-        if let shown = Self.openWindows.lazy.filter({ $0.application === self.application }).compactMap({ $0.tab(showing: conversationID)?.1 }).first {
+    func resumeFromList(_ conversationID: String, device target: DeviceStore? = nil) {
+        let device = target ?? application
+        if let shown = Self.openWindows.lazy.filter({ $0.canShow(device) }).compactMap({ $0.tab(showing: conversationID, device: device)?.1 }).first {
             guard shown.store.canResume else { return list.recordProblem("此会话当前不能继续", source: "继续会话") }
             return shown.store.continueTurn()
         }
-        let tab = makeTab(opening: conversationID)
+        let tab = makeTab(device: device, opening: conversationID)
         tab.activate()
         let id = tab.id
         let resume = BackgroundResume(tab: tab, accepted: tab.store.acceptedSubmissions)
@@ -1460,15 +1799,14 @@ struct WindowSeed: Codable, Hashable {
 
     /// Show in a new tab a conversation the core has just opened, such as an
     /// edit's fork, as `result` gives it.
-    func openInNewTab(adopting result: SnapshotResult) {
+    func openInNewTab(adopting result: SnapshotResult, device: DeviceStore) {
         guard let id = result.snapshot?.conversation.id else { return }
-        if select(showing: id) { return }
-        let store = ConversationStore(device: application)
+        if select(showing: id, device: device) { return }
+        let store = ConversationStore(device: device)
         let pane = focusedPane
         let index = pane.tabs.firstIndex { $0.id == pane.selectedID }.map { $0 + 1 }
         pane.insert(ConversationTab(store: store, start: {
-            store.start(loadFirstConversation: false)
-            store.adopt(result)
+            store.start(adopting: result)
         }), at: index)
         navigateComposer(to: id, tab: focused)
         focused.store.noteFocused()
@@ -1476,28 +1814,34 @@ struct WindowSeed: Codable, Hashable {
 
     /// Divide the focused pane; the new pane takes focus and opens
     /// `conversationID`, or starts a new conversation.
-    func split(_ axis: PaneSplit.Axis, opening conversationID: String? = nil) {
-        if let conversationID, select(showing: conversationID) { return }
-        addPane(with: makeTab(opening: conversationID), beside: focusedPaneID, edge: axis == .horizontal ? .trailing : .bottom)
+    func split(_ axis: PaneSplit.Axis, opening conversationID: String? = nil, device target: DeviceStore? = nil) {
+        if let conversationID, select(showing: conversationID, device: target) { return }
+        addPane(with: makeTab(device: target, opening: conversationID), beside: focusedPaneID, edge: axis == .horizontal ? .trailing : .bottom)
     }
 
-    private func makeTab(opening conversationID: String?) -> ConversationTab {
-        let store = ConversationStore(device: application)
+    private func makeTab(device target: DeviceStore? = nil, opening conversationID: String?) -> ConversationTab {
+        let store = ConversationStore(device: target ?? application)
+        // A tab owns its destination before reading finishes. Otherwise a
+        // close/restart during a remote lookup restores an empty tab.
+        if let conversationID { store.noteRestoredConversation(conversationID) }
         return ConversationTab(store: store, start: {
             store.start(loadFirstConversation: false, newConversation: conversationID == nil, opening: conversationID)
         })
     }
 
     /// Select the tab showing a conversation, if one does.
-    private func select(showing conversationID: String) -> Bool {
-        guard let (_, tab) = tab(showing: conversationID) else { return false }
+    private func select(showing conversationID: String, device: DeviceStore? = nil) -> Bool {
+        guard let (_, tab) = tab(showing: conversationID, device: device) else { return false }
         selectTab(tab.id)
         return true
     }
 
-    func tab(showing conversationID: String) -> (Pane, ConversationTab)? {
+    func tab(showing conversationID: String, device: DeviceStore? = nil) -> (Pane, ConversationTab)? {
         for pane in orderedPanes {
-            if let tab = pane.tabs.compactMap({ $0 as? ConversationTab }).first(where: { $0.store.selectedConversationID == conversationID || $0.store.reachingConversationID == conversationID }) { return (pane, tab) }
+            if let tab = pane.tabs.compactMap({ $0 as? ConversationTab }).first(where: { tab in
+                (device == nil || tab.store.device === device)
+                    && (tab.store.selectedConversationID == conversationID || tab.store.reachingConversationID == conversationID)
+            }) { return (pane, tab) }
         }
         return nil
     }
@@ -1519,6 +1863,12 @@ struct WindowSeed: Codable, Hashable {
         noteSelected(pane.selected)
     }
 
+    /// One-based visible order in the focused group; an absent slot is a no-op.
+    func selectTab(at position: Int) {
+        guard position > 0, position <= focusedPane.tabs.count else { return }
+        selectTab(focusedPane.tabs[position - 1].id)
+    }
+
     /// The tab after (or before) the focused pane's shown one.
     func selectNeighbourTab(forward: Bool) {
         let pane = focusedPane
@@ -1526,13 +1876,14 @@ struct WindowSeed: Codable, Hashable {
         selectTab(pane.tabs[(index + (forward ? 1 : pane.tabs.count - 1)) % pane.tabs.count].id)
     }
 
-    /// Close a tab: its pane's last tab closes the pane, the window's last closes the window.
+    /// The final document leaves a blank tab; closing that blank closes the window.
     func closeTab(_ id: UUID) {
+        guard let pane = pane(holding: id), let closing = pane.tabs.first(where: { $0.id == id }) else { return }
+        noteRecentlyClosed(closing, in: pane)
         let navigating = id == focusedEditor.id && tabCount > 1 && focusedEditor is ConversationTab
-        if navigating, !tools.panesHaveComposer { composerDrafts.checkpoint() }
+        if navigating, !tools.panesHaveComposer { drafts(for: focused.store.device).checkpoint() }
         closeSideChats(from: id)
         guard let tab = detach(id, emptying: .close) else { return }
-        if let closed = tab as? ConversationTab { noteRecentlyClosed(closed) }
         tab.close()
         if navigating, let next = focusedEditor as? ConversationTab {
             navigateComposer(to: next.store.loadedConversationID ?? "tab:\(next.id)", tab: next, checkpointPrevious: false)
@@ -1540,25 +1891,63 @@ struct WindowSeed: Codable, Hashable {
     }
 
     /// Side chats end with their source and are not reopenable.
-    private func noteRecentlyClosed(_ tab: ConversationTab) {
-        guard !tab.store.isSideChat else { return }
-        var target = tab.store.isUnsentConversation ? nil : tab.store.selectedConversationID ?? tabConversations[tab.id]
+    private func noteRecentlyClosed(_ tab: EditorTab, in pane: Pane) {
+        let conversation = tab as? ConversationTab
+        guard conversation?.store.isSideChat != true else { return }
+        var target = conversation?.store.isUnsentConversation == true ? nil : conversation?.store.selectedConversationID ?? tabConversations[tab.id]
         if target?.hasPrefix(ConversationStore.draftConversationPrefix) == true { target = nil }
-        recentlyClosed.append(target)
+        recentlyClosed.append(ClosedTarget(device: conversation?.store.device.peerID, conversation: target,
+                                          tabID: tab.id, paneID: pane.id, index: pane.tabs.firstIndex { $0.id == tab.id }!,
+                                          layout: layout, creation: conversation?.store.unsentConversation,
+                                          artifact: (tab as? ArtifactTab)?.document))
         if recentlyClosed.count > 25 { recentlyClosed.removeFirst() }
     }
-    /// Reopen the most recently closed tab: its conversation in a tab after
-    /// the shown one; a closed unsent conversation reopens as a fresh new
-    /// one. Entries whose conversation was deleted meanwhile are skipped.
+    /// Restore identity and position, including a group removed with its last tab.
     func reopenClosedTab() {
         while let target = recentlyClosed.popLast() {
-            guard let id = target else { openInNewTab(); return }
-            guard application.conversations.contains(where: { $0.id == id }) else { continue }
-            openInNewTab(id); return
+            guard let device = closedTargetDevice(target),
+                  target.conversation.map({ !device.deletedConversationIDs.contains($0) }) ?? true else { continue }
+            if let id = target.conversation, select(showing: id, device: device) { return }
+            let tab: EditorTab
+            if let artifact = target.artifact { tab = ArtifactTab(id: target.tabID, document: artifact) }
+            else {
+                let store = ConversationStore(device: device)
+                if let id = target.conversation { store.noteRestoredConversation(id) }
+                tab = ConversationTab(id: target.tabID, store: store, start: {
+                    if let creation = target.creation { store.restoreUnsentConversation(creation) }
+                    else { store.start(loadFirstConversation: false, newConversation: target.conversation == nil, opening: target.conversation) }
+                })
+            }
+            if let pane = panes[target.paneID] { pane.insert(tab, at: target.index) }
+            else {
+                let pane = Pane(id: target.paneID, tabs: [tab])
+                let currentIDs = Set(layout.paneIDs)
+                let originalRemaining = target.layout.paneIDs.filter { !currentIDs.contains($0) }
+                    .reduce(target.layout) { $0.removing($1) ?? $0 }
+                if originalRemaining == layout {
+                    layout = target.layout.paneIDs.filter { !currentIDs.contains($0) && $0 != pane.id }
+                        .reduce(target.layout) { $0.removing($1) ?? $0 }
+                } else {
+                    // A subsequently rearranged workspace keeps its new groups.
+                    layout = layout.inserting(pane.id, beside: focusedPaneID, edge: .trailing)
+                }
+                panes[pane.id] = pane
+                follow(pane)
+            }
+            selectTab(tab.id)
+            tabsRevision &+= 1
+            return
         }
     }
+    private func closedTargetDevice(_ target: ClosedTarget) -> DeviceStore? {
+        guard let peer = target.device else { return application }
+        return hub?.store(for: peer)
+    }
     var canReopenClosedTab: Bool {
-        recentlyClosed.contains { entry in entry == nil || application.conversations.contains(where: { $0.id == entry }) }
+        recentlyClosed.contains { entry in
+            guard let device = closedTargetDevice(entry) else { return false }
+            return entry.conversation.map { !device.deletedConversationIDs.contains($0) } ?? true
+        }
     }
     func closeOtherTabs(_ id: UUID) {
         guard let pane = pane(holding: id) else { return }
@@ -1599,7 +1988,7 @@ struct WindowSeed: Codable, Hashable {
         if let sheet = artifactSheet, sheet.id == id { artifactSheet = nil; return sheet }
         guard let pane = pane(holding: id), let tab = pane.tabs.first(where: { $0.id == id }) else { return nil }
         if let tab = tab as? ConversationTab, !tab.store.isSideChat, let conversationID = tab.store.loadedConversationID {
-            tab.composer = composerDrafts.model(for: .conversation(conversationID), tab: tab)
+            tab.composer = drafts(for: tab.store.device).model(for: .conversation(conversationID), tab: tab)
         }
         if pane.remove(id) {
             if pane.id == focusedPaneID { noteSelected(pane.selected) }
@@ -1608,7 +1997,8 @@ struct WindowSeed: Codable, Hashable {
         } else {
             switch emptying {
             case .keep: return nil
-            case .leave where hasToolWindows:
+            case .close where (tab as? ConversationTab)?.isBlank != true,
+                 .leave where hasToolWindows:
                 pane.insert(makeTab(opening: nil))
                 pane.remove(id)
                 noteSelected(pane.selected)
@@ -1640,7 +2030,7 @@ struct WindowSeed: Codable, Hashable {
             focus(neighbours[max(0, min(index - 1, neighbours.count - 1))])
         }
         if !tools.panesHaveComposer, let previousOwner, let owner = composerOwner(for: focused), previousOwner != owner {
-            composerDrafts.move(previous, to: owner, tab: focused)
+            drafts(for: focused.store.device).move(previous, to: owner, tab: focused)
         }
     }
 
@@ -1658,7 +2048,7 @@ struct WindowSeed: Codable, Hashable {
         noteSelected(tab)
         let inputTarget = (tab as? ConversationTab) ?? focused
         if !tools.panesHaveComposer, let previousOwner, let owner = composerOwner(for: inputTarget), previousOwner != owner {
-            composerDrafts.move(previous, to: owner, tab: inputTarget)
+            drafts(for: inputTarget.store.device).move(previous, to: owner, tab: inputTarget)
         }
     }
 
@@ -1678,7 +2068,7 @@ struct WindowSeed: Codable, Hashable {
         guard let tabID, let source = Self.owning(tab: tabID) else {
             guard let conversationID = ConversationLink.conversation(in: link)?.conversationID else { return }
             if let (pane, existing) = tab(showing: conversationID) { pane.select(existing.id); focus(pane.id); return }
-            let tab = makeTab(opening: conversationID)
+            let tab = makeTab(device: aggregated.device(of: conversationID)?.store, opening: conversationID)
             switch zone {
             case .center: targetPane.insert(tab, at: index); focus(target); noteSelected(tab)
             case .edge(let edge): addPane(with: tab, beside: target, edge: edge)
@@ -1736,7 +2126,8 @@ struct WindowSeed: Codable, Hashable {
         releaseComposerForHandoff(tab)
         Self.handoff[tab.id] = tab
         let existing = Set(NSApp.windows.map(\.windowNumber))
-        openWindow(.single, WindowSeed(tab: tab.id, device: device))
+        let peer = (tab as? ConversationTab).flatMap { hub?.peerID(of: $0.store.device) } ?? device
+        openWindow(.single, WindowSeed(tab: tab.id, device: peer))
         if let frame { Self.place(windowNotIn: existing, frame: frame, attempts: 20) }
     }
 
@@ -1744,7 +2135,7 @@ struct WindowSeed: Codable, Hashable {
     /// a tab or rearranging panes in this window keeps the existing model.
     private func releaseComposerForHandoff(_ editor: EditorTab) {
         guard let tab = editor as? ConversationTab, !tab.store.isSideChat,
-              let replacement = composerDrafts.releaseEditingModel(tab.composer) else { return }
+              let replacement = drafts(for: tab.store.device).releaseEditingModel(tab.composer) else { return }
         for remaining in conversationTabs where remaining !== tab && remaining.composer === tab.composer {
             remaining.composer = replacement
         }
@@ -1753,12 +2144,12 @@ struct WindowSeed: Codable, Hashable {
 
     /// Open a conversation in a conversation window of its own; a tab of this
     /// window showing it moves there. At `point`, the window's top left is there.
-    func openInNewWindow(_ conversationID: String, at point: NSPoint? = nil) {
-        if let (_, tab) = tab(showing: conversationID) { return moveToNewWindow(tab.id, at: point) }
+    func openInNewWindow(_ conversationID: String, device target: DeviceStore? = nil, at point: NSPoint? = nil) {
+        if let (_, tab) = tab(showing: conversationID, device: target) { return moveToNewWindow(tab.id, at: point) }
         guard let openWindow else { return }
         let frame = newWindowFrame(size: nil, at: point)
         let existing = Set(NSApp.windows.map(\.windowNumber))
-        openWindow(.single, WindowSeed(conversationID: conversationID, device: device))
+        openWindow(.single, WindowSeed(conversationID: conversationID, device: target == nil ? device : target?.peerID))
         if let frame { Self.place(windowNotIn: existing, frame: frame, attempts: 20) }
     }
 
@@ -1782,8 +2173,13 @@ struct WindowSeed: Codable, Hashable {
         return frame
     }
 
-    /// Window-local navigation and input always refer to one execution device.
+    /// Only crossing a window boundary separates local editor state. Closing
+    /// a tab or rearranging panes in this window keeps the existing model.
+    /// Any two workspace windows show the same devices, so a tab crosses
+    /// between them freely; single-conversation windows still match devices.
     private func acceptsEditor(from source: ConversationWindowModel) -> Bool {
+        if source === self { return true }
+        if kind == .workspace && source.kind == .workspace { return true }
         guard source.application !== application else { return true }
         list.recordProblem("标签页只能移到查看同一设备的窗口。", source: "移动标签页")
         return false
@@ -1791,7 +2187,7 @@ struct WindowSeed: Codable, Hashable {
 
     /// A tab arriving from another window.
     private func adopt(_ tab: EditorTab) {
-        if let tab = tab as? ConversationTab, !tab.store.isSideChat, let conversationID = tab.store.loadedConversationID { composerDrafts.adopt(tab.composer, conversationID: conversationID, tab: tab) }
+        if let tab = tab as? ConversationTab, !tab.store.isSideChat, let conversationID = tab.store.loadedConversationID { drafts(for: tab.store.device).adopt(tab.composer, conversationID: conversationID, tab: tab) }
         follow(tab)
         tabsRevision &+= 1
     }
@@ -1820,6 +2216,21 @@ struct WindowSeed: Codable, Hashable {
         let order = layout.paneIDs
         guard order.count > 1, let index = order.firstIndex(of: focusedPaneID) else { return }
         focus(order[(index + (forward ? 1 : order.count - 1)) % order.count])
+        // Pointer focus must leave the clicked control alone; this keyboard
+        // command also moves the responder. Otherwise typing still edits the
+        // previous group's composer despite the newly selected command target.
+        window?.makeFirstResponder(nil)
+        guard let tab = focusedEditor as? ConversationTab else { return }
+        switch tools[.composer].place {
+        case .builtIn:
+            composer(for: tab).focusWhenShown()
+        case .docked where tools.isOpen(.composer):
+            composer(for: tab).focusWhenShown()
+        default:
+            // Changing groups does not reopen a hidden panel or bring a
+            // detached tool forward. The selected editor takes the keyboard.
+            tab.focusTranscript()
+        }
     }
 
     func resize(at path: [Int], fractions: [Double]) {
@@ -1840,11 +2251,14 @@ struct WindowSeed: Codable, Hashable {
 
     private func follow(_ editor: EditorTab) {
         guard let tab = editor as? ConversationTab, !tab.store.isSideChat else { return }
+        // Unsent tabs may never select a conversation, but their execution
+        // device already determines where their creation target will run.
+        noteTabDevice(tab)
         var watches = Set<AnyCancellable>()
         tab.store.composerEvents.sink { [weak self, weak tab] navigation in
             guard let self, let tab else { return }
             if case let .created(previous, id, runtimeID, input) = navigation {
-                self.composerDrafts.reassociate(input, from: previous, to: id, runtimeID: runtimeID, targetTab: tab)
+                self.drafts(for: tab.store.device).reassociate(input, from: previous, to: id, runtimeID: runtimeID, targetTab: tab, publish: false)
                 return
             }
             if case .creationTargetChanged = navigation { self.persistWorkspace(); return }
@@ -1864,15 +2278,16 @@ struct WindowSeed: Codable, Hashable {
             if id != nil { self.restoredCreationTargets[tab.id] = nil }
             DispatchQueue.main.async { [weak self, weak tab] in
                 guard let self, let tab else { return }
-                self.composerDrafts.removeConversations(self.application.deletedConversationIDs)
+                self.drafts(for: tab.store.device).removeConversations(tab.store.device.deletedConversationIDs)
                 if tab === self.focused, tab.store.loadedConversationID != nil, let restored = self.restoredComposerDraft {
                     self.restoredComposerDraft = nil
-                    if let owner = self.composerOwner(for: tab) { self.composerDrafts.move(restored, to: owner, tab: tab) }
+                    if let owner = self.composerOwner(for: tab) { self.drafts(for: tab.store.device).move(restored, to: owner, tab: tab) }
                 }
             }
             if self.tabConversations[tab.id] != id {
                 self.closeSideChats(from: tab.id)
                 self.tabConversations[tab.id] = id
+                self.noteTabDevice(tab)
             }
         }.store(in: &watches)
         subscriptions[tab.id] = watches
@@ -1942,8 +2357,28 @@ struct WindowSeed: Codable, Hashable {
 
     /// The tools' toolbar buttons by tool, for telling which one a right click lands on.
     private var toolbarAnchors: [ToolWindowKind: () -> NSView?] = [:]
+    private var refreshToolbarAnchor: (() -> NSView?)?
 
     func registerToolbarButton(_ kind: ToolWindowKind, anchor: @escaping () -> NSView?) { toolbarAnchors[kind] = anchor }
+    func registerRefreshToolbarButton(anchor: @escaping () -> NSView?) { refreshToolbarAnchor = anchor }
+
+    /// NSToolbar consumes SwiftUI context menus before they reach the button.
+    /// Reuse the window's native event bridge for both native context gestures.
+    private func showsRefreshMenu(for event: NSEvent) -> Bool {
+        guard let view = refreshToolbarAnchor?(), view.window === event.window,
+              view.bounds.contains(view.convert(event.locationInWindow, from: nil)) else { return false }
+        let store = focused.store
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+        let conversation = ClosureMenuItem("刷新当前会话") { [weak store] in store?.reloadFromRuntimes() }
+        let device = ClosureMenuItem("刷新设备状态") { [weak store] in store?.reloadDeviceState() }
+        conversation.isEnabled = store.canReloadFromRuntimes
+        device.isEnabled = store.canReloadFromRuntimes
+        menu.addItem(conversation)
+        menu.addItem(device)
+        NSMenu.popUpContextMenu(menu, with: event, for: view)
+        return true
+    }
 
     /// A right click on the outline's or the linked agents' toolbar button
     /// offers where that tool is, which SwiftUI's own context menu does not
@@ -1965,29 +2400,38 @@ struct WindowSeed: Codable, Hashable {
         return false
     }
 
-    /// A click in a pane focuses it, wherever in the pane it lands.
+    /// A primary click in a pane focuses it, wherever in the pane it lands.
+    /// Context menus and middle-button close act on their target without
+    /// changing the active pane or the shared composer.
     private func installMouseMonitor() {
         guard mouseMonitor == nil else { return }
         mouseMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]) { [weak self] event in
             guard let self else { return event }
-            if event.type == .leftMouseDown { self.noteClick(event) }
-            if event.type == .rightMouseDown, self.showsToolbarPlaceMenu(for: event) { return nil }
-            for tab in self.conversationTabs {
-                guard let view = self.conversationAnchors[tab.id]?(), view.window === event.window,
-                      view.bounds.contains(view.convert(event.locationInWindow, from: nil)) else { continue }
-                self.focusConversation(tab)
+            return self.handleMouseDown(event)
+        }
+    }
+
+    func handleMouseDown(_ event: NSEvent) -> NSEvent? {
+        if event.type == .rightMouseDown || (event.type == .leftMouseDown && event.modifierFlags.contains(.control)),
+           showsRefreshMenu(for: event) { return nil }
+        if event.type == .rightMouseDown, showsToolbarPlaceMenu(for: event) { return nil }
+        guard event.type == .leftMouseDown, !event.modifierFlags.contains(.control) else { return event }
+        noteClick(event)
+        for tab in conversationTabs {
+            guard let view = conversationAnchors[tab.id]?(), view.window === event.window,
+                  view.bounds.contains(view.convert(event.locationInWindow, from: nil)) else { continue }
+            focusConversation(tab)
+            break
+        }
+        guard isSplit else { return event }
+        for (id, anchor) in anchors {
+            guard let view = anchor(), let window = view.window, window === event.window else { continue }
+            if view.bounds.contains(view.convert(event.locationInWindow, from: nil)) {
+                focus(id)
                 break
             }
-            guard self.isSplit else { return event }
-            for (id, anchor) in self.anchors {
-                guard let view = anchor(), let window = view.window, window === event.window else { continue }
-                if view.bounds.contains(view.convert(event.locationInWindow, from: nil)) {
-                    self.focus(id)
-                    break
-                }
-            }
-            return event
         }
+        return event
     }
 }
 

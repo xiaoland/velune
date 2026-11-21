@@ -3,12 +3,15 @@ use crate::{
     BilledCost, BillingConfiguration, BillingRateLimit, BillingReport, BillingScope,
     BillingService, BillingSpendLimit, BillingUsage,
 };
-use chrono::{TimeZone, Utc};
+use chrono::{DateTime, TimeZone, Utc};
 use reqwest::header::{HeaderMap, HeaderValue};
 use serde::{Deserialize, de::DeserializeOwned};
 use std::collections::{BTreeMap, BTreeSet};
+use velune_application_api::ProviderAnalyticsModelUsage;
 
 type Result<T> = std::result::Result<T, String>;
+const MAX_ROWS: usize = 32_000;
+
 struct Client {
     http: reqwest::Client,
     origin: String,
@@ -99,7 +102,7 @@ impl Client {
                 refreshed = Some(refreshed.map_or(value, |previous: i64| previous.min(value)));
             }
             rows.extend(page.data);
-            if rows.len() > 32000 {
+            if rows.len() > MAX_ROWS {
                 return Err("账单记录过多，请缩小统计范围".into());
             }
             if page.has_more == Some(false) || (page.has_more.is_none() && page.next_page.is_none())
@@ -131,8 +134,16 @@ struct Bucket<T> {
     results: Vec<T>,
 }
 #[derive(Deserialize)]
+struct OpenAiUsageBucket {
+    start_time: Option<i64>,
+    end_time: Option<i64>,
+    results: Vec<OpenAiUsage>,
+}
+#[derive(Deserialize)]
 struct OpenAiUsage {
+    model: Option<String>,
     input_tokens: u64,
+    input_uncached_tokens: Option<u64>,
     output_tokens: u64,
     num_model_requests: u64,
     input_cached_tokens: Option<u64>,
@@ -170,7 +181,14 @@ fn decimal<'de, D: serde::Deserializer<'de>>(
 }
 #[derive(Deserialize)]
 struct AnthropicUsageRow {
+    starting_at: Option<String>,
+    ending_at: Option<String>,
+    group: Option<AnthropicUsageGroup>,
     usage: AnthropicUsage,
+}
+#[derive(Deserialize)]
+struct AnthropicUsageGroup {
+    model: Option<String>,
 }
 #[derive(Deserialize)]
 struct AnthropicUsage {
@@ -233,6 +251,147 @@ fn add(target: &mut u64, value: u64) -> Result<()> {
     *target = target.checked_add(value).ok_or("官方用量总数溢出")?;
     Ok(())
 }
+
+struct UsageTotals {
+    total: BillingUsage,
+    models: Vec<ProviderAnalyticsModelUsage>,
+}
+impl UsageTotals {
+    fn new() -> Self {
+        Self {
+            total: BillingUsage {
+                input_tokens: 0,
+                output_tokens: 0,
+                cached_input_tokens: Some(0),
+                cache_creation_input_tokens: Some(0),
+                requests: 0,
+            },
+            models: Vec::new(),
+        }
+    }
+
+    fn add(
+        &mut self,
+        usage: BillingUsage,
+        uncached_input_tokens: Option<u64>,
+        model: Option<String>,
+        range: Option<(DateTime<Utc>, DateTime<Utc>)>,
+    ) -> Result<()> {
+        add(&mut self.total.input_tokens, usage.input_tokens)?;
+        add(&mut self.total.output_tokens, usage.output_tokens)?;
+        add(&mut self.total.requests, usage.requests)?;
+        for (target, value) in [
+            (
+                &mut self.total.cached_input_tokens,
+                usage.cached_input_tokens,
+            ),
+            (
+                &mut self.total.cache_creation_input_tokens,
+                usage.cache_creation_input_tokens,
+            ),
+        ] {
+            match (target.as_mut(), value) {
+                (Some(target), Some(value)) => add(target, value)?,
+                _ => *target = None,
+            }
+        }
+        if let Some(model) = model.filter(|name| !name.trim().is_empty()) {
+            let (date, from_ms, to_ms) = match range {
+                Some((from, to)) if from < to => (
+                    Some(from.date_naive().to_string()),
+                    Some(from.timestamp_millis()),
+                    Some(to.timestamp_millis()),
+                ),
+                _ => (None, None, None),
+            };
+            self.models.push(ProviderAnalyticsModelUsage {
+                model,
+                date,
+                from_ms,
+                to_ms,
+                input_tokens: Some(usage.input_tokens),
+                uncached_input_tokens,
+                cached_input_tokens: usage.cached_input_tokens,
+                output_tokens: Some(usage.output_tokens),
+                requests: Some(usage.requests),
+                turns: None,
+                credits: None,
+                relative_usage: None,
+            });
+        }
+        Ok(())
+    }
+}
+
+fn openai_usage(buckets: Vec<OpenAiUsageBucket>) -> Result<UsageTotals> {
+    if buckets
+        .iter()
+        .map(|bucket| bucket.results.len())
+        .sum::<usize>()
+        > MAX_ROWS
+    {
+        return Err("账单记录过多，请缩小统计范围".into());
+    }
+    let mut totals = UsageTotals::new();
+    for bucket in buckets {
+        let timestamp = |value| DateTime::from_timestamp(value, 0);
+        let range = bucket
+            .start_time
+            .and_then(timestamp)
+            .zip(bucket.end_time.and_then(timestamp));
+        for row in bucket.results {
+            totals.add(
+                BillingUsage {
+                    input_tokens: row.input_tokens,
+                    output_tokens: row.output_tokens,
+                    cached_input_tokens: row.input_cached_tokens,
+                    cache_creation_input_tokens: row.input_cache_write_tokens,
+                    requests: row.num_model_requests,
+                },
+                row.input_uncached_tokens,
+                row.model,
+                range,
+            )?;
+        }
+    }
+    Ok(totals)
+}
+
+fn anthropic_usage(rows: Vec<AnthropicUsageRow>) -> Result<UsageTotals> {
+    let timestamp = |value: &str| {
+        DateTime::parse_from_rfc3339(value)
+            .ok()
+            .map(|value| value.with_timezone(&Utc))
+    };
+    let mut totals = UsageTotals::new();
+    for row in rows {
+        let usage = row.usage;
+        let mut cache_creation = 0;
+        for value in usage.cache_creation.into_values() {
+            add(&mut cache_creation, value)?;
+        }
+        let mut input_tokens = usage.uncached_input_tokens;
+        add(&mut input_tokens, usage.cache_read_input_tokens)?;
+        add(&mut input_tokens, cache_creation)?;
+        totals.add(
+            BillingUsage {
+                input_tokens,
+                output_tokens: usage.output_tokens,
+                cached_input_tokens: Some(usage.cache_read_input_tokens),
+                cache_creation_input_tokens: Some(cache_creation),
+                requests: usage.requests,
+            },
+            Some(usage.uncached_input_tokens),
+            row.group.and_then(|group| group.model),
+            row.starting_at
+                .as_deref()
+                .and_then(timestamp)
+                .zip(row.ending_at.as_deref().and_then(timestamp)),
+        )?;
+    }
+    Ok(totals)
+}
+
 fn money_totals(rows: impl IntoIterator<Item = (String, f64)>) -> Result<Vec<BilledCost>> {
     let mut totals = BTreeMap::<String, f64>::new();
     for (currency, amount) in rows {
@@ -280,6 +439,7 @@ async fn collect_with_client(
         observed_at_ms: observed,
         data_refreshed_at_ms: None,
         usage: None,
+        model_usage: None,
         costs: None,
         spend_limit: None,
         rate_limits: None,
@@ -316,43 +476,20 @@ async fn collect_with_client(
         BillingScope::Workspace { id } => params.push(("workspace_ids[]".into(), id.clone())),
         BillingScope::ApiKey { id } => params.push(("api_key_ids[]".into(), id.clone())),
     }
+    let mut usage_params = params.clone();
+    usage_params.push(("group_by[]".into(), "model".into()));
     match configuration.service {
         BillingService::OpenAi => {
             let (usage, costs) = tokio::join!(
-                client.pages::<Bucket<OpenAiUsage>>(
-                    "/v1/organization/usage/completions",
-                    params.clone()
-                ),
+                client
+                    .pages::<OpenAiUsageBucket>("/v1/organization/usage/completions", usage_params),
                 client.pages::<Bucket<OpenAiCost>>("/v1/organization/costs", params)
             );
-            match usage.and_then(|(rows, _)| {
-                let mut total = BillingUsage {
-                    input_tokens: 0,
-                    output_tokens: 0,
-                    cached_input_tokens: Some(0),
-                    cache_creation_input_tokens: Some(0),
-                    requests: 0,
-                };
-                for row in rows.into_iter().flat_map(|r| r.results) {
-                    add(&mut total.input_tokens, row.input_tokens)?;
-                    add(&mut total.output_tokens, row.output_tokens)?;
-                    add(&mut total.requests, row.num_model_requests)?;
-                    for (target, value) in [
-                        (&mut total.cached_input_tokens, row.input_cached_tokens),
-                        (
-                            &mut total.cache_creation_input_tokens,
-                            row.input_cache_write_tokens,
-                        ),
-                    ] {
-                        match (target.as_mut(), value) {
-                            (Some(target), Some(value)) => add(target, value)?,
-                            _ => *target = None,
-                        }
-                    }
+            match usage.and_then(|(rows, _)| openai_usage(rows)) {
+                Ok(usage) => {
+                    report.usage = Some(usage.total);
+                    report.model_usage = Some(usage.models);
                 }
-                Ok(total)
-            }) {
-                Ok(value) => report.usage = Some(value),
                 Err(error) => report.problems.push(format!("用量：{error}")),
             }
             match costs.and_then(|(rows, _)| {
@@ -391,46 +528,16 @@ async fn collect_with_client(
             }
         }
         BillingService::Anthropic => {
+            usage_params.push(("time_bucket_width".into(), "1d".into()));
             let (usage, costs) = tokio::join!(
-                client.pages::<AnthropicUsageRow>(
-                    "/v1/organizations/analytics/usage",
-                    params.clone()
-                ),
+                client
+                    .pages::<AnthropicUsageRow>("/v1/organizations/analytics/usage", usage_params),
                 client.pages::<AnthropicCostRow>("/v1/organizations/analytics/cost", params)
             );
-            match usage.and_then(|(rows, refreshed)| {
-                let mut total = BillingUsage {
-                    input_tokens: 0,
-                    output_tokens: 0,
-                    cached_input_tokens: Some(0),
-                    cache_creation_input_tokens: Some(0),
-                    requests: 0,
-                };
-                for row in rows {
-                    let row = row.usage;
-                    add(&mut total.input_tokens, row.uncached_input_tokens)?;
-                    add(&mut total.input_tokens, row.cache_read_input_tokens)?;
-                    add(
-                        total.cached_input_tokens.as_mut().expect("initialized"),
-                        row.cache_read_input_tokens,
-                    )?;
-                    for value in row.cache_creation.values() {
-                        add(&mut total.input_tokens, *value)?;
-                        add(
-                            total
-                                .cache_creation_input_tokens
-                                .as_mut()
-                                .expect("initialized"),
-                            *value,
-                        )?;
-                    }
-                    add(&mut total.output_tokens, row.output_tokens)?;
-                    add(&mut total.requests, row.requests)?;
-                }
-                Ok((total, refreshed))
-            }) {
-                Ok((value, refreshed)) => {
-                    report.usage = Some(value);
+            match usage.and_then(|(rows, refreshed)| Ok((anthropic_usage(rows)?, refreshed))) {
+                Ok((usage, refreshed)) => {
+                    report.usage = Some(usage.total);
+                    report.model_usage = Some(usage.models);
                     report.data_refreshed_at_ms = refreshed;
                 }
                 Err(error) => report.problems.push(format!("用量：{error}")),

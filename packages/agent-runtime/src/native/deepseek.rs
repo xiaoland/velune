@@ -2,7 +2,7 @@
 use super::*;
 
 impl NativeSession {
-    pub(super) fn dsh_command(config: &NativeConfig) -> Result<Command> {
+    pub(super) fn dsh_command(config: &NativeConfig) -> Result<(Command, bool)> {
         let path = if let Some(gateway) = &config.gateway {
             let api = match gateway.protocol.as_str() {
                 "openai-completions" => "openai-completions",
@@ -89,10 +89,11 @@ impl NativeSession {
             crate::process_tree::command(&config.binary)
         };
         command.args(["--profile", "acp"]);
+        let has_overlay = path.is_some();
         if let Some(path) = path {
             command.arg("--patch").arg(path);
         }
-        Ok(command)
+        Ok((command, has_overlay))
     }
 
     pub(super) fn dsh_initialize(&mut self) -> Result<()> {
@@ -122,7 +123,10 @@ impl NativeSession {
             .as_str()
             .ok_or_else(|| Error::new("DeepSeek 未返回原生会话身份"))?;
         self.replace_snapshot(id, Some(&cwd), runtime_id, Vec::new());
-        self.dsh_configure_model(&result)
+        self.receive_native_record(result, |session, result| {
+            session.data.replace(DataOwner::Identity);
+            session.dsh_configure_model(&result)
+        })
     }
 
     pub(super) fn dsh_open(
@@ -141,7 +145,10 @@ impl NativeSession {
             &json!({"sessionId":id,"cwd":cwd,"mcpServers":self.dsh_mcp_servers()}),
         )?;
         self.replace_snapshot(id, Some(&cwd), runtime_id, history);
-        self.dsh_configure_model(&result)
+        self.receive_native_record(result, |session, result| {
+            session.data.replace(DataOwner::Identity);
+            session.dsh_configure_model(&result)
+        })
     }
 
     fn dsh_mcp_servers(&self) -> Vec<Value> {
@@ -163,6 +170,7 @@ impl NativeSession {
     }
 
     fn dsh_apply_model(&mut self, result: &Value) -> Result<()> {
+        self.data.replace(DataOwner::Catalog);
         self.available_models = result["configOptions"]
             .as_array()
             .cloned()
@@ -182,6 +190,10 @@ impl NativeSession {
             && pair.len() == 2
             && pair[0] != "velune-gateway"
         {
+            let selection_retention = self
+                .data
+                .try_clone(|owner| matches!(owner, DataOwner::Catalog))?;
+            self.data.insert(DataOwner::Selection, selection_retention);
             self.native_selection = Some(RuntimeModel {
                 provider_id: Some(pair[0].clone()),
                 id: pair[1].clone(),
@@ -219,10 +231,17 @@ impl NativeSession {
                 "sessionId":self.native_id,"configId":"model","value":advertised
             }),
         )?;
-        self.available_models = response["configOptions"]
-            .as_array()
-            .cloned()
-            .unwrap_or_default();
+        let (models, retention) = response
+            .map(|mut value| {
+                value["configOptions"]
+                    .take()
+                    .as_array_mut()
+                    .map(std::mem::take)
+                    .unwrap_or_default()
+            })
+            .into_parts();
+        self.available_models = models;
+        self.data.insert(DataOwner::Catalog, retention);
         Ok(())
     }
 
@@ -256,8 +275,11 @@ impl NativeSession {
     }
 
     pub(super) fn dsh_cancel(&mut self) -> Result<()> {
-        self.rpc
-            .notify("session/cancel", &json!({"sessionId":self.native_id}))?;
+        self.rpc.notify_with_class(
+            "session/cancel",
+            &json!({"sessionId":self.native_id}),
+            crate::transport::WriteClass::ProtocolReplyCancel,
+        )?;
         if let Some(snapshot) = &mut self.snapshot {
             snapshot.run_state = RunState::Stopping;
             snapshot.revision += 1;
@@ -265,10 +287,15 @@ impl NativeSession {
         Ok(())
     }
 
-    pub(super) fn dsh_models(&mut self) -> Result<Vec<ModelOption>> {
+    pub(super) fn dsh_models(&mut self) -> Result<Retained<Vec<ModelOption>>> {
         if self.native_id.is_none() {
-            self.available_models = self.dsh_discover_models()?;
+            let (models, retention) = self.dsh_discover_models()?.into_parts();
+            self.available_models = models;
+            self.data.insert(DataOwner::Catalog, retention);
         }
+        let retention = self
+            .data
+            .try_clone(|owner| matches!(owner, DataOwner::Catalog))?;
         let models = self
             .available_models
             .iter()
@@ -297,10 +324,10 @@ impl NativeSession {
                 });
             }
         }
-        Ok(result)
+        Ok(Retained::from_parts(result, retention))
     }
 
-    fn dsh_discover_models(&self) -> Result<Vec<Value>> {
+    fn dsh_discover_models(&self) -> Result<Retained<Vec<Value>>> {
         // ACP exposes the catalog only on a session. DSH flushes even an empty
         // session, so discovery must use a private persistence root, then remove it.
         let directory = self
@@ -321,7 +348,7 @@ impl NativeSession {
             )?;
             let mut config = self.config.clone();
             config.gateway = None;
-            let mut command = Self::dsh_command(&config)?;
+            let (mut command, _) = Self::dsh_command(&config)?;
             command
                 .arg("--patch")
                 .arg(&patch)
@@ -339,10 +366,13 @@ impl NativeSession {
                     .as_str()
                     .ok_or_else(|| Error::new("DeepSeek 模型目录未返回临时会话身份"))?;
                 rpc.request("session/close", &json!({"sessionId":id}))?;
-                response["configOptions"]
-                    .as_array()
-                    .cloned()
-                    .ok_or_else(|| Error::new("DeepSeek 模型目录格式无效"))
+                response.try_map(|mut value| {
+                    value["configOptions"]
+                        .take()
+                        .as_array_mut()
+                        .map(std::mem::take)
+                        .ok_or_else(|| Error::new("DeepSeek 模型目录格式无效"))
+                })
             })();
             rpc.finish();
             result
@@ -357,6 +387,9 @@ impl NativeSession {
             ))),
         }
     }
+    pub(super) fn dsh_receive_record(&mut self, record: Retained<Value>) -> Result<()> {
+        self.receive_native_record(record, Self::dsh_handle_record)
+    }
     pub(super) fn dsh_handle_record(&mut self, record: Value) -> Result<()> {
         if let Some(method) = record["method"].as_str() {
             let params = &record["params"];
@@ -365,29 +398,42 @@ impl NativeSession {
                     .get("id")
                     .cloned()
                     .ok_or_else(|| Error::new("ACP 权限请求缺少身份"))?;
-                if params["sessionId"].as_str() != self.native_id.as_deref() {
-                    return self
-                        .rpc
-                        .respond(&request_id, &json!({"outcome":{"outcome":"cancelled"}}));
+                if params["sessionId"].as_str() != self.dsh_routing_identity() {
+                    return self.dsh_auto_reply(
+                        &request_id,
+                        &json!({"outcome":{"outcome":"cancelled"}}),
+                        None,
+                    );
                 }
                 let options = params["options"]
                     .as_array()
                     .ok_or_else(|| Error::new("ACP 权限选项无效"))?;
-                let options = options
+                let mut options = options
                     .iter()
                     .map(|option| {
+                        let approval_kind = serde_json::from_value(option["kind"].clone())
+                            .ok()
+                            .and_then(crate::acp::approval_option_kind);
                         Ok(InteractionOption {
                             id: option["optionId"]
                                 .as_str()
                                 .ok_or_else(|| Error::new("ACP 权限选项缺少身份"))?
                                 .into(),
                             label: option["name"].as_str().unwrap_or("权限选项").into(),
+                            approval_kind,
                         })
                     })
                     .collect::<Result<Vec<_>>>()?;
                 if options.is_empty() {
                     return Err(Error::new("ACP 权限请求没有可用选项"));
                 }
+                let mut seen = std::collections::BTreeSet::new();
+                if !options.iter().all(|option| seen.insert(&option.id)) {
+                    for option in &mut options {
+                        option.approval_kind = None;
+                    }
+                }
+                self.dsh_permission_capacity(&request_id)?;
                 self.add_interaction(
                     PendingRequest {
                         background: false,
@@ -406,49 +452,57 @@ impl NativeSession {
                         options,
                     },
                 );
+                self.dsh_capture_permission_deadline();
             } else if method == "session/update" {
-                if params["sessionId"].as_str() == self.native_id.as_deref() {
+                if params["sessionId"].as_str() == self.dsh_routing_identity() {
                     self.dsh_update(&params["update"])?;
                 }
             } else if let Some(id) = record.get("id") {
-                self.rpc.reject(id, "Unsupported client capability")?;
+                self.dsh_auto_reply(id, &Value::Null, Some("Unsupported client capability"))?;
             }
             return Ok(());
         }
         if let Some(id) = record["id"].as_u64()
             && self.pending_rpc.remove(&id).as_deref() == Some("prompt")
         {
-            if let Some(error) = record.get("error") {
-                let error: agent_client_protocol_schema::v1::Error =
-                    serde_json::from_value(error.clone()).map_err(|error| {
-                        Error::new(format!("DeepSeek ACP 错误响应无效：{error}"))
-                    })?;
-                self.notice(&format!(
-                    "DeepSeek 请求失败（{}）：{error}",
-                    i32::from(error.code)
-                ));
-                self.finish_turn(RunState::Failed)?;
-            } else {
-                let response: agent_client_protocol_schema::v1::PromptResponse =
-                    serde_json::from_value(record["result"].clone()).map_err(|error| {
-                        Error::new(format!("DeepSeek prompt 响应无效：{error}"))
-                    })?;
-                use agent_client_protocol_schema::v1::StopReason;
-                match response.stop_reason {
-                    StopReason::EndTurn => {}
-                    StopReason::Cancelled => self.notice("DeepSeek 本轮已取消。"),
-                    StopReason::MaxTokens => self.notice("DeepSeek 达到本轮输出上限。"),
-                    StopReason::MaxTurnRequests => self.notice("DeepSeek 达到本轮请求次数上限。"),
-                    StopReason::Refusal => self.notice("DeepSeek 拒绝本轮请求。"),
-                    _ => return Err(Error::new("DeepSeek prompt 响应缺少可识别的结束原因")),
-                }
-                if let Some(snapshot) = &mut self.snapshot {
-                    snapshot
-                        .executions
-                        .finish(crate::acp::prompt_outcome(&response.stop_reason));
-                }
-                self.finish_turn(RunState::Idle)?;
+            self.dsh_prompt_completed(&record)?;
+        }
+        Ok(())
+    }
+
+    pub(super) fn dsh_prompt_completed(&mut self, record: &Value) -> Result<()> {
+        if let Some(error) = record.get("error") {
+            let error: agent_client_protocol_schema::v1::Error =
+                serde_json::from_value(error.clone())
+                    .map_err(|error| Error::new(format!("DeepSeek ACP 错误响应无效：{error}")))?;
+            self.notice(&format!(
+                "DeepSeek 请求失败（{}）：{error}",
+                i32::from(error.code)
+            ));
+            self.finish_turn(RunState::Failed)?;
+        } else {
+            let response: agent_client_protocol_schema::v1::PromptResponse =
+                serde_json::from_value(record["result"].clone())
+                    .map_err(|error| Error::new(format!("DeepSeek prompt 响应无效：{error}")))?;
+            use agent_client_protocol_schema::v1::StopReason;
+            match response.stop_reason {
+                StopReason::EndTurn => {}
+                StopReason::Cancelled => self.notice("DeepSeek 本轮已取消。"),
+                StopReason::MaxTokens => self.notice("DeepSeek 达到本轮输出上限。"),
+                StopReason::MaxTurnRequests => self.notice("DeepSeek 达到本轮请求次数上限。"),
+                StopReason::Refusal => self.notice("DeepSeek 拒绝本轮请求。"),
+                _ => return Err(Error::new("DeepSeek prompt 响应缺少可识别的结束原因")),
             }
+            if let Some(snapshot) = &mut self.snapshot {
+                snapshot
+                    .executions
+                    .finish(crate::acp::prompt_outcome(&response.stop_reason));
+            }
+            self.finish_turn(if self.dsh_dispatch_blocked() {
+                RunState::Failed
+            } else {
+                RunState::Idle
+            })?;
         }
         Ok(())
     }
@@ -468,21 +522,17 @@ impl NativeSession {
                     self.turn_id.as_deref().unwrap_or("idle"),
                     if thought { "thought" } else { "message" }
                 );
-                let mut message = self
-                    .snapshot
-                    .as_ref()
-                    .and_then(|s| s.messages.iter().find(|m| m.id == id))
-                    .cloned()
-                    .unwrap_or(Message {
-                        turn_settings: None,
-                        turn_usage: None,
-                        branch_point: None,
-                        completed: false,
-                        id,
-                        role: crate::conversation::MessageRole::Assistant,
-                        timestamp_unix_ms: None,
-                        blocks: Vec::new(),
-                    });
+                let (position, previous) = self.take_message(&id);
+                let mut message = previous.unwrap_or(Message {
+                    turn_settings: None,
+                    turn_usage: None,
+                    branch_point: None,
+                    completed: false,
+                    id,
+                    role: crate::conversation::MessageRole::Assistant,
+                    timestamp_unix_ms: None,
+                    blocks: Vec::new(),
+                });
                 if thought {
                     message
                         .blocks
@@ -492,82 +542,69 @@ impl NativeSession {
                         .blocks
                         .push(MessageBlock::Text { text: text.into() });
                 }
-                self.message(message);
+                self.message_at(message, position);
             }
             Some("tool_call" | "tool_call_update") => {
                 let native = update["toolCallId"]
                     .as_str()
                     .ok_or_else(|| Error::new("ACP 工具更新缺少身份"))?;
                 let id = format!("{}:tool:{native}", self.epoch);
-                let old = self
-                    .snapshot
-                    .as_ref()
-                    .and_then(|s| s.messages.iter().find(|m| m.id == id));
-                let title = update["title"]
-                    .as_str()
-                    .map(str::to_owned)
-                    .or_else(|| {
-                        old.and_then(|m| {
-                            m.blocks.iter().find_map(|b| {
-                                if let MessageBlock::Tool { title, .. } = b {
-                                    Some(title.clone())
-                                } else {
-                                    None
-                                }
-                            })
-                        })
-                    })
-                    .unwrap_or_else(|| "工具操作".into());
-                self.message(Message {
+                let (position, previous) = self.take_message(&id);
+                let mut message = previous.unwrap_or(Message {
                     turn_settings: None,
                     turn_usage: None,
                     branch_point: None,
                     completed: true,
                     id,
-                    role: crate::conversation::MessageRole::Tool,
+                    role: MessageRole::Tool,
                     timestamp_unix_ms: None,
-                    blocks: vec![MessageBlock::Tool {
-                        tool_id: Some(native.into()),
-                        title,
-                        state: match update["status"].as_str() {
-                            Some("completed") => ToolState::Completed,
-                            Some("failed") => ToolState::Failed,
-                            Some("in_progress") => ToolState::Running,
-                            Some("pending") => ToolState::Pending,
-                            _ => old
-                                .and_then(|m| m.blocks.first())
-                                .and_then(|b| {
-                                    if let MessageBlock::Tool { state, .. } = b {
-                                        Some(state.clone())
-                                    } else {
-                                        None
-                                    }
-                                })
-                                .unwrap_or(ToolState::Pending),
-                        },
-                        output: update["content"]
-                            .as_array()
-                            .map(|parts| {
-                                parts
-                                    .iter()
-                                    .filter_map(|part| part["content"]["text"].as_str())
-                                    .collect::<Vec<_>>()
-                                    .join("\n")
-                            })
-                            .or_else(|| {
-                                old.and_then(|m| m.blocks.first()).and_then(|b| {
-                                    if let MessageBlock::Tool { output, .. } = b {
-                                        output.clone()
-                                    } else {
-                                        None
-                                    }
-                                })
-                            }),
-                        conversation_id: None,
-                    }],
+                    blocks: Vec::new(),
                 });
+                let (old_title, old_state, old_output) = std::mem::take(&mut message.blocks)
+                    .into_iter()
+                    .find_map(|block| match block {
+                        MessageBlock::Tool {
+                            title,
+                            state,
+                            output,
+                            ..
+                        } => Some((Some(title), state, output)),
+                        _ => None,
+                    })
+                    .unwrap_or((None, ToolState::Pending, None));
+                let title = update["title"]
+                    .as_str()
+                    .map(str::to_owned)
+                    .or(old_title)
+                    .unwrap_or_else(|| "工具操作".into());
+                let state = match update["status"].as_str() {
+                    Some("completed") => ToolState::Completed,
+                    Some("failed") => ToolState::Failed,
+                    Some("in_progress") => ToolState::Running,
+                    Some("pending") => ToolState::Pending,
+                    _ => old_state,
+                };
+                let output = update["content"]
+                    .as_array()
+                    .map(|parts| {
+                        parts
+                            .iter()
+                            .filter_map(|part| part["content"]["text"].as_str())
+                            .collect::<Vec<_>>()
+                            .join("\n")
+                    })
+                    .or(old_output);
+                message.blocks = vec![MessageBlock::Tool {
+                    tool_id: Some(native.into()),
+                    title,
+                    state,
+                    output,
+                    conversation_id: None,
+                }];
+                self.message_at(message, position);
             }
             Some("config_option_update") => {
+                self.data.replace(DataOwner::Catalog);
                 self.available_models = update["configOptions"]
                     .as_array()
                     .cloned()
@@ -584,8 +621,16 @@ impl NativeSession {
         pending: &PendingRequest,
         reply: RuntimeInteractionReply,
     ) -> Result<()> {
+        let result = self.dsh_permission_result(pending, reply)?;
+        self.rpc.respond(&pending.id, &result)
+    }
+    pub(super) fn dsh_permission_result(
+        &self,
+        pending: &PendingRequest,
+        reply: RuntimeInteractionReply,
+    ) -> Result<Value> {
         if pending.method != "session/request_permission"
-            || pending.payload["sessionId"].as_str() != self.native_id.as_deref()
+            || pending.payload["sessionId"].as_str() != self.dsh_routing_identity()
         {
             return Err(Error::new("此权限请求不属于当前原生会话"));
         }
@@ -598,7 +643,7 @@ impl NativeSession {
             }
             _ => return Err(Error::new("此权限请求不接受该回复")),
         };
-        self.rpc.respond(&pending.id, &json!({"outcome":outcome}))
+        Ok(json!({"outcome":outcome}))
     }
 }
 
@@ -613,7 +658,7 @@ fn initialize(rpc: &mut rpc::RpcClient, require_http_mcp: bool) -> Result<()> {
     if result["protocolVersion"] != 1
         || result["agentCapabilities"]["sessionCapabilities"]
             .get("resume")
-            .is_none()
+            .is_none_or(|resume| !resume.is_object())
     {
         return Err(Error::new("DeepSeek ACP 协议或恢复能力与适配器不匹配"));
     }

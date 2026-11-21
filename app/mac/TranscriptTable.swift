@@ -13,6 +13,8 @@ struct TranscriptJump: Equatable {
     var token: UInt64
 }
 
+
+
 /// SwiftUI supplies the ordered presentation; the native list owns geometry,
 /// row reuse, local disclosure state and the reading position.
 /// The status line under a conversation whose turn is not finished: a
@@ -50,6 +52,7 @@ struct TranscriptTable: NSViewRepresentable {
     let openArtifact: (ArtifactDocument) -> Void
     /// Edits the user message of this ID, when it may be edited now.
     let editMessage: (String) -> (() -> Void)?
+    var deleteMessage: (String) -> (() -> Void)? = { _ in nil }
     /// Forks the conversation through the turn this user message ID starts.
     let forkConversation: (String) -> Void
     /// Names a turn's settings and usage: runtime and permission names come from the configuration.
@@ -552,6 +555,7 @@ struct TranscriptTable: NSViewRepresentable {
             let frame = rowRect(index)
             if cell.frame != frame { cell.frame = frame }
         }
+        synchronizeMaterializedRowOrder()
     }
 
     /// Ends the animation at its final geometry; also used when a scroll,
@@ -1008,7 +1012,46 @@ struct TranscriptTable: NSViewRepresentable {
             let frame = rowRect(index)
             if cell.frame != frame { cell.frame = frame }
         }
+        synchronizeMaterializedRowOrder()
         updateSelectionOutline()
+    }
+
+    /// Geometry and accessibility must expose the same order. Inserting a row
+    /// reuses its neighbours, so addSubview alone leaves the new cell last in
+    /// the native hierarchy even after its frame moves between them.
+    private func synchronizeMaterializedRowOrder() {
+        guard let document else { return }
+        let views = document.subviews
+        var previous = -1
+        var sawOverlay = false
+        var needsOrdering = false
+        for view in views {
+            guard let cell = view as? TranscriptCellView else { sawOverlay = true; continue }
+            if sawOverlay { needsOrdering = true }
+            if let id = cell.rowID, let index = indexByID[id] {
+                if index < previous { needsOrdering = true }
+                previous = index
+            }
+        }
+        guard needsOrdering else { return }
+        func position(_ view: NSView, original: Int) -> (Int, Int) {
+            guard let cell = view as? TranscriptCellView else { return (2, original) }
+            guard let id = cell.rowID, let index = indexByID[id] else { return (1, original) }
+            return (0, index)
+        }
+        let ordered = views.enumerated().sorted {
+            position($0.element, original: $0.offset) < position($1.element, original: $1.offset)
+        }.map(\.element)
+        var ranks = Dictionary(uniqueKeysWithValues: ordered.enumerated().map { (ObjectIdentifier($0.element), $0.offset) })
+        withUnsafeMutablePointer(to: &ranks) { context in
+            document.sortSubviews({ first, second, context in
+                guard let context else { return .orderedSame }
+                let ranks = context.assumingMemoryBound(to: [ObjectIdentifier: Int].self).pointee
+                let a = ranks[ObjectIdentifier(first)] ?? .max
+                let b = ranks[ObjectIdentifier(second)] ?? .max
+                return a == b ? .orderedSame : a < b ? .orderedAscending : .orderedDescending
+            }, context: context)
+        }
     }
 
     // MARK: Keyboard
@@ -1158,6 +1201,10 @@ struct TranscriptTable: NSViewRepresentable {
         }) { [weak self] key in
             self?.toggle(entryID: entry.id, key: key)
         }
+        cell.contextMenu = { [weak self] in
+            guard let self, let index = self.indexByID[entry.id], case .message(let row) = self.entries[index] else { return nil }
+            return self.messageMenu(row)
+        }
         cell.highlight(findQuery)
         cell.setAccessibilityIdentifier(entry.id)
         cell.configurationToken = token
@@ -1209,11 +1256,21 @@ struct TranscriptTable: NSViewRepresentable {
         var ancestor: NSView? = view
         while let current = ancestor, !(current is TranscriptCellView) { ancestor = current.superview }
         guard let rowID = (ancestor as? TranscriptCellView)?.rowID, let row = indexByID[rowID], case .message(let message) = entries[row] else { return menu }
+        return messageMenu(message, menu: menu)
+    }
+
+    private func messageMenu(_ message: TranscriptRow, menu: NSMenu = NSMenu()) -> NSMenu {
         var leading: [NSMenuItem] = []
         if message.message.role == .user, let edit = parent?.editMessage(message.message.id) {
             let item = NSMenuItem(title: "编辑消息…", action: #selector(editMessage(_:)), keyEquivalent: "")
             item.target = self
             item.representedObject = edit
+            leading.append(item)
+        }
+        if message.message.role == .user, let remove = parent?.deleteMessage(message.message.id) {
+            let item = NSMenuItem(title: "删除消息…", action: #selector(editMessage(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = remove
             leading.append(item)
         }
         let source = message.message.copiedText
@@ -1271,13 +1328,32 @@ struct TranscriptTable: NSViewRepresentable {
 
     /// Relative file links belong to the conversation's working directory.
     private func resolve(_ original: String) -> URL? {
-        if let url = URL(string: original), url.scheme != nil { return url.isFileURL && parent?.remoteHost != nil ? nil : url }
-        // Paths of a remote conversation name files on its machine, not here.
-        guard parent?.remoteHost == nil else { return nil }
-        let path = original.removingPercentEncoding ?? original
-        if path.hasPrefix("/") { return URL(fileURLWithPath: path) }
-        guard let cwd = parent?.cwd, !path.isEmpty else { return nil }
-        return URL(fileURLWithPath: cwd, isDirectory: true).appendingPathComponent(path).standardizedFileURL
+        TranscriptFileLink.resolve(original, cwd: parent?.cwd, remote: parent?.remoteHost != nil)
+    }
+}
+
+/// A source location suffix belongs to navigation, not to the filename.
+/// Preserve an existing literal filename before interpreting :line[:column].
+enum TranscriptFileLink {
+    static func resolve(_ original: String, cwd: String?, remote: Bool) -> URL? {
+        let parsed = URL(string: original)
+        let hasLocation = original.range(of: #":\d+(?::\d+)?$"#, options: .regularExpression) != nil
+        if let parsed, let scheme = parsed.scheme, scheme != "file",
+           original.contains("://") || !hasLocation || ["mailto", "tel", "agents"].contains(scheme) { return parsed }
+        guard !remote else { return nil }
+        let path: String
+        if let parsed, parsed.isFileURL { path = parsed.path }
+        else { path = original.removingPercentEncoding ?? original }
+        func file(_ path: String) -> URL? {
+            if path.hasPrefix("/") { return URL(fileURLWithPath: path) }
+            if path.hasPrefix("~/") { return URL(fileURLWithPath: (path as NSString).expandingTildeInPath) }
+            guard let cwd, !path.isEmpty else { return nil }
+            return URL(fileURLWithPath: cwd, isDirectory: true).appendingPathComponent(path).standardizedFileURL
+        }
+        guard let literal = file(path) else { return nil }
+        if FileManager.default.fileExists(atPath: literal.path) { return literal }
+        let normalized = path.replacingOccurrences(of: #":\d+(?::\d+)?$"#, with: "", options: .regularExpression)
+        return file(normalized)
     }
 }
 
@@ -1342,6 +1418,8 @@ enum TranscriptConversationLink {
 /// Applies a precomputed layout; never measures or asks for its own size.
 @MainActor final class TranscriptCellView: NSView {
     private(set) var rowID: String?
+    var contextMenu: (() -> NSMenu?)?
+    override func menu(for event: NSEvent) -> NSMenu? { contextMenu?() ?? super.menu(for: event) }
     /// Identifies the applied layout so scrolling does not reapply it.
     var configurationToken: String?
     private var textViews: [TranscriptTextView] = []
@@ -1380,6 +1458,7 @@ enum TranscriptConversationLink {
         super.prepareForReuse()
         clipsToBounds = false
         rowID = nil
+        contextMenu = nil
         configurationToken = nil
         outlineToggle = nil
         editAction = nil
@@ -1393,7 +1472,7 @@ enum TranscriptConversationLink {
         for view in textViews { view.clear() }
         for view in codeBlocks { view.clear() }
         spinner?.stopAnimation(nil)
-        activityLabel?.show("", shimmering: false)
+        activityLabel?.show(NSAttributedString(string: ""), shimmering: false)
     }
 
     func apply(_ layout: TranscriptRowLayout, rowID: String, outlineToggle: (() -> Void)?, edit: (() -> Void)?, fork: (() -> Void)?, toggleHelp: String?, textDelegate: NSTextViewDelegate, openArtifact: @escaping (String) -> Void, toggle: @escaping (String) -> Void) {
@@ -1426,7 +1505,7 @@ enum TranscriptConversationLink {
                 view.delegate = textDelegate
                 view.passesClicks = inBubble && outlineToggle != nil
                 view.show(text, frame: frame)
-            case .code(let language, let source, let text, let frame, let textFrame):
+            case .code(let language, let label, let source, let text, let frame, let textFrame, let controlsFont):
                 if codeIndex == codeBlocks.count {
                     let view = TranscriptCodeBlockView()
                     codeBlocks.append(view)
@@ -1434,8 +1513,9 @@ enum TranscriptConversationLink {
                 }
                 let view = codeBlocks[codeIndex]; codeIndex += 1
                 view.isHidden = false
-                view.show(language: language, source: source, text: text, frame: frame,
-                          textFrame: textFrame.offsetBy(dx: -frame.minX, dy: -frame.minY), textDelegate: textDelegate,
+                view.show(language: language, label: label, source: source, text: text, frame: frame,
+                          textFrame: textFrame.offsetBy(dx: -frame.minX, dy: -frame.minY), controlsFont: controlsFont,
+                          textDelegate: textDelegate,
                           openArtifact: { openArtifact(source) })
             case .disclosure(let key, let title, let symbol, let expanded, let frame):
                 if disclosureIndex == disclosures.count {
@@ -1447,7 +1527,7 @@ enum TranscriptConversationLink {
                 view.frame = frame
                 view.configure(title: title, symbol: symbol, expanded: expanded) { toggle(key) }
                 view.isHidden = false
-            case .attachment(let item, let frame):
+            case .attachment(let item, let name, let frame):
                 if attachmentIndex == attachments.count {
                     let view = TranscriptAttachmentView()
                     attachments.append(view)
@@ -1455,18 +1535,18 @@ enum TranscriptConversationLink {
                 }
                 let view = attachments[attachmentIndex]; attachmentIndex += 1
                 view.frame = frame
-                view.show(item)
+                view.show(item, title: name)
                 view.isHidden = false
-            case .turnSettings(let settings, let frame):
+            case .turnSettings(let settings, let brief, let frame):
                 if turnSettings == nil {
                     let view = TranscriptTurnSettingsView()
                     addSubview(view)
                     turnSettings = view
                 }
                 turnSettings?.frame = frame
-                turnSettings?.show(settings)
+                turnSettings?.show(settings, brief: brief)
                 turnSettings?.isHidden = false
-            case .activity(let activity, let frame):
+            case .activity(let activity, let text, let frame):
                 if spinner == nil {
                     let indicator = NSProgressIndicator()
                     indicator.style = .spinning; indicator.controlSize = .small; indicator.isDisplayedWhenStopped = false
@@ -1477,7 +1557,7 @@ enum TranscriptConversationLink {
                 spinner?.frame = NSRect(x: frame.minX, y: frame.minY + 1, width: 16, height: 16)
                 spinner?.isHidden = false; spinner?.startAnimation(nil)
                 activityLabel?.frame = NSRect(x: frame.minX + 22, y: frame.minY, width: frame.width - 22, height: frame.height)
-                activityLabel?.show(activity.text, shimmering: activity.isLive)
+                activityLabel?.show(text, shimmering: activity.isLive)
                 activityLabel?.isHidden = activity.text.isEmpty
             case .copy(let text, let frame):
                 if copyButton == nil {
@@ -1537,10 +1617,13 @@ enum TranscriptConversationLink {
 
     // The copy button shows while the pointer is anywhere on the row; moving
     // counts too, since a row scrolled under a still pointer gets no entry.
+    private var hoverTrackingArea: NSTrackingArea?
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
-        for area in trackingAreas { removeTrackingArea(area) }
-        addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .mouseMoved, .activeInActiveApp, .inVisibleRect], owner: self))
+        if let hoverTrackingArea { removeTrackingArea(hoverTrackingArea) }
+        let area = NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .mouseMoved, .activeInActiveApp, .inVisibleRect], owner: self)
+        hoverTrackingArea = area
+        addTrackingArea(area)
     }
     override func mouseEntered(with event: NSEvent) { reveal(true) }
     override func mouseMoved(with event: NSEvent) { reveal(true) }
@@ -1651,16 +1734,16 @@ enum TranscriptConversationLink {
     required init?(coder: NSCoder) { fatalError("init(coder:) is unavailable") }
 
     /// A nil `expanded` shows the label alone, aligned with expandable ones.
-    func configure(title: String, symbol: String?, expanded: Bool?, action: @escaping () -> Void) {
+    /// `title` carries its own typography (font, color, truncation); this
+    /// view draws it as given and holds no font of its own.
+    func configure(title: NSAttributedString, symbol: String?, expanded: Bool?, action: @escaping () -> Void) {
         self.action = expanded == nil ? nil : action
         triangle.isHidden = expanded == nil
         triangle.state = expanded == true ? .on : .off
-        triangle.setAccessibilityLabel(title)
+        triangle.setAccessibilityLabel(title.string)
         label.setAccessibilityRole(expanded == nil ? .staticText : .button)
-        label.toolTip = title
-        let paragraph = NSMutableParagraphStyle()
-        paragraph.lineBreakMode = .byTruncatingTail
-        label.attributedTitle = NSAttributedString(string: title, attributes: [.font: TranscriptTypography.callout, .foregroundColor: NSColor.secondaryLabelColor, .paragraphStyle: paragraph])
+        label.toolTip = title.string
+        label.attributedTitle = title
         label.image = symbol.flatMap { NSImage(systemSymbolName: $0, accessibilityDescription: nil)?.withSymbolConfiguration(.init(pointSize: 11, weight: .regular)) }
         needsLayout = true
     }
@@ -1700,24 +1783,25 @@ enum TranscriptConversationLink {
 
     override init(frame: NSRect) {
         super.init(frame: frame)
-        label.font = TranscriptTypography.caption
-        label.textColor = .secondaryLabelColor
         viewButton.bezelStyle = .accessoryBarAction
         viewButton.controlSize = .small
-        viewButton.font = TranscriptTypography.caption
         viewButton.target = self; viewButton.action = #selector(viewArtifact)
         addSubview(label); addSubview(copyButton); addSubview(viewButton); addSubview(text)
     }
     convenience init() { self.init(frame: .zero) }
     required init?(coder: NSCoder) { fatalError("init(coder:) is unavailable") }
 
-    func show(language: String?, source: String, text value: NSAttributedString, frame: NSRect, textFrame: NSRect, textDelegate: NSTextViewDelegate, openArtifact: @escaping () -> Void) {
+    /// Typography arrives baked from the row layout: `label` as an attributed
+    /// string, `controlsFont` for the buttons. The view holds no fonts.
+    func show(language: String?, label attributedLabel: NSAttributedString, source: String, text value: NSAttributedString, frame: NSRect, textFrame: NSRect, controlsFont: NSFont, textDelegate: NSTextViewDelegate, openArtifact: @escaping () -> Void) {
         self.frame = frame
         self.openArtifact = openArtifact
+        label.attributedStringValue = attributedLabel
+        copyButton.font = controlsFont
+        viewButton.font = controlsFont
         viewButton.isHidden = language?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() != "mermaid"
-        label.stringValue = language ?? "代码"
-        let padding = TranscriptRowLayout.codePadding, labelHeight = TranscriptRowLayout.codeLabelHeight
         label.sizeToFit()
+        let padding = TranscriptRowLayout.codePadding, labelHeight = TranscriptRowLayout.codeLabelHeight
         label.frame.origin = NSPoint(x: padding, y: padding + (labelHeight - label.frame.height) / 2)
         copyButton.code = source
         copyButton.sizeToFit()
@@ -1746,7 +1830,6 @@ enum TranscriptConversationLink {
         super.init(frame: .zero)
         bezelStyle = .accessoryBarAction
         controlSize = .small
-        font = TranscriptTypography.caption
         target = self; action = #selector(copyCode)
         reset()
     }
@@ -1858,8 +1941,6 @@ enum TranscriptConversationLink {
     override init(frame: NSRect) {
         super.init(frame: frame)
         wantsLayer = true
-        label.font = TranscriptTypography.callout
-        label.textColor = .secondaryLabelColor
         label.lineBreakMode = .byTruncatingTail
         label.maximumNumberOfLines = 1
         label.wantsLayer = true
@@ -1871,10 +1952,12 @@ enum TranscriptConversationLink {
     convenience init() { self.init(frame: .zero) }
     required init?(coder: NSCoder) { fatalError("init(coder:) is unavailable") }
 
-    func show(_ text: String, shimmering: Bool) {
-        if label.stringValue != text { label.stringValue = text; needsLayout = true }
-        setAccessibilityLabel(text)
-        let shimmer = shimmering && !text.isEmpty && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+    /// `text` carries its own typography (font, color, truncation) baked at
+    /// measurement time; the label draws it as given and holds no font.
+    func show(_ text: NSAttributedString, shimmering: Bool) {
+        if !label.attributedStringValue.isEqual(to: text) { label.attributedStringValue = text; needsLayout = true }
+        setAccessibilityLabel(text.string)
+        let shimmer = shimmering && text.length > 0 && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         guard shimmer != self.shimmering else { return }
         self.shimmering = shimmer
         needsLayout = true
@@ -1919,7 +2002,6 @@ enum TranscriptConversationLink {
         image.wantsLayer = true
         image.layer?.cornerRadius = 4
         image.layer?.masksToBounds = true
-        name.font = TranscriptTypography.callout
         name.lineBreakMode = .byTruncatingMiddle
         name.maximumNumberOfLines = 1
         addSubview(image); addSubview(name)
@@ -1932,10 +2014,12 @@ enum TranscriptConversationLink {
     override var wantsUpdateLayer: Bool { true }
     override func updateLayer() { layer?.backgroundColor = NSColor.quaternarySystemFill.cgColor }
 
-    func show(_ item: TranscriptAttachment) {
+    /// `title` carries its own typography baked at measurement time; the
+    /// identity guard covers the other per-item work only.
+    func show(_ item: TranscriptAttachment, title: NSAttributedString) {
+        name.attributedStringValue = title
         guard item != self.item else { return }
         self.item = item
-        name.stringValue = item.name
         let path: String? = switch item.content { case .imageFile(let path), .file(let path): path; case .imageData, .imagePending: nil }
         toolTip = path ?? item.name
         setAccessibilityLabel("打开附件 \(item.name)")
@@ -2039,8 +2123,6 @@ enum TranscriptConversationLink {
         button.image = NSImage(systemSymbolName: "info.circle", accessibilityDescription: "本轮配置")?.withSymbolConfiguration(.init(pointSize: 11, weight: .regular))
         button.contentTintColor = .tertiaryLabelColor
         button.target = self; button.action = #selector(showSettings)
-        summary.font = TranscriptTypography.callout
-        summary.textColor = .secondaryLabelColor
         summary.lineBreakMode = .byTruncatingMiddle
         summary.alignment = .right
         summary.alphaValue = 0
@@ -2049,9 +2131,10 @@ enum TranscriptConversationLink {
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is unavailable") }
 
-    func show(_ value: TurnSettingsSummary) {
+    /// `brief` carries its own typography baked at measurement time.
+    func show(_ value: TurnSettingsSummary, brief: NSAttributedString) {
         settings = value
-        summary.stringValue = value.brief
+        summary.attributedStringValue = brief
         button.toolTip = value.brief
         button.setAccessibilityLabel("本轮配置")
         button.setAccessibilityValue(value.brief)
@@ -2071,10 +2154,13 @@ enum TranscriptConversationLink {
         return button.frame.contains(convert(point, from: superview)) ? button : nil
     }
 
+    private var hoverTrackingArea: NSTrackingArea?
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
-        for area in trackingAreas { removeTrackingArea(area) }
-        addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeInActiveApp, .inVisibleRect], owner: self))
+        if let hoverTrackingArea { removeTrackingArea(hoverTrackingArea) }
+        let area = NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeInActiveApp, .inVisibleRect], owner: self)
+        hoverTrackingArea = area
+        addTrackingArea(area)
     }
     override func mouseEntered(with event: NSEvent) { reveal(true) }
     override func mouseExited(with event: NSEvent) { reveal(false) }
@@ -2121,5 +2207,67 @@ private struct TurnSettingsPopover: View {
                 Text(part.value).monospacedDigit().textSelection(.enabled)
             }
         }
+    }
+}
+
+extension TranscriptTableController {
+    /// Exercises the production model, virtualized controller, cell reuse and
+    /// AppKit's unignored accessibility children in an offscreen native window.
+    static func checkMaterializedRowOrder() {
+        let model = TranscriptModel()
+        let controller = TranscriptTableController()
+        let scroll = controller.view()
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 800), styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = scroll
+        scroll.layoutSubtreeIfNeeded()
+        guard let document = controller.document else { fatalError("合成消息列表未创建原生document") }
+        func cells(_ ids: [String]) -> [TranscriptCellView] {
+            document.subviews.compactMap { $0 as? TranscriptCellView }.filter { $0.rowID.map(ids.contains) == true }
+        }
+        func rowID(of element: Any) -> String? {
+            var view = element as? NSView ?? (element as? NSCell)?.controlView
+            while let current = view {
+                if let cell = current as? TranscriptCellView { return cell.rowID }
+                view = current.superview
+            }
+            return nil
+        }
+        func apply(_ ids: [String]) {
+            let messages = ids.map { DeliveredMessage(id: $0, role: $0 == "N" ? .client : .assistant, blocks: [.text(text: "native order \($0)")]) }
+            model.apply(messages, turns: [], items: ids.map { .message(id: $0, messageId: $0) }, outline: [], identities: ids.map { .init(id: $0, messageId: $0) }, editable: [])
+            let items = model.items(for: model.rows, turnHeaders: false)
+            precondition(items.map(\.id) == ids, "权威消息模型顺序必须保持")
+            controller.update(TranscriptTable(controller: controller, conversationID: "synthetic-native-order", items: items, revision: model.contentRevision,
+                activity: nil, outlineCollapsed: false, outlineAnchorID: nil, cwd: nil, bottomRequest: 0, jump: nil,
+                followingChanged: { _ in }, outlineToggle: { _ in }, loadPayloads: { _ in }, openConversation: { _ in }, openAgentURI: { _ in }, openArtifact: { _ in },
+                editMessage: { _ in nil }, forkConversation: { _ in }, describeSettings: { _ in nil }))
+            controller.materializeVisibleRows(extra: document.bounds)
+            let materialized = cells(ids)
+            precondition(controller.entries.compactMap { entry -> String? in
+                if case .message(let row) = entry { return row.id }; return nil
+            } == ids)
+            precondition(materialized.map(\.rowID) == ids.map(Optional.some), "原生cell子视图必须与消息顺序一致")
+            precondition(zip(materialized, materialized.dropFirst()).allSatisfy { $0.0.frame.minY < $0.1.frame.minY }, "原生cell几何顺序必须一致")
+            let axIDs = NSAccessibility.unignoredChildren(from: document.subviews).compactMap(rowID).filter(ids.contains).reduce(into: [String]()) {
+                if $0.last != $1 { $0.append($1) }
+            }
+            precondition(axIDs == ids, "AppKit可访问性顺序不能把中间插入的消息堆到末尾")
+        }
+        apply(["A", "C"])
+        let kept = Dictionary(uniqueKeysWithValues: cells(["A", "C"]).map { ($0.rowID!, ObjectIdentifier($0)) })
+        controller.focusFromKeyboard()
+        precondition(document.subviews.last === controller.selectionOutline)
+        apply(["A", "N", "C"])
+        precondition(cells(["A", "C"]).allSatisfy { kept[$0.rowID!] == ObjectIdentifier($0) }, "中间插入不能重建已有cell")
+        precondition(document.subviews.last === controller.selectionOutline, "selection overlay必须保留在所有cells之上")
+        apply(["A", "C"])
+        precondition(cells(["A", "C"]).allSatisfy { kept[$0.rowID!] == ObjectIdentifier($0) })
+        let unchanged = document.subviews.map(ObjectIdentifier.init)
+        controller.materializeVisibleRows(extra: document.bounds)
+        precondition(document.subviews.map(ObjectIdentifier.init) == unchanged, "稳定物化不能改变子视图顺序或身份")
+        controller.viewRemoved()
+        window.contentView = nil
+        FileHandle.standardError.write(Data("PASS native transcript ordering: model/items, frame y, document/AX children A,C → A,N,C → A,C; retained cell identities and overlay\n".utf8))
     }
 }
