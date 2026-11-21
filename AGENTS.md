@@ -16,7 +16,8 @@
 
 ## 仓库约束
 
-- 默认从 `develop` 开发；`main` 只通过 PR 合入，不直接推送、强推或覆盖。
+- 主工作树默认检出 `develop`。日常开发在 `develop` 上进行，并行或隔离任务可从 `develop` 建独立工作树，验收后把已完成的改动合回 `develop`。
+- `main` 只通过 PR 合入，不直接推送、强推或覆盖。
 - 不得通过 hard-reset／hard-cutoff 丢弃已有用户数据；首次启动自动备份并迁移已知旧格式，格式变化须完成可恢复备份与核验，未知／损坏格式不得被空状态覆盖。现行迁移入口见[数据迁移与恢复](docs/development.md#数据迁移与恢复)。
 - Mac 开发实例使用 `svc run start-macos-dev`／`status-macos-dev`／`stop-macos-dev`；不得按名称批量终止 Velune、用裸执行启动普通 GUI 或使用日常状态目录；既有程序化检查入口须用私有合成目录和本次启动的准确子进程句柄。用途、目录与进程控制见[开发实例隔离](docs/development/environment.md#mac-开发实例)。
 - 开发验证使用合成数据；真实凭据、账户状态、支付信息和会话记录的处理边界与授权例外见 [`docs/development.md`](docs/development.md)。
