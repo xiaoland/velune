@@ -78,8 +78,10 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import app.velune.bindings.conversation.AsyncQuestionDelivery
 import app.velune.bindings.conversation.InteractionAnswer
 import app.velune.bindings.conversation.InteractionKind
+import app.velune.bindings.conversation.InteractionQuestion
 import app.velune.bindings.conversation.ModelSelection
 import app.velune.bindings.conversation.RunState
 import app.velune.bindings.conversation.RuntimeInteraction
@@ -182,7 +184,9 @@ fun ConversationContent(header: ConversationHeader, state: ConversationState, ac
             }
             state.failure?.let { Failure(it) }
             state.interactions.firstOrNull()?.let { interaction ->
-                InteractionCard(interaction, enabled = !state.busy) { reply -> actions.reply(interaction.id, reply) }
+                InteractionCard(interaction, enabled = !state.busy, childConversation = state.conversation?.parentConversationId != null) { reply ->
+                    actions.reply(interaction.id, reply)
+                }
             }
             Composer(state, actions)
         }
@@ -202,7 +206,7 @@ private fun Failure(text: String) {
 /** An approval or a question from the runtime, above the input like a pinned message. */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun InteractionCard(interaction: RuntimeInteraction, enabled: Boolean, reply: (RuntimeInteractionReply) -> Unit) {
+private fun InteractionCard(interaction: RuntimeInteraction, enabled: Boolean, childConversation: Boolean, reply: (RuntimeInteractionReply) -> Unit) {
     Surface(
         color = MaterialTheme.colorScheme.surfaceContainerHigh, shape = RoundedCornerShape(16.dp),
         border = BorderStroke(1.dp, Tone.Attention.color().copy(alpha = 0.5f)),
@@ -229,34 +233,90 @@ private fun InteractionCard(interaction: RuntimeInteraction, enabled: Boolean, r
                         }
                     }
                 }
-                is InteractionKind.UserInput -> {
-                    val answers = remember(interaction.id) { mutableStateMapOf<String, String>() }
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.AutoMirrored.Outlined.HelpOutline, contentDescription = null, modifier = Modifier.size(20.dp), tint = Tone.Attention.color())
-                        Text("需要你的回答", style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(start = 8.dp))
-                    }
-                    kind.questions.forEach { question ->
-                        Text(question.text, style = MaterialTheme.typography.bodyMedium)
-                        if (question.options.isNotEmpty()) FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                            question.options.forEach { option ->
-                                if (answers[question.id] == option.label) Button(onClick = {}) { Text(option.label) }
-                                else OutlinedButton(onClick = { answers[question.id] = option.label }) { Text(option.label) }
-                            }
-                        } else OutlinedTextField(
-                            value = answers[question.id].orEmpty(), onValueChange = { answers[question.id] = it },
-                            visualTransformation = if (question.secret) PasswordVisualTransformation() else VisualTransformation.None,
-                            modifier = Modifier.fillMaxWidth(),
-                        )
-                    }
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Button(enabled = enabled && kind.questions.all { !answers[it.id].isNullOrBlank() }, onClick = {
-                            reply(RuntimeInteractionReply.Answers(kind.questions.map { InteractionAnswer(it.id, listOf(answers[it.id].orEmpty())) }))
-                        }) { Text("提交") }
-                        TextButton(enabled = enabled, onClick = { reply(RuntimeInteractionReply.Cancel) }) { Text("取消") }
-                    }
+                is InteractionKind.UserInput -> QuestionFields(interaction.id, kind.questions, enabled, readOnly = false, reply = reply)
+                is InteractionKind.AsyncUserInput -> QuestionFields(
+                    interaction.id, kind.questions, enabled,
+                    readOnly = childConversation && kind.delivery == AsyncQuestionDelivery.CONVERSATION_INPUT,
+                    reply = reply,
+                )
+            }
+        }
+    }
+}
+
+private class QuestionDraft(questions: List<InteractionQuestion>) {
+    val choices = mutableStateMapOf<String, Set<String>>()
+    val text = mutableStateMapOf<String, String>()
+    val other = mutableStateMapOf<String, Boolean>()
+
+    init {
+        for (question in questions) {
+            val value = question.defaultText ?: continue
+            when {
+                question.options.isEmpty() -> text[question.id] = value
+                question.options.any { it.id == value } -> choices[question.id] = setOf(value)
+                question.allowOther -> {
+                    text[question.id] = value
+                    other[question.id] = true
                 }
             }
         }
+    }
+
+    fun values(question: InteractionQuestion): List<String> {
+        val options = choices[question.id].orEmpty()
+        val useText = question.options.isEmpty() || other[question.id] == true
+        return question.options.filter { it.id in options }.map { it.id } +
+            listOfNotNull(text[question.id]?.takeIf { useText && it.isNotBlank() })
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun QuestionFields(id: String, questions: List<InteractionQuestion>, enabled: Boolean, readOnly: Boolean, reply: (RuntimeInteractionReply) -> Unit) {
+    val draft = remember(id) { QuestionDraft(questions) }
+    val canAnswer = enabled && !readOnly
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Icon(Icons.AutoMirrored.Outlined.HelpOutline, contentDescription = null, modifier = Modifier.size(20.dp), tint = Tone.Attention.color())
+        Text("需要你的回答", style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(start = 8.dp))
+    }
+    if (readOnly) Text("请回到父会话回答这个问题。", style = MaterialTheme.typography.bodySmall)
+    Column(Modifier.heightIn(max = 240.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        questions.forEach { question ->
+            val selected = draft.choices[question.id].orEmpty()
+            val hasOther = draft.other[question.id] == true
+            Text(question.text, style = MaterialTheme.typography.bodyMedium)
+            if (question.options.isNotEmpty()) FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                question.options.forEach { option ->
+                    val change = {
+                        draft.choices[question.id] = when {
+                            !question.multiple -> setOf(option.id)
+                            option.id in selected -> selected - option.id
+                            else -> selected + option.id
+                        }
+                        if (!question.multiple) draft.other[question.id] = false
+                    }
+                    if (option.id in selected) Button(onClick = change, enabled = canAnswer) { Text(option.label) }
+                    else OutlinedButton(onClick = change, enabled = canAnswer) { Text(option.label) }
+                }
+                if (question.allowOther && !readOnly) OutlinedButton(enabled = enabled, onClick = {
+                    draft.other[question.id] = !hasOther
+                    if (!question.multiple && !hasOther) draft.choices.remove(question.id)
+                }) { Text("其他") }
+            }
+            if (!readOnly && (question.options.isEmpty() || hasOther)) OutlinedTextField(
+                value = draft.text[question.id].orEmpty(), onValueChange = { draft.text[question.id] = it },
+                visualTransformation = if (question.secret) PasswordVisualTransformation() else VisualTransformation.None,
+                modifier = Modifier.fillMaxWidth(), enabled = enabled, singleLine = !question.multiline,
+                maxLines = if (question.multiline) 5 else 1,
+            )
+        }
+    }
+    if (!readOnly) Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Button(enabled = enabled && questions.isNotEmpty() && questions.all { draft.values(it).isNotEmpty() }, onClick = {
+            reply(RuntimeInteractionReply.Answers(questions.map { InteractionAnswer(it.id, draft.values(it)) }))
+        }) { Text("提交") }
+        TextButton(enabled = enabled, onClick = { reply(RuntimeInteractionReply.Cancel) }) { Text("取消") }
     }
 }
 
