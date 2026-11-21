@@ -92,14 +92,6 @@ enum SendMode: String, Codable, CaseIterable, Identifiable {
     var steerKey: String { self == .returnSends ? "⌘Return" : "⌥⌘Return" }
 }
 
-extension View {
-    /// The send mode's key on a sheet's primary button, so a message edited
-    /// there is sent as one typed in the composer; the other key is a new line.
-    func sendKeyboardShortcut() -> some View {
-        keyboardShortcut(KeyboardShortcutSettings.shared.sendMode == .returnSends ? .defaultAction : KeyboardShortcut(.return, modifiers: .command))
-    }
-}
-
 /// Velune's commands the user may give other shortcuts, with the ones they
 /// come with. Sending and steering stay with the composer's own keys (see
 /// `SendMode`); the global ones work while another app is active.

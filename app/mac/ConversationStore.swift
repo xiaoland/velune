@@ -926,11 +926,6 @@ final class ConversationStore: ObservableObject {
         let selected = ids.filter { conversation(id: $0) != nil }
         if selected != selectedConversationIDs { selectedConversationIDs = selected }
     }
-    func selectConversations(ids: Set<String>) {
-        guard !isLoading, !isShuttingDown, !device.authenticationRunning else { return }
-        selectedConversationIDs = ids.filter { conversation(id: $0) != nil }
-        if selectedConversationIDs.count == 1, let id = selectedConversationIDs.first, id != loadedConversationID { selectConversation(id: id) }
-    }
 
     // MARK: - Navigation
 

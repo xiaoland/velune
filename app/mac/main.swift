@@ -549,18 +549,22 @@ enum VeluneEntry {
             messageEditorVisualCheck(directory: directory)
             exit(0)
         }
-        if CommandLine.arguments.contains("--check-message-experience"),
-           CommandLine.arguments.contains("--experience-message-editor-offscreen")
-            || CommandLine.arguments.contains("--experience-compaction-only")
-            || CommandLine.arguments.contains("--experience-sidebar-only")
-            || CommandLine.arguments.contains("--experience-runtime-recovery-only")
-            || CommandLine.arguments.contains("--experience-workspace-only") {
-            // Enter before SwiftUI initializes its App/delegate/scene machinery.
-            admitMacExecution()
-            messageExperienceChecks()
-        }
+        runMessageExperienceCheck(beforeSwiftUI: true)
         VeluneApp.main()
     }
+}
+
+@MainActor private func runMessageExperienceCheck(beforeSwiftUI: Bool) {
+    let arguments = CommandLine.arguments
+    guard arguments.contains("--check-message-experience") else { return }
+    let runsBeforeSwiftUI = arguments.contains("--experience-message-editor-offscreen")
+        || arguments.contains("--experience-compaction-only")
+        || arguments.contains("--experience-sidebar-only")
+        || arguments.contains("--experience-runtime-recovery-only")
+        || arguments.contains("--experience-workspace-only")
+    guard runsBeforeSwiftUI == beforeSwiftUI else { return }
+    if beforeSwiftUI { admitMacExecution() }
+    messageExperienceChecks()
 }
 
 @MainActor private func admitMacExecution() {
@@ -588,13 +592,12 @@ struct VeluneApp: App {
             FileHandle.standardError.write(Data("旧 Composer 双所有权检查已退役；请使用 --check-composer-ownership --composer-check-content-target 与 --check-composer-controls。\n".utf8))
             exit(2)
         }
-        if CommandLine.arguments.contains("--check-composer-ownership") { composerOwnershipCheck() }
         if CommandLine.arguments.contains("--check-new-tab") { composerOwnershipCheck() }
         if CommandLine.arguments.contains("--check-composer-controls") { composerControlsCheck() }
         if CommandLine.arguments.contains("--check-runtime-interactions") { runtimeInteractionChecks() }
         if CommandLine.arguments.contains("--check-notification-navigation") { notificationNavigationChecks() }
         if CommandLine.arguments.contains("--check-aggregated-list") { aggregatedListChecks() }
-        if CommandLine.arguments.contains("--check-message-experience") { messageExperienceChecks() }
+        runMessageExperienceCheck(beforeSwiftUI: false)
         let preview = CommandLine.arguments.contains { $0.hasPrefix("--preview") }
         MacNativePersistenceGate.close()
         let transport: Transport?
