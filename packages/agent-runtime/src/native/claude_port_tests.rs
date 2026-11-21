@@ -325,6 +325,25 @@ fn claude_legacy_steer_never_sends_text_when_permission_is_rejected_or_the_turn_
 }
 
 #[test]
+fn claude_input_uses_the_wire_uuid_for_its_live_row() {
+    let mut fixture = Fixture::new("hold");
+    fixture.user();
+    let messages = &fixture.session.snapshot().unwrap().messages;
+    let id = &messages
+        .iter()
+        .find(|message| message.role == MessageRole::User)
+        .unwrap()
+        .id;
+    let requests = fixture.requests();
+    let frame = requests
+        .iter()
+        .find(|request| request["type"] == "user")
+        .unwrap();
+    assert_eq!(frame["uuid"].as_str(), Some(id.as_str()));
+    assert_eq!(id.len(), 36);
+}
+
+#[test]
 fn claude_port_rejects_unapplied_steer_configuration_without_user_write() {
     let mut fixture = Fixture::new("hold");
     fixture.user();

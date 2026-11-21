@@ -370,7 +370,7 @@ impl NativeSession {
         ))
     }
     pub(super) fn claude_create(&mut self, cwd: Option<&Path>, runtime_id: &str) -> Result<()> {
-        let id = claude_session_id()?;
+        let id = claude_uuid()?;
         let cwd = cwd
             .map(Path::to_path_buf)
             .unwrap_or_else(|| self.default_cwd.clone());
@@ -397,7 +397,7 @@ impl NativeSession {
                     .native_id
                     .clone()
                     .ok_or_else(|| Error::new("没有原生会话身份"))?;
-                let id = claude_session_id()?;
+                let id = claude_uuid()?;
                 let cwd = snapshot.conversation.cwd.as_deref().map(PathBuf::from);
                 let runtime_id = snapshot.conversation.runtime_id.clone();
                 let history = snapshot.messages[..index].to_vec();
@@ -434,7 +434,7 @@ impl NativeSession {
             })
             .transpose()?
             .or_else(|| snapshot.messages.last().map(|message| message.id.clone()));
-        let id = claude_session_id()?;
+        let id = claude_uuid()?;
         let cwd = snapshot.conversation.cwd.as_deref().map(PathBuf::from);
         let runtime_id = snapshot.conversation.runtime_id.clone();
         let history = snapshot.messages[..next.unwrap_or(snapshot.messages.len())].to_vec();
@@ -594,7 +594,10 @@ impl NativeSession {
             .map(|image| json!({"type":"image","source":{"type":"base64","media_type":image.kind.media_type(),"data":image.base64()}}))
             .chain((!text.is_empty()).then(|| json!({"type":"text","text":text})))
             .collect::<Vec<_>>();
-        self.claude_write(&json!({"type":"user","session_id":self.native_id,"parent_tool_use_id":null,"message":{"role":"user","content":content}}))?;
+        // Claude persists the UUID supplied on an ordinary input. Use it on
+        // the live row so history reloads keep the same edit and fork target.
+        let id = claude_uuid()?;
+        self.claude_write(&json!({"type":"user","uuid":id,"session_id":self.native_id,"parent_tool_use_id":null,"message":{"role":"user","content":content}}))?;
         self.compaction_message_id = None;
         self.claude.result = None;
         self.claude.commands.result_is_terminal = false;
@@ -614,7 +617,7 @@ impl NativeSession {
                 turn_usage: None,
                 branch_point: None,
                 completed: true,
-                id: format!("{}:user", self.turn_id.as_deref().unwrap_or_default()),
+                id,
                 role: MessageRole::User,
                 timestamp_unix_ms: None,
                 blocks: input
@@ -1943,11 +1946,11 @@ pub fn rename_claude_session_at(
     result.map(|_| ())
 }
 
-/// A new random (version 4) UUID, the form Claude Code names sessions by.
-fn claude_session_id() -> Result<String> {
+/// A new random (version 4) UUID for a Claude session or input record.
+fn claude_uuid() -> Result<String> {
     let mut bytes = [0_u8; 16];
     getrandom::fill(&mut bytes)
-        .map_err(|error| Error::new(format!("Claude 会话身份生成失败：{error}")))?;
+        .map_err(|error| Error::new(format!("Claude 身份生成失败：{error}")))?;
     bytes[6] = (bytes[6] & 0x0f) | 0x40;
     bytes[8] = (bytes[8] & 0x3f) | 0x80;
     let hex: String = bytes.iter().map(|b| format!("{b:02x}")).collect();

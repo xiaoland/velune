@@ -1619,16 +1619,19 @@ final class ConversationStore: ObservableObject {
 
     /// A fork runs independently; only an in-place replacement stops the
     /// source turn, as the user confirmed in the editor.
-    func editMessage(_ messageID: String, placement: EditPlacement, text: String, attachments: [String], choices: ConversationChoices? = nil, expectedRevision: String? = nil, forked: @escaping (SnapshotResult) -> Void, accepted: @escaping () -> Void, failed: ((String) -> Void)? = nil) {
-        guard editability(of: messageID) != nil, let runtimeID = snapshot?.conversation.runtimeID, let conversationID = loadedConversationID else { return }
+    func editMessage(_ messageID: String, placement: EditPlacement, text: String, attachments: [String], choices: ConversationChoices? = nil, expectedRevision: String? = nil, forked: @escaping (SnapshotResult) -> Void, accepted: @escaping () -> Void, failed: ((String, String?) -> Void)? = nil) {
+        guard editability(of: messageID) != nil, let runtimeID = snapshot?.conversation.runtimeID, let conversationID = loadedConversationID else {
+            failed?("原消息暂时不能编辑，修改仍保留。", nil)
+            return
+        }
         let kept = choices ?? messageEditingChoices(messageID)
         let editNext = resolve(kept: kept, editingMessageID: messageID)
         let model = editNext?.model
-        guard let transport else { recordProblem("本地核心未配置"); return }
-        guard !isLoading, !isForking, !isShuttingDown else { failed?("请等待当前操作完成后重试"); return }
+        guard let transport else { failed?("执行端未连接，修改仍保留。", nil); return }
+        guard !isLoading, !isForking, !isShuttingDown else { failed?("请等待当前操作完成后重试。", nil); return }
         let inputs = device.composerInputs
         guard let targetChoices = messageEditingTargetChoices(kept, base: placement == .inPlace ? composerTargetChoices : nil) else {
-            failed?("执行配置尚未就绪，请稍后重试"); return
+            failed?("执行配置尚未就绪，请稍后重试。", nil); return
         }
         executionStarting = true
         isForking = placement == .fork
@@ -1656,7 +1659,9 @@ final class ConversationStore: ObservableObject {
             case .success:
                 if placement == .fork { self?.device.noteForkCompleted() }
                 accepted()
-            case .failure(let error): failed?(AppProblem.failure(error).detail)
+            case .failure(let error):
+                let problem = AppProblem.failure(error)
+                failed?(problem.detail, problem.code)
             }
         }) { [weak self] value in
             guard let self else { return }

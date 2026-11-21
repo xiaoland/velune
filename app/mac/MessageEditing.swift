@@ -140,18 +140,19 @@ enum MessageEditPresentation: String, CaseIterable, Identifiable {
     }
     private func prepareHistoryConfirmation() {
         guard !closed, historyRecheckPending, historyReadFinished,
-              !store.isLoading, !store.isOpeningConversation else { return }
-        guard historyChanged else {
-            // The UI may still show its old baseline after a successful read.
-            // Only a same-version read can release an unchanged retry.
-            if reloadedRevision == acceptedRevision { historyRecheckPending = false }
-            return
+              !store.isLoading, !store.isOpeningConversation,
+              store.loadedConversationID == request.conversationID else { return }
+        let projectedRevision = store.editability(of: request.message.id)?.revision
+        if historyChanged, let projectedRevision, targetIssue == nil {
+            confirmationRevision = projectedRevision
+        } else {
+            // A control check can publish transient eligibility before the
+            // confirmed baseline becomes available. Release the check only
+            // if the same revision or the target's disappearance is verified.
+            let unchanged = reloadedRevision == acceptedRevision && projectedRevision == acceptedRevision
+            let removed = reloadedRevision == nil && store.message(id: request.message.id) == nil
+            guard unchanged || removed else { return }
         }
-        // A successful source read may first publish checking-control or a
-        // superseded projection. Keep waiting for this target's qualification,
-        // including an explicit user switch to fork; never accept a baseline.
-        guard targetIssue == nil, let revision = store.editability(of: request.message.id)?.revision else { return }
-        confirmationRevision = revision
         historyRecheckPending = false
     }
     private static func imageExtension(_ mediaType: String?) -> String {
@@ -392,11 +393,13 @@ enum MessageEditPresentation: String, CaseIterable, Identifiable {
                                     ConversationWindowModel.openWindows.contains(where: { $0 === window }) else { return }
                               window.openInNewTab(adopting: result, device: self.store.device)
                           }, accepted: { [weak self] in self?.cancel() },
-                          failed: { [weak self] detail in
+                          failed: { [weak self] detail, code in
                               guard let self, !self.closed else { return }
                               self.submitting = false
                               self.failure = detail
                               self.confirmationRevision = nil
+                              guard code == "edit_history_changed" ||
+                                    detail == "会话已在编辑期间改变，请重新打开编辑后再发送" else { return }
                               self.historyRecheckPending = true
                               self.historyReadFinished = false
                               self.reloadedRevision = nil

@@ -86,6 +86,58 @@ fn message_text(message: &Message) -> String {
         .join("\n")
 }
 
+fn claude_provisional_user(id: &str) -> bool {
+    let mut parts = id.splitn(3, ':');
+    parts.next().is_some_and(|epoch| epoch.parse::<u64>().is_ok())
+        && parts.next().is_some_and(|revision| revision.parse::<u64>().is_ok())
+        && parts.next().is_some_and(|suffix| {
+            suffix == "user"
+                || suffix
+                    .strip_prefix("steer:")
+                    .is_some_and(|sequence| sequence.parse::<u64>().is_ok())
+        })
+}
+
+fn claude_fork_user_index(
+    current: &ConversationSnapshot,
+    users: &[&Message],
+    ordinal: usize,
+    expected: &Message,
+) -> Option<usize> {
+    let confirmed = |shown: &Message, native: &Message| {
+        current.message_identity_confirmations.iter().any(|pair| {
+            pair.previous_id == shown.id && pair.current_id == native.id
+        })
+    };
+    // Claude can coalesce streamed records or omit internal user rows from
+    // native history. A persisted ID remains authoritative across that drift.
+    if let Some(index) = users.iter().position(|native| native.id == expected.id) {
+        return Some(index);
+    }
+    if !claude_provisional_user(&expected.id) {
+        return None;
+    }
+    if let Some(index) = users.iter().position(|native| confirmed(expected, native)) {
+        return Some(index);
+    }
+    let native = users.get(ordinal)?;
+    let anchored_prefix = current
+        .messages
+        .iter()
+        .filter(|message| message.role == MessageRole::User)
+        .zip(&users[..ordinal])
+        .all(|(shown, native)| shown.id == native.id || confirmed(shown, native));
+    // Only a known provisional row can use ordinal as evidence, and only
+    // when every preceding input is accounted for and the payload is unique
+    // after those anchors. A different persisted ID must never stand in for it.
+    (anchored_prefix
+        && native.blocks == expected.blocks
+        && !users[ordinal + 1..]
+            .iter()
+            .any(|candidate| candidate.blocks == expected.blocks))
+    .then_some(ordinal)
+}
+
 /// The entry a Pi message identity names: `pi:<session>:<entry>:<ordinal>`.
 fn pi_entry(message_id: &str) -> Option<&str> {
     let mut parts = message_id.strip_prefix("pi:")?.rsplitn(3, ':');
@@ -576,9 +628,7 @@ impl CoreRuntime {
         {
             *self.session.edit_revision_cache.borrow_mut() = None;
             tracing::warn!(target: "velune_application", event = "conversation_edit_conflict", phase = "edit_baseline", activity_changed = activity != Some(current_activity));
-            return Err(RuntimeError::invalid(
-                "会话已在编辑期间改变，请重新打开编辑后再发送",
-            ));
+            return Err(edit_history_changed("edit_baseline"));
         }
         Ok(())
     }
@@ -789,7 +839,9 @@ impl CoreRuntime {
                     copied: true,
                 }) => return Err(error),
                 Err(NativeForkFailure { error, .. }) => {
-                    if matches!(error, RuntimeError::Busy | RuntimeError::OutstandingWork) {
+                    if matches!(error, RuntimeError::Busy | RuntimeError::OutstandingWork)
+                        || matches!(&error, RuntimeError::Contract(failure) if failure.code == "fork_source_changed")
+                    {
                         return Err(error);
                     }
                     tracing::warn!(target:"velune_application", event="conversation_fork_fallback", detail=%error);
@@ -826,9 +878,6 @@ impl CoreRuntime {
             .iter()
             .filter(|message| message.role == MessageRole::User)
             .collect();
-        // Live user messages can still carry provisional IDs (Claude Code
-        // persists its own UUID). Match the addressed turn to fresh history
-        // by its user ordinal and content, just as message editing does.
         let (ordinal, expected) = current
             .messages
             .iter()
@@ -836,11 +885,24 @@ impl CoreRuntime {
             .enumerate()
             .find(|(_, message)| message.id == message_id)
             .ok_or_else(|| RuntimeError::invalid("会话中没有这条用户消息"))?;
-        let message = users
-            .get(ordinal)
-            .filter(|message| message_text(message) == message_text(expected))
-            .ok_or_else(|| RuntimeError::invalid("会话已在别处改变，请重新打开后再分叉"))?;
-        let message_id = message.id.clone();
+        let ordinal = if branching == Branching::Claude {
+            claude_fork_user_index(current, &users, ordinal, expected).ok_or_else(|| {
+                let mut failure = crate::Failure::new(
+                    crate::FailureKind::Conflict,
+                    "无法在原生历史中确认所选消息，请刷新会话后再分叉。",
+                );
+                failure.code = "fork_source_changed".into();
+                failure.phase = "fork_source_read".into();
+                RuntimeError::Contract(failure)
+            })?
+        } else {
+            users
+                .get(ordinal)
+                .filter(|message| message_text(message) == message_text(expected))
+                .ok_or_else(|| RuntimeError::invalid("会话已在别处改变，请重新打开后再分叉"))?;
+            ordinal
+        };
+        let message_id = users[ordinal].id.clone();
         // Pin a native boundary, never the helper's later 'current leaf'.
         // Before the known next user also retains intervening native metadata.
         let pi_boundary = if branching == Branching::Pi {
@@ -1076,6 +1138,14 @@ impl CoreRuntime {
         }
         if placement == EditPlacement::InPlace {
             if self.turn_running() {
+                // An old Claude stream projection may disagree with its native
+                // source before we reach the edit barrier. Do not interrupt a
+                // live turn for a replacement that will first need confirmation.
+                if self.runtime_instance(&current.context_runtime_id)?.type_id
+                    == RuntimeKind::ClaudeCode
+                {
+                    self.read_edit_sources(&current)?;
+                }
                 self.cancel(&current.context_runtime_id)?;
             }
             self.ensure_work_ended()?;
@@ -1119,22 +1189,13 @@ impl CoreRuntime {
         let branching = Branching::of(runtime.type_id).expect("native editing runtime");
         // The message as the native history has it now: what the view shows
         // may predate a change made outside Velune.
-        let users = |snapshot: &ConversationSnapshot| {
-            snapshot
-                .messages
-                .iter()
-                .filter(|message| message.role == MessageRole::User)
-                .cloned()
-                .collect::<Vec<_>>()
-        };
-        let ordinal = users(&current)
+        let (ordinal, expected) = current
+            .messages
             .iter()
-            .position(|message| message.id == message_id)
+            .filter(|message| message.role == MessageRole::User)
+            .enumerate()
+            .find(|(_, message)| message.id == message_id)
             .expect("editable user message");
-        let expected = users(&current)
-            .get(ordinal)
-            .map(message_text)
-            .unwrap_or_default();
         let native_id = self
             .session
             .logical_projection
@@ -1142,12 +1203,33 @@ impl CoreRuntime {
             .map(|projection| projection.link.segments[0].native_conversation_id.as_str())
             .unwrap_or(conversation_id)
             .to_owned();
-        let fresh = self.read_history(runtime_id, &native_id)?;
-        let original = users(&fresh)
-            .into_iter()
-            .nth(ordinal)
-            .filter(|message| message_text(message) == expected)
-            .ok_or_else(|| RuntimeError::invalid("会话已在别处改变，请重新打开后再编辑"))?;
+        let fresh = if branching == Branching::Claude && !self.session.executing() {
+            let (_, mut sources, _) = self.read_edit_sources(&current)?;
+            sources.pop().expect("native edit source")
+        } else {
+            self.read_history(runtime_id, &native_id)?
+        };
+        let mut users = fresh
+            .messages
+            .iter()
+            .filter(|message| message.role == MessageRole::User);
+        let original = if branching == Branching::Claude {
+            let source_id = if self.link_of(conversation_id).is_some() {
+                message_id.strip_prefix("segment-0:").unwrap_or(message_id)
+            } else {
+                message_id
+            };
+            users.find(|message| {
+                message.id == source_id
+                    && message.blocks == expected.blocks
+                    && message.branch_point == expected.branch_point
+            })
+        } else {
+            users
+                .nth(ordinal)
+                .filter(|message| message_text(message) == message_text(expected))
+        }
+        .ok_or_else(|| edit_history_changed("source_read"))?;
         let first = ordinal == 0;
 
         let origin = self.session.key;
@@ -1195,19 +1277,9 @@ impl CoreRuntime {
             }
             self.prepare_with_selection(fresh.try_clone()?, selection.as_ref(), false)?;
             match &mut self.session.active_state {
-                ActiveState::Native(session) => {
-                    let id = session
-                        .snapshot()
-                        .map(users)
-                        .unwrap_or_default()
-                        .into_iter()
-                        .nth(ordinal)
-                        .map(|message| message.id)
-                        .ok_or_else(|| RuntimeError::invalid("运行时会话中没有这条消息"))?;
-                    session
-                        .branch(&id, placement)
-                        .map_err(|error| RuntimeError::context("消息编辑", error))
-                }
+                ActiveState::Native(session) => session
+                    .branch(&original.id, placement)
+                    .map_err(|error| RuntimeError::context("消息编辑", error)),
                 _ => Err(RuntimeError::invalid("此运行时不提供消息编辑")),
             }
         })();
@@ -1240,7 +1312,7 @@ impl CoreRuntime {
 
     /// Re-read every referenced source before changing a logical association.
     fn read_edit_sources(
-        &self,
+        &mut self,
         current: &ConversationSnapshot,
     ) -> Result<
         (
@@ -1337,12 +1409,49 @@ impl CoreRuntime {
             sources.push(snapshot);
         }
         if !same_edit_history(current, &displayed) {
-            tracing::warn!(target: "velune_application", event = "conversation_edit_conflict", phase = "source_read", current_messages = current.messages.len(), source_messages = displayed.len());
-            return Err(RuntimeError::invalid(
-                "会话已在编辑期间改变，请重新打开编辑后再发送",
-            ));
+            tracing::warn!(target: "velune_application", event = "conversation_edit_conflict", phase = "source_read", conversation_id = %current.conversation.id, runtime_id = %current.context_runtime_id, current_messages = current.messages.len(), source_messages = displayed.len());
+            if let Err(error) =
+                self.refresh_claude_edit_baseline(current, linked.then_some(&link), sources)
+            {
+                tracing::warn!(target: "velune_application", event = "conversation_edit_baseline_refresh_failed", conversation_id = %current.conversation.id, detail = %error);
+            }
+            return Err(edit_history_changed("source_read"));
         }
         Ok((link, sources, displayed))
+    }
+
+    /// Claude's stream can coalesce multiple records and use temporary IDs.
+    /// Once its owner is idle, publish the already-checked native history for
+    /// confirmation. The rejected command never gets to authorize a rewind.
+    fn refresh_claude_edit_baseline(
+        &mut self,
+        current: &ConversationSnapshot,
+        link: Option<&crate::config::ConversationLink>,
+        sources: Vec<browsing::HistorySnapshot>,
+    ) -> Result<(), RuntimeError> {
+        if self.session.conversation_id() != Some(current.conversation.id.as_str())
+            || self.session.executing()
+            || !self.session.can_reopen_execution()
+            || self.runtime_instance(&current.context_runtime_id)?.type_id
+                != RuntimeKind::ClaudeCode
+        {
+            return Ok(());
+        }
+        let mut sources = sources.into_iter();
+        let mut next = || {
+            sources
+                .next()
+                .ok_or_else(|| RuntimeError::invalid("会话缺少原生来源"))
+        };
+        let (snapshot, projection) = if let Some(link) = link {
+            let (snapshot, projection) = self.read_link_with(link, |_| next())?;
+            (snapshot, Some(projection))
+        } else {
+            (next()?, None)
+        };
+        self.invalidate_execution()?;
+        self.present_history(snapshot, projection);
+        Ok(())
     }
 
     fn edit_native_in_place(
@@ -1427,9 +1536,7 @@ impl CoreRuntime {
                 .is_none_or(|snapshot| !same_edit_history(snapshot, &fresh.messages))
         {
             tracing::warn!(target: "velune_application", event = "conversation_edit_conflict", phase = "prepared_source", source_messages = source.messages.len(), prepared_messages = fresh.messages.len());
-            return Err(RuntimeError::invalid(
-                "会话已在编辑期间改变，请重新打开编辑后再发送",
-            ));
+            return Err(edit_history_changed("prepared_source"));
         }
         let branch = match &mut self.session.active_state {
             ActiveState::Native(session) => session
@@ -2172,9 +2279,19 @@ fn stable_edit_prefix(snapshot: &ConversationSnapshot) -> usize {
     }
 }
 
-// Pi extension failures are local presentation records, retained across RPC
-// history syncs but absent from the native archive. Only that adapter-owned
-// system identity is excluded; native system/user records remain protected.
+fn edit_history_changed(phase: &'static str) -> RuntimeError {
+    let mut failure = crate::Failure::new(
+        crate::FailureKind::Conflict,
+        "会话已在编辑期间改变，请核对当前历史后再确认提交。",
+    );
+    failure.code = "edit_history_changed".into();
+    failure.phase = phase.into();
+    RuntimeError::Contract(failure)
+}
+
+// These system records are owned by Velune's presentation, so a fresh native
+// read cannot reproduce them. Keep native messages, including a real compact
+// boundary, in the compare-and-swap baseline.
 fn native_edit_message(message: &&Message) -> bool {
     let native_id = message
         .id
@@ -2186,7 +2303,17 @@ fn native_edit_message(message: &&Message) -> bool {
                 .is_ok_and(|value| value.to_string() == *index)
         })
         .map_or(message.id.as_str(), |(_, native)| native);
-    !(message.role == MessageRole::System && native_id.starts_with("pi-diagnostic-"))
+    if message.role != MessageRole::System {
+        return true;
+    }
+    !(native_id.starts_with("pi-diagnostic-")
+        || (native_id.starts_with("velune-handoff-compaction:")
+            && matches!(
+                message.blocks.as_slice(),
+                [MessageBlock::ContextCompaction { .. }]
+            ))
+        || (native_id.starts_with("prepare-failed:")
+            && matches!(message.blocks.as_slice(), [MessageBlock::Notice { .. }])))
 }
 
 fn same_edit_history(current: &ConversationSnapshot, fresh: &[Message]) -> bool {
@@ -2246,6 +2373,49 @@ fn fork_title(source: &str, existing: &[String]) -> String {
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn claude_fork_resolves_the_selected_native_message_across_projection_drift() {
+        fn view(inputs: &[(&str, &str)]) -> ConversationSnapshot {
+            let messages: Vec<_> = inputs
+                .iter()
+                .map(|(id, text)| json!({"id":id,"role":"user","completed":true,
+                    "blocks":[{"kind":"text","text":text}]}))
+                .collect();
+            serde_json::from_value(json!({
+                "revision":1,"conversation":{"id":"claude:source","runtimeId":"claude","title":{"source":"untitled"},"canRename":false,"canDelete":false},
+                "contextRuntimeId":"claude","runState":"idle","messages":messages,
+                "transcriptItems":[],"transcriptOutline":[],"transcriptMessageIdentities":[],
+                "actions":{"inputAccess":"editable","canSend":true,"canCancel":false,"canSwitch":true}
+            })).unwrap()
+        }
+
+        let mut current = view(&[("older", "first"), ("selected", "same text")]);
+        let cold = view(&[
+            ("older", "first"),
+            ("lookalike", "same text"),
+            ("selected", "same text"),
+        ]);
+        let users: Vec<_> = cold.messages.iter().collect();
+        let resolve = |current: &ConversationSnapshot, users: &[&Message]| {
+            claude_fork_user_index(current, users, 1, &current.messages[1])
+        };
+        assert_eq!(resolve(&current, &users), Some(2));
+        assert_eq!(resolve(&current, &users[..2]), None);
+
+        current.messages[1].id = "9:11:user".into();
+        assert_eq!(resolve(&current, &[users[0], users[2]]), Some(1));
+        assert_eq!(resolve(&current, &users), None);
+        assert_eq!(resolve(&current, &users[1..]), None);
+
+        current.message_identity_confirmations.push(
+            crate::conversation::MessageIdentityConfirmation {
+                previous_id: "9:11:user".into(),
+                current_id: "selected".into(),
+            },
+        );
+        assert_eq!(resolve(&current, &users), Some(2));
+    }
 
     #[test]
     fn linked_edit_accepts_legacy_error_prefix_but_rejects_changed_source_content() {
@@ -2412,6 +2582,215 @@ mod tests {
         );
         let _ = std::fs::remove_dir_all(root);
     }
+
+    #[cfg(unix)]
+    #[test]
+    fn claude_message_edits_reconcile_and_recheck_native_history() {
+        use std::{io::Write, os::unix::fs::PermissionsExt};
+
+        let root =
+            std::env::temp_dir().join(format!("velune-claude-edit-{}", crate::new_record_key()));
+        let native = root.join("native");
+        let project = native.join("projects/synthetic");
+        std::fs::create_dir_all(&project).unwrap();
+        let session_id = "22f06040-64f4-4337-aa3d-92003f66d522";
+        let conversation_id = format!("claude:{session_id}");
+        let source_path = project.join(format!("{session_id}.jsonl"));
+        let first = "11ecfe36-0fa6-418c-802a-f4e73bc1df18";
+        let preserved = "7eec1f1b-a1a0-484b-9fae-9dd67de7a3db";
+        let edited = "9ea2f82e-5ebd-4b2d-a2c2-454e27f0111b";
+        let discarded = "1a96a108-e251-4601-ab9a-88db2cc4eebc";
+        let record = |role: &str, id: &str, parent: Option<&str>, text: &str| {
+            json!({"type":role,"uuid":id,"parentUuid":parent,"sessionId":session_id,
+                "cwd":root,"timestamp":"2026-11-01T00:00:00Z",
+                "message":{"role":role,"id":"api-message-id","stop_reason":"end_turn",
+                    "content":[{"type":"text","text":text}]}})
+        };
+        let mut file = std::fs::File::create(&source_path).unwrap();
+        for entry in [
+            record("user", first, None, "first prompt"),
+            record("assistant", preserved, Some(first), "first reply"),
+            record("user", edited, Some(preserved), "selected prompt"),
+            record("assistant", discarded, Some(edited), "reply later replaced"),
+        ] {
+            writeln!(file, "{entry}").unwrap();
+        }
+        let cli = root.join("claude");
+        std::fs::write(&cli, r#"#!/usr/bin/python3
+import json,pathlib,sys
+root=pathlib.Path(__file__).parent
+if '--version' in sys.argv:
+    print('2.1.286 (Claude Code)');sys.exit(0)
+for line in sys.stdin:
+    req=json.loads(line)
+    if req['type']=='control_request':
+        print(json.dumps({'type':'control_response','response':{'subtype':'success','request_id':req['request_id'],'response':{'models':[],'mcpServers':[]}}}),flush=True)
+        if req['request']['subtype']=='interrupt':
+            root.joinpath('interrupted').touch()
+            print(json.dumps({'type':'result','subtype':'success','is_error':False,'terminal_reason':'aborted_tools'}),flush=True)
+            print(json.dumps({'type':'system','subtype':'session_state_changed','state':'idle'}),flush=True)
+    elif req['type']=='user':
+        if '--resume-session-at' not in sys.argv:
+            continue
+        position=sys.argv[sys.argv.index('--resume-session-at')+1]
+        root.joinpath('sent').write_text(position+'\n'+req['message']['content'][-1]['text'])
+        print(json.dumps({'type':'result','subtype':'success','is_error':False}),flush=True)
+        print(json.dumps({'type':'system','subtype':'session_state_changed','state':'idle'}),flush=True)
+"#).unwrap();
+        std::fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let mut app = crate::Application::open(crate::Options {
+            home_directory: root.join("app"),
+            resources_directory: root.clone(),
+        })
+        .unwrap();
+        let core = &mut app.runtime;
+        core.runtime_instances = vec![RuntimeInstance {
+            enabled: true,
+            id: "claude".into(),
+            name: "Synthetic Claude".into(),
+            type_id: RuntimeKind::ClaudeCode,
+            gateway_id: String::new(),
+            settings: serde_json::from_value(json!({"binary":cli,"agentDir":native})).unwrap(),
+        }];
+        let history = core.read_history("claude", &conversation_id).unwrap();
+        core.present_history(history, None);
+        let before = core.current_snapshot().unwrap();
+        let revision = core.edit_revision(&before).unwrap();
+        core.replace_handoff_compaction_events(vec![
+            super::super::handoff_events::HandoffCompactionEvent {
+                work_id: "local-receipt".into(),
+                conversation_id: conversation_id.clone(),
+                physical_runtime_id: "claude".into(),
+                physical_native_id: session_id.into(),
+                source_anchor: Some(Some(discarded.into())),
+                state: super::super::handoff_events::HandoffCompactionState::Ready,
+            },
+        ]);
+        let decorated = core.current_snapshot().unwrap();
+        assert_eq!(decorated.messages.len(), before.messages.len() + 1);
+        assert_eq!(core.edit_revision(&decorated).unwrap(), revision);
+        core.read_edit_sources(&decorated).unwrap();
+
+        let edit = |core: &mut CoreRuntime, revision: &str, placement| {
+            core.edit_message_with_revision(
+                "claude",
+                &conversation_id,
+                edited,
+                placement,
+                None,
+                Some(revision),
+                None,
+                crate::ComposedTurn {
+                    text: "replacement".into(),
+                    attachments: vec![],
+                    effort: None,
+                    permission_mode: None,
+                },
+            )
+        };
+        let wait_for_turn = |core: &mut CoreRuntime| {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while core.turn_running() && std::time::Instant::now() < deadline {
+                core.drain_sessions().unwrap();
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            assert!(!core.turn_running());
+        };
+
+        edit(core, &revision, EditPlacement::InPlace).unwrap();
+        wait_for_turn(core);
+        assert_eq!(
+            std::fs::read_to_string(root.join("sent")).unwrap(),
+            format!("{preserved}\nreplacement")
+        );
+        std::fs::remove_file(root.join("sent")).unwrap();
+
+        // While a turn is live, verification must precede interruption. This
+        // fixture deliberately leaves the active prompt outside the JSONL.
+        core.prepare_with_selection(before.clone(), None, false)
+            .unwrap();
+        core.send_action(super::super::conversations::Prompt {
+            runtime_id: "claude",
+            message: Some(("still processing", &[])),
+            effort: None,
+            permission_mode: None,
+        })
+        .unwrap();
+        let running = core.current_snapshot().unwrap();
+        let running_revision = core.edit_revision(&running).unwrap();
+        let failure = crate::Failure::from(
+            edit(core, &running_revision, EditPlacement::InPlace).unwrap_err(),
+        );
+        assert_eq!(failure.phase, "source_read");
+        assert!(core.turn_running());
+        assert!(!root.join("interrupted").exists());
+        core.cancel("claude").unwrap();
+        wait_for_turn(core);
+        assert!(root.join("interrupted").exists());
+
+        // SDK streaming uses API message IDs and can combine rows written under
+        // several different UUIDs. The selected native user identity survives.
+        let mut old_projection = before.clone();
+        old_projection.messages.pop();
+        old_projection.messages[1].id = "api-message-id".into();
+        core.prepare_with_selection(old_projection, None, false)
+            .unwrap();
+        assert!(matches!(core.session.active_state, ActiveState::Native(_)));
+        let stale = core.current_snapshot().unwrap();
+        let stale_revision = core.edit_revision(&stale).unwrap();
+        let failure =
+            crate::Failure::from(edit(core, &stale_revision, EditPlacement::InPlace).unwrap_err());
+        assert_eq!(failure.code, "edit_history_changed");
+        assert_eq!(failure.phase, "source_read");
+        let native_baseline = core.current_snapshot().unwrap();
+        assert_eq!(core.edit_revision(&native_baseline).unwrap(), revision);
+        assert!(matches!(core.session.active_state, ActiveState::History(_)));
+        assert!(!root.join("sent").exists());
+
+        let new_id = "9f8213d8-587d-46c0-a016-f662e5296a46";
+        writeln!(
+            file,
+            "{}",
+            record("user", new_id, Some(discarded), "external prompt")
+        )
+        .unwrap();
+        let failure = crate::Failure::from(edit(core, &revision, EditPlacement::Fork).unwrap_err());
+        assert_eq!(failure.code, "edit_history_changed");
+        assert_eq!(failure.phase, "source_read");
+        assert!(!root.join("sent").exists());
+
+        let refreshed = core.current_snapshot().unwrap();
+        let confirmed = core.edit_revision(&refreshed).unwrap();
+        assert_ne!(revision, confirmed);
+        let source = std::fs::read(&source_path).unwrap();
+        for placement in [EditPlacement::InPlace, EditPlacement::Fork] {
+            edit(core, &confirmed, placement).unwrap();
+            wait_for_turn(core);
+            assert_eq!(
+                std::fs::read_to_string(root.join("sent")).unwrap(),
+                format!("{preserved}\nreplacement")
+            );
+            let result = core.current_snapshot().unwrap();
+            assert_eq!(
+                result.conversation.id == conversation_id,
+                placement == EditPlacement::InPlace
+            );
+            assert!(result.messages.iter().all(|message| message.id != edited
+                && message.id != discarded
+                && message.id != new_id));
+            assert_eq!(std::fs::read(&source_path).unwrap(), source);
+            if placement == EditPlacement::InPlace {
+                // The synthetic child records wire input only, leaving the
+                // fixture's native source available for the independent fork.
+                core.open_conversation("claude", &conversation_id).unwrap();
+                std::fs::remove_file(root.join("sent")).unwrap();
+            }
+        }
+        app.close_stopping_work().unwrap();
+        drop(app);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn deletion_links_keep_new_schema_and_refuse_unknown_or_corrupt_state() {
         let root =

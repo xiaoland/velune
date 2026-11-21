@@ -4,7 +4,7 @@ use serde_json::{Value, json};
 use std::{collections::BTreeSet, path::PathBuf};
 use velune_agent_runtime::{
     execution::ExecutionTarget,
-    history::{HistoryConfig, export_context},
+    history::{HistoryConfig, export_context, export_context_before},
     import::*,
     version::RuntimeKind,
 };
@@ -179,6 +179,43 @@ fn genuinely_missing_claude_result_is_rejected_at_source_export() {
     f.save(&records);
     let error = export_context(&f.config(), SESSION).unwrap_err();
     assert!(error.to_string().contains("工具结果不完整"));
+}
+
+#[test]
+fn edited_fork_prefix_preserves_tool_search_results_as_portable_content() {
+    let f = Fixture::new();
+    let mut records = completed_parallel_calls();
+    records[3]["message"]["content"][0]["content"] = json!([
+        {"type":"text","text":"matching tool"},
+        {"type":"tool_reference","tool_name":"mcp__synthetic__lookup"}
+    ]);
+    f.save(&records);
+    let ctx = export_context_before(&f.config(), SESSION, "r2").unwrap();
+    let result = ctx
+        .messages
+        .iter()
+        .flat_map(|message| &message.content)
+        .find_map(|block| match block {
+            Block::ToolResult { id, content, .. } if id == "t1" => Some(content),
+            _ => None,
+        })
+        .expect("the exact earlier tool result must survive the fork cut");
+    assert_eq!(
+        result,
+        &vec![
+            Block::Text {
+                text: "matching tool".into()
+            },
+            Block::Text {
+                text: "Tool reference: mcp__synthetic__lookup".into()
+            },
+        ]
+    );
+    assert!(
+        !ctx.messages
+            .iter()
+            .any(|message| { message.source_message_id.as_deref() == Some("r2") })
+    );
 }
 
 #[test]

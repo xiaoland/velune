@@ -3,6 +3,7 @@
 use serde_json::{Value, json};
 use std::path::PathBuf;
 use velune_agent_runtime::{
+    creation::Retained,
     execution::ExecutionTarget,
     history::{HistoryConfig, export_context},
     import::{Block, Context, Role},
@@ -57,7 +58,7 @@ impl Fixture {
         .unwrap();
     }
 
-    fn export(&self, records: &[Value]) -> Context {
+    fn export(&self, records: &[Value]) -> Retained<Context> {
         self.save(records);
         export_context(&self.config(), SESSION).unwrap()
     }

@@ -873,9 +873,7 @@ impl CoreRuntime {
                 if self.session.projected().is_none_or(|snapshot| {
                     digest(&snapshot.messages).ok().as_ref() != edit.native_digest.as_ref()
                 }) {
-                    return Err(RuntimeError::invalid(
-                        "会话已在编辑期间改变，请重新打开编辑",
-                    ));
+                    return Err(edit_history_changed("prepared_source"));
                 }
                 edit.phase = Phase::SourceVerified;
             }
@@ -933,9 +931,7 @@ impl CoreRuntime {
                 if sources.last().is_none_or(|source| {
                     digest(&source.messages).ok().as_ref() != edit.native_digest.as_ref()
                 }) {
-                    return Err(RuntimeError::invalid(
-                        "会话已在编辑期间改变，请重新打开编辑",
-                    ));
+                    return Err(edit_history_changed("source_read"));
                 }
                 edit.authorized_source_digest = Some(source_digest);
                 self.require_input_access()?;
@@ -1416,9 +1412,7 @@ impl CoreRuntime {
             }
         }
         if !same_edit_history(current, &displayed) {
-            return Err(RuntimeError::invalid(
-                "会话已在编辑期间改变，请重新打开编辑后再发送",
-            ));
+            return Err(edit_history_changed("source_read"));
         }
         Ok(())
     }

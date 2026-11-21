@@ -183,7 +183,7 @@ def export_context(path, sidechain=False, before_message_id=None, without_messag
     discarded = {identity for identity in interrupted if api_calls.get(identity)
                  and not api_calls[identity].intersection(answered)}
 
-    def content_blocks(content):
+    def content_blocks(content, inside_tool_result=False):
         if isinstance(content, str):
             return [{"type": "text", "text": content}]
         result = []
@@ -196,7 +196,11 @@ def export_context(path, sidechain=False, before_message_id=None, without_messag
             elif kind == "tool_use":
                 result.append({"type": "tool_call", "id": block["id"], "name": block["name"], "arguments": block["input"]})
             elif kind == "tool_result":
-                result.append({"type": "tool_result", "id": block["tool_use_id"], "content": content_blocks(block.get("content", "")), "is_error": block.get("is_error", False)})
+                result.append({"type": "tool_result", "id": block["tool_use_id"], "content": content_blocks(block.get("content", ""), inside_tool_result=True), "is_error": block.get("is_error", False)})
+            elif kind == "tool_reference" and inside_tool_result and isinstance(block.get("tool_name"), str) and block["tool_name"].strip():
+                # A portable target has its own tool catalog. Preserve which
+                # tool was found without asking it to expand a Claude reference.
+                result.append({"type": "text", "text": "Tool reference: " + block["tool_name"]})
             elif kind not in ("thinking", "redacted_thinking"):
                 raise ValueError("unsupported Claude context block: " + kind)
         return result
