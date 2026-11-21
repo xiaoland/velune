@@ -42,6 +42,9 @@ fn claude_agents(agents: &[SessionAgent]) -> Value {
 #[derive(Default)]
 pub(super) struct State {
     pub(super) commands: super::claude_port::Commands,
+    /// Configuration of the child owning the current turn.
+    pub(super) launched_effort: Option<String>,
+    pub(super) permission_mode: Option<String>,
     /// The turn's result, whether it failed, and the last activity since.
     pub(super) result: Option<(TurnOutcome, std::time::Instant)>,
     /// A refused response can trigger a native follow-up before the result.
@@ -108,6 +111,21 @@ pub(super) enum ClaudeStart {
     SideContext { path: PathBuf },
 }
 
+pub(super) fn claude_permission_mode(mode: &str) -> Option<&str> {
+    let mode = if mode == "default" { "manual" } else { mode };
+    crate::version::CLAUDE_PERMISSION_MODES
+        .iter()
+        .any(|known| known.id == mode)
+        .then_some(mode)
+}
+
+fn steer_settings_changed(detail: impl std::fmt::Display) -> Error {
+    Error::with_code(
+        format!("Claude Code 已确认切换权限，插入消息未发送：{detail}"),
+        "steer_settings_changed",
+    )
+}
+
 impl NativeSession {
     /// Whether a local instance's configuration directory is the CLI default
     /// for the app's own HOME, where the user's own `claude` login lives. A
@@ -148,15 +166,16 @@ impl NativeSession {
             command.arg("--effort").arg(effort);
         }
         if let Some(mode) = permission_mode {
-            if !crate::version::CLAUDE_PERMISSION_MODES
-                .iter()
-                .any(|known| known.id == mode)
-            {
-                return Err(Error::new("Claude Code 不接受此权限模式"));
-            }
+            let mode = claude_permission_mode(mode)
+                .ok_or_else(|| Error::new("Claude Code 不接受此权限模式"))?;
             command.arg("--permission-mode").arg(mode);
         }
         if let Some((id, cwd, start)) = session {
+            if !matches!(start, ClaudeStart::Side | ClaudeStart::SideContext { .. }) {
+                // Make the native option available for an explicit later
+                // control request. The initial mode stays as selected above.
+                command.arg("--allow-dangerously-skip-permissions");
+            }
             // `--resume-session-at` and `--fork-session` apply in print mode.
             match start {
                 ClaudeStart::Resume => command.arg("--resume").arg(id),
@@ -618,6 +637,127 @@ impl NativeSession {
     /// A user message written while a turn runs joins that turn: Claude Code
     /// takes it in at its next step instead of starting another.
     pub(super) fn claude_steer(&mut self, input: &crate::TurnInput) -> Result<()> {
+        if !self.claude.commands.enabled {
+            self.claude_poll_steer_boundary()?;
+        }
+        let turn_id = self
+            .turn_id
+            .clone()
+            .filter(|_| self.claude_can_insert())
+            .ok_or_else(|| Error::new("Claude Code 当前轮次不能插入消息"))?;
+        if let Some(effort) = input.effort.as_deref()
+            && self.claude.launched_effort.as_deref() != Some(effort)
+        {
+            return Err(Error::with_code(
+                "Claude Code 当前轮次无法更改推理强度，请排队发送",
+                "steer_settings_unsupported",
+            ));
+        }
+        let permission_mode = input
+            .permission_mode
+            .as_deref()
+            .map(|mode| {
+                claude_permission_mode(mode)
+                    .ok_or_else(|| Error::new("Claude Code 不接受此权限模式"))
+            })
+            .transpose()?
+            .filter(|mode| self.claude.permission_mode.as_deref() != Some(*mode));
+        if let Some(mode) = permission_mode {
+            if self.claude.commands.enabled {
+                return Err(Error::with_code(
+                    "Claude Code 异步命令接口目前无法随插入消息更改权限，请排队发送",
+                    "steer_settings_unsupported",
+                ));
+            }
+            self.claude_set_steer_permission(mode)?;
+            self.claude_poll_steer_boundary()
+                .map_err(steer_settings_changed)?;
+            if self.turn_id.as_deref() != Some(turn_id.as_str()) || !self.claude_can_insert() {
+                return Err(steer_settings_changed("原轮次已结束或不可插入"));
+            }
+            if self.claude.permission_mode.as_deref() != Some(mode) {
+                return Err(steer_settings_changed("运行时报告权限模式已再次变化"));
+            }
+        }
+        let result = self.claude_write_steer(input);
+        match (permission_mode, result) {
+            (Some(_), Err(error)) if matches!(error.code(), "transport" | "timeout") => {
+                Err(Error::with_code(
+                    format!("Claude Code 已确认切换权限。插入消息交付未确认，请查看会话记录：{error}"),
+                    error.code(),
+                ))
+            }
+            (Some(_), Err(error)) => Err(steer_settings_changed(error)),
+            (_, result) => result,
+        }
+    }
+
+    fn claude_poll_steer_boundary(&mut self) -> Result<()> {
+        self.poll()?;
+        self.rpc.check_failure().inspect_err(|_| self.fail_connection())
+    }
+
+    fn claude_can_insert(&self) -> bool {
+        self.can_steer()
+            && !self.failed
+            && !self.process_ended
+            && !self.compacting
+            && !self.claude.commands.result_is_terminal
+            && self.claude.bound_session_id.is_some()
+            && self.claude.bound_session_id == self.native_id
+    }
+
+    fn claude_set_steer_permission(&mut self, mode: &str) -> Result<()> {
+        let method = "set_permission_mode";
+        let deadline = std::time::Instant::now() + rpc::CONTROL_TIMEOUT;
+        let result = rpc::observe_request(method, || {
+            let id = self.rpc.begin_claude_control(
+                &json!({"subtype":method,"mode":mode}),
+                crate::transport::WriteClass::Ordinary,
+                deadline,
+            )?;
+            loop {
+                let record = self.rpc.receive(method, deadline)?;
+                if record["type"] == "control_response" && record["response"]["request_id"] == id {
+                    let response = &record["response"];
+                    return match response["subtype"].as_str() {
+                        Some("success") => Ok(()),
+                        Some("error") => {
+                            let reason = response["error"]
+                                .as_str()
+                                .filter(|text| !text.is_empty())
+                                .map(|text| text.chars().take(512).collect::<String>())
+                                .unwrap_or_else(|| "运行时未提供原因".into());
+                            Err(Error::with_code(
+                                format!("Claude Code 拒绝切换权限，插入消息未发送：{reason}"),
+                                "steer_permission_rejected",
+                            ))
+                        }
+                        _ => Err(Error::with_code("Claude 权限控制回执无效", "transport")),
+                    };
+                }
+                self.claude_receive_record(record)?;
+            }
+        });
+        match result {
+            Ok(()) => {
+                self.claude.permission_mode = Some(mode.into());
+                Ok(())
+            }
+            Err(error) if error.code() == "steer_permission_rejected" => Err(error),
+            Err(error) => {
+                if matches!(error.code(), "transport" | "timeout") {
+                    self.fail_connection();
+                }
+                Err(Error::with_code(
+                    format!("Claude Code 权限切换未确认，插入消息未发送：{error}"),
+                    "steer_permission_unconfirmed",
+                ))
+            }
+        }
+    }
+
+    fn claude_write_steer(&mut self, input: &crate::TurnInput) -> Result<()> {
         let text = input.text.as_str();
         let content = input
             .images
@@ -637,7 +777,12 @@ impl NativeSession {
             self.claude.steer_sequence
         );
         self.message(Message {
-            turn_settings: None,
+            turn_settings: self.claude.permission_mode.clone().map(|permission_mode| {
+                crate::conversation::TurnSettings {
+                    permission_mode: Some(permission_mode),
+                    ..Default::default()
+                }
+            }),
             turn_usage: None,
             branch_point: None,
             completed: true,
@@ -784,6 +929,12 @@ impl NativeSession {
     pub(super) fn claude_handle_record(&mut self, record: Value) -> Result<()> {
         if self.side {
             return self.claude_side_record(&record);
+        }
+        if record["type"] == "system"
+            && matches!(record["subtype"].as_str(), Some("init" | "status"))
+            && let Some(mode) = record["permissionMode"].as_str().and_then(claude_permission_mode)
+        {
+            self.claude.permission_mode = Some(mode.into());
         }
         self.claude_background_record(&record);
         match record["type"].as_str() {

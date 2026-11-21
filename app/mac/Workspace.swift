@@ -156,19 +156,20 @@ import VeluneBindings
         if createsConversation { store.device.composerInputs.consumeNewConversationInput(composer) }
     }
 
-    /// Into the running turn through the runtime's own channel; a message it
-    /// does not take goes back to the composer. Without a running turn that
-    /// takes one, the message is sent or queued instead.
+    /// Insert using the running turn's native channel, retaining the draft
+    /// until admission. Without native steering, use ordinary submission.
     func steer() { steer(using: composer) }
     func steer(using composer: ComposerModel, next: NextTurn? = nil) {
         guard store.isGenerating, store.followUp.canSteer else { return send(using: composer, next: next) }
-        var clearedRevision: UInt64?
         let submitted = composer.submission
         let attachments = composer.attachments
         let text = submitted.trimmingCharacters(in: .whitespacesAndNewlines)
         guard submission(using: composer, next: next).canSubmitDraft, store.canSteer else { return }
-        store.steer(text: text, attachments: attachments.map(\.path), onFailure: { [composer] in composer.restoreFailed(submitted, attachments: attachments, revision: clearedRevision) })
-        composer.clear(submitted: submitted, attachments: attachments); clearedRevision = composer.revision
+        let submittedRevision = composer.revision
+        store.steer(text: text, attachments: attachments.map(\.path), next: next, onAccepted: { [composer] in
+            guard composer.revision == submittedRevision else { return }
+            composer.clear(submitted: submitted, attachments: attachments)
+        })
     }
 
     /// Development check of the send queue without driving the interface:

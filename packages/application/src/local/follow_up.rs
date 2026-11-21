@@ -800,9 +800,17 @@ impl CoreRuntime {
             SendQueueOperation::Steer { id } => {
                 let index = queue.position(&id)?;
                 let turn = queue.turns.remove(index).expect("queued turn");
-                if let Err(error) = self.steer(&turn.request.turn) {
+                if let Err(error) = self.steer(
+                    &turn.request.turn,
+                    Some(&turn.request.runtime_id),
+                    turn.request.selection.as_ref(),
+                ) {
                     let queue = &mut self.session.send_queue;
                     queue.turns.insert(index.min(queue.turns.len()), turn);
+                    if matches!(&error, RuntimeError::Contract(failure) if failure.code == "runtime_operation_indeterminate")
+                    {
+                        queue.paused = Some(QueuePause::SendFailed);
+                    }
                     return Err(error);
                 }
                 if self.session.send_queue.turns.is_empty() {
@@ -836,24 +844,49 @@ impl CoreRuntime {
         }
     }
 
-    /// Deliver a composed message into the running turn through the
-    /// runtime's own channel. Its next-turn choices do not apply: the turn
-    /// keeps its own.
+    /// Deliver the instruction and its explicit choices to the active turn.
     pub(crate) fn steer_turn(
         &mut self,
         turn: &ComposedTurn,
+        target_runtime_id: Option<&str>,
+        selection: Option<&ModelSelection>,
     ) -> Result<SnapshotResult, RuntimeError> {
-        self.steer(turn)?;
+        self.steer(turn, target_runtime_id, selection)?;
         self.snapshot_result().map_err(RuntimeError::after_delivery)
     }
 
-    fn steer(&mut self, turn: &ComposedTurn) -> Result<(), RuntimeError> {
+    fn steer(
+        &mut self,
+        turn: &ComposedTurn,
+        target_runtime_id: Option<&str>,
+        requested_model: Option<&ModelSelection>,
+    ) -> Result<(), RuntimeError> {
         self.require_input_access()?;
         if !self.can_steer() {
             return Err(RuntimeError::invalid("此运行时当前不能插入消息"));
         }
-        let runtime_id = self.active_instance()?.id.clone();
+        let runtime = self.active_instance()?;
+        let runtime_id = runtime.id.clone();
+        let claude_control =
+            runtime.type_id == RuntimeKind::ClaudeCode && turn.permission_mode.is_some();
         let selection = self.session.model_selection.clone().flatten();
+        if target_runtime_id.is_some_and(|target| target != runtime_id) {
+            return Err(RuntimeError::invalid("当前轮次不能切换运行时，请排队发送此消息"));
+        }
+        if requested_model.is_some_and(|requested| Some(requested) != selection.as_ref()) {
+            return Err(RuntimeError::invalid("当前轮次不能切换模型，请排队发送此消息"));
+        }
+        if let Some(effort) = turn.effort.as_deref() {
+            self.validate_effort(runtime, selection.as_ref(), effort)?;
+        }
+        if let Some(mode) = turn.permission_mode.as_deref() {
+            self.validate_permission_mode(runtime, mode)?;
+        }
+        if runtime.type_id == RuntimeKind::Pi && turn.effort.is_some() {
+            return Err(RuntimeError::invalid(
+                "Pi 无法确认插入消息的推理强度，请排队发送此消息",
+            ));
+        }
         if turn.attachments.is_empty()
             && self.can_submit_native(
                 execution_workers::ExecutionCommandKind::Steer,
@@ -868,8 +901,8 @@ impl CoreRuntime {
                 execution_workers::ExecutionCommandKind::Steer,
                 pi::TurnInput {
                     text: turn.text.clone(),
-                    effort: None,
-                    permission_mode: None,
+                    effort: turn.effort.clone(),
+                    permission_mode: turn.permission_mode.clone(),
                     images: Vec::new(),
                 },
             );
@@ -881,23 +914,34 @@ impl CoreRuntime {
         }
         let input = pi::TurnInput {
             text,
-            effort: None,
-            permission_mode: None,
+            effort: turn.effort.clone(),
+            permission_mode: turn.permission_mode.clone(),
             images: super::attachments::turn_images(&attachments.images)?,
         };
         self.retire_native_settings_for_submission();
+        if claude_control {
+            // Wait for the permission ACK on the existing execution owner.
+            // Service submissions can still answer reads while this waits.
+            return self.start_live_operation("steer", move |state| {
+                state
+                    .live_mut()
+                    .ok_or_else(|| RuntimeError::invalid("此运行时当前不能插入消息"))?
+                    .steer(&input)
+                    .map_err(|error| RuntimeError::runtime_operation("插入消息", error))
+            });
+        }
         self.session
             .active_state
             .live_mut()
             .ok_or_else(|| RuntimeError::invalid("此运行时当前不能插入消息"))?
             .steer(&input)
-            .map_err(|error| RuntimeError::context("message steer", error))
+            .map_err(|error| RuntimeError::runtime_operation("插入消息", error))
     }
 
     /// The running turn takes messages through the runtime's own channel.
     fn can_steer(&self) -> bool {
-        self.native_snapshot()
-            .is_some_and(|snapshot| Self::submission_admission(&self.session, &snapshot).can_steer)
+        self.session.projected()
+            .is_some_and(|snapshot| Self::submission_admission(&self.session, snapshot).can_steer)
     }
 
     /// The addressed session's turn ended with `outcome`: the queue goes on

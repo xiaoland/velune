@@ -996,9 +996,8 @@ impl NativeSession {
     /// Whether the next turn needs a new runtime process, which ends the
     /// current one with any work it still does: the turn's model moves
     /// between the runtime's own provider and Velune's gateway, or another
-    /// gateway injection or native model was selected. Claude Code takes the
-    /// turn's reasoning level and permission mode only at launch, so its
-    /// turn child is always replaced.
+    /// gateway injection or native model was selected. Claude Code takes a
+    /// new turn's launch configuration in a new child.
     pub fn restart_needed(&self) -> bool {
         self.config.kind == NativeKind::ClaudeCode
             || (self.config.gateway.is_some() && !self.gateway_turn)
@@ -1081,6 +1080,10 @@ impl NativeSession {
                 NativeKind::ClaudeCode => {
                     self.native_id = Some(id.clone());
                     self.claude.bound_session_id = Some(id.clone());
+                    self.claude.launched_effort = effort.map(str::to_owned);
+                    self.claude.permission_mode = permission_mode
+                        .and_then(claude::claude_permission_mode)
+                        .map(str::to_owned);
                 }
             }
             Ok(())

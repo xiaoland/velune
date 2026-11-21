@@ -402,7 +402,7 @@ impl CoreRuntime {
                         },
                     )
                 } else if self.turn_running() {
-                    self.steer_turn(&request.turn)
+                    self.steer_turn(&request.turn, None, None)
                 } else {
                     self.send_turn(request)
                 };

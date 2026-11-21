@@ -11,6 +11,9 @@ pub(super) struct Fixture {
 }
 impl Fixture {
     pub(super) fn new(mode: &str) -> Self {
+        Self::with_port(mode, true)
+    }
+    fn with_port(mode: &str, port: bool) -> Self {
         let mut nonce = [0; 8];
         getrandom::fill(&mut nonce).unwrap();
         let root = std::env::temp_dir().join(format!(
@@ -52,6 +55,14 @@ for line in sys.stdin:
    response(request)
   elif subtype=='side_question':
    emit({'type':'control_response','response':{'subtype':'success','request_id':request['request_id'],'response':{'response':'synthetic side answer'}}})
+  elif subtype=='set_permission_mode':
+   response({'request_id':'unrelated-control'})
+   if mode=='steer_disconnect': sys.exit(0)
+   if mode=='steer_ended':
+    emit({'type':'result','subtype':'success','is_error':False})
+    emit({'type':'system','subtype':'session_state_changed','state':'idle'})
+   response(request,mode=='steer_rejected')
+   if mode=='steer_success': response(request)
   elif mode=='delay':
    time.sleep(.12);terminal();response(request,True)
   elif subtype in ['interrupt','stop_task'] and mode in ['hold','block']:
@@ -59,6 +70,9 @@ for line in sys.stdin:
   else: response(request,mode=='reject')
  elif request.get('type')=='user' and not started:
   started=True
+  if mode.startswith('steer_'):
+   emit({'type':'system','subtype':'init','permissionMode':'default'})
+   if mode!='steer_success': continue
   emit({'type':'system','subtype':'task_started','task_id':'shell','run_id':'one','task_type':'local_bash','description':'Shell'})
   emit({'type':'control_request','request_id':'permission','request':{'subtype':'can_use_tool','tool_name':'Bash','input':{'command':'synthetic'}}})
   if mode=='block':
@@ -87,9 +101,15 @@ for line in sys.stdin:
         .unwrap();
         session.replace_snapshot("parent", Some(&root), "runtime", vec![]);
         session.claude.start = claude::ClaudeStart::Fresh { name: None };
-        session
-            .prepare_claude_commands(None, None, 64 * 1024 * 1024)
-            .unwrap();
+        if port {
+            session
+                .prepare_claude_commands(None, None, 64 * 1024 * 1024)
+                .unwrap();
+        } else {
+            let mut input = Self::input("once");
+            input.permission_mode = Some("manual".into());
+            session.send(&input).unwrap();
+        }
         Self { root, session }
     }
     fn input(text: &str) -> crate::TurnInput {
@@ -236,6 +256,88 @@ impl Drop for Fixture {
         self.session.shutdown().unwrap();
         std::fs::remove_dir_all(&self.root).unwrap();
     }
+}
+
+#[test]
+fn claude_legacy_steer_updates_permission_without_answering_an_existing_tool_prompt() {
+    let mut fixture = Fixture::with_port("steer_success", false);
+    fixture.poll_until(|session| session.has_pending_requests());
+    let active_turn = fixture.session.turn_id.clone();
+    let mut steer = Fixture::input("steered");
+    steer.permission_mode = Some("bypassPermissions".into());
+    fixture.session.steer(&steer).unwrap();
+    steer.text = "steered again".into();
+    fixture.session.steer(&steer).unwrap();
+    // The test-only stdout fence proves the child consumed the user frame.
+    fixture
+        .session
+        .rpc
+        .claude_control(json!({"subtype":"initialize","hooks":{}}))
+        .unwrap();
+    fixture.session.poll().unwrap();
+
+    let argv: Vec<String> =
+        serde_json::from_slice(&std::fs::read(fixture.root.join("argv.json")).unwrap()).unwrap();
+    assert!(argv.iter().any(|arg| arg == "--allow-dangerously-skip-permissions"));
+    assert!(!argv.iter().any(|arg| arg == "--dangerously-skip-permissions"));
+    assert!(argv.windows(2).any(|pair| pair == ["--permission-mode", "manual"]));
+    assert_eq!(fixture.session.turn_id, active_turn);
+    assert!(fixture.session.has_pending_requests());
+    let requests = fixture.requests();
+    let user_and_permission = requests
+        .iter()
+        .filter(|record| {
+            record["type"] == "user" || record["request"]["subtype"] == "set_permission_mode"
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(user_and_permission.len(), 4);
+    assert_eq!(user_and_permission[0]["message"]["content"][0]["text"], "once");
+    assert_eq!(user_and_permission[1]["request"]["mode"], "bypassPermissions");
+    assert_eq!(user_and_permission[2]["message"]["content"][0]["text"], "steered");
+    assert_eq!(user_and_permission[3]["message"]["content"][0]["text"], "steered again");
+    assert!(!requests.iter().any(|record| record["type"] == "control_response"));
+    let snapshot = fixture.session.snapshot().unwrap();
+    let last = snapshot.messages.last().unwrap();
+    assert_eq!(
+        last.turn_settings.as_ref().unwrap().permission_mode.as_deref(),
+        Some("bypassPermissions")
+    );
+}
+
+#[test]
+fn claude_legacy_steer_never_sends_text_when_permission_is_rejected_or_the_turn_ends() {
+    for (mode, error) in [
+        ("steer_rejected", "steer_permission_rejected"),
+        ("steer_disconnect", "steer_permission_unconfirmed"),
+        ("steer_ended", "steer_settings_changed"),
+    ] {
+        let mut fixture = Fixture::with_port(mode, false);
+        let mut steer = Fixture::input("steered");
+        steer.permission_mode = Some("bypassPermissions".into());
+        assert_eq!(fixture.session.steer(&steer).unwrap_err().code(), error);
+        let requests = fixture.requests();
+        assert_eq!(requests.iter().filter(|frame| frame["type"] == "user").count(), 1);
+        assert_eq!(
+            requests.iter().filter(|frame| frame["request"]["subtype"] == "set_permission_mode").count(),
+            1
+        );
+    }
+}
+
+#[test]
+fn claude_port_rejects_unapplied_steer_configuration_without_user_write() {
+    let mut fixture = Fixture::new("hold");
+    fixture.user();
+    let mut steer = Fixture::input("must not be sent");
+    steer.permission_mode = Some("bypassPermissions".into());
+    let Err(ClaudeAdmissionError::Rejected(error)) = fixture.session.enqueue_claude_command(
+        ClaudeCommand::Steer(steer), Instant::now() + Duration::from_secs(3), None
+    ) else { panic!("steer with unconfirmed settings was admitted") };
+    assert_eq!(error.code(), "steer_settings_unsupported");
+    assert_eq!(
+        fixture.requests().iter().filter(|frame| frame["type"] == "user").count(),
+        1
+    );
 }
 
 #[test]

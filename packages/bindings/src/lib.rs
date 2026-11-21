@@ -1705,6 +1705,8 @@ impl VeluneApplication {
         runtime_id: String,
         conversation_id: String,
         turn: ComposedTurn,
+        target_runtime_id: Option<String>,
+        selection: Option<ModelSelection>,
     ) -> Result<SnapshotResult, BindingError> {
         request!(
             self,
@@ -1712,7 +1714,9 @@ impl VeluneApplication {
             SteerTurn {
                 runtime_id,
                 conversation_id,
-                turn
+                turn,
+                target_runtime_id,
+                selection
             }
         )
     }

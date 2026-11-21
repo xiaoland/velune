@@ -463,6 +463,7 @@ impl NativeSession {
                 if input.text.trim().is_empty() && input.images.is_empty() {
                     return Err(Error::new("Empty message").into());
                 }
+                self.require_codex_steer_settings(&input)?;
                 (
                     "turn/steer",
                     json!({"threadId":self.native_id,"expectedTurnId":self.turn_id,"input":codex_input(&input)}),
@@ -1604,6 +1605,7 @@ impl NativeSession {
     /// `turn/steer` names the turn it expects to be running; Codex refuses
     /// the message when that turn has already ended.
     pub(super) fn codex_steer(&mut self, input: &crate::TurnInput) -> Result<()> {
+        self.require_codex_steer_settings(input)?;
         let (Some(thread), Some(turn)) = (self.native_id.as_deref(), self.turn_id.as_deref())
         else {
             return Err(Error::new("Codex 没有正在运行的轮次"));
@@ -1611,6 +1613,21 @@ impl NativeSession {
         let params =
             json!({"threadId": thread, "expectedTurnId": turn, "input": codex_input(input)});
         self.rpc.request("turn/steer", &params)?;
+        Ok(())
+    }
+
+    fn require_codex_steer_settings(&self, input: &crate::TurnInput) -> Result<()> {
+        let active = &self.codex.retry;
+        if let Some(effort) = &input.effort
+            && active.effort.as_ref() != Some(effort)
+        {
+            return Err(Error::new("当前 Codex 轮次不能更改推理强度，请排队发送此消息"));
+        }
+        if let Some(mode) = &input.permission_mode
+            && active.permission_mode.as_ref() != Some(mode)
+        {
+            return Err(Error::new("当前 Codex 轮次不能更改权限模式，请排队发送此消息"));
+        }
         Ok(())
     }
     /// In place, `thread/revert` drops the message's turn and all later ones

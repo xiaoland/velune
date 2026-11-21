@@ -1472,16 +1472,31 @@ final class ConversationStore: ObservableObject {
         }
     }
     var canSteer: Bool { canQueue && followUp.canSteer }
-    /// Into the running turn; the turn keeps its own choices.
-    func steer(text: String, attachments: [String] = [], onFailure: (() -> Void)? = nil) {
-        guard canSteer, let runtimeID = projectionRuntimeID, let conversationID = loadedConversationID, let transport else { onFailure?(); return }
-        let turn = ComposedTurn(text: text, effort: nil, permissionMode: nil, attachments: attachments)
+    /// Into the running turn with the choices captured when the user submits.
+    func steer(text: String, attachments: [String] = [], next: NextTurn? = nil, onAccepted: (() -> Void)? = nil) {
+        guard canSteer, let next = next ?? nextTurn, let runtimeID = projectionRuntimeID,
+              let conversationID = loadedConversationID, let transport else { return }
+        let choice = next.choice
+        let turn = ComposedTurn(text: text, effort: choice.effort, permissionMode: choice.permissionMode, attachments: attachments)
         let submission = outgoing.begin(.steer, text: text, attachments: attachments, snapshot: snapshot)
-        enqueueSnapshot({ try transport.steerTurn(runtimeID: runtimeID, conversationID: conversationID, turn: turn) }, scope: projectionScope(), consumeReceipt: { [weak self] result in
+        let scope = projectionScope()
+        composerRequest = .sending
+        enqueueSnapshot({
+            try transport.steerTurn(runtimeID: runtimeID, conversationID: conversationID, turn: turn,
+                                    targetRuntimeID: next.runtimeId, selection: choice.model)
+        }, scope: scope, consumeReceipt: { [self] result in
+            if generation == scope.storeGeneration { composerRequest = nil }
             switch result {
-            case .success(let value): self?.acceptSubmission(submission, receipt: value); self?.acceptedSubmissions &+= 1
-            case .failure: self?.outgoing.fail(submission); onFailure?()
+            case .success(let value): acceptSubmission(submission, receipt: value)
+            case .failure(let error):
+                if AppProblem.failure(error).code == "message_delivery_accepted" {
+                    outgoing.accept(submission, snapshot: nil)
+                } else if outgoing.fail(submission) {
+                    return
+                }
             }
+            acceptedSubmissions &+= 1
+            onAccepted?()
         })
     }
     /// Whether the user message may be edited now, and how. The edit goes to

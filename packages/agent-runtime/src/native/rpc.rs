@@ -433,17 +433,8 @@ impl RpcClient {
     ) -> Result<Retained<Value>> {
         let method = request["subtype"].as_str().unwrap_or("control_request");
         observe_request(method, || {
-            let id = format!("velune-{}", self.next);
-            self.next = self
-                .next
-                .checked_add(1)
-                .ok_or_else(|| Error::new("运行时请求序号耗尽"))?;
             let deadline = Instant::now() + CONTROL_TIMEOUT;
-            self.write_until_class(
-                &json!({"type":"control_request","request_id":id,"request":request}),
-                class,
-                deadline,
-            )?;
+            let id = self.begin_claude_control(&request, class, deadline)?;
             loop {
                 let record = self.wait_for_record(method, deadline)?;
                 if record["type"] == "control_response" && record["response"]["request_id"] == id {
@@ -455,6 +446,26 @@ impl RpcClient {
                 self.defer(record)?;
             }
         })
+    }
+    /// Issue the control frame. The live session owner can process native
+    /// output in order while it waits for the matching response.
+    pub(crate) fn begin_claude_control(
+        &mut self,
+        request: &Value,
+        class: WriteClass,
+        deadline: Instant,
+    ) -> Result<String> {
+        let id = format!("velune-{}", self.next);
+        self.next = self
+            .next
+            .checked_add(1)
+            .ok_or_else(|| Error::new("运行时请求序号耗尽"))?;
+        self.write_until_class(
+            &json!({"type":"control_request","request_id":id,"request":request}),
+            class,
+            deadline,
+        )?;
+        Ok(id)
     }
     /// Admit a request without waiting for stdin or its protocol response.
     /// The caller owns response correlation and the same absolute deadline;

@@ -442,7 +442,13 @@ final class Transport: @unchecked Sendable {
     /// The runtime's own models first, then the managed models; every entry
     /// carries the levels the runtime accepts for it.
     func runtimeModels(runtimeID: String) throws -> [RuntimeModel] { try withApplication("runtimeModels", .reads, .configurationRead) { try $0.runtimeModels(runtimeId: runtimeID) } }
-    func steerTurn(runtimeID: String, conversationID: String, turn: ComposedTurn) throws -> SnapshotResult { try withApplication("steerTurn", .writes, .send) { try $0.steerTurn(runtimeId: runtimeID, conversationId: conversationID, turn: try deliver(turn, using: $0)) } }
+    func steerTurn(runtimeID: String, conversationID: String, turn: ComposedTurn,
+                   targetRuntimeID: String, selection: ModelSelection?) throws -> SnapshotResult {
+        try withApplication("steerTurn", .writes, .send) {
+            try $0.steerTurn(runtimeId: runtimeID, conversationId: conversationID, turn: try deliver(turn, using: $0),
+                             targetRuntimeId: targetRuntimeID, selection: selection)
+        }
+    }
     func compactConversation(runtimeID: String, conversationID: String, selection: ModelSelection?) throws -> SnapshotResult {
         try withApplication("compactConversation", .writes, .compact) { try $0.compactConversation(runtimeId: runtimeID, conversationId: conversationID, selection: selection) }
     }

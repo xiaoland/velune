@@ -60,6 +60,7 @@ impl ExecutionCommandKind {
                 | (Self::Cancel, "cancel" | "stop_child")
                 | (Self::StopBackground, "stop_background")
                 | (Self::Reply, "reply")
+                | (Self::Steer, "steer")
         )
     }
 }

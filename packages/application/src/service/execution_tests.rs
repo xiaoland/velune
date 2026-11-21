@@ -23,6 +23,12 @@ if '--version' in sys.argv:
     sys.exit(0)
 for line in sys.stdin:
     record = json.loads(line)
+    if record.get('type') == 'user':
+        text = record['message']['content'][0]['text']
+        with (root / 'steer-wire').open('a') as log:
+            log.write(text + '\n')
+        if text in ('synthetic insert', 'synthetic queue insert'):
+            (root / text.replace(' ', '-')).touch()
     if record.get('type') != 'control_request':
         continue
     request = record['request']
@@ -45,6 +51,15 @@ for line in sys.stdin:
         response = {'mcpServers': []}
     elif subtype == 'mcp_set_servers':
         response = {'errors': {}}
+    elif subtype == 'set_permission_mode':
+        with (root / 'steer-wire').open('a') as log:
+            log.write(request['mode'] + '\n')
+        (root / 'steer-entered').touch()
+        deadline = time.monotonic() + 8
+        while not (root / 'release-steer').exists():
+            if time.monotonic() >= deadline:
+                sys.exit(2)
+            time.sleep(0.005)
     print(json.dumps({'type': 'control_response', 'response': {
         'subtype': result_type, 'request_id': record['request_id'], 'response': response
     }}), flush=True)
@@ -285,6 +300,76 @@ fn native_control_wait_keeps_owner_responsive_and_rejection_retry_is_explicit() 
         },
     )
     .unwrap();
+
+    let insert = request_later(
+        &app,
+        "control-view",
+        Command::SteerTurn {
+            runtime_id: "synthetic".into(),
+            conversation_id: id.clone(),
+            target_runtime_id: Some("synthetic".into()),
+            selection: None,
+            turn: crate::ComposedTurn {
+                text: "synthetic insert".into(),
+                effort: None,
+                permission_mode: Some("bypassPermissions".into()),
+                attachments: Vec::new(),
+            },
+        },
+    );
+    fixture.wait("steer-entered");
+    assert_read_before_release(&app);
+    assert!(matches!(insert.try_recv(), Err(mpsc::TryRecvError::Empty)));
+    let steer_wire = fixture.0.join("steer-wire");
+    assert_eq!(
+        fs::read_to_string(&steer_wire).unwrap(),
+        "synthetic input\nbypassPermissions\n"
+    );
+    fs::write(fixture.0.join("release-steer"), []).unwrap();
+    assert!(matches!(
+        insert.recv_timeout(Duration::from_secs(3)).unwrap().unwrap(),
+        Response::SteerTurn(_)
+    ));
+    fixture.wait("synthetic-insert");
+    assert_eq!(
+        fs::read_to_string(&steer_wire).unwrap(),
+        "synthetic input\nbypassPermissions\nsynthetic insert\n"
+    );
+
+    let queue = |operation| Command::EditSendQueue {
+        submission_id: None,
+        runtime_id: "synthetic".into(),
+        conversation_id: id.clone(),
+        operation,
+    };
+    app.execute(
+        view.clone(),
+        queue(crate::SendQueueOperation::Add {
+            source_runtime_id: "synthetic".into(),
+            target_runtime_id: "synthetic".into(),
+            selection: None,
+            turn: crate::ComposedTurn {
+                text: "synthetic queue insert".into(),
+                effort: None,
+                permission_mode: Some("acceptEdits".into()),
+                attachments: Vec::new(),
+            },
+        }),
+    )
+    .unwrap();
+    let pending = control_snapshot(&app, &id).follow_up.queue;
+    assert_eq!(pending.len(), 1);
+    app.execute(
+        view.clone(),
+        queue(crate::SendQueueOperation::Steer { id: pending[0].id.clone() }),
+    )
+    .unwrap();
+    fixture.wait("synthetic-queue-insert");
+    assert!(control_snapshot(&app, &id).follow_up.queue.is_empty());
+    assert_eq!(
+        fs::read_to_string(&steer_wire).unwrap(),
+        "synthetic input\nbypassPermissions\nsynthetic insert\nacceptEdits\nsynthetic queue insert\n"
+    );
 
     let cancel = || Command::Cancel {
         runtime_id: "synthetic".into(),
@@ -722,6 +807,8 @@ fn codex_control_owner_polls_output_and_reply_during_ack_then_preserves_partial_
         Command::SteerTurn {
             runtime_id: "synthetic".into(),
             conversation_id: id.clone(),
+            target_runtime_id: None,
+            selection: None,
             turn: control_turn("still steerable"),
         },
     )
@@ -868,6 +955,8 @@ fn codex_stop_child_is_exact_and_stop_background_preserves_each_delivery() {
                 Command::SteerTurn {
                     runtime_id: "synthetic".into(),
                     conversation_id: id.clone(),
+                    target_runtime_id: None,
+                    selection: None,
                     turn: control_turn("parent was not cancelled"),
                 },
             )
@@ -1596,6 +1685,8 @@ fn codex_prepared_steer_keeps_snapshot_and_reply_live_before_its_ack() {
         Command::SteerTurn {
             runtime_id: "synthetic".into(),
             conversation_id: id.clone(),
+            target_runtime_id: None,
+            selection: None,
             turn: control_turn("one steer input"),
         },
     );
@@ -1615,6 +1706,156 @@ fn codex_prepared_steer_keeps_snapshot_and_reply_live_before_its_ack() {
             .filter(|record| record["method"] == "turn/steer")
             .count(),
         1
+    );
+    app.close(true).unwrap();
+}
+
+#[test]
+fn codex_steer_preserves_the_running_execution_configuration() {
+    let fixture = Fixture::codex_control("send-writer-full");
+    let app = open_control_service(&fixture);
+    let view = || ClientViewId("control-view".into());
+    let id = created_codex(&app, &fixture, "synthetic", native_selection());
+    let mut turn = control_turn("start with known settings");
+    turn.effort = Some("high".into());
+    turn.permission_mode = Some("workspace".into());
+    app.execute(
+        view(),
+        Command::SendTurn {
+            submission_id: None,
+            source_runtime_id: "synthetic".into(),
+            conversation_id: id.clone(),
+            target_runtime_id: "synthetic".into(),
+            selection: native_selection(),
+            turn,
+        },
+    )
+    .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        let snapshot = control_snapshot(&app, &id);
+        if snapshot.follow_up.can_steer
+            && snapshot.transcript_turns.iter().any(|turn| {
+                turn.settings.as_ref().is_some_and(|settings| {
+                    settings.effort.as_deref() == Some("high")
+                        && settings.permission_mode.as_deref() == Some("workspace")
+                })
+            })
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "running configuration was not observed"
+        );
+    }
+
+    let steer = |target: Option<&str>, selection, effort: Option<&str>, mode: Option<&str>| {
+        Command::SteerTurn {
+            runtime_id: "synthetic".into(),
+            conversation_id: id.clone(),
+            target_runtime_id: target.map(str::to_owned),
+            selection,
+            turn: crate::ComposedTurn {
+                effort: effort.map(str::to_owned),
+                permission_mode: mode.map(str::to_owned),
+                ..control_turn("steer input")
+            },
+        }
+    };
+    let other_model = Some(crate::ModelSelection::Native {
+        provider_id: Some("openai".into()),
+        model_id: "other-model".into(),
+    });
+    for command in [
+        steer(Some("other-runtime"), None, None, None),
+        steer(Some("synthetic"), other_model, None, None),
+        steer(Some("synthetic"), native_selection(), Some("low"), None),
+        steer(
+            Some("synthetic"),
+            native_selection(),
+            None,
+            Some("read-only"),
+        ),
+    ] {
+        let error = app
+            .execute(view(), command)
+            .err()
+            .expect("incompatible steer accepted");
+        assert!(error.message.contains("排队"), "{error:?}");
+    }
+
+    let queue = |operation| Command::EditSendQueue {
+        submission_id: None,
+        runtime_id: "synthetic".into(),
+        conversation_id: id.clone(),
+        operation,
+    };
+    let mut queued_turn = control_turn("keep queued permission change");
+    queued_turn.permission_mode = Some("read-only".into());
+    app.execute(
+        view(),
+        queue(crate::SendQueueOperation::Add {
+            source_runtime_id: "synthetic".into(),
+            target_runtime_id: "synthetic".into(),
+            selection: native_selection(),
+            turn: queued_turn,
+        }),
+    )
+    .unwrap();
+    let queued = control_snapshot(&app, &id).follow_up.queue;
+    assert_eq!(queued.len(), 1);
+    let error = app
+        .execute(
+            view(),
+            queue(crate::SendQueueOperation::Steer {
+                id: queued[0].id.clone(),
+            }),
+        )
+        .err()
+        .expect("queued permission change was silently stripped");
+    assert!(error.message.contains("排队"), "{error:?}");
+    assert_eq!(control_snapshot(&app, &id).follow_up.queue, queued);
+    assert!(
+        !fixture
+            .wire()
+            .iter()
+            .any(|record| record["method"] == "turn/steer")
+    );
+
+    for command in [
+        steer(
+            Some("synthetic"),
+            native_selection(),
+            Some("high"),
+            Some("workspace"),
+        ),
+        steer(None, None, None, None),
+    ] {
+        assert!(matches!(
+            app.execute(view(), command).unwrap(),
+            Response::SteerTurn(_)
+        ));
+    }
+    let snapshot = control_snapshot(&app, &id);
+    assert_eq!(snapshot.run_state, crate::conversation::RunState::Running);
+    assert_eq!(snapshot.follow_up.queue, queued);
+    let wire = fixture.wire();
+    assert_eq!(
+        wire.iter()
+            .filter(|record| record["method"] == "turn/start")
+            .count(),
+        1
+    );
+    let steers: Vec<_> = wire
+        .iter()
+        .filter(|record| record["method"] == "turn/steer")
+        .collect();
+    assert_eq!(steers.len(), 2);
+    assert!(
+        steers
+            .iter()
+            .all(|record| record["params"]["expectedTurnId"] == "turn-1")
     );
     app.close(true).unwrap();
 }
