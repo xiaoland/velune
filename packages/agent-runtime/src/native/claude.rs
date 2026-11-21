@@ -382,21 +382,35 @@ impl NativeSession {
     /// copies the session up to there under a new identity, which the
     /// first turn creates.
     pub(super) fn claude_branch(&mut self, index: usize, placement: EditPlacement) -> Result<()> {
+        let from = self
+            .native_id
+            .as_deref()
+            .ok_or_else(|| Error::new("没有原生会话身份"))?;
         let snapshot = self.snapshot.as_ref().expect("branched snapshot");
         let at = snapshot.messages[index]
             .branch_point
             .clone()
             .ok_or_else(|| Error::new("Claude Code 不能替换会话的第一条消息"))?;
+        if snapshot.messages[index + 1..]
+            .iter()
+            .flat_map(|message| &message.blocks)
+            .any(|block| matches!(block, MessageBlock::ContextCompaction { .. }))
+        {
+            // Even a retained UUID can replay a newer compact summary that
+            // describes the message being replaced or the discarded suffix.
+            return Err(Error::with_code(
+                "所选消息之后有 Claude 上下文压缩，需要从原始历史重建",
+                "claude_replay_boundary_unavailable",
+            ));
+        }
+        self.claude_require_replay_boundary(from, &at)?;
         match placement {
             EditPlacement::InPlace => {
                 self.claude.start = ClaudeStart::ResumeAt { at };
                 self.truncate_snapshot(index);
             }
             EditPlacement::Fork => {
-                let from = self
-                    .native_id
-                    .clone()
-                    .ok_or_else(|| Error::new("没有原生会话身份"))?;
+                let from = from.to_owned();
                 let id = claude_uuid()?;
                 let cwd = snapshot.conversation.cwd.as_deref().map(PathBuf::from);
                 let runtime_id = snapshot.conversation.runtime_id.clone();
@@ -434,13 +448,8 @@ impl NativeSession {
             })
             .transpose()?
             .or_else(|| snapshot.messages.last().map(|message| message.id.clone()));
-        if let Some(at) = &at
-            && !crate::history::claude_replay_contains(&self.claude_history_config(), &from, at)?
-        {
-            return Err(Error::with_code(
-                "所选分叉位置已移出 Claude 当前原生上下文，需要从历史重建分支",
-                "claude_fork_boundary_unavailable",
-            ));
+        if let Some(at) = &at {
+            self.claude_require_replay_boundary(&from, at)?;
         }
         let id = claude_uuid()?;
         let cwd = snapshot.conversation.cwd.as_deref().map(PathBuf::from);
@@ -454,6 +463,20 @@ impl NativeSession {
         };
         Ok(())
     }
+
+    /// `--resume-session-at` looks up the boundary after Claude loads its
+    /// current replay chain. A UUID in the transcript can have been compacted
+    /// away. Check before changing the target or truncating the live view.
+    fn claude_require_replay_boundary(&self, from: &str, at: &str) -> Result<()> {
+        if !crate::history::claude_replay_contains(&self.claude_history_config(), from, at)? {
+            return Err(Error::with_code(
+                "所选位置已移出 Claude 当前原生上下文，需要从历史重建",
+                "claude_replay_boundary_unavailable",
+            ));
+        }
+        Ok(())
+    }
+
     pub(super) fn claude_open(
         &mut self,
         id: &str,

@@ -2,11 +2,12 @@ import AppKit
 import SwiftUI
 import VeluneBindings
 
-/// Exercise the ordinary fork callback and the real Composer through Bindings
-/// and Claude Code. The runner supplies a private archive and loopback model.
-@MainActor private func forkSendExperienceChecks(home: URL) -> Never {
+/// Exercise native historical continuation through Bindings and Claude Code.
+/// The runner supplies a private archive and a loopback model.
+@MainActor private func claudeContinuationExperienceChecks(home: URL, editing: Bool) -> Never {
+    let action = editing ? "compact-edit" : "fork-send"
     func fail(_ message: String) -> Never {
-        FileHandle.standardError.write(Data("FAIL Claude fork-send: \(message)\n".utf8))
+        FileHandle.standardError.write(Data("FAIL Claude \(action): \(message)\n".utf8))
         exit(1)
     }
     let foreground = NSWorkspace.shared.frontmostApplication?.processIdentifier
@@ -59,6 +60,47 @@ import VeluneBindings
         let workspace = ConversationWindowModel(application: device, kind: .workspace)
         let source = workspace.focused
         source.store.start(loadFirstConversation: false, opening: sourceID)
+        let choice = ModelSelection.managed(modelRecordKey: modelKey)
+        if editing {
+            func textVisible(_ text: String) -> Bool {
+                source.store.transcript.rows.contains { $0.message.blocks.contains(.text(text: text)) }
+            }
+            guard until({ source.store.loadedConversationID == sourceID && source.store.editability(of: userID)?.inPlace == true }),
+                  textVisible("old edit prompt"), textVisible("later prompt after compact") else {
+                fail("压缩前的旧消息或压缩后的历史未加载")
+            }
+            source.edit(messageID: userID)
+            guard let edit = source.editing, edit.placement == .inPlace else { fail("未打开原地替换编辑器") }
+            edit.target.chooseModel(choice)
+            let host = NSHostingView(rootView: MessageEditorView(session: edit, window: workspace, source: source)
+                .background(Color(nsColor: .windowBackgroundColor)).applicationAppearance())
+            let window = OffscreenMessageEditorWindow(contentRect: NSRect(x: 0, y: 0, width: 560, height: 300),
+                styleMask: [.borderless], backing: .buffered, defer: true)
+            defer { withExtendedLifetime(window) {} }
+            window.isReleasedWhenClosed = false
+            window.isRestorable = false
+            window.contentView = host
+            host.layoutSubtreeIfNeeded()
+            guard until({ edit.editor.textView?.isEditable == true }), let editor = edit.editor.textView,
+                  editor.string == "old edit prompt" else { fail("原生编辑器未载入原消息") }
+            let replacement = "edited historical message"
+            editor.insertText(replacement, replacementRange: NSRange(location: 0, length: (editor.string as NSString).length))
+            guard edit.editor.submission == replacement else { fail("原生编辑器没有提交修改后的正文") }
+            guard until({ edit.canSubmit }) else { fail(edit.noticeText ?? "编辑器禁止提交") }
+            edit.send(in: workspace)
+            guard until({ edit.failure != nil || (source.editing == nil && textVisible("edited reply received")) }),
+                  edit.failure == nil else { fail(edit.failure ?? "编辑提交后未收到 Claude 回复") }
+            guard source.store.loadedConversationID == sourceID, workspace.focused.id == source.id else {
+                fail("原地提交切换了标签或会话 ID")
+            }
+            let missing = ["oldest fork prompt", "oldest fork reply", replacement].filter { !textVisible($0) }
+            let retained = ["old edit prompt", "old edit reply", "retained later prompt", "later prompt after compact"].filter { textVisible($0) }
+            guard missing.isEmpty, retained.isEmpty else { fail("替换后的历史不完整，缺少 \(missing)，仍保留 \(retained)") }
+            settle()
+            try transport.close(stoppingWork: true)
+            print("PASS Claude compact-edit: original conversation retained, discarded history replaced, Claude reply received")
+            exit(0)
+        }
         guard until({ source.store.loadedConversationID == sourceID && source.store.canFork && source.store.message(id: userID) != nil }) else {
             fail("旧轮次未提供分叉入口")
         }
@@ -71,7 +113,6 @@ import VeluneBindings
         let tab = workspace.focused
         let store = tab.store
         let input = workspace.composer(for: tab)
-        let choice = ModelSelection.managed(modelRecordKey: modelKey)
         workspace.composerContext(for: tab).selectModel(choice)
         guard until({ workspace.composerContext(for: tab).chosenModel == choice && store.draftEditable }) else {
             fail("分叉输入不可编辑 \(store.inputAccess)")
@@ -174,7 +215,8 @@ import VeluneBindings
         while !ready(), Date() < end { RunLoop.main.run(until: Date().addingTimeInterval(0.02)) }
         precondition(ready(), "合成检查超时")
     }
-    if CommandLine.arguments.contains("--experience-fork-send-only") { forkSendExperienceChecks(home: home) }
+    if CommandLine.arguments.contains("--experience-fork-send-only") { claudeContinuationExperienceChecks(home: home, editing: false) }
+    if CommandLine.arguments.contains("--experience-claude-compact-edit-only") { claudeContinuationExperienceChecks(home: home, editing: true) }
     if CommandLine.arguments.contains("--experience-sidebar-only") {
         sidebarActionsChecks(home: home)
         exit(0)

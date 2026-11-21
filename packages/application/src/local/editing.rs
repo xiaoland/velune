@@ -1234,6 +1234,7 @@ impl CoreRuntime {
 
         let origin = self.session.key;
         self.focus_new();
+        let mut rebuild_claude_prefix = false;
         let branched = (|| {
             if first && branching != Branching::Pi {
                 // Nothing precedes the first message: a new conversation in
@@ -1279,7 +1280,10 @@ impl CoreRuntime {
             match &mut self.session.active_state {
                 ActiveState::Native(session) => session
                     .branch(&original.id, placement)
-                    .map_err(|error| RuntimeError::context("消息编辑", error)),
+                    .map_err(|error| {
+                        rebuild_claude_prefix = error.code() == "claude_replay_boundary_unavailable";
+                        RuntimeError::context("消息编辑", error)
+                    }),
                 _ => Err(RuntimeError::invalid("此运行时不提供消息编辑")),
             }
         })();
@@ -1289,6 +1293,15 @@ impl CoreRuntime {
             let _ = self.shutdown_active();
             self.session.unsubmitted_draft = None;
             self.focus_key(origin);
+            if rebuild_claude_prefix {
+                return self.translated_branch(
+                    &current,
+                    message_id,
+                    target_runtime_id,
+                    selection,
+                    Some(turn),
+                );
+            }
             return Err(error);
         }
         self.session.refresh_pending_native_fork()?;

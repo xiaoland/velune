@@ -23,11 +23,11 @@ def digest(path):
         return hashlib.file_digest(stream, 'sha256').hexdigest()
 
 
-def prepare_claude_fork(root, evidence, path, lifetime):
-    """Tiny native history where the oldest reply is outside the replay chain."""
+def prepare_claude_continuation(root, evidence, path, lifetime, editing):
+    """Tiny native history where an earlier reply is outside the replay chain."""
     binary = shutil.which('claude', path=path)
     if not binary:
-        raise SystemExit('fork-send requires Claude Code on PATH')
+        raise SystemExit('Claude continuation checks require Claude Code on PATH')
     config = root / 'claude'
     project = (root / 'project').resolve()
     project.mkdir()
@@ -52,7 +52,11 @@ def prepare_claude_fork(root, evidence, path, lifetime):
 
     selected = message('user', None, 'oldest fork prompt')
     old_reply = message('assistant', selected, 'oldest fork reply')
-    retained = message('user', old_reply, 'retained later prompt')
+    retained_parent = old_reply
+    if editing:
+        selected = message('user', old_reply, 'old edit prompt')
+        retained_parent = message('assistant', selected, 'old edit reply')
+    retained = message('user', retained_parent, 'retained later prompt')
     retained_reply = message('assistant', retained, 'retained later reply')
     compact = record('system', None, subtype='compact_boundary', logicalParentUuid=retained_reply,
                      compactMetadata=dict(trigger='manual', preTokens=300, postTokens=30))
@@ -66,7 +70,13 @@ def prepare_claude_fork(root, evidence, path, lifetime):
     archive.write_text(''.join(json.dumps(row) + '\n' for row in rows))
     archive_digest = digest(archive)
     requests = []
+    roles = []
     rejected = []
+    prompt = 'edited historical message' if editing else 'first message after fork'
+    reply = 'edited reply received' if editing else 'fork reply received'
+    markers = ['oldest fork prompt', 'oldest fork reply', 'old edit prompt', 'old edit reply',
+               'new compact summary', 'retained later prompt', 'retained later reply',
+               'later prompt after compact', 'later reply after compact', prompt]
 
     class Messages(BaseHTTPRequestHandler):
         def log_message(self, *_):
@@ -78,10 +88,12 @@ def prepare_claude_fork(root, evidence, path, lifetime):
                 rejected.append(self.path.split('?')[0])
                 self.send_error(400)
                 return
-            transcript = json.dumps(request['messages'])
-            markers = ['oldest fork prompt', 'oldest fork reply', 'retained later prompt',
-                       'later prompt after compact', 'first message after fork']
-            requests.append([marker for marker in markers if marker in transcript])
+            captured = []
+            for message in request['messages']:
+                content = json.dumps(message['content'])
+                captured.extend((message['role'], marker) for marker in markers if marker in content)
+            requests.append([marker for _, marker in captured])
+            roles.append([role for role, _ in captured])
             self.send_response(200)
             self.send_header('Content-Type', 'text/event-stream')
             self.end_headers()
@@ -89,7 +101,7 @@ def prepare_claude_fork(root, evidence, path, lifetime):
                 ('message_start', dict(message=dict(id='msg_' + uuid.uuid4().hex, type='message', role='assistant',
                     model=request['model'], content=[], stop_reason=None, usage=dict(input_tokens=10, output_tokens=1)))),
                 ('content_block_start', dict(index=0, content_block=dict(type='text', text=''))),
-                ('content_block_delta', dict(index=0, delta=dict(type='text_delta', text='fork reply received'))),
+                ('content_block_delta', dict(index=0, delta=dict(type='text_delta', text=reply))),
                 ('content_block_stop', dict(index=0)),
                 ('message_delta', dict(delta=dict(stop_reason='end_turn', stop_sequence=None), usage=dict(output_tokens=5))),
                 ('message_stop', {}),
@@ -109,17 +121,18 @@ def prepare_claude_fork(root, evidence, path, lifetime):
     def verify(output, success):
         intact = digest(archive) == archive_digest
         (output / 'loopback.json').write_text(json.dumps(dict(originalUnchanged=intact, requests=requests,
-                                                            rejectedPaths=rejected), indent=2))
+                                                            roles=roles, rejectedPaths=rejected), indent=2))
         if success:
-            assert intact, 'fork changed the original native archive'
-            assert requests == [['oldest fork prompt', 'oldest fork reply', 'first message after fork']], requests
+            assert intact, 'continuation changed the original native archive'
+            assert requests == [['oldest fork prompt', 'oldest fork reply', prompt]], requests
+            assert roles == [['user', 'assistant', 'user']], roles
 
     return verify
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('check', choices=['editor', 'runtime-editor', 'fork-send', 'queued-editor', 'archived', 'palette-ime', 'pagination', 'continuation', 'targets', 'tabs', 'ownership', 'geometry', 'controls', 'credits', 'background', 'experience', 'recovery', 'compaction', 'sidebar', 'provider-analytics', 'background-notifications', 'sidebar-toolbar', 'outgoing-submissions'])
+    parser.add_argument('check', choices=['editor', 'runtime-editor', 'fork-send', 'claude-compact-edit', 'queued-editor', 'archived', 'palette-ime', 'pagination', 'continuation', 'targets', 'tabs', 'ownership', 'geometry', 'controls', 'credits', 'background', 'experience', 'recovery', 'compaction', 'sidebar', 'provider-analytics', 'background-notifications', 'sidebar-toolbar', 'outgoing-submissions'])
     parser.add_argument('--app', type=Path, default=app_bundle_path(ROOT, 'dev'))
     parser.add_argument('--output', type=Path)
     parser.add_argument('--dark', action='store_true')
@@ -198,9 +211,11 @@ def main():
                 flags.append('--background-check-dark')
         if args.check == 'experience':
             flags = ['--check-message-experience']
-        if args.check == 'fork-send':
-            flags = ['--check-message-experience', '--experience-fork-send-only']
-            verify_fork = prepare_claude_fork(root, evidence, env.get('PATH', os.defpath), lifetime)
+        if args.check in ['fork-send', 'claude-compact-edit']:
+            editing = args.check == 'claude-compact-edit'
+            flag = '--experience-claude-compact-edit-only' if editing else '--experience-fork-send-only'
+            flags = ['--check-message-experience', flag]
+            verify_claude = prepare_claude_continuation(root, evidence, env.get('PATH', os.defpath), lifetime, editing)
             env.update(CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC='1', DISABLE_AUTOUPDATER='1',
                        HTTP_PROXY='http://127.0.0.1:9', HTTPS_PROXY='http://127.0.0.1:9', NO_PROXY='127.0.0.1,localhost')
         if args.check == 'recovery':
@@ -254,15 +269,16 @@ def main():
                 name = 'editor-core-' + native_log.name
                 shutil.copy2(native_log, output / name)
                 exported.append(name)
-        if args.check == 'fork-send':
-            verify_fork(output, receipt['exitCode'] == 0)
+        if args.check in ['fork-send', 'claude-compact-edit']:
+            verify_claude(output, receipt['exitCode'] == 0)
             exported.append('loopback.json')
+            prefix = 'claude-compact-edit' if args.check == 'claude-compact-edit' else 'fork'
             for native_log in (root / 'state' / 'logs').glob('*.jsonl'):
-                name = 'fork-core-' + native_log.name
+                name = prefix + '-core-' + native_log.name
                 shutil.copy2(native_log, output / name)
                 exported.append(name)
         receipt['artifacts'] = sorted(exported)
-        if args.check == 'fork-send' and receipt['exitCode'] == 0:
+        if args.check in ['fork-send', 'claude-compact-edit'] and receipt['exitCode'] == 0:
             receipt['loopbackRequests'] = 1
         (output / 'receipt.json').write_text(json.dumps(receipt, indent=2) + '\n')
         print((output / 'native.log').read_text(), end='')
