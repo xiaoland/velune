@@ -97,6 +97,7 @@ extension ConversationWindowModel {
             case .newConversation, .newWindow, .openConversation, .newTab, .reopenClosedTab, .closeTab, .closeWindow,
                  .splitRight, .splitDown, .commandPalette, .rightArea, .bottomArea, .editorOnly,
                  .problems, .shortcutHelp, .nextAttention, .nextTab, .previousTab, .moveTabToNewWindow,
+                 .zoomIn, .zoomOut, .resetZoom,
                  .closeSplit, .nextPane, .previousPane, .keepInFront, .showList, .selectTab1, .selectTab2, .selectTab3, .selectTab4, .selectTab5, .selectTab6, .selectTab7, .selectTab8, .selectTab9: break
             default: return false
             }
@@ -136,6 +137,7 @@ extension ConversationWindowModel {
         case .focusComposer: store.isSideChat || canToggle(.composer)
         case .showAgents: canToggle(.agents)
         case .showBackgroundTasks: canToggle(.backgroundTasks)
+        case .zoomIn, .zoomOut, .resetZoom: command.canPerformZoom
         case .globalShow, .globalNewConversation: false
         }
     }
@@ -185,6 +187,7 @@ extension ConversationWindowModel {
         case .focusComposer: if tab === sheetTab || tab === composerSheetTab { tab.composer.focusWhenShown() } else { focusComposer() }
         case .showAgents: toggle(.agents)
         case .showBackgroundTasks: toggle(.backgroundTasks)
+        case .zoomIn, .zoomOut, .resetZoom: command.performZoom()
         case .rightArea: tools.toggleArea(.right)
         case .bottomArea: tools.toggleArea(.bottom)
         case .editorOnly: tools.toggleEditorOnly()
@@ -346,6 +349,7 @@ struct CommandPaletteView: View {
     let mode: PaletteMode
     @ObservedObject private var store: ConversationStore
     @ObservedObject private var composer: ComposerModel
+    @ObservedObject private var appearance = AppearancePreferences.shared
 
     init(window: ConversationWindowModel, mode: PaletteMode) {
         self.window = window; self.mode = mode
@@ -354,7 +358,7 @@ struct CommandPaletteView: View {
 
     @State private var query = ""
     @State private var selection = 0
-    private static let rowHeight: CGFloat = 28
+    private var rowHeight: CGFloat { 28 * appearance.values.uiScale }
 
     private var items: [PaletteItem] {
         let all = window.paletteItems(mode)
@@ -366,11 +370,11 @@ struct CommandPaletteView: View {
     var body: some View {
         let items = items
         VStack(spacing: 0) {
-            PaletteField(text: $query, prompt: mode.prompt,
+            PaletteField(text: $query, prompt: mode.prompt, fontSize: 18 * appearance.values.uiScale,
                          move: { step in if !items.isEmpty { selection = (selection + step + items.count) % items.count } },
                          run: { newTab in run(items, newTab: newTab) },
                          cancel: { window.closePalette() })
-                .frame(height: 28).padding(.horizontal, 12).padding(.vertical, 8)
+                .frame(height: rowHeight).padding(.horizontal, 12).padding(.vertical, 8)
             Divider()
             if items.isEmpty {
                 Text(mode == .commands ? "没有匹配的命令" : mode == .conversations ? "没有匹配的会话" : "没有可选的项")
@@ -386,15 +390,16 @@ struct CommandPaletteView: View {
                             }
                         }.padding(6)
                     }
-                    .frame(height: min(CGFloat(items.count), 12) * Self.rowHeight + 12)
+                    .frame(maxHeight: min(CGFloat(items.count), 12) * rowHeight + 12)
                     .onChange(of: selection) { _, value in if items.indices.contains(value) { proxy.scrollTo(items[value].id) } }
                 }
             }
         }
-        .frame(width: 580)
+        .frame(maxWidth: 580)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Color(nsColor: .separatorColor)))
         .shadow(color: .black.opacity(0.25), radius: 24, y: 10)
+        .padding(.horizontal, 12)
         .onChange(of: query) { _, _ in selection = 0 }
         .onAppear { selection = items.firstIndex { $0.checked } ?? 0 }
         .accessibilityElement(children: .contain)
@@ -417,7 +422,7 @@ struct CommandPaletteView: View {
             }
         }
         .foregroundStyle(selected ? AnyShapeStyle(.white) : item.enabled ? AnyShapeStyle(.primary) : AnyShapeStyle(.tertiary))
-        .padding(.horizontal, 8).frame(height: Self.rowHeight)
+        .padding(.horizontal, 8).frame(height: rowHeight)
         .background(selected ? Color.accentColor : .clear, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
         .accessibilityAddTraits(selected ? .isSelected : [])
     }
@@ -436,6 +441,7 @@ struct CommandPaletteView: View {
 struct PaletteField: NSViewRepresentable {
     @Binding var text: String
     let prompt: String
+    var fontSize: CGFloat = 18
     let move: (Int) -> Void
     let run: (_ newTab: Bool) -> Void
     let cancel: () -> Void
@@ -447,7 +453,7 @@ struct PaletteField: NSViewRepresentable {
         field.isBordered = false
         field.drawsBackground = false
         field.focusRingType = .none
-        field.font = .systemFont(ofSize: 18)
+        field.font = .systemFont(ofSize: fontSize)
         field.placeholderString = prompt
         field.delegate = context.coordinator
         field.coordinator = context.coordinator
@@ -459,8 +465,15 @@ struct PaletteField: NSViewRepresentable {
         context.coordinator.parent = self
         // The binding contains committed text. Writing it back while an input
         // method owns marked text cancels composition, even without a focus change.
-        if (field.currentEditor() as? NSTextView)?.hasMarkedText() != true,
-           field.stringValue != text { field.stringValue = text }
+        let editor = field.currentEditor() as? NSTextView
+        if editor?.hasMarkedText() != true {
+            if field.stringValue != text { field.stringValue = text }
+            let font = NSFont.systemFont(ofSize: fontSize)
+            if field.font != font {
+                field.font = font
+                editor?.font = font
+            }
+        }
         if field.placeholderString != prompt { field.placeholderString = prompt }
     }
 

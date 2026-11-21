@@ -252,15 +252,15 @@ struct TabContentView: View {
 private struct PaneTabBar: View {
     @ObservedObject var window: ConversationWindowModel
     @ObservedObject var pane: Pane
+    @ObservedObject private var appearance = AppearancePreferences.shared
     /// Where a tab dragged over the bar would go.
     @State private var insertion: Int?
     /// The tab sliding along the bar, and how far from its place.
     @State private var sliding: (id: UUID, distance: CGFloat)?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    static let height = PaneChrome.barHeight
-
     var body: some View {
         let active = !window.isSplit || window.focusedPaneID == pane.id
+        let height = PaneChrome.barHeight(for: appearance.values)
         HStack(spacing: 0) {
             // No scroll view: clicks in one go to its clip view, not to the tabs' AppKit views.
             GeometryReader { geometry in
@@ -293,7 +293,7 @@ private struct PaneTabBar: View {
                 .animation(motion, value: pane.tabs.map(\.id))
             }
             NewTabButton { window.focus(pane.id); window.openInNewTab() }
-                .frame(width: Self.height, height: Self.height)
+                .frame(width: height, height: height)
                 .onDrop(of: ConversationLink.dropTypes, delegate: TabDropDelegate(window: window, pane: pane.id, index: pane.tabs.count, width: 0, insertion: $insertion))
         }
         .paneBar()
@@ -345,7 +345,7 @@ private struct NewTabButton: View {
 
     var body: some View {
         Button(action: action) {
-            Image(systemName: "plus").font(.system(size: 11, weight: .medium))
+            Image(systemName: "plus").uiFont(.tabTitle.weight(.medium))
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .contentShape(Rectangle())
         }
@@ -381,18 +381,25 @@ enum TabSlide {
 /// the height, the rule under it and the room below the rule are set here
 /// and not by each bar's content.
 enum PaneChrome {
-    static let barHeight: CGFloat = 28
+    static var barHeight: CGFloat { barHeight(for: AppearancePreferences.rendering.read()) }
+    static func barHeight(for appearance: AppearanceValues) -> CGFloat { (28 * appearance.zoomScale).rounded() }
 }
 
-extension View {
-    /// A bar of `PaneChrome.barHeight` with the rule under it, in the
-    /// window's colour unless it is `translucent`, as the docked areas'
-    /// material is, and shows through.
-    func paneBar(translucent: Bool = false) -> some View {
-        frame(height: PaneChrome.barHeight)
+private struct PaneBarModifier: ViewModifier {
+    @ObservedObject private var appearance = AppearancePreferences.shared
+    let translucent: Bool
+
+    func body(content: Content) -> some View {
+        content.frame(height: PaneChrome.barHeight(for: appearance.values))
             .background { if !translucent { Color(nsColor: .windowBackgroundColor) } }
             .overlay(alignment: .bottom) { TabShade.line.frame(height: 1) }
             .padding(.bottom, 1)
+    }
+}
+
+extension View {
+    func paneBar(translucent: Bool = false) -> some View {
+        modifier(PaneBarModifier(translucent: translucent))
     }
 }
 
@@ -441,7 +448,7 @@ private struct PaneTabItem: View {
                 menu: menu))
             if let name = renaming {
                 TextField("会话名称", text: Binding(get: { name }, set: { renaming = $0 }))
-                    .textFieldStyle(.plain).multilineTextAlignment(.center).font(.system(size: 11))
+                    .textFieldStyle(.plain).multilineTextAlignment(.center).uiFont(.tabTitle)
                     .focused($renameFocused)
                     .onSubmit(commitRename)
                     .onExitCommand { renaming = nil }
@@ -450,7 +457,7 @@ private struct PaneTabItem: View {
                     .padding(.horizontal, 26)
             } else {
                 Text(tab.title)
-                    .font(.system(size: 11)).foregroundStyle(selected && active ? .primary : .secondary)
+                    .uiFont(.tabTitle).foregroundStyle(selected && active ? .primary : .secondary)
                     .lineLimit(1).truncationMode(.tail)
                     .padding(.horizontal, 26)
                     .allowsHitTesting(false)

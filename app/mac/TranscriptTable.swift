@@ -1797,8 +1797,10 @@ enum TranscriptConversationLink {
         self.frame = frame
         self.openArtifact = openArtifact
         label.attributedStringValue = attributedLabel
-        copyButton.font = controlsFont
-        viewButton.font = controlsFont
+        // The native accessory bezel caps its intrinsic height on macOS.
+        let buttonFont = NSFont.systemFont(ofSize: min(controlsFont.pointSize, NSFont.smallSystemFontSize))
+        copyButton.font = buttonFont
+        viewButton.font = buttonFont
         viewButton.isHidden = language?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() != "mermaid"
         label.sizeToFit()
         let padding = TranscriptRowLayout.codePadding, labelHeight = TranscriptRowLayout.codeLabelHeight

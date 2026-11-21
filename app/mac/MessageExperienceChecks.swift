@@ -254,6 +254,7 @@ import VeluneBindings
         exit(0)
     }
     if CommandLine.arguments.contains("--experience-native-row-order-only") { TranscriptTableController.checkMaterializedRowOrder(); exit(0) }
+    if CommandLine.arguments.contains("--experience-appearance-zoom-only") { appearanceZoomChecks(home: home) }
     AppearancePreferences.shared.load(home: home) { fatalError($0) }
     if CommandLine.arguments.contains("--experience-admission-only") { DeviceStore.checkBackgroundSubmissionAdmission(); exit(0) }
     if CommandLine.arguments.contains("--experience-message-editor-offscreen") { messageEditorOffscreenChecks(home: home) }
@@ -492,6 +493,193 @@ import VeluneBindings
     AppearancePreferences.shared.values.code = .extraLarge
     precondition(!NSApp.isActive)
     note("PASS hidden native rendering: message actions, client notification, wide/narrow composer and appearance form; process never activated")
+    exit(0)
+}
+
+@MainActor private func appearanceZoomChecks(home: URL) -> Never {
+    func require(_ condition: @autoclosure () -> Bool, _ message: @autoclosure () -> String) {
+        guard condition() else {
+            FileHandle.standardError.write(Data("FAIL appearance zoom: \(message())\n".utf8))
+            exit(1)
+        }
+    }
+    let foreground = NSWorkspace.shared.frontmostApplication?.processIdentifier
+    func safe() {
+        require(NSApp.activationPolicy() == .prohibited && !NSApp.isActive && !NSRunningApplication.current.isActive,
+                "缩放检查进程不得激活")
+        require(NSApp.windows.allSatisfy { !$0.isVisible && !$0.isKeyWindow && !$0.isMainWindow }, "缩放检查不得展示或聚焦窗口")
+        require(NSWorkspace.shared.frontmostApplication?.processIdentifier == foreground, "缩放检查期间前台进程改变")
+    }
+    safe()
+
+    let preferences = AppearancePreferences.shared
+    let file = home.appendingPathComponent("mac-appearance.json")
+    let oldValues = Data(#"{"ui":"large","messages":"small","code":"extraLarge","density":"compact","composerWidthRatio":0.65}"#.utf8)
+    try! oldValues.write(to: file, options: .withoutOverwriting)
+    var problems: [String] = []
+    func reload() { preferences.load(home: home) { problems.append($0) } }
+    reload()
+    let baseline = preferences.values
+    require(problems.isEmpty && baseline.zoomPercent == 100 && baseline.ui == .large && baseline.messages == .small
+            && baseline.code == .extraLarge && baseline.density == .compact && baseline.composerWidthRatio == 0.65,
+            "旧外观配置应默认 100%，并保留之前的字号、密度和宽度")
+    let keys = KeyboardShortcutSettings.shared
+    require(keys.shortcut(.zoomIn) == Shortcut("+") && keys.shortcut(.zoomOut) == Shortcut("-")
+            && keys.shortcut(.resetZoom) == Shortcut("0", [.command, .option]) && keys.shortcut(.focusTranscript) == Shortcut("0"),
+            "缩放默认键冲突或覆盖了转到消息")
+    let equals = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .command, timestamp: 0,
+                                  windowNumber: 0, context: nil, characters: "=", charactersIgnoringModifiers: "=",
+                                  isARepeat: false, keyCode: 24)!
+    require(KeyRouter.routeZoomInAlias(equals) && preferences.values.zoomPercent == 110, "⌘= 必须执行默认放大")
+    ShortcutCommand.zoomOut.performZoom()
+    require(preferences.values == baseline, "缩小命令必须和放大使用同一个缩放状态")
+    keys.set(Shortcut("="), for: .reload)
+    require(!KeyRouter.routeZoomInAlias(equals) && preferences.values == baseline, "⌘= 应保留给用户已有的显式绑定")
+    keys.reset(.reload)
+    for expected in [110, 125, 150] {
+        require(preferences.canAdjustZoom(by: 1), "应允许放大至 \(expected)%")
+        preferences.adjustZoom(by: 1)
+        require(preferences.values.zoomPercent == expected, "未放大到 \(expected)%")
+    }
+    require(!preferences.canAdjustZoom(by: 1), "达到上限后仍允许放大")
+    preferences.adjustZoom(by: 1)
+    require(preferences.values.zoomPercent == 150, "放大超出上限")
+    let enlarged = preferences.values
+    reload()
+    require(problems.isEmpty && preferences.values == enlarged, "重新载入外观时丢失缩放档位")
+    for expected in [125, 110, 100, 90, 80] {
+        require(preferences.canAdjustZoom(by: -1), "应允许缩小至 \(expected)%")
+        preferences.adjustZoom(by: -1)
+        require(preferences.values.zoomPercent == expected, "未缩小到 \(expected)%")
+    }
+    require(!preferences.canAdjustZoom(by: -1), "达到下限后仍允许缩小")
+    preferences.adjustZoom(by: -1)
+    require(preferences.values.zoomPercent == 80, "缩小超出下限")
+    preferences.resetZoom()
+    require(preferences.values == baseline, "恢复缩放重置了独立外观偏好")
+    reload()
+    require(problems.isEmpty && preferences.values == baseline, "重新载入后未恢复 100% 和原外观偏好")
+
+    let dark = CommandLine.arguments.contains("--appearance-zoom-dark")
+    let appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
+    NSApp.appearance = appearance
+    func layout(_ view: NSView) {
+        view.layoutSubtreeIfNeeded(); view.display()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.15))
+        view.layoutSubtreeIfNeeded(); view.display()
+        safe()
+    }
+    func capture(_ view: NSView, as name: String) {
+        guard let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { require(false, "无法绘制 \(name)"); return }
+        view.cacheDisplay(in: view.bounds, to: bitmap)
+        try! bitmap.representation(using: .png, properties: [:])!.write(to: home.appendingPathComponent(name + ".png"))
+    }
+    func descendants(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap(descendants) }
+
+    preferences.values = AppearanceValues()
+    let device = DeviceStore(preview: true)
+    let code = "let scale = 1.25"
+    if var sample = device.previewSnapshots["sample-0"] {
+        let messages: [DeliveredMessage] = [
+            .init(id: "zoom-input", role: .user, blocks: [.text(text: "请调整界面字号，并保留正在编辑的输入。")]),
+            .init(id: "zoom-reply", role: .assistant, blocks: [.text(text: "消息、代码和控件的字号会随缩放一起调整。\n\n```swift\n\(code)\n```")]),
+        ]
+        sample.messages = messages
+        sample.transcriptItems = messages.map { .message(id: $0.id, messageId: $0.id) }
+        sample.transcriptMessageIdentities = messages.map { .init(id: $0.id, messageId: $0.id) }
+        sample.transcriptTurns = []
+        sample.transcriptOutline = []
+        device.keepPreviewSnapshot(sample)
+    }
+    let workspace = ConversationWindowModel(application: device, kind: .workspace)
+    let tab = workspace.focused
+    tab.store.selectConversation(id: "sample-0")
+    workspace.tools.move(.composer, to: .builtIn)
+    let model = workspace.composer(for: tab)
+    let draft = "缩放时保留这段草稿"
+    model.restore(draft, attachments: [])
+    let host = NSHostingView(rootView: HStack(spacing: 0) {
+        ConversationListView(window: workspace, store: workspace.list, focused: tab.store, placement: .panel).frame(width: 232)
+        Divider()
+        PaneLayoutView(window: workspace, layout: workspace.layout, path: [], previewEmpty: false)
+    }.applicationAppearance().environment(\.colorScheme, dark ? .dark : .light)
+        .background(Color(nsColor: .windowBackgroundColor)))
+    let size = NSSize(width: 920, height: 560)
+    host.frame = NSRect(origin: .zero, size: size)
+    let window = OffscreenMessageEditorWindow(contentRect: host.frame, styleMask: [.borderless], backing: .buffered, defer: true)
+    window.appearance = appearance
+    window.isRestorable = false
+    window.contentView = host
+    layout(host)
+    guard let editor = descendants(host).compactMap({ $0 as? ComposerTextView }).first, let undo = editor.undoManager else {
+        require(false, "未找到工作区原生编辑器和撤销记录")
+        exit(1)
+    }
+    require(editor.string == draft, "工作区未显示草稿")
+    undo.beginUndoGrouping()
+    editor.insertText("和撤销记录", replacementRange: NSRange(location: (draft as NSString).length, length: 0))
+    undo.endUndoGrouping()
+    let typed = draft + "和撤销记录"
+    let selection = NSRange(location: 2, length: 3)
+    editor.setSelectedRange(selection)
+    require(model.submission == typed && undo.canUndo, "原生编辑器未记录真实草稿修改")
+
+    var measurements: [[String: Any]] = []
+    func measure(_ percent: Int, name: String) -> [CGFloat] {
+        layout(host)
+        require(preferences.values.zoomPercent == percent, "视图测量不在预期缩放档位")
+        require(AppearancePreferences.rendering.read() == preferences.values, "原生排版快照必须来自当前外观设置")
+        require(descendants(host).contains { $0 === editor } && model.submission == typed && editor.string == typed
+                && editor.selectedRange() == selection && undo.canUndo, "缩放丢失输入、选区、撤销或原生编辑器")
+        let bounds = host.convert(editor.bounds, from: editor)
+        require(bounds.width > 0 && bounds.height > 0 && host.bounds.insetBy(dx: -1, dy: -1).contains(bounds),
+                "缩放后输入框脱离工作区边界")
+        guard let codeEditor = descendants(host).compactMap({ $0 as? TranscriptTextView }).first(where: { $0.string.contains(code) }),
+              let codeSize = (codeEditor.textStorage?.attribute(.font, at: 0, effectiveRange: nil) as? NSFont)?.pointSize,
+              let editorSize = editor.font?.pointSize else {
+            require(false, "未找到工作区代码文本和输入区字号")
+            exit(1)
+        }
+        let caption = TranscriptTypography.caption.pointSize
+        let spacing = TranscriptRowLayout.blockSpacing
+        measurements.append(["sample": name, "zoom": percent, "width": host.bounds.width, "composerFont": editorSize,
+                             "codeFont": codeSize, "captionFont": caption, "messageSpacing": spacing,
+                             "composerFrame": NSStringFromRect(bounds)])
+        capture(host, as: name)
+        return [editorSize, codeSize, caption, spacing]
+    }
+    let standard = measure(100, name: "zoom-workspace-100")
+    preferences.adjustZoom(by: -1); preferences.adjustZoom(by: -1)
+    let small = measure(80, name: "zoom-workspace-80")
+    preferences.resetZoom()
+    preferences.adjustZoom(by: 1); preferences.adjustZoom(by: 1); preferences.adjustZoom(by: 1)
+    let large = measure(150, name: "zoom-workspace-150")
+    require(zip(small, standard).allSatisfy { $0 < $1 } && zip(standard, large).allSatisfy { $0 < $1 },
+            "字号或间距未随 80%、100%、150% 递增")
+    window.setContentSize(NSSize(width: 720, height: size.height))
+    _ = measure(150, name: "zoom-workspace-narrow-150")
+    preferences.resetZoom()
+    layout(host)
+    require(editor.font?.pointSize == standard[0], "恢复 100% 后输入区仍使用放大字号")
+    undo.undo()
+    require(model.submission == draft && editor.string == draft, "缩放后无法撤销原有输入")
+    window.contentView = nil
+
+    preferences.adjustZoom(by: 1); preferences.adjustZoom(by: 1); preferences.adjustZoom(by: 1)
+    let form = NSHostingView(rootView: Form { AppearanceSettingsSection() }.formStyle(.grouped)
+        .applicationAppearance().environment(\.colorScheme, dark ? .dark : .light))
+    form.frame = NSRect(x: 0, y: 0, width: 530, height: 515)
+    let settings = OffscreenMessageEditorWindow(contentRect: form.frame, styleMask: [.borderless], backing: .buffered, defer: true)
+    settings.appearance = appearance
+    settings.isRestorable = false
+    settings.contentView = form
+    layout(form)
+    capture(form, as: "zoom-settings-narrow-150")
+    settings.contentView = nil
+    try! JSONSerialization.data(withJSONObject: measurements, options: [.prettyPrinted, .sortedKeys])
+        .write(to: home.appendingPathComponent("render-measurements.json"))
+    safe()
+    FileHandle.standardError.write(Data("PASS appearance zoom: shortcut routing, legacy settings, step limits, reload, reset, live composer, transcript code and spacing, narrow workspace and settings captures\n".utf8))
     exit(0)
 }
 

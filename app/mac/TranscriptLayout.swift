@@ -162,23 +162,24 @@ struct TranscriptRowLayout: @unchecked Sendable {
     var elements: [Element]
     var height: CGFloat
 
-    static var rowInset: CGFloat { 24 * AppearancePreferences.rendering.read().density.spacing }
+    private static var zoom: CGFloat { AppearancePreferences.rendering.read().zoomScale }
+    static var rowInset: CGFloat { 24 * AppearancePreferences.rendering.read().spacingScale }
     static let columnMaxWidth: CGFloat = 760
     static var headerHeight: CGFloat { max(18, ceil(NSLayoutManager().defaultLineHeight(for: TranscriptTypography.callout))) }
-    static var blockSpacing: CGFloat { 9 * AppearancePreferences.rendering.read().density.spacing }
-    static var bubblePadding: CGFloat { 12 * AppearancePreferences.rendering.read().density.spacing }
+    static var blockSpacing: CGFloat { 9 * AppearancePreferences.rendering.read().spacingScale }
+    static var bubblePadding: CGFloat { 12 * AppearancePreferences.rendering.read().spacingScale }
     static let bubbleMaxWidth: CGFloat = 600
-    static let codePadding: CGFloat = 12
-    static let codeLabelHeight: CGFloat = 18
-    static let codeLabelGap: CGFloat = 6
-    static let attachmentHeight: CGFloat = 48
-    static let attachmentThumbnail: CGFloat = 40
+    static var codePadding: CGFloat { 12 * zoom }
+    static var codeLabelHeight: CGFloat { 18 * zoom }
+    static var codeLabelGap: CGFloat { 6 * zoom }
+    static var attachmentHeight: CGFloat { 48 * zoom }
+    static var attachmentThumbnail: CGFloat { 40 * zoom }
     static let attachmentNameMaxWidth: CGFloat = 180
-    static let attachmentSpacing: CGFloat = 6
-    static let actionGap: CGFloat = 4
-    static let actionSize: CGFloat = 22
+    static var attachmentSpacing: CGFloat { 6 * zoom }
+    static var actionGap: CGFloat { 4 * zoom }
+    static var actionSize: CGFloat { 22 * zoom }
     /// The icon sits this far inside its button; the button reaches past the text so the icon lines up with it.
-    static let actionInset: CGFloat = 5
+    static var actionInset: CGFloat { 5 * zoom }
 
     /// Attachments flow in rows of chips, against the trailing edge for the
     /// user's own messages.
@@ -353,7 +354,9 @@ struct TranscriptRowLayout: @unchecked Sendable {
         case .workActions: return actionGap + actionSize
         case .end: return rowInset
         case .message(let message, _, let expanded, _, let copies, _, _):
-            let charactersPerLine = max(column.width / 7.5, 8)
+            let fontScale = AppearancePreferences.rendering.read().messageScale
+            let charactersPerLine = max(column.width / (7.5 * fontScale), 8)
+            let lineHeight = 19 * fontScale
             var height: CGFloat = 0
             for (index, block) in message.blocks.enumerated() {
                 if index > 0 { height += blockSpacing }
@@ -363,7 +366,7 @@ struct TranscriptRowLayout: @unchecked Sendable {
                     var newlines = 0
                     for byte in text.utf8 where byte == 10 { newlines += 1 }
                     let wrapped = ceil(CGFloat(text.utf16.count) / charactersPerLine)
-                    height += CGFloat(max(newlines + 1, Int(wrapped))) * 19
+                    height += CGFloat(max(newlines + 1, Int(wrapped))) * lineHeight
                 case .reasoning, .tool, .runtimeFailure:
                     height += headerHeight
                     if !expanded.isEmpty { height += 60 }
@@ -377,7 +380,7 @@ struct TranscriptRowLayout: @unchecked Sendable {
                 }
             }
             let copied = copies && message.role != .system && !message.text.isEmpty
-            return rowInset + max(height, 19) + (message.role == .user || message.role == .client ? bubblePadding * 2 : 0) + (copied ? actionGap + actionSize : 0)
+            return rowInset + max(height, lineHeight) + (message.role == .user || message.role == .client ? bubblePadding * 2 : 0) + (copied ? actionGap + actionSize : 0)
         }
     }
 }

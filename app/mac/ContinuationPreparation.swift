@@ -269,7 +269,7 @@ struct ContinuationPreparationView: View {
     }
     private var modelMenuTitle: String {
         let title = session.modelTitle
-        let font = NSFont.systemFont(ofSize: 13 * appearance.values.ui.scale)
+        let font = NSFont.systemFont(ofSize: 13 * appearance.values.uiScale)
         func width(_ value: String) -> CGFloat { (value as NSString).size(withAttributes: [.font: font]).width }
         guard width(title) > 250 else { return title }
         var prefix = title

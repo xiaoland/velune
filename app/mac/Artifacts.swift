@@ -107,7 +107,7 @@ struct ArtifactTabItem: View {
                 Image(systemName: hovering ? "xmark" : "flowchart").frame(width: 16)
                 Text(tab.title).lineLimit(1).truncationMode(.tail)
                 Spacer(minLength: 0)
-            }.font(.system(size: 11)).foregroundStyle(selected ? .primary : .secondary)
+            }.uiFont(.tabTitle).foregroundStyle(selected ? .primary : .secondary)
                 .padding(.horizontal, 8).allowsHitTesting(false)
         }
         .background(Color(nsColor: .windowBackgroundColor))

@@ -4,12 +4,12 @@ import Markdown
 /// Typography shared by measurement and display. Both sides must read the same
 /// values, otherwise a measured row height would not match its drawn text.
 enum TranscriptTypography {
-    static var body: NSFont { NSFont.systemFont(ofSize: NSFont.systemFontSize * AppearancePreferences.rendering.read().messages.scale) }
-    static var callout: NSFont { NSFont.systemFont(ofSize: (NSFont.systemFontSize - 1) * AppearancePreferences.rendering.read().messages.scale) }
-    static var caption: NSFont { NSFont.systemFont(ofSize: (NSFont.smallSystemFontSize - 1) * AppearancePreferences.rendering.read().ui.scale) }
-    static var code: NSFont { NSFont.monospacedSystemFont(ofSize: (NSFont.systemFontSize - 1) * AppearancePreferences.rendering.read().code.scale, weight: .regular) }
-    static var lineSpacing: CGFloat { 2 * AppearancePreferences.rendering.read().density.spacing }
-    static var blockSpacing: CGFloat { 8 * AppearancePreferences.rendering.read().density.spacing }
+    static var body: NSFont { NSFont.systemFont(ofSize: NSFont.systemFontSize * AppearancePreferences.rendering.read().messageScale) }
+    static var callout: NSFont { NSFont.systemFont(ofSize: (NSFont.systemFontSize - 1) * AppearancePreferences.rendering.read().messageScale) }
+    static var caption: NSFont { NSFont.systemFont(ofSize: (NSFont.smallSystemFontSize - 1) * AppearancePreferences.rendering.read().uiScale) }
+    static var code: NSFont { NSFont.monospacedSystemFont(ofSize: (NSFont.systemFontSize - 1) * AppearancePreferences.rendering.read().codeScale, weight: .regular) }
+    static var lineSpacing: CGFloat { 2 * AppearancePreferences.rendering.read().spacingScale }
+    static var blockSpacing: CGFloat { 8 * AppearancePreferences.rendering.read().spacingScale }
 
     static func paragraph(alignment: NSTextAlignment = .natural) -> NSMutableParagraphStyle {
         let style = NSMutableParagraphStyle()
@@ -139,7 +139,7 @@ struct MarkdownAttributedRenderer {
             emit(inlines(paragraph, font: TranscriptTypography.body, context: context), style(context))
         case let heading as Heading:
             let sizes: [CGFloat] = [20, 17, 15, 13, 13, 13]
-            let font = NSFont.systemFont(ofSize: sizes[min(max(heading.level, 1), 6) - 1] * AppearancePreferences.rendering.read().messages.scale, weight: .semibold)
+            let font = NSFont.systemFont(ofSize: sizes[min(max(heading.level, 1), 6) - 1] * AppearancePreferences.rendering.read().messageScale, weight: .semibold)
             let style = style(context)
             style.paragraphSpacingBefore = 6
             emit(inlines(heading, font: font, context: context), style, spacingAfter: 6)

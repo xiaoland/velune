@@ -159,9 +159,9 @@ Mermaid 11.12.0 与许可随 bundle 本地分发，使用固定版本和本地 W
 
 `MessageMetadata` 统一消息操作行的本地时间格式，用户／client／最终回复显示自身创建时间，时间与copy／edit／fork共用hover显隐；工作过程footer只提供复制，不显示时间。缺失原生时间不补造。
 
-通用设置中的外观区分别控制 UI／消息／代码字号、紧凑程度与 composer 可用宽度比例。`AppearancePreferences` 原子保存本机 `mac-appearance.json`，原生测量读线程安全快照；字体变化清消息布局缓存并重测，composer 更新原对象排版以保留正文、选区和撤销记录。转录 cell 的持久子视图（活动行、附件名、披露标题、代码块标签与按钮、本轮配置摘要）不持有字体或颜色：排版由行布局在测量时烘焙进 NSAttributedString／NSFont，随布局缓存一起失效重建，视图只负责绘制，显示与测量在类型层面不可能分叉。速度由模型目录变体表达，不增加独立的按轮维度。
+通用设置中的外观区控制整体缩放、独立 UI／消息／代码字号、紧凑程度与 composer 可用宽度比例。缩放命令与设置共同读写 `AppearancePreferences`，它原子保存本机 `mac-appearance.json` 并向原生排版发布线程安全的只读快照。字号和间距由同一份值计算。外观变化后，消息布局重新测量，composer 在原对象上更新排版，保留正文、选区和撤销记录。转录 cell 的持久子视图（活动行、附件名、披露标题、代码块标签与按钮、本轮配置摘要）从行布局获取 NSAttributedString／NSFont，和布局缓存一起失效重建。速度由模型目录变体表达，不增加独立的按轮维度。
 
-`--check-message-experience` 使用 `/tmp` 下的合成 HOME 检查提交反馈和模型／journal 的保存；`--experience-reopen` 在新进程读回 editor 与外观；`--experience-visual-only` 只生成定向原生 PNG，`--experience-typography-only` 检查原生编辑器更改字号的连续性，并核对复用 cell 上活动行／附件／代码块等持久标签的字体随外观恢复。入口禁止激活，不创建可见窗口或注入全局输入。
+`--check-message-experience` 使用 `/tmp` 下的合成 HOME 检查提交反馈和模型／journal 的保存；`--experience-reopen` 在新进程读回 editor 与外观；`--experience-visual-only` 只生成定向原生 PNG，`--experience-typography-only` 检查原生编辑器更改字号的连续性，并核对复用 cell 上活动行／附件／代码块等持久标签的字体随外观恢复。`scripts/check-macos-composer.py appearance-zoom` 核对快捷键路由、缩放的保存和重载、排版快照与设置一致，以及宽窄窗口的渲染。入口禁止激活，不创建可见窗口或注入全局输入。
 
 系统通知使用通知专用的窗口路由：已打开的目标聚焦其原有Tab，否则在当前工作窗口新开Tab；保留此前Tab。原生通知回调才激活窗口，隐藏检查只验证模型路由。
 

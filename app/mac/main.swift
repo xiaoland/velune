@@ -199,6 +199,16 @@ struct ConversationCommands: Commands {
                 .disabled(!pinning.canPin)
             Divider()
         }
+        CommandGroup(before: .sidebar) {
+            following(AppearancePreferences.shared) {
+                ForEach(ShortcutCommand.zoomCommands) { command in
+                    Button(command.title) { command.performZoom() }
+                        .keyboardShortcut(shortcuts[command])
+                        .disabled(!command.canPerformZoom)
+                }
+                Divider()
+            }
+        }
         CommandGroup(before: .sidebar) { followingFocus {
             item(.commandPalette)
             Divider()
@@ -553,6 +563,7 @@ enum VeluneEntry {
            CommandLine.arguments.contains("--experience-message-editor-offscreen")
             || CommandLine.arguments.contains("--experience-fork-send-only")
             || CommandLine.arguments.contains("--experience-claude-compact-edit-only")
+            || CommandLine.arguments.contains("--experience-appearance-zoom-only")
             || CommandLine.arguments.contains("--experience-runtime-editor-only")
             || CommandLine.arguments.contains("--experience-compaction-only")
             || CommandLine.arguments.contains("--experience-sidebar-only")

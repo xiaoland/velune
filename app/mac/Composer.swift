@@ -401,9 +401,12 @@ struct ComposerEditor: NSViewRepresentable {
         return style
     }
     private static var typography: [NSAttributedString.Key: Any] { [.font: font, .foregroundColor: NSColor.labelColor, .paragraphStyle: paragraph] }
-    static var minimumHeight: CGFloat { lineHeight + 2 * inset }
+    static var minimumHeight: CGFloat { lineHeight + 2 * insets.height }
     static let maximumHeight: CGFloat = 240
-    private static let inset: CGFloat = 5
+    private static var insets: NSSize {
+        let scale = AppearancePreferences.rendering.read().zoomScale
+        return NSSize(width: 3 * scale, height: 5 * scale)
+    }
     fileprivate weak var coordinator: ComposerEditor.Coordinator?
     var placeholder = "" { didSet { needsDisplay = true } }
 
@@ -440,7 +443,7 @@ struct ComposerEditor: NSViewRepresentable {
         isAutomaticLinkDetectionEnabled = false
         isAutomaticDataDetectionEnabled = false
         smartInsertDeleteEnabled = false
-        textContainerInset = NSSize(width: 3, height: Self.inset)
+        textContainerInset = Self.insets
         isVerticallyResizable = true
         isHorizontallyResizable = false
         minSize = .zero
@@ -463,7 +466,7 @@ struct ComposerEditor: NSViewRepresentable {
     func fitHeight() {
         guard let layoutManager, let textContainer else { return }
         layoutManager.ensureLayout(for: textContainer)
-        let content = layoutManager.usedRect(for: textContainer).height + 2 * Self.inset
+        let content = layoutManager.usedRect(for: textContainer).height + 2 * textContainerInset.height
         coordinator?.heightChanged(min(max(ceil(content), Self.minimumHeight), Self.maximumHeight))
     }
     @objc private func appearanceChanged() {
@@ -471,6 +474,7 @@ struct ComposerEditor: NSViewRepresentable {
         let undo = undoManager
         undo?.disableUndoRegistration()
         font = Self.font; defaultParagraphStyle = Self.paragraph; typingAttributes = Self.typography
+        textContainerInset = Self.insets
         textStorage?.addAttributes(Self.typography, range: NSRange(location: 0, length: (string as NSString).length))
         undo?.enableUndoRegistration()
         fitHeight()
@@ -598,7 +602,10 @@ struct ComposerEditor: NSViewRepresentable {
     /// Committed text can arrive carrying another font; plain text has one.
     private func normalizeTypography() {
         typingAttributes = Self.typography
-        guard !hasMarkedText(), let storage = textStorage, storage.length > 0 else { return }
+        guard !hasMarkedText() else { return }
+        let insets = Self.insets
+        if textContainerInset != insets { textContainerInset = insets }
+        guard let storage = textStorage, storage.length > 0 else { return }
         let whole = NSRange(location: 0, length: storage.length)
         var uniform = true
         storage.enumerateAttributes(in: whole) { attributes, _, stop in
@@ -979,7 +986,7 @@ struct ComposerView: View {
 
     /// `compact` shortens the choices' titles to fit a narrow pane.
     private func nextTurnControls(compact: Bool) -> some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 10 * appearance.values.zoomScale) {
             if context.allowsAttachments {
                 Button(action: context.chooseAttachments) { Image(systemName: "paperclip") }
                     .buttonStyle(.borderless)

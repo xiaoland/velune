@@ -132,7 +132,7 @@ def prepare_claude_continuation(root, evidence, path, lifetime, editing):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('check', choices=['editor', 'runtime-editor', 'fork-send', 'claude-compact-edit', 'queued-editor', 'archived', 'palette-ime', 'pagination', 'continuation', 'targets', 'tabs', 'ownership', 'geometry', 'controls', 'credits', 'background', 'experience', 'recovery', 'compaction', 'sidebar', 'provider-analytics', 'background-notifications', 'sidebar-toolbar', 'outgoing-submissions'])
+    parser.add_argument('check', choices=['editor', 'runtime-editor', 'fork-send', 'claude-compact-edit', 'queued-editor', 'archived', 'palette-ime', 'pagination', 'continuation', 'targets', 'tabs', 'ownership', 'geometry', 'controls', 'credits', 'background', 'experience', 'appearance-zoom', 'recovery', 'compaction', 'sidebar', 'provider-analytics', 'background-notifications', 'sidebar-toolbar', 'outgoing-submissions'])
     parser.add_argument('--app', type=Path, default=app_bundle_path(ROOT, 'dev'))
     parser.add_argument('--output', type=Path)
     parser.add_argument('--dark', action='store_true')
@@ -211,6 +211,10 @@ def main():
                 flags.append('--background-check-dark')
         if args.check == 'experience':
             flags = ['--check-message-experience']
+        if args.check == 'appearance-zoom':
+            flags = ['--check-message-experience', '--experience-appearance-zoom-only']
+            if args.dark:
+                flags.append('--appearance-zoom-dark')
         if args.check in ['fork-send', 'claude-compact-edit']:
             editing = args.check == 'claude-compact-edit'
             flag = '--experience-claude-compact-edit-only' if editing else '--experience-fork-send-only'
