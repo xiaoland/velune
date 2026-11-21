@@ -719,9 +719,46 @@ async fn retryable_failures_move_to_the_next_member() {
 }
 
 #[tokio::test]
+async fn forbidden_member_fails_over_and_preserves_the_final_refusal() {
+    for protocol in Api::ALL {
+        let (upstream, address) = Upstream::start().await;
+        let runner = gateway(protocol, &address);
+        let first_error = json!({"error": {"message": "first member refused"}});
+        let final_error = json!({"error": {"message": "last member refused"}});
+        upstream.reply("a", Reply::json(403, first_error.clone()));
+        upstream.reply("b", Reply::stream(protocol.events()));
+
+        let answer = send(&runner, protocol, "velune/model/route", true).await;
+        assert_eq!(answer.status, 200);
+        assert_eq!(answer.body, protocol.events());
+
+        let direct = send(&runner, protocol, "velune/model/a-model", false).await;
+        assert_eq!(direct.status, 403);
+        assert_eq!(
+            serde_json::from_str::<Value>(&direct.body).unwrap(),
+            first_error
+        );
+        assert!(!direct.headers.contains_key("retry-after"));
+
+        upstream.reply("b", Reply::json(403, final_error.clone()));
+        let exhausted = send(&runner, protocol, "velune/model/route", false).await;
+        assert_eq!(exhausted.status, 403);
+        assert_eq!(
+            serde_json::from_str::<Value>(&exhausted.body).unwrap(),
+            final_error
+        );
+        assert!(!exhausted.headers.contains_key("retry-after"));
+        assert_eq!(
+            upstream.hits(),
+            ["a", "b", "a", "a", "b"].map(|id| format!("/{id}/v1{}", protocol.path()))
+        );
+    }
+}
+
+#[tokio::test]
 async fn refused_requests_stop_with_the_upstream_answer() {
     for protocol in Api::ALL {
-        for status in [400, 401, 403, 404] {
+        for status in [400, 401, 404] {
             let (upstream, address) = Upstream::start().await;
             let runner = gateway(protocol, &address);
             let body = json!({"error": {"message": "refused"}});
@@ -845,7 +882,8 @@ async fn mixed_protocol_routes_translate_each_selected_candidate() {
     for ingress in Api::ALL {
         for (index, first) in Api::ALL.into_iter().enumerate() {
             let second = Api::ALL[(index + 1) % Api::ALL.len()];
-            for failover in [false, true] {
+            for status in [200, 403, 429] {
+                let failover = status != 200;
                 let (upstream, address) = Upstream::start().await;
                 let mut config = gateway_config(first, &address);
                 config.providers[1] = provider("b", second, &address);
@@ -871,7 +909,7 @@ async fn mixed_protocol_routes_translate_each_selected_candidate() {
                 upstream.reply(
                     "a",
                     if failover {
-                        Reply::json(429, json!({"error":{"message":"retry"}}))
+                        Reply::json(status, json!({"error":{"message":"retry"}}))
                     } else {
                         Reply::json(200, success(first))
                     },

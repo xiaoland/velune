@@ -53,8 +53,9 @@ const DEFAULT_COOLDOWN: Duration = Duration::from_secs(60);
 const MAX_COOLDOWN: Duration = Duration::from_secs(24 * 60 * 60);
 
 /// Whether a failure before delivery leaves the other candidates open.
-/// Requests the target refused (4xx other than 429) and refused accounts
-/// (401/403) stop; overload, rate limits and failures to reach it do not.
+/// HTTP 403 can be specific to this route member. Ordinary request errors
+/// and authentication failures stop. Rate limits and availability failures
+/// may also incur a cooldown.
 pub(super) fn next_candidate(
     rate_limited: bool,
     cancelled: bool,
@@ -76,6 +77,7 @@ pub(super) fn next_candidate(
                     .min(MAX_COOLDOWN),
             ),
         },
+        Some(403) => NextCandidate::Allowed { cooldown: None },
         // No response: the connection failed or timed out before headers.
         // HTTP generation may be retried before downstream delivery. Execution
         // backends with side effects apply their stricter submitted gate later.

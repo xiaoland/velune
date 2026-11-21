@@ -22,7 +22,7 @@ Axum 负责 HTTP framing，当前只监听随机 loopback 端口并提供三条 
 
 fail-over 只在尚未转发任何响应时发生。429 与结构化 402 额度错误（error.code/type 为 `insufficient_quota`、`usage_limit_reached` 或 `quota_exceeded`）按 Retry-After 冷却，缺省 60 秒、至多 24 小时；上游 5xx、未获答复的连接／传输失败与超时采用 5 秒健康冷却。有效响应头交付后，传输故障只结束本次流，其他请求仍可尝试，当前流不切换重放。HTTP 错误没有可靠窗口作用域，因此该冷却按提供商实例生效，区别于额度快照按模型过滤窗口。冷却期间所有路由和直接调用都不穿透；没有合格成员时按准入原因返回错误：用户配置的使用上限达到时为 429，显式上限所需的额度观测待刷新、缺少所需窗口、健康冷却或绑定失效时为 503。JSON 的 `error.code` 区分 `quota_exhausted`、`quota_pending`、`quota_window_missing`、`provider_unavailable` 与 `binding_invalidated`，三种协议入口使用同一结构；`error.message` 说明当前原因。显式上限所依据窗口的已知重置时间、观测刷新等待或健康冷却可给出 Retry-After，没有可靠重置时间时不补造。重置到期只允许重新读取新鲜观察，不视为满额。冷却期满仅放行一个探测，RAII permit 在取消、失败和正常退出时释放；取得经过协议检查的有效 2xx 响应头后恢复准入，业务 Completed 独立决定黏性与统计；探测遭遇相同临时故障会重新冷却。
 
-403、请求类 4xx、取消与已开始转发后的中断结束请求。成功 HTTP headers 一经交付即提交；200 SSE 内后续出现的额度错误或业务失败也不切换。没有恢复能力的 HTTP 认证收到 401 时结束；声明 `CredentialRecovery::Refreshable` 的 HTTP 认证在提交前调用 resolver.refresh 一次，只有相同恢复身份和 account_id 的凭据可重发。永久认证失效或重发仍为 401 时调用 invalidate，允许下一个成员；临时续期失败可尝试下一成员，但不标记会话永久失效。provider 每次调用只执行一次尝试，401 恢复由 gateway 显式组织。所有候选尝试失败时保留最后一个上游状态和正文，有健康／额度等待事实时附加当前候选最早 Retry-After。该时间表示重新检查的机会，不保证来源已刷新或额度已恢复。每个成员尝试各有一条 analytics，401 恢复保留该成员最终 exchange；tracing 记录首次 401 与切换，日志没有正文和认证值。
+上游 HTTP 403 在交付前允许尝试下一候选。普通 403 不改变提供商冷却状态，已识别的额度耗尽沿用额度规则。其他请求类 4xx、取消与已开始转发后的中断结束请求。成功 HTTP headers 一经交付即提交；200 SSE 内后续出现的额度错误或业务失败也不切换。没有恢复能力的 HTTP 认证收到 401 时结束；声明 `CredentialRecovery::Refreshable` 的 HTTP 认证在提交前调用 resolver.refresh 一次，只有相同恢复身份和 account_id 的凭据可重发。永久认证失效或重发仍为 401 时调用 invalidate，允许下一个成员；临时续期失败可尝试下一成员，但不标记会话永久失效。provider 每次调用只执行一次尝试，401 恢复由 gateway 显式组织。所有候选尝试失败时保留最后一个上游状态和正文，有健康／额度等待事实时附加当前候选最早 Retry-After。该时间表示重新检查的机会，不保证来源已刷新或额度已恢复。每个成员尝试各有一条 analytics，401 恢复保留该成员最终 exchange；tracing 记录首次 401 与切换，日志没有正文和认证值。
 
 半开探测收到经过协议检查的有效上游 2xx 响应头后，即恢复后续请求的准入，不等长 SSE 流完成；这不是业务成功或额度恢复的承诺。业务终态独立决定黏性与统计。已交付响应后的 Transport／Timeout 仍报告为本次请求失败。仅同 epoch／generation 的探测可解除当前冷却；无响应的取消只释放探测槽，已有上游响应后发生下游取消不抹去该证据。
 
@@ -51,6 +51,6 @@ Claude CLI 的执行提交早于 HTTP 响应提交。成功启动进程后或向
 上游 HTTP 2xx 仍可能在响应提交前因协议契约不满足而失败，例如流请求收到非 SSE 类型。此时网关返回 502 合成 JSON 错误，不复用成功响应的正文或实体 headers；analytics 保留实际上游状态。这个下游状态规范化不参与 fail-over 分类，不能把上游协议错误当作上游 5xx。已提交响应后的错误仍按原有中断处理。
 
 
-网关消费中立失败事实而不读取供应商文案。Permission 即使伴随 401／500 也停止，不触发认证恢复或通用 5xx 切换；只有 Authentication 才进入已声明的恢复能力。QuotaExhausted 在提交前按限额冷却并允许下一成员，同时调用非阻塞 `QuotaSource::quota_exhausted(provider_id)`，由 application 按需重取，不能在网关推测重置或修改额度缓存。Overloaded 沿用限流冷却。原始状态与正文继续透传；已提交响应、取消和 CLI 执行提交边界保持不变。
+网关消费中立失败事实而不读取供应商文案。Permission 若没有上游 HTTP 403 仍结束请求，例如上游 401／500 被适配器识别为权限拒绝。只有 Authentication 才进入已声明的恢复能力。QuotaExhausted 在提交前按限额冷却并允许下一成员，同时调用非阻塞 `QuotaSource::quota_exhausted(provider_id)`，由 application 按需重取，不能在网关推测重置或修改额度缓存。Overloaded 沿用限流冷却。原始状态与正文继续透传；已提交响应、取消和 CLI 执行提交边界保持不变。
 
 应用轮换 Key 时可调用 `SchedulingState::invalidate_credentials` 使捕获旧凭据的 Runner 和迟到结果失效，保留已验证账户的冷却及黏性；该方法同时迁移当前绑定的 epoch，不让旧请求回写新世代。新 Key 重新验证前必须由来源层阻止借用旧 owner 准入。验证为不同 owner 时再调用完整 `invalidate_provider` 清除账户事实。
