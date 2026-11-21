@@ -31,6 +31,8 @@ cargo clippy --locked -p velune-bindings --no-default-features --features remote
 cargo tree --locked -p velune-bindings --no-default-features --features remote
 ```
 
+改动 Rust 的 PR 由 [`PR checks`](../../.github/workflows/pr-checks.yml) 在 Linux 上执行上述格式、Clippy 与依赖树检查，并运行 `cargo test --locked --workspace`；`cargo check` 由 Clippy 覆盖。
+
 `velune-bindings --no-default-features --features remote` 是纯控制端，依赖树不含 application、agent-runtime、gateway 或 ai-provider；完全禁用 feature 时没有本地或远程构造入口。application 自身禁用 `local-runtime` 仅裁掉 Harness，配置校验仍链接 gateway，不是纯远端客户端的装配路径。
 
 根目录 [`clippy.toml`](../../clippy.toml) 禁止直接调用 `Command::new`。子进程经 `velune_agent_runtime::process::command` 创建（ai-provider 不依赖 agent-runtime，使用自己的 `hidden_command`），长期运行的进程树经 agent-runtime 的 `process_tree` 创建：Unix 使用独立进程组，Windows 使用 kill-on-close 的 Job Object 并加 `CREATE_NO_WINDOW`，避免 GUI 宿主为每个子进程弹出控制台。
