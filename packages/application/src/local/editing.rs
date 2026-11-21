@@ -1996,8 +1996,6 @@ impl CoreRuntime {
             (link, Retained::from_parts(displayed, retention))
         };
         let tail_index = link.segments.len() - 1;
-        // Live native UUIDs can differ from the latest persisted ones. Resolve
-        // single-source boundaries by ordinal plus text, just like native edits.
         let (ordinal, expected) = current
             .messages
             .iter()
@@ -2005,7 +2003,15 @@ impl CoreRuntime {
             .enumerate()
             .find(|(_, message)| message.id == message_id)
             .ok_or_else(|| RuntimeError::invalid("会话中没有这条消息"))?;
-        let boundary = if simple {
+        let boundary = if simple && link.segments[0].runtime_type_id == RuntimeKind::ClaudeCode {
+            let source_id = message_id.strip_prefix("segment-0:").unwrap_or(message_id);
+            let users: Vec<_> = displayed.iter().filter(|message| message.role == MessageRole::User).collect();
+            let exact = users.iter().find(|message| message.id == source_id).copied();
+            let native = exact.or_else(|| {
+                claude_fork_user_index(current, &users, ordinal, expected).map(|index| users[index])
+            });
+            native.and_then(|native| displayed.iter().position(|message| message.id == native.id))
+        } else if simple {
             displayed
                 .iter()
                 .enumerate()

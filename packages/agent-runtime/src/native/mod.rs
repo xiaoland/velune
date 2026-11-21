@@ -759,8 +759,16 @@ impl NativeSession {
             permission_mode: input.permission_mode.clone(),
             ..Default::default()
         };
+        let starting_fork = matches!(self.claude.start, claude::ClaudeStart::Fork { .. });
         let result = self
             .prepare_turn(input.effort.as_deref(), input.permission_mode.as_deref())
+            .map_err(|error| {
+                if starting_fork {
+                    Error::with_code(error.to_string(), "claude_fork_input_not_sent")
+                } else {
+                    error
+                }
+            })
             .and_then(|()| {
                 if let Some(snapshot) = &mut self.snapshot {
                     snapshot.executions.begin(ExecutionKind::UserTurn, resuming);

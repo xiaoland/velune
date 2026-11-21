@@ -459,7 +459,8 @@ def main():
     runtime_id = request["runtimeId"]
     operation = request["operation"]
     requested = request.get("nativeId")
-    found = sessions(roots, requested.partition("/")[0] if operation in ("read", "export_context", "export_context_without", "export_context_without_many") else None)
+    reads_one = operation in ("read", "contains_replay_message", "export_context", "export_context_without", "export_context_without_many")
+    found = sessions(roots, requested.partition("/")[0] if reads_one else None)
     if operation == "index":
         # File state only: which sessions exist, when their files changed,
         # and each project folder's working directory from its newest session.
@@ -502,7 +503,7 @@ def main():
             except (ValueError, OSError) as error:
                 failures.append({"code": "provider_read", "detail": type(error).__name__})
         return {"contractVersion": 1, "sessions": result, "failures": failures}
-    if operation in ("read", "export_context", "export_context_without", "export_context_without_many"):
+    if reads_one:
         session, _, agent = requested.partition("/")
         uuid.UUID(session)
         if agent and not (agent.startswith("agent-") and AGENT_ID.fullmatch(agent[len("agent-"):])):
@@ -512,6 +513,13 @@ def main():
             path = dict(subagents(path)).get(requested)
         if path is None:
             return {"error": {"code": "session_not_found"}}
+        if operation == "contains_replay_message":
+            with open(path, encoding="utf-8") as file:
+                # An active source can still be appending the final record.
+                records = [json.loads(line) for line in file if line.endswith("\n") and line.strip()]
+            entries, leaf = claude_replay_entries(records, bool(agent))
+            boundary = request["beforeMessageId"]
+            return {"found": any(entry["uuid"] == boundary for entry in claude_replay_chain(entries, leaf))}
         if operation == "export_context":
             return export_context(path, sidechain=bool(agent), before_message_id=request.get("beforeMessageId"))
         if operation == "export_context_without_many":

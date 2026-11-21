@@ -511,6 +511,23 @@ pub fn verify_codex_handoff_summary_source(
     )
 }
 
+/// A displayed Claude record may precede the current compacted replay chain.
+pub(crate) fn claude_replay_contains(
+    config: &HistoryConfig,
+    native_id: &str,
+    message_id: &str,
+) -> NativeResult<bool> {
+    #[derive(Deserialize)]
+    struct ReplayBoundary {
+        found: bool,
+    }
+    let bytes = execute_before(config, "contains_replay_message", "", Some(native_id), &[], Some(message_id))
+        .map_err(|error| Error::new(error.full_message()))?;
+    serde_json::from_slice::<ReplayBoundary>(&bytes)
+        .map(|boundary| boundary.found)
+        .map_err(|error| Error::new(format!("Claude 原生分支检查响应无效：{error}")))
+}
+
 /// Effective model context immediately before one exact native user message.
 /// The boundary is resolved before compaction, so later summaries cannot
 /// leak the replaced message or its replies back into the rebuilt session.

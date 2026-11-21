@@ -2,6 +2,117 @@ import AppKit
 import SwiftUI
 import VeluneBindings
 
+/// Exercise the ordinary fork callback and the real Composer through Bindings
+/// and Claude Code. The runner supplies a private archive and loopback model.
+@MainActor private func forkSendExperienceChecks(home: URL) -> Never {
+    func fail(_ message: String) -> Never {
+        FileHandle.standardError.write(Data("FAIL Claude fork-send: \(message)\n".utf8))
+        exit(1)
+    }
+    let foreground = NSWorkspace.shared.frontmostApplication?.processIdentifier
+    func settle() {
+        RunLoop.main.run(until: Date().addingTimeInterval(0.025))
+        guard NSApp.activationPolicy() == .prohibited, !NSApp.isActive,
+              NSWorkspace.shared.frontmostApplication?.processIdentifier == foreground,
+              NSApp.windows.allSatisfy({ !$0.isVisible && !$0.isKeyWindow && !$0.isMainWindow }) else {
+            fail("离屏操作触及桌面焦点")
+        }
+    }
+    func until(_ ready: () -> Bool) -> Bool {
+        let deadline = Date().addingTimeInterval(12)
+        while !ready(), Date() < deadline { settle() }
+        return ready()
+    }
+    do {
+        let privateRoot = home.deletingLastPathComponent().standardizedFileURL.resolvingSymlinksInPath()
+        let context = MacExecutionContext.admitted
+        let stateDirectory = context.stateDirectory.resolvingSymlinksInPath()
+        guard context.isDevelopment, stateDirectory.path == privateRoot.appendingPathComponent("state", isDirectory: true).path,
+              let osHome = context.harnessUserHome?.resolvingSymlinksInPath().path,
+              osHome == stateDirectory.appendingPathComponent("harness-user", isDirectory: true).path else {
+            fail("需要独立合成状态目录和 HOME")
+        }
+        let data = try Data(contentsOf: home.appendingPathComponent("fixture.json"))
+        guard let fixture = try JSONSerialization.jsonObject(with: data) as? [String: String],
+              let binary = fixture["binary"], let directory = fixture["agentDirectory"],
+              let sourceID = fixture["sourceID"], let userID = fixture["userID"],
+              let endpoint = fixture["endpoint"], endpoint.hasPrefix("http://127.0.0.1:"),
+              URL(fileURLWithPath: directory, isDirectory: true).resolvingSymlinksInPath().path == privateRoot.appendingPathComponent("claude", isDirectory: true).path else {
+            fail("合成会话配置缺失")
+        }
+        let transport = Transport(stateDirectory: stateDirectory, resourcesDirectory: Bundle.main.resourceURL!)
+        let runtimeID = "claude-check"
+        let instance = RuntimeInstance(enabled: true, id: runtimeID, name: "Claude Code", typeId: .claudeCode,
+            gatewayId: "default", settings: ["binary": binary, "agentDir": directory])
+        _ = try transport.upsertRuntime(instance, execution: RuntimeExecution(transport: .local,
+            home: .existing(path: osHome), remoteResourcesDirectory: nil))
+        let gateway = try transport.saveProvider(gatewayID: "default", provider: ProviderDraft(
+            id: "fork-loopback", name: "Synthetic loopback", protocol: .messages, endpoint: endpoint,
+            executionBackend: .http, requestProfile: .native, authenticationSource: .apiKey, quotaSource: .none,
+            models: [ProviderModel(recordKey: "", providerModelId: "claude-sonnet-4-6", nickname: "Synthetic model", contextWindow: 8192, maxOutputTokens: 4096)],
+            quotaLimits: []), authenticationEdit: .setApiKey(value: "synthetic"))
+        guard let modelKey = gateway.gateways.flatMap(\.providers).first(where: { $0.id == "fork-loopback" })?.models.first?.recordKey else {
+            fail("回环模型未保存")
+        }
+        let device = DeviceStore(transport: transport)
+        device.start()
+        let workspace = ConversationWindowModel(application: device, kind: .workspace)
+        let source = workspace.focused
+        source.store.start(loadFirstConversation: false, opening: sourceID)
+        guard until({ source.store.loadedConversationID == sourceID && source.store.canFork && source.store.message(id: userID) != nil }) else {
+            fail("旧轮次未提供分叉入口")
+        }
+        let originalText = source.store.transcript.rows.map(\.id)
+        source.store.forkConversation(through: userID) { workspace.openInNewTab(adopting: $0, device: device) }
+        guard until({ workspace.focused.id != source.id && workspace.focused.store.nextTurn != nil }),
+              let targetID = workspace.focused.store.loadedConversationID, targetID != sourceID else {
+            fail("分叉未打开独立标签页")
+        }
+        let tab = workspace.focused
+        let store = tab.store
+        let input = workspace.composer(for: tab)
+        let choice = ModelSelection.managed(modelRecordKey: modelKey)
+        workspace.composerContext(for: tab).selectModel(choice)
+        guard until({ workspace.composerContext(for: tab).chosenModel == choice && store.draftEditable }) else {
+            fail("分叉输入不可编辑 \(store.inputAccess)")
+        }
+        let composer = ComposerView(store: store, model: input, layout: workspace,
+            send: { workspace.composerContext(for: tab).send() }, steer: {},
+            submission: { workspace.composerContext(for: tab).submission() }, resume: {}, inputTab: tab)
+        let bounds = NSRect(x: 0, y: 0, width: 620, height: 180)
+        let host = NSHostingView(rootView: composer.background(Color(nsColor: .windowBackgroundColor)).applicationAppearance())
+        host.appearance = NSAppearance(named: .aqua)
+        let window = OffscreenMessageEditorWindow(contentRect: bounds, styleMask: [.borderless], backing: .buffered, defer: true)
+        window.isReleasedWhenClosed = false
+        window.isRestorable = false
+        window.contentView = host
+        host.layoutSubtreeIfNeeded()
+        guard until({ input.textView != nil }), let editor = input.textView, editor.isEditable else { fail("原生 Composer 输入框只读") }
+        let prompt = "first message after fork"
+        editor.insertText(prompt, replacementRange: NSRange(location: 0, length: 0))
+        guard input.submission == prompt,
+              until({ workspace.composerContext(for: tab).submission().canSubmitDraft }) else {
+            fail("Composer 禁止发送 \(store.inputAccess) \(workspace.composerContext(for: tab).inputIssue ?? "")")
+        }
+        host.layoutSubtreeIfNeeded()
+        if let bitmap = host.bitmapImageRepForCachingDisplay(in: host.bounds) {
+            host.cacheDisplay(in: host.bounds, to: bitmap)
+            try bitmap.representation(using: .png, properties: [:])?.write(to: home.appendingPathComponent("fork-ready.png"))
+        }
+        let sourceBefore = source.store.loadedConversationID
+        workspace.composerContext(for: tab).send()
+        guard until({ !store.draftEditable || store.transcript.rows.contains { row in
+            row.message.blocks.contains(.text(text: "fork reply received"))
+        } }), store.draftEditable else { fail("首次发送后未收到回复 \(store.inputAccess) \(store.device.problems.first?.detail ?? "")") }
+        guard store.loadedConversationID == targetID, source.store.loadedConversationID == sourceBefore,
+              source.store.transcript.rows.map(\.id) == originalText else { fail("分叉发送改变了原标签页") }
+        settle()
+        try transport.close(stoppingWork: true)
+        print("PASS Claude fork-send: original tab preserved, new native editor editable, first submission received a Claude reply")
+        exit(0)
+    } catch { fail(error.localizedDescription) }
+}
+
 /// Receive a fork on a non-default device and immediately change its next
 /// turn's settings. No runtime or daily state directory is opened.
 @MainActor private func forkExperienceChecks(home: URL) {
@@ -63,6 +174,7 @@ import VeluneBindings
         while !ready(), Date() < end { RunLoop.main.run(until: Date().addingTimeInterval(0.02)) }
         precondition(ready(), "合成检查超时")
     }
+    if CommandLine.arguments.contains("--experience-fork-send-only") { forkSendExperienceChecks(home: home) }
     if CommandLine.arguments.contains("--experience-sidebar-only") {
         sidebarActionsChecks(home: home)
         exit(0)

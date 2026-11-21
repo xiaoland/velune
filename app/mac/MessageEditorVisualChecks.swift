@@ -5,7 +5,7 @@ import ObjectiveC
 
 /// A rendering host can never present or become key/main, including if a view
 /// accidentally requests it. No system input or foreground recovery is allowed.
-@MainActor private final class OffscreenMessageEditorWindow: NSWindow {
+@MainActor final class OffscreenMessageEditorWindow: NSWindow {
     override var canBecomeKey: Bool { false }
     override var canBecomeMain: Bool { false }
     private func refusePresentation() -> Never {

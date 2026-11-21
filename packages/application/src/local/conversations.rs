@@ -1020,10 +1020,25 @@ impl CoreRuntime {
                         None => Err("会话执行尚未准备".into()),
                     },
                 },
-            )
-            .map_err(|error| RuntimeError::context("message send", error));
+            );
+        let rejected_fork_start = sent.as_ref().err().is_some_and(|error| {
+            error.downcast_ref::<velune_agent_runtime::native::Error>()
+                .is_some_and(|error| error.code() == "claude_fork_input_not_sent")
+        });
+        let sent = sent.map_err(|error| RuntimeError::context("message send", error));
         let pending_fork = self.session.refresh_pending_native_fork();
-        if sent.is_err() && self.session.gateway_runner.is_some() && !self.session.executing() {
+        if rejected_fork_start {
+            // Only a known failure before user-frame dispatch admits a retry.
+            // Keep the live-only fork's source and boundary on the session.
+            if let Err(error) = self.finish_managed_turn() {
+                tracing::warn!(target: "velune_application", event = "fork_start_cleanup_failed", detail = %error);
+            }
+            if self.session.pending_native_fork.is_some()
+                && let ActiveState::History(snapshot) = &mut self.session.active_state
+            {
+                snapshot.actions.can_send = true;
+            }
+        } else if sent.is_err() && self.session.gateway_runner.is_some() && !self.session.executing() {
             self.finish_managed_turn()?;
         }
         sent?;

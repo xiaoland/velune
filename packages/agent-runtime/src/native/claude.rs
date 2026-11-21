@@ -434,6 +434,14 @@ impl NativeSession {
             })
             .transpose()?
             .or_else(|| snapshot.messages.last().map(|message| message.id.clone()));
+        if let Some(at) = &at
+            && !crate::history::claude_replay_contains(&self.claude_history_config(), &from, at)?
+        {
+            return Err(Error::with_code(
+                "所选分叉位置已移出 Claude 当前原生上下文，需要从历史重建分支",
+                "claude_fork_boundary_unavailable",
+            ));
+        }
         let id = claude_uuid()?;
         let cwd = snapshot.conversation.cwd.as_deref().map(PathBuf::from);
         let runtime_id = snapshot.conversation.runtime_id.clone();
@@ -1496,18 +1504,7 @@ impl NativeSession {
             .as_ref()
             .map(|s| s.context_runtime_id.as_str())
             .unwrap_or_default();
-        let config = crate::history::HistoryConfig {
-            kind: crate::version::RuntimeKind::ClaudeCode,
-            execution: self.config.execution.clone(),
-            os_home: self.config.os_home.clone(),
-            provider: "claude-code".into(),
-            binary: self.config.binary.clone(),
-            node_binary: self.config.node_binary.clone().unwrap_or_default(),
-            resources_directory: self.config.resources_directory.clone(),
-            root: self.config.agent_dir.join("projects"),
-            home: self.config.agent_dir.clone(),
-        };
-        let history = crate::history::read(&config, runtime_id, id)
+        let history = crate::history::read(&self.claude_history_config(), runtime_id, id)
             .map_err(|error| Error::new(error.to_string()))?;
         if let Some(message) = history
             .messages
@@ -1526,6 +1523,20 @@ impl NativeSession {
             self.context_usage(usage.context_tokens, usage.context_window);
         }
         Ok(())
+    }
+
+    fn claude_history_config(&self) -> crate::history::HistoryConfig {
+        crate::history::HistoryConfig {
+            kind: crate::version::RuntimeKind::ClaudeCode,
+            execution: self.config.execution.clone(),
+            os_home: self.config.os_home.clone(),
+            provider: "claude-code".into(),
+            binary: self.config.binary.clone(),
+            node_binary: self.config.node_binary.clone().unwrap_or_default(),
+            resources_directory: self.config.resources_directory.clone(),
+            root: self.config.agent_dir.join("projects"),
+            home: self.config.agent_dir.clone(),
+        }
     }
 
     fn claude_error(&mut self, blocks: Vec<MessageBlock>) {

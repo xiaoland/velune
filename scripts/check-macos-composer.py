@@ -10,7 +10,11 @@ import shutil
 import signal
 import subprocess
 import tempfile
+import threading
 import time
+import uuid
+from contextlib import ExitStack
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from macos_identity import ROOT, app_bundle_path, validate_bundle
 
 
@@ -19,9 +23,103 @@ def digest(path):
         return hashlib.file_digest(stream, 'sha256').hexdigest()
 
 
+def prepare_claude_fork(root, evidence, path, lifetime):
+    """Tiny native history where the oldest reply is outside the replay chain."""
+    binary = shutil.which('claude', path=path)
+    if not binary:
+        raise SystemExit('fork-send requires Claude Code on PATH')
+    config = root / 'claude'
+    project = (root / 'project').resolve()
+    project.mkdir()
+    source = str(uuid.uuid4())
+    directory = config / 'projects' / (''.join(c if c.isascii() and c.isalnum() else '-' for c in str(project)))
+    directory.mkdir(parents=True)
+    rows = []
+
+    def record(role, parent, **fields):
+        identity = str(uuid.uuid4())
+        rows.append(dict(type=role, uuid=identity, parentUuid=parent, isSidechain=False,
+                         sessionId=source, cwd=str(project), timestamp='2026-11-01T00:00:00.000Z',
+                         version='2.1.327', userType='external', **fields))
+        return identity
+
+    def message(role, parent, value, **fields):
+        body = dict(id='msg_' + uuid.uuid4().hex, role=role, content=[dict(type='text', text=value)])
+        if role == 'assistant':
+            body.update(type='message', model='claude-sonnet-4-6', stop_reason='end_turn',
+                        usage=dict(input_tokens=10, output_tokens=5))
+        return record(role, parent, message=body, **fields)
+
+    selected = message('user', None, 'oldest fork prompt')
+    old_reply = message('assistant', selected, 'oldest fork reply')
+    retained = message('user', old_reply, 'retained later prompt')
+    retained_reply = message('assistant', retained, 'retained later reply')
+    compact = record('system', None, subtype='compact_boundary', logicalParentUuid=retained_reply,
+                     compactMetadata=dict(trigger='manual', preTokens=300, postTokens=30))
+    summary = message('user', compact, 'new compact summary', isCompactSummary=True)
+    keep = [retained, retained_reply]
+    rows[-2]['compactMetadata'].update(preservedMessages=dict(anchorUuid=summary, uuids=keep, allUuids=keep),
+                                       preservedSegment=dict(anchorUuid=summary, headUuid=retained, tailUuid=retained_reply))
+    latest = message('user', summary, 'later prompt after compact')
+    message('assistant', latest, 'later reply after compact')
+    archive = directory / (source + '.jsonl')
+    archive.write_text(''.join(json.dumps(row) + '\n' for row in rows))
+    archive_digest = digest(archive)
+    requests = []
+    rejected = []
+
+    class Messages(BaseHTTPRequestHandler):
+        def log_message(self, *_):
+            pass
+
+        def do_POST(self):
+            request = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
+            if not self.path.split('?')[0].endswith('/messages'):
+                rejected.append(self.path.split('?')[0])
+                self.send_error(400)
+                return
+            transcript = json.dumps(request['messages'])
+            markers = ['oldest fork prompt', 'oldest fork reply', 'retained later prompt',
+                       'later prompt after compact', 'first message after fork']
+            requests.append([marker for marker in markers if marker in transcript])
+            self.send_response(200)
+            self.send_header('Content-Type', 'text/event-stream')
+            self.end_headers()
+            events = [
+                ('message_start', dict(message=dict(id='msg_' + uuid.uuid4().hex, type='message', role='assistant',
+                    model=request['model'], content=[], stop_reason=None, usage=dict(input_tokens=10, output_tokens=1)))),
+                ('content_block_start', dict(index=0, content_block=dict(type='text', text=''))),
+                ('content_block_delta', dict(index=0, delta=dict(type='text_delta', text='fork reply received'))),
+                ('content_block_stop', dict(index=0)),
+                ('message_delta', dict(delta=dict(stop_reason='end_turn', stop_sequence=None), usage=dict(output_tokens=5))),
+                ('message_stop', {}),
+            ]
+            for kind, fields in events:
+                self.wfile.write(f'event: {kind}\ndata: {json.dumps(dict(type=kind, **fields))}\n\n'.encode())
+            self.wfile.flush()
+
+    server = ThreadingHTTPServer(('127.0.0.1', 0), Messages)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    lifetime.callback(server.server_close)
+    lifetime.callback(server.shutdown)
+    (evidence / 'fixture.json').write_text(json.dumps(dict(
+        binary=binary, agentDirectory=str(config), cwd=str(project), sourceID='claude-check:' + source,
+        userID=selected, endpoint=f'http://127.0.0.1:{server.server_port}/v1')))
+
+    def verify(output, success):
+        intact = digest(archive) == archive_digest
+        (output / 'loopback.json').write_text(json.dumps(dict(originalUnchanged=intact, requests=requests,
+                                                            rejectedPaths=rejected), indent=2))
+        if success:
+            assert intact, 'fork changed the original native archive'
+            assert requests == [['oldest fork prompt', 'oldest fork reply', 'first message after fork']], requests
+
+    return verify
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('check', choices=['editor', 'queued-editor', 'archived', 'palette-ime', 'pagination', 'continuation', 'targets', 'tabs', 'ownership', 'geometry', 'controls', 'credits', 'background', 'experience', 'recovery', 'compaction', 'sidebar', 'provider-analytics', 'background-notifications', 'sidebar-toolbar', 'outgoing-submissions'])
+    parser.add_argument('check', choices=['editor', 'fork-send', 'queued-editor', 'archived', 'palette-ime', 'pagination', 'continuation', 'targets', 'tabs', 'ownership', 'geometry', 'controls', 'credits', 'background', 'experience', 'recovery', 'compaction', 'sidebar', 'provider-analytics', 'background-notifications', 'sidebar-toolbar', 'outgoing-submissions'])
     parser.add_argument('--app', type=Path, default=app_bundle_path(ROOT, 'dev'))
     parser.add_argument('--output', type=Path)
     parser.add_argument('--dark', action='store_true')
@@ -43,7 +141,7 @@ def main():
     library = app / 'Contents/Frameworks/libvelune_bindings.dylib'
     if library.exists():
         receipt['bindingsSHA256'] = digest(library)
-    with tempfile.TemporaryDirectory(prefix='velune-native-composer-', dir='/tmp') as temporary:
+    with tempfile.TemporaryDirectory(prefix='velune-native-composer-', dir='/tmp') as temporary, ExitStack() as lifetime:
         root = Path(temporary)
         copied = root / 'Check.app'
         copy_flag = '-cR' if app.stat().st_dev == root.stat().st_dev else '-R'
@@ -98,6 +196,11 @@ def main():
                 flags.append('--background-check-dark')
         if args.check == 'experience':
             flags = ['--check-message-experience']
+        if args.check == 'fork-send':
+            flags = ['--check-message-experience', '--experience-fork-send-only']
+            verify_fork = prepare_claude_fork(root, evidence, env.get('PATH', os.defpath), lifetime)
+            env.update(CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC='1', DISABLE_AUTOUPDATER='1',
+                       HTTP_PROXY='http://127.0.0.1:9', HTTPS_PROXY='http://127.0.0.1:9', NO_PROXY='127.0.0.1,localhost')
         if args.check == 'recovery':
             flags = ['--check-message-experience', '--experience-runtime-recovery-only']
         if args.check == 'compaction':
@@ -149,7 +252,16 @@ def main():
                 name = 'editor-core-' + native_log.name
                 shutil.copy2(native_log, output / name)
                 exported.append(name)
+        if args.check == 'fork-send':
+            verify_fork(output, receipt['exitCode'] == 0)
+            exported.append('loopback.json')
+            for native_log in (root / 'state' / 'logs').glob('*.jsonl'):
+                name = 'fork-core-' + native_log.name
+                shutil.copy2(native_log, output / name)
+                exported.append(name)
         receipt['artifacts'] = sorted(exported)
+        if args.check == 'fork-send' and receipt['exitCode'] == 0:
+            receipt['loopbackRequests'] = 1
         (output / 'receipt.json').write_text(json.dumps(receipt, indent=2) + '\n')
         print((output / 'native.log').read_text(), end='')
         print('Evidence:', output)
