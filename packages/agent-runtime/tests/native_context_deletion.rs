@@ -159,24 +159,39 @@ fn codex_agent_message_preserves_attribution_body_and_tool_pair_after_compaction
     }
     assert_eq!(messages[2]["content"][0]["id"], "tool");
     assert_eq!(messages[3]["content"][0]["id"], "tool");
-    for content in [
-        json!([{"type":"input_text","text":"visible envelope"},{"type":"encrypted_content","encrypted_content":"opaque body"}]),
-        json!([{"type":"unknown_agent_content","text":"unknown body"}]),
-    ] {
-        let mut opaque = communication.clone();
-        opaque["content"] = content;
-        let result = codex(
-            &[json!({"type":"response_item","payload":opaque})],
-            None,
-            false,
-        );
-        assert!(!result.status.success());
-        assert!(result.stdout.is_empty());
-        assert!(
-            String::from_utf8_lossy(&result.stderr)
-                .contains("unsupported Codex agent message content:")
-        );
-    }
+    let mut encrypted = communication.clone();
+    encrypted["content"] = json!([
+        {"type":"input_text","text":"visible envelope"},
+        {"type":"encrypted_content","encrypted_content":"opaque body"}
+    ]);
+    let result = codex(
+        &[json!({"type":"response_item","payload":encrypted})],
+        None,
+        false,
+    );
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert_eq!(
+        serde_json::from_slice::<Value>(&result.stdout).unwrap(),
+        json!({"errorCode":"portable_summary_required"})
+    );
+
+    let mut unknown = communication;
+    unknown["content"] = json!([{"type":"unknown_agent_content","text":"unknown body"}]);
+    let result = codex(
+        &[json!({"type":"response_item","payload":unknown})],
+        None,
+        false,
+    );
+    assert!(!result.status.success());
+    assert!(result.stdout.is_empty());
+    assert!(
+        String::from_utf8_lossy(&result.stderr)
+            .contains("unsupported Codex agent message content: unknown_agent_content")
+    );
 }
 #[test]
 fn codex_omits_exact_duplicate_prompt_and_keeps_native_tools_and_replies() {

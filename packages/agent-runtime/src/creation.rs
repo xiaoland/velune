@@ -411,12 +411,6 @@ impl ReadAccount {
             reading: false,
         })
     }
-    pub(crate) fn parsed(self: &Arc<Self>, value: &Value) -> io::Result<ReadLease> {
-        let cost = parsed_cost(value);
-        let mut lease = self.lease()?;
-        lease.grow(cost, 0, 0)?;
-        Ok(lease)
-    }
 }
 impl Drop for ReadAccount {
     fn drop(&mut self) {
@@ -443,9 +437,6 @@ pub(crate) struct ReadLease {
     reading: bool,
 }
 impl ReadLease {
-    pub(crate) fn charge(&self) -> usize {
-        self.charge
-    }
     fn settle_history_page(&mut self, retained: usize) {
         let Some(account) = self.account.upgrade() else {
             return;
@@ -760,21 +751,6 @@ impl Scan {
             .and_then(|n| n.checked_add(self.nodes))
             .and_then(|n| n.checked_add(RECORD_BASE))
             .ok_or_else(budget_error)
-    }
-}
-fn parsed_cost(value: &Value) -> usize {
-    match value {
-        Value::String(text) => 8192usize.saturating_add(text.capacity().saturating_mul(32)),
-        Value::Array(values) => values.iter().map(parsed_cost).fold(
-            16384usize.saturating_add(values.capacity().saturating_mul(2048)),
-            usize::saturating_add,
-        ),
-        Value::Object(values) => values.iter().fold(16384usize, |n, (key, value)| {
-            n.saturating_add(8192)
-                .saturating_add(key.capacity().saturating_mul(32))
-                .saturating_add(parsed_cost(value))
-        }),
-        _ => 2048,
     }
 }
 /// The sole common reader implementation. No read_until(Vec), oversized first

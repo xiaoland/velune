@@ -1,6 +1,5 @@
 use super::*;
 use crate::{
-    LiveConversation,
     acp::{AcpCommand, Client, Config},
     native::{DshCommand, NativeConfig, NativeKind, NativeSession},
 };
