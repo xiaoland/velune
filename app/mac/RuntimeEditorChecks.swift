@@ -21,6 +21,12 @@ struct RuntimeEditorCheckAccess {
         precondition(condition(), "等待运行时编辑器检查超时")
     }
     let transport = Transport(stateDirectory: home.appendingPathComponent("runtime-editor"), resourcesDirectory: Bundle.main.resourceURL!)
+    let gateway = try! transport.saveProvider(gatewayID: "default", provider: ProviderDraft(
+        id: "synthetic-naming", name: "合成提供商", protocol: .chatCompletions, endpoint: "http://127.0.0.1:1/v1",
+        executionBackend: .http, requestProfile: .native, authenticationSource: .apiKey, quotaSource: .none,
+        models: [ProviderModel(recordKey: "", providerModelId: "synthetic-namer", nickname: "合成命名模型", contextWindow: 8192, maxOutputTokens: 4096)],
+        quotaLimits: []), authenticationEdit: .setApiKey(value: "synthetic"))
+    let namingModel = gateway.gateways.flatMap(\.providers).first { $0.id == "synthetic-naming" }!.models[0].recordKey
     let source = RuntimeInstance(enabled: false, id: "synthetic-existing-runtime", name: "保留实例名称", typeId: .acp, gatewayId: "default", settings: ["binary": "/synthetic/source-agent", "source-only": "保留原类型字段"])
     let execution = RuntimeExecution(transport: .ssh(binary: "/usr/bin/ssh", destination: "synthetic.invalid", port: 2222), home: .managed(remoteRoot: "/synthetic/runtime-homes"), remoteResourcesDirectory: "/synthetic/resources")
     let launch = AcpLaunch(args: ["--synthetic", "source argument"], environment: ["SYNTHETIC_ONLY": "source value"])
@@ -53,7 +59,9 @@ struct RuntimeEditorCheckAccess {
     settle()
     precondition(form.settings.wrappedValue.isEmpty, "新类型不能继承同名 binary 或原类型隐藏字段")
     precondition(form.newConversation.wrappedValue == .lastChosen && form.launch() == AcpLaunch(args: [], environment: [:]))
-    let targetSettings = ["binary": "/synthetic/target-agent", "agentDir": "/synthetic/target-state"]
+    let namingPrompt = "用用户的语言为会话取名。\n标题注明技术主题。"
+    let targetSettings = ["binary": "/synthetic/target-agent", "agentDir": "/synthetic/target-state", "automaticNaming": "true",
+                          "automaticNamingModel": namingModel, "automaticNamingPrompt": namingPrompt]
     form.settings.wrappedValue = targetSettings
     let permission = device.runtimeTypes.first { $0.id == .claudeCode }!.permissionModes.first!.id
     let targetChoice = NewConversationChoice.chosen(choice: TurnChoice(permissionMode: permission))
@@ -71,6 +79,16 @@ struct RuntimeEditorCheckAccess {
     let targetName = device.runtimeTypes.first { $0.id == .claudeCode }!.name
     precondition(popups(editor).contains { $0.title == targetName && $0.isEnabled }, "原生选择器必须呈现当前类型")
     note("PASS hidden native editor: existing type picker enabled; ACP → Claude → ACP → Codex166 → Claude keeps separate fields, launch and new-conversation drafts; SSH/HOME unchanged")
+    func scrollView(_ view: NSView) -> NSScrollView? {
+        (view as? NSScrollView) ?? view.subviews.lazy.compactMap(scrollView).first
+    }
+    if let scroll = scrollView(editor), let document = scroll.documentView {
+        let clip = scroll.contentView
+        let bottom = document.isFlipped ? max(0, document.frame.height - clip.bounds.height) : 0
+        clip.scroll(to: NSPoint(x: clip.bounds.minX, y: bottom))
+        scroll.reflectScrolledClipView(clip)
+        settle()
+    }
     if let bitmap = editor.bitmapImageRepForCachingDisplay(in: editor.bounds) {
         editor.cacheDisplay(in: editor.bounds, to: bitmap)
         try! bitmap.representation(using: .png, properties: [:])!.write(to: home.appendingPathComponent("runtime-editor.png"))
@@ -85,6 +103,8 @@ struct RuntimeEditorCheckAccess {
     let saved = try! transport.list().runtimeInstances.first { $0.id == source.id }!
     precondition(saved.id == source.id && saved.name == source.name && saved.gatewayId == source.gatewayId && saved.enabled == source.enabled && saved.typeId == .claudeCode)
     precondition(saved.settings["binary"] == targetSettings["binary"] && saved.settings["agentDir"] == targetSettings["agentDir"] && saved.settings["source-only"] == nil)
+    precondition(saved.settings["automaticNaming"] == "true" && saved.settings["automaticNamingModel"] == namingModel && saved.settings["automaticNamingPrompt"] == namingPrompt)
+    note("PASS automatic naming settings: model and multiline prompt persisted through the native runtime editor")
     precondition(try! transport.runtimeExecution(id: saved.id).0 == execution)
     let choices = try! transport.composerChoices().runtimes.first { $0.runtimeId == saved.id }!
     precondition(try! runtimeNewConversationChoice(runtime: saved) == targetChoice)

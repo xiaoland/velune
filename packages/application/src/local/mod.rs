@@ -77,6 +77,7 @@ fn runtime_types() -> Vec<crate::config::RuntimeTypeDescriptor> {
             naming.options = vec![crate::conversation::SettingOption { id: "false".into(), label: "关闭".into() }, crate::conversation::SettingOption { id: "true".into(), label: "开启".into() }];
             fields.push(naming);
             fields.push(field("automaticNamingModel", "命名模型", crate::conversation::SettingKind::Text, false, String::new(), "Velune 中配置的模型记录键。"));
+            fields.push(field("automaticNamingPrompt", "命名提示词", crate::conversation::SettingKind::Text, false, String::new(), "留空使用默认命名提示词。"));
         }
         crate::config::RuntimeTypeDescriptor {
             id: variant.kind,

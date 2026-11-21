@@ -27,6 +27,7 @@ pub(super) struct Session {
     pub(super) pi_cleanup_required: bool,
     pub(super) naming: Option<super::naming::Job>,
     pub(super) naming_attempted: bool,
+    pub(super) claude_title_checked: bool,
     pub(super) finished_activity: Option<String>,
     pub(super) scheduled_run: Option<(String, bool)>,
     pub(super) turn_observation: Option<velune_telemetry::Operation>,

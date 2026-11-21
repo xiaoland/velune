@@ -106,6 +106,60 @@ for line in sys.stdin:
         Self(root)
     }
 
+    fn claude_naming() -> Self {
+        let root = std::env::temp_dir()
+            .join(format!("velune-claude-naming-{}", crate::new_record_key()));
+        fs::create_dir(&root).unwrap();
+        let binary = root.join("claude");
+        fs::write(
+            &binary,
+            r#"#!/usr/bin/env python3
+import datetime, json, os, pathlib, re, sys, uuid
+
+if '--version' in sys.argv:
+    print('2.1.286 (Claude Code)')
+    sys.exit(0)
+
+for line in sys.stdin:
+    record = json.loads(line)
+    if record['type'] == 'control_request':
+        response = {'models': [], 'mcpServers': [], 'errors': {}}
+        print(json.dumps({'type': 'control_response', 'response': {
+            'subtype': 'success', 'request_id': record['request_id'], 'response': response
+        }}), flush=True)
+    elif record['type'] == 'user':
+        session = sys.argv[sys.argv.index('--session-id') + 1]
+        cwd = str(pathlib.Path.cwd())
+        project = pathlib.Path(os.environ['CLAUDE_CONFIG_DIR']) / 'projects' / re.sub(r'[^a-zA-Z0-9]', '-', cwd)
+        project.mkdir(parents=True, exist_ok=True)
+        now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        user = {'type': 'user', 'uuid': record['uuid'], 'parentUuid': None,
+                'sessionId': session, 'cwd': cwd, 'timestamp': now, 'message': record['message']}
+        assistant = {'type': 'assistant', 'uuid': str(uuid.uuid4()), 'parentUuid': user['uuid'],
+                     'sessionId': session, 'session_id': session, 'cwd': cwd, 'timestamp': now,
+                     'message': {'role': 'assistant', 'id': 'reply', 'stop_reason': 'end_turn',
+                                 'content': [{'type': 'text', 'text': 'synthetic assistant reply'}]}}
+        path = project / (session + '.jsonl')
+        with path.open('w') as history:
+            for row in [user, assistant]:
+                history.write(json.dumps(row) + '\n')
+        print(json.dumps(assistant), flush=True)
+        print(json.dumps({'type': 'result', 'subtype': 'success', 'is_error': False,
+                          'session_id': session}), flush=True)
+        # Claude's title can be persisted separately from the stdout transcript.
+        if record['message']['content'][0]['text'] == 'native titled prompt':
+            with path.open('a') as history:
+                history.write(json.dumps({'type': 'ai-title', 'sessionId': session,
+                                          'aiTitle': 'Native Claude title'}) + '\n')
+        print(json.dumps({'type': 'system', 'subtype': 'session_state_changed', 'state': 'idle'}),
+              flush=True)
+"#,
+        )
+        .unwrap();
+        fs::set_permissions(binary, fs::Permissions::from_mode(0o700)).unwrap();
+        Self(root)
+    }
+
     fn wait(&self, name: &str) {
         let deadline = Instant::now() + Duration::from_secs(5);
         while !self.0.join(name).exists() {
@@ -742,6 +796,193 @@ fn open_control_service(fixture: &Fixture) -> ApplicationService {
             .join("../agent-runtime/resources"),
     })
     .unwrap()
+}
+
+#[tokio::test]
+async fn claude_automatic_naming_uses_configured_model_and_preserves_native_title() {
+    use crate::config::{ExecutionBackend, Protocol, ProviderQuotaSource, RequestProfile};
+    use crate::conversation::{ConversationTitle, RunState};
+    use axum::{Router, body::Bytes, http::header, routing::post};
+    use serde_json::{Value, json};
+    use velune_application_api::{ProviderDraft, ProviderModel};
+
+    let (requests, received) = mpsc::channel();
+    let server = Router::new().route(
+        "/v1/chat/completions",
+        post(move |body: Bytes| {
+            let requests = requests.clone();
+            async move {
+                let body = serde_json::from_slice::<Value>(&body).unwrap();
+                requests.send(body).unwrap();
+                (
+                    [(header::CONTENT_TYPE, "application/json")],
+                    json!({"choices":[{"message":{"content":"Velune fallback title"},"finish_reason":"stop"}]}).to_string(),
+                )
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move { axum::serve(listener, server).await.unwrap() });
+
+    tokio::task::spawn_blocking(move || {
+        let fixture = Fixture::claude_naming();
+        let app = open_control_service(&fixture);
+        let view = ClientViewId("naming-observer".into());
+        let execute = |command| app.execute(view.clone(), command).unwrap();
+        let Response::SaveProvider(saved) = execute(Command::SaveProvider {
+            gateway_id: "default".into(),
+            provider: ProviderDraft {
+                id: "synthetic-text".into(),
+                name: "Synthetic text provider".into(),
+                protocol: Protocol::ChatCompletions,
+                endpoint: format!("http://{address}/v1"),
+                execution_backend: ExecutionBackend::Http,
+                request_profile: RequestProfile::Native,
+                authentication_source: crate::ProviderAuthenticationSource::ApiKey,
+                quota_source: ProviderQuotaSource::None,
+                quota_limits: Vec::new(),
+                models: ["synthetic-namer", "synthetic-turn-model"]
+                    .into_iter()
+                    .map(|id| ProviderModel {
+                        record_key: String::new(),
+                        provider_model_id: id.into(),
+                        nickname: String::new(),
+                        icon: None,
+                        context_window: None,
+                        max_output_tokens: None,
+                        reasoning_levels: None,
+                        request_parameters: None,
+                    })
+                    .collect(),
+            },
+            authentication_edit: crate::AuthenticationEdit::SetApiKey {
+                value: "synthetic-key".into(),
+            },
+            quota_authentication_edit: None,
+        }) else {
+            panic!("save naming provider response")
+        };
+        let model_key = |id| {
+            saved.gateways[0].providers[0]
+                .models
+                .iter()
+                .find(|model| model.provider_model_id == id)
+                .unwrap()
+                .record_key
+                .clone()
+        };
+        let naming_model = model_key("synthetic-namer");
+        let instruction = "Name this synthetic conversation with a short descriptive title.";
+        let set_naming = |enabled: bool| {
+            execute(Command::UpsertRuntimeWithExecution {
+                runtime: crate::config::RuntimeInstance {
+                    enabled: true,
+                    id: "synthetic".into(),
+                    name: "Synthetic Claude".into(),
+                    type_id: crate::conversation::RuntimeKind::ClaudeCode,
+                    gateway_id: "default".into(),
+                    settings: BTreeMap::from([
+                        (
+                            "binary".into(),
+                            fixture.0.join("claude").to_string_lossy().into_owned(),
+                        ),
+                        ("automaticNaming".into(), enabled.to_string()),
+                        ("automaticNamingModel".into(), naming_model.clone()),
+                        ("automaticNamingPrompt".into(), instruction.into()),
+                    ]),
+                },
+                execution: crate::RuntimeExecution {
+                    home: crate::RuntimeHome::Managed { remote_root: None },
+                    ..Default::default()
+                },
+            });
+        };
+        let run = |prompt, expected, selection: Option<crate::ModelSelection>| {
+            let Response::CreateConversation(created) = execute(Command::CreateConversation {
+                runtime_id: "synthetic".into(),
+                cwd: Some(fixture.0.to_string_lossy().into_owned()),
+                project: None,
+                selection: selection.clone(),
+            }) else {
+                panic!("create response")
+            };
+            let id = created.snapshot.unwrap().conversation.id;
+            execute(Command::SendTurn {
+                submission_id: None,
+                source_runtime_id: "synthetic".into(),
+                conversation_id: id.clone(),
+                target_runtime_id: "synthetic".into(),
+                selection,
+                turn: control_turn(prompt),
+            });
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                let snapshot = control_snapshot(&app, &id);
+                if snapshot.conversation.title == expected && snapshot.run_state == RunState::Idle {
+                    break;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "{id} did not receive {expected:?}; last title was {:?} ({:?})",
+                    snapshot.conversation.title,
+                    snapshot.run_state,
+                );
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            id
+        };
+        set_naming(false);
+        run(
+            "fallback disabled",
+            ConversationTitle::FirstMessage("fallback disabled".into()),
+            None,
+        );
+        set_naming(true);
+        let native = ConversationTitle::Native("Native Claude title".into());
+        let generated = ConversationTitle::Generated("Velune fallback title".into());
+        let generated_id = run(
+            "name this synthetic prompt",
+            generated.clone(),
+            Some(crate::ModelSelection::Managed {
+                model_record_key: model_key("synthetic-turn-model"),
+            }),
+        );
+        let native_id = run("native titled prompt", native.clone(), None);
+        let assert_list = |configuration: Response| {
+            let Response::ReadConfiguration(configuration) = configuration else {
+                panic!("read configuration response")
+            };
+            for (id, expected) in [(&native_id, &native), (&generated_id, &generated)] {
+                let listed = configuration
+                    .conversations
+                    .iter()
+                    .find(|row| &row.conversation.id == id);
+                assert_eq!(listed.map(|row| &row.conversation.title), Some(expected));
+            }
+        };
+        assert_list(execute(Command::ReadConfiguration));
+        app.close(true).unwrap();
+        let app = open_control_service(&fixture);
+        assert_list(app.execute(view, Command::ReadConfiguration).unwrap());
+        app.close(false).unwrap();
+
+        let request = received.try_recv().expect("fallback naming request");
+        assert_eq!(request["model"], "synthetic-namer");
+        let prompt = request["messages"][0]["content"].as_str().unwrap();
+        assert!(prompt.starts_with(instruction));
+        assert_eq!(
+            serde_json::from_str::<Value>(prompt.lines().last().unwrap()).unwrap(),
+            json!({"user": "name this synthetic prompt", "assistant": "synthetic assistant reply"})
+        );
+        assert!(
+            received.try_recv().is_err(),
+            "the disabled fallback and the native title must not request naming"
+        );
+    })
+    .await
+    .unwrap();
+    server.abort();
 }
 
 #[test]

@@ -552,6 +552,7 @@ enum VeluneEntry {
         if CommandLine.arguments.contains("--check-message-experience"),
            CommandLine.arguments.contains("--experience-message-editor-offscreen")
             || CommandLine.arguments.contains("--experience-fork-send-only")
+            || CommandLine.arguments.contains("--experience-runtime-editor-only")
             || CommandLine.arguments.contains("--experience-compaction-only")
             || CommandLine.arguments.contains("--experience-sidebar-only")
             || CommandLine.arguments.contains("--experience-runtime-recovery-only")

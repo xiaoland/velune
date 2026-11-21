@@ -357,6 +357,26 @@ pub fn summaries(
     listed_summaries(&bytes, runtime_id, "summaries")
 }
 
+/// Naming metadata Claude Code persists separately from its live event stream.
+pub fn claude_title(config: &HistoryConfig, native_id: &str) -> Result<Option<String>, HistoryError> {
+    if config.kind != RuntimeKind::ClaudeCode {
+        return Err(HistoryError::new(HistoryFailureKind::UnsupportedProvider, "title"));
+    }
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Title {
+        Error { error: BridgeFailure },
+        Value { title: Option<String> },
+    }
+    let bytes = execute(config, "title", "", Some(native_id), &[])?;
+    match serde_json::from_slice(&bytes) {
+        Ok(Title::Value { title }) => Ok(title),
+        Ok(Title::Error { error }) => Err(bridge_error(&error.code, &error.detail, "title")),
+        Err(error) => Err(HistoryError::new(HistoryFailureKind::BridgeContract, "title")
+            .with_detail(error.to_string())),
+    }
+}
+
 /// The conversations a runtime archived itself; only Codex has an archive.
 pub fn list_archived(
     config: &HistoryConfig,

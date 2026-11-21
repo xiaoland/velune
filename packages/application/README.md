@@ -227,4 +227,4 @@ application 提供目标的规范身份、当前会话默认依据与 NextTurn �
 
 发送队列仍由 application 统一持有逐项的 ComposedTurn、目标运行时与模型选择。QueueWait::Control 表示释放原生连接后的异步控制权确认；尚未派发的消息保持等待，后续轮询在准入恢复后继续，不能把 CheckingControl 锁存为 SendFailed。停止／失败后的暂停仍保留明确用户恢复的边界。Codex 0.166 的实验性 thread/queue 接口只有输入存储与显式 start，尚未承载上述逐项执行选择，因此本实现没有镜像另一份原生待发队列。
 
-自动命名兜底配置属于 RuntimeInstance 的 automaticNaming／automaticNamingModel。仅观察到正常完成后，在后台直接调用 ai-provider 的有界文本操作，使用指定模型及现有认证解析；没有 Harness turn、工具或本地 gateway。禁用默认不产生调用。超时／取消／失败不改变会话状态；完成结果先复核实例选择与原生名称，再写入现有组织记录的 generatedTitles。ConversationTitle::Generated 区分生成名与 Native／FirstMessage；原生名优先，列表与 snapshot 使用相同投影。
+自动命名兜底配置属于 RuntimeInstance 的 automaticNaming／automaticNamingModel／automaticNamingPrompt。仅观察到正常完成且无原生标题后，在后台直接调用 ai-provider 的有界文本操作，使用指定模型、现有认证解析与实例提示词（留空用内置提示词）；没有 Harness turn、工具或本地 gateway。禁用默认不产生调用。超时／取消／失败不改变会话状态；完成结果先复核实例选择与原生名称，再写入现有组织记录的 generatedTitles。ConversationTitle::Generated 区分生成名与 Native／FirstMessage；原生名优先，列表与 snapshot 使用相同投影。

@@ -119,7 +119,7 @@ def prepare_claude_fork(root, evidence, path, lifetime):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('check', choices=['editor', 'fork-send', 'queued-editor', 'archived', 'palette-ime', 'pagination', 'continuation', 'targets', 'tabs', 'ownership', 'geometry', 'controls', 'credits', 'background', 'experience', 'recovery', 'compaction', 'sidebar', 'provider-analytics', 'background-notifications', 'sidebar-toolbar', 'outgoing-submissions'])
+    parser.add_argument('check', choices=['editor', 'runtime-editor', 'fork-send', 'queued-editor', 'archived', 'palette-ime', 'pagination', 'continuation', 'targets', 'tabs', 'ownership', 'geometry', 'controls', 'credits', 'background', 'experience', 'recovery', 'compaction', 'sidebar', 'provider-analytics', 'background-notifications', 'sidebar-toolbar', 'outgoing-submissions'])
     parser.add_argument('--app', type=Path, default=app_bundle_path(ROOT, 'dev'))
     parser.add_argument('--output', type=Path)
     parser.add_argument('--dark', action='store_true')
@@ -172,6 +172,8 @@ def main():
             flags = ['--check-queued-message-editor']
             if args.dark:
                 flags.append('--queued-editor-dark')
+        if args.check == 'runtime-editor':
+            flags = ['--check-message-experience', '--experience-runtime-editor-only']
         if args.check == 'archived':
             flags = ['--check-archived-conversations']
             if args.dark:

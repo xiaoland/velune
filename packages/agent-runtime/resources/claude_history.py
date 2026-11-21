@@ -76,6 +76,36 @@ def notification(text, link):
             "output": tag(text, "result") or tag(text, "summary"), "conversation_id": link(tag(text, "task-id"))}
 
 
+TITLE_FIELDS = {"custom-title": "customTitle", "ai-title": "aiTitle"}
+
+
+def session_title(records):
+    titles = {}
+    for record in records:
+        kind = record.get("type")
+        if isinstance(kind, str) and kind in TITLE_FIELDS:
+            title = record.get(TITLE_FIELDS[kind])
+            if isinstance(title, str) and title.strip():
+                titles[kind] = title.strip()
+    return titles.get("custom-title") or titles.get("ai-title")
+
+
+def title_records(path):
+    # Claude's SDK stream omits titles. Only decode title records in its log.
+    with open(path, encoding="utf-8") as file:
+        for line in file:
+            if '"ai-title"' not in line and '"custom-title"' not in line:
+                continue
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                if not line.endswith("\n"):
+                    break
+                raise
+            if isinstance(record, dict):
+                yield record
+
+
 def history(path, native_id, runtime_id, sidechain=False):
     """A main session, or with `sidechain` one of its sub-agents' sessions."""
     session = native_id.split("/")[0]
@@ -292,11 +322,7 @@ def history(path, native_id, runtime_id, sidechain=False):
             and isinstance(cost.get("totalCostUSD"), (int, float)) and cost["totalCostUSD"] > 0:
         prompt["turn_usage"]["sessionCostMicroUsd"] = round(cost["totalCostUSD"] * 1_000_000)
     # The user's name for the session, else the one Claude Code gave it.
-    title = next((name.strip() for kind, key in (("custom-title", "customTitle"), ("ai-title", "aiTitle"))
-                  for name in (r.get(key) for r in reversed(records) if r.get("type") == kind)
-                  if isinstance(name, str) and name.strip()), None)
-    if sidechain:
-        title = meta_title(path)
+    title = meta_title(path) if sidechain else session_title(records)
     if title is not None:
         title = title.strip() or None
     if first_user is not None:
@@ -459,7 +485,7 @@ def main():
     runtime_id = request["runtimeId"]
     operation = request["operation"]
     requested = request.get("nativeId")
-    reads_one = operation in ("read", "contains_replay_message", "export_context", "export_context_without", "export_context_without_many")
+    reads_one = operation in ("read", "title", "contains_replay_message", "export_context", "export_context_without", "export_context_without_many")
     found = sessions(roots, requested.partition("/")[0] if reads_one else None)
     if operation == "index":
         # File state only: which sessions exist, when their files changed,
@@ -513,6 +539,9 @@ def main():
             path = dict(subagents(path)).get(requested)
         if path is None:
             return {"error": {"code": "session_not_found"}}
+        if operation == "title":
+            title = meta_title(path) if agent else session_title(title_records(path))
+            return {"title": title}
         if operation == "contains_replay_message":
             with open(path, encoding="utf-8") as file:
                 # An active source can still be appending the final record.

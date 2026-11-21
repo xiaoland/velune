@@ -1602,6 +1602,13 @@ impl NativeSession {
             self.data.merge_owner(DataOwner::Metadata, retention);
         }
     }
+    /// Apply naming metadata independently of transcript or execution state.
+    pub fn set_observed_title(&mut self, title: String) {
+        if let Some(snapshot) = &mut self.snapshot {
+            snapshot.conversation.title = ConversationTitle::Native(title);
+            snapshot.revision = snapshot.revision.saturating_add(1);
+        }
+    }
     fn running(&mut self) {
         if let Some(snapshot) = &mut self.snapshot {
             snapshot.run_state = RunState::Running;

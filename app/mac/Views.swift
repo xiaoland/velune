@@ -1480,7 +1480,7 @@ struct RuntimeEditor: View {
         return path.hasPrefix("/") && !path.contains("\0") ? .some(path) : nil
     }
     /// A managed HOME holds the runtime directory, so that field goes away.
-    private var fields: [SettingField] { (descriptor?.fields ?? []).filter { !(home == .managed && $0.key == "agentDir") && !["automaticNaming", "automaticNamingModel"].contains($0.key) } }
+    private var fields: [SettingField] { (descriptor?.fields ?? []).filter { !(home == .managed && $0.key == "agentDir") && !["automaticNaming", "automaticNamingModel", "automaticNamingPrompt"].contains($0.key) } }
     private var homeField: SettingField {
         SettingField(key: "home", label: "HOME 目录", kind: remote ? .text : .directoryPath, required: true, value: "", options: [],
                      help: remote ? "执行机器上的绝对目录。" : nil)
@@ -1601,6 +1601,14 @@ struct RuntimeEditor: View {
                             Text(model.displayName + "（" + provider.name + "）").tag(model.recordKey)
                         }
                     }
+                }
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("命名提示词")
+                    TextField("命名提示词", text: Binding(get: { settings["automaticNamingPrompt"] ?? "" }, set: { settings["automaticNamingPrompt"] = $0 }), prompt: Text("留空使用默认提示词"), axis: .vertical)
+                        .labelsHidden()
+                        .textFieldStyle(.roundedBorder)
+                        .multilineTextAlignment(.leading)
+                        .lineLimit(3...6)
                 }
             }
         } header: { Text("自动命名") } footer: {
