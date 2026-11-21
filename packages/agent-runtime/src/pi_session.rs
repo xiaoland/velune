@@ -107,35 +107,60 @@ impl ControlWait {
     fn new(ticket: PiTicket, cancellation: bool) -> Self {
         Self {
             wait: EditWait {
-                ticket, installed_generation: ticket.session_generation,
-                prompt: false, prompt_wire_id: None, prompt_accepted: false, result: None,
+                ticket,
+                installed_generation: ticket.session_generation,
+                prompt: false,
+                prompt_wire_id: None,
+                prompt_accepted: false,
+                result: None,
             },
-            native: ticket, cancellation, clear_queue_confirmed: false, confirmed: false,
+            native: ticket,
+            cancellation,
+            clear_queue_confirmed: false,
+            confirmed: false,
         }
     }
 }
 
 impl Running {
     fn wait(&self, ticket: PiTicket) -> Option<&EditWait> {
-        self.edit_wait.as_ref().filter(|wait| wait.ticket == ticket)
-            .or_else(|| self.control_wait.as_ref().map(|control| &control.wait)
-                .filter(|wait| wait.ticket == ticket))
+        self.edit_wait
+            .as_ref()
+            .filter(|wait| wait.ticket == ticket)
+            .or_else(|| {
+                self.control_wait
+                    .as_ref()
+                    .map(|control| &control.wait)
+                    .filter(|wait| wait.ticket == ticket)
+            })
     }
 
     fn wait_mut(&mut self, ticket: PiTicket) -> Option<&mut EditWait> {
-        if self.edit_wait.as_ref().is_some_and(|wait| wait.ticket == ticket) {
+        if self
+            .edit_wait
+            .as_ref()
+            .is_some_and(|wait| wait.ticket == ticket)
+        {
             self.edit_wait.as_mut()
         } else {
-            self.control_wait.as_mut().map(|control| &mut control.wait)
+            self.control_wait
+                .as_mut()
+                .map(|control| &mut control.wait)
                 .filter(|wait| wait.ticket == ticket)
         }
     }
 
     fn receipt_wait_mut(&mut self, ticket: PiTicket) -> Option<&mut EditWait> {
-        if self.edit_wait.as_ref().is_some_and(|wait| wait.ticket == ticket) {
+        if self
+            .edit_wait
+            .as_ref()
+            .is_some_and(|wait| wait.ticket == ticket)
+        {
             self.edit_wait.as_mut()
         } else {
-            self.control_wait.as_mut().filter(|control| control.native == ticket)
+            self.control_wait
+                .as_mut()
+                .filter(|control| control.native == ticket)
                 .map(|control| &mut control.wait)
         }
     }
@@ -814,7 +839,10 @@ impl PiSession {
         }
     }
 
-    pub fn set_conversation(&mut self, conversation: crate::creation::Retained<ConversationSummary>) {
+    pub fn set_conversation(
+        &mut self,
+        conversation: crate::creation::Retained<ConversationSummary>,
+    ) {
         let (conversation, data) = conversation.into_parts();
         if let Some(running) = &mut self.running {
             running.projection.set_conversation(conversation);
@@ -823,11 +851,20 @@ impl PiSession {
     }
 
     pub fn owned_snapshot(&self) -> Result<crate::creation::Retained<ConversationSnapshot>> {
-        let data = self.conversation_data.as_ref()
-            .map(crate::creation::DataRetention::try_clone).transpose()
-            .map_err(Error::Io)?.unwrap_or_default();
-        let snapshot = self.snapshot().ok_or_else(|| Error::Sdk("Pi 会话尚未打开".into()))?;
-        Ok(crate::creation::Retained::from_parts(snapshot.clone(), data))
+        let data = self
+            .conversation_data
+            .as_ref()
+            .map(crate::creation::DataRetention::try_clone)
+            .transpose()
+            .map_err(Error::Io)?
+            .unwrap_or_default();
+        let snapshot = self
+            .snapshot()
+            .ok_or_else(|| Error::Sdk("Pi 会话尚未打开".into()))?;
+        Ok(crate::creation::Retained::from_parts(
+            snapshot.clone(),
+            data,
+        ))
     }
 
     /// Read the native history again at the next synchronization.
@@ -975,12 +1012,18 @@ impl PiSession {
             if let Some(running) = &mut self.running {
                 running.apply_event(&event);
                 if event["type"] == "velune_error" && running.client.pi_cleanup_required() {
-                    for wait in running.edit_wait.iter_mut()
-                        .chain(running.control_wait.iter_mut().map(|control| &mut control.wait))
-                    {
+                    for wait in running.edit_wait.iter_mut().chain(
+                        running
+                            .control_wait
+                            .iter_mut()
+                            .map(|control| &mut control.wait),
+                    ) {
                         if wait.result.is_none() {
                             wait.result = Some(Err(Error::Transport(
-                                event["error"].as_str().unwrap_or("Pi operation transport failed").to_owned(),
+                                event["error"]
+                                    .as_str()
+                                    .unwrap_or("Pi operation transport failed")
+                                    .to_owned(),
                             )));
                         }
                     }
@@ -1143,15 +1186,19 @@ impl PiSession {
     /// successful rewind is the sole operation allowed to advance its own scope.
     pub fn take_confirmation(&mut self, ticket: PiTicket) -> Result<Option<Result<()>>> {
         let running = self.running()?;
-        let wait = running.wait(ticket)
+        let wait = running
+            .wait(ticket)
             .ok_or_else(|| Error::Sdk("Pi 操作等待身份已失效".into()))?;
         let installed = PiTicket {
             session_generation: wait.installed_generation,
             ..ticket
         };
-        let confirmed_control = running.control_wait.as_ref()
+        let confirmed_control = running
+            .control_wait
+            .as_ref()
             .is_some_and(|control| control.wait.ticket == ticket && control.confirmed);
-        if !running.client.pi_owns_ticket(installed) && !wait.prompt_accepted && !confirmed_control {
+        if !running.client.pi_owns_ticket(installed) && !wait.prompt_accepted && !confirmed_control
+        {
             self.clear_edit_wait(ticket);
             return Ok(Some(Err(Error::Transport("Pi 编辑来源代际已改变".into()))));
         }
@@ -1169,7 +1216,10 @@ impl PiSession {
     /// and its receipts; cancellation is not proof that a mutation did not run.
     pub fn cancel_confirmation(&mut self, ticket: PiTicket) -> bool {
         let not_sent = self.running.as_mut().is_some_and(|running| {
-            let native = running.control_wait.as_ref().filter(|control| control.wait.ticket == ticket)
+            let native = running
+                .control_wait
+                .as_ref()
+                .filter(|control| control.wait.ticket == ticket)
                 .map_or(ticket, |control| control.native);
             running.client.abandon_queued_pi(native)
         });
@@ -1291,7 +1341,9 @@ impl PiSession {
 
     fn take_edit_wait_result(&mut self, ticket: PiTicket) -> Result<Option<Result<()>>> {
         let running = self.running()?;
-        let confirmed_control = running.control_wait.as_ref()
+        let confirmed_control = running
+            .control_wait
+            .as_ref()
             .is_some_and(|control| control.wait.ticket == ticket && control.confirmed);
         let Some(wait) = running.wait_mut(ticket) else {
             return Err(Error::Sdk("Pi 操作等待身份不匹配或已结束".into()));
@@ -1311,10 +1363,18 @@ impl PiSession {
 
     fn clear_edit_wait(&mut self, ticket: PiTicket) {
         if let Some(running) = &mut self.running {
-            if running.edit_wait.as_ref().is_some_and(|wait| wait.ticket == ticket) {
+            if running
+                .edit_wait
+                .as_ref()
+                .is_some_and(|wait| wait.ticket == ticket)
+            {
                 running.edit_wait = None;
             }
-            if running.control_wait.as_ref().is_some_and(|control| control.wait.ticket == ticket) {
+            if running
+                .control_wait
+                .as_ref()
+                .is_some_and(|control| control.wait.ticket == ticket)
+            {
                 running.control_wait = None;
             }
         }
@@ -1440,7 +1500,9 @@ impl PiSession {
         if self.running()?.control_wait.is_some() {
             return Err(Error::Sdk("Pi 控制正在等待确认".into()));
         }
-        if let Some(error) = self.prepare_cancel()? { return Err(error); }
+        if let Some(error) = self.prepare_cancel()? {
+            return Err(error);
+        }
         let ticket = self.enqueue(PiOperation::ClearQueue, PendingAction::Control)?;
         let running = self.running()?;
         running.control_wait = Some(ControlWait::new(ticket, true));
@@ -1452,9 +1514,14 @@ impl PiSession {
     }
 
     pub fn cancel_prefix_confirmed(&self, ticket: PiTicket) -> bool {
-        self.running.as_ref().and_then(|running| running.control_wait.as_ref())
-            .is_some_and(|control| control.wait.ticket == ticket && control.cancellation
-                && control.clear_queue_confirmed)
+        self.running
+            .as_ref()
+            .and_then(|running| running.control_wait.as_ref())
+            .is_some_and(|control| {
+                control.wait.ticket == ticket
+                    && control.cancellation
+                    && control.clear_queue_confirmed
+            })
     }
 
     pub fn begin_reply_confirmation(
@@ -1633,9 +1700,15 @@ impl PiSession {
             && response["success"] == true
             && response["id"].as_str() == Some(receipt.wire_id.as_str())
         {
-            if control.cancellation && control.native == control.wait.ticket && response["command"] == "clear_queue" {
+            if control.cancellation
+                && control.native == control.wait.ticket
+                && response["command"] == "clear_queue"
+            {
                 control.clear_queue_confirmed = true;
-            } else if control.cancellation && control.native != control.wait.ticket && response["command"] == "abort" {
+            } else if control.cancellation
+                && control.native != control.wait.ticket
+                && response["command"] == "abort"
+            {
                 control.confirmed = true;
             }
         }
@@ -1678,15 +1751,23 @@ impl PiSession {
                 let timely_write = matches!(receipt.physical_write,
                     Some(crate::WriteFact::Written(completion)) if completion.met_deadline());
                 if let Some(control) = &mut running.control_wait
-                    && control.native == receipt.ticket && !control.cancellation && timely_write
-                { control.confirmed = true; }
+                    && control.native == receipt.ticket
+                    && !control.cancellation
+                    && timely_write
+                {
+                    control.confirmed = true;
+                }
                 let failed = running.client.pi_cleanup_required();
                 if let Some(wait) = running.receipt_wait_mut(receipt.ticket)
                     && wait.result.is_none()
                 {
                     wait.result = Some(if failed {
-                        Err(Error::Transport("Pi 回复实际写入后连接失败；原生处理未确认".into()))
-                    } else { Ok(()) });
+                        Err(Error::Transport(
+                            "Pi 回复实际写入后连接失败；原生处理未确认".into(),
+                        ))
+                    } else {
+                        Ok(())
+                    });
                 }
             }
             return;
@@ -1760,8 +1841,14 @@ impl PiSession {
             }
             PiReceiptPhase::NotSent => {
                 if self.running.as_ref().is_some_and(|running| {
-                    running.edit_wait.as_ref().is_some_and(|wait| wait.ticket == receipt.ticket)
-                        || running.control_wait.as_ref().is_some_and(|control| control.native == receipt.ticket)
+                    running
+                        .edit_wait
+                        .as_ref()
+                        .is_some_and(|wait| wait.ticket == receipt.ticket)
+                        || running
+                            .control_wait
+                            .as_ref()
+                            .is_some_and(|control| control.native == receipt.ticket)
                 }) {
                     Err(Error::Sdk("Pi 操作尚未发送".into()))
                 } else if scope_action {
@@ -1808,18 +1895,28 @@ impl PiSession {
                 self.set_background_error(Some(error.to_string()));
             }
         }
-        let clear_queue_ack = result.is_ok() && self.running.as_ref().is_some_and(|running| {
-            running.control_wait.as_ref().is_some_and(|control| control.cancellation
-                && control.native == receipt.ticket && control.native == control.wait.ticket)
-        });
+        let clear_queue_ack = result.is_ok()
+            && self.running.as_ref().is_some_and(|running| {
+                running.control_wait.as_ref().is_some_and(|control| {
+                    control.cancellation
+                        && control.native == receipt.ticket
+                        && control.native == control.wait.ticket
+                })
+            });
         if clear_queue_ack {
             let abort = self.enqueue(PiOperation::Abort, PendingAction::Control);
-            if let Some(control) = self.running.as_mut().and_then(|running| running.control_wait.as_mut()) {
+            if let Some(control) = self
+                .running
+                .as_mut()
+                .and_then(|running| running.control_wait.as_mut())
+            {
                 match abort {
                     Ok(ticket) => control.native = ticket,
-                    Err(error) => control.wait.result = Some(Err(Error::Sdk(format!(
-                        "Pi 清队列已确认；Abort 尚未发送：{error}"
-                    )))),
+                    Err(error) => {
+                        control.wait.result = Some(Err(Error::Sdk(format!(
+                            "Pi 清队列已确认；Abort 尚未发送：{error}"
+                        ))))
+                    }
                 }
             }
             return;
@@ -1830,7 +1927,9 @@ impl PiSession {
                 if scope_action && result.is_ok() {
                     wait.installed_generation = generation.unwrap_or(wait.installed_generation);
                 }
-                if wait.result.is_none() { wait.result = Some(result); }
+                if wait.result.is_none() {
+                    wait.result = Some(result);
+                }
             }
         }
     }

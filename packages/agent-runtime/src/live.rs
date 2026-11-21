@@ -1,16 +1,21 @@
 //! What every running conversation does the same way, whatever runtime runs
 //! it. Kind-specific operations stay on the concrete session types.
 use crate::conversation::{ConversationSnapshot, ConversationSummary, RuntimeInteractionReply};
-use crate::{TurnInput, acp, native, pi_session::PiSession};
 use crate::creation::{DataRetention, Retained};
+use crate::{TurnInput, acp, native, pi_session::PiSession};
 
 /// Failure of a runtime operation, for display.
 pub type LiveError = Box<dyn std::error::Error + Send + Sync>;
 pub type LiveResult = Result<(), LiveError>;
 
 pub trait LiveConversation {
-    fn background_tasks(&self) -> Result<Retained<crate::conversation::BackgroundTaskList>, LiveError> {
-        Ok(Retained::from_parts(Default::default(), DataRetention::default()))
+    fn background_tasks(
+        &self,
+    ) -> Result<Retained<crate::conversation::BackgroundTaskList>, LiveError> {
+        Ok(Retained::from_parts(
+            Default::default(),
+            DataRetention::default(),
+        ))
     }
     fn read_background_task_output(
         &mut self,
@@ -92,15 +97,23 @@ pub trait LiveConversation {
 }
 
 impl LiveConversation for PiSession {
-    fn background_tasks(&self) -> Result<Retained<crate::conversation::BackgroundTaskList>, LiveError> {
-        Ok(Retained::from_parts(PiSession::background_tasks(self), DataRetention::default()))
+    fn background_tasks(
+        &self,
+    ) -> Result<Retained<crate::conversation::BackgroundTaskList>, LiveError> {
+        Ok(Retained::from_parts(
+            PiSession::background_tasks(self),
+            DataRetention::default(),
+        ))
     }
     fn read_background_task_output(
         &mut self,
         task: &str,
         request: Option<&str>,
     ) -> Result<Retained<crate::conversation::BackgroundTaskOutput>, LiveError> {
-        Ok(Retained::from_parts(PiSession::read_background_task_output(self, task, request)?, DataRetention::default()))
+        Ok(Retained::from_parts(
+            PiSession::read_background_task_output(self, task, request)?,
+            DataRetention::default(),
+        ))
     }
     fn stop_background_task(&mut self, task: &str) -> LiveResult {
         Ok(PiSession::stop_background_task(self, task)?)
@@ -124,7 +137,9 @@ impl LiveConversation for PiSession {
         PiSession::snapshot(self)
     }
     fn owned_snapshot(&self) -> Result<Option<Retained<ConversationSnapshot>>, LiveError> {
-        if PiSession::snapshot(self).is_none() { return Ok(None); }
+        if PiSession::snapshot(self).is_none() {
+            return Ok(None);
+        }
         Ok(Some(PiSession::owned_snapshot(self)?))
     }
     fn turn_running(&self) -> bool {
@@ -134,7 +149,10 @@ impl LiveConversation for PiSession {
         true
     }
     fn work(&self) -> Result<Retained<Vec<crate::work::BackgroundTask>>, LiveError> {
-        Ok(Retained::from_parts(PiSession::work(self), DataRetention::default()))
+        Ok(Retained::from_parts(
+            PiSession::work(self),
+            DataRetention::default(),
+        ))
     }
     fn work_settled(&self) -> bool {
         PiSession::work(self).is_empty() && !PiSession::has_pending_metadata(self)
@@ -182,7 +200,9 @@ impl LiveConversation for PiSession {
 }
 
 impl LiveConversation for native::NativeSession {
-    fn background_tasks(&self) -> Result<Retained<crate::conversation::BackgroundTaskList>, LiveError> {
+    fn background_tasks(
+        &self,
+    ) -> Result<Retained<crate::conversation::BackgroundTaskList>, LiveError> {
         Ok(native::NativeSession::background_tasks(self)?)
     }
     fn read_background_task_output(
@@ -201,7 +221,9 @@ impl LiveConversation for native::NativeSession {
         native::NativeSession::snapshot(self)
     }
     fn owned_snapshot(&self) -> Result<Option<Retained<ConversationSnapshot>>, LiveError> {
-        if native::NativeSession::snapshot(self).is_none() { return Ok(None); }
+        if native::NativeSession::snapshot(self).is_none() {
+            return Ok(None);
+        }
         Ok(Some(native::NativeSession::owned_snapshot(self)?))
     }
     fn turn_running(&self) -> bool {
@@ -271,7 +293,9 @@ impl LiveConversation for acp::Client {
         acp::Client::snapshot(self)
     }
     fn owned_snapshot(&self) -> Result<Option<Retained<ConversationSnapshot>>, LiveError> {
-        if acp::Client::snapshot(self).is_none() { return Ok(None); }
+        if acp::Client::snapshot(self).is_none() {
+            return Ok(None);
+        }
         Ok(Some(acp::Client::owned_snapshot(self)?))
     }
     fn turn_running(&self) -> bool {

@@ -795,9 +795,8 @@ mod pi_fork_discovery_tests {
             .join(run)
             .join("run-0/session.jsonl");
         let mismatch = workspace.join("parent.with.dot/forks/run/mismatch.jsonl");
-        let modern_mismatch = workspace.join(format!(
-            "parent.with.dot/11234567-89ab-4cde-8fab-0123456789ab/run-0/session.jsonl"
-        ));
+        let modern_mismatch = workspace
+            .join("parent.with.dot/11234567-89ab-4cde-8fab-0123456789ab/run-0/session.jsonl");
         let wrong_run = workspace.join("parent.with.dot/not-a-run-uuid/run-0/session.jsonl");
         let wrong_name = modern.parent().unwrap().join("intruder.jsonl");
         let unrelated = workspace.join("artifacts/unrelated.jsonl");

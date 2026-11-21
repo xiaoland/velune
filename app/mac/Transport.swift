@@ -395,8 +395,10 @@ final class Transport: @unchecked Sendable {
                              selection: ModelSelection?, turn: ComposedTurn, model: ModelSelection?, effort: String?, submissionId: String? = nil) throws -> QueuedHandoffSummaryStart {
         try withApplication("queueHandoffSummary", .preparesContinuation, .send) { application in
             let delivered = try deliver(turn, using: application)
-            return try application.queueHandoffSummary(sourceRuntimeId: sourceRuntimeID, conversationId: conversationID,
-                targetRuntimeId: targetRuntimeID, selection: selection, turn: delivered, summaryModel: model, effort: effort, submissionId: submissionId)
+            let request = BindingQueuedHandoffSummary(sourceRuntimeId: sourceRuntimeID,
+                conversationId: conversationID, targetRuntimeId: targetRuntimeID, selection: selection,
+                turn: delivered, summaryModel: model, effort: effort)
+            return try application.queueHandoffSummary(request: request, submissionId: submissionId)
         }
     }
     func retryQueuedHandoffSummary(sourceRuntimeID: String, conversationID: String, queuedMessageID: String,
@@ -476,7 +478,14 @@ final class Transport: @unchecked Sendable {
     func deleteUserMessage(runtimeID: String, conversationID: String, messageID: String, truncate: Bool, expectedRevision: String) throws -> SnapshotResult {
         try withApplication("deleteUserMessage", .writes, .conversationWrite) { try $0.deleteUserMessage(runtimeId: runtimeID, conversationId: conversationID, messageId: messageID, truncate: truncate, expectedRevision: expectedRevision) }
     }
-    func editMessage(runtimeID: String, conversationID: String, messageID: String, placement: EditPlacement, targetRuntimeID: String? = nil, selection: ModelSelection?, turn: ComposedTurn, expectedRevision: String? = nil) throws -> SnapshotResult { try withApplication("editMessage", .writes, .conversationWrite) { try $0.editMessageWithRuntime(runtimeId: runtimeID, conversationId: conversationID, messageId: messageID, placement: placement, targetRuntimeId: targetRuntimeID, selection: selection, turn: try deliver(turn, using: $0), expectedRevision: expectedRevision) } }
+    func editMessage(runtimeID: String, conversationID: String, messageID: String, placement: EditPlacement, targetRuntimeID: String? = nil, selection: ModelSelection?, turn: ComposedTurn, expectedRevision: String? = nil) throws -> SnapshotResult {
+        try withApplication("editMessage", .writes, .conversationWrite) { application in
+            let message = BindingMessageReference(runtimeId: runtimeID, conversationId: conversationID, messageId: messageID)
+            return try application.editMessageWithRuntime(message: message, placement: placement,
+                targetRuntimeId: targetRuntimeID, selection: selection, turn: try deliver(turn, using: application),
+                expectedRevision: expectedRevision)
+        }
+    }
     func forkConversation(runtimeID: String, conversationID: String, messageID: String) throws -> SnapshotResult { try withApplication("forkConversation", .writes, .conversationWrite) { try $0.forkConversation(runtimeId: runtimeID, conversationId: conversationID, messageId: messageID) } }
     func cancel(runtimeID: String, conversationID: String) throws -> SnapshotResult { try withApplication("cancel", .writes, .cancel) { try $0.cancel(runtimeId: runtimeID, conversationId: conversationID) } }
     func openSideChat(runtimeID: String, conversationID: String, selection: ModelSelection?, effort: String?, permissionMode: String?) throws -> SnapshotResult {

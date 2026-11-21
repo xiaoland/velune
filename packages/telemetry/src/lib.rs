@@ -669,11 +669,15 @@ impl ClientTelemetry {
         observation
     }
     pub fn flush(&self) -> bool {
-        let sdk = self.lock()
+        let sdk = self
+            .lock()
             .ok()
             .and_then(|s| s.active.clone())
             .is_none_or(|g| g.flush());
-        let local = self.writer.as_ref().is_none_or(|writer| writer.flush().is_ok());
+        let local = self
+            .writer
+            .as_ref()
+            .is_none_or(|writer| writer.flush().is_ok());
         sdk && local
     }
     pub fn shutdown(&self) -> Result<()> {

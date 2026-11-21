@@ -1,7 +1,7 @@
 use super::*;
 use std::{
     io::{BufRead, BufReader, Write},
-    process::{Child, Command, Stdio},
+    process::{Child, Stdio},
 };
 
 struct TestHome(PathBuf);
@@ -17,7 +17,7 @@ struct CodexWriter(Child);
 impl CodexWriter {
     fn lock(path: &Path) -> Self {
         let mut writer = Self(
-            Command::new("python3")
+            velune_agent_runtime::process::command("python3")
                 .args([
                     "-c",
                     r#"import fcntl, sys

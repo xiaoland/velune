@@ -827,9 +827,12 @@ fn deepseek_shared_writer_oversized_inflight_frame_must_preserve_reserved_reply_
         assert!(text_seen(&f.session, "Oversized write still polling"));
         assert!(f.session.dsh_port.as_ref().unwrap().reserved_bytes >= DEFAULT_BYTES);
         assert!(
-            !f.session.dsh_take_receipts().unwrap().iter().any(
-                |receipt| receipt.ticket == *ticket && receipt.stage == DshReceiptStage::Written
-            )
+            !f.session
+                .dsh_take_receipts()
+                .unwrap()
+                .iter()
+                .any(|receipt| receipt.ticket == *ticket
+                    && receipt.stage == DshReceiptStage::Written)
         );
         let cancel = f
             .session
@@ -849,7 +852,8 @@ fn deepseek_shared_writer_oversized_inflight_frame_must_preserve_reserved_reply_
         // Admission while blocked is not Written and cannot bypass the partial prompt.
         assert!(
             !f.session
-                .dsh_take_receipts().unwrap()
+                .dsh_take_receipts()
+                .unwrap()
                 .iter()
                 .any(|receipt| receipt.stage == DshReceiptStage::Written)
         );
@@ -1007,7 +1011,8 @@ fn review_timely_unharvested_write(reply: bool) {
     assert!(!f.session.requires_failure_cleanup());
     assert!(
         f.session
-            .dsh_take_receipts().unwrap()
+            .dsh_take_receipts()
+            .unwrap()
             .iter()
             .any(|receipt| receipt.ticket == *ticket && receipt.stage == DshReceiptStage::Written)
     );
@@ -1183,7 +1188,8 @@ fn deepseek_review_automatic_reply_dispatch_crosses_absolute_deadline_barrier() 
     );
     assert!(
         f.session
-            .dsh_take_receipts().unwrap()
+            .dsh_take_receipts()
+            .unwrap()
             .iter()
             .any(|receipt| receipt.ticket == *ticket
                 && matches!(receipt.stage, DshReceiptStage::Indeterminate { .. }))

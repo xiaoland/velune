@@ -562,7 +562,11 @@ impl LiveConversation for FrozenExecution {
     fn owned_snapshot(
         &self,
     ) -> Result<Option<Retained<crate::conversation::ConversationSnapshot>>, LiveError> {
-        Ok(self.snapshot.as_ref().map(Retained::try_clone).transpose()?)
+        Ok(self
+            .snapshot
+            .as_ref()
+            .map(Retained::try_clone)
+            .transpose()?)
     }
     fn turn_running(&self) -> bool {
         self.turn_running
@@ -577,7 +581,9 @@ impl LiveConversation for FrozenExecution {
             .map_err(|error| -> LiveError { error.as_str().into() })?;
         Ok(work.try_clone()?)
     }
-    fn background_tasks(&self) -> Result<Retained<crate::conversation::BackgroundTaskList>, LiveError> {
+    fn background_tasks(
+        &self,
+    ) -> Result<Retained<crate::conversation::BackgroundTaskList>, LiveError> {
         let tasks = self
             .background
             .as_ref()

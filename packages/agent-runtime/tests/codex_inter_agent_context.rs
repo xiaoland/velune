@@ -1,7 +1,8 @@
 //! Narrow regressions for the production Codex rollout translation helper.
 use serde_json::{Value, json};
 use std::io::Write;
-use std::process::{Command, Output, Stdio};
+use std::process::{Output, Stdio};
+use velune_agent_runtime::process::command;
 
 fn run(records: &[Value]) -> Output {
     run_input(&rollout(records), &[])
@@ -12,7 +13,7 @@ fn rollout(records: &[Value]) -> String {
 }
 
 fn run_input(input: &str, args: &[&str]) -> Output {
-    let mut child = Command::new("python3")
+    let mut child = command("python3")
         .arg("-c")
         .arg(include_str!("../resources/codex_context.py"))
         .args(args)

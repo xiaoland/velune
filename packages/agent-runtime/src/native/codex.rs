@@ -153,6 +153,11 @@ struct CommandOperation {
     deadline: std::time::Instant,
     kind: CommandOperationKind,
 }
+struct CommandRetention {
+    command: DataRetention,
+    public_ticket: DataRetention,
+    late_write: DataRetention,
+}
 enum CommandOperationKind {
     Start {
         cwd: Option<PathBuf>,
@@ -414,8 +419,11 @@ impl NativeSession {
             .checked_add(1)
             .ok_or_else(|| Error::new("Codex operation sequence exhausted"))?;
         let command_retention = self.data.try_clone(super::retention::command_data_owner)?;
-        let public_retention = command_retention.try_clone().map_err(retention_error)?;
-        let late_retention = command_retention.try_clone().map_err(retention_error)?;
+        let retention = CommandRetention {
+            public_ticket: command_retention.try_clone().map_err(retention_error)?,
+            late_write: command_retention.try_clone().map_err(retention_error)?,
+            command: command_retention,
+        };
         let (method, params, kind) = match command {
             CodexCommand::Start { runtime_id } => {
                 self.ensure_idle()?;
@@ -534,9 +542,7 @@ impl NativeSession {
                 // An aggregate has no single native request id. Its receipt
                 // retains every child id, including undispatched targets.
                 return Ok(self.codex_install_retained_operation(
-                    command_retention,
-                    public_retention,
-                    late_retention,
+                    retention,
                     sequence,
                     Value::Null,
                     deadline,
@@ -570,9 +576,7 @@ impl NativeSession {
                     .rpc
                     .enqueue_reply_receipt(&id, &result, dispatch_deadline)?;
                 return Ok(self.codex_install_retained_operation(
-                    command_retention,
-                    public_retention,
-                    late_retention,
+                    retention,
                     sequence,
                     id,
                     deadline,
@@ -628,9 +632,7 @@ impl NativeSession {
             };
         }
         Ok(self.codex_install_retained_operation(
-            command_retention,
-            public_retention,
-            late_retention,
+            retention,
             sequence,
             json!(request),
             deadline,
@@ -666,21 +668,19 @@ impl NativeSession {
 
     fn codex_install_retained_operation(
         &mut self,
-        command_retention: DataRetention,
-        public_retention: DataRetention,
-        late_retention: DataRetention,
+        retention: CommandRetention,
         sequence: u64,
         request_id: Value,
         deadline: std::time::Instant,
         kind: CommandOperationKind,
     ) -> Retained<CodexOperationTicket> {
-        self.codex.commands.retain(sequence, command_retention);
+        self.codex.commands.retain(sequence, retention.command);
         self.codex
             .commands
             .late_retention
-            .insert(sequence, late_retention);
+            .insert(sequence, retention.late_write);
         let ticket = self.codex_install_operation(sequence, request_id, deadline, kind);
-        Retained::from_parts(ticket, public_retention)
+        Retained::from_parts(ticket, retention.public_ticket)
     }
 
     fn codex_install_operation(
@@ -3437,12 +3437,9 @@ while True:
             "failure barrier must not perform cleanup"
         );
         let receipts: Vec<_> = std::iter::from_fn(|| f.session.take_codex_receipt()).collect();
-        assert!(
-            receipts
-                .iter()
-                .any(|r| r.ticket == *send
-                    && matches!(r.delivery, CodexDelivery::Indeterminate { .. }))
-        );
+        assert!(receipts.iter().any(
+            |r| r.ticket == *send && matches!(r.delivery, CodexDelivery::Indeterminate { .. })
+        ));
         let receipt = receipts.into_iter().find(|r| r.ticket == *stop).unwrap();
         let CodexDelivery::Interrupts { children } = &receipt.delivery else {
             panic!()
@@ -3629,7 +3626,7 @@ while True:
         assert_eq!(children.len(), 40);
         let dispatched = children.iter().filter(|r| r.request_id.is_some()).count();
         assert!(
-            dispatched > 0 && dispatched <= COMMAND_CAPACITY - REPLY_RESERVE - 1,
+            dispatched > 0 && dispatched < COMMAND_CAPACITY - REPLY_RESERVE,
             "one blocked send plus child batches must leave four ordinary writer slots free"
         );
         assert!(
@@ -3881,7 +3878,11 @@ while True:
                 .iter()
                 .any(|r| r.ticket == *steer && matches!(r.delivery, CodexDelivery::Accepted { .. }))
         );
-        assert!(receipts.iter().any(|r| r.ticket == *cancel && matches!(r.delivery, CodexDelivery::Accepted { .. })));
+        assert!(
+            receipts.iter().any(
+                |r| r.ticket == *cancel && matches!(r.delivery, CodexDelivery::Accepted { .. })
+            )
+        );
         let interactions: Vec<_> = f.session.interactions.keys().cloned().collect();
         for id in interactions {
             f.enqueue(CodexCommand::Reply {

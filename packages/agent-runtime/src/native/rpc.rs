@@ -408,7 +408,8 @@ impl RpcClient {
     }
     fn defer(&mut self, record: Retained<Value>) -> Result<()> {
         let (record, ownership) = record.into_parts();
-        let mut permit = ownership.into_record()
+        let mut permit = ownership
+            .into_record()
             .map_err(|error| Error::with_code(error.to_string(), "transport"))?;
         permit
             .transfer_to_queue()
@@ -889,7 +890,9 @@ impl RpcClient {
                         )));
                     }
                     return record.try_map(|mut value| {
-                        value.as_object_mut().and_then(|object| object.remove("result"))
+                        value
+                            .as_object_mut()
+                            .and_then(|object| object.remove("result"))
                             .ok_or_else(|| Error::with_code("运行时响应缺少结果", "transport"))
                     });
                 }
@@ -927,7 +930,10 @@ impl RpcClient {
     /// Read one record while a protocol adapter services interleaved agent requests.
     pub(crate) fn receive(&mut self, method: &str, deadline: Instant) -> Result<Retained<Value>> {
         if let Some(record) = self.queued.pop() {
-            let permit = self.deferred_permits.pop_front().expect("deferred record permit");
+            let permit = self
+                .deferred_permits
+                .pop_front()
+                .expect("deferred record permit");
             return Ok(Retained::from_record(record, permit));
         }
         self.wait_for_record(method, deadline)
@@ -993,10 +999,18 @@ impl RpcClient {
             return Err(error);
         }
         let write_error = self.reap_writes().err();
-        let mut values = self.queued.drain_batch(64).into_iter().map(|record| {
-            let permit = self.deferred_permits.pop_front().expect("deferred record permit");
-            Retained::from_record(record, permit)
-        }).collect::<Vec<_>>();
+        let mut values = self
+            .queued
+            .drain_batch(64)
+            .into_iter()
+            .map(|record| {
+                let permit = self
+                    .deferred_permits
+                    .pop_front()
+                    .expect("deferred record permit");
+                Retained::from_record(record, permit)
+            })
+            .collect::<Vec<_>>();
         for _ in values.len()..64 {
             let error = match self.records.try_recv() {
                 Ok(Ok(record)) => {

@@ -438,8 +438,7 @@ fn a_native_catalog_id_cannot_change_a_restored_questions_managed_provider() {
     fs::write(path, serde_json::to_vec(&thread).unwrap()).unwrap();
     let error = fixture
         .answer()
-        .err()
-        .expect("provider must remain unresolved");
+        .expect_err("provider must remain unresolved");
     assert!(error.to_string().contains("提供商与模型"));
     assert!(fixture.requests().iter().all(|record| {
         !matches!(

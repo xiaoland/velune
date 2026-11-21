@@ -16,7 +16,10 @@ use crate::{
     },
     config::{ExecutionBackend, Protocol},
     observation::Observation,
-    scheduling::{AdmissionReason, Candidate, QuotaSource, ScheduleUnavailable, SchedulingState, SessionIdentity},
+    scheduling::{
+        AdmissionReason, Candidate, QuotaSource, ScheduleUnavailable, SchedulingState,
+        SessionIdentity,
+    },
 };
 use axum::{
     Router,
@@ -371,9 +374,10 @@ async fn ingress_observed(
     let candidates = loop {
         match state.candidates(&route) {
             Ok(candidates) => break candidates,
-            Err(unavailable) if unavailable.reason == AdmissionReason::QuotaPending
-                && tokio::time::Instant::now() < quota_deadline
-                && !state.stopping.load(Ordering::Acquire) =>
+            Err(unavailable)
+                if unavailable.reason == AdmissionReason::QuotaPending
+                    && tokio::time::Instant::now() < quota_deadline
+                    && !state.stopping.load(Ordering::Acquire) =>
             {
                 tokio::time::sleep(Duration::from_millis(50)).await;
             }

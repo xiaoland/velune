@@ -745,9 +745,11 @@ for line in sys.stdin:
         let client = pi::Client::spawn(config.clone()).unwrap();
         let mut pi = pi::PiSession::new(config);
         pi.start(client, PiProjection::new(summary(parent_id.clone(), None)));
-        let mut parent = Session::default();
-        parent.active_state = ActiveState::Pi(Box::new(pi));
-        parent.execution_runtime_id = Some("pi".into());
+        let parent = Session {
+            active_state: ActiveState::Pi(Box::new(pi)),
+            execution_runtime_id: Some("pi".into()),
+            ..Default::default()
+        };
         let mut child = PiProjection::new(summary(child_id.clone(), Some(parent_id)))
             .snapshot
             .unwrap();
@@ -824,7 +826,8 @@ for line in sys.stdin:
                     && live.work().is_ok_and(|work| {
                         work.iter().any(|work| {
                             work.conversation_id.as_deref() == Some(child_id.as_str())
-                                && work.state == velune_agent_runtime::work::BackgroundState::Stopping
+                                && work.state
+                                    == velune_agent_runtime::work::BackgroundState::Stopping
                         })
                     })
             })
@@ -908,9 +911,9 @@ for line in sys.stdin:
                 !tasks.live
                     && tasks.issue.is_none()
                     && tasks.tasks.iter().any(|task| task.id == "shell")
-                    && live.work().is_ok_and(|work| {
-                        work.iter().all(|work| work.conversation_id.is_none())
-                    })
+                    && live
+                        .work()
+                        .is_ok_and(|work| work.iter().all(|work| work.conversation_id.is_none()))
                     && !live.can_stop_child(&view.conversation.id)
             })
         });

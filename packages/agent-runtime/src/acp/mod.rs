@@ -240,16 +240,22 @@ impl Client {
         self.snapshot.as_ref()
     }
     fn snapshot_retention_copy(&self) -> Result<crate::creation::DataRetention> {
-        let mut ownership = self._conversation_data.as_ref()
-            .map(crate::creation::DataRetention::try_clone).transpose()
+        let mut ownership = self
+            ._conversation_data
+            .as_ref()
+            .map(crate::creation::DataRetention::try_clone)
+            .transpose()
             .map_err(|error| Error::with_code(error.to_string(), "queue_full"))?
             .unwrap_or_default();
-        for source in self._session_data.iter()
+        for source in self
+            ._session_data
+            .iter()
             .chain(&self._options_data)
             .chain(&self._snapshot_data)
             .chain(self._interaction_data.values())
         {
-            let (_, retained) = source.try_clone()
+            let (_, retained) = source
+                .try_clone()
                 .map_err(|error| Error::with_code(error.to_string(), "queue_full"))?
                 .into_parts();
             ownership = ownership.merge(retained);
@@ -258,14 +264,24 @@ impl Client {
     }
     pub fn owned_snapshot(&self) -> Result<crate::creation::Retained<ConversationSnapshot>> {
         let ownership = self.snapshot_retention_copy()?;
-        let snapshot = self.snapshot.as_ref().ok_or_else(|| Error::new("ACP 会话尚未打开"))?;
-        Ok(crate::creation::Retained::from_parts(snapshot.clone(), ownership))
+        let snapshot = self
+            .snapshot
+            .as_ref()
+            .ok_or_else(|| Error::new("ACP 会话尚未打开"))?;
+        Ok(crate::creation::Retained::from_parts(
+            snapshot.clone(),
+            ownership,
+        ))
     }
     pub fn turn_running(&self) -> bool {
         self.prompt_id.is_some()
     }
 
-    pub fn create(&mut self, cwd: &Path, runtime_id: &str) -> Result<crate::creation::Retained<ConversationSnapshot>> {
+    pub fn create(
+        &mut self,
+        cwd: &Path,
+        runtime_id: &str,
+    ) -> Result<crate::creation::Retained<ConversationSnapshot>> {
         self.prepare_session(cwd)?;
         self.establishing = true;
         let result = self.request::<wire::NewSessionResponse>(
@@ -283,7 +299,9 @@ impl Client {
             self.replace_snapshot(&id, cwd, runtime_id);
             self.options = config::project(response.config_options.unwrap_or_default())?;
             for record in self.initial_updates.drain() {
-                let ownership = self._initial_update_data.pop_front()
+                let ownership = self
+                    ._initial_update_data
+                    .pop_front()
                     .expect("each initial ACP update retains its data charge");
                 self.handle(crate::creation::Retained::from_parts(record, ownership))?;
             }
@@ -671,7 +689,10 @@ impl Client {
         outcome
     }
 
-    pub fn set_conversation(&mut self, conversation: crate::creation::Retained<ConversationSummary>) {
+    pub fn set_conversation(
+        &mut self,
+        conversation: crate::creation::Retained<ConversationSummary>,
+    ) {
         let (conversation, data) = conversation.into_parts();
         if let Some(snapshot) = &mut self.snapshot {
             snapshot.conversation = conversation;
@@ -790,7 +811,10 @@ impl Client {
         if record["method"] == "session/update" && self.establishing {
             let (value, ownership) = record.into_parts();
             self.initial_updates.push(value).map_err(|error| {
-                Error::with_code(format!("ACP initial update buffer full: {error}"), "transport")
+                Error::with_code(
+                    format!("ACP initial update buffer full: {error}"),
+                    "transport",
+                )
             })?;
             self._initial_update_data.push_back(ownership);
             return Ok(());
@@ -808,20 +832,33 @@ impl Client {
         let (value, ownership) = record.into_parts();
         let result = self.handle_value(value);
         if (projects_content || prompt_error) && self.snapshot.is_some() {
-            self._snapshot_data.push(crate::creation::Retained::from_parts((), ownership));
+            self._snapshot_data
+                .push(crate::creation::Retained::from_parts((), ownership));
         } else if let Some(rpc_id) = request_id {
-            let key = self.permissions.iter()
-                .find(|(_, entry)| entry.rpc_id == rpc_id).map(|(id, _)| id.clone())
-                .or_else(|| self.elicitations.iter()
-                    .find(|(_, entry)| entry.rpc_id == rpc_id).map(|(id, _)| id.clone()));
+            let key = self
+                .permissions
+                .iter()
+                .find(|(_, entry)| entry.rpc_id == rpc_id)
+                .map(|(id, _)| id.clone())
+                .or_else(|| {
+                    self.elicitations
+                        .iter()
+                        .find(|(_, entry)| entry.rpc_id == rpc_id)
+                        .map(|(id, _)| id.clone())
+                });
             if let Some(key) = key {
-                self._interaction_data.insert(key, crate::creation::Retained::from_parts((), ownership));
+                self._interaction_data
+                    .insert(key, crate::creation::Retained::from_parts((), ownership));
             }
         }
         self._interaction_data.retain(|id, _| {
-            self.permissions.contains_key(id) || self.elicitations.contains_key(id)
+            self.permissions.contains_key(id)
+                || self.elicitations.contains_key(id)
                 || self.snapshot.as_ref().is_some_and(|snapshot| {
-                    snapshot.pending_interactions.iter().any(|entry| entry.id == *id)
+                    snapshot
+                        .pending_interactions
+                        .iter()
+                        .any(|entry| entry.id == *id)
                 })
         });
         result
