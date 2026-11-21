@@ -12,7 +12,7 @@
 <p align="center"><a href="README.md">English</a> · 简体中文</p>
 
 <p align="center">
-  <a href="https://github.com/xiaoland/velune/releases">Beta 下载</a> ·
+  <a href="https://github.com/xiaoland/velune/releases">预览版下载</a> ·
   <a href="docs/index.md">文档</a> ·
   <a href="https://github.com/xiaoland/velune/discussions">讨论</a> ·
   <a href="https://github.com/xiaoland/velune/issues">问题反馈</a>
@@ -54,7 +54,7 @@ Harness 执行代码、调用工具并保存原生历史。Velune 提供围绕�
 | iPad | 远程控制端 | 从 Mac 应用使用自己的签名安装 |
 | iPhone | 远程控制端 | 源码构建 |
 
-首个公开 beta 面向 macOS 15+（Apple Silicon / Intel）和 Android 9+ arm64。macOS 包采用 ad-hoc 签名且尚未公证。Windows 安装器待依赖许可问题解决后发布。可下载资产见[发布页](https://github.com/xiaoland/velune/releases)，平台获取方式与安装说明见[用户指南](docs/usage.md#平台与安装)。
+公开预览版提供 macOS 15+（Apple Silicon／Intel）和 Android 9+ arm64 安装包。macOS 包采用 ad-hoc 签名且尚未公证。Windows 安装器待依赖许可问题解决后发布。可下载资产见[发布页](https://github.com/xiaoland/velune/releases)，平台获取方式与安装说明见[用户指南](docs/usage.md#平台与安装)。
 
 ## 开始使用
 

@@ -4,7 +4,7 @@
 
 ## 平台与安装
 
-从 [Releases](https://github.com/xiaoland/velune/releases) 下载对应平台的发布资产，并按该版本的发行说明安装。当前公开 beta 提供 macOS 15+（Apple Silicon／Intel）和 Android 9+ arm64 构建。Windows 与 iPhone 目前使用源码构建；iPad 可通过 Mac 应用使用自己的 Apple 签名团队安装。
+从 GitHub Releases 下载对应平台的预览包，并按该版本的发行说明安装。公开预览版提供 macOS 15+（Apple Silicon／Intel）和 Android 9+ arm64 构建。Windows 与 iPhone 目前使用源码构建。iPad 可通过 Mac 应用使用自己的 Apple 签名团队安装。 [Releases](https://github.com/xiaoland/velune/releases)
 
 macOS 包采用 ad-hoc 签名且尚未公证。首次被系统拦截时，可在“系统设置 → 隐私与安全性 → 仍要打开”针对 Velune 放行，保持 Gatekeeper 开启。
 

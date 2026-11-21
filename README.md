@@ -12,7 +12,7 @@
 <p align="center">English · <a href="README.zh-CN.md">简体中文</a></p>
 
 <p align="center">
-  <a href="https://github.com/xiaoland/velune/releases">Beta downloads</a> ·
+  <a href="https://github.com/xiaoland/velune/releases">Preview downloads</a> ·
   <a href="docs/index.md">Documentation</a> ·
   <a href="https://github.com/xiaoland/velune/discussions">Discussions</a> ·
   <a href="https://github.com/xiaoland/velune/issues">Report an issue</a>
@@ -46,7 +46,7 @@ Installation and first-use instructions are in the [user guide](docs/usage.md). 
 
 ## Platforms
 
-| Platform | Role | First beta target |
+| Platform | Role | Availability |
 | --- | --- | --- |
 | macOS | Desktop host and remote client | macOS 15+, Apple Silicon / Intel |
 | Windows | Desktop host and remote client | Source builds |
@@ -54,7 +54,7 @@ Installation and first-use instructions are in the [user guide](docs/usage.md). 
 | iPad | Remote client | Sign and install from the Mac app |
 | iPhone | Remote client | Build from source |
 
-The first public beta targets macOS and Android. macOS builds use ad-hoc signing and have no Apple notarization. Windows installer publication is deferred while dependency licensing is resolved. Follow the installation steps and available assets on the release page. [Releases](https://github.com/xiaoland/velune/releases)
+Public preview builds are available for macOS and Android. macOS builds use ad-hoc signing and have no Apple notarization. Windows installer publication is deferred while dependency licensing is resolved. Follow the installation steps and available assets on the release page. [Releases](https://github.com/xiaoland/velune/releases)
 
 Feature coverage differs by platform. See [platform availability and installation](docs/usage.md#平台与安装).
 
