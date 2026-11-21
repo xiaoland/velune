@@ -1,5 +1,89 @@
 # Changelog
 
+## [0.1.0-alpha.1](https://github.com/xiaoland/velune/compare/v0.1.0-beta.1...v0.1.0-alpha.1) (2026-11-21)
+
+
+### Features
+
+* **analytics:** 统一网关与提供商用量分析 ([1a03fe7](https://github.com/xiaoland/velune/commit/1a03fe7cc2dd772987e43ed43686d87e349d97bc))
+* **background-tasks:** 收拢和清理已结束任务 ([3221b31](https://github.com/xiaoland/velune/commit/3221b319d2fc80cccd7246ffc002bd0a3e106680))
+* **background-tasks:** 独立呈现运行时后台任务 ([c24043b](https://github.com/xiaoland/velune/commit/c24043b0d858ec33287d94b41bd5f21e7df201ac))
+* **collaboration:** 让运行中的子 Agent 优先显示 ([d873a4d](https://github.com/xiaoland/velune/commit/d873a4d777a761b3b004690414b39b5cf0db89e8))
+* **composer:** 在限额状态显示 ChatGPT credits 余额 ([b57461b](https://github.com/xiaoland/velune/commit/b57461bc4f1849b35449fd5dfbb7b3d033eb991d))
+* **composer:** 支持编辑排队消息的完整指令 ([9c8ec82](https://github.com/xiaoland/velune/commit/9c8ec827a74fb66688d1271a95e0c3c7d1ced933))
+* **conversations:** 新增独立归档会话窗口 ([f8a2925](https://github.com/xiaoland/velune/commit/f8a292560ce21801ca638bf3b016ccceea79f5a0))
+* **providers:** 接入 ChatGPT 额度权益与提供商分析 ([4ab0d9c](https://github.com/xiaoland/velune/commit/4ab0d9ca9171fdad1dda859c08d7b46919a1b1ab))
+* **release:** 集成 Alpha 0.1 候选 ([7760ee2](https://github.com/xiaoland/velune/commit/7760ee27a90e03c94727a31f13f403376efdc19c))
+* **remote:** 支持四端自定义中继连接设置 ([297653d](https://github.com/xiaoland/velune/commit/297653dba65435f7d2dde48db8b37421ae3cfc84))
+* **runtime:** 统一运行时生命周期并支持主动交接 ([e75e2c1](https://github.com/xiaoland/velune/commit/e75e2c1d280609ba32a4fb05dbdea5e72b5df7d4))
+
+
+### Bug Fixes
+
+* **android:** 支持运行时异步提问 ([0e1f51f](https://github.com/xiaoland/velune/commit/0e1f51f5a5678363139bf9a02b840856f72df23b))
+* **application:** 显式释放应用状态目录锁租约 ([338926d](https://github.com/xiaoland/velune/commit/338926dbb86525c716db39b5261e256137276e8e))
+* **claude:** 显示 API 异常终止的原生原因 ([1ff179a](https://github.com/xiaoland/velune/commit/1ff179a46ef27cf8c8e76a0c468b2f03fc988e48))
+* **claude:** 首次后台 Agent 事件即关联子会话 ([c614680](https://github.com/xiaoland/velune/commit/c614680b996a5f37990c74b88cb5e6952b594bc2))
+* **codex:** 恢复后撤下重连提示并允许忽略 ([1ea2062](https://github.com/xiaoland/velune/commit/1ea206205d43d75c1abe52b8a3f845f8d72b9694))
+* **codex:** 支持原生协作消息的上下文导出 ([aa9e16f](https://github.com/xiaoland/velune/commit/aa9e16f5fe218d20ff3f7bacd8f2d125864b46bb))
+* **codex:** 识别推理配置与加密 Agent 投递 ([c1ce3d4](https://github.com/xiaoland/velune/commit/c1ce3d481ff6afc0fcad38ba5f732954f5de20af))
+* **composer:** 修复排队消息重复显示 ([a220849](https://github.com/xiaoland/velune/commit/a2208495706597e60bb6ba320e2f757a27df8380))
+* **composer:** 完善历史消息编辑并修复 Pi 原地接续 ([98e88ec](https://github.com/xiaoland/velune/commit/98e88ecc69e7d0fbb840b91f3b1f1b236a8933ed))
+* **composer:** 按 Tab 隔离草稿并修复跨组恢复 ([8bd7929](https://github.com/xiaoland/velune/commit/8bd7929c0874774c336f97802f05b463bb277fee))
+* **composer:** 显示排队消息的原模型 ([16cebc5](https://github.com/xiaoland/velune/commit/16cebc587bf95dbe4ba199bc26357c8e5cd386bb))
+* **control:** 用有界线程池和截止期限替换无界 thread::spawn ([bb86acf](https://github.com/xiaoland/velune/commit/bb86acf0f855c4d7b744f52fe4c3c1723d07098b))
+* **conversations:** 修复关联历史校验并补齐诊断身份 ([0e0ab69](https://github.com/xiaoland/velune/commit/0e0ab698eae9f63795dc3977739f51939545cee3))
+* **conversations:** 修复空组分页并复用历史索引 ([1a068b5](https://github.com/xiaoland/velune/commit/1a068b50578fc7daa2e18e478622fc5501fddb4b))
+* **conversations:** 加速打开列表外的原生子会话 ([6d64f51](https://github.com/xiaoland/velune/commit/6d64f51131c970f474be46404eb0b9537f9f9f4f))
+* **conversations:** 恢复子 Agent 消息列表运行指示器 ([637f536](https://github.com/xiaoland/velune/commit/637f536dadb1a1a017b489a3d6f99396560418b4))
+* **dev:** 固化 Windows 更新入口并处理短暂目录占用 ([ffaba34](https://github.com/xiaoland/velune/commit/ffaba34d88596f7cd9032e02f3052db15d799545))
+* **diagnostics:** 后台轮询失败不再放大成海量问题与日志 ([66793b9](https://github.com/xiaoland/velune/commit/66793b9e7060182df847e58df9c1b9a8620f14a6))
+* **fork:** 从完成边界独立分叉而不等待源执行 ([e082824](https://github.com/xiaoland/velune/commit/e0828247fc0577acac168dfe6bb5acd45be25b9d))
+* **fork:** 分叉会话经核心列表刷新进入会话列表 ([4321fd7](https://github.com/xiaoland/velune/commit/4321fd745aed85fb0400f93c59a86a2c91c6d622))
+* **fork:** 完善确认、进度、命名和原生兜底 ([1ecfb16](https://github.com/xiaoland/velune/commit/1ecfb16bedb7d271dc9c15da911922a82d9b4977))
+* **gateway:** 区分额度耗尽与暂态准入失败 ([9dd1b1e](https://github.com/xiaoland/velune/commit/9dd1b1e816a4cfdc709cde91a4e99cf28b185ddd))
+* **gateway:** 在上游响应后恢复半开请求准入 ([66e50b5](https://github.com/xiaoland/velune/commit/66e50b51170363b4395fa9fd63df32698fed1163))
+* **gateway:** 自动额度观测不再阻止请求 ([3990286](https://github.com/xiaoland/velune/commit/39902866b02ff6cb050db04bd8a2ab5976a7de54))
+* **gateway:** 避免单次断流冷却整个提供商 ([16a721b](https://github.com/xiaoland/velune/commit/16a721b13d6a5dc1bcd59c97a28dd32d33d9d225))
+* **mac:** 保留快速打开面板的输入法组字状态 ([37d2553](https://github.com/xiaoland/velune/commit/37d25534b3618c78291328e33cac80303b231ebd))
+* **mac:** 关闭窗口后停止回写工作区恢复点 ([042f537](https://github.com/xiaoland/velune/commit/042f53787aa1d782b9ac6b45ea12d616ab33e4ea))
+* **mac:** 固定会话列表工具栏的侧栏归属 ([b23542a](https://github.com/xiaoland/velune/commit/b23542a8c6aaaf01dc9862834adcdf14564b9b09))
+* **mac:** 完整显示会话列表上限数字 ([ba0b5f4](https://github.com/xiaoland/velune/commit/ba0b5f4370a36f4aa26c83d9c67082605546e64e))
+* **mac:** 恢复外部执行的消息列表状态行 ([d0126ee](https://github.com/xiaoland/velune/commit/d0126ee520b9721e5bb207548fba6893c056d2ce))
+* **mac:** 显示会话打开失败及重试入口 ([d662241](https://github.com/xiaoland/velune/commit/d66224106330d255f205a8f3f593e14371bcf337))
+* **mac:** 等待恢复身份并完整保存窗口布局 ([99b0daa](https://github.com/xiaoland/velune/commit/99b0daacab14fffa76295c8ad836ec7ba5058cb5))
+* **mac:** 纠正会话列表原生工具栏的分区 ([fd52c08](https://github.com/xiaoland/velune/commit/fd52c082bd14b66ec30ef1218b79889efdd9295d))
+* **mac:** 统一额度检查编译边界并稳定原生验收 ([88c81e9](https://github.com/xiaoland/velune/commit/88c81e9bb882304e47a8e08b58498a4371234d91))
+* **mac:** 转录持久标签在每次配置时重读字体，不再保留创建时的字号快照 ([efde043](https://github.com/xiaoland/velune/commit/efde04307efbba0c38c2a999491be3862b251e35))
+* **mac:** 释放业务回执等待期间的传输长锁 ([68136fb](https://github.com/xiaoland/velune/commit/68136fb8c0968059120060e7a6de525bfb2845ce))
+* **mac:** 首次历史读取未就绪时继续打开原会话 ([2c01f4a](https://github.com/xiaoland/velune/commit/2c01f4a989905508cc7f01b03a918d2d19bc88a6))
+* **pi:** 修复子 Agent 命名与续作活动映射 ([6105d43](https://github.com/xiaoland/velune/commit/6105d433e6cc16988de283ed6de6b42d080525f1))
+* **pi:** 原子读取会话快照与来源身份 ([9d40732](https://github.com/xiaoland/velune/commit/9d407328f5889c21097f5e4d5bc816d4aac94e8d))
+* **pi:** 将后台任务通知按原生顺序归入工作过程 ([9198334](https://github.com/xiaoland/velune/commit/919833451eb0288fe67655730e8addfaead21702))
+* **pi:** 将子 Agent 请求与通知按原生顺序归入工作过程 ([f0caf8c](https://github.com/xiaoland/velune/commit/f0caf8c1d87f2f03eeb6552887e8fac3fc1d24ba))
+* **pi:** 恢复执行时保留已显示的历史消息 ([dad5b03](https://github.com/xiaoland/velune/commit/dad5b039fbe496f76f51f72a8daaa23e095c4615))
+* **pi:** 补齐运行时注入消息与摘要展示 ([7955dd0](https://github.com/xiaoland/velune/commit/7955dd0c6edf97b738d4856060e25305d65161c2))
+* **quota:** 明确额度观测未覆盖全部额外额度 ([d8421d4](https://github.com/xiaoland/velune/commit/d8421d41e77c4f37f7fead2543d299637c4f7f3b))
+* **release:** 固定 Android 验签工具并保留失败证据 ([7438709](https://github.com/xiaoland/velune/commit/74387091129fe5c82651a6ec2ba0fa49296e1701))
+* **release:** 固定 Android 验签工具并保留失败证据 ([8598866](https://github.com/xiaoland/velune/commit/8598866ee3a9047ad57186aee8b3eab24bc37fda))
+* **release:** 补齐 Mac Tunwg 对应源码 ([c15d873](https://github.com/xiaoland/velune/commit/c15d873ad408d46ed8a16f2874038485ff6e27d3))
+* **runtime:** 修复接续到 Codex 后的发送与输入目标 ([0f2bcb6](https://github.com/xiaoland/velune/commit/0f2bcb69a7e0c5e199b65f9b3aa1042eada16dbd))
+* **telemetry:** 有界写入本地日志并保持问题历史顺序 ([85e0f3b](https://github.com/xiaoland/velune/commit/85e0f3b63e27ab7b332b84d804fd37799418b62b))
+* **transcript:** 保留后台通知与最终回复的原生顺序 ([d4b2d5c](https://github.com/xiaoland/velune/commit/d4b2d5c4dfc8c857b1f6457f038c196facd52e83))
+* **transcript:** 将 Pi 工作通知显示为工具消息 ([940b2d5](https://github.com/xiaoland/velune/commit/940b2d59b0565ea5a46dedcffcfc6a005ec74e1c))
+* **windows:** 修复空白标签恢复输入时的运行时目标 ([ea11c08](https://github.com/xiaoland/velune/commit/ea11c084378ee34a471576f67fa3df8895f28aed))
+
+
+### Performance Improvements
+
+* **adapter:** 减少发送与恢复路径的重复工作 ([c1590cd](https://github.com/xiaoland/velune/commit/c1590cdc52874d02a0a8560d58554cc710fedfd1))
+* **conversations:** 减少归档列表的历史读取 ([87644dd](https://github.com/xiaoland/velune/commit/87644dd9876594d93539b198c6b40d499058182a))
+
+
+### Miscellaneous Chores
+
+* **release:** 准备 Alpha 0.1 发布 ([a4af551](https://github.com/xiaoland/velune/commit/a4af5510856a1364e7c6cb5e23ec7a848b9ea00c))
+
 ## [0.1.0-beta.1](https://github.com/xiaoland/velune/releases/tag/v0.1.0-beta.1) (2026-11-07)
 
 
