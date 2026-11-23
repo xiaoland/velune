@@ -585,6 +585,11 @@ impl PiSession {
             self.set_background_error(Some("Pi 后台工作桥接返回了未知协议版本".into()));
             return;
         }
+        // Older bridges could publish their startup sentinel on a child event.
+        // It supplies no host observation or acknowledgement for a query.
+        if frame["kind"] == "uninitialized" {
+            return;
+        }
         if let Some(running) = &mut self.running {
             running.background_frame_revision = running.background_frame_revision.saturating_add(1);
         }
@@ -2235,6 +2240,25 @@ for line in sys.stdin:
         );
         session.shutdown().unwrap();
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn background_startup_frame_leaves_host_observation_pending() {
+        let config: Config = serde_json::from_value(json!({
+            "execution":{"kind":"local"}, "binary":"/bin/pi", "node_binary":"/bin/node",
+        }))
+        .unwrap();
+        let mut session = PiSession::new(config);
+        session.reset_background_session();
+        let startup = json!({"version":1,"kind":"uninitialized","tasks":[]});
+        session.apply_background_frame(&startup);
+        assert!(session.has_pending_metadata());
+        assert_eq!(session.background_error, None);
+
+        session.apply_background_frame(&json!({"version":1,"kind":"unsupported","tasks":[]}));
+        session.apply_background_frame(&startup);
+        assert!(!session.has_pending_metadata());
+        assert_eq!(session.background_error, None);
     }
 
     #[test]

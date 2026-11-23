@@ -172,7 +172,8 @@ export default function installPiBackgroundWork(pi) {
   let removeShutdownListener = () => {};
 
   const publish = (ctx, frame) => {
-    if (disposed) return;
+    // Child refreshes can finish before the first host observation.
+    if (disposed || frame.kind === "uninitialized") return;
     if (ctx && latestContext && ctx.sessionManager.getSessionFile() !== latestContext.sessionManager.getSessionFile()) return;
     if (ctx) latestContext = ctx;
     if (!latestContext) return;
