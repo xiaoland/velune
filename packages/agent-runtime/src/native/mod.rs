@@ -390,9 +390,12 @@ impl NativeSession {
         };
         // stop_task's stream-json schema is verified against this CLI
         // generation. Earlier supported CLIs retain observation-only tasks.
-        session.claude.task_stop_capable = session.config.kind == NativeKind::ClaudeCode
-            && semver::Version::parse(&actual_version)
-                .is_ok_and(|version| version >= semver::Version::new(2, 1, 292));
+        if session.config.kind == NativeKind::ClaudeCode
+            && let Ok(version) = semver::Version::parse(&actual_version)
+        {
+            session.claude.task_stop_capable = version >= semver::Version::new(2, 1, 292);
+            session.claude.background_followup_capable = version >= semver::Version::new(2, 1, 327);
+        }
         session.initialize()?;
         session.config.gateway = selected_gateway;
         Ok(session)
@@ -689,7 +692,7 @@ impl NativeSession {
         if !self.can_compact() || self.side {
             return Err(Error::new("此运行时不支持主动压缩上下文"));
         }
-        if self.has_background_work() {
+        if self.has_background_work() || self.waits_for_background_followup() {
             return Err(Error::new("请先等待子 Agent 结束"));
         }
         self.compacting = true;
@@ -748,7 +751,12 @@ impl NativeSession {
         if self.config.kind == NativeKind::DeepSeek && !input.images.is_empty() {
             return Err(Error::new("DeepSeek 运行时不接受图片"));
         }
-        if self.restart_needed() && self.has_background_work() {
+        let restart = if resuming {
+            self.restart_needed()
+        } else {
+            self.restart_needed_for_send(input.effort.as_deref(), input.permission_mode.as_deref())
+        };
+        if restart && (self.has_background_work() || self.waits_for_background_followup()) {
             return Err(Error::with_code(
                 "子 Agent 仍在运行；此轮需要重新启动运行时，请等待其结束或先停止子 Agent",
                 "outstanding_work",
@@ -760,8 +768,12 @@ impl NativeSession {
             ..Default::default()
         };
         let starting_fork = matches!(self.claude.start, claude::ClaudeStart::Fork { .. });
-        let result = self
-            .prepare_turn(input.effort.as_deref(), input.permission_mode.as_deref())
+        let prepared = if restart {
+            self.prepare_turn(input.effort.as_deref(), input.permission_mode.as_deref())
+        } else {
+            Ok(())
+        };
+        let result = prepared
             .map_err(|error| {
                 if starting_fork {
                     Error::with_code(error.to_string(), "claude_fork_input_not_sent")
@@ -1011,6 +1023,35 @@ impl NativeSession {
             || (self.config.gateway.is_some() && !self.gateway_turn)
             || self.restart_required
     }
+
+    /// Reuse a Claude child retained by background work, with its actual launch
+    /// settings and session unchanged. Other starts keep normal preparation.
+    pub fn restart_needed_for_send(
+        &self,
+        effort: Option<&str>,
+        permission_mode: Option<&str>,
+    ) -> bool {
+        if self.config.kind == NativeKind::ClaudeCode
+            && self.claude.release_when_idle
+            && self.has_background_work()
+            && !self.waits_for_background_followup()
+            && !self.side
+            && !self.restart_required
+            && !self.claude.requires_action
+            && !self.claude.commands.barrier
+            && !self.claude.commands.cleanup_required
+            && self.native_id.is_some()
+            && self.claude.bound_session_id == self.native_id
+            && effort.is_none_or(|effort| self.claude.launched_effort.as_deref() == Some(effort))
+            && permission_mode.is_none_or(|mode| {
+                claude::claude_permission_mode(mode)
+                    .is_some_and(|mode| self.claude.permission_mode.as_deref() == Some(mode))
+            })
+        {
+            return false;
+        }
+        self.restart_needed()
+    }
     /// Acquire this idle copy's writer before an edit sends its first prompt.
     /// Callers must never use execution reconfiguration to interrupt a source.
     pub fn prepare_fork_turn(&mut self) -> Result<()> {
@@ -1039,6 +1080,10 @@ impl NativeSession {
         self.codex.commands.next_generation()?;
         if self.config.kind == NativeKind::ClaudeCode {
             self.claude.commands.next_generation()?;
+            self.claude.release_when_idle = false;
+            self.claude.foreground = None;
+            self.claude.tasks.clear();
+            self.claude.background_followups.clear();
         }
         self.rpc.shutdown();
         self.tunnel = None;
@@ -1374,8 +1419,22 @@ impl NativeSession {
             NativeKind::DeepSeek => false,
         }
     }
-    /// Ask the work besides the turn to stop. Claude Code's tasks belong to
-    /// its turn, which stays running until they end; stopping the turn stops them.
+
+    pub(crate) fn waits_for_background_followup(&self) -> bool {
+        !self.failed
+            && !self.process_ended
+            && self
+                .claude
+                .background_followups
+                .values()
+                .any(|kind| *kind != claude::BackgroundFollowup::Running)
+    }
+
+    fn claude_has_ongoing_background(&self) -> bool {
+        self.has_background_work() || self.waits_for_background_followup()
+    }
+
+    /// Ask the work besides the turn to stop if the adapter supports it.
     pub fn stop_background(&mut self) -> Result<()> {
         match self.config.kind {
             NativeKind::Codex166 => self.codex_stop_background(),
@@ -1643,7 +1702,7 @@ impl NativeSession {
                 .finish((state == RunState::Failed).then_some(TurnOutcome::Failed));
         }
         if self.config.kind == NativeKind::ClaudeCode {
-            self.restart_required = true;
+            self.claude.release_when_idle = true;
         }
         self.turn_id = None;
         // A sub-agent's request still waits for its answer.
@@ -1701,14 +1760,14 @@ impl NativeSession {
         self.codex.cancel_pending = false;
         self.end_spent_process();
     }
-    /// A Claude Code turn's process serves only that turn: it ends once the
-    /// turn and its tasks have.
+    /// End a Claude child after its foreground turn and its background work,
+    /// including any notification-driven follow-up, have settled.
     fn end_spent_process(&mut self) {
         if self.config.kind == NativeKind::ClaudeCode
-            && self.restart_required
+            && self.claude.release_when_idle
             && !self.process_ended
             && !self.turn_running()
-            && !self.has_background_work()
+            && !self.claude_has_ongoing_background()
             && !self.has_pending_requests()
             && !self.rpc.has_pending_writes()
             && !self.claude.commands.pending()

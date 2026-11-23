@@ -47,6 +47,10 @@ pub(super) struct State {
     pub(super) permission_mode: Option<String>,
     /// The turn's result, whether it failed, and the last activity since.
     pub(super) result: Option<(TurnOutcome, std::time::Instant)>,
+    pub(super) foreground: Option<ForegroundCommand>,
+    pub(super) release_when_idle: bool,
+    pub(super) background_followup_capable: bool,
+    pub(super) background_followups: BTreeMap<String, BackgroundFollowup>,
     /// A refused response can trigger a native follow-up before the result.
     /// Keep the visible failure until a real completed response recovers it.
     safety_stopped: bool,
@@ -79,6 +83,19 @@ pub(super) struct State {
     /// carries, and the question waiting for its answer.
     pub(super) side_history: Vec<Value>,
     pub(super) side_question: Option<SideQuestion>,
+}
+
+pub(super) struct ForegroundCommand {
+    id: String,
+    result_confirmed: bool,
+    command_completed: bool,
+}
+
+#[derive(PartialEq, Eq)]
+pub(super) enum BackgroundFollowup {
+    Running,
+    AwaitingResult,
+    AwaitingIdle,
 }
 
 pub(super) struct SideQuestion {
@@ -634,7 +651,11 @@ impl NativeSession {
         self.claude.commands.result_is_terminal = false;
         self.claude.safety_stopped = false;
         self.claude.api_failed = false;
-        self.claude.tasks.clear();
+        self.claude.foreground = Some(ForegroundCommand {
+            id: id.clone(),
+            result_confirmed: false,
+            command_completed: false,
+        });
         self.claude.requires_action = false;
         self.claude.stream_id = None;
         self.turn_id = Some(format!(
@@ -972,6 +993,14 @@ impl NativeSession {
         }
         self.claude_background_record(&record);
         match record["type"].as_str() {
+            Some("command_lifecycle") if record["state"] == "completed" => {
+                if let Some(command) = self.claude.foreground.as_mut()
+                    && record["command_uuid"].as_str() == Some(command.id.as_str())
+                {
+                    command.command_completed = true;
+                    self.claude_finish_background_foreground()?;
+                }
+            }
             Some("control_cancel_request") => {
                 let expired = self
                     .interactions
@@ -1125,16 +1154,11 @@ impl NativeSession {
                 }
                 Some("session_state_changed") => {
                     self.claude.requires_action = record["state"] == "requires_action";
-                    if record["state"] == "idle"
-                        && (self.turn_running() || self.claude_has_failed_turn())
-                        && let Some((outcome, _)) = self.claude.result.take()
-                    {
-                        self.claude_finish_received_outcome(outcome);
-                        self.claude_finish_received_turn(if outcome == TurnOutcome::Failed {
-                            RunState::Failed
-                        } else {
-                            RunState::Idle
-                        })?;
+                    if record["state"] == "idle" {
+                        self.claude
+                            .background_followups
+                            .retain(|_, kind| *kind != BackgroundFollowup::AwaitingIdle);
+                        self.claude_finish_received_result()?;
                     }
                 }
                 Some("task_started")
@@ -1425,6 +1449,29 @@ impl NativeSession {
                 }
             }
             Some("result") => {
+                if record["origin"]["kind"] == "task-notification" {
+                    if let Some(run) = record["origin"]["runId"].as_str()
+                        && let Some(kind) = self.claude.background_followups.get_mut(run)
+                    {
+                        *kind = BackgroundFollowup::AwaitingIdle;
+                    }
+                    return Ok(());
+                }
+                let result_uuid = record["user_message_uuid"].as_str();
+                let result_uuids = record["user_message_uuids"].as_array();
+                if let Some(command) = self.claude.foreground.as_mut()
+                    && (result_uuid.is_some() || result_uuids.is_some_and(|ids| !ids.is_empty()))
+                {
+                    if result_uuid != Some(command.id.as_str())
+                        && !result_uuids.is_some_and(|ids| {
+                            ids.iter()
+                                .any(|id| id.as_str() == Some(command.id.as_str()))
+                        })
+                    {
+                        return Ok(());
+                    }
+                    command.result_confirmed = true;
+                }
                 // Partial records are replaced by the authoritative assistant message before terminal delivery.
                 let prefix = format!(
                     "{}:stream:",
@@ -1503,8 +1550,40 @@ impl NativeSession {
                         None => *total = Some(usage),
                     });
                 }
+                self.claude_finish_background_foreground()?;
             }
             _ => {}
+        }
+        Ok(())
+    }
+
+    fn claude_finish_background_foreground(&mut self) -> Result<()> {
+        // A queued completion notification may start another native turn before
+        // idle. Only a correlated foreground result and command completion can
+        // settle the user's turn early; older CLI records still use idle.
+        if self
+            .claude
+            .foreground
+            .as_ref()
+            .is_some_and(|command| command.result_confirmed && command.command_completed)
+            && self.claude_has_ongoing_background()
+        {
+            self.claude_finish_received_result()?;
+        }
+        Ok(())
+    }
+
+    fn claude_finish_received_result(&mut self) -> Result<()> {
+        if (self.turn_running() || self.claude_has_failed_turn())
+            && let Some((outcome, _)) = self.claude.result.take()
+        {
+            self.claude.foreground = None;
+            self.claude_finish_received_outcome(outcome);
+            self.claude_finish_received_turn(if outcome == TurnOutcome::Failed {
+                RunState::Failed
+            } else {
+                RunState::Idle
+            })?;
         }
         Ok(())
     }

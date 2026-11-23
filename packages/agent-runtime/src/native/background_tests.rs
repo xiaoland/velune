@@ -65,6 +65,101 @@ impl Drop for Fixture {
 }
 
 #[test]
+fn claude_reuses_the_background_child_and_settles_only_the_matching_foreground() {
+    let mut f = Fixture::with_version("2.1.327");
+    f.session.claude.bound_session_id = f.session.native_id.clone();
+    f.session.claude.launched_effort = Some("medium".into());
+    let input = |text: &str, effort: &str| crate::TurnInput {
+        text: text.into(),
+        effort: Some(effort.into()),
+        permission_mode: None,
+        images: vec![],
+    };
+    f.session.claude_send(&input("one", "medium")).unwrap();
+    let first = f
+        .session
+        .snapshot()
+        .unwrap()
+        .messages
+        .last()
+        .unwrap()
+        .id
+        .clone();
+    f.event(json!({"type":"system","subtype":"task_started","task_id":"inline","run_id":"inline-run","task_type":"local_agent","is_backgrounded":false}));
+    f.event(json!({"type":"system","subtype":"task_updated","task_id":"inline","run_id":"inline-run","patch":{"status":"completed"}}));
+    assert!(!f.session.waits_for_background_followup(), "foreground tool completion needs no automatic response");
+    f.event(json!({"type":"system","subtype":"task_started","task_id":"shell","run_id":"run","task_type":"local_bash","description":"shell","is_backgrounded":true}));
+    f.event(json!({"type":"result","subtype":"success","user_message_uuid":first}));
+    f.event(json!({"type":"command_lifecycle","state":"completed","command_uuid":first}));
+    f.event(json!({"type":"system","subtype":"session_state_changed","state":"idle"}));
+    assert!(!f.session.turn_running());
+    assert!(f.session.has_background_work() && !f.session.process_ended);
+    assert_eq!(
+        f.session
+            .send(&input("changed", "high"))
+            .unwrap_err()
+            .code(),
+        "outstanding_work"
+    );
+    let generation = f.session.claude.commands.generation;
+    f.session.send(&input("two", "medium")).unwrap();
+    assert_eq!(f.session.claude.commands.generation, generation);
+    let second = f
+        .session
+        .snapshot()
+        .unwrap()
+        .messages
+        .last()
+        .unwrap()
+        .id
+        .clone();
+
+    f.event(json!({"type":"system","subtype":"task_updated","task_id":"shell","run_id":"run","patch":{"status":"completed"}}));
+    f.event(json!({"type":"system","subtype":"background_tasks_changed","tasks":[]}));
+    assert!(!f.session.has_background_work() && f.session.waits_for_background_followup());
+    f.event(
+        json!({"type":"result","subtype":"success","user_message_uuid":second,
+        "usage":{"input_tokens":10,"output_tokens":4}}),
+    );
+    f.event(json!({"type":"command_lifecycle","state":"completed","command_uuid":first}));
+    assert!(
+        f.session.turn_running(),
+        "a late completion must match the original UUID"
+    );
+    f.event(json!({"type":"command_lifecycle","state":"completed","command_uuid":second}));
+    assert!(!f.session.turn_running());
+    f.session.end_spent_process();
+    assert!(!f.session.process_ended);
+    f.event(
+        json!({"type":"result","subtype":"error_during_execution","is_error":true,
+        "origin":{"kind":"task-notification","runId":"run"},"usage":{"input_tokens":999}}),
+    );
+    assert!(
+        f.session.waits_for_background_followup(),
+        "keep the child until native idle"
+    );
+    f.event(json!({"type":"system","subtype":"session_state_changed","state":"idle"}));
+    f.session.end_spent_process();
+    let snapshot = f.session.snapshot().unwrap();
+    assert_eq!(
+        snapshot.executions.records.last().unwrap().outcome,
+        Some(TurnOutcome::Completed)
+    );
+    assert_eq!(
+        snapshot
+            .messages
+            .last()
+            .unwrap()
+            .turn_usage
+            .as_ref()
+            .unwrap()
+            .input_tokens,
+        Some(10)
+    );
+    assert!(!f.session.waits_for_background_followup());
+}
+
+#[test]
 fn background_tasks_claude_shell_and_workflow_stay_separate_from_agent_relationships() {
     let mut f = Fixture::new();
     for (id, kind) in [("shell", "local_bash"), ("workflow", "local_workflow")] {

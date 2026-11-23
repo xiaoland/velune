@@ -426,6 +426,8 @@ impl CoreRuntime {
         }
         if matches!(self.session.active_state, ActiveState::History(_))
             || self.session.model_selection.as_ref() != Some(&selection)
+            || (self.session.configuration_changed
+                && self.runtime_instance(runtime_id)?.type_id == RuntimeKind::ClaudeCode)
         {
             let snapshot = self.native_snapshot().expect("validated conversation");
             self.prepare_with_selection(snapshot, selection.as_ref(), false)?;
@@ -939,11 +941,6 @@ impl CoreRuntime {
         if self.turn_running() {
             return Err(RuntimeError::invalid("runtime is busy"));
         }
-        if let ActiveState::Native(session) = &self.session.active_state
-            && session.restart_needed()
-        {
-            self.ensure_work_ended()?;
-        }
         let (text, images) = prompt.message.unwrap_or_default();
         let images = super::attachments::turn_images(images)?;
         let resuming = prompt.message.is_none();
@@ -959,17 +956,30 @@ impl CoreRuntime {
                 .ok_or_else(|| RuntimeError::invalid("请选择此会话的模型"))?;
             self.prepare_with_selection(snapshot, selection.as_ref(), false)?;
         }
-        self.retire_native_settings_for_submission();
-        self.begin_turn_observation();
-        if let Some((gateway_id, session)) = self.backend_session_identity() {
-            self.session_backends()
-                .begin_user_turn(&gateway_id, &session)
-                .map_err(|error| RuntimeError::context("CLI 新轮准备", error))?;
-        }
         // Preparation may have changed the native session. Capture the pre-send
         // transcript once for inherited options and the new user-message boundary.
         self.refresh_transcript();
         let (effort, permission_mode) = self.turn_options(prompt.effort, prompt.permission_mode)?;
+        let mut reusing_claude = false;
+        if let ActiveState::Native(session) = &self.session.active_state {
+            let restart = if resuming {
+                session.restart_needed()
+            } else {
+                session.restart_needed_for_send(effort.as_deref(), permission_mode.as_deref())
+            };
+            if restart {
+                self.ensure_work_ended()?;
+            } else {
+                reusing_claude = self.active_instance()?.type_id == RuntimeKind::ClaudeCode;
+            }
+        }
+        self.retire_native_settings_for_submission();
+        self.begin_turn_observation();
+        if !reusing_claude && let Some((gateway_id, session)) = self.backend_session_identity() {
+            self.session_backends()
+                .begin_user_turn(&gateway_id, &session)
+                .map_err(|error| RuntimeError::context("CLI 新轮准备", error))?;
+        }
         let input = pi::TurnInput {
             text: text.into(),
             effort,
@@ -988,7 +998,12 @@ impl CoreRuntime {
         {
             self.bind_gateway_model()?;
         }
-        self.drain_runtime()?;
+        // A managed child's existing backend lease and dispatch target must
+        // survive together. Sync after the write so a terminal background
+        // event cannot release the child between admission and dispatch.
+        if !reusing_claude {
+            self.drain_runtime()?;
+        }
         self.check_submission_cancelled(self.session.conversation_id().unwrap_or_default())?;
         self.session.unsubmitted_draft = None;
         let mut submitted = None;
@@ -1021,11 +1036,21 @@ impl CoreRuntime {
                     },
                 },
             );
-        let rejected_fork_start = sent.as_ref().err().is_some_and(|error| {
-            error.downcast_ref::<velune_agent_runtime::native::Error>()
-                .is_some_and(|error| error.code() == "claude_fork_input_not_sent")
+        let native_error = sent
+            .as_ref()
+            .err()
+            .and_then(|error| error.downcast_ref::<velune_agent_runtime::native::Error>())
+            .map(velune_agent_runtime::native::Error::code);
+        let rejected_fork_start = native_error == Some("claude_fork_input_not_sent");
+        let sent = sent.map_err(|error| {
+            if native_error == Some("outstanding_work") {
+                RuntimeError::OutstandingWork
+            } else if reusing_claude {
+                RuntimeError::runtime_operation("message send", error)
+            } else {
+                RuntimeError::context("message send", error)
+            }
         });
-        let sent = sent.map_err(|error| RuntimeError::context("message send", error));
         let pending_fork = self.session.refresh_pending_native_fork();
         if rejected_fork_start {
             // Only a known failure before user-frame dispatch admits a retry.
@@ -1038,7 +1063,10 @@ impl CoreRuntime {
             {
                 snapshot.actions.can_send = true;
             }
-        } else if sent.is_err() && self.session.gateway_runner.is_some() && !self.session.executing() {
+        } else if sent.is_err()
+            && self.session.gateway_runner.is_some()
+            && !self.session.executing()
+        {
             self.finish_managed_turn()?;
         }
         sent?;

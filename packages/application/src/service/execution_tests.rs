@@ -16,7 +16,7 @@ impl Fixture {
         fs::write(
             &binary,
             r#"#!/usr/bin/env python3
-import json, pathlib, sys, time
+import json, os, pathlib, sys, time
 root = pathlib.Path(__file__).parent
 if '--version' in sys.argv:
     print('2.1.286 (Claude Code)')
@@ -29,6 +29,17 @@ for line in sys.stdin:
             log.write(text + '\n')
         if text in ('synthetic insert', 'synthetic queue insert'):
             (root / text.replace(' ', '-')).touch()
+        if text in ('start background work', 'same settings follow-up'):
+            with (root / 'background-owner').open('a') as log:
+                log.write(str(os.getpid()) + '\n')
+            if text == 'start background work':
+                print(json.dumps({'type': 'system', 'subtype': 'task_started',
+                                  'task_id': 'synthetic-work', 'task_type': 'local_workflow',
+                                  'description': 'Synthetic background work'}), flush=True)
+            print(json.dumps({'type': 'result', 'subtype': 'success', 'is_error': False,
+                              'session_id': record['session_id']}), flush=True)
+            print(json.dumps({'type': 'system', 'subtype': 'session_state_changed', 'state': 'idle'}),
+                  flush=True)
     if record.get('type') != 'control_request':
         continue
     request = record['request']
@@ -3038,6 +3049,141 @@ fn submission_receipt_idle_queue_reports_actual_dispatch_or_retained_rejection()
         fs::write(fixture.0.join("release-echo"), []).unwrap();
         app.close(true).unwrap();
     }
+}
+
+#[test]
+fn claude_background_send_reuses_inherited_options_and_queues_saved_configuration_change() {
+    let fixture = Fixture::new();
+    let app = open_control_service(&fixture);
+    let view = ClientViewId("control-view".into());
+    let mut runtime = crate::config::RuntimeInstance {
+        enabled: true,
+        id: "synthetic".into(),
+        name: "Synthetic Claude".into(),
+        type_id: crate::conversation::RuntimeKind::ClaudeCode,
+        gateway_id: "default".into(),
+        settings: BTreeMap::from([
+            (
+                "binary".into(),
+                fixture.0.join("claude").display().to_string(),
+            ),
+            (
+                "agentDir".into(),
+                fixture.0.join("native").display().to_string(),
+            ),
+        ]),
+    };
+    let save = |runtime| {
+        app.execute(
+            view.clone(),
+            Command::UpsertRuntimeWithExecution {
+                runtime,
+                execution: crate::RuntimeExecution {
+                    home: crate::RuntimeHome::Managed { remote_root: None },
+                    ..Default::default()
+                },
+            },
+        )
+        .unwrap()
+    };
+    save(runtime.clone());
+    let Response::CreateConversation(created) = app
+        .execute(
+            view.clone(),
+            Command::CreateConversation {
+                runtime_id: "synthetic".into(),
+                cwd: Some(fixture.0.display().to_string()),
+                project: None,
+                selection: None,
+            },
+        )
+        .unwrap()
+    else {
+        panic!("create response");
+    };
+    let id = created.snapshot.unwrap().conversation.id;
+    let send = |turn| {
+        let Response::SendTurn(result) = app
+            .execute(
+                view.clone(),
+                Command::SendTurn {
+                    submission_id: None,
+                    source_runtime_id: "synthetic".into(),
+                    conversation_id: id.clone(),
+                    target_runtime_id: "synthetic".into(),
+                    selection: None,
+                    turn,
+                },
+            )
+            .unwrap()
+        else {
+            panic!("send response");
+        };
+        result
+    };
+    let wait_idle_with_work = || {
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            let snapshot = control_snapshot(&app, &id);
+            if snapshot.run_state == crate::conversation::RunState::Idle
+                && snapshot.follow_up.can_stop_sub_agents
+            {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "background work did not hold an idle child"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    };
+    let first = send(crate::ComposedTurn {
+        effort: Some("medium".into()),
+        permission_mode: Some("manual".into()),
+        ..control_turn("start background work")
+    });
+    assert_eq!(
+        first.submission_receipt,
+        Some(crate::SubmissionReceipt::Sending)
+    );
+    wait_idle_with_work();
+    let continued = send(control_turn("same settings follow-up"));
+    assert_eq!(
+        continued.submission_receipt,
+        Some(crate::SubmissionReceipt::Sending)
+    );
+    assert!(continued.submitted_message_id.is_some());
+    wait_idle_with_work();
+    let replacement = fixture.0.join("claude-replacement");
+    fs::copy(fixture.0.join("claude"), &replacement).unwrap();
+    runtime
+        .settings
+        .insert("binary".into(), replacement.display().to_string());
+    save(runtime);
+    let receipt = send(control_turn("follow-up after a runtime edit")).submission_receipt;
+    let snapshot = control_snapshot(&app, &id);
+    let [queued] = snapshot.follow_up.queue.as_slice() else {
+        panic!("expected one waiting message");
+    };
+    assert_eq!(
+        receipt,
+        Some(crate::SubmissionReceipt::Queued {
+            queue_id: queued.id.clone()
+        })
+    );
+    assert_eq!(
+        snapshot.follow_up.waiting,
+        Some(crate::conversation::QueueWait::SubAgents)
+    );
+    let owners = fs::read_to_string(fixture.0.join("background-owner")).unwrap();
+    let owners: Vec<_> = owners.lines().collect();
+    assert_eq!(owners.len(), 2);
+    assert_eq!(owners[0], owners[1]);
+    assert_eq!(
+        fs::read_to_string(fixture.0.join("steer-wire")).unwrap(),
+        "start background work\nsame settings follow-up\n"
+    );
+    app.close(true).unwrap();
 }
 
 #[test]

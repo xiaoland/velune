@@ -213,6 +213,9 @@ impl LiveConversation for native::NativeSession {
     fn work(&self) -> Result<Retained<Vec<crate::work::BackgroundTask>>, LiveError> {
         Ok(native::NativeSession::work(self)?)
     }
+    fn work_settled(&self) -> bool {
+        !self.waits_for_background_followup() && self.work().is_ok_and(|work| work.is_empty())
+    }
     fn has_pending_requests(&self) -> bool {
         native::NativeSession::has_pending_requests(self)
     }

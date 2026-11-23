@@ -128,7 +128,7 @@ pub(super) struct Commands {
     retention: BTreeMap<u64, DataRetention>,
     dispatch: Option<Dispatch>,
     run_deadline: Option<Instant>,
-    barrier: bool,
+    pub(super) barrier: bool,
     failed_turn: Option<FailedTurnFacts>,
 }
 impl Commands {
@@ -224,7 +224,7 @@ impl NativeSession {
         if self.claude.commands.pending()
             || self.turn_running()
             || self.has_pending_requests()
-            || self.has_background_work()
+            || self.claude_has_ongoing_background()
             || self.rpc.has_pending_writes()
         {
             return Err(Error::with_code(
@@ -318,10 +318,13 @@ impl NativeSession {
             command,
             ClaudeCommand::User(_) | ClaudeCommand::Resume | ClaudeCommand::Compact
         );
+        let reuses_background_child = matches!(&command, ClaudeCommand::User(input)
+            if !self.restart_needed_for_send(input.effort.as_deref(), input.permission_mode.as_deref()));
         if starts
             && (!self.claude.commands.prepared
                 || self.claude.bound_session_id != self.native_id
-                || self.restart_required)
+                || self.restart_required
+                || (self.claude.release_when_idle && !reuses_background_child))
         {
             return Err(ClaudeAdmissionError::NeedsPreparation);
         }
@@ -476,7 +479,7 @@ impl NativeSession {
                 Ok(Kind::OneWay)
             }
             ClaudeCommand::Compact => {
-                self.claude_admit_idle()?;
+                self.claude_admit_idle(false)?;
                 if self.side {
                     return Err(Error::new("Side context cannot compact"));
                 }
@@ -540,8 +543,11 @@ impl NativeSession {
             }
         }
     }
-    fn claude_admit_idle(&self) -> Result<()> {
-        if self.turn_running() || self.has_pending_requests() || self.has_background_work() {
+    fn claude_admit_idle(&self, reuse_background: bool) -> Result<()> {
+        if self.turn_running()
+            || self.has_pending_requests()
+            || (!reuse_background && self.claude_has_ongoing_background())
+        {
             return Err(Error::with_code(
                 "Claude still owns live work or interaction",
                 "outstanding_work",
@@ -553,7 +559,9 @@ impl NativeSession {
         Ok(())
     }
     fn claude_admit_user(&mut self, input: &crate::TurnInput) -> Result<()> {
-        self.claude_admit_idle()?;
+        let reuse_background = !self
+            .restart_needed_for_send(input.effort.as_deref(), input.permission_mode.as_deref());
+        self.claude_admit_idle(reuse_background)?;
         // Options must be captured at the explicitly blocking launch boundary.
         if input
             .effort

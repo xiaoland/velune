@@ -45,11 +45,19 @@ impl NativeSession {
                 return;
             };
             let mut current = std::collections::BTreeSet::new();
+            let mut background_runs = std::collections::BTreeSet::new();
             for task in tasks {
                 if let Some(id) = self.claude_observe_task(task) {
                     current.insert(id);
+                    if let Some(run) = self.claude_track_background_followup(task) {
+                        background_runs.insert(run);
+                    }
                 }
             }
+            self.claude.background_followups.retain(|run, kind| {
+                *kind != claude::BackgroundFollowup::Running
+                    || background_runs.contains(run.as_str())
+            });
             for (id, task) in &mut self.claude.task_infos {
                 if !current.contains(id)
                     && matches!(
@@ -71,7 +79,12 @@ impl NativeSession {
             return;
         }
         if matches!(subtype, "task_started" | "task_progress") {
-            self.claude_observe_task(record);
+            if self.claude_observe_task(record).is_some()
+                && subtype == "task_started"
+                && record["is_backgrounded"] == true
+            {
+                self.claude_track_background_followup(record);
+            }
         } else if matches!(subtype, "task_notification" | "task_updated") {
             let Some(native_id) = record["task_id"].as_str() else {
                 return;
@@ -108,6 +121,25 @@ impl NativeSession {
                 .or_else(|| record["patch"]["status"].as_str());
             if let Some(task) = self.claude.task_infos.get_mut(&public) {
                 if let Some(state) = state {
+                    // Claude can remove a task from the active set before the
+                    // prompt carrying its completion reaches the model.
+                    if self.claude.task_runs.get(native_id) == Some(&public)
+                        && let Some(run) = record["run_id"].as_str()
+                        && self.claude.background_followups.get(run)
+                            == Some(&claude::BackgroundFollowup::Running)
+                    {
+                        match state {
+                            "completed" | "failed" => {
+                                self.claude
+                                    .background_followups
+                                    .insert(run.into(), claude::BackgroundFollowup::AwaitingResult);
+                            }
+                            "stopped" | "killed" => {
+                                self.claude.background_followups.remove(run);
+                            }
+                            _ => {}
+                        }
+                    }
                     task.status = crate::background::status(state);
                 }
                 task.can_stop = self.claude.task_stop_capable
@@ -127,6 +159,23 @@ impl NativeSession {
             }
         }
         self.claude_prune_background_tasks();
+    }
+
+    fn claude_track_background_followup<'a>(&mut self, task: &'a Value) -> Option<&'a str> {
+        if !self.claude.background_followup_capable
+            || !matches!(
+                task["task_type"].as_str(),
+                Some("local_bash" | "local_agent" | "local_workflow")
+            )
+        {
+            return None;
+        }
+        let run = task["run_id"].as_str()?;
+        self.claude
+            .background_followups
+            .entry(run.to_owned())
+            .or_insert(claude::BackgroundFollowup::Running);
+        Some(run)
     }
 
     fn claude_observe_task(&mut self, record: &Value) -> Option<String> {
