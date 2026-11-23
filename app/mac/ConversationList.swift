@@ -899,7 +899,9 @@ struct ConversationListHeaderActions: View {
             .background(PaneAnchor { anchor in
                 anchor()?.identifier = NSUserInterfaceItemIdentifier("conversation-list-filter")
             })
-        if side != .left { NewConversationButton(window: window).buttonStyle(.borderless).labelStyle(.iconOnly) }
+        // When the list is a block among other tools in the sidebar, it owns the new conversation
+        // button. When it is alone in the sidebar, the button is in the main toolbar.
+        if side != .left || window.listIsBlock { NewConversationButton(window: window).buttonStyle(.borderless).labelStyle(.iconOnly) }
     }
 }
 
@@ -927,14 +929,14 @@ struct ConversationListSidebarToolbar: ViewModifier {
         // shared or restored. Only the item collection changes ownership.
         if #available(macOS 26, *) {
             content.toolbar(id: ConversationToolbar.id) {
-                if ownsList {
-                    if !window.listIsBlock { filterItem }
+                if ownsList && !window.listIsBlock {
+                    filterItem
                     newConversationItem
                 }
             }
         } else {
             let showsFilter = ownsList && !window.listIsBlock && toolbarSettings.isShown(.listFilter)
-            let showsNewConversation = ownsList && toolbarSettings.isShown(.newConversation)
+            let showsNewConversation = ownsList && !window.listIsBlock && toolbarSettings.isShown(.newConversation)
             // Keep each item at the same structural position when the
             // filter moves between the native toolbar and the block header.
             let newConversationFirst = toolbarSettings.buttons(in: .sidebar).first == .newConversation
