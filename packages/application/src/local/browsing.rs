@@ -3,6 +3,16 @@ use super::*;
 use crate::conversation::{ConversationActions, ConversationSnapshot, Message, MessageBlock};
 use std::collections::BTreeSet;
 use velune_agent_runtime::creation::{DataRetention, Retained};
+
+pub(super) fn history_failure(
+    runtime: &RuntimeInstance,
+    error: velune_agent_runtime::history::HistoryError,
+) -> RuntimeError {
+    let family = velune_agent_runtime::version::variant(runtime.type_id).family_id;
+    tracing::warn!(target: "velune_application", event = "runtime_history_read_failed", phase = error.phase(), failure_kind = error.code(), runtime_family = family, runtime_id=%runtime.id, runtime_name=%runtime.name, runtime_type_id=%runtime.type_id, binary=?runtime.settings.get("binary"), node_binary=?runtime.settings.get("nodeBinary"), agent_dir=?runtime.settings.get("agentDir"), detail=%error);
+    RuntimeError::History(error)
+}
+
 pub(super) fn runtime_context(runtime: &RuntimeInstance) -> String {
     format!(
         "运行时 {}（id={}，type={}）；binary={}；nodeBinary={}；agentDir={}；sessionDir={}",
@@ -143,7 +153,7 @@ pub(super) struct HistoryArchive {
 pub(super) struct IndexedConversation {
     pub(super) id: String,
     /// The native record's state; a read summary holds while it is unchanged.
-    identity: String,
+    pub(super) identity: String,
     /// What the files tell before the session is read.
     pub(super) hint: ConversationHint,
     pub(super) state: EntryState,
@@ -658,70 +668,6 @@ impl CoreRuntime {
             gateway_token: None,
         })
     }
-    /// Index a runtime's native history. Read summaries are kept for records
-    /// that did not change; the index is also the source-scoped membership
-    /// used to open a conversation without listing again.
-    pub(super) fn index_history(&self, runtime: &RuntimeInstance) -> Result<(), RuntimeError> {
-        let source = self.runtime_source_key(runtime)?;
-        let read = |summaries: Vec<SharedSummary>| {
-            summaries
-                .into_iter()
-                .map(|summary| IndexedConversation {
-                    id: summary.id.clone(),
-                    identity: String::new(),
-                    hint: ConversationHint::default(),
-                    state: EntryState::Read(summary.into()),
-                })
-                .collect::<Vec<_>>()
-        };
-        let entries = match runtime.type_id {
-            RuntimeKind::Acp => read(shared_summaries(self.acp_summaries(runtime)?)),
-            RuntimeKind::Codex166 => read(self.read_codex_projects(runtime, false)?),
-            RuntimeKind::Pi => history::list_pi(&self.pi_history_config(runtime)?, &[])
-                .map_err(|error| {
-                    RuntimeError::context("Pi 历史无法读取；请检查实例路径与 SDK 配置后重试", error)
-                })?
-                .files
-                .into_iter()
-                .map(|file| IndexedConversation {
-                    id: format!("{}:{}", runtime.id, file.path),
-                    identity: format!("{}:{}", file.size, file.mtime_ns),
-                    hint: ConversationHint {
-                        parent_conversation_id: file
-                            .parent_path
-                            .map(|parent| format!("{}:{parent}", runtime.id)),
-                        session_id: file.session_id,
-                        cwd: file.cwd,
-                        activity_unix_ms: file.modified_at_unix_ms,
-                        created_unix_ms: file.created_at_unix_ms,
-                    },
-                    state: EntryState::Unread,
-                })
-                .collect(),
-            RuntimeKind::ClaudeCode => history::index(&self.history_config(runtime)?)
-                .map_err(|error| self.history_failure(runtime, error))?
-                .into_iter()
-                .map(|entry| IndexedConversation {
-                    id: format!("{}:{}", runtime.id, entry.native_id),
-                    identity: format!("{}:{:?}", entry.size, entry.modified_at_unix_ms),
-                    hint: ConversationHint {
-                        parent_conversation_id: None,
-                        session_id: None,
-                        cwd: entry.cwd,
-                        activity_unix_ms: entry.modified_at_unix_ms,
-                        created_unix_ms: entry.created_at_unix_ms,
-                    },
-                    state: EntryState::Unread,
-                })
-                .collect(),
-            RuntimeKind::DeepSeek => read(shared_summaries(
-                history::list(&self.history_config(runtime)?, &runtime.id)
-                    .map_err(|error| self.history_failure(runtime, error))?,
-            )),
-        };
-        self.store_history_index(source, entries)
-    }
-
     pub(super) fn store_history_index(
         &self,
         source: runtime_source::RuntimeSourceKey,
@@ -755,16 +701,8 @@ impl CoreRuntime {
             source.runtime_id().to_owned(),
             HistoryListing { source, entries },
         );
+        self.advance_history_index_generation();
         Ok(())
-    }
-    fn history_failure(
-        &self,
-        runtime: &RuntimeInstance,
-        error: velune_agent_runtime::history::HistoryError,
-    ) -> RuntimeError {
-        let family = velune_agent_runtime::version::variant(runtime.type_id).family_id;
-        tracing::warn!(target: "velune_application", event = "runtime_history_read_failed", phase = error.phase(), failure_kind = error.code(), runtime_family = family, runtime_id=%runtime.id, runtime_name=%runtime.name, runtime_type_id=%runtime.type_id, binary=?runtime.settings.get("binary"), node_binary=?runtime.settings.get("nodeBinary"), agent_dir=?runtime.settings.get("agentDir"), detail=%error);
-        RuntimeError::History(error)
     }
     /// The runtime's indexed conversations as last indexed.
     pub(super) fn indexed(&self, runtime: &RuntimeInstance) -> Vec<IndexedConversation> {
@@ -834,7 +772,7 @@ impl CoreRuntime {
         } else {
             let summaries =
                 history::summaries(&self.history_config(runtime)?, &runtime.id, &natives)
-                    .map_err(|error| self.history_failure(runtime, error))?
+                    .map_err(|error| history_failure(runtime, error))?
                     .into_iter()
                     .map(|summary| (summary.id.clone(), summary))
                     .collect();
@@ -890,6 +828,7 @@ impl CoreRuntime {
     }
 
     pub(super) fn discard_runtime_source_caches(&self, runtime_id: &str) {
+        self.advance_history_index_generation();
         *self.last_listed.borrow_mut() = organization::ListedProjection::default();
         self.history_listings.borrow_mut().remove(runtime_id);
         self.native_projects.borrow_mut().remove(runtime_id);

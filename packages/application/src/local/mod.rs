@@ -239,6 +239,7 @@ pub struct CoreRuntime {
     acp_capability_cache: std::cell::RefCell<BTreeMap<String, crate::AcpCapabilities>>,
     native_projects: std::cell::RefCell<BTreeMap<String, projects::NativeProjects>>,
     history_listings: std::cell::RefCell<BTreeMap<String, browsing::HistoryListing>>,
+    history_index_generation: std::cell::Cell<u64>,
     delivery: delivery::TranscriptDelivery,
     prepared_remote_resources: std::cell::RefCell<std::collections::BTreeSet<String>>,
     /// HOME of each inherited-HOME SSH location, by its execution settings.
@@ -295,6 +296,7 @@ use crate::SendQueueOperation;
 mod background_tasks;
 mod collaborators;
 mod control;
+pub(crate) mod list_refresh;
 pub(crate) mod live;
 mod model_selection;
 mod native_composition;
@@ -407,6 +409,7 @@ impl CoreRuntime {
             acp_capability_cache: Default::default(),
             native_projects: Default::default(),
             history_listings: Default::default(),
+            history_index_generation: Default::default(),
             delivery: delivery::TranscriptDelivery::new(),
             prepared_remote_resources: Default::default(),
             remote_homes: Default::default(),

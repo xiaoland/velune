@@ -127,6 +127,7 @@ impl CoreRuntime {
             catalog.active_assignments = assignments;
             catalog.active_retention = assignment_retention;
         }
+        self.advance_history_index_generation();
         Ok(conversations)
     }
 

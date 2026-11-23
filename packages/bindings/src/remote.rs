@@ -707,7 +707,10 @@ impl VeluneRemoteEndpoint {
                 closed: false,
             }),
         });
-        let initial = remote.request_reply(Command::ReadConfiguration)?;
+        // Seed the editor revision through an existing lightweight observation. Reading
+        // configuration here would scan native history before the caller's first list.
+        // Unlike activity reads, this remains available during native authentication.
+        let initial = remote.request_reply(Command::ReadComposerOwner)?;
         remote.state()?.expected = Some(initial.revision);
         Ok(remote_proxy(remote))
     }
@@ -900,5 +903,7 @@ impl VeluneApplication {
     }
 }
 
+#[cfg(test)]
+mod application_tests;
 #[cfg(test)]
 mod network_settings_tests;

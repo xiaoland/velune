@@ -298,16 +298,7 @@ impl CoreRuntime {
                 }
             });
             if let Err(error) = indexed {
-                // A runtime that cannot be read lists nothing, not its last index.
-                self.forget_index(runtime);
-                tracing::warn!(target:"velune_application",event="runtime_history_read_failed",phase="history_list",failure_kind="history_unavailable",runtime_slot=slot+1,runtime_id=%runtime.id,runtime_name=%runtime.name,runtime_type_id=%runtime.type_id,binary=?runtime.settings.get("binary"),node_binary=?runtime.settings.get("nodeBinary"),agent_dir=?runtime.settings.get("agentDir"),detail=%error);
-                history_failures.push(crate::HistoryFailure {
-                    runtime_id: runtime.id.clone(),
-                    detail: format!(
-                        "{}；会话历史无法读取：{error}",
-                        super::browsing::runtime_context(runtime)
-                    ),
-                });
+                history_failures.push(self.list_history_failure(slot, runtime, error));
             }
         }
         self.read_link_segments(&segments);
@@ -320,6 +311,24 @@ impl CoreRuntime {
         };
         *self.history_failures.borrow_mut() = history_failures.clone();
         (self.cached_sources(), history_failures)
+    }
+
+    pub(super) fn list_history_failure(
+        &self,
+        slot: usize,
+        runtime: &RuntimeInstance,
+        error: RuntimeError,
+    ) -> crate::HistoryFailure {
+        // A failed runtime contributes no history until a later refresh succeeds.
+        self.forget_index(runtime);
+        tracing::warn!(target:"velune_application",event="runtime_history_read_failed",phase="history_list",failure_kind="history_unavailable",runtime_slot=slot+1,runtime_id=%runtime.id,runtime_name=%runtime.name,runtime_type_id=%runtime.type_id,binary=?runtime.settings.get("binary"),node_binary=?runtime.settings.get("nodeBinary"),agent_dir=?runtime.settings.get("agentDir"),detail=%error);
+        crate::HistoryFailure {
+            runtime_id: runtime.id.clone(),
+            detail: format!(
+                "{}；会话历史无法读取：{error}",
+                super::browsing::runtime_context(runtime)
+            ),
+        }
     }
 
     /// The listing from the indexes as they stand. A conversation not read
@@ -410,6 +419,20 @@ impl CoreRuntime {
                 refresh_ms = (indexed - start).as_millis() as u64, build_page_ms = (finished - indexed).as_millis() as u64);
         }
         Ok(result)
+    }
+
+    /// Apply the current ordinary view to freshly installed native indexes.
+    pub(crate) fn list_refreshed(&self) -> crate::ConfigurationSnapshot {
+        self.read_link_segments(&self.link_segment_ids(None));
+        self.archived_listing.borrow_mut().clear();
+        // Only the initial allocation is recalculated; explicitly loaded pages
+        // still belong to this view.
+        self.reset_browser_allocation();
+        self.configuration_from_sources(
+            self.cached_sources(),
+            self.history_failures.borrow().clone(),
+            false,
+        )
     }
 
     /// Reapply list organization to the indexed history. A read receipt or

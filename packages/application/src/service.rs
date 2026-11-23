@@ -4,6 +4,7 @@ use crate::local::{
     conversation_history::{
         ConversationHistoryRequest, ConversationRead, LoadedConversationHistory,
     },
+    list_refresh::{ListRefresh, LoadedListRefresh},
 };
 use crate::{
     Application, ApplicationReply, ClientViewId, Command, Error, ExecutionContext, Failure,
@@ -20,7 +21,9 @@ use std::{
     time::{Duration, Instant},
 };
 use velune_agent_runtime::creation::{DataRetention, Retained};
+mod list_refresh;
 mod queued_handoff;
+use list_refresh::PendingListRefresh;
 
 #[derive(Clone)]
 pub struct ApplicationService {
@@ -198,6 +201,7 @@ struct HistoryJob {
 
 enum HistoryWork {
     Conversation(ConversationHistoryRequest),
+    ListRefresh(ListRefresh),
     HandoffRequirements {
         history: velune_agent_runtime::history::HistoryConfig,
         native: velune_agent_runtime::native::NativeConfig,
@@ -234,6 +238,7 @@ struct FinishedHistory {
 
 enum HistoryResult {
     Conversation(Box<LoadedConversationHistory>),
+    ListRefreshed(Box<LoadedListRefresh>),
     HandoffRequirements(Box<Result<Retained<HandoffRequirementFacts>, (String, String)>>),
     HandoffSummaryStarted {
         work_id: String,
@@ -341,6 +346,10 @@ impl HistoryWorkers {
                                 HistoryWork::Conversation(request) => {
                                     tracing::info!(target: "velune_application", event = "conversation_history_read", phase = "worker_queue", elapsed_ms = queued_at.elapsed().as_millis() as u64);
                                     HistoryResult::Conversation(Box::new(request.load()))
+                                }
+                                HistoryWork::ListRefresh(request) => {
+                                    tracing::info!(target: "velune_application", event = "conversation_list", phase = "worker_queue", elapsed_ms = queued_at.elapsed().as_millis() as u64);
+                                    HistoryResult::ListRefreshed(Box::new(request.load()))
                                 }
                                 HistoryWork::HandoffRequirements { history, native, native_id } => {
                                     tracing::info!(target: "velune_application", event = "handoff_requirements_read", phase = "worker_queue", elapsed_ms = queued_at.elapsed().as_millis() as u64);
@@ -452,6 +461,7 @@ struct Owner {
     revision: Revision,
     history: HistoryWorkers,
     pending_history: BTreeMap<u64, PendingHistory>,
+    pending_list_refresh: Option<PendingListRefresh>,
     pending_execution: BTreeMap<crate::local::execution_workers::ExecutionTicket, PendingExecutionReply>,
     handoff_requirements: BTreeMap<String, HandoffRequirementEntry>,
     pending_handoff_requirements: BTreeMap<u64, String>,
@@ -2337,6 +2347,12 @@ impl Owner {
         } = job;
         let history = match result {
             HistoryResult::Conversation(history) => *history,
+            HistoryResult::ListRefreshed(loaded) => {
+                tracing::dispatcher::with_default(&dispatch, || {
+                    span.in_scope(|| self.finish_list_refresh(*loaded, completion));
+                });
+                return;
+            }
             HistoryResult::HandoffRequirements(result) => {
                 self.finish_handoff_requirements(id, *result);
                 return;
@@ -2531,6 +2547,9 @@ impl Owner {
                             tracing::info!(target: "velune_application", event = "application_command", phase = "owner_queue", command = ?kind, elapsed_ms);
                         }
                         match *command {
+                            Command::ReadConfiguration => {
+                                self.start_list_refresh(view, context.is_some(), reply, history_completion);
+                            }
                             command @ (Command::CreateConversation { .. }
                             | Command::Cancel { .. }
                             | Command::StopSubAgents { .. }
@@ -2783,6 +2802,7 @@ impl ApplicationService {
                         revision,
                         history,
                         pending_history: BTreeMap::new(),
+                        pending_list_refresh: None,
                         pending_execution: BTreeMap::new(),
                         handoff_requirements: BTreeMap::new(),
                         pending_handoff_requirements: BTreeMap::new(),
@@ -3243,6 +3263,144 @@ mod usage_tests {
             app.execute(view, Command::ReadConfiguration),
             Ok(Response::ReadConfiguration(_))
         ));
+        app.close(false).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn slow_list_refresh_shares_scan_without_blocking_activity() {
+        let fixture = Fixture::new();
+        let script = fixture.0.join("agent.py");
+        let gate = fixture.0.join("hold-list");
+        let reads = fixture.0.join("list-reads");
+        fs::write(
+            &script,
+            r#"
+import json, pathlib, sys, time
+root = pathlib.Path(sys.argv[1])
+for line in sys.stdin:
+    message = json.loads(line)
+    if message['method'] == 'initialize':
+        value = {'protocolVersion':1, 'agentCapabilities':{'sessionCapabilities':{'list':{}}}}
+    elif message['method'] == 'session/list':
+        with (root / 'list-reads').open('a') as reads: reads.write('list\n')
+        while (root / 'hold-list').exists(): time.sleep(.01)
+        value = {'sessions':[{'sessionId':sys.argv[2], 'cwd':str(root), 'title':'Synthetic'}]}
+    else:
+        value = {}
+    if 'id' in message:
+        print(json.dumps({'jsonrpc':'2.0', 'id':message['id'], 'result':value}), flush=True)
+"#,
+        )
+        .unwrap();
+        let app = fixture.open();
+        let configure = |session: &str| Command::UpsertAcpRuntime {
+            runtime: serde_json::from_value(serde_json::json!({
+                "id":"synthetic", "name":"Synthetic", "enabled":true,
+                "typeId":"acp-v1", "gatewayId":"default", "settings":{"binary":"/usr/bin/python3"}
+            }))
+            .unwrap(),
+            execution: crate::RuntimeExecution {
+                home: crate::RuntimeHome::Existing {
+                    path: fixture.0.to_string_lossy().into_owned(),
+                },
+                ..Default::default()
+            },
+            launch: crate::AcpLaunch {
+                args: vec![
+                    script.to_string_lossy().into_owned(),
+                    fixture.0.to_string_lossy().into_owned(),
+                    session.into(),
+                ],
+                environment: Default::default(),
+            },
+        };
+        app.execute(ClientViewId("local".into()), configure("thread"))
+            .unwrap();
+        fs::write(&reads, "").unwrap();
+        fs::write(&gate, "hold").unwrap();
+        // Submit in order on one sender so activity also proves that the
+        // second list request reached its owner before the scan completed.
+        let send = |view: &str, remote: bool, command: Command| {
+            let (reply, response) = mpsc::channel();
+            app.sender
+                .send(Job::Execute {
+                    view: ClientViewId(view.into()),
+                    presentation_isolated: remote,
+                    context: remote.then(ExecutionContext::default),
+                    command: Box::new(command),
+                    cancellation: None,
+                    queued_at: Instant::now(),
+                    history_completion: app.sender.clone(),
+                    dispatch: tracing::dispatcher::get_default(Clone::clone),
+                    span: tracing::Span::none(),
+                    reply,
+                })
+                .unwrap();
+            response
+        };
+        let wait_for_scan = || {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while fs::metadata(&reads).unwrap().len() == 0 && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            fs::metadata(&reads).unwrap().len() > 0
+        };
+        let local_list = send("local", false, Command::ReadConfiguration);
+        let scan_started = wait_for_scan();
+        let remote_list = send("remote", true, Command::ReadConfiguration);
+        let activity = send(
+            "remote",
+            true,
+            Command::ReadConversationActivity { since: 0 },
+        );
+        let prompt = activity.recv_timeout(Duration::from_secs(2));
+        fs::remove_file(&gate).unwrap();
+        assert!(scan_started, "ACP listing did not enter the gated read");
+        assert!(matches!(
+            prompt.unwrap().unwrap().response,
+            Response::ReadConversationActivity(_)
+        ));
+        let read_list = |result: mpsc::Receiver<Result<ApplicationReply, Failure>>| {
+            let reply = result
+                .recv_timeout(Duration::from_secs(10))
+                .unwrap()
+                .unwrap();
+            let Response::ReadConfiguration(value) = reply.response else {
+                panic!("expected list response");
+            };
+            (reply.revision, value)
+        };
+        for result in [local_list, remote_list] {
+            let (_, value) = read_list(result);
+            assert!(
+                value
+                    .conversations
+                    .iter()
+                    .any(|row| row.native_id == "thread")
+            );
+            let runtime = value
+                .runtime_instances
+                .iter()
+                .find(|runtime| runtime.id == "synthetic")
+                .unwrap();
+            assert!(!runtime.settings.contains_key("acpLaunch"));
+        }
+        assert_eq!(fs::read_to_string(&reads).unwrap().lines().count(), 1);
+
+        fs::write(&reads, "").unwrap();
+        fs::write(&gate, "hold").unwrap();
+        let list = send("local", false, Command::ReadConfiguration);
+        let scan_started = wait_for_scan();
+        let updated =
+            send("local", false, configure("replacement")).recv_timeout(Duration::from_secs(2));
+        fs::remove_file(&gate).unwrap();
+        assert!(scan_started);
+        let (revision, value) = read_list(list);
+        assert_eq!(revision, updated.unwrap().unwrap().revision);
+        assert_eq!(value.conversations.len(), 1);
+        assert_eq!(value.conversations[0].native_id, "replacement");
+        assert_eq!(fs::read_to_string(reads).unwrap().lines().count(), 2);
         app.close(false).unwrap();
     }
 

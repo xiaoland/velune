@@ -17,14 +17,10 @@ impl CoreRuntime {
         }
         let config = self.acp_configuration(runtime, mcp_servers)?;
         self.prepare_runtime_location(runtime)?;
-        let client = telemetry::observe(self.telemetry.as_ref(), "harness.start", || {
-            Client::connect(config)
-        })
-        .map_err(|error| RuntimeError::context("ACP 初始化", error))?;
-        self.acp_capability_cache.borrow_mut().insert(
-            runtime.id.clone(),
-            serde_json::from_value(serde_json::to_value(client.capabilities())?)?,
-        );
+        let (client, capabilities) = connect_acp(config, self.telemetry.as_ref())?;
+        self.acp_capability_cache
+            .borrow_mut()
+            .insert(runtime.id.clone(), capabilities);
         Ok(client)
     }
 
@@ -97,29 +93,6 @@ impl CoreRuntime {
                 .map_err(|error| RuntimeError::context("ACP 关闭", error))?;
         }
         Ok(())
-    }
-
-    pub(super) fn acp_summaries(
-        &self,
-        runtime: &RuntimeInstance,
-    ) -> Result<velune_agent_runtime::creation::Retained<Vec<ConversationSummary>>, RuntimeError>
-    {
-        let mut session = self.acp_client(runtime)?;
-        if !session.capabilities().list_sessions {
-            return Err(RuntimeError::Unsupported(
-                "此 ACP Agent 不提供会话列表；当前会话仍可使用，已知会话可按 load 能力显式打开"
-                    .into(),
-            ));
-        }
-        let summaries = session
-            .list_sessions(None, &runtime.id)
-            .map_err(|error| RuntimeError::context("ACP 会话列表", error));
-        let closed = session
-            .shutdown()
-            .map_err(|error| RuntimeError::context("ACP 关闭", error));
-        let summaries = summaries?;
-        closed?;
-        Ok(summaries)
     }
 
     pub(super) fn read_acp_history(
@@ -257,6 +230,36 @@ impl CoreRuntime {
     }
 }
 
+pub(super) fn connect_acp(
+    config: Config,
+    telemetry: Option<&Arc<velune_telemetry::ClientTelemetry>>,
+) -> Result<(Client, crate::AcpCapabilities), RuntimeError> {
+    let client = telemetry::observe(telemetry, "harness.start", || Client::connect(config))
+        .map_err(|error| RuntimeError::context("ACP 初始化", error))?;
+    let capabilities = acp_capabilities(&client);
+    Ok((client, capabilities))
+}
+
+pub(super) fn list_acp_sessions(
+    mut session: Client,
+    runtime_id: &str,
+) -> Result<velune_agent_runtime::creation::Retained<Vec<ConversationSummary>>, RuntimeError> {
+    if !session.capabilities().list_sessions {
+        return Err(RuntimeError::Unsupported(
+            "此 ACP Agent 不提供会话列表；当前会话仍可使用，已知会话可按 load 能力显式打开".into(),
+        ));
+    }
+    let summaries = session
+        .list_sessions(None, runtime_id)
+        .map_err(|error| RuntimeError::context("ACP 会话列表", error));
+    let closed = session
+        .shutdown()
+        .map_err(|error| RuntimeError::context("ACP 关闭", error));
+    let summaries = summaries?;
+    closed?;
+    Ok(summaries)
+}
+
 /// Perform the ACP history request without touching application state.
 pub(super) fn load_acp_history(
     config: Config,
@@ -282,7 +285,7 @@ pub(super) fn load_acp_history(
     }
     let mut session =
         Client::connect(config).map_err(|error| RuntimeError::context("ACP 初始化", error))?;
-    let capabilities = acp_runtime_info(&session).capabilities;
+    let capabilities = acp_capabilities(&session);
     let snapshot = if capabilities.load_session {
         session
             .load(native_id, cwd, runtime_id)
@@ -300,16 +303,20 @@ pub(super) fn load_acp_history(
     Ok((snapshot, capabilities))
 }
 
-fn acp_runtime_info(session: &velune_agent_runtime::acp::Client) -> crate::AcpRuntimeInfo {
+fn acp_capabilities(session: &Client) -> crate::AcpCapabilities {
     let capabilities = session.capabilities();
+    crate::AcpCapabilities {
+        load_session: capabilities.load_session,
+        list_sessions: capabilities.list_sessions,
+        resume_session: capabilities.resume_session,
+        close_session: capabilities.close_session,
+        delete_session: capabilities.delete_session,
+    }
+}
+
+fn acp_runtime_info(session: &Client) -> crate::AcpRuntimeInfo {
     crate::AcpRuntimeInfo {
-        capabilities: crate::AcpCapabilities {
-            load_session: capabilities.load_session,
-            list_sessions: capabilities.list_sessions,
-            resume_session: capabilities.resume_session,
-            close_session: capabilities.close_session,
-            delete_session: capabilities.delete_session,
-        },
+        capabilities: acp_capabilities(session),
         agent_info: session.agent_info().map(|info| crate::AcpAgentInfo {
             name: info.name.clone(),
             title: info.title.clone(),

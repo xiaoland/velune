@@ -92,7 +92,7 @@ impl CoreRuntime {
         std::cell::Ref::map(self.last_listed.borrow(), |projection| &projection.entries)
     }
 
-    pub(super) fn shows_archived(&self) -> bool {
+    pub(crate) fn shows_archived(&self) -> bool {
         self.browser_window.archived
     }
 
