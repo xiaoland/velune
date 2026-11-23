@@ -87,7 +87,19 @@ import VeluneBindings
     let model = ArchivedConversationsModel(source: device)
     var completed: [Set<String>] = []
     let watch = model.completed.sink { completed.append($0) }
-    model.start(); wait("首次归档", { model.ready && !model.isLoading })
+    do {
+        let releaseNextRead = DispatchSemaphore(value: 0)
+        defer { releaseNextRead.signal() }
+        var firstReadDelivered = false
+        model.start()
+        device.performOnQueue {
+            DispatchQueue.main.async { firstReadDelivered = true }
+            _ = releaseNextRead.wait(timeout: .now() + 15)
+        }
+        model.refreshOnActivation()
+        wait("首次归档回执", { firstReadDelivered })
+        precondition(model.ready && !model.isLoading, "窗口激活应复用正在读取的首屏")
+    }
     precondition(model.conversations.count == 2 && model.conversations.allSatisfy(\.archived))
     let firstPage = Set(model.conversations.map(\.id))
     let cold = all.first { !firstPage.contains($0.id) }!

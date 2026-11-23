@@ -6,7 +6,10 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
     collections::{HashMap, HashSet},
+    fs,
+    io::{BufRead, BufReader, Read},
     path::Path,
+    time::UNIX_EPOCH,
 };
 
 pub(super) const SOURCE_KINDS: [&str; 10] = [
@@ -48,11 +51,15 @@ pub(super) fn summary(thread: &Value, runtime_id: &str) -> Result<ConversationSu
         can_delete: false,
         // Only a spawned thread names its parent; Codex's other internal
         // sub-agents (review, compaction) are listed as they are.
-        parent_conversation_id: thread["parentThreadId"]
-            .as_str()
-            .or_else(|| thread["source"]["subAgent"]["thread_spawn"]["parent_thread_id"].as_str())
+        parent_conversation_id: thread_parent_id(thread)
             .map(|parent| format!("{runtime_id}:{parent}")),
     })
+}
+
+fn thread_parent_id(thread: &Value) -> Option<&str> {
+    thread["parentThreadId"]
+        .as_str()
+        .or_else(|| thread["source"]["subAgent"]["thread_spawn"]["parent_thread_id"].as_str())
 }
 
 /// Stored names and native agent nicknames are authoritative across listing,
@@ -150,14 +157,7 @@ pub fn list_codex_history_at(
     os_home: Option<&Path>,
 ) -> Result<Retained<Vec<ConversationSummary>>> {
     let mut rpc = codex::history_client_at(kind, binary, home, execution, os_home)?;
-    let threads = pages(
-        &mut rpc,
-        "thread/list",
-        json!({
-            "limit":100,"archived":archived,"modelProviders":[],
-            "sourceKinds":SOURCE_KINDS,"sortKey":"updated_at","sortDirection":"desc"
-        }),
-    )?;
+    let threads = list_threads(&mut rpc, home, execution, archived)?;
     let mut seen = HashSet::new();
     threads.try_map(|threads| {
         threads
@@ -172,6 +172,152 @@ pub fn list_codex_history_at(
             })
             .collect()
     })
+}
+
+pub(super) fn list_threads(
+    rpc: &mut RpcClient,
+    home: &Path,
+    execution: &crate::execution::ExecutionTarget,
+    archived: bool,
+) -> Result<Retained<Vec<Value>>> {
+    let params = json!({
+        "limit":100,"archived":archived,"modelProviders":[],
+        "sourceKinds":SOURCE_KINDS,"sortKey":"updated_at","sortDirection":"desc"
+    });
+    if archived && execution.is_local() {
+        let mut indexed_params = params.clone();
+        indexed_params["useStateDbOnly"] = json!(true);
+        if let Ok(indexed) = pages(rpc, "thread/list", indexed_params)
+            && archive_index_covers_rollouts(home, &indexed, |id, parent| {
+                unlisted_child_updated_at(rpc, id, parent)
+            })
+        {
+            return Ok(indexed);
+        }
+    }
+    pages(rpc, "thread/list", params)
+}
+
+/// A paginated Codex history is owned by its database. Legacy rollouts that
+/// aren't represented at their current versions require Codex's repair scan.
+fn archive_index_covers_rollouts(
+    home: &Path,
+    threads: &[Value],
+    mut unlisted_child_updated_at: impl FnMut(&str, &str) -> Option<u64>,
+) -> bool {
+    if threads
+        .iter()
+        .any(|thread| thread["historyMode"] != "paginated")
+    {
+        return false;
+    }
+    let by_id: HashMap<_, _> = threads
+        .iter()
+        .filter_map(|thread| Some((thread["id"].as_str()?, thread["updatedAt"].as_u64()?)))
+        .collect();
+    let by_path: HashMap<_, _> = threads
+        .iter()
+        .filter_map(|thread| {
+            Some((
+                Path::new(thread["path"].as_str()?),
+                thread["updatedAt"].as_u64()?,
+            ))
+        })
+        .collect();
+    let entries = match fs::read_dir(home.join("archived_sessions")) {
+        Ok(entries) => entries,
+        Err(error) => return error.kind() == std::io::ErrorKind::NotFound,
+    };
+    for entry in entries {
+        let Ok(entry) = entry else { return false };
+        let Ok(kind) = entry.file_type() else {
+            return false;
+        };
+        if kind.is_dir() {
+            return false;
+        }
+        let path = entry.path();
+        let compressed = path.extension().is_some_and(|extension| extension == "zst");
+        let jsonl_path = compressed.then(|| path.with_extension(""));
+        if !jsonl_path
+            .as_deref()
+            .unwrap_or(&path)
+            .extension()
+            .is_some_and(|extension| extension == "jsonl")
+        {
+            continue;
+        }
+        if !kind.is_file() {
+            return false;
+        }
+        let Some(modified) = entry
+            .metadata()
+            .ok()
+            .and_then(|metadata| metadata.modified().ok())
+            .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+        else {
+            return false;
+        };
+        // Codex's index may retain the uncompressed path after migration.
+        let updated = by_path
+            .get(path.as_path())
+            .or_else(|| by_path.get(jsonl_path.as_deref()?))
+            .copied()
+            .or_else(|| {
+                let metadata = archive_rollout_metadata(&path, compressed)?;
+                let id = metadata["id"].as_str()?;
+                by_id.get(id).copied().or_else(|| {
+                    let parent = metadata["source"]["subagent"]["thread_spawn"]["parent_thread_id"]
+                        .as_str()?;
+                    unlisted_child_updated_at(id, parent)
+                })
+            });
+        if !updated.is_some_and(|updated| updated >= modified.as_secs()) {
+            return false;
+        }
+    }
+    true
+}
+
+/// A migrated rollout can retain its session identity under a different name.
+fn archive_rollout_metadata(path: &Path, compressed: bool) -> Option<Value> {
+    let file = fs::File::open(path).ok()?;
+    let mut line = Vec::new();
+    fn read_header(reader: impl Read, line: &mut Vec<u8>) -> std::io::Result<usize> {
+        BufReader::new(reader)
+            .take(64 * 1024)
+            .read_until(b'\n', line)
+    }
+    if compressed {
+        let decoder =
+            ruzstd::decoding::StreamingDecoder::new_with_max_window_size(file, 8 * 1024 * 1024)
+                .ok()?;
+        read_header(decoder, &mut line).ok()?;
+    } else {
+        read_header(file, &mut line).ok()?;
+    }
+    let mut metadata: Value = serde_json::from_slice(&line).ok()?;
+    if metadata["type"] != "session_meta" {
+        return None;
+    }
+    Some(metadata["payload"].take())
+}
+
+// The archive file established the candidate's location. Confirm its identity,
+// parent and empty preview in Codex before accepting its omission from listing.
+fn unlisted_child_updated_at(rpc: &mut RpcClient, id: &str, parent: &str) -> Option<u64> {
+    let response = rpc
+        .request("thread/read", &json!({"threadId":id,"includeTurns":false}))
+        .ok()?;
+    let thread = &response["thread"];
+    if thread["id"].as_str() != Some(id)
+        || thread["historyMode"] != "paginated"
+        || thread["preview"] != ""
+        || thread_parent_id(thread) != Some(parent)
+    {
+        return None;
+    }
+    thread["updatedAt"].as_u64()
 }
 
 /// One thread as the runtime describes it, and whether it is archived, for a
@@ -1051,6 +1197,50 @@ fn project_history(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn archive_index_requires_current_native_coverage() {
+        use super::{UNIX_EPOCH, archive_index_covers_rollouts, fs, json};
+        use ruzstd::encoding::{CompressionLevel, compress_to_vec};
+
+        let nonce = getrandom::u64().unwrap();
+        let home = std::env::temp_dir().join(format!("velune-archive-index-{nonce}"));
+        let archive = home.join("archived_sessions");
+        fs::create_dir_all(&archive).unwrap();
+        let renamed = archive.join("renamed.jsonl");
+        let compressed = archive.join("migrated.jsonl.zst");
+        let header = br#"{"type":"session_meta","payload":{"id":"source"}}"#;
+        fs::write(&renamed, header).unwrap();
+        fs::write(
+            &compressed,
+            compress_to_vec(header.as_slice(), CompressionLevel::Fastest),
+        )
+        .unwrap();
+        let modified = [renamed, compressed]
+            .into_iter()
+            .map(|path| fs::metadata(path).unwrap().modified().unwrap())
+            .max()
+            .unwrap()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let mut threads = [json!({
+            "id": "source", "historyMode": "paginated", "updatedAt": modified,
+        })];
+        let covered = archive_index_covers_rollouts(&home, &threads, |_, _| None);
+        let unindexed = archive_index_covers_rollouts(&home, &[], |_, _| None);
+        threads[0]["updatedAt"] = json!(modified - 1);
+        let stale = archive_index_covers_rollouts(&home, &threads, |_, _| None);
+        threads[0]["updatedAt"] = json!(modified);
+        threads[0]["historyMode"] = json!("legacy");
+        let legacy = archive_index_covers_rollouts(&home, &threads, |_, _| None);
+        fs::remove_dir_all(home).unwrap();
+
+        assert!(covered);
+        assert!(!unindexed);
+        assert!(!stale);
+        assert!(!legacy);
+    }
+
     #[cfg(unix)]
     #[test]
     fn exact_codex_child_history_reads_metadata_and_messages_in_one_process() {

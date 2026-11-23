@@ -70,6 +70,11 @@ struct ArchivedConversationsMenuItem: View {
         guard transport != nil else { start(); return }
         read { [ready] in ready ? try $0.list() : try $0.showArchivedConversations(true) }
     }
+    func refreshOnActivation() {
+        // Opening the window may also activate it before its initial read finishes.
+        guard ready || !isLoading else { return }
+        refresh()
+    }
     func search() {
         guard ready else { return }
         // Resolve against the last completed queue operation, not a snapshot
@@ -269,7 +274,7 @@ struct ArchivedConversationsContent: View {
         .onReceive(model.completed) { selection.subtract($0) }
         .onChange(of: model.conversations.map(\.id)) { _, ids in selection.formIntersection(ids) }
         .onChange(of: model.operationError ?? model.loadError) { _, _ in showsErrorDetails = false }
-        .onChange(of: scenePhase) { _, phase in if phase == .active { model.refresh() } }
+        .onChange(of: scenePhase) { _, phase in if phase == .active { model.refreshOnActivation() } }
         .alert(deleting.count == 1 ? "删除会话？" : "删除 \(deleting.count) 个会话？", isPresented: Binding(get: { !deleting.isEmpty }, set: { if !$0 { deleting = [] } })) {
             Button("取消", role: .cancel) { deleting = [] }
             Button("删除", role: .destructive) { model.delete(deleting); deleting = [] }

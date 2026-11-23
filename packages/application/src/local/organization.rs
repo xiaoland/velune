@@ -1397,7 +1397,7 @@ for line in sys.stdin:
             continue
         result = {"data": [
             {"id": f"thread-{i}", "name": f"Codex session {i}", "projectId": "work",
-             "createdAt": 1, "updatedAt": 10000-i}
+             "createdAt": 1, "updatedAt": 10000-i, "historyMode": "paginated"}
             for i in range(start, end)
         ], "nextCursor": str(end) if end < total else None}
     print(json.dumps({"id": request["id"], "result": result}), flush=True)

@@ -1,7 +1,7 @@
 //! Codex's project identities and ordered roots, independent of thread cwd.
 use super::{
     Error, Result, codex,
-    codex_history::{SOURCE_KINDS, is_handoff_summary_thread, pages, summary},
+    codex_history::{is_handoff_summary_thread, list_threads, pages, summary},
 };
 use crate::{conversation::ConversationSummary, creation::Retained, history::HistoryConfig};
 use serde::Deserialize;
@@ -52,11 +52,7 @@ pub fn list_projects(
     {
         return Err(Error::new("Codex 返回无效或重复的项目身份"));
     }
-    let threads = pages(
-        &mut rpc,
-        "thread/list",
-        json!({"limit":100,"archived":archived,"modelProviders":[],"sourceKinds":SOURCE_KINDS,"sortKey":"updated_at","sortDirection":"desc"}),
-    )?;
+    let threads = list_threads(&mut rpc, &config.home, &config.execution, archived)?;
     let (threads, thread_retention) = threads.into_parts();
     retention = retention.merge(thread_retention);
     let mut assignments = BTreeMap::new();
