@@ -286,7 +286,7 @@ struct ArchivedConversationsContent: View {
     private var list: some View {
         List(selection: $selection) {
             ForEach(model.groups, id: \.key) { group in
-                if model.browser.grouping != .none || group.key == .pinned {
+                if group.key != .all {
                     Button {
                         model.browser.setCollapsed(group.key, !model.browser.isCollapsed(group.key))
                     } label: {
@@ -311,7 +311,7 @@ struct ArchivedConversationsContent: View {
         HStack(alignment: .firstTextBaseline, spacing: 20) {
             VStack(alignment: .leading, spacing: 3) {
                 Text(value.title.isEmpty ? "未命名会话" : value.title).lineLimit(1).help(value.title)
-                if let path = value.project ?? value.cwd {
+                if let path = value.project ?? value.cwd, value.group != .project(path: path) {
                     Text(value.project.map { ConversationBrowser.projectName($0, projects: model.projects) } ?? path)
                         .font(.callout).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle).help(path)
                 }

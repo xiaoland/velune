@@ -181,9 +181,15 @@ import VeluneBindings
     let archiveSnapshot = try! visualTransport.showArchivedConversations(true)
     preview.applyList(archiveSnapshot)
     projected.apply(archiveSnapshot)
-    try! visualTransport.close()
     render("content-wide", model: projected, width: 900)
     render("content-narrow", model: projected, width: 600)
+    var groupedPreferences = archiveSnapshot.conversationBrowserPreferences
+    groupedPreferences.grouping = .project
+    let groupedSnapshot = try! visualTransport.setConversationBrowserPreferences(groupedPreferences)
+    precondition(groupedSnapshot.conversations.contains { $0.project != nil && $0.group == .project(path: $0.project) })
+    projected.apply(groupedSnapshot)
+    render("content-by-project", model: projected, width: 600)
+    try! visualTransport.close()
     let empty = ArchivedConversationsModel(source: preview)
     render("empty", model: empty, width: 600)
     empty.searchText = "无匹配的合成标题"
