@@ -385,20 +385,9 @@ private struct ConversationWindowContent: View {
                 }
                 window.start(restoring: saved, seed: seed, persistenceID: windowIdentity)
                 traceRecovery("started")
-                // Development check of split panes without driving the interface.
-                if CommandLine.arguments.contains("--check-split-panes"), !window.isSplit { window.split(.horizontal); window.openInNewTab(); window.split(.vertical) }
-                if CommandLine.arguments.contains("--check-tool-windows") { window.tools.move(.list, to: .floating); window.tools.move(.outline, to: .window); window.tools.move(.composer, to: .floating) }
-                if CommandLine.arguments.contains("--check-send-queue") { window.focused.checkSendQueue() }
-                if CommandLine.arguments.contains("--check-edit-message") { window.focused.checkEditMessage() }
-                if CommandLine.arguments.contains("--check-list-actions") { window.checkListActions() }
-                if CommandLine.arguments.contains("--check-side-chat") { window.checkSideChat() }
-                if CommandLine.arguments.contains("--check-group-creation") { window.checkGroupCreation() }
-                if CommandLine.arguments.contains("--check-dock-areas") { window.tools.move(.outline, to: .docked(.left)); window.tools.move(.list, to: .docked(.right)); window.tools.move(.composer, to: .docked(.bottom)) }
-                if window.application.isPreview, CommandLine.arguments.contains("--check-composer-minimum") {
-                    window.tools.bottomHeight = Double(ComposerTextView.minimumHeight + 54)
-                    UserDefaults.standard.set(true, forKey: "NSQuitAlwaysKeepsWindows")
-                }
-                if window.application.isPreview, CommandLine.arguments.contains("--check-composer-sharing") { window.checkComposerSharing() }
+#if VELUNE_DEV_CHECKS
+                DevelopmentCheck.runAfterWindowStart(window)
+#endif
             }
             .onDisappear {
                 // An identity replacement removes the old native anchors.
@@ -491,88 +480,21 @@ final class VeluneApplicationDelegate: NSObject, NSApplicationDelegate {
 @MainActor
 enum VeluneEntry {
     static func main() {
-        if CommandLine.arguments.contains("--check-conversation-requests") {
-            admitMacExecution()
-            conversationRequestChecks()
-        }
-        if CommandLine.arguments.contains("--check-outgoing-submissions") {
-            admitMacExecution()
-            outgoingSubmissionChecks()
-        }
-        if CommandLine.arguments.contains("--check-sidebar-toolbar") {
-            admitMacExecution()
-            sidebarToolbarChecks()
-        }
-        if CommandLine.arguments.contains("--check-background-notifications") {
-            admitMacExecution()
-            backgroundNotificationChecks()
-        }
-        if CommandLine.arguments.contains("--check-provider-analytics") {
-            admitMacExecution()
-            providerAnalyticsOffscreenChecks()
-        }
-        if CommandLine.arguments.contains("--check-archived-conversations") {
-            admitMacExecution()
-            archivedConversationsChecks()
-        }
-        if CommandLine.arguments.contains("--check-palette-ime") {
-            admitMacExecution()
-            commandPaletteChecks()
-        }
-        if CommandLine.arguments.contains("--check-list-pagination") {
-            admitMacExecution()
-            conversationPaginationChecks()
-        }
-        if CommandLine.arguments.contains("--check-background-tasks") {
-            admitMacExecution()
-            backgroundTaskChecks()
-        }
-        if CommandLine.arguments.contains("--check-continuation-preparation") {
-            admitMacExecution()
-            continuationPreparationChecks()
-        }
-        if CommandLine.arguments.contains("--check-queued-message-editor") {
-            admitMacExecution()
-            queuedMessageEditorChecks()
-        }
-        if CommandLine.arguments.contains("--check-composer-ownership") {
-            admitMacExecution()
-            composerOwnershipCheck()
-        }
-        if CommandLine.arguments.contains("--check-composer-controls"),
-           CommandLine.arguments.contains("--check-editor-visual") {
-            // Programmatic AppKit checks own their lifecycle independently;
-            // ordinary SwiftUI app, device and scene construction stays untouched.
-            admitMacExecution()
-            let directory = URL(fileURLWithPath: ProcessInfo.processInfo.environment["VELUNE_CHECK_OUTPUT"] ?? "/tmp/velune-next-ux/composer", isDirectory: true)
-            try! FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-            messageEditorVisualCheck(directory: directory)
-            exit(0)
-        }
-        runMessageExperienceCheck(beforeSwiftUI: true)
+#if VELUNE_DEV_CHECKS
+        DevelopmentCheck.runBeforeSwiftUI(admit: admitMacExecution)
+#endif
         VeluneApp.main()
     }
-}
-
-@MainActor private func runMessageExperienceCheck(beforeSwiftUI: Bool) {
-    let arguments = CommandLine.arguments
-    guard arguments.contains("--check-message-experience") else { return }
-    let runsBeforeSwiftUI = arguments.contains("--experience-message-editor-offscreen")
-        || arguments.contains("--experience-compaction-only")
-        || arguments.contains("--experience-sidebar-only")
-        || arguments.contains("--experience-runtime-recovery-only")
-        || arguments.contains("--experience-workspace-only")
-    guard runsBeforeSwiftUI == beforeSwiftUI else { return }
-    if beforeSwiftUI { admitMacExecution() }
-    messageExperienceChecks()
 }
 
 @MainActor private func admitMacExecution() {
     do {
         let context = try MacExecutionContext.application()
         try context.activateDevelopmentEnvironment()
-        try context.validateDevelopmentChecks(CommandLine.arguments)
+        try context.validateLaunchArguments(CommandLine.arguments)
+#if VELUNE_DEV_CHECKS
         try context.validateCheckDirectories(environment: ProcessInfo.processInfo.environment)
+#endif
     } catch { MacExecutionContext.failAndExit(error) }
 }
 
@@ -587,17 +509,9 @@ struct VeluneApp: App {
         // Admit purpose and home before checks, telemetry, defaults-backed
         // preferences or any core/device object can be initialized.
         admitMacExecution()
-        let retiredComposerChecks: Set<String> = ["--check-composer-state", "--check-composer-recovery-write", "--check-composer-recovery-read"]
-        if !retiredComposerChecks.isDisjoint(with: CommandLine.arguments) {
-            FileHandle.standardError.write(Data("旧 Composer 双所有权检查已退役；请使用 --check-composer-ownership --composer-check-content-target 与 --check-composer-controls。\n".utf8))
-            exit(2)
-        }
-        if CommandLine.arguments.contains("--check-new-tab") { composerOwnershipCheck() }
-        if CommandLine.arguments.contains("--check-composer-controls") { composerControlsCheck() }
-        if CommandLine.arguments.contains("--check-runtime-interactions") { runtimeInteractionChecks() }
-        if CommandLine.arguments.contains("--check-notification-navigation") { notificationNavigationChecks() }
-        if CommandLine.arguments.contains("--check-aggregated-list") { aggregatedListChecks() }
-        runMessageExperienceCheck(beforeSwiftUI: false)
+#if VELUNE_DEV_CHECKS
+        DevelopmentCheck.runInApp()
+#endif
         let preview = CommandLine.arguments.contains { $0.hasPrefix("--preview") }
         MacNativePersistenceGate.close()
         let transport: Transport?
