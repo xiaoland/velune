@@ -1375,7 +1375,9 @@ struct RuntimeEditor: View {
     @State private var draftID = UUID().uuidString
     /// Type-specific edits belong to this form, while identity and execution stay shared.
     @State private var typeDrafts: [RuntimeKind: TypeDraft] = [:]
+#if VELUNE_DEV_CHECKS
     var observeForCheck: ((RuntimeEditorCheckAccess) -> Void)? = nil
+#endif
     @State private var executableDiscoveryRunning = false
     @State private var executableDiscoveryMessage: String?
     @State private var execution: ExecutionLoad = .loading
@@ -1581,6 +1583,7 @@ struct RuntimeEditor: View {
             if let instance, newConversationMode == .chosen { loadNewConversationModels(instance) }
             DispatchQueue.main.async { discoverExecutableIfNeeded() }
         }
+#if VELUNE_DEV_CHECKS
         .onChange(of: executionReady) { _, ready in
             guard ready else { return }
             observeForCheck?(RuntimeEditorCheckAccess(type: typeSelection, settings: $settings,
@@ -1588,6 +1591,7 @@ struct RuntimeEditor: View {
                 execution: { homeExecution.flatMap { home in transportExecution.map { RuntimeExecution(transport: $0, home: home, remoteResourcesDirectory: remoteResourcesExecution ?? nil) } } },
                 launch: { launch }, save: commit))
         }
+#endif
     }
 
     private var automaticNamingSection: some View {

@@ -87,7 +87,6 @@ final class TranscriptModel: ObservableObject {
         pending = messages.map { TranscriptRow($0.message, id: $0.message.id, status: $0.status) }
         presentation.revision &+= 1
     }
-    func retainedExpandedTurnIDs(_ ids: Set<String>) -> Set<String> { ids.intersection(turns.map(\.id)) }
     func reset() { pending = []; presentation = Presentation(revision: contentRevision &+ 1) }
     /// Turns carry their own `canFork`: a fork may start from each completed
     /// turn's end, even while a later turn runs; `editable` puts an edit

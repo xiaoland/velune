@@ -24,6 +24,8 @@ app 通过生成的 UniFFI 接口消费 application 的完整用例，不解析 
 
 Mac 最低支持macOS15，由根目录 [Package.swift](../../Package.swift) 定义独立 SwiftPM 产品，依赖固定 swift-markdown 0.9.0；[Package.resolved](../../Package.resolved) 锁传递依赖 swift-cmark。build-macos 先生成 UniFFI 模块，再以SwiftPM的Xcode后端构建本机架构产品，dev为debug并限制jobs为2，release为优化构建。应用与生成绑定目标各自启用warnings-as-errors，并打包`app/mac/Licenses`与解析锁文件。依赖保持各自声明的Swift语言模式；当前依赖没有资源bundle。Swift 包不依赖领域 Rust 包源码，只链接对应profile生成绑定与库。
 
+[Checks](Checks/) 中的原生检查与入口由 `VELUNE_DEV_CHECKS` 控制，只编入 development 用途的 App，包含 `build-macos` 与 `build-macos-release`。日常包仍会在启动时拒绝开发检查和预览参数。
+
 新标签复用 DeviceStore 当前列表后直接读目标；不因打开标签先扫描所有运行时。显式 openWindow 请求以临时 seed 集合标记首次展示为普通窗口，展示后恢复全屏交互，系统恢复不消费这个临时意图；全屏源窗口的新开窗口沿用正常默认尺寸。列表拖放目标在异步读取 provider 前取消 ListDragWatch 的拖出后备动作，避免重复新窗口。
 
 会话行与分组的 `NSItemProvider` 数据回调直接返回已捕获的不可变 payload。macOS 退出时会在主线程同步兑现未完成的拖放数据，回调必须独立于主线程运行循环完成。`--check-message-experience --experience-drag-provider-only` 用旧模式负对照和主线程限时等待覆盖这条约束，使用合成身份。

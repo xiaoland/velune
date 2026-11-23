@@ -269,10 +269,6 @@ enum StatusFormat {
         case .remaining: return "剩余 \(100 - used)%"
         }
     }
-    static func limitDetail(_ value: RateLimit, _ display: UsageDisplay) -> String {
-        let reset = value.resetsAtUnixMs.map { Date(timeIntervalSince1970: Double($0) / 1000) }
-        return limit(value.usedPercent, display, short: false) + "，" + QuotaResetFormat.text(reset)
-    }
     static func short(_ tokens: UInt64) -> String { TokenCount.format(tokens) }
     static func cost(_ microUSD: UInt64) -> String {
         (Double(microUSD) / 1_000_000).formatted(.currency(code: "USD").precision(.fractionLength(microUSD < 10_000 ? 4 : 2)))

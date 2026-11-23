@@ -118,6 +118,8 @@ python3 scripts/build-support.py sync "$bindings" target/swift-ffi --include '*.
 } | python3 scripts/build-support.py write target/swift-ffi/module.modulemap
 configuration=debug
 if [[ "$profile" == release ]]; then configuration=release; fi
+# The SwiftPM manifest uses the bundle purpose to select Mac-only check code.
+export VELUNE_MAC_BUILD_PURPOSE="$purpose"
 swift build --build-system xcode --arch "$(uname -m)" --configuration "$configuration" --product VeluneMac -j "${CARGO_BUILD_JOBS:-2}" --force-resolved-versions \
   -Xlinker -L -Xlinker "$(dirname "$prepared")" \
   -Xlinker -lvelune_bindings -Xlinker -rpath -Xlinker '@executable_path/../Frameworks'
