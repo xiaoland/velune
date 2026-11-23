@@ -136,14 +136,15 @@ class ConversationModel(
         if (opening != null) scope.launch {
             try {
                 apply(io(NativeOperation.CONVERSATION_READ) { it.readConversation(opening.runtimeId, opening.conversationId) })
-                pollComposer()
             } catch (error: CancellationException) {
                 throw error
             } catch (error: Exception) {
                 _state.update { it.copy(failure = error.describe()) }
+                return@launch
             } finally {
                 _state.update { it.copy(loading = false) }
             }
+            pollComposer()
         }
     }
 
@@ -154,7 +155,8 @@ class ConversationModel(
         polling = scope.launch {
             while (isActive) {
                 delay(if (_state.value.running) 700 else 3_000)
-                pollComposer()
+                // The input directory and target may take several remote reads.
+                launch { pollComposer() }
                 poll()
             }
         }
@@ -170,17 +172,23 @@ class ConversationModel(
         val runtime = current.contextRuntimeId
         val id = current.conversation.id
         try {
-            when (val update = io(NativeOperation.CONVERSATION_READ) { it.snapshotUpdate(runtime, id, current.cursor) }) {
+            val update = io(NativeOperation.CONVERSATION_READ) { it.snapshotUpdate(runtime, id, current.cursor) }
+            if (snapshot !== current) return
+            when (update) {
                 is SnapshotUpdate.Changed -> merge(update.snapshot)
                 SnapshotUpdate.Unchanged -> {}
                 // The device let the conversation go (it restarted, for one); read it again.
-                SnapshotUpdate.Absent -> apply(io(NativeOperation.CONVERSATION_READ) { it.readConversation(runtime, id) })
+                SnapshotUpdate.Absent -> {
+                    val result = io(NativeOperation.CONVERSATION_READ) { it.readConversation(runtime, id) }
+                    if (snapshot !== current) return
+                    apply(result)
+                }
             }
             _state.update { it.copy(failure = null) }
         } catch (error: CancellationException) {
             throw error
         } catch (error: Exception) {
-            _state.update { it.copy(failure = error.describe()) }
+            if (snapshot === current) _state.update { it.copy(failure = error.describe()) }
         }
     }
 

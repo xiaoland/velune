@@ -8,15 +8,14 @@ import app.velune.bindings.application.RuntimeInstance
 import app.velune.bindings.VeluneApplication
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 
 data class DeviceListing(
     val conversations: List<ListedConversation> = emptyList(),
@@ -47,7 +46,7 @@ class DeviceWorkspace(private val hub: DeviceHub, val peer: String, private val 
         if (polling?.isActive == true) return
         polling = scope.launch {
             while (isActive) {
-                refresh()
+                if (refresh()) refreshActivity()
                 delay(if (_listing.value.active.isEmpty()) 5_000 else 2_000)
             }
         }
@@ -58,18 +57,30 @@ class DeviceWorkspace(private val hub: DeviceHub, val peer: String, private val 
         polling = null
     }
 
-    suspend fun refresh() {
-        try {
-            val (list, activity) = hub.call(peer, NativeOperation.CONFIGURATION_READ) { application ->
-                application.list() to application.conversationActivity(activityCursor)
+    suspend fun refresh(): Boolean {
+        return try {
+            val (list, path) = hub.call(peer, NativeOperation.CONFIGURATION_READ) { application ->
+                application.list() to path(application)
             }
-            val application = hub.application(peer)
-            activityCursor = activity.cursor
-            _listing.value = listing(list, activity.active).copy(path = path(application))
+            _listing.update { listing(list, it.active).copy(path = path) }
+            true
         } catch (error: CancellationException) {
             throw error
         } catch (error: Exception) {
-            _listing.value = _listing.value.copy(loaded = true, failure = error.describe())
+            _listing.update { it.copy(loaded = true, failure = error.describe()) }
+            false
+        }
+    }
+
+    private suspend fun refreshActivity() {
+        try {
+            val activity = hub.call(peer, NativeOperation.READ) { it.conversationActivity(activityCursor) }
+            activityCursor = activity.cursor
+            _listing.update { it.copy(active = activity.active.associateBy { row -> row.conversationId }) }
+        } catch (error: CancellationException) {
+            throw error
+        } catch (_: Exception) {
+            // The next poll can still update the activity of the visible rows.
         }
     }
 
@@ -83,7 +94,7 @@ class DeviceWorkspace(private val hub: DeviceHub, val peer: String, private val 
         return "$kind ${path.rttMicroseconds / 1_000uL} ms"
     }
 
-    private fun listing(list: ConfigurationSnapshot, active: List<ActiveConversation>) = DeviceListing(
+    private fun listing(list: ConfigurationSnapshot, active: Map<String, ActiveConversation>) = DeviceListing(
         conversations = list.conversations.filter { !it.archived && it.conversation.parentConversationId == null },
         runtimes = list.runtimeInstances.filter { it.enabled },
         runtimeLabels = list.runtimeTypes.associateBy { it.id }.let { types ->
@@ -91,7 +102,7 @@ class DeviceWorkspace(private val hub: DeviceHub, val peer: String, private val 
         },
         projectNames = list.conversationProjects.flatMap { project -> project.name?.let { name -> listOfNotNull(project.path to name, project.primaryFolder?.let { it to name }) } ?: emptyList() }.toMap(),
         projects = list.conversationProjects.mapNotNull { it.primaryFolder }.distinct(),
-        active = active.associateBy { it.conversationId },
+        active = active,
         loaded = true,
     )
 }
