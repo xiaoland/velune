@@ -481,11 +481,6 @@ private struct PaneTabItem: View {
         .accessibilityAddTraits(selected ? .isSelected : [])
     }
 
-    private var running: Bool {
-        guard let id = store.selectedConversationID, let conversation = store.conversation(id: id) else { return false }
-        return store.isRunning(conversation)
-    }
-
     /// Close on hover; otherwise what the conversation is doing.
     @ViewBuilder private var leading: some View {
         if hovering && renaming == nil {
@@ -497,10 +492,10 @@ private struct PaneTabItem: View {
                         .fill(Color.primary.opacity(closePointer == .pressed ? 0.18 : closePointer == .over ? 0.09 : 0))
                 }
                 .accessibilityLabel("关闭标签页")
-        } else if !store.pendingInteractions.isEmpty {
+        } else if store.tabIsWaiting {
             Image(systemName: "exclamationmark.circle.fill").foregroundStyle(.orange).imageScale(.small)
                 .accessibilityLabel("等待你的回应")
-        } else if running {
+        } else if store.tabIsRunning {
             ProgressView().controlSize(.mini).accessibilityLabel("正在运行")
         } else if let conversation, conversation.unread && !(selected && active && activeState == .key) {
             if conversation.failed {

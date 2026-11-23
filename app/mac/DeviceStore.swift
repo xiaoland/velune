@@ -329,7 +329,7 @@ final class DeviceStore: ObservableObject {
         guard !isPreview, !isShuttingDown, let transport else { return }
         if !started {
             started = true
-            if NSApp.activationPolicy() != .prohibited { notifier = ConversationNotifier(application: self) }
+            startNotifierIfAvailable()
             loadComposerChoices(transport)
             composerInputs.poll(force: true)
             schedulePolling()
@@ -631,17 +631,25 @@ final class DeviceStore: ObservableObject {
 
     // MARK: - Activity
 
+    private func startNotifierIfAvailable() {
+        if notifier == nil, NSApp.activationPolicy() != .prohibited {
+            notifier = ConversationNotifier(application: self)
+        }
+    }
+
     /// The device follows login and which conversations execute; each tab
     /// follows the conversation it shows.
     private func schedulePolling() {
         timer?.invalidate()
-        timer = Timer.scheduledTimer(withTimeInterval: 0.6, repeats: true) { [weak self] _ in
+        let timer = Timer(timeInterval: 0.6, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 guard let self else { return }
                 self.refreshConversationObservation()
                 self.pollAuthentication(); self.pollActiveConversations(); self.pollQuotaAlerts(); self.composerInputs.poll()
             }
         }
+        RunLoop.main.add(timer, forMode: .common)
+        self.timer = timer
     }
     /// The user is looking at this conversation now.
     func isShowingConversation(_ id: String) -> Bool { isShowingConversation(id, keyWindow: NSApp.keyWindow, active: NSApp.isActive) }
@@ -693,56 +701,56 @@ final class DeviceStore: ObservableObject {
     }
     private func pollActiveConversations() {
         guard started, !isPreview, !isShuttingDown, !activePollPending, activePollBackoff.ready, let transport else { return }
+        startNotifierIfAvailable()
         activePollPending = true
         let since = activityCursor
-        performOnQueue { [weak self] in
+        // Keep live activity independent of list, settings and management reads.
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let result = Result { try transport.conversationActivity(since: since) }
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.activePollPending = false
+                guard !self.isShuttingDown else { return }
                 switch result {
                 case .success(let activity):
                     self.activePollBackoff.succeeded()
                     self.clearActivityProblem("active-conversations")
-                    self.activityCursor = activity.cursor
-                    let active = activity.active
-                    let inputBusy = Set(active.filter { $0.blocksIdleSubmission }.map(\.conversationId))
-                    if self.idleSubmissionBusyIDs != inputBusy { self.idleSubmissionBusyIDs = inputBusy }
-                    let running = Set(active.filter { $0.runState == .running || $0.runState == .stopping }.map(\.conversationId))
-                    if self.runningConversationIDs != running { self.runningConversationIDs = running }
-                    let elsewhere = Set(active.filter { $0.runState == .elsewhere }.map(\.conversationId))
-                    if self.elsewhereConversationIDs != elsewhere { self.elsewhereConversationIDs = elsewhere }
-                    let parents = Set(active.compactMap { item in
-                        [.running, .stopping, .elsewhere].contains(item.runState) ? item.parentConversationId : nil
-                    })
-                    if self.subAgentParentIDs != parents { self.subAgentParentIDs = parents }
-                    let waiting = Set(active.filter { $0.pendingInteractions > 0 }.map(\.conversationId))
-                    if self.waitingConversationIDs != waiting { self.waitingConversationIDs = waiting }
-                    self.executionRuntimeIDs = Dictionary(active.filter { $0.runState == .running && $0.parentConversationId == nil }
-                        .map { ($0.conversationId, $0.contextRuntimeId) }, uniquingKeysWith: { first, _ in first })
-                    self.subAgentRuntimeIDs = Dictionary(active.filter { $0.runState == .running }
-                        .compactMap { item in item.parentConversationId.map { ($0, item.contextRuntimeId) } }, uniquingKeysWith: { first, _ in first })
-                    let resumable = Dictionary(activity.resumable.map { ($0.conversationId, $0.runtimeId) }, uniquingKeysWith: { first, _ in first })
-                    if self.resumableConversations != resumable { self.resumableConversations = resumable }
-                    // A conversation started outside Velune, or by an agent through
-                    // Velune, appears once the list is read again; a sub-agent is
-                    // listed under its parent instead.
-                    let subAgents = Set(active.filter { $0.parentConversationId != nil }.map(\.conversationId))
-                    let unlisted = elsewhere.union(running).subtracting(subAgents).filter { id in !self.conversations.contains { $0.id == id } }
-                    // So does one started and finished between two polls (a quick
-                    // turn sent from a paired device).
-                    let finishedUnlisted = activity.finished.contains { turn in
-                        !subAgents.contains(turn.conversationId) && !self.conversations.contains { $0.id == turn.conversationId }
-                    }
-                    if finishedUnlisted || !unlisted.isSubset(of: self.unlistedElsewhereIDs) { self.refreshConversations() }
-                    self.unlistedElsewhereIDs = unlisted
-                    self.notifier?.observe(activity)
+                    self.applyConversationActivity(activity)
                 case .failure(let failure):
                     self.activePollBackoff.failed()
                     self.recordProblem(failure, source: "读取运行状态", activityKey: "active-conversations")
                 }
             }
         }
+    }
+    func applyConversationActivity(_ activity: ConversationActivity) {
+        activityCursor = activity.cursor
+        let active = activity.active
+        let inputBusy = Set(active.filter { $0.blocksIdleSubmission }.map(\.conversationId))
+        if idleSubmissionBusyIDs != inputBusy { idleSubmissionBusyIDs = inputBusy }
+        let running = Set(active.filter { $0.runState == .running || $0.runState == .stopping }.map(\.conversationId))
+        if runningConversationIDs != running { runningConversationIDs = running }
+        let elsewhere = Set(active.filter { $0.runState == .elsewhere }.map(\.conversationId))
+        if elsewhereConversationIDs != elsewhere { elsewhereConversationIDs = elsewhere }
+        let parents = Set(active.compactMap { item in
+            [.running, .stopping, .elsewhere].contains(item.runState) ? item.parentConversationId : nil
+        })
+        if subAgentParentIDs != parents { subAgentParentIDs = parents }
+        let waiting = Set(active.filter { $0.pendingInteractions > 0 }.map(\.conversationId))
+        if waitingConversationIDs != waiting { waitingConversationIDs = waiting }
+        executionRuntimeIDs = Dictionary(active.filter { $0.runState == .running && $0.parentConversationId == nil }
+            .map { ($0.conversationId, $0.contextRuntimeId) }, uniquingKeysWith: { first, _ in first })
+        subAgentRuntimeIDs = Dictionary(active.filter { $0.runState == .running }
+            .compactMap { item in item.parentConversationId.map { ($0, item.contextRuntimeId) } }, uniquingKeysWith: { first, _ in first })
+        let resumable = Dictionary(activity.resumable.map { ($0.conversationId, $0.runtimeId) }, uniquingKeysWith: { first, _ in first })
+        if resumableConversations != resumable { resumableConversations = resumable }
+        // Completion can change the listed session's unread state and sort position.
+        // Unlisted native sub-agents are shown under their parent.
+        let subAgents = Set(active.filter { $0.parentConversationId != nil }.map(\.conversationId))
+        let unlisted = elsewhere.union(running).subtracting(subAgents).filter { id in !conversations.contains { $0.id == id } }
+        if !isPreview, !activity.finished.isEmpty || !unlisted.isSubset(of: unlistedElsewhereIDs) { refreshConfiguration() }
+        unlistedElsewhereIDs = unlisted
+        notifier?.observe(activity)
     }
     /// Stop the turns of those of `ids` that run in Velune, as their
     /// composers' stop does, without opening them; sub-agents stop with

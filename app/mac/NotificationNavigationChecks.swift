@@ -1,5 +1,6 @@
 import AppKit
 import UserNotifications
+import VeluneBindings
 
 /// Uses real notification payloads, store navigation and window models with
 /// synthetic conversations. No system notifications or messages are sent.
@@ -15,7 +16,8 @@ import UserNotifications
 
     let local = DeviceStore(preview: true)
     let peer = DeviceStore(preview: true, peerID: "synthetic-peer")
-    let localNotifier = ConversationNotifier(application: local)
+    var submitted: [UNNotificationRequest] = []
+    let localNotifier = ConversationNotifier(application: local) { submitted.append($0) }
     let router = ConversationNotificationRouter.shared
     let delegate = UNUserNotificationCenter.current().delegate
     let peerNotifier = ConversationNotifier(application: peer)
@@ -71,6 +73,37 @@ import UserNotifications
     WindowPresentation.notificationTargets.remove(openings[0].id)
     localWindow.noteWindowClosed()
     note("PASS closed notification windows: retained closed models are excluded from selection")
+
+    var stale = local.previewSnapshots["sample-1"]!
+    stale.runState = .running
+    local.keepPreviewSnapshot(stale)
+    let activityWindow = ConversationWindowModel(application: local, kind: .workspace)
+    activityWindow.start(restoring: nil, seed: WindowSeed(conversationID: stale.conversation.id))
+    let background = activityWindow.focused
+    activityWindow.openInNewTab("sample-0", device: local)
+    precondition(activityWindow.focused !== background && background.store.isGenerating)
+    let running = ActiveConversation(contextRuntimeId: stale.contextRuntimeID, conversationId: stale.conversation.id,
+        runState: .running, pendingInteractions: 1, parentConversationId: nil, blocksIdleSubmission: true)
+    local.applyConversationActivity(.init(active: [running], finished: [], resumable: [], cursor: 0))
+    precondition(background.store.tabIsRunning && background.store.tabIsWaiting)
+    let completed = FinishedTurn(silent: false, sequence: 1, contextRuntimeId: stale.contextRuntimeID,
+        conversationId: stale.conversation.id, outcome: .completed)
+    let cancelled = FinishedTurn(silent: false, sequence: 2, contextRuntimeId: stale.contextRuntimeID,
+        conversationId: "sample-0", outcome: .cancelled)
+    let silent = FinishedTurn(silent: true, sequence: 3, contextRuntimeId: stale.contextRuntimeID,
+        conversationId: "sample-2", outcome: .completed)
+    let finished = ConversationActivity(active: [], finished: [completed, cancelled, silent], resumable: [], cursor: 3)
+    local.applyConversationActivity(finished)
+    localNotifier.observe(finished)
+    precondition(activityWindow.focused !== background && background.store.isGenerating,
+                 "验收应保留未选中标签的旧正文快照")
+    precondition(!background.store.tabIsRunning && !background.store.tabIsWaiting,
+                 "已结束的标签必须立即跟随设备状态，不能继续显示等待或运行")
+    precondition(submitted.count == 1 && submitted[0].content.body == "已完成"
+                 && ConversationNotificationTarget(userInfo: submitted[0].content.userInfo) == localTarget,
+                 "后台完成应提交正确的通知，取消和静默轮次应跳过")
+    activityWindow.noteWindowClosed()
+    note("PASS background completion: unselected tab clears its running and waiting states from device activity, and one completion notification targets that tab")
 
     // A synthetic hub supplies real peer-store identity without starting its
     // endpoint. Queued reads cannot reach any device or personal data.

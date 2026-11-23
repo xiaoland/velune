@@ -132,7 +132,7 @@ def prepare_claude_continuation(root, evidence, path, lifetime, editing):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('check', choices=['editor', 'runtime-editor', 'fork-send', 'claude-compact-edit', 'queued-editor', 'archived', 'palette-ime', 'pagination', 'continuation', 'targets', 'tabs', 'ownership', 'geometry', 'controls', 'credits', 'background', 'experience', 'appearance-zoom', 'recovery', 'compaction', 'sidebar', 'provider-analytics', 'background-notifications', 'sidebar-toolbar', 'outgoing-submissions'])
+    parser.add_argument('check', choices=['editor', 'runtime-editor', 'fork-send', 'claude-compact-edit', 'queued-editor', 'archived', 'palette-ime', 'pagination', 'continuation', 'targets', 'tabs', 'ownership', 'geometry', 'controls', 'credits', 'background', 'experience', 'appearance-zoom', 'recovery', 'compaction', 'sidebar', 'provider-analytics', 'background-notifications', 'notification-navigation', 'sidebar-toolbar', 'outgoing-submissions'])
     parser.add_argument('--app', type=Path, default=app_bundle_path(ROOT, 'dev'))
     parser.add_argument('--output', type=Path)
     parser.add_argument('--dark', action='store_true')
@@ -228,6 +228,8 @@ def main():
             flags = ['--check-message-experience', '--experience-compaction-only']
         if args.check == 'background-notifications':
             flags = ['--check-background-notifications']
+        if args.check == 'notification-navigation':
+            flags = ['--check-notification-navigation']
         if args.child_open:
             flags = ['--check-conversation-requests', '--check-child-open']
         if args.check == 'provider-analytics':

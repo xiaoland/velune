@@ -505,6 +505,10 @@ enum VeluneEntry {
             admitMacExecution()
             conversationRequestChecks()
         }
+        if CommandLine.arguments.contains("--check-notification-navigation") {
+            admitMacExecution()
+            notificationNavigationChecks()
+        }
         if CommandLine.arguments.contains("--check-outgoing-submissions") {
             admitMacExecution()
             outgoingSubmissionChecks()
@@ -606,7 +610,6 @@ struct VeluneApp: App {
         if CommandLine.arguments.contains("--check-new-tab") { composerOwnershipCheck() }
         if CommandLine.arguments.contains("--check-composer-controls") { composerControlsCheck() }
         if CommandLine.arguments.contains("--check-runtime-interactions") { runtimeInteractionChecks() }
-        if CommandLine.arguments.contains("--check-notification-navigation") { notificationNavigationChecks() }
         if CommandLine.arguments.contains("--check-aggregated-list") { aggregatedListChecks() }
         if CommandLine.arguments.contains("--check-message-experience") { messageExperienceChecks() }
         let preview = CommandLine.arguments.contains { $0.hasPrefix("--preview") }

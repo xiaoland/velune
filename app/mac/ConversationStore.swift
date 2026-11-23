@@ -239,7 +239,18 @@ final class ConversationStore: ObservableObject {
     var isBusy: Bool { isLoading || applicationIsGenerating || isShuttingDown || device.authenticationRunning }
     var canManageConversations: Bool { !isSideChat && !isShuttingDown }
     /// A running conversation keeps its native session until the turn ends.
-    func isRunning(_ conversation: Conversation) -> Bool { device.runningConversationIDs.contains(conversation.id) || (loadedConversationID == conversation.id && (isGenerating || executionStarting)) }
+    func isRunning(_ conversation: Conversation) -> Bool {
+        device.isConversationRunning(conversation.id) || (loadedConversationID == conversation.id && executionStarting)
+    }
+    /// Tab chrome follows the device's live state even when this transcript is paused.
+    var tabIsRunning: Bool {
+        if isSideChat { return executionStarting || isGenerating }
+        return executionStarting || selectedConversationID.map(device.isConversationRunning) == true
+    }
+    var tabIsWaiting: Bool {
+        if isSideChat { return !pendingInteractions.isEmpty }
+        return selectedConversationID.map(device.waitingConversationIDs.contains) == true
+    }
     /// The core validates the selection again; an unread catalog does not block sending.
     var isStopping: Bool { stopRequested || pendingSendCancellation?.isCancelled() == true || snapshot?.runState == .stopping }
     private var activityBlocksSending: Bool {
