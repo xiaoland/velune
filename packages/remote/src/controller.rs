@@ -136,14 +136,21 @@ impl Controller {
     ) -> Result<RequestStatus> {
         let client = self.client()?;
         id.validate(&client.descriptor().incarnation)?;
-        let effect = command.delivery_class() == DeliveryClass::Effect;
+        let traits = command.traits();
+        let effect = traits.delivery == DeliveryClass::Effect;
         if effect {
             let service = self.owner()?;
             let _access = service.state.access()?;
             if !service.state.store.contact(&self.peer)?.control_authorized {
                 return Err(RemoteError::Unauthorized);
             }
-            let (runtime_id, conversation_id) = operation_targets(&command);
+            let (runtime_id, conversation_id) =
+                traits.operation_target.map_or((None, None), |target| {
+                    (
+                        Some(target.runtime_id.to_owned()),
+                        target.conversation_id.map(str::to_owned),
+                    )
+                });
             service.state.store.record_pending(PendingOperation {
                 peer_id: self.peer.clone(),
                 request_id: id.clone(),
@@ -396,87 +403,5 @@ impl RemoteAccessService {
             .map_err(|_| RemoteError::Unavailable)?
             .remove(peer);
         Ok(())
-    }
-}
-fn operation_targets(command: &Command) -> (Option<String>, Option<String>) {
-    match command {
-        Command::SendTurn {
-            source_runtime_id,
-            conversation_id,
-            ..
-        } => (
-            Some(source_runtime_id.clone()),
-            Some(conversation_id.clone()),
-        ),
-        Command::OpenConversation {
-            runtime_id,
-            conversation_id,
-        }
-        | Command::RenameConversation {
-            runtime_id,
-            conversation_id,
-            ..
-        }
-        | Command::DeleteConversation {
-            runtime_id,
-            conversation_id,
-        }
-        | Command::SetAcpSessionConfig {
-            runtime_id,
-            conversation_id,
-            ..
-        }
-        | Command::EditSendQueue {
-            runtime_id,
-            conversation_id,
-            ..
-        }
-        | Command::SteerTurn {
-            runtime_id,
-            conversation_id,
-            ..
-        }
-        | Command::ResumeTurn {
-            runtime_id,
-            conversation_id,
-            ..
-        }
-        | Command::EditMessage {
-            runtime_id,
-            conversation_id,
-            ..
-        }
-        | Command::ForkConversation {
-            runtime_id,
-            conversation_id,
-            ..
-        }
-        | Command::Cancel {
-            runtime_id,
-            conversation_id,
-        }
-        | Command::StopSubAgents {
-            runtime_id,
-            conversation_id,
-        }
-        | Command::SetConversationHandoff {
-            runtime_id,
-            conversation_id,
-            ..
-        }
-        | Command::OpenSideChat {
-            runtime_id,
-            conversation_id,
-            ..
-        }
-        | Command::ReplyRuntimeInteraction {
-            runtime_id,
-            conversation_id,
-            ..
-        } => (Some(runtime_id.clone()), Some(conversation_id.clone())),
-        Command::CreateConversation { runtime_id, .. }
-        | Command::AdoptRuntimeResource { runtime_id, .. }
-        | Command::ResolveResourceBinding { runtime_id, .. } => (Some(runtime_id.clone()), None),
-        _ => (None, None),
     }
 }
