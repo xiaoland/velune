@@ -436,13 +436,9 @@ impl CoreRuntime {
             config.extension = Some(context.resources.join("pi_virtual_model.mjs"));
             self.session.active_state = ActiveState::Pi(Box::new(pi::PiSession::new(config)));
             self.start_pi_for_session(cwd, (!is_new).then_some(snapshot), None, None)?;
-            let persistent = self.session.side.is_none();
+            let side = self.session.side.is_some();
             let session = self.session.pi()?;
-            if is_new && persistent {
-                session
-                    .new_session()
-                    .map_err(|error| RuntimeError::context("会话创建", error))?;
-            } else if !persistent {
+            if side {
                 session.restore_context(snapshot);
             }
             if let Some((_, model_id)) = native {

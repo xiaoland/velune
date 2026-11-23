@@ -1218,14 +1218,8 @@ impl CoreRuntime {
                 Some(key),
                 Some(&physical),
             )?;
-            let persistent = self.session.side.is_none();
-            let session = self.session.pi()?;
-            if is_new && persistent {
-                session
-                    .new_session()
-                    .map_err(|error| RuntimeError::context("conversation create", error))?;
-            } else if !persistent {
-                session.restore_context(&snapshot);
+            if self.session.side.is_some() {
+                self.session.pi()?.restore_context(&snapshot);
             }
             self.session.model_record_key = Some(key.into());
             self.bind_gateway_model()?;
