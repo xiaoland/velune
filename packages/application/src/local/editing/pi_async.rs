@@ -731,7 +731,7 @@ impl CoreRuntime {
                 edit.phase = Phase::PrepareSource;
             }
             Phase::PrepareSource => {
-                if !self.session.work_settled() && !self.turn_running() {
+                if self.session.work_pending() && !self.turn_running() {
                     return Ok(false);
                 }
                 let source = edit
@@ -779,7 +779,7 @@ impl CoreRuntime {
             Phase::Stop | Phase::Retire => {
                 if matches!(self.session.active_state, ActiveState::Pending(_))
                     || self.turn_running()
-                    || !self.session.work_settled()
+                    || self.session.work_pending()
                 {
                     return Ok(false);
                 }
@@ -878,7 +878,7 @@ impl CoreRuntime {
                 edit.phase = Phase::SourceVerified;
             }
             Phase::SourceVerified => {
-                if !self.session.work_settled() {
+                if self.session.work_pending() {
                     return Ok(false);
                 }
                 let current = self

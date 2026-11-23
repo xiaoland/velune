@@ -998,12 +998,9 @@ impl CoreRuntime {
         {
             self.bind_gateway_model()?;
         }
-        // A managed child's existing backend lease and dispatch target must
-        // survive together. Sync after the write so a terminal background
-        // event cannot release the child between admission and dispatch.
-        if !reusing_claude {
-            self.drain_runtime()?;
-        }
+        // The selected connection and its gateway belong to this dispatch.
+        // Full projection sync follows dispatch: it can settle prior background
+        // work, retire the connection, or advance the send queue.
         self.check_submission_cancelled(self.session.conversation_id().unwrap_or_default())?;
         self.session.unsubmitted_draft = None;
         let mut submitted = None;

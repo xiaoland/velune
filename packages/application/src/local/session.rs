@@ -4,7 +4,7 @@ use super::*;
 use velune_agent_runtime::{
     creation::{DataRetention, Retained},
     LiveError,
-    work::BackgroundTask,
+    work::{BackgroundTask, WorkStatus},
 };
 
 /// Identifies a session while it moves between addressed and parked.
@@ -130,10 +130,15 @@ impl Session {
         )
     }
 
-    pub(super) fn work_settled(&self) -> bool {
+    pub(super) fn work_status(&self) -> WorkStatus {
         self.active_state
             .live()
-            .is_none_or(LiveConversation::work_settled)
+            .map_or(WorkStatus::Untracked, LiveConversation::work_status)
+    }
+
+    /// Only known outstanding work or a pending observation can hold execution open.
+    pub(super) fn work_pending(&self) -> bool {
+        self.work_status().is_pending()
     }
 
     /// Its runtime connection is still needed by execution or metadata;
@@ -150,7 +155,7 @@ impl Session {
                 .live()
                 .is_some_and(LiveConversation::has_pending_requests)
             || self.turn_running()
-            || !self.work_settled()
+            || self.work_pending()
             || self
                 .active_state
                 .live()
@@ -477,10 +482,10 @@ impl CoreRuntime {
     /// Refuses what would end the addressed session's runtime process while
     /// work besides its turn still runs there.
     pub(super) fn ensure_work_ended(&self) -> Result<(), RuntimeError> {
-        if self.session.work_settled() {
-            Ok(())
-        } else {
+        if self.session.work_pending() {
             Err(RuntimeError::OutstandingWork)
+        } else {
+            Ok(())
         }
     }
 
@@ -490,7 +495,7 @@ impl CoreRuntime {
         let ActiveState::Native(native) = &session.active_state else {
             return false;
         };
-        native.work().map_or(true, |work| !work.is_empty())
+        session.work_status() == WorkStatus::Active
             || native.snapshot().is_some_and(|view| {
                 view.messages
                     .iter()
@@ -679,7 +684,7 @@ impl CoreRuntime {
             let work = observation.as_ref().map_or(&[][..], |tasks| tasks.as_slice());
             let local_work = observation.is_err()
                 || work.iter().any(|task| task.conversation_id.is_none())
-                || (work.is_empty() && !session.work_settled());
+                || (work.is_empty() && session.work_pending());
             if session.turn_running() || pending > 0 || local_work {
                 active.push(crate::ActiveConversation {
                     context_runtime_id: view.conversation.runtime_id.clone(),

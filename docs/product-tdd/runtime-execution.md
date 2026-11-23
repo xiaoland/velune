@@ -21,10 +21,10 @@
 
 适配器报告历史读取、执行复用、冷恢复和外部控制权各自的原生能力。application 决定何时准备、保留或释放执行，按执行环境和配置判断复用资格。读取历史只需读取来源，创建或接续执行另行准备。运行时进程与一轮的临时网关覆盖持续到该轮工作全部结束，原生子 Agent 与后台任务也算工作（[PRD](../prd/agent-runtimes.md)）。
 
-- agent-runtime 的 `LiveConversation` 以 `turn_running()`、`work()` 与 `work_settled()` 区分父轮次、已知后台任务及工作／通知交接是否已结束。Codex 跟踪同一 app-server 中其他线程，Claude Code 取未结束的任务；Pi 消费 `pi-background-tasks` 的公开 Host EventBus v1，ACP、DSH 暂无轮次外工作。后台任务不一定具有可独立打开的会话身份，没有时活动属于父会话。查询尚未确认或通知仍在交接时，空任务列表不授权重准备或收尾；尽力元数据请求另行保留连接，不阻止重准备。
+- agent-runtime 的 `LiveConversation` 分别提供前台轮次、任务列表和后台生命周期。Codex 跟踪同一 app-server 中其他线程，Claude Code 追踪未结束的任务及其自动回调，Pi 消费扩展的 Host EventBus 事件。任务列表服务于展示。查询或通知交接仍待确认时，生命周期保持待结清。通用 ACP 和 DeepSeek Harness 显式报告未接入后台观测，按已知前台状态和待处理请求管理连接。后台任务可归属父会话或独立子会话。尽力元数据请求可保留连接并允许重新准备。
 - application 以轮次运行或仍有工作判定会话执行中。经网关的工作结清后关闭本轮执行并释放 runner 与隧道。会话原生 provider 身份由 Harness 保有，跨 provider 继续走会话接续。
 - 空闲容量回收只适用于工作已结清、没有待答交互且释放后仍可接续的会话。仅能在当前连接继续的会话保留执行。用户主动交还控制权走[会话输入准入与调度](conversations.md#会话输入准入与调度)。
-- 下一轮能复用进程时照常发送。需要另起进程（选择、提供商或会话变化；Claude Code 每轮都是）时，`restart_needed` 与 `ensure_work_ended` 以 `Error::OutstandingWork` 拒绝，不结束子 Agent；消息进入发送队列并标记 `FollowUp.waiting = SubAgents`，工作结束后自动发出。
+- 下一轮能复用进程时照常发送。Core 在选定执行后持有进程和网关直到派发，随后同步可能触发回收或推进队列的运行时事件。下一轮若需要更换进程，且后台工作仍待结清，则消息进入发送队列，待工作结清后自动发出。
 - 停止父会话同时中断其子 Agent；`stop_sub_agents` 只停止子 Agent。退出时若有轮次或子 Agent 在 Velune 的进程中运行，平台先确认，再以 `shutdown_stopping_work` 结束它们。
 
 原生失败的类别与原始详情由 adapter 归一化为 `MessageBlock::RuntimeFailure`，一般通知继续使用 `Notice`。冷历史、实时观测与重新打开须保留同一失败原因；平台消费类型化事实，在工作过程折叠时仍呈现当前故障，不通过正文关键词猜测错误。已知登录失效等非重试失败不伪造重试计划，原生没有提供详情时明确保留未知。

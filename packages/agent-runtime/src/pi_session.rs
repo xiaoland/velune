@@ -213,7 +213,9 @@ impl Running {
             // A terminal projection is not a process/cleanup lease release.
             self.busy = false;
         } else if self.projection.turn_ended() {
-            self.busy = false;
+            // An extension run can finish before the next submitted prompt is
+            // acknowledged. Its terminal event does not release that prompt.
+            self.busy = self.pending_prompt.is_some();
         } else if event["type"] == "agent_start" {
             // Extensions may start follow-up runs without a prompt from
             // Velune, including while a history RPC is in flight.
@@ -331,6 +333,17 @@ impl PiSession {
                 }
             }))
             .collect()
+    }
+
+    pub(crate) fn work_status(&self) -> crate::work::WorkStatus {
+        use crate::work::WorkStatus;
+        if !self.background.is_empty() || !self.children.is_empty() {
+            WorkStatus::Active
+        } else if self.has_pending_metadata() {
+            WorkStatus::Settling
+        } else {
+            WorkStatus::Settled
+        }
     }
 
     pub fn can_stop_child(&self, id: &str) -> bool {
@@ -2303,7 +2316,7 @@ for line in sys.stdin:
                 {"id":"before-compaction","status":"completed","notifyOnCompletion":true,"notified":true}
             ],"persistedNotificationIds":["before-compaction"]
         }));
-        assert!(session.work_settled());
+        assert_eq!(session.work_status(), crate::work::WorkStatus::Settled);
         assert!(!session.has_pending_metadata());
 
         session.apply_background_frame(&json!({
@@ -2326,7 +2339,7 @@ for line in sys.stdin:
         }));
         assert!(!session.has_pending_metadata());
         assert!(
-            !session.work_settled(),
+            session.work_status() == crate::work::WorkStatus::Active,
             "a receipt must not erase active work"
         );
     }

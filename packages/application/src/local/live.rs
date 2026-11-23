@@ -460,7 +460,7 @@ fn parent_finished_child(parent: &super::session::Session, child: &str) -> bool 
     !work
         .iter()
         .any(|task| task.conversation_id.as_deref() == Some(child))
-        && (parent.work_settled()
+        && (parent.work_status() == velune_agent_runtime::work::WorkStatus::Settled
             || (!work.is_empty()
                 && work.iter().all(|task| task.conversation_id.is_some())
                 && !parent

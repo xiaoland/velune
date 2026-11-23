@@ -13,7 +13,7 @@ use velune_agent_runtime::{
     control::Target,
     creation::{DataRetention, Retained},
     execution::ExecutionTarget,
-    work::BackgroundTask,
+    work::{BackgroundTask, WorkStatus},
 };
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -585,8 +585,8 @@ impl LiveConversation for FrozenExecution {
             .map_err(|error| -> LiveError { error.as_str().into() })?;
         Ok(tasks.try_clone()?)
     }
-    fn work_settled(&self) -> bool {
-        false
+    fn work_status(&self) -> WorkStatus {
+        WorkStatus::Settling
     }
     fn has_pending_metadata(&self) -> bool {
         true

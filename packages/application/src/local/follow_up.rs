@@ -1118,7 +1118,7 @@ impl CoreRuntime {
                             velune_agent_runtime::version::ResumeStrategy::Unsupported
                         )
                 })
-            && session.work_settled()
+            && !session.work_pending()
             && snapshot
                 .messages
                 .iter()
@@ -1187,7 +1187,7 @@ impl CoreRuntime {
                         runtime.enabled
                             && velune_agent_runtime::version::variant(runtime.type_id).can_compact
                     })
-                && self.session.work_settled()
+                && !self.session.work_pending()
                 && !snapshot.messages.is_empty(),
             editable: self.editable_messages(snapshot),
             can_fork: self.forkable(snapshot),
@@ -1311,10 +1311,10 @@ for line in sys.stdin:
             core.session.execution_runtime_id = Some("pi".into());
             core.session.model_selection = Some(None);
             assert!(
-                !core.session.work_settled(),
+                core.session.work_pending(),
                 "startup discovery is not settled"
             );
-            drain_until(core, |core| core.session.work_settled());
+            drain_until(core, |core| !core.session.work_pending());
             assert_eq!(
                 core.native_snapshot().unwrap().messages[0].id,
                 "source-user"

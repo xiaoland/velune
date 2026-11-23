@@ -382,7 +382,6 @@ for line in sys.stdin:
 
 #[test]
 fn pi_session_parent_settlement_requeries_inflight_background_snapshot_and_retains_live_work() {
-    use crate::LiveConversation;
     let mut fixture = Fixture::new(
         r#"
 import json,sys,time
@@ -408,7 +407,7 @@ for line in sys.stdin:
     fixture.until(|session| !session.has_pending_metadata());
     assert_eq!(fixture.session.background_tasks().tasks[0].id, "survivor");
     assert!(
-        !fixture.session.work_settled(),
+        fixture.session.work_status() == crate::work::WorkStatus::Active,
         "parent settlement never releases surviving background work"
     );
 }
@@ -445,6 +444,52 @@ for line in sys.stdin:
     assert!(requests.find("compact").unwrap() < requests.find("clear_queue").unwrap());
     assert!(requests.find("clear_queue").unwrap() < requests.find("abort").unwrap());
     assert!(fixture.session.snapshot().unwrap().actions.can_send);
+}
+
+#[test]
+fn pi_background_run_end_keeps_the_pending_prompt_live() {
+    let mut fixture = Fixture::new(
+        r#"
+import json, os, sys, time
+root = os.path.dirname(__file__)
+def emit(value): print(json.dumps(value), flush=True)
+for line in sys.stdin:
+ request = json.loads(line)
+ command = request['type']
+ if command == 'prompt':
+  emit({'type':'agent_start'})
+  emit({'type':'agent_settled'})
+  deadline = time.monotonic() + 5
+  while not os.path.exists(os.path.join(root, 'release-prompt')):
+   if time.monotonic() >= deadline: sys.exit(2)
+   time.sleep(.005)
+  emit({'type':'agent_start'})
+  emit({'type':'response','command':command,'id':request['id'],'success':True,'data':{}})
+  emit({'type':'agent_settled'})
+ else:
+  emit({'type':'response','command':command,'id':request['id'],'success':True,'data':{'commands':[]}})
+"#,
+    );
+    fixture.until(|session| !session.has_pending_metadata());
+    fixture.session.send(&input("next input".into())).unwrap();
+    fixture.until(|session| session.running.as_ref().unwrap().projection.turn_ended());
+    // Unblock the worker before asserting so a failing test can shut down.
+    let pending_kept_busy = fixture.session.turn_running();
+    std::fs::write(fixture.root.join("release-prompt"), []).unwrap();
+    assert!(
+        pending_kept_busy,
+        "the previous run must not release this input"
+    );
+    fixture.until(|session| !session.turn_running());
+    assert!(
+        fixture
+            .session
+            .running
+            .as_ref()
+            .unwrap()
+            .pending_prompt
+            .is_none()
+    );
 }
 
 #[test]

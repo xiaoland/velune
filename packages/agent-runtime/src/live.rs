@@ -3,6 +3,7 @@
 use crate::conversation::{ConversationSnapshot, ConversationSummary, RuntimeInteractionReply};
 use crate::{TurnInput, acp, native, pi_session::PiSession};
 use crate::creation::{DataRetention, Retained};
+use crate::work::WorkStatus;
 
 /// Failure of a runtime operation, for display.
 pub type LiveError = Box<dyn std::error::Error + Send + Sync>;
@@ -34,12 +35,8 @@ pub trait LiveConversation {
     fn work(&self) -> Result<Retained<Vec<crate::work::BackgroundTask>>, LiveError> {
         Ok(Retained::from_parts(Vec::new(), DataRetention::default()))
     }
-    /// True only once the adapter has observed that all background work and
-    /// its completion delivery have settled. An empty but stale list is not
-    /// enough to authorize replacing the process.
-    fn work_settled(&self) -> bool {
-        self.work().is_ok_and(|work| work.is_empty())
-    }
+    /// Lifecycle evidence is independent of the task list used for display.
+    fn work_status(&self) -> WorkStatus;
     /// A native request still needs this connection even if it doesn't block the turn.
     fn has_pending_requests(&self) -> bool {
         false
@@ -49,10 +46,10 @@ pub trait LiveConversation {
         false
     }
     fn stop_background(&mut self) -> LiveResult {
-        if self.work_settled() {
-            Ok(())
-        } else {
+        if self.work_status().is_pending() {
             Err("此运行时没有后台工作停止接口".into())
+        } else {
+            Ok(())
         }
     }
     fn can_stop_child(&self, _id: &str) -> bool {
@@ -136,8 +133,8 @@ impl LiveConversation for PiSession {
     fn work(&self) -> Result<Retained<Vec<crate::work::BackgroundTask>>, LiveError> {
         Ok(Retained::from_parts(PiSession::work(self), DataRetention::default()))
     }
-    fn work_settled(&self) -> bool {
-        PiSession::work(self).is_empty() && !PiSession::has_pending_metadata(self)
+    fn work_status(&self) -> WorkStatus {
+        PiSession::work_status(self)
     }
     fn has_pending_metadata(&self) -> bool {
         PiSession::has_pending_metadata(self)
@@ -213,8 +210,8 @@ impl LiveConversation for native::NativeSession {
     fn work(&self) -> Result<Retained<Vec<crate::work::BackgroundTask>>, LiveError> {
         Ok(native::NativeSession::work(self)?)
     }
-    fn work_settled(&self) -> bool {
-        !self.waits_for_background_followup() && self.work().is_ok_and(|work| work.is_empty())
+    fn work_status(&self) -> WorkStatus {
+        native::NativeSession::work_status(self)
     }
     fn has_pending_requests(&self) -> bool {
         native::NativeSession::has_pending_requests(self)
@@ -279,6 +276,9 @@ impl LiveConversation for acp::Client {
     }
     fn turn_running(&self) -> bool {
         acp::Client::turn_running(self)
+    }
+    fn work_status(&self) -> WorkStatus {
+        WorkStatus::Untracked
     }
     fn supports_reopen(&self) -> bool {
         // Velune reopens generic ACP through session/load, which also replays history.

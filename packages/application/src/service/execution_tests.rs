@@ -516,10 +516,20 @@ held_echo = None
 flooded = False
 current_turn = 'turn'
 held_children = []
+managed_background_active = False
 attempt = 0
 turn_count = 0
 buffer = ''
 while True:
+    if managed_background_active and (root / 'finish-managed-background').exists():
+        managed_background_active = False
+        for child in ('child-a', 'child-b'):
+            emit('turn/completed', {'threadId':child,'turn':{'id':'turn-' + child,'status':'completed'}})
+            emit('thread/status/changed', {'threadId':child,'status':{'type':'idle'}})
+        # Fill the pipe after the terminal events, forcing the Rust reader to
+        # queue them before the read-only helper can unblock the Core owner.
+        emit('synthetic/pipeBarrier', {'threadId':'thread','padding':'x' * (2 * 1024 * 1024)})
+        (root / 'managed-background-finished').touch()
     if held_echo and (root / 'finish-without-echo').exists():
         emit('turn/completed', {'threadId':'thread','turn':{'id':current_turn,'status':'completed'}})
         held_echo = None
@@ -573,18 +583,44 @@ while True:
     elif method == 'thread/start':
         with (root / 'thread-processes').open('a') as log: log.write(str(os.getpid()) + '\n')
         ack(request, {'thread':{'id':'thread','name':'Synthetic','cwd':str(root)},'model':'synthetic-native'})
-    elif method == 'thread/resume': ack(request, {'thread':{'id':'thread','modelProvider':'openai'}})
+    elif method == 'thread/resume':
+        provider = 'velune' if (root / 'mode').read_text() == 'managed-queue-background' else 'openai'
+        ack(request, {'thread':{'id':'thread','modelProvider':provider}})
     elif method == 'thread/read':
         if (root / 'reject-provider-check').exists():
             print(json.dumps({'id':request['id'], 'error':{'code':-32600,'message':'provider-check-required'}}), flush=True)
             continue
         thread = request['params']['threadId']
-        ack(request, {'thread':{'id':thread,'modelProvider':'openai','historyMode':'legacy','turns':[],
+        provider = 'openai'
+        if (root / 'mode').read_text() == 'managed-queue-background':
+            provider = 'velune'
+            armed = root / 'finish-background-during-provider-read'
+            if thread == 'thread' and request['params'].get('includeTurns') is False and armed.exists():
+                armed.unlink()
+                (root / 'finish-managed-background').touch()
+                deadline = time.monotonic() + 5
+                while not (root / 'managed-background-finished').exists():
+                    if time.monotonic() >= deadline: sys.exit(2)
+                    time.sleep(0.005)
+        ack(request, {'thread':{'id':thread,'modelProvider':provider,'historyMode':'legacy','turns':[],
             'parentThreadId':'thread' if thread.startswith('child-') else None}})
     elif method == 'turn/start':
         with (root / 'turn-processes').open('a') as log: log.write(str(os.getpid()) + '\n')
         turn_count += 1
         mode = (root / 'mode').read_text()
+        if mode == 'managed-queue-background':
+            text = request['params']['input'][0]['text']
+            current_turn = 'managed-first' if text == 'start managed background' else 'managed-next'
+            ack(request, {'turn':{'id':current_turn}})
+            emit('turn/started', {'threadId':'thread','turn':{'id':current_turn}})
+            emit('item/completed', {'threadId':'thread','turnId':current_turn,'item':{'id':'user-' + current_turn,'type':'userMessage','content':request['params']['input']}})
+            if current_turn == 'managed-first':
+                managed_background_active = True
+                for child in ('child-a', 'child-b'):
+                    emit('thread/status/changed', {'threadId':child,'status':{'type':'active','activeFlags':[]}})
+                    emit('turn/started', {'threadId':child,'turn':{'id':'turn-' + child}})
+            emit('turn/completed', {'threadId':'thread','turn':{'id':current_turn,'status':'completed'}})
+            continue
         if mode == 'draft-first-reject':
             print(json.dumps({'id':request['id'], 'error':{'code':-32600,'message':'first input explicitly rejected'}}), flush=True)
             (root / 'send-entered').touch()
@@ -3183,6 +3219,107 @@ fn claude_background_send_reuses_inherited_options_and_queues_saved_configuratio
         fs::read_to_string(fixture.0.join("steer-wire")).unwrap(),
         "start background work\nsame settings follow-up\n"
     );
+    app.close(true).unwrap();
+}
+
+#[test]
+fn managed_codex_sends_once_when_the_last_background_work_settles_during_submission() {
+    use crate::config::{ExecutionBackend, Protocol, ProviderQuotaSource, RequestProfile};
+    use crate::conversation::RunState;
+    use velune_application_api::{ProviderDraft, ProviderModel};
+
+    let fixture = Fixture::codex_control("managed-queue-background");
+    let app = open_control_service(&fixture);
+    let execute = |command| app.execute(ClientViewId("control-view".into()), command);
+    let Response::SaveProvider(saved) = execute(Command::SaveProvider {
+        gateway_id: "default".into(),
+        provider: ProviderDraft {
+            id: "synthetic".into(),
+            name: "Synthetic transport".into(),
+            protocol: Protocol::Responses,
+            // The fixture only records native dispatch. It never calls upstream.
+            endpoint: "http://127.0.0.1:9/v1".into(),
+            execution_backend: ExecutionBackend::Http,
+            request_profile: RequestProfile::Native,
+            authentication_source: crate::ProviderAuthenticationSource::ApiKey,
+            quota_source: ProviderQuotaSource::None,
+            quota_limits: Vec::new(),
+            models: vec![ProviderModel {
+                record_key: String::new(),
+                provider_model_id: "synthetic-managed".into(),
+                nickname: String::new(),
+                icon: None,
+                context_window: None,
+                max_output_tokens: None,
+                reasoning_levels: None,
+                request_parameters: None,
+            }],
+        },
+        authentication_edit: crate::AuthenticationEdit::SetApiKey {
+            value: "synthetic-key".into(),
+        },
+        quota_authentication_edit: None,
+    })
+    .unwrap() else {
+        panic!("save provider response");
+    };
+    let selection = Some(crate::ModelSelection::Managed {
+        model_record_key: saved.gateways[0].providers[0].models[0].record_key.clone(),
+    });
+    let id = created_codex(&app, &fixture, "synthetic", selection.clone());
+    let send = |text| {
+        let Response::SendTurn(result) = execute(Command::SendTurn {
+            submission_id: None,
+            source_runtime_id: "synthetic".into(),
+            conversation_id: id.clone(),
+            target_runtime_id: "synthetic".into(),
+            selection: selection.clone(),
+            turn: control_turn(text),
+        })
+        .unwrap() else {
+            panic!("send response");
+        };
+        assert_eq!(
+            result.submission_receipt,
+            Some(crate::SubmissionReceipt::Sending)
+        );
+    };
+    let first_text = "start managed background";
+    let next_text = "send during managed background settlement";
+    send(first_text);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let snapshot = control_snapshot(&app, &id);
+        if snapshot.run_state == RunState::Idle && snapshot.sub_agents.len() == 2 {
+            assert!(snapshot.actions.can_send);
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "parent and background did not separate"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+
+    fs::write(fixture.0.join("finish-background-during-provider-read"), []).unwrap();
+    send(next_text);
+    assert!(fixture.0.join("managed-background-finished").exists());
+
+    let wire = fixture.wire();
+    assert!(wire.iter().any(|record| {
+        record["method"] == "thread/start" && record["params"]["modelProvider"] == "velune"
+    }));
+    let starts: Vec<_> = wire
+        .iter()
+        .filter(|record| record["method"] == "turn/start")
+        .map(|record| &record["params"])
+        .collect();
+    assert_eq!(starts.len(), 2, "one native write per user input");
+    for (start, text) in starts.iter().zip([first_text, next_text]) {
+        assert_eq!(start["threadId"], "thread");
+        assert_eq!(start["input"][0]["text"], text);
+    }
+    assert_eq!(starts[0]["model"], starts[1]["model"]);
     app.close(true).unwrap();
 }
 

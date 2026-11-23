@@ -756,7 +756,7 @@ impl NativeSession {
         } else {
             self.restart_needed_for_send(input.effort.as_deref(), input.permission_mode.as_deref())
         };
-        if restart && (self.has_background_work() || self.waits_for_background_followup()) {
+        if restart && self.work_status().is_pending() {
             return Err(Error::with_code(
                 "子 Agent 仍在运行；此轮需要重新启动运行时，请等待其结束或先停止子 Agent",
                 "outstanding_work",
@@ -1403,6 +1403,16 @@ impl NativeSession {
         };
         Ok(Retained::from_parts(work, retention))
     }
+    pub(crate) fn work_status(&self) -> crate::work::WorkStatus {
+        use crate::work::WorkStatus;
+        match self.config.kind {
+            NativeKind::DeepSeek => WorkStatus::Untracked,
+            _ if self.has_background_work() => WorkStatus::Active,
+            _ if self.waits_for_background_followup() => WorkStatus::Settling,
+            _ => WorkStatus::Settled,
+        }
+    }
+
     fn has_background_work(&self) -> bool {
         match self.config.kind {
             NativeKind::Codex166 => !self.codex.threads.is_empty(),
@@ -1431,7 +1441,7 @@ impl NativeSession {
     }
 
     fn claude_has_ongoing_background(&self) -> bool {
-        self.has_background_work() || self.waits_for_background_followup()
+        self.work_status().is_pending()
     }
 
     /// Ask the work besides the turn to stop if the adapter supports it.

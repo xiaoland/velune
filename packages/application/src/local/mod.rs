@@ -922,9 +922,9 @@ impl CoreRuntime {
                 // Consume the outcome when the worker returns the projection.
                 return result;
             }
-            // A next turn can share a connection with actual background work.
-            // Settlement of metadata alone must finish before draining the queue.
-            if self.session.work().is_ok_and(|work| work.is_empty()) {
+            // Only actual background work allows the next turn to share this
+            // connection before the current managed execution is collected.
+            if self.session.work_status() != velune_agent_runtime::work::WorkStatus::Active {
                 return result;
             }
         }
