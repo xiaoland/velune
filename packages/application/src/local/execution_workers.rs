@@ -15,6 +15,7 @@ use velune_agent_runtime::{
     execution::ExecutionTarget,
     work::BackgroundTask,
 };
+pub(crate) use velune_application_api::ExecutionCommandKind;
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct ExecutionTicket {
@@ -30,37 +31,21 @@ pub(super) struct ExecutionCommand {
     started: Option<ExecutionTicket>,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ExecutionCommandKind {
-    Create,
-    Cancel,
-    StopBackground,
-    Reply,
-    Send,
-    Resume,
-    Steer,
-    Edit,
-    Delete,
-}
-
 #[derive(Default)]
 pub(crate) struct ExecutionSuccess {
     pub(crate) submitted_native_message_id: Option<String>,
 }
 
-impl ExecutionCommandKind {
-    pub(crate) fn is_submission(self) -> bool {
-        matches!(self, Self::Send | Self::Resume | Self::Steer | Self::Edit)
-    }
-
-    fn allows(self, name: &str) -> bool {
-        matches!(
-            (self, name),
-            (Self::Create, "native_create")
-                | (Self::Cancel, "cancel" | "stop_child")
-                | (Self::StopBackground, "stop_background")
-                | (Self::Reply, "reply")
-        )
+impl ExecutionCommand {
+    fn allows(&self, name: &str) -> bool {
+        use ExecutionCommandKind::*;
+        match self.kind {
+            Create => name == "native_create",
+            Cancel => matches!(name, "cancel" | "stop_child"),
+            StopBackground => name == "stop_background",
+            Reply => name == "reply",
+            Send | Resume | Steer | Edit | Delete => false,
+        }
     }
 }
 
@@ -1003,7 +988,7 @@ impl CoreRuntime {
         let Some(command) = self
             .execution_command
             .as_ref()
-            .filter(|command| command.dispatching && command.kind.allows(name))
+            .filter(|command| command.dispatching && command.allows(name))
         else {
             if self.session.native_controls.pending() {
                 return Err(RuntimeError::Busy);
@@ -1048,6 +1033,7 @@ impl CoreRuntime {
 mod tests {
     use super::*;
     use std::time::Duration;
+    pub(crate) use velune_application_api::ExecutionCommandKind;
 
     fn submit(
         workers: &ExecutionWorkers,
@@ -1213,6 +1199,7 @@ mod tests {
 #[cfg(all(test, unix))]
 pub(crate) mod cleanup_test_gate {
     use super::*;
+    pub(crate) use velune_application_api::ExecutionCommandKind;
     type Gate = (mpsc::Sender<()>, mpsc::Receiver<()>);
     static GATES: std::sync::LazyLock<Mutex<HashMap<String, Gate>>> =
         std::sync::LazyLock::new(Default::default);
@@ -1236,6 +1223,7 @@ pub(crate) mod cleanup_test_gate {
 pub(crate) mod pi_delete_test_gate {
     use super::*;
     use std::sync::atomic::{AtomicBool, Ordering};
+    pub(crate) use velune_application_api::ExecutionCommandKind;
     type MutationGate = (mpsc::Sender<()>, mpsc::Receiver<()>);
     static MUTATION: std::sync::LazyLock<Mutex<HashMap<String, MutationGate>>> =
         std::sync::LazyLock::new(Default::default);
@@ -1303,6 +1291,7 @@ pub(crate) mod pi_delete_test_gate {
 #[cfg(all(test, unix))]
 pub(crate) mod pi_edit_deadline_test_gate {
     use super::*;
+    pub(crate) use velune_application_api::ExecutionCommandKind;
     static REQUESTS: std::sync::LazyLock<Mutex<HashMap<String, mpsc::Sender<()>>>> =
         std::sync::LazyLock::new(Default::default);
 
