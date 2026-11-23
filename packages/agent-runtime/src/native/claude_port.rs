@@ -270,17 +270,6 @@ impl NativeSession {
         })
     }
 
-    /// Explicit blocking history refresh requested by compaction projection.
-    pub fn refresh_claude_context_blocking(&mut self) -> Result<()> {
-        if self.config.kind != NativeKind::ClaudeCode {
-            return Err(Error::new("Not a Claude session"));
-        }
-        let result = self.claude_read_context();
-        if result.is_ok() {
-            self.claude.commands.context_refresh_required = false;
-        }
-        result
-    }
     pub fn claude_context_refresh_required(&self) -> bool {
         self.claude.commands.context_refresh_required
     }

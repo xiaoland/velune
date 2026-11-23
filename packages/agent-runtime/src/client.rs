@@ -217,14 +217,9 @@ impl Config {
 }
 
 impl Client {
-    /// Compatibility facade for the explicit blocking preparation boundary.
-    pub fn spawn(config: Config) -> Result<Self> {
-        Self::prepare_blocking(config)
-    }
-
     /// Resource preparation, process startup and the transport prefix perform IO.
     /// Call before installing this connection in the nonblocking session owner.
-    pub fn prepare_blocking(mut config: Config) -> Result<Self> {
+    pub fn spawn(mut config: Config) -> Result<Self> {
         config.validate()?;
         let mcp = crate::mcp::Prepared::new(
             &config.mcp_servers,
@@ -902,10 +897,6 @@ impl Client {
         Ok(())
     }
 
-    pub fn sync_virtual_selection(&mut self) -> Result<Value> {
-        self.request(json!({"type":"prompt","message":"/velune-sync-selection"}))
-    }
-
     pub fn cancel(&mut self) -> Result<Vec<Value>> {
         // Pi documents clear_queue before abort for interactive cancellation.
         Ok(vec![
@@ -968,14 +959,10 @@ impl Client {
         }
     }
 
-    /// Synchronous compatibility facade; disabled once the typed port is enabled.
-    pub fn state(&mut self) -> Result<(Value, Value)> {
-        self.state_blocking_preparation()
-    }
-
-    /// Readiness/history preparation before handing the client to PiSession.
+    /// Blocking readiness/history preparation before handing the client to PiSession.
+    /// Disabled once the typed port is enabled.
     /// The live owner installs the atomic ProjectionSync frame in event order.
-    pub fn state_blocking_preparation(&mut self) -> Result<(Value, Value)> {
+    pub fn state(&mut self) -> Result<(Value, Value)> {
         let mut state = self.request_with_timeout(json!({"type":"get_state"}), STARTUP_TIMEOUT)?;
         let request_id = format!("velune-snapshot-{}", self.next_id);
         let metadata = self.request_with_timeout(
@@ -1104,20 +1091,6 @@ impl Client {
         }
         self.pending = retained;
         frame.ok_or_else(|| Error::Sdk("Pi 后台工作桥接没有返回结构化状态".into()))
-    }
-
-    pub fn stop_background_tasks(&mut self, task_ids: &[String]) -> Result<Value> {
-        self.background_work_command(&json!({"operation":"stop_all","taskIds":task_ids}))
-    }
-
-    /// The extension performs the host request asynchronously. Its scoped
-    /// setStatus response is consumed by ordinary nonblocking polling.
-    pub fn begin_background_work_command(&mut self, command: &Value) -> Result<()> {
-        let encoded = URL_SAFE_NO_PAD.encode(serde_json::to_vec(command)?);
-        self.write_command(
-            json!({"type":"prompt","message":format!("/velune-background-work {encoded}")}),
-        )?;
-        Ok(())
     }
 
     pub fn switch_session(&mut self, path: &Path) -> Result<Value> {

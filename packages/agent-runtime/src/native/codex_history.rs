@@ -124,21 +124,6 @@ pub(super) fn pages(
     Ok(entries.expect("the first page always owns an aggregate"))
 }
 
-pub fn list_codex_history(
-    binary: &Path,
-    home: &Path,
-    runtime_id: &str,
-) -> Result<Retained<Vec<ConversationSummary>>> {
-    list_codex_history_at(
-        crate::version::RuntimeKind::Codex166,
-        binary,
-        home,
-        runtime_id,
-        false,
-        &crate::execution::ExecutionTarget::Local,
-        None,
-    )
-}
 /// The runtime's threads, either those in use or those it archived.
 pub fn list_codex_history_at(
     kind: crate::version::RuntimeKind,
@@ -204,22 +189,6 @@ pub fn read_codex_summary_at(
     })
 }
 
-pub fn read_codex_history(
-    binary: &Path,
-    home: &Path,
-    runtime_id: &str,
-    id: &str,
-) -> Result<Retained<History>> {
-    read_codex_history_at(
-        crate::version::RuntimeKind::Codex166,
-        binary,
-        home,
-        runtime_id,
-        id,
-        &crate::execution::ExecutionTarget::Local,
-        None,
-    )
-}
 pub fn codex_context_provider(
     config: &crate::history::HistoryConfig,
     cwd: &Path,

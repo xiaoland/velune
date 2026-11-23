@@ -31,7 +31,7 @@ pub use codex::{
     CodexInterruptReceipt, CodexOperationReceipt, CodexOperationTicket, ThreadChange,
     manage_thread, manage_thread_at, resume_provider_matches, update_read_state,
 };
-mod codex_history;
+pub(crate) mod codex_history;
 pub(crate) use codex_history::cleanup_owned_codex_import;
 mod codex_handoff_summary;
 mod codex_messages;
@@ -46,15 +46,8 @@ pub use codex_handoff_summary::{
     HandoffSummaryArtifact, HandoffSummaryArtifactState, HandoffSummaryCleanupState,
     HandoffSummaryPhase, HandoffSummaryRequest, HandoffSummaryStatus,
 };
-pub(crate) use codex_history::read_codex_with_summary_at;
 pub use codex_history::{
-    HandoffSummaryRecovery, codex_context_provider, codex_models_for_provider,
-    codex_requires_portable_summary, codex_thread_model, export_codex_context,
-    export_codex_context_before, export_codex_context_with_summary, export_codex_context_without,
-    export_codex_context_without_many, list_codex_history, list_codex_history_at,
-    materialize_codex_import, materialize_owned_codex_import, read_codex_history,
-    read_codex_history_at, read_codex_summary_at, recover_codex_handoff_summary,
-    verify_codex_handoff_summary_source,
+    HandoffSummaryRecovery, codex_context_provider, materialize_owned_codex_import,
 };
 mod deepseek;
 mod deepseek_port;
