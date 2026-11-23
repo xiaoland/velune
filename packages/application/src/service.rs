@@ -524,10 +524,16 @@ struct HandoffSummaryWork {
     summary_model: Option<velune_application_api::ModelSelection>,
     effort: Option<String>,
     cancel_requested: bool,
-    expires: Instant,
+    expires: Option<Instant>,
 }
 
 impl HandoffSummaryWork {
+    fn is_retained(&self, now: Instant) -> bool {
+        self.expires.is_none_or(|expires| now < expires)
+            || self.send_pending
+            || (self.queued.is_some() && !self.delivery_accepted)
+    }
+
     fn fail(&mut self, work_id: &str, phase: &str, code: String, detail: String) {
         tracing::dispatcher::with_default(&self.dispatch, || {
             self.span.in_scope(|| {
@@ -544,10 +550,12 @@ impl HandoffSummaryWork {
             });
         });
         self.status = velune_application_api::HandoffSummaryStatus::Failed { code, detail };
+        self.expires = Some(Instant::now() + HANDOFF_RESULT_RETENTION);
     }
 }
 
-const MAX_RETAINED_HANDOFF_SUMMARIES: usize = 32;
+const HANDOFF_RESULT_RETENTION: Duration = Duration::from_secs(600);
+const HANDOFF_CANCELLED_RETENTION: Duration = Duration::from_secs(30);
 
 struct QueuedHandoffBinding {
     queued_message_id: String,
@@ -569,7 +577,7 @@ fn revoke_prepared_handoff(work: &mut HandoffSummaryWork, now: Instant) -> bool 
     work.summary = None;
     work.prepared_token = None;
     work.status = velune_application_api::HandoffSummaryStatus::Cancelled;
-    work.expires = now + Duration::from_secs(30);
+    work.expires = Some(now + HANDOFF_CANCELLED_RETENTION);
     true
 }
 
@@ -581,7 +589,7 @@ fn cancel_late_handoff_result(work: &mut HandoffSummaryWork, now: Instant) -> bo
     work.summary = None;
     work.prepared_token = None;
     work.status = velune_application_api::HandoffSummaryStatus::Cancelled;
-    work.expires = now + Duration::from_secs(30);
+    work.expires = Some(now + HANDOFF_CANCELLED_RETENTION);
     true
 }
 
@@ -1340,7 +1348,7 @@ impl Owner {
             work.requirement_id == requirement_id
                 && work.summary_model == summary_model
                 && work.effort == effort
-                && work.expires > Instant::now()
+                && work.is_retained(Instant::now())
                 && matches!(
                     work.status,
                     HandoffSummaryStatus::Running
@@ -1373,33 +1381,6 @@ impl Owner {
                 "摘要准备队列繁忙，请稍后重试",
             )));
             return;
-        }
-        self.handoff_summary_works.retain(|_, work| {
-            work.expires > Instant::now() || (work.queued.is_some() && !work.delivery_accepted)
-        });
-        if self.handoff_summary_works.len() >= MAX_RETAINED_HANDOFF_SUMMARIES {
-            let oldest_terminal = self
-                .handoff_summary_works
-                .iter()
-                .filter(|(_, work)| {
-                    !matches!(
-                        work.status,
-                        HandoffSummaryStatus::Running | HandoffSummaryStatus::Cancelling
-                    ) && !work.send_pending
-                        && (work.queued.is_none() || work.delivery_accepted)
-                })
-                .min_by_key(|(_, work)| work.expires)
-                .map(|(id, _)| id.clone());
-            if let Some(id) = oldest_terminal {
-                self.handoff_summary_works.remove(&id);
-            }
-            if self.handoff_summary_works.len() >= MAX_RETAINED_HANDOFF_SUMMARIES {
-                let _ = reply.send(Err(Failure::new(
-                    FailureKind::Unavailable,
-                    "摘要工作记录已满，请关闭旧接续准备后重试",
-                )));
-                return;
-            }
         }
         let entry = self
             .handoff_requirements
@@ -1544,7 +1525,7 @@ impl Owner {
                 summary_model,
                 effort,
                 cancel_requested: false,
-                expires: Instant::now() + Duration::from_secs(180),
+                expires: None,
             },
         );
         let job = HistoryJob {
@@ -1587,7 +1568,7 @@ impl Owner {
         let status = self
             .handoff_summary_works
             .get(&work_id)
-            .filter(|work| work.expires > Instant::now())
+            .filter(|work| work.is_retained(Instant::now()))
             .map(|work| work.status.clone())
             .unwrap_or_else(|| velune_application_api::HandoffSummaryStatus::Failed {
                 code: "summary_expired".into(),
@@ -1972,7 +1953,7 @@ impl Owner {
                     // The late-start path terminates it before its first poll.
                     work.status = HandoffSummaryStatus::Cancelled;
                 }
-                work.expires = Instant::now() + Duration::from_secs(30);
+                work.expires = Some(Instant::now() + HANDOFF_CANCELLED_RETENTION);
             }
             HandoffSummaryStatus::Ready { .. } if work.send_pending => {
                 // The source CAS/export is already running on a worker. Its
@@ -1983,7 +1964,7 @@ impl Owner {
                 let _ = revoke_prepared_handoff(work, Instant::now());
             }
             HandoffSummaryStatus::Cancelled => {
-                work.expires = Instant::now() + Duration::from_secs(30);
+                work.expires = Some(Instant::now() + HANDOFF_CANCELLED_RETENTION);
             }
             HandoffSummaryStatus::Failed { .. } => {}
         }
@@ -2034,7 +2015,9 @@ impl Owner {
                 }
             }
             Err((code, detail)) => {
-                work.fail(&work_id, "start_native_session", code, detail);
+                if !work.cancel_requested {
+                    work.fail(&work_id, "start_native_session", code, detail);
+                }
                 // The start worker returns before any fork is created; the
                 // native summary RPC sequence only begins after this session
                 // has been installed and polled by the owner.
@@ -2046,16 +2029,7 @@ impl Owner {
     fn advance_handoff_summaries(&mut self) {
         use velune_application_api::HandoffSummaryStatus as Status;
         let now = Instant::now();
-        self.handoff_summary_works.retain(|work_id, work| {
-            if work.expires > now || (work.queued.is_some() && !work.delivery_accepted) {
-                return true;
-            }
-            if let Some(session) = &mut work.session {
-                let _ = session.cancel_handoff_summary(work_id);
-                let _ = session.shutdown();
-            }
-            false
-        });
+        self.handoff_summary_works.retain(|_, work| work.is_retained(now));
         for (work_id, work) in &mut self.handoff_summary_works {
             let Some(session) = &mut work.session else {
                 continue;
@@ -2168,7 +2142,7 @@ impl Owner {
                         work.summary = None;
                         work.prepared_token = None;
                         work.status = Status::Cancelled;
-                        work.expires = now + Duration::from_secs(30);
+                        work.expires = Some(now + HANDOFF_CANCELLED_RETENTION);
                         let _ = session.shutdown();
                         work.session = None;
                         continue;
@@ -2188,7 +2162,7 @@ impl Owner {
                     work.status = Status::Ready {
                         prepared_token: token,
                     };
-                    work.expires = now + Duration::from_secs(600);
+                    work.expires = Some(now + HANDOFF_RESULT_RETENTION);
                     let _ = session.shutdown();
                     work.session = None;
                 }
@@ -2215,6 +2189,7 @@ impl Owner {
                         tracing::warn!(target: "velune_application", event = "handoff_fork_terminal_receipt_failed", work_id = %work_id, detail = %error);
                     }
                     work.status = Status::Cancelled;
+                    work.expires = Some(now + HANDOFF_CANCELLED_RETENTION);
                     let _ = session.shutdown();
                     work.session = None;
                 }

@@ -71,7 +71,7 @@ fn ready_work() -> HandoffSummaryWork {
         summary_model: None,
         effort: None,
         cancel_requested: false,
-        expires: Instant::now() + Duration::from_secs(600),
+        expires: Some(Instant::now() + HANDOFF_RESULT_RETENTION),
     }
 }
 
@@ -108,6 +108,21 @@ fn requirement(expires: Instant, model_id: &str) -> HandoffRequirementEntry {
             DataRetention::default(),
         ))),
     }
+}
+
+#[test]
+fn active_summary_and_pending_delivery_outlive_the_result_retention_window() {
+    let now = Instant::now();
+    let later = now + HANDOFF_RESULT_RETENTION + Duration::from_secs(1);
+    let mut work = ready_work();
+    work.expires = Some(now);
+    assert!(!work.is_retained(later));
+    work.send_pending = true;
+    assert!(work.is_retained(later));
+    work.send_pending = false;
+    work.status = velune_application_api::HandoffSummaryStatus::Running;
+    work.expires = None;
+    assert!(work.is_retained(later));
 }
 
 #[test]

@@ -98,14 +98,13 @@ impl ForkRegistry {
                 "摘要副本登记格式不受支持，原文件已保留",
             ));
         }
-        for (index, record) in disk.records.iter().enumerate() {
+        let mut work_ids = std::collections::HashSet::new();
+        for record in &disk.records {
             if record.work_id.trim().is_empty()
                 || record.source_runtime_id.trim().is_empty()
                 || record.source_native_id.trim().is_empty()
                 || !record.source_home.is_absolute()
-                || disk.records[..index]
-                    .iter()
-                    .any(|prior| prior.work_id == record.work_id)
+                || !work_ids.insert(&record.work_id)
             {
                 return Err(RuntimeError::invalid("摘要副本登记身份无效，原文件已保留"));
             }
@@ -137,11 +136,6 @@ impl ForkRegistry {
             .records
             .as_ref()
             .map_err(|detail| RuntimeError::Invalid(format!("无法读取摘要副本登记：{detail}")))?;
-        if current.len() >= 64 {
-            return Err(RuntimeError::invalid(
-                "摘要副本登记已满，请先恢复未完成的摘要工作",
-            ));
-        }
         if current.iter().any(|record| record.work_id == work_id) {
             return Err(RuntimeError::invalid("摘要作业身份重复"));
         }
@@ -176,11 +170,19 @@ impl ForkRegistry {
             .records
             .as_ref()
             .map_err(|detail| RuntimeError::Invalid(format!("无法读取摘要副本登记：{detail}")))?;
-        let mut records = current.clone();
-        let record = records
-            .iter_mut()
-            .find(|record| record.work_id == work_id)
+        let index = current
+            .iter()
+            .position(|record| record.work_id == work_id)
             .ok_or_else(|| RuntimeError::invalid("摘要副本登记已过期"))?;
+        let record = &current[index];
+        if temporary_thread_id.is_none_or(|id| record.temporary_thread_id.as_deref() == Some(id))
+            && fingerprint
+                .is_none_or(|digest| record.temporary_fingerprint.as_deref() == Some(digest))
+        {
+            return Ok(());
+        }
+        let mut records = current.clone();
+        let record = &mut records[index];
         if let Some(temporary_thread_id) = temporary_thread_id {
             record.temporary_thread_id = Some(temporary_thread_id.to_owned());
         }
