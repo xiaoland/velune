@@ -48,7 +48,7 @@ def main():
     parser.add_argument("--socket", help="Mac 本地 socket 路径，默认使用 VELUNE_HOME")
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("status", help="读取远控状态，不读取会话内容")
-    commands.add_parser("invite", help="生成五分钟邀请，JSON 输出含邀请秘密，可直接管道传给 begin")
+    commands.add_parser("invite", help="生成五分钟邀请链接，可直接管道传给 begin")
     commands.add_parser("begin", help="从标准输入读取邀请并开始配对")
     approve = commands.add_parser("approve", help="核对两端核对码后批准当前配对")
     approve.add_argument("--attempt", required=True)
@@ -65,14 +65,21 @@ def main():
         invitation = sys.stdin.read(8193).strip()
         if len(invitation.encode()) > 8192:
             parser.error("邀请过长")
-        parsed = json.loads(invitation)
-        command["invitation"] = parsed["invitation"] if "invitation" in parsed else invitation
+        if invitation.startswith("{"):
+            parsed = json.loads(invitation)
+            invitation = parsed.get("invitation", invitation)
+            if not isinstance(invitation, str):
+                parser.error("邀请必须是字符串")
+        command["invitation"] = invitation
     elif args.command == "approve":
         command.update(attempt=args.attempt, peer=args.peer, code=args.code)
     elif args.command in ("revoke", "connect"):
         command["peer"] = args.peer
     result = request(command, android=args.android, socket_path=args.socket)
-    print(json.dumps(result, ensure_ascii=False))
+    if args.command == "invite":
+        print(result.get("url", result["invitation"]))
+    else:
+        print(json.dumps(result, ensure_ascii=False))
 
 
 if __name__ == "__main__":

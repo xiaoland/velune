@@ -37,7 +37,7 @@ class MainActivity : ComponentActivity() {
         (application as VeluneAndroid).configureDevelopment(intent)
         if (!model.launchIntentHandled) {
             model.launchIntentHandled = true
-            openAgentUri(intent)
+            openIncomingUri(intent)
         }
         enableEdgeToEdge()
         setContent {
@@ -50,12 +50,19 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        openAgentUri(intent)
+        openIncomingUri(intent)
     }
 
-    private fun openAgentUri(intent: Intent) {
-        if (intent.action == Intent.ACTION_VIEW && intent.data?.scheme == "agents") {
-            model.openAgentUri(intent.data.toString())
+    private fun openIncomingUri(intent: Intent) {
+        if (intent.action != Intent.ACTION_VIEW) return
+        val address = intent.data ?: return
+        when {
+            address.scheme == "agents" -> model.openAgentUri(address.toString())
+            address.isPairingInvitation() -> {
+                // Invitations belong only to the in-memory preview, never Activity state.
+                intent.data = null
+                model.openPairingLink(address.toString())
+            }
         }
     }
 
@@ -70,6 +77,9 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+private fun Uri.isPairingInvitation(): Boolean =
+    scheme == "velune" && host == "pair" && path?.startsWith("/v3/") == true
+
 @Composable
 private fun App(model: AppViewModel) {
     val hub = model.hub
@@ -81,9 +91,11 @@ private fun App(model: AppViewModel) {
     }
     BackHandler(enabled = model.stack.size > 1) { model.back() }
     when (val screen = model.screen) {
-        Screen.Devices -> DevicesScreen(hub, open = { model.push(Screen.Device(it)) }, add = { model.push(Screen.AddDevice) }, about = { model.push(Screen.About) }, telemetry = { model.push(Screen.Telemetry) })
+        Screen.Devices -> DevicesScreen(hub, open = { model.push(Screen.Device(it)) }, add = { model.push(Screen.AddDevice()) }, about = { model.push(Screen.About) }, telemetry = { model.push(Screen.Telemetry) })
         Screen.Telemetry -> TelemetryScreen(hub, back = { model.back() })
-        Screen.AddDevice -> AddDeviceScreen(hub, back = { model.back() }, paired = { model.showPaired(it) })
+        is Screen.AddDevice -> key(screen) {
+            AddDeviceScreen(hub, back = { model.back() }, paired = { model.showPaired(it) }, draft = screen.draft)
+        }
         Screen.About -> AboutScreen(back = { model.back() }, open = { model.push(Screen.Legal(it)) })
         is Screen.Legal -> LegalDocumentScreen(screen.document, back = { model.back() })
         is Screen.Device -> ConversationListScreen(
@@ -94,7 +106,7 @@ private fun App(model: AppViewModel) {
             open = { model.openConversation(screen.peer, it) },
         )
         is Screen.AgentUri -> key(screen) {
-            AgentUriScreen(hub, screen.address, screen.peer, back = { model.back() }, addDevice = { model.push(Screen.AddDevice) }, open = model::openResolvedAgentUri)
+            AgentUriScreen(hub, screen.address, screen.peer, back = { model.back() }, addDevice = { model.push(Screen.AddDevice()) }, open = model::openResolvedAgentUri)
         }
         is Screen.Conversation -> {
             val listing by model.workspace(screen.peer).listing.collectAsState()
@@ -102,8 +114,12 @@ private fun App(model: AppViewModel) {
             val links = remember(screen, fallback) {
                 object : UriHandler {
                     override fun openUri(uri: String) {
-                        if (Uri.parse(uri).scheme == "agents") model.openAgentUri(uri, screen.peer)
-                        else fallback.openUri(uri)
+                        val address = Uri.parse(uri)
+                        when {
+                            address.scheme == "agents" -> model.openAgentUri(uri, screen.peer)
+                            address.isPairingInvitation() -> model.openPairingLink(uri)
+                            else -> fallback.openUri(uri)
+                        }
                     }
                 }
             }

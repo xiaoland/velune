@@ -149,6 +149,7 @@ impl Fixture {
 
     fn connect(&self) -> Arc<VeluneApplication> {
         let invitation = self.host.create_invitation(60).unwrap();
+        assert!(invitation.encoded.starts_with("velune://pair/v3/"));
         let pending = self.client.begin_pairing(invitation.encoded).unwrap();
         let peer = self.host.descriptor().unwrap().endpoint_id;
         assert!(

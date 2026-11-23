@@ -563,7 +563,7 @@ impl VeluneRemoteEndpoint {
             .create_invitation(Duration::from_secs(lifetime_seconds))?;
         Ok(BindingRemoteInvitation {
             permission: invitation.permission,
-            encoded: invitation.encode()?,
+            encoded: invitation.encode_url()?,
             expires_at_unix_seconds: invitation.expires_at_unix_seconds,
             issuer: invitation.issuer,
         })
@@ -578,7 +578,7 @@ impl VeluneRemoteEndpoint {
             .create_telemetry_invitation(Duration::from_secs(lifetime_seconds))?;
         Ok(BindingRemoteInvitation {
             permission: invitation.permission,
-            encoded: invitation.encode()?,
+            encoded: invitation.encode_url()?,
             expires_at_unix_seconds: invitation.expires_at_unix_seconds,
             issuer: invitation.issuer,
         })

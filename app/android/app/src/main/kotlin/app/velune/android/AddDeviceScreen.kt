@@ -59,23 +59,37 @@ import app.velune.bindings.remote.PairingPermission
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 
+/** Navigation retains drafts in memory; neither invitations nor previews enter saved state. */
+class AddDeviceDraft(initialInvitation: String? = null) {
+    val encoded = mutableStateOf<String?>(null)
+    val offer = mutableStateOf<BindingPairingOfferInfo?>(null)
+    val peer = mutableStateOf<String?>(null)
+    val failure = mutableStateOf<String?>(null)
+    val busy = mutableStateOf(false)
+    val manual = mutableStateOf(initialInvitation != null)
+    val invitation = mutableStateOf("")
+    private var incomingLink = initialInvitation
+
+    fun takeIncomingLink(): String? = incomingLink.also { incomingLink = null }
+}
+
 /** Pairing: read the other device's invitation, compare codes, and wait for it to allow this phone. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun AddDeviceScreen(hub: DeviceHub, back: () -> Unit, paired: (String) -> Unit) {
+fun AddDeviceScreen(hub: DeviceHub, back: () -> Unit, paired: (String) -> Unit, draft: AddDeviceDraft? = null) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val state by hub.state.collectAsState()
     var camera by remember { mutableStateOf(ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) }
     val permission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { camera = it }
-    // The invitation's secret stays in memory and is used once.
-    var encoded by remember { mutableStateOf<String?>(null) }
-    var offer by remember { mutableStateOf<BindingPairingOfferInfo?>(null) }
-    var peer by remember { mutableStateOf<String?>(null) }
-    var failure by remember { mutableStateOf<String?>(null) }
-    var busy by remember { mutableStateOf(false) }
-    var manual by remember { mutableStateOf(false) }
-    var invitation by remember { mutableStateOf("") }
+    val form = remember(draft) { draft ?: AddDeviceDraft() }
+    var encoded by form.encoded
+    var offer by form.offer
+    var peer by form.peer
+    var failure by form.failure
+    var busy by form.busy
+    var manual by form.manual
+    var invitation by form.invitation
 
     fun read(text: String) {
         if (offer != null) return
@@ -85,9 +99,11 @@ fun AddDeviceScreen(hub: DeviceHub, back: () -> Unit, paired: (String) -> Unit) 
             invitation = ""
             failure = null
         } catch (error: Exception) {
-            failure = "这不是 Velune 的设备邀请：${error.describe()}"
+            failure = "邀请链接无效：${error.describe()}"
         }
     }
+
+    LaunchedEffect(form) { form.takeIncomingLink()?.let(::read) }
 
     val pairing = peer?.let { id -> state?.outgoingPairings?.firstOrNull { it.peerId == id } }
     val confirmed = pairing?.phase == PairingPhase.GRANTED && peer?.let { id -> state?.contacts?.firstOrNull { it.peerId == id }?.confirmation is ContactConfirmation.Confirmed } == true
@@ -107,15 +123,15 @@ fun AddDeviceScreen(hub: DeviceHub, back: () -> Unit, paired: (String) -> Unit) 
             if (current == null) {
                 PrimaryTabRow(selectedTabIndex = if (manual) 1 else 0) {
                     Tab(selected = !manual, onClick = { manual = false; failure = null }, text = { Text("扫码") })
-                    Tab(selected = manual, onClick = { manual = true; failure = null }, text = { Text("手动输入") })
+                    Tab(selected = manual, onClick = { manual = true; failure = null }, text = { Text("邀请链接") })
                 }
                 Text("如果对方使用需要认证的中继，请先在本机“连接设置”添加对应访问令牌；邀请不包含中继令牌。", style = MaterialTheme.typography.bodySmall)
                 if (manual) {
                     OutlinedTextField(
                         value = invitation,
                         onValueChange = { invitation = it; failure = null },
-                        label = { Text("设备邀请") },
-                        placeholder = { Text("输入或粘贴邀请") },
+                        label = { Text("邀请链接") },
+                        placeholder = { Text("输入或粘贴邀请链接") },
                         minLines = 3,
                         maxLines = 6,
                         keyboardOptions = KeyboardOptions(autoCorrectEnabled = false, keyboardType = KeyboardType.Password),
@@ -128,7 +144,7 @@ fun AddDeviceScreen(hub: DeviceHub, back: () -> Unit, paired: (String) -> Unit) 
                             val clip = context.getSystemService(ClipboardManager::class.java).primaryClip
                             val text = clip?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.coerceToText(context)?.toString()
                             if (text.isNullOrBlank()) {
-                                failure = "剪贴板中没有邀请"
+                                failure = "剪贴板中没有邀请链接"
                             } else {
                                 invitation = text
                                 failure = null

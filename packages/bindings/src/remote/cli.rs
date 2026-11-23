@@ -133,7 +133,8 @@ async fn execute(owner: &ServiceOwner, command: Command) -> Result<Value, Remote
             // Match the explicit "add controlling device" action in the native app.
             service.set_control_ingress(true)?;
             let offer = service.create_invitation(Duration::from_secs(300))?;
-            json!({"invitation": offer.encode()?, "url": offer.encode_url()?})
+            let url = offer.encode_url()?;
+            json!({"invitation": url, "url": url})
         }
         Command::Begin { invitation } => json!(
             service

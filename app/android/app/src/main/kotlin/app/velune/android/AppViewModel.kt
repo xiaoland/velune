@@ -10,7 +10,9 @@ import androidx.lifecycle.viewModelScope
 /** The screens on the back stack; a conversation screen owns its model. */
 sealed interface Screen {
     data object Devices : Screen
-    data object AddDevice : Screen
+    class AddDevice(initialInvitation: String? = null) : Screen {
+        val draft = AddDeviceDraft(initialInvitation)
+    }
     data object About : Screen
     data object Telemetry : Screen
     data class Legal(val document: LegalDocument) : Screen
@@ -50,6 +52,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         if (screen is Screen.AgentUri) back()
         push(Screen.AgentUri(address, peer))
     }
+
+    /** A new invitation previews above the current screen, preserving its drafts and return path. */
+    fun openPairingLink(address: String) = push(Screen.AddDevice(address))
 
     fun openResolvedAgentUri(peer: String, target: ConversationTarget) {
         back()
