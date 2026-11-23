@@ -831,6 +831,7 @@ impl CoreRuntime {
         self.advance_history_index_generation();
         *self.last_listed.borrow_mut() = organization::ListedProjection::default();
         self.history_listings.borrow_mut().remove(runtime_id);
+        self.codex_active_indexes.borrow_mut().remove(runtime_id);
         self.native_projects.borrow_mut().remove(runtime_id);
         self.reached
             .borrow_mut()

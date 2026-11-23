@@ -180,10 +180,7 @@ pub(super) fn list_threads(
     execution: &crate::execution::ExecutionTarget,
     archived: bool,
 ) -> Result<Retained<Vec<Value>>> {
-    let params = json!({
-        "limit":100,"archived":archived,"modelProviders":[],
-        "sourceKinds":SOURCE_KINDS,"sortKey":"updated_at","sortDirection":"desc"
-    });
+    let params = thread_list_params(archived);
     if archived && execution.is_local() {
         let mut indexed_params = params.clone();
         indexed_params["useStateDbOnly"] = json!(true);
@@ -196,6 +193,13 @@ pub(super) fn list_threads(
         }
     }
     pages(rpc, "thread/list", params)
+}
+
+pub(super) fn thread_list_params(archived: bool) -> Value {
+    json!({
+        "limit":100,"archived":archived,"modelProviders":[],
+        "sourceKinds":SOURCE_KINDS,"sortKey":"updated_at","sortDirection":"desc"
+    })
 }
 
 /// A paginated Codex history is owned by its database. Legacy rollouts that

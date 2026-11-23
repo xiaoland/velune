@@ -240,6 +240,7 @@ pub struct CoreRuntime {
     native_projects: std::cell::RefCell<BTreeMap<String, projects::NativeProjects>>,
     history_listings: std::cell::RefCell<BTreeMap<String, browsing::HistoryListing>>,
     history_index_generation: std::cell::Cell<u64>,
+    codex_active_indexes: std::cell::RefCell<BTreeMap<String, list_refresh::CodexActiveIndex>>,
     delivery: delivery::TranscriptDelivery,
     prepared_remote_resources: std::cell::RefCell<std::collections::BTreeSet<String>>,
     /// HOME of each inherited-HOME SSH location, by its execution settings.
@@ -410,6 +411,7 @@ impl CoreRuntime {
             native_projects: Default::default(),
             history_listings: Default::default(),
             history_index_generation: Default::default(),
+            codex_active_indexes: Default::default(),
             delivery: delivery::TranscriptDelivery::new(),
             prepared_remote_resources: Default::default(),
             remote_homes: Default::default(),

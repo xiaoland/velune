@@ -203,6 +203,7 @@ application 负责 busy 修改门控与资源库的同步；本包不做 UI 或�
 
 Codex 原生项目通过同一个有界 app-server 连接读取 `project/list` 与 `thread/list.projectId`，不扫描桌面私有配置或根据 cwd 推断成员关系。`native::codex_projects` 保留原生项目 ID、名称和有序根，接受共享目录和零根项目。编辑直接以 `project/update` 提交名称和根，保留 metadata，不附加并发修改检查。原生项目目录不用于覆盖已有线程的 `runtimeWorkspaceRoots`，恢复与继续交给 Codex 保留已存工作区。
 
+在支持文件身份核验的 Unix 本机来源上，应用服务在启动时后台预热普通 Codex 列表。适配器在完整读取前后核对文件集合及文件版本，随后只在来源、文件版本和原生索引结果均与上次核验一致时免去修复扫描。文件改动、索引重建或核验失败时重新执行原生修复。项目列表每次都从同一 app-server 读取。
 
 ## 主动上下文压缩
 

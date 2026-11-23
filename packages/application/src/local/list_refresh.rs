@@ -8,7 +8,7 @@ use super::runtime_execution::ExecutionPreparation;
 use super::runtime_source::{Reader, RuntimeSourceKey};
 use super::*;
 use velune_agent_runtime::creation::Retained;
-use velune_agent_runtime::native::codex_projects::{self, ProjectListing};
+use velune_agent_runtime::native::codex_projects::{self, ActiveListIndex, ProjectListing};
 
 pub(crate) struct ListRefresh {
     index_generation: u64,
@@ -21,10 +21,19 @@ pub(crate) struct LoadedListRefresh {
     indexes: Vec<LoadedHistoryIndex>,
 }
 
+/// A startup read populates only the adapter's source-scoped index proof.
+pub(crate) struct CodexIndexWarmup(Vec<HistoryIndexRead>);
+
+pub(super) struct CodexActiveIndex {
+    source: RuntimeSourceKey,
+    index: Arc<ActiveListIndex>,
+}
+
 struct HistoryIndexRead {
     runtime: RuntimeInstance,
     source: Option<RuntimeSourceKey>,
     preparation: Result<ExecutionPreparation, RuntimeError>,
+    codex_active_index: Option<Arc<ActiveListIndex>>,
 }
 
 struct LoadedHistoryIndex {
@@ -65,7 +74,40 @@ impl ListRefresh {
     }
 }
 
+impl CodexIndexWarmup {
+    pub(crate) fn run(self) {
+        let started = std::time::Instant::now();
+        let sources = self.0.len();
+        let known_resources = BTreeSet::new();
+        let mut failures = 0;
+        for request in self.0 {
+            if !matches!(
+                request.load(None, &known_resources).index,
+                Ok(NativeIndex::Codex(Ok(_)))
+            ) {
+                failures += 1;
+            }
+        }
+        tracing::info!(target: "velune_application", event = "codex_active_index_warmup",
+            sources, failures, elapsed_ms = started.elapsed().as_millis() as u64);
+    }
+}
+
 impl CoreRuntime {
+    pub(crate) fn prepare_codex_index_warmup(&self) -> Option<CodexIndexWarmup> {
+        let requests = self
+            .runtime_instances
+            .iter()
+            .filter(|runtime| runtime.enabled && runtime.type_id == RuntimeKind::Codex166)
+            .map(|runtime| {
+                self.prepare_history_index(runtime)
+                    .with_local_codex_index(self)
+            })
+            .filter(|request| request.codex_active_index.is_some())
+            .collect::<Vec<_>>();
+        (!requests.is_empty()).then_some(CodexIndexWarmup(requests))
+    }
+
     pub(crate) fn prepare_list_refresh(&self) -> Option<ListRefresh> {
         if self.shows_archived() {
             return None;
@@ -76,7 +118,10 @@ impl CoreRuntime {
                 .runtime_instances
                 .iter()
                 .filter(|runtime| runtime.enabled)
-                .map(|runtime| self.prepare_history_index(runtime))
+                .map(|runtime| {
+                    self.prepare_history_index(runtime)
+                        .with_local_codex_index(self)
+                })
                 .collect(),
             telemetry: self.telemetry.clone(),
         })
@@ -148,11 +193,35 @@ impl CoreRuntime {
             runtime: runtime.clone(),
             source,
             preparation,
+            codex_active_index: None,
         }
     }
 }
 
 impl HistoryIndexRead {
+    fn with_local_codex_index(mut self, core: &CoreRuntime) -> Self {
+        if self.preparation.is_ok()
+            && let Some(source) = &self.source
+            && source.kind() == RuntimeKind::Codex166
+            && let Reader::Native(config) = source.reader()
+            && ActiveListIndex::supports(config)
+        {
+            let mut indexes = core.codex_active_indexes.borrow_mut();
+            let entry = indexes
+                .entry(source.runtime_id().to_owned())
+                .or_insert_with(|| CodexActiveIndex {
+                    source: source.clone(),
+                    index: Arc::default(),
+                });
+            if entry.source != *source {
+                entry.source = source.clone();
+                entry.index = Arc::default();
+            }
+            self.codex_active_index = Some(entry.index.clone());
+        }
+        self
+    }
+
     fn load(
         self,
         telemetry: Option<&Arc<velune_telemetry::ClientTelemetry>>,
@@ -162,6 +231,7 @@ impl HistoryIndexRead {
             runtime,
             source,
             preparation,
+            codex_active_index,
         } = self;
         let mut acp_capabilities = None;
         let (prepared_resources, index) = match preparation
@@ -174,6 +244,7 @@ impl HistoryIndexRead {
                     source.as_ref().expect("prepared source").reader(),
                     telemetry,
                     &mut acp_capabilities,
+                    codex_active_index.as_deref(),
                 ),
             ),
             Err(error) => (None, Err(error)),
@@ -229,6 +300,7 @@ fn read_index(
     reader: &Reader,
     telemetry: Option<&Arc<velune_telemetry::ClientTelemetry>>,
     acp_capabilities: &mut Option<crate::AcpCapabilities>,
+    codex_active_index: Option<&ActiveListIndex>,
 ) -> Result<NativeIndex, RuntimeError> {
     let id = &runtime.id;
     Ok(match reader {
@@ -261,10 +333,17 @@ fn read_index(
                 .collect(),
         ),
         Reader::Native(config) => match runtime.type_id {
-            RuntimeKind::Codex166 => NativeIndex::Codex(
-                codex_projects::list_projects(config, id, false)
-                    .map_err(|error| RuntimeError::context("Codex 项目读取失败", error)),
-            ),
+            RuntimeKind::Codex166 => {
+                let listing = match codex_active_index {
+                    Some(index) => {
+                        codex_projects::list_projects_with_active_index(config, id, index)
+                    }
+                    None => codex_projects::list_projects(config, id, false),
+                };
+                NativeIndex::Codex(
+                    listing.map_err(|error| RuntimeError::context("Codex 项目读取失败", error)),
+                )
+            }
             RuntimeKind::ClaudeCode => NativeIndex::Entries(
                 history::index(config)
                     .map_err(|error| history_failure(runtime, error))?

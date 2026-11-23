@@ -117,6 +117,63 @@ for line in sys.stdin:
         Self(root)
     }
 
+    fn codex_list_index() -> Self {
+        let root =
+            std::env::temp_dir().join(format!("velune-codex-list-{}", crate::new_record_key()));
+        fs::create_dir_all(root.join("native/sessions/2026/11/23")).unwrap();
+        let binary = root.join("codex");
+        fs::write(
+            &binary,
+            r#"#!/usr/bin/env python3
+import json, os, pathlib, sys, time
+root = pathlib.Path(__file__).parent
+if '--version' in sys.argv:
+    print('codex-cli 0.166.0')
+    sys.exit(0)
+for line in sys.stdin:
+    record = json.loads(line)
+    if 'id' not in record:
+        continue
+    method = record['method']
+    result = {}
+    if method == 'project/list':
+        result = {'data': [], 'nextCursor': None}
+    elif method == 'thread/list':
+        params = record['params']
+        indexed = params.get('useStateDbOnly', False)
+        with (root / 'list-wire').open('a') as log:
+            log.write('indexed\n' if indexed else 'repair\n')
+        database = root / 'list-db'
+        if not indexed:
+            (root / 'entered-1').touch()
+            deadline = time.monotonic() + 8
+            while not (root / 'release-1').exists():
+                if time.monotonic() >= deadline: sys.exit(2)
+                time.sleep(0.005)
+            rows = [{'id': 'known-thread', 'cwd': str(root), 'preview': 'Original thread',
+                     'createdAt': 100, 'updatedAt': 100, 'historyMode': 'paginated'}]
+            if any((pathlib.Path(os.environ['CODEX_HOME']) / 'sessions').rglob('rollout-*.jsonl')):
+                rows.append({'id': 'imported-thread', 'cwd': str(root), 'preview': 'Imported thread',
+                             'createdAt': 90, 'updatedAt': 90, 'historyMode': 'paginated'})
+            database.write_text(json.dumps(rows))
+        rows = json.loads(database.read_text()) if database.exists() else []
+        result = {'data': rows, 'nextCursor': None}
+    elif method == 'thread/read':
+        result = {'thread': {'id': record['params']['threadId'], 'cwd': str(root),
+                             'preview': 'Original thread', 'historyMode': 'paginated'}}
+    elif method == 'thread/items/list':
+        item = {'id': 'message', 'type': 'agentMessage', 'text': 'Readable while indexing'}
+        result = {'data': [{'turnId': 'turn', 'item': item}], 'nextCursor': None}
+    elif method == 'thread/turns/list':
+        result = {'data': [{'id': 'turn', 'status': 'completed'}], 'nextCursor': None}
+    print(json.dumps({'id': record['id'], 'result': result}), flush=True)
+"#,
+        )
+        .unwrap();
+        fs::set_permissions(binary, fs::Permissions::from_mode(0o700)).unwrap();
+        Self(root)
+    }
+
     fn claude_naming() -> Self {
         let root = std::env::temp_dir()
             .join(format!("velune-claude-naming-{}", crate::new_record_key()));
@@ -222,6 +279,126 @@ fn assert_read_before_release(service: &ApplicationService) {
             .unwrap(),
         Response::ReadRuntimeHomeDirectory(_)
     ));
+}
+
+#[test]
+fn codex_startup_prewarms_the_active_list_without_blocking_the_owner() {
+    let fixture = Fixture::codex_list_index();
+    let options = Options {
+        home_directory: fixture.0.join("app"),
+        resources_directory: fixture.0.clone(),
+    };
+    let mut application = Application::open(options.clone()).unwrap();
+    application
+        .runtime
+        .upsert_runtime_with_execution(
+            crate::config::RuntimeInstance {
+                enabled: true,
+                id: "synthetic".into(),
+                name: "Synthetic Codex".into(),
+                type_id: crate::conversation::RuntimeKind::Codex166,
+                gateway_id: "default".into(),
+                settings: BTreeMap::from([
+                    ("binary".into(), fixture.0.join("codex").display().to_string()),
+                    (
+                        "agentDir".into(),
+                        fixture.0.join("native").display().to_string(),
+                    ),
+                    ("nodeBinary".into(), "/synthetic/not-executed-node".into()),
+                ]),
+            },
+            crate::RuntimeExecution {
+                home: crate::RuntimeHome::Existing {
+                    path: fixture.0.display().to_string(),
+                },
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    drop(application);
+
+    let app = ApplicationService::open(options).unwrap();
+    fixture.wait("entered-1");
+    // Enqueue the list before the transcript, including on a busy scheduler.
+    let (reply, first) = mpsc::channel();
+    app.sender
+        .send(Job::Execute {
+            view: ClientViewId("list".into()),
+            presentation_isolated: false,
+            context: None,
+            command: Box::new(Command::ReadConfiguration),
+            cancellation: None,
+            queued_at: Instant::now(),
+            history_completion: app.sender.clone(),
+            dispatch: tracing::dispatcher::get_default(Clone::clone),
+            span: tracing::Span::none(),
+            reply,
+        })
+        .unwrap();
+    assert_read_before_release(&app);
+    let transcript = request_later(
+        &app,
+        "transcript",
+        Command::ReadConversation {
+            runtime_id: "synthetic".into(),
+            conversation_id: "synthetic:known-thread".into(),
+        },
+    );
+    let read = transcript.recv_timeout(Duration::from_secs(3));
+    let list_pending = matches!(first.try_recv(), Err(mpsc::TryRecvError::Empty));
+    fs::write(fixture.0.join("release-1"), []).unwrap();
+    assert!(list_pending);
+    let Response::ReadConversation(history) = read.unwrap().unwrap() else {
+        panic!("transcript response")
+    };
+    let history = history.snapshot.unwrap();
+    assert_eq!(history.conversation.id, "synthetic:known-thread");
+    assert_eq!(history.messages.len(), 1);
+
+    let ids = |response| {
+        let Response::ReadConfiguration(configuration) = response else {
+            panic!("list response");
+        };
+        assert!(configuration.history_failures.is_empty());
+        configuration
+            .conversations
+            .into_iter()
+            .map(|row| row.conversation.id)
+            .collect::<BTreeSet<_>>()
+    };
+    assert_eq!(
+        ids(first.recv_timeout(Duration::from_secs(3)).unwrap().unwrap().response),
+        BTreeSet::from(["synthetic:known-thread".into()])
+    );
+    let wire = fixture.0.join("list-wire");
+    assert_eq!(fs::read_to_string(&wire).unwrap(), "repair\nindexed\n");
+
+    fs::write(
+        fixture.0.join(
+            "native/sessions/2026/11/23/rollout-2026-11-23T01-02-03-00000000-0000-7000-8000-000000000001.jsonl",
+        ),
+        "{}\n",
+    )
+    .unwrap();
+    let refresh = || {
+        ids(app
+            .execute(ClientViewId("list".into()), Command::ReadConfiguration)
+            .unwrap())
+    };
+    let complete = BTreeSet::from([
+        "synthetic:known-thread".into(),
+        "synthetic:imported-thread".into(),
+    ]);
+    assert_eq!(refresh(), complete);
+    assert_eq!(fs::read_to_string(&wire).unwrap(), "repair\nindexed\nrepair\n");
+
+    fs::write(fixture.0.join("list-db"), "[]").unwrap();
+    assert_eq!(refresh(), complete);
+    assert_eq!(
+        fs::read_to_string(&wire).unwrap(),
+        "repair\nindexed\nrepair\nindexed\nrepair\n"
+    );
+    app.close(false).unwrap();
 }
 
 #[test]

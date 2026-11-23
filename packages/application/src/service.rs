@@ -4,7 +4,7 @@ use crate::local::{
     conversation_history::{
         ConversationHistoryRequest, ConversationRead, LoadedConversationHistory,
     },
-    list_refresh::{ListRefresh, LoadedListRefresh},
+    list_refresh::{CodexIndexWarmup, ListRefresh, LoadedListRefresh},
 };
 use crate::{
     Application, ApplicationReply, ClientViewId, Command, Error, ExecutionContext, Failure,
@@ -202,6 +202,7 @@ struct HistoryJob {
 enum HistoryWork {
     Conversation(ConversationHistoryRequest),
     ListRefresh(ListRefresh),
+    WarmCodexIndex(CodexIndexWarmup),
     HandoffRequirements {
         history: velune_agent_runtime::history::HistoryConfig,
         native: velune_agent_runtime::native::NativeConfig,
@@ -239,6 +240,7 @@ struct FinishedHistory {
 enum HistoryResult {
     Conversation(Box<LoadedConversationHistory>),
     ListRefreshed(Box<LoadedListRefresh>),
+    CodexIndexWarmed,
     HandoffRequirements(Box<Result<Retained<HandoffRequirementFacts>, (String, String)>>),
     HandoffSummaryStarted {
         work_id: String,
@@ -350,6 +352,10 @@ impl HistoryWorkers {
                                 HistoryWork::ListRefresh(request) => {
                                     tracing::info!(target: "velune_application", event = "conversation_list", phase = "worker_queue", elapsed_ms = queued_at.elapsed().as_millis() as u64);
                                     HistoryResult::ListRefreshed(Box::new(request.load()))
+                                }
+                                HistoryWork::WarmCodexIndex(warmup) => {
+                                    warmup.run();
+                                    HistoryResult::CodexIndexWarmed
                                 }
                                 HistoryWork::HandoffRequirements { history, native, native_id } => {
                                     tracing::info!(target: "velune_application", event = "handoff_requirements_read", phase = "worker_queue", elapsed_ms = queued_at.elapsed().as_millis() as u64);
@@ -2353,6 +2359,10 @@ impl Owner {
                 });
                 return;
             }
+            HistoryResult::CodexIndexWarmed => {
+                self.finish_codex_index_warmup(completion);
+                return;
+            }
             HistoryResult::HandoffRequirements(result) => {
                 self.finish_handoff_requirements(id, *result);
                 return;
@@ -2509,6 +2519,7 @@ impl Owner {
         receiver: mpsc::Receiver<Job>,
         telemetry: Option<std::sync::Arc<velune_telemetry::ClientTelemetry>>,
     ) {
+        self.schedule_codex_index_warmup();
         self.schedule_handoff_fork_recovery();
         loop {
             match receiver.recv_timeout(Duration::from_millis(40)) {
