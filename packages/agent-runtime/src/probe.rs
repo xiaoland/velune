@@ -37,3 +37,6 @@ impl ProbeBudget {
         self.cancelled() || self.expired()
     }
 }
+
+#[cfg(all(test, unix))]
+mod tests;
