@@ -16,6 +16,11 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+
+private const val LIST_REFRESH_INTERVAL_MS = 30_000L
+private const val LIST_RETRY_INTERVAL_MS = 5_000L
 
 data class DeviceListing(
     val conversations: List<ListedConversation> = emptyList(),
@@ -40,14 +45,24 @@ class DeviceWorkspace(private val hub: DeviceHub, val peer: String, private val 
     private val _listing = MutableStateFlow(DeviceListing())
     val listing: StateFlow<DeviceListing> = _listing.asStateFlow()
     private var polling: Job? = null
+    private val listRefresh = Mutex()
     private var activityCursor = 0uL
 
     fun resume() {
         if (polling?.isActive == true) return
         polling = scope.launch {
+            // The first successful list read establishes the shared device proxy.
+            while (!refresh()) delay(LIST_RETRY_INTERVAL_MS)
+            launch {
+                while (isActive) {
+                    refreshActivity()
+                    delay(if (_listing.value.active.isEmpty()) 5_000 else 2_000)
+                }
+            }
+            var interval = LIST_REFRESH_INTERVAL_MS
             while (isActive) {
-                if (refresh()) refreshActivity()
-                delay(if (_listing.value.active.isEmpty()) 5_000 else 2_000)
+                delay(interval)
+                interval = if (refresh()) LIST_REFRESH_INTERVAL_MS else LIST_RETRY_INTERVAL_MS
             }
         }
     }
@@ -57,8 +72,8 @@ class DeviceWorkspace(private val hub: DeviceHub, val peer: String, private val 
         polling = null
     }
 
-    suspend fun refresh(): Boolean {
-        return try {
+    suspend fun refresh(): Boolean = listRefresh.withLock {
+        try {
             val (list, path) = hub.call(peer, NativeOperation.CONFIGURATION_READ) { application ->
                 application.list() to path(application)
             }
