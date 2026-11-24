@@ -360,6 +360,12 @@ final class Transport: @unchecked Sendable {
         observationStateLock.withLock { observationsDirty = desiredObservations != desired }
         return true
     }
+    /// Register only against an already opened local owner.
+    func nativeUserMessageEvents() -> VeluneNativeUserMessageEvents? {
+        guard !isRemote else { return nil }
+        return lock.withLock { application?.nativeUserMessageEvents() }
+    }
+
     func snapshot(runtimeID: String, conversationID: String) throws -> SnapshotResult {
         try withApplication("snapshot", .reads, .conversationRead) {
             synchronizeObservations($0)

@@ -59,6 +59,34 @@ impl VeluneSendCancellation {
     }
 }
 
+/// A local transcript invalidation hint. An absent ID asks the client to
+/// refresh all observed conversations using the ordinary snapshot reader.
+#[derive(uniffi::Record)]
+pub struct NativeUserMessageWake {
+    pub conversation_id: Option<String>,
+}
+
+#[derive(uniffi::Object)]
+pub struct VeluneNativeUserMessageEvents {
+    #[cfg(feature = "local-runtime")]
+    events: velune_application::NativeUserMessageEvents,
+}
+
+#[uniffi::export]
+impl VeluneNativeUserMessageEvents {
+    /// An absent wake means the local application owner closed.
+    pub async fn next(&self) -> Option<NativeUserMessageWake> {
+        #[cfg(feature = "local-runtime")]
+        {
+            Some(NativeUserMessageWake {
+                conversation_id: self.events.next().await?.conversation_id,
+            })
+        }
+        #[cfg(not(feature = "local-runtime"))]
+        None
+    }
+}
+
 macro_rules! request {
     ($owner:ident, $name:literal, $variant:ident $( { $($field:ident),* } )?) => {
         match $owner.request(concat!("bindings.", $name), Command::$variant $( { $($field),* } )?)? {
@@ -1271,6 +1299,22 @@ impl VeluneApplication {
             }
         )
     }
+    /// Subscribe to the local execution owner. Remote handles use snapshot reads.
+    pub fn native_user_message_events(&self) -> Option<Arc<VeluneNativeUserMessageEvents>> {
+        #[cfg(feature = "local-runtime")]
+        {
+            match self.lock().ok()?.as_ref()? {
+                Backend::Local(service) => Some(Arc::new(VeluneNativeUserMessageEvents {
+                    events: service.native_user_message_events()?,
+                })),
+                #[cfg(feature = "remote")]
+                Backend::Remote(_) => None,
+            }
+        }
+        #[cfg(not(feature = "local-runtime"))]
+        None
+    }
+
     /// Poll a view relative to the cursor of its latest delivery.
     pub fn snapshot_update(
         &self,

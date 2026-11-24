@@ -168,6 +168,7 @@ struct UnsubmittedDraft {
 pub struct CoreRuntime {
     pub(crate) submission_cancellation: Option<(String, Arc<std::sync::atomic::AtomicBool>)>,
     telemetry: Option<Arc<velune_telemetry::ClientTelemetry>>,
+    pub(crate) native_user_messages: Option<tokio::sync::broadcast::Sender<String>>,
     options: RuntimeOptions,
     client_baseline: Option<Box<ClientState>>,
     local_presentation_commit: std::cell::RefCell<Option<crate::repository::PresentationDefaults>>,
@@ -352,6 +353,7 @@ impl CoreRuntime {
         Ok(Self {
             submission_cancellation: None,
             telemetry: None,
+            native_user_messages: None,
             options,
             collaboration: Default::default(),
             session: Default::default(),
@@ -802,6 +804,47 @@ impl CoreRuntime {
                 && snapshot.conversation.id == conversation_id
         }))
     }
+    fn poll_runtime_events(&mut self) -> Result<(), RuntimeError> {
+        fn latest_user_id(snapshot: &crate::conversation::ConversationSnapshot) -> Option<&str> {
+            snapshot.messages.iter().rev().find_map(|message| {
+                (message.role == crate::conversation::MessageRole::User)
+                    .then_some(message.id.as_str())
+            })
+        }
+
+        let Some(live) = self.session.active_state.live_mut() else {
+            return Ok(());
+        };
+        let wakes = self
+            .native_user_messages
+            .as_ref()
+            .filter(|sender| sender.receiver_count() != 0);
+        let previous_user = wakes
+            .and_then(|_| live.snapshot())
+            .and_then(latest_user_id)
+            .map(str::to_owned);
+        let result = live
+            .poll()
+            .map_err(|error| RuntimeError::context("运行时事件读取失败", error));
+
+        if let Some(wakes) = wakes
+            && let Some(snapshot) = live.snapshot()
+            && let Some(user) = latest_user_id(snapshot)
+            && previous_user.as_deref() != Some(user)
+            && !snapshot
+                .message_identity_confirmations
+                .iter()
+                .any(|confirmation| {
+                    Some(confirmation.previous_id.as_str()) == previous_user.as_deref()
+                        && confirmation.current_id == user
+                })
+            && let Some(conversation_id) = self.session.conversation_id()
+        {
+            let _ = wakes.send(conversation_id.to_owned());
+        }
+        result
+    }
+
     fn drain_runtime(&mut self) -> Result<(), RuntimeError> {
         if self
             .session
@@ -865,12 +908,7 @@ impl CoreRuntime {
         if was_executing {
             self.session.last_execution = Some(std::time::Instant::now());
         }
-        let result = match self.session.active_state.live_mut() {
-            Some(live) => live
-                .poll()
-                .map_err(|error| RuntimeError::context("运行时事件读取失败", error)),
-            None => Ok(()),
-        };
+        let result = self.poll_runtime_events();
         self.harvest_native_controls();
         self.advance_native_submissions();
         self.advance_pi_control();

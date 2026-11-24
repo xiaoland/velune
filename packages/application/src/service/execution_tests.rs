@@ -2417,6 +2417,13 @@ fn codex_send_ack_before_echo_never_selects_a_historical_user_and_binds_late_set
         2,
         "exercise both historical U1 and U2"
     );
+    let wakes = app
+        .native_user_message_events()
+        .expect("local owner is open");
+    let wait = tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap();
     let mut turn = control_turn("new input with late native echo");
     turn.effort = Some("high".into());
     let submitted = request_later(
@@ -2439,9 +2446,15 @@ fn codex_send_ack_before_echo_never_selects_a_historical_user_and_binds_late_set
     else {
         panic!("send response")
     };
-    assert_eq!(result.submission_receipt, Some(crate::SubmissionReceipt::Sending));
-    assert_eq!(result.submission_receipt, Some(crate::SubmissionReceipt::Sending));
-    assert!(!serde_json::to_string(&fixture.wire()).unwrap().contains("late-echo-client-token"));
+    assert_eq!(
+        result.submission_receipt,
+        Some(crate::SubmissionReceipt::Sending)
+    );
+    assert!(
+        !serde_json::to_string(&fixture.wire())
+            .unwrap()
+            .contains("late-echo-client-token")
+    );
     // The ACK is real acceptance, but it cannot identify an echo that has not
     // happened. In particular neither historical user is this submission.
     assert!(
@@ -2462,30 +2475,52 @@ fn codex_send_ack_before_echo_never_selects_a_historical_user_and_binds_late_set
             Some("high")
         );
     }
-    fs::write(fixture.0.join("release-echo"), []).unwrap();
-    fixture.wait("echo-written");
-    let deadline = Instant::now() + Duration::from_secs(2);
-    loop {
-        let snapshot = control_snapshot(&app, &id);
-        if let Some(turn) = snapshot
-            .transcript_turns
-            .iter()
-            .find(|turn| turn.user_message_id.contains("user-3"))
-        {
-            assert!(!historical_users.contains(&turn.user_message_id));
-            let settings = turn
-                .settings
-                .as_ref()
-                .expect("late echo must keep accepted settings");
-            assert_eq!(settings.effort.as_deref(), Some("high"));
-            assert_eq!(settings.model_selection, native_selection());
-            break;
-        }
+    // Sending the ACK and advancing the owner do not invent a transcript wake.
+    // Hold the echo longer than the old client's expedited-read window.
+    wait.block_on(async {
         assert!(
-            Instant::now() < deadline,
-            "late echo did not acquire its accepted settings"
+            tokio::time::timeout(Duration::from_millis(350), wakes.next())
+                .await
+                .is_err()
         );
-    }
+    });
+    fs::write(fixture.0.join("release-echo"), []).unwrap();
+    let wake = wait.block_on(async {
+        tokio::time::timeout(Duration::from_secs(2), wakes.next())
+            .await
+            .expect("native input must wake the client without a snapshot read")
+            .expect("application owner is still open")
+    });
+    assert_eq!(wake.conversation_id.as_deref(), Some(id.as_str()));
+    let Response::ReadSnapshotUpdate(crate::SnapshotUpdate::Changed { snapshot }) = app
+        .execute(
+            ClientViewId("control-view".into()),
+            Command::ReadSnapshotUpdate {
+                runtime_id: "synthetic".into(),
+                conversation_id: id.clone(),
+                since: accepted.cursor,
+            },
+        )
+        .unwrap()
+    else {
+        panic!("the wake must lead to an authoritative snapshot delta");
+    };
+    let new_users: Vec<_> = snapshot
+        .messages
+        .iter()
+        .filter(|message| message.role == crate::conversation::MessageRole::User)
+        .collect();
+    assert_eq!(new_users.len(), 1);
+    let new_user_id = &new_users[0].id;
+    assert!(new_user_id.contains("user-3") && !historical_users.contains(new_user_id));
+    let settings = snapshot
+        .transcript_turns
+        .iter()
+        .find(|turn| turn.user_message_id == *new_user_id)
+        .and_then(|turn| turn.settings.as_ref())
+        .expect("late echo must keep accepted settings");
+    assert_eq!(settings.effort.as_deref(), Some("high"));
+    assert_eq!(settings.model_selection, native_selection());
     assert_eq!(
         fixture
             .wire()
@@ -2495,6 +2530,14 @@ fn codex_send_ack_before_echo_never_selects_a_historical_user_and_binds_late_set
         3
     );
     app.close(true).unwrap();
+    wait.block_on(async {
+        assert!(
+            tokio::time::timeout(Duration::from_secs(2), wakes.next())
+                .await
+                .expect("the owner must close the stream")
+                .is_none()
+        );
+    });
 }
 
 #[test]

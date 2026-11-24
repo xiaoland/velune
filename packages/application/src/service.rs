@@ -20,6 +20,7 @@ use std::{
     },
     time::{Duration, Instant},
 };
+use tokio::sync::broadcast;
 use velune_agent_runtime::creation::{DataRetention, Retained};
 mod list_refresh;
 mod queued_handoff;
@@ -28,7 +29,33 @@ use list_refresh::PendingListRefresh;
 #[derive(Clone)]
 pub struct ApplicationService {
     sender: mpsc::Sender<Job>,
+    native_user_messages: broadcast::WeakSender<String>,
     queued_handoff_cancellations: Arc<Mutex<BTreeMap<String, QueuedHandoffCancellation>>>,
+}
+
+/// An invalidation hint for the ordinary cursor-based transcript reader.
+pub struct NativeUserMessageWake {
+    /// An absent ID asks the client to refresh all observed conversations.
+    pub conversation_id: Option<String>,
+}
+
+pub struct NativeUserMessageEvents(tokio::sync::Mutex<broadcast::Receiver<String>>);
+
+impl NativeUserMessageEvents {
+    /// Wait for a wake. An absent wake means the application owner closed.
+    pub async fn next(&self) -> Option<NativeUserMessageWake> {
+        let mut receiver = self.0.lock().await;
+        let conversation_id = match receiver.recv().await {
+            Ok(id) => Some(id),
+            Err(broadcast::error::RecvError::Lagged(_)) => {
+                // Refreshing all observed conversations covers the discarded wakes.
+                *receiver = receiver.resubscribe();
+                None
+            }
+            Err(broadcast::error::RecvError::Closed) => return None,
+        };
+        Some(NativeUserMessageWake { conversation_id })
+    }
 }
 
 struct QueuedHandoffCancellation {
@@ -2772,6 +2799,10 @@ impl ApplicationService {
     ) -> Result<Self, Error> {
         let (sender, receiver) = mpsc::channel();
         let owner_sender = sender.clone();
+        // The runtime owns the sole strong sender. A subscription does not extend
+        // the owner's lifetime or prevent listeners from observing its closure.
+        let (native_user_messages, _) = broadcast::channel(64);
+        let subscription = native_user_messages.downgrade();
         let queued_handoff_cancellations = Arc::new(Mutex::new(BTreeMap::new()));
         let owner_cancellations = queued_handoff_cancellations.clone();
         let (initialized, initialization) = mpsc::sync_channel(1);
@@ -2787,6 +2818,7 @@ impl ApplicationService {
                             return;
                         }
                     };
+                    application.runtime.native_user_messages = Some(native_user_messages);
                     if let Some(owner) = &telemetry {
                         application.runtime.set_telemetry(owner.clone());
                     }
@@ -2833,8 +2865,15 @@ impl ApplicationService {
             .map_err(Error::Contract)?;
         Ok(Self {
             sender,
+            native_user_messages: subscription,
             queued_handoff_cancellations,
         })
+    }
+
+    /// Subscribe to local native user-message wakes.
+    pub fn native_user_message_events(&self) -> Option<NativeUserMessageEvents> {
+        let receiver = self.native_user_messages.upgrade()?.subscribe();
+        Some(NativeUserMessageEvents(tokio::sync::Mutex::new(receiver)))
     }
 
     /// Local, trusted presentation API. Filesystem attachment paths are local to this host.

@@ -98,6 +98,7 @@ final class ConversationStore: ObservableObject {
     private var navigationID = UUID()
     private var timer: Timer?
     private var pollPending = false
+    private var nativeUserMessageWakePending = false
     private var needsResync = false
     private var projectionEpoch: UInt64 = 0
     private let observationQueue = DispatchQueue(label: "local.velune.observation", qos: .userInitiated)
@@ -142,6 +143,9 @@ final class ConversationStore: ObservableObject {
         }.store(in: &subscriptions)
         device.composerInputs.changes.sink { [weak self] in
             self?.composerInputStateChanged()
+        }.store(in: &subscriptions)
+        device.nativeUserMessageWakes.sink { [weak self] conversationID in
+            self?.readNativeUserMessage(for: conversationID)
         }.store(in: &subscriptions)
         device.conversationRenamed.sink { [weak self] change in
             guard let self, snapshot?.conversation.id == change.id else { return }
@@ -1302,7 +1306,6 @@ final class ConversationStore: ObservableObject {
         let submission = outgoing.begin(text: text, attachments: attachments)
         let creating = isDraft
         let ticket = SendProjectionTicket(scope: projectionScope(), input: input, device: device)
-        let previousUserRow = lastUserRowID
         let temporary = isSideChat
         let cwd = snapshot?.conversation.cwd
         let project = snapshot?.conversation.creationProject
@@ -1387,9 +1390,7 @@ final class ConversationStore: ObservableObject {
             }
             }
         }) { [weak self] value in
-            guard let self else { return }
-            applySnapshotResult(value, scope: ticket.scope)
-            refreshAfterSend(value, previousUserRow: previousUserRow, scope: ticket.scope)
+            self?.applySnapshotResult(value, scope: ticket.scope)
         }
         return true
     }
@@ -1733,15 +1734,8 @@ final class ConversationStore: ObservableObject {
         guard !isPreview else { return }
         guard let runtimeID = projectionRuntimeID, let conversationID = loadedConversationID else { recordProblem("请选择会话"); onFailure?(); return }
         guard let transport else { recordProblem("本地核心未配置"); onFailure?(); return }
-        let scope = projectionScope()
-        let previousUserRow = submissionId == nil ? nil : lastUserRowID
-        enqueueSnapshot({ try transport.sendQueue(runtimeID: runtimeID, conversationID: conversationID, operation: operation, submissionId: submissionId) }, scope: scope, consumeReceipt: { result in
+        enqueueSnapshot({ try transport.sendQueue(runtimeID: runtimeID, conversationID: conversationID, operation: operation, submissionId: submissionId) }, scope: projectionScope(), consumeReceipt: { result in
             switch result { case .success(let receipt): onDone?(receipt); case .failure: onFailure?() }
-        }, completion: { [weak self] receipt in
-            // The turn may finish while the Add request is in flight; Core
-            // can dispatch that same submission instead of queuing it.
-            guard submissionId != nil else { return }
-            self?.refreshAfterSend(receipt, previousUserRow: previousUserRow, scope: scope)
         })
     }
     private struct InteractionDraftKey: Hashable { let conversationID: String; let interactionID: String }
@@ -1927,6 +1921,7 @@ final class ConversationStore: ObservableObject {
     // MARK: - Projection
 
     private func resetProjection() {
+        nativeUserMessageWakePending = false
         if let loadedConversationID { discardInteractionDrafts(conversationID: loadedConversationID) }
         projectionEpoch &+= 1
         payloadDemand.removeAll()
@@ -2081,24 +2076,6 @@ final class ConversationStore: ObservableObject {
         needsResync = true
         poll()
     }
-    private var lastUserRowID: String? {
-        transcript.rows.last(where: { $0.message.role == .user })?.id
-    }
-    /// An admitted send can precede the runtime's user-message event. Give
-    /// that event an early read on the ordinary projection lane.
-    private func refreshAfterSend(_ receipt: SnapshotResult, previousUserRow: String?, scope: ProjectionScope) {
-        guard case .sending? = receipt.submissionReceipt, receipt.submittedMessageId == nil,
-              lastUserRowID == previousUserRow else { return }
-        Task { @MainActor [weak self] in
-            for delay in [Duration.milliseconds(120), .milliseconds(180)] {
-                try? await Task.sleep(for: delay)
-                guard let self, self.generation == scope.storeGeneration, self.navigationID == scope.navigationID,
-                      self.isGenerating, self.lastUserRowID == previousUserRow,
-                      ConversationWindowModel.isConversationStoreVisible(self) else { return }
-                self.pollProjection()
-            }
-        }
-    }
     private enum PolledSnapshot: Sendable {
         case absent, unchanged
         case complete(ConversationSnapshot)
@@ -2113,6 +2090,14 @@ final class ConversationStore: ObservableObject {
         retryOpeningIfNeeded()
         pollProjection()
     }
+    /// A native wake carries only an address. Keep one pending read if a
+    /// delivery that began before the native event is already in flight.
+    private func readNativeUserMessage(for conversationID: String?) {
+        guard let loadedConversationID, conversationID == nil || conversationID == loadedConversationID,
+              ConversationWindowModel.isConversationStoreVisible(self) else { return }
+        nativeUserMessageWakePending = true
+        pollProjection()
+    }
     /// Admission is separate from visibility so headless checks can exercise
     /// the exact Store/Transport lane without constructing a window or scene.
     private func pollProjection() {
@@ -2121,6 +2106,7 @@ final class ConversationStore: ObservableObject {
         let runtimeID = current.conversation.runtimeID, selected = current.conversation.id
         let since = needsResync ? nil : current.cursor
         needsResync = false
+        nativeUserMessageWakePending = false
         pollPending = true
         observationQueue.async { [weak self] in
             // Only changed messages cross the boundary; mapping stays off the main thread.
@@ -2139,8 +2125,11 @@ final class ConversationStore: ObservableObject {
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.pollPending = false
+                defer {
+                    if self.nativeUserMessageWakePending
+                        || (self.generation == scope.storeGeneration && self.needsResync) { self.poll() }
+                }
                 guard self.generation == scope.storeGeneration, !self.composerTargetClosed else { return }
-                defer { if self.needsResync { self.poll() } }
                 switch result {
                 case .success(let polled):
                     self.device.clearActivityProblem("poll:" + runtimeID)
@@ -2344,23 +2333,33 @@ extension ConversationStore {
             catalog: [model], turnSettings: [], conversationRuntimeId: runtimeID, modelRecordKey: nil,
             kept: TurnChoice(model: native), runtimeChoices: nil, newConversation: .chosen(choice: TurnChoice(model: native))))
         let prompt = "synthetic late user echo"
-        let previous = store.lastUserRowID
+        func lastUserRowID() -> String? {
+            store.transcript.rows.last(where: { $0.message.role == .user })?.id
+        }
+        let previous = lastUserRowID()
         guard previous != nil, store.snapshot?.runState == .idle, store.send(text: prompt, next: target) else {
             throw TransportError.rejected("late echo fixture could not send into the warm conversation")
         }
         wait { store.acceptedSubmissions == 1 && !store.isLoading }
-        guard store.acceptedSubmissions == 1, store.lastUserRowID == previous, store.isGenerating else {
+        device.nativeUserMessageWakes.send("unrelated-conversation")
+        guard !store.pollPending else {
+            throw TransportError.rejected("a wake for another conversation must not start a read")
+        }
+        // Release after both of the previous implementation's reads would
+        // have fired. This Store has no periodic timer.
+        RunLoop.main.run(until: Date().addingTimeInterval(0.5))
+        guard store.acceptedSubmissions == 1, lastUserRowID() == previous, store.isGenerating else {
             throw TransportError.rejected("an ACK alone must not add a transcript row")
         }
         let released = ProcessInfo.processInfo.systemUptime
         try Data().write(to: home.appendingPathComponent("release-user-echo"))
-        wait { store.lastUserRowID != previous }
+        wait { lastUserRowID() != previous }
         let matching = store.transcript.rows.filter { $0.message.role == .user && $0.message.copiedText == prompt }
-        guard matching.count == 1, store.lastUserRowID == matching.first?.id, store.isGenerating else {
+        guard matching.count == 1, lastUserRowID() == matching.first?.id, store.isGenerating else {
             throw TransportError.rejected("expected one native input row before any assistant reply")
         }
         let elapsedMS = Int((ProcessInfo.processInfo.systemUptime - released) * 1000)
-        print("PASS native user row appeared \(elapsedMS)ms after release, with no periodic or manual poll")
+        print("PASS Core native wake delivered one user row \(elapsedMS)ms after release, with no periodic or manual poll")
     }
 
     /// Real Store → Transport → Core → warm Codex owner. No AppKit lifecycle.

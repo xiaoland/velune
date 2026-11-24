@@ -14,7 +14,7 @@ pub use velune_application_api::{
     ScheduledTasksOperation, ScheduledTasksState,
 };
 mod service;
-pub use service::ApplicationService;
+pub use service::{ApplicationService, NativeUserMessageEvents};
 mod analytics_report;
 mod api_account_quota;
 mod ark_quota;

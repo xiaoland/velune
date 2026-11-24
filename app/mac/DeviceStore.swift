@@ -249,6 +249,21 @@ final class DeviceStore: ObservableObject {
     }
     private var subscriptions: Set<AnyCancellable> = []
     private lazy var conversationObservation = ConversationObservation(device: self)
+    let nativeUserMessageWakes = PassthroughSubject<String?, Never>()
+    private var nativeUserMessageTask: Task<Void, Never>?
+
+    private func followNativeUserMessages() {
+        guard nativeUserMessageTask == nil, let events = transport?.nativeUserMessageEvents() else { return }
+        nativeUserMessageTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled, let wake = await events.next() {
+                guard let self, !Task.isCancelled else { return }
+                nativeUserMessageWakes.send(wake.conversationId)
+            }
+            self?.nativeUserMessageTask = nil
+        }
+    }
+
+    deinit { nativeUserMessageTask?.cancel() }
     func refreshConversationObservation() {
         guard started, !isPreview, !isShuttingDown else { return }
         conversationObservation.refresh()
@@ -410,6 +425,7 @@ final class DeviceStore: ObservableObject {
     }
 
     func applyList(_ data: ConfigurationSnapshot) {
+        followNativeUserMessages()
         clearActivityProblem("configuration-list")
         for conversation in data.conversations.map(BindingMapping.listed) where rememberedConversations[conversation.id] != nil {
             rememberedConversations[conversation.id] = conversation
@@ -814,6 +830,7 @@ final class DeviceStore: ObservableObject {
                             switch result {
                             case .success:
                                 self.started = false
+                                self.nativeUserMessageTask?.cancel()
                                 self.problemQueue.async { DispatchQueue.main.async { completion(true) } }
                             case .failure(let failure):
                                 self.recordProblem(failure)
