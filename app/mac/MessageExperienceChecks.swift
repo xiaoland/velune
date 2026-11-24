@@ -51,7 +51,7 @@ import VeluneBindings
             id: "fork-loopback", name: "Synthetic loopback", protocol: .messages, endpoint: endpoint,
             executionBackend: .http, requestProfile: .native, authenticationSource: .apiKey, quotaSource: .none,
             models: [ProviderModel(recordKey: "", providerModelId: "claude-sonnet-4-6", nickname: "Synthetic model", contextWindow: 8192, maxOutputTokens: 4096)],
-            quotaLimits: []), authenticationEdit: .setApiKey(value: "synthetic"))
+            quotaLimits: [], codexClientVersion: nil), authenticationEdit: .setApiKey(value: "synthetic"))
         guard let modelKey = gateway.gateways.flatMap(\.providers).first(where: { $0.id == "fork-loopback" })?.models.first?.recordKey else {
             fail("回环模型未保存")
         }

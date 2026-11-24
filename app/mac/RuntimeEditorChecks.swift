@@ -25,7 +25,7 @@ struct RuntimeEditorCheckAccess {
         id: "synthetic-naming", name: "合成提供商", protocol: .chatCompletions, endpoint: "http://127.0.0.1:1/v1",
         executionBackend: .http, requestProfile: .native, authenticationSource: .apiKey, quotaSource: .none,
         models: [ProviderModel(recordKey: "", providerModelId: "synthetic-namer", nickname: "合成命名模型", contextWindow: 8192, maxOutputTokens: 4096)],
-        quotaLimits: []), authenticationEdit: .setApiKey(value: "synthetic"))
+        quotaLimits: [], codexClientVersion: nil), authenticationEdit: .setApiKey(value: "synthetic"))
     let namingModel = gateway.gateways.flatMap(\.providers).first { $0.id == "synthetic-naming" }!.models[0].recordKey
     let source = RuntimeInstance(enabled: false, id: "synthetic-existing-runtime", name: "保留实例名称", typeId: .acp, gatewayId: "default", settings: ["binary": "/synthetic/source-agent", "source-only": "保留原类型字段"])
     let execution = RuntimeExecution(transport: .ssh(binary: "/usr/bin/ssh", destination: "synthetic.invalid", port: 2222), home: .managed(remoteRoot: "/synthetic/runtime-homes"), remoteResourcesDirectory: "/synthetic/resources")

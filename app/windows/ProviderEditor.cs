@@ -26,6 +26,7 @@ sealed partial class ProviderEditor : UserControl
     readonly ComboBox protocol = new() { MinWidth = 280 };
     readonly TextBox endpoint = new() { PlaceholderText = "例如 https://api.example.com/v1", MinWidth = 280 };
     readonly TextBox binary = new() { PlaceholderText = "claude 可执行文件的绝对路径", MinWidth = 280 };
+    readonly TextBox codexClientVersion = new() { MinWidth = 280 };
     readonly TextBlock nameError = Ui.Error(), endpointError = Ui.Error(), binaryError = Ui.Error(), modelsError = Ui.Error();
     readonly Button save = new() { Content = "保存", Style = Ui.Style("AccentButtonStyle") };
     readonly Button cancel = new() { Content = "取消" };
@@ -157,6 +158,15 @@ sealed partial class ProviderEditor : UserControl
         {
             BuildBinary();
         }
+        if (profile == RequestProfile.CodexResponses)
+        {
+            const string label = "Codex 客户端版本";
+            codexClientVersion.Text = existing?.CodexClientVersion ?? "";
+            codexClientVersion.PlaceholderText = $"自动（{VeluneBindingsMethods.DefaultCodexClientVersion()}）";
+            Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(codexClientVersion, label);
+            codexClientVersion.TextChanged += (_, _) => Changed();
+            body.Children.Add(Ui.Card(Ui.TwoLines(label, "留空时采用适配器支持的最新版本。"), codexClientVersion));
+        }
     }
 
     // BuildBinary lays out the local Claude Code CLI that runs the
@@ -196,20 +206,25 @@ sealed partial class ProviderEditor : UserControl
     }
 
     // Draft is the provider the fields describe.
-    ProviderDraft Draft() => new(
-        Id: existing?.Id ?? "",
-        Name: name.Text.Trim(),
-        Protocol: subscription || protocol.SelectedIndex < 0 ? protocolID : page.Protocols[protocol.SelectedIndex].Id,
-        Endpoint: endpoint.Text.Trim(),
-        ExecutionBackend: (existing?.ExecutionBackend ?? template?.ExecutionBackend) is ExecutionBackend.ClaudeCli
-            ? new ExecutionBackend.ClaudeCli(binary.Text.Trim())
-            : new ExecutionBackend.Http(),
-        RequestProfile: profile,
-        AuthenticationSource: authenticationSource,
-        // The account source reads only from an official address; another keeps none.
-        QuotaSource: quotaSource == ProviderQuotaSource.ApiAccount && AccountService() == null ? ProviderQuotaSource.None : quotaSource,
-        Models: [.. models.Select(model => model.Value())],
-        QuotaLimits: Limits());
+    ProviderDraft Draft()
+    {
+        var version = codexClientVersion.Text.Trim();
+        return new(
+            Id: existing?.Id ?? "",
+            Name: name.Text.Trim(),
+            Protocol: subscription || protocol.SelectedIndex < 0 ? protocolID : page.Protocols[protocol.SelectedIndex].Id,
+            Endpoint: endpoint.Text.Trim(),
+            ExecutionBackend: (existing?.ExecutionBackend ?? template?.ExecutionBackend) is ExecutionBackend.ClaudeCli
+                ? new ExecutionBackend.ClaudeCli(binary.Text.Trim())
+                : new ExecutionBackend.Http(),
+            RequestProfile: profile,
+            AuthenticationSource: authenticationSource,
+            // The account source reads only from an official address; another keeps none.
+            QuotaSource: quotaSource == ProviderQuotaSource.ApiAccount && AccountService() == null ? ProviderQuotaSource.None : quotaSource,
+            Models: [.. models.Select(model => model.Value())],
+            QuotaLimits: Limits(),
+            CodexClientVersion: profile == RequestProfile.CodexResponses && version.Length > 0 ? version : null);
+    }
 
     // Check shows what is missing; false keeps the editor as it is.
     bool Check(ProviderDraft draft)

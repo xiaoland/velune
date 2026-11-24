@@ -53,6 +53,8 @@ pub struct ProviderSummary {
     pub quota_authentication: crate::QuotaAuthenticationDescription,
     pub quota_limits: Vec<crate::config::QuotaLimit>,
     pub models: Vec<ProviderModel>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub codex_client_version: Option<String>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
@@ -75,6 +77,8 @@ pub struct ProviderDraft {
     pub quota_source: ProviderQuotaSource,
     pub models: Vec<ProviderModel>,
     pub quota_limits: Vec<crate::config::QuotaLimit>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub codex_client_version: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]

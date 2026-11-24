@@ -408,6 +408,7 @@ mod gateway_execution_tests {
             endpoint: endpoint.into(),
             execution_backend: crate::config::ExecutionBackend::Http,
             request_profile: crate::config::RequestProfile::Native,
+            codex_client_version: None,
             authentication_source: crate::ProviderAuthenticationSource::ApiKey,
             quota_source: crate::config::ProviderQuotaSource::None,
             models: vec![velune_application_api::ProviderModel {

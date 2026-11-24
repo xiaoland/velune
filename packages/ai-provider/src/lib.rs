@@ -4,6 +4,7 @@
 #![deny(unsafe_code)]
 pub mod claude_code;
 pub mod config;
+pub use config::valid_codex_client_version;
 mod gemini;
 mod http_client;
 pub use http_client::HttpClient;

@@ -36,6 +36,8 @@ pub struct ProviderDefinition {
     pub(crate) billing: crate::billing::Configuration,
     pub models: Vec<ProviderModel>,
     pub quota_limits: Vec<QuotaLimit>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub codex_client_version: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -330,6 +332,7 @@ impl GatewayConfig {
                         endpoint: p.endpoint.clone(),
                         execution_backend: gateway_execution_backend(&p.execution_backend),
                         request_profile: gateway_request_profile(p.request_profile),
+                        codex_client_version: p.codex_request_version().map(str::to_owned),
                         credential_ref: Some(p.id.clone()),
                         quota_limits: p
                             .quota_limits
@@ -446,7 +449,26 @@ impl ProjectRecord {
     }
 }
 impl ProviderDefinition {
+    pub(crate) fn effective_codex_client_version(&self) -> &str {
+        self.codex_client_version
+            .as_deref()
+            .unwrap_or(crate::default_codex_client_version())
+    }
+
+    pub(crate) fn codex_request_version(&self) -> Option<&str> {
+        (self.request_profile == RequestProfile::CodexResponses)
+            .then(|| self.effective_codex_client_version())
+    }
+
     pub(crate) fn validate_composition(&self) -> Result<(), &'static str> {
+        if let Some(version) = &self.codex_client_version {
+            if self.request_profile != RequestProfile::CodexResponses {
+                return Err("只有 Codex Responses 提供商支持设置 Codex 客户端版本");
+            }
+            if !velune_ai_provider::valid_codex_client_version(version) {
+                return Err("Codex 客户端版本须为主版本.次版本.补丁版本");
+            }
+        }
         self.billing.validate(self)?;
         use crate::provider_authentication::ProviderAuthenticationSource as Auth;
         if !self

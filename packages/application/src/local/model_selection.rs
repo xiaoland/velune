@@ -41,6 +41,7 @@ mod edit_model_tests {
                 endpoint: "http://127.0.0.1:1/v1".into(),
                 execution_backend: crate::config::ExecutionBackend::Http,
                 request_profile: crate::config::RequestProfile::Native,
+                codex_client_version: None,
                 quota_source: crate::config::ProviderQuotaSource::None,
                 authentication: Default::default(),
                 quota_authentication: Default::default(),

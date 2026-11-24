@@ -388,6 +388,7 @@ fn provider(id: &str, protocol: Api, upstream: &str) -> ProviderDefinition {
             request_parameters: BTreeMap::new(),
         }],
         quota_limits: Vec::new(),
+        codex_client_version: None,
     }
 }
 

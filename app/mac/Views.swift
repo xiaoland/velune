@@ -906,6 +906,7 @@ struct ProviderEditor: View {
     @State private var name = ""
     @State private var protocolID: ApiProtocol = .chatCompletions
     @State private var endpoint = ""
+    @State private var codexClientVersion = ""
     @State private var models: [ProviderModelDraft] = []
     @State private var quotaLimits: [QuotaLimit] = []
     @State private var composition = ProviderComposition()
@@ -952,6 +953,9 @@ struct ProviderEditor: View {
     /// The command a CLI backend runs, from the template the composition comes from.
     private var executableCommand: String? { template?.executableCommand ?? composition.subscriptionTemplate?.executableCommand }
     private var usesHTTP: Bool { if case .http = composition.executionBackend { return true }; return false }
+    private var codexVersionPrompt: String {
+        store.transport?.isRemote == true ? "自动（留空）" : "自动（\(defaultCodexClientVersion())）"
+    }
     private var showsQuota: Bool { usesSubscription || composition.quotaSource != .none || !quotaLimits.isEmpty || (providerID.flatMap { store.providerQuotas[$0] }.map { $0.freshness != .unsupported } ?? false) }
     private var modelIndex: Int? { guard case .model(let id) = selection else { return nil }; return models.firstIndex { $0.id == id } }
     private var claudeBinary: String? { composition.claudeBinary?.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -1008,6 +1012,7 @@ struct ProviderEditor: View {
         .onAppear {
             if let provider {
                 name = provider.name; protocolID = provider.protocol; endpoint = provider.endpoint; models = provider.models.map(ProviderModelDraft.init); quotaLimits = provider.quotaLimits; composition = provider.composition
+                codexClientVersion = provider.codexClientVersion ?? ""
             } else if let template {
                 // A subscription is named after it until told apart; an API provider by its service.
                 name = template.kind == .subscription ? template.name : ""; protocolID = template.protocol; endpoint = template.endpoint; composition = template.composition
@@ -1084,6 +1089,10 @@ struct ProviderEditor: View {
                     }
                 }
                 if !usesHTTP { claudeBinaryField }
+                if composition.requestProfile == .codexResponses {
+                    TextField("Codex 客户端版本", text: $codexClientVersion, prompt: Text(codexVersionPrompt))
+                        .help("留空时采用该设备适配器支持的最新版本。可填写主版本.次版本.修订号。")
+                }
             } header: {
                 Text("连接")
             } footer: {
@@ -1206,11 +1215,21 @@ struct ProviderEditor: View {
         let quotaEdit: QuotaAuthenticationEdit? = clearingQuotaAuthentication ? .clear : !quotaAccessKeyID.isEmpty && !quotaSecret.isEmpty ? .setAccessKey(accessKeyId: quotaAccessKeyID, secretAccessKey: quotaSecret, confirmed: quotaConfirmed) : quotaConfirmed ? .confirmBinding : nil
         let existing = Set(store.providers.map(\.id))
         var saving = composition; if let claudeBinary { saving.claudeBinary = claudeBinary }
-        store.saveProvider(ProviderDraft(id: providerID ?? "", name: name.trimmingCharacters(in: .whitespacesAndNewlines), protocol: protocolID, endpoint: usesHTTP ? endpoint.trimmingCharacters(in: .whitespacesAndNewlines) : "", executionBackend: saving.executionBackend, requestProfile: saving.requestProfile, authenticationSource: saving.authenticationSource, quotaSource: saving.quotaSource, models: models.map(\.definition), quotaLimits: quotaLimits), authenticationEdit: edit, quotaAuthenticationEdit: quotaEdit) {
+        let version = codexClientVersion.trimmingCharacters(in: .whitespacesAndNewlines)
+        let draft = ProviderDraft(
+            id: providerID ?? "", name: name.trimmingCharacters(in: .whitespacesAndNewlines),
+            protocol: protocolID, endpoint: usesHTTP ? endpoint.trimmingCharacters(in: .whitespacesAndNewlines) : "",
+            executionBackend: saving.executionBackend, requestProfile: saving.requestProfile,
+            authenticationSource: saving.authenticationSource, quotaSource: saving.quotaSource,
+            models: models.map(\.definition), quotaLimits: quotaLimits,
+            codexClientVersion: saving.requestProfile == .codexResponses && !version.isEmpty ? version : nil
+        )
+        store.saveProvider(draft, authenticationEdit: edit, quotaAuthenticationEdit: quotaEdit) {
             apiKey = ""; originalAPIKey = nil; quotaAccessKeyID = ""; quotaSecret = ""
             guard signingIn, let saved = store.providers.first(where: { $0.id == providerID }) ?? store.providers.first(where: { !existing.contains($0.id) }) else { dismiss(); return }
             // Later saves keep the new authentication and the models' assigned keys.
             savedID = saved.id; clearAuthentication = false; editingAPIKey = false; composition = saved.composition; linkedLogin = saved.authentication.linkedLogin
+            codexClientVersion = saved.codexClientVersion ?? ""
             models = saved.models.map(ProviderModelDraft.init); selection = .connection
             store.startAuthentication(saved.id)
         }

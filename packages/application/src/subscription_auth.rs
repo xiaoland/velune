@@ -592,12 +592,11 @@ fn login_worker(
     Err(failure())
 }
 
-/// Exact usage purpose: subscription credentials are not a general HTTP credential source.
-pub(crate) const USAGE_ENDPOINT: &str = "https://chatgpt.com/backend-api/wham/usage";
 pub(crate) async fn read_usage(
     home: PathBuf,
     id: String,
     generation: u64,
+    codex_client_version: &str,
 ) -> Result<Value, CredentialResolutionError> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(15))
@@ -618,15 +617,18 @@ pub(crate) async fn read_usage(
             reqwest::header::HeaderValue::from_str(&format!("Bearer {}", authorization.secret()))
                 .map_err(|_| CredentialResolutionError::InvalidContract)?;
         bearer.set_sensitive(true);
-        let mut response = client
-            .get(USAGE_ENDPOINT)
-            .header("authorization", bearer)
-            .header("chatgpt-account-id", account_id)
-            .header("originator", "codex_cli_rs")
-            .header("user-agent", velune_ai_provider::codex_user_agent())
-            .send()
-            .await
-            .map_err(|_| failure())?;
+        let endpoint = AccountDataEndpoint::Usage;
+        let mut response = account_data_request(
+            &client,
+            endpoint.url(),
+            bearer,
+            account_id,
+            endpoint,
+            codex_client_version,
+        )
+        .send()
+        .await
+        .map_err(|_| failure())?;
         if response.status() == reqwest::StatusCode::UNAUTHORIZED {
             if attempt == 0 {
                 auth = resolve(
@@ -805,16 +807,7 @@ pub(crate) async fn read_provider_account_data(
     id: String,
     generation: u64,
     endpoint: AccountDataEndpoint,
-) -> Result<Value, CredentialResolutionError> {
-    read_provider_account_data_at(home, id, generation, endpoint.url(), endpoint).await
-}
-
-async fn read_provider_account_data_at(
-    home: PathBuf,
-    id: String,
-    generation: u64,
-    url: &str,
-    endpoint: AccountDataEndpoint,
+    codex_client_version: &str,
 ) -> Result<Value, CredentialResolutionError> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(20))
@@ -835,10 +828,17 @@ async fn read_provider_account_data_at(
             reqwest::header::HeaderValue::from_str(&format!("Bearer {}", authorization.secret()))
                 .map_err(|_| CredentialResolutionError::InvalidContract)?;
         bearer.set_sensitive(true);
-        let response = account_data_request(&client, url, bearer, account_id, endpoint)
-            .send()
-            .await
-            .map_err(|_| failure())?;
+        let response = account_data_request(
+            &client,
+            endpoint.url(),
+            bearer,
+            account_id,
+            endpoint,
+            codex_client_version,
+        )
+        .send()
+        .await
+        .map_err(|_| failure())?;
         if response.status() == reqwest::StatusCode::UNAUTHORIZED {
             if attempt == 0 {
                 auth = resolve(
@@ -888,6 +888,7 @@ pub(crate) async fn read_provider_account_data_at_for_test(
     endpoint: AccountDataEndpoint,
     access_token: &str,
     account_id: &str,
+    codex_client_version: &str,
 ) -> Result<Value, CredentialResolutionError> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(2))
@@ -899,10 +900,17 @@ pub(crate) async fn read_provider_account_data_at_for_test(
     let mut bearer = reqwest::header::HeaderValue::from_str(&format!("Bearer {access_token}"))
         .map_err(|_| CredentialResolutionError::InvalidContract)?;
     bearer.set_sensitive(true);
-    let response = account_data_request(&client, url, bearer, account_id, endpoint)
-        .send()
-        .await
-        .map_err(|_| failure())?;
+    let response = account_data_request(
+        &client,
+        url,
+        bearer,
+        account_id,
+        endpoint,
+        codex_client_version,
+    )
+    .send()
+    .await
+    .map_err(|_| failure())?;
     if !response.status().is_success() {
         return Err(failure());
     }
@@ -923,6 +931,7 @@ fn account_data_request(
     bearer: reqwest::header::HeaderValue,
     account_id: &str,
     endpoint: AccountDataEndpoint,
+    codex_client_version: &str,
 ) -> reqwest::RequestBuilder {
     match endpoint {
         AccountDataEndpoint::Resets => client
@@ -940,7 +949,10 @@ fn account_data_request(
                 .header("chatgpt-account-id", account_id)
                 .header("accept", "application/json")
                 .header("originator", "codex_cli_rs")
-                .header("user-agent", velune_ai_provider::codex_user_agent());
+                .header(
+                    "user-agent",
+                    velune_ai_provider::codex_user_agent(codex_client_version),
+                );
             match endpoint {
                 AccountDataEndpoint::ModelUsage { kind, start, end } => {
                     let request = request.query(&[
@@ -993,6 +1005,8 @@ mod account_analytics_tests {
     };
     use chrono::NaiveDate;
 
+    const OVERRIDE_VERSION: &str = "0.166.7";
+
     #[test]
     fn analytics_get_routes_use_plan_and_fixed_account_scope() {
         let start = NaiveDate::from_ymd_opt(2026, 10, 21).unwrap();
@@ -1019,6 +1033,7 @@ mod account_analytics_tests {
                 reqwest::header::HeaderValue::from_static("Bearer synthetic"),
                 "synthetic-account",
                 endpoint,
+                OVERRIDE_VERSION,
             )
             .build()
             .unwrap();
@@ -1027,6 +1042,10 @@ mod account_analytics_tests {
             assert_eq!(request.url().host_str(), Some("chatgpt.com"));
             assert_eq!(request.url().path(), format!("/backend-api/wham/{path}"));
             assert_eq!(request.headers()["chatgpt-account-id"], "synthetic-account");
+            assert_eq!(
+                request.headers()["user-agent"],
+                "codex_cli_rs/0.166.7 Velune/0.1"
+            );
             let extra = if kind == Kind::Enterprise {
                 "&breakdown_by=model&modes=codex&modes=work"
             } else {
@@ -1042,6 +1061,7 @@ mod account_analytics_tests {
             reqwest::header::HeaderValue::from_static("Bearer synthetic"),
             "synthetic-account",
             endpoint,
+            OVERRIDE_VERSION,
         )
         .build()
         .unwrap();

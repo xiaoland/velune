@@ -73,7 +73,7 @@ final class Transport: @unchecked Sendable {
     let configurationChanged = PassthroughSubject<Void, Never>()
     /// This Mac's Velune home; a remote device's transport keeps its interface state here too.
     let stateDirectory: URL
-    private let remoteAttachments: Bool
+    let isRemote: Bool
     /// Opens the application this transport talks to: this Mac's core, or a paired device.
     private let open: () throws -> VeluneApplication
     let telemetryResult: Result<ClientTelemetry, Error>
@@ -101,7 +101,7 @@ final class Transport: @unchecked Sendable {
 
     init(stateDirectory: URL, resourcesDirectory: URL) {
         self.stateDirectory = stateDirectory
-        remoteAttachments = false
+        isRemote = false
         let result = Result { try ClientTelemetry(home: stateDirectory, platform: "macos", localLogs: true,
             developmentProfile: ProcessInfo.processInfo.environment["VELUNE_TELEMETRY_PROFILE"], runID: ProcessInfo.processInfo.environment["VELUNE_RUN_ID"]) }
         telemetryResult = result
@@ -115,7 +115,7 @@ final class Transport: @unchecked Sendable {
     /// A paired device's application; the same named methods reach its core.
     init(stateDirectory: URL, telemetry: Result<ClientTelemetry, Error>, composerAuthority: Transport? = nil, remote: @escaping () throws -> VeluneApplication) {
         self.stateDirectory = stateDirectory
-        remoteAttachments = true
+        isRemote = true
         telemetryResult = telemetry; ownsTelemetry = false
         open = {
             let application = try remote()
@@ -129,7 +129,7 @@ final class Transport: @unchecked Sendable {
     /// Closing it releases only this presentation view and never the runtime.
     private init(source: Transport, viewID: String) {
         stateDirectory = source.stateDirectory
-        remoteAttachments = source.remoteAttachments
+        isRemote = source.isRemote
         telemetryResult = source.telemetryResult
         ownsTelemetry = false
         open = {
@@ -186,8 +186,8 @@ final class Transport: @unchecked Sendable {
         try withApplication("setProject", .writes, .configurationWrite) { application in
             // A fresh remote proxy carries the revision of this read. The
             // shared browsing proxy may predate intervening conversation work.
-            let editor = remoteAttachments ? try open() : application
-            defer { if remoteAttachments { try? editor.shutdown() } }
+            let editor = isRemote ? try open() : application
+            defer { if isRemote { try? editor.shutdown() } }
             let current = try editor.list()
             if let basis, current.conversationProjects.first(where: { $0.path == path }) != basis {
                 throw TransportError.rejected("项目已在其他窗口或设备中修改。请保留当前输入，重新打开项目后核对再存储。")
@@ -456,7 +456,7 @@ final class Transport: @unchecked Sendable {
         try withApplication("resumeTurn", .writes, .send) { try $0.resumeTurn(runtimeId: runtimeID, conversationId: conversationID, selection: selection, effort: effort, permissionMode: permissionMode) }
     }
     private func deliver(_ turn: ComposedTurn, using application: VeluneApplication) throws -> ComposedTurn {
-        guard remoteAttachments else { return turn }
+        guard isRemote else { return turn }
         var delivered = turn
         delivered.attachments = try turn.attachments.map { path in
             guard path.hasPrefix("/") else { return path }

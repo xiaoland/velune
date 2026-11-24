@@ -44,6 +44,9 @@ pub struct ProviderDefinition {
     pub credential_ref: Option<String>,
     pub models: Vec<ProviderModel>,
     pub quota_limits: Vec<QuotaLimit>,
+    /// Effective client version resolved by the caller for Codex Responses.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub codex_client_version: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -122,6 +125,10 @@ impl GatewayConfig {
                 }
                 _ => {}
             }
+            provider
+                .request_profile
+                .check_codex_client_version(provider.codex_client_version.as_deref())
+                .map_err(|error| error.0)?;
             if provider.request_profile != RequestProfile::Native {
                 let endpoint = HttpEndpoint::parse(&provider.endpoint).map_err(|error| error.0)?;
                 provider

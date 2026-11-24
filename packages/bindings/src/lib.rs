@@ -168,6 +168,12 @@ pub fn provider_templates() -> Result<Vec<ProviderTemplate>, BindingError> {
     Ok(velune_application_api::provider_templates())
 }
 
+#[cfg(feature = "local-runtime")]
+#[uniffi::export]
+pub fn default_codex_client_version() -> String {
+    velune_application::default_codex_client_version().to_owned()
+}
+
 #[uniffi::export]
 pub fn runtime_new_conversation_choice(
     runtime: RuntimeInstance,

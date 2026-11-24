@@ -316,7 +316,12 @@ impl CoreRuntime {
                         let profile = crate::config::gateway_request_profile(provider.request_profile);
                         let backend: Box<dyn NativeProvider> = match &provider.execution_backend {
                             crate::config::ExecutionBackend::Http => Box::new(NativeHttp::new(
-                                HttpTarget::new(provider.protocol, HttpEndpoint::parse(&provider.endpoint).map_err(|_| NativeErrorKind::InvalidInput)?, profile).map_err(|_| NativeErrorKind::InvalidInput)?,
+                                HttpTarget::new(
+                                    provider.protocol,
+                                    HttpEndpoint::parse(&provider.endpoint).map_err(|_| NativeErrorKind::InvalidInput)?,
+                                    profile,
+                                    provider.codex_request_version(),
+                                ).map_err(|_| NativeErrorKind::InvalidInput)?,
                                 HttpClient::new(reqwest::Client::builder().timeout(std::time::Duration::from_secs(30))).map_err(|_| NativeErrorKind::Transport)?, credential,
                             ).map_err(|_| NativeErrorKind::InvalidInput)?),
                             crate::config::ExecutionBackend::ClaudeCli { binary } => {

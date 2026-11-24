@@ -117,7 +117,7 @@ impl NativeHttp {
     ) -> Result<reqwest::Request, NativeErrorKind> {
         let protocol = self.target.protocol();
         let profile = self.target.request_profile();
-        let codex = profile == RequestProfile::CodexResponses;
+        let codex_client_version = self.target.codex_client_version();
         let base = self.target.endpoint();
         let endpoint = match protocol {
             Protocol::ChatCompletions => base.url("/chat/completions"),
@@ -168,7 +168,7 @@ impl NativeHttp {
                     | "content-length"
                     | "connection"
             ) || (own_agent && name == "user-agent")
-                || (codex
+                || (codex_client_version.is_some()
                     && matches!(
                         name.as_str(),
                         "accept"
@@ -190,7 +190,7 @@ impl NativeHttp {
             // A single genuine client identity, never an impersonated agent.
             builder = builder.header("user-agent", service_error::USER_AGENT);
         }
-        if codex {
+        if let Some(version) = codex_client_version {
             let account = account_id.as_deref().expect("validated Codex account");
             let mut account = HeaderValue::from_str(account).expect("validated account header");
             account.set_sensitive(true);
@@ -198,8 +198,8 @@ impl NativeHttp {
                 .header("chatgpt-account-id", account)
                 .header("openai-beta", "responses=experimental")
                 .header("originator", "codex_cli_rs")
-                .header("version", responses::CODEX_CLIENT_VERSION)
-                .header("user-agent", responses::codex_user_agent());
+                .header("version", version)
+                .header("user-agent", responses::codex_user_agent(version));
             if let Some(key) = body["prompt_cache_key"].as_str()
                 && let Ok(value) = HeaderValue::from_str(key)
             {
@@ -524,12 +524,13 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn codex_subscription_uses_supported_client_version_and_preserves_model() {
+    fn codex_subscription_uses_provider_client_version_and_preserves_model() {
         let provider = NativeHttp::new(
             HttpTarget::new(
                 Protocol::Responses,
                 HttpEndpoint::parse("https://chatgpt.com/backend-api/codex").unwrap(),
                 RequestProfile::CodexResponses,
+                Some("0.166.0"),
             )
             .unwrap(),
             HttpClient::new(reqwest::Client::builder()).unwrap(),
@@ -564,9 +565,9 @@ mod tests {
 
         let headers = request.headers();
         assert_eq!(headers.get_all("version").iter().count(), 1);
-        assert_eq!(headers["version"], "0.167.0");
+        assert_eq!(headers["version"], "0.166.0");
         assert_eq!(headers.get_all("user-agent").iter().count(), 1);
-        assert_eq!(headers["user-agent"], "codex_cli_rs/0.167.0 Velune/0.1");
+        assert_eq!(headers["user-agent"], "codex_cli_rs/0.166.0 Velune/0.1");
         let body: Value =
             serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
         assert_eq!(body["model"], model);

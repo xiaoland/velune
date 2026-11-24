@@ -175,6 +175,12 @@ pub(crate) fn edit_provider(
                 billing: previous.map(|p| p.billing.clone()).unwrap_or_default(),
                 models,
                 quota_limits: draft.quota_limits,
+                codex_client_version: draft
+                    .codex_client_version
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|version| !version.is_empty())
+                    .map(str::to_owned),
             };
             if provider.billing.settings.as_ref().is_some_and(|settings| {
                 crate::billing::supported(&provider) != Some(settings.service)
@@ -330,9 +336,107 @@ impl From<&GatewayConfig> for GatewaySummary {
                     },
                     quota_limits: p.quota_limits.clone(),
                     models: p.models.iter().map(Into::into).collect(),
+                    codex_client_version: p.codex_client_version.clone(),
                 })
                 .collect(),
             routes: g.routes.clone(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod codex_client_version_tests {
+    use super::*;
+    use serde_json::Value;
+
+    fn codex_draft() -> ProviderDraft {
+        let template = crate::provider_templates()
+            .into_iter()
+            .find(|template| template.id == "codexSubscription")
+            .unwrap();
+        ProviderDraft {
+            id: "subscription".into(),
+            name: "Subscription".into(),
+            protocol: template.protocol,
+            endpoint: template.endpoint,
+            execution_backend: template.execution_backend,
+            request_profile: template.request_profile,
+            authentication_source: template.authentication_source,
+            quota_source: template.quota_source,
+            models: vec![],
+            quota_limits: vec![],
+            codex_client_version: None,
+        }
+    }
+
+    fn save(gateways: &mut Vec<GatewayConfig>, draft: &ProviderDraft) -> Result<(), Error> {
+        edit_provider(
+            gateways,
+            "default",
+            ProviderEdit::Save {
+                provider: draft.clone(),
+                authentication: AuthenticationEdit::Keep,
+                quota_authentication: None,
+            },
+            &|_| unreachable!(),
+        )
+        .map(|_| ())
+    }
+
+    #[test]
+    fn codex_version_defaults_and_persists_without_changing_login() {
+        let mut gateways = vec![];
+        let mut draft = codex_draft();
+        save(&mut gateways, &draft).unwrap();
+        let login = gateways[0].providers[0].authentication.clone();
+        let automatic = serde_json::to_value(&gateways[0]).unwrap();
+
+        assert!(
+            automatic["providers"][0]
+                .get("codexClientVersion")
+                .is_none()
+        );
+        let old_config: GatewayConfig = serde_json::from_value(automatic.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&old_config).unwrap(), automatic);
+        assert_eq!(
+            old_config.to_gateway_config().unwrap().providers[0]
+                .codex_client_version
+                .as_deref(),
+            Some(crate::default_codex_client_version()),
+        );
+
+        draft.codex_client_version = Some(" 0.166.0 ".into());
+        save(&mut gateways, &draft).unwrap();
+        let stored = serde_json::to_string(&gateways[0]).unwrap();
+        let reloaded: GatewayConfig = serde_json::from_str(&stored).unwrap();
+        assert_eq!(
+            GatewaySummary::from(&reloaded).providers[0]
+                .codex_client_version
+                .as_deref(),
+            Some("0.166.0"),
+        );
+        assert_eq!(
+            reloaded.to_gateway_config().unwrap().providers[0]
+                .codex_client_version
+                .as_deref(),
+            Some("0.166.0"),
+        );
+
+        draft.codex_client_version = Some(" ".into());
+        save(&mut gateways, &draft).unwrap();
+        let current: Value = serde_json::to_value(&gateways[0]).unwrap();
+        assert_eq!(current, automatic);
+        assert_eq!(gateways[0].providers[0].authentication, login);
+    }
+
+    #[test]
+    fn invalid_codex_version_is_rejected() {
+        let mut gateways = vec![];
+        let mut draft = codex_draft();
+        save(&mut gateways, &draft).unwrap();
+        for value in ["0.167", "0.167.0-preview", "0.167.0\r\nVersion: 1.0.0"] {
+            draft.codex_client_version = Some(value.into());
+            assert!(save(&mut gateways.clone(), &draft).is_err());
         }
     }
 }
@@ -354,6 +458,7 @@ mod quota_composition_tests {
             endpoint: template.endpoint,
             execution_backend: template.execution_backend,
             request_profile: template.request_profile,
+            codex_client_version: None,
             authentication_source: template.authentication_source,
             quota_source: template.quota_source,
             models: vec![],
@@ -420,6 +525,7 @@ mod quota_composition_tests {
                 endpoint: "https://api.kimi.com/coding/".into(),
                 execution_backend: template.execution_backend.clone(),
                 request_profile: template.request_profile,
+                codex_client_version: None,
                 authentication_source: template.authentication_source,
                 quota_source: template.quota_source,
                 models: vec![],

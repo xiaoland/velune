@@ -1379,7 +1379,14 @@ final class DeviceStore: ObservableObject {
 
     private func seedPreview() {
         conversationBrowserPreferences = ConversationBrowser().preferences
-        gateway = GatewaySummary(id: "default", name: "默认网关", providers: [ProviderSummary(previewOf: ProviderDraft(id: "sample-provider", name: "示例 AI 服务", protocol: .chatCompletions, endpoint: "https://example.invalid/v1", executionBackend: .http, requestProfile: .native, authenticationSource: .apiKey, quotaSource: .none, models: [ProviderModel(recordKey: "sample-model", providerModelId: "external-example", nickname: "通用模型", contextWindow: 8192, maxOutputTokens: 4096)], quotaLimits: []))], routes: [])
+        let provider = ProviderDraft(
+            id: "sample-provider", name: "示例 AI 服务", protocol: .chatCompletions,
+            endpoint: "https://example.invalid/v1", executionBackend: .http, requestProfile: .native,
+            authenticationSource: .apiKey, quotaSource: .none,
+            models: [ProviderModel(recordKey: "sample-model", providerModelId: "external-example", nickname: "通用模型", contextWindow: 8192, maxOutputTokens: 4096)],
+            quotaLimits: [], codexClientVersion: nil
+        )
+        gateway = GatewaySummary(id: "default", name: "默认网关", providers: [ProviderSummary(previewOf: provider)], routes: [])
         hasGateway = true
         protocols = [ProtocolDescriptor(id: .chatCompletions, name: "OpenAI Chat Completions v1", supported: true), ProtocolDescriptor(id: .responses, name: "OpenAI Responses v1", supported: true), ProtocolDescriptor(id: .messages, name: "Anthropic Messages v1", supported: true), ProtocolDescriptor(id: .gemini, name: "Gemini GenerateContent", supported: true)]
         runtimeTypes = [RuntimeTypeDescriptor(id: .pi, familyId: "sample", compatibleVersions: "", canRenameConversations: true, canDeleteConversations: true, canSideChat: true, launchOptions: false, agentInfo: false, sessionOptions: false, nativeAccountQuota: false, remoteResources: false, supportedProtocols: [.chatCompletions, .responses, .messages, .gemini], supportedProviderProtocols: [.chatCompletions, .responses, .messages, .gemini], name: "示例运行时", fields: [], permissionModes: [])]

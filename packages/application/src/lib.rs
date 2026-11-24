@@ -58,6 +58,11 @@ pub use velune_application_api::{
     ProviderAnalyticsSourceState, ProviderAnalyticsUsage,
 };
 pub use velune_application_api::{ProviderTemplate, ProviderTemplateKind, provider_templates};
+
+pub fn default_codex_client_version() -> &'static str {
+    velune_agent_runtime::version::CODEX_LATEST_SUPPORTED_VERSION
+}
+
 pub mod config;
 mod local;
 pub mod model_catalog;

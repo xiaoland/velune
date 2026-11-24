@@ -31,6 +31,8 @@ struct Binding {
     id: String,
     generation: u64,
     source: crate::config::ProviderQuotaSource,
+    // The request version can invalidate a sample without changing the account's history.
+    codex_client_version: Option<String>,
     binary: Option<String>,
     directory: LoginDirectory,
     kimi: Option<crate::kimi_quota::Capture>,
@@ -237,6 +239,9 @@ impl SubscriptionQuota {
                                 id: credential_id.clone(),
                                 generation: p.authentication.generation,
                                 source: p.quota_source,
+                                codex_client_version: Some(
+                                    p.effective_codex_client_version().into(),
+                                ),
                                 binary: None,
                                 directory: LoginDirectory::Owned,
                                 kimi: None,
@@ -250,6 +255,7 @@ impl SubscriptionQuota {
                                 id: credential_id.clone(),
                                 generation: p.authentication.generation,
                                 source: p.quota_source,
+                                codex_client_version: None,
                                 binary: cli_binary(p),
                                 directory: LoginDirectory::Owned,
                                 kimi: None,
@@ -263,6 +269,7 @@ impl SubscriptionQuota {
                                 id: p.id.clone(),
                                 generation: p.authentication.generation,
                                 source: p.quota_source,
+                                codex_client_version: None,
                                 binary: cli_binary(p),
                                 directory: LoginDirectory::Linked(config_dir.clone()),
                                 kimi: None,
@@ -277,6 +284,7 @@ impl SubscriptionQuota {
                                     id: p.id.clone(),
                                     generation: p.authentication.generation,
                                     source: p.quota_source,
+                                    codex_client_version: None,
                                     binary: None,
                                     directory: LoginDirectory::Owned,
                                     ark: None,
@@ -294,6 +302,7 @@ impl SubscriptionQuota {
                                 id: p.id.clone(),
                                 generation: p.authentication.generation,
                                 source: p.quota_source,
+                                codex_client_version: None,
                                 binary: None,
                                 directory: LoginDirectory::Owned,
                                 kimi: None,
@@ -317,6 +326,7 @@ impl SubscriptionQuota {
                                     id: p.id.clone(),
                                     generation: p.authentication.generation,
                                     source: p.quota_source,
+                                    codex_client_version: None,
                                     binary: None,
                                     directory: LoginDirectory::Owned,
                                     kimi: None,
@@ -1010,7 +1020,15 @@ fn collect(
         tokio::select! {
             result = async {
                 match binding.source {
-                    crate::config::ProviderQuotaSource::CodexUsage => crate::subscription_auth::read_usage(home, binding.id.clone(), binding.generation).await.map_err(|_| ()).and_then(|value| parse_windows(&value,ttl_ms)),
+                    crate::config::ProviderQuotaSource::CodexUsage => {
+                        let version = binding.codex_client_version.as_deref().ok_or(())?;
+                        let response = crate::subscription_auth::read_usage(
+                            home, binding.id.clone(), binding.generation, version,
+                        )
+                        .await
+                        .map_err(|_| ())?;
+                        parse_windows(&response, ttl_ms)
+                    },
                     crate::config::ProviderQuotaSource::ClaudeCliUsage => { let owned=crate::claude_cli::directory(&home,&binding.id); let dir=match &binding.directory { LoginDirectory::Owned=>Some(owned.as_path()), LoginDirectory::Linked(dir)=>dir.as_deref().map(std::path::Path::new) }; let windows=crate::claude_quota::read(binding.binary.as_deref().ok_or(())?,dir,ttl_ms).await?; let observed=windows.first().ok_or(())?.observed_at_ms; let expires=windows.iter().map(|window|window.expires_at_ms).min().ok_or(())?; Ok(observation(windows,None,observed,expires)) },
                     crate::config::ProviderQuotaSource::ArkCodingUsage => { let observed=now_ms(); let windows=binding.ark.as_ref().ok_or(())?.windows(observed,ttl_ms).await?; let expires=windows.iter().map(|w|w.expires_at_ms).min().ok_or(())?; Ok(observation(windows,None,observed,expires)) },
                     crate::config::ProviderQuotaSource::ApiAccount => { let observed=now_ms(); let found=binding.account.as_ref().ok_or(())?.observe(observed,ttl_ms).await?; let expires=found.windows.iter().map(|w|w.expires_at_ms).min().unwrap_or(observed+ttl_ms); Ok(Observation { windows: found.windows, balances: found.balances, available: found.available, observed_at_ms: observed, expires_at_ms: expires }) },
@@ -1135,9 +1153,10 @@ mod configuration_tests {
             id: "fixture".into(),
             name: "Fixture".into(),
             protocol: crate::config::Protocol::Responses,
-            endpoint: "http://127.0.0.1:1/v1".into(),
+            endpoint: crate::subscription_auth::ENDPOINT.into(),
             execution_backend: crate::config::ExecutionBackend::Http,
-            request_profile: crate::config::RequestProfile::Native,
+            request_profile: crate::config::RequestProfile::CodexResponses,
+            codex_client_version: Some("0.166.7".into()),
             quota_source: crate::config::ProviderQuotaSource::CodexUsage,
             authentication: crate::provider_authentication::ProviderAuthentication {
                 material: AuthenticationMaterial::CodexSubscription {
@@ -1199,6 +1218,21 @@ mod configuration_tests {
         assert!(matches!(observation.freshness, QuotaFreshness::Fresh));
         assert_eq!(observation.windows[0].used_percent, 98.0);
         assert!(!observation.refreshing);
+        // A version edit refreshes the sample while keeping the account history.
+        gateways[0].providers[0].codex_client_version = Some("0.166.8".into());
+        next.configure(&gateways);
+        {
+            let state = next.state.lock().unwrap();
+            let entry = &state.entries[&("fixture".into(), "fixture".into())];
+            assert!(!fresh(entry));
+            let binding = entry.binding.as_ref().unwrap();
+            assert_eq!(binding.codex_client_version.as_deref(), Some("0.166.8"));
+            assert_eq!(binding.epoch(), old_epoch);
+        }
+        assert_eq!(
+            next.history("fixture", "fixture", 0).unwrap().points,
+            vec![point.clone()]
+        );
         // Replacing the next version's binding must not revoke the running one.
         gateways[0].providers[0].authentication.generation = 2;
         next.configure(&gateways);

@@ -176,6 +176,7 @@ def managed_selection(app, api, conversation, port):
         request_profile=api.RequestProfile.NATIVE,
         authentication_source=api.ProviderAuthenticationSource.API_KEY,
         quota_source=api.ProviderQuotaSource.NONE, quota_limits=[],
+        codex_client_version=None,
         models=[api.ProviderModel(record_key="", provider_model_id=MODEL,
                                  context_window=128000, max_output_tokens=4096)],
     )

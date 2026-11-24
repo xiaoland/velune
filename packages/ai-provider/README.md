@@ -24,7 +24,7 @@ Cargo 构建会调用 Go，以同进程库链接。Mac 使用 c-archive；Androi
 
 Codex request profile 仅用于 Responses HTTP adapter，目标必须是 `https://chatgpt.com:443/backend-api/codex`，并提供 Bearer 和 account ID；其他协议或目的地址在发送前拒绝。HTTP adapter 的构造必须使用 `HttpClient::new(ClientBuilder)`；该类型在构造末尾强制禁用重定向和自动重试，不接受已构建的任意 Client。gateway 启动时构造并复用，独立消费方可在 builder 注入代理、DNS 或证书信任但不能覆盖这两项策略，避免自定义 account header 被重定向发送到其他目标。请求使用敏感的 `chatgpt-account-id`，附加 Codex backend 所需的 beta、originator 和客户端标识；这是非正式 Codex 接入，不是 Velune 的正式 SIWC 客户端身份。
 
-ChatGPT 订阅端点按 Codex 客户端版本提供模型。推理请求的 `version` 和订阅查询共用的 Codex User-Agent 由 `responses::CODEX_CLIENT_VERSION` 派生，独立于机器上安装的运行时版本。变更该值时用同一订阅验证原生模型目录和推理流；模型选择仍由网关路由交给适配器。
+ChatGPT 订阅端点按 Codex 客户端版本提供模型。`HttpTarget` 接收由调用方解析出的提供商生效版本，要求 Codex Responses profile 提供 `major.minor.patch` 版本。原生 HTTP 适配器以同一个值生成推理请求的 `version` 和 User-Agent，并替换入口传入的这两个请求头。订阅查询可复用 `codex_user_agent` 生成请求头。
 
 Codex backend 只接受流请求。adapter 设置 stream=true、store=false，缺少 instructions 时传空字符串，保留调用方已有 instructions、完整输入及工具调用／结果。字符串输入转换为用户消息数组，system 角色映射为 developer，历史项的上游 id 被移除；状态引用与 item_reference 在发送前明确拒绝，不能据此补造历史。adapter 省略 `metadata` 和不支持的采样、输出限制、显式缓存字段及 service_tier。每次转换成功且省略了顶层字段或移除了历史项 id 时，发出一条 `codex_request_field_omitted` 诊断，只记录固定的顶层协议字段名和移除的历史项 id 数量。它不注入 Codex 系统指令，不合成孤儿工具结果。Native Responses profile 保持原生字段与显式请求能力限制，Codex 的适配不影响它。当前 backend 用户代理约定依据 Magpie `9b04c4e20ff8bf10c745a53f562f5007b82d007d`，上游变更需单独复核。
 

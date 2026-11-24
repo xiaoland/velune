@@ -71,13 +71,11 @@ pub(crate) const CODEX_PERMISSION_MODES: &[PermissionMode] = &[
 /// The versions an adapter carries.
 pub enum Versions {
     /// A dedicated adapter's CLI versions: from the one verified with the
-    /// actual CLI up to, not including, the next version that may break it
-    /// (a semantic minor version; for 0.x the minor too), raised once a
-    /// newer CLI is verified. Versions compare by major.minor.patch, so an
-    /// alpha or beta counts as its release.
+    /// actual CLI through its highest supported minor series. The minimum
+    /// compares by major.minor.patch, so an alpha or beta counts as its release.
     Cli {
         minimum: &'static str,
-        below: &'static str,
+        through: &'static str,
     },
     /// The protocol major version `acp-v1` negotiates.
     AcpProtocol(u64),
@@ -85,23 +83,27 @@ pub enum Versions {
 impl Versions {
     /// Whether a version the CLI reports is in the range.
     pub fn contains(&self, version: &str) -> bool {
-        let Self::Cli { minimum, below } = self else {
+        let Self::Cli { minimum, through } = self else {
             return false;
         };
-        let (Ok(version), Ok(minimum), Ok(below)) = (
+        let (Ok(version), Ok(minimum), Ok(through)) = (
             semver::Version::parse(version),
             semver::Version::parse(minimum),
-            semver::Version::parse(below),
+            semver::Version::parse(through),
         ) else {
             return false;
         };
         let core = |v: &semver::Version| (v.major, v.minor, v.patch);
-        core(&version) >= core(&minimum) && core(&version) < core(&below)
+        core(&version) >= core(&minimum)
+            && (version.major, version.minor) <= (through.major, through.minor)
     }
     /// The range as users read it.
     pub fn describe(&self) -> String {
         match self {
-            Self::Cli { minimum, below } => format!("≥{minimum}，<{below}"),
+            Self::Cli { minimum, through } => {
+                let maximum = semver::Version::parse(through).expect("supported runtime version");
+                format!("≥{minimum}，<{}.{}.0", maximum.major, maximum.minor + 1)
+            }
             Self::AcpProtocol(major) => format!("协议 {major}"),
         }
     }
@@ -157,8 +159,11 @@ pub struct RuntimeVariant {
 /// Pi's range, shared with the Pi provider import.
 pub const PI_VERSIONS: Versions = Versions::Cli {
     minimum: "1.0.2",
-    below: "1.5.0",
+    through: "1.4.0",
 };
+/// Highest supported Codex client version used as the subscription default.
+pub const CODEX_LATEST_SUPPORTED_VERSION: &str = "0.167.0";
+
 pub const ANTIGRAVITY_FAMILY: &str = "antigravity";
 // 1.5.1 exposes the account's models to ACP clients under their own names.
 pub const ANTIGRAVITY_ACP_MINIMUM: semver::Version = semver::Version::new(1, 5, 1);
@@ -191,7 +196,7 @@ const VARIANTS: &[RuntimeVariant] = &[
         name: "Claude Code 2.1",
         versions: Versions::Cli {
             minimum: "2.1.286",
-            below: "2.2.0",
+            through: "2.1.0",
         },
         can_rename_conversations: true,
         can_delete_conversations: false,
@@ -233,7 +238,7 @@ const VARIANTS: &[RuntimeVariant] = &[
         name: "Codex 0.166",
         versions: Versions::Cli {
             minimum: "0.166.0",
-            below: "0.168.0",
+            through: CODEX_LATEST_SUPPORTED_VERSION,
         },
         can_rename_conversations: true,
         can_delete_conversations: true,
@@ -254,7 +259,7 @@ const VARIANTS: &[RuntimeVariant] = &[
         name: "DeepSeek Harness 0.2",
         versions: Versions::Cli {
             minimum: "0.2.0-rc.2",
-            below: "0.3.0",
+            through: "0.2.0",
         },
         can_rename_conversations: false,
         can_delete_conversations: false,

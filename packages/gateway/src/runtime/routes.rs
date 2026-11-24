@@ -46,6 +46,7 @@ pub(super) fn build_routes(
                     provider.protocol,
                     HttpEndpoint::parse(&provider.endpoint)?,
                     provider.request_profile,
+                    provider.codex_client_version.as_deref(),
                 )?),
                 ExecutionBackend::ClaudeCli { .. } => None,
             };
@@ -116,4 +117,53 @@ pub(super) fn build_routes(
         }
     }
     Ok(routes)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn codex_route_members_keep_their_own_client_versions() {
+        let provider = |id, version| {
+            json!({
+                "id": id, "name": id, "protocol": "responsesV1", "executionBackend": "http",
+                "requestProfile": "codexResponses", "endpoint": "https://chatgpt.com/backend-api/codex",
+                "codexClientVersion": version, "quotaLimits": [],
+                "models": [{"recordKey": id, "providerModelId": "gpt-6.2-sol", "nickname": ""}]
+            })
+        };
+        let mut config: GatewayConfig = serde_json::from_value(json!({
+            "id": "gateway", "name": "Gateway",
+            "providers": [provider("a", "0.166.0"), provider("b", "0.167.0")],
+            "routes": [{"recordKey": "both", "name": "Both", "members": ["b", "a"],
+                "strategy": "order", "sticky": false, "weights": {}}]
+        }))
+        .unwrap();
+        config.validate().unwrap();
+        let routes = build_routes(&config, &BTreeMap::new()).unwrap();
+        let versions = |key: &str| {
+            routes[key]
+                .iter()
+                .map(|target| target.config.as_ref().unwrap().codex_client_version())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(versions("velune/model/a"), [Some("0.166.0")]);
+        assert_eq!(
+            versions("velune/model/both"),
+            [Some("0.167.0"), Some("0.166.0")]
+        );
+
+        let provider = &mut config.providers[0];
+        provider.codex_client_version = None;
+        assert!(config.validate().is_err());
+        for version in ["0.166", "00.166.0", "0.166.0-alpha.1", "0.166.0\r\n"] {
+            config.providers[0].codex_client_version = Some(version.into());
+            assert!(config.validate().is_err(), "accepted {version:?}");
+        }
+        config.providers[0].codex_client_version = Some("0.166.0".into());
+        config.providers[0].request_profile = RequestProfile::Native;
+        assert!(config.validate().is_err());
+    }
 }

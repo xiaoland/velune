@@ -153,7 +153,7 @@ extension ProviderSummary: Identifiable {
         self.init(id: draft.id, name: draft.name, protocol: draft.protocol, endpoint: draft.endpoint, executionBackend: draft.executionBackend,
                   requestProfile: draft.requestProfile, authenticationSource: draft.authenticationSource, quotaSource: draft.quotaSource,
                   authentication: .unconfigured, quotaAuthentication: QuotaAuthenticationDescription(configured: false, bindingConfirmed: false),
-                  quotaLimits: draft.quotaLimits, models: draft.models)
+                  quotaLimits: draft.quotaLimits, models: draft.models, codexClientVersion: draft.codexClientVersion)
     }
 }
 
