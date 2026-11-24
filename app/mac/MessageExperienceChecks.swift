@@ -575,9 +575,28 @@ import VeluneBindings
         try! bitmap.representation(using: .png, properties: [:])!.write(to: home.appendingPathComponent(name + ".png"))
     }
     func descendants(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap(descendants) }
+    func visibleMenus(in view: NSView) -> [NSPopUpButton] {
+        descendants(view).compactMap { $0 as? NSPopUpButton }.filter { !$0.isHiddenOrHasHiddenAncestor }
+    }
 
     preferences.values = AppearanceValues()
     let device = DeviceStore(preview: true)
+    let permission = PermissionMode(id: "ask", label: "请求审批", detail: "合成权限模式")
+    var runtimeType = device.runtimeTypes[0]
+    runtimeType.permissionModes = [permission]
+    let listed = device.conversations.map { value in
+        ListedConversation(conversation: .init(id: value.id, title: .native(value.title),
+            updatedAtUnixMs: value.updatedAtUnixMs, createdAtUnixMs: value.createdAtUnixMs, runtimeId: value.runtimeID,
+            cwd: value.cwd, canRename: true, canDelete: true, parentConversationId: nil, nativeReadState: nil),
+            nativeId: value.id, agentsUri: nil, pinned: false, unread: false, archived: false,
+            project: value.project, moved: false, failed: false, group: value.group)
+    }
+    device.applyList(ConfigurationSnapshot(conversations: listed, conversationGroups: device.conversationGroups,
+        conversationProjects: [], workingDirectoryProjects: [:], showsArchived: false, historyFailures: [], gateways: [],
+        runtimeInstances: device.runtimeInstances, runtimeTypes: [runtimeType], modelTemplates: [],
+        conversationBrowserLimits: device.conversationBrowserLimits, outlinePresentation: .popover, linkedConversationOpening: .currentTab,
+        usageDisplay: .used, contextUsageDisplay: .used, conversationBrowserPreferences: ConversationBrowser().preferences,
+        statusLine: [], providerImportTypes: [], protocols: device.protocols, selectedRuntimeInstanceId: device.selectedRuntimeInstanceID))
     let code = "let scale = 1.25"
     if var sample = device.previewSnapshots["sample-0"] {
         let messages: [DeliveredMessage] = [
@@ -596,6 +615,10 @@ import VeluneBindings
     tab.store.selectConversation(id: "sample-0")
     workspace.tools.move(.composer, to: .builtIn)
     let model = workspace.composer(for: tab)
+    let selectionModel = ModelSelection.native(providerId: "sample", modelId: "sample-native")
+    workspace.composerContext(for: tab).selectModel(selectionModel)
+    workspace.composerContext(for: tab).selectEffort("high")
+    workspace.composerContext(for: tab).selectPermissionMode(permission.id)
     let draft = "缩放时保留这段草稿"
     model.restore(draft, attachments: [])
     let host = NSHostingView(rootView: HStack(spacing: 0) {
@@ -625,7 +648,7 @@ import VeluneBindings
     require(model.submission == typed && undo.canUndo, "原生编辑器未记录真实草稿修改")
 
     var measurements: [[String: Any]] = []
-    func measure(_ percent: Int, name: String) -> [CGFloat] {
+    func measure(_ percent: Int, name: String, wide: Bool = true) -> [CGFloat] {
         layout(host)
         require(preferences.values.zoomPercent == percent, "视图测量不在预期缩放档位")
         require(AppearancePreferences.rendering.read() == preferences.values, "原生排版快照必须来自当前外观设置")
@@ -642,11 +665,26 @@ import VeluneBindings
         }
         let caption = TranscriptTypography.caption.pointSize
         let spacing = TranscriptRowLayout.blockSpacing
+        let context = workspace.composerContext(for: tab)
+        require(context.chosenModel == selectionModel && context.nextTurnEffort == "high"
+                && context.effectivePermissionMode?.id == permission.id, "缩放丢失执行配置")
+        let menus = visibleMenus(in: host)
+        let agent = menus.first { $0.title.contains("运行时示例模型") && $0.title.contains("high") }
+        let access = menus.first { $0.title.contains(permission.label) }
+        if wide {
+            require(agent?.title.contains("示例运行时") == true && access != nil, "宽窗未显示完整的执行配置")
+        }
+        let executionControls = [agent, access].compactMap { $0 }
+        require(agent != nil && executionControls.allSatisfy { host.bounds.contains(host.convert($0.bounds, from: $0)) },
+                "执行配置超出工作区边界")
+        let agentWidth = agent?.intrinsicContentSize.width ?? 0
+        let permissionWidth = access?.intrinsicContentSize.width ?? 0
         measurements.append(["sample": name, "zoom": percent, "width": host.bounds.width, "composerFont": editorSize,
                              "codeFont": codeSize, "captionFont": caption, "messageSpacing": spacing,
+                             "executionMenuWidth": agentWidth, "permissionMenuWidth": permissionWidth,
                              "composerFrame": NSStringFromRect(bounds)])
         capture(host, as: name)
-        return [editorSize, codeSize, caption, spacing]
+        return [editorSize, codeSize, caption, spacing, agentWidth, permissionWidth]
     }
     let standard = measure(100, name: "zoom-workspace-100")
     preferences.adjustZoom(by: -1); preferences.adjustZoom(by: -1)
@@ -657,15 +695,31 @@ import VeluneBindings
     require(zip(small, standard).allSatisfy { $0 < $1 } && zip(standard, large).allSatisfy { $0 < $1 },
             "字号或间距未随 80%、100%、150% 递增")
     window.setContentSize(NSSize(width: 720, height: size.height))
-    _ = measure(150, name: "zoom-workspace-narrow-150")
+    _ = measure(150, name: "zoom-workspace-narrow-150", wide: false)
     preferences.resetZoom()
     layout(host)
     require(editor.font?.pointSize == standard[0], "恢复 100% 后输入区仍使用放大字号")
     undo.undo()
     require(model.submission == draft && editor.string == draft, "缩放后无法撤销原有输入")
+
+    window.setContentSize(NSSize(width: 1_200, height: size.height))
+    let cwd = "/synthetic/zoom-workspace"
+    require(workspace.openNewConversationTab(runtimeID: "sample-instance", cwd: cwd) != nil, "无法创建带工作目录的合成草稿")
+    func measureDirectory(_ percent: Int) -> CGFloat {
+        layout(host)
+        guard let menu = visibleMenus(in: host).first(where: { $0.title.contains("zoom-workspace") }) else {
+            require(false, "未发送会话未显示工作目录")
+            return 0
+        }
+        require(host.bounds.contains(host.convert(menu.bounds, from: menu)), "工作目录控件超出工作区边界")
+        capture(host, as: "zoom-draft-\(percent)")
+        return menu.intrinsicContentSize.width
+    }
+    let directoryWidth = measureDirectory(100)
+    preferences.adjustZoom(by: 1); preferences.adjustZoom(by: 1); preferences.adjustZoom(by: 1)
+    require(measureDirectory(150) > directoryWidth, "工作目录标签未随缩放加宽")
     window.contentView = nil
 
-    preferences.adjustZoom(by: 1); preferences.adjustZoom(by: 1); preferences.adjustZoom(by: 1)
     let form = NSHostingView(rootView: Form { AppearanceSettingsSection() }.formStyle(.grouped)
         .applicationAppearance().environment(\.colorScheme, dark ? .dark : .light))
     form.frame = NSRect(x: 0, y: 0, width: 530, height: 515)
@@ -679,7 +733,7 @@ import VeluneBindings
     try! JSONSerialization.data(withJSONObject: measurements, options: [.prettyPrinted, .sortedKeys])
         .write(to: home.appendingPathComponent("render-measurements.json"))
     safe()
-    FileHandle.standardError.write(Data("PASS appearance zoom: shortcut routing, legacy settings, step limits, reload, reset, live composer, transcript code and spacing, narrow workspace and settings captures\n".utf8))
+    FileHandle.standardError.write(Data("PASS appearance zoom: shortcuts, persistence, live composer and undo, execution controls and working directory, narrow workspace, transcript and settings\n".utf8))
     exit(0)
 }
 

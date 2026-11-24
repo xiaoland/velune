@@ -670,6 +670,7 @@ struct ComposerView: View {
     /// Keep the choices beside the send button while the proportionally sized
     /// editor has room; their intrinsic measurement is independent of resizing.
     @State private var oneRow = true
+    @State private var controlsHeight: CGFloat = 22
     @State private var fit = RowFit()
     @State private var availableWidth: CGFloat = 760
     private final class RowFit {
@@ -686,7 +687,7 @@ struct ComposerView: View {
         let sideWidth = wingWidth > 0 ? 2 * (wingWidth + 16) : 0
         let wide = sideWidth > 0 && availableWidth >= 640 + sideWidth
         if columns != wide { columns = wide }
-        let actions = editingTarget == nil ? Self.sendWidth : max(Self.sendWidth, fit.actionsWidth + 16)
+        let actions = max(Self.sendWidth * appearance.values.uiScale, fit.actionsWidth + 16)
         let value = appearance.values.composerWidth(available: availableWidth, reserved: wide ? sideWidth : 0) >= fit.controlsWidth + actions
         if oneRow != value { oneRow = value }
     }
@@ -697,11 +698,12 @@ struct ComposerView: View {
 
     private var hasAttachments: Bool { !model.attachments.isEmpty || !(editingTarget?.retainedAttachments.isEmpty ?? true) }
     private var hasAccessories: Bool { (editingTarget == nil && store.isUnsentConversation && store.creationFailure != nil) || (!columns && hasAttachments) }
+    private var controlsHeightIncrease: CGFloat { max(0, controlsHeight - 22) }
     private var compactAccessories: Bool {
-        fillsHeight && availableHeight <= ComposerTextView.minimumHeight + 62 + (oneRow ? 0 : 30) + min(accessoriesHeight, 64)
+        fillsHeight && availableHeight <= ComposerTextView.minimumHeight + 62 + (oneRow ? 0 : 30) + controlsHeightIncrease + min(accessoriesHeight, 64)
     }
     private var minimumHeight: CGFloat {
-        ComposerTextView.minimumHeight + 54 + (oneRow ? 0 : 30) + (!columns && recipient != nil ? 21 : 0)
+        ComposerTextView.minimumHeight + 54 + (oneRow ? 0 : 30) + controlsHeightIncrease + (!columns && recipient != nil ? 21 : 0)
     }
     private var accessories: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -741,7 +743,11 @@ struct ComposerView: View {
         }
         .background(alignment: .leading) {
             nextTurnControls(compact: false).fixedSize().hidden().id(controlsKey)
-                .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { fit.controlsWidth = $0; refit() }
+                .onGeometryChange(for: CGSize.self) { $0.size } action: { size in
+                    fit.controlsWidth = size.width
+                    controlsHeight = size.height
+                    refit()
+                }
         }
         .onDrop(of: [.fileURL], isTargeted: nil) { providers in
             guard context.allowsAttachments else { return false }
@@ -870,7 +876,8 @@ struct ComposerView: View {
         let context = self.context
         return [nextTurnRuntime?.name ?? "", context.selectedModelName ?? "", context.nextTurnEffort ?? context.currentEffort ?? "",
          (context.effectivePermissionMode ?? context.currentPermissionMode)?.label ?? "", "\(context.permissionModeOptions.isEmpty)\(context.sessionOptions.isEmpty)",
-         editingTarget == nil && store.isUnsentConversation ? store.loadedConversationWorkingDirectory ?? "-" : ""]
+         editingTarget == nil && store.isUnsentConversation ? store.loadedConversationWorkingDirectory ?? "-" : "",
+         appearance.values.ui.rawValue, String(appearance.values.zoomPercent)]
     }
 
     /// The status line and send button, at the trailing end.
@@ -881,10 +888,8 @@ struct ComposerView: View {
             if editingTarget == nil, let issue = context.inputIssue { Text(issue).uiFont(.callout).foregroundStyle(.secondary).lineLimit(1).help(issue) }
             else if editingTarget == nil && context.chosenModelUnavailable { Text("所选模型已不可用").uiFont(.callout).foregroundStyle(.secondary).lineLimit(1) }
             else if editingTarget == nil { ComposerStatusLine(store: store, context: context).layoutPriority(-1).padding(.trailing, 4) }
-            if editingTarget != nil {
-                sendButton.fixedSize()
-                    .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { fit.actionsWidth = $0; refit() }
-            } else { sendButton }
+            HStack(spacing: 8) { sendButton }.fixedSize()
+                .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { fit.actionsWidth = $0; refit() }
         }.frame(minHeight: 22)
     }
 
@@ -984,6 +989,10 @@ struct ComposerView: View {
         }
     }
 
+    // Native Menu titles must carry the font on their label content. The menu
+    // does not inherit the window's environment font for its trigger.
+    private var executionControlFont: Font { UITypeStyle.body.font(scale: appearance.values.uiScale) }
+
     /// `compact` shortens the choices' titles to fit a narrow pane.
     private func nextTurnControls(compact: Bool) -> some View {
         HStack(spacing: 10 * appearance.values.zoomScale) {
@@ -1044,7 +1053,7 @@ struct ComposerView: View {
         } label: {
             // Short by characters: a frame's limit does not hold where the menu takes its ideal width.
             Text(Self.pullDownTitle(compact ? Self.shortened(modelTitle, to: 16) : title))
-                .lineLimit(1).truncationMode(.middle).frame(maxWidth: 360, alignment: .leading)
+                .font(executionControlFont).lineLimit(1).truncationMode(.middle).frame(maxWidth: 360, alignment: .leading)
         }
         .fixedSize()
         .accessibilityLabel("\(subject)：运行时 \(runtime)，模型 \(model)，推理强度 \(effort ?? unchosen)")
@@ -1101,6 +1110,7 @@ struct ComposerView: View {
         let mode = context.effectivePermissionMode
         let current = context.currentPermissionMode
         let hasModes = !context.permissionModeOptions.isEmpty
+        let symbol = hasModes ? "lock.shield" : "slider.horizontal.3"
         let child = editingTarget == nil && store.loadedParentConversationID != nil
         let title = hasModes ? (mode ?? current)?.label ?? (child ? "权限未记录" : "运行时默认权限") : "会话选项"
         return Menu {
@@ -1117,8 +1127,12 @@ struct ComposerView: View {
                 }.disabled(!store.canChangeSessionOptions)
             }
         } label: {
-            if compact { Image(systemName: hasModes ? "lock.shield" : "slider.horizontal.3") }
-            else { Label(Self.pullDownTitle(title), systemImage: hasModes ? "lock.shield" : "slider.horizontal.3").lineLimit(1) }
+            if compact { Image(systemName: symbol).font(executionControlFont) }
+            else {
+                Label {
+                    Text(Self.pullDownTitle(title)).font(executionControlFont).lineLimit(1)
+                } icon: { Image(systemName: symbol).font(executionControlFont) }
+            }
         }
         .fixedSize()
         .accessibilityLabel(hasModes ? "\(child ? "当前会话" : "下一轮")权限模式：\(title)" : "会话选项")
@@ -1157,7 +1171,8 @@ struct ComposerView: View {
                 }
             }
         } label: {
-            Text(Self.pullDownTitle(compact ? Self.shortened(name ?? "无工作区", to: 8) : name ?? "无工作区")).lineLimit(1).truncationMode(.middle).frame(maxWidth: 160, alignment: .leading)
+            Text(Self.pullDownTitle(compact ? Self.shortened(name ?? "无工作区", to: 8) : name ?? "无工作区"))
+                .font(executionControlFont).lineLimit(1).truncationMode(.middle).frame(maxWidth: 160, alignment: .leading)
         }
         .fixedSize()
         .accessibilityLabel(detail ?? "无工作区")
