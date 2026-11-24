@@ -54,7 +54,7 @@ extension ModelTemplate: Identifiable {
 }
 
 extension ApiProtocol: CaseIterable, Identifiable {
-    public static var allCases: [ApiProtocol] { [.chatCompletions, .responses, .messages] }
+    public static var allCases: [ApiProtocol] { [.chatCompletions, .responses, .messages, .gemini] }
     public var id: Self { self }
 }
 

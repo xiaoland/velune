@@ -167,19 +167,7 @@ fn source_identity(source: &Source, models_path: &str, auth_path: Option<&str>) 
     )
 }
 fn protocol(value: &str) -> Option<Protocol> {
-    match value {
-        "chatCompletionsV1" => Some(Protocol::ChatCompletions),
-        "responsesV1" => Some(Protocol::Responses),
-        "messagesV1" => Some(Protocol::Messages),
-        _ => None,
-    }
-}
-pub(crate) fn protocol_name(value: &Protocol) -> &'static str {
-    match value {
-        Protocol::ChatCompletions => "chatCompletionsV1",
-        Protocol::Responses => "responsesV1",
-        Protocol::Messages => "messagesV1",
-    }
+    Protocol::ALL.into_iter().find(|protocol| protocol.id() == value)
 }
 
 pub(crate) fn preview(
@@ -349,7 +337,7 @@ pub(crate) fn apply(
                 "{}|{}|{}|{}",
                 provider.source_provider_id,
                 endpoint,
-                protocol_name(&protocol_kind),
+                protocol_kind.id(),
                 source_identity(
                     &source,
                     &snapshot.models_path,
@@ -370,7 +358,7 @@ pub(crate) fn apply(
                         "{}|{}|{}|{}",
                         provider.source_provider_id,
                         model.id,
-                        protocol_name(&protocol_kind),
+                        protocol_kind.id(),
                         source_identity(
                             &source,
                             &snapshot.models_path,
@@ -435,7 +423,7 @@ pub(crate) fn apply(
                 "{}|{}|{}|{}",
                 provider.source_provider_id,
                 endpoint,
-                protocol_name(&protocol_kind),
+                protocol_kind.id(),
                 source_identity(
                     &source,
                     &snapshot.models_path,
@@ -460,7 +448,7 @@ pub(crate) fn apply(
                     "{}|{}|{}|{}",
                     provider.source_provider_id,
                     model.id,
-                    protocol_name(&protocol_kind),
+                    protocol_kind.id(),
                     source_identity(
                         &source,
                         &snapshot.models_path,
@@ -529,7 +517,7 @@ pub(crate) fn apply(
         );
         settings.insert(
             "bindingProtocol".into(),
-            protocol_name(&protocol_kind).into(),
+            protocol_kind.id().into(),
         );
         settings.insert("bindingEndpoint".into(), endpoint.clone());
         settings.insert(

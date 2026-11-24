@@ -263,8 +263,11 @@ impl Attempt<'_> {
             .transport(if self.cli() { "cli" } else { "http" });
         tracing::info!(event = "gateway_attempt_started");
         let mut body = exchange.body.clone();
-        // The gateway alone resolves ingress aliases to the exact provider identifier.
-        body["model"] = Value::String(self.target.model.as_str().to_owned());
+        // The gateway alone resolves ingress aliases. Gemini's model lives in
+        // the path, but converters still use it to select model-specific rules.
+        if self.target.protocol != Protocol::Gemini || exchange.protocol != Protocol::Gemini {
+            body["model"] = Value::String(self.target.model.as_str().to_owned());
+        }
         let plan = if exchange.protocol == self.target.protocol {
             None
         } else {
@@ -299,11 +302,15 @@ impl Attempt<'_> {
         };
         // The model record's extra parameters override what translation set;
         // a field the upstream rejects fails the request with its own error.
-        if !self.target.request_parameters.is_empty()
-            && let Some(object) = body.as_object_mut()
-        {
+        if let Some(object) = body.as_object_mut() {
             for (key, value) in &self.target.request_parameters {
                 object.insert(key.clone(), Value::String(value.clone()));
+            }
+            if self.target.protocol == Protocol::Gemini {
+                object.remove("model");
+                object.remove("stream");
+            } else if exchange.protocol == Protocol::Gemini {
+                object.insert("stream".into(), Value::Bool(exchange.stream));
             }
         }
         let request = NativeRequest {
@@ -549,6 +556,7 @@ impl Attempt<'_> {
                 Protocol::ChatCompletions => "chat_completions",
                 Protocol::Responses => "responses",
                 Protocol::Messages => "messages",
+                Protocol::Gemini => "gemini_generate_content",
             };
             tracing::warn!(
                 event = "gateway_dispatch_failed",

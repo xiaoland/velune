@@ -1,6 +1,6 @@
 # AI provider 执行
 
-本 unit 实现 AI 契约的具体协议执行：`NativeHttp` 以一个 HTTP adapter 执行三种原生协议，`claude_code::ClaudeCode` 是 Messages 的本机执行后端。原生协议只替换路由所需的外部模型标识，保留请求字段、请求 headers、响应状态、响应 headers 和响应／SSE body。它接受构造时传入的 `HttpTarget`（协议、端点与 request profile）和一次性 `ResolvedCredential`，不读取应用配置、认证来源或 Harness 状态。
+本 unit 实现 AI 契约的具体协议执行：`NativeHttp` 以一个 HTTP adapter 执行 Chat Completions、Responses、Messages 和 Gemini GenerateContent，`claude_code::ClaudeCode` 是 Messages 的本机执行后端。原生协议只替换路由所需的外部模型标识，保留请求字段、请求 headers、响应状态、响应 headers 和响应／SSE body。它接受构造时传入的 `HttpTarget`（协议、端点与 request profile）和一次性 `ResolvedCredential`，不读取应用配置、认证来源或 Harness 状态。
 
 它依赖 [ai](../ai/README.md)，不拥有应用路由、自动重试或 fail-over 策略。网关组合协议执行；Claude Code 后端仅承担已明确授权的本机执行与工具桥接，不代替其他 Harness adapter。协议限制见 [AI service](../../docs/product-tdd/ai-service.md)。
 
@@ -8,7 +8,9 @@
 
 Messages 保留调用方的 `anthropic-version`／beta 请求头与原生 JSON／SSE，缺少版本在派发前拒绝；HTTP API key 使用 `x-api-key`，Bearer 使用 `Authorization`；认证材料类型与协议适配分别校验。提供商 baseURL 追加 `/v1/messages`，运行时 SDK 的网关注入使用 origin。
 
-`translation` 提供 ChatCompletions、Responses、Messages 六向 best-effort 转换。调用方只在异协议时构造请求转换计划，并用同一计划转换 JSON 或增量 SSE，保留工具别名的请求内映射。它不依赖 Harness、路由、应用配置或网络。无法对应的字段、状态引用和不透明推理信息尽量降级并给出不含业务值的 `ConversionNote`；真实错误和缺失终态不会被改造成成功。Messages 请求必须有输出上限，调用方可提供模型配置上限作为缺省值；同协议操作不经过此转换器。
+Gemini Developer API 的 baseURL 包含 API 版本路径。非流请求在模型路径追加 `:generateContent`，流请求追加 `:streamGenerateContent?alt=sse`。API key 使用 `x-goog-api-key`。原生 JSON 保留工具调用、工具结果和思考签名。流式用量按字段采用最后一次有效报告。
+
+`translation` 在四种协议之间提供 best-effort 转换。调用方只在异协议时构造请求转换计划，并用同一计划转换 JSON 或增量 SSE，保留工具别名的请求内映射。它不依赖 Harness、路由、应用配置或网络。无法对应的字段、状态引用和不透明推理信息尽量降级并给出不含业务值的 `ConversionNote`；真实错误和缺失终态不会被改造成成功。Messages 请求必须有输出上限，调用方可提供模型配置上限作为缺省值；同协议操作不经过此转换器。
 
 转换语义由固定版本的 New API RelayKit 提供，Go 依赖见 `relaykit-bridge/go.mod` 和 `go.sum`。Rust 内部桥接管理唯一请求句柄，流转换消费请求计划，释放不会生成终态。桥接仅处理 JSON 与事件；HTTP、认证、取消和原始计量仍由 Rust 持有。不能跨提供商复用的服务端引用按 best-effort 省略并诊断，不补造历史；内联媒体在本地解析，外部媒体 URL 不触发桥接联网。诊断丢弃上游任意说明与字段值，不把原始错误送入日志。
 

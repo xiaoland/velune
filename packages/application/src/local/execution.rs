@@ -173,16 +173,13 @@ impl CoreRuntime {
         config
             .validate_sdk()
             .map_err(|error| RuntimeError::Invalid(error.to_string()))?;
-        let protocol = match gateway
-            .resolve_dispatch(model_record_key)
-            .map_err(RuntimeError::invalid)?
-            .provider()
-            .protocol
-        {
-            Protocol::ChatCompletions => "openai-completions",
-            Protocol::Responses => "openai-responses",
-            Protocol::Messages => "anthropic-messages",
-        };
+        let protocol = pi_gateway_api(
+            gateway
+                .resolve_dispatch(model_record_key)
+                .map_err(RuntimeError::invalid)?
+                .provider()
+                .protocol,
+        );
         if let Err(error) = materialize_models(&config, &gateway, tunnel.endpoint(), protocol) {
             drop(runner);
             return Err(error);

@@ -24,7 +24,7 @@ Harness 与 AI 服务保持独立；读取 Harness 提供商配置属于装配�
 
 用户可从公开模型目录显式拉取、搜索并挑选条目作为模板快填。目录给出来源声明，不决定实际提供商的协议、端点或可用性；填入后成为独立可编辑快照，不能自动覆盖已保存模型或因 reasoning 支持标记猜测具体级别。
 
-协议使用有限选项：OpenAI ChatCompletions v1、Responses v1 与 Anthropic Messages；不使用任意字符串输入来代表协议。透传与转换规则见[协议](#协议)。AI 提供商只是 Velune AI 服务网关配置的一部分；模型路由与 fail-over 策略同属网关配置，不属于提供商实体。Harness 通过 Velune 注册的网关提供商共享模型、聚合订阅与提供商；网关是新增入口，不是唯一允许的入口。用户于 2026-10-08 明确纠正：不得拦截运行时原有提供商注册、模型选择或派发，不以“防绕过”为由限制原生能力。认证由 Velune 提供商适配边界处理；认证来源可以研究对用户指定 Harness 配置的明确委托，并不要求所有登录流程由 Velune 重写。
+协议使用有限选项：OpenAI Chat Completions v1、Responses v1、Anthropic Messages 与 Gemini GenerateContent；不使用任意字符串输入来代表协议。透传与转换规则见[协议](#协议)。AI 提供商只是 Velune AI 服务网关配置的一部分；模型路由与 fail-over 策略同属网关配置，不属于提供商实体。Harness 通过 Velune 注册的网关提供商共享模型、聚合订阅与提供商；网关是新增入口，不是唯一允许的入口。用户于 2026-10-08 明确纠正：不得拦截运行时原有提供商注册、模型选择或派发，不以“防绕过”为由限制原生能力。认证由 Velune 提供商适配边界处理；认证来源可以研究对用户指定 Harness 配置的明确委托，并不要求所有登录流程由 Velune 重写。
 
 升级须保留已有配置与数据；已知旧格式完成可恢复备份与迁移，未知、未来或损坏格式保留原样并报错，不以空配置覆盖。当前数据保留要求见 [S84](../sources/development.md#s84)，替代早期开发阶段的重置约定；迁移与恢复步骤归[数据迁移](../development/migrations.md)。
 
@@ -44,7 +44,7 @@ Harness 与 AI 服务保持独立；读取 Harness 提供商配置属于装配�
 
 2026-10-17 用户指出在提供商表单中逐个罗列“使用某订阅”的入口无法随订阅增加扩展，并提出订阅锁定协议与地址，可理解为一种 AI 提供商模板。添加提供商因此先选择模板：每个订阅是一个固定连接方式的模板，API 提供商是可编辑协议与地址的模板；之后增加订阅只增加模板，不改变表单结构。模板只决定新提供商的初始组合，与模型模板一样不形成独立的全局实体。
 
-官方 API 模板包括 OpenAI Platform（默认 Responses）、Anthropic API（默认 Messages），以及 DeepSeek、Moonshot、OpenRouter；均允许编辑协议与地址，额度读取按实际支持单独配置。OpenAI Platform 与 Codex 订阅、Anthropic API 与 Claude Code 订阅、Moonshot 开放平台 API 与 Kimi Code 订阅分别配置，各自使用对应服务的凭据与计费额度。不能仅凭品牌、模型名称、协议或 API key 认证方式推断为同一种接入产品。
+官方 API 模板包括 OpenAI Platform（默认 Responses）、Anthropic API（默认 Messages），以及 Google Gemini API（原生 GenerateContent）、DeepSeek、Moonshot、OpenRouter；均允许编辑协议与地址，额度读取按实际支持单独配置。OpenAI Platform 与 Codex 订阅、Anthropic API 与 Claude Code 订阅、Moonshot 开放平台 API 与 Kimi Code 订阅分别配置，各自使用对应服务的凭据与计费额度。不能仅凭品牌、模型名称、协议或 API key 认证方式推断为同一种接入产品。
 
 2026-10-17 用户随后决定提供商来源范围：Codex 订阅维持在 Velune 中逐个账户登录，不导入或粘贴 auth.json；Claude Code 订阅可沿用本机已有登录（本人默认登录或某个本机 Claude Code 运行时实例的登录），以引用方式由官方 CLI 继续保存与续期，Velune 不复制凭据，也不提供退出该登录的操作；“从 Agent 运行时导入”扩展到 Codex 与 Claude Code，首批导入 Claude Code 登录及两者已配置的 API 提供商，ACP 暂不做。
 
@@ -87,3 +87,5 @@ OpenAI Platform 与 Anthropic API 提供可选的“用量与账单”入口，�
 AI 服务增加原生 Anthropic Messages 协议，与既有原生 OpenAI 协议并列；同协议保持原生路径，异协议按后续授权采用best-effort转换；运行时是否支持由具体版本适配器的真实能力决定。
 
 2026-10-06 用户授权为跨 Harness 对话增加 OpenAI ChatCompletions v1、Responses v1 与 Anthropic Messages 的全部双向转换，修订此前仅同协议透传的阶段限制。同协议调用继续保留原生请求、响应与流式事件；异协议转换采用 best-effort，不采用 fail-closed。尽量映射消息、工具与参数，不可等价的协议特性允许降级或省略，并通过不含正文的诊断说明转换情况；不能伪造缺失历史、工具执行结果或上游成功。Anthropic 必须的输出上限优先取请求，未提供时采用所选模型配置的最大输出；两者均无值时说明必要配置缺失。
+
+Gemini GenerateContent 同协议调用保留原生思考签名。跨协议调用按转换能力传递模型产出的内容，依赖原生签名的后续工具轮次使用 Gemini 同协议入口。

@@ -1600,16 +1600,13 @@ impl CoreRuntime {
                 id: edit.conversation_id.clone(),
             };
             let key = model_record_key.clone();
-            let protocol = match gateway
-                .resolve_dispatch(&key)
-                .map_err(RuntimeError::invalid)?
-                .provider()
-                .protocol
-            {
-                Protocol::ChatCompletions => "openai-completions",
-                Protocol::Responses => "openai-responses",
-                Protocol::Messages => "anthropic-messages",
-            };
+            let protocol = crate::local::pi_composition::pi_gateway_api(
+                gateway
+                    .resolve_dispatch(&key)
+                    .map_err(RuntimeError::invalid)?
+                    .provider()
+                    .protocol,
+            );
             let lane = self.lane_projection(&context.projection);
             config.provider = Some("velune".into());
             config.model = Some("auto".into());

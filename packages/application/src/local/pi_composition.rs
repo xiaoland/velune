@@ -23,6 +23,15 @@ pub(super) fn runnable_pi_model<'a>(
         .model())
 }
 
+pub(super) fn pi_gateway_api(protocol: Protocol) -> &'static str {
+    match protocol {
+        Protocol::ChatCompletions => "openai-completions",
+        Protocol::Responses => "openai-responses",
+        Protocol::Messages => "anthropic-messages",
+        Protocol::Gemini => "google-generative-ai",
+    }
+}
+
 pub(super) fn materialize_models(
     config: &PiConfig,
     gateway: &GatewayConfig,
@@ -70,11 +79,8 @@ pub(super) fn materialize_models(
                 None if model.nickname.trim().is_empty() => &model.provider_model_id,
                 None => &model.nickname,
             };
-            let api = match routed.provider().protocol {
-                Protocol::ChatCompletions => "openai-completions",
-                Protocol::Responses => "openai-responses",
-                Protocol::Messages => "anthropic-messages",
-            };
+            let protocol = routed.provider().protocol;
+            let api = pi_gateway_api(protocol);
             let binding = routed.model();
             let binding_projection = binding.pi_projection.as_ref();
             let declared_levels = pi_declared_levels(binding);
@@ -99,9 +105,12 @@ pub(super) fn materialize_models(
                 entry["contextWindow"] = json!(value);
             }
             entry["api"] = Value::String(api.into());
-            if api == "anthropic-messages" {
-                // The Anthropic SDK appends /v1/messages to its base URL.
-                entry["baseUrl"] = json!(endpoint.strip_suffix("/v1").expect("gateway base path"));
+            let origin = endpoint.strip_suffix("/v1").expect("gateway base path");
+            match protocol {
+                // Anthropic appends its version path. Pi sends Gemini's versioned URL verbatim.
+                Protocol::Messages => entry["baseUrl"] = json!(origin),
+                Protocol::Gemini => entry["baseUrl"] = json!(format!("{origin}/v1beta")),
+                _ => {}
             }
             let supported_levels = binding_projection
                 .map(|projection| projection.supported_levels(&declared_levels))

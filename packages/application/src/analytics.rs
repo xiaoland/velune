@@ -330,6 +330,7 @@ fn insert(db: &Connection, r: &AnalyticsRecord) -> Result<(), rusqlite::Error> {
         Protocol::ChatCompletions => "chatCompletions",
         Protocol::Responses => "responses",
         Protocol::Messages => "messages",
+        Protocol::Gemini => Protocol::Gemini.id(),
     };
     let outcome = match r.outcome {
         AnalyticsOutcome::Completed => "completed",

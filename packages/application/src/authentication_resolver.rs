@@ -194,11 +194,7 @@ impl CredentialResolver for ProviderResolver {
                 })?;
             let value: serde_json::Value = serde_json::from_str(&output)
                 .map_err(|_| CredentialResolutionError::InvalidContract)?;
-            let expected = match protocol {
-                crate::config::Protocol::ChatCompletions => "chatCompletionsV1",
-                crate::config::Protocol::Responses => "responsesV1",
-                crate::config::Protocol::Messages => "messagesV1",
-            };
+            let expected = protocol.id();
             if value["contractVersion"] != 1
                 || value["capabilities"]["protocol"] != expected
                 || value["capabilities"]["endpoint"] != target.endpoint
@@ -345,7 +341,12 @@ fn http_authorization(
     value: String,
     bearer: bool,
 ) -> velune_gateway::HttpAuthorization {
-    if !bearer && *protocol == crate::config::Protocol::Messages {
+    if !bearer
+        && matches!(
+            protocol,
+            crate::config::Protocol::Messages | crate::config::Protocol::Gemini
+        )
+    {
         velune_gateway::HttpAuthorization::ApiKey(value)
     } else {
         velune_gateway::HttpAuthorization::Bearer(value)

@@ -1,5 +1,6 @@
 //! Read-only facts from original protocol responses, before any translation.
 //! Missing numeric values remain unknown; this observer never changes delivery.
+use crate::gemini;
 use eventsource_stream::EventStream;
 use futures_util::{FutureExt, Stream, StreamExt};
 use serde_json::Value;
@@ -55,6 +56,10 @@ pub struct ResponseMetrics {
     observed_bytes: usize,
     usage: TokenUsage,
     messages_input: Option<u64>,
+    gemini_response: gemini::ResponseObservation,
+    gemini_prompt: Option<u64>,
+    gemini_tool_prompt: Option<u64>,
+    gemini_candidates: Option<u64>,
     choices: BTreeMap<u64, bool>,
     pub reported: bool,
     pub first_output: bool,
@@ -71,6 +76,10 @@ impl ResponseMetrics {
             observed_bytes: 0,
             usage: TokenUsage::default(),
             messages_input: None,
+            gemini_response: gemini::ResponseObservation::default(),
+            gemini_prompt: None,
+            gemini_tool_prompt: None,
+            gemini_candidates: None,
             choices: BTreeMap::new(),
             reported: false,
             first_output: false,
@@ -101,6 +110,11 @@ impl ResponseMetrics {
     pub fn stream_end(&mut self) {
         self.feed.lock().expect("owned metrics feed").ended = true;
         self.drain();
+        if self.protocol == Protocol::Gemini && self.observed_bytes != 0 && !self.degraded {
+            // Gemini can send more candidates and a final usage-only frame
+            // after a finished candidate. Resolve the model outcome at EOF.
+            self.terminal = self.gemini_response.terminal();
+        }
     }
     fn drain(&mut self) {
         loop {
@@ -193,6 +207,15 @@ impl ResponseMetrics {
                     self.first_output |= nonempty(&value["delta"]);
                 }
             }
+            Protocol::Gemini => {
+                self.gemini_response.observe(value);
+                self.merge_gemini_usage(&value["usageMetadata"]);
+                if streaming {
+                    self.first_output |= gemini::has_output(value);
+                } else {
+                    self.terminal = self.gemini_response.terminal();
+                }
+            }
             Protocol::Messages => {
                 self.merge_usage(&value["message"]["usage"]);
                 self.merge_usage(&value["usage"]);
@@ -213,6 +236,43 @@ impl ResponseMetrics {
             }
         }
     }
+    fn merge_gemini_usage(&mut self, value: &Value) {
+        let Some(usage) = value.as_object() else {
+            return;
+        };
+        let count = |key| usage.get(key).and_then(Value::as_u64);
+        merge(&mut self.gemini_prompt, count("promptTokenCount"));
+        merge(
+            &mut self.gemini_tool_prompt,
+            count("toolUsePromptTokenCount"),
+        );
+        merge(&mut self.gemini_candidates, count("candidatesTokenCount"));
+        merge(
+            &mut self.usage.cached_input,
+            count("cachedContentTokenCount"),
+        );
+        merge(
+            &mut self.usage.reasoning_output,
+            count("thoughtsTokenCount"),
+        );
+        self.usage.input = self
+            .gemini_prompt
+            .and_then(|prompt| prompt.checked_add(self.gemini_tool_prompt.unwrap_or(0)));
+        self.usage.uncached_input = self
+            .usage
+            .input
+            .zip(self.usage.cached_input)
+            .and_then(|(input, cached)| input.checked_sub(cached));
+        self.usage.cache_read_input = self.usage.cached_input;
+        self.usage.output = self.gemini_candidates.and_then(|candidates| {
+            candidates.checked_add(self.usage.reasoning_output.unwrap_or(0))
+        });
+        self.reported |= self.usage.input.is_some()
+            || self.usage.output.is_some()
+            || self.usage.cached_input.is_some()
+            || self.usage.reasoning_output.is_some();
+    }
+
     fn merge_usage(&mut self, value: &Value) {
         let Some(usage) = value.as_object() else {
             return;
@@ -271,6 +331,7 @@ impl ResponseMetrics {
                     .zip(self.usage.cache_creation_input)
                     .and_then(|((base, read), write)| base.checked_add(read)?.checked_add(write));
             }
+            Protocol::Gemini => unreachable!("Gemini usage has a separate envelope"),
         }
     }
 }

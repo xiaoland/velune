@@ -61,6 +61,7 @@ impl CoreRuntime {
             Protocol::ChatCompletions => "openai-completions",
             Protocol::Responses => "openai-responses",
             Protocol::Messages => "anthropic-messages",
+            Protocol::Gemini => return Err(RuntimeError::invalid("专用适配器不使用 Gemini 入口")),
         };
         let runner = self
             .session

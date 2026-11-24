@@ -493,6 +493,7 @@ impl CoreRuntime {
                 ),
                 protocol(crate::config::Protocol::Responses, "OpenAI Responses v1"),
                 protocol(crate::config::Protocol::Messages, "Anthropic Messages"),
+                protocol(crate::config::Protocol::Gemini, "Gemini GenerateContent"),
             ],
             selected_runtime_instance_id: self.next_turn_runtime_id.clone(),
         }

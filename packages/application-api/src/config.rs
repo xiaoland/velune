@@ -74,6 +74,7 @@ pub enum Protocol {
     ChatCompletions,
     Responses,
     Messages,
+    Gemini,
 }
 
 /// An ordered set of provider models chosen like a model; the gateway fails

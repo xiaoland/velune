@@ -214,11 +214,7 @@ impl GatewayConfig {
         let identity = PiBindingIdentity {
             model_record_key,
             provider_id: provider.id.as_str(),
-            protocol: match provider.protocol {
-                Protocol::ChatCompletions => "chatCompletionsV1",
-                Protocol::Responses => "responsesV1",
-                Protocol::Messages => "messagesV1",
-            },
+            protocol: provider.protocol.id(),
             execution_backend: &provider.execution_backend,
             request_profile: provider.request_profile,
             endpoint: provider.endpoint.as_str(),
@@ -233,6 +229,20 @@ impl GatewayConfig {
         };
         let canonical = serde_json::to_vec(&identity).map_err(|_| "binding identity encoding")?;
         let digest = Sha256::digest(canonical);
+        if provider.protocol == Protocol::Gemini {
+            let model_id = binding
+                .provider_model_id
+                .strip_prefix("models/")
+                .unwrap_or(&binding.provider_model_id);
+            // Pi infers Gemini's thinking and tool parameter formats from the model name.
+            // Its two Flash aliases require an exact ID, so keep the corresponding family
+            // marker in the routing alias as well.
+            let family_marker = match model_id.to_ascii_lowercase().as_str() {
+                "gemini-flash-latest" | "gemini-flash-lite-latest" => "--gemini-3-flash",
+                _ => "",
+            };
+            return Ok(format!("{model_id}{family_marker}--vln_{digest:x}"));
+        }
         Ok(format!("vln_{digest:x}"))
     }
 
@@ -295,16 +305,12 @@ pub(crate) fn runtime_ingress(kind: RuntimeKind, upstream: &Protocol) -> Option<
         .cloned()
 }
 
-/// All three provider protocols are reachable through the LLM gateway.
+/// Runtimes with a gateway ingress can reach all provider protocols.
 pub(crate) fn runtime_provider_protocols(kind: RuntimeKind) -> Vec<Protocol> {
     if runtime_protocols(kind).is_empty() {
         return Vec::new();
     }
-    vec![
-        Protocol::ChatCompletions,
-        Protocol::Responses,
-        Protocol::Messages,
-    ]
+    Protocol::ALL.to_vec()
 }
 
 impl GatewayConfig {

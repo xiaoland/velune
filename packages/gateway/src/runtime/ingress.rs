@@ -16,12 +16,15 @@ use crate::{
     },
     config::{ExecutionBackend, Protocol},
     observation::Observation,
-    scheduling::{AdmissionReason, Candidate, QuotaSource, ScheduleUnavailable, SchedulingState, SessionIdentity},
+    scheduling::{
+        AdmissionReason, Candidate, QuotaSource, ScheduleUnavailable, SchedulingState,
+        SessionIdentity,
+    },
 };
 use axum::{
     Router,
     body::{Body, Bytes, to_bytes},
-    extract::State,
+    extract::{Path, State},
     http::{Request, Response, StatusCode},
     routing::post,
 };
@@ -66,41 +69,97 @@ pub(super) fn router(state: Arc<Ingress>) -> Router {
         .route("/v1/chat/completions", post(chat))
         .route("/v1/responses", post(responses))
         .route("/v1/messages", post(messages))
+        .route("/v1beta/models/{*operation}", post(gemini))
         .with_state(state)
 }
 
+enum Operation {
+    Body(Protocol),
+    Gemini { model: String, stream: bool },
+}
+
+impl Operation {
+    fn protocol(&self) -> Protocol {
+        match self {
+            Self::Body(protocol) => *protocol,
+            Self::Gemini { .. } => Protocol::Gemini,
+        }
+    }
+}
+
 async fn chat(State(state): State<Arc<Ingress>>, request: Request<Body>) -> Response<Body> {
-    ingress(state, request, Protocol::ChatCompletions).await
+    ingress(state, request, Operation::Body(Protocol::ChatCompletions)).await
 }
 async fn messages(State(state): State<Arc<Ingress>>, request: Request<Body>) -> Response<Body> {
-    ingress(state, request, Protocol::Messages).await
+    ingress(state, request, Operation::Body(Protocol::Messages)).await
 }
 async fn responses(State(state): State<Arc<Ingress>>, request: Request<Body>) -> Response<Body> {
-    ingress(state, request, Protocol::Responses).await
+    ingress(state, request, Operation::Body(Protocol::Responses)).await
+}
+
+async fn gemini(
+    State(state): State<Arc<Ingress>>,
+    Path(operation): Path<String>,
+    request: Request<Body>,
+) -> Response<Body> {
+    // The catch-all preserves gateway model aliases containing `/`. Path
+    // decodes percent escapes once, just as for any other path parameter.
+    let Some((model, method)) = operation.rsplit_once(':') else {
+        return error_response(StatusCode::NOT_FOUND, "unknown Gemini operation");
+    };
+    let stream = match method {
+        "generateContent" => false,
+        "streamGenerateContent" => true,
+        _ => return error_response(StatusCode::NOT_FOUND, "unknown Gemini operation"),
+    };
+    let mut formats = request
+        .uri()
+        .query()
+        .into_iter()
+        .flat_map(|query| query.split('&'))
+        .filter_map(|pair| pair.strip_prefix("alt="));
+    let expected = if stream { "sse" } else { "json" };
+    if formats.next().is_some_and(|format| format != expected) || formats.next().is_some() {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "unsupported Gemini response format",
+        );
+    }
+    ingress(
+        state,
+        request,
+        Operation::Gemini {
+            model: model.into(),
+            stream,
+        },
+    )
+    .await
 }
 
 async fn ingress(
     state: Arc<Ingress>,
     request: Request<Body>,
-    protocol: Protocol,
+    operation: Operation,
 ) -> Response<Body> {
     let request_id = format!(
         "{:x}-{:x}",
         state.request_epoch,
         state.next_request.fetch_add(1, Ordering::Relaxed)
     );
-    let protocol_name = match protocol {
+    let protocol_name = match operation.protocol() {
         Protocol::ChatCompletions => "chat_completions_v1",
         Protocol::Responses => "responses_v1",
         Protocol::Messages => "messages_v1",
+        Protocol::Gemini => "gemini_generate_content",
     };
     let mut telemetry = state
         .telemetry
         .read()
         .unwrap_or_else(|e| e.into_inner())
         .clone();
-    let operation = telemetry.operation("gateway.request", velune_telemetry::SpanKind::Server);
-    let dispatcher = operation
+    let telemetry_operation =
+        telemetry.operation("gateway.request", velune_telemetry::SpanKind::Server);
+    let dispatcher = telemetry_operation
         .as_ref()
         .map(|op| op.dispatch())
         .unwrap_or_else(|| tracing::dispatcher::get_default(Clone::clone));
@@ -108,21 +167,21 @@ async fn ingress(
         &dispatcher,
         || tracing::info_span!(parent: None, "gateway_request", request_id, operation_id = tracing::field::Empty, protocol = protocol_name, stream = tracing::field::Empty),
     );
-    telemetry.parent = operation.as_ref().and_then(|op| op.carrier());
-    telemetry.parent_revision = operation.as_ref().and_then(|op| op.revision());
+    telemetry.parent = telemetry_operation.as_ref().and_then(|op| op.carrier());
+    telemetry.parent_revision = telemetry_operation.as_ref().and_then(|op| op.revision());
     let observation = Observation::new(
         "gateway_request_finished",
         span.clone(),
         state.stopping.clone(),
     )
-    .with_telemetry(operation, telemetry.owner.clone());
+    .with_telemetry(telemetry_operation, telemetry.owner.clone());
     let started_at_ms = now_ms();
     ingress_observed(
         state,
         request_id,
         started_at_ms,
         request,
-        protocol,
+        operation,
         observation,
         telemetry,
     )
@@ -197,22 +256,26 @@ async fn ingress_observed(
     request_id: String,
     started_at_ms: i64,
     request: Request<Body>,
-    protocol: Protocol,
+    operation: Operation,
     observation: Observation,
     telemetry: TelemetryContext,
 ) -> Response<Body> {
     tracing::info!(event = "gateway_request_received");
+    let protocol = operation.protocol();
     let bearer_valid = request
         .headers()
         .get("authorization")
         .and_then(|v| v.to_str().ok())
         == Some(format!("Bearer {}", state.token).as_str());
-    let key_valid = protocol == Protocol::Messages
-        && request
-            .headers()
-            .get("x-api-key")
-            .and_then(|v| v.to_str().ok())
-            == Some(state.token.as_str());
+    let key_header = match protocol {
+        Protocol::Messages => Some("x-api-key"),
+        Protocol::Gemini => Some("x-goog-api-key"),
+        _ => None,
+    };
+    let key_valid = key_header
+        .and_then(|name| request.headers().get(name))
+        .and_then(|v| v.to_str().ok())
+        == Some(state.token.as_str());
     if !bearer_valid && !key_valid {
         return rejected(
             observation,
@@ -292,7 +355,11 @@ async fn ingress_observed(
             );
         }
     };
-    let Some(model) = body["model"].as_str() else {
+    let model = match &operation {
+        Operation::Body(_) => body["model"].as_str(),
+        Operation::Gemini { model, .. } => Some(model.as_str()),
+    };
+    let Some(model) = model else {
         return admission.reject(
             observation,
             StatusCode::BAD_REQUEST,
@@ -327,6 +394,24 @@ async fn ingress_observed(
             Some(&route[0]),
         );
     }
+    if protocol == Protocol::Gemini
+        && (route[0].aggregate || route[0].protocol != Protocol::Gemini)
+        && [
+            "cachedContent",
+            "cached_content",
+            "continuationToken",
+            "continuation_token",
+        ]
+        .iter()
+        .any(|field| body.get(*field).is_some_and(|value| !value.is_null()))
+    {
+        return admission.reject(
+            observation,
+            StatusCode::BAD_REQUEST,
+            "Gemini cachedContent and continuationToken require a directly selected Gemini model",
+            Some(&route[0]),
+        );
+    }
     if let Some(session) = state.backend_session()
         && state
             .backends
@@ -352,17 +437,20 @@ async fn ingress_observed(
             );
         }
     };
-    let stream = match body.get("stream") {
-        None => false,
-        Some(Value::Bool(value)) => *value,
-        Some(_) => {
-            return admission.reject(
-                observation,
-                StatusCode::BAD_REQUEST,
-                "stream must be a boolean",
-                Some(&route[0]),
-            );
-        }
+    let stream = match operation {
+        Operation::Gemini { stream, .. } => stream,
+        Operation::Body(_) => match body.get("stream") {
+            None => false,
+            Some(Value::Bool(value)) => *value,
+            Some(_) => {
+                return admission.reject(
+                    observation,
+                    StatusCode::BAD_REQUEST,
+                    "stream must be a boolean",
+                    Some(&route[0]),
+                );
+            }
+        },
     };
     tracing::Span::current().record("stream", stream);
     // Only wait before dispatch: no upstream request or tool side effect has
@@ -371,9 +459,10 @@ async fn ingress_observed(
     let candidates = loop {
         match state.candidates(&route) {
             Ok(candidates) => break candidates,
-            Err(unavailable) if unavailable.reason == AdmissionReason::QuotaPending
-                && tokio::time::Instant::now() < quota_deadline
-                && !state.stopping.load(Ordering::Acquire) =>
+            Err(unavailable)
+                if unavailable.reason == AdmissionReason::QuotaPending
+                    && tokio::time::Instant::now() < quota_deadline
+                    && !state.stopping.load(Ordering::Acquire) =>
             {
                 tokio::time::sleep(Duration::from_millis(50)).await;
             }
@@ -468,6 +557,20 @@ fn tail_tool_result_ids(protocol: Protocol, body: &Value) -> Vec<String> {
                 )
             })
             .filter_map(|item| item["call_id"].as_str().map(str::to_owned))
+            .collect(),
+        Protocol::Gemini => body["contents"]
+            .as_array()
+            .and_then(|contents| contents.last())
+            .filter(|content| matches!(content["role"].as_str(), None | Some("user")))
+            .and_then(|content| content["parts"].as_array())
+            .into_iter()
+            .flatten()
+            .filter_map(|part| {
+                part.get("functionResponse")
+                    .or_else(|| part.get("function_response"))?["id"]
+                    .as_str()
+                    .map(str::to_owned)
+            })
             .collect(),
     }
 }

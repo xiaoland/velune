@@ -55,6 +55,7 @@ pub(super) fn forward_headers(headers: &HeaderMap) -> Vec<Header> {
                 "content-length",
                 "authorization",
                 "x-api-key",
+                "x-goog-api-key",
                 "cookie",
                 "set-cookie",
             ]

@@ -114,7 +114,7 @@ impl fmt::Debug for HttpEndpoint {
 #[derive(Debug, Clone)]
 pub struct HttpTarget {
     protocol: Protocol,
-    /// Messages appends `/v1/messages`; OpenAI base URLs commonly already end in `/v1`.
+    /// Gemini and OpenAI base paths include their version; Messages appends `/v1/messages`.
     endpoint: HttpEndpoint,
     request_profile: RequestProfile,
 }
@@ -208,6 +208,11 @@ impl RequestProfile {
         protocol: Protocol,
         endpoint: &HttpEndpoint,
     ) -> Result<(), InvalidContract> {
+        if protocol == Protocol::Gemini && self != Self::Native {
+            return Err(InvalidContract(
+                "Gemini requires the native request profile",
+            ));
+        }
         let (hosts, path, error): (&[&str], _, _) = match self {
             Self::Native => return Ok(()),
             Self::CodexResponses if protocol != Protocol::Responses => {

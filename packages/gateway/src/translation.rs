@@ -16,11 +16,10 @@ pub(super) fn upstream_headers(mut headers: Vec<Header>, target: Protocol) -> Ve
         !matches!(
             name.as_str(),
             "content-type" | "accept" | "content-encoding"
-        ) && if target == Protocol::Messages {
-            !name.starts_with("openai-")
-        } else {
-            !name.starts_with("anthropic-")
-        }
+        ) && (target == Protocol::Messages || !name.starts_with("anthropic-"))
+            && (matches!(target, Protocol::ChatCompletions | Protocol::Responses)
+                || !name.starts_with("openai-"))
+            && (target == Protocol::Gemini || !name.starts_with("x-goog-"))
     });
     if target == Protocol::Messages
         && !headers

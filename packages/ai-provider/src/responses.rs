@@ -1,13 +1,8 @@
-//! What only the OpenAI Responses protocol needs: its business terminal, its
-//! stream media type, and the Codex subscription profile's stateless backend.
-use crate::config::RequestProfile;
-use crate::native::transport_kind;
-use futures_util::StreamExt;
+//! What only the OpenAI Responses protocol needs: its business terminal and
+//! the Codex subscription profile's stateless backend.
+use crate::native::observe_sse;
 use serde_json::Value;
-use velune_ai::{
-    InvalidContract, NativeErrorKind, NativeFailure,
-    http::{Header, ResponseMeta},
-};
+use velune_ai::{InvalidContract, NativeErrorKind};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Terminal {
@@ -50,92 +45,16 @@ pub(crate) fn body_terminal(body: &[u8]) -> Option<Terminal> {
 pub(crate) async fn stream_terminal<T: AsRef<[u8]>>(
     chunks: impl futures_util::Stream<Item = reqwest::Result<T>>,
 ) -> Result<bool, NativeErrorKind> {
-    use eventsource_stream::{EventStreamError, Eventsource};
-    let events = chunks.eventsource();
-    futures_util::pin_mut!(events);
     let mut terminal = None;
-    while let Some(event) = events.next().await {
-        let event = event.map_err(|error| match error {
-            EventStreamError::Transport(error) => transport_kind(&error),
-            EventStreamError::Utf8(_) | EventStreamError::Parser(_) => {
-                NativeErrorKind::ProviderFailure
-            }
-        })?;
-        if event.data.is_empty() || event.data == "[DONE]" {
-            continue;
-        }
-        let value: Value =
-            serde_json::from_str(&event.data).map_err(|_| NativeErrorKind::ProviderFailure)?;
-        if let Some(value) = terminal_from_event(Some(&event.event), &value) {
+    observe_sse(chunks, |event, value| {
+        if let Some(value) = terminal_from_event(Some(event), value) {
             terminal = Some(value);
         }
-    }
+    })
+    .await?;
     terminal
         .map(|terminal| terminal == Terminal::Completed)
         .ok_or(NativeErrorKind::ProviderFailure)
-}
-
-/// A successful stream must declare SSE. Codex alone may omit the media type,
-/// which it does on its native SSE endpoint; an explicit wrong type never passes.
-pub(crate) fn check_stream_type(
-    profile: RequestProfile,
-    response: &reqwest::Response,
-    meta: &mut ResponseMeta,
-) -> Result<(), NativeFailure> {
-    let header = |name| {
-        response
-            .headers()
-            .get(name)
-            .and_then(|value| value.to_str().ok())
-    };
-    let content_type = header("content-type");
-    let media_type = content_type
-        .and_then(|value| value.split(';').next())
-        .map(str::trim);
-    if media_type.is_some_and(|value| value.eq_ignore_ascii_case("text/event-stream")) {
-        return Ok(());
-    }
-    if profile == RequestProfile::CodexResponses && !response.headers().contains_key("content-type")
-    {
-        meta.headers.push(Header {
-            name: "content-type".into(),
-            value: "text/event-stream".into(),
-        });
-        return Ok(());
-    }
-    tracing::warn!(
-        event = "responses_stream_content_type_rejected",
-        upstream_status = meta.status,
-        mime = media_type_class(media_type),
-        encoding = encoding_class(header("content-encoding")),
-    );
-    Err(NativeFailure::sent(
-        NativeErrorKind::Unsupported,
-        Some(meta.clone()),
-    ))
-}
-
-// Diagnostic labels must remain finite: upstream header values can contain secrets.
-fn media_type_class(value: Option<&str>) -> &'static str {
-    match value {
-        None => "absent",
-        Some(value) if value.eq_ignore_ascii_case("text/event-stream") => "sse",
-        Some(value) if value.eq_ignore_ascii_case("application/json") => "json",
-        Some(value) if value.eq_ignore_ascii_case("text/html") => "html",
-        Some(value) if value.eq_ignore_ascii_case("text/plain") => "plain",
-        Some(_) => "other",
-    }
-}
-fn encoding_class(value: Option<&str>) -> &'static str {
-    match value.map(str::trim) {
-        None => "absent",
-        Some(value) if value.eq_ignore_ascii_case("identity") => "identity",
-        Some(value) if value.eq_ignore_ascii_case("gzip") => "gzip",
-        Some(value) if value.eq_ignore_ascii_case("br") => "br",
-        Some(value) if value.eq_ignore_ascii_case("deflate") => "deflate",
-        Some(value) if value.eq_ignore_ascii_case("zstd") => "zstd",
-        Some(_) => "other",
-    }
 }
 
 // Codex keeps no upstream response state; retain the caller's complete input and

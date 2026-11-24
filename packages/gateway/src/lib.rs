@@ -1,4 +1,4 @@
-//! Local AI gateway: explicit model routing and OpenAI protocol ingress.
+//! Local AI gateway: explicit model routing and native protocol ingress.
 //!
 //! Callers supply configuration, ingress aliases and a
 //! asynchronous credential resolver. The gateway owns neither application persistence

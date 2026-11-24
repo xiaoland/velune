@@ -218,6 +218,7 @@ const VARIANTS: &[RuntimeVariant] = &[
             Protocol::ChatCompletions,
             Protocol::Responses,
             Protocol::Messages,
+            Protocol::Gemini,
         ],
         permission_modes: &[],
         resume: ResumeStrategy::Message("continue"),

@@ -20,6 +20,27 @@ pub enum Protocol {
     /// Anthropic Messages.
     #[serde(rename = "messagesV1")]
     Messages,
+    /// Gemini Developer API GenerateContent, including SSE streaming.
+    #[serde(rename = "geminiGenerateContent")]
+    Gemini,
+}
+
+impl Protocol {
+    pub const ALL: [Self; 4] = [
+        Self::ChatCompletions,
+        Self::Responses,
+        Self::Messages,
+        Self::Gemini,
+    ];
+
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::ChatCompletions => "chatCompletionsV1",
+            Self::Responses => "responsesV1",
+            Self::Messages => "messagesV1",
+            Self::Gemini => "geminiGenerateContent",
+        }
+    }
 }
 
 /// Exact identifier supplied by the provider, never a gateway alias or application record key.
@@ -70,8 +91,8 @@ pub enum NativeOutput {
 #[derive(Debug, Clone)]
 pub struct NativeSuccess {
     pub output: NativeOutput,
-    /// The response itself reported completion. Only Responses reports it;
-    /// incomplete, failed or cancelled terminals still succeed in transport.
+    /// Responses and Gemini can report completion in the response itself.
+    /// Incomplete, failed or cancelled terminals can still succeed in transport.
     pub completed: bool,
 }
 
