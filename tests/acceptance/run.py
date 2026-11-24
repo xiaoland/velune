@@ -12,6 +12,7 @@ import datetime
 import importlib
 import json
 import os
+import re
 import secrets
 import shutil
 import subprocess
@@ -44,7 +45,9 @@ def tool_version(path: Path) -> str | None:
                                   env={"HOME": home, "PATH": "/usr/bin:/bin"})
         except (OSError, subprocess.TimeoutExpired):
             return None
-    return (done.stdout or done.stderr).strip().splitlines()[0] if (done.stdout or done.stderr).strip() else None
+    # CLIs may print warnings first; record the line that carries a version.
+    lines = [line.strip() for line in (done.stdout + "\n" + done.stderr).splitlines() if line.strip()]
+    return next((line for line in lines if re.search(r"\d+\.\d+", line)), lines[0] if lines else None)
 
 
 def build(out: Path) -> None:
