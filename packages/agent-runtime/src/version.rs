@@ -159,6 +159,14 @@ pub const PI_VERSIONS: Versions = Versions::Cli {
     minimum: "1.0.2",
     below: "1.5.0",
 };
+pub const ANTIGRAVITY_FAMILY: &str = "antigravity";
+// 1.5.1 exposes the account's models to ACP clients under their own names.
+pub const ANTIGRAVITY_ACP_MINIMUM: semver::Version = semver::Version::new(1, 5, 1);
+
+pub fn supports_antigravity_acp(version: &str) -> bool {
+    semver::Version::parse(version).is_ok_and(|version| version >= ANTIGRAVITY_ACP_MINIMUM)
+}
+
 const VARIANTS: &[RuntimeVariant] = &[
     RuntimeVariant {
         kind: RuntimeKind::Acp,
@@ -408,7 +416,7 @@ pub fn probe_version_at(
     execution: &crate::execution::ExecutionTarget,
     os_home: Option<&Path>,
 ) -> Result<String> {
-    if !VARIANTS.iter().any(|v| v.family_id == family_id) {
+    if family_id != ANTIGRAVITY_FAMILY && !VARIANTS.iter().any(|v| v.family_id == family_id) {
         return Err(Error::new("未知运行时系列"));
     }
     if family_id == "acp" {
@@ -432,7 +440,8 @@ pub fn probe_version_at(
     } else {
         binary
     };
-    let mut command = if matches!(family_id, "codex" | "claude-code") {
+    let uses_node = !matches!(family_id, "codex" | "claude-code" | ANTIGRAVITY_FAMILY);
+    let mut command = if !uses_node {
         crate::process_tree::command(binary)
     } else if let Some(node) = node_binary {
         let mut command = crate::process_tree::command(node);
@@ -453,10 +462,12 @@ pub fn probe_version_at(
                 "runtime version probe failed"
             );
             if error.code() == "process_exit" {
-                Error::with_code(
-                    "公开版本命令执行失败，请检查外部安装是否完整及 Node 版本",
-                    "version_probe_failed",
-                )
+                let detail = if uses_node {
+                    "公开版本命令执行失败，请检查外部安装是否完整及 Node 版本"
+                } else {
+                    "公开版本命令执行失败，请检查外部安装是否完整"
+                };
+                Error::with_code(detail, "version_probe_failed")
             } else {
                 error
             }

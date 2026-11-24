@@ -20,6 +20,12 @@ Velune 不附带 Codex、Claude Code、Pi 等 Harness。先安装要使用的 Ha
 
 适配器兼容版本、SSH 执行位置与 HOME 规则见[运行时技术说明](../packages/agent-runtime/README.md#版本与原生控制)。遇到问题时，一并记录 Velune、操作系统与 Harness 的版本。
 
+### Antigravity
+
+1. 在运行 Agent 的电脑上安装 Antigravity CLI 1.5.1 或更新版本，并在终端运行 `agy acp --login` 完成登录。已经登录 Antigravity CLI 时可以直接继续。 [Google ACP 指南](https://antigravity.google/docs/cli/acp/)
+2. 在 Velune 的“设置 → Agent 运行时 → 快速导入”中添加 Antigravity。手动添加或配置 SSH 执行时，选择“ACP v1”，填入执行机器上 `agy` 的绝对路径，并添加单独的启动参数 `acp`。
+3. 新建会话时选择 Antigravity。打开会话后，可使用 Antigravity 公布的模型和会话选项。
+
 ## 手机与 iPad 连接桌面
 
 1. 保持作为执行端的 Mac 或 Windows 上的 Velune 运行。

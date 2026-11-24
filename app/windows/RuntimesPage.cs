@@ -418,7 +418,7 @@ sealed partial class RuntimesPage : UserControl
         var status = Ui.Text("正在发现运行时…");
         var found = new StackPanel { Spacing = 8 };
         var panel = new StackPanel { Spacing = 12, MinWidth = 480 };
-        panel.Children.Add(Ui.Muted("在 PATH、npm／pnpm 全局目录，以及 Codex、Claude 桌面应用与编辑器扩展的安装位置中查找 Pi、Codex 与 Claude Code，只读取公开版本，不导入登录信息。"));
+        panel.Children.Add(Ui.Muted("在 PATH 和常见安装位置查找已安装的运行时，包括 Antigravity。这里只读取公开版本。"));
         panel.Children.Add(status);
         panel.Children.Add(found);
         var dialog = new ContentDialog
@@ -471,7 +471,8 @@ sealed partial class RuntimesPage : UserControl
         {
             action = Ui.Muted("已配置");
         }
-        else if (!candidate.Supported && Addable().Any(kind => kind.Id == candidate.Runtime.TypeId))
+        else if (!candidate.Supported && candidate.Runtime.TypeId != RuntimeKind.Acp
+            && Addable().Any(kind => kind.Id == candidate.Runtime.TypeId))
         {
             // A known version that discovery could not complete, such as a
             // runtime directory that does not exist yet: finish it by hand.

@@ -4,6 +4,7 @@ use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
 };
+use velune_agent_runtime::version::ANTIGRAVITY_FAMILY;
 
 pub(crate) fn hints(
     user_home: &str,
@@ -32,6 +33,7 @@ pub(crate) fn hints(
         ("codex", "codex", "CODEX_HOME", ".codex"),
         ("claude-code", "claude", "CLAUDE_CONFIG_DIR", ".claude"),
         ("deepseek-harness", "dsh", "DSH_HOME", ".dsh"),
+        (ANTIGRAVITY_FAMILY, "agy", "GEMINI_HOME", ".gemini"),
     ]
     .into_iter()
     .map(|(family, command, variable, relative)| {
@@ -140,6 +142,14 @@ impl Bundled<'_> {
                         &[&claude],
                     ));
                 }
+            }
+            ANTIGRAVITY_FAMILY => {
+                let bin = if cfg!(windows) {
+                    self.local.join("agy/bin")
+                } else {
+                    self.home.join(".local/bin")
+                };
+                found.extend(file(bin.join(executable("agy"))));
             }
             _ => {}
         }

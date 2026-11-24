@@ -15,7 +15,7 @@ static class Discovery
         {
             throw new InvalidOperationException("找不到用户目录");
         }
-        var node = NodeBinary() ?? throw new InvalidOperationException("没有找到 Node（node.exe），请先安装 Node 或手动添加运行时");
+        var node = NodeBinary() ?? "";
         // Where the agents keep their state, and where vendors' apps install them.
         var overrides = new Dictionary<string, string>();
         foreach (var key in new[] { "PI_CODING_AGENT_DIR", "CODEX_HOME", "CLAUDE_CONFIG_DIR", "DSH_HOME", "LOCALAPPDATA", "APPDATA" })

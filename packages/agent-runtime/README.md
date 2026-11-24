@@ -63,6 +63,8 @@ Codex 0.166 的 `load_for_resume` 同时核对保存的 provider、请求 provid
 
 ## 通用 ACP v1
 
+Antigravity 的快速导入将官方 CLI 1.5.1 或更新版本配置为 `acp-v1`，以 `agy acp` 启动。导入只读取 CLI 版本，连接时再协商 ACP 能力。账户与会话由 Antigravity 管理，模型及推理档位以会话回报为准。 [Google ACP 指南](https://antigravity.google/docs/cli/acp/)
+
 `acp::Config` 接受目标机器上的绝对 `binary`、完整 `args`、显式 `environment`、`ExecutionTarget` 与可选 `os_home`。用户安装的原生 ACP 程序和社区 bridge 均可直接作为启动命令；本包不安装 Agent、不维护程序名单，也不要求通用 ACP 使用 Node 或本包 helper。SSH 与 HOME 复用下文执行边界。设置 `os_home` 时禁止环境表重复设置 `HOME`，避免家目录归属不明确；环境值可能包含秘密，因此该配置不实现 Debug。
 
 wire 类型采用官方 `agent-client-protocol-schema = 1.11.0` 的稳定 v1 模块，关闭默认与不稳定特性。握手只接受协议 1，保留 Agent 信息、认证方法描述和实际协商能力。`create`、`send`、`poll`、`cancel` 与 `reply` 提供会话、流式更新和权限控制；`list_sessions`、`load`、`resume`、`close_session`、`delete_session` 分别检查 Agent 公布的能力。注册表里的静态删除标记不能替代连接上的动态能力。连接会跨 turn 保留，未支持 load 的 Agent 仍可在当前连接持续对话。

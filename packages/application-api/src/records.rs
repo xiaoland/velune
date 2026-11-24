@@ -24,6 +24,7 @@ pub struct RuntimeDiscoveryHint {
 pub struct RuntimeDiscoveryProbe {
     pub family_id: String,
     pub binary: String,
+    /// Empty when discovery found no Node executable.
     pub node_binary: String,
     pub agent_directory: String,
 }
