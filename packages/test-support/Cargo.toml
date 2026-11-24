@@ -7,4 +7,5 @@ publish = false
 # Shared test fixtures. Crates take this only as a dev-dependency; it must not
 # depend on workspace crates, so no product crate is compiled twice in tests.
 [dependencies]
+serde = "1"
 tempfile = "3"

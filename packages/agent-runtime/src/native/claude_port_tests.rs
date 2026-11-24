@@ -4,9 +4,10 @@ use std::{
     os::unix::fs::PermissionsExt,
     time::{Duration, Instant},
 };
+use velune_test_support::TempRoot;
 
 pub(super) struct Fixture {
-    root: PathBuf,
+    root: TempRoot,
     pub(super) session: NativeSession,
 }
 impl Fixture {
@@ -14,13 +15,7 @@ impl Fixture {
         Self::with_port(mode, true)
     }
     fn with_port(mode: &str, port: bool) -> Self {
-        let mut nonce = [0; 8];
-        getrandom::fill(&mut nonce).unwrap();
-        let root = std::env::temp_dir().join(format!(
-            "velune-claude-port-{:x}",
-            u64::from_le_bytes(nonce)
-        ));
-        std::fs::create_dir(&root).unwrap();
+        let root = TempRoot::new("claude-port");
         std::fs::write(root.join("mode"), mode).unwrap();
         let binary = root.join("claude");
         std::fs::write(&binary, r#"#!/usr/bin/python3
@@ -87,19 +82,19 @@ for line in sys.stdin:
         std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
         let mut session = NativeSession::connect(NativeConfig {
             execution: crate::execution::ExecutionTarget::Local,
-            os_home: Some(root.clone()),
+            os_home: Some(root.to_path_buf()),
             kind: NativeKind::ClaudeCode,
             binary,
             node_binary: None,
-            agent_dir: root.clone(),
-            resources_directory: root.clone(),
-            projection_directory: root.clone(),
+            agent_dir: root.to_path_buf(),
+            resources_directory: root.to_path_buf(),
+            projection_directory: root.to_path_buf(),
             gateway: None,
             mcp_servers: vec![],
             session_agents: vec![],
         })
         .unwrap();
-        session.replace_snapshot("parent", Some(&root), "runtime", vec![]);
+        session.replace_snapshot("parent", Some(root.path()), "runtime", vec![]);
         session.claude.start = claude::ClaudeStart::Fresh { name: None };
         if port {
             session
@@ -256,7 +251,6 @@ for line in sys.stdin:
 impl Drop for Fixture {
     fn drop(&mut self) {
         self.session.shutdown().unwrap();
-        std::fs::remove_dir_all(&self.root).unwrap();
     }
 }
 
@@ -1402,7 +1396,7 @@ fn claude_port_rejected_create_side_context_preserves_prepared_user_routing() {
 #[test]
 fn claude_port_create_side_context_remains_available_in_blocking_preparation() {
     let mut f = Fixture::new("hold");
-    let cwd = f.root.clone();
+    let cwd = f.root.to_path_buf();
     f.session
         .with_claude_blocking_preparation(|session| {
             session.create_side_context(Some(&cwd), "runtime", "portable side context")?;

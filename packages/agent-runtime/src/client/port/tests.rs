@@ -1,22 +1,19 @@
 use super::*;
+use velune_test_support::TempRoot;
 
 struct Fixture {
     client: Client,
-    root: PathBuf,
+    root: TempRoot,
 }
 impl Fixture {
     fn new() -> Self {
         Self::with_script("import sys\nfor line in sys.stdin: pass\n")
     }
     fn with_script(script: &str) -> Self {
-        let mut random = [0; 8];
-        getrandom::fill(&mut random).unwrap();
-        let root =
-            std::env::temp_dir().join(format!("velune-pi-port-{:x}", u64::from_le_bytes(random)));
-        std::fs::create_dir(&root).unwrap();
+        let root = TempRoot::new("pi-port");
         let helper = root.join("rpc.py");
         std::fs::write(&helper, script).unwrap();
-        let config: Config = serde_json::from_value(json!({"execution":{"kind":"local"},"os_home":root,"binary":"/usr/bin/python3","node_binary":"/usr/bin/python3","rpc_entry":helper})).unwrap();
+        let config: Config = serde_json::from_value(json!({"execution":{"kind":"local"},"os_home":root.path(),"binary":"/usr/bin/python3","node_binary":"/usr/bin/python3","rpc_entry":helper})).unwrap();
         Self {
             client: Client::spawn(config).unwrap(),
             root,
@@ -31,7 +28,6 @@ impl Fixture {
 impl Drop for Fixture {
     fn drop(&mut self) {
         self.client.shutdown().unwrap();
-        std::fs::remove_dir_all(&self.root).unwrap();
     }
 }
 fn prompt() -> PiOperation {

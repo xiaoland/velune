@@ -109,6 +109,13 @@ impl AsRef<Path> for TempRoot {
     }
 }
 
+/// Serializes as its path, so fixtures can embed the root in JSON configs.
+impl serde::Serialize for TempRoot {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.path.serialize(serializer)
+    }
+}
+
 impl std::ops::Deref for TempRoot {
     type Target = Path;
 

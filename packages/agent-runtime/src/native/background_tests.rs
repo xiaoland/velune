@@ -1,9 +1,10 @@
 //! Actual stream-json control writes with synthetic task events; no model runs.
 use super::*;
 use std::os::unix::fs::PermissionsExt;
+use velune_test_support::TempRoot;
 
 struct Fixture {
-    root: PathBuf,
+    root: TempRoot,
     session: NativeSession,
 }
 impl Fixture {
@@ -11,11 +12,7 @@ impl Fixture {
         Self::with_version("2.1.292")
     }
     fn with_version(version: &str) -> Self {
-        let mut nonce = [0; 8];
-        getrandom::fill(&mut nonce).unwrap();
-        let root =
-            std::env::temp_dir().join(format!("velune-background-{:x}", u64::from_le_bytes(nonce)));
-        std::fs::create_dir(&root).unwrap();
+        let root = TempRoot::new("background");
         let binary = root.join("claude");
         std::fs::write(&binary, r#"#!/usr/bin/python3
 import json,sys,os
@@ -30,19 +27,19 @@ for line in sys.stdin:
         std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
         let mut session = NativeSession::connect(NativeConfig {
             execution: crate::execution::ExecutionTarget::Local,
-            os_home: Some(root.clone()),
+            os_home: Some(root.to_path_buf()),
             kind: NativeKind::ClaudeCode,
             binary,
             node_binary: None,
-            agent_dir: root.clone(),
-            resources_directory: root.clone(),
-            projection_directory: root.clone(),
+            agent_dir: root.to_path_buf(),
+            resources_directory: root.to_path_buf(),
+            projection_directory: root.to_path_buf(),
             gateway: None,
             mcp_servers: vec![],
             session_agents: vec![],
         })
         .unwrap();
-        session.replace_snapshot("parent", Some(&root), "runtime", vec![]);
+        session.replace_snapshot("parent", Some(root.path()), "runtime", vec![]);
         session.native_id = Some("parent".into());
         session.running();
         Self { root, session }
@@ -62,7 +59,6 @@ for line in sys.stdin:
 impl Drop for Fixture {
     fn drop(&mut self) {
         let _ = self.session.shutdown();
-        std::fs::remove_dir_all(&self.root).unwrap();
     }
 }
 
@@ -571,12 +567,12 @@ fn claude_compaction_order_matches_cold_history_through_repeated_boundaries() {
         &crate::history::HistoryConfig {
             kind: crate::version::RuntimeKind::ClaudeCode,
             execution: f.session.config.execution.clone(),
-            os_home: Some(f.root.clone()),
+            os_home: Some(f.root.to_path_buf()),
             binary: f.session.config.binary.clone(),
             node_binary: PathBuf::new(),
-            resources_directory: f.root.clone(),
+            resources_directory: f.root.to_path_buf(),
             root: projects,
-            home: f.root.clone(),
+            home: f.root.to_path_buf(),
         },
         "runtime",
         native_id,
@@ -781,12 +777,12 @@ fn claude_api_failure_cold_history_deserializes_and_stays_in_failed_work() {
         &crate::history::HistoryConfig {
             kind: crate::version::RuntimeKind::ClaudeCode,
             execution: f.session.config.execution.clone(),
-            os_home: Some(f.root.clone()),
+            os_home: Some(f.root.to_path_buf()),
             binary: f.session.config.binary.clone(),
             node_binary: PathBuf::new(),
-            resources_directory: f.root.clone(),
+            resources_directory: f.root.to_path_buf(),
             root: projects,
-            home: f.root.clone(),
+            home: f.root.to_path_buf(),
         },
         "runtime",
         native_id,

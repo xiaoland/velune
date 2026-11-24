@@ -5,8 +5,7 @@ use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
     fs,
-    os::unix::fs::{DirBuilderExt, PermissionsExt},
-    path::PathBuf,
+    os::unix::fs::PermissionsExt,
     time::{Duration, Instant},
 };
 use velune_application::{
@@ -15,6 +14,7 @@ use velune_application::{
     config::RuntimeInstance,
     conversation::{MessageRole, RunState, RuntimeKind},
 };
+use velune_test_support::TempRoot;
 
 const CONVERSATION: &str = "synthetic:abcd";
 const NEW_TEXT: &str = "new question";
@@ -80,7 +80,7 @@ for line in sys.stdin:
 "#;
 
 struct Fixture {
-    root: PathBuf,
+    root: TempRoot,
     service: ApplicationService,
 }
 
@@ -90,11 +90,7 @@ impl Fixture {
     }
 
     fn with_history(paged: Option<usize>) -> Self {
-        let root = std::env::temp_dir().join(format!(
-            "velune-send-turn-{:016x}",
-            getrandom::u64().unwrap()
-        ));
-        fs::DirBuilder::new().mode(0o700).create(&root).unwrap();
+        let root = TempRoot::new("send-turn");
         let home = root.join("home");
         fs::create_dir(&home).unwrap();
         let binary = root.join("codex");
@@ -105,7 +101,7 @@ impl Fixture {
         }
         let service = ApplicationService::open(Options {
             home_directory: root.join("app"),
-            resources_directory: root.clone(),
+            resources_directory: root.to_path_buf(),
         })
         .unwrap();
         let fixture = Self { root, service };
@@ -197,7 +193,6 @@ impl Drop for Fixture {
     fn drop(&mut self) {
         // Close the service so its RPC owners reap their exact child processes.
         let _ = self.service.close(true);
-        let _ = fs::remove_dir_all(&self.root);
     }
 }
 

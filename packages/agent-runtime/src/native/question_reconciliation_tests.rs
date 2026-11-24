@@ -1,20 +1,16 @@
 //! Exercise actual native request lifetimes without a model, account or user data.
 use super::*;
 use std::os::unix::fs::PermissionsExt;
+use velune_test_support::TempRoot;
 
 pub(super) struct Fixture {
-    root: PathBuf,
+    /// Owns the session's directories until the fixture drops.
+    _root: TempRoot,
     pub(super) session: NativeSession,
 }
 impl Fixture {
     pub(super) fn new() -> Self {
-        let mut nonce = [0; 8];
-        getrandom::fill(&mut nonce).unwrap();
-        let root = std::env::temp_dir().join(format!(
-            "velune-question-lifecycle-{:x}",
-            u64::from_le_bytes(nonce)
-        ));
-        std::fs::create_dir(&root).unwrap();
+        let root = TempRoot::new("question-lifecycle");
         let binary = root.join("codex");
         std::fs::write(
             &binary,
@@ -32,28 +28,30 @@ for line in sys.stdin:
         std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
         let mut session = NativeSession::connect(NativeConfig {
             execution: crate::execution::ExecutionTarget::Local,
-            os_home: Some(root.clone()),
+            os_home: Some(root.to_path_buf()),
             kind: NativeKind::Codex166,
             binary,
             node_binary: None,
-            agent_dir: root.clone(),
-            resources_directory: root.clone(),
-            projection_directory: root.clone(),
+            agent_dir: root.to_path_buf(),
+            resources_directory: root.to_path_buf(),
+            projection_directory: root.to_path_buf(),
             gateway: None,
             mcp_servers: vec![],
             session_agents: vec![],
         })
         .unwrap();
-        session.replace_snapshot("parent", Some(&root), "runtime", vec![]);
+        session.replace_snapshot("parent", Some(root.path()), "runtime", vec![]);
         session.turn_id = Some("turn".into());
         session.running();
-        Self { root, session }
+        Self {
+            _root: root,
+            session,
+        }
     }
 }
 impl Drop for Fixture {
     fn drop(&mut self) {
         self.session.shutdown().unwrap();
-        std::fs::remove_dir_all(&self.root).unwrap();
     }
 }
 

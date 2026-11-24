@@ -5101,6 +5101,7 @@ dependencies = [
 name = "velune-test-support"
 version = "0.1.0"
 dependencies = [
+ "serde",
  "tempfile",
 ]
 
