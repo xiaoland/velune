@@ -1265,8 +1265,8 @@ final class ConversationStore: ObservableObject {
     var attachmentsDirectory: URL {
         (transport?.stateDirectory ?? FileManager.default.temporaryDirectory).appendingPathComponent("attachments", isDirectory: true)
     }
-    /// Returns whether the turn was sent; the message shows at once, marked as
-    /// sending until the runtime accepts it. `onAccepted` receives the
+    /// Begins submission and shows its progress in the composer. The message
+    /// list follows the Core projection. `onAccepted` receives the
     /// conversation that took the turn: sending in a new conversation replaces
     /// its unsent identity with the created one. `onFailure` runs when it was not
     /// sent and receives any identity already created by this operation.
@@ -1302,6 +1302,7 @@ final class ConversationStore: ObservableObject {
         let submission = outgoing.begin(text: text, attachments: attachments)
         let creating = isDraft
         let ticket = SendProjectionTicket(scope: projectionScope(), input: input, device: device)
+        let previousUserRow = lastUserRowID
         let temporary = isSideChat
         let cwd = snapshot?.conversation.cwd
         let project = snapshot?.conversation.creationProject
@@ -1386,7 +1387,9 @@ final class ConversationStore: ObservableObject {
             }
             }
         }) { [weak self] value in
-            self?.applySnapshotResult(value, scope: ticket.scope)
+            guard let self else { return }
+            applySnapshotResult(value, scope: ticket.scope)
+            refreshAfterSend(value, previousUserRow: previousUserRow, scope: ticket.scope)
         }
         return true
     }
@@ -1730,8 +1733,15 @@ final class ConversationStore: ObservableObject {
         guard !isPreview else { return }
         guard let runtimeID = projectionRuntimeID, let conversationID = loadedConversationID else { recordProblem("请选择会话"); onFailure?(); return }
         guard let transport else { recordProblem("本地核心未配置"); onFailure?(); return }
-        enqueueSnapshot({ try transport.sendQueue(runtimeID: runtimeID, conversationID: conversationID, operation: operation, submissionId: submissionId) }, scope: projectionScope(), consumeReceipt: { result in
+        let scope = projectionScope()
+        let previousUserRow = submissionId == nil ? nil : lastUserRowID
+        enqueueSnapshot({ try transport.sendQueue(runtimeID: runtimeID, conversationID: conversationID, operation: operation, submissionId: submissionId) }, scope: scope, consumeReceipt: { result in
             switch result { case .success(let receipt): onDone?(receipt); case .failure: onFailure?() }
+        }, completion: { [weak self] receipt in
+            // The turn may finish while the Add request is in flight; Core
+            // can dispatch that same submission instead of queuing it.
+            guard submissionId != nil else { return }
+            self?.refreshAfterSend(receipt, previousUserRow: previousUserRow, scope: scope)
         })
     }
     private struct InteractionDraftKey: Hashable { let conversationID: String; let interactionID: String }
@@ -2071,6 +2081,24 @@ final class ConversationStore: ObservableObject {
         needsResync = true
         poll()
     }
+    private var lastUserRowID: String? {
+        transcript.rows.last(where: { $0.message.role == .user })?.id
+    }
+    /// An admitted send can precede the runtime's user-message event. Give
+    /// that event an early read on the ordinary projection lane.
+    private func refreshAfterSend(_ receipt: SnapshotResult, previousUserRow: String?, scope: ProjectionScope) {
+        guard case .sending? = receipt.submissionReceipt, receipt.submittedMessageId == nil,
+              lastUserRowID == previousUserRow else { return }
+        Task { @MainActor [weak self] in
+            for delay in [Duration.milliseconds(120), .milliseconds(180)] {
+                try? await Task.sleep(for: delay)
+                guard let self, self.generation == scope.storeGeneration, self.navigationID == scope.navigationID,
+                      self.isGenerating, self.lastUserRowID == previousUserRow,
+                      ConversationWindowModel.isConversationStoreVisible(self) else { return }
+                self.pollProjection()
+            }
+        }
+    }
     private enum PolledSnapshot: Sendable {
         case absent, unchanged
         case complete(ConversationSnapshot)
@@ -2289,6 +2317,52 @@ final class ConversationStore: ObservableObject {
 }
 
 extension ConversationStore {
+    /// The normal periodic poll is deliberately absent in this check. The
+    /// ordinary Send path must observe the runtime event after its receipt.
+    static func checkLateSendEcho(transport: Transport, seed: SnapshotResult, home: URL) throws {
+        let runtimeID = "synthetic-codex"
+        let native = ModelSelection.native(providerId: "openai", modelId: "synthetic-native")
+        let model = RuntimeModel(selection: native, name: "Synthetic", reasoningEfforts: [])
+        let device = DeviceStore(transport: transport)
+        device.applyList(try transport.list())
+        let store = ConversationStore(device: device)
+        store.modelCatalogs[runtimeID] = .ready([model])
+        store.adopt(seed)
+        store.started = true
+        defer { store.close() }
+
+        func wait(until ready: () -> Bool) {
+            let deadline = ProcessInfo.processInfo.systemUptime + 2
+            while !ready(), ProcessInfo.processInfo.systemUptime < deadline {
+                RunLoop.main.run(until: Date().addingTimeInterval(0.01))
+            }
+        }
+        store.pollProjection()
+        wait { !store.pollPending && store.snapshot?.runState == .idle }
+        let target = resolveNextTurn(input: NextTurnInput(runtimeId: runtimeID,
+            runtimeType: device.runtimeTypes.first { $0.id == .codex166 }, providers: [],
+            catalog: [model], turnSettings: [], conversationRuntimeId: runtimeID, modelRecordKey: nil,
+            kept: TurnChoice(model: native), runtimeChoices: nil, newConversation: .chosen(choice: TurnChoice(model: native))))
+        let prompt = "synthetic late user echo"
+        let previous = store.lastUserRowID
+        guard previous != nil, store.snapshot?.runState == .idle, store.send(text: prompt, next: target) else {
+            throw TransportError.rejected("late echo fixture could not send into the warm conversation")
+        }
+        wait { store.acceptedSubmissions == 1 && !store.isLoading }
+        guard store.acceptedSubmissions == 1, store.lastUserRowID == previous, store.isGenerating else {
+            throw TransportError.rejected("an ACK alone must not add a transcript row")
+        }
+        let released = ProcessInfo.processInfo.systemUptime
+        try Data().write(to: home.appendingPathComponent("release-user-echo"))
+        wait { store.lastUserRowID != previous }
+        let matching = store.transcript.rows.filter { $0.message.role == .user && $0.message.copiedText == prompt }
+        guard matching.count == 1, store.lastUserRowID == matching.first?.id, store.isGenerating else {
+            throw TransportError.rejected("expected one native input row before any assistant reply")
+        }
+        let elapsedMS = Int((ProcessInfo.processInfo.systemUptime - released) * 1000)
+        print("PASS native user row appeared \(elapsedMS)ms after release, with no periodic or manual poll")
+    }
+
     /// Real Store → Transport → Core → warm Codex owner. No AppKit lifecycle.
     static func checkIndependentRequests(transport: Transport, seed: SnapshotResult, home: URL) throws {
         func note(_ text: String) { FileHandle.standardError.write(Data(("PASS " + text + "\n").utf8)) }

@@ -32,6 +32,12 @@ def release_send(request, turn):
             return
         time.sleep(.01)
     ack(request, {'turn':{'id':turn}})
+def release_user_echo(thread, turn, items):
+    deadline = time.monotonic() + 12
+    while not (root / 'release-user-echo').exists():
+        if time.monotonic() >= deadline: return
+        time.sleep(.01)
+    notify('item/completed', {'threadId':thread,'turnId':turn,'item':{'id':'late-user','type':'userMessage','content':items}})
 for line in sys.stdin:
     request = json.loads(line)
     with (root / 'wire.jsonl').open('a') as f: f.write(json.dumps(request) + '\n')
@@ -60,6 +66,11 @@ for line in sys.stdin:
         if any('created-failure' in item.get('text', '') for item in request['params']['input']):
             mark('rejected-send-wire')
             emit({'id':request['id'],'error':{'code':-32600,'message':'synthetic created Send rejected'}})
+            continue
+        if any(item.get('text') == 'synthetic late user echo' for item in request['params']['input']):
+            notify('turn/started', {'threadId':thread_id,'turn':{'id':current_turn}})
+            ack(request, {'turn':{'id':current_turn}})
+            threading.Thread(target=release_user_echo, args=(thread_id, current_turn, request['params']['input']), daemon=True).start()
             continue
         if turn_count == 1: ack(request, {'turn':{'id':current_turn}})
         notify('turn/started', {'threadId':thread_id,'turn':{'id':current_turn}})
@@ -126,9 +137,13 @@ for line in sys.stdin:
         let seed = try transport.createAndSend(runtimeID: "synthetic-codex", cwd: home.path, project: nil,
             selection: .native(providerId: "openai", modelId: "synthetic-native"),
             turn: ComposedTurn(text: "synthetic seed", effort: nil, permissionMode: nil, attachments: []), cancellation: VeluneSendCancellation(), onCreated: { _ in })
-        try ConversationStore.checkIndependentRequests(transport: transport, seed: seed, home: home)
+        if CommandLine.arguments.contains("--check-late-send-echo") {
+            try ConversationStore.checkLateSendEcho(transport: transport, seed: seed, home: home)
+        } else {
+            try ConversationStore.checkIndependentRequests(transport: transport, seed: seed, home: home)
+            FileHandle.standardError.write(Data("PASS ConversationStore independent request checks (headless, no App/scene/window)\n".utf8))
+        }
         try transport.close(stoppingWork: true)
-        FileHandle.standardError.write(Data("PASS ConversationStore independent request checks (headless, no App/scene/window)\n".utf8))
         exit(0)
     } catch {
         FileHandle.standardError.write(Data("FAIL independent requests: \(error)\n".utf8))
