@@ -902,6 +902,8 @@ struct ProviderEditor: View {
     let provider: ProviderSummary?
     /// What a new provider starts from; `nil` when editing.
     var template: ProviderTemplate? = nil
+    var observeModelCompactionForCheck: ((ModelAutoCompactionTarget?) -> Void)? = nil
+    var observeModelSelectionForCheck: ((@escaping (String?) -> Void) -> Void)? = nil
     @Environment(\.dismiss) private var dismiss
     @State private var name = ""
     @State private var protocolID: ApiProtocol = .chatCompletions
@@ -954,6 +956,11 @@ struct ProviderEditor: View {
     private var usesHTTP: Bool { if case .http = composition.executionBackend { return true }; return false }
     private var showsQuota: Bool { usesSubscription || composition.quotaSource != .none || !quotaLimits.isEmpty || (providerID.flatMap { store.providerQuotas[$0] }.map { $0.freshness != .unsupported } ?? false) }
     private var modelIndex: Int? { guard case .model(let id) = selection else { return nil }; return models.firstIndex { $0.id == id } }
+    private func modelAutoCompactionTarget(_ draft: ProviderModelDraft) -> ModelAutoCompactionTarget? {
+        guard let providerID,
+              let model = store.providers.first(where: { $0.id == providerID })?.models.first(where: { $0.recordKey == draft.recordKey }) else { return nil }
+        return ModelAutoCompactionTarget.managed(model.recordKey, title: model.displayName, in: store)
+    }
     private var claudeBinary: String? { composition.claudeBinary?.trimmingCharacters(in: .whitespacesAndNewlines) }
     private var valid: Bool { !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && (!usesHTTP || URL(string: endpoint)?.host != nil) && (claudeBinary.map { ($0 as NSString).isAbsolutePath } ?? true) && quotaCredentialsValid && models.allSatisfy(\.valid) && (!editingAPIKey || (!apiKey.isEmpty && (originalAPIKey != nil || authentication.method != .apiKey || clearAuthentication))) }
     private var quotaCredentialsValid: Bool { (quotaAccessKeyID.isEmpty && quotaSecret.isEmpty) || (!quotaAccessKeyID.isEmpty && !quotaSecret.isEmpty) }
@@ -994,6 +1001,11 @@ struct ProviderEditor: View {
                         Form {
                             ProviderModelFields(draft: $models[index], modelIDFocused: $modelIDFocused)
                                 .id(models[index].id)
+                            Section {
+                                ModelAutoCompactionLink(store: store, target: modelAutoCompactionTarget(models[index]),
+                                                        observeForCheck: observeModelCompactionForCheck)
+                                    .id(models[index].id)
+                            }
                             Section { Button("保存为模型模板…") { let model = models[index].definition; templateDraft = ModelTemplate(id: "", name: model.displayName, suggestedProviderModelId: model.providerModelId, nickname: model.nickname, icon: model.icon, contextWindow: model.contextWindow, maxOutputTokens: model.maxOutputTokens, reasoningLevels: model.reasoningLevels) }.disabled(!models[index].valid) }
                         }
                     } else if selection == .quota && showsQuota {
@@ -1013,6 +1025,10 @@ struct ProviderEditor: View {
                 name = template.kind == .subscription ? template.name : ""; protocolID = template.protocol; endpoint = template.endpoint; composition = template.composition
             }
             linkedLogin = provider?.authentication.linkedLogin
+            observeModelSelectionForCheck? { key in
+                if let key, let draft = models.first(where: { $0.recordKey == key }) { selection = .model(draft.id) }
+                else if key == nil { addModel(ProviderModelDraft()) }
+            }
             editingAPIKey = (!usesSubscription || usesAPIKey) && authentication.method == .unconfigured; readAPIKeyIfNeeded()
             if let providerID { store.readProviderQuotas([providerID]) }
             if composition.claudeBinary != nil { discoverExecutables() }
@@ -1309,7 +1325,7 @@ struct RuntimeSettingsView: View {
                 }
             }
             .contextMenu(forSelectionType: String.self) { ids in instanceMenu(ids) } primaryAction: { ids in
-                if let id = ids.first { editor = store.runtimeInstances.first { $0.id == id } }
+                if let id = ids.first { openEditor(store.runtimeInstances.first { $0.id == id }) }
             }
             .listStyle(.bordered).padding(.horizontal, 20).padding(.top, 16)
             HStack {
@@ -1319,7 +1335,7 @@ struct RuntimeSettingsView: View {
                 Spacer()
                 Button("在资源库中查看…") { if let id = selectedID { ResourceLibraryNavigator.shared.show(id, openWindow) } }
                     .disabled(selected == nil).help("管理所选运行时的指令、技能等原生资源")
-                Button("编辑…") { editor = selected }.disabled(selected == nil)
+                Button("编辑…") { openEditor(selected) }.disabled(selected == nil || store.isLoading)
             }.padding(.horizontal, 20).padding(.vertical, 12)
         }
         .sheet(isPresented: $discovering, onDismiss: offerResources) { RuntimeDiscoveryView(store: store) }
@@ -1341,6 +1357,11 @@ struct RuntimeSettingsView: View {
 
     private func rememberIDs() { knownIDs = Set(store.runtimeInstances.map(\.id)) }
 
+    private func openEditor(_ runtime: RuntimeInstance?) {
+        guard !store.isLoading else { return }
+        editor = runtime
+    }
+
     /// After an add sheet has closed, offers the library to a new runtime that
     /// can use some of its resources.
     private func offerResources() {
@@ -1358,7 +1379,7 @@ struct RuntimeSettingsView: View {
 
     @ViewBuilder private func instanceMenu(_ ids: Set<String>) -> some View {
         if let id = ids.first, let runtime = store.runtimeInstances.first(where: { $0.id == id }) {
-            Button("编辑…") { editor = runtime }
+            Button("编辑…") { openEditor(runtime) }.disabled(store.isLoading)
             Button("在资源库中查看…") { ResourceLibraryNavigator.shared.show(id, openWindow) }
             Button(runtime.enabled ? "停用" : "启用") { var updated = runtime; updated.enabled.toggle(); store.saveRuntimeInstance(updated) }.disabled(store.isBusy)
             Button("删除…") { deleting = runtime }
@@ -1729,7 +1750,7 @@ struct RuntimeEditor: View {
         }
     }
     @ViewBuilder private var newConversationPickers: some View {
-        let models: [RuntimeModel] = if case .ready(let choices) = newConversationModels { choices } else { [] }
+        let models = newConversationModels?.models ?? []
         let chosen = newConversationChoice.model
         // A model kept here that the catalog no longer lists still shows.
         let listed = chosen.map { model in models.contains { $0.selection == model } } ?? true
@@ -1775,7 +1796,7 @@ struct RuntimeEditor: View {
     }
     private func loadNewConversationModels(_ instance: RuntimeInstance) {
         // The core still knows the saved type until this form is committed.
-        guard typeID == instance.typeId else { return }
+        guard typeID == instance.typeId, newConversationModels != .loading else { return }
         let readingType = instance.typeId
         newConversationModels = .loading
         store.readModelCatalog(runtimeID: instance.id) { catalog in
@@ -1783,6 +1804,7 @@ struct RuntimeEditor: View {
             else { typeDrafts[readingType]?.models = catalog }
         }
     }
+
     @ViewBuilder private func agentSection(_ instance: RuntimeInstance) -> some View {
         Section {
             switch agent {

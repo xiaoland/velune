@@ -430,6 +430,8 @@ impl CoreRuntime {
             let servers = self.collaboration_servers();
             let mut config = self.pi_history_config(&runtime)?;
             config.mcp_servers = servers;
+            config.model_compaction_reserves =
+                pi_composition::pi_compaction_reserves(&runtime, None)?;
             config.provider = native.as_ref().and_then(|(provider, _)| provider.clone());
             config.model = native.as_ref().map(|(_, model)| (*model).to_owned());
             config.rpc_entry = Some(context.resources.join("pi_rpc.mjs"));
@@ -451,11 +453,28 @@ impl CoreRuntime {
         } else {
             let servers = self.collaboration_servers();
             let mut config = self.native_config(&runtime, None)?;
+            let uses_default_model = native.is_none();
+            let auto_compaction = native
+                .as_ref()
+                .map(|(provider_id, model_id)| {
+                    runtime.model_auto_compaction(&ModelSelection::Native {
+                        provider_id: provider_id.clone(),
+                        model_id: (*model_id).to_owned(),
+                    })
+                })
+                .transpose()?
+                .flatten();
+            if runtime.type_id != RuntimeKind::DeepSeek {
+                config.auto_compaction = auto_compaction.clone();
+            }
             config.mcp_servers = servers;
             let mut session = telemetry::observe(self.telemetry.as_ref(), "harness.start", || {
                 NativeSession::connect(config)
             })
             .map_err(|error| RuntimeError::context("原生运行时连接", error))?;
+            if runtime.type_id == RuntimeKind::Codex166 && uses_default_model {
+                session.set_default_model_auto_compactions(runtime.model_auto_compactions()?);
+            }
             if let Some((provider_id, model_id)) = native {
                 session
                     .select_native_model(Retained::from_parts(
@@ -514,6 +533,20 @@ impl CoreRuntime {
                     })?;
                 }
             }
+            if runtime.type_id == RuntimeKind::DeepSeek {
+                // The ACP catalog resolves the provider/model on open or create.
+                // Launch its overlay on the selected model's first turn.
+                let auto_compaction = match session.dsh_current_model() {
+                    Some((provider_id, model_id)) if uses_default_model => {
+                        runtime.model_auto_compaction(&ModelSelection::Native {
+                            provider_id: Some(provider_id),
+                            model_id,
+                        })?
+                    }
+                    _ => auto_compaction,
+                };
+                session.set_auto_compaction(auto_compaction);
+            }
             self.session.active_state = ActiveState::Native(Box::new(session));
         }
         Ok(())
@@ -537,6 +570,7 @@ impl CoreRuntime {
             execution: context.target,
             os_home: context.os_home,
             gateway,
+            auto_compaction: None,
             mcp_servers: Vec::new(),
             session_agents: Vec::new(),
         })

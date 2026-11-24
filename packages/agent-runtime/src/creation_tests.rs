@@ -102,6 +102,7 @@ impl Owner {
                 resources_directory: home.0.clone(),
                 projection_directory: home.0.clone(),
                 gateway: None,
+                auto_compaction: None,
                 mcp_servers: Vec::new(),
                 session_agents: Vec::new(),
             })

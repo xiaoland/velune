@@ -92,6 +92,30 @@ struct ComposerEditingTarget {
             && (editingTarget != nil || store.loadedParentConversationID == nil)
     }
     var canSwitchModel: Bool { nextTurn != nil && executionChoicesEditable }
+    var modelAutoCompactionRuntime: RuntimeInstance? {
+        guard editingTarget == nil, executionChoicesEditable, targetReady, store.device.hasModelAutoCompactionWriter,
+              let runtimeID = nextTurnRuntimeID else { return nil }
+        return store.device.enabledRuntimeInstances.first { $0.id == runtimeID }
+    }
+    var nativeModelAutoCompactionTargets: (selected: ModelAutoCompactionTarget?, retained: [ModelAutoCompactionTarget]) {
+        guard let runtime = modelAutoCompactionRuntime else { return (nil, []) }
+        let current = chosenModel ?? nextTurnModel
+        let saved = (try? runtimeModelAutoCompactions(runtime: runtime).map(\.model)) ?? []
+        if runtime.typeId == .acp {
+            let live = store.acpAutoCompactionModel(runtimeID: runtime.id, selectedModel: current)
+            return (nil, saved.filter { $0 != live }.compactMap { ModelAutoCompactionTarget.native($0, title: nil, runtime: runtime) })
+        }
+        let selected: ModelAutoCompactionTarget?
+        if let current, !chosenModelUnavailable || saved.contains(current) {
+            selected = ModelAutoCompactionTarget.native(current, title: modelChoices.first { $0.selection == current }?.name, runtime: runtime)
+        } else {
+            selected = nil
+        }
+        let listed = Set(modelChoices.map(\.selection))
+        let retained = saved.filter { $0 != selected?.model && !listed.contains($0) }
+            .compactMap { ModelAutoCompactionTarget.native($0, title: nil, runtime: runtime) }
+        return (selected, retained)
+    }
     var nextTurnSettled: Bool { nextTurn != nil && modelCatalog != .loading }
     var canCompact: Bool { editingTarget == nil && inputIssue == nil && !chosenModelUnavailable && store.canCompact(next: nextTurn) }
     func chooseAttachments() { guard allowsAttachments else { return }; bindInput(); model.chooseAttachments() }

@@ -1890,6 +1890,18 @@ final class ConversationStore: ObservableObject {
 
     // MARK: - Session options
 
+    /// An isolated UI check can inspect the next-turn menu without opening a Harness.
+    static func modelAutoCompactionCheckTab(device: DeviceStore, next: NextTurn, options: [AcpConfigOption]? = nil) -> ConversationTab {
+        let store = ConversationStore(device: device)
+        store.snapshot = ConversationSnapshot(revision: 1, conversation: Conversation(id: "synthetic-compaction-menu",
+            title: "合成模型菜单", updatedAtUnixMs: nil, runtimeID: next.runtimeId, cwd: nil, canRename: false, canDelete: false),
+            contextRuntimeID: next.runtimeId, modelRecordKey: nil, runState: .idle, messages: [],
+            actions: ConversationActions(inputAccess: .editable, canSend: true, canCancel: false, canSwitch: true))
+        store.nextTurn = next
+        store.sessionOptions = options
+        return ConversationTab(store: store, start: {})
+    }
+
     /// The option the composer's model menu already offers: the session's
     /// first model-category option, which the runtime's catalog is read from.
     var editableSessionOptions: [AcpConfigOption] {
@@ -1898,10 +1910,43 @@ final class ConversationStore: ObservableObject {
         return options
     }
     var canChangeSessionOptions: Bool { inputSubmissionAllowed && !isGenerating && !executionStarting && !isLoading && !isShuttingDown }
+    private var acpCompactionTarget: (runtime: RuntimeInstance, model: ModelSelection)? {
+        guard let runtimeID = snapshot?.contextRuntimeID,
+              let runtime = device.runtimeInstances.first(where: { $0.id == runtimeID && $0.typeId == .acp }),
+              let sessionOptions, let model = acpSessionModel(options: sessionOptions) else { return nil }
+        return (runtime, model)
+    }
+    var acpAutoCompactionOptions: [AcpConfigOption] {
+        guard acpCompactionTarget != nil else { return [] }
+        return editableSessionOptions.filter { canBindAcpAutoCompactionOption(option: $0) }
+    }
+    var acpAutoCompactionSetting: AutoCompactionSetting? {
+        guard let target = acpCompactionTarget,
+              let entries = try? runtimeModelAutoCompactions(runtime: target.runtime) else { return nil }
+        return entries.first { $0.model == target.model }?.setting
+    }
+    func acpAutoCompactionModel(runtimeID: String, selectedModel: ModelSelection?) -> ModelSelection? {
+        guard let target = acpCompactionTarget, target.runtime.id == runtimeID,
+              selectedModel == nil || target.model == selectedModel else { return nil }
+        return target.model
+    }
+    func saveAcpAutoCompaction(_ setting: AutoCompactionSetting?, runtimeID: String, model: ModelSelection) {
+        guard canChangeSessionOptions, let target = acpCompactionTarget,
+              target.runtime.id == runtimeID, target.model == model else { return }
+        if let setting {
+            guard case let .acp(optionID, value) = setting,
+                  acpAutoCompactionOptions.contains(where: {
+                      $0.id == optionID && acpAutoCompactionAccepts(option: $0, value: value)
+                  }) else { return }
+        }
+        device.saveRuntimeModelAutoCompaction(runtimeID: target.runtime.id, model: target.model, setting: setting) {
+            [weak self] in self?.objectWillChange.send()
+        }
+    }
     func setSessionOption(_ option: AcpConfigOption, value: AcpConfigValue) {
-        guard canChangeSessionOptions, value != option.value, let runtimeID = snapshot?.conversation.runtimeID, let conversationID = loadedConversationID, let transport else { return }
+        guard canChangeSessionOptions, value != option.value, let runtimeID = snapshot?.contextRuntimeID, let conversationID = loadedConversationID, let transport else { return }
         enqueue({ try transport.setSessionOption(runtimeID: runtimeID, conversationID: conversationID, optionID: option.id, value: value) }) { [weak self] options in
-            guard let self, self.loadedConversationID == conversationID else { return }
+            guard let self, self.loadedConversationID == conversationID, self.snapshot?.contextRuntimeID == runtimeID else { return }
             self.sessionOptions = options
         }
     }
@@ -1910,15 +1955,16 @@ final class ConversationStore: ObservableObject {
     /// not being live yet is not a problem to report.
     private func refreshSessionOptions() {
         guard let value = snapshot, !isDraft, !isPreview, let transport,
-              let typeID = device.runtimeInstances.first(where: { $0.id == value.conversation.runtimeID })?.typeId,
+              let typeID = device.runtimeInstances.first(where: { $0.id == value.contextRuntimeID })?.typeId,
               device.runtimeTypes.first(where: { $0.id == typeID })?.sessionOptions == true else {
             if sessionOptions != nil { sessionOptions = nil }; sessionOptionsKey = nil; return
         }
-        let key = "\(value.conversation.id)|\(value.runState)"
+        let prefix = "\(value.conversation.id)|\(value.contextRuntimeID)|"
+        let key = prefix + "\(value.runState)"
         guard key != sessionOptionsKey else { return }
-        if sessionOptionsKey?.hasPrefix(value.conversation.id + "|") != true { sessionOptions = nil }
+        if sessionOptionsKey?.hasPrefix(prefix) != true { sessionOptions = nil }
         sessionOptionsKey = key
-        let runtimeID = value.conversation.runtimeID, conversationID = value.conversation.id
+        let runtimeID = value.contextRuntimeID, conversationID = value.conversation.id
         performOnQueue { [weak self] in
             let options = (try? transport.sessionOptions(runtimeID: runtimeID, conversationID: conversationID))
             DispatchQueue.main.async {

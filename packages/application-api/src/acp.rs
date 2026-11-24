@@ -74,6 +74,17 @@ pub struct AcpRuntimeInfo {
 
 pub use velune_conversation::acp_config::{AcpConfigChoice, AcpConfigOption, AcpConfigValue};
 
+pub fn acp_session_model(
+    options: Vec<AcpConfigOption>,
+) -> Option<velune_conversation::ModelSelection> {
+    velune_conversation::acp_config::current_model(&options).map(|id| {
+        velune_conversation::ModelSelection::Native {
+            provider_id: None,
+            model_id: id.into(),
+        }
+    })
+}
+
 impl RuntimeInstance {
     pub fn acp_launch(&self) -> Result<AcpLaunch, Error> {
         if self.type_id != crate::RuntimeKind::Acp {

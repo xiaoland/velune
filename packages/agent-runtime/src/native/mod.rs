@@ -10,6 +10,7 @@ use std::{
     path::{Path, PathBuf},
     process::Command,
 };
+use velune_conversation::{AutoCompactionSetting, ModelAutoCompaction};
 #[cfg(all(test, unix))]
 mod background_tests;
 mod claude;
@@ -139,6 +140,7 @@ pub struct NativeConfig {
     pub resources_directory: PathBuf,
     pub projection_directory: PathBuf,
     pub gateway: Option<GatewayInjection>,
+    pub auto_compaction: Option<AutoCompactionSetting>,
     pub mcp_servers: Vec<crate::mcp::Server>,
     /// Sub-agents the host supplies to gateway turns only; nothing of them is
     /// written where the Harness keeps its own definitions, so a turn on the
@@ -407,7 +409,7 @@ impl NativeSession {
         effort: Option<&str>,
         permission_mode: Option<&str>,
     ) -> Result<(rpc::RpcClient, bool)> {
-        let (mut command, dsh_history_overlay) = match config.kind {
+        let (mut command, home_key) = match config.kind {
             NativeKind::Codex166 => {
                 let mut command = crate::process_tree::command(&config.binary);
                 command.arg("app-server");
@@ -430,18 +432,13 @@ impl NativeSession {
                         json!(gateway.endpoint)
                     ));
                 }
-                (command, false)
+                (command, "CODEX_HOME")
             }
-            NativeKind::DeepSeek => Self::dsh_command(config)?,
+            NativeKind::DeepSeek => return Self::dsh_spawn(config, selection),
             NativeKind::ClaudeCode => (
                 Self::claude_command(config, selection, session, effort, permission_mode)?,
-                false,
+                "CLAUDE_CONFIG_DIR",
             ),
-        };
-        let home_key = match config.kind {
-            NativeKind::Codex166 => "CODEX_HOME",
-            NativeKind::DeepSeek => "DSH_HOME",
-            NativeKind::ClaudeCode => "CLAUDE_CONFIG_DIR",
         };
         if config.kind == NativeKind::ClaudeCode && Self::claude_default_config(config) {
             // Setting CLAUDE_CONFIG_DIR at all, even to its default, makes the CLI
@@ -457,12 +454,12 @@ impl NativeSession {
             command.env_remove("VELUNE_GATEWAY_TOKEN");
         }
         let rpc = rpc::RpcClient::spawn_at(command, &config.execution, config.os_home.as_deref())?;
-        Ok((rpc, dsh_history_overlay))
+        Ok((rpc, false))
     }
     fn initialize(&mut self) -> Result<()> {
         match self.config.kind {
             NativeKind::Codex166 => self.codex_initialize(),
-            NativeKind::DeepSeek => self.dsh_initialize(),
+            NativeKind::DeepSeek => Ok(()),
             NativeKind::ClaudeCode => self.claude_initialize(),
         }
     }
@@ -953,6 +950,21 @@ impl NativeSession {
             NativeKind::ClaudeCode => self.claude_cancel(),
         }
     }
+    /// Capture the setting for the next preparation. A bound child keeps its
+    /// current configuration until its work has settled and it can be replaced.
+    pub fn set_auto_compaction(&mut self, setting: Option<AutoCompactionSetting>) {
+        if self.config.auto_compaction != setting {
+            self.config.auto_compaction = setting;
+            self.restart_required |= self.native_id.is_some();
+        }
+    }
+
+    /// Supply overrides before opening or creating a Codex thread on its
+    /// default model. The adapter matches the identity from its config read.
+    pub fn set_default_model_auto_compactions(&mut self, entries: Vec<ModelAutoCompaction>) {
+        self.codex.default_model_auto_compactions = entries;
+    }
+
     /// Select a gateway for the next turn. Existing native provider settings are never rewritten.
     pub fn select_model(&mut self, injection: GatewayInjection) -> Result<()> {
         self.ensure_idle()?;
@@ -960,6 +972,7 @@ impl NativeSession {
             self.restart_required = true;
         }
         self.config.gateway = Some(injection);
+        self.codex.default_model_auto_compactions.clear();
         Ok(())
     }
     /// DeepSeek requires the provider identity returned by its native catalog.
@@ -1002,6 +1015,7 @@ impl NativeSession {
             id: model_id,
         });
         self.config.gateway = None;
+        self.codex.default_model_auto_compactions.clear();
         self.restart_required = true;
         Ok(())
     }
@@ -1972,6 +1986,7 @@ done
                 resources_directory: root.clone(),
                 projection_directory: root.clone(),
                 gateway: None,
+                auto_compaction: None,
                 mcp_servers: vec![],
                 session_agents: vec![],
             })

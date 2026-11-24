@@ -665,6 +665,7 @@ impl CoreRuntime {
             rpc_entry: None,
             models_path: None,
             selection_file: None,
+            model_compaction_reserves: Default::default(),
             gateway_token: None,
         })
     }

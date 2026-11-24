@@ -108,6 +108,7 @@ pub enum CommandKind {
     UpsertRuntime,
     UpsertRuntimeWithExecution,
     UpsertAcpRuntime,
+    SetRuntimeModelAutoCompaction,
     ReadAcpLaunch,
     ReadAcpRuntimeInfo,
     ReadAcpSessionConfig,
@@ -358,6 +359,11 @@ pub enum Command {
         runtime: RuntimeInstance,
         execution: crate::RuntimeExecution,
         launch: crate::AcpLaunch,
+    },
+    SetRuntimeModelAutoCompaction {
+        runtime_id: String,
+        model: ModelSelection,
+        setting: Option<crate::AutoCompactionSetting>,
     },
     ReadAcpLaunch {
         runtime_id: String,
@@ -817,6 +823,7 @@ pub enum Response {
     UpsertRuntime(RuntimeUpdate),
     UpsertRuntimeWithExecution(RuntimeUpdate),
     UpsertAcpRuntime(RuntimeUpdate),
+    SetRuntimeModelAutoCompaction(RuntimeUpdate),
     ReadAcpLaunch(crate::AcpLaunch),
     ReadAcpRuntimeInfo(crate::AcpRuntimeInfo),
     ReadAcpSessionConfig(Vec<crate::AcpConfigOption>),
@@ -1004,6 +1011,7 @@ impl Command {
             | Self::UpsertRuntime { .. }
             | Self::UpsertRuntimeWithExecution { .. }
             | Self::UpsertAcpRuntime { .. }
+            | Self::SetRuntimeModelAutoCompaction { .. }
             | Self::SetAcpSessionConfig { .. }
             | Self::DeleteRuntime { .. }
             | Self::SelectRuntime { .. }
@@ -1108,6 +1116,9 @@ impl Command {
             Self::UpsertRuntime { .. } => CommandKind::UpsertRuntime,
             Self::UpsertRuntimeWithExecution { .. } => CommandKind::UpsertRuntimeWithExecution,
             Self::UpsertAcpRuntime { .. } => CommandKind::UpsertAcpRuntime,
+            Self::SetRuntimeModelAutoCompaction { .. } => {
+                CommandKind::SetRuntimeModelAutoCompaction
+            }
             Self::ReadAcpLaunch { .. } => CommandKind::ReadAcpLaunch,
             Self::ReadAcpRuntimeInfo { .. } => CommandKind::ReadAcpRuntimeInfo,
             Self::ReadAcpSessionConfig { .. } => CommandKind::ReadAcpSessionConfig,
@@ -1221,6 +1232,7 @@ impl Command {
             || matches!(
                 self,
                 Self::CreateConversation { .. }
+                    | Self::SetRuntimeModelAutoCompaction { .. }
                     | Self::SendTurn { .. }
                     | Self::BeginHandoffSummary { .. }
                     | Self::QueueHandoffSummary { .. }

@@ -13,6 +13,7 @@ use std::{
     path::{Path, PathBuf},
     time::Instant,
 };
+mod auto_compaction;
 mod config;
 mod port;
 mod projection;
@@ -81,6 +82,7 @@ pub struct Client {
     agent_info: Option<AgentInfo>,
     auth_methods: Vec<AuthMethod>,
     options: Vec<ConfigOption>,
+    auto_compaction: Option<auto_compaction::Applied>,
     snapshot: Option<ConversationSnapshot>,
     native_id: Option<String>,
     prompt_id: Option<u64>,
@@ -149,6 +151,7 @@ impl Client {
             agent_info: None,
             auth_methods: Vec::new(),
             options: Vec::new(),
+            auto_compaction: None,
             snapshot: None,
             native_id: None,
             prompt_id: None,
@@ -364,6 +367,7 @@ impl Client {
         if !self.capabilities.close_session {
             return Err(unsupported("session/close"));
         }
+        self.restore_auto_compaction()?;
         let id = self.session_id()?.to_owned();
         self.request::<wire::CloseSessionResponse>("session/close", &json!({"sessionId":id}))?;
         self.clear_session();
@@ -491,6 +495,20 @@ impl Client {
 
     pub fn set_config_option(&mut self, config_id: &str, value: ConfigValue) -> Result<()> {
         self.ensure_idle()?;
+        let switches_model = self
+            .options
+            .iter()
+            .find(|option| option.category.as_deref() == Some("model"))
+            .is_some_and(|option| {
+                option.id == config_id && option.value != value && option.accepts(&value)
+            });
+        if switches_model {
+            self.restore_auto_compaction()?;
+        }
+        self.write_config_option(config_id, value)
+    }
+
+    fn write_config_option(&mut self, config_id: &str, value: ConfigValue) -> Result<()> {
         let id = self.session_id()?.to_owned();
         let option = self
             .options
@@ -498,17 +516,15 @@ impl Client {
             .find(|option| option.id == config_id)
             .ok_or_else(|| Error::new("ACP 会话未公布此配置项"))?;
         let mut params = json!({"sessionId":id,"configId":config_id});
-        match (&option.value, value) {
-            (ConfigValue::Select(_), ConfigValue::Select(value))
-                if option.choices.iter().any(|choice| choice.value == value) =>
-            {
-                params["value"] = json!(value)
-            }
-            (ConfigValue::Boolean(_), ConfigValue::Boolean(value)) => {
+        if !option.accepts(&value) {
+            return Err(Error::new("ACP 配置值不属于当前公布的选项或类型"));
+        }
+        match value {
+            ConfigValue::Select(value) => params["value"] = json!(value),
+            ConfigValue::Boolean(value) => {
                 params["type"] = json!("boolean");
                 params["value"] = json!(value);
             }
-            _ => return Err(Error::new("ACP 配置值不属于当前公布的选项或类型")),
         }
         let response: crate::creation::Retained<wire::SetSessionConfigOptionResponse> =
             self.request("session/set_config_option", &params)?;
@@ -682,20 +698,22 @@ impl Client {
     /// Gracefully close an idle session when supported, then always release its process.
     /// A busy or failed connection is aborted; Drop never performs a protocol request.
     pub fn shutdown(&mut self) -> Result<()> {
-        let outcome = if self.port.is_none()
-            && !self.failed
-            && !self.turn_running()
-            && self.capabilities.close_session
-        {
-            if let Some(id) = self.native_id.clone() {
-                self.request::<wire::CloseSessionResponse>(
-                    "session/close",
-                    &json!({"sessionId":id}),
-                )
-                .map(|_| ())
-            } else {
-                Ok(())
-            }
+        let outcome = if self.port.is_none() && !self.failed && !self.turn_running() {
+            self.restore_auto_compaction().and_then(|()| {
+                if let Some(id) = self
+                    .native_id
+                    .clone()
+                    .filter(|_| self.capabilities.close_session)
+                {
+                    self.request::<wire::CloseSessionResponse>(
+                        "session/close",
+                        &json!({"sessionId":id}),
+                    )
+                    .map(|_| ())
+                } else {
+                    Ok(())
+                }
+            })
         } else {
             Ok(())
         };
@@ -1090,13 +1108,13 @@ impl Client {
         if !cwd.is_absolute() || !self.config.execution.is_directory(cwd)? {
             return Err(Error::new("ACP 工作目录必须是目标机器上的已有绝对目录"));
         }
-        if let Some(id) = self.native_id.clone() {
+        if self.native_id.is_some() {
             if !self.capabilities.close_session {
                 return Err(Error::new(
                     "此 ACP Agent 不支持关闭会话，请为新会话创建连接",
                 ));
             }
-            self.request::<wire::CloseSessionResponse>("session/close", &json!({"sessionId":id}))?;
+            return self.close_session();
         }
         self.clear_session();
         Ok(())
@@ -1105,6 +1123,7 @@ impl Client {
         self.native_id = None;
         self.snapshot = None;
         self.options.clear();
+        self.auto_compaction = None;
         self.stream = None;
         self.initial_updates.drain();
         self.permissions.clear();
@@ -1256,6 +1275,8 @@ def wait(name):
 pending = None
 count = 0
 seen = set()
+live_model = 'model/a'
+auto_values = {'model/a':False,'model/b':'default'}
 def emit(value): print(json.dumps(dict(jsonrpc='2.0',**value)),flush=True)
 def chunk(text,session='synthetic'):
     emit({'method':'session/update','params':{'sessionId':session,'update':{'sessionUpdate':'agent_message_chunk','content':{'type':'text','text':text}}}})
@@ -1265,7 +1286,14 @@ def interactions():
     emit({'id':'p','method':'session/request_permission','params':{'sessionId':'synthetic','toolCall':{'toolCallId':'t','title':'Synthetic tool'},'options':[{'optionId':'yes','name':'Yes','kind':'allow_once'}]}})
     emit({'id':'q','method':'elicitation/create','params':{'mode':'form','sessionId':'synthetic','message':'Value?', 'requestedSchema':{'type':'object','required':['value'],'properties':{'value':{'type':'string'}}}}})
 def options(value='model/a'):
-    return [{'id':'opaque/model-id','name':'Model','category':'model','type':'select','currentValue':value,'options':[{'value':'model/a','name':'A'},{'value':'model/b','name':'B'}]}]
+    result=[{'id':'opaque/model-id','name':'Model','category':'model','type':'select','currentValue':value,'options':[{'value':'model/a','name':'A'},{'value':'model/b','name':'B'}]}]
+    if mode=='model-auto-compaction':
+        if value=='model/a':
+            result.append({'id':'auto_compact_enabled','name':'Automatically compact','type':'boolean','currentValue':auto_values[value]})
+        else:
+            result.append({'id':'vendor.retention','name':'Retention','type':'select','currentValue':auto_values[value], 'options':[{'value':'default','name':'Default'},{'value':'less','name':'Less'}]})
+        result.append({'id':'opaque/safety','name':'Permissions','category':'_permissions','type':'boolean','currentValue':False})
+    return result
 
 for line in sys.stdin:
     request=json.loads(line)
@@ -1301,7 +1329,8 @@ for line in sys.stdin:
         continue
     elif method=='session/load':
         chunk('authoritative replay',params['sessionId'])
-        result={'configOptions':options('model/b')}
+        live_model='model/b'
+        result={'configOptions':options(live_model)}
     elif method=='session/resume': result={'configOptions':options()}
     elif method=='session/list':
         result={'sessions':[]}
@@ -1309,6 +1338,20 @@ for line in sys.stdin:
             emit({'id':request['id'],'result':result})
             chunk('|')
             continue
+    elif method=='session/set_config_option' and mode=='model-auto-compaction':
+        assert params['sessionId']=='synthetic'
+        config,value=params['configId'],params['value']
+        if config=='opaque/model-id':
+            assert auto_values[live_model] == (False if live_model=='model/a' else 'default')
+            live_model=value
+        elif live_model=='model/a':
+            assert config=='auto_compact_enabled' and params['type']=='boolean' and isinstance(value,bool)
+            auto_values[live_model]=value
+        else:
+            assert config=='vendor.retention' and value in ('default','less')
+            auto_values[live_model]=value
+        with open(os.path.join(root,'setting-writes'),'a') as f: f.write(config+'\n')
+        result={'configOptions':options(live_model)}
     elif method=='session/set_config_option':
         assert params['configId']=='opaque/model-id'
         if mode=='control-budget':
@@ -1330,6 +1373,10 @@ for line in sys.stdin:
             sys.exit(0)
 
     elif method=='session/prompt':
+        if mode=='model-auto-compaction':
+            assert auto_values[live_model] == json.loads(params['prompt'][0]['text'])
+            emit({'id':request['id'],'result':{'stopReason':'end_turn'}})
+            continue
         if mode=='blocked': continue
         if mode=='prompt-error':
             chunk('output before error')

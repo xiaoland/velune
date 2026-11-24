@@ -14,7 +14,7 @@ Windows 按 [PRD](../../docs/prd/index.md) 跟进完整端能力，规则见[本
 | [工作区布局](../../docs/prd/workspace-layout.md) | 窗口、分屏、标签与工具布局已实现（[Unit TDD](TDD.md)） | Mac 的会话 Tab 菜单与未读／失败呈现、会话详情中的发送队列、窗口工具栏中的管理进度、独立窗口默认 composer、完整输入恢复点与 editor journal 尚未跟进；布局未在真机逐项验收 |
 | [键盘操作](../../docs/prd/keyboard.md) | 命令表与可配置快捷键已实现 | 完整键盘路径、浅／深色界面及真机操作验收待做；局部入口检查不代替整体验收 |
 | [协作](../../docs/prd/collaboration.md) | 关联 Agent、xURL MCP 工具与随包官方 CLI 已实现；活动子 Agent 沿用核心的创建时间倒序，已结束的子 Agent 默认折叠 | xURL 深链主路径已在 Windows 与 Mac 验收，其他协作界面不据此扩大验收结论 |
-| [Agent 运行时](../../docs/prd/agent-runtimes.md) | 本机运行时及已有实例类型编辑已接入。Antigravity 快速导入已用合成 CLI 验证浅色与深色下的保存和正常退出 | 经 SSH 的运行时只能在 Mac 上设置：Windows 宿主没有 OpenSSH ControlMaster 所需的 Unix socket；类型编辑尚未做 Windows 原生 UI 验收 |
+| [Agent 运行时](../../docs/prd/agent-runtimes.md) | 本机运行时及已有实例类型编辑已接入。Antigravity 快速导入已用合成 CLI 验证浅色与深色下的保存和正常退出。[按模型配置自动压缩](../../docs/prd/ai-providers.md#按模型配置自动压缩)入口位于提供商模型、路由编辑页和会话的原生模型菜单 | 经 SSH 的运行时只能在 Mac 上设置：Windows 宿主没有 OpenSSH ControlMaster 所需的 Unix socket；类型编辑与自动压缩设置尚未做 Windows 原生 UI 验收 |
 | [AI 提供商](../../docs/prd/ai-providers.md) | 官方 API 模板、订阅识别、独立组织账单、额度节奏／金额／历史与提醒已接入；设置没有额外的全局运行中禁用；自动额度受限提示与 Mac 同步为部分观测，不再宣称账户不可用或自动暂停 | 额度窗口名称仍由窗口 ID 拼出；历史使用自绘柱条与悬停提示，Mac 使用选中读数。官方 API 编辑器与账单入口已通过构建、浅／深色原生 UIAutomation 和正常退出检查，尚未用真实账户联调；按依赖判断忙时资格的共享核心变更及部分额度观测提示未做 Windows 原生复验 |
 | [模型路由](../../docs/prd/model-routing.md) | 已实现；额外请求参数可编辑，模型速度以目录变体呈现 | 成员顺序用上移／下移，不用拖动；模型编辑器后续改动仅有隔离源码构建证据 |
 | [资源库](../../docs/prd/resource-library.md) | 本机核心已接入，界面没有额外的全局运行中禁用 | 技能只编辑 SKILL.md；Windows 不写技能执行属性。按依赖判断同步资格的共享核心变更未做 Windows 原生复验 |

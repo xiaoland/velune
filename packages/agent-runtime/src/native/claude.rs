@@ -176,6 +176,9 @@ impl NativeSession {
             "--permission-prompt-tool",
             "stdio",
         ]);
+        if let Some(AutoCompactionSetting::Claude { window_tokens }) = &config.auto_compaction {
+            command.arg("--autocompact").arg(window_tokens.to_string());
+        }
         if let Some(effort) = effort {
             if !CLAUDE_EFFORT_LEVELS.contains(&effort) {
                 return Err(Error::new("Claude Code 不接受此推理强度"));
@@ -2093,6 +2096,7 @@ mod error_tests {
             resources_directory: "/synthetic/resources".into(),
             projection_directory: "/synthetic/projection".into(),
             gateway: None,
+            auto_compaction: None,
             mcp_servers: Vec::new(),
             session_agents: Vec::new(),
         };

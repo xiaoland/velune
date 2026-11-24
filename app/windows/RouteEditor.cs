@@ -76,6 +76,10 @@ sealed class RouteEditor : UserControl
         sticky.IsOn = route?.Sticky ?? true;
         sticky.Toggled += (_, _) => dirty = true;
         body.Children.Add(Ui.Card(Ui.TwoLines("会话保持", "同一会话继续使用上次成功的成员，不越过健康检查与使用上限；只在应用运行期间保留。", true), sticky));
+        var compaction = new Button { Content = "自动压缩…", IsEnabled = recordKey.Length > 0 };
+        compaction.Click += (_, _) => EditCompaction(compaction);
+        body.Children.Add(compaction);
+        if (recordKey.Length == 0) body.Children.Add(Ui.Muted("保存路由后可配置自动压缩。"));
 
         var heading = new Grid();
         heading.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
@@ -119,6 +123,18 @@ sealed class RouteEditor : UserControl
     {
         var shown = name.Text.Trim();
         trail.ItemsSource = new[] { "模型路由", shown.Length > 0 ? shown : recordKey.Length == 0 ? "新路由" : "路由" };
+    }
+
+    async void EditCompaction(Button button)
+    {
+        if (!IsLoaded || recordKey.Length == 0 || !save.IsEnabled) return;
+        button.IsEnabled = false;
+        try
+        {
+            await ModelCompactionDialog.ShowManaged(page.Core, page.Window, recordKey, name.Text.Trim(), () => IsLoaded && save.IsEnabled);
+        }
+        catch (Exception problem) { Problems.Report("配置路由自动压缩", problem); }
+        finally { if (IsLoaded) button.IsEnabled = true; }
     }
 
     RoutingStrategy Strategy => strategy.SelectedIndex >= 0 ? strategies[strategy.SelectedIndex] : RoutingStrategy.Smart;

@@ -38,6 +38,7 @@ for line in sys.stdin:
             resources_directory: root.clone(),
             projection_directory: root.clone(),
             gateway: None,
+            auto_compaction: None,
             mcp_servers: vec![],
             session_agents: vec![],
         })
@@ -157,6 +158,32 @@ fn claude_reuses_the_background_child_and_settles_only_the_matching_foreground()
         Some(10)
     );
     assert!(!f.session.waits_for_background_followup());
+}
+
+#[test]
+fn claude_auto_compaction_change_waits_for_the_background_child() {
+    let mut f = Fixture::with_version("2.1.327");
+    f.session.claude.bound_session_id = f.session.native_id.clone();
+    f.event(json!({"type":"system","subtype":"task_started","task_id":"shell","run_id":"run","task_type":"local_bash","is_backgrounded":true}));
+    f.session.settle(RunState::Idle);
+    assert!(!f.session.restart_needed_for_send(None, None));
+
+    f.session
+        .set_auto_compaction(Some(AutoCompactionSetting::Claude {
+            window_tokens: 700_000,
+        }));
+    let input = crate::TurnInput {
+        text: "Next turn".into(),
+        effort: None,
+        permission_mode: None,
+        images: vec![],
+    };
+    assert_eq!(
+        f.session.send(&input).unwrap_err().code(),
+        "outstanding_work"
+    );
+    assert!(f.session.has_background_work());
+    assert!(!f.session.process_ended);
 }
 
 #[test]

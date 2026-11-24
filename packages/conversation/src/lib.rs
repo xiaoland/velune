@@ -348,6 +348,39 @@ pub enum ModelSelection {
     },
 }
 
+/// An explicit model policy, expressed in the units accepted by its runtime.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, uniffi::Enum)]
+#[serde(
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum AutoCompactionSetting {
+    Codex {
+        token_limit: u32,
+    },
+    Claude {
+        window_tokens: u32,
+    },
+    Pi {
+        reserve_tokens: u32,
+    },
+    DeepSeek {
+        threshold_percent: u8,
+    },
+    Acp {
+        option_id: String,
+        value: acp_config::AcpConfigValue,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, uniffi::Record)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ModelAutoCompaction {
+    pub model: ModelSelection,
+    pub setting: AutoCompactionSetting,
+}
+
 /// Tokens a turn used, summed over its model requests as the harness
 /// recorded them, and where the conversation stood when it ended; each part
 /// is absent when the harness records none.

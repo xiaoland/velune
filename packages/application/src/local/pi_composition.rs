@@ -23,6 +23,106 @@ pub(super) fn runnable_pi_model<'a>(
         .model())
 }
 
+pub(super) fn pi_compaction_reserves(
+    runtime: &RuntimeInstance,
+    managed_key: Option<&str>,
+) -> Result<BTreeMap<String, u32>, RuntimeError> {
+    use crate::ModelSelection;
+    use velune_conversation::AutoCompactionSetting;
+
+    if let Some(model_record_key) = managed_key {
+        let selection = ModelSelection::Managed {
+            model_record_key: model_record_key.to_owned(),
+        };
+        // Pi checks the physical context window, with settings keyed by the virtual selection.
+        return Ok(match runtime.model_auto_compaction(&selection)? {
+            Some(AutoCompactionSetting::Pi { reserve_tokens }) => {
+                BTreeMap::from([("velune/auto".into(), reserve_tokens)])
+            }
+            _ => BTreeMap::new(),
+        });
+    }
+
+    Ok(runtime
+        .model_auto_compactions()?
+        .into_iter()
+        .filter_map(|entry| match (entry.model, entry.setting) {
+            (
+                ModelSelection::Native {
+                    provider_id: Some(provider),
+                    model_id,
+                },
+                AutoCompactionSetting::Pi { reserve_tokens },
+            ) => Some((format!("{provider}/{model_id}"), reserve_tokens)),
+            _ => None,
+        })
+        .collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ModelSelection;
+    use velune_application_api::ModelAutoCompaction;
+    use velune_conversation::AutoCompactionSetting;
+
+    #[test]
+    fn pi_compaction_reserves_follow_native_identity_and_selected_managed_model() {
+        let mut runtime = RuntimeInstance {
+            id: "synthetic-pi".into(),
+            name: "Synthetic Pi".into(),
+            type_id: RuntimeKind::Pi,
+            gateway_id: "synthetic-gateway".into(),
+            enabled: true,
+            settings: BTreeMap::new(),
+        };
+        let entry = |model, reserve_tokens| ModelAutoCompaction {
+            model,
+            setting: AutoCompactionSetting::Pi { reserve_tokens },
+        };
+        let managed = |key: &str| ModelSelection::Managed {
+            model_record_key: key.into(),
+        };
+        let native = |provider: &str| ModelSelection::Native {
+            provider_id: Some(provider.into()),
+            model_id: "family/model".into(),
+        };
+        runtime
+            .set_model_auto_compactions(vec![
+                entry(managed("a"), 10_000),
+                entry(managed("b"), 20_000),
+                entry(native("first"), 30_000),
+                entry(native("second"), 40_000),
+            ])
+            .unwrap();
+        for (key, reserve) in [("a", 10_000), ("b", 20_000)] {
+            assert_eq!(
+                pi_compaction_reserves(&runtime, Some(key)).unwrap(),
+                BTreeMap::from([("velune/auto".into(), reserve)]),
+            );
+        }
+        assert!(
+            pi_compaction_reserves(&runtime, Some("other"))
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            pi_compaction_reserves(&runtime, None).unwrap(),
+            BTreeMap::from([
+                ("first/family/model".into(), 30_000),
+                ("second/family/model".into(), 40_000),
+            ]),
+        );
+        runtime.set_model_auto_compactions(Vec::new()).unwrap();
+        assert!(
+            pi_compaction_reserves(&runtime, Some("b"))
+                .unwrap()
+                .is_empty()
+        );
+        assert!(pi_compaction_reserves(&runtime, None).unwrap().is_empty());
+    }
+}
+
 pub(super) fn materialize_models(
     config: &PiConfig,
     gateway: &GatewayConfig,

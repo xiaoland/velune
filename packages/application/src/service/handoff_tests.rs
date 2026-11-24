@@ -23,6 +23,7 @@ fn ready_work() -> HandoffSummaryWork {
         resources_directory: PathBuf::from("/synthetic/resources"),
         projection_directory: PathBuf::from("/synthetic/projection"),
         gateway: None,
+        auto_compaction: None,
         mcp_servers: Vec::new(),
         session_agents: Vec::new(),
     };

@@ -16,6 +16,7 @@ sealed partial class Conversation
     public int Uploading { get; private set; }
     // The ACP Agent's options for this conversation; empty when it has none.
     public AcpConfigOption[] SessionOptions { get; private set; } = [];
+    (string Runtime, string Conversation)? sessionOptionsTarget;
 
     public FollowUp? FollowUp => Snapshot?.FollowUp;
 
@@ -316,15 +317,22 @@ sealed partial class Conversation
         if (Snapshot is not { } snapshot || Configuration.RuntimeType(snapshot.ContextRuntimeId) is not { SessionOptions: true })
         {
             SessionOptions = [];
+            sessionOptionsTarget = null;
             return;
         }
+        var target = (snapshot.ContextRuntimeId, snapshot.Conversation.Id);
         try
         {
-            SessionOptions = await Call(NativeOperation.ConfigurationRead, application => application.AcpSessionConfig(snapshot.ContextRuntimeId, snapshot.Conversation.Id));
+            var options = await Call(NativeOperation.ConfigurationRead, application => application.AcpSessionConfig(snapshot.ContextRuntimeId, snapshot.Conversation.Id));
+            if (closed || Snapshot is not { } current || (current.ContextRuntimeId, current.Conversation.Id) != target) return;
+            SessionOptions = options;
+            sessionOptionsTarget = target;
         }
         catch (Exception failure)
         {
+            if (closed || Snapshot is not { } current || (current.ContextRuntimeId, current.Conversation.Id) != target) return;
             SessionOptions = [];
+            sessionOptionsTarget = null;
             Problems.Report("读取 ACP 会话选项", failure, Device);
         }
         Notify();
@@ -336,14 +344,60 @@ sealed partial class Conversation
         {
             return;
         }
+        var target = (snapshot.ContextRuntimeId, snapshot.Conversation.Id);
         try
         {
-            SessionOptions = await Call(NativeOperation.ConfigurationWrite, application => application.SetAcpSessionConfig(snapshot.ContextRuntimeId, snapshot.Conversation.Id, id, value));
+            var options = await Call(NativeOperation.ConfigurationWrite, application => application.SetAcpSessionConfig(snapshot.ContextRuntimeId, snapshot.Conversation.Id, id, value));
+            if (closed || Snapshot is not { } current || (current.ContextRuntimeId, current.Conversation.Id) != target) return;
+            SessionOptions = options;
+            sessionOptionsTarget = target;
         }
         catch (Exception failure)
         {
             Problems.Report("设置 ACP 会话选项", failure, Device);
         }
         Notify();
+    }
+
+    internal ModelSelection? AcpAutoCompactionModel =>
+        Snapshot is { } snapshot
+            && sessionOptionsTarget == (snapshot.ContextRuntimeId, snapshot.Conversation.Id)
+            && snapshot.ContextRuntimeId == Next
+            && Configuration.Runtime(Next) is { TypeId: RuntimeKind.Acp }
+                ? VeluneBindingsMethods.AcpSessionModel(SessionOptions) : null;
+
+    internal AcpConfigOption[] AcpAutoCompactionOptions => AcpAutoCompactionModel != null
+        ? [.. SessionOptions.Where(VeluneBindingsMethods.CanBindAcpAutoCompactionOption)] : [];
+
+    internal bool CanEditModelAutoCompaction(string runtimeId) =>
+        !closed && InputEditable && !Busy && !Running && !Loading && Next == runtimeId;
+
+    internal async Task<RuntimeInstance?> ReadModelCompactionRuntime(string runtimeId) =>
+        (await Call(NativeOperation.ConfigurationRead, application => application.List())).RuntimeInstances
+            .FirstOrDefault(runtime => runtime.Id == runtimeId && runtime.Enabled);
+
+    internal async Task SaveModelAutoCompaction(string runtimeId, ModelSelection model, AutoCompactionSetting? setting)
+    {
+        if (!CanEditModelAutoCompaction(runtimeId)) throw new InvalidOperationException("当前模型已不可编辑。");
+        var update = await Call(NativeOperation.ConfigurationWrite,
+            application => application.SetRuntimeModelAutoCompaction(runtimeId, model, setting));
+        if (closed) return;
+        Configuration = Configuration with { Runtimes = [.. update.RuntimeInstances.Where(instance => instance.Enabled)] };
+        Notify();
+    }
+
+    internal async void SaveAcpAutoCompaction(string runtimeId, ModelSelection model, AutoCompactionSetting.Acp? setting)
+    {
+        if (!CanEditModelAutoCompaction(runtimeId)) return;
+        if (setting != null && (!Equals(AcpAutoCompactionModel, model) || !AcpAutoCompactionOptions.Any(option =>
+            option.Id == setting.OptionId && VeluneBindingsMethods.AcpAutoCompactionAccepts(option, setting.Value)))) return;
+        try
+        {
+            await SaveModelAutoCompaction(runtimeId, model, setting);
+        }
+        catch (Exception failure)
+        {
+            Problems.Report("保存模型自动压缩设置", failure, Device);
+        }
     }
 }

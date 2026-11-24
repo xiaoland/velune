@@ -198,9 +198,10 @@ private struct RouteMemberStatus: View {
     }
 }
 
-private struct ModelRouteEditor: View {
+struct ModelRouteEditor: View {
     @ObservedObject var store: DeviceStore
     let route: ModelRoute
+    var observeModelCompactionForCheck: ((ModelAutoCompactionTarget?) -> Void)? = nil
     @Environment(\.dismiss) private var dismiss
     @State private var name = ""
     @State private var strategy: RoutingStrategy = .smart
@@ -217,6 +218,11 @@ private struct ModelRouteEditor: View {
             Divider()
             Form {
                 Section { TextField("名称", text: $name, prompt: Text("在模型选择中显示")).focused($nameFocused) }
+                Section {
+                    ModelAutoCompactionLink(store: store,
+                                            target: ModelAutoCompactionTarget.managed(route.recordKey, title: route.name, in: store),
+                                            observeForCheck: observeModelCompactionForCheck)
+                }
                 Section {
                     Picker("策略", selection: $strategy) { ForEach(RoutingStrategy.allCases) { Text($0.label).tag($0) } }
                     Toggle("会话保持", isOn: $sticky)

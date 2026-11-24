@@ -95,6 +95,7 @@ for line in sys.stdin:
             resources_directory: root.clone(),
             projection_directory: root.clone(),
             gateway: None,
+            auto_compaction: None,
             mcp_servers: vec![],
             session_agents: vec![],
         })
@@ -923,6 +924,9 @@ fn claude_port_restart_fences_old_generation_and_keeps_fixed_fork_and_options() 
                 at: Some("fixed-boundary".into()),
                 name: Some("fork-name".into()),
             };
+            session.set_auto_compaction(Some(AutoCompactionSetting::Claude {
+                window_tokens: 700_000,
+            }));
             Ok(())
         })
         .unwrap();
@@ -949,10 +953,18 @@ fn claude_port_restart_fences_old_generation_and_keeps_fixed_fork_and_options() 
         ["--effort", "high"],
         ["--permission-mode", "manual"],
         ["--name", "fork-name"],
+        ["--autocompact", "700000"],
     ] {
         assert!(args.windows(2).any(|args| args == pair));
     }
     assert!(args.iter().any(|arg| arg == "--fork-session"));
+    f.session.set_auto_compaction(None);
+    f.session
+        .prepare_claude_commands(None, None, 64 * 1024 * 1024)
+        .unwrap();
+    let args: Vec<String> =
+        serde_json::from_slice(&std::fs::read(f.root.join("argv.json")).unwrap()).unwrap();
+    assert!(!args.iter().any(|arg| arg == "--autocompact"));
 }
 
 #[test]

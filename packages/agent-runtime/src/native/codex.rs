@@ -26,6 +26,7 @@ pub(super) struct State {
     /// The speed tier of the selected speed variant, sent per turn; `None`
     /// is Codex's own default.
     pub(super) service_tier: Option<String>,
+    pub(super) default_model_auto_compactions: Vec<ModelAutoCompaction>,
 }
 
 /// Rust-only commands for an initialized Codex connection. `Start` creates a
@@ -1367,6 +1368,14 @@ impl NativeSession {
                 options["model"] = json!(model.id);
             }
         }
+        let auto_compaction = self
+            .config
+            .auto_compaction
+            .as_ref()
+            .or_else(|| self.codex_default_auto_compaction());
+        if let Some(AutoCompactionSetting::Codex { token_limit }) = auto_compaction {
+            options["config"]["model_auto_compact_token_limit"] = json!(token_limit);
+        }
         if let Some(cwd) = cwd {
             options["cwd"] = json!(cwd);
         }
@@ -1395,6 +1404,21 @@ impl NativeSession {
                 });
         }
         options
+    }
+
+    fn codex_default_auto_compaction(&self) -> Option<&AutoCompactionSetting> {
+        if self.config.gateway.is_some() {
+            return None;
+        }
+        let model = self.native_selection.as_ref()?;
+        self.codex
+            .default_model_auto_compactions
+            .iter()
+            .find(|entry| {
+                matches!(&entry.model, ModelSelection::Native { provider_id, model_id }
+                    if provider_id == &model.provider_id && model_id == &model.id)
+            })
+            .map(|entry| &entry.setting)
     }
     pub(super) fn codex_create(
         &mut self,
@@ -3228,6 +3252,7 @@ while True:
                 resources_directory: root.clone(),
                 projection_directory: root.clone(),
                 gateway: None,
+                auto_compaction: None,
                 mcp_servers: vec![],
                 session_agents: vec![],
             })
@@ -3788,6 +3813,75 @@ while True:
 
     #[cfg(unix)]
     #[test]
+    fn codex_auto_compaction_applies_to_start_and_cold_resume() {
+        let mut f = CommandFixture::new("hold");
+        let initial = Some(AutoCompactionSetting::Codex {
+            token_limit: 50_000,
+        });
+        f.session.set_auto_compaction(initial.clone());
+        f.start();
+        f.session.set_auto_compaction(initial);
+        assert!(!f.session.restart_needed());
+
+        f.session
+            .set_auto_compaction(Some(AutoCompactionSetting::Codex {
+                token_limit: 80_000,
+            }));
+        assert!(f.session.restart_needed());
+        f.session.prepare_codex_commands(Some(&f.root)).unwrap();
+        f.session.set_auto_compaction(None);
+        assert!(f.session.restart_needed());
+        f.session.prepare_codex_commands(Some(&f.root)).unwrap();
+        assert!(!f.session.restart_needed());
+
+        let wire = f.wire();
+        let start = wire.iter().find(|r| r["method"] == "thread/start").unwrap();
+        assert_eq!(
+            start["params"]["config"]["model_auto_compact_token_limit"],
+            50_000
+        );
+        let mut resumed = wire.iter().filter(|r| r["method"] == "thread/resume");
+        let changed = &resumed.next().unwrap()["params"];
+        assert_eq!(changed["threadId"], "thread");
+        assert_eq!(changed["config"]["model_auto_compact_token_limit"], 80_000);
+        let cleared = &resumed.next().unwrap()["params"];
+        assert_eq!(cleared["threadId"], "thread");
+        assert!(
+            cleared["config"]
+                .get("model_auto_compact_token_limit")
+                .is_none()
+        );
+        assert!(resumed.next().is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn codex_auto_compaction_matches_a_configured_default_by_provider_and_model() {
+        for (provider, expected) in [("openai", Some(50_000)), ("different", None)] {
+            let mut f = CommandFixture::new("hold");
+            f.session
+                .set_default_model_auto_compactions(vec![ModelAutoCompaction {
+                    model: ModelSelection::Native {
+                        provider_id: Some(provider.into()),
+                        model_id: "synthetic".into(),
+                    },
+                    setting: AutoCompactionSetting::Codex {
+                        token_limit: 50_000,
+                    },
+                }]);
+            f.start();
+            let wire = f.wire();
+            let start = wire.iter().find(|r| r["method"] == "thread/start").unwrap();
+            assert_eq!(start["params"]["model"], "synthetic");
+            assert_eq!(
+                start["params"]["config"]["model_auto_compact_token_limit"].as_u64(),
+                expected,
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn codex_commands_prepare_native_selection_before_async_start() {
         let mut f = CommandFixture::new("hold");
         f.session
@@ -4286,6 +4380,7 @@ for line in sys.stdin:
                 resources_directory: root.clone(),
                 projection_directory: root.clone(),
                 gateway: None,
+                auto_compaction: None,
                 mcp_servers: Vec::new(),
                 session_agents: Vec::new(),
             })

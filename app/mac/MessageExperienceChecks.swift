@@ -259,6 +259,7 @@ import VeluneBindings
     if CommandLine.arguments.contains("--experience-admission-only") { DeviceStore.checkBackgroundSubmissionAdmission(); exit(0) }
     if CommandLine.arguments.contains("--experience-message-editor-offscreen") { messageEditorOffscreenChecks(home: home) }
     if CommandLine.arguments.contains("--experience-runtime-editor-only") { runtimeEditorChecks(home: home) }
+    if CommandLine.arguments.contains("--experience-model-auto-compaction-only") { modelAutoCompactionChecks(home: home) }
     func stamp(_ date: Date) -> Int64 { Int64(date.timeIntervalSince1970 * 1000) }
     if CommandLine.arguments.contains("--experience-navigation-only") {
         ConversationStore.checkOpeningCatalogAdmission()

@@ -20,6 +20,7 @@ sealed partial class RuntimesPage : UserControl
     // Offers the library's resources to a runtime just added.
     readonly InfoBar offer = new() { Severity = InfoBarSeverity.Informational, IsClosable = true };
     RuntimeInstance[] instances = [];
+    int reads;
     bool listed;
     RuntimeTypeDescriptor[] kinds = [];
     bool busy;
@@ -50,7 +51,8 @@ sealed partial class RuntimesPage : UserControl
             }
         };
         Content = Ui.ListPage("Agent 运行时", new StackPanel { Spacing = 8, Children = { failure, offer } }, list, [add, import, remove], [edit]);
-        Reload();
+        ShowActions();
+        Loaded += (_, _) => Reload();
     }
 
     RuntimeInstance? Chosen() => list.SelectedIndex is var index and >= 0 && index < instances.Length ? instances[index] : null;
@@ -65,9 +67,11 @@ sealed partial class RuntimesPage : UserControl
 
     async void Reload()
     {
+        var read = ++reads;
         try
         {
             var snapshot = await Task.Run(core.Local.List);
+            if (read != reads || !IsLoaded) return;
             kinds = snapshot.RuntimeTypes;
             SetInstances(snapshot.RuntimeInstances);
         }
@@ -362,14 +366,22 @@ sealed partial class RuntimesPage : UserControl
             var runtime = existing == null
                 ? new RuntimeInstance(Guid.NewGuid().ToString(), shownName.Length > 0 ? shownName : kind.Name, kind.Id, DefaultGateway, settings, enabled.IsOn)
                 : existing with { Enabled = enabled.IsOn, Name = shownName.Length > 0 ? shownName : kind.Name, TypeId = kind.Id, Settings = settings };
-            runtime = VeluneBindingsMethods.RuntimeWithNewConversationChoice(runtime, started);
-            e.Cancel = !await Write("保存运行时「" + runtime.Name + "」", application =>
+            try
             {
-                return launched != null
+                runtime = VeluneBindingsMethods.RuntimeWithNewConversationChoice(runtime, started);
+                e.Cancel = !await Write("保存运行时「" + runtime.Name + "」", application => launched != null
                     ? application.UpsertAcpRuntime(runtime, execution, launched)
-                    : application.UpsertRuntimeWithExecution(runtime, execution);
-            }, formError);
-            deferral.Complete();
+                    : application.UpsertRuntimeWithExecution(runtime, execution), formError);
+            }
+            catch (Exception problem)
+            {
+                Ui.Show(formError, Core.Describe(problem));
+                e.Cancel = true;
+            }
+            finally
+            {
+                deferral.Complete();
+            }
         };
         await window.ShowDialog(dialog);
     }

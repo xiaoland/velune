@@ -450,6 +450,15 @@ impl Application {
                 Login::Blocks,
                 |core| core.upsert_acp_runtime(runtime, execution, launch),
             )?),
+            Command::SetRuntimeModelAutoCompaction {
+                runtime_id,
+                model,
+                setting,
+            } => Response::SetRuntimeModelAutoCompaction(application.runtime.serve(
+                Focus::None,
+                Login::Blocks,
+                |core| core.set_runtime_model_auto_compaction(&runtime_id, model, setting),
+            )?),
             Command::ReadAcpLaunch { runtime_id } => {
                 Response::ReadAcpLaunch(application.runtime.serve(
                     Focus::None,

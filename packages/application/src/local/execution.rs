@@ -99,6 +99,11 @@ impl CoreRuntime {
             let result = (|| {
                 let injection = self.native_injection(&runtime, model_record_key)?;
                 let mut config = self.native_config(&runtime, Some(injection))?;
+                config.auto_compaction = runtime.model_auto_compaction(
+                    &crate::ModelSelection::Managed {
+                        model_record_key: model_record_key.to_owned(),
+                    },
+                )?;
                 config.projection_directory = lane;
                 config.mcp_servers = servers;
                 config.session_agents = self.turn_subagents(&runtime);
@@ -162,6 +167,10 @@ impl CoreRuntime {
             rpc_entry: Some(context.resources.join("pi_rpc.mjs")),
             models_path: Some(projection_dir.join("models.json")),
             selection_file: Some(projection_dir.join("velune-selection.json")),
+            model_compaction_reserves: pi_composition::pi_compaction_reserves(
+                &runtime,
+                Some(model_record_key),
+            )?,
             gateway_token: Some(runner.token().into()),
             session_dir: setting_path_optional(&runtime, "sessionDir"),
             session: None,
