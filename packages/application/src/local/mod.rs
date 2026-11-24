@@ -63,12 +63,15 @@ fn runtime_types() -> Vec<crate::config::RuntimeTypeDescriptor> {
     velune_agent_runtime::version::variants().iter().map(|variant| {
         let mut binary=field("binary","运行时入口",crate::conversation::SettingKind::FilePath,true,String::new(),"当前运行时版本的绝对可执行路径。执行准备时会核对实际版本。");
         if variant.kind==RuntimeKind::Acp {binary.help=Some("支持 ACP v1 的命令或 bridge 的绝对路径；启动参数与环境变量在下方设置，启动时协商协议。".into());}
-        if variant.family_id=="pi" {binary.executable_discovery=Some(crate::conversation::ExecutableDiscovery{command:"pi".into(),minimum_version:"1.0.2".into()});}
-        if matches!(variant.kind, RuntimeKind::Codex166) {binary.executable_discovery=Some(crate::conversation::ExecutableDiscovery{command:"codex".into(),minimum_version:"0.166.0".into()});}
-        if variant.kind==RuntimeKind::DeepSeek {binary.executable_discovery=Some(crate::conversation::ExecutableDiscovery{command:"dsh".into(),minimum_version:"0.2.0".into()});}
+        if let Some((command, minimum)) = variant.executable() {
+            binary.executable_discovery = Some(crate::conversation::ExecutableDiscovery {
+                command: command.into(),
+                minimum_version: minimum.into(),
+            });
+        }
         let mut runtime_node = node.clone();
-        runtime_node.required = variant.family_id != "claude-code";
-        if variant.family_id == "claude-code" { binary.executable_discovery=Some(crate::conversation::ExecutableDiscovery{command:"claude".into(),minimum_version:"2.1.286".into()}); }
+        // Claude Code ships a native binary; the other CLIs run on Node.
+        runtime_node.required = variant.kind != RuntimeKind::ClaudeCode;
         let mut fields=vec![binary,runtime_node,field("agentDir","运行时目录",crate::conversation::SettingKind::DirectoryPath,true,String::new(),match variant.kind {RuntimeKind::ClaudeCode=>"该实例的 CLAUDE_CONFIG_DIR；配置与原生会话目录，不是任务工作目录。",RuntimeKind::Codex166 =>"该实例的 CODEX_HOME；配置与会话根目录，不是任务工作目录。",RuntimeKind::DeepSeek=>"该实例的 DeepSeek Harness 配置与会话根目录，不是任务工作目录。",_=>"该实例的 Pi 配置与状态根目录，不是任务工作目录。"})];
         if variant.kind==RuntimeKind::Acp {fields.retain(|field| field.key=="binary");}
         if variant.kind==RuntimeKind::Pi {fields.push(field("sessionDir","会话存储目录",crate::conversation::SettingKind::DirectoryPath,false,String::new(),"覆盖 Pi 默认的会话存储位置；留空采用运行时目录的 sessions，此项不是任务工作目录。"));}
