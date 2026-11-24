@@ -445,7 +445,7 @@ impl CoreRuntime {
                     "type": types.iter().find(|t| t.id == runtime.type_id).map_or(runtime.type_id.id(), |t| t.name.as_str()),
                     "location": location(runtime),
                     "same_machine_as_you": here.is_some_and(|here| same_machine(here, runtime)),
-                    "agents_provider": super::agent_uri::provider(runtime.type_id),
+                    "agents_provider": super::agent_uri::UriFamily::of(runtime.type_id).map(super::agent_uri::UriFamily::name),
                     "xurl": self.xurl_invocation(runtime, here),
                 })
             })

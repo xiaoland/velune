@@ -132,11 +132,12 @@ impl CoreRuntime {
         if !caller.is_some_and(|caller| same_machine(caller, runtime)) {
             return None;
         }
-        let family = super::super::agent_uri::provider(runtime.type_id)?;
+        use super::super::agent_uri::UriFamily;
+        let family = UriFamily::of(runtime.type_id)?;
         let (target, home) = self.runtime_location(runtime).ok()?;
         // A local binary is not portable to an SSH target's architecture.
         if !target.is_local()
-            || (family == "pi"
+            || (family == UriFamily::Pi
                 && runtime
                     .settings
                     .get("sessionDir")
@@ -157,10 +158,9 @@ impl CoreRuntime {
             .ok()??;
         let home = home.or_else(std::env::home_dir)?;
         let (root_key, binary_key) = match family {
-            "codex" => ("CODEX_HOME", "XURL_CODEX_BIN"),
-            "claude" => ("CLAUDE_CONFIG_DIR", "XURL_CLAUDE_BIN"),
-            "pi" => ("PI_CODING_AGENT_DIR", "XURL_PI_BIN"),
-            _ => return None,
+            UriFamily::Codex => ("CODEX_HOME", "XURL_CODEX_BIN"),
+            UriFamily::Claude => ("CLAUDE_CONFIG_DIR", "XURL_CLAUDE_BIN"),
+            UriFamily::Pi => ("PI_CODING_AGENT_DIR", "XURL_PI_BIN"),
         };
         let mut environment = BTreeMap::from([
             ("HOME", home.to_string_lossy().into_owned()),
@@ -182,7 +182,7 @@ impl CoreRuntime {
             );
         }
         Some(
-            json!({"executable":binary,"environment":environment,"provider":family,
+            json!({"executable":binary,"environment":environment,"provider":family.name(),
             "write_mode":"independent_native_cli","instructions":"调用 xurl_instructions；Velune 管理会话优先用 send_message 继续"}),
         )
     }
