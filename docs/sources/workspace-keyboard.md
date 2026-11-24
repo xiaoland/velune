@@ -61,3 +61,7 @@
 ## S76
 
 2026-11-04 用户要求支持常见的 Tab 操作，举例 ⌘⇧T 与 ⌘W。⌘W（关闭标签页）与 ⌘T（新建标签页）为既有默认；本次新增 ⇧⌘T 重新打开关闭的标签页（Mac）。行为归[工作区布局](../prd/workspace-layout.md#窗口与-tab)、默认键位归[键盘操作](../prd/keyboard.md)。
+
+## S92
+
+2026-11-23 用户指出此前一直对 Tabbed Interface、Grid Layout 的行为修修补补，还观察到 UI 布局、动画及状态问题（如重启后的工作区恢复），希望从更上游的位置根本解决，并在标签、网格布局与停靠窗口上追求更原生的体验。开发方诊断为：一个窗口由三套布局引擎（`NavigationSplitView`、inspector、自建分屏）分管；分屏视图身份随结构变化而重建；恢复同时依赖 SceneStorage、journal 与工具布局文件，身份由 SwiftUI scene 决定；两端各有一套布局模型。方向为纯值布局模型与单一持久化、AppKit 窗口外壳（`NSSplitViewController` 侧栏／inspector、嵌套 `NSSplitView` 网格、AppKit 标签栏），系统窗口恢复只决定重开哪些窗口。用户答复：“先只处理/思考 Mac。我觉得你的诊断很到位，方向的选择也很合理。不保留吸附浮动面板，收敛为独立窗口、停靠、隐藏就好。是的，最低要求 macOS 14+。AppKit 我没意见。”本条修订 [S25](#s25) 中的浮动与吸附模式。产品归 [工作区布局](../prd/workspace-layout.md#窗口系统)，实施归 [Mac 工作区原生外壳](../../tasks/workspace-native-shell/packet.md)。
