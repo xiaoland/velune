@@ -114,7 +114,7 @@ AppKit 自绘 `TabBarView`，行为对齐系统 Tab Bar（Xcode 分屏标签也�
 - `ToolPlace` 去掉 `.floating`，`ToolWindowState` 去掉 `panelFrame`；删除 `ToolPanel`、吸附、子窗口跟随、拖到窗口边缘停靠与 `dockHint` 高亮。`DetachedTools` 只管理独立窗口（标题栏位置菜单、关闭即隐藏、输入区高度跟随内容）。工具栏无按钮时关联 Agent／后台任务改为独立窗口。
 - 迁移在 JSON 层完成，模型类型不保留旧格式：`ToolWindowLayout.migratingFloatingTools` 把浮动工具改为 `window`，`panelFrame` 成为 `windowFrame`（附着的面板保留相对主窗口的位置，首次打开后记录为屏幕位置）。`SavedWindowLayout.decodeKnown` 在严格键校验前迁移；日志恢复点改写前备份为 `<id>.json.before-floating-tools.bak` 并保留修改时间；`mac-tool-layout.json` 改写前备份为 `mac-tool-layout.json.before-floating-tools.bak`。SceneStorage 中的旧布局读入时同样迁移，但无法备份（步骤 4 移除 SceneStorage，以日志为准）。
 - 检查：`WorkspaceContinuityChecks` 新增合成旧恢复点与旧工具布局的迁移检查（位置、尺寸、备份、严格读回、修改时间），`experience --workspace-only` 22 组全部通过。`check-macos-composer.py sidebar` 失败（共享左区顶部普通按钮 3 个，期望 2 个）；在本分支基点 `8551f93a9` 上同样失败，属既有问题，与本任务无关。
-- 视觉验收未完成：宿主命令工具所在的 `Cage.app` 没有屏幕录制权限（`CGPreflightScreenCaptureAccess()` 为 false，`screencapture -l` 失败），预览模式又不读写 `mac-tool-layout.json`。需用户在“系统设置 › 隐私与安全性 › 录屏与系统录音”中允许 `Cage.app` 后补做：旧浮动布局启动后成为独立窗口、位置菜单往返。
+- 视觉验收（2026-11-24，用户授予 `Cage.app` 屏幕录制后）：非预览开发实例、私有空目录 `/tmp/velune-ws-visual2`，向其两个恢复点与 `mac-tool-layout.json` 写入浮动输入区（附着、相对主窗口 dx 160）。启动后三份文件均生成 `.before-floating-tools.bak` 并改写为 `window`；输入区成为 640pt 宽的独立窗口“输入区 – 新会话”，左缘在主窗口左缘右侧 160pt，标题栏右端有位置按钮，主窗口各面板不再显示输入区；前台应用始终是用户的应用，未抢焦点。窗口截图在工作树 `target/checks/workspace-native-shell/step3-*.png`（不入库）。主窗口显示“无法打开会话”是空目录无运行时所致。位置菜单往返需要点按，未做前台操作，由模型与检查覆盖。
 
 ## Mac 验证途径
 
@@ -125,7 +125,7 @@ AppKit 自绘 `TabBarView`，行为对齐系统 Tab Bar（Xcode 分屏标签也�
 - 宿主命令工具（以用户账户在其登录会话中执行，可直接访问本工作树、`svc` 与 cargo）。构建：`CARGO_HOME=/Volumes/WorkSSD/.dev-cache/cargo svc run build-macos`（不设则 `uniffi_bindgen` 编译失败）；新工作树需先把主检出的 `target/runtime-support` 复制过来或运行 `scripts/install-runtime-support.sh`。程序化检查：`python3 scripts/check-macos-composer.py <check>`，在后台副本与私有临时目录中运行。
 - `ssh cage-mac`（独立账户 `cage-runner`）：无外置卷访问、无图形会话，仅适合把源码副本放到 `~/velune-ws` 做纯编译。
 
-视觉证据（步骤 3 起）：`svc run start-macos-dev` 后用 `screencapture -l <窗口号>` 截取开发实例窗口，不激活、不抢焦点；能否截取取决于宿主命令工具是否有屏幕录制权限，首次使用时确认。
+视觉证据：`scripts/macos-dev.py start [--preview] --home <私有临时目录>`（即 `svc run start-macos-dev` 的入口，`svc run` 不转发参数；目录须由启动器创建，可先启动再停止后写入合成文件），按开发实例 pid 用 `CGWindowListCopyWindowInfo` 取窗口号，再 `screencapture -x -o -l <窗口号>` 只截该窗口。不要截取屏幕区域，那会带入用户其他应用的内容。预览模式不读写 `mac-tool-layout.json` 与恢复点。
 
 ## 风险与待定
 
