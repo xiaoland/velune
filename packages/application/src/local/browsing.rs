@@ -1588,8 +1588,8 @@ mod source_cache_tests {
 impl CoreRuntime {
     pub(super) fn keep_native_read_state(
         &mut self,
-        receipt: Retained<velune_conversation::NativeReadState>,
-    ) -> Result<(), RuntimeError> {
+        receipt: &Retained<velune_conversation::NativeReadState>,
+    ) {
         let needs_update = |summary: &ConversationSummary| {
             summary.native_read_state.as_ref() != Some(receipt.as_ref())
                 && (summary.id == receipt.conversation_id
@@ -1598,58 +1598,68 @@ impl CoreRuntime {
                         .as_ref()
                         .is_some_and(|s| s.conversation_id == receipt.conversation_id))
         };
-        let update_shared = |summary: &mut SharedSummary| {
-            if needs_update(summary) {
-                summary.update_from(&receipt, |summary, value| {
+        // A native receipt has already committed. Update the open views first,
+        // since copying a retained list page can fail its separate data budget.
+        self.advance_history_index_generation();
+        let mut deferred = self
+            .for_each_session(|core| {
+                match &mut core.session.active_state {
+                    ActiveState::History(snapshot) if needs_update(&snapshot.conversation) => {
+                        // Read state changes the serialized history header; cached
+                        // size must be recomputed when this parked view is trimmed.
+                        let owned = receipt.try_clone().map_err(|error| {
+                            RuntimeError::context("history read-state credit", error)
+                        })?;
+                        let (value, guard) = owned.into_parts();
+                        snapshot.conversation.native_read_state = Some(value);
+                        snapshot.retention = std::mem::take(&mut snapshot.retention).merge(guard);
+                        core.session.invalidate_history_cache_weight();
+                    }
+                    ActiveState::Native(session)
+                        if session.snapshot().is_some_and(|snapshot| {
+                            snapshot.conversation.id == receipt.conversation_id
+                                && needs_update(&snapshot.conversation)
+                        }) =>
+                    {
+                        session.set_read_state(receipt.try_clone().map_err(|error| {
+                            RuntimeError::context("native read-state credit", error)
+                        })?)
+                    }
+                    _ => {}
+                }
+                Ok(())
+            })
+            .err();
+        let mut update_shared = |summary: &mut SharedSummary| {
+            if needs_update(summary)
+                && let Err(error) = summary.update_from(receipt, |summary, value| {
                     summary.native_read_state = Some(value);
-                })?;
+                })
+            {
+                deferred.get_or_insert(error);
             }
-            Ok::<(), RuntimeError>(())
         };
         for source in self.last_listed.borrow_mut().entries.values_mut() {
-            update_shared(&mut source.summary)?;
+            update_shared(&mut source.summary);
         }
         for source in self.reached.borrow_mut().values_mut() {
-            update_shared(&mut source.value.summary)?;
+            update_shared(&mut source.value.summary);
         }
         for archive in self.archived_listing.borrow_mut().values_mut() {
             for summary in &mut archive.summaries {
-                update_shared(summary)?;
+                update_shared(summary);
             }
         }
         for listing in self.history_listings.borrow_mut().values_mut() {
             for entry in &mut listing.entries {
                 if let EntryState::Read(summary) = &mut entry.state {
-                    update_shared(summary)?;
+                    update_shared(summary);
                 }
             }
         }
-        self.for_each_session(|core| {
-            match &mut core.session.active_state {
-                ActiveState::History(snapshot) if needs_update(&snapshot.conversation) => {
-                    // Read state changes the serialized history header; cached
-                    // size must be recomputed when this parked view is trimmed.
-                    let owned = receipt.try_clone().map_err(|error| {
-                        RuntimeError::context("history read-state credit", error)
-                    })?;
-                    let (value, guard) = owned.into_parts();
-                    snapshot.conversation.native_read_state = Some(value);
-                    snapshot.retention = std::mem::take(&mut snapshot.retention).merge(guard);
-                    core.session.invalidate_history_cache_weight();
-                }
-                ActiveState::Native(session)
-                    if session.snapshot().is_some_and(|snapshot| {
-                        snapshot.conversation.id == receipt.conversation_id
-                            && needs_update(&snapshot.conversation)
-                    }) =>
-                {
-                    session.set_read_state(receipt.try_clone().map_err(|error| {
-                        RuntimeError::context("native read-state credit", error)
-                    })?)
-                }
-                _ => {}
-            }
-            Ok(())
-        })
+        if let Some(error) = deferred {
+            tracing::warn!(target: "velune_application", event = "native_read_state_cache_deferred",
+                detail = %error);
+        }
     }
 }

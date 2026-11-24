@@ -105,3 +105,73 @@ fn unused_loaded_history_returns_transient_credit_without_a_permanent_cache_perm
     drop(app);
     fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn accepted_read_receipt_updates_open_history_when_summary_credit_is_exhausted() {
+    let (mut app, root) = open();
+    let core = &mut app.runtime;
+    let mut loaded = loaded_rpc_history(core, &root);
+    let id = loaded.snapshot.conversation.id.clone();
+    let before = velune_conversation::NativeReadState {
+        conversation_id: id.clone(),
+        revision: "before".into(),
+        unread: true,
+    };
+    loaded.snapshot.snapshot.conversation.native_read_state = Some(before.clone());
+    let credit = SaturatedCredit::from_history(&loaded.snapshot);
+    let (snapshot, retention) = loaded.snapshot.into_retained().into_parts();
+    let (history_charge, summary_charge) = retention.split();
+    let summary = SharedSummary::retained(Retained::from_parts(
+        snapshot.conversation.clone(),
+        summary_charge,
+    ));
+    core.history_listings.borrow_mut().insert(
+        "synthetic".into(),
+        HistoryListing {
+            source: loaded.source,
+            entries: vec![IndexedConversation {
+                id,
+                identity: "synthetic".into(),
+                hint: ConversationHint::default(),
+                state: EntryState::Read(summary),
+            }],
+        },
+    );
+    core.present_history(
+        HistorySnapshot {
+            snapshot,
+            retention: history_charge,
+        },
+        None,
+    );
+    let generation = core.history_index_generation.get();
+    let committed = Retained::from_parts(
+        velune_conversation::NativeReadState {
+            revision: "committed".into(),
+            unread: false,
+            ..before.clone()
+        },
+        DataRetention::default(),
+    );
+    core.keep_native_read_state(&committed);
+    assert_eq!(
+        core.session
+            .projected()
+            .unwrap()
+            .conversation
+            .native_read_state
+            .as_ref(),
+        Some(committed.as_ref())
+    );
+    assert_ne!(core.history_index_generation.get(), generation);
+    let listing = core.history_listings.borrow();
+    let EntryState::Read(cached) = &listing["synthetic"].entries[0].state else {
+        panic!("summary still retained with its original credit");
+    };
+    assert_eq!(cached.native_read_state.as_ref(), Some(&before));
+    credit.assert_still_owned();
+    drop(listing);
+    drop(credit);
+    drop(app);
+    fs::remove_dir_all(root).unwrap();
+}

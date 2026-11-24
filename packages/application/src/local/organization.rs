@@ -971,7 +971,7 @@ impl CoreRuntime {
                 self.listed(&source, &places),
             ));
         }
-        let mut native_updated = BTreeSet::new();
+        let mut native_updated = BTreeMap::new();
         // Native CAS uses the receipt actually seen by the caller. Never
         // substitute a newer cache revision or retry an acknowledgement.
         if matches!(
@@ -1013,15 +1013,15 @@ impl CoreRuntime {
                             RuntimeError::context("修改原生已读状态", error)
                         }
                     })?;
-                    self.keep_native_read_state(result)?;
-                    native_updated.insert(summary.id.clone());
+                    self.keep_native_read_state(&result);
+                    native_updated.insert(summary.id.clone(), (summary.native_read_state.clone(), result));
                 }
             }
         }
         let mut next = self.organization.clone();
         let now = unix_ms_now();
         for (summary, archived_natively, listed) in &targets {
-            if native_updated.contains(&summary.id) {
+            if native_updated.contains_key(&summary.id) {
                 continue;
             }
             let native_archive = matches!(
@@ -1112,8 +1112,10 @@ impl CoreRuntime {
             }
         }
         next.conversations.retain(|marks| !marks.is_empty());
-        self.store_organization(next)?;
-        let listing = if matches!(
+        if native_updated.len() != targets.len() {
+            self.store_organization(next)?;
+        }
+        let mut listing = if matches!(
             change,
             ConversationOrganizationChange::Archive | ConversationOrganizationChange::Unarchive
         ) {
@@ -1121,6 +1123,18 @@ impl CoreRuntime {
         } else {
             self.cached_list()
         };
+        // Use the committed native receipt in this response even when a
+        // separate retained cache could not accept a copy. Keep any newer
+        // receipt already read from the runtime while building the list.
+        for item in &mut listing.conversations {
+            if let Some((previous, receipt)) = native_updated.get(&item.conversation.id)
+                && (item.conversation.native_read_state.is_none()
+                    || item.conversation.native_read_state == *previous)
+            {
+                item.conversation.native_read_state = Some(receipt.as_ref().clone());
+                item.unread = !item.archived && receipt.unread;
+            }
+        }
         // The list read again may already show newer activity than the mark.
         let listed = self.listed_sources();
         for (summary, _, _) in &targets {
