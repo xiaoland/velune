@@ -9,6 +9,8 @@ import androidx.lifecycle.viewModelScope
 
 /** The screens on the back stack; a conversation screen owns its model. */
 sealed interface Screen {
+    /** The home: every paired device's conversations in one list. */
+    data object Sessions : Screen
     data object Devices : Screen
     class AddDevice(initialInvitation: String? = null) : Screen {
         val draft = AddDeviceDraft(initialInvitation)
@@ -16,7 +18,6 @@ sealed interface Screen {
     data object About : Screen
     data object Telemetry : Screen
     data class Legal(val document: LegalDocument) : Screen
-    data class Device(val peer: String) : Screen
     class AgentUri(val address: String, val peer: String?) : Screen
     class Conversation(val peer: String, val model: ConversationModel) : Screen
 }
@@ -27,9 +28,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private val workspaces = mutableMapOf<String, DeviceWorkspace>()
     // Retained across rotation; a recreated process must handle its launch URI again.
     var launchIntentHandled = false
-    var stack by mutableStateOf(listOf<Screen>(Screen.Devices))
+    var stack by mutableStateOf(listOf<Screen>(Screen.Sessions))
         private set
     val screen: Screen get() = stack.last()
+    /** The device the session list is narrowed to; null shows them all. */
+    var deviceFilter by mutableStateOf<String?>(null)
 
     fun workspace(peer: String): DeviceWorkspace =
         workspaces.getOrPut(peer) { DeviceWorkspace(checkNotNull(hub), peer, viewModelScope) }
@@ -39,14 +42,15 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         selectShownDevice()
     }
 
-    /** Opens a device in place of the one shown: one interface, switched to another device. */
-    fun switchDevice(peer: String) {
-        stack = stack.takeWhile { it !is Screen.Device && it !is Screen.Conversation } + Screen.Device(peer)
-        selectShownDevice()
-    }
-
     fun openConversation(peer: String, target: ConversationTarget) =
         push(Screen.Conversation(peer, ConversationModel(checkNotNull(hub), peer, target, viewModelScope)))
+
+    /** The devices page opens a device as the session list narrowed to it. */
+    fun showDevice(peer: String) {
+        deviceFilter = peer
+        stack = listOf(Screen.Sessions)
+        selectShownDevice()
+    }
 
     fun openAgentUri(address: String, peer: String? = null) {
         if (screen is Screen.AgentUri) back()
@@ -58,7 +62,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     fun openResolvedAgentUri(peer: String, target: ConversationTarget) {
         back()
-        if (screen !is Screen.Conversation && screen != Screen.Device(peer)) switchDevice(peer)
         openConversation(peer, target)
     }
 
@@ -70,20 +73,20 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         return true
     }
 
-    /** After pairing, the device opens in place of the pairing screen. */
+    /** After pairing, the new device's conversations join the session list. */
     fun showPaired(peer: String) {
         if (hub?.state?.value?.outgoingPairings?.firstOrNull { it.peerId == peer }?.permission == app.velune.bindings.remote.PairingPermission.TELEMETRY_PROFILE_READ) {
-            stack = listOf(Screen.Devices, Screen.Telemetry); selectShownDevice(); return
+            stack = listOf(Screen.Sessions, Screen.Telemetry); selectShownDevice(); return
         }
         val address = stack.filterIsInstance<Screen.AgentUri>().lastOrNull()?.address
-        stack = if (address != null) listOf(Screen.Devices, Screen.AgentUri(address, peer))
-            else listOf(Screen.Devices, Screen.Device(peer))
+        stack = if (address != null) listOf(Screen.Sessions, Screen.AgentUri(address, peer)) else listOf(Screen.Sessions)
         selectShownDevice()
     }
 
+    /** The session list reports the devices it shows itself, as they come and go. */
     private fun selectShownDevice() {
         val peer = when (val shown = screen) {
-            is Screen.Device -> shown.peer
+            Screen.Sessions -> return
             is Screen.Conversation -> shown.peer
             is Screen.AgentUri -> shown.peer
             else -> null

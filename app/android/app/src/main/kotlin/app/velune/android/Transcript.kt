@@ -1,11 +1,5 @@
 package app.velune.android
 
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.animateContentSize
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.scaleIn
-import androidx.compose.animation.scaleOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -16,6 +10,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -26,16 +21,16 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.automirrored.outlined.InsertDriveFile
 import androidx.compose.material.icons.filled.KeyboardArrowDown
-import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.ErrorOutline
@@ -64,9 +59,10 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import app.velune.bindings.application.DeliveredMessage
 import app.velune.bindings.application.DeliveredBlock
+import app.velune.bindings.application.DeliveredMessage
 import app.velune.bindings.application.MessagePayload
 import app.velune.bindings.conversation.MessageRole
 import app.velune.bindings.conversation.ToolState
@@ -78,24 +74,28 @@ import kotlinx.coroutines.launch
  * stays put once they scroll up to read.
  */
 @Composable
-fun Transcript(state: ConversationState, load: (String) -> Unit, modifier: Modifier = Modifier) {
-    val list = rememberLazyListState()
+fun Transcript(
+    state: ConversationState,
+    list: LazyListState,
+    load: (String) -> Unit,
+    modifier: Modifier = Modifier,
+) {
     val scope = rememberCoroutineScope()
-    // Folded state outlives rows scrolled out of the lazy list.
+    // Explicit user toggles outlive rows scrolled out of the lazy list.
     val expanded = remember { mutableStateMapOf<String, Boolean>() }
     val awayFromEnd by remember { derivedStateOf { list.firstVisibleItemIndex > 0 || list.firstVisibleItemScrollOffset > 240 } }
     val working = state.running && (state.entries.lastOrNull() as? TranscriptEntry.Work)?.running != true
     // Sending jumps back to the end, where the message appears.
-    LaunchedEffect(state.sending) { if (state.sending != null) list.animateScrollToItem(0) }
+    LaunchedEffect(state.sending) { if (state.sending != null) list.scrollToItem(0) }
     BoxWithConstraints(modifier) {
         val bubbleWidth = maxWidth * 0.85f
         LazyColumn(
             state = list, reverseLayout = true, modifier = Modifier.fillMaxSize(),
             contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
-            verticalArrangement = Arrangement.spacedBy(14.dp, Alignment.Bottom),
+            verticalArrangement = Arrangement.spacedBy(16.dp, Alignment.Bottom),
         ) {
             if (working) item(key = "working") { Working() }
-            state.sending?.let { text -> item(key = "sending") { UserBubble(listOf(DeliveredBlock.Text(text)), bubbleWidth, pending = true) } }
+            state.sending?.let { text -> item(key = "sending") { UserMessage(listOf(DeliveredBlock.Text(text)), null, bubbleWidth, pending = true) } }
             items(state.entries.asReversed(), key = { it.key }) { entry ->
                 when (entry) {
                     is TranscriptEntry.Message -> MessageView(entry.message, bubbleWidth, expanded, load)
@@ -103,13 +103,12 @@ fun Transcript(state: ConversationState, load: (String) -> Unit, modifier: Modif
                 }
             }
         }
-        AnimatedVisibility(
-            visible = awayFromEnd, enter = fadeIn() + scaleIn(), exit = fadeOut() + scaleOut(),
-            modifier = Modifier.align(Alignment.BottomEnd).padding(16.dp),
-        ) {
+        if (awayFromEnd) {
             SmallFloatingActionButton(
-                onClick = { scope.launch { list.animateScrollToItem(0) } },
+                onClick = { scope.launch { list.scrollToItem(0) } },
                 containerColor = MaterialTheme.colorScheme.surfaceContainerHighest,
+                contentColor = MaterialTheme.colorScheme.onSurface,
+                modifier = Modifier.align(Alignment.BottomEnd).padding(16.dp),
             ) { Icon(Icons.Filled.KeyboardArrowDown, contentDescription = "回到最新") }
         }
     }
@@ -117,21 +116,31 @@ fun Transcript(state: ConversationState, load: (String) -> Unit, modifier: Modif
 
 /** The user's messages on the right, the model's on the left, the system's and the Harness's in the middle. */
 @Composable
-private fun MessageView(message: DeliveredMessage, bubbleWidth: androidx.compose.ui.unit.Dp, expanded: MutableMap<String, Boolean>, load: (String) -> Unit) {
+private fun MessageView(message: DeliveredMessage, bubbleWidth: Dp, expanded: MutableMap<String, Boolean>, load: (String) -> Unit) {
     when (message.role) {
-        MessageRole.USER, MessageRole.CLIENT -> UserBubble(message.blocks, bubbleWidth)
-        MessageRole.ASSISTANT, MessageRole.TOOL, MessageRole.SYSTEM -> Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            message.blocks.forEachIndexed { index, block -> WorkBlock(message.id, index, block, expanded, load, reply = message.role == MessageRole.ASSISTANT) }
+        MessageRole.USER, MessageRole.CLIENT -> UserMessage(message.blocks, message.timestampUnixMs, bubbleWidth)
+        MessageRole.ASSISTANT -> Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            message.blocks.forEachIndexed { index, block -> WorkBlock(message.id, index, block, expanded, load, reply = true) }
+            val copyable = remember(message.blocks) { message.copyableText() }
+            if (message.completed && (copyable.isNotEmpty() || message.timestampUnixMs != null)) {
+                MessageMetaRow(message.timestampUnixMs, copyable.takeIf { it.isNotEmpty() }, Alignment.Start)
+            }
+        }
+        MessageRole.TOOL, MessageRole.SYSTEM -> Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            message.blocks.forEachIndexed { index, block -> WorkBlock(message.id, index, block, expanded, load, reply = false) }
         }
     }
 }
 
 @Composable
-private fun UserBubble(blocks: List<DeliveredBlock>, maxWidth: androidx.compose.ui.unit.Dp, pending: Boolean = false) {
+private fun UserMessage(blocks: List<DeliveredBlock>, timestampUnixMs: Long?, maxWidth: Dp, pending: Boolean = false) {
+    val copyable = remember(blocks) {
+        blocks.filterIsInstance<DeliveredBlock.Text>().mapNotNull { it.text.takeIf(String::isNotBlank) }.joinToString("\n\n")
+    }
     Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.End) {
         Surface(
             color = MaterialTheme.colorScheme.secondaryContainer, contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
-            shape = RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp, bottomStart = 20.dp, bottomEnd = 6.dp),
+            shape = RoundedCornerShape(topStart = 18.dp, topEnd = 18.dp, bottomStart = 18.dp, bottomEnd = 4.dp),
             modifier = Modifier.widthIn(max = maxWidth).alpha(if (pending) 0.6f else 1f),
         ) {
             Column(Modifier.padding(horizontal = 14.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -145,29 +154,58 @@ private fun UserBubble(blocks: List<DeliveredBlock>, maxWidth: androidx.compose.
                 }
             }
         }
-        if (pending) Text("发送中…", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 4.dp, end = 4.dp))
+        if (pending) {
+            Text("发送中…", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 4.dp, end = 4.dp))
+        } else if (copyable.isNotEmpty() || timestampUnixMs != null) {
+            MessageMetaRow(timestampUnixMs, copyable.takeIf { it.isNotEmpty() }, Alignment.End)
+        }
+    }
+}
+
+/** Quiet timestamp and one-tap copy under user messages and completed replies. */
+@Composable
+private fun MessageMetaRow(timestampUnixMs: Long?, copyText: String?, alignment: Alignment.Horizontal) {
+    val copy = rememberCopy()
+    val time = remember(timestampUnixMs) { timestampUnixMs?.let(::formatMessageTime) }
+    Row(
+        Modifier.fillMaxWidth().padding(top = 2.dp),
+        horizontalArrangement = if (alignment == Alignment.End) Arrangement.End else Arrangement.Start,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        if (alignment == Alignment.End && copyText != null) CopyButton { copy(copyText) }
+        if (time != null) Text(time, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        if (alignment == Alignment.Start && copyText != null) {
+            if (time != null) Spacer(Modifier.width(4.dp))
+            CopyButton { copy(copyText) }
+        }
+    }
+}
+
+@Composable
+private fun CopyButton(onClick: () -> Unit) {
+    IconButton(onClick = onClick, modifier = Modifier.size(32.dp)) {
+        Icon(Icons.Outlined.ContentCopy, contentDescription = "复制", modifier = Modifier.size(15.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
 
 /**
- * A turn's work in one line, like “Finished working” in Lody: what ran and
- * for how long. While it runs the line names the latest step; unfolded, the
- * steps hang off a rule on the left.
+ * A turn's work: open while running or when it failed/stopped, folded into one
+ * quiet line once finished cleanly. Unfolded steps hang off a left rule.
  */
 @Composable
 private fun WorkGroup(work: TranscriptEntry.Work, expanded: MutableMap<String, Boolean>, load: (String) -> Unit) {
-    val open = expanded[work.key] == true
+    val open = expanded[work.key] ?: work.defaultExpanded
     val latest = remember(work) { work.members.flatMap { it.blocks }.lastOrNull { it is DeliveredBlock.Tool } as? DeliveredBlock.Tool }
-    Column(Modifier.fillMaxWidth().animateContentSize()) {
+    Column(Modifier.fillMaxWidth()) {
         Row(
-            Modifier.clip(RoundedCornerShape(8.dp)).clickable { expanded[work.key] = !open }.padding(vertical = 6.dp, horizontal = 2.dp),
+            Modifier.clip(RoundedCornerShape(8.dp)).clickable { expanded[work.key] = !open }.heightIn(min = 36.dp).padding(vertical = 4.dp, horizontal = 2.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             if (work.running) CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 1.5.dp)
-            else Icon(if (open) Icons.Filled.KeyboardArrowDown else Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = null, modifier = Modifier.size(18.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+            else Icon(if (open) Icons.Filled.KeyboardArrowDown else Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = if (open) "收起工作过程" else "展开工作过程", modifier = Modifier.size(18.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
             val parts = listOfNotNull(
                 if (work.running) "正在工作" else "工作过程",
-                if (work.running) latest?.title else work.toolCount.takeIf { it > 0 }?.let { "$it 个工具" },
+                if (work.running && !open) latest?.title else work.toolCount.takeIf { it > 0 }?.let { "$it 个工具" },
                 work.durationMs?.takeIf { !work.running }?.let(::duration),
             )
             Text(
@@ -177,8 +215,8 @@ private fun WorkGroup(work: TranscriptEntry.Work, expanded: MutableMap<String, B
             if (work.failedTools > 0) Text(" · ${work.failedTools} 个失败", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.error, maxLines = 1)
         }
         if (open) Row(Modifier.height(IntrinsicSize.Min).padding(top = 4.dp)) {
-            Box(Modifier.padding(start = 10.dp, end = 12.dp).width(1.5.dp).fillMaxHeight().background(MaterialTheme.colorScheme.outlineVariant))
-            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Box(Modifier.padding(start = 8.dp, end = 12.dp).width(1.5.dp).fillMaxHeight().background(MaterialTheme.colorScheme.outlineVariant))
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 work.members.forEach { message ->
                     message.blocks.forEachIndexed { index, block -> WorkBlock(message.id, index, block, expanded, load, reply = false) }
                 }
@@ -194,11 +232,11 @@ private fun WorkBlock(messageId: String, index: Int, block: DeliveredBlock, expa
         is DeliveredBlock.Text -> SelectionContainer {
             Markdown(block.text, style = if (reply) MaterialTheme.typography.bodyLarge else MaterialTheme.typography.bodyMedium)
         }
-        is DeliveredBlock.Reasoning -> Reasoning(block, expanded[key] == true, toggle = {
+        is DeliveredBlock.Reasoning -> if (block.summary.isNotBlank()) Reasoning(block, expanded[key] == true, toggle = {
             expanded[key] = expanded[key] != true
             if (block.text is MessagePayload.Deferred) load(messageId)
         })
-        is DeliveredBlock.Tool -> ToolCard(block, expanded[key] == true, toggle = {
+        is DeliveredBlock.Tool -> ToolStep(block, expanded[key] == true, toggle = {
             expanded[key] = expanded[key] != true
             if (block.output is MessagePayload.Deferred) load(messageId)
         })
@@ -206,7 +244,7 @@ private fun WorkBlock(messageId: String, index: Int, block: DeliveredBlock, expa
             block.text, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
             textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp),
         )
-        is DeliveredBlock.RuntimeFailure -> Text(block.detail, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        is DeliveredBlock.RuntimeFailure -> Text(block.detail, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
         is DeliveredBlock.ContextCompaction -> ContextCompaction(block.text, expanded[key] == true) {
             expanded[key] = expanded[key] != true
         }
@@ -221,11 +259,18 @@ private fun WorkBlock(messageId: String, index: Int, block: DeliveredBlock, expa
 @Composable
 private fun Reasoning(block: DeliveredBlock.Reasoning, open: Boolean, toggle: () -> Unit) {
     Column(Modifier.fillMaxWidth()) {
-        Row(Modifier.clip(RoundedCornerShape(8.dp)).clickable(onClick = toggle).padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+        Row(
+            Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).clickable(onClick = toggle).heightIn(min = 36.dp).padding(vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
             Icon(Icons.Outlined.Lightbulb, contentDescription = null, modifier = Modifier.size(16.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
             Text(
-                block.summary.ifBlank { "思考" }, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = if (open) 4 else 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(start = 6.dp),
+                block.summary, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = if (open) 4 else 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(start = 8.dp).weight(1f),
+            )
+            Icon(
+                if (open) Icons.Filled.KeyboardArrowDown else Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = null,
+                modifier = Modifier.size(16.dp), tint = MaterialTheme.colorScheme.outline,
             )
         }
         if (open) Payload(block.text, italic = true)
@@ -251,7 +296,7 @@ private fun ContextCompaction(text: String, open: Boolean, toggle: () -> Unit) {
         )
     } else Column(Modifier.fillMaxWidth()) {
         Row(
-            Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).clickable(onClick = toggle).heightIn(min = 44.dp).padding(vertical = 4.dp),
+            Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).clickable(onClick = toggle).heightIn(min = 40.dp).padding(vertical = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Icon(
@@ -264,32 +309,31 @@ private fun ContextCompaction(text: String, open: Boolean, toggle: () -> Unit) {
     }
 }
 
-/** One tool call: its state and title; the output unfolds below, read on request when large. */
+/** One tool call on the work rail: compact and scannable; output unfolds below on demand. */
 @Composable
-private fun ToolCard(block: DeliveredBlock.Tool, open: Boolean, toggle: () -> Unit) {
-    Surface(color = MaterialTheme.colorScheme.surfaceContainerLow, shape = RoundedCornerShape(12.dp), modifier = Modifier.fillMaxWidth()) {
-        Column(Modifier.animateContentSize()) {
-            Row(
-                Modifier.fillMaxWidth().clickable(enabled = block.output != null, onClick = toggle).heightIn(min = 44.dp).padding(horizontal = 12.dp, vertical = 8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                when (block.state) {
-                    ToolState.PENDING -> Icon(Icons.Outlined.Schedule, contentDescription = "等待", modifier = Modifier.size(18.dp), tint = Tone.Attention.color())
-                    ToolState.RUNNING -> CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 1.5.dp)
-                    ToolState.COMPLETED -> Icon(Icons.Outlined.CheckCircle, contentDescription = "完成", modifier = Modifier.size(18.dp), tint = Tone.Positive.color())
-                    ToolState.FAILED -> Icon(Icons.Outlined.ErrorOutline, contentDescription = "失败", modifier = Modifier.size(18.dp), tint = Tone.Negative.color())
-                }
-                Text(
-                    block.title, style = MaterialTheme.typography.bodyMedium, fontFamily = FontFamily.Monospace,
-                    maxLines = if (open) 6 else 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(start = 10.dp).weight(1f),
-                )
-                if (block.output != null) Icon(
-                    if (open) Icons.Filled.KeyboardArrowDown else Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = null,
-                    modifier = Modifier.size(18.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+private fun ToolStep(block: DeliveredBlock.Tool, open: Boolean, toggle: () -> Unit) {
+    Column(Modifier.fillMaxWidth()) {
+        Row(
+            Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).clickable(enabled = block.output != null, onClick = toggle).heightIn(min = 38.dp).padding(vertical = 6.dp, horizontal = 2.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            when (block.state) {
+                ToolState.PENDING -> Icon(Icons.Outlined.Schedule, contentDescription = "等待", modifier = Modifier.size(16.dp), tint = Tone.Attention.color())
+                ToolState.RUNNING -> CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 1.5.dp)
+                ToolState.COMPLETED -> Icon(Icons.Outlined.CheckCircle, contentDescription = "完成", modifier = Modifier.size(16.dp), tint = Tone.Positive.color())
+                ToolState.FAILED -> Icon(Icons.Outlined.ErrorOutline, contentDescription = "失败", modifier = Modifier.size(16.dp), tint = Tone.Negative.color())
             }
-            if (open) block.output?.let { Box(Modifier.padding(start = 12.dp, end = 12.dp, bottom = 12.dp)) { Payload(it, italic = false) } }
+            Text(
+                block.title, style = MaterialTheme.typography.bodySmall, fontFamily = FontFamily.Monospace,
+                color = if (block.state == ToolState.FAILED) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface,
+                maxLines = if (open) 6 else 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(start = 8.dp).weight(1f),
+            )
+            if (block.output != null) Icon(
+                if (open) Icons.Filled.KeyboardArrowDown else Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = null,
+                modifier = Modifier.size(16.dp), tint = MaterialTheme.colorScheme.outline,
+            )
         }
+        if (open) block.output?.let { Box(Modifier.padding(top = 4.dp, bottom = 4.dp)) { Payload(it, italic = false) } }
     }
 }
 
@@ -297,7 +341,7 @@ private fun ToolCard(block: DeliveredBlock.Tool, open: Boolean, toggle: () -> Un
 private fun Payload(payload: MessagePayload, italic: Boolean) {
     when (payload) {
         is MessagePayload.Inline -> if (italic) SelectionContainer {
-            Text(payload.text, style = MaterialTheme.typography.bodySmall, fontStyle = FontStyle.Italic, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(start = 22.dp, top = 2.dp))
+            Text(payload.text, style = MaterialTheme.typography.bodySmall, fontStyle = FontStyle.Italic, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(start = 24.dp, top = 2.dp, bottom = 4.dp))
         } else Output(payload.text)
         is MessagePayload.Deferred -> Row(Modifier.padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
             CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 1.5.dp)
@@ -310,7 +354,7 @@ private fun Payload(payload: MessagePayload, italic: Boolean) {
 @Composable
 private fun Output(text: String) {
     val copy = rememberCopy()
-    Surface(color = MaterialTheme.colorScheme.surfaceContainerHigh, shape = RoundedCornerShape(8.dp), modifier = Modifier.fillMaxWidth()) {
+    Surface(color = MaterialTheme.colorScheme.surfaceContainerLow, shape = RoundedCornerShape(8.dp), modifier = Modifier.fillMaxWidth()) {
         Box {
             SelectionContainer {
                 Text(
@@ -339,7 +383,7 @@ private fun Attachment(icon: androidx.compose.ui.graphics.vector.ImageVector, la
 private fun Working() {
     Row(verticalAlignment = Alignment.CenterVertically) {
         CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 1.5.dp)
-        Text("正在工作…", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(start = 8.dp))
+        Text("正在运行…", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(start = 8.dp))
     }
 }
 

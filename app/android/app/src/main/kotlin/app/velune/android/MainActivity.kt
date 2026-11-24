@@ -91,20 +91,25 @@ private fun App(model: AppViewModel) {
     }
     BackHandler(enabled = model.stack.size > 1) { model.back() }
     when (val screen = model.screen) {
-        Screen.Devices -> DevicesScreen(hub, open = { model.push(Screen.Device(it)) }, add = { model.push(Screen.AddDevice()) }, about = { model.push(Screen.About) }, telemetry = { model.push(Screen.Telemetry) })
+        Screen.Sessions -> SessionsScreen(
+            hub, workspace = model::workspace, filter = model.deviceFilter,
+            actions = SessionsActions(
+                open = model::openConversation,
+                refresh = {},
+                filter = { model.deviceFilter = it },
+                devices = { model.push(Screen.Devices) },
+                add = { model.push(Screen.AddDevice()) },
+                telemetry = { model.push(Screen.Telemetry) },
+                about = { model.push(Screen.About) },
+            ),
+        )
+        Screen.Devices -> DevicesScreen(hub, back = { model.back() }, open = model::showDevice, add = { model.push(Screen.AddDevice()) })
         Screen.Telemetry -> TelemetryScreen(hub, back = { model.back() })
         is Screen.AddDevice -> key(screen) {
             AddDeviceScreen(hub, back = { model.back() }, paired = { model.showPaired(it) }, draft = screen.draft)
         }
         Screen.About -> AboutScreen(back = { model.back() }, open = { model.push(Screen.Legal(it)) })
         is Screen.Legal -> LegalDocumentScreen(screen.document, back = { model.back() })
-        is Screen.Device -> ConversationListScreen(
-            hub = hub,
-            workspace = model.workspace(screen.peer),
-            back = { model.back() },
-            switchDevice = { model.switchDevice(it) },
-            open = { model.openConversation(screen.peer, it) },
-        )
         is Screen.AgentUri -> key(screen) {
             AgentUriScreen(hub, screen.address, screen.peer, back = { model.back() }, addDevice = { model.push(Screen.AddDevice()) }, open = model::openResolvedAgentUri)
         }

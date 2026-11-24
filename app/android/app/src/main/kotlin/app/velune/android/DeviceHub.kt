@@ -23,6 +23,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.UUID
@@ -50,8 +52,10 @@ class DeviceHub(private val context: Context) {
     /** One view per process: a device tells this phone's windows apart by it. */
     private val view = "android-" + UUID.randomUUID()
     private var network: NetworkMonitor? = null
-    private var selected: String? = null
-    private var foreground = false
+    @Volatile private var viewed: Set<String> = emptySet()
+    /** Activity reports reach the core in the order the user changed screens. */
+    private val activity = Mutex()
+    @Volatile private var foreground = false
 
     fun start() {
         scope.launch {
@@ -134,21 +138,29 @@ class DeviceHub(private val context: Context) {
     }
 
     /** Tells the core which device the user looks at, so it keeps that connection ready. */
-    fun select(peer: String?) {
-        val previous = selected
-        selected = peer
+    fun select(peer: String?) = view(setOfNotNull(peer))
+
+    /**
+     * Tells the core which devices are on screen: the merged session list
+     * shows several at once. Each controller recovers on its own.
+     */
+    fun view(peers: Set<String>) {
+        val previous = viewed
+        viewed = peers
         scope.launch {
-            val opened = endpoint ?: return@launch
-            if (previous != null && previous != peer) runCatching { opened.setControllerActivity(previous, false, false) }
-            if (peer != null) runCatching { opened.setControllerActivity(peer, true, foreground) }
+            activity.withLock {
+                val opened = endpoint ?: return@withLock
+                (previous - peers).forEach { runCatching { opened.setControllerActivity(it, false, false) } }
+                peers.forEach { runCatching { opened.setControllerActivity(it, true, foreground) } }
+            }
         }
     }
 
     fun setForeground(value: Boolean) {
         foreground = value
         if (value) network?.foreground()
-        val peer = selected ?: return
-        scope.launch { endpoint?.let { runCatching { it.setControllerActivity(peer, true, value) } } }
+        val peers = viewed
+        scope.launch { activity.withLock { endpoint?.let { opened -> peers.forEach { runCatching { opened.setControllerActivity(it, true, value) } } } } }
     }
 }
 

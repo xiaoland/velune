@@ -2,25 +2,20 @@ package app.velune.android
 
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.outlined.Computer
 import androidx.compose.material.icons.outlined.Devices
 import androidx.compose.material.icons.outlined.ErrorOutline
-import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
@@ -31,10 +26,8 @@ import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.ListItem
-import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -47,7 +40,6 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import app.velune.bindings.remote.ContactConfirmation
@@ -62,23 +54,24 @@ data class DeviceSummary(val peerId: String, val name: String, val status: Devic
 
 data class DeviceStatus(val text: String, val tone: Tone)
 
-class DevicesActions(val open: (String) -> Unit, val add: () -> Unit, val remove: (DeviceSummary) -> Unit, val about: () -> Unit, val telemetry: () -> Unit = {}, val network: () -> Unit = {})
+class DevicesActions(val back: () -> Unit, val open: (String) -> Unit, val add: () -> Unit, val remove: (DeviceSummary) -> Unit, val network: () -> Unit = {})
 
+/** Paired devices and this phone's connection settings; conversations live in the session list. */
 @Composable
-fun DevicesScreen(hub: DeviceHub, open: (String) -> Unit, add: () -> Unit, about: () -> Unit, telemetry: () -> Unit) {
+fun DevicesScreen(hub: DeviceHub, back: () -> Unit, open: (String) -> Unit, add: () -> Unit) {
     val state by hub.state.collectAsState()
     val failure by hub.failure.collectAsState()
     val scope = rememberCoroutineScope()
     var removing by remember { mutableStateOf<DeviceSummary?>(null) }
     var network by remember { mutableStateOf(false) }
     val devices = state?.let { snapshot -> snapshot.contacts.filter { it.controlAuthorized }.map { deviceSummary(snapshot, it) } }
-    DevicesContent(devices, failure, DevicesActions(open, add, remove = { removing = it }, about, telemetry, network = { network = true }))
+    DevicesContent(devices, failure, DevicesActions(back, open, add, remove = { removing = it }, network = { network = true }))
     if (network) RemoteNetworkDialog(hub, dismiss = { network = false })
     removing?.let { device ->
         AlertDialog(
             onDismissRequest = { removing = null },
             title = { Text("移除“${device.name}”？") },
-            text = { Text("这台手机将不再连接它。要撤销它对这台手机的授权，请在那台设备的“设备”设置中操作。") },
+            text = { Text("这台手机将不再连接它，它的会话也不再出现在列表中。要撤销它对这台手机的授权，请在那台设备的“设备”设置中操作。") },
             confirmButton = {
                 TextButton(onClick = {
                     removing = null
@@ -97,12 +90,9 @@ fun DevicesContent(devices: List<DeviceSummary>?, failure: String?, actions: Dev
     Scaffold(
         topBar = {
             TopAppBar(
+                navigationIcon = { IconButton(onClick = actions.back) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回") } },
                 title = { Text("设备") },
-                actions = {
-                    TextButton(onClick = actions.network, enabled = devices != null) { Text("连接设置") }
-                    TextButton(onClick = actions.telemetry, enabled = devices != null) { Text("遥测") }
-                    IconButton(onClick = actions.about) { Icon(Icons.Outlined.Info, contentDescription = "关于与开源许可") }
-                },
+                actions = { TextButton(onClick = actions.network, enabled = devices != null) { Text("连接设置") } },
             )
         },
         floatingActionButton = {
@@ -117,21 +107,11 @@ fun DevicesContent(devices: List<DeviceSummary>?, failure: String?, actions: Dev
             when {
                 failure != null -> EmptyState(Icons.Outlined.ErrorOutline, "远程控制没有启动", failure)
                 devices == null -> CircularProgressIndicator(Modifier.align(Alignment.Center))
-                devices.isEmpty() -> EmptyState(
-                    Icons.Outlined.Devices, "连接你的电脑",
-                    "在电脑的“设置 › 设备”中生成邀请，然后扫码或手动输入。",
-                ) {
-                    Button(onClick = actions.add) {
-                        Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(18.dp))
-                        Text("添加设备", modifier = Modifier.padding(start = 8.dp))
-                    }
+                devices.isEmpty() -> EmptyState(Icons.Outlined.Devices, "还没有配对设备", "在电脑的“设置 › 设备”中添加控制设备，然后扫码或打开邀请链接。") {
+                    Button(onClick = actions.add) { Text("添加设备") }
                 }
-                else -> LazyColumn(
-                    Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 96.dp),
-                    verticalArrangement = Arrangement.spacedBy(10.dp),
-                ) {
-                    items(devices, key = { it.peerId }) { device -> DeviceCard(device, actions) }
+                else -> LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 96.dp)) {
+                    items(devices, key = { it.peerId }) { device -> DeviceRow(device, actions) }
                 }
             }
         }
@@ -140,35 +120,28 @@ fun DevicesContent(devices: List<DeviceSummary>?, failure: String?, actions: Dev
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun DeviceCard(device: DeviceSummary, actions: DevicesActions) {
+private fun DeviceRow(device: DeviceSummary, actions: DevicesActions) {
     var menu by remember { mutableStateOf(false) }
-    Surface(color = MaterialTheme.colorScheme.surfaceContainerLow, shape = RoundedCornerShape(16.dp), modifier = Modifier.fillMaxWidth()) {
-        ListItem(
-            leadingContent = {
-                Surface(color = MaterialTheme.colorScheme.secondaryContainer, contentColor = MaterialTheme.colorScheme.onSecondaryContainer, shape = CircleShape, modifier = Modifier.size(44.dp)) {
-                    Box(contentAlignment = Alignment.Center) { Icon(Icons.Outlined.Computer, contentDescription = null) }
+    ListItem(
+        leadingContent = { Icon(Icons.Outlined.Computer, contentDescription = null) },
+        headlineContent = { Text(device.name, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+        supportingContent = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                StatusDot(device.status.tone)
+                Text(device.status.text, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(start = 6.dp))
+            }
+        },
+        trailingContent = {
+            Box {
+                IconButton(onClick = { menu = true }) { Icon(Icons.Filled.MoreVert, contentDescription = "更多") }
+                DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                    if (device.confirmed) DropdownMenuItem(text = { Text("查看会话") }, onClick = { menu = false; actions.open(device.peerId) })
+                    DropdownMenuItem(text = { Text("移除此设备") }, onClick = { menu = false; actions.remove(device) })
                 }
-            },
-            headlineContent = { Text(device.name, maxLines = 1, overflow = TextOverflow.Ellipsis) },
-            supportingContent = {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    StatusDot(device.status.tone)
-                    Text(device.status.text, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(start = 6.dp))
-                }
-            },
-            trailingContent = {
-                Box {
-                    IconButton(onClick = { menu = true }) { Icon(Icons.Filled.MoreVert, contentDescription = "更多") }
-                    DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
-                        if (device.confirmed) DropdownMenuItem(text = { Text("打开") }, onClick = { menu = false; actions.open(device.peerId) })
-                        DropdownMenuItem(text = { Text("移除此设备") }, onClick = { menu = false; actions.remove(device) })
-                    }
-                }
-            },
-            colors = ListItemDefaults.colors(containerColor = Color.Transparent),
-            modifier = Modifier.combinedClickable(onClick = { if (device.confirmed) actions.open(device.peerId) else menu = true }, onLongClick = { menu = true }),
-        )
-    }
+            }
+        },
+        modifier = Modifier.combinedClickable(onClick = { if (device.confirmed) actions.open(device.peerId) else menu = true }, onLongClick = { menu = true }),
+    )
 }
 
 fun deviceSummary(state: RemoteServiceSnapshot, contact: DeviceContact, path: String? = null) = DeviceSummary(
