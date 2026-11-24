@@ -623,7 +623,7 @@ pub(crate) async fn read_usage(
             .header("authorization", bearer)
             .header("chatgpt-account-id", account_id)
             .header("originator", "codex_cli_rs")
-            .header("user-agent", "codex_cli_rs/0.162.0 Velune/0.1")
+            .header("user-agent", velune_ai_provider::codex_user_agent())
             .send()
             .await
             .map_err(|_| failure())?;
@@ -940,7 +940,7 @@ fn account_data_request(
                 .header("chatgpt-account-id", account_id)
                 .header("accept", "application/json")
                 .header("originator", "codex_cli_rs")
-                .header("user-agent", "codex_cli_rs/0.162.0 Velune/0.1");
+                .header("user-agent", velune_ai_provider::codex_user_agent());
             match endpoint {
                 AccountDataEndpoint::ModelUsage { kind, start, end } => {
                     let request = request.query(&[

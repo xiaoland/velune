@@ -198,8 +198,8 @@ impl NativeHttp {
                 .header("chatgpt-account-id", account)
                 .header("openai-beta", "responses=experimental")
                 .header("originator", "codex_cli_rs")
-                .header("version", "0.162.0")
-                .header("user-agent", "codex_cli_rs/0.162.0 Velune/0.1");
+                .header("version", responses::CODEX_CLIENT_VERSION)
+                .header("user-agent", responses::codex_user_agent());
             if let Some(key) = body["prompt_cache_key"].as_str()
                 && let Ok(value) = HeaderValue::from_str(key)
             {
@@ -514,5 +514,61 @@ fn response_meta(response: &Response) -> ResponseMeta {
                 })
             })
             .collect(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{CredentialRecovery, HttpEndpoint, RequestCapabilities};
+    use serde_json::json;
+
+    #[test]
+    fn codex_subscription_uses_supported_client_version_and_preserves_model() {
+        let provider = NativeHttp::new(
+            HttpTarget::new(
+                Protocol::Responses,
+                HttpEndpoint::parse("https://chatgpt.com/backend-api/codex").unwrap(),
+                RequestProfile::CodexResponses,
+            )
+            .unwrap(),
+            HttpClient::new(reqwest::Client::builder()).unwrap(),
+            ResolvedCredential {
+                material: CredentialMaterial::Http {
+                    authorization: HttpAuthorization::Bearer("test-token".into()),
+                    account_id: Some("test-account".into()),
+                },
+                recovery: CredentialRecovery::None,
+                request_capabilities: RequestCapabilities::default(),
+            },
+        )
+        .unwrap();
+        let model = "gpt-6.2-sol";
+        let request = provider
+            .prepare(NativeRequest {
+                model: ProviderModelId::new(model).unwrap(),
+                body: Payload::new(json!({"model": model, "input": "test prompt"})),
+                headers: vec![
+                    Header {
+                        name: "Version".into(),
+                        value: "0.162.0".into(),
+                    },
+                    Header {
+                        name: "User-Agent".into(),
+                        value: "codex_cli_rs/0.162.0".into(),
+                    },
+                ],
+                stream: true,
+            })
+            .unwrap();
+
+        let headers = request.headers();
+        assert_eq!(headers.get_all("version").iter().count(), 1);
+        assert_eq!(headers["version"], "0.167.0");
+        assert_eq!(headers.get_all("user-agent").iter().count(), 1);
+        assert_eq!(headers["user-agent"], "codex_cli_rs/0.167.0 Velune/0.1");
+        let body: Value =
+            serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
+        assert_eq!(body["model"], model);
     }
 }

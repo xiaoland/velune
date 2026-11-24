@@ -4,6 +4,15 @@ use crate::native::observe_sse;
 use serde_json::Value;
 use velune_ai::{InvalidContract, NativeErrorKind};
 
+// ChatGPT gates its model catalog and inference on the Codex client version.
+// Keep the wire version independent of any locally installed runtime.
+pub(crate) const CODEX_CLIENT_VERSION: &str = "0.167.0";
+
+/// The Codex-compatible user agent used by subscription requests.
+pub fn codex_user_agent() -> String {
+    format!("codex_cli_rs/{CODEX_CLIENT_VERSION} Velune/0.1")
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Terminal {
     Completed,
