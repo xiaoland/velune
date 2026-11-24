@@ -116,6 +116,22 @@ AppKit 自绘 `TabBarView`，行为对齐系统 Tab Bar（Xcode 分屏标签也�
 - 检查：`WorkspaceContinuityChecks` 新增合成旧恢复点与旧工具布局的迁移检查（位置、尺寸、备份、严格读回、修改时间），`experience --workspace-only` 22 组全部通过。`check-macos-composer.py sidebar` 失败（共享左区顶部普通按钮 3 个，期望 2 个）；在本分支基点 `8551f93a9` 上同样失败，属既有问题，与本任务无关。
 - 视觉验收（2026-11-24，用户授予 `Cage.app` 屏幕录制后）：非预览开发实例、私有空目录 `/tmp/velune-ws-visual2`，向其两个恢复点与 `mac-tool-layout.json` 写入浮动输入区（附着、相对主窗口 dx 160）。启动后三份文件均生成 `.before-floating-tools.bak` 并改写为 `window`；输入区成为 640pt 宽的独立窗口“输入区 – 新会话”，左缘在主窗口左缘右侧 160pt，标题栏右端有位置按钮，主窗口各面板不再显示输入区；前台应用始终是用户的应用，未抢焦点。窗口截图在工作树 `target/checks/workspace-native-shell/step3-*.png`（不入库）。主窗口显示“无法打开会话”是空目录无运行时所致。位置菜单往返需要点按，未做前台操作，由模型与检查覆盖。
 
+### 步骤 0：技术验证结论（2026-11-24，开发实例实测）
+
+- 命令目标不依赖 SwiftUI `FocusedValue`：`WorkspaceWindows.commandTarget` 跟随 AppKit 键窗口通知，`ConversationCommands` 以 `@ObservedObject` 观察它（Commands 已有同样用法）。应用不活跃时 `NSApp.keyWindow` 为 nil，目标随之为空，不影响菜单（菜单只在应用活跃时使用）。
+- AppKit 窗口内 `NSHostingController` 承载的内容里，`@Environment(\.openWindow)`／`openSettings` 照常打开“问题”与设置窗口（临时探针实测，未入库）。
+- `NSHostingController.sceneBridgingOptions = [.toolbars, .title]` 让内容声明的工具栏与标题成为窗口的；`NavigationSplitView` 侧栏在标题栏下全高，`inspector` 与各工具栏项照常。
+- SwiftUI App 生命周期下，AppKit `restorationClass` 恢复照常被调用；剩余 SwiftUI 场景用 `defaultLaunchBehavior(.suppressed)` 与 `handlesExternalEvents(matching: [])`，链接改由 `applicationWillFinishLaunching` 安装的 Apple Event 处理器接收。
+
+### 步骤 4（一）：AppKit 窗口外壳与恢复
+
+- `WorkspaceWindows.swift`：`WorkspaceWindows` 打开、恢复、追踪窗口并处理链接与 Dock 重开；`WorkspaceWindowController` 持有 `ConversationWindowModel`，内容为原 SwiftUI 根视图；`WorkspaceWindowRestoration` 只解码窗口名、种类与设备。移除工作区与会话窗口的 `WindowGroup`、`SceneStorage`（`windowLayout`／`windowIdentity`）及其写入路径，`ConversationWindowContent` 只在出现时启动模型。
+- 持久化决定（偏离原方案）：不合并为单一 `mac-workspace.json`。`mac-window-workspaces/<窗口名>.json` 已按窗口 UUID 存放、有备份、严格解码、未知格式只禁用该窗口写入等保障，去掉 SceneStorage 后它就是唯一来源；合并只会再引入一次全量迁移。`mac-tool-layout.json` 仍记最近工作区的工具安排。
+- 系统重开的窗口只读自己的恢复点（`start(..., reopened: true)` 不回退到最近快照，避免两个窗口显示同一份布局）。首次以 AppKit 窗口启动且系统设置保留窗口时，从 journal 重开上次退出时一并写入（30 秒内）的窗口，此后由系统恢复。
+- 实测（私有目录 `/tmp/velune-ws-shell`，用户系统 `NSQuitAlwaysKeepsWindows` = 1，`macos-dev.py stop` 为正常退出）：首次启动一个工作区、不打开辅助场景；正常退出再启动，恢复同名窗口、不新建恢复点；构造两个同时写入的恢复点并清除系统恢复状态后，迁移重开两个窗口（含保持在最前的那个，浮动层级）；两窗口正常退出再启动，系统恢复两窗口、无新恢复点；`open -g` 送入的会话链接进入已有工作区窗口（显示该会话无法打开并记录问题），未新开窗口。全程前台应用不变。截图在工作树 `target/checks/workspace-native-shell/step4-*.png`（不入库）。
+- 检查：`experience --workspace-only` 22 组、`tabs`、`ownership`、`targets` 全部通过。
+- 未实测：全屏中新开窗口、Dock 无窗口时重开、键窗口切换时菜单启用状态（均需前台操作）。
+
 ## Mac 验证途径
 
 开发 Agent 运行在 Mac 宿主的 Linux 虚拟机中：仓库主检出经 sshfs 挂载在同一路径，虚拟机内没有 Xcode、无法运行 AppKit，`gh` 未登录。纯 Foundation 代码可在虚拟机内用 Linux 版 Swift 编译与检查；凡涉及 AppKit／SwiftUI 的步骤须在 Mac 上验证。

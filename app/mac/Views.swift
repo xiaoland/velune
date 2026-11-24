@@ -118,7 +118,6 @@ struct VeluneRootView: View {
             ComposerSheet(window: window, tab: sheet, store: sheet.store)
         }
         .onChange(of: store.device.outlinePresentation) { _, _ in window.outlinePopover = false }
-        .focusedSceneValue(\.conversationCommands, ConversationCommandTarget(window: window))
         .task { if previewSettings { openSettings() } }
     }
 

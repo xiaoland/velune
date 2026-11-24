@@ -117,10 +117,7 @@ struct ScheduledTasksContent: View {
         }
         .disabled(model.busy)
         .onAppear {
-            store.openConversationWindow = { [openWindow] seed in
-                WindowPresentation.windowed.insert(seed.id)
-                openWindow(id: ConversationWindowKind.workspace.sceneID, value: seed)
-            }
+            store.openConversationWindow = { seed in WorkspaceWindows.shared.open(.workspace, seed: seed) }
         }
         .task { store.start(); while !Task.isCancelled { model.refresh(); try? await Task.sleep(for: .seconds(5)) } }
         .toolbar {

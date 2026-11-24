@@ -605,7 +605,6 @@ struct WindowSeed: Codable, Hashable {
 
 /// Presentation intent belongs to this opening, never to restored window data.
 @MainActor enum WindowPresentation {
-    static var windowed: Set<UUID> = []
     static var notificationTargets: Set<UUID> = []
 }
 
@@ -1105,7 +1104,9 @@ struct WindowSeed: Codable, Hashable {
     /// Restore a saved arrangement, take a handed-over tab, or open `seed`'s
     /// conversation, then start reading. A lone new tab opens the list's
     /// first conversation.
-    func start(restoring saved: SavedWindowLayout?, seed: WindowSeed?, persistenceID: String? = nil) {
+    /// A window the system reopens (`reopened`) restores its own recovery
+    /// point only, never another window's latest one.
+    func start(restoring saved: SavedWindowLayout?, seed: WindowSeed?, persistenceID: String? = nil, reopened: Bool = false) {
         closed = false
         guard !started else { return }
         started = true
@@ -1128,7 +1129,7 @@ struct WindowSeed: Codable, Hashable {
             return candidate.isWhole && (candidate.windowKind == nil || candidate.windowKind == kind)
                 && (candidate.windowDevice == nil || candidate.windowDevice == SavedWindowLayout.ExecutionDevice(device)) ? candidate : nil
         }
-        let journalSaved = recoveryID.flatMap { application.windowWorkspaceJournal.restore(id: $0, recoverLatest: seed == nil && sceneSaved == nil && kind == .workspace, kind: kind, device: device, aggregatingDevices: aggregatingDevices, legacyTabID: seed?.tab) }
+        let journalSaved = recoveryID.flatMap { application.windowWorkspaceJournal.restore(id: $0, recoverLatest: !reopened && seed == nil && sceneSaved == nil && kind == .workspace, kind: kind, device: device, aggregatingDevices: aggregatingDevices, legacyTabID: seed?.tab) }
         let saved = journalSaved ?? sceneSaved
         let recoveryBranch = seed?.tab.flatMap { Self.handoff[$0] } != nil ? "handoff" : saved != nil ? "snapshot" : seed?.conversationID != nil ? "conversation" : seed?.tab != nil ? "missingHandoff" : "default"
         let recoveryKind = kind.sceneID

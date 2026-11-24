@@ -12,15 +12,6 @@ let windowRecoveryLogger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "Ve
     var store: ConversationStore { window.commandTab.store }
     func send() { window.send() }
 }
-private struct ConversationCommandTargetKey: FocusedValueKey {
-    typealias Value = ConversationCommandTarget
-}
-extension FocusedValues {
-    var conversationCommands: ConversationCommandTarget? {
-        get { self[ConversationCommandTargetKey.self] }
-        set { self[ConversationCommandTargetKey.self] = newValue }
-    }
-}
 
 /// Menu items that follow `object`. A Commands body observes no object, so
 /// an item it disabled stays as it was when the body last ran, shortcut too.
@@ -33,17 +24,16 @@ private struct Observing<Object: ObservableObject, Content: View>: View {
 @MainActor
 struct ConversationCommands: Commands {
     @Environment(\.openWindow) private var openWindow
-    @FocusedValue(\.conversationCommands) private var focusedTarget
+    /// The key window's model, followed through AppKit: the windows are no scenes.
+    @ObservedObject private var windows = WorkspaceWindows.shared
     @ObservedObject private var pinning = WindowPinning.shared
     @ObservedObject private var shortcuts = KeyboardShortcutSettings.shared
-    /// A floating panel or tool window is no scene: while one is key, its window is the target.
+    /// The key workspace or conversation window, or the one whose tool window is key.
     private var target: ConversationCommandTarget? {
         // A message editor owns its input; conversation commands must not
         // silently act on the source tab behind its floating panel.
         guard MessageEditingSession.owning(window: NSApp.keyWindow) == nil else { return nil }
-        return focusedTarget ?? ConversationWindowModel.owning(detached: NSApp.keyWindow).map { window in
-            ConversationCommandTarget(window: window)
-        }
+        return windows.commandTarget.map { ConversationCommandTarget(window: $0) }
     }
     /// Items as `object` stands, or as they are without it.
     @ViewBuilder private func following<Object: ObservableObject, Content: View>(_ object: Object?, @ViewBuilder _ content: @escaping () -> Content) -> some View {
@@ -69,9 +59,9 @@ struct ConversationCommands: Commands {
             Button("新建标签页") { target?.window.openInNewTab() }
                 .keyboardShortcut(shortcuts[.newTab])
                 .disabled(target == nil)
-            Button("新建窗口") { target?.window.openWindow?(.workspace, WindowSeed()) }
+            // Also with no window open: windows are opened from here, not by SwiftUI.
+            Button("新建窗口") { WorkspaceWindows.shared.open(.workspace) }
                 .keyboardShortcut(shortcuts[.newWindow])
-                .disabled(target?.window.openWindow == nil)
             item(.reopenClosedTab)
         }
         // Not in place of the save items: an app without documents shows none of that group.
@@ -265,36 +255,7 @@ struct ConversationCommands: Commands {
     }
 }
 
-@MainActor
-struct ConversationWindow: View {
-    /// SwiftUI can hydrate these values after the first appearance. Keep them
-    /// outside the state object lifetime so restored input creates its model.
-    @SceneStorage("windowLayout") private var savedLayout = ""
-    @SceneStorage("windowIdentity") private var windowIdentity = UUID().uuidString
-    let application: DeviceStore
-    let kind: ConversationWindowKind
-    let seed: WindowSeed?
-    let previewEmpty: Bool
-    let previewSettings: Bool
-
-    init(application: DeviceStore, kind: ConversationWindowKind, seed: WindowSeed?, previewEmpty: Bool, previewSettings: Bool) {
-        self.application = application; self.kind = kind; self.seed = seed
-        self.previewEmpty = previewEmpty; self.previewSettings = previewSettings
-    }
-
-    var body: some View {
-        if kind == .single, seed == nil {
-            WindowRestorationPendingView()
-                .applicationAppearance()
-        } else {
-            ConversationWindowContent(application: application, kind: kind, seed: seed,
-                                      savedLayout: $savedLayout, windowIdentity: windowIdentity,
-                                      previewEmpty: previewEmpty, previewSettings: previewSettings)
-                .id((seed?.id.uuidString ?? "default") + ":" + windowIdentity)
-        }
-    }
-}
-
+/// Shown while a window waits for what it restores.
 struct WindowRestorationPendingView: View {
     var body: some View {
         ProgressView("正在恢复窗口…")
@@ -304,96 +265,37 @@ struct WindowRestorationPendingView: View {
     }
 }
 
+/// A workspace or conversation window's content, hosted by its AppKit
+/// window controller. It starts the window's model once it appears; the
+/// window's journal is its only recovery point.
 @MainActor
-private struct ConversationWindowContent: View {
-    @StateObject private var window: ConversationWindowModel
-    @Binding private var savedLayout: String
-    let windowIdentity: String
-    @State private var savedLayoutWritable = true
-    @State private var startsWindowed: Bool
+struct ConversationWindowContent: View {
+    @ObservedObject var window: ConversationWindowModel
     let seed: WindowSeed?
-    @Environment(\.openWindow) private var openWindow
+    let persistenceID: String
+    /// Reopened by the system: only its own recovery point applies.
+    let restoring: Bool
     let previewEmpty: Bool
     let previewSettings: Bool
-    init(application: DeviceStore, kind: ConversationWindowKind, seed: WindowSeed?, savedLayout: Binding<String>, windowIdentity: String, previewEmpty: Bool, previewSettings: Bool) {
-        // A single-conversation window belongs to the device it opened for;
-        // a workspace window aggregates every device this Mac controls.
-        let target = kind == .single ? (seed?.device.flatMap { DeviceHub.shared?.store(for: $0) } ?? application) : application
-        _window = StateObject(wrappedValue: ConversationWindowModel(application: target, kind: kind, device: kind == .single ? seed?.device : nil, hub: DeviceHub.shared))
-        _startsWindowed = State(initialValue: seed.map { WindowPresentation.windowed.contains($0.id) } ?? false)
-        _savedLayout = savedLayout
-        self.windowIdentity = windowIdentity
-        self.seed = seed
-        self.previewEmpty = previewEmpty
-        self.previewSettings = previewSettings
-    }
+
     private func traceRecovery(_ phase: String) {
         let seedID = seed?.id.uuidString ?? "none"
         let tabID = seed?.tab?.uuidString ?? "none"
-        let kindID = window.kind.sceneID, sceneID = windowIdentity
+        let kindID = window.kind.sceneID
         let modelID = window.restorationLifecycleID.uuidString
         let hasConversation = seed?.conversationID != nil
-        let savedBytes = savedLayout.utf8.count, activeTabID = window.focused.id.uuidString
-        windowRecoveryLogger.debug("phase=\(phase, privacy: .public) model=\(modelID, privacy: .public) kind=\(kindID, privacy: .public) seed=\(seedID, privacy: .public) tab=\(tabID, privacy: .public) hasConversation=\(hasConversation) scene=\(sceneID, privacy: .public) savedBytes=\(savedBytes) activeTab=\(activeTabID, privacy: .public)")
+        let activeTabID = window.focused.id.uuidString
+        windowRecoveryLogger.debug("phase=\(phase, privacy: .public) model=\(modelID, privacy: .public) kind=\(kindID, privacy: .public) seed=\(seedID, privacy: .public) tab=\(tabID, privacy: .public) hasConversation=\(hasConversation) window=\(persistenceID, privacy: .public) restoring=\(restoring) activeTab=\(activeTabID, privacy: .public)")
     }
+
     var body: some View {
         VeluneRootView(window: window, store: window.list, tab: window.focused, focused: window.focused.store,
                        previewEmpty: previewEmpty, previewSettings: previewSettings)
             .applicationAppearance()
-            // Explicitly opened windows start as ordinary windows even when
-            // the source is full screen. Re-enable full screen after presentation.
-            .windowFullScreenBehavior(startsWindowed ? .disabled : .automatic)
+            .frame(minWidth: 520, minHeight: 420)
             .onAppear {
                 traceRecovery("appear")
-                if !window.application.isPreview && !MacNativePersistenceGate.isEnabled {
-                    savedLayoutWritable = false
-                }
-                if let seed { WindowPresentation.windowed.remove(seed.id) }
-                window.openWindow = { [openWindow] kind, seed in
-                    WindowPresentation.windowed.insert(seed.id)
-                    openWindow(id: kind.sceneID, value: seed)
-                }
-                window.application.openConversationWindow = { [openWindow] seed in
-                    WindowPresentation.windowed.insert(seed.id)
-                    openWindow(id: ConversationWindowKind.workspace.sceneID, value: seed)
-                }
-                // The devices settings focus an existing aggregated window or open one.
-                DeviceHub.shared?.openWorkspaceWindow = { [openWindow] seed in
-                    WindowPresentation.windowed.insert(seed.id)
-                    openWindow(id: ConversationWindowKind.workspace.sceneID, value: seed)
-                }
-                DispatchQueue.main.async {
-                    if startsWindowed, window.window?.isKeyWindow == true { startsWindowed = false }
-                }
-                var saved: SavedWindowLayout?
-                if !savedLayout.isEmpty && savedLayoutWritable {
-                    do {
-                        var decoded = try SavedWindowLayout.decodeKnown(Data(savedLayout.utf8))
-                        if decoded.schemaVersion == 0 {
-                            let backupKey = "velune.before-beta.windowLayout.\(windowIdentity)"
-                            if let previous = UserDefaults.standard.string(forKey: backupKey), previous != savedLayout {
-                                throw NSError(domain: "VelunePersistence", code: 22, userInfo: [NSLocalizedDescriptionKey: "窗口 SceneStorage 恢复副本与旧布局不一致"])
-                            }
-                            UserDefaults.standard.set(savedLayout, forKey: backupKey)
-                            decoded.schemaVersion = 1
-                            let converted = try JSONEncoder().encode(decoded)
-                            guard let text = String(data: converted, encoding: .utf8) else { throw CocoaError(.fileWriteInapplicableStringEncoding) }
-                            savedLayout = text
-                        }
-                        if window.kind == .workspace, window.hub != nil, case .remote(_)? = decoded.windowDevice {
-                            let backupKey = "velune.before-aggregation.windowLayout.\(windowIdentity)"
-                            if let previous = UserDefaults.standard.string(forKey: backupKey), previous != savedLayout {
-                                throw NSError(domain: "VelunePersistence", code: 22, userInfo: [NSLocalizedDescriptionKey: "窗口聚合恢复副本与旧布局不一致"])
-                            }
-                            UserDefaults.standard.set(savedLayout, forKey: backupKey)
-                        }
-                        saved = decoded
-                    } catch {
-                        savedLayoutWritable = false
-                        window.application.recordProblem(error, source: "窗口恢复")
-                    }
-                }
-                window.start(restoring: saved, seed: seed, persistenceID: windowIdentity)
+                window.start(restoring: nil, seed: seed, persistenceID: persistenceID, reopened: restoring)
                 traceRecovery("started")
                 // Development check of split panes without driving the interface.
                 if CommandLine.arguments.contains("--check-split-panes"), !window.isSplit { window.split(.horizontal); window.openInNewTab(); window.split(.vertical) }
@@ -410,50 +312,7 @@ private struct ConversationWindowContent: View {
                 }
                 if window.application.isPreview, CommandLine.arguments.contains("--check-composer-sharing") { window.checkComposerSharing() }
             }
-            .onDisappear {
-                // An identity replacement removes the old native anchors.
-                // Minimizing or changing Space keeps them attached.
-                let retiringModel = window
-                DispatchQueue.main.async {
-                    guard retiringModel.window == nil else { return }
-                    retiringModel.persistWorkspace()
-                    retiringModel.noteWindowClosed()
-                    retiringModel.detached.closeAll()
-                }
-            }
-            .onChange(of: seed) { _, _ in traceRecovery("seedChanged") }
-            .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { note in
-                guard startsWindowed, let shown = note.object as? NSWindow, shown === window.window else { return }
-                DispatchQueue.main.async { startsWindowed = false }
-            }
-            .onChange(of: window.savedLayout) { _, layout in
-                guard savedLayoutWritable, window.acceptsWorkspacePersistence else { return }
-                if let data = try? JSONEncoder().encode(layout), let text = String(data: data, encoding: .utf8) { savedLayout = text }
-                window.persistWorkspace()
-            }
-            .onReceive(window.composerDrafts.changes.debounce(for: .milliseconds(350), scheduler: RunLoop.main)) { _ in
-                guard savedLayoutWritable, window.acceptsWorkspacePersistence else { return }
-                if let data = try? JSONEncoder().encode(window.savedLayout), let text = String(data: data, encoding: .utf8) { savedLayout = text }
-            }
-            .onReceive(NotificationCenter.default.publisher(for: NSWindow.willCloseNotification)) { note in
-                if let closed = note.object as? NSWindow, closed === window.window {
-                    guard savedLayoutWritable else { window.noteWindowClosed(); return }
-                    if let data = try? JSONEncoder().encode(window.savedLayout), let text = String(data: data, encoding: .utf8) { savedLayout = text; window.persistWorkspace() }
-                    window.noteWindowClosed()
-                }
-            }
-            .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
-                guard savedLayoutWritable, window.acceptsWorkspacePersistence else { return }
-                if let data = try? JSONEncoder().encode(window.savedLayout), let text = String(data: data, encoding: .utf8) { savedLayout = text }
-            }
-            // A conversation link opens in a window already showing Velune.
-            .handlesExternalEvents(preferring: MacExecutionContext.admitted.externalEventSchemes, allowing: MacExecutionContext.admitted.externalEventSchemes)
             .sheet(isPresented: $window.showsAgentURI) { AgentURIView(window: window) }
-            .onOpenURL { url in
-                if !MacExecutionContext.admitted.isDevelopment, url.scheme == "agents" { window.openAgentURI(url.absoluteString); return }
-                guard let link = ConversationLink.conversation(in: url) else { return }
-                window.open(link.conversationID)
-            }
     }
 }
 
@@ -461,6 +320,27 @@ private struct ConversationWindowContent: View {
 final class VeluneApplicationDelegate: NSObject, NSApplicationDelegate {
     weak var store: DeviceStore?
     private var terminationPending = false
+
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        // Links come here rather than to a scene: no scene shows conversations.
+        NSAppleEventManager.shared().setEventHandler(self, andSelector: #selector(handleURLEvent(_:reply:)),
+                                                     forEventClass: AEEventClass(kInternetEventClass), andEventID: AEEventID(kAEGetURL))
+    }
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        // After the windows the system restores have been made.
+        DispatchQueue.main.async { WorkspaceWindows.shared.finishLaunching() }
+    }
+
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
+        if !hasVisibleWindows { WorkspaceWindows.shared.reopen() }
+        return false
+    }
+
+    @objc private func handleURLEvent(_ event: NSAppleEventDescriptor, reply: NSAppleEventDescriptor) {
+        guard let text = event.paramDescriptor(forKeyword: AEKeyword(keyDirectObject))?.stringValue, let url = URL(string: text) else { return }
+        WorkspaceWindows.shared.handle(url)
+    }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard !terminationPending else { return .terminateLater }
@@ -648,14 +528,20 @@ struct VeluneApp: App {
         NSWindow.allowsAutomaticWindowTabbing = false
         KeyRouter.install()
         GlobalHotKeys.shared.start()
+        // Before AppKit restores windows, which it does as the application launches.
+        WorkspaceWindows.shared.start(.init(store: applicationStore, previewEmpty: previewEmpty, previewSettings: previewSettings))
     }
 
     var body: some Scene {
-        WindowGroup("Velune", id: ConversationWindowKind.workspace.sceneID, for: WindowSeed.self) { $seed in
-            ConversationWindow(application: store, kind: .workspace, seed: seed, previewEmpty: previewEmpty, previewSettings: previewSettings)
-                .frame(minWidth: 520, minHeight: 420)
+        // Workspace and conversation windows are AppKit's (`WorkspaceWindows`);
+        // the scenes here are the auxiliary windows, opened only when asked
+        // for, and none takes a link: the application's handler does.
+        Window("问题", id: "problems") {
+            ProblemsView(local: store, hub: DeviceHub.shared).frame(minWidth: 600, minHeight: 320)
         }
-        .defaultSize(width: 1060, height: 760)
+        .defaultSize(width: 760, height: 480)
+        .defaultLaunchBehavior(.suppressed)
+        .handlesExternalEvents(matching: [])
         .commands {
             CommandGroup(replacing: .appInfo) {
                 Button("关于 Velune") {
@@ -701,29 +587,26 @@ struct VeluneApp: App {
             }
 
         }
-        // Its own scene: its windows' frames are not the next workspace
-        // window's, and a window restores as one opened for a conversation.
-        WindowGroup("Velune", id: ConversationWindowKind.single.sceneID, for: WindowSeed.self) { $seed in
-            ConversationWindow(application: store, kind: .single, seed: seed, previewEmpty: previewEmpty, previewSettings: previewSettings)
-                .frame(minWidth: 520, minHeight: 420)
-        }
-        .defaultSize(width: 720, height: 760)
-        .defaultLaunchBehavior(.suppressed)
-        Window("问题", id: "problems") {
-            ProblemsView(local: store, hub: DeviceHub.shared).frame(minWidth: 600, minHeight: 320)
-        }.defaultSize(width: 760, height: 480)
         Window("定时任务", id: "scheduled-tasks") {
             ScheduledTasksView(local: store, hub: DeviceHub.shared).frame(minWidth: 860, minHeight: 560)
         }.defaultSize(width: 1040, height: 700)
+        .defaultLaunchBehavior(.suppressed)
+        .handlesExternalEvents(matching: [])
         Window("已归档会话", id: "archived-conversations") {
             ArchivedConversationsView(local: store, hub: DeviceHub.shared).frame(minWidth: 680, minHeight: 420)
         }.defaultSize(width: 920, height: 640)
+        .defaultLaunchBehavior(.suppressed)
+        .handlesExternalEvents(matching: [])
         Window("资源库", id: "resource-library") {
             ResourceLibraryView(store: store).frame(minWidth: 820, minHeight: 500)
         }.defaultSize(width: 1040, height: 680)
+        .defaultLaunchBehavior(.suppressed)
+        .handlesExternalEvents(matching: [])
         Window("分析", id: "analytics") {
             AnalyticsView(store: store).frame(minWidth: 680, minHeight: 460)
         }.defaultSize(width: 860, height: 640)
+        .defaultLaunchBehavior(.suppressed)
+        .handlesExternalEvents(matching: [])
         Settings {
             SettingsView(store: store)
                 .applicationAppearance()
