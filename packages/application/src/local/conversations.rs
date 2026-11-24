@@ -852,7 +852,7 @@ impl CoreRuntime {
             // active index refresh below cannot invalidate a cached archive.
             let source = self.runtime_source_key(&runtime)?;
             let config = self.history_config(&runtime)?;
-            let summaries = if config.provider == "codex" {
+            let summaries = if config.kind == velune_agent_runtime::version::RuntimeKind::Codex166 {
                 self.read_codex_projects(&runtime, true)?
             } else {
                 browsing::shared_summaries(history::list_archived(&config, &runtime.id)?)

@@ -205,7 +205,6 @@ mod tests {
             kind: crate::version::RuntimeKind::Codex166,
             execution: crate::execution::ExecutionTarget::Local,
             os_home: None,
-            provider: "codex".into(),
             binary,
             node_binary: PathBuf::new(),
             resources_directory: home.clone(),

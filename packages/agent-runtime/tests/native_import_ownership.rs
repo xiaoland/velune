@@ -30,7 +30,6 @@ fn config(root: &Path, provider: &str, binary: PathBuf) -> HistoryConfig {
         },
         execution: ExecutionTarget::Local,
         os_home: Some(root.into()),
-        provider: provider.into(),
         binary,
         node_binary: root.join("unused-node"),
         resources_directory: root.into(),

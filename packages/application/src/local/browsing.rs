@@ -342,14 +342,18 @@ impl HistoryRead {
                 pi_history = Some(saved);
                 Some(pi_history_summary(runtime_id, summary))
             }
-            (None, Reader::Native(config)) if config.provider == "codex" => {
+            (None, Reader::Native(config))
+                if config.kind == velune_agent_runtime::version::RuntimeKind::Codex166 =>
+            {
                 let ((summary, saved), guard) =
                     history::read_codex_with_summary(config, runtime_id, &native_id)?.into_parts();
                 retention = retention.merge(guard);
                 native_history = Some(saved);
                 Some(summary)
             }
-            (None, Reader::Native(config)) if config.provider == "claude-code" => {
+            (None, Reader::Native(config))
+                if config.kind == velune_agent_runtime::version::RuntimeKind::ClaudeCode =>
+            {
                 let ((summary, saved), guard) =
                     history::read_claude_with_summary(config, runtime_id, &native_id)?.into_parts();
                 retention = retention.merge(guard);

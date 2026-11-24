@@ -24,7 +24,6 @@ impl Fixture {
             kind: RuntimeKind::ClaudeCode,
             execution: ExecutionTarget::Local,
             os_home: Some(self.0.to_path_buf()),
-            provider: "claude-code".into(),
             binary: self.0.join("unused-cli"),
             node_binary: self.0.join("unused-node"),
             resources_directory: self.0.to_path_buf(),

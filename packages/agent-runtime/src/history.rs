@@ -86,7 +86,6 @@ pub struct HistoryConfig {
     pub kind: RuntimeKind,
     pub execution: crate::execution::ExecutionTarget,
     pub os_home: Option<PathBuf>,
-    pub provider: String,
     pub binary: PathBuf,
     pub node_binary: PathBuf,
     pub resources_directory: PathBuf,
@@ -208,7 +207,10 @@ fn execute_selection(
     before_message_id: Option<&str>,
     without_message_ids: &[String],
 ) -> Result<Vec<u8>, HistoryError> {
-    if !matches!(config.provider.as_str(), "deepseek" | "claude-code") {
+    if !matches!(
+        config.kind,
+        crate::version::RuntimeKind::DeepSeek | crate::version::RuntimeKind::ClaudeCode
+    ) {
         return Err(HistoryError::new(
             HistoryFailureKind::UnsupportedProvider,
             "validate",
@@ -220,7 +222,8 @@ fn execute_selection(
         &config.root,
         &config.home,
     ] {
-        if !(config.provider == "claude-code" && path == &config.node_binary) && !path.is_absolute()
+        if !(config.kind == crate::version::RuntimeKind::ClaudeCode && path == &config.node_binary)
+            && !path.is_absolute()
         {
             return Err(HistoryError::new(
                 HistoryFailureKind::InvalidConfiguration,
@@ -228,12 +231,19 @@ fn execute_selection(
             ));
         }
     }
-    let request = json!({"operation":operation,"provider":config.provider,"home":config.home,"roots":[config.root],"runtimeId":runtime_id,"nativeId":native_id,"nativeIds":native_ids,"beforeMessageId":before_message_id,"withoutMessageIds":without_message_ids});
+    // The helper names the readers it implements; the kind check above
+    // admits only those two.
+    let provider = if config.kind == crate::version::RuntimeKind::ClaudeCode {
+        "claude-code"
+    } else {
+        "deepseek"
+    };
+    let request = json!({"operation":operation,"provider":provider,"home":config.home,"roots":[config.root],"runtimeId":runtime_id,"nativeId":native_id,"nativeIds":native_ids,"beforeMessageId":before_message_id,"withoutMessageIds":without_message_ids});
     let input = serde_json::to_vec(&request).map_err(|error| {
         HistoryError::new(HistoryFailureKind::BridgeContract, "request")
             .with_detail(error.to_string())
     })?;
-    let mut command = if config.provider == "claude-code" {
+    let mut command = if config.kind == crate::version::RuntimeKind::ClaudeCode {
         let mut command = config.execution.python();
         command.args([
             "-c",
@@ -270,7 +280,7 @@ pub fn list(
     config: &HistoryConfig,
     runtime_id: &str,
 ) -> Result<Retained<Vec<ConversationSummary>>, HistoryError> {
-    if config.provider == "codex" {
+    if config.kind == crate::version::RuntimeKind::Codex166 {
         return codex_history::list_codex_history_at(
             config.kind,
             &config.binary,
@@ -327,7 +337,7 @@ struct Index {
 
 /// The sessions a Claude Code root holds, by file state only.
 pub fn index(config: &HistoryConfig) -> Result<Vec<IndexedSession>, HistoryError> {
-    if config.provider != "claude-code" {
+    if config.kind != crate::version::RuntimeKind::ClaudeCode {
         return Err(HistoryError::new(
             HistoryFailureKind::UnsupportedProvider,
             "validate",
@@ -391,7 +401,7 @@ pub fn list_archived(
     config: &HistoryConfig,
     runtime_id: &str,
 ) -> Result<Retained<Vec<ConversationSummary>>, HistoryError> {
-    if config.provider != "codex" {
+    if config.kind != crate::version::RuntimeKind::Codex166 {
         return Ok(Retained::from_parts(Vec::new(), DataRetention::default()));
     }
     codex_history::list_codex_history_at(
@@ -412,7 +422,7 @@ pub fn read_summary(
     runtime_id: &str,
     native_id: &str,
 ) -> Result<Option<Retained<(ConversationSummary, bool)>>, HistoryError> {
-    if config.provider != "codex" {
+    if config.kind != crate::version::RuntimeKind::Codex166 {
         return Ok(None);
     }
     codex_history::read_codex_summary_at(
@@ -432,7 +442,7 @@ pub fn export_context(
     config: &HistoryConfig,
     native_id: &str,
 ) -> NativeResult<Retained<crate::import::Context>> {
-    if config.provider == "codex" {
+    if config.kind == crate::version::RuntimeKind::Codex166 {
         return codex_history::export_codex_context(config, native_id);
     }
     let bytes = execute(config, "export_context", "", Some(native_id), &[])
@@ -448,7 +458,7 @@ pub fn export_codex_context_with_summary(
     native_id: &str,
     summary: &str,
 ) -> NativeResult<Retained<crate::import::Context>> {
-    if config.provider != "codex" || config.kind != crate::version::RuntimeKind::Codex166 {
+    if config.kind != crate::version::RuntimeKind::Codex166 {
         return Err(Error::with_code(
             "portable compaction summaries are only supported for Codex",
             "unsupported",
@@ -463,7 +473,7 @@ pub fn codex_requires_portable_summary(
     config: &HistoryConfig,
     native_id: &str,
 ) -> NativeResult<bool> {
-    if config.provider != "codex" || config.kind != crate::version::RuntimeKind::Codex166 {
+    if config.kind != crate::version::RuntimeKind::Codex166 {
         return Err(Error::with_code(
             "portable compaction summary checks are only supported for Codex",
             "unsupported",
@@ -477,7 +487,7 @@ pub fn codex_thread_model(
     config: &HistoryConfig,
     native_id: &str,
 ) -> NativeResult<Retained<(String, String)>> {
-    if config.provider != "codex" || config.kind != crate::version::RuntimeKind::Codex166 {
+    if config.kind != crate::version::RuntimeKind::Codex166 {
         return Err(Error::with_code(
             "Codex thread model lookup is only supported for Codex",
             "unsupported",
@@ -492,7 +502,7 @@ pub fn codex_models_for_provider(
     config: &HistoryConfig,
     provider_id: &str,
 ) -> NativeResult<Retained<Vec<crate::native::ModelOption>>> {
-    if config.provider != "codex" || config.kind != crate::version::RuntimeKind::Codex166 {
+    if config.kind != crate::version::RuntimeKind::Codex166 {
         return Err(Error::with_code(
             "Codex model catalog is only supported for Codex",
             "unsupported",
@@ -572,10 +582,10 @@ pub fn export_context_before(
     native_id: &str,
     message_id: &str,
 ) -> NativeResult<Retained<crate::import::Context>> {
-    if config.provider == "codex" {
+    if config.kind == crate::version::RuntimeKind::Codex166 {
         return codex_history::export_codex_context_before(config, native_id, message_id);
     }
-    if config.provider != "claude-code" {
+    if config.kind != crate::version::RuntimeKind::ClaudeCode {
         return Err(Error::with_code(
             "此运行时尚未接入历史边界导出",
             "unsupported",
@@ -601,10 +611,10 @@ pub fn export_context_without(
     native_id: &str,
     message_id: &str,
 ) -> NativeResult<Retained<crate::import::Context>> {
-    if config.provider == "codex" {
+    if config.kind == crate::version::RuntimeKind::Codex166 {
         return codex_history::export_codex_context_without(config, native_id, message_id);
     }
-    if config.provider != "claude-code" {
+    if config.kind != crate::version::RuntimeKind::ClaudeCode {
         return Err(Error::with_code(
             "此运行时尚未接入单条消息导出",
             "unsupported",
@@ -628,10 +638,10 @@ pub fn export_context_without_many(
     native_id: &str,
     message_ids: &[String],
 ) -> NativeResult<Retained<crate::import::Context>> {
-    if config.provider == "codex" {
+    if config.kind == crate::version::RuntimeKind::Codex166 {
         return codex_history::export_codex_context_without_many(config, native_id, message_ids);
     }
-    if config.provider != "claude-code" || message_ids.is_empty() {
+    if config.kind != crate::version::RuntimeKind::ClaudeCode || message_ids.is_empty() {
         return Err(Error::with_code(
             "此运行时尚未接入精确消息导出",
             "unsupported",
@@ -658,7 +668,7 @@ pub fn read_codex_with_summary(
     runtime_id: &str,
     native_id: &str,
 ) -> Result<Retained<(ConversationSummary, History)>, HistoryError> {
-    if config.provider != "codex" {
+    if config.kind != crate::version::RuntimeKind::Codex166 {
         return Err(HistoryError::new(
             HistoryFailureKind::UnsupportedProvider,
             "validate",
@@ -673,7 +683,7 @@ pub fn read(
     runtime_id: &str,
     native_id: &str,
 ) -> Result<Retained<History>, HistoryError> {
-    if config.provider == "codex" {
+    if config.kind == crate::version::RuntimeKind::Codex166 {
         return codex_history::read_codex_history_at(
             config.kind,
             &config.binary,

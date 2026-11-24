@@ -635,7 +635,7 @@ pub fn verify_codex_handoff_summary_source(
     source_turn_id: &str,
     expected_fingerprint: &str,
 ) -> Result<bool> {
-    if config.kind != crate::version::RuntimeKind::Codex166 || config.provider != "codex" {
+    if config.kind != crate::version::RuntimeKind::Codex166 {
         return Err(Error::with_code(
             "handoff summary verification is only supported for Codex",
             "unsupported",
@@ -688,7 +688,7 @@ pub fn recover_codex_handoff_summary(
     expected_temporary_thread_id: Option<&str>,
     expected_temporary_fingerprint: Option<&str>,
 ) -> Result<HandoffSummaryRecovery> {
-    if config.kind != crate::version::RuntimeKind::Codex166 || config.provider != "codex" {
+    if config.kind != crate::version::RuntimeKind::Codex166 {
         return Err(Error::with_code(
             "handoff summary recovery is only supported for Codex",
             "unsupported",

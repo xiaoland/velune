@@ -27,7 +27,6 @@ impl ColdFixture {
             kind: crate::version::RuntimeKind::Codex166,
             execution: crate::execution::ExecutionTarget::Local,
             os_home: Some(directory.clone()),
-            provider: "codex".into(),
             binary,
             node_binary: PathBuf::new(),
             resources_directory: directory.clone(),

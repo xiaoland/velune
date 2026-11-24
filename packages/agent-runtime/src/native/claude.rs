@@ -1638,7 +1638,6 @@ impl NativeSession {
             kind: crate::version::RuntimeKind::ClaudeCode,
             execution: self.config.execution.clone(),
             os_home: self.config.os_home.clone(),
-            provider: "claude-code".into(),
             binary: self.config.binary.clone(),
             node_binary: self.config.node_binary.clone().unwrap_or_default(),
             resources_directory: self.config.resources_directory.clone(),

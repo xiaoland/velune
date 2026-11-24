@@ -113,7 +113,7 @@ impl CoreRuntime {
             match source.and_then(|source| {
                 self.history_config(runtime)
                     .and_then(|config| {
-                        if config.provider == "codex" {
+                        if config.kind == velune_agent_runtime::version::RuntimeKind::Codex166 {
                             self.read_codex_projects(runtime, true)
                         } else {
                             Ok(browsing::shared_summaries(history::list_archived(
