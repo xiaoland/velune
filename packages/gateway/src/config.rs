@@ -30,6 +30,13 @@ pub struct ProviderModel {
 pub enum ExecutionBackend {
     Http,
     ClaudeCli { binary: String },
+    AntigravityCli,
+}
+
+impl ExecutionBackend {
+    pub(crate) fn is_cli(&self) -> bool {
+        matches!(self, Self::ClaudeCli { .. } | Self::AntigravityCli)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -121,6 +128,15 @@ impl GatewayConfig {
                 {
                     return Err(
                         "Claude CLI requires a binary, Messages, native profile and no HTTP endpoint",
+                    );
+                }
+                ExecutionBackend::AntigravityCli
+                    if !provider.endpoint.is_empty()
+                        || provider.protocol != Protocol::Messages
+                        || provider.request_profile != RequestProfile::Native =>
+                {
+                    return Err(
+                        "Antigravity CLI requires Messages, native profile and no HTTP endpoint",
                     );
                 }
                 _ => {}

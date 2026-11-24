@@ -19,7 +19,7 @@ fail-over 由网关单独决策，provider 每次只执行一次尝试。候选�
 - 限流、配额耗尽（含结构化的 402 配额错误）、过载、5xx 与未获答复的连接或传输失败，在提交前可以切换下一成员。其他请求错误和其他状态上的权限错误结束请求。
 - 聚合路由明确拒绝 `previous_response_id`、`conversation`、Gemini 的 `cachedContent` 与 `continuationToken` 等上游状态引用。Gemini 的这两项只在直连同协议模型时传递。
 - 成功响应头交付后不再切换，包括之后的 SSE 业务失败；不拼接两个流，也不缓存完整流来扩大切换窗口。
-- Claude Code 子进程启动后，或向已有进程写入本次输入前，即进入不可自动重放状态；之后的退出、超时与解析错误不切换账户重做。CLI 故障不伪装成 HTTP 401。
+- Claude Code 启动新进程后或开始写入已有进程时进入不可自动重放状态。Antigravity 在开始写入 ACP `session/prompt` 时提交。此后退出、超时与解析错误结束本次派发。Antigravity 的 ACP 未登录错误映射为 401，遵循普通认证失败的终止规则。
 - 取消结束本次调用，不触发 fail-over，也不声称撤销已发生的上游执行。
 
 半开探测的准入恢复与业务成功分别处理：只有当前认证 epoch、当前冷却 generation 的探测收到 adapter 已通过协议检查的有效 2xx `Headers`，才解除该次健康冷却；不等待首个业务增量或完整流结束。未收到上游响应的取消只释放探测名额；上游已响应后，下游断开不撤销这份上游证据，也不建立业务成功或黏性。有效响应头交付后，Transport／Timeout 或业务失败只结束本次流并保留失败事实，不冷却提供商，也不切换重放。未获答复的连接失败、上游 5xx 与明确限流仍按提交前分类更新健康；旧响应不能解除新冷却。
@@ -30,7 +30,7 @@ fail-over 由网关单独决策，provider 每次只执行一次尝试。候选�
 
 ## 原生派发与观测
 
-Chat Completions、Responses、Messages 与 Gemini GenerateContent 共用原生派发操作：`velune_ai::NativeProvider` 以 `Protocol` 区分，共用请求、事件、失败与完成类型，每个 adapter 只服务构造时确定的一个协议。ai-provider 的 `NativeHttp` 按协议区分端点、认证头、输出上限字段与终态；Claude Code 本机后端实现同一契约。协议实现按协议组织，服务商名称、端点与模型标识是配置数据，不选择不同的通用执行路径。
+Chat Completions、Responses、Messages 与 Gemini GenerateContent 共用原生派发操作：`velune_ai::NativeProvider` 以 `Protocol` 区分，共用请求、事件、失败与完成类型，每个 adapter 只服务构造时确定的一个协议。ai-provider 的 `NativeHttp` 按协议区分端点、认证头、输出上限字段与终态；Claude Code 与 Antigravity CLI 后端通过 Messages 实现同一契约。协议实现按协议组织，服务商名称、端点与模型标识是配置数据，不选择不同的通用执行路径。
 
 gateway 按路由绑定写入精确的 `providerModelId`，其余请求字段保持原样；原生 JSON／SSE、HTTP 状态与安全响应头经同一保真边界。保真以非路由字段与响应事件的内容、顺序及含义为准，不要求 JSON 空白与成员顺序不变；同协议的未知扩展不丢弃。原生事件 sink 可等待，下游以容量为 1 的通道施加背压；取消关闭派发 Future。HTTP 入口使用 Axum。
 

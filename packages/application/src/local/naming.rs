@@ -7,6 +7,7 @@ use std::sync::mpsc;
 use velune_ai::{NativeErrorKind, NativeProvider, ProviderModelId};
 use velune_ai_provider::{
     HttpClient, NativeHttp,
+    antigravity::{Antigravity, AntigravityConfig},
     claude_code::{ClaudeCode, ClaudeCodeConfig},
     config::{CredentialMaterial, HttpEndpoint, HttpTarget},
 };
@@ -308,7 +309,7 @@ impl CoreRuntime {
             let result = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|_| NativeErrorKind::Transport)
                 .and_then(|runtime| runtime.block_on(async move {
                     let generate = async {
-                        let credential = resolver.resolve(provider.id.clone(), velune_gateway::CredentialTarget {
+                        let credential = resolver.resolve(provider.credential_reference(), velune_gateway::CredentialTarget {
                             protocol: provider.protocol, endpoint: provider.endpoint.clone(),
                             execution_backend: crate::config::gateway_execution_backend(&provider.execution_backend),
                             request_profile: crate::config::gateway_request_profile(provider.request_profile),
@@ -329,6 +330,13 @@ impl CoreRuntime {
                                 Box::new(ClaudeCode::new(backends.claude_code, ClaudeCodeConfig {
                                     executable: binary.into(), config_dir: config_dir.map(Into::into), session: None,
                                     binding: format!("automatic-title:{}", provider.id),
+                                }).map_err(|_| NativeErrorKind::InvalidInput)?)
+                            }
+                            crate::config::ExecutionBackend::AntigravityCli { .. } => {
+                                let CredentialMaterial::AntigravityCli { launch } = credential.material else { return Err(NativeErrorKind::Authentication) };
+                                Box::new(Antigravity::new(backends.antigravity, AntigravityConfig {
+                                    launch, session: None,
+                                    binding: provider.credential_reference(),
                                 }).map_err(|_| NativeErrorKind::InvalidInput)?)
                             }
                         };

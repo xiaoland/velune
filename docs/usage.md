@@ -26,6 +26,10 @@ Velune 不附带 Codex、Claude Code、Pi 等 Harness。先安装要使用的 Ha
 2. 在 Velune 的“设置 → Agent 运行时 → 快速导入”中添加 Antigravity。手动添加或配置 SSH 执行时，选择“ACP v1”，填入执行机器上 `agy` 的绝对路径，并添加单独的启动参数 `acp`。
 3. 新建会话时选择 Antigravity。打开会话后，可使用 Antigravity 公布的模型和会话选项。
 
+### 在其他运行时使用 Antigravity 订阅
+
+在对应的系统用户或 SSH 主机上用官方 `agy` 完成登录，再在 Velune 的「设置 → AI 提供商 → 添加」选择 **Google Antigravity 订阅**。填写该环境上的 `agy` 可执行文件绝对路径和 ACP 提供的模型 ID。macOS 使用 SSH 时填写已有的 OpenSSH 主机别名或 `user@host`。远端需要 Python 3 和可用的 SSH 回环端口转发。Windows 使用本机 `agy`。将分别登录的提供商模型加入同一条模型路由，即可从支持网关的运行时选择。Google 会按登录和客户端提供可用模型。 [Google ACP 模型与登录说明](https://antigravity.google/docs/ide/extensions/acp/#models-and-thinking-level)
+
 ## 使用 Google Gemini API
 
 在运行 Agent 的电脑打开「设置 → AI 提供商」，添加 **Google Gemini API** 模板，填入 Google AI Studio 创建的 Gemini API key 和要使用的模型 ID。保存后可在支持网关的运行时中选择该模型，也可将它加入模型路由。 [Google API key 说明](https://aistudio.google.com/docs/api-key)

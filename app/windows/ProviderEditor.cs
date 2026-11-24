@@ -25,7 +25,7 @@ sealed partial class ProviderEditor : UserControl
     readonly TextBox name = new() { PlaceholderText = "例如 DeepSeek", MinWidth = 280 };
     readonly ComboBox protocol = new() { MinWidth = 280 };
     readonly TextBox endpoint = new() { PlaceholderText = "例如 https://api.example.com/v1", MinWidth = 280 };
-    readonly TextBox binary = new() { PlaceholderText = "claude 可执行文件的绝对路径", MinWidth = 280 };
+    readonly TextBox binary = new() { MinWidth = 280 };
     readonly TextBox codexClientVersion = new() { MinWidth = 280 };
     readonly TextBlock nameError = Ui.Error(), endpointError = Ui.Error(), binaryError = Ui.Error(), modelsError = Ui.Error();
     readonly Button save = new() { Content = "保存", Style = Ui.Style("AccentButtonStyle") };
@@ -33,6 +33,10 @@ sealed partial class ProviderEditor : UserControl
     // Set while the editor fills its fields, which changes nothing.
     bool building = true;
     bool dirty;
+
+    ExecutionBackend? ConnectionBackend => existing?.ExecutionBackend ?? template?.ExecutionBackend;
+    bool UsesCli => ConnectionBackend is ExecutionBackend.ClaudeCli or ExecutionBackend.AntigravityCli;
+    bool UsesAntigravity => ConnectionBackend is ExecutionBackend.AntigravityCli;
 
     internal ProviderEditor(ProvidersPage page, ProviderSummary? existing, ProviderTemplate? template)
     {
@@ -44,7 +48,7 @@ sealed partial class ProviderEditor : UserControl
         authenticationSource = existing?.AuthenticationSource ?? template?.AuthenticationSource ?? ProviderAuthenticationSource.ApiKey;
         quotaSource = existing?.QuotaSource ?? template?.QuotaSource ?? ProviderQuotaSource.None;
         subscription = VeluneBindingsMethods.ProviderSubscriptionTemplate(
-            existing?.ExecutionBackend ?? template?.ExecutionBackend ?? new ExecutionBackend.Http(),
+            ConnectionBackend ?? new ExecutionBackend.Http(),
             profile, authenticationSource, quotaSource) != null;
 
         trail.ItemClicked += (_, e) =>
@@ -139,12 +143,11 @@ sealed partial class ProviderEditor : UserControl
         protocol.SelectionChanged += (_, _) => Changed();
         endpoint.Text = existing?.Endpoint ?? template?.Endpoint ?? "";
         endpoint.TextChanged += (_, _) => Changed();
-        var cli = (existing?.ExecutionBackend ?? template?.ExecutionBackend) is ExecutionBackend.ClaudeCli;
         if (subscription)
         {
             // A subscription connects as its template does.
             body.Children.Add(Ui.Card(Ui.TwoLines("协议", "由订阅决定。"), Ui.Text(page.ProtocolName(protocolID))));
-            if (!cli)
+            if (!UsesCli)
             {
                 body.Children.Add(Ui.Card(Ui.TwoLines("接口地址", "由订阅决定。"), Ui.Text(endpoint.Text)));
             }
@@ -154,7 +157,7 @@ sealed partial class ProviderEditor : UserControl
             body.Children.Add(Ui.Card(Ui.TwoLines("协议", "提供商 API 使用的协议；与运行时协议不同时由网关转换。", true), protocol));
             body.Children.Add(Ui.Card(Ui.Field(Ui.Text("接口地址"), "", endpointError), endpoint));
         }
-        if (cli)
+        if (UsesCli)
         {
             BuildBinary();
         }
@@ -169,13 +172,26 @@ sealed partial class ProviderEditor : UserControl
         }
     }
 
-    // BuildBinary lays out the local Claude Code CLI that runs the
-    // provider's requests in place of a service address.
+    // A CLI executes the provider's requests in place of an HTTP service address.
     void BuildBinary()
     {
-        binary.Text = (existing?.ExecutionBackend ?? template?.ExecutionBackend) is ExecutionBackend.ClaudeCli { Binary: var saved } ? saved : "";
-        var found = Discovery.Installed("claude-code", template?.ExecutableCommand ?? "claude");
-        if (binary.Text.Length == 0 && found.Count > 0)
+        var previousSshTarget = (ConnectionBackend as ExecutionBackend.AntigravityCli)?.SshDestination;
+        if (previousSshTarget != null)
+        {
+            body.Children.Add(Ui.Card(Ui.TwoLines("原执行目标", $"此提供商配置了 SSH {previousSshTarget}。在 Windows 上，请选择本机 agy 并保存。", true)));
+        }
+        binary.Text = ConnectionBackend switch
+        {
+            ExecutionBackend.ClaudeCli { Binary: var saved } => saved,
+            ExecutionBackend.AntigravityCli { Binary: var saved, SshDestination: null } => saved,
+            _ => "",
+        };
+        var title = UsesAntigravity ? "Antigravity CLI 程序" : "Claude Code 程序";
+        var command = template?.ExecutableCommand ?? (UsesAntigravity ? "agy" : "claude");
+        binary.PlaceholderText = $"{command} 可执行文件的绝对路径";
+        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(binary, title);
+        var found = Discovery.Installed(UsesAntigravity ? "antigravity" : "claude-code", command);
+        if (previousSshTarget == null && binary.Text.Length == 0 && found.Count > 0)
         {
             binary.Text = found[0];
         }
@@ -202,7 +218,8 @@ sealed partial class ProviderEditor : UserControl
         row.Children.Add(binary);
         row.Children.Add(discovered);
         row.Children.Add(browse);
-        body.Children.Add(Ui.Card(Ui.Field(Ui.TwoLines("Claude Code 程序", "由本机官方 CLI 登录与执行请求；须为绝对路径。", true), "", binaryError), row));
+        var detail = UsesAntigravity ? "填写本机 agy 程序的绝对路径。" : "由本机官方 CLI 登录与执行请求；须为绝对路径。";
+        body.Children.Add(Ui.Card(Ui.Field(Ui.TwoLines(title, detail, true), "", binaryError), row));
     }
 
     // Draft is the provider the fields describe.
@@ -213,10 +230,13 @@ sealed partial class ProviderEditor : UserControl
             Id: existing?.Id ?? "",
             Name: name.Text.Trim(),
             Protocol: subscription || protocol.SelectedIndex < 0 ? protocolID : page.Protocols[protocol.SelectedIndex].Id,
-            Endpoint: endpoint.Text.Trim(),
-            ExecutionBackend: (existing?.ExecutionBackend ?? template?.ExecutionBackend) is ExecutionBackend.ClaudeCli
-                ? new ExecutionBackend.ClaudeCli(binary.Text.Trim())
-                : new ExecutionBackend.Http(),
+            Endpoint: UsesCli ? "" : endpoint.Text.Trim(),
+            ExecutionBackend: ConnectionBackend switch
+            {
+                ExecutionBackend.AntigravityCli => new ExecutionBackend.AntigravityCli(binary.Text.Trim(), null),
+                ExecutionBackend.ClaudeCli => new ExecutionBackend.ClaudeCli(binary.Text.Trim()),
+                _ => new ExecutionBackend.Http(),
+            },
             RequestProfile: profile,
             AuthenticationSource: authenticationSource,
             // The account source reads only from an official address; another keeps none.
@@ -229,12 +249,12 @@ sealed partial class ProviderEditor : UserControl
     // Check shows what is missing; false keeps the editor as it is.
     bool Check(ProviderDraft draft)
     {
-        var cli = draft.ExecutionBackend is ExecutionBackend.ClaudeCli;
         Ui.Show(nameError, draft.Name.Length == 0 ? "请填写名称" : "");
-        var endpointMissing = !cli && draft.Endpoint.Length == 0;
-        var binaryMissing = cli && !Path.IsPathFullyQualified(binary.Text.Trim());
+        var endpointMissing = !UsesCli && draft.Endpoint.Length == 0;
+        var path = binary.Text.Trim();
+        var binaryMissing = UsesCli && (!Path.IsPathFullyQualified(path) || (UsesAntigravity && path.Any(char.IsControl)));
         Ui.Show(endpointError, endpointMissing ? "请填写接口地址" : "");
-        Ui.Show(binaryError, binaryMissing ? "请选择 Claude Code 程序的绝对路径" : "");
+        Ui.Show(binaryError, binaryMissing ? (UsesAntigravity ? "请填写 agy 程序的绝对路径" : "请选择 Claude Code 程序的绝对路径") : "");
         var missingID = models.Any(model => model.ID.Length == 0);
         var invalidTokens = models.Any(model => !model.ValidTokens);
         Ui.Show(modelsError, draft.Models.Length == 0 ? "请添加至少一个模型" : missingID ? "每个模型都需要模型 ID" : invalidTokens ? TokenCount.InputError : "");

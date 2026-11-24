@@ -4,7 +4,7 @@
 
 调用方通过 `GatewayConfig` 提供具有模型条目的提供商、模型路由及策略，通过 `Runner::start` 提供入口模型别名。提供商配置在启动时形成不可变快照；直接调用方修改配置后须重建 Runner；application 会使执行失效并在下次发送时自动准备，用户不需要手动连接。运行时模型选择可显式替换入口 alias 到稳定模型记录的绑定，不修改在途派发已捕获的目标。此 unit 不理解 Harness 的模型目录、思考级别转换、配置实例或认证文件。模型元数据不成为原生请求参数的默认值。仅异协议转换到 Messages、原请求无输出上限时，使用所选模型的配置上限；两者都缺失时返回必要配置错误。旧 `chatCompletionsOutputLimitField` 已从新契约删除，不提供兼容入口。
 
-提供商认证配置只有不透明 `credential_ref`。应用通过 `Runner::start(config, resolver, aliases)` 注入真正的异步 `CredentialResolver`；每次解析将资源引用与已捕获的协议、执行后端、request profile 和 endpoint 一同传入，只返回瞬时 `ResolvedCredential`。解析器的私有认证配置、目标校验、来源 adapter、helper 与进程生命周期均归调用方。网关不接收来源 JSON 或认证文件，不读取它们；CLI 可执行路径来自结构化后端配置，隔离目录由解析后的本机会话材料提供。网关不解释引用，不读取全局配置，不持久化秘密。取消派发会丢弃正在等待的解析 future；调用方必须提供符合取消合同的实现。
+提供商认证配置只有不透明 `credential_ref`。应用通过 `Runner::start(config, resolver, aliases)` 注入真正的异步 `CredentialResolver`；每次解析将资源引用与已捕获的协议、执行后端、request profile 和 endpoint 一同传入，只返回瞬时 `ResolvedCredential`。解析器的私有认证配置、目标校验、来源 adapter、helper 与进程生命周期均归调用方。网关不接收来源 JSON 或认证文件，不读取它们；Claude CLI 可执行路径来自结构化后端配置，隔离目录由解析后的会话材料提供。Antigravity 的进程启动器由认证解析器提供，持有目标环境和启动资源。网关不解释引用，不读取全局配置，不持久化秘密。取消派发会丢弃正在等待的解析 future；调用方必须提供符合取消合同的实现。
 
 Axum 负责 HTTP framing，当前只监听随机 loopback 端口并提供各协议的 POST 生成端点。请求 body 不设 gateway 自身的大小上限，读取期限为 15 秒；入口不设置固定并发拒绝门禁。流式输出采用容量为 1 的异步通道保持背压，丢弃响应 body 会取消派发。HTTP client 禁用自动重试与重定向，连接期限为 15 秒，不设置固定读取空闲期限。`Runner` 退出停止入口并取消在途任务，不等待长流完成。取消与资源限制由调用方和上游 HTTP 客户端共同决定。
 
@@ -42,11 +42,11 @@ Gemini 的入口是 `/v1beta/models/{model}:generateContent` 和 `/v1beta/models
 
 调用方可通过 `Runner::start_with_analytics` 注入非阻塞 `AnalyticsSink`，在上游原生响应、协议转换之前接收实际提供商／模型与用量、时间、结果记录。接收器负责持久化；gateway 不读取存储路径，也不从 tracing 重建用量。已有 `Runner::start` 可不采集统计。
 
-`ProviderDefinition.execution_backend` 显式选择 `Http` 或 `ClaudeCli { binary }`，`request_profile` 独立选择 `Native`、`CodexResponses`、`KimiCoding` 或 `ArkCoding`。HTTP 必须提供 endpoint；CLI 必须使用 Messages、Native profile 和空 endpoint，binary 是可执行文件路径而非 shell 命令。调用方须为 `CodexResponses` 提供生效的 `codex_client_version`，网关将此值与各提供商的路由目标绑定。订阅 profile 只允许各自的固定 HTTPS 目标，协议 adapter 再次校验；ArkCoding 拒绝普通按量 API 地址。认证来源不决定这些选择。`ResolvedCredential` 的材料、恢复身份和请求能力彼此独立，resolver 的 refresh／invalidate 默认分别返回不可用／无操作，rejected_token 不写日志。认证的创建、保存、刷新串行化与并发换号保护属于 application；独立额度查询认证不进入网关的模型凭据。
+`ProviderDefinition.execution_backend` 显式选择 `Http`、`ClaudeCli { binary }` 或 `AntigravityCli`，`request_profile` 独立选择 `Native`、`CodexResponses`、`KimiCoding` 或 `ArkCoding`。HTTP 必须提供 endpoint；CLI 必须使用 Messages、Native profile 和空 endpoint，binary 是可执行文件路径而非 shell 命令。调用方须为 `CodexResponses` 提供生效的 `codex_client_version`，网关将此值与各提供商的路由目标绑定。订阅 profile 只允许各自的固定 HTTPS 目标，协议 adapter 再次校验；ArkCoding 拒绝普通按量 API 地址。认证来源不决定这些选择。`ResolvedCredential` 的材料、恢复身份和请求能力彼此独立，resolver 的 refresh／invalidate 默认分别返回不可用／无操作，rejected_token 不写日志。认证的创建、保存、刷新串行化与并发换号保护属于 application；独立额度查询认证不进入网关的模型凭据。
 
-`ExecutionBackends` 由应用跨 Runner 持有，与 `SchedulingState` 配合。它维护 Claude Code 共享 pool 与唯一 binding 编码；认证身份或后端配置变化时，应用同时调用两者的 `invalidate_provider(gateway_id, provider_id)`，普通 token refresh 不调用。应用退出才 shutdown 共享后端。CLI 的流式和非流式请求使用既有 Messages 转换路径；没有会话 ID 时不复用 CLI 会话。
+`ExecutionBackends` 由应用跨 Runner 持有，与 `SchedulingState` 配合。它维护 CLI 共享 pool 与唯一 binding 编码；认证身份或后端配置变化时，应用同时调用两者的 `invalidate_provider(gateway_id, provider_id)`，普通 token refresh 不调用。应用退出才 shutdown 共享后端。CLI 的流式和非流式请求使用既有 Messages 转换路径；没有会话 ID 时不复用 CLI 会话。
 
-Claude CLI 的执行提交早于 HTTP 响应提交。成功启动进程后或向已存在进程写入本次输入前，后端标记 submitted；之后即使尚未返回 headers，也禁止透明切换。CLI 退出码不伪装成 HTTP 401，也不触发认证刷新；只有明确的限流、超时或传输事实更新相应健康冷却。工具执行只由调用方承担：CLI 后端转交 tool_use 并等待真实 tool_result。
+Claude CLI 的执行提交早于 HTTP 响应提交。成功启动进程后或向已存在进程写入本次输入前，后端标记 submitted；之后即使尚未返回 headers，也禁止透明切换。CLI 退出码不伪装成 HTTP 401，也不触发认证刷新；只有明确的限流、超时或传输事实更新相应健康冷却。Antigravity CLI 在写 ACP `session/prompt` 前标记 submitted，会话建立与模型协商发生在该边界之前。CLI 后端把工具调用作为 `tool_use` 交给调用方，收到 `tool_result` 后续接原执行。
 
 有挂起工具调用的显式会话，必须使用后端登记的原 provider 与认证 epoch。这是执行归属，先于策略和软黏性；其成员被移除、换绑、会话失效或额度／健康不合格时，返回明确的不可接续错误，不切到另一实例。普通文本也不能绕过尚未完成的工具归属，不从请求正文或 tool_use_id 猜测会话。外层 Harness 回合结束时调用 `ExecutionBackends::finish_user_turn`，清理仍在执行或等待工具的交互，保留已完成的空闲会话供复用。应用在用户取消时调用 `ExecutionBackends::cancel_session`，在显式新用户轮入口调用 `begin_user_turn`；后者拒绝仍运行或挂起的交互，仅解除已终止交互的失效限制，不在每次 HTTP 请求或运行时准备时重置。后端保留已失效工具 ID，网关在选择任何候选前校验本次请求尾部的工具结果，拒绝迟到结果；完整历史中的旧结果不会阻止新轮。
 

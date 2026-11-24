@@ -48,7 +48,7 @@ pub(super) fn build_routes(
                     provider.request_profile,
                     provider.codex_client_version.as_deref(),
                 )?),
-                ExecutionBackend::ClaudeCli { .. } => None,
+                ExecutionBackend::ClaudeCli { .. } | ExecutionBackend::AntigravityCli => None,
             };
             let model = ProviderModelId::new(entry.provider_model_id.clone())?;
             routes.insert(

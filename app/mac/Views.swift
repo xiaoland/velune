@@ -777,6 +777,10 @@ struct ProviderSettingsView: View {
     private func providerSummary(_ provider: ProviderSummary) -> String {
         let authentication = provider.authentication
         guard let subscription = provider.composition.subscriptionName else { return "\(provider.models.count) 个模型，地址：\(provider.endpoint)" }
+        if case .antigravityCli(_, let destination) = provider.composition.executionBackend {
+            let target = destination.map { "SSH \($0)" } ?? (store.transport?.isRemote == true ? "提供商所在设备" : "本机")
+            return "\(provider.models.count) 个模型，\(subscription)，\(target) agy 登录"
+        }
         let status = authentication.method == .oAuth ? (authentication.configured ? "已登录" : "需要登录") : (authentication.configured ? "已配置" : "需要配置认证")
         return (["\(provider.models.count) 个模型", subscription] + (authentication.accountLabel.map { ["账户 …\($0)"] } ?? []) + [status]).joined(separator: "，")
     }
@@ -829,10 +833,12 @@ private struct ProviderModelDraft: Identifiable {
 private struct ProviderModelFields: View {
     @Binding var draft: ProviderModelDraft
     var modelIDFocused: FocusState<Bool>.Binding
+    let showsRequestParameters: Bool
     @State private var parametersExpanded: Bool
-    init(draft: Binding<ProviderModelDraft>, modelIDFocused: FocusState<Bool>.Binding) {
+    init(draft: Binding<ProviderModelDraft>, modelIDFocused: FocusState<Bool>.Binding, showsRequestParameters: Bool = true) {
         _draft = draft
         self.modelIDFocused = modelIDFocused
+        self.showsRequestParameters = showsRequestParameters
         // A model with parameters opens with them visible; others stay clean.
         _parametersExpanded = State(initialValue: draft.wrappedValue.parameters != nil)
     }
@@ -862,17 +868,19 @@ private struct ProviderModelFields: View {
                 }
             }
         }
-        Section {
-            ImmediateDisclosureGroup(isExpanded: $parametersExpanded) {
-                VStack(alignment: .leading, spacing: 12) {
-                    TextField("参数", text: $draft.requestParameters, prompt: Text("逗号分隔的 key=value，如 service_tier=priority"))
-                    if !draft.validParameters { Text("每对参数写为 key=value").uiFont(.caption).foregroundStyle(.red) }
-                }.frame(maxWidth: .infinity, alignment: .leading).padding(.top, 8)
-            } label: {
-                HStack {
-                    VStack(alignment: .leading, spacing: 3) { Text("额外请求参数"); Text(draft.parametersSummary).uiFont(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }
-                    Spacer()
-                    FormInfoButton("随每个上游请求发送，覆盖适配器的同名字段；提供商不认识的参数以它自己的错误失败。速度档位是一条带参数的独立模型，例如同一模型 ID 加 service_tier=priority。")
+        if showsRequestParameters {
+            Section {
+                ImmediateDisclosureGroup(isExpanded: $parametersExpanded) {
+                    VStack(alignment: .leading, spacing: 12) {
+                        TextField("参数", text: $draft.requestParameters, prompt: Text("逗号分隔的 key=value，如 service_tier=priority"))
+                        if !draft.validParameters { Text("每对参数写为 key=value").uiFont(.caption).foregroundStyle(.red) }
+                    }.frame(maxWidth: .infinity, alignment: .leading).padding(.top, 8)
+                } label: {
+                    HStack {
+                        VStack(alignment: .leading, spacing: 3) { Text("额外请求参数"); Text(draft.parametersSummary).uiFont(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }
+                        Spacer()
+                        FormInfoButton("随每个上游请求发送，覆盖适配器的同名字段；提供商不认识的参数以它自己的错误失败。速度档位是一条带参数的独立模型，例如同一模型 ID 加 service_tier=priority。")
+                    }
                 }
             }
         }
@@ -940,7 +948,8 @@ struct ProviderEditor: View {
     /// OAuth subscriptions sign in once saved, unless they use an existing login.
     private var awaitsFirstSave: Bool { providerID == nil && composition.signInHint != nil && linkedLogin == nil }
     private var usesAPIKey: Bool { composition.authenticationSource == .apiKey }
-    private var usesClaudeCLI: Bool { composition.claudeBinary != nil }
+    private var usesClaudeCLI: Bool { if case .claudeCli = composition.executionBackend { return true }; return false }
+    private var usesAntigravityCLI: Bool { if case .antigravityCli = composition.executionBackend { return true }; return false }
     /// The account source differs from the saved one; the saved status no longer applies.
     private var linkedLoginChanged: Bool { usesClaudeCLI && linkedLogin != authentication.linkedLogin }
     /// Local Claude Code runtimes whose own login a provider can use.
@@ -952,14 +961,35 @@ struct ProviderEditor: View {
     }
     /// The command a CLI backend runs, from the template the composition comes from.
     private var executableCommand: String? { template?.executableCommand ?? composition.subscriptionTemplate?.executableCommand }
+    private var cliName: String { usesAntigravityCLI ? "Antigravity CLI" : "Claude Code" }
+    private var sshDestination: String? {
+        guard let value = composition.antigravitySSHDestination?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else { return nil }
+        return value
+    }
+    private var canDiscoverExecutables: Bool {
+        usesClaudeCLI || (usesAntigravityCLI && sshDestination == nil && store.transport?.isRemote != true)
+    }
     private var usesHTTP: Bool { if case .http = composition.executionBackend { return true }; return false }
     private var codexVersionPrompt: String {
         store.transport?.isRemote == true ? "自动（留空）" : "自动（\(defaultCodexClientVersion())）"
     }
-    private var showsQuota: Bool { usesSubscription || composition.quotaSource != .none || !quotaLimits.isEmpty || (providerID.flatMap { store.providerQuotas[$0] }.map { $0.freshness != .unsupported } ?? false) }
+    private var showsQuota: Bool { !usesAntigravityCLI && (usesSubscription || composition.quotaSource != .none || !quotaLimits.isEmpty || (providerID.flatMap { store.providerQuotas[$0] }.map { $0.freshness != .unsupported } ?? false)) }
     private var modelIndex: Int? { guard case .model(let id) = selection else { return nil }; return models.firstIndex { $0.id == id } }
-    private var claudeBinary: String? { composition.claudeBinary?.trimmingCharacters(in: .whitespacesAndNewlines) }
-    private var valid: Bool { !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && (!usesHTTP || URL(string: endpoint)?.host != nil) && (claudeBinary.map { ($0 as NSString).isAbsolutePath } ?? true) && quotaCredentialsValid && models.allSatisfy(\.valid) && (!editingAPIKey || (!apiKey.isEmpty && (originalAPIKey != nil || authentication.method != .apiKey || clearAuthentication))) }
+    private var cliBinary: String? { composition.cliBinary?.trimmingCharacters(in: .whitespacesAndNewlines) }
+    private var validCLI: Bool {
+        guard let cliBinary else { return true }
+        guard usesAntigravityCLI else { return (cliBinary as NSString).isAbsolutePath }
+        guard !cliBinary.isEmpty, cliBinary.rangeOfCharacter(from: .controlCharacters) == nil else { return false }
+        guard let sshDestination else {
+            // The selected device validates its own local path syntax.
+            return store.transport?.isRemote == true || cliBinary.hasPrefix("/")
+        }
+        let parts = sshDestination.split(separator: "@", omittingEmptySubsequences: false)
+        return cliBinary.hasPrefix("/") && parts.count <= 2
+            && parts.allSatisfy { !$0.isEmpty && !$0.hasPrefix("-") }
+            && sshDestination.rangeOfCharacter(from: CharacterSet.whitespacesAndNewlines.union(.controlCharacters).union(CharacterSet(charactersIn: "/\\"))) == nil
+    }
+    private var valid: Bool { !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && (!usesHTTP || URL(string: endpoint)?.host != nil) && validCLI && quotaCredentialsValid && models.allSatisfy(\.valid) && (!editingAPIKey || (!apiKey.isEmpty && (originalAPIKey != nil || authentication.method != .apiKey || clearAuthentication))) }
     private var quotaCredentialsValid: Bool { (quotaAccessKeyID.isEmpty && quotaSecret.isEmpty) || (!quotaAccessKeyID.isEmpty && !quotaSecret.isEmpty) }
     private var quotaAuthentication: ProviderSummary? { store.providers.first { $0.id == providerID } ?? provider }
     var body: some View {
@@ -996,7 +1026,7 @@ struct ProviderEditor: View {
                 Group {
                     if let index = modelIndex {
                         Form {
-                            ProviderModelFields(draft: $models[index], modelIDFocused: $modelIDFocused)
+                            ProviderModelFields(draft: $models[index], modelIDFocused: $modelIDFocused, showsRequestParameters: !usesAntigravityCLI)
                                 .id(models[index].id)
                             Section { Button("保存为模型模板…") { let model = models[index].definition; templateDraft = ModelTemplate(id: "", name: model.displayName, suggestedProviderModelId: model.providerModelId, nickname: model.nickname, icon: model.icon, contextWindow: model.contextWindow, maxOutputTokens: model.maxOutputTokens, reasoningLevels: model.reasoningLevels) }.disabled(!models[index].valid) }
                         }
@@ -1019,9 +1049,10 @@ struct ProviderEditor: View {
             }
             linkedLogin = provider?.authentication.linkedLogin
             editingAPIKey = (!usesSubscription || usesAPIKey) && authentication.method == .unconfigured; readAPIKeyIfNeeded()
-            if let providerID { store.readProviderQuotas([providerID]) }
-            if composition.claudeBinary != nil { discoverExecutables() }
+            if !usesAntigravityCLI, let providerID { store.readProviderQuotas([providerID]) }
+            discoverExecutables()
         }
+        .onChange(of: sshDestination) { _, _ in discoverExecutables() }
         .onChange(of: selection) { _, value in if value == .connection { readAPIKeyIfNeeded() } }
         .sheet(isPresented: $choosingTemplates) { ModelTemplatePicker(templates: store.modelTemplates) { values in for template in values { addModel(ProviderModelDraft(template.model)) } } }
         .sheet(isPresented: $showingBilling) {
@@ -1047,26 +1078,29 @@ struct ProviderEditor: View {
         case .claudeCliUsage: "Claude Code 订阅额度"
         }
     }
-    private var claudeBinaryField: some View {
-        LabeledContent("Claude Code") {
+    private var cliBinaryField: some View {
+        LabeledContent(cliName) {
             HStack {
-                TextField("Claude Code", text: Binding(get: { composition.claudeBinary ?? "" }, set: { composition.claudeBinary = $0 }), prompt: Text("claude 可执行文件的绝对路径"))
+                TextField(cliName, text: Binding(get: { composition.cliBinary ?? "" }, set: { composition.cliBinary = $0 }), prompt: Text("\(executableCommand ?? cliName) 可执行文件的绝对路径"))
                     .labelsHidden()
-                if executableCandidates.count > 1 || (executableCandidates.count == 1 && executableCandidates[0] != claudeBinary) {
-                    Menu("已发现") { ForEach(executableCandidates, id: \.self) { path in Button(path) { composition.claudeBinary = path } } }.fixedSize()
-                }
-                Button("选择…") {
-                    let panel = NSOpenPanel(); panel.canChooseFiles = true; panel.canChooseDirectories = false; panel.allowsMultipleSelection = false
-                    if panel.runModal() == .OK, let url = panel.url { composition.claudeBinary = url.path }
+                if canDiscoverExecutables {
+                    if executableCandidates.count > 1 || (executableCandidates.count == 1 && executableCandidates[0] != cliBinary) {
+                        Menu("已发现") { ForEach(executableCandidates, id: \.self) { path in Button(path) { composition.cliBinary = path } } }.fixedSize()
+                    }
+                    Button("选择…") {
+                        let panel = NSOpenPanel(); panel.canChooseFiles = true; panel.canChooseDirectories = false; panel.allowsMultipleSelection = false
+                        if panel.runModal() == .OK, let url = panel.url { composition.cliBinary = url.path }
+                    }
                 }
             }
         }
     }
     private func discoverExecutables() {
-        guard let executableCommand else { return }
+        guard canDiscoverExecutables, let executableCommand else { return }
         MacExecutableDiscovery.candidates(command: executableCommand) { paths in
+            guard canDiscoverExecutables else { return }
             executableCandidates = paths
-            if claudeBinary?.isEmpty == true, let first = paths.first { composition.claudeBinary = first }
+            if cliBinary?.isEmpty == true, let first = paths.first { composition.cliBinary = first }
         }
     }
     private var connectionForm: some View {
@@ -1088,7 +1122,12 @@ struct ProviderEditor: View {
                             .help(protocolID == .messages ? "Anthropic Messages 协议基础 URL；请求路径为 /v1/messages。" : "提供商的协议服务基础 URL。")
                     }
                 }
-                if !usesHTTP { claudeBinaryField }
+                if usesAntigravityCLI {
+                    TextField("SSH 目标", text: Binding(get: { composition.antigravitySSHDestination ?? "" }, set: { composition.antigravitySSHDestination = $0 }),
+                              prompt: Text("可留空，或填 user@host、SSH 别名"))
+                        .help("留空时在提供商所在设备执行。程序路径填写所选设备上的绝对路径。")
+                }
+                if !usesHTTP { cliBinaryField }
                 if composition.requestProfile == .codexResponses {
                     TextField("Codex 客户端版本", text: $codexClientVersion, prompt: Text(codexVersionPrompt))
                         .help("留空时采用该设备适配器支持的最新版本。可填写主版本.次版本.修订号。")
@@ -1096,7 +1135,7 @@ struct ProviderEditor: View {
             } header: {
                 Text("连接")
             } footer: {
-                Text(composition.subscriptionName.map { "\($0)固定协议与连接方式\(composition.claudeBinary != nil ? "，由本机官方 Claude Code CLI 执行请求" : "")。" + (usesAPIKey ? "填写此订阅使用的 API key。" : "使用 API key 请另外添加 API 提供商。") } ?? "切换协议后采用默认适配参数；模型 ID 与已填写的能力保留。")
+                Text(composition.subscriptionName.map { "\($0)固定协议与连接方式\(usesClaudeCLI ? "，由本机官方 Claude Code CLI 执行请求" : "")。" + (usesAPIKey ? "填写此订阅使用的 API key。" : "使用 API key 请另外添加 API 提供商。") } ?? "切换协议后采用默认适配参数；模型 ID 与已填写的能力保留。")
                     .formFooterStyle()
             }
             if composition.quotaSource == .arkCodingUsage {
@@ -1120,7 +1159,9 @@ struct ProviderEditor: View {
                         ForEach(claudeLoginRuntimes) { instance in Text("运行时“\(instance.name)”的登录").tag(LinkedClaudeLogin?.some(.runtime(instanceId: instance.id))) }
                     }
                 }
-                if editingAPIKey {
+                if usesAntigravityCLI {
+                    Text("使用所选执行环境中已有的 agy 登录。请先在该环境中登录 agy。").foregroundStyle(.secondary)
+                } else if editingAPIKey {
                     HStack {
                         if showKey { TextField("API key", text: $apiKey) } else { SecureField("API key", text: $apiKey) }
                         Button { showKey.toggle() } label: { Image(systemName: showKey ? "eye.slash" : "eye") }.buttonStyle(.borderless).help(showKey ? "隐藏 API key" : "显示 API key")
@@ -1147,7 +1188,7 @@ struct ProviderEditor: View {
                     }
                 }
                 if !editingAPIKey && (!usesSubscription || usesAPIKey) { Button("使用 API key…") { editingAPIKey = true; clearAuthentication = true; if !usesAPIKey { composition = ProviderComposition() }; apiKey = "" } }
-                if providerID != nil && authentication.linkedLogin == nil && !linkedLoginChanged && (authentication.configured || editingAPIKey) {
+                if !usesAntigravityCLI && providerID != nil && authentication.linkedLogin == nil && !linkedLoginChanged && (authentication.configured || editingAPIKey) {
                     Button("清除认证", role: .destructive) { clearAuthentication = true; editingAPIKey = false; apiKey = ""; originalAPIKey = nil }
                 }
                 if usesSubscription, let disclosure = authentication.disclosure ?? template?.disclosure {
@@ -1157,17 +1198,19 @@ struct ProviderEditor: View {
                     ImmediateDisclosureGroup("来源详情") { Text(provenance.displayName).uiFont(.callout).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading).padding(.top, 8) }
                 }
             }
-            Section {
-                Picker("查询来源", selection: $composition.quotaSource) {
-                    ForEach(providerQuotaSources(executionBackend: composition.executionBackend, authenticationSource: composition.authenticationSource), id: \.self) { source in
-                        Text(quotaSourceTitle(source)).tag(source)
+            if !usesAntigravityCLI {
+                Section {
+                    Picker("查询来源", selection: $composition.quotaSource) {
+                        ForEach(providerQuotaSources(executionBackend: composition.executionBackend, authenticationSource: composition.authenticationSource), id: \.self) { source in
+                            Text(quotaSourceTitle(source)).tag(source)
+                        }
                     }
+                } header: {
+                    Text("额度查询")
+                } footer: {
+                    Text("额度查询独立于模型请求协议与创建模板。Kimi、ARK 和官方账户查询需要相应官方服务地址及认证；更改后保存生效。")
+                        .formFooterStyle()
                 }
-            } header: {
-                Text("额度查询")
-            } footer: {
-                Text("额度查询独立于模型请求协议与创建模板。Kimi、ARK 和官方账户查询需要相应官方服务地址及认证；更改后保存生效。")
-                    .formFooterStyle()
             }
             if usesHTTP && !usesSubscription && usesAPIKey && composition.requestProfile == .native && providerBillingService(endpoint: endpoint) != nil {
                 Section {
@@ -1210,11 +1253,17 @@ struct ProviderEditor: View {
     /// Saves; `signingIn` keeps the editor open on the saved provider and starts its login.
     /// API-key subscriptions save the entered key without changing their protocol composition.
     private func commit(signingIn: Bool = false) {
-        let edit: AuthenticationEdit = editingAPIKey && apiKey != originalAPIKey ? .setApiKey(value: apiKey) : clearAuthentication ? .clear
-            : linkedLoginChanged ? linkedLogin.map(AuthenticationEdit.useClaudeCodeLogin) ?? .clear : .keep
+        let edit: AuthenticationEdit
+        if usesAntigravityCLI { edit = .keep }
+        else if editingAPIKey && apiKey != originalAPIKey { edit = .setApiKey(value: apiKey) }
+        else if clearAuthentication { edit = .clear }
+        else if linkedLoginChanged { edit = linkedLogin.map(AuthenticationEdit.useClaudeCodeLogin) ?? .clear }
+        else { edit = .keep }
         let quotaEdit: QuotaAuthenticationEdit? = clearingQuotaAuthentication ? .clear : !quotaAccessKeyID.isEmpty && !quotaSecret.isEmpty ? .setAccessKey(accessKeyId: quotaAccessKeyID, secretAccessKey: quotaSecret, confirmed: quotaConfirmed) : quotaConfirmed ? .confirmBinding : nil
         let existing = Set(store.providers.map(\.id))
-        var saving = composition; if let claudeBinary { saving.claudeBinary = claudeBinary }
+        var saving = composition
+        saving.cliBinary = cliBinary
+        saving.antigravitySSHDestination = sshDestination
         let version = codexClientVersion.trimmingCharacters(in: .whitespacesAndNewlines)
         let draft = ProviderDraft(
             id: providerID ?? "", name: name.trimmingCharacters(in: .whitespacesAndNewlines),

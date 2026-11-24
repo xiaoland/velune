@@ -46,6 +46,8 @@ Harness 与 AI 服务保持独立；读取 Harness 提供商配置属于装配�
 
 官方 API 模板包括 OpenAI Platform（默认 Responses）、Anthropic API（默认 Messages），以及 Google Gemini API（原生 GenerateContent）、DeepSeek、Moonshot、OpenRouter；均允许编辑协议与地址，额度读取按实际支持单独配置。OpenAI Platform 与 Codex 订阅、Anthropic API 与 Claude Code 订阅、Moonshot 开放平台 API 与 Kimi Code 订阅分别配置，各自使用对应服务的凭据与计费额度。不能仅凭品牌、模型名称、协议或 API key 认证方式推断为同一种接入产品。
 
+Antigravity 订阅模板引用一个执行环境里官方 `agy` 的现有登录。用户可以分别配置本机及使用独立登录的 SSH 执行环境，并把各提供商的模型加入同一路由。可用模型由各登录的 ACP 会话报告。登录与续期由 `agy` 管理，Velune 的请求用量按提供商记录。账户额度窗口缺少可归因的来源时保持未知。 [Google ACP 文档](https://antigravity.google/docs/cli/acp) · [Google 认证文档](https://antigravity.google/docs/install/?tab=cli)
+
 2026-10-17 用户随后决定提供商来源范围：Codex 订阅维持在 Velune 中逐个账户登录，不导入或粘贴 auth.json；Claude Code 订阅可沿用本机已有登录（本人默认登录或某个本机 Claude Code 运行时实例的登录），以引用方式由官方 CLI 继续保存与续期，Velune 不复制凭据，也不提供退出该登录的操作；“从 Agent 运行时导入”扩展到 Codex 与 Claude Code，首批导入 Claude Code 登录及两者已配置的 API 提供商，ACP 暂不做。
 
 Codex 订阅的连接设置允许为各个提供商指定客户端版本，格式为主版本、次版本和补丁版本。留空使用 Codex 适配器最高支持的版本。手动设置只作用于这个提供商经 Velune 网关发送的请求。

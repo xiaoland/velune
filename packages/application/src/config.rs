@@ -123,15 +123,20 @@ pub(crate) struct ConversationHandoff {
 
 impl GatewayConfig {
     pub fn validate(&self) -> Result<(), &'static str> {
+        let mut antigravity_targets = std::collections::BTreeSet::new();
         for provider in &self.providers {
             provider
                 .authentication
                 .validate_target(&provider.protocol, &provider.endpoint)?;
             provider.validate_composition()?;
-            if matches!(
-                provider.execution_backend,
-                ExecutionBackend::ClaudeCli { .. }
-            ) {
+            if let ExecutionBackend::AntigravityCli {
+                ssh_destination, ..
+            } = &provider.execution_backend
+                && !antigravity_targets.insert(ssh_destination.as_deref())
+            {
+                return Err("同一个 Antigravity 执行目标只能在网关中绑定一次");
+            }
+            if provider.execution_backend != ExecutionBackend::Http {
                 continue;
             }
             let endpoint = url::Url::parse(&provider.endpoint).map_err(|_| "提供商服务地址无效")?;
@@ -333,7 +338,7 @@ impl GatewayConfig {
                         execution_backend: gateway_execution_backend(&p.execution_backend),
                         request_profile: gateway_request_profile(p.request_profile),
                         codex_client_version: p.codex_request_version().map(str::to_owned),
-                        credential_ref: Some(p.id.clone()),
+                        credential_ref: Some(p.credential_reference()),
                         quota_limits: p
                             .quota_limits
                             .iter()
@@ -449,6 +454,26 @@ impl ProjectRecord {
     }
 }
 impl ProviderDefinition {
+    pub(crate) fn credential_reference(&self) -> String {
+        if let ExecutionBackend::AntigravityCli {
+            binary,
+            ssh_destination,
+        } = &self.execution_backend
+        {
+            // The gateway receives a credential reference without the
+            // executable or SSH destination. Reject a reference issued for an
+            // earlier binding even when the rest of the route is unchanged.
+            let target =
+                serde_json::to_vec(&(binary, ssh_destination)).expect("Antigravity target tuple");
+            let digest = Sha256::digest(target);
+            return format!(
+                "antigravity/{}/{digest:x}/{}",
+                self.authentication.generation, self.id
+            );
+        }
+        self.id.clone()
+    }
+
     pub(crate) fn effective_codex_client_version(&self) -> &str {
         self.codex_client_version
             .as_deref()
@@ -547,6 +572,9 @@ impl ProviderDefinition {
                 if source == Auth::ClaudeCli {
                     return Err("Claude CLI 认证必须由 Claude CLI 执行后端消费");
                 }
+                if source == Auth::AntigravityCli {
+                    return Err("Antigravity CLI 登录必须绑定到 Antigravity CLI 执行后端");
+                }
                 if source == Auth::CodexOAuth
                     && self.request_profile != RequestProfile::CodexResponses
                 {
@@ -569,6 +597,23 @@ impl ProviderDefinition {
                 {
                     return Err(
                         "Claude CLI 必须组合 Messages、Native、Claude CLI 认证和空 HTTP 地址",
+                    );
+                }
+            }
+            ExecutionBackend::AntigravityCli {
+                binary,
+                ssh_destination,
+            } => {
+                crate::antigravity_cli::validate_target(binary, ssh_destination.as_deref())?;
+                if source != Auth::AntigravityCli
+                    || self.protocol != Protocol::Messages
+                    || self.request_profile != RequestProfile::Native
+                    || !self.endpoint.is_empty()
+                    || self.quota_source != ProviderQuotaSource::None
+                    || !self.quota_limits.is_empty()
+                {
+                    return Err(
+                        "Antigravity CLI 需要 Messages、Native 和 CLI 登录绑定，服务地址与额度配置留空",
                     );
                 }
             }
@@ -622,6 +667,7 @@ pub(crate) fn gateway_execution_backend(
         ExecutionBackend::ClaudeCli { binary } => velune_gateway::ExecutionBackend::ClaudeCli {
             binary: binary.clone(),
         },
+        ExecutionBackend::AntigravityCli { .. } => velune_gateway::ExecutionBackend::AntigravityCli,
     }
 }
 pub(crate) fn gateway_request_profile(value: RequestProfile) -> velune_gateway::RequestProfile {

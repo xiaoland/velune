@@ -25,8 +25,7 @@ sealed partial class ProviderEditor
     // of a provider that calls a service's official address directly.
     void BuildAccountQuota()
     {
-        if (subscription || authenticationSource != ProviderAuthenticationSource.ApiKey
-            || (existing?.ExecutionBackend ?? template?.ExecutionBackend) is ExecutionBackend.ClaudeCli)
+        if (subscription || authenticationSource != ProviderAuthenticationSource.ApiKey || UsesCli)
         {
             return;
         }

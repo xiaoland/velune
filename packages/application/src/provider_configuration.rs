@@ -49,6 +49,24 @@ pub(crate) fn edit_provider(
             authentication: edit,
             quota_authentication: quota_edit,
         } => {
+            if cfg!(windows)
+                && matches!(
+                    &draft.execution_backend,
+                    ExecutionBackend::AntigravityCli {
+                        ssh_destination: Some(_),
+                        ..
+                    }
+                )
+            {
+                return Err(Error::invalid(crate::antigravity_cli::SSH_UNSUPPORTED));
+            }
+            if draft.authentication_source == ProviderAuthenticationSource::AntigravityCli
+                && matches!(edit, AuthenticationEdit::Clear)
+            {
+                return Err(Error::invalid(
+                    "Antigravity 登录由官方 agy 管理，可删除此提供商来解除绑定",
+                ));
+            }
             if draft.id.is_empty() {
                 draft.id = crate::new_record_key();
             }
@@ -82,12 +100,19 @@ pub(crate) fn edit_provider(
                         account_label: None,
                         identity: None,
                     },
+                    ProviderAuthenticationSource::AntigravityCli => {
+                        AuthenticationMaterial::AntigravityCli
+                    }
                     ProviderAuthenticationSource::RuntimeProvider => {
                         return Err(Error::invalid("运行时认证来源只能由提供商导入建立"));
                     }
                 };
             }
             let changed = reset
+                || (matches!(
+                    authentication.material,
+                    AuthenticationMaterial::AntigravityCli
+                ) && previous.is_some_and(|p| p.execution_backend != draft.execution_backend))
                 || (target_changed
                     && matches!(
                         authentication.material,
@@ -296,6 +321,151 @@ pub(crate) fn validate_template(template: &ModelTemplate) -> Result<(), Error> {
 }
 pub(crate) fn summaries(gateways: &[GatewayConfig]) -> Vec<GatewaySummary> {
     gateways.iter().map(GatewaySummary::from).collect()
+}
+
+#[cfg(test)]
+mod antigravity_tests {
+    use super::*;
+    use crate::authentication_resolver::ProviderResolver;
+    use serde_json::json;
+    use velune_gateway::{CredentialMaterial, CredentialResolutionError, CredentialTarget};
+
+    fn draft(id: &str, binary: &str) -> ProviderDraft {
+        let template = crate::provider_templates()
+            .into_iter()
+            .find(|template| template.id == "antigravityCliSubscription")
+            .unwrap();
+        ProviderDraft {
+            id: id.into(),
+            name: id.into(),
+            protocol: template.protocol,
+            endpoint: template.endpoint,
+            execution_backend: ExecutionBackend::AntigravityCli {
+                binary: std::env::temp_dir().join(binary).to_str().unwrap().into(),
+                ssh_destination: None,
+            },
+            request_profile: template.request_profile,
+            authentication_source: template.authentication_source,
+            quota_source: template.quota_source,
+            models: Vec::new(),
+            quota_limits: Vec::new(),
+            codex_client_version: None,
+        }
+    }
+
+    fn save(gateways: &mut Vec<GatewayConfig>, provider: ProviderDraft) -> Result<(), Error> {
+        edit_provider(
+            gateways,
+            "default",
+            ProviderEdit::Save {
+                provider,
+                authentication: AuthenticationEdit::Keep,
+                quota_authentication: None,
+            },
+            &|_| unreachable!(),
+        )
+    }
+
+    #[test]
+    fn antigravity_snapshot_binds_to_the_saved_target_without_credentials() {
+        let mut gateways = Vec::new();
+        let original = draft("agy", "fixture-agy");
+        save(&mut gateways, original.clone()).unwrap();
+        let saved = serde_json::to_value(&gateways[0]).unwrap();
+        assert_eq!(
+            saved["providers"][0]["authentication"],
+            json!({"material": {"kind": "antigravityCli"}, "generation": 1}),
+        );
+        assert_eq!(
+            saved["providers"][0]["executionBackend"],
+            json!(original.execution_backend)
+        );
+        let loaded: GatewayConfig = serde_json::from_value(saved).unwrap();
+        assert_eq!(loaded, gateways[0]);
+        let summary = GatewaySummary::from(&loaded).providers.remove(0);
+        assert_eq!(
+            summary.authentication_source,
+            ProviderAuthenticationSource::AntigravityCli
+        );
+        assert!(summary.authentication.configured);
+        assert!(summary.authentication.account_label.is_none());
+        assert!(summary.authentication.actions.is_empty());
+
+        let options = crate::Options {
+            home_directory: std::env::temp_dir(),
+            resources_directory: std::env::temp_dir(),
+        };
+        let old_reference = loaded.to_gateway_config().unwrap().providers[0]
+            .credential_ref
+            .clone()
+            .unwrap();
+        let old_resolver = ProviderResolver::capture(&loaded, &options);
+        save(&mut gateways, draft("agy", "fixture-agy-updated")).unwrap();
+        let new_reference = gateways[0].to_gateway_config().unwrap().providers[0]
+            .credential_ref
+            .clone()
+            .unwrap();
+        assert_ne!(old_reference, new_reference);
+        let new_resolver = ProviderResolver::capture(&gateways[0], &options);
+        let target = CredentialTarget {
+            protocol: Protocol::Messages,
+            endpoint: String::new(),
+            execution_backend: velune_gateway::ExecutionBackend::AntigravityCli,
+            request_profile: velune_gateway::RequestProfile::Native,
+        };
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            assert!(matches!(
+                old_resolver
+                    .resolve(new_reference.clone(), target.clone())
+                    .await,
+                Err(CredentialResolutionError::Unavailable)
+            ));
+            assert!(matches!(
+                new_resolver.resolve(old_reference, target.clone()).await,
+                Err(CredentialResolutionError::Unavailable)
+            ));
+            let resolved = new_resolver.resolve(new_reference, target).await.unwrap();
+            assert!(matches!(
+                resolved.material,
+                CredentialMaterial::AntigravityCli { .. }
+            ));
+        });
+    }
+
+    #[test]
+    fn antigravity_gateway_rejects_duplicate_local_targets_and_accepts_distinct_ssh_targets() {
+        let mut gateways = Vec::new();
+        save(&mut gateways, draft("agy-local", "fixture-agy")).unwrap();
+        assert!(save(&mut gateways.clone(), draft("duplicate", "other-agy")).is_err());
+        let remote = |id: &str, destination: &str| {
+            let mut provider = draft(id, "fixture-agy");
+            provider.execution_backend = ExecutionBackend::AntigravityCli {
+                binary: "/tools/agy".into(),
+                ssh_destination: Some(destination.into()),
+            };
+            provider
+        };
+        if cfg!(windows) {
+            assert!(save(&mut gateways, remote("agy-remote", "alice@host")).is_err());
+            return;
+        }
+        save(&mut gateways, remote("agy-alice", "alice@host")).unwrap();
+        save(&mut gateways, remote("agy-bob", "bob@host")).unwrap();
+        assert!(save(&mut gateways.clone(), remote("duplicate", "bob@host")).is_err());
+        for invalid in [
+            "--flag",
+            "@host",
+            "user@host@extra",
+            "ssh://host",
+            "host\nextra",
+        ] {
+            assert!(save(&mut gateways.clone(), remote("invalid", invalid)).is_err());
+        }
+    }
 }
 
 impl From<&GatewayConfig> for GatewaySummary {

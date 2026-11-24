@@ -4919,11 +4919,13 @@ dependencies = [
  "futures-util",
  "getrandom 0.4.3",
  "reqwest",
+ "rustix",
  "serde",
  "serde_json",
  "tokio",
  "tracing",
  "velune-ai",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

@@ -420,10 +420,21 @@ pub enum ConversationBrowserProject {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, uniffi::Enum)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
 pub enum ExecutionBackend {
     Http,
-    ClaudeCli { binary: String },
+    ClaudeCli {
+        binary: String,
+    },
+    AntigravityCli {
+        binary: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ssh_destination: Option<String>,
+    },
 }
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, uniffi::Record)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

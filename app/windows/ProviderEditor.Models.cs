@@ -99,7 +99,7 @@ sealed partial class ProviderEditor
             var fields = new Grid { ColumnSpacing = 12, RowSpacing = 12 };
             fields.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
             fields.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-            for (var i = 0; i < 4; i++)
+            for (var i = 0; i < 3; i++)
             {
                 fields.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
             }
@@ -109,8 +109,12 @@ sealed partial class ProviderEditor
             Place(fields, output, 1, 1);
             Place(fields, levels, 2, 0);
             Grid.SetColumnSpan(levels, 2);
-            Place(fields, parameters, 3, 0);
-            Grid.SetColumnSpan(parameters, 2);
+            if (!editor.UsesAntigravity)
+            {
+                fields.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+                Place(fields, parameters, 3, 0);
+                Grid.SetColumnSpan(parameters, 2);
+            }
 
             var asTemplate = new Button { Content = "存为模板…" };
             asTemplate.Click += (_, _) =>
@@ -216,7 +220,7 @@ sealed partial class ProviderEditor
             ContextWindow: Optional(context),
             MaxOutputTokens: Optional(output),
             ReasoningLevels: Levels(),
-            RequestParameters: Parameters());
+            RequestParameters: editor.UsesAntigravity ? null : Parameters());
 
         // Keep takes the record a save gave a new model.
         public void Keep(ProviderModel[] saved)

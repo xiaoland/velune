@@ -29,7 +29,11 @@ use velune_ai::{
     NativeOutput, NativeProvider, NativeRequest, NativeSink, NativeSuccess, Payload,
     http::{Header, ResponseMeta},
 };
-use velune_ai_provider::{NativeHttp, claude_code::ClaudeCode, claude_code::ClaudeCodeConfig};
+use velune_ai_provider::{
+    NativeHttp,
+    antigravity::{Antigravity, AntigravityConfig},
+    claude_code::{ClaudeCode, ClaudeCodeConfig},
+};
 
 /// One admitted caller request, as each attempt sends it.
 pub(super) struct Exchange {
@@ -71,7 +75,7 @@ pub(super) async fn dispatch(
                         })
                         .collect();
                     send_failure(&sender,Some(ResponseMeta { status:409,headers }),None,409,
-                        "Claude tool continuation is paused by quota, health or an invalidated provider binding").await;
+                        "CLI tool continuation is paused by quota, health or an invalidated provider binding").await;
                     return;
                 }
                 unavailable.merge(blocked);
@@ -230,10 +234,7 @@ impl Attempt<'_> {
     }
 
     fn cli(&self) -> bool {
-        matches!(
-            self.target.execution_backend,
-            ExecutionBackend::ClaudeCli { .. }
-        )
+        self.target.execution_backend.is_cli()
     }
 
     fn destination(&self) -> CredentialTarget {
@@ -369,7 +370,9 @@ impl Attempt<'_> {
         let recovery = credential.recovery.clone();
         let account = match &credential.material {
             CredentialMaterial::Http { account_id, .. } => account_id.clone(),
-            CredentialMaterial::LocalSession { .. } => None,
+            CredentialMaterial::LocalSession { .. } | CredentialMaterial::AntigravityCli { .. } => {
+                None
+            }
         };
         let Some(rejected_token) = credential
             .token()
@@ -476,6 +479,19 @@ impl Attempt<'_> {
                     ClaudeCodeConfig {
                         executable: binary.into(),
                         config_dir: config_dir.map(Into::into),
+                        session: self.state.backend_session(),
+                        binding: self.state.backend_bindings[&self.target.provider_id].clone(),
+                    },
+                )?)
+            }
+            ExecutionBackend::AntigravityCli => {
+                let CredentialMaterial::AntigravityCli { launch } = credential.material else {
+                    return Err(InvalidContract("Antigravity CLI requires an execution target"));
+                };
+                Box::new(Antigravity::new(
+                    self.state.backends.antigravity.clone(),
+                    AntigravityConfig {
+                        launch,
                         session: self.state.backend_session(),
                         binding: self.state.backend_bindings[&self.target.provider_id].clone(),
                     },

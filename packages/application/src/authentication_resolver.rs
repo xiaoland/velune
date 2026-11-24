@@ -35,7 +35,7 @@ impl ProviderResolver {
             providers: gateway
                 .providers
                 .iter()
-                .map(|p| (p.id.clone(), p.clone()))
+                .map(|p| (p.credential_reference(), p.clone()))
                 .collect(),
             options: options.clone(),
         })
@@ -143,6 +143,28 @@ impl CredentialResolver for ProviderResolver {
                     return Ok(ResolvedCredential {
                         material: velune_gateway::CredentialMaterial::LocalSession {
                             config_dir: config_dir.clone(),
+                        },
+                        recovery: velune_gateway::CredentialRecovery::None,
+                        request_capabilities: Default::default(),
+                    });
+                }
+                AuthenticationMaterial::AntigravityCli => {
+                    let crate::config::ExecutionBackend::AntigravityCli {
+                        binary,
+                        ssh_destination,
+                    } = &resource.execution_backend
+                    else {
+                        return Err(CredentialResolutionError::UnauthorizedTarget);
+                    };
+                    resource
+                        .validate_composition()
+                        .map_err(|_| CredentialResolutionError::UnauthorizedTarget)?;
+                    return Ok(ResolvedCredential {
+                        material: velune_gateway::CredentialMaterial::AntigravityCli {
+                            launch: Arc::new(crate::antigravity_cli::Launcher::new(
+                                binary.clone(),
+                                ssh_destination.clone(),
+                            )),
                         },
                         recovery: velune_gateway::CredentialRecovery::None,
                         request_capabilities: Default::default(),

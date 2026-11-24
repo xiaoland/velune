@@ -2,6 +2,7 @@
 //! local backend, protocol translation and response metrics. Configuration and
 //! credentials arrive resolved; no environment, file or configuration reads here.
 #![deny(unsafe_code)]
+pub mod antigravity;
 pub mod claude_code;
 pub mod config;
 pub use config::valid_codex_client_version;

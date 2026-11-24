@@ -183,7 +183,11 @@ private struct RouteMemberStatus: View {
         var parts: [String] = []
         if let name = member.provider.composition.subscriptionName { parts.append(name) } else if authentication.method != .unconfigured { parts.append(authentication.method.label) }
         if let label = authentication.accountLabel { parts.append("账户 …\(label)") }
-        parts.append(needsSignIn ? "需要登录" : authentication.method == .unconfigured ? "尚未配置认证" : authentication.method == .oAuth ? "已登录" : "")
+        if member.provider.composition.authenticationSource == .antigravityCli {
+            parts.append("执行目标已配置")
+        } else {
+            parts.append(needsSignIn ? "需要登录" : authentication.method == .unconfigured ? "尚未配置认证" : authentication.method == .oAuth ? "已登录" : "")
+        }
         return parts.filter { !$0.isEmpty }.joined(separator: "，")
     }
     /// Why the gateway will not send this member new requests, as far as login and quota tell.

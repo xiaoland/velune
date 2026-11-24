@@ -426,7 +426,18 @@ sealed class RouteEditor : UserControl
             var (provider, model) = member;
             var authentication = provider.Authentication;
             var reasons = new List<string>();
-            if (provider.AuthenticationSource != ProviderAuthenticationSource.None)
+            if (provider.ExecutionBackend is ExecutionBackend.AntigravityCli antigravity)
+            {
+                if (antigravity.SshDestination == null)
+                {
+                    status.Children.Add(Ui.Muted("执行目标已配置"));
+                }
+                else
+                {
+                    reasons.Add("请先在 AI 提供商设置中改用本机 agy。");
+                }
+            }
+            else if (provider.AuthenticationSource != ProviderAuthenticationSource.None)
             {
                 var account = authentication.AccountLabel is { Length: > 0 } label ? "：" + label : "";
                 var line = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };

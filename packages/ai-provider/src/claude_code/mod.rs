@@ -1,5 +1,5 @@
 //! Claude Code subprocess execution. Caller tools are served over a private loopback MCP server.
-mod stream;
+pub(crate) mod stream;
 mod usage;
 use axum::{Json, Router, routing::post};
 use serde_json::{Value, json};
@@ -83,7 +83,7 @@ impl Slot {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Continuation {
     None,
-    Pinned { binding: String },
+    Pinned { binding: String, model: Option<String> },
     Invalidated,
 }
 pub struct ClaudeCodePool {
@@ -92,30 +92,30 @@ pub struct ClaudeCodePool {
     closed: AtomicBool,
     invalid_results: Arc<Mutex<HashMap<String, HashSet<String>>>>,
 }
-struct Executor {
-    handle: tokio::runtime::Handle,
+pub(crate) struct Executor {
+    pub(crate) handle: tokio::runtime::Handle,
     stop: Option<oneshot::Sender<()>>,
     thread: Option<std::thread::JoinHandle<()>>,
 }
 impl Executor {
-    fn new() -> Self {
+    pub(crate) fn new(name: &'static str) -> Self {
         let (stop, stopped) = oneshot::channel();
         let (ready, receive) = std::sync::mpsc::sync_channel(1);
         let thread = std::thread::Builder::new()
-            .name("velune-claude-code".into())
+            .name(name.into())
             .spawn(move || {
                 let runtime = tokio::runtime::Builder::new_current_thread()
                     .enable_all()
                     .build()
-                    .expect("Claude Code runtime");
+                    .expect("native CLI runtime");
                 let _ = ready.send(runtime.handle().clone());
                 runtime.block_on(async {
                     let _ = stopped.await;
                 });
             })
-            .expect("Claude Code runtime thread");
+            .expect("native CLI runtime thread");
         Self {
-            handle: receive.recv().expect("Claude Code runtime initialization"),
+            handle: receive.recv().expect("native CLI runtime initialization"),
             stop: Some(stop),
             thread: Some(thread),
         }
@@ -137,13 +137,13 @@ impl Default for ClaudeCodePool {
     fn default() -> Self {
         Self {
             sessions: Mutex::new(HashMap::new()),
-            executor: Executor::new(),
+            executor: Executor::new("velune-claude-code"),
             closed: AtomicBool::new(false),
             invalid_results: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 }
-struct AbortOnDrop<T>(tokio::task::JoinHandle<T>);
+pub(crate) struct AbortOnDrop<T>(pub(crate) tokio::task::JoinHandle<T>);
 impl<T> Drop for AbortOnDrop<T> {
     fn drop(&mut self) {
         self.0.abort();
@@ -223,6 +223,7 @@ impl ClaudeCodePool {
             if id == session && slot.status.load(Ordering::Acquire) == 1 {
                 return Continuation::Pinned {
                     binding: binding.clone(),
+                    model: None,
                 };
             }
         }

@@ -53,7 +53,8 @@ impl Binding {
 fn cli_binary(provider: &crate::config::ProviderDefinition) -> Option<String> {
     match &provider.execution_backend {
         crate::config::ExecutionBackend::ClaudeCli { binary } => Some(binary.clone()),
-        crate::config::ExecutionBackend::Http => None,
+        crate::config::ExecutionBackend::Http
+        | crate::config::ExecutionBackend::AntigravityCli { .. } => None,
     }
 }
 /// Where a Claude Code CLI reads usage from.

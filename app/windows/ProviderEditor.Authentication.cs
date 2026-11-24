@@ -57,6 +57,10 @@ sealed partial class ProviderEditor
                 status.Children.Add(signedIn);
                 body.Children.Add(Ui.Card(status, signInActions));
                 break;
+            case ProviderAuthenticationSource.AntigravityCli:
+                Section("认证");
+                body.Children.Add(Ui.Card(Ui.TwoLines("Antigravity CLI", "使用本机已有的 agy 登录。请先在 agy 中登录。", true)));
+                break;
         }
         if (quotaSource == ProviderQuotaSource.ArkCodingUsage)
         {
@@ -104,6 +108,10 @@ sealed partial class ProviderEditor
 
     void ShowAuthentication()
     {
+        if (authenticationSource == ProviderAuthenticationSource.AntigravityCli)
+        {
+            return;
+        }
         var authentication = existing?.Authentication;
         if (authenticationSource == ProviderAuthenticationSource.ApiKey)
         {

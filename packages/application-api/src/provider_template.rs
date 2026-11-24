@@ -73,6 +73,25 @@ pub fn provider_templates() -> Vec<ProviderTemplate> {
             disclosure: SubscriptionDisclosure::for_source(ProviderAuthenticationSource::ClaudeCli),
         },
         ProviderTemplate {
+            id: "antigravityCliSubscription".into(),
+            kind: ProviderTemplateKind::Subscription,
+            name: "Google Antigravity 订阅".into(),
+            summary: "通过官方 agy 使用本机或指定 SSH 主机上已有的 Antigravity 登录。".into(),
+            protocol: Protocol::Messages,
+            endpoint: String::new(),
+            execution_backend: ExecutionBackend::AntigravityCli {
+                binary: String::new(),
+                ssh_destination: None,
+            },
+            request_profile: RequestProfile::Native,
+            authentication_source: ProviderAuthenticationSource::AntigravityCli,
+            quota_source: ProviderQuotaSource::None,
+            executable_command: Some("agy".into()),
+            disclosure: SubscriptionDisclosure::for_source(
+                ProviderAuthenticationSource::AntigravityCli,
+            ),
+        },
+        ProviderTemplate {
             id: "kimiCodingPlan".into(),
             kind: ProviderTemplateKind::Subscription,
             name: "Kimi Coding Plan".into(),

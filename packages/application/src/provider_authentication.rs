@@ -35,6 +35,8 @@ pub(crate) enum AuthenticationMaterial {
         account_label: Option<String>,
         identity: Option<String>,
     },
+    /// Only the execution target is bound. The CLI owns the login.
+    AntigravityCli,
     RuntimeProvider {
         source: AuthenticationSource,
         method: AuthenticationMethod,
@@ -71,6 +73,7 @@ impl ProviderAuthentication {
             | AuthenticationMaterial::ClaudeCliLinked { .. } => {
                 ProviderAuthenticationSource::ClaudeCli
             }
+            AuthenticationMaterial::AntigravityCli => ProviderAuthenticationSource::AntigravityCli,
         }
     }
     pub(crate) fn description(&self) -> ProviderAuthenticationDescription {
@@ -131,6 +134,14 @@ impl ProviderAuthentication {
                     id: "inspect".into(),
                     label: "检查登录状态".into(),
                 }],
+            ),
+            AuthenticationMaterial::AntigravityCli => (
+                AuthenticationMethod::OAuth,
+                true,
+                Some(AuthenticationProvenance {
+                    display_name: "执行环境中的 Antigravity CLI 已绑定，登录由 agy 管理".into(),
+                }),
+                Vec::new(),
             ),
             AuthenticationMaterial::RuntimeProvider {
                 source,

@@ -144,6 +144,10 @@ sealed class ProvidersPage : UserControl
         {
             parts.Add("Claude Code CLI");
         }
+        else if (provider.ExecutionBackend is ExecutionBackend.AntigravityCli antigravity)
+        {
+            parts.Add(antigravity.SshDestination is { } destination ? $"SSH {destination}（需改用本机 agy）" : "本机 agy 登录");
+        }
         else if (provider.Endpoint.Length > 0)
         {
             parts.Add(provider.Endpoint);

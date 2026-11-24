@@ -14,7 +14,7 @@ use crate::{
         AnalyticsOutcome, AnalyticsRecord, RequestAnalytics, SharedAnalyticsSink, TokenUsage,
         now_ms,
     },
-    config::{ExecutionBackend, Protocol},
+    config::Protocol,
     observation::Observation,
     scheduling::{
         AdmissionReason, Candidate, QuotaSource, ScheduleUnavailable, SchedulingState,
@@ -412,27 +412,27 @@ async fn ingress_observed(
             Some(&route[0]),
         );
     }
-    if let Some(session) = state.backend_session()
-        && state
-            .backends
-            .claude_code
-            .validate_result_ids(&session, &tail_tool_result_ids(protocol, &body))
-            .is_err()
-    {
-        return admission.reject(
-            observation,
-            StatusCode::CONFLICT,
-            "tool results belong to a cancelled or invalidated Claude interaction",
-            Some(&route[0]),
-        );
-    }
-    let route = match state.continuation_route(&route) {
+    let continuation = match state.backends.resolve_continuation(
+        state.backend_session().as_deref(),
+        &tail_tool_result_ids(protocol, &body),
+    ) {
+        Ok(continuation) => continuation,
+        Err(_) => {
+            return admission.reject(
+                observation,
+                StatusCode::CONFLICT,
+                "tool results have no matching CLI interaction for this session",
+                Some(&route[0]),
+            );
+        }
+    };
+    let route = match state.continuation_route(&route, continuation) {
         Ok(route) => route,
         Err(()) => {
             return admission.reject(
                 observation,
                 StatusCode::CONFLICT,
-                "Claude tool continuation is unavailable for this session and provider binding",
+                "CLI tool continuation is unavailable for this session and provider binding",
                 Some(&route[0]),
             );
         }
@@ -581,18 +581,18 @@ impl Ingress {
             .as_ref()
             .map(|session| ExecutionBackends::session_key(&self.gateway_id, session))
     }
-    pub(super) fn continuation_route(&self, route: &Route) -> Result<Route, ()> {
-        let Some(session) = self.backend_session() else {
-            return Ok(route.clone());
-        };
-        match self.backends.claude_code.continuation(&session) {
+    fn continuation_route(&self, route: &Route, continuation: Continuation) -> Result<Route, ()> {
+        match continuation {
             Continuation::None => Ok(route.clone()),
             Continuation::Invalidated => Err(()),
-            Continuation::Pinned { binding } => {
+            Continuation::Pinned { binding, model } => {
                 let mut target = route
                     .iter()
                     .find(|target| {
-                        matches!(target.execution_backend, ExecutionBackend::ClaudeCli { .. })
+                        target.execution_backend.is_cli()
+                            && model
+                                .as_deref()
+                                .is_none_or(|model| target.model.as_str() == model)
                             && self.backend_bindings.get(&target.provider_id) == Some(&binding)
                     })
                     .cloned()
