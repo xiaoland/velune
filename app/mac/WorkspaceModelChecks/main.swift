@@ -113,6 +113,25 @@ check("splitting and closing groups") {
     _ = t[4]
 }
 
+check("a closed group comes back where it was") {
+    let t = ids(4)
+    var layout = WorkspaceLayout(tab: t[0])
+    let left = layout.focused
+    layout.addGroup(with: t[1], edge: .trailing)
+    layout.addGroup(with: t[2], edge: .bottom)
+    let below = layout.focused, before = layout.grid
+    layout.focus(left)
+    layout.remove(t[2])
+    expect(layout.restoreGroup(below, with: t[2], grid: before), "restored into the arrangement it left")
+    expect(layout.grid == before && layout.focused == below && layout.focusedTab == t[2], "same grid, focused")
+    expectSound(layout, "after restoring")
+    layout.remove(t[2])
+    layout.addGroup(with: t[3], beside: left, edge: .bottom)
+    let changed = layout
+    expect(!layout.restoreGroup(below, with: t[2], grid: before) && layout == changed, "a rearranged grid keeps its new groups")
+    expect(!layout.restoreGroup(left, with: t[2], grid: before), "an existing group is not restored")
+}
+
 check("moving across groups") {
     let t = ids(3)
     var layout = WorkspaceLayout(tab: t[0])

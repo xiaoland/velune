@@ -101,19 +101,24 @@ AppKit 自绘 `TabBarView`，行为对齐系统 Tab Bar（Xcode 分屏标签也�
 - 检查：`swift run velune-workspace-checks`（`app/mac/WorkspaceModelChecks/`）覆盖选择历史、最后一个标签、重排、拆分与关闭、跨组移动、比例、编解码与拒绝不完整数据，另有 200 组各 60 步随机操作的完整性检查。在 Linux 虚拟机用 Swift 6.1.2（`-swift-version 5 -warnings-as-errors`）编译通过，36068 项全部通过，连续三次。
 - Mac 编译（2026-11-24，Xcode 26.2／Swift 6.2.3，macOS 15.4.1）：`swift run velune-workspace-checks` 36068 项全部通过；`swift build --build-system xcode --product VeluneMac` 中 `app/mac` 全部 Swift 文件在 `-warnings-as-errors` 下编译无错误无警告，仅链接因缺少 Rust `uniffi` 库失败（构建副本未编 Rust）。
 
+### 步骤 2：窗口模型改用布局模型
+
+- `ConversationWindowModel` 以 `workspace: WorkspaceLayout` 为网格、组、焦点的唯一状态，`editors` 按标签 id 持有活对象；所有改动经 `changeLayout`，随后修剪不再被引用的编辑器、跟随新标签并同步视图。`layout`／`focusedPaneID`／`isSplit`／`tabCount` 改为由布局派生。
+- `Pane` 只是组的视图投影（`tabs`、`selectedID` 由窗口按布局写入），外部不能再直接改动；现有 SwiftUI 视图不变，留待步骤 4、5 替换。原 `Pane.select` 的副作用（被挡下的 composer 焦点转给新显示标签、`activate`）集中在窗口的 `noteShown`。
+- 重开已关闭标签时，被移除的组经新增的 `WorkspaceLayout.restoreGroup` 放回原位；工作区之后被重排则在焦点组右侧新建组（行为不变）。
+- 原 `Pane` 激活历史检查并入 `velune-workspace-checks`（36075 项通过），窗口级检查改用 `insertTab`。
+- Mac 验证（2026-11-24）：`svc run build-macos` 通过；`scripts/check-macos-composer.py experience --workspace-only`、`tabs`、`ownership`、`targets` 全部通过（含关闭标签恢复已移除的分屏组、跨窗口拖放、侧聊拆分移动）。
+
 ## Mac 验证途径
 
 开发 Agent 运行在 Mac 宿主的 Linux 虚拟机中：仓库主检出经 sshfs 挂载在同一路径，虚拟机内没有 Xcode、无法运行 AppKit，`gh` 未登录。纯 Foundation 代码可在虚拟机内用 Linux 版 Swift 编译与检查；凡涉及 AppKit／SwiftUI 的步骤须在 Mac 上验证。
 
-现有通道：`ssh cage-mac`，宿主账户 `cage-runner`（独立于用户账户）。实测：
+现有通道：
 
-- 可用：Xcode 26.2、Swift 6.2.3、`/tmp` 与 `~`。编译验证的做法是 `git archive HEAD` 连同主检出的 `target/swift-ffi`、`target/swift-bindings` 经管道解包到 `~/velune-ws`，在那里 `swift build`／`swift run`。
-- 不可用：`/Volumes/WorkSSD` 一律 `Operation not permitted`（系统隐私权限拦截 SSH 会话访问外置卷），因此不能直接在工作树上用 `svc`；账户无 `svc`、无 Rust 工具链；没有图形会话（`screencapture` 失败），不能启动开发实例或取视觉证据。
+- 宿主命令工具（以用户账户在其登录会话中执行，可直接访问本工作树、`svc` 与 cargo）。构建：`CARGO_HOME=/Volumes/WorkSSD/.dev-cache/cargo svc run build-macos`（不设则 `uniffi_bindgen` 编译失败）；新工作树需先把主检出的 `target/runtime-support` 复制过来或运行 `scripts/install-runtime-support.sh`。程序化检查：`python3 scripts/check-macos-composer.py <check>`，在后台副本与私有临时目录中运行。
+- `ssh cage-mac`（独立账户 `cage-runner`）：无外置卷访问、无图形会话，仅适合把源码副本放到 `~/velune-ws` 做纯编译。
 
-完成步骤 3 起的运行与视觉验收，需要用户在以下方式中选择（不抢前台焦点的约束不变）：
-
-- 给 SSH 会话授予外置卷访问（或完全磁盘访问），并让命令以用户账户在其图形会话中运行（例如允许以用户账户 SSH 登录，或为 `cage-runner` 配置到用户会话的受限执行），同时授予屏幕录制权限以便 `screencapture -l <窗口号>` 截取开发实例窗口。
-- 或由用户在步骤节点代为运行 `svc run start-macos-dev` 与截图。
+视觉证据（步骤 3 起）：`svc run start-macos-dev` 后用 `screencapture -l <窗口号>` 截取开发实例窗口，不激活、不抢焦点；能否截取取决于宿主命令工具是否有屏幕录制权限，首次使用时确认。
 
 ## 风险与待定
 

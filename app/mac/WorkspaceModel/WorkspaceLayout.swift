@@ -347,6 +347,19 @@ public struct WorkspaceLayout: Codable, Equatable, Sendable {
         focused = id
     }
 
+    /// A group closed with its last tab put back as `grid` had it, as
+    /// reopening that tab does. `grid` must be the current grid with only
+    /// that group added; false, changing nothing, otherwise.
+    @discardableResult public mutating func restoreGroup(_ id: UUID, with tab: UUID, grid restored: PaneLayout) -> Bool {
+        let ids = restored.paneIDs
+        guard groups[id] == nil, !contains(tab: tab), ids.count == groups.count + 1, Set(ids) == Set(groupIDs + [id]),
+              restored.removing(id) == grid else { return false }
+        grid = restored.normalized()
+        groups[id] = TabGroup(tabs: [tab])!
+        focused = id
+        return true
+    }
+
     // MARK: Removing
 
     public enum Removal: Equatable, Sendable {

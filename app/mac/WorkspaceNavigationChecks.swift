@@ -7,18 +7,7 @@ import SwiftUI
     func note(_ text: String) { FileHandle.standardError.write(Data((text + "\n").utf8)) }
     workspaceKeyboardPaneFocusChecks()
     let device = DeviceStore(preview: true)
-    func tab() -> ConversationTab { ConversationTab(store: ConversationStore(device: device), start: {}) }
-    let tabs = [tab(), tab(), tab(), tab()]
-    let pane = Pane(tabs: tabs, selected: tabs[2].id)
-    pane.remove(tabs[2].id)
-    precondition(pane.selectedID == tabs[1].id, "没有激活历史时关闭当前标签应选左邻")
-    pane.select(tabs[3].id)
-    pane.select(tabs[0].id)
-    pane.remove(tabs[0].id)
-    precondition(pane.selectedID == tabs[3].id, "关闭当前标签恢复最近激活者，不按左右位置")
-    pane.remove(tabs[1].id)
-    precondition(pane.selectedID == tabs[3].id, "关闭后台标签不改变当前激活者")
-    note("PASS tab close: per-group activation history, left fallback, background close")
+    // Per-group activation history is checked with the layout model: `swift run velune-workspace-checks`.
 
     let window = ConversationWindowModel(application: device, kind: .workspace)
     window.start(restoring: nil, seed: WindowSeed(conversationID: "sample-0"))
@@ -201,7 +190,7 @@ import SwiftUI
     workspace.focus(leftID)
     FileHandle.standardError.write(Data("PASS contextual pane press: right/control/middle preserve active tab and draft ownership; primary click still focuses target\n".utf8))
     let artifact = ArtifactTab(document: .mermaid(source: "flowchart LR; A-->B", conversationID: nil, sourceID: "keyboard-artifact"))
-    workspace.focusedPane.insert(artifact)
+    workspace.insertTab(artifact)
     workspace.focus(rightID)
     workspace.focusNeighbour(forward: false)
     precondition(workspace.focusedEditor === artifact && native.firstResponder !== rightView,
