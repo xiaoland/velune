@@ -107,7 +107,8 @@ import SwiftUI
     precondition(native.closeCount == 1, "关闭最后空白标签才关闭窗口")
     note("PASS final tab: document → blank → window close")
 
-    let handle = TabHandle.HandleView(frame: NSRect(x: 0, y: 0, width: 110, height: 28))
+    let handle = TabItemView(tab: lone.focused, bar: nil, model: lone)
+    handle.frame = NSRect(x: 0, y: 0, width: 110, height: 28)
     anchor.addSubview(handle)
     handle.toolTip = "一个超出标签宽度的完整会话标题"
     let external = NSTrackingArea(rect: handle.bounds, options: [.mouseEnteredAndExited, .activeAlways], owner: native)
@@ -119,6 +120,30 @@ import SwiftUI
                  "原生 tooltip manager 的 tracking area 必须保留")
     precondition(handle.toolTip == "一个超出标签宽度的完整会话标题")
     note("PASS tab tooltip: full title and foreign tracking survive hover updates")
+
+    do {
+        // Tabs past the bar's width scroll; the shown one is brought into view; titles that fit are whole.
+        let model = ConversationWindowModel(application: device, kind: .workspace)
+        model.start(restoring: nil, seed: WindowSeed(conversationID: "sample-0"))
+        for _ in 0..<11 { model.openInNewTab() }
+        let bar = TabBarView(window: model, pane: model.focusedPane)
+        let host = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 420, height: 28), styleMask: [.titled], backing: .buffered, defer: true)
+        host.contentView = bar
+        bar.update()
+        bar.layoutSubtreeIfNeeded()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+        guard let scroll = bar.subviews.compactMap({ $0 as? NSScrollView }).first, let strip = scroll.documentView else { fatalError("标签栏缺少滚动视图") }
+        let items = strip.subviews.compactMap { $0 as? TabItemView }
+        precondition(items.count == 12 && strip.frame.width > scroll.contentSize.width, "超出栏宽的标签可滚动：\(strip.frame.width) / \(scroll.contentSize.width)")
+        precondition(items.allSatisfy { $0.frame.width >= TabBarView.minimumTabWidth && $0.frame.width <= TabBarView.maximumTabWidth }, "标签宽度在上下限之内")
+        guard let shown = items.first(where: { $0.tab.id == model.focusedPane.selectedID }) else { fatalError("缺少显示中的标签") }
+        precondition(scroll.contentView.bounds.contains(NSRect(x: shown.frame.minX, y: 0, width: shown.frame.width, height: 1)), "显示中的标签滚入可见范围")
+        for item in items where item.frame.width < TabBarView.maximumTabWidth {
+            let title = (item.tab.title as NSString).size(withAttributes: [.font: NSFont.systemFont(ofSize: 11 * AppearancePreferences.shared.values.uiScale)]).width
+            precondition(item.frame.width - 2 * TabItemView.titleInset >= title, "未达上限的标签标题完整：\(item.tab.title)")
+        }
+        note("PASS tab bar: overflow scrolls, the shown tab is brought into view, widths within limits, titles under the limit whole")
+    }
 
     precondition(ConversationListClicks.openDelay(pressedAt: 10, now: 10.1, interval: 0.5) > 0.39)
     precondition(ConversationListClicks.openDelay(pressedAt: 10, now: 10.6, interval: 0.5) == 0,

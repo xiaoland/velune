@@ -40,7 +40,7 @@ import VeluneBindings
                 try! bitmap.representation(using: .png, properties: [:])!.write(to: directory.appendingPathComponent("\(state)-\(Int(width))-pane.png"))
             }
             @MainActor func hasCompleteTooltip(_ view: NSView) -> Bool {
-                if let handle = view as? TabHandle.HandleView, handle.toolTip == snapshot.conversation.title { return true }
+                if let handle = view as? TabItemView, handle.toolTip == snapshot.conversation.title { return true }
                 return view.subviews.contains(where: hasCompleteTooltip)
             }
             precondition(hasCompleteTooltip(pane), "Truncated tab must retain complete native tooltip")
