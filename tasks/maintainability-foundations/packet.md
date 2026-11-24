@@ -34,23 +34,32 @@
 - 方针：[验证方式](../../docs/development/validation.md)已重写，来源为 S93。
 - 测试基建：新增 `packages/test-support`（`velune-test-support`，仅作 dev-dependency）。首批迁移 application、bindings、agent-runtime 中 10 个手写夹具，删去各自的随机目录命名与 `Drop` 清理。
 - 验收基建：新增 `tests/acceptance/`，入口 `python3 tests/acceptance/run.py`（`svc run acceptance`）。首个用例 `codex_conversation_lifecycle` 由 `scripts/check-conversation-parity.py` 迁入。
-- 架构：`HistoryConfig` 删去与 `kind` 重复的 `provider` 字符串，原生历史读取的分支改为匹配 `RuntimeKind`，消除 `provider != "codex" || kind != Codex166` 一类双重判定；`agents://` 地址解析为 `UriFamily` 枚举，application 中按 `"codex"`／`"claude"`／`"pi"` 字符串的分支改为穷尽匹配。
+- 第二批夹具迁移：agent-runtime 的 Pi 端口、Claude 端口、后台任务、问题对账夹具，application 的 Codex 问题夹具与 send_turn 集成测试；`TempRoot` 可序列化为路径。
+- 架构：`HistoryConfig` 删去与 `kind` 重复的 `provider` 字符串，原生历史读取的分支改为匹配 `RuntimeKind`，消除 `provider != "codex" || kind != Codex166` 一类双重判定；`agents://` 地址解析为 `UriFamily` 枚举，application 中按 `"codex"`／`"claude"`／`"pi"` 字符串的分支改为穷尽匹配；可执行发现的命令与最低版本改由运行时变体声明，消除与版本表的重复（DeepSeek 下限此前已分叉）。
 
-## 验收现状（2026-11-24）
+## 验收现状（2026-11-25）
 
-主机镜像构建：fmt 通过；`clippy --workspace --all-targets --all-features -D warnings` 通过；remote-only bindings 依赖边界通过（981 项，不含本地运行时 crate）。bindings 两个窄特性集的 Clippy 尚未取得明确退出码。`cargo test --workspace`：agent-runtime 290/291、application 269/271，其余全部通过。三项失败：
+在主机构建镜像中对分支最终源码执行：
 
-- `local::submission::tests::finished_parent_work_clears_the_viewed_childs_loading_state`：develop 的 3e939ac37 把 `parent.work_settled()`（无活动连接视为已结算）改为 `work_status() == Settled`，无活动连接的父会话返回 `Untracked`，子会话加载态不再清除。判定为 develop 已有回归，待修正 `parent_finished_child` 对 `Untracked` 的处理并复验。
-- `local::organization::pagination_tests::archive_reads_native_pages_and_only_locally_archived_titles`：Codex 归档扫描次数与期望的 4 不符，实际值未取得。测试体与 develop 仅差 `TempRoot` 一行，需对照 develop 基线确认是否为 develop 新增的后台索引预热造成的竞争。
-- `client::port::tests::pi_port_pending_and_unconsumed_evidence_reserve_replies_and_count_encoded_bytes`（tests.rs:288）：运行时尚未迁移该文件，原因未查。
+- Rust 静态门禁：fmt、`clippy --workspace --all-targets --all-features -D warnings`、bindings 的 `--no-default-features` 与 `--features remote` 两个特性集 Clippy 均通过；remote-only 依赖树不含本地运行时 crate（981 项）。
+- `cargo test --workspace`：628 项通过、1 项失败。失败项 `archive_reads_native_pages_and_only_locally_archived_titles` 已由 9f8a4ddf3 修正后单独复跑通过（见下）。
+- Mac：`svc run build-macos`（dev，含 `VELUNE_DEV_CHECKS`）通过，Rust 库、Swift、资源与签名用时 807 秒。旧分支 T2 记录的“Mac 桌面端调用签名未验证”由此关闭。程序化检查 `late-send-echo`（develop 新增、经 CheckAccess 移植）与 `outgoing-submissions` 通过；两者不创建可见窗口、不激活应用。后者产生的 18 张截图未作视觉判断。
+- 验收套件：`tests/acceptance/run.py --build --codex <ChatGPT.app 内置 codex-cli 0.167.0-alpha.4.1>` 的 `codex_conversation_lifecycle` 通过，8 项检查、3.8 秒，每阶段恰一次上游调用。清单中的 `source.head` 是构建镜像的分离 HEAD（develop），不代表本分支提交；镜像源码由同步脚本从本工作树复制。Homebrew 的 codex 0.159.3 不在适配器范围内。
 
-Mac、Windows 构建与验收套件实跑均未进行；旧分支 T2 记录的“桌面端调用签名未验证”仍然开放。
+修正的问题：
 
-工作树中另有未提交、未验证的改动：第二批夹具迁移（agent-runtime 5 个端口／会话测试、question_tests、send_turn）、`RuntimeVariant::command`／`executable()` 取代 `local/mod.rs` 中按 `family_id` 硬编码的可执行发现（DeepSeek 下限统一为变体声明的 0.2.0-rc.2，Mac 只取数字部分，行为不变）、`run.py` 版本行识别修正。
+- develop 回归（4f7746ce6）：3e939ac37 把父任务完成判定改为 `work_status() == Settled`，无活动连接的父会话变成 `Untracked`，子会话加载态不清除。恢复“无活动连接即无剩余工作”。
+- 时序依赖的测试（9f8a4ddf3）：develop 新增的启动期 Codex 活动索引预热与归档视图共用假 Codex 的扫描日志，整份日志断言随交错而变（实测 8～9 行）。改为只核对归档分页。曾验证非规范化临时目录同样失败，排除了 TempRoot 的影响。
+- `pi_port_pending_and_unconsumed_evidence_reserve_replies_and_count_encoded_bytes` 在第一次全量运行中失败一次，此后两次运行通过，原因未查，记为偶发。
+
+未验证：Windows 与 Android 构建；Mac 的可见界面、系统键盘与 AX 验收。
+
+构建环境：主机的 `mbx` 编译缓存会清理它认为已脱离检出的 target 内容，本任务的几轮测试因此反复从头编译依赖。
 
 ## 待处理
 
-- `discovery.rs`、`local/mod.rs`、`runtime_discovery.rs` 仍按 `family_id` 字符串判断 Pi／Codex，应由运行时描述携带所需能力。
+- `discovery.rs` 与 `runtime_discovery.rs` 仍按 `family_id` 字符串判断 Pi／Codex（`local/mod.rs` 的可执行发现已改由 `RuntimeVariant::executable()` 提供），应由运行时描述携带所需能力。
+- 验收 runner 的 `--build` 不复用平台构建已有的绑定库，且清单只记录所在检出的 HEAD；应增加内容指纹并允许直接指定已构建的库。
 - 其余约 110 处手写临时目录、176 处手动 `remove_dir_all` 与 15 段内联假进程脚本按文件迁移。
 - `scripts/check-*` 其余端到端脚本迁入验收套件。
 - 超大模块：`local/editing.rs` 的内联测试外移后再按用例拆分；`service.rs`、`native/codex.rs`、`ConversationStore.swift` 的拆分需先确认边界测试。
