@@ -53,6 +53,11 @@ import VeluneBindings
     func loaded(_ index: Int) -> UInt32 { device.conversationGroups.first { $0.key == keys[index] }!.loaded }
     precondition(loaded(0) == 2 && loaded(1) == 2 && loaded(4) == 0 && loaded(5) == 0)
     let original = Set(device.conversations.map(\.id))
+    if CommandLine.arguments.contains("--check-palette-search") {
+        let target = "synthetic-pagination:00000000-0000-4000-8000-000004000005"
+        checkConversationPaletteSearch(device: device, target: target, initialIDs: original)
+        exit(0)
+    }
     let started = ProcessInfo.processInfo.systemUptime
     device.loadMoreConversations(in: keys[4])
     device.loadMoreConversations(in: keys[4])

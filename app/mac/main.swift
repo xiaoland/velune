@@ -533,7 +533,7 @@ enum VeluneEntry {
             admitMacExecution()
             commandPaletteChecks()
         }
-        if CommandLine.arguments.contains("--check-list-pagination") {
+        if CommandLine.arguments.contains("--check-list-pagination") || CommandLine.arguments.contains("--check-palette-search") {
             admitMacExecution()
             conversationPaginationChecks()
         }

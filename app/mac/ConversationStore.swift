@@ -1037,14 +1037,16 @@ final class ConversationStore: ObservableObject {
         }
     }
     private func abandonLinkedConversationLookup() { linkedConversationRequest = nil; reachingConversationID = nil }
+    func rememberOffListConversation(_ conversation: Conversation) {
+        offListConversations.removeAll { $0.id == conversation.id }
+        offListConversations.append(conversation)
+    }
     private func finishLinkedConversationLookup(_ result: Result<ListedConversation?, Error>, id: String, move: NavigationMove, request: UUID) {
         guard linkedConversationRequest == request else { return }
         abandonLinkedConversationLookup()
         switch result {
         case .success(let found?):
-            let reached = BindingMapping.listed(found)
-            offListConversations.removeAll { $0.id == reached.id }
-            offListConversations.append(reached)
+            rememberOffListConversation(BindingMapping.listed(found))
             selectConversation(id: id, move: move)
         case .success(nil):
             clearInitialOpening()

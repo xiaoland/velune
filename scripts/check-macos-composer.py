@@ -132,7 +132,7 @@ def prepare_claude_continuation(root, evidence, path, lifetime, editing):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('check', choices=['editor', 'runtime-editor', 'fork-send', 'claude-compact-edit', 'queued-editor', 'archived', 'palette-ime', 'pagination', 'continuation', 'targets', 'tabs', 'ownership', 'geometry', 'controls', 'credits', 'background', 'experience', 'appearance-zoom', 'recovery', 'compaction', 'sidebar', 'provider-analytics', 'background-notifications', 'notification-navigation', 'sidebar-toolbar', 'outgoing-submissions', 'transcript'])
+    parser.add_argument('check', choices=['editor', 'runtime-editor', 'fork-send', 'claude-compact-edit', 'queued-editor', 'archived', 'palette-ime', 'palette-search', 'pagination', 'continuation', 'targets', 'tabs', 'ownership', 'geometry', 'controls', 'credits', 'background', 'experience', 'appearance-zoom', 'recovery', 'compaction', 'sidebar', 'provider-analytics', 'background-notifications', 'notification-navigation', 'sidebar-toolbar', 'outgoing-submissions', 'transcript'])
     parser.add_argument('--app', type=Path, default=app_bundle_path(ROOT, 'dev'))
     parser.add_argument('--output', type=Path)
     parser.add_argument('--dark', action='store_true')
@@ -193,6 +193,8 @@ def main():
                 flags.append('--archived-check-dark')
         if args.check == 'palette-ime':
             flags = ['--check-palette-ime']
+        if args.check == 'palette-search':
+            flags = ['--check-palette-search']
         if args.check == 'pagination':
             flags = ['--check-list-pagination']
         if args.check == 'tabs':

@@ -1471,11 +1471,11 @@ struct WindowSeed: Codable, Hashable {
     }
 
     /// Open a conversation, or a new one, in a new tab after the focused pane's shown tab.
-    func openInNewTab(_ conversationID: String? = nil, device target: DeviceStore? = nil) {
+    func openInNewTab(_ conversationID: String? = nil, device target: DeviceStore? = nil, resolved: Conversation? = nil) {
         if let conversationID, select(showing: conversationID, device: target) { return }
         let pane = focusedPane
         let index = pane.tabs.firstIndex { $0.id == pane.selectedID }.map { $0 + 1 }
-        pane.insert(makeTab(device: target, opening: conversationID), at: index)
+        pane.insert(makeTab(device: target, opening: conversationID, resolved: resolved), at: index)
         focused.store.noteFocused()
     }
 
@@ -1820,8 +1820,9 @@ struct WindowSeed: Codable, Hashable {
         addPane(with: makeTab(device: target, opening: conversationID), beside: focusedPaneID, edge: axis == .horizontal ? .trailing : .bottom)
     }
 
-    private func makeTab(device target: DeviceStore? = nil, opening conversationID: String?) -> ConversationTab {
+    private func makeTab(device target: DeviceStore? = nil, opening conversationID: String?, resolved: Conversation? = nil) -> ConversationTab {
         let store = ConversationStore(device: target ?? application)
+        if let resolved, resolved.id == conversationID { store.rememberOffListConversation(resolved) }
         // A tab owns its destination before reading finishes. Otherwise a
         // close/restart during a remote lookup restores an empty tab.
         if let conversationID { store.noteRestoredConversation(conversationID) }
