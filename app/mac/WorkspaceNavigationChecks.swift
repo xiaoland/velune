@@ -8,6 +8,37 @@ import SwiftUI
     workspaceKeyboardPaneFocusChecks()
     let device = DeviceStore(preview: true)
     // Per-group activation history is checked with the layout model: `swift run velune-workspace-checks`.
+    do {
+        // The grid's panes are native views kept per group: never ordered on screen.
+        let model = ConversationWindowModel(application: device, kind: .workspace)
+        model.start(restoring: nil, seed: WindowSeed(conversationID: "sample-0"))
+        let grid = PaneGridView(window: model, previewEmpty: false)
+        let host = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1200, height: 800), styleMask: [.titled], backing: .buffered, defer: true)
+        host.contentView = grid
+        func apply() { grid.apply(model.layout, groups: Set(model.panes.keys)); grid.layoutSubtreeIfNeeded() }
+        apply()
+        let first = model.focusedPaneID
+        guard let firstView = grid.paneView(first) else { fatalError("缺少第一组的面板视图") }
+        model.split(.horizontal)
+        apply()
+        let second = model.focusedPaneID
+        precondition(grid.paneView(first) === firstView && firstView.window === host, "拆分不重建已有组的面板视图")
+        model.split(.vertical)
+        apply()
+        guard let secondView = grid.paneView(second) else { fatalError("缺少第二组的面板视图") }
+        model.closePane(first)
+        apply()
+        precondition(grid.paneView(second) === secondView && secondView.window === host && grid.paneView(first) == nil && firstView.superview == nil,
+                     "关闭一组只移走它自己的视图")
+        model.resize(at: [], fractions: [3, 1])
+        apply()
+        guard let root = grid.subviews.first as? PaneSplitView, root.subviews.count == 2 else { fatalError("网格根应为两项的分栏") }
+        // The first group closed: the two left are stacked.
+        let heights = root.subviews.map(\.frame.height)
+        precondition(!root.isVertical && abs(heights[0] / (heights[0] + heights[1]) - 0.75) < 0.01, "分栏按布局比例排布：\(heights)")
+        precondition(grid.paneView(second) === secondView, "调整比例不重建面板视图")
+        note("PASS pane grid: group views survive splits and closes, closed groups leave, shares follow the layout")
+    }
 
     let window = ConversationWindowModel(application: device, kind: .workspace)
     window.start(restoring: nil, seed: WindowSeed(conversationID: "sample-0"))

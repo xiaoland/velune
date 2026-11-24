@@ -31,7 +31,7 @@ import SwiftUI
     // production PaneAnchor only when this hierarchy moves into the NSWindow.
     let host = NSHostingView(rootView:
         VStack(spacing: 0) {
-            PaneLayoutView(window: window, layout: window.layout, path: [], previewEmpty: false)
+            PaneGrid(window: window, previewEmpty: false)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             Divider()
             ToolContent(kind: .composer, window: window, side: .bottom)
@@ -77,7 +77,7 @@ import SwiftUI
     }
     precondition(window.window === native, "窗口命中测试必须读取实际生产视图注册的锚点")
     var observations = [
-        "覆盖：真实 PaneLayoutView + ToolContent(.composer) 的离屏 NSHostingView/NSWindow；1280×900。",
+        "覆盖：真实 PaneGrid + ToolContent(.composer) 的离屏 NSHostingView/NSWindow；1280×900。",
         "输入：构造 NSEvent，仅调用生产 handleMouseDown 本地事件入口；没有物理鼠标、系统事件派发或 AX 操作。",
         "窗口：prohibited；未调用 orderFront、makeKey、show 或激活应用。",
     ]

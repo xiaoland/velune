@@ -124,7 +124,7 @@ struct VeluneRootView: View {
     private var panes: some View {
         GeometryReader { geometry in
             VStack(spacing: 0) {
-                PaneLayoutView(window: window, layout: window.layout, path: [], previewEmpty: previewEmpty)
+                PaneGrid(window: window, previewEmpty: previewEmpty)
                 if !window.tools.tools(in: .bottom).isEmpty { BottomAreaView(window: window, available: geometry.size.height) }
             }
         }
