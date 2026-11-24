@@ -9,6 +9,9 @@
 /.build/
 /.swiftpm/
 
+# Task scratch files and verification snapshots.
+/tmp/
+
 # Local state and secrets.
 /.pi/
 /.ryugi/

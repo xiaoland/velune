@@ -4,7 +4,9 @@
 
 2026-11-23 用户确认诊断与方向（[S92](../../docs/sources/workspace-keyboard.md#s92)）：先只处理 Mac；工作区窗口外壳改用 AppKit；工具模式收敛为停靠、独立窗口、隐藏，取消吸附浮动面板；最低系统 macOS 14+（现行构建已是 15.0，无需改动）。共享布局模型暂留 Mac 的 Swift 内，Windows 暂不接入，跨平台共享待 Mac 稳定后再议。
 
-本包只有方案，尚未改源码；产品规则已同步到 [PRD](../../docs/prd/workspace-layout.md#窗口系统)。不重装日常应用，不读取真实会话；验收用开发实例与合成数据。
+`feat/workspace-native-shell` 已抽出独立的布局模型，模型检查在 Linux 和 Mac 上通过。下一步是将窗口模型接入该布局模型。AppKit 外壳及其运行和视觉验收仍待完成。
+
+下文保留设计基线，当前实施顺序和验证结果见该分支的同名任务包。产品规则见 [PRD](../../docs/prd/workspace-layout.md#窗口系统)。验收使用开发实例与合成数据。
 
 ## 问题根源
 
@@ -64,7 +66,7 @@ AppKit 自绘 `TabBarView`，行为对齐系统 Tab Bar（Xcode 分屏标签也�
 
 - 标签为 `NSView`，滑动与让位用 Core Animation；按下即选中，双击重命名，中键关闭，悬停关闭钮，运行／待答／未读状态沿用现有规则。
 - 拖动统一走 `NSDraggingSource`／`NSDraggingDestination`：栏内重排、跨组、跨窗口、拖到所有窗口外成为会话独立窗口；组内容区边缘四分之一拆分，中间并入。会话列表拖入沿用私有类型 `local.velune.conversation-link`。
-- 标签多时的溢出与宽度规则在实现前单独确定（现行为等分并截断）。
+- 标签溢出时横向滚动。选中、新开或拖入的标签会自动滚入可见区，具体宽度留待实现时核定。
 
 ### 6. 工具窗口
 
@@ -90,5 +92,4 @@ AppKit 自绘 `TabBarView`，行为对齐系统 Tab Bar（Xcode 分屏标签也�
 
 - 步骤 0 若显示 SwiftUI `Commands` 无法可靠跟随 AppKit 窗口焦点，菜单需改为 AppKit 动作与 `validateMenuItem`，工作量增加，届时向用户说明。
 - 现有大量 `--check-*` 启动参数挂在 `ConversationWindowContent.onAppear`，需随外壳迁移改挂到窗口控制器。
-- 标签溢出（等分截断或滚动）在步骤 5 前确认。
 - 共享布局模型是否下沉到 Rust 供 Windows 共用，Mac 完成后再决定。
