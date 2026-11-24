@@ -99,17 +99,21 @@ AppKit 自绘 `TabBarView`，行为对齐系统 Tab Bar（Xcode 分屏标签也�
 - 相对旧行为的差异：`removing` 关闭组后会合并同轴嵌套（旧实现可能留下 `split(h, [split(h, …)])`），`resizing` 拒绝路径或数量不符的比例。
 - `app/mac/WorkspaceModelImport.swift` 以 `@_exported import` 让 App 各文件照旧使用这些类型。
 - 检查：`swift run velune-workspace-checks`（`app/mac/WorkspaceModelChecks/`）覆盖选择历史、最后一个标签、重排、拆分与关闭、跨组移动、比例、编解码与拒绝不完整数据，另有 200 组各 60 步随机操作的完整性检查。在 Linux 虚拟机用 Swift 6.1.2（`-swift-version 5 -warnings-as-errors`）编译通过，36068 项全部通过，连续三次。
-- **尚未在 Mac 编译**：`Package.swift` 新增两个目标，`VeluneMac` 依赖新模块并排除其目录；Linux 上 `swift package dump-package` 解析通过。移除 `Workspace.swift` 中旧类型后的 App 整体编译需在 Mac 上确认。
+- Mac 编译（2026-11-24，Xcode 26.2／Swift 6.2.3，macOS 15.4.1）：`swift run velune-workspace-checks` 36068 项全部通过；`swift build --build-system xcode --product VeluneMac` 中 `app/mac` 全部 Swift 文件在 `-warnings-as-errors` 下编译无错误无警告，仅链接因缺少 Rust `uniffi` 库失败（构建副本未编 Rust）。
 
 ## Mac 验证途径
 
-开发 Agent 运行在 Mac 宿主的 Linux 虚拟机中：仓库主检出经 sshfs 挂载在同一路径，虚拟机内没有 Xcode、无法运行 AppKit，宿主（网关 `192.168.5.2`）的 SSH 端口当前拒绝连接，`gh` 未登录。纯 Foundation 代码可在虚拟机内用 Linux 版 Swift 编译与检查；凡涉及 AppKit／SwiftUI 的步骤须在 Mac 上验证。
+开发 Agent 运行在 Mac 宿主的 Linux 虚拟机中：仓库主检出经 sshfs 挂载在同一路径，虚拟机内没有 Xcode、无法运行 AppKit，`gh` 未登录。纯 Foundation 代码可在虚拟机内用 Linux 版 Swift 编译与检查；凡涉及 AppKit／SwiftUI 的步骤须在 Mac 上验证。
 
-建议途径：用户在 Mac 开启“远程登录”（仅允许本用户），并把虚拟机生成的专用公钥加入 `~/.ssh/authorized_keys`。之后 Agent 经 SSH 在 Mac 上执行：
+现有通道：`ssh cage-mac`，宿主账户 `cage-runner`（独立于用户账户）。实测：
 
-- `swift run velune-workspace-checks` 与 `svc run build-macos`（在本工作树）。
-- 既有 `--check-*` 程序化入口：私有合成目录、本次子进程句柄，遵守 [Mac 指引](../../app/mac/AGENTS.md)的焦点约束。
-- 视觉证据：`svc run start-macos-dev` 后用 `screencapture -l <窗口号>` 截取开发实例窗口，不激活、不抢焦点；需要为 SSH 会话授予屏幕录制权限，由用户在系统设置中决定。
+- 可用：Xcode 26.2、Swift 6.2.3、`/tmp` 与 `~`。编译验证的做法是 `git archive HEAD` 连同主检出的 `target/swift-ffi`、`target/swift-bindings` 经管道解包到 `~/velune-ws`，在那里 `swift build`／`swift run`。
+- 不可用：`/Volumes/WorkSSD` 一律 `Operation not permitted`（系统隐私权限拦截 SSH 会话访问外置卷），因此不能直接在工作树上用 `svc`；账户无 `svc`、无 Rust 工具链；没有图形会话（`screencapture` 失败），不能启动开发实例或取视觉证据。
+
+完成步骤 3 起的运行与视觉验收，需要用户在以下方式中选择（不抢前台焦点的约束不变）：
+
+- 给 SSH 会话授予外置卷访问（或完全磁盘访问），并让命令以用户账户在其图形会话中运行（例如允许以用户账户 SSH 登录，或为 `cage-runner` 配置到用户会话的受限执行），同时授予屏幕录制权限以便 `screencapture -l <窗口号>` 截取开发实例窗口。
+- 或由用户在步骤节点代为运行 `svc run start-macos-dev` 与截图。
 
 ## 风险与待定
 
