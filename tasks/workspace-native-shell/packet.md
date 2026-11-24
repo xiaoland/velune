@@ -132,6 +132,22 @@ AppKit 自绘 `TabBarView`，行为对齐系统 Tab Bar（Xcode 分屏标签也�
 - 检查：`experience --workspace-only` 22 组、`tabs`、`ownership`、`targets` 全部通过。
 - 未实测：全屏中新开窗口、Dock 无窗口时重开、键窗口切换时菜单启用状态（均需前台操作）。
 
+### 编辑区网格（原步骤 4）
+
+- `PaneGrid.swift`：嵌套 `NSSplitView`，每组面板是按组保留的 `NSHostingView`（重设 `applicationAppearance()`，它不继承窗口根视图的环境）。形状不变只更新比例；形状变化时先放入新排布再移走旧根，仍在的面板始终留在窗口内。`PaneSplitView` 按布局比例排布（`applyShares`，`adjustSubviews` 会保留现有比例而不用新比例），拖动由 `NSSplitView` 跟踪，松开写回，双击均分，相邻组至少 320pt。删除 SwiftUI `PaneLayoutView`／`PaneSplitView`。
+- 检查：`WorkspaceNavigationChecks` 新增网格检查（拆分与关闭后面板视图身份不变、关闭的组移出、比例跟随布局）；检查曾抓到单面板根被移入新分栏后又被移除的缺陷，已修。
+
+### AppKit 标签栏（原步骤 5）
+
+- `TabBar.swift`：`TabBarView`（`NSScrollView` 横向滚动、纵向滚轮转横向、覆盖式滚动条，“＋”固定在外），`TabItemView`（自绘配色、悬停关闭、运行／等待／未读指示、双击就地重命名、中键关闭、右键菜单、沿栏滑动与 Core Animation 让位、离栏转 `NSDraggingSource`）；标签栏是原生拖放目标（会话链接私有类型与 URL）。标签宽度 96–240pt；显示中的标签滚入可见。tracking area 只移除自己的（系统工具提示另有 tracking area，旧检查覆盖）。Artifact sheet 的拖动把手复用 `TabItemView`（无栏，不滑动）。删除 `TabHandle`、SwiftUI 标签栏与标签项、`TabDropDelegate`。面板内容区的边缘拆分投放仍是 SwiftUI `PaneDropDelegate`。
+- 检查：新增标签栏溢出检查（可滚动、显示中标签可见、宽度上下限、未达上限的标题完整）；首版宽度未计标签文本框内边距导致截断，检查截图发现后已修。`experience --workspace-only` 24 组、`tabs`、`ownership`、`targets` 通过；开发实例窗口截图确认标签栏与空白处底色。
+
+### 待做与未实测
+
+- 三区停靠：左区仍是 `NavigationSplitView`、右区 `.inspector`、底区 `SashOverlay`。改为 `NSSplitViewController` 需把内容声明的工具栏（含 `ConversationToolbarPartition` 的分区）迁到窗口工具栏，风险集中在工具栏；左右区已是系统容器，可先只把底区并入原生竖向分栏。
+- 需前台操作、未实测：分隔条拖动与双击、标签滑动重排与拖出成窗口、跨窗口拖放、列表拖入、重命名、键窗口切换时菜单启用、全屏中新开窗口、Dock 无窗口时重开。程序化检查覆盖了模型与视图身份，交互手感需用户或前台验收。
+- 合回 `develop` 待以上前台验收后进行。
+
 ## Mac 验证途径
 
 开发 Agent 运行在 Mac 宿主的 Linux 虚拟机中：仓库主检出经 sshfs 挂载在同一路径，虚拟机内没有 Xcode、无法运行 AppKit，`gh` 未登录。纯 Foundation 代码可在虚拟机内用 Linux 版 Swift 编译与检查；凡涉及 AppKit／SwiftUI 的步骤须在 Mac 上验证。
