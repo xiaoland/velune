@@ -161,6 +161,62 @@ import Foundation
     precondition(actualDate == expectedDate, "schema 标记不改变恢复点的原始排序时间")
     note("PASS legacy snapshot migration preserves mtime and latest-window selection")
 
+    do {
+        // Layouts saved while floating panels existed: an attached composer
+        // panel and a free outline panel, plus a window's stale panel frame.
+        let panel: [String: Any] = ["width": 640, "height": 120, "x": 0, "y": 0,
+                                    "attachment": ["fromTrailing": false, "fromTop": false, "dx": 300, "dy": 24]]
+        let free: [String: Any] = ["width": 280, "height": 500, "x": 900, "y": 100]
+        func floatingTools(_ tools: ToolWindowLayout) -> [String: Any] {
+            var raw = try! JSONSerialization.jsonObject(with: JSONEncoder().encode(tools)) as! [String: Any]
+            var states = raw["tools"] as! [String: Any]
+            states["composer"] = ["place": ["floating": [String: Any]()], "shown": true, "weight": 1, "panelFrame": panel, "pinned": false]
+            states["outline"] = ["place": ["floating": [String: Any]()], "shown": true, "weight": 1, "panelFrame": free, "pinned": false]
+            states["list"] = ["place": ["window": [String: Any]()], "shown": true, "weight": 1, "panelFrame": free, "windowFrame": panel, "pinned": false]
+            raw["tools"] = states
+            return raw
+        }
+        func expectMigrated(_ tools: ToolWindowLayout, _ context: String) {
+            precondition(tools[.composer].place == .window && tools[.outline].place == .window && tools[.list].place == .window, "\(context)：浮动工具改为独立窗口")
+            precondition(tools[.composer].windowFrame?.width == 640 && tools[.composer].windowFrame?.attachment?.dx == 300, "\(context)：保留面板尺寸与相对主窗口的位置")
+            precondition(tools[.outline].windowFrame?.x == 900 && tools[.outline].windowFrame?.height == 500, "\(context)：自由面板保留原位置与尺寸")
+            precondition(tools[.list].windowFrame?.width == 640, "\(context)：已是独立窗口的工具保留自己的窗口位置")
+        }
+        let migrationHome = home.appendingPathComponent("workspace-floating-migration", isDirectory: true)
+        let migrationJournal = WindowWorkspaceJournal(directory: migrationHome) { fatalError($0) }
+        let migrationSnapshots = migrationHome.appendingPathComponent("mac-window-workspaces", isDirectory: true)
+        try! FileManager.default.createDirectory(at: migrationSnapshots, withIntermediateDirectories: true)
+        var raw = try! JSONSerialization.jsonObject(with: JSONEncoder().encode(localLayout)) as! [String: Any]
+        raw["tools"] = floatingTools(localLayout.tools)
+        let original = try! JSONSerialization.data(withJSONObject: raw, options: [.sortedKeys])
+        let snapshotID = UUID().uuidString
+        let snapshot = migrationSnapshots.appendingPathComponent(snapshotID + ".json")
+        try! original.write(to: snapshot)
+        let date = Date(timeIntervalSince1970: 30)
+        try! FileManager.default.setAttributes([.modificationDate: date], ofItemAtPath: snapshot.path)
+        guard let restored = migrationJournal.restore(id: snapshotID, recoverLatest: false) else { fatalError("含浮动工具的恢复点必须可读") }
+        expectMigrated(restored.tools, "恢复点")
+        let backup = migrationSnapshots.appendingPathComponent(snapshotID + ".json.before-floating-tools.bak")
+        precondition((try? Data(contentsOf: backup)) == original, "迁移前备份原恢复点")
+        let rewritten = try! Data(contentsOf: snapshot)
+        precondition(!String(decoding: rewritten, as: UTF8.self).contains("floating") && !String(decoding: rewritten, as: UTF8.self).contains("panelFrame"),
+                     "恢复点改写为新格式")
+        precondition((try? SavedWindowLayout.decodeKnown(rewritten)) == restored, "改写后的恢复点按新格式严格读回")
+        precondition(try! snapshot.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate == date, "迁移保留恢复点修改时间")
+
+        let toolHome = home.appendingPathComponent("workspace-floating-tool-layout", isDirectory: true)
+        try! FileManager.default.createDirectory(at: toolHome, withIntermediateDirectories: true)
+        let toolFile = toolHome.appendingPathComponent("mac-tool-layout.json")
+        let toolOriginal = try! JSONSerialization.data(withJSONObject: ["schema": 1, "tools": floatingTools(ToolWindowLayout())], options: [.sortedKeys])
+        try! toolOriginal.write(to: toolFile)
+        let remembered = RememberedToolLayout(home: toolHome) { fatalError("工具布局迁移失败：\($0)") }
+        expectMigrated(remembered.layout, "工具布局")
+        precondition((try? Data(contentsOf: toolFile.appendingPathExtension("before-floating-tools.bak"))) == toolOriginal, "迁移前备份工具布局")
+        precondition(RememberedToolLayout(home: toolHome) { fatalError("改写后的工具布局必须可读：\($0)") }.layout == remembered.layout, "工具布局改写为新格式")
+        precondition(!String(decoding: try! Data(contentsOf: toolFile), as: UTF8.self).contains("floating"), "工具布局文件不再含浮动")
+        note("PASS floating tools migrate to windows of their own: panel size and place kept, originals backed up, files rewritten strictly")
+    }
+
     let startHome = home.appendingPathComponent("workspace-start-check", isDirectory: true)
     let transport = Transport(stateDirectory: startHome, resourcesDirectory: Bundle.main.resourceURL!)
     try! transport.prepareForLaunch()

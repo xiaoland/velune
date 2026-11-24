@@ -397,7 +397,7 @@ private struct ConversationWindowContent: View {
                 traceRecovery("started")
                 // Development check of split panes without driving the interface.
                 if CommandLine.arguments.contains("--check-split-panes"), !window.isSplit { window.split(.horizontal); window.openInNewTab(); window.split(.vertical) }
-                if CommandLine.arguments.contains("--check-tool-windows") { window.tools.move(.list, to: .floating); window.tools.move(.outline, to: .window); window.tools.move(.composer, to: .floating) }
+                if CommandLine.arguments.contains("--check-tool-windows") { window.tools.move(.list, to: .window); window.tools.move(.outline, to: .window); window.tools.move(.composer, to: .window) }
                 if CommandLine.arguments.contains("--check-send-queue") { window.focused.checkSendQueue() }
                 if CommandLine.arguments.contains("--check-edit-message") { window.focused.checkEditMessage() }
                 if CommandLine.arguments.contains("--check-list-actions") { window.checkListActions() }

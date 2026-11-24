@@ -504,7 +504,10 @@ struct SavedWindowLayout: Codable, Equatable {
         return layout
     }
 
+    /// A known layout; one saved with floating tools reads with them as
+    /// windows of their own (the journal backs such files up before rewriting them).
     static func decodeKnown(_ data: Data) throws -> SavedWindowLayout {
+        let data = ToolWindowLayout.migratingFloatingTools(in: data) ?? data
         let raw = try JSONSerialization.jsonObject(with: data) as? [String: Any]
         let layout = try JSONDecoder().decode(SavedWindowLayout.self, from: data)
         guard layout.schemaVersion == 0 || layout.schemaVersion == 1 else {
@@ -799,7 +802,7 @@ struct WindowSeed: Codable, Hashable {
         let placement = placement ?? tools
         if tab === sheetTab || tab === composerSheetTab { return .conversation(tab.store.selectedConversationID ?? tab.store.loadedConversationID ?? "tab:\(tab.id)") }
         switch placement[.composer].place {
-        case .floating, .window, .docked: return .shared
+        case .window, .docked: return .shared
         default: return .conversation(tab.store.selectedConversationID ?? tab.store.loadedConversationID ?? "tab:\(tab.id)")
         }
     }
@@ -907,8 +910,6 @@ struct WindowSeed: Codable, Hashable {
             if kind == .workspace { application.rememberedToolLayout.remember(tools) }
         }
     }
-    /// The area a panel dragged now would dock into, for the window to show where.
-    @Published var dockHint: DockSide?
     /// The outline popover from the toolbar button.
     @Published var outlinePopover = false
     @Published var agentsPopover = false
@@ -993,7 +994,7 @@ struct WindowSeed: Codable, Hashable {
 
     /// The window whose floating panel or tool window is key: commands act on it as on the window itself.
     static func owning(detached window: NSWindow?) -> ConversationWindowModel? {
-        (window as? any DetachedTool)?.model
+        (window as? ToolWindow)?.model
     }
 
     /// The conversation window an AppKit window shows.

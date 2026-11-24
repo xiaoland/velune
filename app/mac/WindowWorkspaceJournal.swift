@@ -62,15 +62,9 @@ final class WindowWorkspaceJournal: @unchecked Sendable {
             let snapshots = files.compactMap { url -> (id: String, date: Date, layout: SavedWindowLayout)? in
                 let fileID = url.deletingPathExtension().lastPathComponent
                 do {
-                    var layout = try SavedWindowLayout.decodeKnown(Data(contentsOf: url))
-                    if layout.schemaVersion == 0 {
-                        let bytes = try Data(contentsOf: url)
-                        let date = try url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
-                        try backupLegacy(bytes, id: fileID)
-                        layout.schemaVersion = 1
-                        try JSONEncoder().encode(layout).write(to: url, options: .atomic)
-                        if let date { try FileManager.default.setAttributes([.modificationDate: date], ofItemAtPath: url.path) }
-                    }
+                    let bytes = try Data(contentsOf: url)
+                    var layout = try SavedWindowLayout.decodeKnown(bytes)
+                    try upgrade(&layout, from: bytes, at: url, id: fileID)
                     if aggregatingDevices, kind == .workspace, device == nil, layout.windowKind != .single,
                        case .remote(_)? = layout.windowDevice {
                         try backupLegacy(Data(contentsOf: url), id: fileID, suffix: "before-aggregation")
@@ -121,13 +115,7 @@ final class WindowWorkspaceJournal: @unchecked Sendable {
         do {
             let bytes = try Data(contentsOf: target)
             var layout = try SavedWindowLayout.decodeKnown(bytes)
-            if layout.schemaVersion == 0 {
-                let date = try target.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
-                try backupLegacy(bytes, id: id)
-                layout.schemaVersion = 1
-                try JSONEncoder().encode(layout).write(to: target, options: .atomic)
-                if let date { try FileManager.default.setAttributes([.modificationDate: date], ofItemAtPath: target.path) }
-            }
+            try upgrade(&layout, from: bytes, at: target, id: id)
             lock.withLock { _ = checkedIDs.insert(id) }
             return true
         } catch {
@@ -135,6 +123,21 @@ final class WindowWorkspaceJournal: @unchecked Sendable {
             report("无法保存恢复点 \(id).json：\(error.localizedDescription)；原文件保留，恢复该窗口的写入已禁用")
             return false
         }
+    }
+
+    /// Known older formats (the pre-beta shape, floating tools) are backed
+    /// up, then rewritten as now encoded, keeping the file's date for
+    /// latest-window selection.
+    private func upgrade(_ layout: inout SavedWindowLayout, from bytes: Data, at url: URL, id: String) throws {
+        let unversioned = layout.schemaVersion == 0
+        let floating = ToolWindowLayout.migratingFloatingTools(in: bytes) != nil
+        guard unversioned || floating else { return }
+        let date = try url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
+        if unversioned { try backupLegacy(bytes, id: id) }
+        if floating { try backupLegacy(bytes, id: id, suffix: "before-floating-tools") }
+        layout.schemaVersion = 1
+        try JSONEncoder().encode(layout).write(to: url, options: .atomic)
+        if let date { try FileManager.default.setAttributes([.modificationDate: date], ofItemAtPath: url.path) }
     }
 
     private func backupLegacy(_ bytes: Data, id: String, suffix: String = "before-beta") throws {

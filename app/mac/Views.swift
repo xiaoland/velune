@@ -74,7 +74,6 @@ struct VeluneRootView: View {
         }
         .navigationSplitViewStyle(.balanced)
         .background(WindowLevelSetter(pinned: window.pinned))
-        .overlay { if let side = window.dockHint { DockZoneHighlight(side: side) } }
         .overlay(alignment: .top) {
             if let mode = window.palette {
                 ZStack(alignment: .top) {
@@ -339,28 +338,6 @@ struct VeluneRootView: View {
 }
 
 /// Where a dragged panel would dock: the sidebar, the inspector, or the strip below the panes.
-private struct DockZoneHighlight: View {
-    let side: DockSide
-
-    var body: some View {
-        GeometryReader { geometry in
-            let size = geometry.size
-            let rect: CGRect = switch side {
-            case .left: CGRect(x: 0, y: 0, width: min(260, size.width / 3), height: size.height)
-            case .right: CGRect(x: size.width - min(280, size.width / 3), y: 0, width: min(280, size.width / 3), height: size.height)
-            case .bottom: CGRect(x: 0, y: size.height - 180, width: size.width, height: 180)
-            }
-            RoundedRectangle(cornerRadius: 8)
-                .fill(Color.accentColor.opacity(0.12))
-                .strokeBorder(Color.accentColor.opacity(0.6), lineWidth: 2)
-                .frame(width: max(0, rect.width - 12), height: max(0, rect.height - 12))
-                .position(x: rect.midX, y: rect.midY)
-        }
-        .ignoresSafeArea()
-        .allowsHitTesting(false)
-    }
-}
-
 struct ConversationRenameView: View {
     @ObservedObject var store: ConversationStore
     let conversation: Conversation

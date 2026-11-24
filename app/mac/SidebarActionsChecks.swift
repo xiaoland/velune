@@ -31,7 +31,7 @@ import SwiftUI
         let appearance = NSAppearance(named: dark ? .darkAqua : .aqua)!
         NSApp.appearance = appearance
         for width: CGFloat in [240, 420] {
-            for mode in ["shared-left", "right", "floating-content"] {
+            for mode in ["shared-left", "right", "window-content"] {
                 let application = DeviceStore(preview: true)
                 let model = ConversationWindowModel(application: application, kind: .workspace)
                 precondition(model.window == nil)
@@ -39,14 +39,14 @@ import SwiftUI
                 if mode == "right" { layout[.list].place = .docked(.right) }
                 if mode == "shared-left" { layout[.outline] = ToolWindowState(place: .docked(.left)) }
                 // DetachedToolContent does not depend on the list's saved place. Keep
-                // its model docked: assigning .floating would ask the window manager
-                // to synchronize a real panel, which this layout check does not own.
-                if mode != "floating-content" { model.tools = layout }
+                // its model docked: assigning .window would ask the window manager
+                // to synchronize a real tool window, which this layout check does not own.
+                if mode != "window-content" { model.tools = layout }
                 let content: AnyView
                 switch mode {
                 case "shared-left": content = AnyView(DockAreaView(window: model, side: .left))
                 case "right": content = AnyView(DockAreaView(window: model, side: .right))
-                case "floating-content": content = AnyView(DetachedToolContent(kind: .list, window: model))
+                case "window-content": content = AnyView(DetachedToolContent(kind: .list, window: model))
                 default:
                     content = AnyView(ConversationListView(window: model, store: model.list,
                         focused: model.focused.store, placement: .sidebar))
