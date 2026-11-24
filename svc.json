@@ -509,6 +509,12 @@
         "scripts/check-macos-composer.py",
         "background"
       ]
+    },
+    "acceptance": {
+      "argv": [
+        "python3",
+        "tests/acceptance/run.py"
+      ]
     }
   }
 }
