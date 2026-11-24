@@ -1530,13 +1530,21 @@ print(json.dumps({"contractVersion": 3, "files": [
             "{:?}",
             snapshot.history_failures
         );
-        let codex_scans = fs::read_to_string(root.join("codex-scans")).unwrap();
+        // The service's startup index warmup lists active threads on its own
+        // worker, so only archived pages belong to the archive view.
+        let archive_scans = || {
+            fs::read_to_string(root.join("codex-scans"))
+                .unwrap()
+                .lines()
+                .filter(|scan| *scan == "archive")
+                .count()
+        };
+        let codex_scans = archive_scans();
         eprintln!(
-            "cold archive: {:?}; {} Codex pages",
-            started.elapsed(),
-            codex_scans.lines().count()
+            "cold archive: {:?}; {codex_scans} archived Codex pages",
+            started.elapsed()
         );
-        assert_eq!(codex_scans.lines().collect::<Vec<_>>(), ["archive"; 4]);
+        assert_eq!(codex_scans, 4);
         let group = snapshot
             .conversation_groups
             .iter()
@@ -1575,10 +1583,7 @@ print(json.dumps({"contractVersion": 3, "files": [
             assert_eq!(result.conversations.len(), 1);
             assert_eq!(result.conversations[0].conversation.id, expected);
         }
-        assert_eq!(
-            fs::read_to_string(root.join("codex-scans")).unwrap(),
-            codex_scans
-        );
+        assert_eq!(archive_scans(), codex_scans);
         let pi_scans = fs::read_to_string(root.join("pi-scans")).unwrap();
         assert_eq!(
             pi_scans
