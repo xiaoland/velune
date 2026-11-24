@@ -344,19 +344,6 @@ import VeluneBindings
     }
 }
 
-/// Which side of a pane something dropped on it goes to.
-enum PaneEdge: Equatable {
-    case leading, trailing, top, bottom
-    var axis: PaneSplit.Axis { self == .leading || self == .trailing ? .horizontal : .vertical }
-    var after: Bool { self == .trailing || self == .bottom }
-}
-
-/// Where a tab dropped on a pane goes: among its tabs, or beside an edge.
-enum PaneDropZone: Equatable {
-    case center
-    case edge(PaneEdge)
-}
-
 /// The tab a drag carries, so a drop moves that tab rather than opening its
 /// conversation again; a drag from the list has none. A tab with no
 /// conversation yet drags a link naming the tab itself. Written where the
@@ -438,79 +425,6 @@ final class TabDragSource: @unchecked Sendable {
         guard !NSApp.windows.contains(where: { $0.isVisible && $0.isOnActiveSpace && $0.styleMask.contains(.titled) && $0.frame.contains(point) }) else { return }
         window.openInNewWindow(conversationID, at: point)
     }
-}
-
-/// How a window's panes are arranged: a pane, or panes side by side
-/// (horizontal) or stacked (vertical), each taking a fraction of the room.
-indirect enum PaneLayout: Codable, Equatable {
-    case pane(UUID)
-    case split(PaneSplit)
-
-    var paneIDs: [UUID] {
-        switch self {
-        case .pane(let id): [id]
-        case .split(let split): split.children.flatMap(\.paneIDs)
-        }
-    }
-
-    /// `added` beside `pane`'s `edge`, taking half its room.
-    func inserting(_ added: UUID, beside pane: UUID, edge: PaneEdge) -> PaneLayout {
-        switch self {
-        case .pane(let id):
-            guard id == pane else { return self }
-            let children: [PaneLayout] = edge.after ? [.pane(id), .pane(added)] : [.pane(added), .pane(id)]
-            return .split(PaneSplit(axis: edge.axis, children: children, fractions: [0.5, 0.5]))
-        case .split(var split):
-            // A pane in a split along the same axis shares its own room with the new one.
-            if split.axis == edge.axis, let index = split.children.firstIndex(of: .pane(pane)) {
-                let half = split.fractions[index] / 2
-                split.fractions[index] = half
-                split.children.insert(.pane(added), at: edge.after ? index + 1 : index)
-                split.fractions.insert(half, at: edge.after ? index + 1 : index)
-                return .split(split)
-            }
-            split.children = split.children.map { $0.inserting(added, beside: pane, edge: edge) }
-            return .split(split)
-        }
-    }
-
-    /// Without `pane`; a split left with one child becomes that child. Nil
-    /// when `pane` was all there was.
-    func removing(_ pane: UUID) -> PaneLayout? {
-        switch self {
-        case .pane(let id): return id == pane ? nil : self
-        case .split(var split):
-            var children: [PaneLayout] = []
-            var fractions: [Double] = []
-            for (child, fraction) in zip(split.children, split.fractions) {
-                if let kept = child.removing(pane) { children.append(kept); fractions.append(fraction) }
-            }
-            guard let first = children.first else { return nil }
-            if children.count == 1 { return first }
-            let total = fractions.reduce(0, +)
-            split.children = children
-            split.fractions = fractions.map { $0 / total }
-            return .split(split)
-        }
-    }
-
-    /// The split at `path` (child indices from the root) with new fractions.
-    func resizing(at path: [Int], fractions: [Double]) -> PaneLayout {
-        guard case .split(var split) = self else { return self }
-        guard let index = path.first else {
-            split.fractions = fractions
-            return .split(split)
-        }
-        split.children[index] = split.children[index].resizing(at: Array(path.dropFirst()), fractions: fractions)
-        return .split(split)
-    }
-}
-
-struct PaneSplit: Codable, Equatable {
-    enum Axis: String, Codable { case horizontal, vertical }
-    var axis: Axis
-    var children: [PaneLayout]
-    var fractions: [Double]
 }
 
 /// What a window restores: its arrangement, each pane's tabs, each tab's
