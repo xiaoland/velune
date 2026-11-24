@@ -84,7 +84,9 @@ impl CoreRuntime {
                     .find_conversation(id.to_owned())?
                     .ok_or_else(|| RuntimeError::invalid("没有这个会话"))?
                     .conversation;
-                history = self.read_conversation_source(&summary.runtime_id, &summary.id)?.0;
+                history = self
+                    .read_conversation_source(&summary.runtime_id, &summary.id)?
+                    .0;
                 &history
             }
         };

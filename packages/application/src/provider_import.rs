@@ -167,7 +167,9 @@ fn source_identity(source: &Source, models_path: &str, auth_path: Option<&str>) 
     )
 }
 fn protocol(value: &str) -> Option<Protocol> {
-    Protocol::ALL.into_iter().find(|protocol| protocol.id() == value)
+    Protocol::ALL
+        .into_iter()
+        .find(|protocol| protocol.id() == value)
 }
 
 pub(crate) fn preview(
@@ -515,10 +517,7 @@ pub(crate) fn apply(
                 .clone()
                 .unwrap_or_else(|| "auth".into()),
         );
-        settings.insert(
-            "bindingProtocol".into(),
-            protocol_kind.id().into(),
-        );
+        settings.insert("bindingProtocol".into(), protocol_kind.id().into());
         settings.insert("bindingEndpoint".into(), endpoint.clone());
         settings.insert(
             "bindingModelIds".into(),

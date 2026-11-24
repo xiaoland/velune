@@ -175,8 +175,8 @@ for line in sys.stdin:
     }
 
     fn claude_naming() -> Self {
-        let root = std::env::temp_dir()
-            .join(format!("velune-claude-naming-{}", crate::new_record_key()));
+        let root =
+            std::env::temp_dir().join(format!("velune-claude-naming-{}", crate::new_record_key()));
         fs::create_dir(&root).unwrap();
         let binary = root.join("claude");
         fs::write(
@@ -299,7 +299,10 @@ fn codex_startup_prewarms_the_active_list_without_blocking_the_owner() {
                 type_id: crate::conversation::RuntimeKind::Codex166,
                 gateway_id: "default".into(),
                 settings: BTreeMap::from([
-                    ("binary".into(), fixture.0.join("codex").display().to_string()),
+                    (
+                        "binary".into(),
+                        fixture.0.join("codex").display().to_string(),
+                    ),
                     (
                         "agentDir".into(),
                         fixture.0.join("native").display().to_string(),
@@ -367,7 +370,11 @@ fn codex_startup_prewarms_the_active_list_without_blocking_the_owner() {
             .collect::<BTreeSet<_>>()
     };
     assert_eq!(
-        ids(first.recv_timeout(Duration::from_secs(3)).unwrap().unwrap().response),
+        ids(first
+            .recv_timeout(Duration::from_secs(3))
+            .unwrap()
+            .unwrap()
+            .response),
         BTreeSet::from(["synthetic:known-thread".into()])
     );
     let wire = fixture.0.join("list-wire");
@@ -390,7 +397,10 @@ fn codex_startup_prewarms_the_active_list_without_blocking_the_owner() {
         "synthetic:imported-thread".into(),
     ]);
     assert_eq!(refresh(), complete);
-    assert_eq!(fs::read_to_string(&wire).unwrap(), "repair\nindexed\nrepair\n");
+    assert_eq!(
+        fs::read_to_string(&wire).unwrap(),
+        "repair\nindexed\nrepair\n"
+    );
 
     fs::write(fixture.0.join("list-db"), "[]").unwrap();
     assert_eq!(refresh(), complete);
@@ -569,7 +579,10 @@ fn native_control_wait_keeps_owner_responsive_and_rejection_retry_is_explicit() 
     );
     fs::write(fixture.0.join("release-steer"), []).unwrap();
     assert!(matches!(
-        insert.recv_timeout(Duration::from_secs(3)).unwrap().unwrap(),
+        insert
+            .recv_timeout(Duration::from_secs(3))
+            .unwrap()
+            .unwrap(),
         Response::SteerTurn(_)
     ));
     fixture.wait("synthetic-insert");
@@ -603,7 +616,9 @@ fn native_control_wait_keeps_owner_responsive_and_rejection_retry_is_explicit() 
     assert_eq!(pending.len(), 1);
     app.execute(
         view.clone(),
-        queue(crate::SendQueueOperation::Steer { id: pending[0].id.clone() }),
+        queue(crate::SendQueueOperation::Steer {
+            id: pending[0].id.clone(),
+        }),
     )
     .unwrap();
     fixture.wait("synthetic-queue-insert");
@@ -2654,7 +2669,10 @@ fn codex_first_admission_error_still_cleans_failed_owner_when_poll_returns_ok_an
             {
                 break;
             }
-            Err(error) => assert!(error.message.contains("无效协议记录"), "{error:?}"),
+            Err(error) => {
+                assert_eq!(error.code, "invalid", "{error:?}");
+                assert!(error.message.starts_with("运行时事件读取失败"), "{error:?}");
+            }
             _ => {}
         }
         assert!(Instant::now() < deadline);

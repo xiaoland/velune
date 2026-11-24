@@ -88,8 +88,12 @@ fn message_text(message: &Message) -> String {
 
 fn claude_provisional_user(id: &str) -> bool {
     let mut parts = id.splitn(3, ':');
-    parts.next().is_some_and(|epoch| epoch.parse::<u64>().is_ok())
-        && parts.next().is_some_and(|revision| revision.parse::<u64>().is_ok())
+    parts
+        .next()
+        .is_some_and(|epoch| epoch.parse::<u64>().is_ok())
+        && parts
+            .next()
+            .is_some_and(|revision| revision.parse::<u64>().is_ok())
         && parts.next().is_some_and(|suffix| {
             suffix == "user"
                 || suffix
@@ -105,9 +109,10 @@ fn claude_fork_user_index(
     expected: &Message,
 ) -> Option<usize> {
     let confirmed = |shown: &Message, native: &Message| {
-        current.message_identity_confirmations.iter().any(|pair| {
-            pair.previous_id == shown.id && pair.current_id == native.id
-        })
+        current
+            .message_identity_confirmations
+            .iter()
+            .any(|pair| pair.previous_id == shown.id && pair.current_id == native.id)
     };
     // Claude can coalesce streamed records or omit internal user rows from
     // native history. A persisted ID remains authoritative across that drift.
@@ -975,7 +980,8 @@ impl CoreRuntime {
             self.focus_key(origin);
             return Err(NativeForkFailure { error, copied });
         }
-        self.session.refresh_pending_native_fork()
+        self.session
+            .refresh_pending_native_fork()
             .map_err(|error| NativeForkFailure { error, copied })?;
         Ok(())
     }
@@ -1278,12 +1284,13 @@ impl CoreRuntime {
             }
             self.prepare_with_selection(fresh.try_clone()?, selection.as_ref(), false)?;
             match &mut self.session.active_state {
-                ActiveState::Native(session) => session
-                    .branch(&original.id, placement)
-                    .map_err(|error| {
-                        rebuild_claude_prefix = error.code() == "claude_replay_boundary_unavailable";
+                ActiveState::Native(session) => {
+                    session.branch(&original.id, placement).map_err(|error| {
+                        rebuild_claude_prefix =
+                            error.code() == "claude_replay_boundary_unavailable";
                         RuntimeError::context("消息编辑", error)
-                    }),
+                    })
+                }
                 _ => Err(RuntimeError::invalid("此运行时不提供消息编辑")),
             }
         })();
@@ -1659,11 +1666,14 @@ impl CoreRuntime {
         );
         let native_context = if can_import {
             let exported = match source_runtime.type_id {
-                RuntimeKind::Pi => Some(velune_agent_runtime::history::export_pi_context_before(
-                    &self.pi_history_config(source_runtime)?,
-                    Path::new(source_id),
-                    &native_message_id,
-                ).map(|context| Retained::from_parts(context, DataRetention::default()))),
+                RuntimeKind::Pi => Some(
+                    velune_agent_runtime::history::export_pi_context_before(
+                        &self.pi_history_config(source_runtime)?,
+                        Path::new(source_id),
+                        &native_message_id,
+                    )
+                    .map(|context| Retained::from_parts(context, DataRetention::default())),
+                ),
                 RuntimeKind::Codex166 | RuntimeKind::ClaudeCode => {
                     Some(velune_agent_runtime::history::export_context_before(
                         &self.history_config(source_runtime)?,
@@ -1994,7 +2004,9 @@ impl CoreRuntime {
             let (tail, checked) = self.read_link(&link)?;
             let index = link.segments.len() - 1;
             let segment = &link.segments[index];
-            let tail_retention = tail.retention.try_clone()
+            let tail_retention = tail
+                .retention
+                .try_clone()
                 .map_err(|error| RuntimeError::context("分叉显示来源复制", error))?;
             let retention = checked.retention.merge(tail_retention);
             let mut displayed = checked.prefix;
@@ -2018,8 +2030,14 @@ impl CoreRuntime {
             .ok_or_else(|| RuntimeError::invalid("会话中没有这条消息"))?;
         let boundary = if simple && link.segments[0].runtime_type_id == RuntimeKind::ClaudeCode {
             let source_id = message_id.strip_prefix("segment-0:").unwrap_or(message_id);
-            let users: Vec<_> = displayed.iter().filter(|message| message.role == MessageRole::User).collect();
-            let exact = users.iter().find(|message| message.id == source_id).copied();
+            let users: Vec<_> = displayed
+                .iter()
+                .filter(|message| message.role == MessageRole::User)
+                .collect();
+            let exact = users
+                .iter()
+                .find(|message| message.id == source_id)
+                .copied();
             let native = exact.or_else(|| {
                 claude_fork_user_index(current, &users, ordinal, expected).map(|index| users[index])
             });
@@ -2398,8 +2416,10 @@ mod tests {
         fn view(inputs: &[(&str, &str)]) -> ConversationSnapshot {
             let messages: Vec<_> = inputs
                 .iter()
-                .map(|(id, text)| json!({"id":id,"role":"user","completed":true,
-                    "blocks":[{"kind":"text","text":text}]}))
+                .map(|(id, text)| {
+                    json!({"id":id,"role":"user","completed":true,
+                    "blocks":[{"kind":"text","text":text}]})
+                })
                 .collect();
             serde_json::from_value(json!({
                 "revision":1,"conversation":{"id":"claude:source","runtimeId":"claude","title":{"source":"untitled"},"canRename":false,"canDelete":false},
@@ -2512,7 +2532,7 @@ mod tests {
         projection
             .sealed_sources
             .insert(source.conversation.id.clone(), source.clone());
-        core.session.active_state = ActiveState::History(Box::new(tail.into()));
+        core.session.active_state = ActiveState::History(Box::new(tail));
         core.session.logical_projection = Some(projection);
         let current = core.current_snapshot().unwrap();
         assert!(
@@ -2932,7 +2952,7 @@ for line in sys.stdin:
                 .map(|m| m.id.clone())
                 .collect();
             assert_eq!(original_users.len(), 3);
-            core.session.active_state = ActiveState::History(Box::new(source.into()));
+            core.session.active_state = ActiveState::History(Box::new(source));
             let view = core.current_snapshot().unwrap();
             let revision = core.edit_revision(&view).unwrap();
             if external_change {
@@ -3002,7 +3022,7 @@ for line in sys.stdin:
                 );
                 let link = core.repository.load_conversation_links().unwrap().remove(0);
                 let (fresh, projection) = core.read_link(&link).unwrap();
-                core.session.active_state = ActiveState::History(Box::new(fresh.into()));
+                core.session.active_state = ActiveState::History(Box::new(fresh));
                 core.session.logical_projection = Some(projection);
                 assert_eq!(core.current_snapshot().unwrap().conversation.id, id);
                 assert!(!root.join("unexpected-send").exists());
@@ -3056,7 +3076,7 @@ for line in sys.stdin:
             // Drop all transient provenance and recover solely from the persisted link.
             core.session.logical_projection = None;
             let (fresh, projection) = core.read_link(&links[0]).unwrap();
-            core.session.active_state = ActiveState::History(Box::new(fresh.into()));
+            core.session.active_state = ActiveState::History(Box::new(fresh));
             core.session.logical_projection = Some(projection);
             let before_second_delete =
                 std::fs::read(root.join("app/conversation-links.json")).unwrap();
@@ -3173,7 +3193,7 @@ for line in sys.stdin:
             core.invalidate_execution().unwrap();
             let link = core.repository.load_conversation_links().unwrap().remove(0);
             let (fresh, projection) = core.read_link(&link).unwrap();
-            core.session.active_state = ActiveState::History(Box::new(fresh.into()));
+            core.session.active_state = ActiveState::History(Box::new(fresh));
             core.session.logical_projection = Some(projection);
             let view = core.current_snapshot().unwrap();
             let newest = view
@@ -3380,7 +3400,7 @@ SessionManager.open(source).appendContextEdit(target,{content:'synthetic earlier
             core.index_history(&runtime).unwrap();
             let id = format!("pi:{}", source.display());
             let snapshot = core.read_history("pi", &id).unwrap();
-            core.session.active_state = ActiveState::History(Box::new(snapshot.into()));
+            core.session.active_state = ActiveState::History(Box::new(snapshot));
             let current = core.current_snapshot().unwrap();
             let users: Vec<_> = current
                 .messages
@@ -3483,7 +3503,7 @@ SessionManager.open(source).appendContextEdit(target,{content:'synthetic earlier
                         "branch-local earlier replacement must survive later deletion and truncation");
                 };
                 preserved_replacement(&cold);
-                core.session.active_state = ActiveState::History(Box::new(cold.into()));
+                core.session.active_state = ActiveState::History(Box::new(cold));
                 let reopened = core.current_snapshot().unwrap();
                 let third = &users[2];
                 let third_at = reopened
@@ -3755,7 +3775,7 @@ for line in sys.stdin:
             core.index_history(&core.runtime_instances[0].clone())
                 .unwrap();
             let original = core.read_history("pi", &id).unwrap();
-            core.session.active_state = ActiveState::History(Box::new(original.into()));
+            core.session.active_state = ActiveState::History(Box::new(original));
             let addressed = if linked {
                 let sealed = core
                     .read_history("pi", &format!("pi:{}", sealed_path.display()))
@@ -3800,7 +3820,7 @@ for line in sys.stdin:
                     .store_conversation_links(&core.conversation_links)
                     .unwrap();
                 let (tail, projection) = core.read_link(&link).unwrap();
-                core.session.active_state = ActiveState::History(Box::new(tail.into()));
+                core.session.active_state = ActiveState::History(Box::new(tail));
                 core.session.logical_projection = Some(projection);
                 if mode == "unchanged" && deletion.is_none() {
                     let choice = crate::config::RuntimeTurnChoice {
@@ -3853,7 +3873,7 @@ for line in sys.stdin:
                     assert_eq!(core.composer_choices, choices_before);
                     std::fs::write(&history_path, original_history).unwrap();
                     let (restored, projection) = core.read_link(&link).unwrap();
-                    core.session.active_state = ActiveState::History(Box::new(restored.into()));
+                    core.session.active_state = ActiveState::History(Box::new(restored));
                     core.session.logical_projection = Some(projection);
                 }
                 link.id

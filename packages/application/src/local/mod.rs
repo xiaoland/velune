@@ -641,7 +641,10 @@ impl CoreRuntime {
         if let Some(state) = &child_run_state {
             snapshot.run_state = state.clone();
         } else if external_turn
-            && matches!(snapshot.run_state, RunState::Idle | RunState::Elsewhere | RunState::Failed)
+            && matches!(
+                snapshot.run_state,
+                RunState::Idle | RunState::Elsewhere | RunState::Failed
+            )
         {
             snapshot.run_state = RunState::Elsewhere;
         }

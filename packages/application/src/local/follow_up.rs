@@ -871,10 +871,14 @@ impl CoreRuntime {
             runtime.type_id == RuntimeKind::ClaudeCode && turn.permission_mode.is_some();
         let selection = self.session.model_selection.clone().flatten();
         if target_runtime_id.is_some_and(|target| target != runtime_id) {
-            return Err(RuntimeError::invalid("当前轮次不能切换运行时，请排队发送此消息"));
+            return Err(RuntimeError::invalid(
+                "当前轮次不能切换运行时，请排队发送此消息",
+            ));
         }
         if requested_model.is_some_and(|requested| Some(requested) != selection.as_ref()) {
-            return Err(RuntimeError::invalid("当前轮次不能切换模型，请排队发送此消息"));
+            return Err(RuntimeError::invalid(
+                "当前轮次不能切换模型，请排队发送此消息",
+            ));
         }
         if let Some(effort) = turn.effort.as_deref() {
             self.validate_effort(runtime, selection.as_ref(), effort)?;
@@ -940,7 +944,8 @@ impl CoreRuntime {
 
     /// The running turn takes messages through the runtime's own channel.
     fn can_steer(&self) -> bool {
-        self.session.projected()
+        self.session
+            .projected()
             .is_some_and(|snapshot| Self::submission_admission(&self.session, snapshot).can_steer)
     }
 

@@ -668,3 +668,6 @@ fn initialize(rpc: &mut rpc::RpcClient, require_http_mcp: bool) -> Result<()> {
     // agentInfo.version is the ACP plugin version, not the CLI release gate.
     Ok(())
 }
+
+#[cfg(all(test, unix))]
+mod question_reconciliation_tests;

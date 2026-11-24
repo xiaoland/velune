@@ -65,7 +65,10 @@ impl CoreRuntime {
         for session in std::iter::once(&self.session).chain(&self.parked) {
             if session.conversation_id() == Some(snapshot.conversation.id.as_str()) {
                 if let Ok(work) = session.work() {
-                    for id in work.iter().filter_map(|task| task.conversation_id.as_deref()) {
+                    for id in work
+                        .iter()
+                        .filter_map(|task| task.conversation_id.as_deref())
+                    {
                         add(id, "子 Agent");
                     }
                 }
@@ -129,14 +132,16 @@ impl CoreRuntime {
             .chain(&self.parked)
             .find(|session| {
                 session.work().is_ok_and(|work| {
-                    work.iter().any(|task| task.conversation_id.as_deref() == Some(id))
-                })
-                    || session.active_state.live().is_some_and(|live| {
-                        live.background_tasks().is_ok_and(|background| {
-                            background.tasks.iter()
-                                .any(|task| task.conversation_id.as_deref() == Some(id))
-                        })
+                    work.iter()
+                        .any(|task| task.conversation_id.as_deref() == Some(id))
+                }) || session.active_state.live().is_some_and(|live| {
+                    live.background_tasks().is_ok_and(|background| {
+                        background
+                            .tasks
+                            .iter()
+                            .any(|task| task.conversation_id.as_deref() == Some(id))
                     })
+                })
             })
         {
             return parent.conversation_id().map(str::to_owned);

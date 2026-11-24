@@ -1,8 +1,9 @@
 //! Historical projection through native Codex APIs and the installed DSH reader.
+pub use crate::native::codex_history::{materialize_codex_import, materialize_owned_codex_import};
 use crate::{
     conversation::*,
     creation::{DataRetention, Retained},
-    native::{Error, Result as NativeResult},
+    native::{Error, Result as NativeResult, codex_history},
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -270,7 +271,7 @@ pub fn list(
     runtime_id: &str,
 ) -> Result<Retained<Vec<ConversationSummary>>, HistoryError> {
     if config.provider == "codex" {
-        return crate::native::list_codex_history_at(
+        return codex_history::list_codex_history_at(
             config.kind,
             &config.binary,
             &config.home,
@@ -358,9 +359,15 @@ pub fn summaries(
 }
 
 /// Naming metadata Claude Code persists separately from its live event stream.
-pub fn claude_title(config: &HistoryConfig, native_id: &str) -> Result<Option<String>, HistoryError> {
+pub fn claude_title(
+    config: &HistoryConfig,
+    native_id: &str,
+) -> Result<Option<String>, HistoryError> {
     if config.kind != RuntimeKind::ClaudeCode {
-        return Err(HistoryError::new(HistoryFailureKind::UnsupportedProvider, "title"));
+        return Err(HistoryError::new(
+            HistoryFailureKind::UnsupportedProvider,
+            "title",
+        ));
     }
     #[derive(Deserialize)]
     #[serde(untagged)]
@@ -372,8 +379,10 @@ pub fn claude_title(config: &HistoryConfig, native_id: &str) -> Result<Option<St
     match serde_json::from_slice(&bytes) {
         Ok(Title::Value { title }) => Ok(title),
         Ok(Title::Error { error }) => Err(bridge_error(&error.code, &error.detail, "title")),
-        Err(error) => Err(HistoryError::new(HistoryFailureKind::BridgeContract, "title")
-            .with_detail(error.to_string())),
+        Err(error) => Err(
+            HistoryError::new(HistoryFailureKind::BridgeContract, "title")
+                .with_detail(error.to_string()),
+        ),
     }
 }
 
@@ -385,7 +394,7 @@ pub fn list_archived(
     if config.provider != "codex" {
         return Ok(Retained::from_parts(Vec::new(), DataRetention::default()));
     }
-    crate::native::list_codex_history_at(
+    codex_history::list_codex_history_at(
         config.kind,
         &config.binary,
         &config.home,
@@ -406,7 +415,7 @@ pub fn read_summary(
     if config.provider != "codex" {
         return Ok(None);
     }
-    crate::native::read_codex_summary_at(
+    codex_history::read_codex_summary_at(
         config.kind,
         &config.binary,
         &config.home,
@@ -424,7 +433,7 @@ pub fn export_context(
     native_id: &str,
 ) -> NativeResult<Retained<crate::import::Context>> {
     if config.provider == "codex" {
-        return crate::native::export_codex_context(config, native_id);
+        return codex_history::export_codex_context(config, native_id);
     }
     let bytes = execute(config, "export_context", "", Some(native_id), &[])
         .map_err(|error| Error::new(error.full_message()))?;
@@ -445,7 +454,7 @@ pub fn export_codex_context_with_summary(
             "unsupported",
         ));
     }
-    crate::native::export_codex_context_with_summary(config, native_id, summary)
+    codex_history::export_codex_context_with_summary(config, native_id, summary)
 }
 
 /// Whether Codex context export needs a portable summary for encrypted
@@ -460,7 +469,7 @@ pub fn codex_requires_portable_summary(
             "unsupported",
         ));
     }
-    crate::native::codex_requires_portable_summary(config, native_id)
+    codex_history::codex_requires_portable_summary(config, native_id)
 }
 
 /// Gets the effective Codex model/provider identity without exposing history.
@@ -474,7 +483,7 @@ pub fn codex_thread_model(
             "unsupported",
         ));
     }
-    crate::native::codex_thread_model(config, native_id)
+    codex_history::codex_thread_model(config, native_id)
 }
 
 /// Lists the model options visible to a source Codex provider, including its
@@ -489,7 +498,7 @@ pub fn codex_models_for_provider(
             "unsupported",
         ));
     }
-    crate::native::codex_models_for_provider(config, provider_id)
+    codex_history::codex_models_for_provider(config, provider_id)
 }
 
 /// Archives a crash-abandoned summary fork only when its exact marker,
@@ -502,7 +511,7 @@ pub fn recover_codex_handoff_summary(
     expected_temporary_thread_id: Option<&str>,
     expected_temporary_fingerprint: Option<&str>,
 ) -> NativeResult<crate::native::HandoffSummaryRecovery> {
-    crate::native::recover_codex_handoff_summary(
+    codex_history::recover_codex_handoff_summary(
         config,
         source_native_id,
         work_id,
@@ -521,7 +530,7 @@ pub fn verify_codex_handoff_summary_source(
     source_turn_id: &str,
     source_fingerprint: &str,
 ) -> NativeResult<bool> {
-    crate::native::verify_codex_handoff_summary_source(
+    codex_history::verify_codex_handoff_summary_source(
         config,
         source_native_id,
         source_provider_id,
@@ -541,8 +550,15 @@ pub(crate) fn claude_replay_contains(
     struct ReplayBoundary {
         found: bool,
     }
-    let bytes = execute_before(config, "contains_replay_message", "", Some(native_id), &[], Some(message_id))
-        .map_err(|error| Error::new(error.full_message()))?;
+    let bytes = execute_before(
+        config,
+        "contains_replay_message",
+        "",
+        Some(native_id),
+        &[],
+        Some(message_id),
+    )
+    .map_err(|error| Error::new(error.full_message()))?;
     serde_json::from_slice::<ReplayBoundary>(&bytes)
         .map(|boundary| boundary.found)
         .map_err(|error| Error::new(format!("Claude 原生分支检查响应无效：{error}")))
@@ -557,7 +573,7 @@ pub fn export_context_before(
     message_id: &str,
 ) -> NativeResult<Retained<crate::import::Context>> {
     if config.provider == "codex" {
-        return crate::native::export_codex_context_before(config, native_id, message_id);
+        return codex_history::export_codex_context_before(config, native_id, message_id);
     }
     if config.provider != "claude-code" {
         return Err(Error::with_code(
@@ -586,7 +602,7 @@ pub fn export_context_without(
     message_id: &str,
 ) -> NativeResult<Retained<crate::import::Context>> {
     if config.provider == "codex" {
-        return crate::native::export_codex_context_without(config, native_id, message_id);
+        return codex_history::export_codex_context_without(config, native_id, message_id);
     }
     if config.provider != "claude-code" {
         return Err(Error::with_code(
@@ -613,7 +629,7 @@ pub fn export_context_without_many(
     message_ids: &[String],
 ) -> NativeResult<Retained<crate::import::Context>> {
     if config.provider == "codex" {
-        return crate::native::export_codex_context_without_many(config, native_id, message_ids);
+        return codex_history::export_codex_context_without_many(config, native_id, message_ids);
     }
     if config.provider != "claude-code" || message_ids.is_empty() {
         return Err(Error::with_code(
@@ -648,7 +664,7 @@ pub fn read_codex_with_summary(
             "validate",
         ));
     }
-    crate::native::read_codex_with_summary_at(config, runtime_id, native_id)
+    codex_history::read_codex_with_summary_at(config, runtime_id, native_id)
         .map_err(|error| native_history_error(error, "native_read"))
 }
 
@@ -658,7 +674,7 @@ pub fn read(
     native_id: &str,
 ) -> Result<Retained<History>, HistoryError> {
     if config.provider == "codex" {
-        return crate::native::read_codex_history_at(
+        return codex_history::read_codex_history_at(
             config.kind,
             &config.binary,
             &config.home,

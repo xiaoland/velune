@@ -333,20 +333,6 @@ enum MessageEditPresentation: String, CaseIterable, Identifiable {
         }
         return (placement == .inPlace ? store.inputLockMessage : nil) ?? targetIssue ?? (historyRecheckPending ? "正在核对原会话，请稍候。" : nil) ?? modelPreparationIssue ?? attachmentIssue
     }
-    /// Projection-only fixtures; never mutates a real editing operation.
-    func prepareVisualCheckState(_ state: String) {
-        guard store.isPreview, CommandLine.arguments.contains("--check-editor-visual") ||
-                CommandLine.arguments.contains("--experience-message-editor-offscreen") else {
-            FileHandle.standardError.write(Data("编辑器投影检查只允许合成预览入口。\n".utf8))
-            exit(2)
-        }
-        if state.hasPrefix("busy") { submitting = true }
-        if state.hasPrefix("failure") { failure = "提交失败：连接已中断，编辑内容仍保留。请核对会话结果后重试。\n" + String(repeating: "远端暂时不可达；本次修改尚未得到确认。", count: 4) }
-        if state == "failure-target-changed" {
-            failure = "原生历史已执行回退，但尚未发送替换消息。编辑副本仍保留；请核对原会话后再决定下一步。\n" + String(repeating: "这是不能被目标变化提示遮住的真实失败详情。", count: 4)
-        }
-    }
-
     var target: ComposerEditingTarget {
         ComposerEditingTarget(nextTurn: next,
                               issue: executionIssue,
@@ -546,3 +532,10 @@ struct MessageEditorView: View {
     func closeEditor() { if !closing { close() } }
     func windowWillClose(_ notification: Notification) { closing = true; session.cancel() }
 }
+
+#if VELUNE_DEV_CHECKS
+extension MessageEditingSession {
+    func setVisualCheckSubmitting() { submitting = true }
+    func setVisualCheckFailure(_ detail: String) { failure = detail }
+}
+#endif

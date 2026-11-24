@@ -777,9 +777,10 @@ def run_api_flow(bindings, api, conversation, app, provider: LoopbackProvider, r
     wait_source_input_ready(app, "codex-source", source_conversation_id)
     target_selection = conversation.ModelSelection.NATIVE(provider_id="synthetic", model_id=TARGET_MODEL)
     turn = api.ComposedTurn(text=TARGET_INPUT, effort=None, permission_mode=None, attachments=[])
-    started = app.queue_handoff_summary(
-        "codex-source", source_conversation_id, "pi-target", target_selection, turn, selected_summary, None,
-    )
+    started = app.queue_handoff_summary(bindings.BindingQueuedHandoffSummary(
+        source_runtime_id="codex-source", conversation_id=source_conversation_id, target_runtime_id="pi-target",
+        selection=target_selection, turn=turn, summary_model=selected_summary, effort=None,
+    ))
     head = started.queued_message_id
     if started.result.snapshot is None or [item.id for item in started.result.snapshot.follow_up.queue] != [head]:
         raise AssertionError("atomic queue acknowledgement did not contain its accepted first item")
@@ -921,10 +922,12 @@ def preaccepted_cancellation_flow(bindings, api, conversation, app, provider, ro
         wait_source_input_ready(app,"codex-source",cid)
         poll_requirements(app,api,"codex-source",cid,"pi-target",timeout)
         target_count=sum(entry["protocol"]=="chat_completions" for entry in provider.bodies)
-        started=app.queue_handoff_summary("codex-source",cid,"pi-target",
-            conversation.ModelSelection.NATIVE(provider_id="synthetic",model_id=TARGET_MODEL),
-            api.ComposedTurn(text="SYNTHETIC CANCEL BEFORE TARGET ACCEPT",effort=None,permission_mode=None,attachments=[]),
-            None,None)
+        started = app.queue_handoff_summary(bindings.BindingQueuedHandoffSummary(
+            source_runtime_id="codex-source", conversation_id=cid, target_runtime_id="pi-target",
+            selection=conversation.ModelSelection.NATIVE(provider_id="synthetic", model_id=TARGET_MODEL),
+            turn=api.ComposedTurn(text="SYNTHETIC CANCEL BEFORE TARGET ACCEPT", effort=None, permission_mode=None, attachments=[]),
+            summary_model=None, effort=None,
+        ))
         deadline=time.monotonic()+min(timeout,30)
         while not entered.exists() and time.monotonic()<deadline: time.sleep(.05)
         if not entered.exists(): raise TimeoutError("real target SDK preparation did not enter its gate")

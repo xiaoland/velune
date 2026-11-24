@@ -245,9 +245,11 @@ impl CoreRuntime {
         &mut self,
         cwd: Option<&Path>,
         key: &str,
-        project: Option<&velune_agent_runtime::creation::Retained<
-            velune_agent_runtime::native::codex_projects::NativeProject,
-        >>,
+        project: Option<
+            &velune_agent_runtime::creation::Retained<
+                velune_agent_runtime::native::codex_projects::NativeProject,
+            >,
+        >,
     ) -> Result<(), RuntimeError> {
         let runtime = self.active_instance()?.clone();
         let side_context = self.session.side.as_ref().map(|side| side.context.clone());

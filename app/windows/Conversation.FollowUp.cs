@@ -267,7 +267,8 @@ sealed partial class Conversation
         DeliveredSnapshot? result = null;
         var done = await Change("编辑消息", NativeOperation.ConversationWrite, application =>
         {
-            var edited = application.EditMessage(snapshot.ContextRuntimeId, snapshot.Conversation.Id, messageID, placement, selection, turn);
+            var message = new BindingMessageReference(snapshot.ContextRuntimeId, snapshot.Conversation.Id, messageID);
+            var edited = application.EditMessage(message, placement, selection, turn);
             result = edited.Snapshot;
             // A fork's snapshot is the new conversation's, which this one does not take.
             return placement == EditPlacement.Fork ? new SnapshotResult(null) : edited;

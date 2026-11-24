@@ -10,133 +10,6 @@ fn empty_default_gateway() -> GatewayConfig {
     }
 }
 
-#[cfg(test)]
-mod runtime_start_tests {
-    use super::*;
-    use crate::config::{NewConversationChoice, RuntimeComposerChoices, TurnChoice};
-
-    #[test]
-    fn runtime_policy_is_one_configuration_commit_and_keeps_old_type_choices() {
-        let mut nonce = [0; 8];
-        getrandom::fill(&mut nonce).unwrap();
-        let root = std::env::temp_dir().join(format!(
-            "velune-runtime-policy-{:x}",
-            u64::from_le_bytes(nonce)
-        ));
-        fs::create_dir(&root).unwrap();
-        let mut application = crate::Application::open(crate::Options {
-            home_directory: root.clone(),
-            resources_directory: root.clone(),
-        })
-        .unwrap();
-        let core = &mut application.runtime;
-        let mut runtime = RuntimeInstance {
-            enabled: false,
-            id: "synthetic".into(),
-            name: "Synthetic".into(),
-            type_id: RuntimeKind::Acp,
-            gateway_id: "default".into(),
-            settings: BTreeMap::new(),
-        };
-        core.upsert_acp_runtime(
-            runtime.clone(),
-            RuntimeExecution::default(),
-            crate::AcpLaunch::default(),
-        )
-        .unwrap();
-        core.set_runtime_composer_choices(RuntimeComposerChoices {
-            runtime_id: runtime.id.clone(),
-            runtime_type: RuntimeKind::Acp,
-            last_chosen: TurnChoice {
-                model: Some(crate::ModelSelection::Native {
-                    provider_id: None,
-                    model_id: "synthetic-model".into(),
-                }),
-                ..TurnChoice::default()
-            },
-        })
-        .unwrap();
-        let composer = fs::read(root.join("composer-choices.json")).unwrap();
-        fs::create_dir(root.join("composer-choices.json.tmp")).unwrap();
-        runtime.type_id = RuntimeKind::ClaudeCode;
-        let policy = NewConversationChoice::Chosen {
-            choice: TurnChoice {
-                permission_mode: Some("manual".into()),
-                ..TurnChoice::default()
-            },
-        };
-        runtime.set_new_conversation_choice(policy.clone()).unwrap();
-        core.upsert_runtime_with_execution(runtime.clone(), RuntimeExecution::default())
-            .unwrap();
-        assert_eq!(
-            fs::read(root.join("composer-choices.json")).unwrap(),
-            composer
-        );
-        assert_eq!(
-            core.runtime_start_choice(runtime.id.clone())
-                .unwrap()
-                .permission_mode
-                .as_deref(),
-            Some("manual")
-        );
-        let committed = fs::read(root.join("generic-config.json")).unwrap();
-        fs::create_dir(root.join("generic-config.json.tmp")).unwrap();
-        runtime.type_id = RuntimeKind::Codex166;
-        runtime
-            .set_new_conversation_choice(NewConversationChoice::LastChosen)
-            .unwrap();
-        assert!(
-            core.upsert_runtime_with_execution(runtime.clone(), RuntimeExecution::default())
-                .is_err()
-        );
-        assert_eq!(
-            core.runtime_instance(&runtime.id).unwrap().type_id,
-            RuntimeKind::ClaudeCode
-        );
-        assert_eq!(
-            core.runtime_instance(&runtime.id)
-                .unwrap()
-                .new_conversation_choice()
-                .unwrap(),
-            policy
-        );
-        assert_eq!(
-            fs::read(root.join("generic-config.json")).unwrap(),
-            committed
-        );
-        fs::remove_dir(root.join("generic-config.json.tmp")).unwrap();
-        let mut invalid = core.runtime_instance(&runtime.id).unwrap().clone();
-        invalid
-            .set_new_conversation_choice(NewConversationChoice::Chosen {
-                choice: TurnChoice {
-                    permission_mode: Some("wrong-type".into()),
-                    ..TurnChoice::default()
-                },
-            })
-            .unwrap();
-        assert!(core.upsert_runtime(invalid).is_err());
-        assert_eq!(
-            fs::read(root.join("generic-config.json")).unwrap(),
-            committed
-        );
-        drop(application);
-        let reopened = crate::Application::open(crate::Options {
-            home_directory: root.clone(),
-            resources_directory: root.clone(),
-        })
-        .unwrap();
-        let saved = reopened.runtime.runtime_instance(&runtime.id).unwrap();
-        assert_eq!(saved.type_id, RuntimeKind::ClaudeCode);
-        assert_eq!(saved.new_conversation_choice().unwrap(), policy);
-        assert_eq!(
-            reopened.runtime.composer_choices.runtimes[0].runtime_type,
-            RuntimeKind::Acp
-        );
-        drop(reopened);
-        fs::remove_dir_all(root).unwrap();
-    }
-}
-
 enum RuntimeChange {
     Upsert(RuntimeInstance),
     Delete(String),
@@ -879,5 +752,132 @@ impl CoreRuntime {
             *self.local_presentation_commit.borrow_mut() = Some(config.presentation_defaults());
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod runtime_start_tests {
+    use super::*;
+    use crate::config::{NewConversationChoice, RuntimeComposerChoices, TurnChoice};
+
+    #[test]
+    fn runtime_policy_is_one_configuration_commit_and_keeps_old_type_choices() {
+        let mut nonce = [0; 8];
+        getrandom::fill(&mut nonce).unwrap();
+        let root = std::env::temp_dir().join(format!(
+            "velune-runtime-policy-{:x}",
+            u64::from_le_bytes(nonce)
+        ));
+        fs::create_dir(&root).unwrap();
+        let mut application = crate::Application::open(crate::Options {
+            home_directory: root.clone(),
+            resources_directory: root.clone(),
+        })
+        .unwrap();
+        let core = &mut application.runtime;
+        let mut runtime = RuntimeInstance {
+            enabled: false,
+            id: "synthetic".into(),
+            name: "Synthetic".into(),
+            type_id: RuntimeKind::Acp,
+            gateway_id: "default".into(),
+            settings: BTreeMap::new(),
+        };
+        core.upsert_acp_runtime(
+            runtime.clone(),
+            RuntimeExecution::default(),
+            crate::AcpLaunch::default(),
+        )
+        .unwrap();
+        core.set_runtime_composer_choices(RuntimeComposerChoices {
+            runtime_id: runtime.id.clone(),
+            runtime_type: RuntimeKind::Acp,
+            last_chosen: TurnChoice {
+                model: Some(crate::ModelSelection::Native {
+                    provider_id: None,
+                    model_id: "synthetic-model".into(),
+                }),
+                ..TurnChoice::default()
+            },
+        })
+        .unwrap();
+        let composer = fs::read(root.join("composer-choices.json")).unwrap();
+        fs::create_dir(root.join("composer-choices.json.tmp")).unwrap();
+        runtime.type_id = RuntimeKind::ClaudeCode;
+        let policy = NewConversationChoice::Chosen {
+            choice: TurnChoice {
+                permission_mode: Some("manual".into()),
+                ..TurnChoice::default()
+            },
+        };
+        runtime.set_new_conversation_choice(policy.clone()).unwrap();
+        core.upsert_runtime_with_execution(runtime.clone(), RuntimeExecution::default())
+            .unwrap();
+        assert_eq!(
+            fs::read(root.join("composer-choices.json")).unwrap(),
+            composer
+        );
+        assert_eq!(
+            core.runtime_start_choice(runtime.id.clone())
+                .unwrap()
+                .permission_mode
+                .as_deref(),
+            Some("manual")
+        );
+        let committed = fs::read(root.join("generic-config.json")).unwrap();
+        fs::create_dir(root.join("generic-config.json.tmp")).unwrap();
+        runtime.type_id = RuntimeKind::Codex166;
+        runtime
+            .set_new_conversation_choice(NewConversationChoice::LastChosen)
+            .unwrap();
+        assert!(
+            core.upsert_runtime_with_execution(runtime.clone(), RuntimeExecution::default())
+                .is_err()
+        );
+        assert_eq!(
+            core.runtime_instance(&runtime.id).unwrap().type_id,
+            RuntimeKind::ClaudeCode
+        );
+        assert_eq!(
+            core.runtime_instance(&runtime.id)
+                .unwrap()
+                .new_conversation_choice()
+                .unwrap(),
+            policy
+        );
+        assert_eq!(
+            fs::read(root.join("generic-config.json")).unwrap(),
+            committed
+        );
+        fs::remove_dir(root.join("generic-config.json.tmp")).unwrap();
+        let mut invalid = core.runtime_instance(&runtime.id).unwrap().clone();
+        invalid
+            .set_new_conversation_choice(NewConversationChoice::Chosen {
+                choice: TurnChoice {
+                    permission_mode: Some("wrong-type".into()),
+                    ..TurnChoice::default()
+                },
+            })
+            .unwrap();
+        assert!(core.upsert_runtime(invalid).is_err());
+        assert_eq!(
+            fs::read(root.join("generic-config.json")).unwrap(),
+            committed
+        );
+        drop(application);
+        let reopened = crate::Application::open(crate::Options {
+            home_directory: root.clone(),
+            resources_directory: root.clone(),
+        })
+        .unwrap();
+        let saved = reopened.runtime.runtime_instance(&runtime.id).unwrap();
+        assert_eq!(saved.type_id, RuntimeKind::ClaudeCode);
+        assert_eq!(saved.new_conversation_choice().unwrap(), policy);
+        assert_eq!(
+            reopened.runtime.composer_choices.runtimes[0].runtime_type,
+            RuntimeKind::Acp
+        );
+        drop(reopened);
+        fs::remove_dir_all(root).unwrap();
     }
 }

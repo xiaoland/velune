@@ -549,8 +549,7 @@ impl CoreRuntime {
                 }
             }));
         };
-        let (models, _catalog_retention) =
-            self.runtime_models(runtime_id.to_owned())?.into_parts();
+        let (models, _catalog_retention) = self.runtime_models(runtime_id.to_owned())?.into_parts();
         models
             .into_iter()
             .find(|model| {

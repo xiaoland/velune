@@ -175,7 +175,10 @@ impl Gateway {
             providers,
             routes: [
                 (ROUTE, vec![PRIMARY.into(), BACKUP.into()]),
-                (ALTERNATE_ROUTE, vec!["alternate".into(), PRIMARY.into(), BACKUP.into()]),
+                (
+                    ALTERNATE_ROUTE,
+                    vec!["alternate".into(), PRIMARY.into(), BACKUP.into()],
+                ),
             ]
             .into_iter()
             .map(|(key, members)| ModelRoute {

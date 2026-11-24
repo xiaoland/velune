@@ -83,7 +83,10 @@ impl Slot {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Continuation {
     None,
-    Pinned { binding: String, model: Option<String> },
+    Pinned {
+        binding: String,
+        model: Option<String>,
+    },
     Invalidated,
 }
 pub struct ClaudeCodePool {

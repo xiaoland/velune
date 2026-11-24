@@ -173,7 +173,10 @@ impl Workspace {
             #[cfg(unix)]
             {
                 use std::os::unix::fs::DirBuilderExt;
-                fs::DirBuilder::new().mode(0o700).create(&path).map_err(|_| ())?;
+                fs::DirBuilder::new()
+                    .mode(0o700)
+                    .create(&path)
+                    .map_err(|_| ())?;
             }
             #[cfg(not(unix))]
             fs::create_dir(&path).map_err(|_| ())?;

@@ -191,27 +191,47 @@ impl SubscriptionQuota {
         let weak = Arc::downgrade(service);
         if std::thread::Builder::new()
             .name("velune-quota-refresh".into())
-            .spawn(move || loop {
-                std::thread::sleep(Duration::from_secs(1));
-                let Some(service) = weak.upgrade() else { break };
-                let due = {
-                    let state = service.state.lock().expect("quota state");
-                    if state.stopped { break; }
-                    let now = Instant::now();
-                    state.entries.iter()
-                        .filter(|(_, entry)| !entry.running
-                            && entry.demand_until.is_some_and(|until| until > now)
-                            && entry.retry_at <= now)
-                        .map(|(key, entry)| (key.clone(), ViewBinding {
-                            binding: entry.binding.clone(),
-                            incarnation: entry.incarnation.clone(),
-                        }))
-                        .collect::<Vec<_>>()
-                };
-                for ((gateway, provider), binding) in due {
-                    let _ = service.query_binding_inner(&gateway, &provider, false, Some(&binding), false);
+            .spawn(move || {
+                loop {
+                    std::thread::sleep(Duration::from_secs(1));
+                    let Some(service) = weak.upgrade() else { break };
+                    let due = {
+                        let state = service.state.lock().expect("quota state");
+                        if state.stopped {
+                            break;
+                        }
+                        let now = Instant::now();
+                        state
+                            .entries
+                            .iter()
+                            .filter(|(_, entry)| {
+                                !entry.running
+                                    && entry.demand_until.is_some_and(|until| until > now)
+                                    && entry.retry_at <= now
+                            })
+                            .map(|(key, entry)| {
+                                (
+                                    key.clone(),
+                                    ViewBinding {
+                                        binding: entry.binding.clone(),
+                                        incarnation: entry.incarnation.clone(),
+                                    },
+                                )
+                            })
+                            .collect::<Vec<_>>()
+                    };
+                    for ((gateway, provider), binding) in due {
+                        let _ = service.query_binding_inner(
+                            &gateway,
+                            &provider,
+                            false,
+                            Some(&binding),
+                            false,
+                        );
+                    }
                 }
-            }).is_err()
+            })
+            .is_err()
         {
             tracing::warn!(target: "velune_application", event = "quota_refresh_unavailable");
         }
@@ -601,7 +621,10 @@ impl SubscriptionQuota {
         }
         let refresh_due = !fresh(entry)
             || entry.expires_at_ms.saturating_sub(now_ms()) <= 10_000
-            || (entry.binding.as_ref().is_some_and(|binding| binding.kimi.is_some())
+            || (entry
+                .binding
+                .as_ref()
+                .is_some_and(|binding| binding.kimi.is_some())
                 && entry.owner.is_none());
         let start = may_start
             && entry.binding.as_ref().is_some_and(|b| {

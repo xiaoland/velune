@@ -1,9 +1,7 @@
 //! Synthetic native records only: no CLI authentication or model requests.
 use serde_json::{Value, json};
-use std::{
-    io::Write,
-    process::{Command, Stdio},
-};
+use std::{io::Write, process::Stdio};
+use velune_agent_runtime::{history, process::command, version::RuntimeKind};
 
 fn codex(records: &[Value], id: Option<&str>, omit: bool) -> std::process::Output {
     let mut args = vec!["-c", include_str!("../resources/codex_context.py")];
@@ -17,7 +15,7 @@ fn codex(records: &[Value], id: Option<&str>, omit: bool) -> std::process::Outpu
             id,
         ]);
     }
-    let mut child = Command::new("python3")
+    let mut child = command("python3")
         .args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -31,7 +29,7 @@ fn codex(records: &[Value], id: Option<&str>, omit: bool) -> std::process::Outpu
     child.wait_with_output().unwrap()
 }
 fn codex_summary_required(records: &[Value]) -> std::process::Output {
-    let mut child = Command::new("python3")
+    let mut child = command("python3")
         .args([
             "-c",
             include_str!("../resources/codex_context.py"),
@@ -55,7 +53,7 @@ fn codex_with_summary(records: &[Value], summary: &str) -> std::process::Output 
         .collect::<Vec<_>>()
         .join("\n");
     let request = json!({"rollout":rollout,"portableSummary":summary});
-    let mut child = Command::new("python3")
+    let mut child = command("python3")
         .args([
             "-c",
             include_str!("../resources/codex_context.py"),
@@ -159,24 +157,39 @@ fn codex_agent_message_preserves_attribution_body_and_tool_pair_after_compaction
     }
     assert_eq!(messages[2]["content"][0]["id"], "tool");
     assert_eq!(messages[3]["content"][0]["id"], "tool");
-    for content in [
-        json!([{"type":"input_text","text":"visible envelope"},{"type":"encrypted_content","encrypted_content":"opaque body"}]),
-        json!([{"type":"unknown_agent_content","text":"unknown body"}]),
-    ] {
-        let mut opaque = communication.clone();
-        opaque["content"] = content;
-        let result = codex(
-            &[json!({"type":"response_item","payload":opaque})],
-            None,
-            false,
-        );
-        assert!(!result.status.success());
-        assert!(result.stdout.is_empty());
-        assert!(
-            String::from_utf8_lossy(&result.stderr)
-                .contains("unsupported Codex agent message content:")
-        );
-    }
+    let mut encrypted = communication.clone();
+    encrypted["content"] = json!([
+        {"type":"input_text","text":"visible envelope"},
+        {"type":"encrypted_content","encrypted_content":"opaque body"}
+    ]);
+    let result = codex(
+        &[json!({"type":"response_item","payload":encrypted})],
+        None,
+        false,
+    );
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert_eq!(
+        serde_json::from_slice::<Value>(&result.stdout).unwrap(),
+        json!({"errorCode":"portable_summary_required"})
+    );
+
+    let mut unknown = communication;
+    unknown["content"] = json!([{"type":"unknown_agent_content","text":"unknown body"}]);
+    let result = codex(
+        &[json!({"type":"response_item","payload":unknown})],
+        None,
+        false,
+    );
+    assert!(!result.status.success());
+    assert!(result.stdout.is_empty());
+    assert!(
+        String::from_utf8_lossy(&result.stderr)
+            .contains("unsupported Codex agent message content: unknown_agent_content")
+    );
 }
 #[test]
 fn codex_omits_exact_duplicate_prompt_and_keeps_native_tools_and_replies() {
@@ -387,10 +400,7 @@ with tempfile.TemporaryDirectory(prefix='velune-context-delete-') as root:
     assert export_context(path, without_message_id='selected')['messages'] == [{'role':'user','content':[{'type':'text','text':'summary'}]}]
 "#
     );
-    let output = Command::new("python3")
-        .args(["-c", script])
-        .output()
-        .unwrap();
+    let output = command("python3").args(["-c", script]).output().unwrap();
     assert!(
         output.status.success(),
         "{}",
@@ -440,7 +450,7 @@ fn native_imports_roundtrip_assistant_first_context_without_a_new_request() {
         include_str!("../resources/claude_context.py"),
         "\nimport json,sys\ndef local_command(content): return None\nprint(json.dumps(export_context(sys.argv[1])))\n"
     );
-    let output = Command::new("python3")
+    let output = command("python3")
         .args(["-c", script])
         .arg(path)
         .output()
@@ -478,7 +488,7 @@ fn native_imports_roundtrip_assistant_first_context_without_a_new_request() {
         None
     }
     let path = rollout(&home.join("sessions")).unwrap();
-    let mut child = Command::new("python3")
+    let mut child = command("python3")
         .args(["-c", include_str!("../resources/codex_context.py")])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -507,17 +517,20 @@ fn native_imports_roundtrip_assistant_first_context_without_a_new_request() {
     assert_eq!(restored["messages"][2]["content"][0]["text"], "reply");
     // Optional installed official CLI read, never turn/start or model access.
     if let Some(binary) = std::env::var_os("VELUNE_TEST_CODEX_BINARY") {
-        let history = velune_agent_runtime::native::read_codex_history_at(
-            velune_agent_runtime::version::RuntimeKind::Codex166,
-            std::path::Path::new(&binary),
-            &home,
-            "synthetic",
-            &thread_id,
-            &execution,
-            Some(&root),
-        );
+        let config = history::HistoryConfig {
+            kind: RuntimeKind::Codex166,
+            execution,
+            os_home: Some(root.clone()),
+            provider: "codex".into(),
+            binary: binary.into(),
+            node_binary: root.join("unused-node"),
+            resources_directory: root.clone(),
+            root: root.clone(),
+            home,
+        };
+        let history = history::read(&config, "synthetic", &thread_id);
         if let Err(error) = history {
-            panic!("{error}");
+            panic!("{}", error.full_message());
         }
     }
     std::fs::remove_dir_all(root).unwrap();
@@ -564,7 +577,7 @@ fn imports_preserve_prompt_origins_for_repeated_and_multimodal_deletion() {
         include_str!("../resources/claude_context.py"),
         "\nimport json,sys\ndef local_command(content): return None\nprint(json.dumps(export_context(sys.argv[1], without_message_ids=json.loads(sys.argv[2]))))\n"
     );
-    let output = Command::new("python3")
+    let output = command("python3")
         .args(["-c", script])
         .arg(path)
         .arg(serde_json::to_string(&ids).unwrap())
@@ -590,8 +603,8 @@ fn imports_preserve_prompt_origins_for_repeated_and_multimodal_deletion() {
     assert_eq!(origins["old-one"].len(), 2);
     assert_eq!(origins["old-two"].len(), 1);
     if let Some(binary) = std::env::var_os("VELUNE_TEST_CODEX_BINARY") {
-        let config = velune_agent_runtime::history::HistoryConfig {
-            kind: velune_agent_runtime::version::RuntimeKind::Codex166,
+        let config = history::HistoryConfig {
+            kind: RuntimeKind::Codex166,
             execution,
             os_home: Some(root.clone()),
             provider: "codex".into(),
@@ -602,18 +615,8 @@ fn imports_preserve_prompt_origins_for_repeated_and_multimodal_deletion() {
             home,
         };
         let ids: Vec<String> = origins.values().flatten().cloned().collect();
-        velune_agent_runtime::native::materialize_codex_import(&config, &thread_id, "openai")
-            .unwrap();
-        let history = velune_agent_runtime::native::read_codex_history_at(
-            config.kind,
-            &config.binary,
-            &config.home,
-            "synthetic",
-            &thread_id,
-            &config.execution,
-            config.os_home.as_deref(),
-        )
-        .unwrap();
+        history::materialize_codex_import(&config, &thread_id, "openai").unwrap();
+        let history = history::read(&config, "synthetic", &thread_id).unwrap();
         for id in &ids {
             assert!(
                 history.messages.iter().any(|message| &message.id == id),
@@ -625,8 +628,7 @@ fn imports_preserve_prompt_origins_for_repeated_and_multimodal_deletion() {
                     .collect::<Vec<_>>()
             );
         }
-        let exported =
-            velune_agent_runtime::native::export_codex_context(&config, &thread_id).unwrap();
+        let exported = history::export_context(&config, &thread_id).unwrap();
         let exported_ids: Vec<&str> = exported
             .messages
             .iter()
@@ -635,10 +637,7 @@ fn imports_preserve_prompt_origins_for_repeated_and_multimodal_deletion() {
         for id in &ids {
             assert!(exported_ids.contains(&id.as_str()));
         }
-        let restored = velune_agent_runtime::native::export_codex_context_without_many(
-            &config, &thread_id, &ids,
-        )
-        .unwrap();
+        let restored = history::export_context_without_many(&config, &thread_id, &ids).unwrap();
         assert_eq!(restored.messages.len(), 1);
         assert_eq!(restored.messages[0].role, Role::Assistant);
         let (ImportedConversation::Codex { thread_id: managed }, _) =
@@ -654,18 +653,8 @@ fn imports_preserve_prompt_origins_for_repeated_and_multimodal_deletion() {
         else {
             panic!()
         };
-        velune_agent_runtime::native::materialize_codex_import(&config, &managed, "velune")
-            .unwrap();
-        let managed_history = velune_agent_runtime::native::read_codex_history_at(
-            config.kind,
-            &config.binary,
-            &config.home,
-            "synthetic",
-            &managed,
-            &config.execution,
-            config.os_home.as_deref(),
-        )
-        .unwrap();
+        history::materialize_codex_import(&config, &managed, "velune").unwrap();
+        let managed_history = history::read(&config, "synthetic", &managed).unwrap();
         assert!(!managed_history.messages.is_empty());
     }
     std::fs::remove_dir_all(root).unwrap();
@@ -691,7 +680,7 @@ fn empty_claude_import_is_discoverable_and_fresh_cli_accepts_its_identity() {
     else {
         panic!()
     };
-    let config = velune_agent_runtime::history::HistoryConfig {
+    let config = history::HistoryConfig {
         kind: velune_agent_runtime::version::RuntimeKind::ClaudeCode,
         execution: ExecutionTarget::Local,
         os_home: Some(root.clone()),
@@ -706,7 +695,7 @@ fn empty_claude_import_is_discoverable_and_fresh_cli_accepts_its_identity() {
     assert!(history.messages.is_empty());
     assert_eq!(history.cwd.as_deref(), root.to_str());
     if let Some(binary) = std::env::var_os("VELUNE_TEST_CLAUDE_BINARY") {
-        let mut child = Command::new(binary)
+        let mut child = command(binary)
             .env_clear()
             .env("PATH", "/opt/homebrew/bin:/usr/bin:/bin")
             .env("HOME", &root)
@@ -757,7 +746,7 @@ fn legacy_steer_duplicates_use_canonical_turn_ordinals_for_many_deletion() {
         json!({"id":"legacy-steer-one","type":"userMessage","content":[{"type":"text","text":"duplicate"}]}),
         json!({"id":"legacy-steer-two","type":"userMessage","content":[{"type":"text","text":"duplicate"}]}),
     ];
-    let records = vec![
+    let records = [
         json!({"type":"event_msg","payload":{"type":"task_started","turn_id":"turn"}}),
         json!({"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"duplicate"}]}}),
         json!({"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"duplicate"}]}}),
@@ -772,7 +761,7 @@ fn legacy_steer_duplicates_use_canonical_turn_ordinals_for_many_deletion() {
         "legacy-steer-one":{"turnId":"turn","ordinal":1,"users":users},
         "legacy-steer-two":{"turnId":"turn","ordinal":2,"users":users}
     }});
-    let mut child = Command::new("python3")
+    let mut child = command("python3")
         .args([
             "-c",
             include_str!("../resources/codex_context.py"),

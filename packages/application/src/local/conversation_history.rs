@@ -1,7 +1,7 @@
 //! A cold conversation read captures native read inputs on the owner and
 //! installs a history-only session after IO. A live session always wins.
 use super::*;
-use crate::{SnapshotResult, config::ConversationLink, conversation::ConversationSnapshot};
+use crate::{SnapshotResult, config::ConversationLink};
 use browsing::{HistoryRead, HistorySnapshot, LoadedHistory, history_read_changed};
 
 pub(crate) enum ConversationRead {

@@ -1,6 +1,5 @@
 //! Local application conversations use cases.
 use super::*;
-use crate::conversation::ConversationSnapshot;
 use crate::local::continuation::LogicalProjection;
 use crate::{ComposedTurn, ConfigurationSnapshot, ModelSelection, SnapshotResult};
 

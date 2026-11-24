@@ -1014,7 +1014,10 @@ impl CoreRuntime {
                         }
                     })?;
                     self.keep_native_read_state(&result);
-                    native_updated.insert(summary.id.clone(), (summary.native_read_state.clone(), result));
+                    native_updated.insert(
+                        summary.id.clone(),
+                        (summary.native_read_state.clone(), result),
+                    );
                 }
             }
         }

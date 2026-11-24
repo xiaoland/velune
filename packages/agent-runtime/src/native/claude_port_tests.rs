@@ -245,7 +245,9 @@ for line in sys.stdin:
     }
     fn complete(&mut self) {
         self.permission();
-        self.poll_until(|session| !session.has_pending_requests() && session.work().unwrap().is_empty());
+        self.poll_until(|session| {
+            !session.has_pending_requests() && session.work().unwrap().is_empty()
+        });
         self.emit(json!({"type":"result","subtype":"success","is_error":false}));
         self.emit(json!({"type":"system","subtype":"session_state_changed","state":"idle"}));
         self.poll_until(|session| !session.turn_running());
@@ -278,9 +280,19 @@ fn claude_legacy_steer_updates_permission_without_answering_an_existing_tool_pro
 
     let argv: Vec<String> =
         serde_json::from_slice(&std::fs::read(fixture.root.join("argv.json")).unwrap()).unwrap();
-    assert!(argv.iter().any(|arg| arg == "--allow-dangerously-skip-permissions"));
-    assert!(!argv.iter().any(|arg| arg == "--dangerously-skip-permissions"));
-    assert!(argv.windows(2).any(|pair| pair == ["--permission-mode", "manual"]));
+    assert!(
+        argv.iter()
+            .any(|arg| arg == "--allow-dangerously-skip-permissions")
+    );
+    assert!(
+        !argv
+            .iter()
+            .any(|arg| arg == "--dangerously-skip-permissions")
+    );
+    assert!(
+        argv.windows(2)
+            .any(|pair| pair == ["--permission-mode", "manual"])
+    );
     assert_eq!(fixture.session.turn_id, active_turn);
     assert!(fixture.session.has_pending_requests());
     let requests = fixture.requests();
@@ -291,15 +303,35 @@ fn claude_legacy_steer_updates_permission_without_answering_an_existing_tool_pro
         })
         .collect::<Vec<_>>();
     assert_eq!(user_and_permission.len(), 4);
-    assert_eq!(user_and_permission[0]["message"]["content"][0]["text"], "once");
-    assert_eq!(user_and_permission[1]["request"]["mode"], "bypassPermissions");
-    assert_eq!(user_and_permission[2]["message"]["content"][0]["text"], "steered");
-    assert_eq!(user_and_permission[3]["message"]["content"][0]["text"], "steered again");
-    assert!(!requests.iter().any(|record| record["type"] == "control_response"));
+    assert_eq!(
+        user_and_permission[0]["message"]["content"][0]["text"],
+        "once"
+    );
+    assert_eq!(
+        user_and_permission[1]["request"]["mode"],
+        "bypassPermissions"
+    );
+    assert_eq!(
+        user_and_permission[2]["message"]["content"][0]["text"],
+        "steered"
+    );
+    assert_eq!(
+        user_and_permission[3]["message"]["content"][0]["text"],
+        "steered again"
+    );
+    assert!(
+        !requests
+            .iter()
+            .any(|record| record["type"] == "control_response")
+    );
     let snapshot = fixture.session.snapshot().unwrap();
     let last = snapshot.messages.last().unwrap();
     assert_eq!(
-        last.turn_settings.as_ref().unwrap().permission_mode.as_deref(),
+        last.turn_settings
+            .as_ref()
+            .unwrap()
+            .permission_mode
+            .as_deref(),
         Some("bypassPermissions")
     );
 }
@@ -316,9 +348,18 @@ fn claude_legacy_steer_never_sends_text_when_permission_is_rejected_or_the_turn_
         steer.permission_mode = Some("bypassPermissions".into());
         assert_eq!(fixture.session.steer(&steer).unwrap_err().code(), error);
         let requests = fixture.requests();
-        assert_eq!(requests.iter().filter(|frame| frame["type"] == "user").count(), 1);
         assert_eq!(
-            requests.iter().filter(|frame| frame["request"]["subtype"] == "set_permission_mode").count(),
+            requests
+                .iter()
+                .filter(|frame| frame["type"] == "user")
+                .count(),
+            1
+        );
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|frame| frame["request"]["subtype"] == "set_permission_mode")
+                .count(),
             1
         );
     }
@@ -350,11 +391,19 @@ fn claude_port_rejects_unapplied_steer_configuration_without_user_write() {
     let mut steer = Fixture::input("must not be sent");
     steer.permission_mode = Some("bypassPermissions".into());
     let Err(ClaudeAdmissionError::Rejected(error)) = fixture.session.enqueue_claude_command(
-        ClaudeCommand::Steer(steer), Instant::now() + Duration::from_secs(3), None
-    ) else { panic!("steer with unconfirmed settings was admitted") };
+        ClaudeCommand::Steer(steer),
+        Instant::now() + Duration::from_secs(3),
+        None,
+    ) else {
+        panic!("steer with unconfirmed settings was admitted")
+    };
     assert_eq!(error.code(), "steer_settings_unsupported");
     assert_eq!(
-        fixture.requests().iter().filter(|frame| frame["type"] == "user").count(),
+        fixture
+            .requests()
+            .iter()
+            .filter(|frame| frame["type"] == "user")
+            .count(),
         1
     );
 }
@@ -378,7 +427,11 @@ fn claude_port_written_is_not_accepted_and_held_ack_does_not_block_permission() 
             .iter()
             .any(|r| r.ticket == *reply && matches!(r.delivery, ClaudeDelivery::Written))
     );
-    assert!(receipts.iter().any(|r| r.ticket == *interrupt && matches!(r.delivery, ClaudeDelivery::Accepted { .. })));
+    assert!(
+        receipts.iter().any(
+            |r| r.ticket == *interrupt && matches!(r.delivery, ClaudeDelivery::Accepted { .. })
+        )
+    );
     assert!(f.session.turn_running(), "control ACK is not completion");
     assert_eq!(
         f.requests().iter().filter(|r| r["type"] == "user").count(),
@@ -413,7 +466,8 @@ fn claude_port_blocked_stdin_keeps_poll_and_reserved_reply_admission_live() {
     assert!(started.elapsed() < Duration::from_millis(500));
     assert!(
         f.session
-            .background_tasks().unwrap()
+            .background_tasks()
+            .unwrap()
             .tasks
             .iter()
             .any(|task| task.title == "pulse")
@@ -433,7 +487,11 @@ fn claude_port_blocked_stdin_keeps_poll_and_reserved_reply_admission_live() {
             .iter()
             .any(|r| r.ticket == *reply && matches!(r.delivery, ClaudeDelivery::Written))
     );
-    assert!(receipts.iter().any(|r| r.ticket == *interrupt && matches!(r.delivery, ClaudeDelivery::Accepted { .. })));
+    assert!(
+        receipts.iter().any(
+            |r| r.ticket == *interrupt && matches!(r.delivery, ClaudeDelivery::Accepted { .. })
+        )
+    );
     assert_eq!(
         f.requests().iter().filter(|r| r["type"] == "user").count(),
         2
@@ -1199,7 +1257,9 @@ fn claude_port_checked_sequence_and_duplicate_reply_never_write_untracked_frames
             )
             .is_err()
     );
-    f.poll_until(|session| !session.claude.commands.pending() && session.work().unwrap().is_empty());
+    f.poll_until(|session| {
+        !session.claude.commands.pending() && session.work().unwrap().is_empty()
+    });
     assert_eq!(
         f.requests().iter().filter(|r| r["type"] == "user").count(),
         1
@@ -1302,8 +1362,7 @@ fn claude_port_rejected_create_side_context_preserves_prepared_user_routing() {
     let error = f
         .session
         .create_side_context(Some(&f.root), "runtime", "rejected context")
-        .err()
-        .expect("ordinary synchronous mutation must be rejected in port mode");
+        .expect_err("ordinary synchronous mutation must be rejected in port mode");
     assert_eq!(error.code(), "operation_pending");
     assert!(!f.session.side, "rejection must not enable side routing");
     assert_eq!(f.session.native_id, native_id);

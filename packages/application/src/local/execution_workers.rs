@@ -15,6 +15,7 @@ use velune_agent_runtime::{
     execution::ExecutionTarget,
     work::{BackgroundTask, WorkStatus},
 };
+pub(crate) use velune_application_api::ExecutionCommandKind;
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct ExecutionTicket {
@@ -30,38 +31,23 @@ pub(super) struct ExecutionCommand {
     started: Option<ExecutionTicket>,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ExecutionCommandKind {
-    Create,
-    Cancel,
-    StopBackground,
-    Reply,
-    Send,
-    Resume,
-    Steer,
-    Edit,
-    Delete,
-}
-
 #[derive(Default)]
 pub(crate) struct ExecutionSuccess {
     pub(crate) submitted_native_message_id: Option<String>,
 }
 
-impl ExecutionCommandKind {
-    pub(crate) fn is_submission(self) -> bool {
-        matches!(self, Self::Send | Self::Resume | Self::Steer | Self::Edit)
-    }
-
-    fn allows(self, name: &str) -> bool {
-        matches!(
-            (self, name),
-            (Self::Create, "native_create")
-                | (Self::Cancel, "cancel" | "stop_child")
-                | (Self::StopBackground, "stop_background")
-                | (Self::Reply, "reply")
-                | (Self::Steer, "steer")
-        )
+impl ExecutionCommand {
+    /// Which adapter operation this dispatching command may transfer.
+    fn allows(&self, name: &str) -> bool {
+        use ExecutionCommandKind::*;
+        match self.kind {
+            Create => name == "native_create",
+            Cancel => matches!(name, "cancel" | "stop_child"),
+            StopBackground => name == "stop_background",
+            Reply => name == "reply",
+            Steer => name == "steer",
+            Send | Resume | Edit | Delete => false,
+        }
     }
 }
 
@@ -563,7 +549,11 @@ impl LiveConversation for FrozenExecution {
     fn owned_snapshot(
         &self,
     ) -> Result<Option<Retained<crate::conversation::ConversationSnapshot>>, LiveError> {
-        Ok(self.snapshot.as_ref().map(Retained::try_clone).transpose()?)
+        Ok(self
+            .snapshot
+            .as_ref()
+            .map(Retained::try_clone)
+            .transpose()?)
     }
     fn turn_running(&self) -> bool {
         self.turn_running
@@ -578,7 +568,9 @@ impl LiveConversation for FrozenExecution {
             .map_err(|error| -> LiveError { error.as_str().into() })?;
         Ok(work.try_clone()?)
     }
-    fn background_tasks(&self) -> Result<Retained<crate::conversation::BackgroundTaskList>, LiveError> {
+    fn background_tasks(
+        &self,
+    ) -> Result<Retained<crate::conversation::BackgroundTaskList>, LiveError> {
         let tasks = self
             .background
             .as_ref()
@@ -998,7 +990,7 @@ impl CoreRuntime {
         let Some(command) = self
             .execution_command
             .as_ref()
-            .filter(|command| command.dispatching && command.kind.allows(name))
+            .filter(|command| command.dispatching && command.allows(name))
         else {
             if self.session.native_controls.pending() {
                 return Err(RuntimeError::Busy);

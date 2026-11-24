@@ -2,7 +2,7 @@
 
 pub mod creation;
 pub use velune_conversation as conversation;
-pub mod background;
+pub(crate) mod background;
 
 mod client;
 pub(crate) mod elicitation;

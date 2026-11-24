@@ -903,9 +903,11 @@ fn automatic_discovery_and_controller_business_really_traverse_a_b_c() {
             .controllers
             .iter()
             .find(|status| status.peer_id == c.id)
-            .unwrap()
-            .clone();
-        assert_eq!(baseline_controller.via_device_ids, [b.id.clone()]);
+            .unwrap();
+        assert_eq!(
+            baseline_controller.via_device_ids,
+            std::slice::from_ref(&b.id)
+        );
         let before_upgrade = a.service.read_state().unwrap();
         assert!(before_upgrade.version >= baseline.version);
         block_link(a, c, false);
@@ -915,19 +917,19 @@ fn automatic_discovery_and_controller_business_really_traverse_a_b_c() {
         // route, and the UI needs a new version containing its new epoch/via.
         let published = tokio::time::timeout(WAIT, async {
             loop {
-                if let Some(snapshot) = state_observer.next(Duration::from_secs(5)).await.unwrap() {
-                    if snapshot.controllers.iter().any(|status| {
+                if let Some(snapshot) = state_observer.next(Duration::from_secs(5)).await.unwrap()
+                    && snapshot.controllers.iter().any(|status| {
                         status.peer_id == c.id
                             && status.phase == ControllerPhase::Connected
                             && status.connection_epoch > baseline_controller.connection_epoch
                             && status.via_device_ids.is_empty()
-                    }) {
-                        assert!(
-                            snapshot.version > before_upgrade.version,
-                            "直达升级必须推进公开快照版本，不能只改变 Controller 内部字段"
-                        );
-                        break snapshot;
-                    }
+                    })
+                {
+                    assert!(
+                        snapshot.version > before_upgrade.version,
+                        "直达升级必须推进公开快照版本，不能只改变 Controller 内部字段"
+                    );
+                    break snapshot;
                 }
             }
         })
