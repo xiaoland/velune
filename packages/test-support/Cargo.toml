@@ -1,0 +1,10 @@
+[package]
+name = "velune-test-support"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# Shared test fixtures. Crates take this only as a dev-dependency; it must not
+# depend on workspace crates, so no product crate is compiled twice in tests.
+[dependencies]
+tempfile = "3"

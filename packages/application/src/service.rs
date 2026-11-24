@@ -3006,30 +3006,20 @@ mod execution_tests;
 mod usage_tests {
     use super::*;
     use crate::config::UsageDisplay::{Remaining, Used};
-    use std::{fs, path::PathBuf};
+    use std::fs;
+    use velune_test_support::TempRoot;
 
-    struct Fixture(PathBuf);
+    struct Fixture(TempRoot);
     impl Fixture {
         fn new() -> Self {
-            // Tests run in parallel; a clock-based name can repeat within its resolution.
-            let mut nonce = [0; 8];
-            getrandom::fill(&mut nonce).unwrap();
-            let path =
-                std::env::temp_dir().join(format!("velune-usage-{:x}", u64::from_le_bytes(nonce)));
-            fs::create_dir(&path).unwrap();
-            Self(path)
+            Self(TempRoot::new("usage"))
         }
         fn open(&self) -> ApplicationService {
             ApplicationService::open(Options {
-                home_directory: self.0.clone(),
-                resources_directory: self.0.clone(),
+                home_directory: self.0.to_path_buf(),
+                resources_directory: self.0.to_path_buf(),
             })
             .unwrap()
-        }
-    }
-    impl Drop for Fixture {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.0);
         }
     }
     fn display(

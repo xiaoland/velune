@@ -1,41 +1,33 @@
 //! Claude source export through the production validator and native writers.
 //! Everything lives in an owned temporary directory; no runtime or model runs.
 use serde_json::{Value, json};
-use std::{collections::BTreeSet, path::PathBuf};
+use std::collections::BTreeSet;
 use velune_agent_runtime::{
     execution::ExecutionTarget,
     history::{HistoryConfig, export_context, export_context_before},
     import::*,
     version::RuntimeKind,
 };
+use velune_test_support::TempRoot;
 
 const SESSION: &str = "00000000-0000-4000-8000-000000000001";
 
-struct Fixture(PathBuf);
+struct Fixture(TempRoot);
 impl Fixture {
     fn new() -> Self {
-        let root = std::env::temp_dir().join(format!(
-            "velune-claude-handoff-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir(&root).unwrap();
-        Self(root)
+        Self(TempRoot::new("claude-handoff"))
     }
     fn config(&self) -> HistoryConfig {
         HistoryConfig {
             kind: RuntimeKind::ClaudeCode,
             execution: ExecutionTarget::Local,
-            os_home: Some(self.0.clone()),
+            os_home: Some(self.0.to_path_buf()),
             provider: "claude-code".into(),
             binary: self.0.join("unused-cli"),
             node_binary: self.0.join("unused-node"),
-            resources_directory: self.0.clone(),
-            root: self.0.clone(),
-            home: self.0.clone(),
+            resources_directory: self.0.to_path_buf(),
+            root: self.0.to_path_buf(),
+            home: self.0.to_path_buf(),
         }
     }
     fn save(&self, records: &[Value]) {
@@ -44,11 +36,6 @@ impl Fixture {
             records.iter().map(|r| format!("{r}\n")).collect::<String>(),
         )
         .unwrap();
-    }
-}
-impl Drop for Fixture {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
     }
 }
 

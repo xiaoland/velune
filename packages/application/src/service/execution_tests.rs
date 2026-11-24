@@ -1,17 +1,12 @@
 //! A real protocol wait must not occupy the application owner.
 use super::*;
-use std::{
-    fs,
-    os::unix::fs::PermissionsExt,
-    path::{Path, PathBuf},
-};
+use std::{fs, os::unix::fs::PermissionsExt, path::Path};
+use velune_test_support::TempRoot;
 
-struct Fixture(PathBuf);
+struct Fixture(TempRoot);
 impl Fixture {
     fn new() -> Self {
-        let root =
-            std::env::temp_dir().join(format!("velune-control-gate-{}", crate::new_record_key()));
-        fs::create_dir(&root).unwrap();
+        let root = TempRoot::new("control-gate");
         let binary = root.join("claude");
         fs::write(
             &binary,
@@ -81,9 +76,7 @@ for line in sys.stdin:
         Self(root)
     }
     fn codex() -> Self {
-        let root =
-            std::env::temp_dir().join(format!("velune-bootstrap-gate-{}", crate::new_record_key()));
-        fs::create_dir(&root).unwrap();
+        let root = TempRoot::new("bootstrap-gate");
         let binary = root.join("codex");
         fs::write(
             &binary,
@@ -118,9 +111,8 @@ for line in sys.stdin:
     }
 
     fn codex_list_index() -> Self {
-        let root =
-            std::env::temp_dir().join(format!("velune-codex-list-{}", crate::new_record_key()));
-        fs::create_dir_all(root.join("native/sessions/2026/11/23")).unwrap();
+        let root = TempRoot::new("codex-list");
+        root.dir("native/sessions/2026/11/23");
         let binary = root.join("codex");
         fs::write(
             &binary,
@@ -175,9 +167,7 @@ for line in sys.stdin:
     }
 
     fn claude_naming() -> Self {
-        let root =
-            std::env::temp_dir().join(format!("velune-claude-naming-{}", crate::new_record_key()));
-        fs::create_dir(&root).unwrap();
+        let root = TempRoot::new("claude-naming");
         let binary = root.join("claude");
         fs::write(
             &binary,
@@ -246,7 +236,6 @@ impl Drop for Fixture {
         for attempt in 1..=2 {
             let _ = fs::write(self.0.join(format!("release-{attempt}")), []);
         }
-        let _ = fs::remove_dir_all(&self.0);
     }
 }
 
@@ -286,7 +275,7 @@ fn codex_startup_prewarms_the_active_list_without_blocking_the_owner() {
     let fixture = Fixture::codex_list_index();
     let options = Options {
         home_directory: fixture.0.join("app"),
-        resources_directory: fixture.0.clone(),
+        resources_directory: fixture.0.to_path_buf(),
     };
     let mut application = Application::open(options.clone()).unwrap();
     application

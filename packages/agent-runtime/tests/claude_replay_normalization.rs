@@ -1,7 +1,6 @@
 //! Synthetic Claude 2.1.292 replay shapes through the production source exporter
 //! and generic context validator. No CLI, model, or user session is involved.
 use serde_json::{Value, json};
-use std::path::PathBuf;
 use velune_agent_runtime::{
     creation::Retained,
     execution::ExecutionTarget,
@@ -9,41 +8,28 @@ use velune_agent_runtime::{
     import::{Block, Context, Role},
     version::RuntimeKind,
 };
+use velune_test_support::TempRoot;
 
 const SESSION: &str = "00000000-0000-4000-8000-000000000001";
 
-struct Fixture(PathBuf);
+struct Fixture(TempRoot);
 
 impl Fixture {
     fn new() -> Self {
-        let root = std::env::temp_dir().join(format!(
-            "velune-claude-replay-normalization-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir(&root).unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
-        }
-        Self(root)
+        Self(TempRoot::new("claude-replay-normalization"))
     }
 
     fn config(&self) -> HistoryConfig {
         HistoryConfig {
             kind: RuntimeKind::ClaudeCode,
             execution: ExecutionTarget::Local,
-            os_home: Some(self.0.clone()),
+            os_home: Some(self.0.to_path_buf()),
             provider: "claude-code".into(),
             binary: self.0.join("unused-cli"),
             node_binary: self.0.join("unused-node"),
-            resources_directory: self.0.clone(),
-            root: self.0.clone(),
-            home: self.0.clone(),
+            resources_directory: self.0.to_path_buf(),
+            root: self.0.to_path_buf(),
+            home: self.0.to_path_buf(),
         }
     }
 
@@ -61,12 +47,6 @@ impl Fixture {
     fn export(&self, records: &[Value]) -> Retained<Context> {
         self.save(records);
         export_context(&self.config(), SESSION).unwrap()
-    }
-}
-
-impl Drop for Fixture {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
     }
 }
 

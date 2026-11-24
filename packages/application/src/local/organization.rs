@@ -1252,13 +1252,12 @@ mod pagination_tests {
     use super::*;
     use crate::{ApplicationService, ClientViewId, Command, Options, Response};
     use std::time::Instant;
+    use velune_test_support::TempRoot;
 
-    struct Fixture(PathBuf);
+    struct Fixture(TempRoot);
     impl Fixture {
         fn new(collapsed: bool) -> Self {
-            let root =
-                std::env::temp_dir().join(format!("velune-pagination-{}", crate::new_record_key()));
-            fs::create_dir(&root).unwrap();
+            let root = TempRoot::new("pagination");
             // Deliberately slow unrelated history reader. Paging an existing index
             // must neither restart it nor require it to remain available.
             fs::write(
@@ -1327,8 +1326,8 @@ print(json.dumps({'contractVersion':1,'sessions':[
         }
         fn open(&self) -> ApplicationService {
             ApplicationService::open(Options {
-                home_directory: self.0.clone(),
-                resources_directory: self.0.clone(),
+                home_directory: self.0.to_path_buf(),
+                resources_directory: self.0.to_path_buf(),
             })
             .unwrap()
         }
@@ -1366,19 +1365,12 @@ print(json.dumps({'contractVersion':1,'sessions':[
             value
         }
     }
-    impl Drop for Fixture {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.0);
-        }
-    }
 
     #[test]
     fn archive_reads_native_pages_and_only_locally_archived_titles() {
         use std::os::unix::fs::PermissionsExt;
 
-        let root =
-            std::env::temp_dir().join(format!("velune-archive-list-{}", crate::new_record_key()));
-        fs::create_dir(&root).unwrap();
+        let root = TempRoot::new("archive-list");
         let fixture = Fixture(root);
         let root = &fixture.0;
         let codex = root.join("codex");

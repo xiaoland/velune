@@ -3,14 +3,7 @@ use std::{
     io::{BufRead, BufReader, Write},
     process::{Child, Stdio},
 };
-
-struct TestHome(PathBuf);
-
-impl Drop for TestHome {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
-    }
-}
+use velune_test_support::TempRoot;
 
 struct CodexWriter(Child);
 
@@ -81,10 +74,8 @@ fn codex_snapshot_and_activity_follow_the_external_turn() {
     const FIRST_TURN: &str = "11234567-89ab-4cde-8fab-0123456789ab";
     const SECOND_TURN: &str = "21234567-89ab-4cde-8fab-0123456789ab";
 
-    let root = std::env::temp_dir().join(format!("velune-external-{}", crate::new_record_key()));
-    fs::create_dir(&root).unwrap();
-    let home = TestHome(root);
-    let agent_dir = home.0.join("codex");
+    let home = TempRoot::new("external");
+    let agent_dir = home.join("codex");
     let sessions = agent_dir.join("sessions/2026/11/19");
     let locks = agent_dir.join("thread-writer-locks");
     fs::create_dir_all(&sessions).unwrap();
@@ -95,8 +86,8 @@ fn codex_snapshot_and_activity_follow_the_external_turn() {
     let writer = CodexWriter::lock(&lock);
 
     let mut application = crate::Application::open(crate::Options {
-        home_directory: home.0.join("app"),
-        resources_directory: home.0.clone(),
+        home_directory: home.join("app"),
+        resources_directory: home.to_path_buf(),
     })
     .unwrap();
     let core = &mut application.runtime;

@@ -37,3 +37,6 @@ rustix = { version = "1", features = ["process"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Threading"] }
+
+[dev-dependencies]
+velune-test-support = { path = "../test-support" }

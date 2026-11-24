@@ -2,8 +2,9 @@
 use super::*;
 use std::{fs, os::unix::fs::PermissionsExt, path::PathBuf};
 use velune_conversation::{EditPlacement, MessageRole, RunState, RuntimeInteractionReply};
+use velune_test_support::TempRoot;
 
-struct Fixture(PathBuf);
+struct Fixture(TempRoot);
 
 fn native_header(root: &std::path::Path, name: &str) -> String {
     let id = match name {
@@ -22,12 +23,7 @@ fn native_header(root: &std::path::Path, name: &str) -> String {
 
 impl Fixture {
     fn new(gate: &str, reject: bool) -> Self {
-        let root =
-            std::env::temp_dir().join(format!("velune-pi-edit-async-{}", crate::new_record_key()));
-        fs::create_dir(&root).unwrap();
-        // Native IDs, the index and execution cwd use one physical path on
-        // platforms whose temporary directory is reached through an alias.
-        let root = root.canonicalize().unwrap();
+        let root = TempRoot::new("pi-edit-async");
         fs::write(root.join("gate"), gate).unwrap();
         fs::write(root.join("reject"), if reject { "yes" } else { "no" }).unwrap();
         fs::write(root.join("pi"), "#!/bin/sh\nprintf '1.4.0\\n'\n").unwrap();
@@ -45,7 +41,7 @@ else: os.execv('/usr/bin/python3',['/usr/bin/python3']+sys.argv[1:])
                 native_header(&root, name),
             )
             .unwrap();
-            fs::write(root.join(format!("{name}-history.json")), serde_json::json!({"cwd":root,"messages":[
+            fs::write(root.join(format!("{name}-history.json")), serde_json::json!({"cwd":root.path(),"messages":[
                 {"id":"pi:synthetic:prefix-user:0","role":"user","content":"retained prompt"},
                 {"id":"pi:synthetic:prefix-reply:0","role":"assistant","content":"retained reply","stopReason":"stop"},
                 {"id":"pi:synthetic:edited-user:0","role":"user","content":"old selected body"},
@@ -251,7 +247,7 @@ for line in requests():
     fn open(&self) -> ApplicationService {
         let service = ApplicationService::open(Options {
             home_directory: self.0.join("app"),
-            resources_directory: self.0.clone(),
+            resources_directory: self.0.to_path_buf(),
         })
         .unwrap();
         service
@@ -314,7 +310,6 @@ impl Drop for Fixture {
         ] {
             let _ = fs::write(self.0.join(marker), []);
         }
-        let _ = fs::remove_dir_all(&self.0);
     }
 }
 fn close_after_cleanup(service: &ApplicationService) {
