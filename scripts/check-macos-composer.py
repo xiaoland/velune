@@ -132,7 +132,7 @@ def prepare_claude_continuation(root, evidence, path, lifetime, editing):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('check', choices=['editor', 'runtime-editor', 'fork-send', 'claude-compact-edit', 'queued-editor', 'archived', 'palette-ime', 'pagination', 'continuation', 'targets', 'tabs', 'ownership', 'geometry', 'controls', 'credits', 'background', 'experience', 'appearance-zoom', 'recovery', 'compaction', 'sidebar', 'provider-analytics', 'background-notifications', 'notification-navigation', 'sidebar-toolbar', 'outgoing-submissions'])
+    parser.add_argument('check', choices=['editor', 'runtime-editor', 'fork-send', 'claude-compact-edit', 'queued-editor', 'archived', 'palette-ime', 'pagination', 'continuation', 'targets', 'tabs', 'ownership', 'geometry', 'controls', 'credits', 'background', 'experience', 'appearance-zoom', 'recovery', 'compaction', 'sidebar', 'provider-analytics', 'background-notifications', 'notification-navigation', 'sidebar-toolbar', 'outgoing-submissions', 'transcript'])
     parser.add_argument('--app', type=Path, default=app_bundle_path(ROOT, 'dev'))
     parser.add_argument('--output', type=Path)
     parser.add_argument('--dark', action='store_true')
@@ -238,6 +238,8 @@ def main():
             flags = ['--check-outgoing-submissions']
         if args.check == 'sidebar-toolbar':
             flags = ['--check-sidebar-toolbar']
+        if args.check == 'transcript':
+            flags = ['--check-message-experience', '--experience-native-row-order-only']
         if args.check == 'sidebar':
             flags = ['--check-message-experience', '--experience-sidebar-only']
         if args.dark and args.check == 'continuation':

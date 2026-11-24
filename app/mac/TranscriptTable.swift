@@ -199,6 +199,7 @@ struct TranscriptTable: NSViewRepresentable {
     private var conversationID: String?
     private var revision: UInt64?
     private var activity: TranscriptActivity?
+    private var needsEntryRebuild = false
     private var outlineCollapsed = false
     private var transition: OutlineTransition?
     /// Finished turns the user expanded, and running turns the user collapsed:
@@ -309,9 +310,7 @@ struct TranscriptTable: NSViewRepresentable {
         measureToken?.cancel()
         measured.removeAll()
         for cell in visibleCells.values { cell.configurationToken = nil }
-        // Hidden tabs keep their rendered text; the next update lazily lays
-        // out their action rows against the new date environment.
-        if parent != nil { rebuildEntries() }
+        rebuildEntries()
     }
 
     func update(_ input: TranscriptTable) {
@@ -319,7 +318,7 @@ struct TranscriptTable: NSViewRepresentable {
         let outlineChanged = input.outlineCollapsed != outlineCollapsed
         let scrollRequested = lastBottomRequest != input.bottomRequest || input.jump?.token != lastJumpToken
         // Unrelated SwiftUI updates leave a running outline animation alone.
-        if contentChanged || outlineChanged || scrollRequested { finishTransition() }
+        if contentChanged || outlineChanged || scrollRequested || needsEntryRebuild { finishTransition() }
         parent = input
         clipFrameChanged()
         var restored: Position?
@@ -343,12 +342,12 @@ struct TranscriptTable: NSViewRepresentable {
             following = true
             measureToken?.cancel()
         }
-        if contentChanged || outlineChanged {
+        if contentChanged || outlineChanged || needsEntryRebuild {
             revision = input.revision; activity = input.activity
             outlineCollapsed = input.outlineCollapsed
             // Only a pure outline change on a shown list is animated; content
             // changes and explicit scrolling in the same update take precedence.
-            if outlineChanged, !contentChanged, !scrollRequested, !entries.isEmpty {
+            if outlineChanged, !contentChanged, !scrollRequested, !needsEntryRebuild, !entries.isEmpty {
                 changeOutline(anchorID: input.outlineAnchorID)
             } else {
                 rebuildEntries()
@@ -420,6 +419,10 @@ struct TranscriptTable: NSViewRepresentable {
     }
 
     private func rebuildEntries(anchor requested: Anchor? = nil) {
+        // A background tab retains its rows and reading position while it has
+        // no SwiftUI input. Rebuild on reattachment, even at the same revision.
+        guard parent != nil else { needsEntryRebuild = true; return }
+        needsEntryRebuild = false
         let next = buildEntries()
         let anchor = requested ?? captureAnchor()
         let previousHeights = Dictionary(entries.indices.map { (entries[$0].id, heights[$0]) }, uniquingKeysWith: { first, _ in first })
@@ -2268,8 +2271,21 @@ extension TranscriptTableController {
         let unchanged = document.subviews.map(ObjectIdentifier.init)
         controller.materializeVisibleRows(extra: document.bounds)
         precondition(document.subviews.map(ObjectIdentifier.init) == unchanged, "稳定物化不能改变子视图顺序或身份")
+        let preferences = AppearancePreferences.shared
+        let originalAppearance = preferences.values
+        let originalRevision = model.contentRevision
+        let originalHeight = cells(["A"]).first!.frame.height
+        controller.viewRemoved()
+        preferences.values.zoomPercent = originalAppearance.zoomPercent < 150 ? 150 : 100
+        precondition(cells(["A", "C"]).count == 2, "外观变化不能清除后台标签的行")
+        let reattached = controller.view()
+        precondition(reattached === scroll, "返回标签时复用原生列表")
+        apply(["A", "C"])
+        precondition(model.contentRevision == originalRevision, "本地外观变化不推进消息版本")
+        precondition(cells(["A"]).first!.frame.height != originalHeight, "重新挂载后按新字号排版")
+        preferences.values = originalAppearance
         controller.viewRemoved()
         window.contentView = nil
-        FileHandle.standardError.write(Data("PASS native transcript ordering: model/items, frame y, document/AX children A,C → A,N,C → A,C; retained cell identities and overlay\n".utf8))
+        FileHandle.standardError.write(Data("PASS native transcript: row and AX order, stable cells, and background-tab zoom refresh at the same message revision\n".utf8))
     }
 }
