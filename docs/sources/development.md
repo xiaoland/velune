@@ -41,3 +41,7 @@
 用户确认按 Velopack 每用户安装器、GitHub Releases 更新源、用户选择下载及正常退出后的更新时机推进，并要求说明 iPad 可在 Mac 应用使用自己的签名一键安装。随后明确 Windows 也须保留跨协议转换，拒绝同协议首发范围，要求继续寻找兼容实现。不得将该要求解释为删除 Windows 网关或跨协议调用。
 
 兼容转换库的隔离验证通过后，用户在统一替换及增加 Windows 窄链接许可、仅 Windows 替换、保持现状三项选择中，明确选择“保持现有依赖和许可，Windows 发行暂缓”。首 beta 因而发布 Mac 和 Android，保留 RelayKit、AGPL 及 Windows 跨协议功能，已完成的 Windows 安装／更新代码保留待后续发行。
+
+## S93
+
+2026-11-24，用户复核 `refactor/maintainability` 后指出它“仅仅局限在了形式上的 DX”，并认为“代码架构、代码味道、文档、测试基建以及验收基建，才是 DX 的实际根基，才是 maintainability 的源头活水”。用户同意推翻“不建立成套的单元或集成测试、临时脚本不入库”的验证方针，说明“随着 alpha0.1 的发布和接下来越来越多功能的加入，这个规则已经过时”，并授权自主推进、自动提交，验收可使用主机命令执行。现行方针归[验证方式](../development/validation.md)，计划与进度归[任务包](../../tasks/maintainability-foundations/packet.md)。本条不放宽数据授权、迁移和开发实例隔离的既有约束。
