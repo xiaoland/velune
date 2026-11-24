@@ -109,6 +109,13 @@ AppKit 自绘 `TabBarView`，行为对齐系统 Tab Bar（Xcode 分屏标签也�
 - 原 `Pane` 激活历史检查并入 `velune-workspace-checks`（36075 项通过），窗口级检查改用 `insertTab`。
 - Mac 验证（2026-11-24）：`svc run build-macos` 通过；`scripts/check-macos-composer.py experience --workspace-only`、`tabs`、`ownership`、`targets` 全部通过（含关闭标签恢复已移除的分屏组、跨窗口拖放、侧聊拆分移动）。
 
+### 步骤 3：取消浮动工具面板
+
+- `ToolPlace` 去掉 `.floating`，`ToolWindowState` 去掉 `panelFrame`；删除 `ToolPanel`、吸附、子窗口跟随、拖到窗口边缘停靠与 `dockHint` 高亮。`DetachedTools` 只管理独立窗口（标题栏位置菜单、关闭即隐藏、输入区高度跟随内容）。工具栏无按钮时关联 Agent／后台任务改为独立窗口。
+- 迁移在 JSON 层完成，模型类型不保留旧格式：`ToolWindowLayout.migratingFloatingTools` 把浮动工具改为 `window`，`panelFrame` 成为 `windowFrame`（附着的面板保留相对主窗口的位置，首次打开后记录为屏幕位置）。`SavedWindowLayout.decodeKnown` 在严格键校验前迁移；日志恢复点改写前备份为 `<id>.json.before-floating-tools.bak` 并保留修改时间；`mac-tool-layout.json` 改写前备份为 `mac-tool-layout.json.before-floating-tools.bak`。SceneStorage 中的旧布局读入时同样迁移，但无法备份（步骤 4 移除 SceneStorage，以日志为准）。
+- 检查：`WorkspaceContinuityChecks` 新增合成旧恢复点与旧工具布局的迁移检查（位置、尺寸、备份、严格读回、修改时间），`experience --workspace-only` 22 组全部通过。`check-macos-composer.py sidebar` 失败（共享左区顶部普通按钮 3 个，期望 2 个）；在本分支基点 `8551f93a9` 上同样失败，属既有问题，与本任务无关。
+- 视觉验收未完成：宿主命令工具所在的 `Cage.app` 没有屏幕录制权限（`CGPreflightScreenCaptureAccess()` 为 false，`screencapture -l` 失败），预览模式又不读写 `mac-tool-layout.json`。需用户在“系统设置 › 隐私与安全性 › 录屏与系统录音”中允许 `Cage.app` 后补做：旧浮动布局启动后成为独立窗口、位置菜单往返。
+
 ## Mac 验证途径
 
 开发 Agent 运行在 Mac 宿主的 Linux 虚拟机中：仓库主检出经 sshfs 挂载在同一路径，虚拟机内没有 Xcode、无法运行 AppKit，`gh` 未登录。纯 Foundation 代码可在虚拟机内用 Linux 版 Swift 编译与检查；凡涉及 AppKit／SwiftUI 的步骤须在 Mac 上验证。
