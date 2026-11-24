@@ -298,7 +298,7 @@ import VeluneBindings
         func chromeFonts(activity: Bool) -> [CGFloat] {
             let content: TranscriptRowContent = activity
                 ? .activity(.init(text: "正在思考", isLive: true))
-                : .message(chromeMessage, revision: 0, expanded: [], status: nil, copies: false, edits: false, forks: false)
+                : .message(chromeMessage, revision: 0, expanded: [], copies: false, edits: false, forks: false)
             let layout = TranscriptRowLayout.make(content, rendered: activity ? nil : RenderedMessage(chromeMessage), width: 640, measurer: TextMeasurer())
             let cell = activity ? activityCell : chromeCell
             cell.frame = NSRect(x: 0, y: 0, width: 640, height: layout.height)
@@ -353,36 +353,6 @@ import VeluneBindings
     precondition(MessageMetadata.time(stamp(calendar.date(byAdding: .year, value: -1, to: now)!), now: now, calendar: calendar) == "2025-11-04 12:00")
     precondition(MessageMetadata.time(nil) == nil)
     note("PASS message action row: today, same year, previous year and missing native time")
-
-    let conversation = Conversation(id: "synthetic", title: "Synthetic", updatedAtUnixMs: nil, runtimeID: "fixture", cwd: nil, canRename: false, canDelete: false)
-    var snapshot = ConversationSnapshot(revision: 1, conversation: conversation, contextRuntimeID: "fixture", modelRecordKey: nil, runState: .running, messages: [], actions: ConversationActions(inputAccess: .editable, canSend: false, canCancel: true, canSwitch: false))
-    let outgoing = OutgoingSubmissions()
-    let first = outgoing.begin(.steer, text: "same input", attachments: [], snapshot: snapshot)
-    precondition(outgoing.displayed.first?.status == "插入中")
-    outgoing.accept(first, snapshot: snapshot)
-    let second = outgoing.begin(.steer, text: "same input", attachments: [], snapshot: snapshot)
-    outgoing.accept(second, snapshot: snapshot)
-    snapshot.messages = [DeliveredMessage(id: "native-a", role: .user, blocks: [.text(text: "same input")])]
-    snapshot.transcriptMessageIdentities = [.init(id: "stable-a", messageId: "native-a")]
-    outgoing.reconcile(snapshot); outgoing.reconcile(snapshot)
-    precondition(outgoing.displayed.count == 1, "同一个回显不能确认两个提交")
-    snapshot.messages[0].id = "confirmed-native-a"
-    snapshot.transcriptMessageIdentities[0].messageId = "confirmed-native-a"
-    outgoing.reconcile(snapshot)
-    precondition(outgoing.displayed.count == 1, "原生历史身份确认不能冒充新回显")
-    snapshot.messages.append(DeliveredMessage(id: "native-b", role: .user, blocks: [.text(text: "same input")]))
-    snapshot.transcriptMessageIdentities.append(.init(id: "stable-b", messageId: "native-b"))
-    outgoing.reconcile(snapshot); precondition(outgoing.displayed.isEmpty)
-    let queued = outgoing.begin(.queue, text: "queued", attachments: [], snapshot: snapshot)
-    precondition(outgoing.displayed.isEmpty && outgoing.queued.isEmpty, "未受理的排队请求保留输入，不先制造队列行")
-    snapshot.followUp.queue = [.init(id: "canonical-queue", submissionId: queued, text: "queued", attachments: [])]
-    outgoing.accept(queued, receipt: .queued(queueId: "canonical-queue"), snapshot: snapshot); precondition(outgoing.displayed.isEmpty && outgoing.queued.isEmpty)
-    let sending = outgoing.begin(.send, text: "failed send", attachments: [], snapshot: snapshot)
-    precondition(outgoing.displayed.first?.status == "发送中")
-    outgoing.fail(sending); precondition(outgoing.displayed.isEmpty)
-    note("PASS unified local submissions: immediate send/queue/steer; canonical queue; repeated and renamed echoes do not consume another submission; failure removes only its placeholder")
-
-    if CommandLine.arguments.contains("--experience-submissions-only") { exit(0) }
 
     _ = try! transport.upsertRuntime(RuntimeInstance(enabled: true, id: "fixture", name: "Synthetic ACP", typeId: .acp, gatewayId: "default", settings: ["binary": "/usr/bin/true"]))
     device.start()
@@ -777,7 +747,7 @@ import VeluneBindings
             add(.work(label: "工作过程", expanded: false, settings: nil), rendered: nil, id: "work")
             add(.workActions(text: "核对运行时目录与提交状态。"), rendered: nil, id: "work-actions")
         }
-        add(.message(message, revision: 0, expanded: [], status: nil, copies: true, edits: message.role == .user, forks: message.role == .assistant), rendered: RenderedMessage(message), id: message.id)
+        add(.message(message, revision: 0, expanded: [], copies: true, edits: message.role == .user, forks: message.role == .assistant), rendered: RenderedMessage(message), id: message.id)
     }
     let editedMessage = DeliveredMessage(id: "user", role: .user, timestampUnixMs: now, blocks: [
         .text(text: "请把刚才的方案再简化一些。\n\n保留现有的消息编辑入口，让我能直接修改正文，再决定是在原会话继续，还是另开一个会话。运行参数不需要一直展开。\n\n另外，发送失败时请保留我正在编辑的内容。"),

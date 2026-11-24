@@ -90,8 +90,10 @@ import VeluneBindings
             try! bitmap.representation(using: .png, properties: [:])!.write(to: directory.appendingPathComponent(name + ".png"))
             let expected = store.transcript.rows.map(\.id)
             let expectedSet = Set(expected)
-            let cells = descendants(host.view).compactMap { $0 as? TranscriptCellView }.filter { !$0.isHidden && $0.rowID.map(expectedSet.contains) == true }
-            let nativeIDs = cells.compactMap(\.rowID)
+            let cells = descendants(host.view).compactMap { $0 as? TranscriptCellView }.filter { !$0.isHidden && $0.rowID != nil }
+            require(!cells.contains { $0.rowID?.hasPrefix("submission:") == true },
+                    "no local submission may render in the transcript: \(name)")
+            let nativeIDs = cells.compactMap(\.rowID).filter(expectedSet.contains)
             evidence.append(["case": name, "transcriptIDs": expected, "nativeIDs": nativeIDs,
                              "canonicalQueueIDs": store.followUp.queue.map(\.id),
                              "pendingQueueIDs": store.pendingQueuedMessages.map(\.id),
@@ -107,6 +109,6 @@ import VeluneBindings
     }
     UserDefaults.standard.setVolatileDomain(preferences, forName: UserDefaults.argumentDomain)
     safe()
-    print("PASS outgoing submissions: real receipt-before-projection lane, poll-before-ACK, exact token ownership, late ACK, failure/retry/cancel/input revisions; 14 native production-root PNGs; no activation or model calls")
+    print("PASS outgoing submissions: real receipt-before-projection lane, poll-before-ACK, exact token ownership, late ACK, failure/retry/cancel/input revisions; \(evidence.count) native production-root PNGs; no activation or model calls")
     exit(0)
 }

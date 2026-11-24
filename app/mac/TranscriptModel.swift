@@ -10,8 +10,6 @@ final class TranscriptRow: @MainActor Identifiable {
     let id: String
     private(set) var message: DeliveredMessage
     private(set) var contentRevision: UInt64 = 0
-    /// A caption under a message the runtime has not confirmed yet, such as "发送中".
-    let status: String?
     /// Whether a copy button goes under it: the user's messages and a turn's
     /// closing reply, not the messages and text of its work.
     fileprivate(set) var copies: Bool
@@ -20,8 +18,8 @@ final class TranscriptRow: @MainActor Identifiable {
     fileprivate(set) var fork: String?
     /// The user message may be edited now; shows an edit button beside copy.
     fileprivate(set) var edit: Bool
-    init(_ message: DeliveredMessage, id: String, status: String? = nil, copies: Bool? = nil, fork: String? = nil, edit: Bool = false) {
-        self.id = id; self.message = message; self.status = status
+    init(_ message: DeliveredMessage, id: String, copies: Bool? = nil, fork: String? = nil, edit: Bool = false) {
+        self.id = id; self.message = message
         self.copies = copies ?? (message.role == .user)
         self.fork = fork
         self.edit = edit
@@ -43,10 +41,7 @@ final class TranscriptModel: ObservableObject {
         var revision: UInt64 = 0
     }
     @Published private var presentation = Presentation()
-    /// The message just sent, shown after the projection until the runtime's
-    /// own copy appears in it.
-    @Published private var pending: [TranscriptRow] = []
-    var rows: [TranscriptRow] { presentation.rows + pending }
+    var rows: [TranscriptRow] { presentation.rows }
     var turns: [TranscriptTurn] { presentation.turns }
     var contentRevision: UInt64 { presentation.revision }
     var userRows: [TranscriptRow] {
@@ -68,7 +63,6 @@ final class TranscriptModel: ObservableObject {
         // A message split into work and reply has two rows; work members use the first.
         let byMessage = Dictionary(rows.map { ($0.message.id, $0) }, uniquingKeysWith: { first, _ in first })
         let byTurn = Dictionary(uniqueKeysWithValues: turns.map { ($0.id, $0) })
-        let pendingItems = pending.filter { visible.contains($0.id) }.map(Item.message)
         return presentation.items.flatMap { item -> [Item] in
             switch item {
             case .message(let id, let messageID):
@@ -80,15 +74,10 @@ final class TranscriptModel: ObservableObject {
                 guard !members.isEmpty else { return [] }
                 return [.work(turn, members)]
             }
-        } + pendingItems
-    }
-    func showSubmissions(_ messages: [SubmittedMessage]) {
-        guard pending.map({ SubmittedMessage(message: $0.message, status: $0.status) }) != messages else { return }
-        pending = messages.map { TranscriptRow($0.message, id: $0.message.id, status: $0.status) }
-        presentation.revision &+= 1
+        }
     }
     func retainedExpandedTurnIDs(_ ids: Set<String>) -> Set<String> { ids.intersection(turns.map(\.id)) }
-    func reset() { pending = []; presentation = Presentation(revision: contentRevision &+ 1) }
+    func reset() { presentation = Presentation(revision: contentRevision &+ 1) }
     /// Turns carry their own `canFork`: a fork may start from each completed
     /// turn's end, even while a later turn runs; `editable` puts an edit
     /// button under those user messages.

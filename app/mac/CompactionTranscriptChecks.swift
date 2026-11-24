@@ -42,7 +42,7 @@ import VeluneBindings
             var expanded: Set<String> = []
             func layout() -> TranscriptRowLayout {
                 TranscriptRowLayout.make(.message(compact, revision: 0, expanded: expanded,
-                    status: nil, copies: false, edits: false, forks: false), rendered: rendered, width: width, measurer: TextMeasurer())
+                    copies: false, edits: false, forks: false), rendered: rendered, width: width, measurer: TextMeasurer())
             }
             func apply() {
                 let value = layout()

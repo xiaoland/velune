@@ -138,7 +138,7 @@ extension DeliveredBlock {
 }
 
 extension DeliveredMessage {
-    /// A message the Mac shows before the core delivers it: a pending send or a preview.
+    /// A synthetic message for previews and checks.
     init(id: String, role: MessageRole, timestampUnixMs: Int64? = nil, blocks: [DeliveredBlock]) {
         self.init(stamp: 0, completed: true, id: id, role: role, timestampUnixMs: timestampUnixMs, blocks: blocks)
     }
