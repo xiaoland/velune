@@ -460,7 +460,10 @@ fn parent_finished_child(parent: &super::session::Session, child: &str) -> bool 
     !work
         .iter()
         .any(|task| task.conversation_id.as_deref() == Some(child))
-        && (parent.work_status() == velune_agent_runtime::work::WorkStatus::Settled
+        // A parent without a live connection has nothing left running; a live
+        // one must have observed its work settle.
+        && (parent.active_state.live().is_none()
+            || parent.work_status() == velune_agent_runtime::work::WorkStatus::Settled
             || (!work.is_empty()
                 && work.iter().all(|task| task.conversation_id.is_some())
                 && !parent
