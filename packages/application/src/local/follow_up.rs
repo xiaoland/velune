@@ -1191,10 +1191,13 @@ impl CoreRuntime {
             queue: queue.turns.iter().map(QueuedTurn::public).collect(),
             paused: queue.paused.clone(),
             waiting: queue.waiting.clone(),
-            can_stop_sub_agents: self.session.work().is_ok_and(|work| {
-                work.iter()
-                    .any(|task| task.state != velune_agent_runtime::work::BackgroundState::Stopping)
-            }),
+            can_stop_sub_agents: !matches!(&self.session.active_state,
+                ActiveState::Native(native) if native.has_active_background_terminals())
+                && self.session.work().is_ok_and(|work| {
+                    work.iter().any(|task| {
+                        task.state != velune_agent_runtime::work::BackgroundState::Stopping
+                    })
+                }),
             can_queue: admission.offer_queue,
             can_steer: admission.can_steer,
             can_resume: self.resumable(&self.session, snapshot),

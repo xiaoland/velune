@@ -80,10 +80,12 @@ struct SendQueueView: View {
                 Spacer(minLength: 0)
             } else if store.followUp.waitingForSubAgents {
                 Label("后台工作仍在运行；结束后发送", systemImage: "hourglass")
-                    .help("下一条需要重新启动运行时；可先查看关联子会话，或明确停止全部后台工作")
+                    .help("下一条需要重新启动运行时。可在关联 Agent 和后台任务中查看当前工作。")
                 Spacer(minLength: 8)
-                Button("停止全部后台工作并发送", action: store.stopSubAgents).controlSize(.small)
-                    .disabled(!store.followUp.canStopSubAgents || store.isLoading)
+                if store.followUp.canStopSubAgents {
+                    Button("停止全部后台工作并发送", action: store.stopSubAgents)
+                        .controlSize(.small).disabled(store.isLoading)
+                }
             } else {
                 Text("排队 \(queue.count) 条")
                 Spacer(minLength: 0)

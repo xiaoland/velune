@@ -40,13 +40,19 @@ import VeluneBindings
     }
     let store = ConversationStore(device: DeviceStore(preview: true))
     let reset = BackgroundTasksModel(); reset.loading = true; reset.reset(store)
-    precondition(!reset.loading && reset.tasks.isEmpty && reset.issue == nil, "切换会话必须清除旧任务加载态")
+    precondition(!reset.loading && reset.tasks.isEmpty && reset.live == nil && reset.issue == nil, "切换会话必须清除上一会话的观察状态")
     render("agents-empty", LinkedAgentsView(store: store, inPopover: false, open: { _, _ in }))
-    for state in ["empty", "loading", "unknown", "unsupported"] {
+    for state in ["empty", "loading", "offline", "unknown"] {
         let model = BackgroundTasksModel()
         model.loading = state == "loading"
-        if state == "unknown" { model.issue = "运行时连接暂时不可用。保留已有任务，恢复后重新同步状态。" }
-        if state == "unsupported" { model.issue = "请选择支持后台任务的 Pi 或 Claude Code 会话。" }
+        if state == "empty" { model.apply(BackgroundTaskList(tasks: [], live: true, issue: nil)) }
+        if state == "offline" {
+            model.apply(BackgroundTaskList(tasks: [], live: false, issue: nil))
+            precondition(model.live == false && model.issue == nil, "未连接宿主是正常状态")
+        }
+        if state == "unknown" {
+            model.apply(BackgroundTaskList(tasks: [], live: false, issue: "运行时查询失败。"))
+        }
         render(state, BackgroundTasksContent(model: model, inPopover: false, open: { _, _ in }))
     }
     // Older windows know only subAgents. Adding a task tool must preserve
@@ -61,6 +67,19 @@ import VeluneBindings
     restored.hide(.backgroundTasks)
     precondition(restored.isOpen(.agents) && !restored.isOpen(.backgroundTasks))
     precondition(!store.hasLinkedAgents && store.canShowBackgroundTasks, "后台任务入口不能依赖关联 Agent 存在")
+    if let runtime = store.device.runtimeInstances.first(where: { $0.id == store.projectionRuntimeID }) {
+        var terminalRuntime = runtime
+        terminalRuntime.typeId = .codex166
+        store.device.saveRuntimeInstance(terminalRuntime)
+        precondition(store.canShowBackgroundTasks, "Codex 会话须提供独立的后台任务入口")
+        terminalRuntime.typeId = .acp
+        store.device.saveRuntimeInstance(terminalRuntime)
+        precondition(!store.canShowBackgroundTasks, "通用 ACP 尚无后台任务清单")
+        render("unsupported", BackgroundTasksView(store: store, inPopover: false, open: { _, _ in }))
+        store.device.saveRuntimeInstance(runtime)
+    } else {
+        preconditionFailure("检查必须绑定一个实际的预览运行时")
+    }
     let statuses: [BackgroundTaskStatus] = [.running, .stopping, .completed, .failed, .cancelled, .unknown]
     let tasks = statuses.enumerated().map { index, status in
         BackgroundTaskInfo(id: "synthetic-\(index)", kind: index == 2 ? "delegate" : "shell", title: index == 2 ? "汇总构建结果并检查各平台兼容性，准备一份可供下一轮使用的报告" : "检查工作区构建与测试结果", status: status, conversationId: index == 2 ? "pi:synthetic-child" : nil, childSessionId: nil, canStop: status == .running, canReadOutput: status == .completed || status == .failed)

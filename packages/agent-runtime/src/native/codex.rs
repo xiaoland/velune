@@ -508,6 +508,9 @@ impl NativeSession {
                         }
                         Some(thread.to_owned())
                     }
+                    _ if self.has_active_background_terminals() => {
+                        return Err(Error::new("请在后台任务面板中停止 Codex 后台终端").into());
+                    }
                     _ => None,
                 };
                 let targets = self
@@ -2372,6 +2375,9 @@ impl NativeSession {
     /// conversation's own turn does not stop them. They end when their
     /// status turns idle.
     pub(super) fn codex_stop_background(&mut self) -> Result<()> {
+        if self.has_active_background_terminals() {
+            return Err(Error::new("请在后台任务面板中停止 Codex 后台终端"));
+        }
         let turns = self
             .codex
             .threads
@@ -3349,6 +3355,10 @@ while True:
             fixture.session.work_status(),
             crate::work::WorkStatus::Active
         );
+        assert!(fixture.session.enqueue_codex_command(
+            CodexCommand::StopBackground,
+            std::time::Instant::now() + std::time::Duration::from_secs(1),
+        ).is_err(), "the sub-agent batch must not acknowledge a terminal stop");
         let a = tasks
             .tasks
             .iter()

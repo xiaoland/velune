@@ -6,7 +6,7 @@ extension ConversationStore {
     var canShowBackgroundTasks: Bool {
         guard pendingConversationID == nil else { return false }
         let kind = device.runtimeInstances.first { $0.id == projectionRuntimeID }?.typeId
-        return !isUnsentConversation && (kind == .pi || kind == .claudeCode)
+        return !isUnsentConversation && (kind == .pi || kind == .claudeCode || kind == .codex166)
     }
 }
 
@@ -102,6 +102,7 @@ private struct BackgroundTaskIdentity: Hashable {
     let dismissals: BackgroundTaskDismissals
     @Published var tasks: [BackgroundTaskInfo] = []
     @Published var issue: String?
+    @Published private(set) var live: Bool?
     @Published var loading = false
     @Published var output: BackgroundTaskOutput?
     @Published var outputIssue: String?
@@ -122,7 +123,7 @@ private struct BackgroundTaskIdentity: Hashable {
     func reset(_ store: ConversationStore) {
         generation &+= 1; outputGeneration &+= 1
         source = store; key = identity(store)
-        tasks = []; issue = nil; loading = false; output = nil; outputIssue = nil; outputTask = nil
+        tasks = []; issue = nil; live = nil; loading = false; output = nil; outputIssue = nil; outputTask = nil
         pendingList = false; pendingOutput = false; stopping = []
         finishedExpanded = false
     }
@@ -147,6 +148,7 @@ private struct BackgroundTaskIdentity: Hashable {
             markConnectionUnavailable(reported: value.tasks)
         }
         issue = value.issue
+        live = value.live
     }
 
     private func markConnectionUnavailable(reported: [BackgroundTaskInfo] = []) {
@@ -173,7 +175,7 @@ private struct BackgroundTaskIdentity: Hashable {
     }
     func reload() {
         guard !pendingList, let (transport, runtime, conversation) = target() else { return }
-        pendingList = true; loading = tasks.isEmpty && issue == nil
+        pendingList = true; loading = live == nil && issue == nil
         let captured = key, epoch = generation
         DispatchQueue.global(qos: .utility).async {
             let result = Result { try transport.backgroundTasks(runtimeID: runtime, conversationID: conversation) }
@@ -184,6 +186,7 @@ private struct BackgroundTaskIdentity: Hashable {
                 case .success(let value): apply(value)
                 case .failure(let error):
                     markConnectionUnavailable()
+                    live = false
                     issue = error.localizedDescription
                 }
             }
@@ -246,10 +249,21 @@ struct BackgroundTaskRow: View {
 
 struct BackgroundTasksEmptyView: View {
     let loading: Bool
+    let live: Bool?
     let issue: String?
+    private var message: (title: String, detail: String?) {
+        if loading { return ("正在读取后台任务…", nil) }
+        if let issue { return ("无法读取后台任务", issue) }
+        if live == false { return ("暂无实时任务状态", "历史任务通知仍可在会话消息中查看。") }
+        return ("没有后台任务", nil)
+    }
     var body: some View {
-        ContentUnavailableView(loading ? "正在读取后台任务…" : issue == nil ? "没有后台任务" : "无法读取后台任务", systemImage: "terminal",
-                               description: Text(issue ?? "运行时提供的后台 Shell、委派任务和工作流会列在这里。"))
+        let message = message
+        ContentUnavailableView {
+            Label(message.title, systemImage: "terminal")
+        } description: {
+            if let detail = message.detail { Text(detail) }
+        }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
@@ -266,9 +280,11 @@ struct BackgroundTasksView: View {
             if store.canShowBackgroundTasks {
                 BackgroundTasksSessionView(store: store, inPopover: inPopover, inSidebar: inSidebar, layout: layout, open: open)
                     .id((store.projectionRuntimeID ?? "") + "\n" + (store.loadedConversationID ?? ""))
+            } else if store.pendingConversationID != nil {
+                BackgroundTasksEmptyView(loading: true, live: nil, issue: nil)
             } else {
-                BackgroundTasksEmptyView(loading: store.pendingConversationID != nil,
-                                         issue: store.pendingConversationID == nil ? "请选择支持后台任务的 Pi 或 Claude Code 会话。" : nil)
+                ContentUnavailableView("请选择支持后台任务的会话", systemImage: "terminal")
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }.frame(width: inPopover ? 360 : nil, height: inPopover ? 400 : nil)
     }
@@ -340,7 +356,7 @@ struct BackgroundTasksContent: View {
                     ContentUnavailableView("已结束的任务已清理", systemImage: "terminal")
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else if listed.isEmpty {
-                    BackgroundTasksEmptyView(loading: model.loading, issue: model.issue)
+                    BackgroundTasksEmptyView(loading: model.loading, live: model.live, issue: model.issue)
                 } else {
                     if inSidebar { list(active, finished).listStyle(.sidebar) }
                     else { list(active, finished).listStyle(.inset) }
@@ -348,7 +364,7 @@ struct BackgroundTasksContent: View {
                 Divider()
                 HStack {
                     if !listed.isEmpty {
-                        Text(model.issue ?? "\(listed.count) 个后台任务")
+                        Text(model.issue ?? (model.live == false ? "暂无实时任务状态" : "\(listed.count) 个后台任务"))
                             .uiFont(.callout).foregroundStyle(.secondary).lineLimit(2)
                     }
                     Spacer()
@@ -418,7 +434,14 @@ struct BackgroundTaskDetail: View {
     let back: () -> Void
     let open: (String, LinkedConversationOpening?) -> Void
     @State private var outputRefresh: UInt64 = 0
-    private var task: BackgroundTaskInfo { model.tasks.first { $0.id == initial.id } ?? initial }
+    private var task: BackgroundTaskInfo {
+        if let current = model.tasks.first(where: { $0.id == initial.id }) { return current }
+        var last = initial
+        if !last.status.isTerminal { last.status = .unknown }
+        last.canStop = false
+        last.canReadOutput = false
+        return last
+    }
     private var output: BackgroundTaskOutput? { model.output?.taskId == task.id ? model.output : nil }
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {

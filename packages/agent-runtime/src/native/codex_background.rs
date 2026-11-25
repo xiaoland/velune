@@ -105,6 +105,10 @@ impl Terminals {
 }
 
 impl NativeSession {
+    pub fn has_active_background_terminals(&self) -> bool {
+        self.codex.terminals.active_work().next().is_some()
+    }
+
     pub(super) fn codex_background_tasks(&self) -> Result<Retained<BackgroundTaskList>> {
         let retention = self
             .data
