@@ -2,11 +2,13 @@ package app.velune.android
 
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -41,26 +43,40 @@ import app.velune.bindings.conversation.TurnOutcome
  *
  *     adb shell am start -n app.velune.android/.GalleryActivity --es screen sessions
  *
- * Screens: sessions, empty-sessions, no-devices, devices, conversation, running, new.
+ * Screens: sessions, empty-sessions, no-devices, devices, conversation, running, new, appearance.
  */
 class GalleryActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         val screen = intent.getStringExtra("screen") ?: "sessions"
+        val appearance = AppearancePreferences(this)
         setContent {
-            VeluneTheme {
+            val values by appearance.values.collectAsState()
+            var showing by remember { mutableStateOf(screen) }
+            var filter by remember { mutableStateOf<String?>(null) }
+            BackHandler(enabled = showing != screen) { showing = screen }
+            val sessionsActions = SessionsActions(
+                open = { _, _ -> showing = "conversation" },
+                refresh = {},
+                filter = { filter = it },
+                devices = { showing = "devices" },
+                add = {},
+                telemetry = {},
+                about = {},
+                appearance = { showing = "appearance" },
+                newSession = { showing = "new" },
+            )
+            VeluneTheme(values) {
                 Surface(Modifier.fillMaxSize()) {
-                    when (screen) {
+                    when (showing) {
                         "devices" -> DevicesContent(Sample.devices, null, DevicesActions({}, {}, {}, {}))
-                        "no-devices" -> SessionsContent(emptyList(), emptyList(), null, null, false, Sample.sessionsActions)
-                        "empty-sessions" -> SessionsContent(Sample.devices.take(1), listOf(Sample.devices[0] to Sample.macListing.copy(conversations = emptyList())), null, null, false, Sample.sessionsActions)
-                        "sessions", "list" -> {
-                            var filter by remember { mutableStateOf<String?>(null) }
-                            SessionsContent(Sample.devices, Sample.listings, filter, null, false, SessionsActions({ _, _ -> }, {}, { filter = it }, {}, {}, {}, {}))
-                        }
+                        "no-devices" -> SessionsContent(emptyList(), emptyList(), null, null, false, sessionsActions)
+                        "empty-sessions" -> SessionsContent(Sample.devices.take(1), listOf(Sample.devices[0] to Sample.macListing.copy(conversations = emptyList())), null, null, false, sessionsActions)
+                        "sessions", "list" -> SessionsContent(Sample.devices, Sample.listings, filter, null, false, sessionsActions)
+                        "appearance" -> AppearanceScreen(appearance, back = { showing = screen })
                         "running" -> InteractiveConversation(Sample.header, Sample.running)
-                        "new" -> InteractiveConversation(Sample.header.copy(title = "新会话"), ConversationState(loading = false, models = Sample.models, efforts = Sample.efforts, permissionModes = Sample.permissionModes, composerReady = true))
+                        "new" -> NewSessionGallery(filter) { showing = screen }
                         else -> InteractiveConversation(Sample.header, Sample.finished)
                     }
                 }
@@ -70,13 +86,35 @@ class GalleryActivity : ComponentActivity() {
 }
 
 @Composable
-private fun InteractiveConversation(header: ConversationHeader, initial: ConversationState) {
+private fun NewSessionGallery(preferredPeer: String?, back: () -> Unit) {
+    var peer by remember {
+        mutableStateOf(Sample.listings.firstOrNull { it.first.peerId == preferredPeer && it.canStartConversation() }?.first?.peerId ?: "mac")
+    }
+    val (device, listing) = Sample.listings.first { it.first.peerId == peer }
+    var target by remember(peer) { mutableStateOf(ConversationTarget.New(listing.runtimes.first().id, listing.projects.firstOrNull())) }
+    val context = NewSessionContext(peer, target, Sample.listings, { peer = it }, { target = target.copy(runtimeId = it) }, { target = target.copy(cwd = it) })
+    val header = ConversationHeader("新会话", listing.runtimeLabels[target.runtimeId], device.name, target.cwd)
+    InteractiveConversation(
+        header,
+        ConversationState(loading = false, models = Sample.models, efforts = Sample.efforts, permissionModes = Sample.permissionModes, composerReady = true),
+        context,
+        back,
+    )
+}
+
+@Composable
+private fun InteractiveConversation(
+    header: ConversationHeader,
+    initial: ConversationState,
+    newSession: NewSessionContext? = null,
+    back: () -> Unit = {},
+) {
     var state by remember { mutableStateOf(initial) }
     ConversationContent(
         header,
         state,
         ConversationActions(
-            back = {},
+            back = back,
             send = { _, _ -> state = state.copy(draft = "") },
             stop = {},
             reply = { _, _ -> state = state.copy(interactions = emptyList()) },
@@ -91,14 +129,13 @@ private fun InteractiveConversation(header: ConversationHeader, initial: Convers
             editMessage = { _, _, _ -> },
             forkConversation = {},
         ),
+        newSession = newSession,
     )
 }
 
 private object Sample {
     private val now = System.currentTimeMillis()
     private const val MINUTE = 60_000L
-
-    val sessionsActions = SessionsActions({ _, _ -> }, {}, {}, {}, {}, {}, {})
 
     val devices = listOf(
         DeviceSummary("mac", "工作室 Mac mini", DeviceStatus("已连接 · 直连 12 ms", Tone.Positive), true),

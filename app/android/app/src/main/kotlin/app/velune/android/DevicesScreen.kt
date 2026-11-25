@@ -128,7 +128,7 @@ private fun DeviceRow(device: DeviceSummary, actions: DevicesActions) {
         supportingContent = {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 StatusDot(device.status.tone)
-                Text(device.status.text, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(start = 6.dp))
+                Text(device.status.text, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(start = 6.dp * LocalAppearance.current.spacingScale))
             }
         },
         trailingContent = {
@@ -140,7 +140,7 @@ private fun DeviceRow(device: DeviceSummary, actions: DevicesActions) {
                 }
             }
         },
-        modifier = Modifier.combinedClickable(onClick = { if (device.confirmed) actions.open(device.peerId) else menu = true }, onLongClick = { menu = true }),
+        modifier = Modifier.combinedClickable(onClick = { if (device.confirmed) actions.open(device.peerId) else menu = true }, onLongClick = { menu = true }).padding(vertical = 4.dp * LocalAppearance.current.spacingScale),
     )
 }
 

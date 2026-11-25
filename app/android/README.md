@@ -23,7 +23,7 @@ Android 是只控制、不执行的端。它不运行 Agent、Harness、网关�
 adb shell am start -n app.velune.android/.GalleryActivity --es screen sessions
 ```
 
-可选 `sessions`、`empty-sessions`、`no-devices`、`devices`、`conversation`、`running`、`new`。
+可选 `sessions`、`empty-sessions`、`no-devices`、`devices`、`conversation`、`running`、`new`、`appearance`。从 Gallery 的会话列表也可打开新会话或外观设置。
 
 ## 构建与安装
 

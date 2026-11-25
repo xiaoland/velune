@@ -90,6 +90,7 @@ fun Transcript(
     modifier: Modifier = Modifier,
 ) {
     val scope = rememberCoroutineScope()
+    val spacing = LocalAppearance.current.spacingScale
     // Explicit user toggles outlive rows scrolled out of the lazy list.
     val expanded = remember { mutableStateMapOf<String, Boolean>() }
     val awayFromEnd by remember { derivedStateOf { list.firstVisibleItemIndex > 0 || list.firstVisibleItemScrollOffset > 240 } }
@@ -100,8 +101,8 @@ fun Transcript(
         val bubbleWidth = maxWidth * 0.85f
         LazyColumn(
             state = list, reverseLayout = true, modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp, Alignment.Bottom),
+            contentPadding = PaddingValues(horizontal = 16.dp * spacing, vertical = 12.dp * spacing),
+            verticalArrangement = Arrangement.spacedBy(16.dp * spacing, Alignment.Bottom),
         ) {
             if (working) item(key = "working") { Working() }
             state.sending?.let { text -> item(key = "sending") { UserMessage(listOf(DeliveredBlock.Text(text)), null, bubbleWidth, pending = true) } }
@@ -123,7 +124,7 @@ fun Transcript(
                 onClick = { scope.launch { list.scrollToItem(0) } },
                 containerColor = MaterialTheme.colorScheme.surfaceContainerHighest,
                 contentColor = MaterialTheme.colorScheme.onSurface,
-                modifier = Modifier.align(Alignment.BottomEnd).padding(16.dp),
+                modifier = Modifier.align(Alignment.BottomEnd).padding(16.dp * spacing),
             ) { Icon(Icons.Filled.KeyboardArrowDown, contentDescription = "回到最新") }
         }
     }
@@ -141,16 +142,17 @@ private fun MessageView(
     onEdit: () -> Unit,
     onFork: () -> Unit,
 ) {
+    val spacing = LocalAppearance.current.spacingScale
     when (message.role) {
         MessageRole.USER, MessageRole.CLIENT -> UserMessage(message.blocks, message.timestampUnixMs, bubbleWidth, onEdit = onEdit.takeIf { editable })
-        MessageRole.ASSISTANT -> Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        MessageRole.ASSISTANT -> Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(10.dp * spacing)) {
             message.blocks.forEachIndexed { index, block -> WorkBlock(message.id, index, block, expanded, load, reply = true) }
             val copyable = remember(message.blocks) { message.copyableText() }
             if (message.completed && (copyable.isNotEmpty() || message.timestampUnixMs != null || forkable)) {
                 MessageMetaRow(message.timestampUnixMs, copyable.takeIf { it.isNotEmpty() }, Alignment.Start, onFork = onFork.takeIf { forkable })
             }
         }
-        MessageRole.TOOL, MessageRole.SYSTEM -> Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        MessageRole.TOOL, MessageRole.SYSTEM -> Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(10.dp * spacing)) {
             message.blocks.forEachIndexed { index, block -> WorkBlock(message.id, index, block, expanded, load, reply = false) }
         }
     }
@@ -164,6 +166,8 @@ private fun UserMessage(
     pending: Boolean = false,
     onEdit: (() -> Unit)? = null,
 ) {
+    val appearance = LocalAppearance.current
+    val spacing = appearance.spacingScale
     val copyable = remember(blocks) {
         blocks.filterIsInstance<DeliveredBlock.Text>().mapNotNull { it.text.takeIf(String::isNotBlank) }.joinToString("\n\n")
     }
@@ -173,10 +177,10 @@ private fun UserMessage(
             shape = RoundedCornerShape(topStart = 18.dp, topEnd = 18.dp, bottomStart = 18.dp, bottomEnd = 4.dp),
             modifier = Modifier.widthIn(max = maxWidth).alpha(if (pending) 0.6f else 1f),
         ) {
-            Column(Modifier.padding(horizontal = 14.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Column(Modifier.padding(horizontal = 14.dp * spacing, vertical = 10.dp * spacing), verticalArrangement = Arrangement.spacedBy(6.dp * spacing)) {
                 blocks.forEach { block ->
                     when (block) {
-                        is DeliveredBlock.Text -> SelectionContainer { Text(block.text, style = MaterialTheme.typography.bodyLarge) }
+                        is DeliveredBlock.Text -> SelectionContainer { Text(block.text, style = BaseTypography.bodyLarge.scaled(appearance.messageScale)) }
                         is DeliveredBlock.Image -> Attachment(Icons.Outlined.Image, "图片")
                         is DeliveredBlock.File -> Attachment(Icons.AutoMirrored.Outlined.InsertDriveFile, lastPathComponent(block.path))
                         else -> {}
@@ -185,7 +189,7 @@ private fun UserMessage(
             }
         }
         if (pending) {
-            Text("发送中…", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 4.dp, end = 4.dp))
+            Text("发送中…", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 4.dp * spacing, end = 4.dp * spacing))
         } else if (copyable.isNotEmpty() || timestampUnixMs != null || onEdit != null) {
             MessageMetaRow(timestampUnixMs, copyable.takeIf { it.isNotEmpty() }, Alignment.End, onEdit = onEdit)
         }
@@ -202,9 +206,10 @@ private fun MessageMetaRow(
     onFork: (() -> Unit)? = null,
 ) {
     val copy = rememberCopy()
+    val spacing = LocalAppearance.current.spacingScale
     val time = remember(timestampUnixMs) { timestampUnixMs?.let(::formatMessageTime) }
     Row(
-        Modifier.fillMaxWidth().padding(top = 2.dp),
+        Modifier.fillMaxWidth().padding(top = 2.dp * spacing),
         horizontalArrangement = if (alignment == Alignment.End) Arrangement.End else Arrangement.Start,
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -217,7 +222,7 @@ private fun MessageMetaRow(
         } else {
             if (time != null) Text(time, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             if (copyText != null) {
-                if (time != null) Spacer(Modifier.width(4.dp))
+                if (time != null) Spacer(Modifier.width(4.dp * spacing))
                 CopyButton { copy(copyText) }
             }
             if (onFork != null) IconButton(onClick = onFork, modifier = Modifier.size(32.dp)) {
@@ -255,11 +260,13 @@ private fun CopyButton(onClick: () -> Unit) {
  */
 @Composable
 private fun WorkGroup(work: TranscriptEntry.Work, expanded: MutableMap<String, Boolean>, load: (String) -> Unit) {
+    val spacing = LocalAppearance.current.spacingScale
     val open = expanded[work.key] ?: work.defaultExpanded
     val latest = remember(work) { work.members.flatMap { it.blocks }.lastOrNull { it is DeliveredBlock.Tool } as? DeliveredBlock.Tool }
     Column(Modifier.fillMaxWidth()) {
         Row(
-            Modifier.clip(RoundedCornerShape(8.dp)).clickable { expanded[work.key] = !open }.heightIn(min = 36.dp).padding(vertical = 4.dp, horizontal = 2.dp),
+            Modifier.clip(RoundedCornerShape(8.dp)).clickable { expanded[work.key] = !open }.heightIn(min = 36.dp)
+                .padding(vertical = 4.dp * spacing, horizontal = 2.dp * spacing),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             if (work.running) CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 1.5.dp)
@@ -271,14 +278,14 @@ private fun WorkGroup(work: TranscriptEntry.Work, expanded: MutableMap<String, B
             )
             Text(
                 parts.joinToString(" · "), style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(start = 6.dp).weight(1f, fill = false),
+                maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(start = 6.dp * spacing).weight(1f, fill = false),
             )
             if (work.outcome == TurnOutcome.FAILED) Text(" · 失败", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.error, maxLines = 1)
             else if (work.outcome == TurnOutcome.CANCELLED) Text(" · 已停止", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
         }
-        if (open) Row(Modifier.height(IntrinsicSize.Min).padding(top = 4.dp)) {
-            Box(Modifier.padding(start = 8.dp, end = 12.dp).width(1.5.dp).fillMaxHeight().background(MaterialTheme.colorScheme.outlineVariant))
-            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        if (open) Row(Modifier.height(IntrinsicSize.Min).padding(top = 4.dp * spacing)) {
+            Box(Modifier.padding(start = 8.dp * spacing, end = 12.dp * spacing).width(1.5.dp).fillMaxHeight().background(MaterialTheme.colorScheme.outlineVariant))
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp * spacing)) {
                 work.members.forEach { message ->
                     message.blocks.forEachIndexed { index, block -> WorkBlock(message.id, index, block, expanded, load, reply = false) }
                 }
@@ -290,9 +297,10 @@ private fun WorkGroup(work: TranscriptEntry.Work, expanded: MutableMap<String, B
 @Composable
 private fun WorkBlock(messageId: String, index: Int, block: DeliveredBlock, expanded: MutableMap<String, Boolean>, load: (String) -> Unit, reply: Boolean) {
     val key = "$messageId/$index"
+    val appearance = LocalAppearance.current
     when (block) {
         is DeliveredBlock.Text -> SelectionContainer {
-            Markdown(block.text, style = if (reply) MaterialTheme.typography.bodyLarge else MaterialTheme.typography.bodyMedium)
+            MessageMarkdown(block.text, baseStyle = if (reply) BaseTypography.bodyLarge else BaseTypography.bodyMedium)
         }
         is DeliveredBlock.Reasoning -> if (block.summary.isNotBlank()) Reasoning(block, expanded[key] == true, toggle = {
             expanded[key] = expanded[key] != true
@@ -303,10 +311,10 @@ private fun WorkBlock(messageId: String, index: Int, block: DeliveredBlock, expa
             if (block.output is MessagePayload.Deferred) load(messageId)
         })
         is DeliveredBlock.Notice -> Text(
-            block.text, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
-            textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp),
+            block.text, style = BaseTypography.bodySmall.scaled(appearance.messageScale), color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp * appearance.spacingScale),
         )
-        is DeliveredBlock.RuntimeFailure -> Text(block.detail, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+        is DeliveredBlock.RuntimeFailure -> Text(block.detail, style = BaseTypography.bodySmall.scaled(appearance.messageScale), color = MaterialTheme.colorScheme.error)
         is DeliveredBlock.ContextCompaction -> ContextCompaction(block.text, expanded[key] == true) {
             expanded[key] = expanded[key] != true
         }
@@ -320,15 +328,17 @@ private fun WorkBlock(messageId: String, index: Int, block: DeliveredBlock, expa
 
 @Composable
 private fun Reasoning(block: DeliveredBlock.Reasoning, open: Boolean, toggle: () -> Unit) {
+    val appearance = LocalAppearance.current
+    val spacing = appearance.spacingScale
     Column(Modifier.fillMaxWidth()) {
         Row(
-            Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).clickable(onClick = toggle).heightIn(min = 36.dp).padding(vertical = 4.dp),
+            Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).clickable(onClick = toggle).heightIn(min = 36.dp).padding(vertical = 4.dp * spacing),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Icon(Icons.Outlined.Lightbulb, contentDescription = null, modifier = Modifier.size(16.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
             Text(
-                block.summary, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = if (open) 4 else 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(start = 8.dp).weight(1f),
+                block.summary, style = BaseTypography.bodySmall.scaled(appearance.messageScale), color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = if (open) 4 else 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(start = 8.dp * spacing).weight(1f),
             )
             Icon(
                 if (open) Icons.Filled.KeyboardArrowDown else Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = null,
@@ -350,33 +360,39 @@ private fun contextCompactionParts(text: String): Pair<String, String?> {
 
 @Composable
 private fun ContextCompaction(text: String, open: Boolean, toggle: () -> Unit) {
+    val appearance = LocalAppearance.current
+    val spacing = appearance.spacingScale
+    val style = BaseTypography.bodySmall.scaled(appearance.messageScale)
     val (status, detail) = remember(text) { contextCompactionParts(text) }
     if (detail == null) {
         Text(
-            text, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
-            textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp),
+            text, style = style, color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp * spacing),
         )
     } else Column(Modifier.fillMaxWidth()) {
         Row(
-            Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).clickable(onClick = toggle).heightIn(min = 40.dp).padding(vertical = 4.dp),
+            Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).clickable(onClick = toggle).heightIn(min = 40.dp).padding(vertical = 4.dp * spacing),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Icon(
                 if (open) Icons.Filled.KeyboardArrowDown else Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = if (open) "收起详情" else "展开详情",
                 modifier = Modifier.size(18.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            Text(status, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(start = 6.dp).weight(1f))
+            Text(status, style = style, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(start = 6.dp * spacing).weight(1f))
         }
-        if (open) SelectionContainer { Markdown(detail, style = MaterialTheme.typography.bodySmall) }
+        if (open) SelectionContainer { MessageMarkdown(detail, baseStyle = BaseTypography.bodySmall) }
     }
 }
 
 /** One tool call on the work rail: compact and scannable; output unfolds below on demand. */
 @Composable
 private fun ToolStep(block: DeliveredBlock.Tool, open: Boolean, toggle: () -> Unit) {
+    val appearance = LocalAppearance.current
+    val spacing = appearance.spacingScale
     Column(Modifier.fillMaxWidth()) {
         Row(
-            Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).clickable(enabled = block.output != null, onClick = toggle).heightIn(min = 38.dp).padding(vertical = 6.dp, horizontal = 2.dp),
+            Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).clickable(enabled = block.output != null, onClick = toggle).heightIn(min = 38.dp)
+                .padding(vertical = 6.dp * spacing, horizontal = 2.dp * spacing),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             when (block.state) {
@@ -386,28 +402,33 @@ private fun ToolStep(block: DeliveredBlock.Tool, open: Boolean, toggle: () -> Un
                 ToolState.FAILED -> Icon(Icons.Outlined.ErrorOutline, contentDescription = "失败", modifier = Modifier.size(16.dp), tint = Tone.Negative.color())
             }
             Text(
-                block.title, style = MaterialTheme.typography.bodySmall, fontFamily = FontFamily.Monospace,
+                block.title, style = BaseTypography.bodySmall.scaled(appearance.codeScale), fontFamily = FontFamily.Monospace,
                 color = if (block.state == ToolState.FAILED) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface,
-                maxLines = if (open) 6 else 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(start = 8.dp).weight(1f),
+                maxLines = if (open) 6 else 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(start = 8.dp * spacing).weight(1f),
             )
             if (block.output != null) Icon(
                 if (open) Icons.Filled.KeyboardArrowDown else Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = null,
                 modifier = Modifier.size(16.dp), tint = MaterialTheme.colorScheme.outline,
             )
         }
-        if (open) block.output?.let { Box(Modifier.padding(top = 4.dp, bottom = 4.dp)) { Payload(it, italic = false) } }
+        if (open) block.output?.let { Box(Modifier.padding(vertical = 4.dp * spacing)) { Payload(it, italic = false) } }
     }
 }
 
 @Composable
 private fun Payload(payload: MessagePayload, italic: Boolean) {
+    val appearance = LocalAppearance.current
+    val spacing = appearance.spacingScale
     when (payload) {
         is MessagePayload.Inline -> if (italic) SelectionContainer {
-            Text(payload.text, style = MaterialTheme.typography.bodySmall, fontStyle = FontStyle.Italic, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(start = 24.dp, top = 2.dp, bottom = 4.dp))
+            Text(
+                payload.text, style = BaseTypography.bodySmall.scaled(appearance.messageScale), fontStyle = FontStyle.Italic,
+                color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(start = 24.dp * spacing, top = 2.dp * spacing, bottom = 4.dp * spacing),
+            )
         } else Output(payload.text)
-        is MessagePayload.Deferred -> Row(Modifier.padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
+        is MessagePayload.Deferred -> Row(Modifier.padding(8.dp * spacing), verticalAlignment = Alignment.CenterVertically) {
             CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 1.5.dp)
-            Text("正在读取 ${bytes(payload.bytes)}…", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(start = 8.dp))
+            Text("正在读取 ${bytes(payload.bytes)}…", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(start = 8.dp * spacing))
         }
     }
 }
@@ -416,12 +437,15 @@ private fun Payload(payload: MessagePayload, italic: Boolean) {
 @Composable
 private fun Output(text: String) {
     val copy = rememberCopy()
+    val appearance = LocalAppearance.current
+    val spacing = appearance.spacingScale
     Surface(color = MaterialTheme.colorScheme.surfaceContainerLow, shape = RoundedCornerShape(8.dp), modifier = Modifier.fillMaxWidth()) {
         Box {
             SelectionContainer {
                 Text(
-                    text.trimEnd(), style = MaterialTheme.typography.bodySmall, fontFamily = FontFamily.Monospace, softWrap = false,
-                    modifier = Modifier.heightIn(max = 360.dp).verticalScroll(rememberScrollState()).horizontalScroll(rememberScrollState()).padding(10.dp).padding(end = 28.dp),
+                    text.trimEnd(), style = BaseTypography.bodySmall.scaled(appearance.codeScale), fontFamily = FontFamily.Monospace, softWrap = false,
+                    modifier = Modifier.heightIn(max = 360.dp).verticalScroll(rememberScrollState()).horizontalScroll(rememberScrollState())
+                        .padding(10.dp * spacing).padding(end = 28.dp),
                 )
             }
             IconButton(onClick = { copy(text) }, modifier = Modifier.align(Alignment.TopEnd).size(36.dp)) {
@@ -433,19 +457,21 @@ private fun Output(text: String) {
 
 @Composable
 private fun Attachment(icon: androidx.compose.ui.graphics.vector.ImageVector, label: String) {
+    val spacing = LocalAppearance.current.spacingScale
     Surface(color = MaterialTheme.colorScheme.surfaceContainerHighest, shape = RoundedCornerShape(8.dp)) {
-        Row(Modifier.padding(horizontal = 10.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+        Row(Modifier.padding(horizontal = 10.dp * spacing, vertical = 6.dp * spacing), verticalAlignment = Alignment.CenterVertically) {
             Icon(icon, contentDescription = null, modifier = Modifier.size(16.dp))
-            Text(label, style = MaterialTheme.typography.labelMedium, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(start = 6.dp))
+            Text(label, style = MaterialTheme.typography.labelMedium, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(start = 6.dp * spacing))
         }
     }
 }
 
 @Composable
 private fun Working() {
+    val spacing = LocalAppearance.current.spacingScale
     Row(verticalAlignment = Alignment.CenterVertically) {
         CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 1.5.dp)
-        Text("正在运行…", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(start = 8.dp))
+        Text("正在运行…", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(start = 8.dp * spacing))
     }
 }
 

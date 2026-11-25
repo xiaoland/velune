@@ -10,14 +10,12 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.selection.selectable
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
@@ -40,17 +38,13 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.ListItem
-import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
-import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -67,10 +61,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import app.velune.bindings.remote.ContactConfirmation
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 
@@ -83,6 +78,8 @@ class SessionsActions(
     val add: () -> Unit,
     val telemetry: () -> Unit,
     val about: () -> Unit,
+    val appearance: () -> Unit,
+    val newSession: () -> Unit,
 )
 
 /**
@@ -102,7 +99,7 @@ fun SessionsScreen(
     val scope = rememberCoroutineScope()
     var refreshing by remember { mutableStateOf(false) }
     val snapshot = state
-    val contacts = snapshot?.contacts?.filter { it.controlAuthorized && it.confirmation is ContactConfirmation.Confirmed }.orEmpty()
+    val contacts = snapshot?.conversationContacts().orEmpty()
     // A removed device no longer narrows the list.
     val effective = filter?.takeIf { peer -> contacts.any { it.peerId == peer } }
     val shown = contacts.map { it.peerId }.filter { effective == null || it == effective }.toSet()
@@ -123,7 +120,7 @@ fun SessionsScreen(
         refreshing = refreshing,
         actions = SessionsActions(
             open = actions.open, filter = actions.filter, devices = actions.devices, add = actions.add,
-            telemetry = actions.telemetry, about = actions.about,
+            telemetry = actions.telemetry, about = actions.about, appearance = actions.appearance, newSession = actions.newSession,
             refresh = {
                 refreshing = true
                 scope.launch {
@@ -148,13 +145,12 @@ fun SessionsContent(
 ) {
     var searching by rememberSaveable { mutableStateOf(false) }
     var query by rememberSaveable { mutableStateOf("") }
-    var starting by remember { mutableStateOf(false) }
     val list = rememberLazyListState()
     val expandedFab by remember { derivedStateOf { list.firstVisibleItemIndex == 0 } }
     val shown = listings.filter { filter == null || it.first.peerId == filter }
     val sections = remember(shown, query) { sessionSections(shown, query) }
     val unreachable = shown.filter { it.second.failure != null }
-    val startable = listings.filter { it.second.runtimes.isNotEmpty() }
+    val canStart = listings.any { it.canStartConversation() }
     val multipleDevices = (devices?.size ?: 0) > 1
     Scaffold(
         topBar = {
@@ -171,9 +167,10 @@ fun SessionsContent(
             }
         },
         floatingActionButton = {
-            if (startable.isNotEmpty() && !searching) ExtendedFloatingActionButton(
-                onClick = { starting = true }, expanded = expandedFab,
+            if (canStart && !searching) ExtendedFloatingActionButton(
+                onClick = actions.newSession, expanded = expandedFab,
                 icon = { Icon(Icons.Filled.Add, contentDescription = null) }, text = { Text("新会话") },
+                modifier = Modifier.semantics { contentDescription = "新会话" },
             )
         },
     ) { padding ->
@@ -188,7 +185,7 @@ fun SessionsContent(
                 sections.isEmpty() && shown.any { !it.second.loaded } -> CircularProgressIndicator(Modifier.align(Alignment.Center))
                 sections.isEmpty() && unreachable.size == shown.size -> EmptyState(Icons.Outlined.CloudOff, "无法读取会话", unreachable.joinToString("\n") { "${it.first.name}：${it.second.failure}" })
                 sections.isEmpty() && unreachable.isEmpty() -> EmptyState(Icons.Outlined.ChatBubbleOutline, "还没有会话") {
-                    if (startable.isNotEmpty()) Button(onClick = { starting = true }) { Text("新会话") }
+                    if (canStart) Button(onClick = actions.newSession) { Text("新会话") }
                 }
                 else -> LazyColumn(state = list, modifier = Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 96.dp)) {
                     items(unreachable, key = { "failure/" + it.first.peerId }) { (device, listing) ->
@@ -205,10 +202,6 @@ fun SessionsContent(
             }
         }
     }
-    if (starting) NewConversationSheet(startable, preferred = filter, dismiss = { starting = false }) { peer, runtime, cwd ->
-        starting = false
-        actions.open(peer, ConversationTarget.New(runtime, cwd))
-    }
 }
 
 @Composable
@@ -219,6 +212,7 @@ private fun OverflowMenu(devicesReady: Boolean, actions: SessionsActions) {
         DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
             DropdownMenuItem(text = { Text("设备") }, enabled = devicesReady, onClick = { open = false; actions.devices() })
             DropdownMenuItem(text = { Text("遥测") }, enabled = devicesReady, onClick = { open = false; actions.telemetry() })
+            DropdownMenuItem(text = { Text("外观与显示") }, onClick = { open = false; actions.appearance() })
             DropdownMenuItem(text = { Text("关于") }, onClick = { open = false; actions.about() })
         }
     }
@@ -248,9 +242,10 @@ private fun SearchBar(query: String, change: (String) -> Unit, close: () -> Unit
 /** Chips that narrow the list to one device; each shows whether its device is reachable. */
 @Composable
 private fun DeviceFilter(devices: List<DeviceSummary>, filter: String?, select: (String?) -> Unit) {
+    val spacing = LocalAppearance.current.spacingScale
     Row(
-        Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 16.dp),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 16.dp * spacing),
+        horizontalArrangement = Arrangement.spacedBy(8.dp * spacing),
     ) {
         FilterChip(selected = filter == null, onClick = { select(null) }, label = { Text("全部") })
         devices.forEach { device ->
@@ -273,7 +268,7 @@ private fun SectionHeader(kind: SessionSectionKind) {
     }
     Text(
         title, style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary,
-        modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 4.dp),
+        modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 16.dp * LocalAppearance.current.spacingScale, bottom = 4.dp),
     )
 }
 
@@ -281,7 +276,7 @@ private fun SectionHeader(kind: SessionSectionKind) {
 @Composable
 private fun DeviceNotice(device: String, failure: String) {
     Row(
-        Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+        Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp * LocalAppearance.current.spacingScale),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Icon(Icons.Outlined.CloudOff, contentDescription = null, modifier = Modifier.size(16.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -304,6 +299,7 @@ private fun DeviceNotice(device: String, failure: String) {
 @Composable
 private fun SessionItem(row: SessionRow, showDevice: Boolean, open: () -> Unit) {
     val listed = row.listed
+    val spacing = LocalAppearance.current.spacingScale
     ListItem(
         leadingContent = { RuntimeBadge(row.runtime, size = 28.dp) },
         headlineContent = {
@@ -317,7 +313,7 @@ private fun SessionItem(row: SessionRow, showDevice: Boolean, open: () -> Unit) 
             }
         },
         trailingContent = {
-            Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(6.dp * spacing)) {
                 listed.conversation.updatedAtUnixMs?.let { Text(relativeTime(it), style = MaterialTheme.typography.labelSmall) }
                 if (listed.unread) StatusDot(Tone.Active) else Spacer(Modifier.size(8.dp))
             }
@@ -338,66 +334,4 @@ private fun SessionStatus(row: SessionRow) {
     if (tone == Tone.Active) CircularProgressIndicator(Modifier.padding(end = 6.dp).size(12.dp), strokeWidth = 1.5.dp, color = tone.color())
     Text(text, color = tone.color(), maxLines = 1)
     Text(" · ", maxLines = 1)
-}
-
-/** Where a new conversation runs: a device, a runtime, and a project folder or the runtime's own default. */
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun NewConversationSheet(
-    devices: List<Pair<DeviceSummary, DeviceListing>>,
-    preferred: String?,
-    dismiss: () -> Unit,
-    start: (peer: String, runtime: String, cwd: String?) -> Unit,
-) {
-    var peer by remember { mutableStateOf(devices.firstOrNull { it.first.peerId == preferred }?.first?.peerId ?: devices.first().first.peerId) }
-    val listing = devices.first { it.first.peerId == peer }.second
-    var runtime by remember(peer) { mutableStateOf(listing.runtimes.first().id) }
-    var project by remember(peer) { mutableStateOf(listing.projects.firstOrNull()) }
-    ModalBottomSheet(sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true), onDismissRequest = dismiss) {
-        Column(Modifier.navigationBarsPadding().padding(bottom = 16.dp)) {
-            Text("新会话", style = MaterialTheme.typography.titleLarge, modifier = Modifier.padding(horizontal = 24.dp))
-            if (devices.size > 1) {
-                SheetLabel("设备")
-                Row(Modifier.horizontalScroll(rememberScrollState()).padding(horizontal = 20.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    devices.forEach { (device, _) ->
-                        FilterChip(selected = device.peerId == peer, onClick = { peer = device.peerId }, label = { Text(device.name) }, leadingIcon = { StatusDot(device.status.tone) })
-                    }
-                }
-            }
-            SheetLabel("运行时")
-            Row(Modifier.horizontalScroll(rememberScrollState()).padding(horizontal = 20.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                listing.runtimes.forEach { instance ->
-                    FilterChip(
-                        selected = instance.id == runtime, onClick = { runtime = instance.id },
-                        label = { Text(instance.name) }, leadingIcon = { RuntimeBadge(listing.runtimeLabels[instance.id], size = 18.dp) },
-                    )
-                }
-            }
-            SheetLabel("项目")
-            LazyColumn(Modifier.weight(1f, fill = false)) {
-                items(listing.projects, key = { "p/$it" }) { path ->
-                    ProjectChoice(listing.projectNames[path] ?: lastPathComponent(path), path, path == project) { project = path }
-                }
-                item(key = "none") { ProjectChoice("不指定", "使用运行时默认目录", project == null) { project = null } }
-            }
-            Spacer(Modifier.size(8.dp))
-            Button(onClick = { start(peer, runtime, project) }, modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp)) { Text("开始") }
-        }
-    }
-}
-
-@Composable
-private fun SheetLabel(text: String) {
-    Text(text, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(start = 24.dp, top = 16.dp, bottom = 8.dp))
-}
-
-@Composable
-private fun ProjectChoice(title: String, detail: String, selected: Boolean, select: () -> Unit) {
-    ListItem(
-        leadingContent = { RadioButton(selected = selected, onClick = null) },
-        headlineContent = { Text(title, maxLines = 1, overflow = TextOverflow.Ellipsis) },
-        supportingContent = { Text(detail, maxLines = 1, overflow = TextOverflow.Ellipsis) },
-        colors = ListItemDefaults.colors(containerColor = Color.Transparent),
-        modifier = Modifier.selectable(selected, onClick = select).padding(horizontal = 8.dp),
-    )
 }

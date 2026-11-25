@@ -10,7 +10,7 @@ import app.velune.bindings.conversation.ModelSelection
 import org.json.JSONArray
 import org.json.JSONObject
 
-internal data class PendingComposerCreation(val inputId: String, val ownerId: String, val runtimeId: String, val conversationId: String, val choices: ComposerTargetChoices? = null)
+internal data class PendingComposerCreation(val inputId: String, val ownerId: String, val runtimeId: String, val conversationId: String, val choices: ComposerTargetChoices? = null, val draftId: String? = null)
 
 /** Content and target caches keep independent pending baselines. */
 internal data class SavedComposerInput(
@@ -24,7 +24,7 @@ internal data class SavedComposerInput(
         .put("pending", pending).put("baseline", baseline?.toString()).put("unbound", unbound)
         .put("directoryRevision", directoryRevision?.toString()).put("bindingRevision", bindingRevision?.toString()).put("bindingBaseline", bindingBaseline?.toString())
         .put("target", target?.let(::encodeTarget)).put("targetRevision", targetRevision?.toString()).put("targetPending", targetPending).put("targetBaseline", targetBaseline?.toString())
-        .put("creation", creation?.let { JSONObject().put("input", it.inputId).put("owner", it.ownerId).put("runtime", it.runtimeId).put("conversation", it.conversationId).put("choices", it.choices?.let(::encodeTarget)) }).toString()
+        .put("creation", creation?.let { JSONObject().put("input", it.inputId).put("owner", it.ownerId).put("runtime", it.runtimeId).put("conversation", it.conversationId).put("choices", it.choices?.let(::encodeTarget)).put("draftId", it.draftId) }).toString()
 
     companion object {
         fun decode(value: String): SavedComposerInput {
@@ -35,7 +35,7 @@ internal data class SavedComposerInput(
             return SavedComposerInput(
                 ComposerInput(json.getString("id"), json.getString("revision").toULong(), content),
                 json.getBoolean("pending"), json.optional("baseline")?.toULong(), json.getBoolean("unbound"), json.optional("directoryRevision")?.toULong(),
-                json.optJSONObject("creation")?.let { PendingComposerCreation(it.getString("input"), it.getString("owner"), it.getString("runtime"), it.getString("conversation"), it.optJSONObject("choices")?.let(::decodeTarget)) },
+                json.optJSONObject("creation")?.let { PendingComposerCreation(it.getString("input"), it.getString("owner"), it.getString("runtime"), it.getString("conversation"), it.optJSONObject("choices")?.let(::decodeTarget), it.optional("draftId")) },
                 json.optional("bindingRevision")?.toULong(), json.optional("bindingBaseline")?.toULong(),
                 json.optJSONObject("target")?.let(::decodeTarget), json.optional("targetRevision")?.toULong(), json.optBoolean("targetPending"), json.optional("targetBaseline")?.toULong(),
             )

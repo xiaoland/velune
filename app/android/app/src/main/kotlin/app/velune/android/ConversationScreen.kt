@@ -12,10 +12,16 @@ import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
+import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.only
+import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -51,7 +57,6 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.FilledTonalButton
-import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -83,6 +88,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
@@ -136,6 +142,7 @@ fun ConversationScreen(
     model: ConversationModel,
     back: () -> Unit,
     openConversation: (ConversationTarget.Existing) -> Unit = {},
+    newSession: NewSessionContext? = null,
 ) {
     val state by model.state.collectAsState()
     val remote by hub.state.collectAsState()
@@ -169,12 +176,13 @@ fun ConversationScreen(
             editMessage = { id, text, placement -> model.editMessage(id, text, placement, openConversation) },
             forkConversation = { id -> model.forkConversation(id, openConversation) },
         )
-    })
+    }, newSession)
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ConversationContent(header: ConversationHeader, state: ConversationState, actions: ConversationActions) {
+fun ConversationContent(header: ConversationHeader, state: ConversationState, actions: ConversationActions, newSession: NewSessionContext? = null) {
+    val spacing = LocalAppearance.current.spacingScale
     val list = rememberLazyListState()
     val scope = rememberCoroutineScope()
     val outline = remember(state.entries) { outlineTurns(state.entries) }
@@ -186,6 +194,8 @@ fun ConversationContent(header: ConversationHeader, state: ConversationState, ac
     }
     val hasOverflow = state.canCompact || state.controlHandoff == ControlHandoff.CAN_RELEASE
     Scaffold(
+        // The composer owns the bottom inset: navigation bars at rest and IME while editing.
+        contentWindowInsets = WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal + WindowInsetsSides.Top),
         topBar = {
             Column {
                 TopAppBar(
@@ -193,7 +203,7 @@ fun ConversationContent(header: ConversationHeader, state: ConversationState, ac
                     title = {
                         Column {
                             Text(header.title, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                            if (subtitle.isNotEmpty()) {
+                            if (newSession == null && subtitle.isNotEmpty()) {
                                 Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
                             }
                         }
@@ -227,7 +237,7 @@ fun ConversationContent(header: ConversationHeader, state: ConversationState, ac
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
                 header.connection?.let { status ->
                     Surface(color = MaterialTheme.colorScheme.surfaceContainerLow, modifier = Modifier.fillMaxWidth()) {
-                        Row(Modifier.padding(horizontal = 16.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Row(Modifier.padding(horizontal = 16.dp * spacing, vertical = 6.dp * spacing), verticalAlignment = Alignment.CenterVertically) {
                             StatusDot(status.tone, size = 7.dp)
                             Text(
                                 "${header.device ?: "设备"} · ${status.text}",
@@ -242,11 +252,11 @@ fun ConversationContent(header: ConversationHeader, state: ConversationState, ac
             }
         },
     ) { padding ->
-        Column(Modifier.fillMaxSize().padding(padding).imePadding()) {
+        Column(Modifier.fillMaxSize().padding(padding).consumeWindowInsets(padding).imePadding()) {
             Box(Modifier.weight(1f).fillMaxWidth()) {
                 when {
                     state.loading -> CircularProgressIndicator(Modifier.align(Alignment.Center))
-                    state.entries.isEmpty() && state.sending == null && state.conversation == null -> NewConversationContext(header)
+                    state.entries.isEmpty() && state.sending == null && state.conversation == null -> Unit
                     else -> Transcript(
                         state, list, actions.load,
                         onEdit = { editing = it },
@@ -261,6 +271,7 @@ fun ConversationContent(header: ConversationHeader, state: ConversationState, ac
                     actions.reply(interaction.id, reply)
                 }
             }
+            if (newSession != null) NewConversationContext(newSession, enabled = !state.busy, hasAttachments = state.attachments.isNotEmpty())
             Composer(state, actions)
         }
     }
@@ -363,27 +374,6 @@ private fun PlacementChoice(title: String, detail: String, selected: Boolean, se
         colors = ListItemDefaults.colors(containerColor = Color.Transparent),
         modifier = Modifier.selectable(selected, onClick = select),
     )
-}
-
-/** Quiet context for an empty new conversation so the composer stays the focus. */
-@Composable
-private fun NewConversationContext(header: ConversationHeader) {
-    val targetLine = listOfNotNull(header.device, header.runtime?.name).joinToString(" · ").ifEmpty { "新会话" }
-    Column(
-        Modifier.fillMaxSize().padding(horizontal = 24.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center,
-    ) {
-        Text(targetLine, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurface)
-        Text(
-            header.cwd ?: "运行时默认目录",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            maxLines = 2,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.padding(top = 4.dp),
-        )
-    }
 }
 
 @Composable
@@ -523,6 +513,20 @@ private fun QuestionFields(id: String, questions: List<InteractionQuestion>, ena
 @Composable
 private fun Composer(state: ConversationState, actions: ConversationActions) {
     val text = state.draft
+    val spacing = LocalAppearance.current.spacingScale
+    val imeVisible = WindowInsets.ime.getBottom(LocalDensity.current) > 0
+    val insets = if (imeVisible) Modifier.padding(top = 4.dp) else {
+        Modifier.navigationBarsPadding().padding(start = 12.dp, end = 12.dp, top = 4.dp, bottom = 8.dp)
+    }
+    val shape = if (imeVisible) {
+        RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp, bottomStart = 0.dp, bottomEnd = 0.dp)
+    } else RoundedCornerShape(24.dp)
+    val submitColors = IconButtonDefaults.filledIconButtonColors(
+        containerColor = MaterialTheme.colorScheme.primary,
+        contentColor = MaterialTheme.colorScheme.onPrimary,
+        disabledContainerColor = MaterialTheme.colorScheme.surfaceContainerHighest,
+        disabledContentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
     var choosingModel by remember { mutableStateOf(false) }
     var choosingConfig by remember { mutableStateOf(false) }
     val canSend = !state.busy && state.composerReady && state.composerFailure == null && (text.isNotBlank() || state.attachments.isNotEmpty()) && state.canSend
@@ -534,7 +538,7 @@ private fun Composer(state: ConversationState, actions: ConversationActions) {
     val activePermission = state.permissionModes.firstOrNull { it.id == state.permissionMode } ?: state.currentPermissionMode
     val activeEffort = state.effort ?: state.currentEffort
     val configSummary = listOfNotNull(activePermission?.label, activeEffort).joinToString(" · ").ifEmpty { "权限与推理" }
-    Column(Modifier.fillMaxWidth().navigationBarsPadding().padding(start = 12.dp, end = 12.dp, top = 4.dp, bottom = 8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+    Column(Modifier.fillMaxWidth().then(insets), verticalArrangement = Arrangement.spacedBy(6.dp * spacing)) {
         ComposerStatus(state, actions)
         if (state.attachments.isNotEmpty()) {
             Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -548,23 +552,31 @@ private fun Composer(state: ConversationState, actions: ConversationActions) {
                 }
             }
         }
-        Surface(color = MaterialTheme.colorScheme.surfaceContainerHigh, shape = RoundedCornerShape(24.dp), modifier = Modifier.fillMaxWidth()) {
+        Surface(color = MaterialTheme.colorScheme.surfaceContainerHigh, shape = shape, modifier = Modifier.fillMaxWidth()) {
             Column {
+                if (imeVisible) HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                 val bodyStyle = MaterialTheme.typography.bodyLarge.copy(color = MaterialTheme.colorScheme.onSurface)
-                Box(Modifier.fillMaxWidth().heightIn(min = 44.dp).padding(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 6.dp), contentAlignment = Alignment.CenterStart) {
-                    if (text.isEmpty()) Text("给 Agent 发消息", style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    BasicTextField(
-                        value = text,
-                        onValueChange = actions.editDraft,
-                        readOnly = state.inputAccess == InputAccess.READ_ONLY,
-                        textStyle = bodyStyle,
-                        cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
-                        maxLines = 6,
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                }
+                BasicTextField(
+                    value = text,
+                    onValueChange = actions.editDraft,
+                    readOnly = state.inputAccess == InputAccess.READ_ONLY,
+                    textStyle = bodyStyle,
+                    cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+                    maxLines = 6,
+                    modifier = Modifier.fillMaxWidth(),
+                    decorationBox = { field ->
+                        Box(
+                            Modifier.fillMaxWidth().heightIn(min = 48.dp)
+                                .padding(start = 16.dp, end = 16.dp, top = 12.dp * spacing, bottom = 6.dp * spacing),
+                            contentAlignment = Alignment.CenterStart,
+                        ) {
+                            if (text.isEmpty()) Text("给 Agent 发消息", style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            field()
+                        }
+                    },
+                )
                 Row(
-                    Modifier.fillMaxWidth().padding(start = 10.dp, end = 8.dp, bottom = 8.dp),
+                    Modifier.fillMaxWidth().padding(start = 10.dp, end = 8.dp, bottom = 8.dp * spacing),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
@@ -597,20 +609,15 @@ private fun Composer(state: ConversationState, actions: ConversationActions) {
                         }
                     }
                     if (state.running && state.canCancel) {
-                        FilledTonalIconButton(enabled = !state.busy, onClick = actions.stop, modifier = Modifier.size(40.dp)) {
+                        FilledIconButton(enabled = !state.busy, onClick = actions.stop, modifier = Modifier.size(40.dp), shape = CircleShape, colors = submitColors) {
                             Icon(Icons.Filled.Stop, contentDescription = "停止")
                         }
                     } else {
                         FilledIconButton(
                             enabled = canSend, onClick = { actions.send(text.trim()) {} }, modifier = Modifier.size(40.dp),
-                            colors = IconButtonDefaults.filledIconButtonColors(
-                                containerColor = MaterialTheme.colorScheme.primary,
-                                contentColor = MaterialTheme.colorScheme.onPrimary,
-                                disabledContainerColor = MaterialTheme.colorScheme.surfaceContainerHighest,
-                                disabledContentColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                            ),
+                            shape = CircleShape, colors = submitColors,
                         ) {
-                            if (state.busy && state.sending != null) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp, color = MaterialTheme.colorScheme.onPrimary)
+                            if (state.busy && state.sending != null) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             else Icon(Icons.Filled.ArrowUpward, contentDescription = "发送")
                         }
                     }

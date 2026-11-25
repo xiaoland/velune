@@ -15,16 +15,19 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.platform.UriHandler
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -41,7 +44,8 @@ class MainActivity : ComponentActivity() {
         }
         enableEdgeToEdge()
         setContent {
-            VeluneTheme {
+            val appearance by model.appearance.values.collectAsStateWithLifecycle()
+            VeluneTheme(appearance) {
                 Surface(Modifier.fillMaxSize()) { App(model) }
             }
         }
@@ -89,32 +93,61 @@ private fun App(model: AppViewModel) {
         }
         return
     }
+    val navigationState = rememberSaveableStateHolder()
     BackHandler(enabled = model.stack.size > 1) { model.back() }
     when (val screen = model.screen) {
-        Screen.Sessions -> SessionsScreen(
-            hub, workspace = model::workspace, filter = model.deviceFilter,
-            actions = SessionsActions(
-                open = model::openConversation,
-                refresh = {},
-                filter = { model.deviceFilter = it },
-                devices = { model.push(Screen.Devices) },
-                add = { model.push(Screen.AddDevice()) },
-                telemetry = { model.push(Screen.Telemetry) },
-                about = { model.push(Screen.About) },
-            ),
-        )
+        Screen.Sessions -> navigationState.SaveableStateProvider("sessions") {
+            SessionsScreen(
+                hub, workspace = model::workspace, filter = model.deviceFilter,
+                actions = SessionsActions(
+                    open = model::openConversation,
+                    refresh = {},
+                    filter = { model.deviceFilter = it },
+                    devices = { model.push(Screen.Devices) },
+                    add = { model.push(Screen.AddDevice()) },
+                    telemetry = { model.push(Screen.Telemetry) },
+                    about = { model.push(Screen.About) },
+                    appearance = { model.push(Screen.Appearance) },
+                    newSession = model::openNewConversation,
+                ),
+            )
+        }
         Screen.Devices -> DevicesScreen(hub, back = { model.back() }, open = model::showDevice, add = { model.push(Screen.AddDevice()) })
         Screen.Telemetry -> TelemetryScreen(hub, back = { model.back() })
         is Screen.AddDevice -> key(screen) {
             AddDeviceScreen(hub, back = { model.back() }, paired = { model.showPaired(it) }, draft = screen.draft)
         }
         Screen.About -> AboutScreen(back = { model.back() }, open = { model.push(Screen.Legal(it)) })
+        Screen.Appearance -> AppearanceScreen(model.appearance, back = { model.back() })
         is Screen.Legal -> LegalDocumentScreen(screen.document, back = { model.back() })
         is Screen.AgentUri -> key(screen) {
             AgentUriScreen(hub, screen.address, screen.peer, back = { model.back() }, addDevice = { model.push(Screen.AddDevice()) }, open = model::openResolvedAgentUri)
         }
         is Screen.Conversation -> {
-            val listing by model.workspace(screen.peer).listing.collectAsState()
+            val target = screen.model.target
+            val runtime = model.workspace(screen.peer).listing.collectAsState().value.runtimeLabels[target.runtimeId]
+            val newSession = if (target is ConversationTarget.New) {
+                val remote by hub.state.collectAsState()
+                val snapshot = remote
+                val contacts = snapshot?.conversationContacts().orEmpty()
+                val peers = contacts.mapTo(mutableSetOf()) { it.peerId }
+                LaunchedEffect(peers) { hub.view(peers) }
+                val devices = contacts.map { contact ->
+                    key(contact.peerId) {
+                        val workspace = model.workspace(contact.peerId)
+                        val listing by workspace.listing.collectAsState()
+                        WhileVisible(workspace, resume = workspace::resume, pause = workspace::pause)
+                        deviceSummary(checkNotNull(snapshot), contact, listing.path) to listing
+                    }
+                }
+                NewSessionContext(
+                    screen.peer, target, devices,
+                    model::changeNewSessionDevice, model::changeNewSessionRuntime, model::changeNewSessionProject,
+                )
+            } else {
+                LaunchedEffect(screen.peer) { hub.select(screen.peer) }
+                null
+            }
             val fallback = LocalUriHandler.current
             val links = remember(screen, fallback) {
                 object : UriHandler {
@@ -130,9 +163,10 @@ private fun App(model: AppViewModel) {
             }
             CompositionLocalProvider(LocalUriHandler provides links) {
                 ConversationScreen(
-                    hub, screen.peer, listing.runtimeLabels[screen.model.target.runtimeId], screen.model,
+                    hub, screen.peer, runtime, screen.model,
                     back = { model.back() },
                     openConversation = { model.openConversation(screen.peer, it) },
+                    newSession = newSession,
                 )
             }
         }
