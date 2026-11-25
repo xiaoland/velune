@@ -1756,7 +1756,6 @@ impl VeluneApplication {
         conversation_id: String,
         turn: ComposedTurn,
         target_runtime_id: Option<String>,
-        selection: Option<ModelSelection>,
     ) -> Result<SnapshotResult, BindingError> {
         request!(
             self,
@@ -1765,8 +1764,7 @@ impl VeluneApplication {
                 runtime_id,
                 conversation_id,
                 turn,
-                target_runtime_id,
-                selection
+                target_runtime_id
             }
         )
     }

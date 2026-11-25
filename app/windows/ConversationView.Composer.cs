@@ -101,7 +101,7 @@ public sealed partial class ConversationView
     async void Steer()
     {
         var text = Input.Text;
-        if (!Model.Submission.CanSubmitDraft || Model.Submission.Action != ComposerSubmission.Kind.Queue || !Model.CanSteer)
+        if (Model.FollowUp?.CanSteer != true)
         {
             Send();
             return;
@@ -249,7 +249,7 @@ public sealed partial class ConversationView
         Input.PlaceholderText = $"输入消息，{keys.SendKey} 发送，{keys.NewLineKey} 换行，/ 命令";
         ToolTipService.SetToolTip(SendButton, submission.Action == ComposerSubmission.Kind.Resume ? "继续当前会话；不支持原生恢复的运行时会发送“continue”"
             : submission.Action == ComposerSubmission.Kind.Queue
-                ? Model.CanSteer ? $"{keys.SendKey} 加入发送队列；{keys.SteerKey} 插入本轮" : $"{keys.SendKey} 加入发送队列，本轮结束后发出"
+                ? Model.CanSteer ? $"{keys.SendKey} 加入发送队列；{keys.SteerKey} 插入本轮并沿用本轮模型和推理强度" : $"{keys.SendKey} 加入发送队列，本轮结束后发出"
                 : $"{keys.SendKey} 发送消息");
         AttachButton.IsEnabled = !Model.Busy && Model.DraftEditable;
         CompactButton.IsEnabled = Model.CanCompact;
@@ -290,7 +290,7 @@ public sealed partial class ConversationView
         var followUp = Model.FollowUp;
         var queue = followUp?.Queue ?? [];
         ShowQueueBar(followUp);
-        var steer = Model.CanSteer;
+        var steer = Model.CanSteerQueued;
         var signature = string.Join("\n", queue.Select(message => $"{message.Id}\t{message.EditContext?.Revision}\t{message.Text}\t{message.Attachments.Length}")) + (steer ? "\nsteer" : "") + (Model.Busy ? "\nbusy" : "");
         if (signature == shownQueue)
         {
@@ -318,7 +318,7 @@ public sealed partial class ConversationView
         if (steer)
         {
             var into = new Button { Content = "插入本轮", IsEnabled = !Model.Busy };
-            ToolTipService.SetToolTip(into, "经运行时的原生通道送入正在运行的这一轮，不另起一轮");
+            ToolTipService.SetToolTip(into, "插入正在运行的本轮，沿用本轮的模型和推理强度");
             into.Click += (_, _) => Model.SteerQueued(message.Id);
             actions.Children.Add(into);
         }

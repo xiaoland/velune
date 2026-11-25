@@ -121,7 +121,7 @@ struct SendQueueView: View {
         .contextMenu(forSelectionType: String.self) { ids in
             if ids.count == 1, !ids.contains(where: isPending), let message = queue.first(where: { ids.contains($0.id) }), let index = queue.firstIndex(of: message) {
                 Button("编辑…") { openEditor(message.id) }.disabled(!canEdit(message.id))
-                Button("插入本轮") { store.steerQueued(message.id) }.disabled(isDispatching(message.id) || !store.followUp.canSteer || store.isLoading)
+                Button("插入本轮（沿用本轮模型）") { store.steerQueued(message.id) }.disabled(isDispatching(message.id) || !store.canSteer)
                 Divider()
                 Button("移到最前") { store.moveQueued(message.id, to: 0) }.disabled(index == 0 || !canMove(message.id, to: 0))
                 Button("上移") { store.moveQueued(message.id, to: index - 1) }.disabled(index == 0 || !canMove(message.id, to: index - 1))

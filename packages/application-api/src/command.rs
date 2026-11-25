@@ -535,10 +535,6 @@ pub enum Command {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[uniffi(default = None)]
         target_runtime_id: Option<String>,
-        /// Absent follows the active execution's model.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        #[uniffi(default = None)]
-        selection: Option<ModelSelection>,
     },
     CompactConversation {
         runtime_id: String,

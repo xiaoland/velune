@@ -103,7 +103,11 @@ import VeluneBindings
                                   isComposing: model.isComposing, canSend: configured && store.canSend && (store.allowsAttachments || model.attachments.isEmpty),
                                   canQueue: configured && store.canQueue, canResume: configured && store.canResume(next: next ?? store.nextTurn))
     }
-    var canSteer: Bool { submission.canSubmitDraft && submission.action == .queue && store.canSteer }
+    func canSteer(using model: ComposerModel) -> Bool {
+        store.canSteer && store.composerRequest == nil && continuationPreparation == nil
+            && !model.isComposing && (!model.isEmpty || !model.attachments.isEmpty)
+            && ComposerContext(tab: self, model: model).attachmentIssue == nil
+    }
     func resume() {
         guard submission.canResume else { return }
         store.continueTurn()
@@ -168,13 +172,12 @@ import VeluneBindings
 
     /// Insert using the running turn's native channel, retaining the draft
     /// until admission. Without native steering, use ordinary submission.
-    func steer() { steer(using: composer) }
     func steer(using composer: ComposerModel, next: NextTurn? = nil) {
-        guard store.isGenerating, store.followUp.canSteer else { return send(using: composer, next: next) }
+        guard store.followUp.canSteer else { return send(using: composer, next: next) }
         let submitted = composer.submission
         let attachments = composer.attachments
         let text = submitted.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard submission(using: composer, next: next).canSubmitDraft, store.canSteer else { return }
+        guard canSteer(using: composer) else { return }
         let submittedRevision = composer.revision
         let inserted = store.steer(text: text, attachments: attachments.map(\.path), next: next, onAccepted: { [composer] in
             guard composer.revision == submittedRevision else { return }

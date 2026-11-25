@@ -385,27 +385,29 @@ impl CoreRuntime {
             let text = async_answer_text(questions, &reply)?;
             let mut accepted_error = None;
             if let Some(text) = text {
-                let selection = self.async_question_selection(&snapshot)?;
-                let request = async_turn_request(&snapshot, selection, text);
-                let dispatched = if self.session.compacting
-                    || (self.turn_running() && !snapshot.follow_up.can_steer)
-                {
-                    if !snapshot.follow_up.can_queue {
+                let running = self.turn_running();
+                let dispatched = if running && snapshot.follow_up.can_steer && !self.session.compacting {
+                    self.steer_turn(&async_turn_request(&snapshot, None, text).turn, None)
+                } else {
+                    let queued = running || self.session.compacting;
+                    if queued && !snapshot.follow_up.can_queue {
                         return Err(RuntimeError::invalid("当前会话暂时不能接收回答"));
                     }
-                    self.send_queue(
-                        &request.conversation_id,
-                        crate::SendQueueOperation::Add {
-                            source_runtime_id: request.source_runtime_id,
-                            target_runtime_id: request.runtime_id,
-                            selection: request.selection,
-                            turn: request.turn,
-                        },
-                    )
-                } else if self.turn_running() {
-                    self.steer_turn(&request.turn, None, None)
-                } else {
-                    self.send_turn(request)
+                    let selection = self.async_question_selection(&snapshot)?;
+                    let request = async_turn_request(&snapshot, selection, text);
+                    if queued {
+                        self.send_queue(
+                            &request.conversation_id,
+                            crate::SendQueueOperation::Add {
+                                source_runtime_id: request.source_runtime_id,
+                                target_runtime_id: request.runtime_id,
+                                selection: request.selection,
+                                turn: request.turn,
+                            },
+                        )
+                    } else {
+                        self.send_turn(request)
+                    }
                 };
                 if let Err(error) = dispatched {
                     if !error.delivery_accepted() {

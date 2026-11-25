@@ -51,6 +51,11 @@ struct ComposerEditingTarget {
     var inputIssue: String? {
         if let editingTarget { return editingTarget.issue ?? attachmentIssue }
         if store.loadedParentConversationID != nil { return nil }
+        if let issue = executionTargetIssue { return issue }
+        if !store.isSideChat, let issue = store.device.composerInputs.issue(for: model.id) { return issue }
+        return attachmentIssue
+    }
+    private var executionTargetIssue: String? {
         if !targetReady { return "正在打开目标会话" }
         if let source = targetChoices?.runtimeOwnerId, source != store.device.composerInputs.ownerID { return "所选运行时位于另一设备，输入已保留" }
         if let runtime = targetChoices?.runtimeId, !store.device.enabledRuntimeInstances.contains(where: { $0.id == runtime }) { return "所选运行时在此设备不可用" }
@@ -58,10 +63,9 @@ struct ComposerEditingTarget {
         if let project = selectedWorkingProject, !workingDirectoryProjects.contains(where: { $0.project == project.key && $0.canSelectProject }) { return "所选项目已不可用，请刷新或重新选择工作区" }
         if let issue = store.composerTargetIssue { return issue }
         if !store.isSideChat, let key = targetID, let issue = store.device.composerInputs.targetIssue(for: key) { return issue }
-        if !store.isSideChat, let issue = store.device.composerInputs.issue(for: model.id) { return issue }
-        return attachmentIssue
+        return nil
     }
-    private var attachmentIssue: String? {
+    var attachmentIssue: String? {
         model.attachments.contains(where: { !FileManager.default.isReadableFile(atPath: $0.path) }) ? "附件不可用，点击附件重试或移除" : nil
     }
     var inputEditable: Bool { editingTarget.map { $0.editable && !store.isShuttingDown } ?? store.draftEditable }
@@ -93,10 +97,10 @@ struct ComposerEditingTarget {
     }
     var canSwitchModel: Bool { nextTurn != nil && executionChoicesEditable }
     var nextTurnSettled: Bool { nextTurn != nil && modelCatalog != .loading }
-    var canCompact: Bool { editingTarget == nil && inputIssue == nil && !chosenModelUnavailable && store.canCompact(next: nextTurn) }
+    var canCompact: Bool { editingTarget == nil && executionTargetIssue == nil && !chosenModelUnavailable && store.canCompact(next: nextTurn) }
     func chooseAttachments() { guard allowsAttachments else { return }; bindInput(); model.chooseAttachments() }
     var canResume: Bool { editingTarget == nil && inputIssue == nil && !chosenModelUnavailable && store.canResume(next: nextTurn) }
-    var canSteer: Bool { editingTarget == nil && submission().canSubmitDraft && submission().action == .queue && store.canSteer }
+    var canSteer: Bool { editingTarget == nil && tab.canSteer(using: model) }
     var sideChatTarget: SideChatTarget? { store.sideChatTarget(next: nextTurn) }
 
     func selectNextTurnRuntime(_ id: String) {

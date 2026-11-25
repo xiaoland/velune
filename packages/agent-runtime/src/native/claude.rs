@@ -733,14 +733,6 @@ impl NativeSession {
             .clone()
             .filter(|_| self.claude_can_insert())
             .ok_or_else(|| Error::new("Claude Code 当前轮次不能插入消息"))?;
-        if let Some(effort) = input.effort.as_deref()
-            && self.claude.launched_effort.as_deref() != Some(effort)
-        {
-            return Err(Error::with_code(
-                "Claude Code 当前轮次无法更改推理强度，请排队发送",
-                "steer_settings_unsupported",
-            ));
-        }
         let permission_mode = input
             .permission_mode
             .as_deref()

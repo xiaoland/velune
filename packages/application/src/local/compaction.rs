@@ -10,10 +10,11 @@ impl CoreRuntime {
         selection: Option<crate::ModelSelection>,
     ) -> Result<crate::SnapshotResult, RuntimeError> {
         self.ensure_active(runtime_id)?;
-        self.require_input_access()?;
         let snapshot = self
             .current_snapshot()
             .ok_or_else(|| RuntimeError::invalid("请选择会话"))?;
+        self.check_handoff_input(&snapshot)?;
+        Self::check_input_access(snapshot.actions.input_access)?;
         if !snapshot.follow_up.can_compact {
             return Err(RuntimeError::invalid("当前会话不能压缩上下文"));
         }

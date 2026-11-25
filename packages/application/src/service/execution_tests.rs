@@ -561,10 +561,9 @@ fn native_control_wait_keeps_owner_responsive_and_rejection_retry_is_explicit() 
             runtime_id: "synthetic".into(),
             conversation_id: id.clone(),
             target_runtime_id: Some("synthetic".into()),
-            selection: None,
             turn: crate::ComposedTurn {
                 text: "synthetic insert".into(),
-                effort: None,
+                effort: Some("xhigh".into()),
                 permission_mode: Some("bypassPermissions".into()),
                 attachments: Vec::new(),
             },
@@ -1285,7 +1284,6 @@ fn codex_control_owner_polls_output_and_reply_during_ack_then_preserves_partial_
             runtime_id: "synthetic".into(),
             conversation_id: id.clone(),
             target_runtime_id: None,
-            selection: None,
             turn: control_turn("still steerable"),
         },
     )
@@ -1433,7 +1431,6 @@ fn codex_stop_child_is_exact_and_stop_background_preserves_each_delivery() {
                     runtime_id: "synthetic".into(),
                     conversation_id: id.clone(),
                     target_runtime_id: None,
-                    selection: None,
                     turn: control_turn("parent was not cancelled"),
                 },
             )
@@ -2163,7 +2160,6 @@ fn codex_prepared_steer_keeps_snapshot_and_reply_live_before_its_ack() {
             runtime_id: "synthetic".into(),
             conversation_id: id.clone(),
             target_runtime_id: None,
-            selection: None,
             turn: control_turn("one steer input"),
         },
     );
@@ -2227,12 +2223,11 @@ fn codex_steer_preserves_the_running_execution_configuration() {
         );
     }
 
-    let steer = |target: Option<&str>, selection, effort: Option<&str>, mode: Option<&str>| {
+    let steer = |target: Option<&str>, effort: Option<&str>, mode: Option<&str>| {
         Command::SteerTurn {
             runtime_id: "synthetic".into(),
             conversation_id: id.clone(),
             target_runtime_id: target.map(str::to_owned),
-            selection,
             turn: crate::ComposedTurn {
                 effort: effort.map(str::to_owned),
                 permission_mode: mode.map(str::to_owned),
@@ -2245,15 +2240,8 @@ fn codex_steer_preserves_the_running_execution_configuration() {
         model_id: "other-model".into(),
     });
     for command in [
-        steer(Some("other-runtime"), None, None, None),
-        steer(Some("synthetic"), other_model, None, None),
-        steer(Some("synthetic"), native_selection(), Some("low"), None),
-        steer(
-            Some("synthetic"),
-            native_selection(),
-            None,
-            Some("read-only"),
-        ),
+        steer(Some("other-runtime"), None, None),
+        steer(Some("synthetic"), None, Some("read-only")),
     ] {
         let error = app
             .execute(view(), command)
@@ -2270,12 +2258,13 @@ fn codex_steer_preserves_the_running_execution_configuration() {
     };
     let mut queued_turn = control_turn("keep queued permission change");
     queued_turn.permission_mode = Some("read-only".into());
+    queued_turn.effort = Some("low".into());
     app.execute(
         view(),
         queue(crate::SendQueueOperation::Add {
             source_runtime_id: "synthetic".into(),
             target_runtime_id: "synthetic".into(),
-            selection: native_selection(),
+            selection: other_model.clone(),
             turn: queued_turn,
         }),
     )
@@ -2301,13 +2290,8 @@ fn codex_steer_preserves_the_running_execution_configuration() {
     );
 
     for command in [
-        steer(
-            Some("synthetic"),
-            native_selection(),
-            Some("high"),
-            Some("workspace"),
-        ),
-        steer(None, None, None, None),
+        steer(Some("synthetic"), Some("low"), Some("workspace")),
+        steer(None, Some("not-a-current-model-effort"), None),
     ] {
         assert!(matches!(
             app.execute(view(), command).unwrap(),
@@ -2317,6 +2301,27 @@ fn codex_steer_preserves_the_running_execution_configuration() {
     let snapshot = control_snapshot(&app, &id);
     assert_eq!(snapshot.run_state, crate::conversation::RunState::Running);
     assert_eq!(snapshot.follow_up.queue, queued);
+    let mut queued_turn = control_turn("insert despite a different next model and effort");
+    queued_turn.effort = Some("low".into());
+    app.execute(
+        view(),
+        queue(crate::SendQueueOperation::Add {
+            source_runtime_id: "synthetic".into(),
+            target_runtime_id: "synthetic".into(),
+            selection: other_model,
+            turn: queued_turn,
+        }),
+    )
+    .unwrap();
+    let queued_with_insert = control_snapshot(&app, &id).follow_up.queue;
+    app.execute(
+        view(),
+        queue(crate::SendQueueOperation::Steer {
+            id: queued_with_insert[1].id.clone(),
+        }),
+    )
+    .unwrap();
+    assert_eq!(control_snapshot(&app, &id).follow_up.queue, queued);
     let wire = fixture.wire();
     assert_eq!(
         wire.iter()
@@ -2328,7 +2333,7 @@ fn codex_steer_preserves_the_running_execution_configuration() {
         .iter()
         .filter(|record| record["method"] == "turn/steer")
         .collect();
-    assert_eq!(steers.len(), 2);
+    assert_eq!(steers.len(), 3);
     assert!(
         steers
             .iter()

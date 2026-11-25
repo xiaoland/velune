@@ -166,12 +166,11 @@ sealed partial class Conversation
         var target = NextTurn;
         var choice = target.Choice;
         var attachments = Attached.ToArray();
-        var turn = new ComposedTurn(Text: text, Effort: choice.Effort, PermissionMode: choice.PermissionMode,
+        var turn = new ComposedTurn(Text: text, Effort: null, PermissionMode: choice.PermissionMode,
             Attachments: [.. attachments.Select(attachment => attachment.Reference)]);
-        if (!await PrepareComposerSubmission()) return false;
         var acceptedWithoutSnapshot = false;
         var accepted = await Change("插入本轮", NativeOperation.Send,
-            application => application.SteerTurn(snapshot.ContextRuntimeId, snapshot.Conversation.Id, turn, target.RuntimeId, choice.Model),
+            application => application.SteerTurn(snapshot.ContextRuntimeId, snapshot.Conversation.Id, turn, target.RuntimeId),
             failure => acceptedWithoutSnapshot = failure is BindingException.Diagnostic { code: "message_delivery_accepted" });
         if (!accepted && !acceptedWithoutSnapshot)
         {
@@ -207,7 +206,9 @@ sealed partial class Conversation
         Notify();
     }
 
-    public bool CanSteer => ComposerReady && !Busy && !stopRequested && !composing && FollowUp is { CanSteer: true };
+    public bool CanSteerQueued => !Loading && !stopRequested && FollowUp is { CanSteer: true };
+    public bool CanSteer => CanSteerQueued && !Busy && !composing && Uploading == 0
+        && composerLoaded && !composerUnbound && pendingCreation == null && composerRequest == null;
 
     public ComposerSubmission Submission
     {

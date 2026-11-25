@@ -1487,19 +1487,19 @@ final class ConversationStore: ObservableObject {
         }
     }
     var canSteer: Bool { canQueue && followUp.canSteer }
-    /// Into the running turn with the choices captured when the user submits.
+    /// Into the running turn, with an optional explicit permission change.
     @discardableResult
     func steer(text: String, attachments: [String] = [], next: NextTurn? = nil, onAccepted: (() -> Void)? = nil) -> Bool {
-        guard canSteer, let next = next ?? nextTurn, let runtimeID = projectionRuntimeID,
+        guard canSteer, let runtimeID = projectionRuntimeID,
               let conversationID = loadedConversationID, let transport else { return false }
-        let choice = next.choice
-        let turn = ComposedTurn(text: text, effort: choice.effort, permissionMode: choice.permissionMode, attachments: attachments)
+        let next = next ?? nextTurn
+        let turn = ComposedTurn(text: text, effort: nil, permissionMode: next?.choice.permissionMode, attachments: attachments)
         let submission = outgoing.begin(text: text, attachments: attachments, sendingFrom: snapshot)
         let scope = projectionScope()
         composerRequest = .sending
         enqueueSnapshot({
             try transport.steerTurn(runtimeID: runtimeID, conversationID: conversationID, turn: turn,
-                                    targetRuntimeID: next.runtimeId, selection: choice.model)
+                                    targetRuntimeID: next?.runtimeId)
         }, scope: scope, consumeReceipt: { [self] result in
             if generation == scope.storeGeneration { composerRequest = nil }
             switch result {

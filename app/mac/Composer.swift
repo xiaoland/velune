@@ -868,7 +868,7 @@ struct ComposerView: View {
         let mode = shortcuts.sendMode
         guard store.isGenerating else { return mode == .returnSends ? "输入消息，Return 发送，⇧Return 换行，/ 命令" : "输入消息，⌘Return 发送，/ 命令" }
         if !store.canQueue { return "正在回答；可继续编辑，结束后发送" }
-        return store.followUp.canSteer ? "\(mode.sendKey) 排队，\(mode.steerKey) 插入本轮" : "\(mode.sendKey) 排队，本轮结束后发送"
+        return store.followUp.canSteer ? "\(mode.sendKey) 排队，\(mode.steerKey) 插入本轮（沿用模型）" : "\(mode.sendKey) 排队，本轮结束后发送"
     }
 
     /// What the choices' titles are made of.
@@ -932,7 +932,7 @@ struct ComposerView: View {
         }
         if store.inputSubmissionAllowed, current.action == .queue && store.followUp.canSteer {
             Button("插入本轮", action: steer).disabled(!context.canSteer)
-                .help("将消息插入正在运行的本轮")
+                .help("插入正在运行的本轮，沿用本轮的模型和推理强度")
         }
         if store.controlHandoff == .releasing {
             Text("正在交还控制权…").uiFont(.callout).foregroundStyle(.secondary)
