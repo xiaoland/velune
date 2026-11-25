@@ -128,6 +128,23 @@ impl SendQueue {
         }
         Ok(index)
     }
+
+    fn position_at_revision(
+        &self,
+        id: &str,
+        expected_revision: u64,
+    ) -> Result<usize, RuntimeError> {
+        let index = self.editable_position(id)?;
+        if self.turns[index].edit_revision != expected_revision {
+            let mut failure = crate::Failure::new(
+                crate::FailureKind::Conflict,
+                "此排队消息已被修改，请刷新后重试",
+            );
+            failure.code = "queued_message_changed".into();
+            return Err(RuntimeError::Contract(failure));
+        }
+        Ok(index)
+    }
 }
 
 fn queued_id() -> String {
@@ -554,6 +571,24 @@ impl CoreRuntime {
         self.send_queue_submission(conversation_id, operation, None)
     }
 
+    pub(crate) fn withdraw_queued_turn(
+        &mut self,
+        conversation_id: &str,
+        id: String,
+        expected_revision: u64,
+        composer: &mut crate::composer::ComposerInputs,
+    ) -> Result<SnapshotResult, RuntimeError> {
+        if self.session.conversation_id() != Some(conversation_id) {
+            return Err(RuntimeError::invalid("排队会话已不可用"));
+        }
+        let queue = &self.session.send_queue;
+        let index = queue.position_at_revision(&id, expected_revision)?;
+        composer.restore_queued_turn(conversation_id, &queue.turns[index].request)?;
+        // The same application owner still controls the queue, so its item
+        // and dispatch eligibility cannot change between saving and removal.
+        self.send_queue(conversation_id, SendQueueOperation::Remove { id })
+    }
+
     fn replace_queued_turn(
         &mut self,
         id: &str,
@@ -564,16 +599,8 @@ impl CoreRuntime {
         mut turn: ComposedTurn,
     ) -> Result<SnapshotResult, RuntimeError> {
         let queue = &self.session.send_queue;
-        let index = queue.editable_position(id)?;
+        let index = queue.position_at_revision(id, expected_revision)?;
         let queued = &queue.turns[index];
-        if queued.edit_revision != expected_revision {
-            let mut failure = crate::Failure::new(
-                crate::FailureKind::Conflict,
-                "此排队消息已被修改，请重新打开编辑并核对内容",
-            );
-            failure.code = "queued_message_changed".into();
-            return Err(RuntimeError::Contract(failure));
-        }
         let previous = &queued.request;
         let target_changed = previous.runtime_id != target_runtime_id;
         let config_changed = target_changed
@@ -773,6 +800,9 @@ impl CoreRuntime {
                     // The service observes this exact gate's disappearance and
                     // revokes only its work/token; remaining items stay paused.
                     queue.preparation = None;
+                    if queue.waiting == Some(QueueWait::ContextPreparation) {
+                        queue.waiting = None;
+                    }
                 }
                 if queue.turns.is_empty() {
                     queue.paused = None;
@@ -796,6 +826,9 @@ impl CoreRuntime {
                     ));
                 }
                 queue.paused = None;
+            }
+            SendQueueOperation::Withdraw { .. } => {
+                return Err(RuntimeError::invalid("撤回排队消息需要共享输入存储"));
             }
             SendQueueOperation::Steer { id } => {
                 let index = queue.position(&id)?;
@@ -1451,6 +1484,240 @@ mod preparation_tests {
             let _ = self.application.close_stopping_work();
             let _ = std::fs::remove_dir_all(&self.root);
         }
+    }
+
+    fn withdraw_command(expected_revision: u64) -> crate::Command {
+        crate::Command::EditSendQueue {
+            submission_id: None,
+            runtime_id: "source".into(),
+            conversation_id: "source:one".into(),
+            operation: SendQueueOperation::Withdraw {
+                id: "head".into(),
+                expected_revision,
+            },
+        }
+    }
+
+    #[test]
+    fn withdrawing_queued_turn_restores_complete_composer_on_execution_owner() {
+        use velune_application_api::{ComposerContextKey, ComposerInputOperation};
+
+        let mut fixture = Fixture::new();
+        let new_file = fixture.root.join("new.txt");
+        fs::write(&new_file, b"new attachment").unwrap();
+        let view = crate::ClientViewId("synthetic-withdraw".into());
+        let application = &mut fixture.application;
+        application
+            .composer
+            .legacy_edit("source:one".into(), Some("original draft".into()), None)
+            .unwrap();
+        let existing = application
+            .composer
+            .upload("existing.txt".into(), b"existing attachment".to_vec())
+            .unwrap();
+        let owner_id = application.composer.owner_id();
+        let context = ComposerContextKey::Conversation {
+            owner_id: owner_id.clone(),
+            conversation_id: "source:one".into(),
+        };
+        let old = application
+            .composer
+            .operate(ComposerInputOperation::Read {
+                since_revision: None,
+            })
+            .unwrap();
+        let old_id = &old
+            .bindings
+            .iter()
+            .find(|item| item.context == context)
+            .unwrap()
+            .input_id;
+        let old_path = application.composer.attachment_path(&existing.id).unwrap();
+        let turn = &mut application.runtime.session.send_queue.turns[0].request;
+        let selection = ModelSelection::Native {
+            provider_id: Some("synthetic".into()),
+            model_id: "synthetic-model".into(),
+        };
+        turn.selection = Some(selection.clone());
+        turn.turn.effort = Some("high".into());
+        turn.turn.permission_mode = Some("read-only".into());
+        turn.turn.attachments = vec![
+            old_path.to_str().unwrap().into(),
+            new_file.to_str().unwrap().into(),
+        ];
+        application.runtime.session.send_queue.waiting = Some(QueueWait::ContextPreparation);
+
+        let crate::Response::EditSendQueue(result) = application
+            .execute_command(withdraw_command(1), true, &view)
+            .unwrap()
+        else {
+            panic!("withdrawal returned the wrong response");
+        };
+        let follow_up = result.snapshot.unwrap().follow_up;
+        assert_eq!(follow_up.paused, Some(QueuePause::TurnStopped));
+        assert_eq!(follow_up.queue.len(), 1);
+        assert_eq!(follow_up.queue[0].id, "tail");
+        assert!(follow_up.context_preparation.is_none());
+        assert_ne!(follow_up.waiting, Some(QueueWait::ContextPreparation));
+
+        let state = application
+            .composer
+            .operate(ComposerInputOperation::Read {
+                since_revision: None,
+            })
+            .unwrap();
+        assert_eq!(state.revision, old.revision + 1);
+        let binding = state
+            .bindings
+            .iter()
+            .find(|item| item.context == context)
+            .unwrap();
+        assert_ne!(&binding.input_id, old_id);
+        assert!(
+            state
+                .inputs
+                .iter()
+                .any(|item| &item.id == old_id && item.content.text == "original draft")
+        );
+        let restored = state
+            .inputs
+            .iter()
+            .find(|item| item.id == binding.input_id)
+            .unwrap();
+        assert_eq!(restored.content.text, "first");
+        assert_eq!(restored.content.attachments.len(), 2);
+        assert_eq!(restored.content.attachments[0], existing);
+        let imported = &restored.content.attachments[1];
+        assert_eq!(imported.name, "new.txt");
+        let crate::Response::ReadComposerAttachment(content) = application
+            .execute_command(
+                crate::Command::ReadComposerAttachment {
+                    attachment_id: imported.id.clone(),
+                },
+                true,
+                &view,
+            )
+            .unwrap()
+        else {
+            panic!("composer attachment returned the wrong response");
+        };
+        assert_eq!(content.bytes, b"new attachment");
+        let target = application.composer.target(&context).unwrap();
+        assert_eq!(
+            target.choices.runtime_owner_id.as_deref(),
+            Some(owner_id.as_str())
+        );
+        assert_eq!(target.choices.runtime_id.as_deref(), Some("target"));
+        let choice = &target.choices.choices[0].choice;
+        assert_eq!(choice.model, Some(selection));
+        assert_eq!(choice.effort.as_deref(), Some("high"));
+        assert_eq!(choice.permission_mode.as_deref(), Some("read-only"));
+    }
+
+    #[test]
+    fn withdrawing_stale_or_dispatching_queue_item_leaves_composer_and_queue_untouched() {
+        use velune_application_api::ComposerInputOperation;
+
+        let mut fixture = Fixture::new();
+        let application = &mut fixture.application;
+        let view = crate::ClientViewId("synthetic-withdraw".into());
+        let read = ComposerInputOperation::Read {
+            since_revision: None,
+        };
+        let before = application.composer.operate(read.clone()).unwrap();
+        application
+            .runtime
+            .send_queue(
+                "source:one",
+                SendQueueOperation::Edit {
+                    id: "head".into(),
+                    text: "new revision".into(),
+                },
+            )
+            .unwrap();
+        let error = application
+            .execute_command(withdraw_command(1), false, &view)
+            .err()
+            .expect("stale withdrawal was accepted");
+        assert_eq!(error.code, "queued_message_changed");
+        assert_eq!(
+            application.runtime.queued_preparation_state("work-1"),
+            Some(PreparationState::Running)
+        );
+        application
+            .runtime
+            .sync_queued_preparation("work-1", PreparationState::Ready);
+        assert!(
+            application
+                .runtime
+                .queued_prepared_candidate("work-1")
+                .is_some()
+        );
+        assert!(
+            application
+                .execute_command(withdraw_command(2), false, &view)
+                .is_err()
+        );
+        application.runtime.pause_queued_preparation("work-1");
+        assert!(
+            application
+                .execute_command(withdraw_command(2), false, &view)
+                .is_err()
+        );
+        assert_eq!(
+            application.runtime.session.send_queue.turns[0]
+                .request
+                .turn
+                .text,
+            "new revision"
+        );
+        assert_eq!(application.composer.operate(read).unwrap(), before);
+    }
+
+    #[test]
+    fn withdrawing_queue_item_keeps_it_and_cleans_imports_if_saving_fails() {
+        use velune_application_api::ComposerInputOperation;
+
+        let mut fixture = Fixture::new();
+        let first = fixture.root.join("first.txt");
+        let second = fixture.root.join("second.txt");
+        fs::write(&first, b"first").unwrap();
+        let application = &mut fixture.application;
+        let view = crate::ClientViewId("synthetic-withdraw".into());
+        let read = ComposerInputOperation::Read {
+            since_revision: None,
+        };
+        let before = application.composer.operate(read.clone()).unwrap();
+        application.runtime.session.send_queue.turns[0]
+            .request
+            .turn
+            .attachments = vec![
+            first.to_str().unwrap().into(),
+            second.to_str().unwrap().into(),
+        ];
+        let attached = fixture.root.join("composer-attachments");
+        assert!(
+            application
+                .execute_command(withdraw_command(1), false, &view)
+                .is_err()
+        );
+        assert_eq!(fs::read_dir(&attached).unwrap().count(), 0);
+
+        fs::write(&second, b"second").unwrap();
+        // Prevent creating the temporary catalog without changing the stored catalog.
+        fs::create_dir(fixture.root.join("composer-inputs.json.tmp")).unwrap();
+        assert!(
+            application
+                .execute_command(withdraw_command(1), false, &view)
+                .is_err()
+        );
+        assert_eq!(fs::read_dir(attached).unwrap().count(), 0);
+        assert_eq!(application.composer.operate(read).unwrap(), before);
+        assert_eq!(application.runtime.session.send_queue.turns[0].id, "head");
+        assert_eq!(
+            application.runtime.queued_preparation_state("work-1"),
+            Some(PreparationState::Running)
+        );
     }
 
     #[test]

@@ -140,6 +140,7 @@ private final class ComposerInputWorker: @unchecked Sendable {
     private var deferred: [() -> Void] = []
     private var legacyBlankContexts: Set<String> = []
     private var pollPending = false
+    private var forcePollPending = false
     private var lastPoll = Date.distantPast
     private var pollBackoff = PollBackoff()
     let changes = PassthroughSubject<Void, Never>()
@@ -332,13 +333,19 @@ private final class ComposerInputWorker: @unchecked Sendable {
     func resumePolling() { pollBackoff.succeeded() }
 
     func poll(force: Bool = false) {
-        guard let worker, !pollPending, force || (pollBackoff.ready && Date().timeIntervalSince(lastPoll) > 0.6) else { return }
+        guard let worker, force || (pollBackoff.ready && Date().timeIntervalSince(lastPoll) > 0.6) else { return }
+        if pollPending {
+            if force { forcePollPending = true }
+            return
+        }
         pollPending = true; lastPoll = Date()
         worker.queue.async { [weak self] in
             let result = Result { try worker.poll(force: force) }
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.pollPending = false
+                let refresh = self.forcePollPending
+                self.forcePollPending = false
                 switch result {
                 case .success(let result): self.pollBackoff.succeeded(); self.apply(result); if force { self.changes.send() }
                 case .failure(let error):
@@ -346,6 +353,7 @@ private final class ComposerInputWorker: @unchecked Sendable {
                     self.available = false; self.changes.send()
                     if force { self.device?.recordProblem(error, source: "读取共享输入") }
                 }
+                if refresh { self.poll(force: true) }
             }
         }
     }

@@ -591,11 +591,129 @@ impl ComposerInputs {
         Ok(())
     }
 
+    pub(crate) fn restore_queued_turn(
+        &mut self,
+        conversation_id: &str,
+        request: &crate::local::TurnRequest,
+    ) -> Result<(), Error> {
+        let owner_id = self.owner_id();
+        let context = ComposerContextKey::Conversation {
+            owner_id: owner_id.clone(),
+            conversation_id: conversation_id.into(),
+        };
+        let mut next = self.stored.clone();
+        let state = &mut next.state;
+        let revision = state
+            .revision
+            .checked_add(1)
+            .ok_or_else(|| Error::invalid("共享输入修订已达上限"))?;
+        let input_id = identity();
+        state.bindings.retain(|binding| binding.context != context);
+        state.bindings.push(ComposerInputBinding {
+            context: context.clone(),
+            input_id: input_id.clone(),
+            revision,
+        });
+        let mut target = self.target(&context).unwrap_or(ComposerTarget {
+            context,
+            revision: 0,
+            choices: ComposerTargetChoices::default(),
+        });
+        target.choices.choice_edited = true;
+        target.choices.runtime_id = Some(request.runtime_id.clone());
+        target.choices.runtime_owner_id = Some(owner_id.clone());
+        target.choices.choices.retain(|choice| {
+            choice.owner_id != owner_id || choice.runtime_id != request.runtime_id
+        });
+        let choice = TurnChoice {
+            model: request.selection.clone(),
+            effort: request.turn.effort.clone(),
+            permission_mode: request.turn.permission_mode.clone(),
+        };
+        if !choice.is_empty() {
+            target.choices.choices.push(ComposerRuntimeChoice {
+                owner_id,
+                runtime_id: request.runtime_id.clone(),
+                choice,
+            });
+        }
+        validate_choices(&target.choices)?;
+        target.revision = target
+            .revision
+            .checked_add(1)
+            .ok_or_else(|| Error::invalid("目标执行配置修订已达上限"))?;
+        state
+            .targets
+            .retain(|record| record.context != target.context);
+        state.targets.push(target);
+
+        let mut added = Vec::new();
+        let result = (|| {
+            let mut attachments: Vec<ComposerAttachment> = Vec::new();
+            for path in &request.turn.attachments {
+                let path = Path::new(path);
+                let name = path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .ok_or_else(|| Error::invalid("排队附件名称不可用"))?;
+                if !path.is_absolute() || !fs::metadata(path)?.is_file() {
+                    return Err(Error::invalid("排队附件已不可用"));
+                }
+                // Queue paths were resolved on acceptance. Only reuse blobs
+                // whose exact stored path is present in the attachment catalog.
+                let stored = path.parent().and_then(Path::file_name).and_then(|id| {
+                    self.stored.attachments.iter().find(|record| {
+                        id == record.id.as_str()
+                            && path == self.attachments.join(&record.id).join(&record.name)
+                    })
+                });
+                if let Some(stored) = stored.filter(|record| !attachments.contains(record)) {
+                    fs::File::open(path)?;
+                    attachments.push(stored.clone());
+                    continue;
+                }
+                let bytes = crate::commands::read_content(path)?;
+                let attachment = self.write_attachment(name.to_owned(), bytes)?;
+                added.push(attachment.clone());
+                attachments.push(attachment);
+            }
+            let state = &mut next.state;
+            state.inputs.push(ComposerInput {
+                id: input_id,
+                revision: 1,
+                content: ComposerInputContent {
+                    text: request.turn.text.clone(),
+                    attachments,
+                },
+            });
+            state.revision = revision;
+            next.attachments.extend(added.iter().cloned());
+            self.publish(next)
+        })();
+        if result.is_err() {
+            for attachment in added {
+                let _ = fs::remove_dir_all(self.attachments.join(attachment.id));
+            }
+        }
+        result
+    }
+
     pub(crate) fn upload(
         &mut self,
         name: String,
         bytes: Vec<u8>,
     ) -> Result<ComposerAttachment, Error> {
+        let attachment = self.write_attachment(name, bytes)?;
+        let mut next = self.stored.clone();
+        next.attachments.push(attachment.clone());
+        if let Err(error) = self.publish(next) {
+            let _ = fs::remove_dir_all(self.attachments.join(&attachment.id));
+            return Err(error);
+        }
+        Ok(attachment)
+    }
+
+    fn write_attachment(&self, name: String, bytes: Vec<u8>) -> Result<ComposerAttachment, Error> {
         validate_name(&name)?;
         if bytes.len() > 20 * 1024 * 1024 {
             return Err(Error::invalid("附件名称或大小无效；单个附件最多 20 MiB"));
@@ -606,11 +724,12 @@ impl ComposerInputs {
             bytes: bytes.len() as u64,
         };
         let directory = self.attachments.join(&attachment.id);
-        fs::create_dir_all(&directory)?;
-        commit(&directory.join(&attachment.name), &bytes)?;
-        let mut next = self.stored.clone();
-        next.attachments.push(attachment.clone());
-        self.publish(next)?;
+        fs::create_dir_all(&self.attachments)?;
+        fs::create_dir(&directory)?;
+        if let Err(error) = commit(&directory.join(&attachment.name), &bytes) {
+            let _ = fs::remove_dir_all(directory);
+            return Err(error);
+        }
         Ok(attachment)
     }
 

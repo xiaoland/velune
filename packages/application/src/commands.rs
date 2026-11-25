@@ -657,11 +657,25 @@ impl Application {
                 runtime_id: _,
                 conversation_id,
                 operation,
-            } => Response::EditSendQueue(application.runtime.serve(
-                Focus::Conversation(conversation_id.clone()),
-                Login::Blocks,
-                |core| core.send_queue_submission(&conversation_id, operation, submission_id),
-            )?),
+            } => {
+                let composer = &mut application.composer;
+                Response::EditSendQueue(application.runtime.serve(
+                    Focus::Conversation(conversation_id.clone()),
+                    Login::Blocks,
+                    |core| match operation {
+                        SendQueueOperation::Withdraw {
+                            id,
+                            expected_revision,
+                        } => core.withdraw_queued_turn(
+                            &conversation_id,
+                            id,
+                            expected_revision,
+                            composer,
+                        ),
+                        _ => core.send_queue_submission(&conversation_id, operation, submission_id),
+                    },
+                )?)
+            }
             Command::SteerTurn {
                 runtime_id: _,
                 conversation_id,
@@ -1305,7 +1319,7 @@ impl Application {
         Ok(response)
     }
 }
-fn read_content(path: &str) -> Result<Vec<u8>, Error> {
+pub(crate) fn read_content(path: impl AsRef<std::path::Path>) -> Result<Vec<u8>, Error> {
     let mut bytes = Vec::new();
     std::fs::File::open(path)?
         .take((MAX_ATTACHMENT_BYTES + 1) as u64)

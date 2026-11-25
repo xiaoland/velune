@@ -1743,6 +1743,14 @@ final class ConversationStore: ObservableObject {
         })
     }
     func removeQueued(_ id: String) { changeQueue(.remove(id: id)) }
+    func withdrawQueued(_ message: QueuedMessage) {
+        guard let revision = message.editContext?.revision,
+              followUp.queue.contains(where: { $0.id == message.id }) else { return }
+        let inputs = device.composerInputs
+        changeQueue(.withdraw(id: message.id, expectedRevision: revision),
+                    onFailure: { inputs.poll(force: true) },
+                    onDone: { _ in inputs.poll(force: true) })
+    }
     func moveQueued(_ id: String, to index: Int) { changeQueue(.move(id: id, index: UInt32(max(index, 0)))) }
     func resumeQueue() { guard inputSubmissionAllowed else { return }; changeQueue(.resume) }
     private func changeQueue(_ operation: SendQueueOperation, submissionId: String? = nil, onFailure: (() -> Void)? = nil, onDone: ((SnapshotResult) -> Void)? = nil) {
@@ -2321,6 +2329,82 @@ final class ConversationStore: ObservableObject {
 }
 
 extension ConversationStore {
+    /// Exercises the same queue action and shared input registry as a window,
+    /// against an isolated Core while a synthetic native turn holds the queue.
+    static func checkQueueWithdrawal(transport: Transport, seed: SnapshotResult, home: URL) throws {
+        let runtimeID = "synthetic-codex"
+        let native = ModelSelection.native(providerId: "openai", modelId: "synthetic-native")
+        guard let conversationID = seed.snapshot?.conversation.id else {
+            throw TransportError.rejected("missing queue withdrawal fixture conversation")
+        }
+        func wait(_ operation: String, until ready: () -> Bool) throws {
+            let deadline = Date().addingTimeInterval(8)
+            while !ready(), Date() < deadline { RunLoop.main.run(until: Date().addingTimeInterval(0.01)) }
+            guard ready() else { throw TransportError.rejected("queue withdrawal: \(operation)") }
+        }
+        try wait("the initial turn must be idle") {
+            (try? transport.snapshot(runtimeID: runtimeID, conversationID: conversationID).snapshot?.runState) == .idle
+        }
+        let running = try transport.sendTurn(sourceRuntimeID: runtimeID, conversationID: conversationID,
+            targetRuntimeID: runtimeID, selection: native,
+            turn: ComposedTurn(text: "hold for queue withdrawal", effort: nil, permissionMode: nil, attachments: []))
+        let device = DeviceStore(transport: transport)
+        device.applyList(try transport.list())
+        let window = ConversationWindowModel(application: device, kind: .workspace)
+        let tab = window.focused
+        let store = tab.store
+        defer { store.close(); window.list.close() }
+        store.adopt(running)
+        device.composerInputs.poll(force: true)
+        try wait("input directory must be available") { device.composerInputs.ownerID != nil }
+        let previous = window.composer(for: tab)
+        previous.restoreSavedDraft(.init(text: "existing unsent draft", attachments: []))
+        device.composerInputs.bind(conversationID, input: previous)
+        try wait("original draft must be saved") {
+            device.composerInputs.inputID(for: conversationID) == previous.id && !device.composerInputs.isDirty(previous.id)
+        }
+        let attachment = home.appendingPathComponent("queue-withdrawal.txt")
+        let bytes = Data("queued attachment".utf8)
+        try bytes.write(to: attachment)
+        let queued = try transport.sendQueue(runtimeID: runtimeID, conversationID: conversationID,
+            operation: .add(sourceRuntimeId: runtimeID, targetRuntimeId: runtimeID, selection: native,
+                turn: ComposedTurn(text: "queued draft", effort: "low", permissionMode: "read-only", attachments: [attachment.path])))
+        guard case .queued(let id) = queued.submissionReceipt,
+              let original = queued.snapshot?.followUp.queue.first(where: { $0.id == id }) else {
+            throw TransportError.rejected("the fixture message must remain queued")
+        }
+        let edited = try transport.sendQueue(runtimeID: runtimeID, conversationID: conversationID,
+            operation: .edit(id: id, text: "revised queued draft"))
+        store.adopt(edited)
+        guard let revised = store.followUp.queue.first(where: { $0.id == id }),
+              original.editContext?.revision != revised.editContext?.revision else {
+            throw TransportError.rejected("the fixture must expose a newer queue revision")
+        }
+        store.withdrawQueued(original)
+        try wait("the stale request must settle") { !store.isLoading }
+        guard device.composerInputs.inputID(for: conversationID) == previous.id,
+              store.followUp.queue.contains(revised) else {
+            throw TransportError.rejected("a stale withdrawal must keep both the old draft and the revised queue item")
+        }
+        store.withdrawQueued(revised)
+        try wait("the queue item and input binding must both be updated") {
+            !store.isLoading && store.followUp.queue.isEmpty &&
+                device.composerInputs.inputID(for: conversationID).map { $0 != previous.id } == true
+        }
+        let restored = window.composer(for: tab)
+        let choice = device.composerInputs.targetChoices(for: conversationID)
+        guard restored.submission == revised.text,
+              restored.attachments.count == 1,
+              try Data(contentsOf: restored.attachments[0]) == bytes,
+              choice?.runtimeId == runtimeID,
+              choice?.choices.contains(where: { $0.runtimeId == runtimeID && $0.choice == TurnChoice(model: native, effort: "low", permissionMode: "read-only") }) == true,
+              window.drafts(for: device).alternatives(to: restored).contains(where: { $0.model.id == previous.id && $0.model.submission == "existing unsent draft" }),
+              store.isGenerating else {
+            throw TransportError.rejected("the restored input must include the exact bytes and execution choices, with its prior draft and active turn preserved")
+        }
+        print("PASS queue withdrawal: stale revision retained, revised item moved to composer, attachment bytes and execution choices restored, original draft accessible")
+    }
+
     /// The normal periodic poll is deliberately absent in this check. The
     /// ordinary Send path must observe the runtime event after its receipt.
     static func checkLateSendEcho(transport: Transport, seed: SnapshotResult, home: URL) throws {

@@ -632,6 +632,12 @@ pub enum SendQueueOperation {
     Remove {
         id: String,
     },
+    /// Restore the queued input as the conversation's draft before removing it.
+    #[serde(rename_all = "camelCase")]
+    Withdraw {
+        id: String,
+        expected_revision: u64,
+    },
     /// Move to `index` in the queue as it is after removing the message.
     Move {
         id: String,

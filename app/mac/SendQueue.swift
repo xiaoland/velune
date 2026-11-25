@@ -127,6 +127,8 @@ struct SendQueueView: View {
                 Button("上移") { store.moveQueued(message.id, to: index - 1) }.disabled(index == 0 || !canMove(message.id, to: index - 1))
                 Button("下移") { store.moveQueued(message.id, to: index + 1) }.disabled(index == queue.count - 1 || !canMove(message.id, to: index + 1))
                 Divider()
+                Button("撤回") { store.withdrawQueued(message) }
+                    .disabled(!canEdit(message.id) || store.isLoading || store.isShuttingDown)
             }
             if !ids.isEmpty && !ids.contains(where: isPending) { Button(ids.count > 1 ? "删除 \(ids.count) 条" : "删除") { remove(ids) } }
         } primaryAction: { ids in

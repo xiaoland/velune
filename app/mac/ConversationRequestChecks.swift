@@ -67,6 +67,10 @@ for line in sys.stdin:
             mark('rejected-send-wire')
             emit({'id':request['id'],'error':{'code':-32600,'message':'synthetic created Send rejected'}})
             continue
+        if any(item.get('text') == 'hold for queue withdrawal' for item in request['params']['input']):
+            notify('turn/started', {'threadId':thread_id,'turn':{'id':current_turn}})
+            ack(request, {'turn':{'id':current_turn}})
+            continue
         if any(item.get('text') == 'synthetic late user echo' for item in request['params']['input']):
             notify('turn/started', {'threadId':thread_id,'turn':{'id':current_turn}})
             ack(request, {'turn':{'id':current_turn}})
@@ -137,7 +141,9 @@ for line in sys.stdin:
         let seed = try transport.createAndSend(runtimeID: "synthetic-codex", cwd: home.path, project: nil,
             selection: .native(providerId: "openai", modelId: "synthetic-native"),
             turn: ComposedTurn(text: "synthetic seed", effort: nil, permissionMode: nil, attachments: []), cancellation: VeluneSendCancellation(), onCreated: { _ in })
-        if CommandLine.arguments.contains("--check-late-send-echo") {
+        if CommandLine.arguments.contains("--check-queue-withdrawal") {
+            try ConversationStore.checkQueueWithdrawal(transport: transport, seed: seed, home: home)
+        } else if CommandLine.arguments.contains("--check-late-send-echo") {
             try ConversationStore.checkLateSendEcho(transport: transport, seed: seed, home: home)
         } else {
             try ConversationStore.checkIndependentRequests(transport: transport, seed: seed, home: home)
