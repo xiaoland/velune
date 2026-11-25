@@ -18,6 +18,7 @@ sealed interface Screen {
     }
     data object About : Screen
     data object Appearance : Screen
+    data object NetworkSettings : Screen
     data object Telemetry : Screen
     data class Legal(val document: LegalDocument) : Screen
     class AgentUri(val address: String, val peer: String?) : Screen

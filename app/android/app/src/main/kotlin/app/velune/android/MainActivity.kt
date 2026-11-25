@@ -112,7 +112,14 @@ private fun App(model: AppViewModel) {
                 ),
             )
         }
-        Screen.Devices -> DevicesScreen(hub, back = { model.back() }, open = model::showDevice, add = { model.push(Screen.AddDevice()) })
+        Screen.Devices -> DevicesScreen(
+            hub,
+            back = { model.back() },
+            open = model::showDevice,
+            add = { model.push(Screen.AddDevice()) },
+            network = { model.push(Screen.NetworkSettings) },
+        )
+        Screen.NetworkSettings -> RemoteNetworkScreen(hub, back = { model.back() })
         Screen.Telemetry -> TelemetryScreen(hub, back = { model.back() })
         is Screen.AddDevice -> key(screen) {
             AddDeviceScreen(hub, back = { model.back() }, paired = { model.showPaired(it) }, draft = screen.draft)

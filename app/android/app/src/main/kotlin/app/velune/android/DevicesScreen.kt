@@ -58,15 +58,13 @@ class DevicesActions(val back: () -> Unit, val open: (String) -> Unit, val add: 
 
 /** Paired devices and this phone's connection settings; conversations live in the session list. */
 @Composable
-fun DevicesScreen(hub: DeviceHub, back: () -> Unit, open: (String) -> Unit, add: () -> Unit) {
+fun DevicesScreen(hub: DeviceHub, back: () -> Unit, open: (String) -> Unit, add: () -> Unit, network: () -> Unit) {
     val state by hub.state.collectAsState()
     val failure by hub.failure.collectAsState()
     val scope = rememberCoroutineScope()
     var removing by remember { mutableStateOf<DeviceSummary?>(null) }
-    var network by remember { mutableStateOf(false) }
     val devices = state?.let { snapshot -> snapshot.contacts.filter { it.controlAuthorized }.map { deviceSummary(snapshot, it) } }
-    DevicesContent(devices, failure, DevicesActions(back, open, add, remove = { removing = it }, network = { network = true }))
-    if (network) RemoteNetworkDialog(hub, dismiss = { network = false })
+    DevicesContent(devices, failure, DevicesActions(back, open, add, remove = { removing = it }, network = network))
     removing?.let { device ->
         AlertDialog(
             onDismissRequest = { removing = null },

@@ -132,6 +132,66 @@ internal fun PreviewDevices(gallery: PreviewGallery) {
             },
             add = {},
             remove = {},
+            network = { gallery.open("network") },
+        ),
+    )
+}
+
+@Composable
+internal fun PreviewNetworkScreen(gallery: PreviewGallery) {
+    var mode by remember { mutableStateOf(1) }
+    var urls by remember { mutableStateOf("https://relay.velune.example/") }
+    var credentials by remember {
+        mutableStateOf(
+            listOf(
+                app.velune.android.RelayAccessDraft(url = "https://relay.velune.example/", configured = true),
+            ),
+        )
+    }
+    var savedMessage by remember { mutableStateOf<String?>(null) }
+    val status = remember {
+        app.velune.bindings.remote.NetworkState(
+            saved = null,
+            phase = app.velune.bindings.remote.NetworkApplicationPhase.APPLIED,
+            appliedRevision = 1uL,
+            generation = 1uL,
+            errorCode = null,
+            facilities = listOf(
+                app.velune.bindings.remote.FacilityStatus(
+                    app.velune.bindings.remote.FacilityKind.HOME_RELAY,
+                    "https://relay.velune.example/",
+                    app.velune.bindings.remote.FacilityReachability.REACHABLE,
+                ),
+                app.velune.bindings.remote.FacilityStatus(
+                    app.velune.bindings.remote.FacilityKind.LOOKUP,
+                    "https://dns.iroh.link/",
+                    app.velune.bindings.remote.FacilityReachability.REACHABLE,
+                ),
+            ),
+        )
+    }
+    app.velune.android.RemoteNetworkContent(
+        status = status,
+        loaded = true,
+        mode = mode,
+        urls = urls,
+        credentials = credentials,
+        busy = false,
+        failure = null,
+        savedMessage = savedMessage,
+        actions = app.velune.android.RemoteNetworkActions(
+            back = gallery::back,
+            selectMode = { mode = it; savedMessage = null },
+            editUrls = { urls = it; savedMessage = null },
+            addCredential = { credentials = credentials + app.velune.android.RelayAccessDraft() },
+            updateCredential = { id, transform ->
+                credentials = credentials.map { if (it.id == id) transform(it) else it }
+                savedMessage = null
+            },
+            dropCredential = { id -> credentials = credentials.filterNot { it.id == id } },
+            save = { savedMessage = "已保存并应用" },
+            retry = {},
+            reload = { savedMessage = null },
         ),
     )
 }

@@ -54,6 +54,9 @@ internal object PreviewCatalog {
         screen("appearance", "外观与显示", "调节界面、消息、代码字号与显示密度", PreviewGroup.Settings) {
             PreviewAppearanceScreen(it)
         },
+        screen("network", "连接设置", "配置中继模式、访问凭据与查看设施可达状态", PreviewGroup.Settings) {
+            PreviewNetworkScreen(it)
+        },
     )
 
     private val byId = scenarios.associateBy { it.id }
