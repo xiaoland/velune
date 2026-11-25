@@ -2,9 +2,8 @@ import SwiftUI
 
 /// The window toolbar's buttons the user can hide and reorder in the
 /// settings. From macOS 26 the system's own Customize Toolbar… does this
-/// (see `VeluneRootView.withToolbar`); before it a customizable toolbar
-/// costs scrolling speed, so Velune offers the same choices itself over a
-/// plain toolbar.
+/// (see `WorkspaceToolbar`); before it Velune offers the same choices
+/// itself over a fixed toolbar.
 enum ToolbarButton: String, CaseIterable, Identifiable {
     case reload, outline, subAgents, backgroundTasks, pin, split, problems
     case listFilter, newConversation

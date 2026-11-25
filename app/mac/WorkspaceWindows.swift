@@ -129,6 +129,7 @@ import SwiftUI
     /// The paired device a conversation window was opened for.
     let device: String?
     let model: ConversationWindowModel
+    private var shell: WorkspaceShell!
 
     init(kind: ConversationWindowKind, id: String, device: String?, seed: WindowSeed?, restoring: Bool, context: WorkspaceWindows.Context) {
         self.id = id
@@ -154,12 +155,7 @@ import SwiftUI
         model.openWindow = { kind, seed in WorkspaceWindows.shared.open(kind, seed: seed) }
         let content = ConversationWindowContent(window: model, seed: seed, persistenceID: id, restoring: restoring,
                                                 previewEmpty: context.previewEmpty, previewSettings: context.previewSettings)
-        let hosting = NSHostingController(rootView: content)
-        // The toolbar and title the content declares become the window's.
-        hosting.sceneBridgingOptions = [.toolbars, .title]
-        // The window's size is the user's, not the content's ideal size.
-        hosting.sizingOptions = [.minSize]
-        window.contentViewController = hosting
+        shell = WorkspaceShell(window: window, model: model, content: content, previewEmpty: context.previewEmpty)
         window.setContentSize(size)
         window.contentMinSize = NSSize(width: 520, height: 420)
         window.invalidateRestorableState()

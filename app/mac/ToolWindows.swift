@@ -97,6 +97,9 @@ struct ToolWindowLayout: Codable, Equatable {
     var sideChatPresentation: SideChatPresentation?
     /// Total drawer height, independent of composer state or draft length.
     var bottomHeight = 220.0
+    /// The sidebar's and the inspector's widths as last dragged; nil until then.
+    var leftWidth: Double?
+    var rightWidth: Double?
     /// The areas "editor only" collapsed, to open again.
     var editorOnly: Set<DockSide>?
 

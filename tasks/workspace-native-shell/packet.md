@@ -142,9 +142,22 @@ AppKit 自绘 `TabBarView`，行为对齐系统 Tab Bar（Xcode 分屏标签也�
 - `TabBar.swift`：`TabBarView`（`NSScrollView` 横向滚动、纵向滚轮转横向、覆盖式滚动条，“＋”固定在外），`TabItemView`（自绘配色、悬停关闭、运行／等待／未读指示、双击就地重命名、中键关闭、右键菜单、沿栏滑动与 Core Animation 让位、离栏转 `NSDraggingSource`）；标签栏是原生拖放目标（会话链接私有类型与 URL）。标签宽度 96–240pt；显示中的标签滚入可见。tracking area 只移除自己的（系统工具提示另有 tracking area，旧检查覆盖）。Artifact sheet 的拖动把手复用 `TabItemView`（无栏，不滑动）。删除 `TabHandle`、SwiftUI 标签栏与标签项、`TabDropDelegate`。面板内容区的边缘拆分投放仍是 SwiftUI `PaneDropDelegate`。
 - 检查：新增标签栏溢出检查（可滚动、显示中标签可见、宽度上下限、未达上限的标题完整）；首版宽度未计标签文本框内边距导致截断，检查截图发现后已修。`experience --workspace-only` 24 组、`tabs`、`ownership`、`targets` 通过；开发实例窗口截图确认标签栏与空白处底色。
 
+### 三区停靠与 AppKit 工具栏
+
+- `EditorColumn.swift`：编辑区与底区同处一个 `NSSplitView`（`BottomSplitView`），底区开合不重建面板，窗口缩放时底区保持高度，拖动松开写回、双击恢复默认。区内两个及以上工具放入 `ToolSplit`（复用 `PaneSplitView`，最小 120pt），工具视图按种类保留；只有一个工具时直接是区的内容（列表独占边栏时需要它的搜索框在边栏顶部）。删除 `SplitSash`／`SashOverlay`／`WeightedSplit`／`BottomAreaView`。
+- `WindowShell.swift`：`WorkspaceShell` 把窗口内容换成 `NSSplitViewController`（边栏项、编辑列、检查器项），工具栏换成 AppKit `NSToolbar`（`WorkspaceToolbar`）。两区收起与工具布局双向同步：布局变化时（启动恢复期间不动画）设置 `isCollapsed`，KVO 把系统的显示／隐藏边栏与拖动收起写回布局。拖动分隔松开时宽度记入 `ToolWindowLayout.leftWidth/rightWidth`（可选字段，旧文件照常读入），打开时按其恢复。工具栏按钮是 `.toolbar` 样式 `NSButton`，条件项用 `isHidden`（macOS 15+），弹出面板是 `NSPopover`；右键菜单沿用窗口模型的锚点注册。删除 `ConversationToolbarPartition`、`ConversationListSidebarToolbar` 与 SwiftUI 工具栏声明；列表独占边栏时用自己的 `SearchField` 代替 `.searchable(placement: .sidebar)`。⌘R 刷新移入“会话”菜单。macOS 26 工具栏标识改为 `conversation-window`，旧 SwiftUI 工具栏的自定排列不沿用（本机为 macOS 15，没有）。
+- `sidebar-toolbar` 检查改写为针对新外壳：边栏跟踪分隔绑定外壳分栏、列表动作在其前且位于边栏内、共享与右区时隐藏、显示／隐藏边栏写回布局、保存的宽度恢复且窗口缩放时保持。原检查在 `develop` 上已失败（`aa42506c2` 改了列表动作归属而未改检查）。
+
+### 边栏与停靠区
+
+现状：PRD 把左／右／底定义为对等停靠区，任一工具可放任一区；但在 macOS 上左区就是窗口边栏（系统材质、⌃⌘S、工具栏的边栏分区），列表独占左区时其筛选与新建会话进入窗口工具栏、搜索在边栏顶部，与其他工具同区或在其他区时则是带标题条的块。可见性又分三层（工具是否显示、区是否收起、只显示编辑区）。
+
+建议（待用户决定）：按 Xcode 的导航器／检查器／调试区理解三区，保留“任一工具放任一区”，但让列表在任何位置形态一致——始终带自己的搜索、筛选与新建，不随位置把动作搬进工具栏；工具栏的边栏分区只留边栏按钮。可见性收敛为“区是否打开”与“工具在哪个区”两层：隐藏区内最后一个工具即收起该区。
+
 ### 待做与未实测
 
-- 三区停靠：左区仍是 `NavigationSplitView`、右区 `.inspector`、底区 `SashOverlay`。改为 `NSSplitViewController` 需把内容声明的工具栏（含 `ConversationToolbarPartition` 的分区）迁到窗口工具栏，风险集中在工具栏；左右区已是系统容器，可先只把底区并入原生竖向分栏。
+- 停靠区与区内工具的交互手感（边栏／检查器开合动画、分隔拖动、宽度记忆）需前台验收；见下“三区停靠”。
+- 边栏与停靠区概念混杂（用户 2026-11-25 指出）：左区既是 macOS 边栏又是通用停靠区，列表独占左区时与其他位置的形态、工具栏归属都不同。待用户就收敛方向决定，见下“边栏与停靠区”。
 - 需前台操作、未实测：分隔条拖动与双击、标签滑动重排与拖出成窗口、跨窗口拖放、列表拖入、重命名、键窗口切换时菜单启用、全屏中新开窗口、Dock 无窗口时重开。程序化检查覆盖了模型与视图身份，交互手感需用户或前台验收。
 - 合回 `develop` 待以上前台验收后进行。
 

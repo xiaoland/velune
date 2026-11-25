@@ -118,6 +118,7 @@ struct ConversationCommands: Commands {
                 item(.chooseWorkingDirectory)
                 Divider()
                 item(.nextAttention)
+                item(.reload)
                 Divider()
                 Button("停止生成") { target?.store.cancel() }
                     .keyboardShortcut(shortcuts[.stop])
@@ -292,7 +293,6 @@ struct ConversationWindowContent: View {
         VeluneRootView(window: window, store: window.list, tab: window.focused, focused: window.focused.store,
                        previewEmpty: previewEmpty, previewSettings: previewSettings)
             .applicationAppearance()
-            .frame(minWidth: 520, minHeight: 420)
             .onAppear {
                 traceRecovery("appear")
                 window.start(restoring: nil, seed: seed, persistenceID: persistenceID, reopened: restoring)

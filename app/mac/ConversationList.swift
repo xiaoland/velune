@@ -29,7 +29,6 @@ struct ConversationListView: View {
     let placement: Placement
     /// Sharing its area with other tools, the search is a button over a popover.
     var compact = false
-    @FocusState private var searchFocused: Bool
     @State private var searchFocusRequest = 0
     @Environment(\.controlActiveState) private var activeState
     /// The window's, so the title bar's filter menu and the list share it.
@@ -84,10 +83,12 @@ struct ConversationListView: View {
         Group {
             switch placement {
             case .sidebar:
-                list
-                    .searchable(text: $window.listSearch, placement: .sidebar, prompt: "搜索会话")
-                    .searchFocused($searchFocused)
-                    .navigationTitle("会话")
+                // The sidebar's filter and new conversation are in the toolbar above it.
+                VStack(spacing: 0) {
+                    SearchField(text: $window.listSearch, prompt: "搜索会话", focusRequest: searchFocusRequest)
+                        .padding(.horizontal, 10).padding(.top, 6).padding(.bottom, 4)
+                    list
+                }
             case .panel:
                 VStack(spacing: 0) {
                     // A block has its search, filter and new conversation in its title bar.
@@ -112,7 +113,7 @@ struct ConversationListView: View {
         .onChange(of: ObjectIdentifier(focused)) { _, _ in synchronizeFocusedSelection() }
         .onChange(of: window.listSearchRequest) { _, _ in
             switch placement {
-            case .sidebar: searchFocused = true
+            case .sidebar: searchFocusRequest += 1
             case .panel: if !compact { searchFocusRequest += 1 }
             }
         }
@@ -902,53 +903,5 @@ struct ConversationListHeaderActions: View {
         // When the list is a block among other tools in the sidebar, it owns the new conversation
         // button. When it is alone in the sidebar, the button is in the main toolbar.
         if side != .left || window.listIsBlock { NewConversationButton(window: window).buttonStyle(.borderless).labelStyle(.iconOnly) }
-    }
-}
-
-/// The sidebar column owns its toolbar contributions. Keeping the owner here
-/// preserves the historical split between titlebar actions and list content as
-/// the list changes between a sole sidebar and a titled block in that column.
-struct ConversationListSidebarToolbar: ViewModifier {
-    @ObservedObject var window: ConversationWindowModel
-    @ObservedObject private var toolbarSettings = ToolbarSettings.shared
-
-    private var ownsList: Bool { window.tools.tools(in: .left).contains(.list) }
-
-    private var filterItem: some CustomizableToolbarContent {
-        ToolbarItem(id: ConversationToolbar.Item.listFilter.rawValue) {
-            ConversationFilterMenu(window: window, store: window.list)
-        }
-    }
-
-    private var newConversationItem: some CustomizableToolbarContent {
-        ToolbarItem(id: ConversationToolbar.Item.newConversation.rawValue) { NewConversationButton(window: window) }
-    }
-
-    @ViewBuilder func body(content: Content) -> some View {
-        // Keep the column and its toolbar host identical as tools are hidden,
-        // shared or restored. Only the item collection changes ownership.
-        if #available(macOS 26, *) {
-            content.toolbar(id: ConversationToolbar.id) {
-                if ownsList && !window.listIsBlock {
-                    filterItem
-                    newConversationItem
-                }
-            }
-        } else {
-            let showsFilter = ownsList && !window.listIsBlock && toolbarSettings.isShown(.listFilter)
-            let showsNewConversation = ownsList && !window.listIsBlock && toolbarSettings.isShown(.newConversation)
-            // Keep each item at the same structural position when the
-            // filter moves between the native toolbar and the block header.
-            let newConversationFirst = toolbarSettings.buttons(in: .sidebar).first == .newConversation
-            content.toolbar {
-                if newConversationFirst {
-                    if showsNewConversation { newConversationItem }
-                    if showsFilter { filterItem }
-                } else {
-                    if showsFilter { filterItem }
-                    if showsNewConversation { newConversationItem }
-                }
-            }
-        }
     }
 }
