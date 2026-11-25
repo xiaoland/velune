@@ -779,7 +779,7 @@ struct ProviderSettingsView: View {
         guard let subscription = provider.composition.subscriptionName else { return "\(provider.models.count) 个模型，地址：\(provider.endpoint)" }
         if case .antigravityCli(_, let destination) = provider.composition.executionBackend {
             let target = destination.map { "SSH \($0)" } ?? (store.transport?.isRemote == true ? "提供商所在设备" : "本机")
-            return "\(provider.models.count) 个模型，\(subscription)，\(target) agy 登录"
+            return "\(provider.models.count) 个模型，\(subscription)，执行目标 \(target)"
         }
         let status = authentication.method == .oAuth ? (authentication.configured ? "已登录" : "需要登录") : (authentication.configured ? "已配置" : "需要配置认证")
         return (["\(provider.models.count) 个模型", subscription] + (authentication.accountLabel.map { ["账户 …\($0)"] } ?? []) + [status]).joined(separator: "，")
@@ -1004,7 +1004,7 @@ struct ProviderEditor: View {
                 VStack(spacing: 0) {
                     List(selection: $selection) {
                         Label("连接与认证", systemImage: "network").tag(ProviderEditorSelection.connection)
-                        if showsQuota { Label(usesAntigravityCLI ? "额度" : "额度与使用上限", systemImage: "gauge.with.dots.needle.50percent").tag(ProviderEditorSelection.quota) }
+                        if showsQuota { Label("额度与使用上限", systemImage: "gauge.with.dots.needle.50percent").tag(ProviderEditorSelection.quota) }
                         Section("模型") {
                             ForEach(models) { model in VStack(alignment: .leading, spacing: 3) { Text(model.displayName).lineLimit(1); if !model.providerModelID.isEmpty { Text(model.providerModelID).uiFont(.caption).foregroundStyle(.secondary).lineLimit(1) } }.tag(ProviderEditorSelection.model(model.id)) }
                         }
@@ -1053,7 +1053,7 @@ struct ProviderEditor: View {
             }
             linkedLogin = provider?.authentication.linkedLogin
             editingAPIKey = (!usesSubscription || usesAPIKey) && authentication.method == .unconfigured; readAPIKeyIfNeeded()
-            if !usesAntigravityCLI, let providerID { store.readProviderQuotas([providerID]) }
+            if let providerID { store.readProviderQuotas([providerID]) }
             discoverExecutables()
         }
         .onChange(of: sshDestination) { _, _ in discoverExecutables() }

@@ -97,7 +97,7 @@ private struct ModelRouteOverview: View {
     private var providerIDs: [String] {
         var ids: [String] = []
         for key in route.members {
-            if let provider = store.routeMember(key)?.provider, provider.authenticationSource != .antigravityCli,
+            if let provider = store.routeMember(key)?.provider,
                !provider.authentication.awaitsSignIn, !ids.contains(provider.id) { ids.append(provider.id) }
         }
         return ids
@@ -152,11 +152,13 @@ private struct RouteMemberStatus: View {
     let weight: UInt32?
     let totalWeight: UInt32
     private var authentication: ProviderAuthenticationDescription { member.provider.authentication }
-    private var quota: QuotaObservation? {
-        member.provider.authenticationSource == .antigravityCli ? nil : store.providerQuotas[member.provider.id]
+    private var usesAntigravity: Bool { member.provider.authenticationSource == .antigravityCli }
+    private var quota: QuotaObservation? { store.providerQuotas[member.provider.id] }
+    private var windows: [QuotaWindowObservation] {
+        (quota?.windows ?? []).filter { (!usesAntigravity || $0.hasModelMapping) && $0.applies(to: member.model.providerModelId) }
     }
-    private var windows: [QuotaWindowObservation] { (quota?.windows ?? []).filter { $0.applies(to: member.model.providerModelId) } }
     var body: some View {
+        let now = Date()
         VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Text("\(position)").monospacedDigit().foregroundStyle(.secondary).frame(width: 16, alignment: .trailing)
@@ -171,15 +173,19 @@ private struct RouteMemberStatus: View {
                 }
             }
             Group {
-                if let notice { Label(notice, systemImage: "pause.circle").uiFont(.caption).foregroundStyle(.orange) }
-                if quota?.available == false { Label(QuotaStatusText.limitedObservation, systemImage: "info.circle").uiFont(.caption).foregroundStyle(.secondary) }
+                if let notice = notice(at: now) { Label(notice, systemImage: "pause.circle").uiFont(.caption).foregroundStyle(.orange) }
+                if !usesAntigravity, quota?.available == false { Label(QuotaStatusText.limitedObservation, systemImage: "info.circle").uiFont(.caption).foregroundStyle(.secondary) }
                 ForEach(Array(windows.enumerated()), id: \.offset) { _, window in
-                    QuotaWindowRow(window: window, limit: member.provider.quotaLimits.first { $0.windowId == window.id }?.maxUsedPercent, fresh: quota?.freshness == .fresh, display: store.usageDisplay)
+                    QuotaWindowRow(window: window, limit: member.provider.quotaLimits.first { $0.windowId == window.id }?.maxUsedPercent,
+                                   fresh: usesAntigravity ? window.isCurrent(at: now) : quota?.freshness == .fresh, display: store.usageDisplay,
+                                   title: usesAntigravity ? QuotaWindowObservation.antigravityName(window.id) : nil, showsExpiry: usesAntigravity)
                 }
-                ForEach(Array((quota?.balances ?? []).enumerated()), id: \.offset) { _, balance in
-                    QuotaBalanceRow(balance: balance, fresh: quota?.freshness == .fresh).uiFont(.caption)
+                if !usesAntigravity {
+                    ForEach(Array((quota?.balances ?? []).enumerated()), id: \.offset) { _, balance in
+                        QuotaBalanceRow(balance: balance, fresh: quota?.freshness == .fresh).uiFont(.caption)
+                    }
                 }
-                if !needsSignIn, let quota, quota.freshness != .unsupported, quota.freshness != .fresh || (windows.isEmpty && quota.balances.isEmpty) { QuotaStatusText(quota: quota) }
+                if !usesAntigravity, !needsSignIn, let quota, quota.freshness != .unsupported, quota.freshness != .fresh || (windows.isEmpty && quota.balances.isEmpty) { QuotaStatusText(quota: quota) }
             }.padding(.leading, 24)
         }.padding(.vertical, 2)
     }
@@ -188,7 +194,7 @@ private struct RouteMemberStatus: View {
         var parts: [String] = []
         if let name = member.provider.composition.subscriptionName { parts.append(name) } else if authentication.method != .unconfigured { parts.append(authentication.method.label) }
         if let label = authentication.accountLabel { parts.append("账户 …\(label)") }
-        if member.provider.composition.authenticationSource == .antigravityCli {
+        if usesAntigravity {
             parts.append("执行目标已配置")
         } else {
             parts.append(needsSignIn ? "需要登录" : authentication.method == .unconfigured ? "尚未配置认证" : authentication.method == .oAuth ? "已登录" : "")
@@ -196,12 +202,24 @@ private struct RouteMemberStatus: View {
         return parts.filter { !$0.isEmpty }.joined(separator: "，")
     }
     /// Why the gateway will not send this member new requests, as far as login and quota tell.
-    private var notice: String? {
+    private func notice(at time: Date) -> String? {
         if needsSignIn { return "登录前路由不会使用它" }
         if authentication.method == .unconfigured { return "配置认证前路由不会使用它" }
         let limits = member.provider.quotaLimits
         guard !limits.isEmpty else { return nil }
         if member.provider.composition.quotaSource == .arkCodingUsage && !member.provider.quotaAuthentication.bindingConfirmed { return "额度来源未确认关联，暂停派发" }
+        if usesAntigravity, let quota {
+            let mapped = quota.windows.filter(\.hasModelMapping)
+            if limits.contains(where: { limit in !mapped.contains { $0.id == limit.windowId } }) {
+                return "设有上限的额度组缺少模型映射，暂停派发"
+            }
+            if !mapped.contains(where: { $0.isCurrent(at: time) }) || windows.contains(where: { window in
+                !window.isCurrent(at: time) && limits.contains { $0.windowId == window.id }
+            }) {
+                return "设有使用上限，取得最新额度前暂停"
+            }
+            return nil
+        }
         if quota?.freshness != .fresh { return "设有使用上限，取得最新额度前暂停" }
         return nil
     }

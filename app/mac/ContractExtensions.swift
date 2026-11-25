@@ -195,12 +195,24 @@ extension QuotaWindowObservation {
     var period: TimeInterval? { windowMs.map { Double($0) / 1000 } }
     var observedAt: Date? { observedAtMs?.unixMsDate }
     func applies(to providerModelID: String) -> Bool { modelIds?.contains(providerModelID) ?? true }
+    var appliesToAnyModel: Bool { modelIds?.isEmpty != true }
+    var hasModelMapping: Bool { modelIds?.isEmpty == false }
+    /// Each Antigravity group can expire or reset independently.
+    func isCurrent(at time: Date) -> Bool {
+        guard let observedAt, let expiresAt = expiresAtMs?.unixMsDate else { return false }
+        return (0...100).contains(usedPercent) && observedAt <= time && expiresAt > time
+            && (resetsAt.map { $0 > time } ?? true)
+    }
     /// The window as a row names it: a period's window, or the limit itself.
     static func title(_ id: String) -> String {
-        id == "openrouter:keyLimit" ? "Key 花费上限" : "\(name(id))窗口"
+        if id == "openrouter:keyLimit" { return "Key 花费上限" }
+        let group = antigravityName(id)
+        return group == id ? "\(name(id))窗口" : group
     }
     /// A readable name for a window ID; Codex names its windows `window:<seconds>`.
     static func name(_ id: String) -> String {
+        let group = antigravityName(id)
+        if group != id { return group }
         switch id {
         case "ark:session": return "5 小时"
         case "ark:weekly": return "周"

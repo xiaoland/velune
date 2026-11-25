@@ -120,11 +120,13 @@ struct ComposerStatusLine: View {
     }
 
     private func accountSummary(short: Bool) -> String {
-        accounts.map { account in
+        let now = Date()
+        return accounts.map { account in
             let windows = account.windows.map { window in
                 let used = min(max(window.usedPercent, 0), 100)
                 let label = UsageFormat.label(Int((store.device.usageDisplay == .remaining ? 100 - used : used).rounded()), store.device.usageDisplay)
-                return (account.isRecorded && window.period == nil ? "限额" : QuotaWindowObservation.name(window.id)) + " " + label + (short ? "" : "，" + QuotaResetFormat.text(window.resetsAt))
+                let expired = account.quota.freshness == .fresh && !account.isCurrent(window, at: now) ? "（上次观测）" : ""
+                return (account.isRecorded && window.period == nil ? "限额" : QuotaWindowObservation.name(window.id)) + " " + label + expired + (short ? "" : "，" + QuotaResetFormat.text(window.resetsAt))
             }
             let balances = (account.quota.balances).map { $0.title + " " + $0.formatted }
             let credits = account.credits.map { short ? $0.compactValue : "credits 余额 \($0.detailValue)" }
@@ -171,7 +173,8 @@ struct StatusDetails: View {
         .frame(width: 380).frame(maxHeight: 600).fixedSize(horizontal: false, vertical: true)
     }
     private var details: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        let now = Date()
+        return VStack(alignment: .leading, spacing: 10) {
             Text("会话状态").uiFont(.headline)
             Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 6) {
                 if let tokens = status.usage.contextTokens {
@@ -216,7 +219,8 @@ struct StatusDetails: View {
                 if account.quota.available == false { Text(QuotaStatusText.limitedObservation).uiFont(.caption).foregroundStyle(.secondary) }
                 ForEach(Array(account.windows.enumerated()), id: \.offset) { _, window in
                     QuotaWindowRow(window: window, limit: account.limit(for: window.id),
-                                   fresh: account.quota.freshness == .fresh, display: quotaDisplay, showsModels: true, title: account.isRecorded && window.period == nil ? "限额" : nil)
+                                   fresh: account.isCurrent(window, at: now), display: quotaDisplay, showsModels: true,
+                                   title: account.isRecorded && window.period == nil ? "限额" : nil, showsExpiry: account.quota.freshness == .fresh)
                 }
                 ForEach(Array((account.quota.balances).enumerated()), id: \.offset) { _, balance in
                     QuotaBalanceRow(balance: balance, fresh: account.quota.freshness == .fresh)

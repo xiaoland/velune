@@ -187,7 +187,8 @@ final class ConversationNotifier {
     /// and condition; a later one replaces it.
     func observe(_ alert: QuotaAlert) {
         guard let application, let provider = application.providers.first(where: { $0.id == alert.providerId }) else { return }
-        let window = alert.windowId.map(QuotaWindowObservation.title) ?? ""
+        let usesAntigravity = provider.authenticationSource == .antigravityCli
+        let window = alert.windowId.map { usesAntigravity ? QuotaWindowObservation.antigravityName($0) : QuotaWindowObservation.title($0) } ?? ""
         let body: String
         switch alert.kind {
         case .capReached:
@@ -199,7 +200,7 @@ final class ConversationNotifier {
         }
         let content = UNMutableNotificationContent()
         content.title = provider.name
-        content.subtitle = "额度提醒"
+        content.subtitle = usesAntigravity ? "执行目标额度提醒" : "额度提醒"
         content.body = body
         let device = application.peerID ?? ""
         let request = UNNotificationRequest(identifier: "quota:\(device.utf8.count):\(device):\(alert.providerId):\(alert.kind):\(alert.windowId ?? "")", content: content, trigger: nil)

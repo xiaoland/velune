@@ -6,9 +6,12 @@ import VeluneBindings
 enum QuotaMetric: Hashable, Sendable {
     case window(id: String, modelIDs: [String]?)
     case balance(id: String, unit: String)
-    var title: String {
+    func title(antigravity: Bool) -> String {
         switch self {
-        case .window(let id, let models): return QuotaWindowObservation.title(id) + (models.map { "（仅 " + $0.joined(separator: "、") + "）" } ?? "")
+        case .window(let id, let models):
+            let name = antigravity ? QuotaWindowObservation.antigravityName(id) : QuotaWindowObservation.title(id)
+            guard let models, !models.isEmpty else { return name }
+            return name + "（仅 " + models.joined(separator: "、") + "）"
         case .balance(let id, let unit): return QuotaBalanceObservation.title(id: id, unit: unit)
         }
     }
@@ -51,15 +54,17 @@ struct QuotaHistorySheet: View {
     @State private var metric: QuotaMetric?
     @State private var selectedDate: Date?
     @State private var confirmingClear = false
+    @State private var loadToken = UUID()
     private static let binCount = 96
     private var provider: ProviderSummary? { store.providers.first { $0.id == providerID } }
+    private var usesAntigravity: Bool { provider?.authenticationSource == .antigravityCli }
     private var quota: QuotaObservation? { store.providerQuotas[providerID] }
     private var remaining: Bool { store.usageDisplay == .remaining }
     /// Current series first, in the order the provider reports them, then ones only history has.
     private var metrics: [QuotaMetric] {
         var all: [QuotaMetric] = (quota?.windows ?? []).map { .window(id: $0.id, modelIDs: $0.modelIds) } + (quota?.balances ?? []).map { .balance(id: $0.id, unit: $0.unit) }
         for observation in observations ?? [] {
-            for key in observation.values.keys.sorted(by: { $0.title < $1.title }) where !all.contains(key) { all.append(key) }
+            for key in observation.values.keys.sorted(by: { $0.title(antigravity: usesAntigravity) < $1.title(antigravity: usesAntigravity) }) where !all.contains(key) { all.append(key) }
         }
         return all
     }
@@ -108,14 +113,16 @@ struct QuotaHistorySheet: View {
             }
             HStack {
                 Picker("项目", selection: Binding(get: { current }, set: { metric = $0 })) {
-                    ForEach(metrics, id: \.self) { Text($0.title).tag(QuotaMetric?.some($0)) }
+                    ForEach(metrics, id: \.self) { Text($0.title(antigravity: usesAntigravity)).tag(QuotaMetric?.some($0)) }
                 }.disabled(metrics.isEmpty).frame(maxWidth: 320)
                 Spacer()
                 Picker("范围", selection: $range) { ForEach(QuotaHistoryRange.allCases) { Text($0.label).tag($0) } }.pickerStyle(.segmented).labelsHidden().fixedSize()
             }
             content.frame(maxWidth: .infinity, minHeight: 220, maxHeight: .infinity)
             summary
-            Text("只记录 Velune 读取到的额度：查看额度或经网关使用这个提供商时才会读取。空白时段表示没有观测，不代表额度没有变化。保留 30 天；更换认证后从新的记录开始。").formFooterStyle()
+            Text(usesAntigravity
+                 ? "按当前执行目标保留最近 30 天的额度观测。空白时段表示没有观测。在 agy 中换号后，可以刷新额度并清除旧历史。"
+                 : "只记录 Velune 读取到的额度：查看额度或经网关使用这个提供商时才会读取。空白时段表示没有观测，不代表额度没有变化。保留 30 天；更换认证后从新的记录开始。").formFooterStyle()
             HStack {
                 Button("清除历史…", role: .destructive) { confirmingClear = true }.disabled(observations?.isEmpty ?? true)
                 Spacer()
@@ -126,6 +133,13 @@ struct QuotaHistorySheet: View {
         .frame(width: 620, height: 480)
         .task(id: range) { load() }
         .onChange(of: quota?.observedAt) { _, _ in load() }
+        .onChange(of: provider?.executionBackend) { _, _ in
+            observations = nil
+            metric = nil
+            selectedDate = nil
+            confirmingClear = false
+            load()
+        }
         .confirmationDialog("清除这个提供商的额度历史？", isPresented: $confirmingClear) {
             Button("清除历史", role: .destructive) { store.clearQuotaHistory(providerID) { load() } }
         } message: { Text("只删除保留的观测记录；当前额度、认证和使用上限不受影响。") }
@@ -191,7 +205,11 @@ struct QuotaHistorySheet: View {
     }
     private func load() {
         failure = nil
+        let token = UUID()
+        let backend = provider?.executionBackend
+        loadToken = token
         store.readQuotaHistory(providerID, since: Date().addingTimeInterval(-range.duration)) { result in
+            guard loadToken == token, provider?.executionBackend == backend else { return }
             switch result {
             case .success(let values): observations = values
             case .failure(let error): failure = error.localizedDescription

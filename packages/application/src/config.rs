@@ -626,10 +626,9 @@ impl ProviderDefinition {
                         self.quota_source,
                         ProviderQuotaSource::None | ProviderQuotaSource::AntigravityCliUsage
                     )
-                    || !self.quota_limits.is_empty()
                 {
                     return Err(
-                        "Antigravity CLI 需要 Messages、Native 和 CLI 登录绑定，只支持其自带额度查询，服务地址与额度上限留空",
+                        "Antigravity CLI 需要 Messages、Native 和 CLI 登录绑定，只支持其自带额度查询，服务地址须留空",
                     );
                 }
             }

@@ -37,14 +37,14 @@ static class Quota
 
     // Detail is a window's use as the usage display shows it, its limit when
     // one is set, when it resets, and whether the observation is old.
-    public static string Detail(QuotaWindowObservation window, QuotaFreshness freshness, UsageDisplay usage, QuotaLimit? limit = null)
+    public static string Detail(QuotaWindowObservation window, QuotaFreshness freshness, UsageDisplay usage, QuotaLimit? limit = null, bool limitReached = false)
     {
         var used = Math.Clamp(window.UsedPercent, 0, 100);
         var remaining = usage == UsageDisplay.Remaining;
         var parts = new List<string> { remaining ? $"剩余 {100 - used:0.#}%" : $"已用 {used:0.#}%" };
         if (limit != null)
         {
-            parts.Add(Ceiling(limit.MaxUsedPercent, usage, false));
+            parts.Add(Ceiling(limit.MaxUsedPercent, usage, limitReached));
         }
         if (window.ResetAtMs is { } reset)
         {
@@ -103,4 +103,14 @@ static class Quota
     // to models names it, the others cover every model.
     public static bool Applies(QuotaWindowObservation window, string modelID) =>
         window.ModelIds?.Contains(modelID) ?? true;
+
+    public static bool HasModelMapping(QuotaWindowObservation window) =>
+        window.ModelIds is { Length: > 0 };
+
+    // Antigravity's reported groups can expire and reset independently.
+    public static bool IsCurrent(QuotaWindowObservation window, long now) =>
+        window.UsedPercent is >= 0 and <= 100
+        && window.ObservedAtMs is { } observed && observed <= now
+        && window.ExpiresAtMs is { } expires && expires > now
+        && (window.ResetAtMs is not { } reset || reset > now);
 }

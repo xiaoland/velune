@@ -7,6 +7,7 @@ mod pool;
 mod process;
 
 use crate::claude_code::AbortOnDrop;
+pub use acp::{Model, probe_models};
 pub use pool::AntigravityPool;
 use std::{process::Command, sync::Arc, time::Duration};
 use velune_ai::{

@@ -146,7 +146,7 @@ sealed class ProvidersPage : UserControl
         }
         else if (provider.ExecutionBackend is ExecutionBackend.AntigravityCli antigravity)
         {
-            parts.Add(antigravity.SshDestination is { } destination ? $"SSH {destination}（需改用本机 agy）" : "本机 agy 登录");
+            parts.Add(antigravity.SshDestination is { } destination ? $"SSH {destination}（需改用本机 agy）" : "本机 agy 执行目标");
         }
         else if (provider.Endpoint.Length > 0)
         {

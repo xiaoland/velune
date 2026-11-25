@@ -11,7 +11,7 @@ use velune_agent_runtime::{
     process::command,
 };
 use velune_ai::{NativeErrorKind, OperationFuture};
-use velune_ai_provider::antigravity::{Launch, Process};
+use velune_ai_provider::antigravity::{Launch, Process, probe_models};
 use velune_gateway::QuotaWindow;
 
 // Do not let an inherited Gemini key or Cloud configuration take precedence
@@ -51,6 +51,13 @@ const USAGE_SETTINGS: &str = r#"{
 }"#;
 const USAGE_AGENT: &str = "velune-usage";
 const VERSION_TIMEOUT: Duration = Duration::from_secs(5);
+const CATALOG_TIMEOUT: Duration = Duration::from_secs(15);
+const ACP_ARGS: &[&str] = &[
+    "acp",
+    "--process-per-session",
+    "--sandbox",
+    "--disable-telemetry",
+];
 const USAGE_TIMEOUT: Duration = Duration::from_secs(15);
 const SETTINGS_PATH: &str = ".gemini/antigravity-cli/settings.json";
 
@@ -126,12 +133,7 @@ impl Launcher {
             .ok_or(NativeErrorKind::InvalidInput)?
             .to_owned();
         let mut child = command(&self.binary);
-        child.args([
-            "acp",
-            "--process-per-session",
-            "--sandbox",
-            "--disable-telemetry",
-        ]);
+        child.args(ACP_ARGS);
         configure(&mut child, &workspace.path, "acp.log");
         let prepared = target
             .prepare(child, None)
@@ -153,13 +155,36 @@ impl Launcher {
         let workspace = tokio::task::spawn_blocking(move || Workspace::create(target, QUOTA_FILES))
             .await
             .map_err(|_| ())??;
-        let version = self.quota_command(&workspace, &["--version"])?;
+        let version = workspace
+            .target
+            .prepare_helper(self.quota_command(&workspace, &["--version"])?)
+            .map_err(|_| ())?;
         let version = execute_prepared_timeout(version, VERSION_TIMEOUT)
             .await
             .map_err(|_| ())?;
         if !antigravity_quota::supported_version(&version) {
             return Err(());
         }
+
+        // A successful session/new is the preflight for account-backed
+        // /usage. Authentication and prompts are never requested over ACP.
+        let acp = workspace
+            .target
+            .prepare(self.quota_command(&workspace, ACP_ARGS)?, None)
+            .map_err(|_| ())?;
+        let models = tokio::time::timeout(
+            CATALOG_TIMEOUT,
+            probe_models(Process {
+                command: acp.command,
+                input_prefix: acp.input_prefix,
+                cwd: workspace.path.to_str().ok_or(())?.to_owned(),
+                mcp_endpoint: String::new(),
+                guard: None,
+            }),
+        )
+        .await
+        .map_err(|_| ())?
+        .map_err(|_| ())?;
 
         let usage = self.quota_command(
             &workspace,
@@ -174,17 +199,14 @@ impl Launcher {
                 "12s",
             ],
         )?;
+        let usage = workspace.target.prepare_helper(usage).map_err(|_| ())?;
         let output = execute_prepared_timeout(usage, USAGE_TIMEOUT)
             .await
             .map_err(|_| ())?;
-        antigravity_quota::parse(&output, crate::local::unix_ms_now(), ttl_ms)
+        antigravity_quota::parse(&output, &models, crate::local::unix_ms_now(), ttl_ms)
     }
 
-    fn quota_command(
-        &self,
-        workspace: &Workspace,
-        args: &[&str],
-    ) -> Result<velune_agent_runtime::execution::PreparedCommand, ()> {
+    fn quota_command(&self, workspace: &Workspace, args: &[&str]) -> Result<Command, ()> {
         let mut child = if workspace.target.is_local() {
             let inherited = std::env::var_os("PATH").unwrap_or_default();
             let path = std::env::join_paths(
@@ -215,7 +237,7 @@ os.execv(sys.argv[1], sys.argv[1:])
         child
             .env("AGY_CLI_DISABLE_AUTO_UPDATE", "true")
             .env("BROWSER", workspace.path.join(BROWSER_GUARD));
-        workspace.target.prepare_helper(child).map_err(|_| ())
+        Ok(child)
     }
 }
 
@@ -379,9 +401,12 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn quota_checks_exact_cli_then_runs_only_the_isolated_usage_command() {
+    async fn quota_checks_exact_cli_then_preflights_acp_in_the_same_isolation() {
+        use serde_json::{Value, json};
+
         const SCRIPT: &str = include_str!("../tests/fixtures/antigravity-quota/fake-agy.sh");
         const REPORT: &str = include_str!("../tests/fixtures/antigravity-quota/usage.json");
+        const MODELS: &str = include_str!("../tests/fixtures/antigravity-quota/models.json");
         let fixture = Workspace::create(
             ExecutionTarget::Local,
             &[
@@ -391,29 +416,86 @@ mod tests {
             ],
         )
         .unwrap();
+        let legacy: Value = serde_json::from_str(MODELS).unwrap();
+        let reply = |message: Value| {
+            fs::write(fixture.path.join("session"), format!("{message}\n")).unwrap()
+        };
+        reply(json!({"jsonrpc":"2.0","id":2,"result":legacy}));
         let launcher = Launcher::new(fixture.path.join("agy").to_str().unwrap().to_owned(), None);
         let windows = launcher.quota_windows(60_000).await.unwrap();
         assert_eq!(windows.len(), 5);
+        let argon = windows
+            .iter()
+            .find(|window| window.id == "gemini-argon-wtu-weekly")
+            .unwrap();
+        assert_eq!(
+            argon.model_ids.as_deref().unwrap(),
+            ["gemini-4-argon-high", "gemini-4-argon-medium"]
+        );
         assert_eq!(
             fs::read_to_string(fixture.path.join("calls")).unwrap(),
-            "--version\n-p\n"
+            "--version\nacp\nsession/close\n-p\n"
         );
         let runs = fs::read_to_string(fixture.path.join("workspaces")).unwrap();
         let mut paths = runs.lines();
         let cwd = paths.next().unwrap();
-        assert_eq!(paths.next(), Some(cwd));
+        assert_eq!(paths.collect::<Vec<_>>(), [cwd, cwd]);
         assert_ne!(Path::new(cwd), fixture.path);
         assert!(!Path::new(cwd).exists());
 
+        let modern = json!({
+            "jsonrpc":"2.0","id":2,"result":{
+                "sessionId":"fixture-session",
+                "configOptions":[{
+                    "id":"model","category":"model","type":"select","currentValue":"gemini-4-hydrogen-medium",
+                    "options":[{"group":"gemini","name":"Gemini","options":[
+                        {"value":"gemini-4-hydrogen-medium","name":"Gemini 4 Hydrogen (Medium)"},
+                        {"value":"gemini-4-hydrogen-xhigh","name":"Gemini 4 Hydrogen (XHigh)"}
+                    ]}]
+                }]
+            }
+        });
+        reply(modern);
+        let windows = launcher.quota_windows(60_000).await.unwrap();
+        assert_eq!(
+            windows[0].model_ids.as_deref().unwrap(),
+            ["gemini-4-hydrogen-medium", "gemini-4-hydrogen-xhigh"]
+        );
+        assert!(windows[4].model_ids.as_deref().unwrap().is_empty());
+
+        reply(json!({"jsonrpc":"2.0","id":2,"result":{"sessionId":"fixture-session"}}));
+        let windows = launcher.quota_windows(60_000).await.unwrap();
+        assert!(windows.iter().all(|window| {
+            window
+                .model_ids
+                .as_deref()
+                .is_some_and(|ids| ids.is_empty())
+        }));
+
         let calls_path = fixture.path.join("calls");
-        for version in ["1.1.10", "1.5.9-beta", "agy 1.5.9", "1.5", "invalid"] {
+        for version in [
+            "1.1.11",
+            "1.4.9",
+            "1.5.9-beta",
+            "agy 1.5.9",
+            "1.5",
+            "invalid",
+        ] {
             fs::write(fixture.path.join("version"), version).unwrap();
             fs::write(&calls_path, "").unwrap();
             assert!(launcher.quota_windows(60_000).await.is_err());
             assert_eq!(fs::read_to_string(&calls_path).unwrap(), "--version\n");
         }
-        fs::write(fixture.path.join("version"), "1.1.11").unwrap();
+        fs::write(fixture.path.join("version"), "1.5.0").unwrap();
         fs::write(&calls_path, "").unwrap();
+        reply(
+            json!({"jsonrpc":"2.0","id":2,"error":{"code":-32000,"message":"Authentication required"}}),
+        );
+        assert!(launcher.quota_windows(60_000).await.is_err());
+        assert_eq!(fs::read_to_string(&calls_path).unwrap(), "--version\nacp\n");
+
+        fs::write(&calls_path, "").unwrap();
+        reply(json!({"jsonrpc":"2.0","id":2,"result":legacy}));
         // A valid prefix alone is insufficient when the complete payload is oversized.
         fs::write(
             fixture.path.join("report"),
@@ -421,7 +503,10 @@ mod tests {
         )
         .unwrap();
         assert!(launcher.quota_windows(60_000).await.is_err());
-        assert_eq!(fs::read_to_string(&calls_path).unwrap(), "--version\n-p\n");
+        assert_eq!(
+            fs::read_to_string(&calls_path).unwrap(),
+            "--version\nacp\nsession/close\n-p\n"
+        );
     }
 
     #[test]

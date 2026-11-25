@@ -45,16 +45,8 @@ struct Binding {
     antigravity: Option<AntigravityLauncher>,
 }
 impl Binding {
-    fn manual_only(&self) -> bool {
-        self.antigravity.is_some()
-    }
-
-    fn history_epoch(&self) -> Option<String> {
-        (!self.manual_only()).then(|| self.epoch())
-    }
-
-    /// Durable identity of the observed account binding. A new credential
-    /// or source is a separate history; it does not reveal the previous one.
+    /// History stays with the captured credential or external execution target.
+    /// The Antigravity ID includes the target digest from credential_reference.
     fn epoch(&self) -> String {
         use sha2::Digest;
         let digest = sha2::Sha256::digest(
@@ -154,6 +146,16 @@ fn now_ms() -> i64 {
 }
 fn fresh(entry: &Entry) -> bool {
     let now = now_ms();
+    if entry
+        .binding
+        .as_ref()
+        .is_some_and(|binding| binding.antigravity.is_some())
+    {
+        return entry
+            .windows
+            .iter()
+            .any(|window| antigravity_window_fresh(window, now));
+    }
     entry.observed_at_ms > 0
         && entry.observed_at_ms <= now
         && entry.expires_at_ms > now
@@ -406,6 +408,13 @@ impl SubscriptionQuota {
             })
             .collect();
         let mut state = self.state.lock().expect("quota state");
+        let State { entries, alerts, .. } = &mut *state;
+        alerts.retain(|alert| {
+            let key = (alert.gateway_id.clone(), alert.provider_id.clone());
+            let old = entries.get(&key).and_then(|entry| entry.binding.as_ref());
+            !old.is_some_and(|binding| binding.antigravity.is_some())
+                || desired.get(&key).is_some_and(|(binding, _)| binding.as_ref() == old)
+        });
         state.entries.retain(|key, entry| {
             if let Some((_, limits)) = desired.get(key) {
                 entry.limits = limits.clone();
@@ -434,7 +443,7 @@ impl SubscriptionQuota {
             .map(|((gateway, provider), (binding, _))| {
                 (
                     crate::quota_history::QuotaHistory::name(gateway, provider),
-                    binding.as_ref().and_then(Binding::history_epoch),
+                    binding.as_ref().map(Binding::epoch),
                 )
             })
             .collect();
@@ -561,7 +570,8 @@ impl SubscriptionQuota {
         self.query_binding(gateway_id, provider_id, refresh, None)
     }
 
-    /// The provider's explicit refresh action can read manual-only sources.
+    /// The provider's explicit refresh action also invalidates an Antigravity
+    /// observation if the CLI login may have changed outside Velune.
     pub(crate) fn refresh_provider(
         self: &Arc<Self>,
         gateway_id: &str,
@@ -585,7 +595,7 @@ impl SubscriptionQuota {
             .ok_or_else(|| crate::Error::invalid("provider id"))?
             .binding
             .as_ref()
-            .and_then(Binding::history_epoch);
+            .map(Binding::epoch);
         let points = match epoch {
             Some(epoch) => self
                 .history
@@ -668,13 +678,18 @@ impl SubscriptionQuota {
         }
         // A query renews observation demand; the scheduler does not renew its
         // own lease. Idle providers stop polling after the final caller leaves.
-        let manual_only = entry.binding.as_ref().is_some_and(Binding::manual_only);
-        let force = match refresh {
-            Refresh::IfDue => false,
-            Refresh::Forced => !manual_only,
-            Refresh::Explicit => true,
-        };
-        if renew_demand && !manual_only {
+        let antigravity = entry
+            .binding
+            .as_ref()
+            .is_some_and(|binding| binding.antigravity.is_some());
+        if antigravity && matches!(refresh, Refresh::Explicit) {
+            entry.expire_observation();
+            // A user may have switched the external login since the active
+            // read began. Let the worker discard its result and refresh again.
+            entry.resample |= entry.running;
+        }
+        let force = !matches!(refresh, Refresh::IfDue);
+        if renew_demand {
             entry.demand_until = Some(Instant::now() + Duration::from_secs(120));
         }
         let refresh_due = !fresh(entry)
@@ -689,8 +704,8 @@ impl SubscriptionQuota {
                 b.source != crate::config::ProviderQuotaSource::ArkCodingUsage || b.ark.is_some()
             })
             && !entry.running
-            && (force || (!manual_only && refresh_due && entry.retry_at <= Instant::now()));
-        if manual_only && force && !may_start && !entry.running {
+            && (force || (refresh_due && entry.retry_at <= Instant::now()));
+        if antigravity && force && !may_start && !entry.running {
             entry.problem = Some("额度读取暂时繁忙，请稍后重新点击刷新。".into());
         }
         if start {
@@ -794,12 +809,12 @@ impl SubscriptionQuota {
                     let observation = match result {
                         Ok(observation) => observation,
                         Err(()) => {
-                            if manual_only {
+                            if antigravity {
                                 entry.expire_observation();
                                 entry.problem = Some(if entry.observed_at_ms > 0 {
                                     "Antigravity 额度读取失败。上次观测仅供参考，请确认目标的 agy 登录后再试。"
                                 } else {
-                                    "Antigravity 额度读取失败。请确认该目标已登录，并使用支持 /usage 的 agy。"
+                                    "Antigravity 额度读取失败。请确认该目标的 agy 已登录，并使用 1.5.0 或更新的稳定版本。"
                                 }.into());
                             } else {
                                 // An early failure leaves the previous expiry intact.
@@ -811,12 +826,8 @@ impl SubscriptionQuota {
                     };
                     let (observed, expires) =
                         (observation.observed_at_ms, observation.expires_at_ms);
-                    let raised = if manual_only {
-                        BTreeMap::new()
-                    } else {
-                        alert_conditions(&observation, &entry.limits)
-                    };
-                    let history = binding.history_epoch().map(|epoch| (epoch, history_point(&observation)));
+                    let raised = alert_conditions(&observation, &entry.limits, antigravity);
+                    let point = history_point(&observation);
                     let fresh_alerts: Vec<_> = raised
                         .iter()
                         .filter(|(key, _)| !entry.alerting.contains(*key))
@@ -854,9 +865,7 @@ impl SubscriptionQuota {
                         }
                     }
                     drop(state);
-                    if let Some((epoch, point)) = history {
-                        service.history.record(&worker_key.0, &worker_key.1, &epoch, point);
-                    }
+                    service.history.record(&worker_key.0, &worker_key.1, &binding.epoch(), point);
                 });
             if spawned.is_err() {
                 state.inflight -= 1;
@@ -901,7 +910,7 @@ impl SubscriptionQuota {
                     .collect(),
                 balances: entry.balances.clone(),
                 available: entry.available,
-                refreshing: entry.running,
+                refreshing: entry.running || (antigravity && entry.resample),
                 problem: entry.problem.clone().or_else(|| {
                     entry
                         .binding
@@ -923,9 +932,7 @@ impl Drop for SubscriptionQuota {
 }
 impl QuotaSource for GatewayView {
     fn quota_exhausted(&self, provider_id: &str) {
-        if let Some(binding) = self.bindings.get(provider_id)
-            && !binding.binding.as_ref().is_some_and(Binding::manual_only)
-        {
+        if let Some(binding) = self.bindings.get(provider_id) {
             {
                 let mut state = self.service.state.lock().expect("quota state");
                 let Some(entry) = state
@@ -952,9 +959,6 @@ impl QuotaSource for GatewayView {
         let Some(binding) = self.bindings.get(provider_id) else {
             return QuotaSnapshot::Unknown;
         };
-        if binding.binding.as_ref().is_some_and(Binding::manual_only) {
-            return QuotaSnapshot::Unsupported;
-        }
         let Ok(status) = self.service.query_binding(
             &self.gateway_id,
             provider_id,
@@ -970,7 +974,7 @@ impl QuotaSource for GatewayView {
             return QuotaSnapshot::Unknown;
         }
         let status = status.observation;
-        let windows = status
+        let windows: Vec<QuotaWindow> = status
             .windows
             .into_iter()
             .map(|w| QuotaWindow {
@@ -983,6 +987,13 @@ impl QuotaSource for GatewayView {
                 expires_at_ms: w.expires_at_ms.expect("provider observation expiry"),
             })
             .collect();
+        if binding
+            .binding
+            .as_ref()
+            .is_some_and(|binding| binding.antigravity.is_some())
+        {
+            return antigravity_projection(windows);
+        }
         match status.freshness {
             QuotaFreshness::Fresh => QuotaSnapshot::Known {
                 windows,
@@ -997,6 +1008,41 @@ impl QuotaSource for GatewayView {
         }
     }
 }
+/// Keep mapped windows even if one has expired. The scheduler applies each
+/// window's own freshness and scope to the candidate model's saved limits.
+fn antigravity_projection(mut windows: Vec<QuotaWindow>) -> QuotaSnapshot {
+    windows.retain(antigravity_window_mapped);
+    if windows.is_empty() {
+        return QuotaSnapshot::Unknown;
+    }
+    let now = now_ms();
+    if windows
+        .iter()
+        .any(|window| antigravity_window_fresh(window, now))
+    {
+        QuotaSnapshot::Known {
+            windows,
+            available: None,
+        }
+    } else {
+        QuotaSnapshot::Stale {
+            windows,
+            available: None,
+        }
+    }
+}
+
+fn antigravity_window_mapped(window: &QuotaWindow) -> bool {
+    window.model_ids.as_ref().is_some_and(|ids| !ids.is_empty())
+}
+
+fn antigravity_window_fresh(window: &QuotaWindow, now: i64) -> bool {
+    window.observed_at_ms > 0
+        && window.observed_at_ms <= now
+        && window.expires_at_ms > now
+        && window.reset_at_ms.is_none_or(|reset| reset > now)
+}
+
 /// The observed use against an even spend over the window's period, at the
 /// time of the observation. The rate is the average since the period began.
 fn pace(window: &QuotaWindow) -> Option<QuotaPaceObservation> {
@@ -1035,6 +1081,7 @@ type AlertCondition = (QuotaAlertKind, Option<String>, Option<u8>);
 fn alert_conditions(
     observation: &Observation,
     limits: &[crate::config::QuotaLimit],
+    antigravity: bool,
 ) -> BTreeMap<String, AlertCondition> {
     let mut raised = BTreeMap::new();
     if observation.available == Some(false) {
@@ -1044,6 +1091,12 @@ fn alert_conditions(
         );
     }
     for window in &observation.windows {
+        if antigravity
+            && !(antigravity_window_mapped(window)
+                && antigravity_window_fresh(window, observation.observed_at_ms))
+        {
+            continue;
+        }
         let scope = window
             .model_ids
             .as_ref()
@@ -1136,7 +1189,13 @@ fn collect(
                     ProviderQuotaSource::AntigravityCliUsage => {
                         let windows = binding.antigravity.as_ref().ok_or(())?.quota_windows(ttl_ms).await?;
                         let observed = windows.first().ok_or(())?.observed_at_ms;
-                        let expires = windows.iter().map(|window| window.expires_at_ms).min().ok_or(())?;
+                        let expiries = windows.iter().map(|window| window.expires_at_ms);
+                        let expires = expiries
+                            .clone()
+                            .filter(|expiry| *expiry > observed)
+                            .min()
+                            .or_else(|| expiries.min())
+                            .ok_or(())?;
                         Ok(observation(windows, None, observed, expires))
                     },
                     crate::config::ProviderQuotaSource::ArkCodingUsage => { let observed=now_ms(); let windows=binding.ark.as_ref().ok_or(())?.windows(observed,ttl_ms).await?; let expires=windows.iter().map(|w|w.expires_at_ms).min().ok_or(())?; Ok(observation(windows,None,observed,expires)) },
@@ -1294,38 +1353,43 @@ mod configuration_tests {
     }
 
     #[test]
-    fn antigravity_quota_does_not_sample_until_explicit_refresh() {
+    fn antigravity_quota_samples_on_demand_and_expires_refresh_failures() {
         let home = std::env::temp_dir().join(crate::new_record_key());
         let gateway = antigravity_fixture(&home, "missing-agy");
         let service = SubscriptionQuota::new(home.clone(), &[gateway], Default::default());
         let gateway_id = "synthetic-gateway";
         let provider_id = "agy";
         let view = service.source(gateway_id);
-        for force in [false, true] {
-            let quota = service
-                .query(gateway_id, provider_id, force)
-                .unwrap()
-                .observation;
-            assert!(matches!(quota.freshness, QuotaFreshness::Unknown));
-            assert!(!quota.refreshing);
-            assert!(quota.problem.is_none());
+        {
+            let state = service.state.lock().unwrap();
+            assert_eq!(state.inflight, 0);
+            assert!(
+                state
+                    .entries
+                    .values()
+                    .next()
+                    .unwrap()
+                    .demand_until
+                    .is_none()
+            );
         }
-        assert!(matches!(
-            view.snapshot(provider_id),
-            QuotaSnapshot::Unsupported
-        ));
-        view.quota_exhausted(provider_id);
+        let initial = service
+            .query(gateway_id, provider_id, false)
+            .unwrap()
+            .observation;
+        assert!(matches!(initial.freshness, QuotaFreshness::Unknown));
+        assert!(initial.refreshing);
+        wait_for(|| service.state.lock().unwrap().inflight == 0);
         {
             let mut state = service.state.lock().unwrap();
-            assert_eq!(state.inflight, 0);
             let entry = state.entries.values_mut().next().unwrap();
-            assert!(entry.demand_until.is_none());
+            assert!(entry.demand_until.is_some());
             let now = now_ms();
             entry.observed_at_ms = now;
             entry.expires_at_ms = now + 60_000;
             entry.windows.push(QuotaWindow {
                 id: "fixture-group".into(),
-                model_ids: Some(Vec::new()),
+                model_ids: Some(vec!["fixture-model".into()]),
                 used_percent: 50.0,
                 reset_at_ms: None,
                 window_ms: None,
@@ -1333,13 +1397,16 @@ mod configuration_tests {
                 expires_at_ms: now + 60_000,
             });
         }
-        assert!(
-            service
-                .refresh_provider(gateway_id, provider_id)
-                .unwrap()
-                .observation
-                .refreshing
-        );
+        assert!(matches!(
+            view.snapshot(provider_id),
+            QuotaSnapshot::Known { .. }
+        ));
+        let checking = service
+            .refresh_provider(gateway_id, provider_id)
+            .unwrap()
+            .observation;
+        assert!(checking.refreshing);
+        assert!(matches!(checking.freshness, QuotaFreshness::Stale));
         wait_for(|| service.state.lock().unwrap().inflight == 0);
         let result = service
             .query(gateway_id, provider_id, false)
@@ -1356,7 +1423,7 @@ mod configuration_tests {
         );
         assert!(matches!(
             view.snapshot(provider_id),
-            QuotaSnapshot::Unsupported
+            QuotaSnapshot::Stale { .. }
         ));
         assert!(!home.exists());
     }
@@ -1375,27 +1442,129 @@ if [ "$1" = --version ]; then
     printf '1.5.9\n'
     exit 0
 fi
+if [ "$1" = acp ]; then
+    IFS= read -r request
+    printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1}}'
+    IFS= read -r request
+    printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"sessionId":"fixture-session","models":{"availableModels":[{"modelId":"gemini-4-hydrogen-medium","name":"Gemini 4 Hydrogen (Medium)"}]}}}'
+    exit 0
+fi
 [ "$1" = -p ] && [ "$2" = /usage ] || exit 1
 directory="${0%/*}"
+report=$(/bin/cat "$directory/report.json") || exit 1
 : > "$directory/started"
 while [ -f "$directory/hold" ]; do /bin/sleep 0.02; done
-/bin/cat "$directory/report.json"
+printf '%s\n' "$report"
 "#,
         )
         .unwrap();
         fs::set_permissions(&binary, fs::Permissions::from_mode(0o700)).unwrap();
+        let mut report: Value = serde_json::from_str(include_str!(
+            "../tests/fixtures/antigravity-quota/usage.json"
+        ))
+        .unwrap();
+        report["command"]["data"]["groups"][0]["buckets"][0]["remaining_fraction"] = 0.2.into();
+        let original_reset =
+            report["command"]["data"]["groups"][0]["buckets"][1]["reset_time"].clone();
+        report["command"]["data"]["groups"][0]["buckets"][1]["remaining_fraction"] = 0.0.into();
+        report["command"]["data"]["groups"][0]["buckets"][1]["reset_time"] =
+            "2000-01-01T00:00:00Z".into();
         fs::write(home.join("hold"), b"").unwrap();
         fs::write(
             home.join("report.json"),
-            include_str!("../tests/fixtures/antigravity-quota/usage.json"),
+            serde_json::to_vec(&report).unwrap(),
         )
         .unwrap();
 
-        let gateway = antigravity_fixture(&home, "fixture-agy");
+        let mut gateway = antigravity_fixture(&home, "fixture-agy");
+        gateway.providers[0]
+            .quota_limits
+            .push(crate::config::QuotaLimit {
+                window_id: "gemini-weekly".into(),
+                max_used_percent: 20,
+            });
         let service = SubscriptionQuota::new(home.clone(), &[gateway], Default::default());
         let gateway_id = "synthetic-gateway";
         let provider_id = "agy";
         let view = service.source(gateway_id);
+        assert!(
+            service
+                .query(gateway_id, provider_id, false)
+                .unwrap()
+                .observation
+                .refreshing
+        );
+        wait_for(|| home.join("started").exists());
+        // The explicit refresh supersedes the background sample that may
+        // come from a login that has just been switched outside Velune.
+        assert!(
+            service
+                .refresh_provider(gateway_id, provider_id)
+                .unwrap()
+                .observation
+                .refreshing
+        );
+        report["command"]["data"]["groups"][0]["buckets"][0]["remaining_fraction"] = 0.8.into();
+        fs::write(
+            home.join("report.json"),
+            serde_json::to_vec(&report).unwrap(),
+        )
+        .unwrap();
+        fs::remove_file(home.join("hold")).unwrap();
+        wait_for(|| {
+            !service
+                .history(gateway_id, provider_id, 0)
+                .unwrap()
+                .points
+                .is_empty()
+        });
+        let history = service.history(gateway_id, provider_id, 0).unwrap();
+        assert_eq!(history.points.len(), 1);
+        assert_eq!(history.points[0].windows.len(), 5);
+        let weekly = history.points[0]
+            .windows
+            .iter()
+            .find(|window| window.id == "gemini-weekly")
+            .unwrap();
+        assert_eq!(weekly.used_percent, 20.0);
+        assert!(matches!(
+            service
+                .query(gateway_id, provider_id, false)
+                .unwrap()
+                .observation
+                .freshness,
+            QuotaFreshness::Fresh
+        ));
+        assert!(
+            service
+                .state
+                .lock()
+                .unwrap()
+                .entries
+                .values()
+                .next()
+                .unwrap()
+                .expires_at_ms
+                > now_ms()
+        );
+        let alerts = service.alerts(0);
+        assert_eq!(alerts.alerts.len(), 1);
+        assert!(matches!(alerts.alerts[0].kind, QuotaAlertKind::CapReached));
+        assert_eq!(alerts.alerts[0].window_id.as_deref(), Some("gemini-weekly"));
+        assert!(matches!(
+            view.snapshot(provider_id),
+            QuotaSnapshot::Known { .. }
+        ));
+
+        fs::remove_file(home.join("started")).unwrap();
+        fs::write(home.join("hold"), b"").unwrap();
+        report["command"]["data"]["groups"][0]["buckets"][0]["remaining_fraction"] = 0.0.into();
+        report["command"]["data"]["groups"][0]["buckets"][1]["reset_time"] = original_reset;
+        fs::write(
+            home.join("report.json"),
+            serde_json::to_vec(&report).unwrap(),
+        )
+        .unwrap();
         assert!(
             service
                 .refresh_provider(gateway_id, provider_id)
@@ -1404,19 +1573,23 @@ while [ -f "$directory/hold" ]; do /bin/sleep 0.02; done
                 .refreshing
         );
         wait_for(|| home.join("started").exists());
-        assert!(
-            service
-                .refresh_provider(gateway_id, provider_id)
-                .unwrap()
-                .observation
-                .refreshing
-        );
         assert_eq!(service.state.lock().unwrap().inflight, 1);
 
         // An in-flight execution keeps its original binding when the saved
         // executable is changed. The late observation cannot cross that boundary.
         let changed = antigravity_fixture(&home, "other-agy");
         let next = service.fork_configuration(&[changed]);
+        let unread = next.alerts(0);
+        assert!(unread.alerts.is_empty());
+        assert_eq!(unread.cursor, alerts.cursor);
+        next.state
+            .lock()
+            .unwrap()
+            .entries
+            .values_mut()
+            .next()
+            .unwrap()
+            .retry_at = Instant::now() + Duration::from_secs(3600);
         let new = next
             .query(gateway_id, provider_id, false)
             .unwrap()
@@ -1441,33 +1614,217 @@ while [ -f "$directory/hold" ]; do /bin/sleep 0.02; done
                 .iter()
                 .any(|window| window.used_percent == 100.0)
         );
-        assert!(
-            old.windows
-                .iter()
-                .all(|window| window.model_ids == Some(Vec::new()))
-        );
         assert!(matches!(
             view.snapshot(provider_id),
-            QuotaSnapshot::Unsupported
+            QuotaSnapshot::Known { .. }
         ));
-        assert!(service.alerts(0).alerts.is_empty());
+        assert!(next.alerts(alerts.cursor).alerts.is_empty());
         assert!(
-            service
-                .history(gateway_id, provider_id, 0)
-                .unwrap()
-                .points
-                .is_empty()
-        );
-        assert!(!home.join("quota-history").exists());
-        assert!(
-            next.query(gateway_id, provider_id, true)
+            next.query(gateway_id, provider_id, false)
                 .unwrap()
                 .observation
                 .windows
                 .is_empty()
         );
+        assert!(
+            next.history(gateway_id, provider_id, 0)
+                .unwrap()
+                .points
+                .is_empty()
+        );
+        assert_eq!(
+            service
+                .history(gateway_id, provider_id, 0)
+                .unwrap()
+                .points
+                .len(),
+            1
+        );
         assert_eq!(next.state.lock().unwrap().inflight, 0);
         fs::remove_dir_all(&home).unwrap();
+    }
+
+    #[test]
+    fn antigravity_windows_drive_smart_and_protect_scoped_caps_at_gateway_ingress() {
+        use crate::config::{ModelRoute, ProviderModel, QuotaLimit, RoutingStrategy};
+        use reqwest::{Client, StatusCode};
+        use velune_gateway::{
+            CredentialResolutionError, CredentialResolver, CredentialTarget, ResolvedCredential,
+            Runner,
+        };
+
+        #[derive(Default)]
+        struct Attempts(Mutex<Vec<String>>);
+        impl CredentialResolver for Attempts {
+            fn resolve(
+                &self,
+                reference: String,
+                _: CredentialTarget,
+            ) -> velune_ai::OperationFuture<Result<ResolvedCredential, CredentialResolutionError>>
+            {
+                self.0.lock().unwrap().push(reference);
+                Box::pin(async { Err(CredentialResolutionError::Unavailable) })
+            }
+        }
+
+        let home = std::env::temp_dir().join(crate::new_record_key());
+        let mut gateway = antigravity_fixture(&home, "fixture-agy");
+        let model = |record_key: &str, provider_model_id: &str| ProviderModel {
+            record_key: record_key.into(),
+            provider_model_id: provider_model_id.into(),
+            nickname: record_key.into(),
+            icon: None,
+            context_window: None,
+            max_output_tokens: None,
+            reasoning_levels: None,
+            request_parameters: None,
+            pi_projection: None,
+        };
+        let mut backup = gateway.providers[0].clone();
+        backup.id = "second-agy".into();
+        backup.execution_backend = ExecutionBackend::AntigravityCli {
+            binary: "/fixture/agy".into(),
+            ssh_destination: Some("second-fixture-target".into()),
+        };
+        backup.models = vec![model("backup-model", "hydrogen")];
+        gateway.providers[0].models = vec![
+            model("primary-model", "hydrogen"),
+            model("other-model", "argon"),
+        ];
+        gateway.providers[0].quota_limits.push(QuotaLimit {
+            window_id: "gemini-weekly".into(),
+            max_used_percent: 70,
+        });
+        gateway.providers.push(backup);
+        gateway.routes.push(ModelRoute {
+            record_key: "smart-fixture".into(),
+            name: "Smart fixture".into(),
+            members: vec!["primary-model".into(), "backup-model".into()],
+            strategy: RoutingStrategy::Smart,
+            sticky: false,
+            weights: BTreeMap::new(),
+        });
+        gateway.validate().unwrap();
+        let service =
+            SubscriptionQuota::new(home, std::slice::from_ref(&gateway), Default::default());
+        let now = now_ms();
+        let sample = |id: &str, scope: &[&str], used_percent, expiry| QuotaWindow {
+            id: id.into(),
+            model_ids: Some(scope.iter().map(|id| (*id).to_owned()).collect()),
+            used_percent,
+            reset_at_ms: None,
+            window_ms: None,
+            observed_at_ms: now,
+            expires_at_ms: expiry,
+        };
+        for (provider, windows) in [
+            (
+                "agy",
+                vec![
+                    sample("gemini-weekly", &["hydrogen"], 65.0, now + 60_000),
+                    sample("argon-weekly", &["argon"], 95.0, now + 60_000),
+                    sample("unknown-group", &[], 100.0, now),
+                ],
+            ),
+            (
+                "second-agy",
+                vec![sample("gemini-weekly", &["hydrogen"], 20.0, now + 60_000)],
+            ),
+        ] {
+            let mut state = service.state.lock().unwrap();
+            let entry = state
+                .entries
+                .get_mut(&(gateway.id.clone(), provider.into()))
+                .unwrap();
+            entry.observed_at_ms = now;
+            entry.expires_at_ms = windows
+                .iter()
+                .map(|window| window.expires_at_ms)
+                .min()
+                .unwrap();
+            entry.windows = windows;
+            // Neither fixture target is contacted. These are recorded windows
+            // supplied to the production quota projection and gateway.
+            entry.retry_at = Instant::now() + Duration::from_secs(3600);
+        }
+        let primary_ref = gateway.providers[0].credential_reference();
+        let backup_ref = gateway.providers[1].credential_reference();
+        let attempts = Arc::new(Attempts::default());
+        let runner = Runner::start_with_scheduling(
+            gateway.to_gateway_config().unwrap(),
+            attempts.clone(),
+            BTreeMap::new(),
+            None,
+            Default::default(),
+            service.source(&gateway.id),
+            None,
+            Default::default(),
+        )
+        .unwrap();
+        let request = |model| {
+            Client::builder()
+                .no_proxy()
+                .timeout(Duration::from_secs(8))
+                .build()
+                .unwrap()
+                .post(format!("{}/messages", runner.endpoint()))
+                .bearer_auth(runner.token())
+                .header("anthropic-version", "2023-06-01")
+                .header("content-type", "application/json")
+                .body(
+                    serde_json::json!({
+                        "model": format!("velune/model/{model}"),
+                        "max_tokens": 64,
+                        "messages": [{"role":"user","content":"fixture"}],
+                    })
+                    .to_string(),
+                )
+                .send()
+        };
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            request("smart-fixture").await.unwrap();
+            let first = std::mem::take(&mut *attempts.0.lock().unwrap());
+            assert_eq!(first.first(), Some(&backup_ref));
+
+            let key = (gateway.id.clone(), "agy".into());
+            service
+                .state
+                .lock()
+                .unwrap()
+                .entries
+                .get_mut(&key)
+                .unwrap()
+                .windows[0]
+                .used_percent = 80.0;
+            assert_eq!(
+                request("primary-model").await.unwrap().status(),
+                StatusCode::TOO_MANY_REQUESTS
+            );
+            assert!(attempts.0.lock().unwrap().is_empty());
+
+            request("other-model").await.unwrap();
+            let other = std::mem::take(&mut *attempts.0.lock().unwrap());
+            assert_eq!(other, [primary_ref]);
+
+            service
+                .state
+                .lock()
+                .unwrap()
+                .entries
+                .get_mut(&key)
+                .unwrap()
+                .windows[0]
+                .model_ids = Some(Vec::new());
+            let missing = request("primary-model").await.unwrap();
+            assert_eq!(missing.status(), StatusCode::SERVICE_UNAVAILABLE);
+            let error: Value = serde_json::from_slice(&missing.bytes().await.unwrap()).unwrap();
+            assert_eq!(error["error"]["code"], "quota_window_missing");
+            assert!(attempts.0.lock().unwrap().is_empty());
+        });
     }
 
     #[test]

@@ -18,10 +18,12 @@ sealed class QuotaHistory
     // A series: a window's used share, or an amount in its unit.
     sealed record Metric(bool Window, string Id, string[]? Models, string Unit)
     {
-        public string Key => (Window ? "w" : "b") + "\n" + Id + "\n" + string.Join(",", Models ?? []) + "\n" + Unit;
-        public string Title => Window
-            ? Quota.Name(Id) + (Models is { Length: > 0 } scoped ? "（仅 " + string.Join("、", scoped) + "）" : "")
+        static string Scope(string[]? models) => models == null ? "-" : "+" + string.Concat(models.Select(model => $"{model.Length}:{model}"));
+        public string Key => (Window ? "w" : "b") + "\n" + Id + "\n" + Scope(Models) + "\n" + Unit;
+        public string Title(bool antigravity) => Window
+            ? (antigravity ? Quota.AntigravityName(Id) : Quota.Name(Id)) + (Models is { Length: > 0 } scoped ? "（仅 " + string.Join("、", scoped) + "）" : "")
             : Quota.BalanceName(Id) + "（" + Unit + "）";
+        public bool Matches(QuotaHistoryWindow window) => window.Id == Id && Scope(window.ModelIds) == Scope(Models);
     }
 
     sealed class Bin
@@ -79,7 +81,9 @@ sealed class QuotaHistory
         panel.Children.Add(ends);
         panel.Children.Add(summary);
         panel.Children.Add(state);
-        panel.Children.Add(Ui.Muted("只记录 Velune 读取到的额度：查看额度或经网关使用这个提供商时才会读取。空白时段表示没有观测，不代表额度没有变化。悬停柱条查看观测时间。保留 30 天；更换认证后从新的记录开始。"));
+        panel.Children.Add(Ui.Muted(provider.AuthenticationSource == ProviderAuthenticationSource.AntigravityCli
+            ? "按当前执行目标保留最近 30 天的额度观测。空白时段表示没有观测。在 agy 中换号后，可以刷新额度并清除旧历史。"
+            : "只记录 Velune 读取到的额度：查看额度或经网关使用这个提供商时才会读取。空白时段表示没有观测，不代表额度没有变化。悬停柱条查看观测时间。保留 30 天；更换认证后从新的记录开始。"));
         dialog = new ContentDialog
         {
             Title = "额度历史 · " + provider.Name,
@@ -199,7 +203,7 @@ sealed class QuotaHistory
         metricBox.Items.Clear();
         foreach (var metric in metrics)
         {
-            metricBox.Items.Add(metric.Title);
+            metricBox.Items.Add(metric.Title(provider.AuthenticationSource == ProviderAuthenticationSource.AntigravityCli));
         }
         metricBox.IsEnabled = metrics.Count > 0;
         var index = metrics.FindIndex(metric => metric.Key == chosen);
@@ -213,8 +217,7 @@ sealed class QuotaHistory
     {
         if (metric.Window)
         {
-            var models = string.Join(",", metric.Models ?? []);
-            var window = point.Windows.FirstOrDefault(kept => kept.Id == metric.Id && string.Join(",", kept.ModelIds ?? []) == models);
+            var window = point.Windows.FirstOrDefault(metric.Matches);
             return window == null ? null : remaining ? 100 - Math.Clamp(window.UsedPercent, 0, 100) : Math.Clamp(window.UsedPercent, 0, 100);
         }
         return point.Balances.FirstOrDefault(kept => kept.Id == metric.Id && kept.Unit == metric.Unit)?.Amount;

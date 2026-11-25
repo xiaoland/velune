@@ -11,17 +11,50 @@ use velune_ai::NativeErrorKind as Error;
 
 const MAX_LINE: u64 = 8 * 1024 * 1024;
 
-pub(super) struct Run {
+struct Connection {
     input: ChildStdin,
     messages: mpsc::Receiver<Value>,
     reader: tokio::task::AbortHandle,
-    pub ended: watch::Receiver<bool>,
-    bridge: mcp::Bridge,
+    ended: watch::Receiver<bool>,
     _child: ChildTree,
     _guard: Option<Box<dyn Send>>,
     next_id: u64,
+}
+
+pub(super) struct Run {
+    connection: Connection,
+    pub ended: watch::Receiver<bool>,
+    bridge: mcp::Bridge,
     session: String,
     model: String,
+}
+
+/// An exact model identifier and display name advertised by the ACP session.
+pub struct Model {
+    pub id: String,
+    pub name: String,
+}
+
+/// Check that an isolated ACP session can start and read its model catalog.
+/// No model selection, authentication method, MCP server, or prompt is submitted.
+/// The caller owns the timeout and the process's execution target.
+pub async fn probe_models(process: Process) -> Result<Vec<Model>, Error> {
+    let cwd = &process.cwd;
+    if cwd.is_empty() {
+        return Err(Error::InvalidInput);
+    }
+    let params = json!({"cwd": cwd, "mcpServers": []});
+    let mut connection = Connection::open(process).await?;
+    let init = connection.initialize().await?;
+    let (id, session) = connection.new_session(params).await?;
+    if init["agentCapabilities"]["sessionCapabilities"]["close"].is_object() {
+        let _ = tokio::time::timeout(
+            Duration::from_millis(150),
+            connection.rpc("session/close", json!({"sessionId": id})),
+        )
+        .await;
+    }
+    Ok(catalog(&session))
 }
 
 pub(super) enum Event {
@@ -40,16 +73,10 @@ impl Run {
     ) -> Result<Self, Error> {
         let has_tools = !tools.is_empty();
         let bridge = mcp::Bridge::start(tools).await?;
-        let Process {
-            command,
-            input_prefix,
-            cwd,
-            mcp_endpoint,
-            guard,
-        } = launch.prepare(bridge.endpoint.clone()).await?;
-        if cwd.is_empty()
+        let process = launch.prepare(bridge.endpoint.clone()).await?;
+        if process.cwd.is_empty()
             || (has_tools
-                && !reqwest::Url::parse(&mcp_endpoint).is_ok_and(|url| {
+                && !reqwest::Url::parse(&process.mcp_endpoint).is_ok_and(|url| {
                     url.scheme() == "http"
                         && url.host_str() == Some("127.0.0.1")
                         && url.port().is_some()
@@ -62,43 +89,12 @@ impl Run {
         {
             return Err(Error::InvalidInput);
         }
-        let mut child = ChildTree::spawn(command)?;
-        let input = child.child.stdin.take().ok_or(Error::Transport)?;
-        let stdout = child.child.stdout.take().ok_or(Error::Transport)?;
-        let (sender, messages) = mpsc::channel(64);
-        let (closed, ended) = watch::channel(false);
-        let reader = tokio::spawn(async move {
-            read_lines(stdout, sender).await;
-            closed.send_replace(true);
-        });
-        let mut run = Self {
-            input,
-            messages,
-            reader: reader.abort_handle(),
-            ended,
-            bridge,
-            _child: child,
-            _guard: guard,
-            next_id: 1,
-            session: String::new(),
-            model: model.to_owned(),
-        };
-        if !input_prefix.is_empty() {
-            run.write(&input_prefix).await?;
-        }
-        let init = run
-            .rpc(
-                "initialize",
-                json!({
-                    "protocolVersion": 1,
-                    "clientInfo": {"name": "velune", "version": env!("CARGO_PKG_VERSION")},
-                    "clientCapabilities": {}
-                }),
-            )
-            .await?;
-        if init["protocolVersion"].as_u64() != Some(1)
-            || (has_images
-                && init["agentCapabilities"]["promptCapabilities"]["image"].as_bool() != Some(true))
+        let mut params = json!({"cwd": process.cwd, "mcpServers": []});
+        let endpoint = has_tools.then(|| process.mcp_endpoint.clone());
+        let mut connection = Connection::open(process).await?;
+        let init = connection.initialize().await?;
+        if (has_images
+            && init["agentCapabilities"]["promptCapabilities"]["image"].as_bool() != Some(true))
             || (has_tools
                 && init["agentCapabilities"]["mcpCapabilities"]["http"].as_bool() == Some(false))
         {
@@ -106,26 +102,27 @@ impl Run {
         }
         // Antigravity enables HTTP MCP in its process-per-session worker. Its
         // outer initialize response can omit mcpCapabilities.
-        let mut params = json!({"cwd": cwd, "mcpServers": []});
-        if has_tools {
+        if let Some(endpoint) = endpoint {
             params["mcpServers"] = json!([{
                 "type": "http",
                 "name": "velune",
-                "url": mcp_endpoint,
-                "headers": [{"name": "Authorization", "value": run.bridge.authorization}],
+                "url": endpoint,
+                "headers": [{"name": "Authorization", "value": bridge.authorization}],
                 "_meta": {"antigravity": {"forceAllToolsEager": true}}
             }]);
         }
         if !system.is_empty() {
             params["_meta"]["antigravity"]["systemPrompt"]["append"] = json!(system);
         }
-        let session = run.rpc("session/new", params).await?;
-        run.session = session["sessionId"]
-            .as_str()
-            .filter(|id| !id.is_empty())
-            .ok_or(Error::ProviderFailure)?
-            .to_owned();
-        run.set_model(&session).await?;
+        let (session, settings) = connection.new_session(params).await?;
+        let mut run = Self {
+            ended: connection.ended.clone(),
+            connection,
+            bridge,
+            session,
+            model: model.to_owned(),
+        };
+        run.set_model(&settings).await?;
         Ok(run)
     }
 
@@ -137,6 +134,7 @@ impl Run {
             if option["currentValue"] != self.model {
                 let id = option["id"].as_str().ok_or(Error::ProviderFailure)?;
                 let result = self
+                    .connection
                     .rpc(
                         "session/set_config_option",
                         json!({"sessionId": self.session, "configId": id, "value": self.model}),
@@ -158,27 +156,29 @@ impl Run {
             return Err(Error::Unsupported);
         }
         if models["currentModelId"] != self.model {
-            self.rpc(
-                "session/set_model",
-                json!({"sessionId": self.session, "modelId": self.model}),
-            )
-            .await?;
+            self.connection
+                .rpc(
+                    "session/set_model",
+                    json!({"sessionId": self.session, "modelId": self.model}),
+                )
+                .await?;
         }
         Ok(())
     }
 
     pub async fn prompt(&mut self, content: Vec<Value>) -> Result<u64, Error> {
-        self.request(
-            "session/prompt",
-            json!({"sessionId": self.session, "prompt": content}),
-        )
-        .await
+        self.connection
+            .request(
+                "session/prompt",
+                json!({"sessionId": self.session, "prompt": content}),
+            )
+            .await
     }
 
     pub async fn cancel(&mut self) {
         let _ = tokio::time::timeout(
             Duration::from_millis(100),
-            self.send(&json!({
+            self.connection.send(&json!({
                 "jsonrpc": "2.0","method": "session/cancel","params": {"sessionId": self.session}
             })),
         )
@@ -190,7 +190,7 @@ impl Run {
             let msg = tokio::select! {
                 // Prefer a terminal or already emitted text to any queued tool calls.
                 biased;
-                msg = self.messages.recv() => msg.ok_or(Error::Transport)?,
+                msg = self.connection.messages.recv() => msg.ok_or(Error::Transport)?,
                 call = self.bridge.calls.recv() => {
                     return call.map(Event::Tool).ok_or(Error::Transport);
                 }
@@ -210,7 +210,7 @@ impl Run {
                     _ => {}
                 }
             } else if msg.get("method").is_some() {
-                self.handle_request(&msg).await?;
+                self.connection.handle_request(&msg).await?;
             } else if msg["id"] == prompt_id {
                 let result = result(msg)?;
                 let stop = result["stopReason"]
@@ -219,6 +219,66 @@ impl Run {
                 return Ok(Event::Stop(stop.to_owned()));
             }
         }
+    }
+}
+
+impl Connection {
+    async fn open(process: Process) -> Result<Self, Error> {
+        let Process {
+            command,
+            input_prefix,
+            guard,
+            ..
+        } = process;
+        let mut child = ChildTree::spawn(command)?;
+        let input = child.child.stdin.take().ok_or(Error::Transport)?;
+        let stdout = child.child.stdout.take().ok_or(Error::Transport)?;
+        let (sender, messages) = mpsc::channel(64);
+        let (closed, ended) = watch::channel(false);
+        let reader = tokio::spawn(async move {
+            read_lines(stdout, sender).await;
+            closed.send_replace(true);
+        });
+        let mut connection = Self {
+            input,
+            messages,
+            reader: reader.abort_handle(),
+            ended,
+            _child: child,
+            _guard: guard,
+            next_id: 1,
+        };
+        if !input_prefix.is_empty() {
+            connection.write(&input_prefix).await?;
+        }
+        Ok(connection)
+    }
+
+    async fn initialize(&mut self) -> Result<Value, Error> {
+        let init = self
+            .rpc(
+                "initialize",
+                json!({
+                    "protocolVersion": 1,
+                    "clientInfo": {"name": "velune", "version": env!("CARGO_PKG_VERSION")},
+                    "clientCapabilities": {}
+                }),
+            )
+            .await?;
+        if init["protocolVersion"].as_u64() != Some(1) {
+            return Err(Error::Unsupported);
+        }
+        Ok(init)
+    }
+
+    async fn new_session(&mut self, params: Value) -> Result<(String, Value), Error> {
+        let session = self.rpc("session/new", params).await?;
+        let id = session["sessionId"]
+            .as_str()
+            .filter(|id| !id.is_empty())
+            .ok_or(Error::ProviderFailure)?
+            .to_owned();
+        Ok((id, session))
     }
 
     async fn rpc(&mut self, method: &str, params: Value) -> Result<Value, Error> {
@@ -273,27 +333,51 @@ impl Run {
     }
 }
 
-impl Drop for Run {
+impl Drop for Connection {
     fn drop(&mut self) {
         self.reader.abort();
     }
 }
 
 fn model_option(value: &Value) -> Option<&Value> {
-    value["configOptions"]
-        .as_array()?
-        .iter()
-        .find(|option| option["category"] == "model" && option["type"] == "select")
+    value["configOptions"].as_array()?.iter().find(|option| {
+        option["type"] == "select"
+            && (option["category"] == "model"
+                || (option["category"].is_null() && option["id"] == "model"))
+    })
+}
+
+fn choices(options: &Value) -> impl Iterator<Item = &Value> {
+    options.as_array().into_iter().flatten().flat_map(|entry| {
+        entry["options"]
+            .as_array()
+            .map(Vec::as_slice)
+            .unwrap_or_else(|| std::slice::from_ref(entry))
+    })
 }
 
 fn contains_option(options: &Value, model: &str) -> bool {
-    options.as_array().is_some_and(|entries| {
-        entries.iter().any(|entry| {
-            entry["value"] == model
-                || entry["options"]
-                    .as_array()
-                    .is_some_and(|group| group.iter().any(|option| option["value"] == model))
-        })
+    choices(options).any(|option| option["value"] == model)
+}
+
+fn catalog(session: &Value) -> Vec<Model> {
+    if let Some(option) = model_option(session) {
+        return choices(&option["options"])
+            .filter_map(|entry| catalog_entry(&entry["value"], &entry["name"]))
+            .collect();
+    }
+    session["models"]["availableModels"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| catalog_entry(&entry["modelId"], &entry["name"]))
+        .collect()
+}
+
+fn catalog_entry(id: &Value, name: &Value) -> Option<Model> {
+    Some(Model {
+        id: id.as_str()?.to_owned(),
+        name: name.as_str().unwrap_or_default().to_owned(),
     })
 }
 

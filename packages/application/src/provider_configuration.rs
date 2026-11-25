@@ -492,7 +492,11 @@ mod antigravity_tests {
             window_id: "fixture".into(),
             max_used_percent: 95,
         });
-        assert!(save(&mut gateways.clone(), limited).is_err());
+        save(&mut gateways, limited).unwrap();
+        assert_eq!(
+            gateways[0].to_gateway_config().unwrap().providers[0].quota_limits[0].window_id,
+            "fixture",
+        );
 
         provider.execution_backend = ExecutionBackend::Http;
         provider.endpoint = "https://quota-fixture.invalid".into();

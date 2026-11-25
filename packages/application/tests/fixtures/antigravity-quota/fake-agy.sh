@@ -12,17 +12,34 @@ test "$(command -v xdg-open)" = "${BROWSER%/*}/xdg-open"
 if "$BROWSER"; then
     exit 30
 fi
-if test -t 0 || IFS= read -r unexpected; then
-    exit 31
-fi
 test -f .gemini/antigravity-cli/settings.json
 test -f .agents/agents/velune-usage/agent.md
 
+test ! -t 0
+if test "$1" != acp && IFS= read -r unexpected; then
+    exit 31
+fi
 case "$1" in
     --version)
         shift
         test "$1" = --gemini-dir && test "$3" = --log-file || exit 32
         cat "$fixture/version"
+        ;;
+    acp)
+        shift
+        test "$1" = --process-per-session && test "$2" = --sandbox || exit 38
+        test "$3" = --disable-telemetry && test "$4" = --gemini-dir || exit 39
+        IFS= read -r frame
+        case "$frame" in *'"id":1'*'"method":"initialize"'*) ;; *) exit 40 ;; esac
+        printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentCapabilities":{"sessionCapabilities":{"close":{}}}}}'
+        IFS= read -r frame
+        case "$frame" in *'"id":2'*'"method":"session/new"'*'"mcpServers":[]'*) ;; *) exit 41 ;; esac
+        cat "$fixture/session"
+        if IFS= read -r frame; then
+            case "$frame" in *'"id":3'*'"method":"session/close"'*) ;; *) exit 42 ;; esac
+            printf '%s\n' 'session/close' >> "$fixture/calls"
+            printf '%s\n' '{"jsonrpc":"2.0","id":3,"result":{}}'
+        fi
         ;;
     -p)
         shift

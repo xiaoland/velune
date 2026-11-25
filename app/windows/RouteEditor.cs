@@ -26,7 +26,7 @@ sealed class RouteEditor : UserControl
     readonly Button save = new() { Content = "保存", Style = Ui.Style("AccentButtonStyle") };
     readonly List<string> members;
     readonly Dictionary<string, uint> weights;
-    readonly Dictionary<string, QuotaObservation> quotas = [];
+    readonly Dictionary<string, (ExecutionBackend Target, QuotaObservation Observation)> quotas = [];
     readonly List<MemberCard> cards = [];
     readonly DispatcherTimer timer = new();
     bool reading;
@@ -254,14 +254,14 @@ sealed class RouteEditor : UserControl
         var soon = false;
         var providers = members.Select(page.Member).Where(member => member != null).Select(member => member!.Value.Provider)
             .Where(provider => provider.QuotaSource != ProviderQuotaSource.None && provider.Authentication.Configured
-                && provider.AuthenticationSource != ProviderAuthenticationSource.AntigravityCli)
+                && provider.ExecutionBackend is not ExecutionBackend.AntigravityCli { SshDestination: not null })
             .DistinctBy(provider => provider.Id).ToList();
         foreach (var provider in providers)
         {
             try
             {
                 var status = await Task.Run(() => page.Core.Local.ProviderQuota(ProvidersPage.DefaultGateway, provider.Id).Observation);
-                quotas[provider.Id] = status;
+                quotas[provider.Id] = (provider.ExecutionBackend, status);
                 Problems.Recovered(Problems.Key("quota", Device.Local, provider.Id));
                 soon |= status.Refreshing || status.Windows.Length == 0 && status.Freshness == QuotaFreshness.Unknown;
             }
@@ -427,7 +427,8 @@ sealed class RouteEditor : UserControl
             var (provider, model) = member;
             var authentication = provider.Authentication;
             var reasons = new List<string>();
-            if (provider.ExecutionBackend is ExecutionBackend.AntigravityCli antigravity)
+            var antigravity = provider.ExecutionBackend as ExecutionBackend.AntigravityCli;
+            if (antigravity != null)
             {
                 if (antigravity.SshDestination == null)
                 {
@@ -458,24 +459,41 @@ sealed class RouteEditor : UserControl
                 }
             }
             var limited = provider.QuotaLimits.Length > 0;
-            if (provider.AuthenticationSource != ProviderAuthenticationSource.AntigravityCli
-                && editor.quotas.TryGetValue(provider.Id, out var quota))
+            if (editor.quotas.TryGetValue(provider.Id, out var read) && read.Target == provider.ExecutionBackend)
             {
-                foreach (var window in quota.Windows.Where(window => Quota.Applies(window, model.ProviderModelId)))
+                var quota = read.Observation;
+                var mapped = antigravity == null ? quota.Windows : quota.Windows.Where(Quota.HasModelMapping).ToArray();
+                var applicable = mapped.Where(window => Quota.Applies(window, model.ProviderModelId)).ToArray();
+                var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                foreach (var window in applicable)
                 {
                     var limit = provider.QuotaLimits.FirstOrDefault(saved => saved.WindowId == window.Id);
-                    status.Children.Add(Ui.Text(Quota.Name(window.Id) + "：" + Quota.Detail(window, quota.Freshness, editor.page.Usage, limit),
-                        Quota.Short(window, quota.Freshness) ? "CautionTextStyle" : "MutedTextStyle"));
+                    var name = antigravity != null ? Quota.AntigravityName(window.Id) : Quota.Name(window.Id);
+                    var freshness = antigravity == null ? quota.Freshness
+                        : Quota.IsCurrent(window, now) ? QuotaFreshness.Fresh : QuotaFreshness.Stale;
+                    var reached = antigravity != null && freshness == QuotaFreshness.Fresh
+                        && limit != null && window.UsedPercent >= limit.MaxUsedPercent;
+                    status.Children.Add(Ui.Text(name + "：" + Quota.Detail(window, freshness, editor.page.Usage, limit, reached),
+                        reached || Quota.Short(window, freshness) ? "CautionTextStyle" : "MutedTextStyle"));
                 }
-                foreach (var balance in quota.Balances)
+                if (antigravity == null)
                 {
-                    status.Children.Add(Ui.Muted(Quota.BalanceName(balance.Id) + "：" + Quota.Amount(balance.Amount, balance.Unit)));
+                    foreach (var balance in quota.Balances)
+                    {
+                        status.Children.Add(Ui.Muted(Quota.BalanceName(balance.Id) + "：" + Quota.Amount(balance.Amount, balance.Unit)));
+                    }
                 }
-                if (quota.Available == false)
+                if (antigravity == null && quota.Available == false)
                 {
                     status.Children.Add(Ui.Muted(Quota.LimitedObservation));
                 }
-                if (limited && quota.Freshness != QuotaFreshness.Fresh)
+                if (antigravity != null && provider.QuotaLimits.Any(limit => !mapped.Any(window => window.Id == limit.WindowId)))
+                {
+                    reasons.Add("设有上限的额度组缺少模型映射，暂停派发。");
+                }
+                else if (limited && (antigravity == null ? quota.Freshness != QuotaFreshness.Fresh
+                    : !mapped.Any(window => Quota.IsCurrent(window, now)) || applicable.Any(window =>
+                        !Quota.IsCurrent(window, now) && provider.QuotaLimits.Any(limit => limit.WindowId == window.Id))))
                 {
                     reasons.Add("设有使用上限而缺少最新额度，路由暂不使用它。");
                 }
