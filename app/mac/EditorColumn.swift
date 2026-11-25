@@ -70,7 +70,7 @@ struct EditorColumn: NSViewRepresentable {
 }
 
 /// The editor area above, the bottom dock area below at a height of its own.
-@MainActor final class BottomSplitView: NSSplitView, NSSplitViewDelegate {
+@MainActor final class BottomSplitView: NSSplitView {
     var bottomHeight: CGFloat = 220
     var bottomMinimum: CGFloat = 0
     var resized: ((Double) -> Void)?
@@ -78,12 +78,18 @@ struct EditorColumn: NSViewRepresentable {
     /// The editor area keeps at least this much.
     private static let editorMinimum: CGFloat = 200
     private var laidOutCount = 0
+    /// Not the split view itself: see `SplitViewRules`.
+    private lazy var rules = SplitViewRules(
+        minimum: { [unowned self] _ in min(Self.editorMinimum, max(0, bounds.height - dividerThickness - bottomMinimum)) },
+        maximum: { [unowned self] _ in max(0, bounds.height - dividerThickness - bottomMinimum) },
+        effectiveRect: { $0.insetBy(dx: 0, dy: -PaneSplitView.reach) },
+        adjusts: { [unowned self] view in view === subviews.first })
 
     override init(frame: NSRect) {
         super.init(frame: frame)
         isVertical = false
         dividerStyle = .thin
-        delegate = self
+        delegate = rules
     }
 
     @available(*, unavailable)
@@ -107,7 +113,8 @@ struct EditorColumn: NSViewRepresentable {
             editor.frame = bounds
             return
         }
-        let bottom = min(effectiveHeight, bounds.height)
+        // The views and the divider always fill the bounds exactly, however short the column is.
+        let bottom = min(effectiveHeight, max(0, bounds.height - dividerThickness))
         let top = max(0, bounds.height - bottom - dividerThickness)
         editor.frame = NSRect(x: 0, y: 0, width: bounds.width, height: top)
         subviews[1].frame = NSRect(x: 0, y: top + dividerThickness, width: bounds.width, height: bottom)
@@ -129,22 +136,6 @@ struct EditorColumn: NSViewRepresentable {
         let edge = subviews[0].frame.maxY
         return point.y >= edge - PaneSplitView.reach && point.y <= edge + dividerThickness + PaneSplitView.reach
     }
-
-    // MARK: NSSplitViewDelegate
-
-    func splitView(_ splitView: NSSplitView, constrainMinCoordinate proposedMinimumPosition: CGFloat, ofSubviewAt dividerIndex: Int) -> CGFloat {
-        min(Self.editorMinimum, max(0, bounds.height - dividerThickness - bottomMinimum))
-    }
-
-    func splitView(_ splitView: NSSplitView, constrainMaxCoordinate proposedMaximumPosition: CGFloat, ofSubviewAt dividerIndex: Int) -> CGFloat {
-        max(0, bounds.height - dividerThickness - bottomMinimum)
-    }
-
-    func splitView(_ splitView: NSSplitView, effectiveRect proposedEffectiveRect: NSRect, forDrawnRect drawnRect: NSRect, ofDividerAt dividerIndex: Int) -> NSRect {
-        drawnRect.insetBy(dx: 0, dy: -PaneSplitView.reach)
-    }
-
-    func splitView(_ splitView: NSSplitView, shouldAdjustSizeOfSubview view: NSView) -> Bool { view === subviews.first }
 }
 
 /// Several tools of one dock area in a native split: side by side in the

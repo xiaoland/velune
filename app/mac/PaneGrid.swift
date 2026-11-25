@@ -119,7 +119,7 @@ struct PaneGrid: NSViewRepresentable {
 /// their shares of its length as it resizes; a divider dragged writes the
 /// new shares once it is let go, and a double click on one shares the room
 /// equally again.
-@MainActor final class PaneSplitView: NSSplitView, NSSplitViewDelegate {
+@MainActor final class PaneSplitView: NSSplitView {
     var fractions: [Double]
     var path: [Int] = []
     var resized: (([Int], [Double]) -> Void)?
@@ -127,6 +127,11 @@ struct PaneGrid: NSViewRepresentable {
     private let minimumLength: CGFloat
     /// The divider takes the pointer this far either side of its line.
     static let reach: CGFloat = 4
+    private lazy var rules = SplitViewRules(
+        minimum: { [unowned self] in minimumCoordinate(ofSubviewAt: $0) },
+        maximum: { [unowned self] in maximumCoordinate(ofSubviewAt: $0) },
+        effectiveRect: { [unowned self] rect in isVertical ? rect.insetBy(dx: -Self.reach, dy: 0) : rect.insetBy(dx: 0, dy: -Self.reach) },
+        adjusts: { _ in true })
 
     init(axis: PaneSplit.Axis, fractions: [Double], minimumLength: CGFloat = 320) {
         self.fractions = fractions
@@ -134,7 +139,7 @@ struct PaneGrid: NSViewRepresentable {
         super.init(frame: .zero)
         isVertical = axis == .horizontal
         dividerStyle = .thin
-        delegate = self
+        delegate = rules
     }
 
     @available(*, unavailable)
@@ -187,14 +192,14 @@ struct PaneGrid: NSViewRepresentable {
         return nil
     }
 
-    // MARK: NSSplitViewDelegate
+    // MARK: Divider limits
 
-    func splitView(_ splitView: NSSplitView, constrainMinCoordinate proposedMinimumPosition: CGFloat, ofSubviewAt dividerIndex: Int) -> CGFloat {
+    private func minimumCoordinate(ofSubviewAt dividerIndex: Int) -> CGFloat {
         let frame = subviews[dividerIndex].frame
         return (isVertical ? frame.minX : frame.minY) + min(minimumLength, pairLength(dividerIndex) / 2)
     }
 
-    func splitView(_ splitView: NSSplitView, constrainMaxCoordinate proposedMaximumPosition: CGFloat, ofSubviewAt dividerIndex: Int) -> CGFloat {
+    private func maximumCoordinate(ofSubviewAt dividerIndex: Int) -> CGFloat {
         let frame = subviews[dividerIndex + 1].frame
         return (isVertical ? frame.maxX : frame.maxY) - dividerThickness - min(minimumLength, pairLength(dividerIndex) / 2)
     }
@@ -203,10 +208,38 @@ struct PaneGrid: NSViewRepresentable {
         let a = subviews[dividerIndex].frame, b = subviews[dividerIndex + 1].frame
         return isVertical ? a.width + b.width : a.height + b.height
     }
+}
 
-    func splitView(_ splitView: NSSplitView, effectiveRect proposedEffectiveRect: NSRect, forDrawnRect drawnRect: NSRect, ofDividerAt dividerIndex: Int) -> NSRect {
-        isVertical ? drawnRect.insetBy(dx: -Self.reach, dy: 0) : drawnRect.insetBy(dx: 0, dy: -Self.reach)
+/// A split view's delegate, kept apart from the split view. AppKit's split
+/// view passes responder-chain questions (`respondsToSelector:`, asked of
+/// every responder as a command or a menu item is validated) on to its
+/// delegate, so a split view that is its own delegate asks itself again
+/// without end and the application crashes.
+@MainActor final class SplitViewRules: NSObject, NSSplitViewDelegate {
+    private let minimum: (Int) -> CGFloat
+    private let maximum: (Int) -> CGFloat
+    private let effectiveRect: (NSRect) -> NSRect
+    private let adjusts: (NSView) -> Bool
+
+    init(minimum: @escaping (Int) -> CGFloat, maximum: @escaping (Int) -> CGFloat,
+         effectiveRect: @escaping (NSRect) -> NSRect, adjusts: @escaping (NSView) -> Bool) {
+        self.minimum = minimum
+        self.maximum = maximum
+        self.effectiveRect = effectiveRect
+        self.adjusts = adjusts
     }
 
-    func splitView(_ splitView: NSSplitView, shouldAdjustSizeOfSubview view: NSView) -> Bool { true }
+    func splitView(_ splitView: NSSplitView, constrainMinCoordinate proposedMinimumPosition: CGFloat, ofSubviewAt dividerIndex: Int) -> CGFloat {
+        minimum(dividerIndex)
+    }
+
+    func splitView(_ splitView: NSSplitView, constrainMaxCoordinate proposedMaximumPosition: CGFloat, ofSubviewAt dividerIndex: Int) -> CGFloat {
+        maximum(dividerIndex)
+    }
+
+    func splitView(_ splitView: NSSplitView, effectiveRect proposedEffectiveRect: NSRect, forDrawnRect drawnRect: NSRect, ofDividerAt dividerIndex: Int) -> NSRect {
+        effectiveRect(drawnRect)
+    }
+
+    func splitView(_ splitView: NSSplitView, shouldAdjustSizeOfSubview view: NSView) -> Bool { adjusts(view) }
 }

@@ -37,6 +37,9 @@ import SwiftUI
         let heights = root.subviews.map(\.frame.height)
         precondition(!root.isVertical && abs(heights[0] / (heights[0] + heights[1]) - 0.75) < 0.01, "分栏按布局比例排布：\(heights)")
         precondition(grid.paneView(second) === secondView, "调整比例不重建面板视图")
+        host.contentView = nil
+        for tab in model.allTabs { tab.close() }
+        model.list.close()
         note("PASS pane grid: group views survive splits and closes, closed groups leave, shares follow the layout")
     }
     do {
@@ -98,6 +101,9 @@ import SwiftUI
         model.tools.hide(.outline); model.tools.hide(.agents); model.tools.hide(.backgroundTasks)
         apply()
         precondition(column.bottomArea == nil && column.grid.paneView(model.focusedPaneID) === pane, "底区收起后面板视图不变")
+        host.contentView = nil
+        for tab in model.allTabs { tab.close() }
+        model.list.close()
         note("PASS editor column: bottom area beside the same panes, keeps its height, tools keep their views")
     }
 
@@ -439,4 +445,57 @@ import SwiftUI
     precondition(successes.last == ["deleted"], "部分删除成功不能清除失败项选择")
     withExtendedLifetime(watch) {}
     FileHandle.standardError.write(Data("PASS management cancellation: waiting effects skipped, active race rejected, later work proceeds, cancelled selection retained\n".utf8))
+}
+
+/// The whole window shell, as a new tab opens and closes. Run after the
+/// timed checks: a full window's views keep the main thread busy a while.
+@MainActor func workspaceShellChecks() {
+    func note(_ text: String) { FileHandle.standardError.write(Data((text + "\n").utf8)) }
+    let device = DeviceStore(preview: true)
+    // The whole window shell, as a new tab opens and closes. Commands and
+    // menu validation ask every responder up the chain whether it handles
+    // an action; a split view that is its own delegate answers by asking
+    // itself again, without end.
+    let model = ConversationWindowModel(application: device, kind: .workspace)
+    model.start(restoring: nil, seed: WindowSeed(conversationID: "sample-0"))
+    let root = VeluneRootView(window: model, store: model.list, tab: model.focused,
+                              focused: model.focused.store, previewEmpty: false, previewSettings: false)
+    let host = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1200, height: 800),
+                        styleMask: [.titled, .closable, .resizable, .fullSizeContentView], backing: .buffered, defer: true)
+    host.isReleasedWhenClosed = false; host.isRestorable = false
+    let shell = WorkspaceShell(window: host, model: model, content: root, previewEmpty: false)
+    model.tools.move(.outline, to: .docked(.bottom))
+    func settle() { for _ in 0..<5 { shell.split.view.layoutSubtreeIfNeeded(); RunLoop.main.run(until: Date().addingTimeInterval(0.05)) } }
+    settle()
+    func descendants(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap(descendants) }
+    let actions = ["performClose:", "toggleSidebar:", "undo:", "velune_unhandledAction:"].map(NSSelectorFromString)
+    func askResponders() -> Int {
+        var asked = 0
+        for view in descendants(host.contentView!) {
+            for action in actions { _ = view.responds(to: action) }
+            asked += 1
+        }
+        return asked
+    }
+    precondition(askResponders() > 0)
+    let tabs = model.tabCount
+    model.openInNewTab()
+    settle()
+    precondition(model.tabCount == tabs + 1, "新建标签")
+    _ = askResponders()
+    model.closeTab(model.focusedEditor.id)
+    settle()
+    precondition(model.tabCount == tabs, "关闭新建的标签")
+    let asked = askResponders()
+    precondition(descendants(host.contentView!).allSatisfy { ($0 as? NSSplitView).map { $0.delegate !== $0 } ?? true },
+                 "分栏视图不能是自己的代理：AppKit 会把响应链询问转给代理而无限递归")
+    // Nothing of this window outlives it into the checks that follow.
+    host.toolbar = nil
+    host.contentViewController = nil
+    host.close()
+    for tab in model.allTabs { tab.close() }
+    model.list.close()
+    RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+    withExtendedLifetime(shell) {}
+    note("PASS window shell: a new tab opens and closes; \(asked) views answer responder-chain queries without recursion")
 }

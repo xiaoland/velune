@@ -248,6 +248,7 @@ import Foundation
                  "系统重开的seeded窗口仍恢复有效scene，不退回最初导航")
     precondition(!NSApp.isActive && NSApp.activationPolicy() == .prohibited)
     note("PASS actual window start validates scene device/kind/structure before latest fallback; valid scenes and seeded-window recovery retain precedence")
+    workspaceShellChecks()
 }
 
 /// Hold the device queue before startup. Tab queues can read the addressed
@@ -265,10 +266,10 @@ import Foundation
     let otherID = "review:" + id.drop(while: { $0 != ":" }).dropFirst()
     let release = DispatchSemaphore(value: 0)
     device.performOnQueue { precondition(release.wait(timeout: .now() + 60) == .success) }
-    func wait(_ condition: () -> Bool) {
-        let deadline = Date().addingTimeInterval(25)
+    func wait(_ step: String, _ condition: () -> Bool) {
+        let started = Date(), deadline = started.addingTimeInterval(25)
         while !condition(), Date() < deadline { RunLoop.main.run(until: Date().addingTimeInterval(0.01)) }
-        precondition(condition(), "工作区冷启动检查超时")
+        precondition(condition(), "工作区冷启动检查超时：\(step)，等待 \(Int(Date().timeIntervalSince(started)))s")
     }
     let known = ConversationStore(device: device), other = ConversationStore(device: device)
     let first = ConversationStore(device: device), draft = ConversationStore(device: device)
@@ -282,7 +283,7 @@ import Foundation
     other.start()
     other.openLinkedConversation(id: otherID)
 
-    wait { known.loadedConversationID == id && other.loadedConversationID == otherID }
+    wait("两个指定来源打开") { known.loadedConversationID == id && other.loadedConversationID == otherID }
     precondition(known.conversation(id: id)?.runtimeID == fixture["runtimeID"]
                  && other.conversation(id: otherID)?.runtimeID == "review")
     precondition(device.listRevision == 0 && first.loadedConversationID == nil && draft.loadedConversationID == nil,
@@ -291,12 +292,12 @@ import Foundation
                                                resourcesDirectory: Bundle.main.resourceURL!), peerID: "synthetic-other")
     let switched = ConversationStore(device: peer)
     switched.start(opening: id)
-    wait { switched.openingFailure != nil }
+    wait("另一设备解析失败") { switched.openingFailure != nil }
     precondition(switched.loadedConversationID == nil && known.loadedConversationID == id,
                  "切换设备后同一 ID 必须由目标设备解析，不能借用旧设备的详情")
     switched.close()
     release.signal()
-    wait { first.loadedConversationID != nil && draft.isUnsentConversation }
+    wait("首列表后初始选择与草稿") { first.loadedConversationID != nil && draft.isUnsentConversation }
     precondition(device.listRevision == 1 && first.loadedConversationID == first.sidebarConversations.first?.id)
     precondition(closed.loadedConversationID == nil && list.loadedConversationID == nil
                  && other.loadedConversationID == otherID, "迟到的首列表不能改变显式导航或关闭的标签")
