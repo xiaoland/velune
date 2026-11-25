@@ -6,6 +6,7 @@ pub(super) const NATIVE_RETRY_DETAIL: &str = "\nCodex 正在自动重试。";
 #[derive(Default)]
 pub(super) struct State {
     pub(super) title: super::codex_title::Title,
+    pub(super) terminals: super::codex_background::Terminals,
     pub(super) commands: Commands,
     pub(super) handoff_summary: Option<super::codex_handoff_summary::Job>,
     pub(super) handoff_summary_hidden: std::collections::BTreeSet<String>,
@@ -1989,7 +1990,16 @@ impl NativeSession {
             // Settle those facts before poll_commands consumes that error;
             // every enqueue still crosses RpcClient's dispatch barrier.
         }
+        if record["method"] == "item/completed"
+            && self.native_id.is_some()
+            && record["params"]["threadId"].as_str() == self.native_id.as_deref()
+        {
+            self.codex_terminal_item("item/completed", &record["params"]);
+        }
         if self.codex_command_record(&record)? {
+            return Ok(());
+        }
+        if self.codex_terminal_reply(&record) {
             return Ok(());
         }
         if self.codex_handoff_summary_record(&record)? {
@@ -2066,6 +2076,9 @@ impl NativeSession {
         }
         if record.get("id").is_some() && record.get("method").is_some() {
             return self.codex_request(&record, false);
+        }
+        if method == "item/started" {
+            self.codex_terminal_item(method, params);
         }
         if let Some(turn) = params["turnId"].as_str()
             && self
@@ -2171,6 +2184,7 @@ impl NativeSession {
                 if let Some(turn) = params["turn"]["id"].as_str()
                     && Some(turn) == self.turn_id.as_deref()
                 {
+                    self.codex_settle_terminals();
                     let status = params["turn"]["status"].as_str();
                     if !matches!(status, Some("completed" | "failed" | "interrupted")) {
                         return Err(Error::new("Codex 轮次缺少有效结束状态"));
@@ -3133,8 +3147,13 @@ held = None
 held_child = None
 replies = set()
 ended = False
+active_terminals = {'11': 'shell-a', '12': 'shell-b'} if (root / 'mode').read_text() == 'background-terminals' else {}
+late_terminal = None
 buffer = ''
 while True:
+    if late_terminal and (root / 'finish-terminal').exists():
+        emit('item/completed', {'threadId':'thread','turnId':'turn','item':{'id':late_terminal,'type':'commandExecution','source':'unifiedExecStartup','processId':'11','status':'failed','exitCode':137}})
+        late_terminal = None
     if held and (root / 'release').exists():
         ack(held, {'turn':{'id':'turn'}}); held = None
     if '\n' not in buffer:
@@ -3179,6 +3198,11 @@ while True:
             sys.stdout.write(json.dumps({'id':request['id'],'result':{'turn':{'id':'accepted'}}}) + '\n{malformed\n')
             sys.stdout.flush()
             (root / 'malformed-written').touch()
+        elif mode == 'background-terminals':
+            ack(request, {'turn':{'id':'turn'}})
+            emit('turn/started', {'threadId':'thread','turn':{'id':'turn'}})
+            emit('item/started', {'threadId':'thread','turnId':'turn','item':{'id':'shell-a','type':'commandExecution','source':'unifiedExecStartup','processId':'11','status':'inProgress'}})
+            emit('turn/completed', {'threadId':'thread','turn':{'id':'turn','status':'completed'}})
         elif mode == 'resume':
             ack(request, {'turn':{'id':'resumed'}})
             emit('turn/completed', {'threadId':'thread','turn':{'id':'resumed','status':'completed'}})
@@ -3189,6 +3213,13 @@ while True:
             emit('item/started', {'threadId':'thread','turnId':'turn','item':{'id':'assistant','type':'agentMessage','text':'early output'}})
             approval('approval-a'); approval('approval-b')
             emit('thread/status/changed', {'threadId':'child','status':{'type':'active','activeFlags':[]}})
+    elif method == 'thread/backgroundTerminals/list':
+        assert request['params']['threadId'] == 'thread'
+        ack(request, {'data':[{'itemId':i,'processId':p,'command':i} for p,i in active_terminals.items()], 'nextCursor':None})
+    elif method == 'thread/backgroundTerminals/terminate':
+        assert request['params']['threadId'] == 'thread'
+        late_terminal = active_terminals.pop(request['params']['processId'], None)
+        ack(request, {'terminated':late_terminal is not None})
     elif method == 'turn/interrupt' and request['params']['threadId'] == 'child-b':
         mode = (root / 'mode').read_text()
         if mode == 'children-disconnect': sys.exit(0)
@@ -3289,6 +3320,84 @@ while True:
                 .collect()
         }
     }
+    #[cfg(unix)]
+    #[test]
+    fn codex_background_terminals_use_live_inventory_and_exact_stop() {
+        let mut fixture = CommandFixture::new("background-terminals");
+        fixture.start();
+        fixture.session.poll().unwrap();
+        assert_eq!(
+            fixture.session.work_status(),
+            crate::work::WorkStatus::Settled
+        );
+        assert!(!fixture.session.background_tasks().unwrap().live);
+        fixture.enqueue(CodexCommand::Send(CommandFixture::input("synthetic")));
+        fixture.poll_until(|session| {
+            !session.turn_running() && session.background_tasks().unwrap().tasks.len() == 2
+        });
+        let tasks = fixture.session.background_tasks().unwrap();
+        assert!(
+            tasks.live
+                && tasks.tasks.iter().all(|task| {
+                    task.kind == "shell"
+                        && task.can_stop
+                        && !task.can_read_output
+                        && task.conversation_id.is_none()
+                })
+        );
+        assert_eq!(
+            fixture.session.work_status(),
+            crate::work::WorkStatus::Active
+        );
+        let a = tasks
+            .tasks
+            .iter()
+            .find(|task| task.title == "shell-a")
+            .unwrap()
+            .id
+            .clone();
+        let b = tasks
+            .tasks
+            .iter()
+            .find(|task| task.title == "shell-b")
+            .unwrap()
+            .id
+            .clone();
+        assert!(
+            fixture
+                .session
+                .stop_background_task("foreign-task")
+                .is_err()
+        );
+        fixture.session.stop_background_task(&a).unwrap();
+        let status = |session: &NativeSession, id: &str| {
+            session
+                .background_tasks()
+                .unwrap()
+                .tasks
+                .iter()
+                .find(|task| task.id == id)
+                .unwrap()
+                .status
+        };
+        assert_eq!(status(&fixture.session, &a), BackgroundTaskStatus::Stopping);
+        fixture.poll_until(|session| status(session, &a) == BackgroundTaskStatus::Unknown);
+        assert_eq!(status(&fixture.session, &b), BackgroundTaskStatus::Running);
+        std::fs::write(fixture.root.join("finish-terminal"), "").unwrap();
+        fixture.poll_until(|session| status(session, &a) == BackgroundTaskStatus::Cancelled);
+        let wire = std::fs::read_to_string(fixture.root.join("wire")).unwrap();
+        let stops: Vec<Value> = wire
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .filter(|record: &Value| record["method"] == "thread/backgroundTerminals/terminate")
+            .collect();
+        assert_eq!(stops.len(), 1);
+        assert_eq!(
+            stops[0]["params"],
+            json!({"threadId":"thread","processId":"11"})
+        );
+    }
+
     #[cfg(unix)]
     impl Drop for CommandFixture {
         fn drop(&mut self) {

@@ -10,6 +10,10 @@ pub type LiveError = Box<dyn std::error::Error + Send + Sync>;
 pub type LiveResult = Result<(), LiveError>;
 
 pub trait LiveConversation {
+    /// Request a new live observation without waiting or preparing a session.
+    fn refresh_background_tasks(&mut self) -> LiveResult {
+        Ok(())
+    }
     fn background_tasks(&self) -> Result<Retained<crate::conversation::BackgroundTaskList>, LiveError> {
         Ok(Retained::from_parts(Default::default(), DataRetention::default()))
     }
@@ -179,6 +183,10 @@ impl LiveConversation for PiSession {
 }
 
 impl LiveConversation for native::NativeSession {
+    fn refresh_background_tasks(&mut self) -> LiveResult {
+        native::NativeSession::refresh_background_tasks(self);
+        Ok(())
+    }
     fn background_tasks(&self) -> Result<Retained<crate::conversation::BackgroundTaskList>, LiveError> {
         Ok(native::NativeSession::background_tasks(self)?)
     }

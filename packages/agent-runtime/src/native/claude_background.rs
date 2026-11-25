@@ -258,6 +258,9 @@ impl NativeSession {
     }
 
     pub fn background_tasks(&self) -> Result<Retained<BackgroundTaskList>> {
+        if self.config.kind == NativeKind::Codex166 {
+            return self.codex_background_tasks();
+        }
         let retention = self
             .data
             .try_clone(|owner| matches!(owner, DataOwner::Task(_) | DataOwner::TaskIssue))?;
@@ -346,6 +349,9 @@ impl NativeSession {
             .ok_or_else(|| Error::new("任务输出请求已失效"))
     }
     pub fn stop_background_task(&mut self, task: &str) -> Result<()> {
+        if self.config.kind == NativeKind::Codex166 {
+            return self.codex_stop_background_task(task);
+        }
         self.ensure_claude_sync_mutation()?;
         let native = self.claude_stop_target(task)?;
         self.claude.task_sequence = self

@@ -28,6 +28,7 @@ pub use claude::{
     rename_claude_session_at,
 };
 mod codex;
+mod codex_background;
 pub use codex::{
     CodexAdmissionError, CodexCommand, CodexDelivery, CodexInterruptDelivery,
     CodexInterruptReceipt, CodexOperationReceipt, CodexOperationTicket, ThreadChange,
@@ -1212,6 +1213,7 @@ impl NativeSession {
                 }
                 self.codex_poll_title();
                 self.codex_handoff_summary_poll()?;
+                self.codex_poll_terminals();
             }
             if let Some(snapshot) = &mut self.snapshot
                 && revision != Some(snapshot.revision)
@@ -1378,6 +1380,7 @@ impl NativeSession {
             )
         })?;
         let work = match self.config.kind {
+            NativeKind::Codex166 if self.failed || self.process_ended => Vec::new(),
             NativeKind::Codex166 => {
                 let Some(runtime_id) = self
                     .snapshot
@@ -1393,6 +1396,7 @@ impl NativeSession {
                         conversation_id: Some(format!("{runtime_id}:{thread}")),
                         state: entry.state,
                     })
+                    .chain(self.codex.terminals.active_work())
                     .collect()
             }
             NativeKind::ClaudeCode if self.failed || self.process_ended => Vec::new(),
@@ -1424,13 +1428,23 @@ impl NativeSession {
             NativeKind::DeepSeek => WorkStatus::Untracked,
             _ if self.has_background_work() => WorkStatus::Active,
             _ if self.waits_for_background_followup() => WorkStatus::Settling,
+            NativeKind::Codex166
+                if !self.failed && !self.process_ended && self.codex.terminals.settling() =>
+            {
+                WorkStatus::Settling
+            }
             _ => WorkStatus::Settled,
         }
     }
 
     fn has_background_work(&self) -> bool {
         match self.config.kind {
-            NativeKind::Codex166 => !self.codex.threads.is_empty(),
+            NativeKind::Codex166 => {
+                !self.failed
+                    && !self.process_ended
+                    && (!self.codex.threads.is_empty()
+                        || self.codex.terminals.active_work().next().is_some())
+            }
             NativeKind::ClaudeCode => {
                 !self.failed
                     && !self.process_ended
@@ -1595,6 +1609,7 @@ impl NativeSession {
     }
     fn set_native_thread(&mut self, id: &str, history: &[Message]) {
         self.native_id = Some(id.into());
+        self.codex.terminals = Default::default();
         self.turn_id = None;
         self.codex.turn_error = None;
         self.clear_requests();
