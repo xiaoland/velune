@@ -3221,7 +3221,8 @@ while True:
             emit('thread/status/changed', {'threadId':'child','status':{'type':'active','activeFlags':[]}})
     elif method == 'thread/backgroundTerminals/list':
         assert request['params']['threadId'] == 'thread'
-        ack(request, {'data':[{'itemId':i,'processId':p,'command':i} for p,i in active_terminals.items()], 'nextCursor':None})
+        refreshed = (root / 'refresh-terminal').exists()
+        ack(request, {'data':[{'itemId':i,'processId':p,'command':i+' updated' if refreshed else i} for p,i in active_terminals.items()], 'nextCursor':None})
     elif method == 'thread/backgroundTerminals/terminate':
         assert request['params']['threadId'] == 'thread'
         late_terminal = active_terminals.pop(request['params']['processId'], None)
@@ -3355,6 +3356,16 @@ while True:
             fixture.session.work_status(),
             crate::work::WorkStatus::Active
         );
+        std::fs::write(fixture.root.join("refresh-terminal"), "").unwrap();
+        fixture.session.refresh_background_tasks(true);
+        fixture.poll_until(|session| {
+            session
+                .background_tasks()
+                .unwrap()
+                .tasks
+                .iter()
+                .any(|task| task.title == "shell-a updated")
+        });
         assert!(fixture.session.enqueue_codex_command(
             CodexCommand::StopBackground,
             std::time::Instant::now() + std::time::Duration::from_secs(1),

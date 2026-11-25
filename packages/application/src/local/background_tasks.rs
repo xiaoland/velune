@@ -7,6 +7,7 @@ impl CoreRuntime {
         &mut self,
         runtime: &str,
         conversation: &str,
+        manual: bool,
     ) -> Result<BackgroundTaskList, RuntimeError> {
         let session = std::iter::once(&mut self.session)
             .chain(&mut self.parked)
@@ -16,7 +17,7 @@ impl CoreRuntime {
                 return Err(RuntimeError::invalid("后台任务来源运行时不匹配"));
             }
             if let Some(live) = session.active_state.live_mut() {
-                live.refresh_background_tasks()
+                live.refresh_background_tasks(manual)
                     .map_err(|error| RuntimeError::context("刷新后台任务", error))?;
                 return Self::read_background_observation(live);
             }
@@ -121,6 +122,7 @@ mod tests {
                     crate::Command::ReadBackgroundTasks {
                         runtime_id: "synthetic".into(),
                         conversation_id: "parked".into(),
+                        manual: true,
                     },
                     false,
                     &view,

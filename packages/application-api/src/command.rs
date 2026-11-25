@@ -586,6 +586,9 @@ pub enum Command {
     ReadBackgroundTasks {
         runtime_id: String,
         conversation_id: String,
+        #[serde(default)]
+        #[uniffi(default = false)]
+        manual: bool,
     },
     ReadBackgroundTaskOutput {
         runtime_id: String,

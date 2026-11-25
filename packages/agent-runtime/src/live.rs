@@ -11,7 +11,7 @@ pub type LiveResult = Result<(), LiveError>;
 
 pub trait LiveConversation {
     /// Request a new live observation without waiting or preparing a session.
-    fn refresh_background_tasks(&mut self) -> LiveResult {
+    fn refresh_background_tasks(&mut self, _manual: bool) -> LiveResult {
         Ok(())
     }
     fn background_tasks(&self) -> Result<Retained<crate::conversation::BackgroundTaskList>, LiveError> {
@@ -93,6 +93,12 @@ pub trait LiveConversation {
 }
 
 impl LiveConversation for PiSession {
+    fn refresh_background_tasks(&mut self, manual: bool) -> LiveResult {
+        if manual {
+            PiSession::refresh_background_tasks(self);
+        }
+        Ok(())
+    }
     fn background_tasks(&self) -> Result<Retained<crate::conversation::BackgroundTaskList>, LiveError> {
         Ok(Retained::from_parts(PiSession::background_tasks(self), DataRetention::default()))
     }
@@ -183,8 +189,8 @@ impl LiveConversation for PiSession {
 }
 
 impl LiveConversation for native::NativeSession {
-    fn refresh_background_tasks(&mut self) -> LiveResult {
-        native::NativeSession::refresh_background_tasks(self);
+    fn refresh_background_tasks(&mut self, manual: bool) -> LiveResult {
+        native::NativeSession::refresh_background_tasks(self, manual);
         Ok(())
     }
     fn background_tasks(&self) -> Result<Retained<crate::conversation::BackgroundTaskList>, LiveError> {

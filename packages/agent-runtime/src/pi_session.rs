@@ -280,11 +280,7 @@ impl PiSession {
             pending_prompt_started: false,
         });
         self.background_pending_sync = true;
-        if let Err(error) =
-            self.enqueue(PiOperation::GetCommands, PendingAction::DiscoverBackground)
-        {
-            self.set_background_error(Some(error.to_string()));
-        }
+        self.refresh_background_tasks();
     }
 
     /// Stop the process; the configuration stays, without its conversation.
@@ -523,6 +519,18 @@ impl PiSession {
         self.background_diagnostic_error = Some(error.to_owned());
     }
 
+    pub(crate) fn refresh_background_tasks(&mut self) {
+        let Some(running) = &self.running else { return };
+        if running.background_request_pending() {
+            return;
+        }
+        if let Err(error) =
+            self.enqueue(PiOperation::GetCommands, PendingAction::DiscoverBackground)
+        {
+            self.set_background_error(Some(error.to_string()));
+        }
+    }
+
     fn refresh_background(&mut self, command: Value) {
         if self
             .running
@@ -532,7 +540,6 @@ impl PiSession {
             self.background_refresh_queued = true;
             return;
         }
-        self.background_pending_sync = true;
         match self.enqueue(
             PiOperation::Background(command),
             PendingAction::Background(
@@ -2181,6 +2188,12 @@ for line in sys.stdin:
             !session.background_tasks().tasks.is_empty()
         });
         session.apply_events(vec![json!({"type":"agent_start"})]);
+        session
+            .apply_background_frame(&json!({"version":1,"kind":"unknown","error":"临时查询失败"}));
+        assert!(!session.background_tasks().live);
+        session.refresh_background_tasks();
+        poll_until(&mut session, |session| session.background_tasks().live);
+        assert!(session.background_tasks().issue.is_none());
         assert!(
             session
                 .background_tasks()

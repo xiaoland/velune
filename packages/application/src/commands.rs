@@ -802,11 +802,12 @@ impl Application {
             Command::ReadBackgroundTasks {
                 runtime_id,
                 conversation_id,
-            } => Response::ReadBackgroundTasks(
-                application
-                    .runtime
-                    .background_tasks(&runtime_id, &conversation_id)?,
-            ),
+                manual,
+            } => Response::ReadBackgroundTasks(application.runtime.background_tasks(
+                &runtime_id,
+                &conversation_id,
+                manual,
+            )?),
             Command::ReadBackgroundTaskOutput {
                 runtime_id,
                 conversation_id,

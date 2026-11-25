@@ -120,6 +120,8 @@ Mac 的后台任务与关联 Agent 使用独立工具身份、入口和视图所
 
 任务使用独立的 `BackgroundTaskInfo` 身份与能力。`ReadBackgroundTasks` 读取既有 session／parked live 的轻量观察，适配器可在已有连接异步刷新。`ReadBackgroundTaskOutput` 显式发起有界读取，后续以 task／request ID 取 Checking／Ready／Failed。每连接最多保留 8 个读取结果，单个最多 64 KiB，10 秒超时。客户端只在详情可见且结果为 Checking 时以一秒间隔继续读取。没有实时宿主返回 `live: false`，只有真实故障填 `issue`。查看列表不准备执行、不切换会话、不扫描冷历史。丢失观察的运行中任务显示未知。
 
+`ReadBackgroundTasks.manual` 默认为 `false`。Mac 在自动读取期间收到手动刷新时紧接着发起一次显式请求。Codex 绕过清单查询的冷却期，Pi 在已有桥接上请求完整快照，Claude Code 在当前 stream-json 连接上请求重发活动任务快照。后续轮询读取原生响应，刷新不得启动宿主、恢复会话或阻塞 Core。
+
 Pi 桥保留 Host v1 的 task ID、kind、描述、状态和操作能力；`stop` 只发送精确 task ID，`logs` 请求最多 64 KiB，delegate/fusion 优先读取 Host 校验的 `result`。命令只写 RPC，Host EventBus 在原生侧异步执行，普通 poll 收取按请求归属的状态帧，application owner 不等待 Host 或日志 IO。delegate 仅从该任务的 artifact/child-session 路径检查 manifest 的 task／nonce／seed／child ID、当前父 session 和子文件头，缺失或不符时保持普通任务。
 
 Claude 使用结构化 task events 与 `background_tasks_changed` 的完整活动集合，不以通知文本解析 live 状态。任务按进程 epoch、native task ID 与 run ID 隔离，旧 run 和迟到停止 ACK 不能覆盖新 run 或终态。`stop_task` 能力保守限定为已证实的 CLI 2.1.292 及之后版本，复用原有启动版本结果；旧版仍可观察，不额外探测或回退到父 `interrupt`。ACK 仅确认请求，任务保持 Stopping 直到终态或完整活动集合证明结束；控制超时不释放仍活动的进程。任务描述不成为结果，仅结构化 summary/output 可读。任务缓存以 128 项为回收目标，活动工作不驱逐；回收非活动项时同步移除其输出。

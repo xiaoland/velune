@@ -114,6 +114,11 @@ import VeluneBindings
     listModel.apply(BackgroundTaskList(tasks: [], live: false, issue: "连接不可用"))
     precondition(listModel.listedTasks.map(\.id) == currentIDs && listModel.listedTasks.allSatisfy { $0.status == .unknown },
                  "连接失败不可把已确认的终态重置成未知并重新显示")
+    render("retry-with-tasks", BackgroundTasksContent(model: listModel, inPopover: false, open: { _, _ in }))
+    render("retry-task-status", BackgroundTaskDetail(initial: tasks[0], model: listModel, back: {}, open: { _, _ in }))
+    listModel.apply(snapshot)
+    precondition(listModel.issue == nil && listModel.live == true && listModel.listedTasks == tasks.filter { !$0.status.isTerminal },
+                 "恢复时应清除错误并保留用户已清理的任务选择")
     let unavailable = tasks.map { var task = $0; task.status = .unknown; return task }
     let reopenedOffline = BackgroundTasksModel(dismissals: store.device.backgroundTaskDismissals)
     reopenedOffline.reset(store)

@@ -121,9 +121,14 @@ impl NativeSession {
         ))
     }
 
-    pub fn refresh_background_tasks(&mut self) {
+    pub fn refresh_background_tasks(&mut self, manual: bool) {
         if self.config.kind == NativeKind::Codex166 {
+            if manual {
+                self.codex.terminals.next_check = None;
+            }
             self.codex_start_terminal_list(false);
+        } else if self.config.kind == NativeKind::ClaudeCode && manual {
+            self.claude_refresh_background_tasks();
         }
     }
 

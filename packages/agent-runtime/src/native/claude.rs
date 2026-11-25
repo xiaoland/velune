@@ -68,6 +68,8 @@ pub(super) struct State {
     pub(super) task_reads: crate::background::Reads,
     pub(super) task_read_retention: std::collections::VecDeque<(String, DataRetention)>,
     pub(super) task_issue: Option<String>,
+    pub(super) task_refresh: Option<super::claude_background::TaskRefresh>,
+    pub(super) task_refresh_issue: Option<&'static str>,
     pub(super) task_sequence: u64,
     pub(super) task_stop_capable: bool,
     pub(super) requires_action: bool,
@@ -277,6 +279,8 @@ impl NativeSession {
         Ok(command)
     }
     pub(super) fn claude_initialize(&mut self) -> Result<()> {
+        self.claude.task_refresh = None;
+        self.claude.task_refresh_issue = None;
         let response = self
             .rpc
             .claude_control(json!({"subtype":"initialize","hooks":{}}))?;

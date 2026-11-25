@@ -50,6 +50,7 @@ for line in sys.stdin:
  if request.get('type')=='control_request':
   subtype=request['request']['subtype']
   if subtype=='initialize':
+   if mode=='refresh' and 'hooks' not in request['request']: continue
    old=os.path.join(root,'old-response')
    if os.path.exists(old): emit(json.load(open(old)))
    response(request)
@@ -486,6 +487,92 @@ fn claude_port_stop_task_negative_ack_cannot_revive_terminal_and_ack_is_not_stop
             )
             .is_err()
     );
+}
+
+#[test]
+fn claude_background_refresh_requires_a_matching_ack_and_new_snapshot() {
+    let mut f = Fixture::new("refresh");
+    f.user();
+    let known = f.session.background_tasks().unwrap().tasks[0].clone();
+    let approvals = f.session.snapshot().unwrap().pending_interactions.clone();
+    assert_eq!(approvals.len(), 1);
+    f.session.available_models = vec![json!({"value":"existing-model"})];
+
+    f.session.claude_refresh_background_tasks();
+    let first = f
+        .session
+        .claude
+        .task_refresh
+        .as_ref()
+        .unwrap()
+        .request_id
+        .clone();
+    f.session.claude_refresh_background_tasks();
+    let pending = f.session.claude.task_refresh.as_mut().unwrap();
+    assert_eq!(pending.request_id, first);
+    pending.deadline = Instant::now();
+    f.session.poll().unwrap();
+    let timed_out = f.session.background_tasks().unwrap();
+    assert!(timed_out.live && timed_out.issue.as_ref().unwrap().contains("超时"));
+    assert_eq!(timed_out.tasks, vec![known.clone()]);
+    assert!(f.session.turn_running() && !f.session.failed);
+
+    f.session.claude_refresh_background_tasks();
+    let retry = f
+        .session
+        .claude
+        .task_refresh
+        .as_ref()
+        .unwrap()
+        .request_id
+        .clone();
+    assert_ne!(retry, first);
+    let ack = |request_id| {
+        json!({"type":"control_response","response":{
+            "subtype":"success", "request_id":request_id, "response":{"models":[]},
+            "pending_permission_requests":[{"type":"control_request","request_id":"permission",
+                "request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"synthetic"}}}]
+        }})
+    };
+    let snapshot = |description| {
+        json!({"type":"system","subtype":"background_tasks_changed",
+            "session_id":"parent","tasks":[{
+                "task_id":"shell","run_id":"one","task_type":"local_bash","description":description
+            }]
+        })
+    };
+    f.emit(ack(first.clone()));
+    f.emit(snapshot("原生推送"));
+    f.poll_until(|session| session.background_tasks().unwrap().tasks[0].title == "原生推送");
+    assert!(!f.session.claude.task_refresh.as_ref().unwrap().accepted);
+    assert!(f.session.background_tasks().unwrap().issue.is_some());
+
+    f.emit(ack(retry.clone()));
+    f.poll_until(|session| session.claude.task_refresh.as_ref().unwrap().accepted);
+    assert!(f.session.background_tasks().unwrap().issue.is_some());
+    f.emit(snapshot("刷新清单"));
+    f.poll_until(|session| session.claude.task_refresh.is_none());
+    let updated = f.session.background_tasks().unwrap();
+    assert!(updated.live && updated.issue.is_none());
+    assert_eq!(updated.tasks[0].id, known.id);
+    assert_eq!(updated.tasks[0].title, "刷新清单");
+    assert_eq!(
+        f.session.snapshot().unwrap().pending_interactions,
+        approvals
+    );
+    assert_eq!(
+        f.session.available_models,
+        vec![json!({"value":"existing-model"})]
+    );
+    let refreshes = f
+        .requests()
+        .into_iter()
+        .filter(|frame| {
+            frame["request"]["subtype"] == "initialize" && frame["request"].get("hooks").is_none()
+        })
+        .map(|frame| frame["request_id"].as_str().unwrap().to_owned())
+        .collect::<Vec<_>>();
+    assert_eq!(refreshes, vec![first, retry]);
 }
 
 #[test]

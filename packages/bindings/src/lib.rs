@@ -1965,17 +1965,20 @@ impl VeluneApplication {
         request!(self, "close_side_chat", CloseSideChat { side_chat_id }; unit)
     }
 
+    #[uniffi::method(default(manual = false))]
     pub fn background_tasks(
         &self,
         runtime_id: String,
         conversation_id: String,
+        manual: bool,
     ) -> Result<BackgroundTaskList, BindingError> {
         request!(
             self,
             "background_tasks",
             ReadBackgroundTasks {
                 runtime_id,
-                conversation_id
+                conversation_id,
+                manual
             }
         )
     }
