@@ -129,7 +129,11 @@ private fun App(model: AppViewModel) {
                 }
             }
             CompositionLocalProvider(LocalUriHandler provides links) {
-                ConversationScreen(hub, screen.peer, listing.runtimeLabels[screen.model.target.runtimeId], screen.model, back = { model.back() })
+                ConversationScreen(
+                    hub, screen.peer, listing.runtimeLabels[screen.model.target.runtimeId], screen.model,
+                    back = { model.back() },
+                    openConversation = { model.openConversation(screen.peer, it) },
+                )
             }
         }
     }

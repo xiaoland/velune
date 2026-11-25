@@ -6,16 +6,23 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.Surface
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import app.velune.bindings.application.ActiveConversation
 import app.velune.bindings.application.DeliveredBlock
 import app.velune.bindings.application.DeliveredMessage
 import app.velune.bindings.application.ListedConversation
 import app.velune.bindings.application.MessagePayload
+import app.velune.bindings.application.PermissionMode
 import app.velune.bindings.application.RuntimeInstance
 import app.velune.bindings.application.RuntimeModel
 import app.velune.bindings.conversation.ConversationSummary
 import app.velune.bindings.conversation.ConversationTitle
+import app.velune.bindings.conversation.EditableMessage
 import app.velune.bindings.conversation.InteractionKind
 import app.velune.bindings.conversation.InteractionOption
 import app.velune.bindings.conversation.MessageRole
@@ -48,15 +55,43 @@ class GalleryActivity : ComponentActivity() {
                         "devices" -> DevicesContent(Sample.devices, null, DevicesActions({}, {}, {}, {}))
                         "no-devices" -> SessionsContent(emptyList(), emptyList(), null, null, false, Sample.sessionsActions)
                         "empty-sessions" -> SessionsContent(Sample.devices.take(1), listOf(Sample.devices[0] to Sample.macListing.copy(conversations = emptyList())), null, null, false, Sample.sessionsActions)
-                        "sessions", "list" -> SessionsContent(Sample.devices, Sample.listings, null, null, false, Sample.sessionsActions)
-                        "running" -> ConversationContent(Sample.header, Sample.running, Sample.actions)
-                        "new" -> ConversationContent(Sample.header.copy(title = "新会话"), ConversationState(loading = false, models = Sample.models, composerReady = true), Sample.actions)
-                        else -> ConversationContent(Sample.header, Sample.finished, Sample.actions)
+                        "sessions", "list" -> {
+                            var filter by remember { mutableStateOf<String?>(null) }
+                            SessionsContent(Sample.devices, Sample.listings, filter, null, false, SessionsActions({ _, _ -> }, {}, { filter = it }, {}, {}, {}, {}))
+                        }
+                        "running" -> InteractiveConversation(Sample.header, Sample.running)
+                        "new" -> InteractiveConversation(Sample.header.copy(title = "新会话"), ConversationState(loading = false, models = Sample.models, efforts = Sample.efforts, permissionModes = Sample.permissionModes, composerReady = true))
+                        else -> InteractiveConversation(Sample.header, Sample.finished)
                     }
                 }
             }
         }
     }
+}
+
+@Composable
+private fun InteractiveConversation(header: ConversationHeader, initial: ConversationState) {
+    var state by remember { mutableStateOf(initial) }
+    ConversationContent(
+        header,
+        state,
+        ConversationActions(
+            back = {},
+            send = { _, _ -> state = state.copy(draft = "") },
+            stop = {},
+            reply = { _, _ -> state = state.copy(interactions = emptyList()) },
+            select = { state = state.copy(selection = it) },
+            load = {},
+            compact = {},
+            editDraft = { state = state.copy(draft = it) },
+            removeAttachment = {},
+            setConversationHandoff = {},
+            selectEffort = { state = state.copy(effort = it) },
+            selectPermissionMode = { state = state.copy(permissionMode = it) },
+            editMessage = { _, _, _ -> },
+            forkConversation = {},
+        ),
+    )
 }
 
 private object Sample {
@@ -129,13 +164,19 @@ private object Sample {
     )
 
     val models = listOf(
-        RuntimeModel(ModelSelection.Native(null, "claude-opus-5-5"), "Claude Opus 5.5", emptyList()),
-        RuntimeModel(ModelSelection.Native(null, "claude-sonnet-5-5"), "Claude Sonnet 5.5", emptyList()),
+        RuntimeModel(ModelSelection.Native(null, "claude-opus-5-5"), "Claude Opus 5.5", listOf("low", "medium", "high")),
+        RuntimeModel(ModelSelection.Native(null, "claude-sonnet-5-5"), "Claude Sonnet 5.5", listOf("low", "medium", "high")),
+    )
+
+    val efforts = listOf("low", "medium", "high")
+
+    val permissionModes = listOf(
+        PermissionMode("default", "默认审批", "执行命令或修改敏感内容前询问"),
+        PermissionMode("acceptEdits", "自动接受编辑", "自动写入文件，终端命令仍需确认"),
+        PermissionMode("plan", "仅规划", "只读分析与制定方案，不改动文件"),
     )
 
     val header = ConversationHeader("修复 Android 会话列表的滚动抖动", RuntimeLabel("Claude Code", "claude-code"), "工作室 Mac mini", "/Users/me/Development/velune")
-
-    val actions = ConversationActions({}, { _, _ -> }, {}, { _, _ -> }, {}, {})
 
     private fun message(id: String, role: MessageRole, minutesAgo: Long, vararg blocks: DeliveredBlock) =
         DeliveredMessage(1uL, true, id, role, now - minutesAgo * MINUTE, blocks.toList())
@@ -176,7 +217,7 @@ private object Sample {
         ),
     )
 
-    private val turn = TranscriptTurn("turn1", "u1", listOf("a1"), "a1", 5u, 83_000uL, false, false, TurnOutcome.COMPLETED, null, null)
+    private val turn = TranscriptTurn("turn1", "u1", listOf("a1"), "a1", 5u, 83_000uL, false, true, TurnOutcome.COMPLETED, null, null)
     private val items = listOf(TranscriptItem.Message("u1", "u1"), TranscriptItem.Work("turn1"), TranscriptItem.Message("reply:a1", "a1"))
     private val byId = messages.associateBy { it.id }
 
@@ -186,6 +227,14 @@ private object Sample {
         loading = false,
         models = models,
         selection = models[0].selection,
+        hasCurrent = true,
+        currentModelName = "Claude Opus 5.5",
+        efforts = efforts,
+        currentEffort = "medium",
+        permissionModes = permissionModes,
+        currentPermissionMode = permissionModes[0],
+        editable = mapOf("u1" to EditableMessage("u1", inPlace = true, deleteOnly = false, deleteFollowing = false, revision = "r1")),
+        canFork = true,
         composerReady = true,
         canCompact = true,
     )

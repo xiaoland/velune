@@ -16,8 +16,11 @@ import app.velune.bindings.application.TurnChoice
 import java.util.UUID
 import app.velune.bindings.application.ComposedTurn
 import app.velune.bindings.application.DeliveredSnapshot
+import app.velune.bindings.application.PermissionMode
 import app.velune.bindings.conversation.ControlHandoff
 import app.velune.bindings.conversation.ConversationSummary
+import app.velune.bindings.conversation.EditPlacement
+import app.velune.bindings.conversation.EditableMessage
 import app.velune.bindings.application.DeliveredMessage
 import app.velune.bindings.conversation.ModelSelection
 import app.velune.bindings.conversation.InputAccess
@@ -59,8 +62,18 @@ data class ConversationState(
     val canCompact: Boolean = false,
     val controlHandoff: ControlHandoff? = null,
     val models: List<RuntimeModel> = emptyList(),
-    /** None: the runtime's own default. */
+    /** None: follow the conversation's current model, or the runtime's default. */
     val selection: ModelSelection? = null,
+    val hasCurrent: Boolean = false,
+    val currentModelName: String? = null,
+    val efforts: List<String> = emptyList(),
+    val effort: String? = null,
+    val currentEffort: String? = null,
+    val permissionModes: List<PermissionMode> = emptyList(),
+    val permissionMode: String? = null,
+    val currentPermissionMode: PermissionMode? = null,
+    val editable: Map<String, EditableMessage> = emptyMap(),
+    val canFork: Boolean = false,
     val busy: Boolean = false,
     val loading: Boolean = true,
     val failure: String? = null,
@@ -215,6 +228,8 @@ class ConversationModel(
                 canCompact = next.followUp.canCompact,
                 controlHandoff = next.followUp.controlHandoff,
                 canCancel = next.actions.canCancel,
+                editable = next.followUp.editable.associateBy { it.messageId },
+                canFork = next.followUp.canFork,
                 selection = state.selection,
             )
         }
@@ -225,16 +240,43 @@ class ConversationModel(
     private fun entries(of: DeliveredSnapshot) =
         transcriptEntries(of.transcriptItems, of.transcriptTurns) { id -> payloads[id] ?: messages[id] }
 
-    fun select(selection: ModelSelection?) {
+    private fun updateTurnChoice(transform: (TurnChoice) -> TurnChoice) {
         if (!_state.value.composerReady || _state.value.busy) return
         val runtime = targetChoices.runtimeId ?: target.runtimeId
-        val previous = targetChoices.choices.firstOrNull { it.runtimeId == runtime && it.ownerId == composerOwner }?.choice ?: TurnChoice(model = null, effort = null, permissionMode = null)
+        val owner = composerOwner ?: return
+        val previous = targetChoices.choices.firstOrNull { it.runtimeId == runtime && it.ownerId == owner }?.choice ?: TurnChoice(model = null, effort = null, permissionMode = null)
+        val updated = transform(previous)
         targetBaseline = targetRevision
-        targetChoices = targetChoices.copy(choices = targetChoices.choices.filter { it.runtimeId != runtime || it.ownerId != composerOwner } + ComposerRuntimeChoice(composerOwner ?: return, runtime, previous.copy(model = selection)), choiceEdited = true)
+        targetChoices = targetChoices.copy(choices = targetChoices.choices.filter { it.runtimeId != runtime || it.ownerId != owner } + ComposerRuntimeChoice(owner, runtime, updated), choiceEdited = true)
         targetPending = true
-        _state.update { it.copy(selection = selection) }; cacheComposer()
+        applyResolvedNextTurn(updated)
+        cacheComposer()
         scope.launch { runCatching { flushComposer() }.onFailure { error -> _state.update { it.copy(composerFailure = composerError(error)) } } }
     }
+
+    private fun applyResolvedNextTurn(explicit: TurnChoice? = null) {
+        val next = effectiveNextTurn()
+        val runtime = targetChoices.runtimeId ?: preparedComposerTarget?.defaultRuntimeId ?: snapshot?.contextRuntimeId ?: target.runtimeId
+        val choice = explicit ?: targetChoices.choices.firstOrNull { it.runtimeId == runtime && it.ownerId == composerOwner }?.choice
+        _state.update { state ->
+            state.copy(
+                models = next?.models ?: state.models,
+                selection = choice?.model,
+                hasCurrent = next?.hasCurrent ?: state.hasCurrent,
+                currentModelName = next?.modelName,
+                efforts = next?.efforts ?: state.efforts,
+                effort = choice?.effort,
+                currentEffort = next?.currentEffort,
+                permissionModes = next?.permissionModes ?: state.permissionModes,
+                permissionMode = choice?.permissionMode,
+                currentPermissionMode = next?.currentPermissionMode,
+            )
+        }
+    }
+
+    fun select(selection: ModelSelection?) = updateTurnChoice { it.copy(model = selection) }
+    fun selectEffort(effort: String?) = updateTurnChoice { it.copy(effort = effort) }
+    fun selectPermissionMode(modeId: String?) = updateTurnChoice { it.copy(permissionMode = modeId) }
     fun editDraft(text: String) { _state.update { it.copy(draft = text) }; composerChanged() }
     fun removeAttachment(id: String) { _state.update { it.copy(attachments = it.attachments.filter { file -> file.id != id }) }; composerChanged() }
     private fun content(): ComposerInputContent {
@@ -380,9 +422,22 @@ class ConversationModel(
             composerCatalogRuntime = selectedRuntime
             val selection = _state.value.selection
             check(selection == null || catalog.any { it.selection == selection }) { "所选模型在此设备不可用，输入已保留" }
+            val resolved = resolveComposerTarget(prepared, targetChoices, catalog)
             val ready = (snapshot == null || snapshot?.contextRuntimeId == prepared.defaultRuntimeId)
-                && resolveComposerTarget(prepared, targetChoices, catalog)?.chosenModelUnavailable == false
-            _state.update { it.copy(models = catalog, composerReady = ready) }
+                && resolved?.chosenModelUnavailable == false
+            _state.update {
+                it.copy(
+                    models = resolved?.models ?: catalog,
+                    composerReady = ready,
+                    hasCurrent = resolved?.hasCurrent ?: it.hasCurrent,
+                    currentModelName = resolved?.modelName,
+                    efforts = resolved?.efforts ?: emptyList(),
+                    currentEffort = resolved?.currentEffort,
+                    permissionModes = resolved?.permissionModes ?: emptyList(),
+                    currentPermissionMode = resolved?.currentPermissionMode,
+                )
+            }
+            applyResolvedNextTurn()
             flushComposer()
             _state.update { it.copy(composerFailure = null) }
         } catch (error: CancellationException) { throw error } catch (error: Exception) { _state.update { it.copy(composerReady = false, composerFailure = composerError(error)) } }
@@ -450,6 +505,33 @@ class ConversationModel(
     fun reply(interactionId: String, reply: RuntimeInteractionReply) = act {
         val current = snapshot ?: return@act
         apply(io(NativeOperation.REPLY) { it.replyRuntimeInteraction(current.contextRuntimeId, current.conversation.id, interactionId, reply) })
+    }
+
+    fun editMessage(messageId: String, text: String, placement: EditPlacement, onForked: (ConversationTarget.Existing) -> Unit) = act {
+        val current = snapshot ?: return@act
+        val editable = _state.value.editable[messageId] ?: return@act
+        val next = effectiveNextTurn()
+        val turn = ComposedTurn(text = text, effort = next?.effort, permissionMode = next?.permissionMode?.id, attachments = emptyList())
+        val result = io(NativeOperation.CONVERSATION_WRITE) {
+            it.editMessage(current.contextRuntimeId, current.conversation.id, messageId, placement, next?.model, turn, editable.revision)
+        }
+        if (placement == EditPlacement.FORK) {
+            result.snapshot?.let { created ->
+                onForked(ConversationTarget.Existing(created.contextRuntimeId, created.conversation.id, created.conversation.title.displayText()))
+            }
+        } else {
+            apply(result)
+        }
+    }
+
+    fun forkConversation(messageId: String, onForked: (ConversationTarget.Existing) -> Unit) = act {
+        val current = snapshot ?: return@act
+        val result = io(NativeOperation.CONVERSATION_WRITE) {
+            it.forkConversation(current.contextRuntimeId, current.conversation.id, messageId)
+        }
+        result.snapshot?.let { created ->
+            onForked(ConversationTarget.Existing(created.contextRuntimeId, created.conversation.id, created.conversation.title.displayText()))
+        }
     }
 
     /** Large reasoning and tool output arrive by size; this reads one message's whole content. */

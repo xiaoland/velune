@@ -29,11 +29,13 @@ import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material.icons.automirrored.outlined.CallSplit
 import androidx.compose.material.icons.automirrored.outlined.InsertDriveFile
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.ContentCopy
+import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.ErrorOutline
 import androidx.compose.material.icons.outlined.Image
 import androidx.compose.material.icons.outlined.Lightbulb
@@ -83,6 +85,8 @@ fun Transcript(
     state: ConversationState,
     list: LazyListState,
     load: (String) -> Unit,
+    onEdit: (DeliveredMessage) -> Unit = {},
+    onFork: (DeliveredMessage) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val scope = rememberCoroutineScope()
@@ -103,7 +107,13 @@ fun Transcript(
             state.sending?.let { text -> item(key = "sending") { UserMessage(listOf(DeliveredBlock.Text(text)), null, bubbleWidth, pending = true) } }
             items(state.entries.asReversed(), key = { it.key }) { entry ->
                 when (entry) {
-                    is TranscriptEntry.Message -> MessageView(entry.message, bubbleWidth, expanded, load)
+                    is TranscriptEntry.Message -> MessageView(
+                        entry.message, bubbleWidth, expanded, load,
+                        editable = entry.message.id in state.editable,
+                        forkable = entry.canFork && state.canFork,
+                        onEdit = { onEdit(entry.message) },
+                        onFork = { onFork(entry.message) },
+                    )
                     is TranscriptEntry.Work -> WorkGroup(entry, expanded, load)
                 }
             }
@@ -121,14 +131,23 @@ fun Transcript(
 
 /** The user's messages on the right, the model's on the left, the system's and the Harness's in the middle. */
 @Composable
-private fun MessageView(message: DeliveredMessage, bubbleWidth: Dp, expanded: MutableMap<String, Boolean>, load: (String) -> Unit) {
+private fun MessageView(
+    message: DeliveredMessage,
+    bubbleWidth: Dp,
+    expanded: MutableMap<String, Boolean>,
+    load: (String) -> Unit,
+    editable: Boolean,
+    forkable: Boolean,
+    onEdit: () -> Unit,
+    onFork: () -> Unit,
+) {
     when (message.role) {
-        MessageRole.USER, MessageRole.CLIENT -> UserMessage(message.blocks, message.timestampUnixMs, bubbleWidth)
+        MessageRole.USER, MessageRole.CLIENT -> UserMessage(message.blocks, message.timestampUnixMs, bubbleWidth, onEdit = onEdit.takeIf { editable })
         MessageRole.ASSISTANT -> Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             message.blocks.forEachIndexed { index, block -> WorkBlock(message.id, index, block, expanded, load, reply = true) }
             val copyable = remember(message.blocks) { message.copyableText() }
-            if (message.completed && (copyable.isNotEmpty() || message.timestampUnixMs != null)) {
-                MessageMetaRow(message.timestampUnixMs, copyable.takeIf { it.isNotEmpty() }, Alignment.Start)
+            if (message.completed && (copyable.isNotEmpty() || message.timestampUnixMs != null || forkable)) {
+                MessageMetaRow(message.timestampUnixMs, copyable.takeIf { it.isNotEmpty() }, Alignment.Start, onFork = onFork.takeIf { forkable })
             }
         }
         MessageRole.TOOL, MessageRole.SYSTEM -> Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -138,7 +157,13 @@ private fun MessageView(message: DeliveredMessage, bubbleWidth: Dp, expanded: Mu
 }
 
 @Composable
-private fun UserMessage(blocks: List<DeliveredBlock>, timestampUnixMs: Long?, maxWidth: Dp, pending: Boolean = false) {
+private fun UserMessage(
+    blocks: List<DeliveredBlock>,
+    timestampUnixMs: Long?,
+    maxWidth: Dp,
+    pending: Boolean = false,
+    onEdit: (() -> Unit)? = null,
+) {
     val copyable = remember(blocks) {
         blocks.filterIsInstance<DeliveredBlock.Text>().mapNotNull { it.text.takeIf(String::isNotBlank) }.joinToString("\n\n")
     }
@@ -161,15 +186,21 @@ private fun UserMessage(blocks: List<DeliveredBlock>, timestampUnixMs: Long?, ma
         }
         if (pending) {
             Text("发送中…", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 4.dp, end = 4.dp))
-        } else if (copyable.isNotEmpty() || timestampUnixMs != null) {
-            MessageMetaRow(timestampUnixMs, copyable.takeIf { it.isNotEmpty() }, Alignment.End)
+        } else if (copyable.isNotEmpty() || timestampUnixMs != null || onEdit != null) {
+            MessageMetaRow(timestampUnixMs, copyable.takeIf { it.isNotEmpty() }, Alignment.End, onEdit = onEdit)
         }
     }
 }
 
-/** Quiet timestamp and one-tap copy under user messages and completed replies. */
+/** Quiet timestamp and one-tap actions (copy, edit, fork) under user messages and completed replies. */
 @Composable
-private fun MessageMetaRow(timestampUnixMs: Long?, copyText: String?, alignment: Alignment.Horizontal) {
+private fun MessageMetaRow(
+    timestampUnixMs: Long?,
+    copyText: String?,
+    alignment: Alignment.Horizontal,
+    onEdit: (() -> Unit)? = null,
+    onFork: (() -> Unit)? = null,
+) {
     val copy = rememberCopy()
     val time = remember(timestampUnixMs) { timestampUnixMs?.let(::formatMessageTime) }
     Row(
@@ -177,11 +208,21 @@ private fun MessageMetaRow(timestampUnixMs: Long?, copyText: String?, alignment:
         horizontalArrangement = if (alignment == Alignment.End) Arrangement.End else Arrangement.Start,
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        if (alignment == Alignment.End && copyText != null) CopyButton { copy(copyText) }
-        if (time != null) Text(time, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        if (alignment == Alignment.Start && copyText != null) {
-            if (time != null) Spacer(Modifier.width(4.dp))
-            CopyButton { copy(copyText) }
+        if (alignment == Alignment.End) {
+            if (onEdit != null) IconButton(onClick = onEdit, modifier = Modifier.size(32.dp)) {
+                Icon(Icons.Outlined.Edit, contentDescription = "编辑消息", modifier = Modifier.size(15.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            if (copyText != null) CopyButton { copy(copyText) }
+            if (time != null) Text(time, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        } else {
+            if (time != null) Text(time, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            if (copyText != null) {
+                if (time != null) Spacer(Modifier.width(4.dp))
+                CopyButton { copy(copyText) }
+            }
+            if (onFork != null) IconButton(onClick = onFork, modifier = Modifier.size(32.dp)) {
+                Icon(Icons.AutoMirrored.Outlined.CallSplit, contentDescription = "分叉会话", modifier = Modifier.size(15.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
         }
     }
 }

@@ -12,7 +12,11 @@ import app.velune.bindings.conversation.TurnOutcome
 sealed interface TranscriptEntry {
     val key: String
 
-    data class Message(override val key: String, val message: DeliveredMessage) : TranscriptEntry {
+    data class Message(
+        override val key: String,
+        val message: DeliveredMessage,
+        val canFork: Boolean = false,
+    ) : TranscriptEntry {
         val isUser: Boolean get() = message.role == MessageRole.USER || message.role == MessageRole.CLIENT
         val isAssistantReply: Boolean get() = message.role == MessageRole.ASSISTANT
     }
@@ -66,13 +70,14 @@ fun transcriptEntries(
 ): List<TranscriptEntry> {
     val byTurn = turns.associateBy { it.id }
     val replyStart = turns.filter { it.replyStartBlock > 0u }.mapNotNull { turn -> turn.lastMessageId?.let { it to turn.replyStartBlock.toInt() } }.toMap()
+    val forkable = turns.filter { it.canFork }.mapNotNull { it.lastMessageId }.toSet()
     return items.mapNotNull { item ->
         when (item) {
             is TranscriptItem.Message -> {
                 val found = message(item.messageId) ?: return@mapNotNull null
                 val start = replyStart[item.messageId]
                 val shown = if (item.id.startsWith("reply:") && start != null) found.copy(blocks = found.blocks.drop(start)) else found
-                TranscriptEntry.Message(item.id, shown)
+                TranscriptEntry.Message(item.id, shown, canFork = item.messageId in forkable)
             }
             is TranscriptItem.Work -> {
                 val turn = byTurn[item.turnId] ?: return@mapNotNull null
