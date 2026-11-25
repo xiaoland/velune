@@ -487,6 +487,22 @@ import SwiftUI
     settle()
     precondition(model.tabCount == tabs, "关闭新建的标签")
     let asked = askResponders()
+    // 在新窗口中新建会话 asks for a conversation window on the focused
+    // tab's device, with no conversation: that window starts a new one.
+    var requested: [(ConversationWindowKind, WindowSeed)] = []
+    model.openWindow = { requested.append(($0, $1)) }
+    precondition(device.enabledRuntimeInstances.isEmpty || model.canPerform(.newConversationWindow), "有运行时时可在新窗口中新建会话")
+    model.perform(.newConversationWindow)
+    if !device.enabledRuntimeInstances.isEmpty {
+        precondition(requested.count == 1 && requested[0].0 == .single && requested[0].1.conversationID == nil
+                     && requested[0].1.device == nil && requested[0].1.tab == nil, "在新窗口中新建会话：本机的会话窗口，不带会话")
+        let single = ConversationWindowModel(application: device, kind: .single)
+        single.start(restoring: nil, seed: requested[0].1)
+        settle()
+        precondition(single.focused.store.isUnsentConversation, "新的会话窗口以未发送的新会话开始")
+        for tab in single.allTabs { tab.close() }
+        single.list.close()
+    }
     precondition(descendants(host.contentView!).allSatisfy { ($0 as? NSSplitView).map { $0.delegate !== $0 } ?? true },
                  "分栏视图不能是自己的代理：AppKit 会把响应链询问转给代理而无限递归")
     // Nothing of this window outlives it into the checks that follow.
@@ -497,5 +513,5 @@ import SwiftUI
     model.list.close()
     RunLoop.main.run(until: Date().addingTimeInterval(0.1))
     withExtendedLifetime(shell) {}
-    note("PASS window shell: a new tab opens and closes; \(asked) views answer responder-chain queries without recursion")
+    note("PASS window shell: a new tab opens and closes; \(asked) views answer responder-chain queries without recursion; a new conversation window is asked for (\(requested.count))")
 }

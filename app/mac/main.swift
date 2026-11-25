@@ -55,6 +55,14 @@ struct ConversationCommands: Commands {
                     .keyboardShortcut(shortcuts[.newConversation])
                     .disabled(target == nil || target?.window.canPerform(.newConversation) != true)
             }
+            // Also with no window open, for this Mac, as 新建窗口 is.
+            followingConversation {
+                Button(ShortcutCommand.newConversationWindow.title) {
+                    if let target { target.window.perform(.newConversationWindow) } else { WorkspaceWindows.shared.open(.single) }
+                }
+                .keyboardShortcut(shortcuts[.newConversationWindow])
+                .disabled(target.map { !$0.window.canPerform(.newConversationWindow) } ?? false)
+            }
             item(.openConversation)
             Button("新建标签页") { target?.window.openInNewTab() }
                 .keyboardShortcut(shortcuts[.newTab])
