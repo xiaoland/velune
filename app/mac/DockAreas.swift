@@ -13,8 +13,7 @@ struct DockAreaView: View {
         let kinds = window.tools.tools(in: side)
         let flexible = side == .bottom ? kinds : kinds.filter { $0 != .composer }
         VStack(spacing: 0) {
-            // A tool alone is the area's content itself, so the list alone in
-            // the sidebar keeps the sidebar's own search field.
+            // A tool alone is the area's content itself.
             if flexible.count == 1, let kind = flexible.first {
                 DockedTool(window: window, kind: kind, side: side)
             } else if flexible.count > 1 {
@@ -56,7 +55,6 @@ private struct ToolHeader: View {
         HStack(spacing: 4) {
             Text(kind.title).uiFont(.subheadline.weight(.semibold)).foregroundStyle(.secondary).lineLimit(1)
             Spacer(minLength: 0)
-            if kind == .list { ConversationListHeaderActions(window: window, side: side) }
             Menu { ToolPlaceMenu(window: window, kind: kind) } label: { Image(systemName: "ellipsis") }
                 .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
                 .help("移到其他位置").accessibilityLabel("\(kind.title)的位置")
@@ -107,12 +105,7 @@ struct ToolContent: View {
         let tab = window.focused
         switch kind {
         case .list:
-            // The sidebar's own search field and toolbar serve the list at its top, unless
-            // other tools share the area: then it is a block with a title bar, and its search a button.
-            let shared = side.map { window.tools.tools(in: $0).count > 1 } ?? false
-            ConversationListView(window: window, store: window.list, focused: tab.store,
-                                 placement: side == .left && window.tools.tools(in: .left).first == .list && !shared ? .sidebar : .panel,
-                                 compact: shared)
+            ConversationListView(window: window, store: window.list, focused: tab.store)
         case .outline:
             ToolOutline(window: window, tab: tab, store: tab.store, inSidebar: side == .left).id(tab.id)
         case .composer:

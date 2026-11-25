@@ -17,7 +17,7 @@ import SwiftUI
     let preferences = UserDefaults.standard.volatileDomain(forName: UserDefaults.argumentDomain)
     var syntheticPreferences = preferences
     syntheticPreferences["toolbarButtonsHidden"] = [String]()
-    syntheticPreferences["toolbarButtonOrder"] = ["listFilter", "newConversation"]
+    syntheticPreferences["toolbarButtonOrder"] = [String]()
     UserDefaults.standard.setVolatileDomain(syntheticPreferences, forName: UserDefaults.argumentDomain)
     defer { UserDefaults.standard.setVolatileDomain(preferences, forName: UserDefaults.argumentDomain) }
 
@@ -31,7 +31,7 @@ import SwiftUI
         let appearance = NSAppearance(named: dark ? .darkAqua : .aqua)!
         NSApp.appearance = appearance
         for width: CGFloat in [240, 420] {
-            for mode in ["shared-left", "right", "window-content"] {
+            for mode in ["solo-left", "shared-left", "right", "window-content"] {
                 let application = DeviceStore(preview: true)
                 let model = ConversationWindowModel(application: application, kind: .workspace)
                 precondition(model.window == nil)
@@ -44,12 +44,10 @@ import SwiftUI
                 if mode != "window-content" { model.tools = layout }
                 let content: AnyView
                 switch mode {
-                case "shared-left": content = AnyView(DockAreaView(window: model, side: .left))
+                case "solo-left", "shared-left": content = AnyView(DockAreaView(window: model, side: .left))
                 case "right": content = AnyView(DockAreaView(window: model, side: .right))
                 case "window-content": content = AnyView(DetachedToolContent(kind: .list, window: model))
-                default:
-                    content = AnyView(ConversationListView(window: model, store: model.list,
-                        focused: model.focused.store, placement: .sidebar))
+                default: fatalError("unknown mode \(mode)")
                 }
                 let size = NSSize(width: width, height: 500)
                 let host = NSHostingView(rootView: content.applicationAppearance()
@@ -75,7 +73,9 @@ import SwiftUI
                     let rect = host.convert(button.bounds, from: button)
                     return host.isFlipped ? rect.minY : host.bounds.height - rect.maxY
                 }
-                let headerButtons = buttons.filter { top($0) >= -1 && top($0) < 52 }
+                // A shared list has the tool's title strip above its own row.
+                let rowLimit: CGFloat = mode == "shared-left" ? 52 + PaneChrome.barHeight : 52
+                let headerButtons = buttons.filter { top($0) >= -1 && top($0) < rowLimit }
                 let headerPopups = headerButtons.filter { $0 is NSPopUpButton }
                 let headerPlainButtons = headerButtons.filter { !($0 is NSPopUpButton) }
                 let records = buttons.map { button -> [String: Any] in
@@ -98,14 +98,16 @@ import SwiftUI
                 guard let bitmap = canvas.bitmapImageRepForCachingDisplay(in: canvas.bounds) else { fatalError("无法绘制列表顶部布局") }
                 appearance.performAsCurrentDrawingAppearance { canvas.cacheDisplay(in: canvas.bounds, to: bitmap) }
                 try! bitmap.representation(using: .png, properties: [:])!.write(to: home.appendingPathComponent(name + ".png"))
+                // The list is the same everywhere: its own search, filter and
+                // new conversation; sharing its area adds the tool's title strip above.
                 let shared = mode == "shared-left"
                 require(headerPopups.count == (shared ? 2 : 1) && headerPlainButtons.count == (shared ? 2 : 1),
                         "顶部原生控件类型与数量：\(item)")
-                require(searchFields.count == (shared ? 0 : 1), "列表不重复显示搜索框：\(item)")
+                require(searchFields.count == 1, "列表在任何位置都有且只有自己的搜索框：\(item)")
                 for button in headerButtons {
                     let rect = host.convert(button.bounds, from: button)
                     require(rect.width > 0 && rect.height > 0 && rect.minX >= -1 && rect.maxX <= width + 1
-                        && top(button) + rect.height <= 52, "原生控件应在自己的顶部行内：\(item)")
+                        && top(button) + rect.height <= rowLimit, "原生控件应在自己的顶部行内：\(item)")
                 }
                 model.list.close()
                 model.focused.store.close()
@@ -115,5 +117,5 @@ import SwiftUI
     precondition(NSApp.windows.isEmpty && !NSApp.isActive)
     try! failures.joined(separator: "\n").write(to: home.appendingPathComponent("sidebar-failures.txt"), atomically: true, encoding: .utf8)
     precondition(failures.isEmpty, "列表离屏检查失败：\(failures.joined(separator: "\n"))")
-    FileHandle.standardError.write(Data("PASS sidebar layout-only: 12 unwindowed production panel/block header captures; native control type counts, search field counts, top-row bounds; zero windows/models. Action AX labels and List rows are unavailable without windows; semantic identity and behavior require separate real-app evidence. Floating content is not a panel interaction.\n".utf8))
+    FileHandle.standardError.write(Data("PASS sidebar layout-only: 16 unwindowed production list header captures (alone, shared, right, own window); native control type counts, search field counts, top-row bounds; zero windows/models. Action AX labels and List rows are unavailable without windows; semantic identity and behavior require separate real-app evidence. Floating content is not a panel interaction.\n".utf8))
 }

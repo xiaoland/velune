@@ -40,6 +40,23 @@ import SwiftUI
         note("PASS pane grid: group views survive splits and closes, closed groups leave, shares follow the layout")
     }
     do {
+        // Visibility is whether an area is open and which area a tool is in: an open area always shows a tool.
+        var tools = ToolWindowLayout()
+        precondition(tools.isOpen(.left) && !tools.isOpen(.right) && !tools.isOpen(.bottom), "默认只有左区打开")
+        tools.hide(.list)
+        precondition(!tools.isOpen(.left) && tools[.list].shown && tools[.list].place == .docked(.left), "隐藏区内最后一个工具即收起该区，工具留在区内")
+        tools.toggleArea(.left)
+        precondition(tools.tools(in: .left) == [.list], "重开该区带回它的工具")
+        tools.move(.outline, to: .docked(.left))
+        tools.hide(.outline)
+        precondition(tools.tools(in: .left) == [.list] && tools.isOpen(.left), "区内还有其他工具时只移走被隐藏的那个")
+        tools.move(.list, to: .docked(.right))
+        precondition(!tools.isOpen(.left) && tools.tools(in: .right) == [.list], "工具移走后空出的区收起")
+        tools.toggleArea(.left)
+        precondition(tools.tools(in: .left) == [.outline], "重开空出的区带回留在那里的工具")
+        note("PASS dock visibility: an open area always shows a tool, hiding its last tool or moving it away closes the area")
+    }
+    do {
         // The bottom area opens and closes beside the same panes, keeps its height as the window resizes, and its tools keep their views.
         let model = ConversationWindowModel(application: device, kind: .workspace)
         model.start(restoring: nil, seed: WindowSeed(conversationID: "sample-0"))

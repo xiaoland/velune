@@ -87,7 +87,7 @@ import ObjectiveC
     let preferences = UserDefaults.standard.volatileDomain(forName: UserDefaults.argumentDomain)
     var synthetic = preferences
     synthetic["toolbarButtonsHidden"] = [String]()
-    synthetic["toolbarButtonOrder"] = ["listFilter", "newConversation"]
+    synthetic["toolbarButtonOrder"] = [String]()
     UserDefaults.standard.setVolatileDomain(synthetic, forName: UserDefaults.argumentDomain)
     var evidence: [[String: Any]] = []
     for dark in [false, true] {
@@ -136,48 +136,24 @@ import ObjectiveC
             func indices(_ id: ConversationToolbar.Item) -> [Int] {
                 items.indices.filter { items[$0].itemIdentifier == id.identifier && !items[$0].isHidden }
             }
-            let filter = indices(.listFilter), create = indices(.newConversation)
             let back = indices(.back), forward = indices(.forward)
-            if mode == "solo" {
-                require(filter.count == 1 && create.count == 1, "sidebar action identities must resolve uniquely: \(name)")
-                for index in filter + create {
-                    require(sidebarOwns(action: index, separator: separator.0, matchesOuterSplit: true), "action belongs to Content toolbar: \(name)")
-                }
-            } else if mode == "shared" {
-                require(filter.isEmpty && create.isEmpty, "shared block owns its filter and new conversation: \(name)")
-                require(identifiers(sidebarView).contains("conversation-list-filter"), "shared block filter remains rendered")
-            } else {
-                require(filter.isEmpty && create.isEmpty, "hidden/right list must not leak actions into titlebar: \(name)")
-            }
+            // The sidebar's part of the toolbar holds the sidebar button alone;
+            // the list keeps its own search, filter and new conversation wherever it is.
+            let sidebarPart = items.prefix(separator.0).map(\.itemIdentifier)
+            require(sidebarPart == [.toggleSidebar], "the sidebar part holds only the sidebar button: \(name), \(sidebarPart)")
             require(back.count == 1 && forward.count == 1, "navigation identities must resolve uniquely: \(name)")
             require(back[0] > separator.0 && forward[0] > separator.0, "navigation belongs to detail partition")
-            if mode == "solo" {
-                for index in create {
-                    guard let view = items[index].view else { fail("missing new conversation view: \(name)") }
-                    require(descendants(view).contains(where: { $0 is NSButton && !$0.isHiddenOrHasHiddenAncestor }),
-                            "new conversation must render as a button: \(name)")
-                }
-                for index in filter + create {
-                    require(toolbar.visibleItems?.contains(where: { $0 === items[index] }) == true,
-                            "sidebar action must remain directly visible, not in global overflow: \(name)")
-                    guard let view = items[index].view else { fail("missing visible sidebar action view") }
-                    let rect = view.convert(view.bounds, to: nativeFrame)
-                    require(rect.width > 0 && rect.minX >= sidebarRect.minX && rect.maxX <= sidebarRect.maxX,
-                            "visible action must fit the actual sidebar: \(name), \(rect), \(sidebarRect)")
-                }
+            if mode == "solo" || mode == "shared" {
+                let ids = identifiers(sidebarView)
+                require(ids.contains("conversation-list-filter") && ids.contains("conversation-list-new"),
+                        "the list in the sidebar carries its own filter and new conversation: \(name)")
                 guard let searchField = descendants(sidebarView).first(where: { $0 is NSSearchField && !$0.isHiddenOrHasHiddenAncestor }) else {
-                    fail("missing sidebar search field: \(name)")
+                    fail("missing the list's search field: \(name)")
                 }
                 let searchRect = searchField.convert(searchField.bounds, to: nativeFrame)
                 require(searchRect.minX >= sidebarRect.minX && searchRect.maxX <= sidebarRect.maxX,
                         "search field must remain inside the sidebar: \(name)")
-                for index in filter + create {
-                    if let view = items[index].view {
-                        require(searchRect.maxY <= view.convert(view.bounds, to: nativeFrame).minY,
-                                "search must be below the toolbar actions: \(name)")
-                    }
-                }
-                if requestedSidebarWidth != nil { require(sidebarRect.width >= 220, "sole-list sidebar must honor toolbar minimum") }
+                if requestedSidebarWidth != nil { require(sidebarRect.width >= 190, "the sidebar keeps its minimum width") }
             }
             if mode == "solo" || mode == "shared" {
                 for index in back + forward {
@@ -264,6 +240,6 @@ import ObjectiveC
     }
     UserDefaults.standard.setVolatileDomain(preferences, forName: UserDefaults.argumentDomain)
     safe()
-    print("PASS sidebar toolbar: \(evidence.count) production layouts in the AppKit shell, sidebar actions over the sidebar, collapse follows tools and Show/Hide Sidebar, saved widths restored; no presentation or activation")
+    print("PASS sidebar toolbar: \(evidence.count) production layouts in the AppKit shell, the sidebar part holds only its button and the list keeps its own actions, collapse follows tools and Show/Hide Sidebar, saved widths restored; no presentation or activation")
     exit(0)
 }

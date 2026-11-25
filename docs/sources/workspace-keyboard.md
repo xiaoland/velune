@@ -65,3 +65,7 @@
 ## S92
 
 2026-11-23 用户指出此前一直对 Tabbed Interface、Grid Layout 的行为修修补补，还观察到 UI 布局、动画及状态问题（如重启后的工作区恢复），希望从更上游的位置根本解决，并在标签、网格布局与停靠窗口上追求更原生的体验。开发方诊断为：一个窗口由三套布局引擎（`NavigationSplitView`、inspector、自建分屏）分管；分屏视图身份随结构变化而重建；恢复同时依赖 SceneStorage、journal 与工具布局文件，身份由 SwiftUI scene 决定；两端各有一套布局模型。方向为纯值布局模型与单一持久化、AppKit 窗口外壳（`NSSplitViewController` 侧栏／inspector、嵌套 `NSSplitView` 网格、AppKit 标签栏），系统窗口恢复只决定重开哪些窗口。用户答复：“先只处理/思考 Mac。我觉得你的诊断很到位，方向的选择也很合理。不保留吸附浮动面板，收敛为独立窗口、停靠、隐藏就好。是的，最低要求 macOS 14+。AppKit 我没意见。”本条修订 [S25](#s25) 中的浮动与吸附模式。产品归 [工作区布局](../prd/workspace-layout.md#窗口系统)，实施归 [Mac 工作区原生外壳](../../tasks/workspace-native-shell/packet.md)。
+
+## S93
+
+2026-11-25 用户指出当前停靠行为“比较别扭，似乎混杂了 sidebar 和 docking area 两件事”：左区既是 macOS 边栏又是通用停靠区，列表独占左区时筛选与新建会话移进窗口工具栏，在其他位置则是带标题条的块；可见性分为工具是否显示、区是否收起、只显示编辑区三层。开发方建议按 Xcode 的导航器／检查器／调试区理解三区：保留任一工具放任一区；列表在任何位置形态一致，始终带自己的搜索、筛选与新建，工具栏的边栏部分只留边栏按钮；可见性收敛为区是否打开与工具在哪个区两层，隐藏区内最后一个工具即收起该区。用户答复：“I agree with your suggestion, proceed.” 本条修订 [S92](#s92) 之前列表独占左区时动作归窗口工具栏的做法。产品归 [工作区布局](../prd/workspace-layout.md#窗口系统)，实施归 [Mac 工作区原生外壳](../../tasks/workspace-native-shell/packet.md)。

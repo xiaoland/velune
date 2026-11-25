@@ -2257,20 +2257,13 @@ struct WindowSeed: Codable, Hashable {
     func find() {
         let listHasFocus = findAreas[.list]?()?.window === NSApp.keyWindow && focusIsIn(findAreas[.list])
         if listHasFocus || (!commandTab.store.isSideChat && clickedFindArea == .list) {
-            if listIsBlock { listSearchPopover = true } else { listSearchRequest &+= 1 }
+            listSearchRequest &+= 1
         } else { commandTab.beginFind() }
     }
 
     @Published private(set) var listSearchRequest = 0
     /// The list's grouping, filtering and sorting.
     @Published var listBrowser = ConversationBrowser()
-    /// The search popover of the list's title bar.
-    @Published var listSearchPopover = false
-    /// The list shares its area with other tools, so it is a block with a title bar.
-    var listIsBlock: Bool {
-        guard let side = tools[.list].place.side else { return false }
-        return tools.tools(in: side).count > 1
-    }
     private var findAreas: [ToolWindowKind: () -> NSView?] = [:]
     /// The tool window last clicked in, if the last click was in one: clicking a
     /// conversation in the list moves the focus on to the composer, but the

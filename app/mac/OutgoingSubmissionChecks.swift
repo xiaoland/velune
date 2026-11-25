@@ -66,7 +66,7 @@ import VeluneBindings
     let preferences = UserDefaults.standard.volatileDomain(forName: UserDefaults.argumentDomain)
     var synthetic = preferences
     synthetic["toolbarButtonsHidden"] = [String]()
-    synthetic["toolbarButtonOrder"] = ["listFilter", "newConversation"]
+    synthetic["toolbarButtonOrder"] = [String]()
     UserDefaults.standard.setVolatileDomain(synthetic, forName: UserDefaults.argumentDomain)
     var evidence: [[String: Any]] = []
     for dark in [false, true] {

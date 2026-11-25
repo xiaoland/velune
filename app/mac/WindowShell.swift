@@ -8,8 +8,6 @@ enum ConversationToolbar {
     static let id = "conversation-window"
 
     enum Item: String, CaseIterable {
-        case listFilter = "list-filter"
-        case newConversation = "new-conversation"
         case back, forward, device, operations
         case reload, outline
         case subAgents = "sub-agents"
@@ -27,8 +25,6 @@ enum ConversationToolbar {
             case .pin: self = .pin
             case .split: self = .split
             case .problems: self = .problems
-            case .listFilter: self = .listFilter
-            case .newConversation: self = .newConversation
             }
         }
     }
@@ -130,7 +126,6 @@ enum ConversationToolbar {
     /// The areas as the window's tools have them.
     func sync(animated: Bool) {
         let tools = model.tools
-        sidebarItem.minimumThickness = tools.tools(in: .left) == [.list] ? 220 : 190
         for (item, side, width) in [(sidebarItem, DockSide.left, tools.leftWidth), (inspectorItem, .right, tools.rightWidth)] {
             let collapsed = tools.tools(in: side).isEmpty
             // A closed area opens at its saved width; the split keeps it after that.
@@ -228,8 +223,9 @@ enum ConversationToolbar {
     private var symbolName: String?
 }
 
-/// The conversation window's toolbar: the sidebar's list actions over the
-/// sidebar, navigation, and the editor's buttons at the trailing end. Its
+/// The conversation window's toolbar: the sidebar button over the sidebar,
+/// navigation, and the editor's buttons at the trailing end. The list's
+/// own actions stay with the list wherever it is. Its
 /// buttons follow the window: the focused tab, its conversation, where the
 /// tools are. From macOS 26 the system's Customize Toolbar… arranges it;
 /// before that the settings' choices do (`ToolbarSettings`).
@@ -282,22 +278,17 @@ enum ConversationToolbar {
 
     // MARK: Arrangement
 
-    /// The items in their places: the sidebar's before its tracking
-    /// separator, the editor's at the trailing end.
+    /// The items in their places: the sidebar button before the sidebar's
+    /// tracking separator, the editor's at the trailing end.
     private var arrangement: [NSToolbarItem.Identifier] {
-        let sidebar: [Item], editor: [Item]
+        let editor: [Item]
         if #available(macOS 26, *) {
-            sidebar = [.listFilter, .newConversation]
             editor = [.reload, .outline, .subAgents, .backgroundTasks, .pin, .split, .problems]
         } else {
-            let settings = ToolbarSettings.shared
-            sidebar = settings.shown(in: .sidebar).compactMap(Item.init)
-            editor = settings.shown(in: .detail).compactMap(Item.init)
+            editor = ToolbarSettings.shared.shown.compactMap(Item.init)
         }
         let navigation: [Item] = [.back, .forward, .device, .operations]
-        var identifiers: [NSToolbarItem.Identifier] = [.toggleSidebar]
-        identifiers += sidebar.map(\.identifier)
-        identifiers.append(.sidebarTrackingSeparator)
+        var identifiers: [NSToolbarItem.Identifier] = [.toggleSidebar, .sidebarTrackingSeparator]
         identifiers += navigation.map(\.identifier)
         identifiers.append(.flexibleSpace)
         identifiers += editor.map(\.identifier)
@@ -327,9 +318,6 @@ enum ConversationToolbar {
         item.label = title(kind)
         item.paletteLabel = title(kind)
         switch kind {
-        case .listFilter:
-            item.view = hosting(ConversationFilterMenu(window: model, store: model.list)
-                .menuStyle(.borderlessButton).menuIndicator(.visible).labelStyle(.iconOnly).fixedSize())
         case .device:
             let name = model.device.map { DeviceHub.shared?.name(of: $0) ?? "远程设备" } ?? ""
             item.view = hosting(Label(name, systemImage: "desktopcomputer").labelStyle(.titleAndIcon).foregroundStyle(.secondary).fixedSize())
@@ -362,8 +350,6 @@ enum ConversationToolbar {
 
     private func title(_ item: Item) -> String {
         switch item {
-        case .listFilter: "筛选与分组"
-        case .newConversation: "新建会话"
         case .back: "后退"
         case .forward: "前进"
         case .device: "设备"
@@ -380,7 +366,6 @@ enum ConversationToolbar {
 
     private func symbol(_ item: Item) -> String {
         switch item {
-        case .newConversation: "square.and.pencil"
         case .back: "chevron.backward"
         case .forward: "chevron.forward"
         case .reload: "arrow.clockwise"
@@ -390,7 +375,7 @@ enum ConversationToolbar {
         case .pin: "pin"
         case .split: "rectangle.split.2x1"
         case .problems: "exclamationmark.triangle"
-        case .listFilter, .device, .operations: ""
+        case .device, .operations: ""
         }
     }
 
@@ -398,7 +383,6 @@ enum ConversationToolbar {
         switch item {
         case .back: "conversation-back"
         case .forward: "conversation-forward"
-        case .newConversation: "conversation-new-conversation"
         default: "conversation-toolbar-\(item.rawValue)"
         }
     }
@@ -408,7 +392,6 @@ enum ConversationToolbar {
     private func perform(_ item: Item) {
         let tab = model.focused
         switch item {
-        case .newConversation: model.createConversation()
         case .back: tab.goBack()
         case .forward: tab.goForward()
         case .reload: tab.store.reloadFromRuntimes()
@@ -424,7 +407,7 @@ enum ConversationToolbar {
         // As in Xcode: Option-click divides downward.
         case .split: model.split(NSEvent.modifierFlags.contains(.option) ? .vertical : .horizontal)
         case .problems: model.openScene?("problems")
-        case .listFilter, .device, .operations: break
+        case .device, .operations: break
         }
         refresh()
     }
@@ -465,11 +448,8 @@ enum ConversationToolbar {
         let shortcuts = KeyboardShortcutSettings.shared
         let tools = model.tools
         let focus = model.hasConversationFocus
-        let listInSidebar = tools.tools(in: .left).contains(.list) && !model.listIsBlock
         let outlineUnavailable = !focus || store.pendingConversationID != nil || store.transcript.userRows.isEmpty
 
-        setHidden(.listFilter, !listInSidebar)
-        setHidden(.newConversation, !listInSidebar)
         setHidden(.device, model.device == nil)
         setHidden(.operations, model.aggregated.conversationManagement.isEmpty)
         setHidden(.subAgents, !(focus && (tools[.agents].place != .builtIn || store.hasLinkedAgents)))
@@ -478,8 +458,6 @@ enum ConversationToolbar {
         setHidden(.pin, !(!model.hasToolWindows || model.pinned))
         setHidden(.problems, model.list.device.problems.isEmpty)
 
-        update(.newConversation, enabled: !model.application.enabledRuntimeInstances.isEmpty,
-               help: shortcuts.help("新建会话", .newConversation))
         update(.back, enabled: focus && !store.backHistory.isEmpty, help: shortcuts.help("回到之前查看的会话", .back))
         update(.forward, enabled: focus && !store.forwardHistory.isEmpty, help: shortcuts.help("前往后退前的会话", .forward))
         update(.reload, enabled: store.canReloadFromRuntimes, help: shortcuts.help("重新读取会话、控制状态和输入执行配置；右键可刷新设备状态", .reload))

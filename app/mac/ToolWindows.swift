@@ -88,10 +88,15 @@ enum ToolChoice: Hashable {
     }
 }
 
-/// Where a window's tool windows are, restored with the window. A docked
-/// tool shows while it is shown and its area is not collapsed.
+/// Where a window's tool windows are, restored with the window. Visibility
+/// is two things: whether an area is open, and which area a tool is in. An
+/// area is open while it shows a tool: hiding the last one there closes the
+/// area, which keeps the tool for when it opens again, and one with nothing
+/// left in it is closed. A tool hidden beside others has left the area and
+/// keeps it to come back to.
 struct ToolWindowLayout: Codable, Equatable {
     var tools: [ToolWindowKind: ToolWindowState] = [.list: ToolWindowState(place: .docked(.left)), .outline: ToolWindowState(place: .builtIn), .composer: ToolWindowState(place: .builtIn)]
+    /// The areas closed by hand; one with nothing to show is closed as well.
     var collapsed: Set<DockSide> = []
     /// Nil in older saved layouts means the default split presentation.
     var sideChatPresentation: SideChatPresentation?
@@ -146,9 +151,19 @@ struct ToolWindowLayout: Codable, Equatable {
     }
 
     /// The composer, which a pane cannot do without, goes back to the panes.
+    /// The last tool an area shows closes the area instead, and comes back with it.
     mutating func hide(_ kind: ToolWindowKind) {
-        if kind == .composer { self[kind].place = .builtIn } else { self[kind].shown = false }
+        if let side = self[kind].place.side, tools(in: side) == [kind], kind != .composer {
+            collapse(side)
+        } else if kind == .composer {
+            self[kind].place = .builtIn
+        } else {
+            self[kind].shown = false
+        }
     }
+
+    /// Whether an area is open; an open one shows at least one tool.
+    func isOpen(_ side: DockSide) -> Bool { !tools(in: side).isEmpty }
 
     mutating func collapse(_ side: DockSide) {
         collapsed.insert(side)
@@ -163,7 +178,7 @@ struct ToolWindowLayout: Codable, Equatable {
     }
 
     mutating func toggleArea(_ side: DockSide) {
-        if tools(in: side).isEmpty { showArea(side) } else { collapse(side) }
+        if isOpen(side) { collapse(side) } else { showArea(side) }
     }
 
     /// Collapse every area showing something, or open them again.
