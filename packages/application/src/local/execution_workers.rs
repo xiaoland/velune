@@ -787,6 +787,7 @@ impl CoreRuntime {
             .any(|session| {
                 matches!(session.active_state, ActiveState::Pending(_))
                     || session.native_controls.pending()
+                    || session.claude_submission.is_some()
                     || session.pi_submission.is_some()
                     || session.pi_edit.is_some()
                     || session.pi_control.is_some()

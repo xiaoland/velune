@@ -1210,7 +1210,9 @@ fn pi_composed_send_waits_for_exact_prompt_receipt_and_rejects_before_delivery()
         fs::write(fixture.0.join("release-composed-send"), []).unwrap();
         let outcome = reply.recv_timeout(Duration::from_secs(5)).unwrap();
         if rejected {
-            let error = outcome.expect_err("explicit Pi rejection must fail the submission");
+            let Err(error) = outcome else {
+                panic!("explicit Pi rejection must fail the submission");
+            };
             assert_ne!(error.code, "message_delivery_accepted");
             let failed = snapshot(&service, id);
             assert_eq!(failed.run_state, RunState::Failed);

@@ -27,6 +27,17 @@ for line in sys.stdin:
         text = record['message']['content'][0]['text']
         with (root / 'steer-wire').open('a') as log:
             log.write(text + '\n')
+        if record.get('uuid'):
+            lifecycle = {'type': 'command_lifecycle', 'command_uuid': record['uuid'],
+                         'session_id': record['session_id']}
+            if text == 'same settings follow-up':
+                print(json.dumps(dict(lifecycle, state='queued')), flush=True)
+                (root / 'composed-queued').touch()
+                deadline = time.monotonic() + 8
+                while not (root / 'composed-release').exists():
+                    if time.monotonic() >= deadline: sys.exit(2)
+                    time.sleep(0.005)
+            print(json.dumps(dict(lifecycle, state='started')), flush=True)
         if text in ('synthetic insert', 'synthetic queue insert'):
             (root / text.replace(' ', '-')).touch()
         if text in ('start background work', 'same settings follow-up'):
@@ -3404,7 +3415,20 @@ fn claude_background_send_reuses_inherited_options_and_queues_saved_configuratio
         Some(crate::SubmissionReceipt::Sending)
     );
     wait_idle_with_work();
-    let continued = send(control_turn("same settings follow-up"));
+    let continued = std::thread::scope(|scope| {
+        let pending = scope.spawn(|| send(control_turn("same settings follow-up")));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !fixture.0.join("composed-queued").exists() {
+            assert!(Instant::now() < deadline, "Claude did not queue the composed input");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(!pending.is_finished(), "a queued native command cannot settle the send");
+        assert!(control_snapshot(&app, &id).messages.iter().all(|message| {
+            !message.blocks.iter().any(|block| matches!(block, crate::DeliveredBlock::Text { text } if text == "same settings follow-up"))
+        }));
+        fs::write(fixture.0.join("composed-release"), []).unwrap();
+        pending.join().unwrap()
+    });
     assert_eq!(
         continued.submission_receipt,
         Some(crate::SubmissionReceipt::Sending)

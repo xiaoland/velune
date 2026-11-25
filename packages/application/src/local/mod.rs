@@ -273,6 +273,7 @@ pub(crate) use client_state::ClientState;
 mod agent_uri;
 mod authentication_coordination;
 mod browsing;
+mod claude_submission;
 mod collaboration;
 mod composer_choices;
 mod composer_target;
@@ -912,6 +913,7 @@ impl CoreRuntime {
         let result = self.poll_runtime_events();
         self.harvest_native_controls();
         self.advance_native_submissions();
+        self.advance_claude_submission();
         self.advance_pi_control();
         self.advance_pi_submission();
         self.advance_pi_edit();

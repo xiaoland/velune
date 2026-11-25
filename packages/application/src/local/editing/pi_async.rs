@@ -146,32 +146,27 @@ impl CoreRuntime {
         let Some(submission) = self.session.pi_submission.take() else {
             return;
         };
-        let result = match self.session.pi() {
-            Ok(pi) => pi.take_confirmation(submission.native),
-            Err(error) => Err(error),
+        let ActiveState::Pi(pi) = &mut self.session.active_state else {
+            self.execution_results.insert(submission.application, Err(RuntimeError::operation_indeterminate(
+                "Pi 确认输入前，原运行时连接已改变",
+            )));
+            return;
         };
+        let result = pi.take_confirmation(submission.native);
         match result {
             Ok(None) => self.session.pi_submission = Some(submission),
             Ok(Some(Ok(()))) => {
+                if let Some(id) = self.session.conversation_id().map(str::to_owned) {
+                    self.restore_archived(&id);
+                }
                 self.execution_results
                     .insert(submission.application, Ok(ExecutionSuccess::default()));
             }
             Ok(Some(Err(error))) | Err(error) => {
-                let failure = match &error {
-                    // A matching Pi response explicitly rejected this prompt,
-                    // or the transport proved that it was never sent.
-                    pi::Error::CommandFailed(_) => {
-                        RuntimeError::context("Pi 明确拒绝输入", &error)
-                    }
-                    pi::Error::Sdk(ref detail) if detail.contains("尚未发送") => {
-                        RuntimeError::context("Pi 输入未发送", &error)
-                    }
-                    // EOF, timeout and scope loss do not prove that Pi missed
-                    // the prompt. Do not invite an automatic duplicate send.
-                    _ => RuntimeError::operation_indeterminate(format!("Pi 输入回执：{error}")),
-                };
-                self.execution_results
-                    .insert(submission.application, Err(failure));
+                self.execution_results.insert(
+                    submission.application,
+                    Err(dependency_error("Pi 输入回执", error)),
+                );
             }
         }
     }

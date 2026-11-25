@@ -91,10 +91,13 @@ import VeluneBindings
             let expected = store.transcript.rows.map(\.id)
             let expectedSet = Set(expected)
             let cells = descendants(host.view).compactMap { $0 as? TranscriptCellView }.filter { !$0.isHidden && $0.rowID != nil }
-            require(!cells.contains { $0.rowID?.hasPrefix("submission:") == true },
-                    "no local submission may render in the transcript: \(name)")
+            let sending = store.transcript.rows.filter(\.sending).map(\.id)
+            let nativeSending = cells.filter { cell in
+                descendants(cell).compactMap { $0 as? NSTextView }.contains { !$0.isHidden && $0.string == "发送中" }
+            }.compactMap(\.rowID)
+            require(nativeSending == sending, "sending caption must match the staged message: \(name), \(nativeSending), \(sending)")
             let nativeIDs = cells.compactMap(\.rowID).filter(expectedSet.contains)
-            evidence.append(["case": name, "transcriptIDs": expected, "nativeIDs": nativeIDs,
+            evidence.append(["case": name, "transcriptIDs": expected, "nativeIDs": nativeIDs, "sendingIDs": nativeSending,
                              "canonicalQueueIDs": store.followUp.queue.map(\.id),
                              "pendingQueueIDs": store.pendingQueuedMessages.map(\.id),
                              "nativeTableRowCounts": descendants(host.view).compactMap { ($0 as? NSTableView)?.numberOfRows },

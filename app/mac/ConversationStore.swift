@@ -129,6 +129,7 @@ final class ConversationStore: ObservableObject {
         seenComposerChoicesRevision = device.composerChoicesRevision
         outgoing.changes.sink { [weak self] in
             guard let self else { return }
+            transcript.showSubmission(outgoing.message)
             objectWillChange.send()
         }.store(in: &subscriptions)
         device.objectWillChange.sink { [weak self] in
@@ -1269,8 +1270,8 @@ final class ConversationStore: ObservableObject {
     var attachmentsDirectory: URL {
         (transport?.stateDirectory ?? FileManager.default.temporaryDirectory).appendingPathComponent("attachments", isDirectory: true)
     }
-    /// Begins submission and shows its progress in the composer. The message
-    /// list follows the Core projection. `onAccepted` receives the
+    /// Begins submission and immediately shows it in the message list.
+    /// `onAccepted` receives the
     /// conversation that took the turn: sending in a new conversation replaces
     /// its unsent identity with the created one. `onFailure` runs when it was not
     /// sent and receives any identity already created by this operation.
@@ -1303,7 +1304,7 @@ final class ConversationStore: ObservableObject {
         composerRequest = .sending
         let cancellation = VeluneSendCancellation()
         pendingSendCancellation = cancellation
-        let submission = outgoing.begin(text: text, attachments: attachments)
+        let submission = outgoing.begin(text: text, attachments: attachments, sendingFrom: snapshot)
         let creating = isDraft
         let ticket = SendProjectionTicket(scope: projectionScope(), input: input, device: device)
         let temporary = isSideChat
@@ -1367,9 +1368,10 @@ final class ConversationStore: ObservableObject {
             if AppProblem.failure(error).code == "message_delivery_accepted" {
                 // Delivery was accepted even though the projection failed.
                 // Honour a pending stop before a running snapshot arrives.
-                self.outgoing.accept(submission, receipt: nil, hasSnapshot: false)
+                self.outgoing.accept(submission, receipt: nil, hasSnapshot: false, submittedMessageID: nil)
                 self.acceptedSubmissions &+= 1
                 onAccepted?(acceptedID)
+                if generation == ticket.scope.storeGeneration { requestProjectionResync() }
                 if cancellation.isCancelled() {
                     self.stopRequested = true
                     self.requestControl("execution", operation: { try transport.cancel(runtimeID: target, conversationID: acceptedID) },
@@ -1395,7 +1397,9 @@ final class ConversationStore: ObservableObject {
         return true
     }
     private func acceptSubmission(_ id: String, receipt: SnapshotResult) {
-        outgoing.accept(id, receipt: receipt.submissionReceipt, hasSnapshot: receipt.snapshot != nil)
+        outgoing.accept(id, receipt: receipt.submissionReceipt, hasSnapshot: receipt.snapshot != nil, submittedMessageID: receipt.submittedMessageId)
+        // A newer poll may already have installed the echo before this receipt.
+        if let snapshot { outgoing.reconcile(snapshot, afterReceipt: true) }
     }
     /// Stop the sub-agents the loaded conversation started; they may run after its turn.
     func stopSubAgents() {
@@ -1484,11 +1488,13 @@ final class ConversationStore: ObservableObject {
     }
     var canSteer: Bool { canQueue && followUp.canSteer }
     /// Into the running turn with the choices captured when the user submits.
-    func steer(text: String, attachments: [String] = [], next: NextTurn? = nil, onAccepted: (() -> Void)? = nil) {
+    @discardableResult
+    func steer(text: String, attachments: [String] = [], next: NextTurn? = nil, onAccepted: (() -> Void)? = nil) -> Bool {
         guard canSteer, let next = next ?? nextTurn, let runtimeID = projectionRuntimeID,
-              let conversationID = loadedConversationID, let transport else { return }
+              let conversationID = loadedConversationID, let transport else { return false }
         let choice = next.choice
         let turn = ComposedTurn(text: text, effort: choice.effort, permissionMode: choice.permissionMode, attachments: attachments)
+        let submission = outgoing.begin(text: text, attachments: attachments, sendingFrom: snapshot)
         let scope = projectionScope()
         composerRequest = .sending
         enqueueSnapshot({
@@ -1496,10 +1502,19 @@ final class ConversationStore: ObservableObject {
                                     targetRuntimeID: next.runtimeId, selection: choice.model)
         }, scope: scope, consumeReceipt: { [self] result in
             if generation == scope.storeGeneration { composerRequest = nil }
-            if case .failure(let error) = result, AppProblem.failure(error).code != "message_delivery_accepted" { return }
+            switch result {
+            case .success(let value): acceptSubmission(submission, receipt: value)
+            case .failure(let error):
+                if AppProblem.failure(error).code == "message_delivery_accepted" {
+                    outgoing.accept(submission, receipt: nil, hasSnapshot: false, submittedMessageID: nil)
+                } else if outgoing.fail(submission) {
+                    return
+                }
+            }
             acceptedSubmissions &+= 1
             onAccepted?()
         })
+        return true
     }
     /// Whether the user message may be edited now, and how. The edit goes to
     /// the conversation's own runtime with the next turn's choices.
@@ -1949,7 +1964,7 @@ final class ConversationStore: ObservableObject {
         if value.conversation.id != snapshot?.conversation.id || value.contextRuntimeID != snapshot?.contextRuntimeID { loadedPayloads.removeAll() }
         value.messages = withLoadedPayloads(value.messages)
         payloadDemand.formIntersection(value.messages.filter(\.hasDeferredPayload).map(\.id))
-        if coreDelivery { outgoing.reconcile(value.followUp.queue) }
+        if coreDelivery { outgoing.reconcile(value) }
         guard snapshot != value else { return }
         for (key, draft) in interactionDrafts where key.conversationID == value.conversation.id && !value.pendingInteractions.contains(where: { $0.id == key.interactionID }) {
             draft.clear()
@@ -2332,13 +2347,76 @@ extension ConversationStore {
             runtimeType: device.runtimeTypes.first { $0.id == .codex166 }, providers: [],
             catalog: [model], turnSettings: [], conversationRuntimeId: runtimeID, modelRecordKey: nil,
             kept: TurnChoice(model: native), runtimeChoices: nil, newConversation: .chosen(choice: TurnChoice(model: native))))
+        let tab = ConversationTab(store: store, start: {})
+        let composer = tab.composer
+        device.composerInputs.poll(force: true)
+        wait { device.composerInputs.ownerID != nil }
+        store.requestComposerTarget()
+        wait { store.composerTargetIssue == nil && store.canSend }
+        let attachment = home.appendingPathComponent("restore-on-rejection.txt")
+        try Data("isolated attachment".utf8).write(to: attachment)
+        let rejected = "created-failure"
+        let history = store.transcript.rows.map(\.id)
+        composer.restoreSavedDraft(.init(text: rejected, attachments: [attachment]))
+        guard let conversationID = store.loadedConversationID else {
+            throw TransportError.rejected("late echo fixture lost its opened conversation")
+        }
+        device.composerInputs.bind(conversationID, input: composer)
+        wait { tab.submission(using: composer, next: target).canSubmitDraft }
+        let firstSubmission = tab.submission(using: composer, next: target)
+        let firstIssue = ComposerContext(tab: tab, model: composer).inputIssue
+        tab.send(using: composer, next: target)
+        guard composer.isEmpty, store.transcript.rows.last?.sending == true else {
+            throw TransportError.rejected("clicking Send must stage the draft; action=\(firstSubmission.action), enabled=\(firstSubmission.enabled), issue=\(firstIssue ?? "none")")
+        }
+        wait { !store.isLoading }
+        guard composer.submission == rejected, composer.attachments == [attachment],
+              store.transcript.rows.map(\.id) == history, store.acceptedSubmissions == 0 else {
+            throw TransportError.rejected("rejected input must disappear from the list and restore its exact draft")
+        }
+        let retained = Set(device.composerInputs.state?.inputs.map(\.id) ?? [])
+        wait { store.composerTargetIssue == nil && store.canSend }
+        tab.send(using: composer, next: target)
+        guard store.transcript.rows.last?.sending == true else {
+            throw TransportError.rejected("retry must stage the retained input")
+        }
+        composer.restoreSavedDraft(.init(text: "new draft while sending", attachments: []))
+        func savedFailedInput() -> Bool {
+            device.composerInputs.state?.inputs.contains { row in
+                guard !retained.contains(row.id), let id = UUID(uuidString: row.id),
+                      let saved = device.composerInputs.draft(id) else { return false }
+                return saved.text == rejected && saved.attachments.map(\.lastPathComponent) == [attachment.lastPathComponent]
+            } == true
+        }
+        wait { !store.isLoading && savedFailedInput() }
+        guard savedFailedInput(), composer.submission == "new draft while sending",
+              store.transcript.rows.map(\.id) == history else {
+            throw TransportError.rejected("a late failure must preserve the new draft and save the original input")
+        }
+
+        // The rejected attachment uses the compatibility send path and
+        // invalidates that synthetic process's control observation. Exercise
+        // the independent late-echo case on another warm native conversation.
+        let warmSeed = try transport.createAndSend(runtimeID: runtimeID, cwd: home.path, selection: native,
+            turn: ComposedTurn(text: "synthetic seed", effort: nil, permissionMode: nil, attachments: []),
+            onCreated: { _ in })
+        guard let warmID = warmSeed.snapshot?.conversation.id, warmID != conversationID else {
+            throw TransportError.rejected("late echo needs a separate warm fixture")
+        }
+        store.adopt(warmSeed)
+        store.pollProjection()
+        wait { !store.pollPending && store.snapshot?.runState == .idle }
         let prompt = "synthetic late user echo"
         func lastUserRowID() -> String? {
             store.transcript.rows.last(where: { $0.message.role == .user })?.id
         }
-        let previous = lastUserRowID()
-        guard previous != nil, store.snapshot?.runState == .idle, store.send(text: prompt, next: target) else {
-            throw TransportError.rejected("late echo fixture could not send into the warm conversation")
+        composer.restoreSavedDraft(.init(text: prompt, attachments: []))
+        device.composerInputs.bind(warmID, input: composer)
+        wait { tab.submission(using: composer, next: target).canSubmitDraft }
+        tab.send(using: composer, next: target)
+        guard let staged = store.transcript.rows.last, staged.id.hasPrefix("submission:"),
+              staged.message.copiedText == prompt, staged.sending, composer.isEmpty else {
+            throw TransportError.rejected("send must synchronously show its own in-flight message")
         }
         wait { store.acceptedSubmissions == 1 && !store.isLoading }
         device.nativeUserMessageWakes.send("unrelated-conversation")
@@ -2348,18 +2426,20 @@ extension ConversationStore {
         // Release after both of the previous implementation's reads would
         // have fired. This Store has no periodic timer.
         RunLoop.main.run(until: Date().addingTimeInterval(0.5))
-        guard store.acceptedSubmissions == 1, lastUserRowID() == previous, store.isGenerating else {
-            throw TransportError.rejected("an ACK alone must not add a transcript row")
+        guard store.acceptedSubmissions == 1, lastUserRowID() == staged.id,
+              store.transcript.rows.last?.sending == false, store.isGenerating else {
+            throw TransportError.rejected("ACK must remove the sending badge without hiding the bubble while waiting for native history")
         }
         let released = ProcessInfo.processInfo.systemUptime
         try Data().write(to: home.appendingPathComponent("release-user-echo"))
-        wait { lastUserRowID() != previous }
+        wait { lastUserRowID() != staged.id }
         let matching = store.transcript.rows.filter { $0.message.role == .user && $0.message.copiedText == prompt }
-        guard matching.count == 1, lastUserRowID() == matching.first?.id, store.isGenerating else {
+        guard matching.count == 1, lastUserRowID() == matching.first?.id,
+              matching.first?.id.hasPrefix("submission:") == false, store.isGenerating else {
             throw TransportError.rejected("expected one native input row before any assistant reply")
         }
         let elapsedMS = Int((ProcessInfo.processInfo.systemUptime - released) * 1000)
-        print("PASS Core native wake delivered one user row \(elapsedMS)ms after release, with no periodic or manual poll")
+        print("PASS Composer send: immediate pending row, native rejection restored text and attachment, ACK removed badge, native wake replaced row in \(elapsedMS)ms without polling")
     }
 
     /// Real Store → Transport → Core → warm Codex owner. No AppKit lifecycle.
@@ -3300,7 +3380,8 @@ extension ConversationStore {
                 messageIds: messages.map(\.id), messages: messages, revision: sequence, conversation: summary,
                 contextRuntimeId: "sample-instance", resourceId: nil, modelRecordKey: nil, runState: runState,
                 transcriptTurns: [], usage: .init(), transcriptItems: messages.map { .message(id: "message:" + $0.id, messageId: $0.id) },
-                transcriptOutline: [], transcriptMessageIdentities: messages.map { .init(id: "message:" + $0.id, messageId: $0.id) },
+                transcriptOutline: messages.map { .init(id: "message:" + $0.id, messageId: $0.id) },
+                transcriptMessageIdentities: messages.map { .init(id: "message:" + $0.id, messageId: $0.id) },
                 messageIdentityConfirmations: [], pendingInteractions: [],
                 actions: .init(inputAccess: .editable, canSend: runState == .idle, canCancel: runState == .running, canSwitch: false),
                 followUp: followUp, subAgents: [], collaborators: [])
@@ -3351,9 +3432,9 @@ extension ConversationStore {
         inspect(window, "accepted-queue")
 
         apply(snapshot(3))
-        let racing = store.outgoing.begin(text: "忙闲竞态：核心将这次发送实际接纳为排队。", attachments: [])
+        let racing = store.outgoing.begin(text: "忙闲竞态：核心将这次发送实际接纳为排队。", attachments: [], sendingFrom: store.snapshot)
         store.composerRequest = .sending
-        assertTranscript([history])
+        precondition(store.transcript.rows.last?.id == racing && store.transcript.rows.last?.sending == true)
         precondition(window.focused.submission(using: queueInput).action == .sending)
         inspect(window, "sending-without-native-message")
         let raced = QueuedMessage(id: "queue-race", submissionId: racing, text: "忙闲竞态：核心将这次发送实际接纳为排队。", attachments: [])
@@ -3420,18 +3501,53 @@ extension ConversationStore {
         }
         precondition(store.followUp.queue.isEmpty && queueInput.isEmpty)
         apply(snapshot(10, sent: [immediateNative], runState: .idle))
-        let interrupted = store.outgoing.begin(text: "原生端尚未产生消息就停止。", attachments: [])
+        let interrupted = store.outgoing.begin(text: "原生端尚未产生消息就停止。", attachments: [], sendingFrom: store.snapshot)
         store.composerRequest = .sending
         receipt(interrupted, SnapshotResult(snapshot: snapshot(11, sent: [immediateNative]), submissionReceipt: .sending)) {
             store.composerRequest = nil
         }
-        precondition(store.snapshot?.runState == .running)
-        assertTranscript([history, immediateNative])
+        precondition(store.snapshot?.runState == .running && store.transcript.rows.last?.id == interrupted
+                     && store.transcript.rows.last?.sending == false)
         inspect(window, "accepted-without-native-message")
         apply(snapshot(12, sent: [immediateNative], runState: .idle))
         assertTranscript([history, immediateNative])
         precondition(store.followUp.queue.isEmpty && store.pendingQueuedMessages.isEmpty)
         inspect(window, "stopped-without-native-message")
+
+        try! FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+        let rejectedAttachment = home.appendingPathComponent("notes.txt")
+        try! Data("isolated attachment".utf8).write(to: rejectedAttachment)
+        let rejectedText = "运行时拒绝，恢复正文和附件。"
+        queueInput.restore(rejectedText, attachments: [rejectedAttachment])
+        let rejected = store.outgoing.begin(text: rejectedText, attachments: [rejectedAttachment.path], sendingFrom: store.snapshot)
+        queueInput.clear(submitted: rejectedText, attachments: [rejectedAttachment])
+        let rejectedRevision = queueInput.revision
+        precondition(store.transcript.rows.last?.id == rejected && store.transcript.rows.last?.sending == true
+                     && store.transcript.rows.last?.message.blocks.contains(.file(path: rejectedAttachment.path)) == true
+                     && store.transcript.userRows.count == 2)
+        inspect(window, "sending-with-attachment")
+        var rejectedSettled = false
+        enqueueFixture({ throw TransportError.rejected("运行时明确拒绝此次输入") }, consumeReceipt: { result in
+            guard case .failure = result, store.outgoing.fail(rejected) else { preconditionFailure("rejection must restore the draft") }
+            queueInput.restoreFailed(rejectedText, attachments: [rejectedAttachment], revision: rejectedRevision)
+            rejectedSettled = true
+        })
+        let rejectionDeadline = Date().addingTimeInterval(8)
+        while !rejectedSettled, Date() < rejectionDeadline { RunLoop.main.run(until: Date().addingTimeInterval(0.01)) }
+        precondition(rejectedSettled && queueInput.submission == rejectedText && queueInput.attachments == [rejectedAttachment])
+        assertTranscript([history, immediateNative])
+        inspect(window, "rejected-draft-restored")
+
+        let early = store.outgoing.begin(text: immediateInput, attachments: [], sendingFrom: store.snapshot)
+        // The exact same text from a previous turn must not consume the new staged row.
+        precondition(store.transcript.rows.last?.id == early)
+        let earlyNative = DeliveredMessage(id: "native-second-identical-input", role: .user, blocks: [.text(text: immediateInput)])
+        apply(snapshot(13, sent: [immediateNative, earlyNative]))
+        assertTranscript([history, immediateNative, earlyNative])
+        receipt(early, SnapshotResult(snapshot: snapshot(13, sent: [immediateNative, earlyNative]),
+                                      submittedMessageId: earlyNative.id, submissionReceipt: .sending))
+        assertTranscript([history, immediateNative, earlyNative])
+        inspect(window, "identical-user-inputs")
 
         let ledger = OutgoingSubmissions()
         let failed = ledger.begin(text: "同文请求", attachments: [])
@@ -3439,9 +3555,9 @@ extension ConversationStore {
         let retry = ledger.begin(text: "同文请求", attachments: [])
         let another = ledger.begin(text: "同文请求", attachments: [])
         precondition(failed != retry && retry != another && ledger.queued.isEmpty)
-        ledger.reconcile([.init(id: "unrelated", submissionId: "another-client", text: "同文请求", attachments: [])])
+        ledger.reconcile(BindingMapping.snapshot(snapshot(14, queue: [.init(id: "unrelated", submissionId: "another-client", text: "同文请求", attachments: [])])))
         precondition(ledger.fail(retry), "unrelated queue rows do not acknowledge matching text")
-        ledger.reconcile([.init(id: "after-close", submissionId: another, text: "同文请求", attachments: [])])
+        ledger.reconcile(BindingMapping.snapshot(snapshot(15, queue: [.init(id: "after-close", submissionId: another, text: "同文请求", attachments: [])])))
         ledger.reset()
         precondition(!ledger.fail(another) && ledger.queued.isEmpty,
                      "navigation must retain in-flight admission proof without leaking into the new view")

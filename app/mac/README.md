@@ -155,7 +155,7 @@ Mermaid 11.12.0 与许可随 bundle 本地分发，使用固定版本和本地 W
 大纲导航先量出目标之前的可见带，再让目标用户气泡底部贴齐滚动视口底部，复制按钮不计入端点。自动命名在运行时设置中使用专门开关和模型 Picker，原生／生成标题从 snapshot 到达时立即同步列表与 Tab。产品规则见[Artifact](../../docs/prd/conversation-view.md#artifact)与[自动命名兜底](../../docs/prd/conversations.md#自动命名兜底)。
 
 
-`OutgoingSubmissions` 用受理回执结算本地提交和队列。消息列表只渲染 Core 投影中的消息。本机 Core 收到原生用户消息时按会话发出更新通知，可见会话用同一个投影游标读取，已有读请求在途时保留待处理的更新。用 `scripts/check-macos-composer.py late-send-echo` 检查晚于受理回执的原生用户消息无需等待普通轮询。
+`OutgoingSubmissions` 在普通发送时立即呈现带「发送中」的消息，以运行时接收回执撤下标记，由原生投影接替暂态行。失败回退到提交时捕获的输入，受理为排队的消息转到对应的队列项。本机 Core 收到原生用户消息时按会话通知，可见会话沿用投影游标读取。`scripts/check-macos-composer.py` 的 `outgoing-submissions` 检查可见反馈、失败回退和队列，`late-send-echo` 检查运行时先确认、原生记录后到的接替。
 
 `MessageMetadata` 统一消息操作行的本地时间格式，用户／client／最终回复显示自身创建时间，时间与copy／edit／fork共用hover显隐；工作过程footer只提供复制，不显示时间。缺失原生时间不补造。
 

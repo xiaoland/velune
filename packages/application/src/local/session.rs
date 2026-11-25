@@ -20,6 +20,7 @@ impl Default for SessionKey {
 
 #[derive(Default)]
 pub(super) struct Session {
+    pub(super) claude_submission: Option<super::claude_submission::ClaudeSubmission>,
     pub(super) pi_io_cleanup: Option<Box<execution_workers::PendingExecution>>,
     pub(super) pi_control: Option<editing::PiControl>,
     pub(super) pi_submission: Option<editing::PiSubmission>,
@@ -145,7 +146,7 @@ impl Session {
     /// Its runtime connection is still needed by execution or metadata;
     /// visible activity remains the user turn and native background work.
     pub(super) fn executing(&self) -> bool {
-        self.pi_io_cleanup.is_some()
+        self.claude_submission.is_some() || self.pi_io_cleanup.is_some()
             || self.pi_submission.is_some()
             || self.pi_edit.is_some()
             || self.pi_edit_advancing

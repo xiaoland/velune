@@ -124,7 +124,7 @@ extension RenderedMessage {
 enum TranscriptRowContent: @unchecked Sendable {
     /// `copies` puts a copy button under the message, `edits` an edit button
     /// and `forks` a fork button beside it.
-    case message(DeliveredMessage, revision: UInt64, expanded: Set<String>, copies: Bool, edits: Bool, forks: Bool)
+    case message(DeliveredMessage, revision: UInt64, expanded: Set<String>, sending: Bool = false, copies: Bool, edits: Bool, forks: Bool)
     /// `expanded` is nil for a turn with no work under its header.
     case work(label: String, expanded: Bool?, settings: TurnSettingsSummary?)
     /// Copying work has no message creation time of its own.
@@ -233,7 +233,7 @@ struct TranscriptRowLayout: @unchecked Sendable {
         case .workActions(let text):
             y = 0
             messageActions(text: text, timestamp: nil, trailing: false, column: column, y: &y, elements: &elements, measurer: measurer)
-        case .message(_, _, let expanded, let copies, let edits, let forks):
+        case .message(_, _, let expanded, let sending, let copies, let edits, let forks):
             guard let rendered else { preconditionFailure("A message row is laid out from its rendered revision") }
             if rendered.clientSide {
                 // Images lead files regardless of which part of the native record carried them.
@@ -271,6 +271,14 @@ struct TranscriptRowLayout: @unchecked Sendable {
                 elements.append(.bubble(NSRect(x: column.x + column.width - textWidth - bubblePadding * 2, y: y, width: textWidth + bubblePadding * 2, height: bubbleHeight)))
                 elements += texts
                 y += bubbleHeight
+                }
+                if sending {
+                    let caption = TranscriptTypography.plain("发送中", font: TranscriptTypography.caption, color: .secondaryLabelColor)
+                    let size = measurer.size(of: caption, width: column.width)
+                    let width = ceil(size.width) + 1
+                    y += 4
+                    elements.append(.text(caption, frame: NSRect(x: column.x + column.width - width, y: y, width: width, height: size.height), inBubble: false))
+                    y += size.height
                 }
                 if copies { messageActions(text: rendered.copiedText, timestamp: rendered.timestamp, edits: edits, forks: forks, trailing: true, column: column, y: &y, elements: &elements, measurer: measurer) }
             } else {
@@ -345,7 +353,7 @@ struct TranscriptRowLayout: @unchecked Sendable {
         case .work, .activity: return rowInset + headerHeight
         case .workActions: return actionGap + actionSize
         case .end: return rowInset
-        case .message(let message, _, let expanded, let copies, _, _):
+        case .message(let message, _, let expanded, let sending, let copies, _, _):
             let fontScale = AppearancePreferences.rendering.read().messageScale
             let charactersPerLine = max(column.width / (7.5 * fontScale), 8)
             let lineHeight = 19 * fontScale
@@ -372,7 +380,7 @@ struct TranscriptRowLayout: @unchecked Sendable {
                 }
             }
             let copied = copies && message.role != .system && !message.text.isEmpty
-            return rowInset + max(height, lineHeight) + (message.role == .user || message.role == .client ? bubblePadding * 2 : 0) + (copied ? actionGap + actionSize : 0)
+            return rowInset + max(height, lineHeight) + (message.role == .user || message.role == .client ? bubblePadding * 2 : 0) + (copied || sending ? actionGap + actionSize : 0)
         }
     }
 }

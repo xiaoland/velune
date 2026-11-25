@@ -88,7 +88,7 @@ struct TranscriptTable: NSViewRepresentable {
         }
     }
     private enum ContentKey: Equatable {
-        case message(UInt64, [String], Bool, Bool, Bool), work(String, Bool?, TurnSettingsSummary?), workActions(String), activity(TranscriptActivity), end
+        case message(UInt64, [String], Bool, Bool, Bool, Bool), work(String, Bool?, TurnSettingsSummary?), workActions(String), activity(TranscriptActivity), end
     }
     private struct Measured {
         var key: ContentKey
@@ -621,8 +621,8 @@ struct TranscriptTable: NSViewRepresentable {
         switch entries[index] {
         case .message(let row):
             let expanded = expandedBlocks[row.id] ?? []
-            return (.message(row.contentRevision, expanded.sorted(), row.copies, row.edit, row.fork != nil),
-                    .message(row.message, revision: row.contentRevision, expanded: expanded, copies: row.copies, edits: row.edit, forks: row.fork != nil))
+            return (.message(row.contentRevision, expanded.sorted(), row.sending, row.copies, row.edit, row.fork != nil),
+                    .message(row.message, revision: row.contentRevision, expanded: expanded, sending: row.sending, copies: row.copies, edits: row.edit, forks: row.fork != nil))
         case .work(let turn, let label, let expandable, let settings):
             let expanded = expandable ? showsWork(turn) : nil
             return (.work(label, expanded, settings), .work(label: label, expanded: expanded, settings: settings))
@@ -936,7 +936,7 @@ struct TranscriptTable: NSViewRepresentable {
                 if token.cancelled { return }
                 var renderedMessage = job.rendered
                 var revision: UInt64?
-                if case .message(let message, let messageRevision, _, _, _, _) = job.content {
+                if case .message(let message, let messageRevision, _, _, _, _, _) = job.content {
                     revision = messageRevision
                     if renderedMessage == nil { renderedMessage = RenderedMessage(message) }
                 }

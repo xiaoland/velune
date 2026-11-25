@@ -134,11 +134,21 @@ import VeluneBindings
         let createsConversation = store.isUnsentConversation
         let requestedTarget = next ?? store.nextTurn
         let sourceID = store.loadedConversationID
+        let drafts = ConversationWindowModel.owning(tab: id)?.drafts(for: store.device)
         var restoredForPreparation = false
         let sent = store.send(text: text, attachments: attachments.map(\.path), next: next, input: composer, onFailure: { [composer, store] createdID in
             restoredForPreparation = clearedRevision == composer.revision
-            composer.restoreFailed(submitted, attachments: attachments, revision: clearedRevision)
-            store.device.composerInputs.save(composer.id, draft: composer.savedDraft)
+            if restoredForPreparation {
+                composer.restoreFailed(submitted, attachments: attachments, revision: clearedRevision)
+                store.device.composerInputs.save(composer.id, draft: composer.savedDraft)
+            } else {
+                // The next draft is already being edited. Keep this input
+                // available in the existing composer draft picker.
+                let recovered = ComposerModel()
+                recovered.restoreSavedDraft(.init(text: submitted, attachments: attachments))
+                if let drafts { drafts.retain(recovered, name: "发送失败的输入") }
+                else { store.device.composerInputs.save(recovered.id, draft: recovered.savedDraft) }
+            }
             // The global new entry takes the consumed input back, unless its
             // fresh input has gained newer content meanwhile.
             if createsConversation { store.device.composerInputs.restoreConsumedNewConversationInput(composer, whileCreating: store, createdConversationID: createdID) }
@@ -166,10 +176,11 @@ import VeluneBindings
         let text = submitted.trimmingCharacters(in: .whitespacesAndNewlines)
         guard submission(using: composer, next: next).canSubmitDraft, store.canSteer else { return }
         let submittedRevision = composer.revision
-        store.steer(text: text, attachments: attachments.map(\.path), next: next, onAccepted: { [composer] in
+        let inserted = store.steer(text: text, attachments: attachments.map(\.path), next: next, onAccepted: { [composer] in
             guard composer.revision == submittedRevision else { return }
             composer.clear(submitted: submitted, attachments: attachments)
         })
+        if inserted { scrollRequest &+= 1 }
     }
 
     /// Development check of the send queue without driving the interface:

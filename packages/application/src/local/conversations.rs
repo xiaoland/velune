@@ -1026,7 +1026,15 @@ impl CoreRuntime {
             self.session.pi_submission = Some(editing::PiSubmission { application, native });
             self.mark_execution_started(application);
         }
-        let sent = if pi_ticket.is_some() {
+        let claude = if pi_ticket.is_none() && !resuming {
+            self.try_start_claude_composed(&input)
+        } else {
+            None
+        };
+        let composed_claude = claude.is_some();
+        let sent = if let Some(result) = claude {
+            result
+        } else if pi_ticket.is_some() {
             Ok(())
         } else {
             telemetry::observe(
@@ -1067,7 +1075,7 @@ impl CoreRuntime {
         let sent = sent.map_err(|error| {
             if native_error == Some("outstanding_work") {
                 RuntimeError::OutstandingWork
-            } else if reusing_claude {
+            } else if reusing_claude || composed_claude {
                 RuntimeError::runtime_operation("message send", error)
             } else {
                 RuntimeError::context("message send", error)
