@@ -672,19 +672,19 @@ struct ComposerView: View {
     @State private var oneRow = true
     @State private var controlsHeight: CGFloat = 22
     @State private var fit = RowFit()
-    @State private var availableWidth: CGFloat = 760
     private final class RowFit {
         /// What the choices take at full length.
         var controlsWidth: CGFloat = 0
         var actionsWidth: CGFloat = 0
+        /// The room inside the padding. Not state: it changes with every
+        /// frame of a resize, and only crossing a threshold changes the view.
+        var availableWidth: CGFloat = 760
     }
     /// The send button and a little of the status line beside the choices.
     private static let sendWidth: CGFloat = 130
-    private var editorMaximumWidth: CGFloat {
-        appearance.values.composerWidth(available: availableWidth, reserved: columns ? 2 * (wingWidth + 16) : 0)
-    }
     private func refit() {
         let sideWidth = wingWidth > 0 ? 2 * (wingWidth + 16) : 0
+        let availableWidth = fit.availableWidth
         let wide = sideWidth > 0 && availableWidth >= 640 + sideWidth
         if columns != wide { columns = wide }
         let actions = max(Self.sendWidth * appearance.values.uiScale, fit.actionsWidth + 16)
@@ -722,7 +722,7 @@ struct ComposerView: View {
                     }
                 }.frame(width: wingWidth, alignment: .leading).padding(.top, 3)
             }
-            editorColumn.frame(maxWidth: editorMaximumWidth)
+            editorColumn
             if columns {
                 VStack(alignment: .leading, spacing: 6) {
                     if hasAttachments {
@@ -732,7 +732,7 @@ struct ComposerView: View {
                 }.frame(width: wingWidth).frame(height: fillsHeight ? nil : max(editorHeight + 30, 64))
             }
         }
-        .frame(maxWidth: columns ? editorMaximumWidth + 2 * (wingWidth + 16) : editorMaximumWidth)
+        .modifier(ComposerWidthLimit(appearance: appearance.values, reserved: columns ? 2 * (wingWidth + 16) : 0))
         .contentShape(Rectangle())
         .contextMenu {
             if editingTarget == nil {
@@ -761,7 +761,7 @@ struct ComposerView: View {
         }
         .padding(.horizontal, 16).padding(.top, 10).padding(.bottom, 14)
         .frame(minWidth: 0, maxWidth: .infinity)
-        .onGeometryChange(for: CGFloat.self) { max(0, $0.size.width - 32) } action: { availableWidth = $0; refit() }
+        .onGeometryChange(for: CGFloat.self) { max(0, $0.size.width - 32) } action: { fit.availableWidth = $0; refit() }
         .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { availableHeight = $0 }
         .onChange(of: model.attachments.count) { _, _ in refit() }
         .onChange(of: hasAttachments) { _, _ in refit() }
@@ -1240,5 +1240,31 @@ struct PreservedInputMenu: View {
                 }
             }
         }
+    }
+}
+
+/// The composer's row at the width the appearance gives it for the room it
+/// is offered, its side columns (`reserved`) beside it. A layout rather
+/// than a width kept in state: a resize lays the row out again at each
+/// frame without computing the composer's view again.
+private struct ComposerWidthLimit: ViewModifier, Layout {
+    let appearance: AppearanceValues
+    let reserved: CGFloat
+
+    func body(content: Content) -> some View { self { content } }
+
+    private func limit(_ room: CGFloat?) -> CGFloat? {
+        room.map { min($0, appearance.composerWidth(available: $0, reserved: reserved) + reserved) }
+    }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        guard let row = subviews.first else { return .zero }
+        let size = row.sizeThatFits(ProposedViewSize(width: limit(proposal.width), height: proposal.height))
+        return CGSize(width: limit(proposal.width).map { min(size.width, $0) } ?? size.width, height: size.height)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        subviews.first?.place(at: CGPoint(x: bounds.midX, y: bounds.midY), anchor: .center,
+                              proposal: ProposedViewSize(width: bounds.width, height: bounds.height))
     }
 }

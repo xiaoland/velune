@@ -430,7 +430,18 @@ final class TabStripView: NSView {
 
     /// As wide as its title with room for the indicator on either side, within the bar's limits.
     var preferredWidth: CGFloat {
-        let title = (tab.title as NSString).size(withAttributes: [.font: font]).width
+        // Measured once per title and size: the bar lays its tabs out again
+        // at every frame of a resize.
+        let font = font
+        if let measured, measured.title == label.stringValue, measured.size == font.pointSize { return measured.width }
+        let width = Self.width(of: label.stringValue, font: font)
+        measured = (label.stringValue, font.pointSize, width)
+        return width
+    }
+    private var measured: (title: String, size: CGFloat, width: CGFloat)?
+
+    private static func width(of text: String, font: NSFont) -> CGFloat {
+        let title = (text as NSString).size(withAttributes: [.font: font]).width
         // The label's cell pads its text a little on either side.
         return min(max((title + 2 * Self.titleInset + 8).rounded(.up), TabBarView.minimumTabWidth), TabBarView.maximumTabWidth)
     }
