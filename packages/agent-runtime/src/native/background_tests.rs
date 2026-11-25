@@ -64,6 +64,150 @@ impl Drop for Fixture {
     }
 }
 
+fn composed_input() -> crate::TurnInput {
+    crate::TurnInput {
+        text: "composed prompt".into(),
+        images: vec![],
+        effort: None,
+        permission_mode: None,
+    }
+}
+
+#[test]
+fn claude_composed_waits_for_the_exact_native_start_receipt() {
+    let mut f = Fixture::with_version("2.1.286");
+    f.session.settle(RunState::Idle);
+    assert!(f.session.supports_claude_composed_acceptance());
+    let id = f.session.send_claude_composed(&composed_input()).unwrap();
+    assert!(f.session.turn_running());
+    assert!(f.session.snapshot().unwrap().messages.is_empty());
+
+    // A flushed writer does not count as the runtime's acceptance.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    loop {
+        f.session.poll().unwrap();
+        let requests = std::fs::read_to_string(f.root.join("requests.jsonl")).unwrap();
+        if requests
+            .lines()
+            .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+            .any(|frame| frame["type"] == "user" && frame["uuid"] == id)
+        {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "Claude did not read the input"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    assert!(f.session.take_claude_composed_acceptance().is_none());
+    assert!(f.session.snapshot().unwrap().messages.is_empty());
+
+    for (state, session, command) in [
+        ("started", "different-session", id.as_str()),
+        ("started", "parent", "other-command"),
+        ("queued", "parent", id.as_str()),
+    ] {
+        f.event(json!({
+            "type":"command_lifecycle", "state":state,
+            "command_uuid":command, "session_id":session
+        }));
+    }
+    f.event(json!({
+        "type":"result", "subtype":"success",
+        "origin":{"kind":"task-notification","runId":"other-run"}
+    }));
+    f.event(json!({"type":"system", "subtype":"session_state_changed", "state":"idle"}));
+    assert!(f.session.turn_running());
+    assert!(f.session.take_claude_composed_acceptance().is_none());
+    assert!(f.session.snapshot().unwrap().messages.is_empty());
+
+    for _ in 0..2 {
+        f.event(json!({
+            "type":"command_lifecycle", "state":"started",
+            "command_uuid":id, "session_id":"parent"
+        }));
+    }
+    assert_eq!(
+        f.session.take_claude_composed_acceptance(),
+        Some(ClaudeComposedAcceptance::Accepted {
+            message_id: id.clone()
+        })
+    );
+    assert!(f.session.take_claude_composed_acceptance().is_none());
+    let messages = &f.session.snapshot().unwrap().messages;
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0].id, id);
+    assert_eq!(messages[0].role, MessageRole::User);
+}
+
+#[test]
+fn claude_composed_terminal_before_receipt_preserves_background_and_is_indeterminate() {
+    let mut f = Fixture::with_version("2.1.327");
+    f.session.claude.bound_session_id = f.session.native_id.clone();
+    f.event(json!({
+        "type":"system", "subtype":"task_started", "task_id":"shell",
+        "run_id":"run", "task_type":"local_bash", "is_backgrounded":true
+    }));
+    f.session.settle(RunState::Idle);
+    assert!(f.session.has_background_work());
+    let id = f.session.send_claude_composed(&composed_input()).unwrap();
+    f.event(json!({"type":"result", "subtype":"success", "user_message_uuid":id}));
+    f.event(json!({"type":"system", "subtype":"session_state_changed", "state":"idle"}));
+    assert!(matches!(
+        f.session.take_claude_composed_acceptance(),
+        Some(ClaudeComposedAcceptance::Indeterminate { message_id, .. }) if message_id == id
+    ));
+    assert!(f.session.snapshot().unwrap().messages.is_empty());
+    assert!(f.session.has_background_work());
+    assert!(!f.session.process_ended);
+}
+
+#[test]
+fn claude_composed_compatibility_send_still_publishes_without_receipt() {
+    let mut f = Fixture::with_version("2.1.286");
+    f.session.settle(RunState::Idle);
+    f.session.send(&composed_input()).unwrap();
+    assert_eq!(f.session.snapshot().unwrap().messages.len(), 1);
+    assert!(f.session.take_claude_composed_acceptance().is_none());
+}
+
+#[test]
+fn claude_composed_rejects_a_write_the_transport_proves_was_skipped() {
+    let mut f = Fixture::with_version("2.1.327");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+    let (writer, receipt) = crate::transport::WriteReceipt::test_pending(deadline);
+    f.session.claude.composed_prompt = Some(claude_composed::PendingPrompt::new(
+        Message {
+            turn_settings: None,
+            turn_usage: None,
+            branch_point: None,
+            completed: true,
+            id: "skipped".into(),
+            role: MessageRole::User,
+            timestamp_unix_ms: None,
+            blocks: vec![],
+        },
+        receipt,
+        deadline,
+    ));
+    writer
+        .send(crate::transport::WriteOutcome::NotWritten(
+            std::io::Error::new(std::io::ErrorKind::TimedOut, "write expired in queue"),
+        ))
+        .unwrap();
+    f.session.poll().unwrap();
+    assert_eq!(
+        f.session.take_claude_composed_acceptance(),
+        Some(ClaudeComposedAcceptance::Rejected {
+            message_id: "skipped".into(),
+            detail: "write expired in queue".into(),
+        })
+    );
+    assert!(!f.session.turn_running());
+    assert!(f.session.snapshot().unwrap().messages.is_empty());
+}
+
 #[test]
 fn claude_reuses_the_background_child_and_settles_only_the_matching_foreground() {
     let mut f = Fixture::with_version("2.1.327");

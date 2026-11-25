@@ -14,6 +14,8 @@ use std::{
 mod background_tests;
 mod claude;
 mod claude_background;
+mod claude_composed;
+pub use claude_composed::ClaudeComposedAcceptance;
 mod claude_port;
 pub use claude_port::{
     ClaudeAdmissionError, ClaudeCommand, ClaudeDelivery, ClaudeOperationReceipt,
@@ -680,7 +682,7 @@ impl NativeSession {
             .ok_or_else(|| Error::new("运行时未打开侧聊"))
     }
     pub fn send(&mut self, input: &crate::TurnInput) -> Result<()> {
-        self.start_turn(input, false)
+        self.start_turn(input, false, false)
     }
 
     pub fn can_compact(&self) -> bool {
@@ -732,9 +734,15 @@ impl NativeSession {
                 images: Vec::new(),
             },
             true,
+            false,
         )
     }
-    fn start_turn(&mut self, input: &crate::TurnInput, resuming: bool) -> Result<()> {
+    fn start_turn(
+        &mut self,
+        input: &crate::TurnInput,
+        resuming: bool,
+        composed_claude: bool,
+    ) -> Result<()> {
         self.ensure_idle()?;
         if !resuming && input.text.trim().is_empty() && input.images.is_empty() {
             return Err(Error::new("消息内容为空"));
@@ -773,6 +781,7 @@ impl NativeSession {
         } else {
             Ok(())
         };
+        let preparation_failed = prepared.is_err();
         let result = prepared
             .map_err(|error| {
                 if starting_fork {
@@ -782,16 +791,21 @@ impl NativeSession {
                 }
             })
             .and_then(|()| {
-                if let Some(snapshot) = &mut self.snapshot {
+                if !composed_claude && let Some(snapshot) = &mut self.snapshot {
                     snapshot.executions.begin(ExecutionKind::UserTurn, resuming);
                 }
                 match self.config.kind {
                     NativeKind::Codex166 => self.codex_send(input),
                     NativeKind::DeepSeek => self.dsh_send(&input.text),
+                    NativeKind::ClaudeCode if composed_claude => {
+                        self.claude_send_input(input, true)
+                    }
                     NativeKind::ClaudeCode => self.claude_send(input),
                 }
             });
-        if result.is_err() {
+        // Pre-write admission can reject a composed frame while a reused
+        // Claude child still owns prior background work.
+        if result.is_err() && (!composed_claude || preparation_failed) {
             self.fail_connection();
         }
         result
@@ -1187,6 +1201,7 @@ impl NativeSession {
                 }
             }
             if self.config.kind == NativeKind::ClaudeCode {
+                self.claude_poll_composed_send();
                 self.claude_expire_background_controls();
                 self.claude_check_terminal_timeout();
             }
@@ -1706,6 +1721,7 @@ impl NativeSession {
     /// Ends the turn. The process stays while it does other work; the
     /// host releases the turn's gateway once that work has ended too.
     fn settle(&mut self, state: RunState) {
+        self.claude_finish_unconfirmed_composed_send();
         if let Some(snapshot) = &mut self.snapshot {
             snapshot
                 .executions

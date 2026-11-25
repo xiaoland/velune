@@ -48,6 +48,8 @@ pub(super) struct State {
     /// The turn's result, whether it failed, and the last activity since.
     pub(super) result: Option<(TurnOutcome, std::time::Instant)>,
     pub(super) foreground: Option<ForegroundCommand>,
+    pub(super) composed_prompt: Option<super::claude_composed::PendingPrompt>,
+    pub(super) composed_acceptance: Option<ClaudeComposedAcceptance>,
     pub(super) release_when_idle: bool,
     pub(super) background_followup_capable: bool,
     pub(super) background_followups: BTreeMap<String, BackgroundFollowup>,
@@ -631,6 +633,14 @@ impl NativeSession {
         }
     }
     pub(super) fn claude_send(&mut self, input: &crate::TurnInput) -> Result<()> {
+        self.claude_send_input(input, false)
+    }
+
+    pub(super) fn claude_send_input(
+        &mut self,
+        input: &crate::TurnInput,
+        composed: bool,
+    ) -> Result<()> {
         if self.side {
             return self.claude_side_send(input);
         }
@@ -645,7 +655,23 @@ impl NativeSession {
         // Claude persists the UUID supplied on an ordinary input. Use it on
         // the live row so history reloads keep the same edit and fork target.
         let id = claude_uuid()?;
-        self.claude_write(&json!({"type":"user","uuid":id,"session_id":self.native_id,"parent_tool_use_id":null,"message":{"role":"user","content":content}}))?;
+        let frame = json!({"type":"user","uuid":id,"session_id":self.native_id,"parent_tool_use_id":null,"message":{"role":"user","content":content}});
+        let pending_write = if composed {
+            let deadline = std::time::Instant::now() + rpc::CONTROL_TIMEOUT;
+            let (write, _) = self.rpc.enqueue_claude_frame_receipt(
+                &frame,
+                crate::transport::WriteClass::Ordinary,
+                deadline,
+                crate::transport::writer_policy_limit(),
+            )?;
+            if let Some(snapshot) = &mut self.snapshot {
+                snapshot.executions.begin(ExecutionKind::UserTurn, false);
+            }
+            Some((write, deadline))
+        } else {
+            self.claude_write(&frame)?;
+            None
+        };
         self.compaction_message_id = None;
         self.claude.result = None;
         self.claude.commands.result_is_terminal = false;
@@ -664,7 +690,7 @@ impl NativeSession {
             self.snapshot.as_ref().map_or(0, |s| s.revision)
         ));
         if !content.is_empty() {
-            self.message(Message {
+            let message = Message {
                 turn_settings: None,
                 turn_usage: None,
                 branch_point: None,
@@ -683,7 +709,14 @@ impl NativeSession {
                     })
                     .chain((!text.is_empty()).then(|| MessageBlock::Text { text: text.into() }))
                     .collect(),
-            });
+            };
+            if let Some((write, deadline)) = pending_write {
+                self.claude.composed_prompt = Some(super::claude_composed::PendingPrompt::new(
+                    message, write, deadline,
+                ));
+            } else {
+                self.message(message);
+            }
         }
         self.claude.start = ClaudeStart::Resume;
         self.running();
@@ -992,6 +1025,7 @@ impl NativeSession {
             self.claude.permission_mode = Some(mode.into());
         }
         self.claude_background_record(&record);
+        self.claude_observe_composed_acceptance(&record);
         match record["type"].as_str() {
             Some("command_lifecycle") if record["state"] == "completed" => {
                 if let Some(command) = self.claude.foreground.as_mut()
