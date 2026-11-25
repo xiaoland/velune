@@ -277,15 +277,24 @@ private fun SectionHeader(kind: SessionSectionKind) {
     )
 }
 
-/** A device whose list could not be read; the others stay in the list. */
+/** A device whose list could not be read; compact so the reachable devices' sessions stay in view. */
 @Composable
 private fun DeviceNotice(device: String, failure: String) {
-    ListItem(
-        leadingContent = { Icon(Icons.Outlined.CloudOff, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant) },
-        headlineContent = { Text("无法读取“$device”的会话", style = MaterialTheme.typography.bodyMedium) },
-        supportingContent = { Text(failure, maxLines = 2, overflow = TextOverflow.Ellipsis) },
-    )
-    HorizontalDivider()
+    Row(
+        Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(Icons.Outlined.CloudOff, contentDescription = null, modifier = Modifier.size(16.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(
+            "$device：$failure",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.padding(start = 8.dp),
+        )
+    }
+    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
 }
 
 /**

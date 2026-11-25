@@ -30,6 +30,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.automirrored.outlined.InsertDriveFile
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.ContentCopy
@@ -49,8 +50,10 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -66,6 +69,8 @@ import app.velune.bindings.application.DeliveredMessage
 import app.velune.bindings.application.MessagePayload
 import app.velune.bindings.conversation.MessageRole
 import app.velune.bindings.conversation.ToolState
+import app.velune.bindings.conversation.TurnOutcome
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 /**
@@ -183,14 +188,29 @@ private fun MessageMetaRow(timestampUnixMs: Long?, copyText: String?, alignment:
 
 @Composable
 private fun CopyButton(onClick: () -> Unit) {
-    IconButton(onClick = onClick, modifier = Modifier.size(32.dp)) {
-        Icon(Icons.Outlined.ContentCopy, contentDescription = "复制", modifier = Modifier.size(15.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+    var copied by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+    IconButton(
+        onClick = {
+            onClick()
+            copied = true
+            scope.launch { delay(1_500); copied = false }
+        },
+        modifier = Modifier.size(32.dp),
+    ) {
+        Icon(
+            if (copied) Icons.Filled.Check else Icons.Outlined.ContentCopy,
+            contentDescription = if (copied) "已复制" else "复制",
+            modifier = Modifier.size(15.dp),
+            tint = if (copied) Tone.Positive.color() else MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
 }
 
 /**
  * A turn's work: open while running or when it failed/stopped, folded into one
  * quiet line once finished cleanly. Unfolded steps hang off a left rule.
+ * A recovered tool failure stays inside the steps rather than alarming a finished turn.
  */
 @Composable
 private fun WorkGroup(work: TranscriptEntry.Work, expanded: MutableMap<String, Boolean>, load: (String) -> Unit) {
@@ -212,7 +232,8 @@ private fun WorkGroup(work: TranscriptEntry.Work, expanded: MutableMap<String, B
                 parts.joinToString(" · "), style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(start = 6.dp).weight(1f, fill = false),
             )
-            if (work.failedTools > 0) Text(" · ${work.failedTools} 个失败", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.error, maxLines = 1)
+            if (work.outcome == TurnOutcome.FAILED) Text(" · 失败", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.error, maxLines = 1)
+            else if (work.outcome == TurnOutcome.CANCELLED) Text(" · 已停止", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
         }
         if (open) Row(Modifier.height(IntrinsicSize.Min).padding(top = 4.dp)) {
             Box(Modifier.padding(start = 8.dp, end = 12.dp).width(1.5.dp).fillMaxHeight().background(MaterialTheme.colorScheme.outlineVariant))

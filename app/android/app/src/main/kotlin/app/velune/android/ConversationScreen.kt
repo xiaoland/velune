@@ -94,7 +94,14 @@ import app.velune.bindings.conversation.RuntimeInteractionReply
 import kotlinx.coroutines.launch
 
 /** What the header says about the conversation besides its title. */
-data class ConversationHeader(val title: String, val runtime: RuntimeLabel?, val device: String?, val cwd: String?)
+data class ConversationHeader(
+    val title: String,
+    val runtime: RuntimeLabel?,
+    val device: String?,
+    val cwd: String?,
+    /** Non-null only when the connection to the controlled device is not live. */
+    val connection: DeviceStatus? = null,
+)
 
 class ConversationActions(
     val back: () -> Unit,
@@ -115,11 +122,16 @@ fun ConversationScreen(hub: DeviceHub, peer: String, runtime: RuntimeLabel?, mod
     val remote by hub.state.collectAsState()
     WhileVisible(model, resume = model::resume, pause = model::pause)
     val target = model.target
+    val contact = remote?.contacts?.firstOrNull { it.peerId == peer }
+    val connection = if (remote != null && contact != null) {
+        deviceStatus(checkNotNull(remote), contact).takeIf { it.tone != Tone.Positive }
+    } else null
     val header = ConversationHeader(
         title = state.conversation?.title?.displayText() ?: (target as? ConversationTarget.Existing)?.title ?: "新会话",
         runtime = runtime,
-        device = remote?.contacts?.firstOrNull { it.peerId == peer }?.name,
+        device = contact?.name,
         cwd = state.conversation?.cwd ?: (target as? ConversationTarget.New)?.cwd,
+        connection = connection,
     )
     ConversationContent(header, state, remember(model, back) {
         ConversationActions(
@@ -188,6 +200,20 @@ fun ConversationContent(header: ConversationHeader, state: ConversationState, ac
                     },
                 )
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+                header.connection?.let { status ->
+                    Surface(color = MaterialTheme.colorScheme.surfaceContainerLow, modifier = Modifier.fillMaxWidth()) {
+                        Row(Modifier.padding(horizontal = 16.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                            StatusDot(status.tone, size = 7.dp)
+                            Text(
+                                "${header.device ?: "设备"} · ${status.text}",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(start = 8.dp),
+                            )
+                        }
+                    }
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+                }
             }
         },
     ) { padding ->
@@ -235,12 +261,13 @@ fun ConversationContent(header: ConversationHeader, state: ConversationState, ac
 /** Quiet context for an empty new conversation so the composer stays the focus. */
 @Composable
 private fun NewConversationContext(header: ConversationHeader) {
+    val targetLine = listOfNotNull(header.device, header.runtime?.name).joinToString(" · ").ifEmpty { "新会话" }
     Column(
         Modifier.fillMaxSize().padding(horizontal = 24.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {
-        Text(header.runtime?.name ?: "新会话", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurface)
+        Text(targetLine, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurface)
         Text(
             header.cwd ?: "运行时默认目录",
             style = MaterialTheme.typography.bodySmall,
@@ -291,6 +318,7 @@ private fun InteractionCard(interaction: RuntimeInteraction, enabled: Boolean, c
                             FilledTonalButton(enabled = enabled, onClick = { reply(RuntimeInteractionReply.Decision(option.id)) }) { Text(option.label) }
                         }
                     }
+                    if (!enabled) Text("正在提交…", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
                 is InteractionKind.UserInput -> QuestionFields(interaction.id, kind.questions, enabled, readOnly = false, reply = reply)
                 is InteractionKind.AsyncUserInput -> QuestionFields(
@@ -341,9 +369,13 @@ private fun QuestionFields(id: String, questions: List<InteractionQuestion>, ena
     }
     if (readOnly) Text("请回到父会话回答这个问题。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
     Column(Modifier.heightIn(max = 240.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        questions.forEach { question ->
+        questions.forEachIndexed { index, question ->
+            if (index > 0) HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
             val selected = draft.choices[question.id].orEmpty()
             val hasOther = draft.other[question.id] == true
+            if (questions.size > 1) {
+                Text("问题 ${index + 1} / ${questions.size}", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
             Text(question.text, style = MaterialTheme.typography.bodyMedium)
             if (question.options.isNotEmpty()) FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 question.options.forEach { option ->
