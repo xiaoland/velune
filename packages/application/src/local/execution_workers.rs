@@ -636,7 +636,9 @@ impl CoreRuntime {
 
     pub(super) fn start_native_cleanup_worker(&mut self) -> Result<(), RuntimeError> {
         if matches!(self.session.active_state, ActiveState::Pi(_))
-            && (self.session.pi_edit.is_some() || self.session.pi_control.is_some())
+            && (self.session.pi_edit.is_some()
+                || self.session.pi_control.is_some()
+                || self.session.pi_submission.is_some())
         {
             // Keep both business fact channels reachable until their owner has
             // harvested ready outcomes. Failed protocol tickets settle on poll.
@@ -785,6 +787,7 @@ impl CoreRuntime {
             .any(|session| {
                 matches!(session.active_state, ActiveState::Pending(_))
                     || session.native_controls.pending()
+                    || session.pi_submission.is_some()
                     || session.pi_edit.is_some()
                     || session.pi_control.is_some()
                     || session.pi_io_cleanup.is_some()

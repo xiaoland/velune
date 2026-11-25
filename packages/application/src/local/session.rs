@@ -22,6 +22,7 @@ impl Default for SessionKey {
 pub(super) struct Session {
     pub(super) pi_io_cleanup: Option<Box<execution_workers::PendingExecution>>,
     pub(super) pi_control: Option<editing::PiControl>,
+    pub(super) pi_submission: Option<editing::PiSubmission>,
     pub(super) pi_edit: Option<editing::PiEdit>,
     pub(super) pi_edit_advancing: bool,
     pub(super) pi_cleanup_required: bool,
@@ -145,6 +146,7 @@ impl Session {
     /// visible activity remains the user turn and native background work.
     pub(super) fn executing(&self) -> bool {
         self.pi_io_cleanup.is_some()
+            || self.pi_submission.is_some()
             || self.pi_edit.is_some()
             || self.pi_edit_advancing
             || self.pi_cleanup_required

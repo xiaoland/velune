@@ -14,6 +14,13 @@ pub(in crate::local) struct PiControl {
     cancel: bool,
 }
 
+/// An ordinary composed prompt whose exact Pi response is still pending.
+/// Keep the application command ticket until the runtime accepts or rejects it.
+pub(in crate::local) struct PiSubmission {
+    pub(in crate::local) application: ExecutionTicket,
+    pub(in crate::local) native: pi::PiTicket,
+}
+
 pub(in crate::local) struct PiEdit {
     application: ExecutionTicket,
     session: session::SessionKey,
@@ -135,6 +142,40 @@ impl Io {
 }
 
 impl CoreRuntime {
+    pub(in crate::local) fn advance_pi_submission(&mut self) {
+        let Some(submission) = self.session.pi_submission.take() else {
+            return;
+        };
+        let result = match self.session.pi() {
+            Ok(pi) => pi.take_confirmation(submission.native),
+            Err(error) => Err(error),
+        };
+        match result {
+            Ok(None) => self.session.pi_submission = Some(submission),
+            Ok(Some(Ok(()))) => {
+                self.execution_results
+                    .insert(submission.application, Ok(ExecutionSuccess::default()));
+            }
+            Ok(Some(Err(error))) | Err(error) => {
+                let failure = match &error {
+                    // A matching Pi response explicitly rejected this prompt,
+                    // or the transport proved that it was never sent.
+                    pi::Error::CommandFailed(_) => {
+                        RuntimeError::context("Pi 明确拒绝输入", &error)
+                    }
+                    pi::Error::Sdk(ref detail) if detail.contains("尚未发送") => {
+                        RuntimeError::context("Pi 输入未发送", &error)
+                    }
+                    // EOF, timeout and scope loss do not prove that Pi missed
+                    // the prompt. Do not invite an automatic duplicate send.
+                    _ => RuntimeError::operation_indeterminate(format!("Pi 输入回执：{error}")),
+                };
+                self.execution_results
+                    .insert(submission.application, Err(failure));
+            }
+        }
+    }
+
     pub(in crate::local) fn try_start_pi_control(
         &mut self,
         reply: Option<(&str, velune_conversation::RuntimeInteractionReply)>,

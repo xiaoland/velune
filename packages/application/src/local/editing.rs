@@ -9,7 +9,7 @@ mod pi_async;
 use crate::conversation::{
     ConversationSnapshot, EditPlacement, EditableMessage, Message, MessageBlock, MessageRole,
 };
-pub(super) use pi_async::{PiControl, PiEdit, PiEditIoValue};
+pub(super) use pi_async::{PiControl, PiEdit, PiEditIoValue, PiSubmission};
 use velune_agent_runtime::creation::{DataRetention, Retained};
 
 /// The runtime types whose native history can branch at a user message.

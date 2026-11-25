@@ -1135,17 +1135,12 @@ impl PiSession {
     /// A local enqueue/physical Written is not native input acceptance. This
     /// ticket settles only at its exact native response. Pi user events may
     /// lack identity and are not attributable ACKs, even after agent_start.
-    pub fn begin_edit_prompt(&mut self, input: &TurnInput) -> Result<PiTicket> {
+    pub fn begin_submission_prompt(&mut self, input: &TurnInput) -> Result<PiTicket> {
         if self.running()?.edit_wait.is_some() {
-            return Err(Error::Sdk("Pi 消息编辑依赖正在执行".into()));
+            return Err(Error::Sdk("Pi 输入回执已有等待操作".into()));
         }
-        self.send(input)?;
+        let ticket = self.send_with_ticket(input)?;
         let running = self.running()?;
-        let ticket = running
-            .pending
-            .iter()
-            .find_map(|(ticket, action)| matches!(action, PendingAction::Prompt).then_some(*ticket))
-            .ok_or_else(|| Error::Sdk("Pi 替换输入未取得票据".into()))?;
         running.edit_wait = Some(EditWait {
             ticket,
             installed_generation: ticket.session_generation,
@@ -1155,6 +1150,10 @@ impl PiSession {
             result: None,
         });
         Ok(ticket)
+    }
+
+    pub fn begin_edit_prompt(&mut self, input: &TurnInput) -> Result<PiTicket> {
+        self.begin_submission_prompt(input)
     }
 
     /// Polling does no IO wait. Generation changes cannot authorize a successor;
@@ -1397,10 +1396,16 @@ impl PiSession {
     /// Send a user turn. Pi may handle it at once (an extension command);
     /// otherwise the turn runs until its events end it.
     pub fn send(&mut self, input: &TurnInput) -> Result<()> {
+        self.send_with_ticket(input).map(drop)
+    }
+
+    /// Submit a prompt and return its exact native ticket. This lets callers
+    /// distinguish local enqueue from the runtime's prompt response.
+    pub fn send_with_ticket(&mut self, input: &TurnInput) -> Result<PiTicket> {
         if self.turn_running() {
             return Err(Error::Sdk("Pi turn already running".into()));
         }
-        if let Some(level) = &input.effort {
+        let ticket = if let Some(level) = &input.effort {
             let mut dependent = input.clone();
             dependent.effort = None;
             let predecessor = self.enqueue(
@@ -1425,9 +1430,10 @@ impl PiSession {
                 "velune-pi-{}-{}",
                 ticket.generation, ticket.sequence
             ));
+            ticket
         } else {
-            self.enqueue_prompt(input.clone())?;
-        }
+            self.enqueue_prompt(input.clone())?
+        };
         let running = self.running()?;
         running.pending_prompt_started = false;
         running.busy = true;
@@ -1437,16 +1443,16 @@ impl PiSession {
             snapshot.actions.can_send = false;
             snapshot.actions.can_cancel = true;
         }
-        Ok(())
+        Ok(ticket)
     }
 
-    fn enqueue_prompt(&mut self, input: TurnInput) -> Result<()> {
+    fn enqueue_prompt(&mut self, input: TurnInput) -> Result<PiTicket> {
         let ticket = self.enqueue(PiOperation::Prompt(input), PendingAction::Prompt)?;
         self.running()?.pending_prompt = Some(format!(
             "velune-pi-{}-{}",
             ticket.generation, ticket.sequence
         ));
-        Ok(())
+        Ok(ticket)
     }
 
     pub fn steer(&mut self, input: &TurnInput) -> Result<()> {
@@ -1760,11 +1766,12 @@ impl PiSession {
                 ) {
                     self.background_pending_sync = true;
                 }
-                if matches!(action, PendingAction::Thinking) {
+                if matches!(action, PendingAction::Thinking | PendingAction::Prompt) {
                     let running = self.running.as_mut().unwrap();
+                    running.pending_prompt = None;
                     running
                         .projection
-                        .reject_prompt(response["error"].as_str().unwrap_or("Pi 拒绝推理强度"));
+                        .reject_prompt(response["error"].as_str().unwrap_or("Pi 拒绝输入"));
                     running.busy = false;
                     running.dialogs.clear();
                     running.publish_dialogs();
@@ -1781,6 +1788,12 @@ impl PiSession {
                     running.edit_wait.as_ref().is_some_and(|wait| wait.ticket == receipt.ticket)
                         || running.control_wait.as_ref().is_some_and(|control| control.native == receipt.ticket)
                 }) {
+                    if matches!(action, PendingAction::Prompt | PendingAction::Thinking) {
+                        let running = self.running.as_mut().unwrap();
+                        running.pending_prompt = None;
+                        running.busy = false;
+                        running.projection.reject_prompt("Pi 输入尚未发送");
+                    }
                     Err(Error::Sdk("Pi 操作尚未发送".into()))
                 } else if scope_action {
                     Err(Error::Transport("Pi 分支操作未发送".into()))

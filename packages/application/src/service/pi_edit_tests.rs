@@ -195,6 +195,13 @@ for line in requests():
     emit({'type':'message_start','message':{'role':'user','content':text}})
     emit({'type':'extension_ui_request','method':'confirm','id':'primary-confirm','title':'Synthetic same-session question'})
     (root/'primary-prompt-read').touch(); continue
+   if mode in ('composed-send','composed-reject') and name=='edit':
+    emit({'type':'agent_start'})
+    (root/'entered-composed-send').touch()
+    while not (root/'release-composed-send').exists(): time.sleep(.005)
+    if mode=='composed-reject':
+     emit({'type':'response','id':r['id'],'command':command,'success':False,'error':'synthetic prompt rejection'}); continue
+    emit({'type':'response','id':r['id'],'command':command,'success':True,'data':{'disposition':'queued'}}); continue
    if mode in ('prompt-budget-model','prompt-budget-form') and name=='edit':
     emit({'type':'agent_start'})
     message={'id':'pi:synthetic:replacement:0','role':'user','content':text}
@@ -311,6 +318,7 @@ impl Drop for Fixture {
             "release-primary-clear",
             "release-primary-abort",
             "release-primary-fact",
+            "release-composed-send",
         ] {
             let _ = fs::write(self.0.join(marker), []);
         }
@@ -1162,6 +1170,57 @@ fn pi_prompt_terminal_response_without_echo_keeps_acceptance_and_cleanup_separat
             }
             assert!(Instant::now() < end);
             std::thread::sleep(Duration::from_millis(5));
+        }
+        close_after_cleanup(&service);
+    }
+}
+
+#[test]
+fn pi_composed_send_waits_for_exact_prompt_receipt_and_rejects_before_delivery() {
+    use std::sync::mpsc::TryRecvError;
+
+    for (mode, rejected) in [("composed-send", false), ("composed-reject", true)] {
+        let fixture = Fixture::new(mode, false);
+        let service = fixture.open();
+        let id = fixture.id("edit");
+        let _ = snapshot(&service, id.clone());
+        let reply = later(
+            &service,
+            "edit",
+            Command::SendTurn {
+                submission_id: Some("pi-composed-acceptance-test".into()),
+                source_runtime_id: "pi".into(),
+                conversation_id: id.clone(),
+                target_runtime_id: "pi".into(),
+                selection: None,
+                turn: crate::ComposedTurn {
+                    text: "ordinary composed prompt".into(),
+                    effort: None,
+                    permission_mode: None,
+                    attachments: Vec::new(),
+                },
+            },
+        );
+        fixture.wait("entered-composed-send");
+        assert!(
+            matches!(reply.try_recv(), Err(TryRecvError::Empty)),
+            "SendTurn replied after local enqueue, before Pi's exact prompt response"
+        );
+
+        fs::write(fixture.0.join("release-composed-send"), []).unwrap();
+        let outcome = reply.recv_timeout(Duration::from_secs(5)).unwrap();
+        if rejected {
+            let error = outcome.expect_err("explicit Pi rejection must fail the submission");
+            assert_ne!(error.code, "message_delivery_accepted");
+            let failed = snapshot(&service, id);
+            assert_eq!(failed.run_state, RunState::Failed);
+            assert!(failed.actions.can_send, "rejected input must release Pi's send gate");
+        } else {
+            let Response::SendTurn(result) = outcome.unwrap() else {
+                panic!("expected composed SendTurn response");
+            };
+            assert_eq!(result.submission_receipt, Some(crate::SubmissionReceipt::Sending));
+            assert!(result.submitted_message_id.is_none(), "no native echo was fabricated");
         }
         close_after_cleanup(&service);
     }

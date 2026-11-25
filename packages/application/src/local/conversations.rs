@@ -1004,7 +1004,31 @@ impl CoreRuntime {
         self.check_submission_cancelled(self.session.conversation_id().unwrap_or_default())?;
         self.session.unsubmitted_draft = None;
         let mut submitted = None;
-        let sent =
+        // Pi's ordinary send() only queues the prompt. A user initiated
+        // composed send holds its application reply until this exact native
+        // prompt response settles.
+        let pi_application = if !resuming {
+            self.execution_control_ticket(execution_workers::ExecutionCommandKind::Send)?
+        } else {
+            None
+        };
+        let pi_ticket = if let (Some(application), ActiveState::Pi(pi)) =
+            (pi_application, &mut self.session.active_state)
+        {
+            let native = pi
+                .begin_submission_prompt(&input)
+                .map_err(|error| RuntimeError::context("Pi 输入未派发", error))?;
+            Some((application, native))
+        } else {
+            None
+        };
+        if let Some((application, native)) = pi_ticket {
+            self.session.pi_submission = Some(editing::PiSubmission { application, native });
+            self.mark_execution_started(application);
+        }
+        let sent = if pi_ticket.is_some() {
+            Ok(())
+        } else {
             telemetry::observe(
                 self.telemetry.as_ref(),
                 "harness.dispatch",
@@ -1032,7 +1056,8 @@ impl CoreRuntime {
                         None => Err("会话执行尚未准备".into()),
                     },
                 },
-            );
+            )
+        };
         let native_error = sent
             .as_ref()
             .err()

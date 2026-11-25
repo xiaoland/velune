@@ -865,6 +865,7 @@ impl CoreRuntime {
                     pi.poll();
                 }
                 self.advance_pi_control();
+                self.advance_pi_submission();
                 self.advance_pi_edit();
                 if matches!(self.session.active_state, ActiveState::Pi(_)) {
                     let _ = self.start_native_cleanup_worker();
@@ -912,6 +913,7 @@ impl CoreRuntime {
         self.harvest_native_controls();
         self.advance_native_submissions();
         self.advance_pi_control();
+        self.advance_pi_submission();
         self.advance_pi_edit();
         self.refresh_native_accepted_settings();
         let pi_failure = matches!(&self.session.active_state,
