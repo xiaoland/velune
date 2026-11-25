@@ -10,7 +10,7 @@ struct DockAreaView: View {
     let side: DockSide
 
     var body: some View {
-        let kinds = window.tools.tools(in: side)
+        let kinds = window.tools.kept(in: side)
         let flexible = side == .bottom ? kinds : kinds.filter { $0 != .composer }
         VStack(spacing: 0) {
             // A tool alone is the area's content itself.
@@ -34,7 +34,7 @@ struct DockedTool: View {
     let side: DockSide
 
     var body: some View {
-        let shared = window.tools.tools(in: side).count > 1
+        let shared = window.tools.kept(in: side).count > 1
         VStack(spacing: 0) {
             if shared { ToolHeader(window: window, kind: kind, side: side) }
             ToolContent(kind: kind, window: window, side: side)

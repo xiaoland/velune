@@ -397,6 +397,10 @@ enum VeluneEntry {
             admitMacExecution()
             sidebarToolbarChecks()
         }
+        if CommandLine.arguments.contains("--check-shell-motion") {
+            admitMacExecution()
+            shellMotionChecks()
+        }
         if CommandLine.arguments.contains("--check-background-notifications") {
             admitMacExecution()
             backgroundNotificationChecks()

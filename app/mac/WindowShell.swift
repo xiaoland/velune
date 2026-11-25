@@ -112,11 +112,19 @@ enum ConversationToolbar {
         if collapsed { model.tools.collapse(side) } else { model.tools.showArea(side) }
     }
 
+    /// Show/Hide Sidebar and Show/Hide Inspector, from the toolbar's
+    /// button, the View menu or their keys: the window's tools change first
+    /// and the area moves after, as for any other change of the tools.
+    override func toggleSidebar(_ sender: Any?) { model.tools.toggleArea(.left) }
+    override func toggleInspector(_ sender: Any?) { model.tools.toggleArea(.right) }
+
     private func scheduleSync() {
         guard !syncScheduled else { return }
         syncScheduled = true
-        // `$tools` publishes before the change; the areas follow what it became.
-        DispatchQueue.main.async { [weak self] in
+        // `$tools` publishes before the change; the areas follow what it
+        // became once the window's views have, at the end of this turn of
+        // the run loop, so that update does not fall inside the animation.
+        RunLoop.main.afterViewsUpdate { [weak self] in
             guard let self else { return }
             self.syncScheduled = false
             self.sync(animated: self.model.acceptsWorkspacePersistence && self.view.window?.isVisible == true)
@@ -179,6 +187,21 @@ enum ConversationToolbar {
         if !sidebarItem.isCollapsed { model.tools.leftWidth = Double(sidebarItem.viewController.view.frame.width) }
         if !inspectorItem.isCollapsed { model.tools.rightWidth = Double(inspectorItem.viewController.view.frame.width) }
         sized.formUnion([.left, .right])
+    }
+}
+
+extension RunLoop {
+    /// Runs `body` once, as this turn of the main run loop ends: after
+    /// SwiftUI has brought its views up to date and Core Animation has
+    /// committed them. Something started then, an animation say, begins
+    /// with nothing of that update left to do in its first frames.
+    func afterViewsUpdate(_ body: @escaping @MainActor () -> Void) {
+        let observer = CFRunLoopObserverCreateWithHandler(nil, CFRunLoopActivity.beforeWaiting.rawValue, false, CFIndex.max) { _, _ in
+            MainActor.assumeIsolated { body() }
+        }
+        CFRunLoopAddObserver(getCFRunLoop(), observer, .commonModes)
+        // A turn that is already waiting runs its observers when it next wakes.
+        CFRunLoopWakeUp(getCFRunLoop())
     }
 }
 

@@ -129,6 +129,14 @@ struct ToolWindowLayout: Codable, Equatable {
         collapsed.contains(side) ? [] : docked(in: side).filter { self[$0].shown }
     }
 
+    /// What an area's view holds: its tools, and while it is collapsed the
+    /// ones it showed, so closing and opening it move the same views rather
+    /// than tear them down and build them again. A composer is put away with
+    /// its area.
+    func kept(in side: DockSide) -> [ToolWindowKind] {
+        collapsed.contains(side) ? docked(in: side).filter { self[$0].shown && $0 != .composer } : tools(in: side)
+    }
+
     func docked(in side: DockSide) -> [ToolWindowKind] {
         ToolWindowKind.allCases.filter { self[$0].place == .docked(side) }
     }
