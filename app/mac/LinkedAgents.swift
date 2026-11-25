@@ -80,7 +80,9 @@ struct LinkedAgentsView: View {
         let finished = children.filter { !$0.isActive(in: store.device) }
         let visibleIDs = Set((finishedExpanded ? agents : agents.filter { !$0.isChild || $0.isActive(in: store.device) }).map(\.id))
         VStack(spacing: 0) {
-            if agents.isEmpty {
+            if store.isOpeningConversation && store.pendingConversationID != nil {
+                ProgressView("正在打开会话…").frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if agents.isEmpty {
                 ContentUnavailableView("没有关联 Agent", systemImage: "person.2",
                                        description: Text("父会话、子 Agent 和协作会话会列在这里。"))
             } else {

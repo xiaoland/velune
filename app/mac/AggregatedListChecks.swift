@@ -1,11 +1,10 @@
 import AppKit
-import Combine
 import Foundation
 import VeluneBindings
 
 /// Entry for --check-aggregated-list, before ordinary application startup.
-/// Preview devices never open a core or endpoint. Only the caller's temporary
-/// synthetic directory is used for the real preferences round trip.
+/// Preview devices, preferences and the isolated sidebar search use the
+/// caller's temporary directory. This check never opens a window or an endpoint.
 @MainActor func aggregatedListChecks() -> Never {
     NSApplication.shared.setActivationPolicy(.prohibited)
     MacNativePersistenceGate.close()
@@ -111,21 +110,12 @@ import VeluneBindings
     precondition(orderedIDs(model) == expected)
     note("PASS aggregated filtering/persistence: hidden slots survive moves; each single-device view keeps its own order; filter, qualified collapse and manual order survive reopening")
 
-    // A preview search deliberately has no result, matching the missing-result
-    // condition after a failed first request. Observe the real facade's query
-    // input to prove a successful list recovery retries the unchanged query.
     let search = AggregatedListModel(local: localStore, hub: nil)
     search.updateDevices([local, peer])
     let peerList = search.listStore(for: peer)
-    var queries: [String] = []
-    let watch = peerList.$searchText.sink { queries.append($0) }
     search.setSearchText("  synthetic needle  ")
-    precondition(peerList.searchText == "synthetic needle" && peerList.searchResults == nil)
+    precondition(peerList.searchText == "synthetic needle" && peerList.searchRead.results == nil)
     precondition(search.sections.isEmpty, "等待搜索结果时不能把普通列表冒充搜索结果")
-    let queryCount = queries.filter { $0 == "synthetic needle" }.count
-    peerStore.applyList(snapshot([.pinned, a, b]))
-    wait { queries.filter { $0 == "synthetic needle" }.count == queryCount + 1 }
-    precondition(Array(queries.suffix(2)) == ["", "synthetic needle"], "列表恢复必须重发相同搜索词")
     let extraStore = DeviceStore(preview: true, peerID: "synthetic-new-peer")
     let extra = AggregatedListModel.Device(peerID: extraStore.peerID, store: extraStore, name: "新上线合成设备")
     search.updateDevices([local, peer, extra])
@@ -133,10 +123,67 @@ import VeluneBindings
     search.setFilter(.peer("synthetic-peer"))
     precondition(search.listStore(for: local).searchText.isEmpty && peerList.searchText == "synthetic needle")
     search.setSearchText("")
-    precondition(peerList.searchText.isEmpty && search.searchResults.isEmpty)
+    precondition(peerList.searchText.isEmpty && peerList.searchRead.results == nil)
     precondition(search.sections.map(\.key) == [.pinned, a, b])
-    withExtendedLifetime(watch) {}
-    note("PASS aggregated search recovery: missing first result retries after list revision; new devices join active query; filter changes and clearing invalidate previous queries (preview query-input evidence)")
+    note("PASS aggregated search scope: new devices join active query; filter changes and clearing invalidate previous queries")
+
+    let searchHome = home.appendingPathComponent("isolated-search-core", isDirectory: true)
+    let transport = Transport(stateDirectory: searchHome, resourcesDirectory: Bundle.main.resourceURL!)
+    let runtimeID = "synthetic-sidebar-search"
+    let agent = searchHome.appendingPathComponent("agent", isDirectory: true)
+    let projects = agent.appendingPathComponent("projects/synthetic", isDirectory: true)
+    try! FileManager.default.createDirectory(at: projects, withIntermediateDirectories: true)
+    let nativeID = "00000000-0000-4000-8000-000000000001"
+    let record: [String: Any] = ["type": "user", "uuid": "search-input", "parentUuid": NSNull(),
+        "sessionId": nativeID, "cwd": "/synthetic", "timestamp": "2026-01-01T00:00:00Z",
+        "message": ["role": "user", "content": "Synthetic sidebar search anchor"]]
+    var bytes = try! JSONSerialization.data(withJSONObject: record)
+    bytes.append(10)
+    try! bytes.write(to: projects.appendingPathComponent(nativeID + ".jsonl"))
+    let configuration = try! transport.list()
+    for var runtime in configuration.runtimeInstances where runtime.enabled {
+        runtime.enabled = false
+        _ = try! transport.upsertRuntime(runtime)
+    }
+    _ = try! transport.upsertRuntime(RuntimeInstance(enabled: true, id: runtimeID, name: "搜索合成源",
+        typeId: .claudeCode, gatewayId: configuration.gateways.first?.id ?? "default",
+        settings: ["binary": "/synthetic/unused-agent", "nodeBinary": "/usr/bin/python3", "agentDir": agent.path]),
+        execution: RuntimeExecution(transport: .local, home: .existing(path: searchHome.path), remoteResourcesDirectory: nil))
+    let localSearchStore = DeviceStore(transport: transport)
+    localSearchStore.applyList(try! transport.list())
+    let secondHome = home.appendingPathComponent("recovering-search-core", isDirectory: true)
+    let resources = Bundle.main.resourceURL!.path
+    var firstOpen = true
+    let disconnected = Transport(stateDirectory: secondHome, telemetry: transport.telemetryResult, remote: {
+        if firstOpen {
+            firstOpen = false
+            throw TransportError.rejected("合成设备暂时不可达")
+        }
+        return try VeluneApplication.open(options: BindingOptions(homeDirectory: secondHome.path, resourcesDirectory: resources))
+    })
+    precondition((try? disconnected.prepareForLaunch()) == nil, "预置缓存连接错误")
+    let disconnectedStore = DeviceStore(transport: disconnected, peerID: "synthetic-disconnected")
+    let sources = AggregatedListModel(local: localSearchStore, hub: nil)
+    let localSearch = sources.devices[0]
+    let failedSearch = AggregatedListModel.Device(peerID: disconnectedStore.peerID, store: disconnectedStore, name: "合成离线设备")
+    sources.updateDevices([localSearch, failedSearch])
+    sources.setSearchText("sidebar search anchor")
+    precondition(sources.searchLoading)
+    wait { !sources.searchLoading && sources.sections.flatMap(\.conversations).contains { $0.id == "\(runtimeID):\(nativeID)" } }
+    precondition(sources.searchFailures.map(\.id) == [failedSearch.id])
+    sources.retrySearch(on: failedSearch)
+    precondition(sources.searchFailures.first?.retrying == true)
+    wait { !sources.searchLoading && sources.searchFailures.isEmpty }
+    precondition(sources.sections.flatMap(\.conversations).contains { $0.id == "\(runtimeID):\(nativeID)" }, "部分失败与重试不能遮住其他设备的结果")
+    try! transport.close()
+    sources.retrySearch(on: localSearch)
+    wait { !sources.searchLoading && sources.searchFailures.map(\.id) == [localSearch.id] }
+    precondition(sources.sections.flatMap(\.conversations).contains { $0.id == "\(runtimeID):\(nativeID)" }, "同一搜索重试失败应保留已有结果")
+    sources.setSearchText("other query")
+    precondition(sources.sections.isEmpty, "换词后不能继续显示上一个搜索词的结果")
+    wait { !sources.searchLoading }
+    try! disconnected.close()
+    note("PASS aggregated search recovery: real sidebar query, explicit retry bypasses cached open failure, successful-source result retention, same-query failure and new-query isolation")
 
     let unloadedStore = DeviceStore(preview: true, peerID: "synthetic-unloaded")
     unloadedStore.deleteInPreview(Set(unloadedStore.conversations.map(\.id)))
@@ -242,5 +289,5 @@ import VeluneBindings
         return json["filter"] as? String == "all"
     }
     precondition(!NSApp.isActive && NSApp.activationPolicy() == .prohibited && !MacNativePersistenceGate.isEnabled)
-    note("PASS aggregated list checks: preview data only; no windows, endpoints, cores or messages")
+    note("PASS aggregated list checks: isolated fixture; no windows, endpoints or model calls")
 }

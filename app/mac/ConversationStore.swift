@@ -20,9 +20,14 @@ final class ConversationStore: ObservableObject {
     private var temporaryChoices = ConversationChoices()
     @Published private(set) var openingFailure: AppProblem?
     @Published private(set) var creationFailure: String?
-    /// This window's search: its text, and the matches once read.
+    /// A device's last usable result for the current sidebar search.
+    struct SearchRead {
+        var results: (conversations: [Conversation], groups: [ConversationGroup])?
+        var failure: String?
+        var isLoading = false
+    }
     @Published private(set) var searchText = ""
-    @Published private(set) var searchResults: (conversations: [Conversation], groups: [ConversationGroup])?
+    @Published private(set) var searchRead = SearchRead()
     private var searchRequest = 0
     /// Conversations reached outside the list (a link, a search result), so they can be opened.
     private var offListConversations: [Conversation] = []
@@ -180,7 +185,7 @@ final class ConversationStore: ObservableObject {
             // Organization changes the list's own rows; reached ones follow them.
             let listed = Dictionary(device.conversations.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
             offListConversations = offListConversations.map { listed[$0.id] ?? $0 }
-            if searchResults != nil { refreshSearch() }
+            if !searchText.isEmpty { refreshSearch() }
             let selected = selectedConversationIDs.filter { conversation(id: $0) != nil }
             if selected != selectedConversationIDs { selectedConversationIDs = selected }
             // A later successful list can finish startup after the first read failed.
@@ -225,7 +230,7 @@ final class ConversationStore: ObservableObject {
     /// A conversation by identity: listed, or reached outside the list.
     func conversation(id: String) -> Conversation? {
         if let current = snapshot?.conversation, current.id == id, !isDraft { return isSideChat ? current : conversations.first { $0.id == id } }
-        return device.conversations.first { $0.id == id } ?? searchResults?.conversations.first { $0.id == id } ?? offListConversations.first { $0.id == id }
+        return device.conversations.first { $0.id == id } ?? searchRead.results?.conversations.first { $0.id == id } ?? offListConversations.first { $0.id == id }
     }
     var selectedConversationTitle: String? { selectedConversationID.flatMap { conversation(id: $0) }?.title ?? (snapshot?.conversation.id == selectedConversationID ? snapshot?.conversation.title : nil) }
     var isGenerating: Bool { snapshot?.runState == .running || snapshot?.runState == .stopping }
@@ -845,7 +850,9 @@ final class ConversationStore: ObservableObject {
     /// Refresh also resamples control and
     /// composer facts without stopping execution or replacing local drafts.
     func reloadFromRuntimes() {
-        guard canReloadFromRuntimes, let transport else { return }
+        guard canReloadFromRuntimes else { return }
+        if canRetryFailedOpening { retryFailedOpening(); return }
+        guard let transport else { return }
         let open = isDraft ? nil : snapshot?.conversation
         reloadProjection { try open.map { try transport.refreshConversation(runtimeID: $0.runtimeID, conversationID: $0.id) } }
     }
@@ -876,7 +883,11 @@ final class ConversationStore: ObservableObject {
 
     /// Git changes in the loaded conversation's working directory.
     func readWorkingChanges(_ apply: @escaping (Result<WorkingChanges, Error>) -> Void) {
-        guard !isPreview, !isShuttingDown, let transport, let conversation = snapshot?.conversation, !isDraft else { return }
+        guard !isShuttingDown else { apply(.failure(TransportError.quitting)); return }
+        guard let transport else { apply(.failure(TransportError.unavailable)); return }
+        guard let conversation = snapshot?.conversation, !isDraft else {
+            apply(.failure(TransportError.rejected("请先打开具有工作目录的会话。"))); return
+        }
         performOnQueue {
             let result = Result { try transport.workingChanges(runtimeID: conversation.runtimeID, conversationID: conversation.id) }
             DispatchQueue.main.async { apply(result) }
@@ -892,7 +903,11 @@ final class ConversationStore: ObservableObject {
         }
     }
     func readFileDiff(path: String, _ apply: @escaping (Result<FileDiff, Error>) -> Void) {
-        guard !isPreview, !isShuttingDown, let transport, let conversation = snapshot?.conversation, !isDraft else { return }
+        guard !isShuttingDown else { apply(.failure(TransportError.quitting)); return }
+        guard let transport else { apply(.failure(TransportError.unavailable)); return }
+        guard let conversation = snapshot?.conversation, !isDraft else {
+            apply(.failure(TransportError.rejected("请先打开具有工作目录的会话。"))); return
+        }
         performOnQueue {
             let result = Result { try transport.fileDiff(runtimeID: conversation.runtimeID, conversationID: conversation.id, path: path) }
             DispatchQueue.main.async { apply(result) }
@@ -914,22 +929,38 @@ final class ConversationStore: ObservableObject {
         }
     }
     func setSearchText(_ text: String) {
-        guard text != searchText else { return }
-        searchText = text
+        let query = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard query != searchText else { return }
+        searchText = query
+        searchRead = SearchRead()
         refreshSearch()
     }
-    private func refreshSearch() {
+    func retrySearch() {
+        guard !searchRead.isLoading else { return }
+        refreshSearch(retryConnection: true)
+    }
+    private func refreshSearch(retryConnection: Bool = false) {
         searchRequest += 1
         let request = searchRequest
-        let text = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty, !isPreview, let transport else { searchResults = nil; return }
+        let text = searchText
+        guard !text.isEmpty, !isPreview, !isShuttingDown else { return }
+        guard let transport else {
+            searchRead.failure = "暂时无法连接此设备。"
+            return
+        }
+        searchRead.isLoading = true
         performOnQueue { [weak self] in
+            if retryConnection { transport.retryOpen() }
             let result = Result { try transport.searchConversations(text) }
             DispatchQueue.main.async {
                 guard let self, request == self.searchRequest else { return }
                 switch result {
-                case .success(let found): self.searchResults = (found.conversations.map(BindingMapping.listed), found.groups)
-                case .failure(let failure): self.recordProblem(failure, source: "搜索会话")
+                case .success(let found):
+                    self.searchRead = SearchRead(results: (found.conversations.map(BindingMapping.listed), found.groups))
+                case .failure(let error):
+                    let detail = AppProblem.failure(error, source: "搜索会话").detail
+                    self.searchRead = SearchRead(results: self.searchRead.results, failure: detail)
+                    self.recordProblem(error, source: "搜索会话")
                 }
             }
         }
@@ -969,17 +1000,20 @@ final class ConversationStore: ObservableObject {
         default: retryable = false
         }
         openingNeedsRetry = retryable
-        if retryable { openingRetry.failed(); openingFailure = nil }
-        else { openingFailure = AppProblem.failure(error, source: "打开会话") }
+        if retryable { openingRetry.failed() }
+        openingFailure = AppProblem.failure(error, source: "打开会话")
     }
     var canRetryFailedOpening: Bool {
-        !isSideChat && !isLoading && !isShuttingDown && openingFailure != nil && unopenedConversationID != nil
+        !isSideChat && !isLoading && !isShuttingDown && !executionStarting && pendingConversationID == nil
+            && reachingConversationID == nil && deferredSelection == nil && coldOpeningProblem != nil && unopenedConversationID != nil
     }
     var coldOpeningProblem: AppProblem? {
-        loadedConversationID == nil && !isOpeningConversation ? openingFailure : nil
+        loadedConversationID == nil && pendingConversationID == nil && reachingConversationID == nil ? openingFailure : nil
     }
     func retryFailedOpening() {
         guard canRetryFailedOpening, let id = unopenedConversationID else { return }
+        openingNeedsRetry = false
+        if let transport { performOnQueue { transport.retryOpen() } }
         openLinkedConversation(id: id)
     }
     private func takeOpeningRetry() -> String? {
@@ -1017,7 +1051,11 @@ final class ConversationStore: ObservableObject {
     func openLinkedConversation(id: String, move: NavigationMove = .new) {
         if unopenedConversationID != id { clearInitialOpening() }
         if conversation(id: id) != nil { selectConversation(id: id, move: move); return }
-        guard !isPreview, !isShuttingDown, let transport else { abandonLinkedConversationLookup(); return }
+        guard !isPreview, !isShuttingDown else { abandonLinkedConversationLookup(); return }
+        if snapshot == nil { unopenedConversationID = id }
+        guard let transport else {
+            abandonLinkedConversationLookup(); noteOpeningFailure(TransportError.unavailable); return
+        }
         // Native links already carry the source instance. The history reader
         // validates membership, without rebuilding that instance's list.
         if let separator = id.firstIndex(of: ":"), id.index(after: separator) != id.endIndex {
@@ -1029,7 +1067,6 @@ final class ConversationStore: ObservableObject {
                 return
             }
         }
-        if snapshot == nil { unopenedConversationID = id }
         let request = UUID()
         linkedConversationRequest = request
         deferredSelection = nil
@@ -1079,8 +1116,10 @@ final class ConversationStore: ObservableObject {
         deferredSelection = nil
         selectedConversationIDs = [id]
         if isPreview { projectionRuntimeID = runtimeID; apply(device.previewSnapshots[id]); composerEvents.send(.conversation(id)); return }
-        guard let transport else { recordProblem("本地核心未配置"); return }
         if snapshot == nil { unopenedConversationID = id }
+        guard let transport else {
+            noteOpeningFailure(TransportError.unavailable); recordProblem("本地核心未配置"); return
+        }
         // The sidebar reflects user intent immediately. The old loaded transcript
         // is retained until success, but hidden while this destination is loading.
         let previousSelection = snapshot?.conversation.id
@@ -2945,7 +2984,7 @@ extension ConversationStore {
         store.selectedConversationID = sample.conversation.id
         let unavailable = TransportError.operation("openConversation", .diagnostic(kind: "unavailable", detail: "会话历史正在读取，请稍后重试", code: "unavailable", phase: "read", operationID: "synthetic"))
         store.noteOpeningFailure(unavailable)
-        precondition(store.snapshot == nil && store.isOpeningConversation && store.openingFailure == nil)
+        precondition(store.snapshot == nil && store.isOpeningConversation && store.coldOpeningProblem != nil && store.canRetryFailedOpening)
         precondition(store.takeOpeningRetry() == nil && store.openingRetry.failures == 1,
                      "暂态失败不能在下一个通知中立即热重试")
         wait { store.openingRetry.ready }

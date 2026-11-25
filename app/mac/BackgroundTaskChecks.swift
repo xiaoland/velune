@@ -42,6 +42,14 @@ import VeluneBindings
     let reset = BackgroundTasksModel(); reset.loading = true; reset.reset(store)
     precondition(!reset.loading && reset.tasks.isEmpty && reset.live == nil && reset.issue == nil, "切换会话必须清除上一会话的观察状态")
     render("agents-empty", LinkedAgentsView(store: store, inPopover: false, open: { _, _ in }))
+    var workingReadFailed = false, diffReadFailed = false
+    store.readWorkingChanges { if case .failure = $0 { workingReadFailed = true } }
+    store.readFileDiff(path: "synthetic.txt") { if case .failure = $0 { diffReadFailed = true } }
+    precondition(workingReadFailed && diffReadFailed, "无连接时变更读取也必须结束并返回可重试的失败")
+    render("working-changes-unavailable", ChangeReviewView(store: store))
+    let library = ResourceLibraryModel(transport: nil)
+    library.reload(manual: true)
+    precondition(library.readFailure != nil && library.failure == nil, "资源清单的读取错误必须独立于编辑错误")
     for state in ["empty", "loading", "offline", "unknown"] {
         let model = BackgroundTasksModel()
         model.loading = state == "loading"
@@ -150,6 +158,12 @@ import VeluneBindings
         else { model.output = BackgroundTaskOutput(requestId: "synthetic", taskId: task.id, status: .ready, text: state == "empty-output" ? "" : String(repeating: "合成输出 0123456789\n", count: 200), truncated: state == "long-output", issue: nil) }
         render(state, BackgroundTaskDetail(initial: task, model: model, back: {}, open: { _, _ in }))
     }
+    let cachedOutput = BackgroundTasksModel(), completedTask = tasks[2]
+    cachedOutput.tasks = [completedTask]
+    cachedOutput.output = BackgroundTaskOutput(requestId: "cached", taskId: completedTask.id, status: .ready,
+        text: "保留上一次读取的任务输出。", truncated: false, issue: nil)
+    cachedOutput.outputIssue = "刚才的读取失败，请重试。"
+    render("output-error-with-cache", BackgroundTaskDetail(initial: completedTask, model: cachedOutput, back: {}, open: { _, _ in }))
     safe()
     store.close()
     let receipt: [String: Any] = ["states": states, "dark": dark, "realModelCalls": 0, "systemChromeVerified": false, "foregroundUnchanged": true,

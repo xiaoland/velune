@@ -56,11 +56,14 @@ extension ResourceTemplateSummary: Identifiable {}
     @Published private(set) var unmanaged: [RuntimeResourceKind: [UnmanagedRuntimeResource]] = [:]
     @Published private(set) var isLoaded = false
     @Published private(set) var isWorking = false
+    @Published private(set) var isRefreshing = false
+    @Published private(set) var readFailure: String?
     @Published var failure: String?
     @Published var drafts: [LibrarySelection: TemplateDraft] = [:]
     @Published private(set) var saved: [LibrarySelection: TemplateDraft] = [:]
     private let transport: Transport?
     private let queue = DispatchQueue(label: "local.velune.resource-library", qos: .userInitiated)
+    private var reloadGeneration = 0
 
     init(transport: Transport?) { self.transport = transport }
 
@@ -81,16 +84,21 @@ extension ResourceTemplateSummary: Identifiable {}
         }
     }
 
-    func reload() {
-        guard let transport else { return }
+    func reload(manual: Bool = false) {
+        guard let transport else { readFailure = "本地核心未配置。"; return }
+        reloadGeneration += 1
+        let generation = reloadGeneration
+        isRefreshing = true
         queue.async { [weak self] in
+            if manual { transport.retryOpen() }
             let result = Result { () -> ([ResourceTemplateSummary], [ResourceSyncStatus], [RuntimeResourceKind: [UnmanagedRuntimeResource]]) in
                 var unmanaged: [RuntimeResourceKind: [UnmanagedRuntimeResource]] = [:]
                 for kind in RuntimeResourceKind.templateKinds { unmanaged[kind] = try transport.unmanagedRuntimeResources(kind) }
                 return (try transport.listResourceTemplates(), try transport.resourceSyncStatus(), unmanaged)
             }
             DispatchQueue.main.async {
-                guard let self else { return }
+                guard let self, self.reloadGeneration == generation else { return }
+                self.isRefreshing = false
                 switch result {
                 case .success(let (summaries, statuses, unmanaged)):
                     self.summaries = summaries.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
@@ -99,7 +107,8 @@ extension ResourceTemplateSummary: Identifiable {}
                     self.states = states
                     self.unmanaged = unmanaged
                     self.isLoaded = true
-                case .failure(let error): self.failure = ResourceFailure(error).message
+                    self.readFailure = nil
+                case .failure(let error): self.readFailure = ResourceFailure(error).message
                 }
             }
         }
@@ -220,6 +229,9 @@ struct ResourceLibraryView: View {
         }
         .navigationTitle("资源库")
         .toolbar(id: "resource-library") {
+            ToolbarItem(id: "refresh") {
+                ReadRefreshButton(label: "刷新资源库") { library.reload(manual: true) }.disabled(library.isRefreshing)
+            }
             ToolbarItem(id: "runtime") {
                 Picker("运行时", selection: $navigator.runtimeID) {
                     Text("全部运行时").tag(String?.none)
@@ -277,6 +289,11 @@ private struct ResourceListView: View {
 
     var body: some View {
         List(selection: $navigator.selection) {
+            if let failure = library.readFailure {
+                ReadFailureNotice(title: "无法读取资源库", detail: failure, retryDisabled: library.isRefreshing) {
+                    library.reload(manual: true)
+                }.selectionDisabled(true)
+            }
             if others.isEmpty { resourceRows } else if !resources.isEmpty { Section("资源库") { resourceRows } }
             if !others.isEmpty {
                 Section("运行时中的其他内容") {
@@ -293,9 +310,11 @@ private struct ResourceListView: View {
         }
         .searchable(text: $query, placement: .toolbar, prompt: "搜索\(navigator.kind.templateTitle)")
         .overlay {
-            if library.isLoaded && resources.isEmpty && others.isEmpty && !query.isEmpty {
+            if library.isRefreshing && !library.isLoaded && library.readFailure == nil {
+                ProgressView("正在读取资源库…")
+            } else if library.readFailure == nil && library.isLoaded && resources.isEmpty && others.isEmpty && !query.isEmpty {
                 ContentUnavailableView.search(text: query)
-            } else if library.isLoaded && resources.isEmpty && others.isEmpty {
+            } else if library.readFailure == nil && library.isLoaded && resources.isEmpty && others.isEmpty {
                 ContentUnavailableView {
                     Label("还没有\(navigator.kind.templateTitle)", systemImage: navigator.kind.templateSymbol)
                 } actions: {
@@ -380,6 +399,7 @@ private struct ResourceDetailView: View {
                 }
             } else if let message = library.failure {
                 ContentUnavailableView { Label("无法读取资源", systemImage: "exclamationmark.triangle") } description: { Text(message) }
+                    actions: { Button("重试") { library.open(selection) }.disabled(library.isWorking) }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -634,6 +654,7 @@ private struct NativeResourceView: View {
                 }
             } else if let message = library.failure {
                 ContentUnavailableView { Label("无法读取", systemImage: "exclamationmark.triangle") } description: { Text(message) }
+                    actions: { Button("重试", action: load).disabled(library.isWorking) }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -712,7 +733,7 @@ private struct DriftSheet: View {
                     }
                 }
             } else if let message = library.failure {
-                FailureBanner(message: message)
+                ReadFailureNotice(title: "无法读取资源差异", detail: message, retryDisabled: library.isWorking, retry: load)
             } else {
                 ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
             }
@@ -726,10 +747,12 @@ private struct DriftSheet: View {
             }
         }
         .padding(20).frame(width: 720, height: 520)
-        .onAppear {
-            let runtimeID = runtime.id, resourceID = resourceID
-            library.run({ try $0.resourceDrift(runtimeID: runtimeID, templateID: resourceID) }, done: { files = $0 })
-        }
+        .onAppear(perform: load)
+    }
+
+    private func load() {
+        let runtimeID = runtime.id, resourceID = resourceID
+        library.run({ try $0.resourceDrift(runtimeID: runtimeID, templateID: resourceID) }, done: { files = $0 })
     }
 }
 

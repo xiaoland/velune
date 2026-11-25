@@ -47,7 +47,8 @@ struct ArchivedConversationsMenuItem: View {
 
     func start() {
         active = true
-        guard transport == nil, let original = source.transport else { return }
+        guard transport == nil, !source.isPreview else { return }
+        guard let original = source.transport else { loadError = "暂时无法连接设备。"; return }
         lifecycle = UUID()
         transport = original.clientView("archived-conversations:\(lifecycle.uuidString)")
         read { try $0.showArchivedConversations(true) }
@@ -139,6 +140,7 @@ struct ArchivedConversationsMenuItem: View {
 
     func unarchive(_ values: [Conversation]) { manage(values, deleting: false) }
     func delete(_ values: [Conversation]) { manage(values, deleting: true) }
+    func dismissOperationError() { operationError = nil }
 
     private func manage(_ values: [Conversation], deleting: Bool) {
         guard let transport, !values.isEmpty else { return }
@@ -222,13 +224,13 @@ struct ArchivedConversationsContent: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            if let error = model.operationError ?? model.loadError {
+            if let error = model.operationError {
                 VStack(alignment: .leading, spacing: 8) {
                     HStack {
-                        Label(model.operationError != nil ? "会话操作未完成" : "归档会话未能完整更新", systemImage: "exclamationmark.triangle")
+                        Label("会话操作未完成", systemImage: "exclamationmark.triangle")
                         Spacer(minLength: 12)
                         Button(showsErrorDetails ? "收起详情" : "详情") { showsErrorDetails.toggle() }
-                        Button("重新读取") { model.refresh() }
+                        Button("关闭提示") { model.dismissOperationError() }
                     }
                     if showsErrorDetails {
                         ScrollView { Text(error).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }.frame(height: 100)
@@ -236,8 +238,13 @@ struct ArchivedConversationsContent: View {
                 }.padding(12)
                 Divider()
             }
+            if let error = model.loadError {
+                ReadFailureNotice(title: "归档会话未能完整更新", detail: error, retryDisabled: model.isLoading) { model.refresh() }
+                Divider()
+            }
             if model.conversations.isEmpty && model.groups.isEmpty {
                 if model.isLoading { ProgressView("正在读取已归档会话…").frame(maxWidth: .infinity, maxHeight: .infinity) }
+                else if model.loadError != nil { Spacer(minLength: 0) }
                 else {
                     ContentUnavailableView {
                         Label(model.searchText.isEmpty && !model.browser.hasFilters ? "没有已归档的会话" : "没有匹配的会话", systemImage: "archivebox")
@@ -262,7 +269,7 @@ struct ArchivedConversationsContent: View {
             ToolbarItem { Button("打开会话", systemImage: "arrow.up.right.square") { if let value = selected.first { open(value) } }.disabled(selected.count != 1) }
             ToolbarItem { Button("取消归档", systemImage: "tray.and.arrow.up") { model.unarchive(selected) }.disabled(!canUnarchive) }
             ToolbarItem { Button("删除…", systemImage: "trash") { deleting = selected }.disabled(!canDelete) }
-            ToolbarItem { Button("重新读取", systemImage: "arrow.clockwise") { model.refresh() }.disabled(model.isLoading) }
+            ToolbarItem { ReadRefreshButton(label: "刷新归档会话") { model.refresh() }.disabled(model.isLoading) }
         }
         .onAppear { source.start(); model.start() }
         .onDisappear { model.stop() }

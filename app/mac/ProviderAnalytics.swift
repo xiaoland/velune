@@ -12,6 +12,7 @@ struct AnalyticsProviderUsageSummary: View {
     let problem: String?
     let showSources: () -> Void
     let showModels: () -> Void
+    var retry: (() -> Void)? = nil
 
     private var days: [ProviderAnalyticsDailyTotal] {
         let range = sourceDate(from)...sourceDate(to)
@@ -71,7 +72,13 @@ struct AnalyticsProviderUsageSummary: View {
                 Text(report?.sources.isEmpty == false ? "当前范围暂无已报告用量" : "暂无提供商用量")
                     .uiFont(.callout).foregroundStyle(.secondary)
             }
-            if let problem { Label(problem, systemImage: "exclamationmark.triangle").uiFont(.caption).foregroundStyle(.secondary) }
+            if let problem {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Label(problem, systemImage: "exclamationmark.triangle").uiFont(.caption).foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                    if let retry { Button("重试", action: retry).controlSize(.small).disabled(reading) }
+                }
+            }
             else if report?.sources.contains(where: \.stale) == true {
                 Text("部分来源显示上次结果").uiFont(.caption).foregroundStyle(.secondary)
             }

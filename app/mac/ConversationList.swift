@@ -157,7 +157,9 @@ struct ConversationListView: View {
     }
 
     private var list: some View {
-        List(selection: Binding(get: { selection }, set: selectList)) {
+        let failures = aggregated.searchFailures
+        let pending = pendingDevices.filter { device in !failures.contains { $0.device.id == device.id } }
+        return List(selection: Binding(get: { selection }, set: selectList)) {
             if store.device.showsArchived {
                 HStack {
                     Label("已归档的会话", systemImage: "archivebox").foregroundStyle(.secondary)
@@ -165,16 +167,41 @@ struct ConversationListView: View {
                     Button("返回") { store.device.setShowsArchived(false) }.buttonStyle(.link)
                 }.selectionDisabled(true)
             }
-            if sections.isEmpty && pendingDevices.isEmpty && !store.isLoading && !focused.isLoading {
-                if searchActive || (browser.hasFilters && !filteredDevice.store.conversations.isEmpty) {
+            ForEach(failures) { failure in
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing: 6) {
+                        Label(aggregated.showsMultipleDevices ? "无法搜索\(failure.device.name)" : "无法搜索会话",
+                              systemImage: "exclamationmark.circle").lineLimit(1)
+                        Spacer(minLength: 0)
+                        if failure.retrying { ProgressView().controlSize(.mini).accessibilityLabel("正在重试搜索") }
+                        Button("重试") { aggregated.retrySearch(on: failure.device) }
+                            .buttonStyle(.borderless).disabled(failure.retrying)
+                            .accessibilityLabel("重试搜索\(failure.device.name)")
+                    }
+                    Text(failure.detail).lineLimit(2).help(failure.detail)
+                }.uiFont(.caption).foregroundStyle(.secondary).selectionDisabled(true)
+            }
+            if !searchActive {
+                ForEach(aggregated.visibleDevices) { device in
+                    if let error = device.store.conversationListReadError {
+                        ReadFailureNotice(title: aggregated.showsMultipleDevices ? "无法更新\(device.name)的会话" : "无法更新会话列表", detail: error) {
+                            device.store.refreshConversations()
+                        }.selectionDisabled(true)
+                    }
+                }
+            }
+            if sections.isEmpty && pending.isEmpty && !store.isLoading && !focused.isLoading {
+                if searchActive && aggregated.searchLoading && failures.isEmpty {
+                    ProgressView("正在搜索会话…").controlSize(.small).selectionDisabled(true)
+                } else if (searchActive && failures.isEmpty) || (!searchActive && browser.hasFilters && !filteredDevice.store.conversations.isEmpty) {
                     Text("没有匹配的会话").foregroundStyle(.secondary).selectionDisabled(true)
                     if browser.hasFilters { Button("清除筛选") { browser.runtimeID = nil; browser.project = .all }.selectionDisabled(true) }
-                } else if store.device.showsArchived {
+                } else if !searchActive && store.device.showsArchived {
                     Text("没有已归档的会话").foregroundStyle(.secondary).selectionDisabled(true)
                 }
             }
             if aggregated.showsMultipleDevices || aggregated.filter != .all {
-                ForEach(pendingDevices) { device in
+                ForEach(pending) { device in
                     DeviceStatusRow(name: device.name, status: DeviceHub.shared?.statusText(for: device.peerID ?? "") ?? "未连接") {
                         aggregated.retry(device)
                     }
@@ -230,6 +257,7 @@ struct ConversationListView: View {
                             ConversationPaginationButton(loaded: section.group.loaded, total: section.group.total,
                                 isLoading: section.device.store.loadingConversationGroups.contains(section.key),
                                 sourceName: section.crossProjectID == nil ? nil : section.device.name,
+                                error: section.device.store.conversationGroupReadErrors[section.key],
                                 load: { section.device.store.loadMoreConversations(in: section.key) })
                                 .selectionDisabled(true)
                                 .groupDrop(groupDropDelegate(section, .more), line: groupLines(section, .more))

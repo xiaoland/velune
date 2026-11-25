@@ -47,6 +47,12 @@ struct AnalyticsView: View {
                 Spacer()
             }.padding(.horizontal, 20).padding(.vertical, 12)
             if let report = store.analyticsReport { reportContext(report) }
+            if let error = store.analyticsReadError {
+                ReadFailureNotice(title: "无法读取网关记录", detail: error,
+                                  retryDisabled: store.analyticsIsLoading, retry: load)
+                    .padding(.horizontal, 8)
+                Divider()
+            }
             switch page {
             case .overview:
                 if store.analyticsReport != nil || providerReport != nil || providerError != nil {
@@ -68,7 +74,7 @@ struct AnalyticsView: View {
             ToolbarItem(id: "refresh") {
                 HStack(spacing: 8) {
                     if store.analyticsIsLoading || providerLoading { ProgressView().controlSize(.small).accessibilityLabel("正在刷新分析") }
-                    Button("刷新", systemImage: "arrow.clockwise") { refresh(); providerReadID += 1 }
+                    ReadRefreshButton(label: "刷新分析") { refresh(); providerReadID += 1 }
                         .disabled(store.analyticsIsLoading)
                 }
             }
@@ -87,12 +93,10 @@ struct AnalyticsView: View {
         .onDisappear { store.cancelAnalyticsRead() }
     }
     @ViewBuilder private var gatewayPlaceholder: some View {
-        if store.analyticsIsLoading || (page != .requests && providerLoading) {
+        if store.analyticsReadError != nil {
+            Spacer(minLength: 0)
+        } else if store.analyticsIsLoading || (page != .requests && providerLoading) {
             ProgressView("正在读取分析…").frame(maxWidth: .infinity, maxHeight: .infinity)
-        } else if store.analyticsReadFailed {
-            ContentUnavailableView { Label("无法读取网关记录", systemImage: "exclamationmark.triangle") } description: {
-                Text("可在问题窗口查看详情，然后重试。")
-            } actions: { Button("重试") { load() }; ProblemsButton(store: store) }
         } else {
             ContentUnavailableView("暂无网关请求", systemImage: "chart.bar.xaxis",
                 description: Text("所示时间范围与筛选没有网关请求记录。"))
@@ -139,13 +143,12 @@ struct AnalyticsView: View {
                 Spacer()
                 if let updated = store.analyticsUpdatedAt { Text("更新于 \(updated.formatted(date: .omitted, time: .shortened))") }
             }.uiFont(.caption).foregroundStyle(.secondary)
-            if store.analyticsIsLoading || store.analyticsReadFailed || report.storageWarning != nil {
+            if store.analyticsIsLoading || report.storageWarning != nil {
                 HStack(alignment: .firstTextBaseline) {
                     if store.analyticsIsLoading { Text("正在读取新范围，当前仍显示上次结果。").foregroundStyle(.secondary) }
-                    else if store.analyticsReadFailed { Label("读取失败，保留上次结果。", systemImage: "exclamationmark.triangle") }
                     else { Label("部分用量记录未能保存。", systemImage: "exclamationmark.triangle") }
                     Spacer()
-                    if store.analyticsReadFailed || report.storageWarning != nil { ProblemsButton(store: store) }
+                    if report.storageWarning != nil { ProblemsButton(store: store) }
                 }.uiFont(.callout)
             }
         }.padding(.horizontal, 20).padding(.bottom, 12)
@@ -205,7 +208,7 @@ struct AnalyticsView: View {
                     metric("输出 Token", value: AnalyticsFormatting.tokens(totals.outputTokens), coverage: coverage(totals.outputReportedCount, totals.requestCount))
                 }
             } else {
-                Text(store.analyticsReadFailed ? "网关记录读取失败" : "所选范围暂无网关请求")
+                Text(store.analyticsReadError == nil ? "所选范围暂无网关请求" : "暂无可显示的网关记录")
                     .uiFont(.callout).foregroundStyle(.secondary)
             }
         }.frame(minWidth: 224, alignment: .leading)
@@ -216,7 +219,7 @@ struct AnalyticsView: View {
         return AnalyticsProviderUsageSummary(report: providerReport, from: displayRange.start, to: displayRange.end,
             reading: providerLoading, problem: providerError,
             showSources: { showsProviderSources = true },
-            showModels: { breakdownMode = .model; page = .breakdown })
+            showModels: { breakdownMode = .model; page = .breakdown }, retry: { providerReadID += 1 })
         .popover(isPresented: $showsProviderSources, arrowEdge: .bottom) {
             ProviderAnalyticsContent(report: providerReport, reading: providerLoading, problem: providerError) {
                 providerReadID += 1

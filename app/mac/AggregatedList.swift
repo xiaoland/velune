@@ -90,7 +90,6 @@ extension ConversationGroupKey {
     }
     private var searchWatches: [String: AnyCancellable] = [:]
     private var searchRequest = 0
-    private var searchListRevisions: [String: Int] = [:]
     /// One list-type store per device, for search and organization requests.
     private var listStores: [String: ConversationStore] = [:]
 
@@ -100,10 +99,24 @@ extension ConversationGroupKey {
     @Published private(set) var collapsed: [String]
     /// Cross-device group order for the merged view's manual ordering.
     @Published private(set) var groupOrder: [String]
-    /// Searching: the text and each device's own matches.
-    @Published var searchText = ""
-    @Published private(set) var searchResults: [String: (conversations: [Conversation], groups: [ConversationGroup])] = [:]
-    @Published private(set) var searchFailure: String?
+    @Published private(set) var searchText = ""
+
+    struct SearchFailure: Identifiable {
+        let device: Device
+        let detail: String
+        let retrying: Bool
+        var id: String { device.id }
+    }
+    var searchFailures: [SearchFailure] {
+        guard !searchText.isEmpty else { return [] }
+        return visibleDevices.compactMap { device in
+            guard let read = listStores[device.id]?.searchRead, let detail = read.failure else { return nil }
+            return SearchFailure(device: device, detail: detail, retrying: read.isLoading)
+        }
+    }
+    var searchLoading: Bool {
+        !searchText.isEmpty && visibleDevices.contains { listStores[$0.id]?.searchRead.isLoading == true }
+    }
 
     init(local: DeviceStore, hub: DeviceHub?, persistence: AggregatedListPersistence? = nil, crossProjects: CrossDeviceProjectCatalog? = nil) {
         self.crossProjects = crossProjects ?? CrossDeviceProjectCatalog.controller(home: local.isPreview || !MacNativePersistenceGate.isEnabled ? nil : local.transport?.stateDirectory)
@@ -167,8 +180,6 @@ extension ConversationGroupKey {
         for id in Array(listStores.keys) where !next.contains(where: { $0.id == id }) {
             listStores.removeValue(forKey: id)?.setSearchText("")
             searchWatches[id] = nil
-            searchListRevisions[id] = nil
-            searchResults[id] = nil
         }
         rebuildSections()
     }
@@ -208,23 +219,21 @@ extension ConversationGroupKey {
         refreshSearches()
         let visible = visibleDevices
         var merged: [Section] = []
-        var searchMerged: [Section] = []
         for device in visible {
-            if !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, let results = searchResults[device.id] {
-                searchMerged += ConversationBrowser.sections(conversations: results.conversations, groups: results.groups).map {
-                    Section(device: device, key: $0.group.key, group: $0.group, conversations: $0.conversations, title: groupTitle($0.group, key: $0.group.key, store: device.store))
-                }
-                continue
+            let conversations: [Conversation], groups: [ConversationGroup]
+            if searchText.isEmpty {
+                conversations = device.store.conversations
+                groups = device.store.conversationGroups
+            } else {
+                guard let results = listStores[device.id]?.searchRead.results else { continue }
+                conversations = results.conversations
+                groups = results.groups
             }
-            merged += ConversationBrowser.sections(conversations: device.store.conversations, groups: device.store.conversationGroups).map {
+            merged += ConversationBrowser.sections(conversations: conversations, groups: groups).map {
                 Section(device: device, key: $0.group.key, group: $0.group, conversations: $0.conversations, title: groupTitle($0.group, key: $0.group.key, store: device.store))
             }
         }
-        if !searchMerged.isEmpty || !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            sections = projectSections(reorder(searchMerged))
-        } else {
-            sections = projectSections(reorder(merged))
-        }
+        sections = projectSections(reorder(merged))
         objectWillChange.send()
     }
 
@@ -331,47 +340,29 @@ extension ConversationGroupKey {
     // MARK: - Search
 
     func setSearchText(_ text: String) {
-        guard text != searchText else { return }
-        searchText = text
+        let query = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard query != searchText else { return }
+        searchText = query
         resetSearches()
         rebuildSections()
     }
 
+    func retrySearch(on device: Device) { listStores[device.id]?.retrySearch() }
+
     private func resetSearches() {
         searchRequest += 1
         searchWatches.removeAll()
-        searchListRevisions.removeAll()
-        searchResults = [:]
         for store in listStores.values { store.setSearchText("") }
     }
 
     private func refreshSearches() {
-        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !query.isEmpty else { return }
+        guard !searchText.isEmpty else { return }
         let request = searchRequest
-        for device in visibleDevices {
+        for device in visibleDevices where searchWatches[device.id] == nil {
             let store = listStore(for: device)
-            let revision = device.store.listRevision
-            if searchWatches[device.id] != nil {
-                guard searchListRevisions[device.id] != revision else { continue }
-                searchListRevisions[device.id] = revision
-                // ConversationStore refreshes successful searches on a list
-                // revision. A failed initial search has no results to refresh.
-                if store.searchResults == nil {
-                    store.setSearchText("")
-                    store.setSearchText(query)
-                }
-                continue
-            }
-            searchListRevisions[device.id] = revision
-            store.setSearchText(query)
-            searchWatches[device.id] = store.$searchResults.receive(on: RunLoop.main).sink { [weak self] results in
+            store.setSearchText(searchText)
+            searchWatches[device.id] = store.$searchRead.receive(on: RunLoop.main).sink { [weak self] _ in
                 guard let self, request == self.searchRequest else { return }
-                if let results {
-                    self.searchResults[device.id] = (results.conversations, results.groups)
-                } else {
-                    self.searchResults[device.id] = nil
-                }
                 self.rebuildSections()
             }
         }

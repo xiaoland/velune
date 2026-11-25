@@ -18,7 +18,8 @@ struct ProviderBillingView: View {
     @State private var reading = false
     @State private var saving = false
     @State private var active = false
-    @State private var problem: String?
+    @State private var readProblem: String?
+    @State private var saveProblem: String?
     private var scopeName: String { service == .openAi ? "Project" : "Workspace" }
     private var valid: Bool {
         !enabled || (!organization.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -27,43 +28,39 @@ struct ProviderBillingView: View {
     }
     var body: some View {
         VStack(spacing: 0) {
-            HStack { Text("用量与账单").uiFont(.headline); Spacer(); Button("完成") { dismiss() }.keyboardShortcut(.cancelAction) }.padding(20)
+            HStack {
+                Text("用量与账单").uiFont(.headline)
+                Spacer()
+                Button("刷新账单", systemImage: "arrow.clockwise") { read(refresh: true) }
+                    .labelStyle(.iconOnly).disabled(reading || saving).help("重新读取账单配置和报表")
+                Button("完成") { dismiss() }.keyboardShortcut(.cancelAction)
+            }.padding(20)
             Divider()
             Form {
-                Section {
-                    Toggle("查询组织用量与账单", isOn: $enabled)
-                    if enabled {
-                        TextField("组织 ID", text: $organization)
-                        Picker("统计范围", selection: $scope) {
-                            Text("整个组织").tag(0)
-                            Text(scopeName).tag(1)
-                            Text("API key").tag(2)
-                        }
-                        if scope != 0 { TextField(scope == 1 ? "\(scopeName) ID" : "API key ID（非密钥）", text: $scopeID) }
-                        SecureField(status?.authentication.configured == true ? "新的查询 Key（留空保留）" : "组织查询 Key", text: $key)
-                        Toggle("我确认查询凭据属于此组织，且模型 Key 对应所选范围", isOn: $confirmed)
-                        Text(service == .openAi ? "使用有查询权限的 OpenAI Admin Key，与模型 Key 分开保存。" : "使用有组织查询权限的 Admin Key。普通 workspace 模型 Key 不适用；个人账户不支持 Admin API。")
-                            .uiFont(.caption).foregroundStyle(.secondary)
-                        if status?.authentication.configured == true && status?.authentication.bindingConfirmed == false {
-                            Text("模型认证已变化，请重新确认关联后保存。").foregroundStyle(.orange)
-                        }
+                if let readProblem {
+                    HStack(alignment: .firstTextBaseline) {
+                        Label(readProblem, systemImage: "exclamationmark.triangle").textSelection(.enabled)
+                        Spacer(minLength: 8)
+                        Button("重试") { read(refresh: true) }.disabled(reading || saving)
                     }
-                    Button(saving ? "正在保存…" : "保存查询配置") { save() }.disabled(!loaded || saving || reading || !valid)
-                    if let problem { Text(problem).foregroundStyle(.red).textSelection(.enabled) }
-                } footer: {
-                    Text("查询配置单独保存。关闭后删除查询凭据；报表不参与网关准入。组织总额包含此范围内所有客户端的消费，多个提供商引用同一范围时不要重复相加。")
-                        .formFooterStyle()
+                } else if !loaded {
+                    ProgressView("正在读取账单配置…")
                 }
+                if loaded { configurationSection }
                 if let status, status.configuration != nil {
                     Section {
-                        HStack {
-                            Text(status.refreshing ? "正在查询…" : status.stale ? "上次报表已过期" : "本月报表（UTC）")
-                            Spacer()
-                            Button("刷新") { read(refresh: true) }.disabled(reading || saving || status.refreshing)
+                        Text(status.refreshing ? "正在查询…" : status.stale ? "上次报表已过期" : "本月报表（UTC）")
+                        if let issue = status.problem {
+                            HStack(alignment: .firstTextBaseline) {
+                                Label(issue, systemImage: "exclamationmark.triangle").textSelection(.enabled)
+                                if status.authentication.bindingConfirmed && readProblem == nil {
+                                    Spacer(minLength: 8)
+                                    Button("重试") { read(refresh: true) }.disabled(reading || saving || status.refreshing)
+                                }
+                            }
                         }
-                        if let issue = status.problem { Text(issue).foregroundStyle(.orange) }
                         if let report = status.report { reportContent(report) }
-                        else if !status.refreshing { Text("尚未取得报表").foregroundStyle(.secondary) }
+                        else if status.problem == nil && !status.refreshing { Text("尚未取得报表").foregroundStyle(.secondary) }
                     } footer: {
                         Text(service == .anthropic ? "官方 Analytics 当前为 beta，通常延迟 4 小时，最长 24 小时；费用为折扣后、抵扣 credits 前金额。空记录也可能由范围 ID 不匹配导致。" : "费用来自组织 Costs；文本生成用量来自 Completions Usage，二者覆盖的服务可能不同。报表可能延迟，不代表充值余额。")
                             .formFooterStyle()
@@ -84,6 +81,38 @@ struct ProviderBillingView: View {
             }
         }
         .onDisappear { active = false; key = "" }
+    }
+    private var configurationSection: some View {
+        Section {
+            Toggle("查询组织用量与账单", isOn: $enabled)
+            if enabled {
+                TextField("组织 ID", text: $organization)
+                Picker("统计范围", selection: $scope) {
+                    Text("整个组织").tag(0)
+                    Text(scopeName).tag(1)
+                    Text("API key").tag(2)
+                }
+                if scope != 0 { TextField(scope == 1 ? "\(scopeName) ID" : "API key ID（非密钥）", text: $scopeID) }
+                SecureField(status?.authentication.configured == true ? "新的查询 Key（留空保留）" : "组织查询 Key", text: $key)
+                Toggle("我确认查询凭据属于此组织，且模型 Key 对应所选范围", isOn: $confirmed)
+                Text(service == .openAi ? "使用有查询权限的 OpenAI Admin Key，与模型 Key 分开保存。" : "使用有组织查询权限的 Admin Key。普通 workspace 模型 Key 不适用；个人账户不支持 Admin API。")
+                    .uiFont(.caption).foregroundStyle(.secondary)
+                if status?.authentication.configured == true && status?.authentication.bindingConfirmed == false {
+                    Text("模型认证已变化，请重新确认关联后保存。").foregroundStyle(.orange)
+                }
+            }
+            HStack(alignment: .firstTextBaseline) {
+                if let saveProblem {
+                    Label(saveProblem, systemImage: "exclamationmark.triangle").textSelection(.enabled)
+                    Spacer(minLength: 8)
+                }
+                Button(saving ? "正在保存…" : saveProblem == nil ? "保存查询配置" : "重试保存") { save() }
+                    .disabled(saving || reading || !valid)
+            }
+        } footer: {
+            Text("查询配置单独保存。关闭后删除查询凭据；报表不参与网关准入。组织总额包含此范围内所有客户端的消费，多个提供商引用同一范围时不要重复相加。")
+                .formFooterStyle()
+        }
     }
     @ViewBuilder private func reportContent(_ report: BillingReport) -> some View {
         LabeledContent("已保存范围", value: scopeLabel(report.configuration))
@@ -149,7 +178,7 @@ struct ProviderBillingView: View {
             reading = false
             switch result {
             case .success(let value):
-                status = value; problem = nil
+                status = value; readProblem = nil
                 if !loaded {
                     if let config = value.configuration {
                         enabled = true; organization = config.organizationId
@@ -161,7 +190,7 @@ struct ProviderBillingView: View {
                     }
                     loaded = true
                 }
-            case .failure(let error): problem = error.localizedDescription
+            case .failure(let error): readProblem = error.localizedDescription
             }
         }
     }
@@ -174,8 +203,8 @@ struct ProviderBillingView: View {
             guard active else { return }
             saving = false
             switch result {
-            case .success(let value): status = value; key = ""; problem = nil; confirmed = false
-            case .failure(let error): problem = error.localizedDescription
+            case .success(let value): status = value; key = ""; readProblem = nil; saveProblem = nil; confirmed = false
+            case .failure(let error): saveProblem = error.localizedDescription
             }
         }
     }

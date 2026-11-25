@@ -36,7 +36,9 @@ final class DeviceStore: ObservableObject {
     @Published private(set) var conversations: [Conversation] = []
     /// The list's groups in display order, as the core windows them.
     @Published private(set) var conversationGroups: [ConversationGroup] = []
+    @Published private(set) var conversationListReadError: String?
     @Published private(set) var loadingConversationGroups: Set<ConversationGroupKey> = []
+    @Published private(set) var conversationGroupReadErrors: [ConversationGroupKey: String] = [:]
     @Published private(set) var conversationProjects: [ConversationProject] = []
     @Published private(set) var workingDirectoryProjects: [String: [WorkingDirectoryProject]] = [:]
     @Published private(set) var showsArchived = false
@@ -250,7 +252,7 @@ final class DeviceStore: ObservableObject {
     @Published private(set) var analyticsReport: AnalyticsReport?
     @Published private(set) var analyticsLoadedQuery: AnalyticsQuery?
     @Published private(set) var analyticsIsLoading = false
-    @Published private(set) var analyticsReadFailed = false
+    @Published private(set) var analyticsReadError: String?
     @Published private(set) var analyticsUpdatedAt: Date?
     private var analyticsGeneration: UInt64 = 0
 
@@ -422,6 +424,7 @@ final class DeviceStore: ObservableObject {
                     switch result {
                     case .success(let value): self.applyList(value); outcome = .success(())
                     case .failure(let error):
+                        self.conversationListReadError = error.localizedDescription
                         self.recordProblem(error, source: "刷新配置", activityKey: "configuration-list")
                         outcome = .failure(error)
                     }
@@ -435,11 +438,12 @@ final class DeviceStore: ObservableObject {
 
     func refreshConversations() {
         guard !isPreview, !isLoading, !isShuttingDown else { return }
-        refreshConfiguration()
+        refreshConfiguration(forgetOpenFailure: true)
     }
 
     func applyList(_ data: ConfigurationSnapshot) {
         followNativeUserMessages()
+        conversationListReadError = nil
         clearActivityProblem("configuration-list")
         for conversation in data.conversations.map(BindingMapping.listed) where rememberedConversations[conversation.id] != nil {
             rememberedConversations[conversation.id] = conversation
@@ -530,9 +534,13 @@ final class DeviceStore: ObservableObject {
         }
     }
     func loadMoreConversations(in group: ConversationGroupKey) {
-        guard let transport, !isPreview, !isShuttingDown,
-              loadingConversationGroups.insert(group).inserted else { return }
+        guard !isPreview, !isShuttingDown else { return }
+        guard let transport else { conversationGroupReadErrors[group] = "暂时无法连接设备。"; return }
+        guard loadingConversationGroups.insert(group).inserted else { return }
         let preferences = conversationBrowserPreferences
+        let loaded = conversationGroups.first { $0.key == group }?.loaded ?? 0
+        let runtimeID: String?
+        if case .runtime(let id) = group { runtimeID = id } else { runtimeID = preferences?.runtimeId }
         browse({
             // A merged list can show this group while its source view still
             // has it folded. An explicit page request must read that group.
@@ -541,8 +549,18 @@ final class DeviceStore: ObservableObject {
                 _ = try transport.setConversationBrowserPreferences(expanded)
             }
             return try transport.loadMoreConversations(group: group)
-        }, source: "加载会话", finished: { [weak self] _ in
-            self?.loadingConversationGroups.remove(group)
+        }, source: "加载会话", finished: { [weak self] result in
+            guard let self else { return }
+            self.loadingConversationGroups.remove(group)
+            switch result {
+            case .success(let data):
+                // Partial history reads return the usable snapshot and failures together.
+                let updated = data.conversationGroups.first { $0.key == group }?.loaded ?? 0
+                self.conversationGroupReadErrors[group] = updated <= loaded
+                    ? data.historyFailures.first { runtimeID == nil || $0.runtimeId == runtimeID }?.detail
+                    : nil
+            case .failure(let error): self.conversationGroupReadErrors[group] = error.localizedDescription
+            }
         })
     }
     func setShowsArchived(_ archived: Bool) {
@@ -863,9 +881,12 @@ final class DeviceStore: ObservableObject {
     func loadAnalytics(_ query: AnalyticsQuery) {
         analyticsGeneration &+= 1
         let requestGeneration = analyticsGeneration
-        analyticsReadFailed = false
+        analyticsReadError = nil
         guard !isPreview else { analyticsIsLoading = false; return }
-        guard !isShuttingDown, let transport else { analyticsIsLoading = false; analyticsReadFailed = true; recordProblem("本地核心不可用", source: "读取分析记录"); return }
+        guard !isShuttingDown, let transport else {
+            analyticsIsLoading = false; analyticsReadError = "本地核心不可用"
+            recordProblem("本地核心不可用", source: "读取分析记录"); return
+        }
         analyticsIsLoading = true
         performOnQueue { [weak self] in
             let result = Result { try transport.analyticsQuery(query) }
@@ -877,7 +898,9 @@ final class DeviceStore: ObservableObject {
                     self.analyticsReport = report; self.analyticsLoadedQuery = query; self.analyticsUpdatedAt = Date()
                     if let warning = report.storageWarning { self.recordProblem(TransportError.rejected(warning), source: "保存分析记录", activityKey: "analytics:storage") }
                     else { self.clearActivityProblem("analytics:storage") }
-                case .failure(let failure): self.analyticsReadFailed = true; self.recordProblem(failure)
+                case .failure(let failure):
+                    let problem = AppProblem.failure(failure, source: "读取分析记录")
+                    self.analyticsReadError = problem.detail; self.recordProblem(failure, source: "读取分析记录")
                 }
             }
         }

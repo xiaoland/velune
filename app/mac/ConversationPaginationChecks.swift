@@ -74,11 +74,12 @@ import VeluneBindings
     try! Data("{}\n".utf8).write(to: duplicate.appendingPathComponent("00000000-0000-4000-8000-000000000000.jsonl"))
     device.loadMoreConversations(in: keys[5])
     wait { !device.loadingConversationGroups.contains(keys[5]) }
-    precondition(loaded(5) == 0 && !device.problems.isEmpty, "冷读失败应结束加载并披露问题")
+    precondition(loaded(5) == 0 && device.conversationGroupReadErrors[keys[5]] != nil && device.conversationGroupReadErrors[keys[4]] == nil,
+                 "冷读失败应结束加载并在对应组披露问题")
     try! FileManager.default.removeItem(at: duplicate)
     device.loadMoreConversations(in: keys[5])
     wait { !device.loadingConversationGroups.contains(keys[5]) }
-    precondition(loaded(5) > 0 && loaded(4) == 2
+    precondition(loaded(5) > 0 && loaded(4) == 2 && device.conversationGroupReadErrors[keys[5]] == nil
                  && original.isSubset(of: Set(device.conversations.map(\.id))), "失败后可重试并保留其他组")
     if let output = ProcessInfo.processInfo.environment["VELUNE_CHECK_OUTPUT"] {
         for dark in [false, true] {
@@ -86,11 +87,12 @@ import VeluneBindings
                 ConversationPaginationButton(loaded: 0, total: 36, isLoading: false, load: {})
                 ConversationPaginationButton(loaded: 0, total: 36, isLoading: true, load: {})
                 ConversationPaginationButton(loaded: 2, total: 36, isLoading: false, sourceName: "合成设备", load: {})
-            }.padding(16).frame(width: 360, height: 140, alignment: .leading)
+                ConversationPaginationButton(loaded: 0, total: 36, isLoading: false, error: "这个分组暂时无法读取。", load: {})
+            }.padding(16).frame(width: 360, height: 180, alignment: .leading)
                 .environment(\.colorScheme, dark ? .dark : .light)
                 .background(Color(nsColor: .windowBackgroundColor)))
             host.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
-            host.frame = NSRect(x: 0, y: 0, width: 360, height: 140)
+            host.frame = NSRect(x: 0, y: 0, width: 360, height: 180)
             host.layoutSubtreeIfNeeded()
             let bitmap = host.bitmapImageRepForCachingDisplay(in: host.bounds)!
             host.cacheDisplay(in: host.bounds, to: bitmap)
