@@ -123,9 +123,10 @@ private fun App(model: AppViewModel) {
         is Screen.AgentUri -> key(screen) {
             AgentUriScreen(hub, screen.address, screen.peer, back = { model.back() }, addDevice = { model.push(Screen.AddDevice()) }, open = model::openResolvedAgentUri)
         }
-        is Screen.Conversation -> {
+        is Screen.Conversation -> key(screen.model) {
             val target = screen.model.target
-            val runtime = model.workspace(screen.peer).listing.collectAsState().value.runtimeLabels[target.runtimeId]
+            val workspace = model.workspace(screen.peer)
+            val listing by workspace.listing.collectAsState()
             val newSession = if (target is ConversationTarget.New) {
                 val remote by hub.state.collectAsState()
                 val snapshot = remote
@@ -146,6 +147,7 @@ private fun App(model: AppViewModel) {
                 )
             } else {
                 LaunchedEffect(screen.peer) { hub.select(screen.peer) }
+                WhileVisible(workspace, resume = workspace::resume, pause = workspace::pause)
                 null
             }
             val fallback = LocalUriHandler.current
@@ -163,7 +165,7 @@ private fun App(model: AppViewModel) {
             }
             CompositionLocalProvider(LocalUriHandler provides links) {
                 ConversationScreen(
-                    hub, screen.peer, runtime, screen.model,
+                    hub, screen.peer, listing, screen.model,
                     back = { model.back() },
                     openConversation = { model.openConversation(screen.peer, it) },
                     newSession = newSession,
