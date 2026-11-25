@@ -120,8 +120,8 @@ class ConversationActions(
     val setConversationHandoff: (release: Boolean) -> Unit = {},
     val selectEffort: (String?) -> Unit = {},
     val selectPermissionMode: (String?) -> Unit = {},
-    val editMessage: (messageId: String, text: String, placement: EditPlacement) -> Unit = { _, _, _ -> },
-    val forkConversation: (messageId: String) -> Unit = {},
+    val editMessage: (messageId: String, text: String, placement: EditPlacement, expectedRevision: String?, onDone: () -> Unit) -> Unit = { _, _, _, _, onDone -> onDone() },
+    val forkConversation: (userMessageId: String) -> Unit = {},
     val selectRuntime: (String) -> Unit = {},
     val addAttachments: (List<suspend () -> Pair<String, ByteArray>>) -> Unit = {},
     val refresh: () -> Unit = {},
@@ -175,7 +175,7 @@ fun ConversationScreen(
             setConversationHandoff = model::setConversationHandoff,
             selectEffort = model::selectEffort,
             selectPermissionMode = model::selectPermissionMode,
-            editMessage = { id, text, placement -> model.editMessage(id, text, placement, openConversation) },
+            editMessage = { id, text, placement, revision, onDone -> model.editMessage(id, text, placement, revision, onDone, openConversation) },
             forkConversation = { id -> model.forkConversation(id, openConversation) },
             selectRuntime = model::selectRuntime,
             addAttachments = model::addAttachments,
@@ -214,8 +214,8 @@ fun ConversationContent(
     val scope = rememberCoroutineScope()
     val outline = remember(state.entries) { outlineTurns(state.entries) }
     var showOutline by remember { mutableStateOf(false) }
-    var editing by remember { mutableStateOf<DeliveredMessage?>(null) }
-    var forking by remember { mutableStateOf<DeliveredMessage?>(null) }
+    var editing by remember { mutableStateOf<Pair<DeliveredMessage, EditableMessage>?>(null) }
+    var forking by remember { mutableStateOf<String?>(null) }
     var panel by remember { mutableStateOf<ConversationPanel?>(null) }
     val subtitle = remember(header) {
         listOfNotNull(header.runtime?.name, header.cwd?.let(::lastPathComponent), header.device).joinToString(" · ")
@@ -326,8 +326,8 @@ fun ConversationContent(
                     state.entries.isEmpty() && state.sending == null && state.conversation == null -> Unit
                     else -> Transcript(
                         state, list, actions.load,
-                        onEdit = { editing = it },
-                        onFork = { forking = it },
+                        onEdit = { message -> state.editable[message.id]?.let { editing = message to it } },
+                        onFork = { userMessageId -> forking = userMessageId },
                         modifier = Modifier.fillMaxSize(),
                     )
                 }
@@ -378,22 +378,21 @@ fun ConversationContent(
             }
         }
     }
-    editing?.let { message ->
-        val info = state.editable[message.id]
-        if (info != null) EditMessageSheet(
-            initial = message.copyableText(),
+    editing?.let { (message, info) ->
+        EditMessageSheet(
+            initial = message.editableText(),
             preservedAttachments = message.originalAttachmentNames(),
             editable = info,
             running = state.running,
             busy = state.busy,
-            dismiss = { editing = null },
+            failure = state.failure,
+            dismiss = { if (!state.busy) editing = null },
             submit = { updated, placement ->
-                editing = null
-                actions.editMessage(message.id, updated, placement)
+                actions.editMessage(message.id, updated, placement, info.revision) { editing = null }
             },
-        ) else editing = null
+        )
     }
-    forking?.let { message ->
+    forking?.let { userMessageId ->
         AlertDialog(
             onDismissRequest = { forking = null },
             title = { Text("从此轮分叉新会话？") },
@@ -401,7 +400,7 @@ fun ConversationContent(
             confirmButton = {
                 TextButton(enabled = !state.busy, onClick = {
                     forking = null
-                    actions.forkConversation(message.id)
+                    actions.forkConversation(userMessageId)
                 }) { Text("创建分叉") }
             },
             dismissButton = { TextButton(onClick = { forking = null }) { Text("取消") } },
@@ -417,6 +416,7 @@ private fun EditMessageSheet(
     editable: EditableMessage,
     running: Boolean,
     busy: Boolean,
+    failure: String?,
     dismiss: () -> Unit,
     submit: (String, EditPlacement) -> Unit,
 ) {
@@ -425,9 +425,13 @@ private fun EditMessageSheet(
     ModalBottomSheet(sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true), onDismissRequest = dismiss) {
         Column(Modifier.navigationBarsPadding().padding(horizontal = 24.dp).padding(bottom = 16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Text("编辑消息", style = MaterialTheme.typography.titleLarge)
+            if (failure != null) {
+                Text(failure, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+            }
             OutlinedTextField(
                 value = text,
                 onValueChange = { text = it },
+                enabled = !busy,
                 modifier = Modifier.fillMaxWidth().heightIn(min = 96.dp, max = 220.dp),
                 placeholder = { Text("修改消息内容") },
             )

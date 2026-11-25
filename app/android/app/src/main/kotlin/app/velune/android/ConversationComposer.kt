@@ -94,7 +94,7 @@ internal fun ConversationComposer(
     val hasInput = text.isNotBlank() || state.attachments.isNotEmpty()
     val canSubmit = state.composerReady && state.composerFailure == null && !state.busy &&
         !state.uploadingAttachment && !state.switchingRuntime && hasInput
-    val showRuntimeOptions = state.canSwitch && runtimes.size >= 2
+    val showRuntimeOptions = state.canSwitch && (runtimes.size >= 2 || runtimes.any { it.id != state.selectedRuntimeId })
     val hasExecutionConfig = showRuntimeOptions || state.permissionModes.isNotEmpty() || state.efforts.isNotEmpty()
     val canChooseModel = !state.busy && !state.switchingRuntime &&
         (state.composerReady || state.composerFailure != null)

@@ -53,6 +53,7 @@ class DeviceHub(private val context: Context) {
     private val view = "android-" + UUID.randomUUID()
     private var network: NetworkMonitor? = null
     @Volatile private var viewed: Set<String> = emptySet()
+    private var submittedViewed: Set<String> = emptySet()
     /** Activity reports reach the core in the order the user changed screens. */
     private val activity = Mutex()
     @Volatile private var foreground = false
@@ -145,13 +146,15 @@ class DeviceHub(private val context: Context) {
      * shows several at once. Each controller recovers on its own.
      */
     fun view(peers: Set<String>) {
-        val previous = viewed
         viewed = peers
         scope.launch {
             activity.withLock {
                 val opened = endpoint ?: return@withLock
-                (previous - peers).forEach { runCatching { opened.setControllerActivity(it, false, false) } }
-                peers.forEach { runCatching { opened.setControllerActivity(it, true, foreground) } }
+                val target = viewed
+                val previous = submittedViewed
+                (previous - target).forEach { runCatching { opened.setControllerActivity(it, false, false) } }
+                target.forEach { runCatching { opened.setControllerActivity(it, true, foreground) } }
+                submittedViewed = target
             }
         }
     }
@@ -159,8 +162,14 @@ class DeviceHub(private val context: Context) {
     fun setForeground(value: Boolean) {
         foreground = value
         if (value) network?.foreground()
-        val peers = viewed
-        scope.launch { activity.withLock { endpoint?.let { opened -> peers.forEach { runCatching { opened.setControllerActivity(it, true, value) } } } } }
+        scope.launch {
+            activity.withLock {
+                val opened = endpoint ?: return@withLock
+                val target = viewed
+                target.forEach { runCatching { opened.setControllerActivity(it, true, foreground) } }
+                submittedViewed = target
+            }
+        }
     }
 }
 

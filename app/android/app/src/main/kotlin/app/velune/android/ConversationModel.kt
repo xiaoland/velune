@@ -840,9 +840,10 @@ class ConversationModel(
         val current = _state.value
         if (!current.running || !current.canSteer || !current.usesCurrentRuntime || !current.steerUsesCurrentModel) return
         submitDraft(text, followUp = "正在介入本轮…", onSent = {}) { next, turn, _ ->
-            // The generated binding steers the current runtime and model.
             val keep = turn.copy(effort = next.choice.effort, permissionMode = next.choice.permissionMode)
-            io(NativeOperation.SEND) { it.steerTurn(existing.contextRuntimeId, existing.conversation.id, keep) }
+            io(NativeOperation.SEND) {
+                it.steerTurn(existing.conversation.runtimeId, existing.conversation.id, keep, next.runtimeId, next.model)
+            }
         }
     }
 
@@ -913,19 +914,26 @@ class ConversationModel(
         apply(io(NativeOperation.REPLY) { it.replyRuntimeInteraction(current.contextRuntimeId, current.conversation.id, interactionId, reply) })
     }
 
-    fun editMessage(messageId: String, text: String, placement: EditPlacement, onForked: (ConversationTarget.Existing) -> Unit) = act {
+    fun editMessage(
+        messageId: String,
+        text: String,
+        placement: EditPlacement,
+        expectedRevision: String?,
+        onDone: () -> Unit,
+        onForked: (ConversationTarget.Existing) -> Unit,
+    ) = act {
         val current = snapshot ?: return@act
-        val editable = _state.value.editable[messageId] ?: return@act
         val original = payloads[messageId] ?: messages[messageId] ?: error("原消息已不可用，请刷新后重试")
         val preservedAttachments = preserveOriginalAttachments(current, original)
-        val next = effectiveNextTurn()
-        val turn = ComposedTurn(text = text, effort = next?.effort, permissionMode = next?.permissionMode?.id, attachments = preservedAttachments)
+        // Do not borrow ordinary composer's next-turn permissions/model for historical edits.
+        val turn = ComposedTurn(text = text, effort = null, permissionMode = null, attachments = preservedAttachments)
         val result = io(NativeOperation.CONVERSATION_WRITE) {
-            it.editMessage(current.contextRuntimeId, current.conversation.id, messageId, placement, next?.model, turn, editable.revision)
+            it.editMessage(current.conversation.runtimeId, current.conversation.id, messageId, placement, null, turn, expectedRevision)
         }
+        onDone()
         if (placement == EditPlacement.FORK) {
             result.snapshot?.let { created ->
-                onForked(ConversationTarget.Existing(created.contextRuntimeId, created.conversation.id, created.conversation.title.displayText()))
+                onForked(ConversationTarget.Existing(created.conversation.runtimeId, created.conversation.id, created.conversation.title.displayText()))
             }
         } else {
             apply(result)
@@ -957,7 +965,7 @@ class ConversationModel(
                 is DeliveredBlock.Image -> when (val source = block.source) {
                     is DeliveredImageSource.Path -> io(NativeOperation.CONVERSATION_READ) {
                         it.readAttachment(current.contextRuntimeId, current.conversation.id, original.id, index.toUInt()).bytes
-                    }
+                    }.takeIf { it.isNotEmpty() } ?: error("无法保留原附件“$name”：图片内容为空")
                     is DeliveredImageSource.Data -> {
                         val inline = when (val payload = source.data) {
                             is MessagePayload.Inline -> payload.text
@@ -970,24 +978,23 @@ class ConversationModel(
                         } else {
                             io(NativeOperation.CONVERSATION_READ) {
                                 it.readAttachment(current.contextRuntimeId, current.conversation.id, original.id, index.toUInt()).bytes
-                            }
+                            }.takeIf { it.isNotEmpty() } ?: error("无法保留原附件“$name”：图片内容为空")
                         }
                     }
                 }
                 else -> error("不支持的原附件类型")
             }
-            if (bytes.isEmpty()) error("无法保留原附件“$name”：附件内容为空")
             io(NativeOperation.CONVERSATION_WRITE) { it.uploadAttachment(name, bytes).reference }
         }
     }
 
-    fun forkConversation(messageId: String, onForked: (ConversationTarget.Existing) -> Unit) = act {
+    fun forkConversation(userMessageId: String, onForked: (ConversationTarget.Existing) -> Unit) = act {
         val current = snapshot ?: return@act
         val result = io(NativeOperation.CONVERSATION_WRITE) {
-            it.forkConversation(current.contextRuntimeId, current.conversation.id, messageId)
+            it.forkConversation(current.conversation.runtimeId, current.conversation.id, userMessageId)
         }
         result.snapshot?.let { created ->
-            onForked(ConversationTarget.Existing(created.contextRuntimeId, created.conversation.id, created.conversation.title.displayText()))
+            onForked(ConversationTarget.Existing(created.conversation.runtimeId, created.conversation.id, created.conversation.title.displayText()))
         }
     }
 

@@ -128,7 +128,10 @@ internal class PreviewConversation(
                 addAttachments = { addAttachments(gallery, it) },
                 selectEffort = { effort -> changeChoice { it.copy(effort = effort) } },
                 selectPermissionMode = { mode -> changeChoice { it.copy(permissionMode = mode) } },
-                editMessage = { id, text, placement -> editMessage(gallery, id, text, placement) },
+                editMessage = { id, text, placement, _, onDone ->
+                    editMessage(gallery, id, text, placement)
+                    onDone()
+                },
                 forkConversation = { forkAt(gallery, it) },
                 selectRuntime = ::selectRuntime,
                 refresh = {

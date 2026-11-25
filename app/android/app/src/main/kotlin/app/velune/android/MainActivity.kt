@@ -167,7 +167,7 @@ private fun App(model: AppViewModel) {
                 ConversationScreen(
                     hub, screen.peer, listing, screen.model,
                     back = { model.back() },
-                    openConversation = { model.openConversation(screen.peer, it) },
+                    openConversation = { target -> if (model.screen === screen) model.openConversation(screen.peer, target) },
                     newSession = newSession,
                 )
             }

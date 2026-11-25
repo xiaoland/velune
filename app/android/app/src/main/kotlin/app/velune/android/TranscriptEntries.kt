@@ -15,7 +15,8 @@ sealed interface TranscriptEntry {
     data class Message(
         override val key: String,
         val message: DeliveredMessage,
-        val canFork: Boolean = false,
+        /** The turn's user message ID when this closing reply may fork the conversation. */
+        val forkUserMessageId: String? = null,
     ) : TranscriptEntry {
         val isUser: Boolean get() = message.role == MessageRole.USER || message.role == MessageRole.CLIENT
         val isAssistantReply: Boolean get() = message.role == MessageRole.ASSISTANT
@@ -50,9 +51,13 @@ fun DeliveredMessage.copyableText(): String =
         }
     }.joinToString("\n\n")
 
+/** Editable text of a user message: only Text blocks, never system/error notices. */
+fun DeliveredMessage.editableText(): String =
+    blocks.mapNotNull { (it as? DeliveredBlock.Text)?.text?.takeIf(String::isNotBlank) }.joinToString("\n\n")
+
 fun outlineTurns(entries: List<TranscriptEntry>): List<OutlineTurn> =
     entries.mapNotNull { entry ->
-        val message = (entry as? TranscriptEntry.Message)?.takeIf { it.isUser }?.message ?: return@mapNotNull null
+        val message = (entry as? TranscriptEntry.Message)?.takeIf { it.message.role == MessageRole.USER }?.message ?: return@mapNotNull null
         val preview = message.copyableText().lineSequence().map { it.trim() }.firstOrNull { it.isNotEmpty() } ?: "（附件）"
         OutlineTurn(entry.key, preview, message.timestampUnixMs)
     }
@@ -70,14 +75,14 @@ fun transcriptEntries(
 ): List<TranscriptEntry> {
     val byTurn = turns.associateBy { it.id }
     val replyStart = turns.filter { it.replyStartBlock > 0u }.mapNotNull { turn -> turn.lastMessageId?.let { it to turn.replyStartBlock.toInt() } }.toMap()
-    val forkable = turns.filter { it.canFork }.mapNotNull { it.lastMessageId }.toSet()
+    val forkUserByReply = turns.filter { it.canFork }.mapNotNull { turn -> turn.lastMessageId?.let { it to turn.userMessageId } }.toMap()
     return items.mapNotNull { item ->
         when (item) {
             is TranscriptItem.Message -> {
                 val found = message(item.messageId) ?: return@mapNotNull null
                 val start = replyStart[item.messageId]
                 val shown = if (item.id.startsWith("reply:") && start != null) found.copy(blocks = found.blocks.drop(start)) else found
-                TranscriptEntry.Message(item.id, shown, canFork = item.messageId in forkable)
+                TranscriptEntry.Message(item.id, shown, forkUserMessageId = forkUserByReply[item.messageId])
             }
             is TranscriptItem.Work -> {
                 val turn = byTurn[item.turnId] ?: return@mapNotNull null

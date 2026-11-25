@@ -86,7 +86,7 @@ fun Transcript(
     list: LazyListState,
     load: (String) -> Unit,
     onEdit: (DeliveredMessage) -> Unit = {},
-    onFork: (DeliveredMessage) -> Unit = {},
+    onFork: (String) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val scope = rememberCoroutineScope()
@@ -108,13 +108,16 @@ fun Transcript(
             state.sending?.let { text -> item(key = "sending") { UserMessage(listOf(DeliveredBlock.Text(text)), null, bubbleWidth, pending = true) } }
             items(state.entries.asReversed(), key = { it.key }) { entry ->
                 when (entry) {
-                    is TranscriptEntry.Message -> MessageView(
-                        entry.message, bubbleWidth, expanded, load,
-                        editable = entry.message.id in state.editable,
-                        forkable = entry.canFork && state.canFork,
-                        onEdit = { onEdit(entry.message) },
-                        onFork = { onFork(entry.message) },
-                    )
+                    is TranscriptEntry.Message -> {
+                        val forkUserId = entry.forkUserMessageId.takeIf { state.canFork }
+                        MessageView(
+                            entry.message, bubbleWidth, expanded, load,
+                            editable = entry.message.id in state.editable,
+                            forkable = forkUserId != null,
+                            onEdit = { onEdit(entry.message) },
+                            onFork = { forkUserId?.let(onFork) },
+                        )
+                    }
                     is TranscriptEntry.Work -> WorkGroup(entry, expanded, load)
                 }
             }

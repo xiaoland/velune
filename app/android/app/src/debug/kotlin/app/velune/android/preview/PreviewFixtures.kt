@@ -322,13 +322,13 @@ internal object PreviewFixtures {
 
     fun deferredBuildOutput() = MessagePayload.Inline("构建首次失败：无法解析列表项的 key。修正后重试通过。")
 
-    fun textEntry(id: String, role: MessageRole, text: String, canFork: Boolean = false) =
-        TranscriptEntry.Message(id, message(id, role, listOf(DeliveredBlock.Text(text))), canFork)
+    fun textEntry(id: String, role: MessageRole, text: String, forkUserMessageId: String? = null) =
+        TranscriptEntry.Message(id, message(id, role, listOf(DeliveredBlock.Text(text))), forkUserMessageId)
 
     fun completedTurn(id: String, prompt: String, reply: String, work: TranscriptEntry.Work? = null) = listOfNotNull(
         textEntry("user:$id", MessageRole.USER, prompt),
         work,
-        textEntry("reply:$id", MessageRole.ASSISTANT, reply, canFork = true),
+        textEntry("reply:$id", MessageRole.ASSISTANT, reply, forkUserMessageId = "user:$id"),
     )
 
     private fun work(id: String, running: Boolean = false, outcome: TurnOutcome? = null, blocks: List<DeliveredBlock>) =
