@@ -18,8 +18,12 @@ import app.velune.bindings.application.ComposerRuntimeChoice
 import app.velune.bindings.application.TurnChoice
 import java.util.UUID
 import app.velune.bindings.application.ComposedTurn
+import app.velune.bindings.application.DeliveredBlock
+import app.velune.bindings.application.DeliveredImageSource
 import app.velune.bindings.application.DeliveredSnapshot
+import app.velune.bindings.application.MessagePayload
 import app.velune.bindings.application.PermissionMode
+import java.util.Base64
 import app.velune.bindings.conversation.ControlHandoff
 import app.velune.bindings.conversation.ConversationSummary
 import app.velune.bindings.conversation.EditPlacement
@@ -912,8 +916,10 @@ class ConversationModel(
     fun editMessage(messageId: String, text: String, placement: EditPlacement, onForked: (ConversationTarget.Existing) -> Unit) = act {
         val current = snapshot ?: return@act
         val editable = _state.value.editable[messageId] ?: return@act
+        val original = payloads[messageId] ?: messages[messageId] ?: error("原消息已不可用，请刷新后重试")
+        val preservedAttachments = preserveOriginalAttachments(current, original)
         val next = effectiveNextTurn()
-        val turn = ComposedTurn(text = text, effort = next?.effort, permissionMode = next?.permissionMode?.id, attachments = emptyList())
+        val turn = ComposedTurn(text = text, effort = next?.effort, permissionMode = next?.permissionMode?.id, attachments = preservedAttachments)
         val result = io(NativeOperation.CONVERSATION_WRITE) {
             it.editMessage(current.contextRuntimeId, current.conversation.id, messageId, placement, next?.model, turn, editable.revision)
         }
@@ -923,6 +929,55 @@ class ConversationModel(
             }
         } else {
             apply(result)
+        }
+    }
+
+    /** Re-uploads the original message's image/file attachments so editing text never drops them. */
+    private suspend fun preserveOriginalAttachments(current: DeliveredSnapshot, original: DeliveredMessage): List<String> {
+        val attachmentIndices = original.blocks.mapIndexedNotNull { index, block ->
+            if (block is DeliveredBlock.Image || block is DeliveredBlock.File) index to block else null
+        }
+        if (attachmentIndices.isEmpty()) return emptyList()
+        val needsPayload = attachmentIndices.any { (_, block) ->
+            block is DeliveredBlock.Image && block.source is DeliveredImageSource.Data && block.source.data is MessagePayload.Deferred
+        }
+        val loadedMessage = if (needsPayload) {
+            val loaded = io(NativeOperation.CONVERSATION_READ) {
+                it.messagePayloads(current.contextRuntimeId, current.conversation.id, listOf(original.id))
+            }.firstOrNull { it.id == original.id }
+            if (loaded != null && loaded.stamp != original.stamp) error("原消息已有更新，请重新打开编辑")
+            loaded
+        } else null
+        return attachmentIndices.map { (index, block) ->
+            val name = attachmentDisplayName(index, block)
+            val bytes = when (block) {
+                is DeliveredBlock.File -> io(NativeOperation.CONVERSATION_READ) {
+                    it.readAttachment(current.contextRuntimeId, current.conversation.id, original.id, index.toUInt()).bytes
+                }
+                is DeliveredBlock.Image -> when (val source = block.source) {
+                    is DeliveredImageSource.Path -> io(NativeOperation.CONVERSATION_READ) {
+                        it.readAttachment(current.contextRuntimeId, current.conversation.id, original.id, index.toUInt()).bytes
+                    }
+                    is DeliveredImageSource.Data -> {
+                        val inline = when (val payload = source.data) {
+                            is MessagePayload.Inline -> payload.text
+                            is MessagePayload.Deferred -> (loadedMessage?.blocks?.getOrNull(index) as? DeliveredBlock.Image)
+                                ?.let { (it.source as? DeliveredImageSource.Data)?.data as? MessagePayload.Inline }?.text
+                        }
+                        if (inline != null) {
+                            runCatching { Base64.getMimeDecoder().decode(inline) }.getOrNull()?.takeIf { it.isNotEmpty() }
+                                ?: error("无法保留原附件“$name”：原图片数据无法解码")
+                        } else {
+                            io(NativeOperation.CONVERSATION_READ) {
+                                it.readAttachment(current.contextRuntimeId, current.conversation.id, original.id, index.toUInt()).bytes
+                            }
+                        }
+                    }
+                }
+                else -> error("不支持的原附件类型")
+            }
+            if (bytes.isEmpty()) error("无法保留原附件“$name”：附件内容为空")
+            io(NativeOperation.CONVERSATION_WRITE) { it.uploadAttachment(name, bytes).reference }
         }
     }
 

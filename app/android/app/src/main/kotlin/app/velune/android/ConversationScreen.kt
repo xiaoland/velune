@@ -81,6 +81,8 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import app.velune.bindings.application.DeliveredBlock
+import app.velune.bindings.application.DeliveredImageSource
 import app.velune.bindings.application.DeliveredMessage
 import app.velune.bindings.conversation.AsyncQuestionDelivery
 import app.velune.bindings.conversation.EditPlacement
@@ -380,6 +382,7 @@ fun ConversationContent(
         val info = state.editable[message.id]
         if (info != null) EditMessageSheet(
             initial = message.copyableText(),
+            preservedAttachments = message.originalAttachmentNames(),
             editable = info,
             running = state.running,
             busy = state.busy,
@@ -410,6 +413,7 @@ fun ConversationContent(
 @Composable
 private fun EditMessageSheet(
     initial: String,
+    preservedAttachments: List<String>,
     editable: EditableMessage,
     running: Boolean,
     busy: Boolean,
@@ -427,6 +431,15 @@ private fun EditMessageSheet(
                 modifier = Modifier.fillMaxWidth().heightIn(min = 96.dp, max = 220.dp),
                 placeholder = { Text("修改消息内容") },
             )
+            if (preservedAttachments.isNotEmpty()) {
+                Text(
+                    "保留原附件：${preservedAttachments.joinToString("、")}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
             Column {
                 if (editable.inPlace) {
                     val detail = if (running) "将先停止当前轮次，再替换此消息及之后的内容" else "替换此消息及之后的内容"
@@ -436,12 +449,37 @@ private fun EditMessageSheet(
             }
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End)) {
                 TextButton(onClick = dismiss) { Text("取消") }
-                Button(enabled = !busy && text.isNotBlank(), onClick = { submit(text.trim(), placement) }) {
+                Button(enabled = !busy && (text.isNotBlank() || preservedAttachments.isNotEmpty()), onClick = { submit(text.trim(), placement) }) {
                     Text(if (placement == EditPlacement.IN_PLACE) "替换并发送" else "分叉并发送")
                 }
             }
         }
     }
+}
+
+internal fun attachmentDisplayName(index: Int, block: DeliveredBlock): String = when (block) {
+    is DeliveredBlock.File -> lastPathComponent(block.path).ifBlank { "原附件" }
+    is DeliveredBlock.Image -> when (val source = block.source) {
+        is DeliveredImageSource.Path -> lastPathComponent(source.path).ifBlank { "原消息图片 ${index + 1}.${imageExtension(block.mediaType)}" }
+        is DeliveredImageSource.Data -> "原消息图片 ${index + 1}.${imageExtension(block.mediaType)}"
+    }
+    else -> "原附件"
+}
+
+private fun DeliveredMessage.originalAttachmentNames(): List<String> =
+    blocks.mapIndexedNotNull { index, block ->
+        if (block is DeliveredBlock.Image || block is DeliveredBlock.File) attachmentDisplayName(index, block) else null
+    }
+
+private fun imageExtension(mediaType: String?): String = when (mediaType?.lowercase()) {
+    "image/jpeg" -> "jpg"
+    "image/gif" -> "gif"
+    "image/webp" -> "webp"
+    "image/bmp" -> "bmp"
+    "image/heic", "image/heif" -> "heic"
+    "image/avif" -> "avif"
+    "image/tiff" -> "tiff"
+    else -> "png"
 }
 
 @Composable
