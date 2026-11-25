@@ -36,6 +36,10 @@ Velune 不附带 Codex、Claude Code、Pi 等 Harness。先安装要使用的 Ha
 
 在运行 Agent 的电脑打开「设置 → AI 提供商」，添加 **Google Gemini API** 模板，填入 Google AI Studio 创建的 Gemini API key 和要使用的模型 ID。保存后可在支持网关的运行时中选择该模型，也可将它加入模型路由。 [Google API key 说明](https://aistudio.google.com/docs/api-key)
 
+## 在 Mac 查找会话
+
+侧栏搜索也能找到列表尚未加载的会话。在侧栏的「显示」菜单打开「已归档会话…」，可按标题搜索、筛选、取消归档或删除会话。读取失败时，可在错误旁重试。
+
 ## 手机与 iPad 连接桌面
 
 1. 保持作为执行端的 Mac 或 Windows 上的 Velune 运行。

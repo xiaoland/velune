@@ -86,7 +86,9 @@ Codex 摘要在带标记的临时副本中通过原生本地压缩生成，沿�
 
 ### 会话数据通路
 
-列表分页窗口归 `ClientViewId`：初始分给各组的容量与显式追加页数分别保存，缓存分页不因原生摘要修正活动时间、组重排而重新分配初始容量。折叠释放该组的初始容量，由尚未获得容量的展开组竞争；展开不抢其他组已经获得的容量。来源刷新重新分配初始容量但保留追加页；重置分页或修改限额清除容量。分页与浏览偏好修改复用来源索引，只补读窗口所缺摘要；冷读预算耗尽或部分失败时保留同组已读结果，`loaded` 按实际显示条目计数，错误进入 `history_failures` 并可重试。Mac 对可见组分页先同步展开该来源组，同组在途请求合并，成功或失败都结束加载状态。
+`ClientViewId` 分别保存各组的初始容量和追加页数。组重排复用容量。折叠释放的容量分给尚未获配的展开组。来源刷新重分初始容量，保留追加页。重置分页或修改限额会清除容量。
+
+分页与浏览偏好修改复用索引，只补读当前窗口缺少的摘要。部分失败时，`ConfigurationSnapshot` 同时交付可用列表和 `historyFailures`，`loaded` 只计显示的条目。Mac 分页先展开来源组并合并同组请求。可见条目数未增加且回包报告相关来源失败时，在该组显示错误。
 
 - **列表**：application 按实例保留最近一次列表，以同一原生读取来源校验索引、项目及回退投影，打开列表中的会话复用来源范围校验。Claude Code 与 Pi 的列表先建索引：只取文件状态与文件头的工作目录、开始时间，用于分组、计数与决定先读哪些；只解析列表窗口显示到的会话，未变化的文件复用已读摘要。搜索、协作工具与按 ID 查找按需读取所需会话。索引是进程内缓存。
 - **交付**：core 为每个展示视图（上下文运行时＋会话，最近 8 个）记录已交付内容，以 generation／sequence 游标表示交付位置。快照中超过 2 KB 的推理与工具输出只携带字节数，由 `message_payloads` 按消息读取完整内容；`snapshot_update(since)` 只返回变化的消息与完整顺序。
@@ -116,11 +118,11 @@ Pi的原生描述由adapter填入snapshot.sub_agents，application合并关联�
 
 ### 后台任务观察与控制
 
-Mac 的后台任务与关联 Agent 使用独立工具身份、入口和视图所有者。旧布局的 `subAgents` 键仍指关联 Agent；新增 `backgroundTasks` 不改变其位置、尺寸或显示状态，旧记录缺少该键时使用内建弹出位置。只有后台任务视图可见时轮询任务；切换会话进入 pending 时立即撤下旧任务及控制，迟到读取／停止回执按会话和请求代际丢弃。输出详情每次刷新或可读能力变化都启动自己的请求／轮询，关闭详情取消后不再发读取请求；输出只显示给匹配的 task ID。
+Mac 按会话与请求代际接收任务读取和停止回执，切换目标时撤下旧任务和操作。输出按任务身份保存，刷新或重试失败时仍可读上次成功的同任务输出。关闭详情停止输出轮询。
 
-任务使用独立的 `BackgroundTaskInfo` 身份与能力。`ReadBackgroundTasks` 读取既有 session／parked live 的轻量观察，适配器可在已有连接异步刷新。`ReadBackgroundTaskOutput` 显式发起有界读取，后续以 task／request ID 取 Checking／Ready／Failed。每连接最多保留 8 个读取结果，单个最多 64 KiB，10 秒超时。客户端只在详情可见且结果为 Checking 时以一秒间隔继续读取。没有实时宿主返回 `live: false`，只有真实故障填 `issue`。查看列表不准备执行、不切换会话、不扫描冷历史。丢失观察的运行中任务显示未知。
+`ReadBackgroundTasks` 从当前或停放的执行连接读取 `BackgroundTaskInfo`。无实时宿主返回 `live: false`，故障填 `issue`。`ReadBackgroundTaskOutput` 发起有界读取，后续按任务和请求 ID 查询。每连接保留至多 8 个结果，每个至多 64 KiB，10 秒超时。详情可见且结果为 `Checking` 时每秒查询一次。
 
-`ReadBackgroundTasks.manual` 默认为 `false`。Mac 在自动读取期间收到手动刷新时紧接着发起一次显式请求。Codex 绕过清单查询的冷却期，Pi 在已有桥接上请求完整快照，Claude Code 在当前 stream-json 连接上请求重发活动任务快照。后续轮询读取原生响应，刷新不得启动宿主、恢复会话或阻塞 Core。
+`ReadBackgroundTasks.manual` 默认为 `false`。手动刷新与自动查询重叠时，Mac 在当前查询结束后补发一次。Codex 跳过查询冷却期，Pi 向桥接请求完整快照，Claude Code 在 stream-json 连接上请求重发活动任务。后续轮询取回结果。读取和刷新限于已有连接，Core 无需等待运行时回包。
 
 Pi 桥保留 Host v1 的 task ID、kind、描述、状态和操作能力；`stop` 只发送精确 task ID，`logs` 请求最多 64 KiB，delegate/fusion 优先读取 Host 校验的 `result`。命令只写 RPC，Host EventBus 在原生侧异步执行，普通 poll 收取按请求归属的状态帧，application owner 不等待 Host 或日志 IO。delegate 仅从该任务的 artifact/child-session 路径检查 manifest 的 task／nonce／seed／child ID、当前父 session 和子文件头，缺失或不符时保持普通任务。
 

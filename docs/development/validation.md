@@ -2,7 +2,7 @@
 
 [返回开发导航](../development.md)
 
-以类型安全、静态检查和构建为先。行为验收使用手动操作或临时端到端脚本，不建立成套的单元或集成测试，也不把临时脚本接入 CI。自动化测试只为类型与静态检查无法表达的真实不变量少量保留，以 `cargo test -p <包>` 在相关平台上运行。
+先做类型检查和构建。行为验收复用已有检查入口，必要时用临时端到端脚本或手动操作。只为静态检查无法证明的真实不变量保留少量自动化检查。Rust 回归用 `cargo test -p <包>` 在相关平台运行。
 
 内部不变量优先由类型表达：解析后的对象携带所需关联，枚举区分有效状态，穷尽匹配让新增变体触发编译错误。已在配置入口验证的不可变数据不在每次派发时全量重验。lint 用于有明确代码模式和实际维护收益的规则，不以扫描字符串或禁止所有条件分支代替类型设计。文件内容、用户配置、HTTP 与子进程响应仍在接入边界解析；运行时版本、目标存在性和实际执行失败不能预先由编译器证明。
 
@@ -37,6 +37,8 @@ cargo tree --locked -p velune-bindings --no-default-features --features remote
 
 平台代码的检查是各平台构建本身（Swift、Kotlin、C# 均把警告视为错误）。Apple 原生控件的系统明暗适配不另设完整验收矩阵，自绘 logo、固定色位图、阴影与边框则按所在背景核对可见性。平台中可脱离界面的逻辑放在独立文件，以脚本单独编译检查：`bash scripts/check-token-units.sh` 用同一组样例检查 Mac 与 Windows 的 token 数量格式化与解析；`bash scripts/check-account-quota.sh` 在 `build-macos.sh --build-only` 之后，以实际 Swift 绑定检查 Mac 的额度呈现。
 
-端到端行为用临时脚本验收：先构建动态库，并按 [bindings unit](../../packages/bindings/README.md#生成绑定) 生成匹配的 Python 绑定，再在临时 `VELUNE_HOME` 与临时 Harness HOME 中，以合成凭据和本机回环上游驱动实际 application。需要实际 Harness 时传入已安装 CLI 的绝对路径。脚本随任务使用，不提交到仓库；所用版本、覆盖范围与结果记录在该任务的 Task Packet。验证前先遵守[隔离验证与敏感数据边界](../development.md#隔离验证与敏感数据)。界面检查使用隔离的应用实例或 [Mac 预览模式](platforms.md#mac-构建)。
+临时端到端脚本使用匹配的动态库和 Python 绑定，在独立 `VELUNE_HOME` 与 Harness HOME 中通过回环上游驱动 application。需要实际 Harness 时提供已安装 CLI 的绝对路径。任务包记录版本、范围、结果及数据授权。生成步骤和授权边界见[绑定说明](../../packages/bindings/README.md#生成绑定)与[隔离验证](../development.md#隔离验证与敏感数据)。
 
-Mac 自动化的进程、焦点和前台操作约束见[平台 Agent 指引](../../app/mac/AGENTS.md)。
+### Mac 读取恢复复验
+
+用开发包运行仓库内的检查脚本，`--help` 列出入口，`--app` 可指定优化开发包。`background --dark` 检查后台任务的深色状态，`aggregated-list`、`pagination`、`archived` 分别核对搜索、分页和归档。冷打开用 `experience --workspace-only`，提供商用量呈现用 `provider-analytics`。脚本用隔离副本与合成数据复验，结果可通过 `--output` 留存。视觉检查根据生成的截图判断。 [检查脚本](../../scripts/check-macos-composer.py) [Mac 进程与焦点约束](../../app/mac/AGENTS.md)
