@@ -39,6 +39,50 @@ import SwiftUI
         precondition(grid.paneView(second) === secondView, "调整比例不重建面板视图")
         note("PASS pane grid: group views survive splits and closes, closed groups leave, shares follow the layout")
     }
+    do {
+        // The bottom area opens and closes beside the same panes, keeps its height as the window resizes, and its tools keep their views.
+        let model = ConversationWindowModel(application: device, kind: .workspace)
+        model.start(restoring: nil, seed: WindowSeed(conversationID: "sample-0"))
+        let column = EditorColumnView(window: model, previewEmpty: false)
+        let host = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1200, height: 800), styleMask: [.titled], backing: .buffered, defer: true)
+        host.contentView = column
+        func apply() {
+            column.grid.apply(model.layout, groups: Set(model.panes.keys))
+            column.apply(bottom: !model.tools.tools(in: .bottom).isEmpty, height: model.tools.bottomHeight, minimum: 100)
+            column.layoutSubtreeIfNeeded()
+        }
+        apply()
+        guard let pane = column.grid.paneView(model.focusedPaneID) else { fatalError("缺少面板视图") }
+        precondition(column.bottomArea == nil, "默认没有底区")
+        model.tools.bottomHeight = 240
+        model.tools.move(.outline, to: .docked(.bottom))
+        apply()
+        guard let bottom = column.bottomArea else { fatalError("底区应打开") }
+        precondition(abs(bottom.frame.height - 240) < 1 && column.grid.paneView(model.focusedPaneID) === pane && pane.window === host,
+                     "底区按保存的高度打开，面板视图不变：\(bottom.frame.height)")
+        host.setContentSize(NSSize(width: 1200, height: 600))
+        column.layoutSubtreeIfNeeded()
+        precondition(abs(bottom.frame.height - 240) < 1, "窗口变矮时底区保持高度，面板让出空间：\(bottom.frame.height)")
+        model.tools.move(.backgroundTasks, to: .docked(.bottom))
+        apply()
+        @MainActor func toolSplit(_ view: NSView) -> ToolSplitView? {
+            if let split = view as? ToolSplitView { return split }
+            for child in view.subviews { if let found = toolSplit(child) { return found } }
+            return nil
+        }
+        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+        column.layoutSubtreeIfNeeded()
+        guard let tools = toolSplit(bottom), let split = tools.splitView, split.subviews.count == 2, split.isVertical else { fatalError("底区两个工具应并排于原生分栏") }
+        let outline = split.subviews[0]
+        model.tools.move(.agents, to: .docked(.bottom))
+        apply()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+        precondition(tools.splitView?.subviews.count == 3 && tools.splitView?.subviews.first === outline, "加入工具不重建已在的工具视图")
+        model.tools.hide(.outline); model.tools.hide(.agents); model.tools.hide(.backgroundTasks)
+        apply()
+        precondition(column.bottomArea == nil && column.grid.paneView(model.focusedPaneID) === pane, "底区收起后面板视图不变")
+        note("PASS editor column: bottom area beside the same panes, keeps its height, tools keep their views")
+    }
 
     let window = ConversationWindowModel(application: device, kind: .workspace)
     window.start(restoring: nil, seed: WindowSeed(conversationID: "sample-0"))

@@ -122,12 +122,7 @@ struct VeluneRootView: View {
     }
 
     private var panes: some View {
-        GeometryReader { geometry in
-            VStack(spacing: 0) {
-                PaneGrid(window: window, previewEmpty: previewEmpty)
-                if !window.tools.tools(in: .bottom).isEmpty { BottomAreaView(window: window, available: geometry.size.height) }
-            }
-        }
+        EditorColumn(window: window, previewEmpty: previewEmpty)
         // The window keeps the title for the Window menu and Mission Control; the tab bar shows it.
         .navigationTitle([previewEmpty ? "新会话" : window.focusedEditor.title, deviceName].compactMap { $0 }.joined(separator: " — "))
         .toolbar(removing: .title)

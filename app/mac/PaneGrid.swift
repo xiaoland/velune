@@ -115,19 +115,22 @@ struct PaneGrid: NSViewRepresentable {
     }
 }
 
-/// One split of the editor area. Its panes keep their shares of its length
-/// as it resizes; a divider dragged writes the new shares once it is let
-/// go, and a double click on one shares the room equally again.
+/// One split of the editor area, or of a dock area's tools. Its views keep
+/// their shares of its length as it resizes; a divider dragged writes the
+/// new shares once it is let go, and a double click on one shares the room
+/// equally again.
 @MainActor final class PaneSplitView: NSSplitView, NSSplitViewDelegate {
     var fractions: [Double]
     var path: [Int] = []
     var resized: (([Int], [Double]) -> Void)?
-    private static let minimumLength: CGFloat = 320
+    /// The least a view keeps while a divider is dragged, room permitting.
+    private let minimumLength: CGFloat
     /// The divider takes the pointer this far either side of its line.
-    private static let reach: CGFloat = 4
+    static let reach: CGFloat = 4
 
-    init(axis: PaneSplit.Axis, fractions: [Double]) {
+    init(axis: PaneSplit.Axis, fractions: [Double], minimumLength: CGFloat = 320) {
         self.fractions = fractions
+        self.minimumLength = minimumLength
         super.init(frame: .zero)
         isVertical = axis == .horizontal
         dividerStyle = .thin
@@ -188,12 +191,12 @@ struct PaneGrid: NSViewRepresentable {
 
     func splitView(_ splitView: NSSplitView, constrainMinCoordinate proposedMinimumPosition: CGFloat, ofSubviewAt dividerIndex: Int) -> CGFloat {
         let frame = subviews[dividerIndex].frame
-        return (isVertical ? frame.minX : frame.minY) + min(Self.minimumLength, pairLength(dividerIndex) / 2)
+        return (isVertical ? frame.minX : frame.minY) + min(minimumLength, pairLength(dividerIndex) / 2)
     }
 
     func splitView(_ splitView: NSSplitView, constrainMaxCoordinate proposedMaximumPosition: CGFloat, ofSubviewAt dividerIndex: Int) -> CGFloat {
         let frame = subviews[dividerIndex + 1].frame
-        return (isVertical ? frame.maxX : frame.maxY) - dividerThickness - min(Self.minimumLength, pairLength(dividerIndex) / 2)
+        return (isVertical ? frame.maxX : frame.maxY) - dividerThickness - min(minimumLength, pairLength(dividerIndex) / 2)
     }
 
     private func pairLength(_ dividerIndex: Int) -> CGFloat {

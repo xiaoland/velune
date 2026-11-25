@@ -2,8 +2,9 @@ import AppKit
 import SwiftUI
 
 /// A dock area's tools: stacked down the sidebar or the inspector, side by
-/// side below the panes. A composer in a side area keeps its own height
-/// under the others. With more than one tool each has a title strip.
+/// side below the panes, in a native split when there are several. A
+/// composer in a side area keeps its own height under the others. With more
+/// than one tool each has a title strip.
 struct DockAreaView: View {
     @ObservedObject var window: ConversationWindowModel
     let side: DockSide
@@ -12,28 +13,34 @@ struct DockAreaView: View {
         let kinds = window.tools.tools(in: side)
         let flexible = side == .bottom ? kinds : kinds.filter { $0 != .composer }
         VStack(spacing: 0) {
-            // The bottom area provides stable room, including when it holds
-            // only the composer. Side areas retain their weighted split.
-            if !flexible.isEmpty {
-                WeightedSplit(axis: side == .bottom ? .horizontal : .vertical, ids: flexible,
-                              weights: flexible.map { window.tools[$0].weight },
-                              commit: { weights in window.tools.setWeights(Dictionary(uniqueKeysWithValues: zip(flexible, weights))) }) { kind in
-                    tool(kind, titled: kinds.count > 1)
-                }
+            // A tool alone is the area's content itself, so the list alone in
+            // the sidebar keeps the sidebar's own search field.
+            if flexible.count == 1, let kind = flexible.first {
+                DockedTool(window: window, kind: kind, side: side)
+            } else if flexible.count > 1 {
+                ToolSplit(window: window, side: side, kinds: flexible)
             }
             if side != .bottom, kinds.contains(.composer) {
                 if !flexible.isEmpty { Divider() }
-                tool(.composer, titled: kinds.count > 1)
+                DockedTool(window: window, kind: .composer, side: side)
             }
         }
     }
+}
 
-    private func tool(_ kind: ToolWindowKind, titled: Bool) -> some View {
+/// One docked tool, with its title strip when it shares its area.
+struct DockedTool: View {
+    @ObservedObject var window: ConversationWindowModel
+    let kind: ToolWindowKind
+    let side: DockSide
+
+    var body: some View {
+        let shared = window.tools.tools(in: side).count > 1
         VStack(spacing: 0) {
-            if titled { ToolHeader(window: window, kind: kind, side: side) }
+            if shared { ToolHeader(window: window, kind: kind, side: side) }
             ToolContent(kind: kind, window: window, side: side)
                 // A composer under other tools keeps its own height; elsewhere it sits at the bottom of its room.
-                .frame(maxWidth: .infinity, maxHeight: kind == .composer && side != .bottom && window.tools.tools(in: side).count > 1 ? nil : .infinity,
+                .frame(maxWidth: .infinity, maxHeight: kind == .composer && side != .bottom && shared ? nil : .infinity,
                        alignment: .bottom)
         }
     }
@@ -84,103 +91,6 @@ struct ToolPlaceMenu: View {
             ForEach(ToolChoice.all(for: kind), id: \.choice) { Text($0.title).tag($0.choice) }
         }
         .pickerStyle(.inline).labelsHidden()
-    }
-}
-
-/// Tools side by side or stacked, each taking its share of the room, with
-/// dividers between them. A divider's drag is the view's until it ends; a
-/// double click shares the room equally again.
-struct WeightedSplit<ID: Hashable, Content: View>: View {
-    let axis: Axis
-    let ids: [ID]
-    let weights: [Double]
-    let commit: ([Double]) -> Void
-    @ViewBuilder let content: (ID) -> Content
-    @State private var dragged: [Double]?
-    @State private var dragStart: [Double]?
-    private static var minimumLength: CGFloat { 120 }
-
-    var body: some View {
-        GeometryReader { geometry in
-            let horizontal = axis == .horizontal
-            let length = (horizontal ? geometry.size.width : geometry.size.height) - CGFloat(ids.count - 1)
-            let fractions = normalized(dragged ?? weights)
-            let stack = horizontal ? AnyLayout(HStackLayout(spacing: 0)) : AnyLayout(VStackLayout(spacing: 0))
-            stack {
-                ForEach(Array(ids.enumerated()), id: \.element) { index, id in
-                    if index > 0 { Divider() }
-                    content(id)
-                        .frame(width: horizontal ? max(0, length * fractions[index]) : geometry.size.width,
-                               height: horizontal ? geometry.size.height : max(0, length * fractions[index]))
-                        .clipped()
-                }
-            }
-            .overlay {
-                SashOverlay(axis: axis, lengths: fractions.map { max(0, length * $0) },
-                            drag: { index, distance in drag(before: index, distance: distance, length: length, fractions: fractions) },
-                            end: {
-                                if let dragged { commit(dragged) }
-                                dragged = nil
-                                dragStart = nil
-                            },
-                            reset: { commit(ids.map { _ in 1 }) })
-            }
-        }
-    }
-
-    private func normalized(_ values: [Double]) -> [Double] {
-        guard values.count == ids.count else { return ids.map { _ in 1 / Double(max(ids.count, 1)) } }
-        let total = values.reduce(0, +)
-        return total > 0 ? values.map { $0 / total } : values.map { _ in 1 / Double(values.count) }
-    }
-
-    private func drag(before index: Int, distance: CGFloat, length: CGFloat, fractions: [Double]) {
-        let start = dragStart ?? fractions
-        if dragStart == nil { dragStart = start }
-        guard length > 0 else { return }
-        let pair = start[index - 1] + start[index]
-        let minimum = min(pair / 2, Double(Self.minimumLength / length))
-        var next = start
-        next[index - 1] = min(max(start[index - 1] + Double(distance / length), minimum), pair - minimum)
-        next[index] = pair - next[index - 1]
-        dragged = next
-    }
-}
-
-/// The bottom drawer keeps its user-selected height across conversation and
-/// composer states. Input scrolls within that space instead of resizing panes.
-struct BottomAreaView: View {
-    @ObservedObject var window: ConversationWindowModel
-    /// The room the panes and this area share.
-    let available: CGFloat
-    @State private var dragged: Double?
-    @State private var dragStart: Double?
-
-    var body: some View {
-        let minimum = window.composerMinimumHeight
-            + (window.tools.tools(in: .bottom).count > 1 ? PaneChrome.barHeight : 0)
-        let limit = max(minimum, available - 200)
-        VStack(spacing: 0) {
-            Divider()
-            DockAreaView(window: window, side: .bottom)
-                .frame(height: min(max(dragged ?? window.tools.bottomHeight, minimum), limit))
-        }
-        .overlay(alignment: .top) {
-                SplitSash(axis: .vertical,
-                          drag: { distance in
-                              let start = dragStart ?? min(window.tools.bottomHeight, limit)
-                              if dragStart == nil { dragStart = start }
-                              dragged = min(max(start - distance, minimum), limit)
-                          },
-                          end: {
-                              if let dragged { window.tools.bottomHeight = dragged }
-                              dragged = nil
-                              dragStart = nil
-                          },
-                          reset: { window.tools.bottomHeight = ToolWindowLayout().bottomHeight })
-                    .frame(height: SplitSash.thickness)
-                    .offset(y: -SplitSash.thickness / 2)
-        }
     }
 }
 
