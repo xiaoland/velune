@@ -105,7 +105,7 @@ internal fun ConversationComposer(
     val activePermission = state.permissionModes.firstOrNull { it.id == state.permissionMode } ?: state.currentPermissionMode
     val activeEffort = state.effort ?: state.currentEffort
     val selectedRuntime = runtimeLabels[state.selectedRuntimeId]?.name
-    val configSummary = listOfNotNull(selectedRuntime.takeIf { showRuntimeOptions }, activePermission?.label, activeEffort)
+    val configSummary = listOfNotNull(selectedRuntime.takeIf { showRuntimeOptions && !state.usesCurrentRuntime }, activePermission?.label, activeEffort)
         .joinToString(" · ").ifEmpty { "权限与推理" }
     Column(Modifier.fillMaxWidth().then(insets), verticalArrangement = Arrangement.spacedBy(6.dp * spacing)) {
         ComposerStatus(state, actions)
