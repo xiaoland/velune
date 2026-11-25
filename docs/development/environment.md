@@ -38,6 +38,7 @@ Mac 重装先调用既有构建脚本并验证新 bundle 签名，成功后才�
 ## Mac 开发实例
 
 ```sh
+svc run run-macos-dev      # 构建并启动；本工作树的旧构建实例先正常退出
 svc run build-macos
 svc run start-macos-dev
 svc run status-macos-dev
@@ -51,7 +52,7 @@ svc run start-macos-dev-release
 
 开发默认状态目录为 `~/.velune-dev/<scope>`，使用短路径以适应Unix socket长度；原生Agent目录在其中的 `harness-user` 下。应用入口在核心、遥测和偏好初始化前核对用途与目录：缺失／矛盾身份、日常目录及其symlink别名、其它scope或无归属的已有非空目录均拒绝。临时合成目录用启动器的 `--home` 准备 `.velune-development.json` 标记；不复制日常配置、登录或会话。开发检查／预览只能由开发用途产物执行。文件目录隔离不等于同一账号Keychain隔离；真实账户联调仍需任务级授权。
 
-`start`通过LaunchServices后台打开当前worktree的运行副本，构建不会改写已加载的bundle。副本只在实例退出后更新，每scope保留一个；不复制编译缓存。当前实例与请求的目录、构建来源不一致时，工具拒绝猜测复用，也不会自动重启。`status`显示PID、出生时间、准确bundle／executable路径、scope与状态目录；`stop`重新核对当前进程身份后只请求正常Quit。取消、超时或歧义时停止，不追加SIGKILL、不删除lock、不按名称搜索和结束其它Velune。
+`start`通过LaunchServices后台打开当前worktree的运行副本，构建不会改写已加载的bundle。副本只在实例退出后更新，每scope保留一个；不复制编译缓存。当前实例与请求的目录、构建来源不一致时，`start` 拒绝猜测复用，也不会自动重启。`run-macos-dev`（`macos-dev.py restart --build`）先走 `svc run build-macos`，构建失败不动运行实例；只有运行实例的 PID／出生时间／目录与本工作树的实例记录吻合、仅构建指纹／profile／预览模式不同时，才请求它正常退出再启动新产物，其余不确定情形仍按 `start` 拒绝。`status`显示PID、出生时间、准确bundle／executable路径、scope与状态目录；`stop`重新核对当前进程身份后只请求正常Quit。取消、超时或歧义时停止，不追加SIGKILL、不删除lock、不按名称搜索和结束其它Velune。
 
 同一 scope 的开发实例可被复用，需要独立 UI 时使用不同 worktree／scope。工具的身份检查与有界停止不构成 OS 安全沙箱，同 UID 的外部 shell 仍有发送信号的能力。Agent 的进程操作范围及自动验收约束归[Mac 操作指引](../../app/mac/AGENTS.md)。
 

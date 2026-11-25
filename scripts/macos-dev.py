@@ -25,6 +25,10 @@ class LauncherError(RuntimeError):
     pass
 
 
+class StaleInstance(LauncherError):
+    """The running instance is this worktree's own, but from another build or mode."""
+
+
 def absolute_path(value, label):
     path = Path(value)
     if not path.is_absolute() or "\0" in str(path):
@@ -249,7 +253,7 @@ def reuse(application, receipt, home, scope, source, profile, fingerprint, previ
         if receipt.get(field) != requested:
             differences.append(label)
     if differences:
-        raise LauncherError("运行实例的构建来源与请求不一致（" + "、".join(differences)
+        raise StaleInstance("运行实例的构建来源与请求不一致（" + "、".join(differences)
                             + "）；请先显式正常停止该开发实例，再启动所需产物")
     marker = read_private_json(home / common.MARKER)
     if marker != dict(schemaVersion=1, purpose="development", scope=scope):
@@ -444,10 +448,27 @@ def stop(workspace=ROOT, profile="dev"):
         return dict(stopped, status="notRunning", purpose="development", scope=scope, bundlePath=str(bundle))
 
 
+def restart(workspace=ROOT, profile="dev", home=None, preview=False, build=False):
+    """Build if asked, then start; an instance of this worktree from an older
+    build or another mode is quit normally first. Anything less certain than
+    that (an unmatched receipt, other instances) still refuses as start does."""
+    if build:
+        entry = "build-macos" if profile == "dev" else "build-macos-release"
+        completed = subprocess.run(["svc", "run", entry], cwd=workspace_path(workspace, profile))
+        if completed.returncode != 0:
+            raise LauncherError(f"构建失败（svc run {entry} 退出码 {completed.returncode}），未改动运行实例")
+    try:
+        return start(workspace, profile, home=home, preview=preview)
+    except StaleInstance as error:
+        print(f"{error}；正在正常退出旧实例后重新启动", file=sys.stderr)
+    stopped = stop(workspace, profile)
+    return dict(start(workspace, profile, home=home, preview=preview), restarted=True, previousPid=stopped.get("pid"))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
-    for name in ("start", "status", "stop"):
+    for name in ("start", "status", "stop", "restart"):
         command = commands.add_parser(name)
         command.add_argument("--workspace", type=Path, default=ROOT)
         command.add_argument("--profile", choices=("dev", "release"), default="dev")
@@ -455,6 +476,10 @@ def main():
             command.add_argument("--app", type=Path)
             command.add_argument("--home", type=Path)
             command.add_argument("--preview", action="store_true", help="仅使用合成会话，不启动核心或远端连接")
+        if name == "restart":
+            command.add_argument("--home", type=Path)
+            command.add_argument("--preview", action="store_true", help="仅使用合成会话，不启动核心或远端连接")
+            command.add_argument("--build", action="store_true", help="先用对应的 svc 构建入口构建")
     args = vars(parser.parse_args())
     command = args.pop("command")
     print(json.dumps(globals()[command](**args), ensure_ascii=False, sort_keys=True))
