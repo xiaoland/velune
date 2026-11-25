@@ -12,6 +12,7 @@ pub enum ProviderQuotaSource {
     /// An API service's own account balance or key limit, read with the
     /// provider's key from the official host its requests already reach.
     ApiAccount,
+    AntigravityCliUsage,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, uniffi::Record)]

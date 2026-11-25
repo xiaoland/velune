@@ -17,6 +17,7 @@ mod service;
 pub use service::{ApplicationService, NativeUserMessageEvents};
 mod analytics_report;
 mod antigravity_cli;
+mod antigravity_quota;
 mod api_account_quota;
 mod ark_quota;
 mod authentication_resolver;

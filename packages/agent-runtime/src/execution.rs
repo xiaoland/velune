@@ -113,6 +113,12 @@ impl ExecutionTarget {
         self.prepare_lifetime(command, os_home, true)
     }
 
+    /// Prepare a one-shot helper whose stdin closes after its startup data.
+    /// The caller owns bounded output and the local transport lifetime.
+    pub fn prepare_helper(&self, command: Command) -> Result<PreparedCommand> {
+        self.prepare_lifetime(command, None, false)
+    }
+
     fn prepare_lifetime(
         &self,
         mut command: Command,
@@ -617,6 +623,24 @@ fn shell_quote(value: &str) -> String {
 mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn remote_helper_preserves_a_natural_exit_after_input_closes() {
+        let request = serde_json::to_vec(&json!({
+            "operation": "launch",
+            "argv": ["/bin/sh", "-c", "cat >/dev/null; printf 'report'"],
+            "environment": {},
+            "cwd": null,
+            "interactive": false,
+        }))
+        .unwrap();
+        let mut input_prefix = format!("{}\n", request.len()).into_bytes();
+        input_prefix.extend(request);
+        let mut command = crate::process_tree::command("python3");
+        command.args(["-c", BOOTSTRAP]);
+        let output = run_prepared(PreparedCommand { command, input_prefix }, None).unwrap();
+        assert_eq!(output, b"report");
+    }
 
     #[test]
     fn dropping_tunnel_stops_ssh_helpers_without_opening_network_connections() {

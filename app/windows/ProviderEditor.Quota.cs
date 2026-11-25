@@ -13,7 +13,7 @@ sealed partial class ProviderEditor
     readonly TextBlock quotaState = Ui.Muted("");
     readonly Button refreshQuota = new() { Content = "刷新" };
     readonly Button quotaHistory = new() { Content = "历史…" };
-    readonly Dictionary<string, (TextBlock Detail, NumberBox Limit)> windows = [];
+    readonly Dictionary<string, (TextBlock Detail, NumberBox? Limit)> windows = [];
     readonly ToggleSwitch accountQuota = new() { OnContent = "开", OffContent = "关" };
     readonly TextBlock accountTitle = Ui.Text(""), accountDetail = Ui.Muted("");
     Border? accountCard;
@@ -70,19 +70,19 @@ sealed partial class ProviderEditor
 
     void BuildQuota()
     {
-        if (quotaSource == ProviderQuotaSource.None && accountCard == null)
+        if (!UsesAntigravity && quotaSource == ProviderQuotaSource.None && accountCard == null)
         {
             return;
         }
         body.Children.Add(quotaSection);
-        quotaSection.Children.Add(Ui.Heading("额度与使用上限"));
+        quotaSection.Children.Add(Ui.Heading(UsesAntigravity ? "额度" : "额度与使用上限"));
         ShowAccountQuota();
         var remaining = page.Usage == UsageDisplay.Remaining;
         var about = remaining
             ? "为每个额度窗口设置至少保留的比例，剩余低于它时暂停新请求；对所有路由和直接调用共同生效。"
             : "为每个额度窗口设置已用比例上限，达到时暂停新请求；对所有路由和直接调用共同生效。";
         var state = new StackPanel { Spacing = 2 };
-        state.Children.Add(Ui.Text(about + "上限依据供应商观测，不是计费硬预算。"));
+        state.Children.Add(Ui.Text(UsesAntigravity ? "本机 agy 登录的额度" : about + "上限依据供应商观测，不是计费硬预算。"));
         state.Children.Add(quotaState);
         refreshQuota.Click += (_, _) => ReadQuota(true);
         quotaHistory.Click += async (_, _) =>
@@ -100,15 +100,18 @@ sealed partial class ProviderEditor
         ShowQuotaState(null);
     }
 
-    // CanReadQuota tells whether the provider is saved with a quota source
-    // and signed in, the only time its quota is read.
-    bool CanReadQuota => existing is { Authentication.Configured: true } saved && saved.QuotaSource != ProviderQuotaSource.None;
+    bool CanReadQuota => existing is { Authentication.Configured: true } saved
+        && (UsesAntigravity
+            ? saved.ExecutionBackend is ExecutionBackend.AntigravityCli { Binary: var path, SshDestination: null }
+                && binary.Text.Trim() == path
+            : saved.QuotaSource != ProviderQuotaSource.None);
 
     void StartQuota()
     {
+        ShowQuotaState(lastQuota);
         if (!IsLoaded || !CanReadQuota)
         {
-            ShowQuotaState(null);
+            StopQuota();
             return;
         }
         quotaTimer ??= new DispatcherTimer();
@@ -121,11 +124,11 @@ sealed partial class ProviderEditor
 
     void QuotaTick(object? sender, object e) => ReadQuota(false);
 
-    // ReadQuota reads the core's observation, which decides itself whether
-    // to sample: soon while it reads or has none, then every half minute.
+    // Polls agy cache for changes and expiry. Other signed-in providers
+    // can also refresh their expiring observation as it is read.
     async void ReadQuota(bool refresh)
     {
-        if (reading || existing is not { } provider || !CanReadQuota)
+        if (reading || !IsLoaded || existing is not { } provider || !CanReadQuota || (refresh && UsesAntigravity && page.Busy))
         {
             return;
         }
@@ -138,19 +141,30 @@ sealed partial class ProviderEditor
             status = await Task.Run(() => refresh
                 ? page.Core.Local.RefreshProviderQuota(ProvidersPage.DefaultGateway, provider.Id).Observation
                 : page.Core.Local.ProviderQuota(ProvidersPage.DefaultGateway, provider.Id).Observation);
-            ShowQuota(status);
-            Problems.Recovered(Problems.Key("quota", Device.Local, provider.Id));
+            if (IsLoaded && existing is { } current && provider.Id == current.Id && provider.ExecutionBackend == current.ExecutionBackend)
+            {
+                ShowQuota(status);
+                Problems.Recovered(Problems.Key("quota", Device.Local, provider.Id));
+            }
         }
         catch (Exception problem)
         {
-            quotaState.Text = Core.Describe(problem);
-            Problems.Failing(Problems.Key("quota", Device.Local, provider.Id), "读取提供商「" + provider.Name + "」的额度", problem);
+            if (IsLoaded && existing is { } current && provider.Id == current.Id && provider.ExecutionBackend == current.ExecutionBackend)
+            {
+                quotaState.Text = Core.Describe(problem);
+                Problems.Failing(Problems.Key("quota", Device.Local, provider.Id), "读取提供商「" + provider.Name + "」的额度", problem);
+            }
         }
         reading = false;
-        refreshQuota.IsEnabled = true;
         if (IsLoaded && quotaTimer != null)
         {
-            var soon = status == null || status.Refreshing || status.Windows.Length == 0 && status.Freshness == QuotaFreshness.Unknown;
+            refreshQuota.IsEnabled = status?.Refreshing != true;
+            if (!CanReadQuota)
+            {
+                return;
+            }
+            var soon = status?.Refreshing == true
+                || (!UsesAntigravity && (status == null || status.Windows.Length == 0 && status.Freshness == QuotaFreshness.Unknown));
             quotaTimer.Interval = TimeSpan.FromSeconds(soon ? 2 : 30);
             quotaTimer.Start();
         }
@@ -158,8 +172,11 @@ sealed partial class ProviderEditor
 
     void ShowQuotaState(QuotaObservation? status)
     {
-        refreshQuota.Visibility = quotaHistory.Visibility = CanReadQuota ? Visibility.Visible : Visibility.Collapsed;
-        quotaState.Text = existing == null || existing.QuotaSource == ProviderQuotaSource.None ? "保存并完成认证后，这里显示额度窗口。"
+        refreshQuota.Visibility = CanReadQuota ? Visibility.Visible : Visibility.Collapsed;
+        quotaHistory.Visibility = !UsesAntigravity && CanReadQuota ? Visibility.Visible : Visibility.Collapsed;
+        quotaWindows.Visibility = !UsesAntigravity || CanReadQuota ? Visibility.Visible : Visibility.Collapsed;
+        quotaState.Text = UsesAntigravity ? AntigravityQuotaText(status)
+            : existing == null || existing.QuotaSource == ProviderQuotaSource.None ? "保存并完成认证后，这里显示额度窗口。"
             : !CanReadQuota ? (authenticationSource == ProviderAuthenticationSource.ApiKey ? "配置 API key 后显示额度。" : "登录后显示额度窗口。")
             : status == null ? "正在读取额度…"
             : status.Problem is { Length: > 0 } problem ? problem
@@ -175,10 +192,32 @@ sealed partial class ProviderEditor
         quotaState.Visibility = quotaState.Text.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
     }
 
+    string AntigravityQuotaText(QuotaObservation? status)
+    {
+        if (existing == null) return "保存提供商后可手动刷新额度。";
+        if (!CanReadQuota) return "保存本机 agy 执行目标后可刷新额度。";
+        if (status?.Refreshing == true) return "正在刷新额度…";
+        if (status?.Problem is { Length: > 0 } problem)
+        {
+            return status.Freshness == QuotaFreshness.Stale ? problem + " 上次观测已过期。" : problem;
+        }
+        return status?.Freshness switch
+        {
+            QuotaFreshness.Unsupported => "此提供商不报告额度。",
+            QuotaFreshness.Stale => "额度观测已过期，请手动刷新。",
+            QuotaFreshness.Fresh => Quota.Balances(status),
+            _ => "点击“刷新”查询额度。",
+        };
+    }
+
     void ShowQuota(QuotaObservation status)
     {
         lastQuota = status;
         ShowQuotaState(status);
+        if (UsesAntigravity)
+        {
+            ClearQuotaWindows();
+        }
         foreach (var window in status.Windows)
         {
             if (!windows.TryGetValue(window.Id, out var row))
@@ -190,27 +229,37 @@ sealed partial class ProviderEditor
         }
     }
 
+    void ClearQuotaWindows()
+    {
+        quotaWindows.Children.Clear();
+        windows.Clear();
+    }
+
     // AddWindow shows one quota window with its limit, which keeps what the
     // user typed while the window's observation updates.
-    (TextBlock Detail, NumberBox Limit) AddWindow(string id)
+    (TextBlock Detail, NumberBox? Limit) AddWindow(string id)
     {
-        var remaining = page.Usage == UsageDisplay.Remaining;
-        var limit = new NumberBox
+        NumberBox? limit = null;
+        if (!UsesAntigravity)
         {
-            Minimum = remaining ? 0 : 1,
-            Maximum = remaining ? 99 : 100,
-            PlaceholderText = "不设上限",
-            SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Compact,
-            MinWidth = 140,
-            Header = remaining ? "至少保留（%）" : "已用上限（%）",
-        };
-        limit.Value = existing?.QuotaLimits.FirstOrDefault(saved => saved.WindowId == id) is { } kept
-            ? remaining ? 100 - kept.MaxUsedPercent : kept.MaxUsedPercent
-            : double.NaN;
-        limit.ValueChanged += (_, _) => Changed();
+            var remaining = page.Usage == UsageDisplay.Remaining;
+            limit = new NumberBox
+            {
+                Minimum = remaining ? 0 : 1,
+                Maximum = remaining ? 99 : 100,
+                PlaceholderText = "不设上限",
+                SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Compact,
+                MinWidth = 140,
+                Header = remaining ? "至少保留（%）" : "已用上限（%）",
+                Value = existing?.QuotaLimits.FirstOrDefault(saved => saved.WindowId == id) is { } kept
+                    ? remaining ? 100 - kept.MaxUsedPercent : kept.MaxUsedPercent
+                    : double.NaN,
+            };
+            limit.ValueChanged += (_, _) => Changed();
+        }
         var detail = Ui.Muted("");
         var lines = new StackPanel { Spacing = 2 };
-        lines.Children.Add(Ui.Text(Quota.Name(id)));
+        lines.Children.Add(Ui.Text(UsesAntigravity ? Quota.AntigravityName(id) : Quota.Name(id)));
         lines.Children.Add(detail);
         quotaWindows.Children.Add(Ui.Card(lines, limit));
         windows[id] = (detail, limit);
@@ -221,13 +270,14 @@ sealed partial class ProviderEditor
     // not reported now keeps its limit.
     QuotaLimit[] Limits()
     {
+        if (UsesAntigravity) return [];
         var remaining = page.Usage == UsageDisplay.Remaining;
         var limits = (existing?.QuotaLimits ?? []).Where(saved => !windows.ContainsKey(saved.WindowId)).ToList();
         foreach (var (id, row) in windows)
         {
-            if (!double.IsNaN(row.Limit.Value))
+            if (row.Limit is { Value: var value } && !double.IsNaN(value))
             {
-                var used = remaining ? 100 - row.Limit.Value : row.Limit.Value;
+                var used = remaining ? 100 - value : value;
                 limits.Add(new QuotaLimit(id, (byte)Math.Clamp(Math.Round(used), 1, 100)));
             }
         }

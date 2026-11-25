@@ -96,7 +96,10 @@ private struct ModelRouteOverview: View {
     /// Providers whose quota can be read: those of the members, signed in.
     private var providerIDs: [String] {
         var ids: [String] = []
-        for key in route.members { if let provider = store.routeMember(key)?.provider, !provider.authentication.awaitsSignIn, !ids.contains(provider.id) { ids.append(provider.id) } }
+        for key in route.members {
+            if let provider = store.routeMember(key)?.provider, provider.authenticationSource != .antigravityCli,
+               !provider.authentication.awaitsSignIn, !ids.contains(provider.id) { ids.append(provider.id) }
+        }
         return ids
     }
     private var reportsQuota: Bool { providerIDs.contains { store.providerQuotas[$0].map { $0.freshness != .unsupported } ?? false } }
@@ -149,7 +152,9 @@ private struct RouteMemberStatus: View {
     let weight: UInt32?
     let totalWeight: UInt32
     private var authentication: ProviderAuthenticationDescription { member.provider.authentication }
-    private var quota: QuotaObservation? { store.providerQuotas[member.provider.id] }
+    private var quota: QuotaObservation? {
+        member.provider.authenticationSource == .antigravityCli ? nil : store.providerQuotas[member.provider.id]
+    }
     private var windows: [QuotaWindowObservation] { (quota?.windows ?? []).filter { $0.applies(to: member.model.providerModelId) } }
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {

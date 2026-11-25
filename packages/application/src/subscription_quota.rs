@@ -5,7 +5,11 @@ use crate::{
     QuotaHistoryWindow, QuotaObservation, QuotaPaceObservation, QuotaPaceStatus,
     QuotaWindowObservation,
 };
-use crate::{config::GatewayConfig, provider_authentication::AuthenticationMaterial};
+use crate::{
+    antigravity_cli::Launcher as AntigravityLauncher,
+    config::{ExecutionBackend, GatewayConfig, ProviderQuotaSource},
+    provider_authentication::AuthenticationMaterial,
+};
 use serde_json::Value;
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
@@ -38,8 +42,17 @@ struct Binding {
     kimi: Option<crate::kimi_quota::Capture>,
     ark: Option<crate::ark_quota::Capture>,
     account: Option<crate::api_account_quota::Capture>,
+    antigravity: Option<AntigravityLauncher>,
 }
 impl Binding {
+    fn manual_only(&self) -> bool {
+        self.antigravity.is_some()
+    }
+
+    fn history_epoch(&self) -> Option<String> {
+        (!self.manual_only()).then(|| self.epoch())
+    }
+
     /// Durable identity of the observed account binding. A new credential
     /// or source is a separate history; it does not reveal the previous one.
     fn epoch(&self) -> String {
@@ -94,6 +107,15 @@ struct Entry {
     problem: Option<String>,
     cancel: tokio::sync::watch::Sender<bool>,
 }
+impl Entry {
+    fn expire_observation(&mut self) {
+        let expired = now_ms();
+        self.expires_at_ms = self.expires_at_ms.min(expired);
+        for window in &mut self.windows {
+            window.expires_at_ms = window.expires_at_ms.min(expired);
+        }
+    }
+}
 #[derive(Default)]
 struct State {
     entries: BTreeMap<Key, Entry>,
@@ -115,6 +137,12 @@ struct GatewayView {
     service: Arc<SubscriptionQuota>,
     gateway_id: String,
     bindings: BTreeMap<String, ViewBinding>,
+}
+
+enum Refresh {
+    IfDue,
+    Forced,
+    Explicit,
 }
 
 fn now_ms() -> i64 {
@@ -209,7 +237,9 @@ impl SubscriptionQuota {
                         .collect::<Vec<_>>()
                 };
                 for ((gateway, provider), binding) in due {
-                    let _ = service.query_binding_inner(&gateway, &provider, false, Some(&binding), false);
+                    let _ = service.query_binding_inner(
+                        &gateway, &provider, Refresh::IfDue, Some(&binding), false,
+                    );
                 }
             }).is_err()
         {
@@ -231,15 +261,16 @@ impl SubscriptionQuota {
             .iter()
             .flat_map(|g| {
                 g.providers.iter().map(|p| {
+                    let source = p.effective_quota_source();
                     let binding: Option<Binding> =
-                        match (&p.authentication.material, p.quota_source) {
+                        match (&p.authentication.material, source) {
                             (
                                 AuthenticationMaterial::CodexSubscription { credential_id, .. },
                                 crate::config::ProviderQuotaSource::CodexUsage,
                             ) => Some(Binding {
                                 id: credential_id.clone(),
                                 generation: p.authentication.generation,
-                                source: p.quota_source,
+                                source,
                                 codex_client_version: Some(
                                     p.effective_codex_client_version().into(),
                                 ),
@@ -248,6 +279,7 @@ impl SubscriptionQuota {
                                 kimi: None,
                                 ark: None,
                                 account: None,
+                                antigravity: None,
                             }),
                             (
                                 AuthenticationMaterial::ClaudeCli { credential_id, .. },
@@ -255,13 +287,14 @@ impl SubscriptionQuota {
                             ) => Some(Binding {
                                 id: credential_id.clone(),
                                 generation: p.authentication.generation,
-                                source: p.quota_source,
+                                source,
                                 codex_client_version: None,
                                 binary: cli_binary(p),
                                 directory: LoginDirectory::Owned,
                                 kimi: None,
                                 ark: None,
                                 account: None,
+                                antigravity: None,
                             }),
                             (
                                 AuthenticationMaterial::ClaudeCliLinked { config_dir, .. },
@@ -269,13 +302,14 @@ impl SubscriptionQuota {
                             ) => Some(Binding {
                                 id: p.id.clone(),
                                 generation: p.authentication.generation,
-                                source: p.quota_source,
+                                source,
                                 codex_client_version: None,
                                 binary: cli_binary(p),
                                 directory: LoginDirectory::Linked(config_dir.clone()),
                                 kimi: None,
                                 ark: None,
                                 account: None,
+                                antigravity: None,
                             }),
                             (
                                 AuthenticationMaterial::ApiKey { value },
@@ -284,12 +318,13 @@ impl SubscriptionQuota {
                                 Binding {
                                     id: p.id.clone(),
                                     generation: p.authentication.generation,
-                                    source: p.quota_source,
+                                    source,
                                     codex_client_version: None,
                                     binary: None,
                                     directory: LoginDirectory::Owned,
                                     ark: None,
                                     account: None,
+                                    antigravity: None,
                                     kimi: Some(crate::kimi_quota::Capture {
                                         region,
                                         key: value.clone(),
@@ -302,12 +337,13 @@ impl SubscriptionQuota {
                             ) => Some(Binding {
                                 id: p.id.clone(),
                                 generation: p.authentication.generation,
-                                source: p.quota_source,
+                                source,
                                 codex_client_version: None,
                                 binary: None,
                                 directory: LoginDirectory::Owned,
                                 kimi: None,
                                 account: None,
+                                antigravity: None,
                                 ark: p.quota_authentication.access_key().map(|key| {
                                     crate::ark_quota::Capture {
                                         key: key.clone(),
@@ -326,18 +362,40 @@ impl SubscriptionQuota {
                                 |service| Binding {
                                     id: p.id.clone(),
                                     generation: p.authentication.generation,
-                                    source: p.quota_source,
+                                    source,
                                     codex_client_version: None,
                                     binary: None,
                                     directory: LoginDirectory::Owned,
                                     kimi: None,
                                     ark: None,
+                                    antigravity: None,
                                     account: Some(crate::api_account_quota::Capture {
                                         service,
                                         key: value.clone(),
                                     }),
                                 },
                             ),
+                            (
+                                AuthenticationMaterial::AntigravityCli,
+                                ProviderQuotaSource::AntigravityCliUsage,
+                            ) => match &p.execution_backend {
+                                ExecutionBackend::AntigravityCli { binary, ssh_destination } => Some(Binding {
+                                    id: p.credential_reference(),
+                                    generation: p.authentication.generation,
+                                    source,
+                                    codex_client_version: None,
+                                    binary: None,
+                                    directory: LoginDirectory::Owned,
+                                    kimi: None,
+                                    ark: None,
+                                    account: None,
+                                    antigravity: Some(AntigravityLauncher::new(
+                                        binary.clone(),
+                                        ssh_destination.clone(),
+                                    )),
+                                }),
+                                _ => None,
+                            },
                             _ => None,
                         };
                     (
@@ -376,7 +434,7 @@ impl SubscriptionQuota {
             .map(|((gateway, provider), (binding, _))| {
                 (
                     crate::quota_history::QuotaHistory::name(gateway, provider),
-                    binding.as_ref().map(Binding::epoch),
+                    binding.as_ref().and_then(Binding::history_epoch),
                 )
             })
             .collect();
@@ -495,7 +553,21 @@ impl SubscriptionQuota {
         provider_id: &str,
         force: bool,
     ) -> Result<ProviderQuotaStatus, crate::Error> {
-        self.query_binding(gateway_id, provider_id, force, None)
+        let refresh = if force {
+            Refresh::Forced
+        } else {
+            Refresh::IfDue
+        };
+        self.query_binding(gateway_id, provider_id, refresh, None)
+    }
+
+    /// The provider's explicit refresh action can read manual-only sources.
+    pub(crate) fn refresh_provider(
+        self: &Arc<Self>,
+        gateway_id: &str,
+        provider_id: &str,
+    ) -> Result<ProviderQuotaStatus, crate::Error> {
+        self.query_binding(gateway_id, provider_id, Refresh::Explicit, None)
     }
     /// The current binding's retained observations since `since_ms`.
     pub(crate) fn history(
@@ -513,7 +585,7 @@ impl SubscriptionQuota {
             .ok_or_else(|| crate::Error::invalid("provider id"))?
             .binding
             .as_ref()
-            .map(Binding::epoch);
+            .and_then(Binding::history_epoch);
         let points = match epoch {
             Some(epoch) => self
                 .history
@@ -568,17 +640,17 @@ impl SubscriptionQuota {
         self: &Arc<Self>,
         gateway_id: &str,
         provider_id: &str,
-        force: bool,
+        refresh: Refresh,
         expected: Option<&ViewBinding>,
     ) -> Result<ProviderQuotaStatus, crate::Error> {
-        self.query_binding_inner(gateway_id, provider_id, force, expected, true)
+        self.query_binding_inner(gateway_id, provider_id, refresh, expected, true)
     }
 
     fn query_binding_inner(
         self: &Arc<Self>,
         gateway_id: &str,
         provider_id: &str,
-        force: bool,
+        refresh: Refresh,
         expected: Option<&ViewBinding>,
         renew_demand: bool,
     ) -> Result<ProviderQuotaStatus, crate::Error> {
@@ -596,19 +668,31 @@ impl SubscriptionQuota {
         }
         // A query renews observation demand; the scheduler does not renew its
         // own lease. Idle providers stop polling after the final caller leaves.
-        if renew_demand {
+        let manual_only = entry.binding.as_ref().is_some_and(Binding::manual_only);
+        let force = match refresh {
+            Refresh::IfDue => false,
+            Refresh::Forced => !manual_only,
+            Refresh::Explicit => true,
+        };
+        if renew_demand && !manual_only {
             entry.demand_until = Some(Instant::now() + Duration::from_secs(120));
         }
         let refresh_due = !fresh(entry)
             || entry.expires_at_ms.saturating_sub(now_ms()) <= 10_000
-            || (entry.binding.as_ref().is_some_and(|binding| binding.kimi.is_some())
+            || (entry
+                .binding
+                .as_ref()
+                .is_some_and(|binding| binding.kimi.is_some())
                 && entry.owner.is_none());
         let start = may_start
             && entry.binding.as_ref().is_some_and(|b| {
                 b.source != crate::config::ProviderQuotaSource::ArkCodingUsage || b.ark.is_some()
             })
             && !entry.running
-            && (force || (refresh_due && entry.retry_at <= Instant::now()));
+            && (force || (!manual_only && refresh_due && entry.retry_at <= Instant::now()));
+        if manual_only && force && !may_start && !entry.running {
+            entry.problem = Some("额度读取暂时繁忙，请稍后重新点击刷新。".into());
+        }
         if start {
             entry.running = true;
             entry.resample = false;
@@ -710,17 +794,29 @@ impl SubscriptionQuota {
                     let observation = match result {
                         Ok(observation) => observation,
                         Err(()) => {
-                            // A failed early refresh does not revoke a still
-                            // fresh observation. Its original expiry remains final.
-                            entry.problem =
-                                Some("额度暂不可用；保留上次观测，稍后可重新读取。".into());
+                            if manual_only {
+                                entry.expire_observation();
+                                entry.problem = Some(if entry.observed_at_ms > 0 {
+                                    "Antigravity 额度读取失败。上次观测仅供参考，请确认目标的 agy 登录后再试。"
+                                } else {
+                                    "Antigravity 额度读取失败。请确认该目标已登录，并使用支持 /usage 的 agy。"
+                                }.into());
+                            } else {
+                                // An early failure leaves the previous expiry intact.
+                                entry.problem =
+                                    Some("额度暂不可用；保留上次观测，稍后可重新读取。".into());
+                            }
                             return;
                         }
                     };
                     let (observed, expires) =
                         (observation.observed_at_ms, observation.expires_at_ms);
-                    let raised = alert_conditions(&observation, &entry.limits);
-                    let point = history_point(&observation);
+                    let raised = if manual_only {
+                        BTreeMap::new()
+                    } else {
+                        alert_conditions(&observation, &entry.limits)
+                    };
+                    let history = binding.history_epoch().map(|epoch| (epoch, history_point(&observation)));
                     let fresh_alerts: Vec<_> = raised
                         .iter()
                         .filter(|(key, _)| !entry.alerting.contains(*key))
@@ -758,9 +854,9 @@ impl SubscriptionQuota {
                         }
                     }
                     drop(state);
-                    service
-                        .history
-                        .record(&worker_key.0, &worker_key.1, &binding.epoch(), point);
+                    if let Some((epoch, point)) = history {
+                        service.history.record(&worker_key.0, &worker_key.1, &epoch, point);
+                    }
                 });
             if spawned.is_err() {
                 state.inflight -= 1;
@@ -827,7 +923,9 @@ impl Drop for SubscriptionQuota {
 }
 impl QuotaSource for GatewayView {
     fn quota_exhausted(&self, provider_id: &str) {
-        if let Some(binding) = self.bindings.get(provider_id) {
+        if let Some(binding) = self.bindings.get(provider_id)
+            && !binding.binding.as_ref().is_some_and(Binding::manual_only)
+        {
             {
                 let mut state = self.service.state.lock().expect("quota state");
                 let Some(entry) = state
@@ -840,25 +938,29 @@ impl QuotaSource for GatewayView {
                     return;
                 };
                 entry.resample = entry.running;
-                let expired = now_ms();
-                entry.expires_at_ms = entry.expires_at_ms.min(expired);
-                for window in &mut entry.windows {
-                    window.expires_at_ms = window.expires_at_ms.min(expired);
-                }
+                entry.expire_observation();
             }
-            let _ = self
-                .service
-                .query_binding(&self.gateway_id, provider_id, true, Some(binding));
+            let _ = self.service.query_binding(
+                &self.gateway_id,
+                provider_id,
+                Refresh::Forced,
+                Some(binding),
+            );
         }
     }
     fn snapshot(&self, provider_id: &str) -> QuotaSnapshot {
         let Some(binding) = self.bindings.get(provider_id) else {
             return QuotaSnapshot::Unknown;
         };
-        let Ok(status) =
-            self.service
-                .query_binding(&self.gateway_id, provider_id, false, Some(binding))
-        else {
+        if binding.binding.as_ref().is_some_and(Binding::manual_only) {
+            return QuotaSnapshot::Unsupported;
+        }
+        let Ok(status) = self.service.query_binding(
+            &self.gateway_id,
+            provider_id,
+            Refresh::IfDue,
+            Some(binding),
+        ) else {
             return QuotaSnapshot::Unknown;
         };
         if binding.binding.as_ref().is_some_and(|b| {
@@ -1031,6 +1133,12 @@ fn collect(
                         parse_windows(&response, ttl_ms)
                     },
                     crate::config::ProviderQuotaSource::ClaudeCliUsage => { let owned=crate::claude_cli::directory(&home,&binding.id); let dir=match &binding.directory { LoginDirectory::Owned=>Some(owned.as_path()), LoginDirectory::Linked(dir)=>dir.as_deref().map(std::path::Path::new) }; let windows=crate::claude_quota::read(binding.binary.as_deref().ok_or(())?,dir,ttl_ms).await?; let observed=windows.first().ok_or(())?.observed_at_ms; let expires=windows.iter().map(|window|window.expires_at_ms).min().ok_or(())?; Ok(observation(windows,None,observed,expires)) },
+                    ProviderQuotaSource::AntigravityCliUsage => {
+                        let windows = binding.antigravity.as_ref().ok_or(())?.quota_windows(ttl_ms).await?;
+                        let observed = windows.first().ok_or(())?.observed_at_ms;
+                        let expires = windows.iter().map(|window| window.expires_at_ms).min().ok_or(())?;
+                        Ok(observation(windows, None, observed, expires))
+                    },
                     crate::config::ProviderQuotaSource::ArkCodingUsage => { let observed=now_ms(); let windows=binding.ark.as_ref().ok_or(())?.windows(observed,ttl_ms).await?; let expires=windows.iter().map(|w|w.expires_at_ms).min().ok_or(())?; Ok(observation(windows,None,observed,expires)) },
                     crate::config::ProviderQuotaSource::ApiAccount => { let observed=now_ms(); let found=binding.account.as_ref().ok_or(())?.observe(observed,ttl_ms).await?; let expires=found.windows.iter().map(|w|w.expires_at_ms).min().unwrap_or(observed+ttl_ms); Ok(Observation { windows: found.windows, balances: found.balances, available: found.available, observed_at_ms: observed, expires_at_ms: expires }) },
                     crate::config::ProviderQuotaSource::None | crate::config::ProviderQuotaSource::KimiUsage => Err(()),
@@ -1145,6 +1253,222 @@ fn collect_kimi(
 #[cfg(test)]
 mod configuration_tests {
     use super::*;
+
+    fn antigravity_fixture(home: &std::path::Path, executable: &str) -> GatewayConfig {
+        use crate::config::{Protocol, ProviderDefinition, RequestProfile};
+        GatewayConfig {
+            id: "synthetic-gateway".into(),
+            name: "Synthetic gateway".into(),
+            providers: vec![ProviderDefinition {
+                id: "agy".into(),
+                name: "Fixture".into(),
+                execution_backend: ExecutionBackend::AntigravityCli {
+                    binary: home.join(executable).to_string_lossy().into_owned(),
+                    ssh_destination: None,
+                },
+                // Exercise the legacy storage shape and its effective source.
+                quota_source: ProviderQuotaSource::None,
+                protocol: Protocol::Messages,
+                request_profile: RequestProfile::Native,
+                endpoint: String::new(),
+                authentication: crate::provider_authentication::ProviderAuthentication {
+                    material: AuthenticationMaterial::AntigravityCli,
+                    generation: 1,
+                },
+                quota_authentication: Default::default(),
+                billing: Default::default(),
+                models: Vec::new(),
+                quota_limits: Vec::new(),
+                codex_client_version: None,
+            }],
+            routes: Vec::new(),
+        }
+    }
+
+    fn wait_for(mut condition: impl FnMut() -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !condition() {
+            assert!(Instant::now() < deadline, "quota worker did not settle");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn antigravity_quota_does_not_sample_until_explicit_refresh() {
+        let home = std::env::temp_dir().join(crate::new_record_key());
+        let gateway = antigravity_fixture(&home, "missing-agy");
+        let service = SubscriptionQuota::new(home.clone(), &[gateway], Default::default());
+        let gateway_id = "synthetic-gateway";
+        let provider_id = "agy";
+        let view = service.source(gateway_id);
+        for force in [false, true] {
+            let quota = service
+                .query(gateway_id, provider_id, force)
+                .unwrap()
+                .observation;
+            assert!(matches!(quota.freshness, QuotaFreshness::Unknown));
+            assert!(!quota.refreshing);
+            assert!(quota.problem.is_none());
+        }
+        assert!(matches!(
+            view.snapshot(provider_id),
+            QuotaSnapshot::Unsupported
+        ));
+        view.quota_exhausted(provider_id);
+        {
+            let mut state = service.state.lock().unwrap();
+            assert_eq!(state.inflight, 0);
+            let entry = state.entries.values_mut().next().unwrap();
+            assert!(entry.demand_until.is_none());
+            let now = now_ms();
+            entry.observed_at_ms = now;
+            entry.expires_at_ms = now + 60_000;
+            entry.windows.push(QuotaWindow {
+                id: "fixture-group".into(),
+                model_ids: Some(Vec::new()),
+                used_percent: 50.0,
+                reset_at_ms: None,
+                window_ms: None,
+                observed_at_ms: now,
+                expires_at_ms: now + 60_000,
+            });
+        }
+        assert!(
+            service
+                .refresh_provider(gateway_id, provider_id)
+                .unwrap()
+                .observation
+                .refreshing
+        );
+        wait_for(|| service.state.lock().unwrap().inflight == 0);
+        let result = service
+            .query(gateway_id, provider_id, false)
+            .unwrap()
+            .observation;
+        assert!(matches!(result.freshness, QuotaFreshness::Stale));
+        assert!(!result.refreshing);
+        assert!(result.problem.unwrap().contains("上次观测仅供参考"));
+        assert_eq!(result.windows.len(), 1);
+        assert!(
+            result.windows[0]
+                .expires_at_ms
+                .is_some_and(|expiry| expiry <= now_ms())
+        );
+        assert!(matches!(
+            view.snapshot(provider_id),
+            QuotaSnapshot::Unsupported
+        ));
+        assert!(!home.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn antigravity_quota_keeps_late_samples_with_their_execution_binding() {
+        use std::{fs, os::unix::fs::PermissionsExt};
+        let home = std::env::temp_dir().join(crate::new_record_key());
+        fs::create_dir(&home).unwrap();
+        let binary = home.join("fixture-agy");
+        fs::write(
+            &binary,
+            r#"#!/bin/sh
+if [ "$1" = --version ]; then
+    printf '1.5.9\n'
+    exit 0
+fi
+[ "$1" = -p ] && [ "$2" = /usage ] || exit 1
+directory="${0%/*}"
+: > "$directory/started"
+while [ -f "$directory/hold" ]; do /bin/sleep 0.02; done
+/bin/cat "$directory/report.json"
+"#,
+        )
+        .unwrap();
+        fs::set_permissions(&binary, fs::Permissions::from_mode(0o700)).unwrap();
+        fs::write(home.join("hold"), b"").unwrap();
+        fs::write(
+            home.join("report.json"),
+            include_str!("../tests/fixtures/antigravity-quota/usage.json"),
+        )
+        .unwrap();
+
+        let gateway = antigravity_fixture(&home, "fixture-agy");
+        let service = SubscriptionQuota::new(home.clone(), &[gateway], Default::default());
+        let gateway_id = "synthetic-gateway";
+        let provider_id = "agy";
+        let view = service.source(gateway_id);
+        assert!(
+            service
+                .refresh_provider(gateway_id, provider_id)
+                .unwrap()
+                .observation
+                .refreshing
+        );
+        wait_for(|| home.join("started").exists());
+        assert!(
+            service
+                .refresh_provider(gateway_id, provider_id)
+                .unwrap()
+                .observation
+                .refreshing
+        );
+        assert_eq!(service.state.lock().unwrap().inflight, 1);
+
+        // An in-flight execution keeps its original binding when the saved
+        // executable is changed. The late observation cannot cross that boundary.
+        let changed = antigravity_fixture(&home, "other-agy");
+        let next = service.fork_configuration(&[changed]);
+        let new = next
+            .query(gateway_id, provider_id, false)
+            .unwrap()
+            .observation;
+        assert!(matches!(new.freshness, QuotaFreshness::Unknown));
+        assert!(!new.refreshing);
+        fs::remove_file(home.join("hold")).unwrap();
+        wait_for(|| service.state.lock().unwrap().inflight == 0);
+
+        let old = service
+            .query(gateway_id, provider_id, false)
+            .unwrap()
+            .observation;
+        assert!(
+            matches!(old.freshness, QuotaFreshness::Fresh),
+            "{:?}",
+            old.problem
+        );
+        assert_eq!(old.windows.len(), 5);
+        assert!(
+            old.windows
+                .iter()
+                .any(|window| window.used_percent == 100.0)
+        );
+        assert!(
+            old.windows
+                .iter()
+                .all(|window| window.model_ids == Some(Vec::new()))
+        );
+        assert!(matches!(
+            view.snapshot(provider_id),
+            QuotaSnapshot::Unsupported
+        ));
+        assert!(service.alerts(0).alerts.is_empty());
+        assert!(
+            service
+                .history(gateway_id, provider_id, 0)
+                .unwrap()
+                .points
+                .is_empty()
+        );
+        assert!(!home.join("quota-history").exists());
+        assert!(
+            next.query(gateway_id, provider_id, true)
+                .unwrap()
+                .observation
+                .windows
+                .is_empty()
+        );
+        assert_eq!(next.state.lock().unwrap().inflight, 0);
+        fs::remove_dir_all(&home).unwrap();
+    }
 
     #[test]
     fn configuration_fork_preserves_quota_and_does_not_cancel_the_running_version() {

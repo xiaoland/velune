@@ -466,6 +466,40 @@ mod antigravity_tests {
             assert!(save(&mut gateways.clone(), remote("invalid", invalid)).is_err());
         }
     }
+
+    #[test]
+    fn antigravity_quota_source_is_fixed_and_legacy_none_remains_readable() {
+        let mut gateways = Vec::new();
+        let mut provider = draft("agy", "fixture-agy");
+        assert_eq!(
+            provider.quota_source,
+            ProviderQuotaSource::AntigravityCliUsage
+        );
+        provider.quota_source = ProviderQuotaSource::None;
+        save(&mut gateways, provider.clone()).unwrap();
+        let saved = serde_json::to_value(&gateways[0]).unwrap();
+        assert_eq!(saved["providers"][0]["quotaSource"], "none");
+        let loaded: GatewayConfig = serde_json::from_value(saved).unwrap();
+        loaded.validate().unwrap();
+        assert_eq!(
+            GatewaySummary::from(&loaded).providers[0].quota_source,
+            ProviderQuotaSource::AntigravityCliUsage,
+        );
+
+        let mut limited = provider.clone();
+        limited.quota_source = ProviderQuotaSource::AntigravityCliUsage;
+        limited.quota_limits.push(QuotaLimit {
+            window_id: "fixture".into(),
+            max_used_percent: 95,
+        });
+        assert!(save(&mut gateways.clone(), limited).is_err());
+
+        provider.execution_backend = ExecutionBackend::Http;
+        provider.endpoint = "https://quota-fixture.invalid".into();
+        provider.authentication_source = ProviderAuthenticationSource::ApiKey;
+        provider.quota_source = ProviderQuotaSource::AntigravityCliUsage;
+        assert!(save(&mut gateways, provider).is_err());
+    }
 }
 
 impl From<&GatewayConfig> for GatewaySummary {
@@ -484,7 +518,7 @@ impl From<&GatewayConfig> for GatewaySummary {
                     execution_backend: p.execution_backend.clone(),
                     request_profile: p.request_profile,
                     authentication_source: p.authentication.source(),
-                    quota_source: p.quota_source,
+                    quota_source: p.effective_quota_source(),
                     quota_authentication: p
                         .quota_authentication
                         .description(p.authentication.generation),

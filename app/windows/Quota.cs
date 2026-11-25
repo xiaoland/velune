@@ -25,6 +25,16 @@ static class Quota
         };
     }
 
+    public static string AntigravityName(string id) => id switch
+    {
+        "gemini-5h" => "Gemini · 5 小时",
+        "gemini-weekly" => "Gemini · 每周",
+        "3p-5h" => "第三方模型 · 5 小时",
+        "3p-weekly" => "第三方模型 · 每周",
+        "gemini-argon-wtu-weekly" => "Gemini Argon WTU · 每周",
+        _ => id,
+    };
+
     // Detail is a window's use as the usage display shows it, its limit when
     // one is set, when it resets, and whether the observation is old.
     public static string Detail(QuotaWindowObservation window, QuotaFreshness freshness, UsageDisplay usage, QuotaLimit? limit = null)
@@ -92,5 +102,5 @@ static class Quota
     // Applies tells whether a window counts for a model ID: a window scoped
     // to models names it, the others cover every model.
     public static bool Applies(QuotaWindowObservation window, string modelID) =>
-        window.ModelIds is not { Length: > 0 } scoped || scoped.Contains(modelID);
+        window.ModelIds?.Contains(modelID) ?? true;
 }

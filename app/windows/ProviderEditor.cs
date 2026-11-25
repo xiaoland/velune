@@ -195,7 +195,11 @@ sealed partial class ProviderEditor : UserControl
         {
             binary.Text = found[0];
         }
-        binary.TextChanged += (_, _) => Changed();
+        binary.TextChanged += (_, _) =>
+        {
+            Changed();
+            if (UsesAntigravity) StartQuota();
+        };
         var choose = new MenuFlyout();
         foreach (var path in found)
         {
@@ -285,9 +289,15 @@ sealed partial class ProviderEditor : UserControl
                 : [];
             var update = await Task.Run(() => page.Core.Local.SaveProvider(ProvidersPage.DefaultGateway, draft, authentication, quotaEdit));
             var saved = page.SetGateway(update.Gateways);
+            var previousBackend = existing?.ExecutionBackend;
             existing = existing == null
                 ? saved.FirstOrDefault(provider => !previous.Contains(provider.Id))
                 : saved.FirstOrDefault(provider => provider.Id == existing.Id);
+            if (UsesAntigravity && previousBackend != existing?.ExecutionBackend)
+            {
+                lastQuota = null;
+                ClearQuotaWindows();
+            }
             dirty = false;
             Refresh();
             return existing != null;

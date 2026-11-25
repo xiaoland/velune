@@ -216,6 +216,16 @@ extension QuotaWindowObservation {
         if seconds % 3_600 == 0 { return "\(seconds / 3_600) 小时" }
         return "\(max(1, seconds / 60)) 分钟"
     }
+    static func antigravityName(_ id: String) -> String {
+        switch id {
+        case "gemini-5h": "Gemini · 5 小时"
+        case "gemini-weekly": "Gemini · 每周"
+        case "3p-5h": "第三方模型 · 5 小时"
+        case "3p-weekly": "第三方模型 · 每周"
+        case "gemini-argon-wtu-weekly": "Gemini Argon WTU · 每周"
+        default: id
+        }
+    }
 }
 
 /// The observed use against spending the window evenly; the rate is the

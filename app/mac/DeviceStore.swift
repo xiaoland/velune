@@ -146,7 +146,21 @@ final class DeviceStore: ObservableObject {
     @Published private(set) var stoppingConversationIDs: Set<String> = []
     /// Conversations running elsewhere that the list did not contain when last read again.
     private var unlistedElsewhereIDs: Set<String> = []
-    @Published private(set) var gateway = GatewaySummary(id: "default", name: "默认网关", providers: [], routes: []) { didSet { if oldValue != gateway { configurationRevision &+= 1; invalidateProviderReports() } } }
+    @Published private(set) var gateway = GatewaySummary(id: "default", name: "默认网关", providers: [], routes: []) {
+        didSet {
+            guard oldValue != gateway else { return }
+            for previous in oldValue.providers {
+                let current = providers.first { $0.id == previous.id }
+                if previous.authenticationSource == .antigravityCli || current?.authenticationSource == .antigravityCli,
+                   oldValue.id != gateway.id || current?.executionBackend != previous.executionBackend {
+                    providerQuotas[previous.id] = nil
+                    quotaReadsPending[previous.id] = nil
+                }
+            }
+            configurationRevision &+= 1
+            invalidateProviderReports()
+        }
+    }
     @Published private(set) var runtimeInstances: [RuntimeInstance] = [] {
         didSet {
             if oldValue != runtimeInstances {
@@ -177,7 +191,7 @@ final class DeviceStore: ObservableObject {
     @Published var showsAuthentication = false
     /// The core's quota observations by provider ID, as last read.
     @Published private(set) var providerQuotas: [String: QuotaObservation] = [:]
-    private var quotaReadsPending: Set<String> = []
+    private var quotaReadsPending: [String: (token: UUID, refreshing: Bool)] = [:]
     /// What a new provider starts from; a static catalog in the core.
     private(set) lazy var providerTemplates: [ProviderTemplate] = (try? VeluneBindings.providerTemplates()) ?? []
     @Published private(set) var isLoading = false
@@ -880,21 +894,26 @@ final class DeviceStore: ObservableObject {
             self?.applyGatewayUpdate(data); onSaved?()
         }
     }
-    /// Reads the providers' quota without holding up other work. Reading
-    /// samples a provider whose observation has expired; `refresh` asks for a
-    /// sample now. Either returns at once, so callers read again while
-    /// `refreshing` holds.
+    /// Reads cached quota, which can sample expired automatic sources.
+    /// `refresh` explicitly requests a sample. Callers read again while it is running.
     func readProviderQuotas(_ providerIDs: [String], refresh: Bool = false) {
-        let ids = providerIDs.filter { !quotaReadsPending.contains($0) }
+        let ids = providerIDs.filter { id in
+            guard let pending = quotaReadsPending[id] else { return true }
+            return refresh && !pending.refreshing
+        }
         guard !ids.isEmpty, !isPreview, !isShuttingDown, let transport else { return }
-        quotaReadsPending.formUnion(ids)
+        let token = UUID()
+        for id in ids { quotaReadsPending[id] = (token, refresh) }
         let gatewayID = gateway.id
         performOnQueue { [weak self] in
             let results = ids.map { id in (id, Result { try transport.providerQuota(gatewayID: gatewayID, providerID: id, refresh: refresh) }) }
             DispatchQueue.main.async {
                 guard let self else { return }
-                self.quotaReadsPending.subtract(ids)
                 for (id, result) in results {
+                    // Target changes invalidate the pending request as well as its cached value.
+                    guard self.quotaReadsPending[id]?.token == token else { continue }
+                    self.quotaReadsPending[id] = nil
+                    guard self.gateway.id == gatewayID else { continue }
                     switch result {
                     case .success(let quota): self.providerQuotas[id] = quota; self.clearActivityProblem("quota:\(id)")
                     case .failure(let failure):
@@ -1057,7 +1076,11 @@ final class DeviceStore: ObservableObject {
         guard !isPreview else { recordProblem("预览不会检查登录"); return }
         guard let transport else { recordProblem("本地核心未配置"); return }
         enqueue({ _ = try transport.authenticationInspect(gatewayID: self.gateway.id, providerID: providerID); return try transport.list() }) { [weak self] in
-            self?.applyList($0); self?.readProviderQuotas([providerID], refresh: true)
+            guard let self else { return }
+            self.applyList($0)
+            if let provider = self.providers.first(where: { $0.id == providerID }), provider.authenticationSource != .antigravityCli {
+                self.readProviderQuotas([providerID], refresh: true)
+            }
         }
     }
     /// Signs the provider's source out, e.g. Claude Code CLI's own login.

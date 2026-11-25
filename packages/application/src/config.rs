@@ -454,6 +454,19 @@ impl ProjectRecord {
     }
 }
 impl ProviderDefinition {
+    pub(crate) fn effective_quota_source(&self) -> ProviderQuotaSource {
+        if self.quota_source == ProviderQuotaSource::None
+            && matches!(
+                self.execution_backend,
+                ExecutionBackend::AntigravityCli { .. }
+            )
+        {
+            // Legacy Antigravity settings predate the manual quota command.
+            return ProviderQuotaSource::AntigravityCliUsage;
+        }
+        self.quota_source
+    }
+
     pub(crate) fn credential_reference(&self) -> String {
         if let ExecutionBackend::AntigravityCli {
             binary,
@@ -609,11 +622,14 @@ impl ProviderDefinition {
                     || self.protocol != Protocol::Messages
                     || self.request_profile != RequestProfile::Native
                     || !self.endpoint.is_empty()
-                    || self.quota_source != ProviderQuotaSource::None
+                    || !matches!(
+                        self.quota_source,
+                        ProviderQuotaSource::None | ProviderQuotaSource::AntigravityCliUsage
+                    )
                     || !self.quota_limits.is_empty()
                 {
                     return Err(
-                        "Antigravity CLI 需要 Messages、Native 和 CLI 登录绑定，服务地址与额度配置留空",
+                        "Antigravity CLI 需要 Messages、Native 和 CLI 登录绑定，只支持其自带额度查询，服务地址与额度上限留空",
                     );
                 }
             }
@@ -624,6 +640,9 @@ impl ProviderDefinition {
             }
             ProviderQuotaSource::ClaudeCliUsage if source != Auth::ClaudeCli => {
                 Err("Claude CLI 额度来源需要 Claude CLI 认证")
+            }
+            ProviderQuotaSource::AntigravityCliUsage if source != Auth::AntigravityCli => {
+                Err("Antigravity CLI 额度只支持 Antigravity 订阅")
             }
             _ => Ok(()),
         }

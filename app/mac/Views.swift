@@ -973,9 +973,13 @@ struct ProviderEditor: View {
     private var codexVersionPrompt: String {
         store.transport?.isRemote == true ? "自动（留空）" : "自动（\(defaultCodexClientVersion())）"
     }
-    private var showsQuota: Bool { !usesAntigravityCLI && (usesSubscription || composition.quotaSource != .none || !quotaLimits.isEmpty || (providerID.flatMap { store.providerQuotas[$0] }.map { $0.freshness != .unsupported } ?? false)) }
+    private var showsQuota: Bool { usesSubscription || composition.quotaSource != .none || !quotaLimits.isEmpty || (providerID.flatMap { store.providerQuotas[$0] }.map { $0.freshness != .unsupported } ?? false) }
     private var modelIndex: Int? { guard case .model(let id) = selection else { return nil }; return models.firstIndex { $0.id == id } }
     private var cliBinary: String? { composition.cliBinary?.trimmingCharacters(in: .whitespacesAndNewlines) }
+    private var antigravityTarget: ExecutionBackend? {
+        guard usesAntigravityCLI, let cliBinary else { return nil }
+        return .antigravityCli(binary: cliBinary, sshDestination: sshDestination)
+    }
     private var validCLI: Bool {
         guard let cliBinary else { return true }
         guard usesAntigravityCLI else { return (cliBinary as NSString).isAbsolutePath }
@@ -1000,7 +1004,7 @@ struct ProviderEditor: View {
                 VStack(spacing: 0) {
                     List(selection: $selection) {
                         Label("连接与认证", systemImage: "network").tag(ProviderEditorSelection.connection)
-                        if showsQuota { Label("额度与使用上限", systemImage: "gauge.with.dots.needle.50percent").tag(ProviderEditorSelection.quota) }
+                        if showsQuota { Label(usesAntigravityCLI ? "额度" : "额度与使用上限", systemImage: "gauge.with.dots.needle.50percent").tag(ProviderEditorSelection.quota) }
                         Section("模型") {
                             ForEach(models) { model in VStack(alignment: .leading, spacing: 3) { Text(model.displayName).lineLimit(1); if !model.providerModelID.isEmpty { Text(model.providerModelID).uiFont(.caption).foregroundStyle(.secondary).lineLimit(1) } }.tag(ProviderEditorSelection.model(model.id)) }
                         }
@@ -1031,7 +1035,7 @@ struct ProviderEditor: View {
                             Section { Button("保存为模型模板…") { let model = models[index].definition; templateDraft = ModelTemplate(id: "", name: model.displayName, suggestedProviderModelId: model.providerModelId, nickname: model.nickname, icon: model.icon, contextWindow: model.contextWindow, maxOutputTokens: model.maxOutputTokens, reasoningLevels: model.reasoningLevels) }.disabled(!models[index].valid) }
                         }
                     } else if selection == .quota && showsQuota {
-                        ProviderQuotaForm(store: store, providerID: providerID, limits: $quotaLimits)
+                        ProviderQuotaForm(store: store, providerID: providerID, limits: $quotaLimits, antigravityTarget: antigravityTarget)
                     } else { connectionForm }
                 }.formStyle(.grouped).frame(minWidth: 360, maxWidth: .infinity, maxHeight: .infinity)
             }
@@ -1076,6 +1080,7 @@ struct ProviderEditor: View {
         case .apiAccount: "官方 API 账户额度"
         case .codexUsage: "Codex 订阅额度"
         case .claudeCliUsage: "Claude Code 订阅额度"
+        case .antigravityCliUsage: "Antigravity 订阅额度"
         }
     }
     private var cliBinaryField: some View {

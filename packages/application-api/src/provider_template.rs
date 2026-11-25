@@ -85,7 +85,7 @@ pub fn provider_templates() -> Vec<ProviderTemplate> {
             },
             request_profile: RequestProfile::Native,
             authentication_source: ProviderAuthenticationSource::AntigravityCli,
-            quota_source: ProviderQuotaSource::None,
+            quota_source: ProviderQuotaSource::AntigravityCliUsage,
             executable_command: Some("agy".into()),
             disclosure: SubscriptionDisclosure::for_source(
                 ProviderAuthenticationSource::AntigravityCli,
@@ -241,6 +241,9 @@ pub fn provider_quota_sources(
         (ExecutionBackend::Http, Auth::CodexOAuth) => vec![Quota::None, Quota::CodexUsage],
         (ExecutionBackend::ClaudeCli { .. }, Auth::ClaudeCli) => {
             vec![Quota::None, Quota::ClaudeCliUsage]
+        }
+        (ExecutionBackend::AntigravityCli { .. }, Auth::AntigravityCli) => {
+            vec![Quota::AntigravityCliUsage]
         }
         _ => vec![Quota::None],
     }

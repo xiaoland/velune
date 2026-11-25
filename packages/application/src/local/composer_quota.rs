@@ -31,6 +31,11 @@ impl CoreRuntime {
                         .resolve_dispatch(&key)
                         .map_err(|_| RuntimeError::invalid("所选模型已不存在"))?;
                     let provider = resolved.provider();
+                    // This command is model-scoped. Antigravity reports groups
+                    // whose model IDs are unknown and uses a provider-only refresh.
+                    if provider.effective_quota_source() == ProviderQuotaSource::AntigravityCliUsage {
+                        continue;
+                    }
                     let authentication = provider.authentication.description();
                     let reports_credits = matches!(
                         provider.authentication.material,

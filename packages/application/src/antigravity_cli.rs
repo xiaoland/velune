@@ -1,7 +1,10 @@
 //! Binds a gateway provider to an official agy process on one execution target.
+use crate::{antigravity_quota, credential_helper::execute_prepared_timeout};
 use std::{
     fs,
     path::{Path, PathBuf},
+    process::Command,
+    time::Duration,
 };
 use velune_agent_runtime::{
     execution::{ExecutionTarget, LoopbackTunnel, SshTarget},
@@ -9,16 +12,19 @@ use velune_agent_runtime::{
 };
 use velune_ai::{NativeErrorKind, OperationFuture};
 use velune_ai_provider::antigravity::{Launch, Process};
+use velune_gateway::QuotaWindow;
 
 // Do not let an inherited Gemini key or Cloud configuration take precedence
 // over the CLI's own login. The CLI inherits its OS login environment.
 const REMOVED_ENVIRONMENT: &[&str] = &[
     "AGY_ADC_AUTH",
+    "CLOUD_CODE_URL",
     "GEMINI_API_KEY",
     "GOOGLE_API_KEY",
     "GOOGLE_APPLICATION_CREDENTIALS",
     "GOOGLE_CLOUD_LOCATION",
     "GOOGLE_CLOUD_PROJECT",
+    "GOOGLE_CLOUD_QUOTA_PROJECT",
     "GOOGLE_GEMINI_BASE_URL",
     "GOOGLE_GENAI_USE_VERTEXAI",
     "GOOGLE_OAUTH_ACCESS_TOKEN",
@@ -26,7 +32,7 @@ const REMOVED_ENVIRONMENT: &[&str] = &[
 
 // Only the request's MCP server may authorize tools. Explicit command, file
 // and web denies are independent of the CLI's sandbox availability.
-const SETTINGS: &str = r#"{
+const ACP_SETTINGS: &str = r#"{
   "agentMode": "",
   "toolPermission": "request-review",
   "permissions": {
@@ -34,6 +40,19 @@ const SETTINGS: &str = r#"{
     "deny": ["command(*)", "read_file(*)", "write_file(*)", "read_url(*)", "execute_url(*)"]
   }
 }"#;
+
+const USAGE_SETTINGS: &str = r#"{
+  "agentMode": "",
+  "disableSlashCommands": false,
+  "toolPermission": "request-review",
+  "permissions": {
+    "deny": ["command(*)", "read_file(*)", "write_file(*)", "read_url(*)", "execute_url(*)", "mcp(*)"]
+  }
+}"#;
+const USAGE_AGENT: &str = "velune-usage";
+const VERSION_TIMEOUT: Duration = Duration::from_secs(5);
+const USAGE_TIMEOUT: Duration = Duration::from_secs(15);
+const SETTINGS_PATH: &str = ".gemini/antigravity-cli/settings.json";
 
 pub(crate) const SSH_UNSUPPORTED: &str = "Windows 上的 Antigravity 订阅只支持本机执行";
 
@@ -66,7 +85,7 @@ pub(crate) fn validate_target(binary: &str, destination: Option<&str>) -> Result
     Ok(())
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 pub(crate) struct Launcher {
     binary: String,
     destination: Option<String>,
@@ -80,43 +99,40 @@ impl Launcher {
         }
     }
 
-    fn prepare_process(self, loopback_mcp: &str) -> Result<Process, NativeErrorKind> {
+    fn target(&self) -> Result<ExecutionTarget, NativeErrorKind> {
         validate_target(&self.binary, self.destination.as_deref())
             .map_err(|_| NativeErrorKind::InvalidInput)?;
         if cfg!(windows) && self.destination.is_some() {
             return Err(NativeErrorKind::Unsupported);
         }
-        let target = match self.destination {
+        Ok(match &self.destination {
             Some(destination) => ExecutionTarget::Ssh(SshTarget {
                 binary: ssh_binary().ok_or(NativeErrorKind::Transport)?,
-                destination,
+                destination: destination.clone(),
                 port: None,
             }),
             None => ExecutionTarget::Local,
-        };
+        })
+    }
+
+    fn prepare_process(self, loopback_mcp: &str) -> Result<Process, NativeErrorKind> {
+        let target = self.target()?;
         let mut workspace =
-            Workspace::create(target.clone()).map_err(|_| NativeErrorKind::Transport)?;
+            Workspace::create(target.clone(), &[(SETTINGS_PATH, ACP_SETTINGS, 0o600)])
+                .map_err(|_| NativeErrorKind::Transport)?;
         let cwd = workspace
             .path
             .to_str()
             .ok_or(NativeErrorKind::InvalidInput)?
             .to_owned();
         let mut child = command(&self.binary);
-        child
-            .current_dir(&workspace.path)
-            .args([
-                "acp",
-                "--process-per-session",
-                "--sandbox",
-                "--disable-telemetry",
-                "--gemini-dir",
-            ])
-            .arg(workspace.path.join(".gemini"))
-            .arg("--log-file")
-            .arg(workspace.path.join("acp.log"));
-        for name in REMOVED_ENVIRONMENT {
-            child.env_remove(name);
-        }
+        child.args([
+            "acp",
+            "--process-per-session",
+            "--sandbox",
+            "--disable-telemetry",
+        ]);
+        configure(&mut child, &workspace.path, "acp.log");
         let prepared = target
             .prepare(child, None)
             .map_err(|_| NativeErrorKind::Transport)?;
@@ -132,6 +148,75 @@ impl Launcher {
             guard: Some(Box::new(workspace)),
         })
     }
+    pub(crate) async fn quota_windows(&self, ttl_ms: i64) -> Result<Vec<QuotaWindow>, ()> {
+        let target = self.target().map_err(|_| ())?;
+        let workspace = tokio::task::spawn_blocking(move || Workspace::create(target, QUOTA_FILES))
+            .await
+            .map_err(|_| ())??;
+        let version = self.quota_command(&workspace, &["--version"])?;
+        let version = execute_prepared_timeout(version, VERSION_TIMEOUT)
+            .await
+            .map_err(|_| ())?;
+        if !antigravity_quota::supported_version(&version) {
+            return Err(());
+        }
+
+        let usage = self.quota_command(
+            &workspace,
+            &[
+                "-p",
+                "/usage",
+                "--output-format",
+                "json",
+                "--agent",
+                USAGE_AGENT,
+                "--print-timeout",
+                "12s",
+            ],
+        )?;
+        let output = execute_prepared_timeout(usage, USAGE_TIMEOUT)
+            .await
+            .map_err(|_| ())?;
+        antigravity_quota::parse(&output, crate::local::unix_ms_now(), ttl_ms)
+    }
+
+    fn quota_command(
+        &self,
+        workspace: &Workspace,
+        args: &[&str],
+    ) -> Result<velune_agent_runtime::execution::PreparedCommand, ()> {
+        let mut child = if workspace.target.is_local() {
+            let inherited = std::env::var_os("PATH").unwrap_or_default();
+            let path = std::env::join_paths(
+                std::iter::once(workspace.path.clone()).chain(std::env::split_paths(&inherited)),
+            )
+            .map_err(|_| ())?;
+            let mut child = command(&self.binary);
+            child.env("PATH", path);
+            child
+        } else {
+            // Preserve the target login's PATH. The argument list goes through
+            // the existing SSH bootstrap, and Python replaces itself with agy.
+            let mut child = command("python3");
+            child
+                .args([
+                    "-c",
+                    r#"
+import os, sys
+os.environ["PATH"] = os.getcwd() + os.pathsep + os.environ.get("PATH", os.defpath)
+os.execv(sys.argv[1], sys.argv[1:])
+"#,
+                ])
+                .arg(&self.binary);
+            child
+        };
+        child.args(args);
+        configure(&mut child, &workspace.path, "usage.log");
+        child
+            .env("AGY_CLI_DISABLE_AUTO_UPDATE", "true")
+            .env("BROWSER", workspace.path.join(BROWSER_GUARD));
+        workspace.target.prepare_helper(child).map_err(|_| ())
+    }
 }
 
 impl Launch for Launcher {
@@ -144,6 +229,38 @@ impl Launch for Launcher {
         })
     }
 }
+
+fn configure(child: &mut Command, cwd: &Path, log_name: &str) {
+    child
+        .current_dir(cwd)
+        .arg("--gemini-dir")
+        .arg(cwd.join(".gemini"))
+        .arg("--log-file")
+        .arg(cwd.join(log_name));
+    for name in REMOVED_ENVIRONMENT {
+        child.env_remove(name);
+    }
+}
+
+#[cfg(unix)]
+const BROWSER_GUARD: &str = "open";
+#[cfg(windows)]
+const BROWSER_GUARD: &str = "open.cmd";
+
+const QUOTA_FILES: &[(&str, &str, u32)] = &[
+    (SETTINGS_PATH, USAGE_SETTINGS, 0o600),
+    (
+        ".agents/agents/velune-usage/agent.md",
+        "---\nname: velune-usage\ndescription: Read CLI quota\nmainAgent: true\nsubagent: false\ntools: []\nmcpServers: []\n---\nRead the CLI quota report only.\n",
+        0o600,
+    ),
+    #[cfg(unix)]
+    (BROWSER_GUARD, "#!/bin/sh\nexit 1\n", 0o700),
+    #[cfg(unix)]
+    ("xdg-open", "#!/bin/sh\nexit 1\n", 0o700),
+    #[cfg(windows)]
+    (BROWSER_GUARD, "@exit /b 1\r\n", 0o600),
+];
 
 fn ssh_binary() -> Option<PathBuf> {
     std::iter::once(PathBuf::from("/usr/bin/ssh"))
@@ -163,7 +280,7 @@ struct Workspace {
 }
 
 impl Workspace {
-    fn create(target: ExecutionTarget) -> Result<Self, ()> {
+    fn create(target: ExecutionTarget, files: &[(&str, &str, u32)]) -> Result<Self, ()> {
         let mut bytes = [0_u8; 16];
         getrandom::fill(&mut bytes).map_err(|_| ())?;
         let nonce = u128::from_ne_bytes(bytes);
@@ -173,7 +290,10 @@ impl Workspace {
             #[cfg(unix)]
             {
                 use std::os::unix::fs::DirBuilderExt;
-                fs::DirBuilder::new().mode(0o700).create(&path).map_err(|_| ())?;
+                fs::DirBuilder::new()
+                    .mode(0o700)
+                    .create(&path)
+                    .map_err(|_| ())?;
             }
             #[cfg(not(unix))]
             fs::create_dir(&path).map_err(|_| ())?;
@@ -182,9 +302,24 @@ impl Workspace {
                 path,
                 tunnel: None,
             };
-            let settings = workspace.path.join(".gemini").join("antigravity-cli");
-            fs::create_dir_all(&settings).map_err(|_| ())?;
-            fs::write(settings.join("settings.json"), SETTINGS).map_err(|_| ())?;
+            for (relative, content, mode) in files {
+                use std::io::Write;
+                let path = workspace.path.join(relative);
+                fs::create_dir_all(path.parent().ok_or(())?).map_err(|_| ())?;
+                let mut options = fs::OpenOptions::new();
+                options.write(true).create_new(true);
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::OpenOptionsExt;
+                    options.mode(*mode);
+                }
+                #[cfg(not(unix))]
+                let _ = mode;
+                options
+                    .open(path)
+                    .and_then(|mut file| file.write_all(content.as_bytes()))
+                    .map_err(|_| ())?;
+            }
             return Ok(workspace);
         }
 
@@ -194,21 +329,23 @@ impl Workspace {
             .args([
                 "-c",
                 r#"
-import os, shutil, sys
+import json, os, shutil, sys
 path = sys.argv[1]
 os.mkdir(path, 0o700)
 try:
-    settings = os.path.join(path, ".gemini", "antigravity-cli")
-    os.makedirs(settings, mode=0o700)
-    with open(os.path.join(settings, "settings.json"), "x", encoding="utf-8") as file:
-        file.write(sys.argv[2])
+    for relative, content, mode in json.loads(sys.argv[2]):
+        file_path = os.path.join(path, relative)
+        os.makedirs(os.path.dirname(file_path), exist_ok=True)
+        fd = os.open(file_path, os.O_CREAT | os.O_WRONLY | os.O_EXCL, mode)
+        with os.fdopen(fd, "w", encoding="utf-8") as file:
+            file.write(content)
 except BaseException:
     shutil.rmtree(path, ignore_errors=True)
     raise
 "#,
             ])
             .arg(&path)
-            .arg(SETTINGS);
+            .arg(serde_json::to_string(files).map_err(|_| ())?);
         target.output(mkdir, None, None).map_err(|_| ())?;
         Ok(Self {
             target,
@@ -239,6 +376,53 @@ impl Drop for Workspace {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn quota_checks_exact_cli_then_runs_only_the_isolated_usage_command() {
+        const SCRIPT: &str = include_str!("../tests/fixtures/antigravity-quota/fake-agy.sh");
+        const REPORT: &str = include_str!("../tests/fixtures/antigravity-quota/usage.json");
+        let fixture = Workspace::create(
+            ExecutionTarget::Local,
+            &[
+                ("agy", SCRIPT, 0o700),
+                ("version", "1.5.9\n", 0o600),
+                ("report", REPORT, 0o600),
+            ],
+        )
+        .unwrap();
+        let launcher = Launcher::new(fixture.path.join("agy").to_str().unwrap().to_owned(), None);
+        let windows = launcher.quota_windows(60_000).await.unwrap();
+        assert_eq!(windows.len(), 5);
+        assert_eq!(
+            fs::read_to_string(fixture.path.join("calls")).unwrap(),
+            "--version\n-p\n"
+        );
+        let runs = fs::read_to_string(fixture.path.join("workspaces")).unwrap();
+        let mut paths = runs.lines();
+        let cwd = paths.next().unwrap();
+        assert_eq!(paths.next(), Some(cwd));
+        assert_ne!(Path::new(cwd), fixture.path);
+        assert!(!Path::new(cwd).exists());
+
+        let calls_path = fixture.path.join("calls");
+        for version in ["1.1.10", "1.5.9-beta", "agy 1.5.9", "1.5", "invalid"] {
+            fs::write(fixture.path.join("version"), version).unwrap();
+            fs::write(&calls_path, "").unwrap();
+            assert!(launcher.quota_windows(60_000).await.is_err());
+            assert_eq!(fs::read_to_string(&calls_path).unwrap(), "--version\n");
+        }
+        fs::write(fixture.path.join("version"), "1.1.11").unwrap();
+        fs::write(&calls_path, "").unwrap();
+        // A valid prefix alone is insufficient when the complete payload is oversized.
+        fs::write(
+            fixture.path.join("report"),
+            format!("{REPORT}{}", " ".repeat(70_000)),
+        )
+        .unwrap();
+        assert!(launcher.quota_windows(60_000).await.is_err());
+        assert_eq!(fs::read_to_string(&calls_path).unwrap(), "--version\n-p\n");
+    }
 
     #[test]
     fn antigravity_plans_a_private_cli_process_without_accessing_login() {

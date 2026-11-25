@@ -1,6 +1,10 @@
 //! Bounded platform-helper execution. Source contents and helper output never enter logs.
 use std::{process::Stdio, time::Duration};
-use tokio::{io::AsyncReadExt, process::Command};
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    process::Command,
+};
+use velune_agent_runtime::execution::PreparedCommand;
 
 const OUTPUT_LIMIT: u64 = 64 * 1024;
 const RESOLVE_TIMEOUT: Duration = Duration::from_secs(30);
@@ -18,12 +22,31 @@ pub(super) async fn execute(command: Command) -> Result<String, CredentialError>
 }
 
 pub(super) async fn execute_timeout(
+    command: Command,
+    timeout: Duration,
+) -> Result<String, CredentialError> {
+    execute_with_prefix(command, Vec::new(), timeout).await
+}
+
+pub(super) async fn execute_prepared_timeout(
+    prepared: PreparedCommand,
+    timeout: Duration,
+) -> Result<String, CredentialError> {
+    execute_with_prefix(prepared.command.into(), prepared.input_prefix, timeout).await
+}
+
+async fn execute_with_prefix(
     mut command: Command,
+    input_prefix: Vec<u8>,
     timeout: Duration,
 ) -> Result<String, CredentialError> {
     tree::prepare(&mut command);
     let mut child = command
-        .stdin(Stdio::null())
+        .stdin(if input_prefix.is_empty() {
+            Stdio::null()
+        } else {
+            Stdio::piped()
+        })
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .kill_on_drop(true)
@@ -42,15 +65,33 @@ pub(super) async fn execute_timeout(
         .take()
         .ok_or(CredentialError::Unavailable)?
         .take(OUTPUT_LIMIT + 1);
+    let mut stdin = child.stdin.take();
     let operation = async {
-        let mut bytes = Vec::new();
-        stdout
-            .read_to_end(&mut bytes)
-            .await
-            .map_err(|_| CredentialError::InvalidOutput)?;
-        if bytes.len() as u64 > OUTPUT_LIMIT {
-            return Err(CredentialError::InvalidOutput);
-        }
+        let send = async {
+            if let Some(mut stdin) = stdin.take() {
+                stdin
+                    .write_all(&input_prefix)
+                    .await
+                    .map_err(|_| CredentialError::Unavailable)?;
+                stdin
+                    .shutdown()
+                    .await
+                    .map_err(|_| CredentialError::Unavailable)?;
+            }
+            Ok(())
+        };
+        let read = async {
+            let mut bytes = Vec::new();
+            stdout
+                .read_to_end(&mut bytes)
+                .await
+                .map_err(|_| CredentialError::InvalidOutput)?;
+            if bytes.len() as u64 > OUTPUT_LIMIT {
+                return Err(CredentialError::InvalidOutput);
+            }
+            Ok(bytes)
+        };
+        let ((), bytes) = tokio::try_join!(send, read)?;
         let status = tree
             .wait(&mut child)
             .await

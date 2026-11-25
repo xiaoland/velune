@@ -31,7 +31,7 @@ struct QuotaWindowRow: View {
         if let limit { parts.append(UsageFormat.ceiling(limit, display, reached: reached)) }
         parts.append(QuotaResetFormat.text(window.resetsAt))
         if runsShort, let empty = window.pace?.runsOutAt { parts.append("按目前的平均速度约\(empty.formatted(.relative(presentation: .named)))用尽") }
-        if showsModels, let models = window.modelIds { parts.append("仅 " + models.joined(separator: "、")) }
+        if showsModels, let models = window.modelIds, !models.isEmpty { parts.append("仅 " + models.joined(separator: "、")) }
         return parts.joined(separator: "，")
     }
 }
@@ -69,19 +69,27 @@ enum UsageFormat {
 struct QuotaStatusText: View {
     static let limitedObservation = "额度观测显示受限；额外额度尚未完整查询，实际可用性以服务商响应为准。"
     let quota: QuotaObservation?
+    var manualRefresh = false
     var body: some View {
-        Text(Self.summary(quota)).uiFont(.caption).foregroundStyle(.secondary)
+        Text(Self.summary(quota, manualRefresh: manualRefresh)).uiFont(.caption).foregroundStyle(.secondary)
     }
-    static func summary(_ quota: QuotaObservation?) -> String {
-        guard let quota else { return "正在读取额度…" }
+    static func summary(_ quota: QuotaObservation?, manualRefresh: Bool = false) -> String {
+        let initial = manualRefresh ? "点击“刷新”查询额度。" : "尚未取得额度"
+        guard let quota else { return manualRefresh ? initial : "正在读取额度…" }
+        if manualRefresh {
+            if quota.refreshing { return "正在刷新额度…" }
+            if let problem = quota.problem {
+                return problem + (quota.freshness == .stale ? " 上次观测已过期。" : "")
+            }
+        }
         if quota.refreshing && quota.freshness != .fresh { return "正在读取额度…" }
         let observed = quota.observedAt.map { $0.formatted(.relative(presentation: .named)) }
         switch quota.freshness {
         case .fresh:
             if quota.windows.isEmpty && quota.balances.isEmpty { return "提供商未报告额度上限或余额" }
             return observed.map { "额度于\($0)更新" } ?? "额度已更新"
-        case .stale: return "额度已过期" + (observed.map { "（\($0)观测）" } ?? "") + "，再次使用或刷新时更新"
-        case .unknown: return quota.problem ?? "尚未取得额度"
+        case .stale: return "额度已过期" + (observed.map { "（\($0)观测）" } ?? "") + (manualRefresh ? "，请手动刷新" : "，再次使用或刷新时更新")
+        case .unknown: return quota.problem ?? initial
         case .unsupported: return quota.problem ?? "此来源不报告额度"
         }
     }
@@ -122,19 +130,29 @@ extension View {
     }
 }
 
-/// The provider editor's quota pane: the latest observation and the
-/// used-percent ceiling of each window, which every route and direct use of
-/// the provider is held to.
+/// The provider editor's latest observation and, where supported,
+/// the used-percent ceiling that applies to routes and direct use.
 struct ProviderQuotaForm: View {
     @ObservedObject var store: DeviceStore
     /// `nil` until the provider is saved.
     let providerID: String?
     @Binding var limits: [QuotaLimit]
+    var antigravityTarget: ExecutionBackend? = nil
     @State private var showsHistory = false
     private static let presets: [UInt8] = [50, 60, 70, 80, 90, 95, 100]
     private var quota: QuotaObservation? { providerID.flatMap { store.providerQuotas[$0] } }
+    private var provider: ProviderSummary? { store.providers.first { $0.id == providerID } }
+    private var manualRefresh: Bool { antigravityTarget != nil }
+    private var targetChanged: Bool {
+        guard let antigravityTarget, let provider else { return false }
+        return antigravityTarget != provider.executionBackend
+    }
+    private var targetName: String? {
+        guard case .antigravityCli(_, let destination) = provider?.executionBackend else { return nil }
+        return destination.map { "SSH \($0)" } ?? (store.transport?.isRemote == true ? "提供商所在设备" : "本机")
+    }
     /// Quota is read with the login, so a provider awaiting one has none to show.
-    private var signedOut: Bool { providerID.flatMap { id in store.providers.first { $0.id == id } }?.authentication.awaitsSignIn ?? true }
+    private var signedOut: Bool { provider?.authentication.awaitsSignIn ?? true }
     /// Reported windows first, then ceilings for windows not reported now.
     private var windowIDs: [String] {
         var ids: [String] = []
@@ -150,35 +168,40 @@ struct ProviderQuotaForm: View {
             }
             Section {
                 if providerID == nil {
-                    Text("保存提供商并配置认证后读取额度。").foregroundStyle(.secondary)
+                    Text(manualRefresh ? "保存提供商后可手动刷新额度。" : "保存提供商并配置认证后读取额度。").foregroundStyle(.secondary)
+                } else if targetChanged {
+                    Text("保存执行目标后可刷新额度。").foregroundStyle(.secondary)
                 } else if signedOut {
                     Text("配置认证后读取额度。").foregroundStyle(.secondary)
                 } else {
-                    if let quota, quota.available == false {
+                    if let targetName { LabeledContent("执行目标", value: targetName) }
+                    if !manualRefresh, let quota, quota.available == false {
                         Label(QuotaStatusText.limitedObservation, systemImage: "info.circle").foregroundStyle(.secondary)
                     }
                     ForEach(Array((quota?.windows ?? []).enumerated()), id: \.offset) { _, window in
-                        QuotaWindowRow(window: window, limit: limit(window.id), fresh: quota?.freshness == .fresh, display: store.usageDisplay, showsModels: true)
+                        QuotaWindowRow(window: window, limit: manualRefresh ? nil : limit(window.id), fresh: quota?.freshness == .fresh, display: store.usageDisplay, showsModels: true,
+                                       title: manualRefresh ? QuotaWindowObservation.antigravityName(window.id) : nil)
                     }
                     ForEach(Array((quota?.balances ?? []).enumerated()), id: \.offset) { _, balance in
                         QuotaBalanceRow(balance: balance, fresh: quota?.freshness == .fresh)
                     }
-                    QuotaStatusText(quota: quota)
+                    QuotaStatusText(quota: quota, manualRefresh: manualRefresh)
                 }
             } header: {
                 HStack {
                     Text("额度")
                     Spacer()
-                    if let providerID, !signedOut {
-                        Button("历史…") { showsHistory = true }.controlSize(.small)
-                        Button("刷新") { store.readProviderQuotas([providerID], refresh: true) }.disabled(quota?.refreshing == true).controlSize(.small)
+                    if let providerID, !signedOut, !targetChanged {
+                        if !manualRefresh { Button("历史…") { showsHistory = true }.controlSize(.small) }
+                        Button("刷新") { store.readProviderQuotas([providerID], refresh: true) }
+                            .disabled(quota?.refreshing == true || (manualRefresh && store.isBusy)).controlSize(.small)
                     }
                 }
             }
             if let providerID, let provider = store.providers.first(where: { $0.id == providerID }), provider.composition.authenticationSource == .codexOAuth {
                 ProviderAccountSection(store: store, providerID: providerID)
             }
-            if !balancesOnly { Section {
+            if !manualRefresh, !balancesOnly { Section {
                 if windowIDs.isEmpty {
                     Text("取得额度后可为各窗口设置上限。").foregroundStyle(.secondary)
                 } else {
@@ -199,7 +222,7 @@ struct ProviderQuotaForm: View {
                     .formFooterStyle()
             } }
         }
-        .readsQuota(of: signedOut ? [] : providerID.map { [$0] } ?? [], from: store)
+        .readsQuota(of: signedOut || targetChanged ? [] : providerID.map { [$0] } ?? [], from: store)
         .sheet(isPresented: $showsHistory) { if let providerID { QuotaHistorySheet(store: store, providerID: providerID) } }
     }
     private func limit(_ id: String) -> UInt8? { limits.first { $0.windowId == id }?.maxUsedPercent }

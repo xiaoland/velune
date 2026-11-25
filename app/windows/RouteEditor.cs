@@ -253,7 +253,8 @@ sealed class RouteEditor : UserControl
         timer.Stop();
         var soon = false;
         var providers = members.Select(page.Member).Where(member => member != null).Select(member => member!.Value.Provider)
-            .Where(provider => provider.QuotaSource != ProviderQuotaSource.None && provider.Authentication.Configured)
+            .Where(provider => provider.QuotaSource != ProviderQuotaSource.None && provider.Authentication.Configured
+                && provider.AuthenticationSource != ProviderAuthenticationSource.AntigravityCli)
             .DistinctBy(provider => provider.Id).ToList();
         foreach (var provider in providers)
         {
@@ -457,7 +458,8 @@ sealed class RouteEditor : UserControl
                 }
             }
             var limited = provider.QuotaLimits.Length > 0;
-            if (editor.quotas.TryGetValue(provider.Id, out var quota))
+            if (provider.AuthenticationSource != ProviderAuthenticationSource.AntigravityCli
+                && editor.quotas.TryGetValue(provider.Id, out var quota))
             {
                 foreach (var window in quota.Windows.Where(window => Quota.Applies(window, model.ProviderModelId)))
                 {
