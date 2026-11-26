@@ -64,12 +64,16 @@
 
 ## S92
 
-2026-11-23 用户指出此前一直对 Tabbed Interface、Grid Layout 的行为修修补补，还观察到 UI 布局、动画及状态问题（如重启后的工作区恢复），希望从更上游的位置根本解决，并在标签、网格布局与停靠窗口上追求更原生的体验。开发方诊断为：一个窗口由三套布局引擎（`NavigationSplitView`、inspector、自建分屏）分管；分屏视图身份随结构变化而重建；恢复同时依赖 SceneStorage、journal 与工具布局文件，身份由 SwiftUI scene 决定；两端各有一套布局模型。方向为纯值布局模型与单一持久化、AppKit 窗口外壳（`NSSplitViewController` 侧栏／inspector、嵌套 `NSSplitView` 网格、AppKit 标签栏），系统窗口恢复只决定重开哪些窗口。用户答复：“先只处理/思考 Mac。我觉得你的诊断很到位，方向的选择也很合理。不保留吸附浮动面板，收敛为独立窗口、停靠、隐藏就好。是的，最低要求 macOS 14+。AppKit 我没意见。”本条修订 [S25](#s25) 中的浮动与吸附模式。产品归 [工作区布局](../prd/workspace-layout.md#窗口系统)，实施见 [Mac README](../../app/mac/README.md)，过程见 git 历史中的 `tasks/workspace-native-shell`。
+2026-11-23 用户指出此前一直对 Tabbed Interface、Grid Layout 的行为修修补补，还观察到 UI 布局、动画及状态问题（如重启后的工作区恢复），希望从更上游的位置根本解决，并在标签、网格布局与停靠窗口上追求更原生的体验。开发方诊断为：一个窗口由三套布局引擎（`NavigationSplitView`、inspector、自建分屏）分管；分屏视图身份随结构变化而重建；恢复同时依赖 SceneStorage、journal 与工具布局文件，身份由 SwiftUI scene 决定；两端各有一套布局模型。方向为纯值布局模型与单一持久化、AppKit 窗口外壳（`NSSplitViewController` 侧栏／inspector、嵌套 `NSSplitView` 网格、AppKit 标签栏），系统窗口恢复只决定重开哪些窗口。用户答复：“先只处理/思考 Mac。我觉得你的诊断很到位，方向的选择也很合理。不保留吸附浮动面板，收敛为独立窗口、停靠、隐藏就好。是的，最低要求 macOS 14+。AppKit 我没意见。”本条修订 [S25](#s25) 中的浮动与吸附模式。产品归 [工作区布局](../prd/workspace-layout.md#窗口系统)，实施归 [Mac 工作区原生外壳](../../tasks/workspace-native-shell/packet.md)。
 
 ## S93
 
-2026-11-25 用户指出当前停靠行为“比较别扭，似乎混杂了 sidebar 和 docking area 两件事”：左区既是 macOS 边栏又是通用停靠区，列表独占左区时筛选与新建会话移进窗口工具栏，在其他位置则是带标题条的块；可见性分为工具是否显示、区是否收起、只显示编辑区三层。开发方建议按 Xcode 的导航器／检查器／调试区理解三区：保留任一工具放任一区；列表在任何位置形态一致，始终带自己的搜索、筛选与新建，工具栏的边栏部分只留边栏按钮；可见性收敛为区是否打开与工具在哪个区两层，隐藏区内最后一个工具即收起该区。用户答复：“I agree with your suggestion, proceed.” 本条修订 [S92](#s92) 之前列表独占左区时动作归窗口工具栏的做法。产品归 [工作区布局](../prd/workspace-layout.md#窗口系统)，实施见 [Mac README](../../app/mac/README.md)，过程见 git 历史中的 `tasks/workspace-native-shell`。
+2026-11-25 用户指出当前停靠行为“比较别扭，似乎混杂了 sidebar 和 docking area 两件事”：左区既是 macOS 边栏又是通用停靠区，列表独占左区时筛选与新建会话移进窗口工具栏，在其他位置则是带标题条的块；可见性分为工具是否显示、区是否收起、只显示编辑区三层。开发方建议按 Xcode 的导航器／检查器／调试区理解三区：保留任一工具放任一区；列表在任何位置形态一致，始终带自己的搜索、筛选与新建，工具栏的边栏部分只留边栏按钮；可见性收敛为区是否打开与工具在哪个区两层，隐藏区内最后一个工具即收起该区。用户答复：“I agree with your suggestion, proceed.” 本条修订 [S92](#s92) 之前列表独占左区时动作归窗口工具栏的做法。产品归 [工作区布局](../prd/workspace-layout.md#窗口系统)，实施归 [Mac 工作区原生外壳](../../tasks/workspace-native-shell/packet.md)。
 
 ## S94
 
 2026-11-25 用户在 Mac 开发版中报告 ⌘N 无法新建会话，并要求 ⇧⌘N 新建窗口（新建会话的独立窗口）。开发方核对：该开发实例没有启用的 Agent 运行时，按既有规则“新建会话”在没有可用运行时时停用，并非外壳迁移丢失的绑定；新增“在新窗口中新建会话”，默认 ⇧⌘N，“新建窗口”⌥⌘N 仍打开完整工作区。默认键位归[键盘操作](../prd/keyboard.md#默认快捷键)。
+
+## S95
+
+2026-11-26 用户手动检验 Mac 工作区原生外壳后接受，随即指出验收只在空状态下进行，没有测试过真实数据下的体验。开发方询问数据来源，用户选择“日常数据的只读副本”：把日常 Velune 状态与原生会话记录（Claude Code、Codex 等）复制到开发实例的私有目录，原文件不动，不复制登录、令牌与 API key，记录只保留脱敏结果，不能发送消息。用户进一步说明：“我是希望再向前推一步，从而顺带改进多项功能的 UI/UX: Make the best decision that will elevate all three: the user experience (UX), developer experience (DX), and agent experience (AX) always, without breaking anything. And also find everything that's broken, inconsistent, inefficient, or no longer needed. Prefer deleting over simplifying, simplifying over optimizing, and optimizing over automating”。本条修订 [S92](#s92) 授权中“不读取真实会话”的约束，仅限上述只读副本。实施归 [Mac 工作区原生外壳](../../tasks/workspace-native-shell/packet.md)。

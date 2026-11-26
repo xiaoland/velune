@@ -95,6 +95,7 @@
 - <a id="s92"></a>[S92 · Mac 工作区原生外壳](sources/workspace-keyboard.md#s92)
 - <a id="s93"></a>[S93 · 边栏与停靠区收敛](sources/workspace-keyboard.md#s93)
 - <a id="s94"></a>[S94 · 在新窗口中新建会话](sources/workspace-keyboard.md#s94)
+- <a id="s95"></a>[S95 · 真实数据副本验收与体验收敛](sources/workspace-keyboard.md#s95)
 
 ## 远程控制与平台选择
 
