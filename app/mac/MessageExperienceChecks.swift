@@ -142,9 +142,9 @@ import VeluneBindings
         }
         let sourceBefore = source.store.loadedConversationID
         workspace.composerContext(for: tab).send()
-        guard until({ !store.draftEditable || store.transcript.rows.contains { row in
+        guard until({ !store.inputSubmissionAllowed || store.transcript.rows.contains { row in
             row.message.blocks.contains(.text(text: "fork reply received"))
-        } }), store.draftEditable else { fail("首次发送后未收到回复 \(store.inputAccess) \(store.device.problems.first?.detail ?? "")") }
+        } }), store.inputSubmissionAllowed else { fail("首次发送后未收到回复 \(store.inputAccess) \(store.device.problems.first?.detail ?? "")") }
         guard store.loadedConversationID == targetID, source.store.loadedConversationID == sourceBefore,
               source.store.transcript.rows.map(\.id) == originalText else { fail("分叉发送改变了原标签页") }
         settle()

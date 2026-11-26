@@ -325,6 +325,7 @@ private fun QuestionFields(id: String, questions: List<InteractionQuestion>, ena
 @Composable
 private fun Composer(state: ConversationState, actions: ConversationActions) {
     val text = state.draft
+    val childConversation = state.conversation?.parentConversationId != null
     var choosing by remember { mutableStateOf(false) }
     val canSend = !state.busy && state.composerReady && state.composerFailure == null && (text.isNotBlank() || state.attachments.isNotEmpty()) && state.canSend
     Column(Modifier.fillMaxWidth().navigationBarsPadding().padding(start = 12.dp, end = 12.dp, top = 4.dp, bottom = 8.dp)) {
@@ -334,7 +335,7 @@ private fun Composer(state: ConversationState, actions: ConversationActions) {
             InputAccess.EXTERNAL_CONTROLLER -> "另一个客户端正在控制此会话。草稿可继续编辑，暂不能发送。"
             InputAccess.CONTROL_UNAVAILABLE -> "暂时无法确认会话控制权，正在重试。"
             InputAccess.EXTERNAL_EXECUTION -> "此会话正在其他客户端执行。"
-            InputAccess.READ_ONLY -> "此会话当前只可阅读。"
+            InputAccess.READ_ONLY -> if (childConversation) "子 Agent 会话由父会话继续。" else "此会话当前不能提交消息。草稿可继续编辑。"
         }
         when (state.controlHandoff) {
             ControlHandoff.RELEASED, ControlHandoff.RELEASING -> Row(verticalAlignment = Alignment.CenterVertically) {
@@ -358,7 +359,7 @@ private fun Composer(state: ConversationState, actions: ConversationActions) {
         Surface(color = MaterialTheme.colorScheme.surfaceContainerHigh, shape = RoundedCornerShape(24.dp), modifier = Modifier.fillMaxWidth()) {
             Column {
                 TextField(
-                    value = text, onValueChange = actions.editDraft, readOnly = state.inputAccess == InputAccess.READ_ONLY, placeholder = { Text("给 Agent 发消息") },
+                    value = text, onValueChange = actions.editDraft, readOnly = childConversation, placeholder = { Text("给 Agent 发消息") },
                     maxLines = 6, modifier = Modifier.fillMaxWidth(),
                     colors = TextFieldDefaults.colors(
                         focusedContainerColor = Color.Transparent, unfocusedContainerColor = Color.Transparent, disabledContainerColor = Color.Transparent,

@@ -267,12 +267,14 @@ final class ConversationStore: ObservableObject {
     }
     var inputAccess: InputAccess { snapshot?.actions.inputAccess ?? .editable }
     var inputSubmissionAllowed: Bool { inputAccess == .editable }
-    /// Runtime ownership restricts submission, not local drafting.
-    var draftEditable: Bool {
-        if case .readOnly = inputAccess { return false }
-        return !isShuttingDown
+    /// Native child views have no draft of their own.
+    var draftEditable: Bool { loadedParentConversationID == nil && !isShuttingDown }
+    var inputLockMessage: String? {
+        if inputAccess == .readOnly && loadedParentConversationID != nil {
+            return "子 Agent 会话由父会话继续。"
+        }
+        return inputAccess.message
     }
-    var inputLockMessage: String? { inputAccess.message }
     /// Early native turn activity revokes idle admission; background-only activity does not.
     var canSend: Bool { !executionStarting && !device.authenticationRunning && !isLoading && !isStopping && !activityBlocksSending && !isShuttingDown && (snapshot?.actions.canSend ?? false) }
     var canCancel: Bool { !isStopping && (pendingSendCancellation != nil || (snapshot?.runState == .running && (snapshot?.actions.canCancel ?? false))) }
@@ -3249,10 +3251,14 @@ extension ConversationStore {
 
         var readOnlyParent = parent
         readOnlyParent.actions.inputAccess = .readOnly
+        readOnlyParent.actions.canSend = false
         store.apply(readOnlyParent)
         let readOnlyContext = ComposerContext(tab: window.focused, model: window.composer(for: window.focused))
-        precondition(!readOnlyContext.inputEditable && readOnlyContext.executionChoicesEditable && readOnlyContext.canSwitchModel,
-                     "非子会话的文本只读不能收紧原有的本地执行配置资格")
+        precondition(readOnlyContext.inputEditable && readOnlyContext.allowsAttachments &&
+                     readOnlyContext.executionChoicesEditable && readOnlyContext.canSwitchModel,
+                     "只读的普通会话仍可编辑草稿、附件和下一轮配置")
+        precondition(!readOnlyContext.submission().canSubmitDraft)
+        inspect(window, false)
         store.apply(parent)
         store.selectComposerRuntime("sample-review")
         var child = parent

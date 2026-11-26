@@ -144,9 +144,10 @@ import VeluneBindings
     }
 
     ConversationStore.checkSubAgentControls { workspace, child in
-        let store = workspace.focused.store
-        let composer = ComposerView(store: store, model: workspace.composer(for: workspace.focused), layout: workspace,
-            send: {}, steer: {}, submission: { ComposerSubmission(phase: child ? .running : .idle, hasInput: false, isComposing: false, canSend: !child, canQueue: false, canResume: false) }, resume: {})
+        let context = workspace.composerContext(for: workspace.focused)
+        let store = context.store
+        let composer = ComposerView(store: store, model: context.model, layout: workspace,
+            send: context.send, steer: context.steer, submission: { context.submission() }, resume: context.resume)
         let content = VStack {
             if !child { LinkedAgentsView(store: store, inPopover: false, open: { _, _ in }).frame(height: 220) }
             composer
@@ -155,6 +156,18 @@ import VeluneBindings
         let native = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 800, height: child ? 160 : 390), styleMask: [.borderless], backing: .buffered, defer: false)
         native.contentView = host
         host.layoutSubtreeIfNeeded(); settle(); host.layoutSubtreeIfNeeded(); host.displayIfNeeded()
+        if !child && store.inputAccess == .readOnly {
+            guard let editor = context.model.textView, editor.isEditable else {
+                fatalError("只读普通会话必须保留可编辑的原生草稿输入框")
+            }
+            editor.insertText("停留在相同会话的草稿", replacementRange: NSRange(location: 0, length: editor.string.utf16.count))
+            precondition(context.model.submission == "停留在相同会话的草稿")
+            precondition(!context.submission().canSubmitDraft)
+            context.send()
+            precondition(context.model.submission == "停留在相同会话的草稿" && store.composerRequest == nil)
+            note("PASS native composer edits a read-only parent draft and keeps submission blocked")
+            return
+        }
         guard let bitmap = host.bitmapImageRepForCachingDisplay(in: host.bounds) else { fatalError("无法绘制Pi子会话检查") }
         host.cacheDisplay(in: host.bounds, to: bitmap)
         try! bitmap.representation(using: .png, properties: [:])!.write(to: directory.appendingPathComponent(child ? "pi-child-controls.png" : "pi-parent-controls.png"))
