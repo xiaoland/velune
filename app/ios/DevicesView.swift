@@ -4,6 +4,7 @@ import AVFoundation
 
 struct DevicesView: View {
     @ObservedObject var devices: DeviceStore
+    @StateObject private var networkSettings = RemoteNetworkSettingsModel()
     @State private var adding = false
     @State private var forgetting: DeviceContact?
     private var controlling: [DeviceContact] { devices.state?.contacts.filter(\.controlAuthorized) ?? [] }
@@ -31,7 +32,7 @@ struct DevicesView: View {
                 }
                 Section {
                     NavigationLink("连接设置") {
-                        RemoteNetworkSettingsView(endpoint: { try RemoteService.shared.resources.endpoint() })
+                        RemoteNetworkSettingsView(model: networkSettings, endpoint: { try RemoteService.shared.resources.endpoint() })
                             .navigationTitle("连接设置")
                     }
                     NavigationLink("遥测") {
