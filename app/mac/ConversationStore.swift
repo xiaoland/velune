@@ -1007,6 +1007,11 @@ final class ConversationStore: ObservableObject {
         !isSideChat && !isLoading && !isShuttingDown && !executionStarting && pendingConversationID == nil
             && reachingConversationID == nil && deferredSelection == nil && coldOpeningProblem != nil && unopenedConversationID != nil
     }
+    /// A temporary failure is retried on its own (the history being read as
+    /// the app starts); about the first 18 s of automatic retries show loading,
+    /// not an error that clears itself. Later ones, and failures that wait for
+    /// the user, show it.
+    var retriesOpeningQuietly: Bool { coldOpeningProblem != nil && openingNeedsRetry && openingRetry.failures < 5 }
     var coldOpeningProblem: AppProblem? {
         loadedConversationID == nil && pendingConversationID == nil && reachingConversationID == nil ? openingFailure : nil
     }
@@ -2985,6 +2990,7 @@ extension ConversationStore {
         let unavailable = TransportError.operation("openConversation", .diagnostic(kind: "unavailable", detail: "会话历史正在读取，请稍后重试", code: "unavailable", phase: "read", operationID: "synthetic"))
         store.noteOpeningFailure(unavailable)
         precondition(store.snapshot == nil && store.isOpeningConversation && store.coldOpeningProblem != nil && store.canRetryFailedOpening)
+        precondition(store.retriesOpeningQuietly, "自动重试中的暂态失败显示加载，不显示错误")
         precondition(store.takeOpeningRetry() == nil && store.openingRetry.failures == 1,
                      "暂态失败不能在下一个通知中立即热重试")
         wait { store.openingRetry.ready }
