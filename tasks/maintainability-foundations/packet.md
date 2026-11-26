@@ -101,6 +101,14 @@
 
 分支检出在 `~/Development/.worktrees/velune/maintainability-foundations`。此前编辑环境未找到该目录，曾在主检出的 `tmp/worktrees` 编辑并同步到这里构建；该嵌套工作树与同步脚本已删除。
 
-## 脚本审计（进行中）
+## 脚本审计（2026-11-26）
 
-`scripts/check-*` 中 17 个不被 svc、CI、文档或其他脚本引用（仅任务包或来源记录可能提及）：check-build-cache、check-build-support、check-claude-background-follow-up、check-claude-history、check-codex-sampling-route、check-composer-migration、check-macos-dev、check-macos-history-cache、check-macos-sidebar-toolbar、check-pi-background-work、check-pi-child-history、check-pi-child-host、check-pi-projection-snapshot、check-pi-subagent-metadata、check-portable-handoff、check-runtime-start-policy、check-service-tier-migration。下一步逐个判断：已由 Rust 测试或验收套件覆盖、或只服务已结束任务的删除；仍有价值的迁入 `tests/acceptance` 或登记入口。check-build-cache 与 check-build-support 是构建工具自检，应保留并接入 CI。
+`scripts/` 中 18 个脚本不被 svc、CI、文档或其他脚本引用：17 个 `check-*` 与 `mac_telemetry_build.py`。逐个运行后：
+
+- 10 个合成检查在 macOS 与 Linux 上都通过、不需外部 CLI，覆盖随仓库发布的迁移脚本、构建支持、开发实例与 Pi bridge：check-build-cache、check-build-support、check-claude-history、check-composer-migration、check-runtime-start-policy、check-service-tier-migration、check-macos-dev、check-pi-background-work、check-pi-subagent-metadata、check-runtime-background-tasks。它们没有损坏，只是从未被运行；已加入 PR checks，并在[验证方式](../../docs/development/validation.md)写明。
+- check-pi-child-history 与 check-pi-projection-snapshot 需要真实 Pi CLI，传入本机 pi 后通过（11 项）；归真实运行时层，手动运行。
+- check-claude-background-follow-up 迁为验收用例 `claude_background_follow_up` 及 `_managed` 变体，实际 Claude Code 2.1.327 下两者各 4 项通过；它依赖的 check-conversation-parity 早已迁为 `codex_conversation_lifecycle`。两个原脚本删除。
+- `mac_telemetry_build.py` 的调用方（manual-telemetry 与 otlp-observability 任务验收程序）已于此前删除，一并删除。
+- 其余端到端脚本未迁移：check-codex-sampling-route、check-macos-history-cache、check-portable-handoff、check-macos-sidebar-toolbar、check-pi-child-host。
+
+`codex_conversation_lifecycle` 本轮失败：ChatGPT.app 内置 Codex CLI 已自动更新到 0.171.0-alpha.13，超出本分支适配器范围（<0.168）。develop 已增加 0.170 支持（7bad70f60），合入后需按新类型复验；用例固定使用 `CODEX166`，届时应随适配器版本调整。PR checks 的新步骤尚未在 CI 实际运行。
