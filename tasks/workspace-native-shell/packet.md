@@ -6,6 +6,8 @@
 
 2026-11-26 用户手动检验后接受，外壳已合入本地 `develop`（未推送）。随后用户指出只在空状态下验收过，任务重开（[S95](../../docs/sources/workspace-keyboard.md#s95)）：以日常数据的只读副本在开发实例中验收真实体验，并顺带找出各功能中损坏、不一致、低效或不再需要的部分，按删除、简化、优化、自动化的优先顺序处理，不破坏既有行为与数据。
 
+2026-11-26 真实数据验收的修正经用户接受：先合入 `develop`（含 Codex 0.171 支持），合并后构建上 18 组 Mac 检查通过，再快进合入本地 `develop`（未推送）。下方“发现但未在此处理”中的 Codex 0.171 已由 `develop` 的 `28a5777d3` 处理；首次加载缓慢另有 `perf/codex-active-index-persistence` 在做。
+
 - 分支 `feat/workspace-native-shell`，工作树 `tmp/worktrees/workspace-native-shell`（在主检出内、被 `.git/info/exclude` 忽略：开发用 Linux 虚拟机只挂载了主检出目录）。
 - 真实数据只用副本：见下方[真实数据副本](#真实数据副本)。不读取或复制登录、令牌与 API key，不发送消息，不重装日常应用。
 
