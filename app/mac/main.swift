@@ -68,7 +68,9 @@ struct ConversationCommands: Commands {
                 .keyboardShortcut(shortcuts[.newTab])
                 .disabled(target == nil)
             // Also with no window open: windows are opened from here, not by SwiftUI.
-            Button("新建窗口") { WorkspaceWindows.shared.open(.workspace) }
+            // A seed of its own: a new workspace, not a copy of the latest one's
+            // arrangement, which is for opening with no workspace window.
+            Button("新建窗口") { WorkspaceWindows.shared.open(.workspace, seed: WindowSeed()) }
                 .keyboardShortcut(shortcuts[.newWindow])
             item(.reopenClosedTab)
         }
