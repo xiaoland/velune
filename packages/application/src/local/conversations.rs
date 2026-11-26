@@ -618,6 +618,9 @@ impl CoreRuntime {
     ) -> Result<SnapshotResult, RuntimeError> {
         match self.prepare_conversation_read(runtime_id, id)? {
             super::conversation_history::ConversationRead::Ready(snapshot) => Ok(*snapshot),
+            super::conversation_history::ConversationRead::Present => {
+                unreachable!("prepare_conversation_read returns Ready or Load")
+            }
             super::conversation_history::ConversationRead::Load(request) => {
                 self.finish_conversation_read(request.load())
             }

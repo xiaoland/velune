@@ -256,6 +256,9 @@ pub struct CoreRuntime {
     worktree_origins: std::cell::RefCell<BTreeMap<String, Option<String>>>,
     turn_failures:
         std::cell::RefCell<BTreeMap<PathBuf, (velune_agent_runtime::activity::Signature, bool)>>,
+    pi_binding_aliases: std::cell::RefCell<
+        std::collections::HashMap<String, (GatewayConfig, std::collections::HashMap<String, String>)>,
+    >,
     analytics: Arc<crate::analytics::AnalyticsStore>,
     /// Shared admission, recovery and session affinity across gateway runners.
     scheduling_state: velune_gateway::SchedulingState,
@@ -424,6 +427,7 @@ impl CoreRuntime {
             sub_agent_failures: Default::default(),
             worktree_origins: Default::default(),
             turn_failures: Default::default(),
+            pi_binding_aliases: Default::default(),
             analytics,
             scheduling_state,
             execution_backends: Default::default(),

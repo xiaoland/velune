@@ -2157,3 +2157,152 @@ for line in sys.stdin:
     drop(application);
     std::fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn editing_choices_matches_deletion_source_across_pi_codex_and_linked_messages() {
+    let root = std::env::temp_dir().join(format!(
+        "velune-editing-choices-{}",
+        crate::new_record_key()
+    ));
+    std::fs::create_dir_all(&root).unwrap();
+    let mut application = crate::Application::open(crate::Options {
+        home_directory: root.clone(),
+        resources_directory: root.clone(),
+    })
+    .unwrap();
+    let core = &mut application.runtime;
+    core.runtime_instances = vec![
+        RuntimeInstance {
+            enabled: true,
+            id: "pi".into(),
+            name: "Synthetic Pi".into(),
+            type_id: RuntimeKind::Pi,
+            gateway_id: "default".into(),
+            settings: BTreeMap::from([
+                ("binary".into(), "/synthetic/pi".into()),
+                ("nodeBinary".into(), "/synthetic/node".into()),
+                ("agentDir".into(), root.join("pi").display().to_string()),
+            ]),
+        },
+        RuntimeInstance {
+            enabled: true,
+            id: "codex".into(),
+            name: "Synthetic Codex".into(),
+            type_id: RuntimeKind::Codex166,
+            gateway_id: "default".into(),
+            settings: Default::default(),
+        },
+    ];
+
+    let make_msg = |id: &str, role: &str| {
+        serde_json::from_value::<Message>(serde_json::json!({
+            "id": id,
+            "role": role,
+            "completed": true,
+            "blocks": [{"kind": "text", "text": "hello"}]
+        }))
+        .unwrap()
+    };
+    let mut messages = vec![
+        make_msg("pi:session:unique:0", "user"),
+        make_msg("pi:session:unique-reply:0", "assistant"),
+        make_msg("pi:session:shared:0", "user"),
+        make_msg("pi:session:shared:1", "assistant"),
+        make_msg("pi:session:nonzero:1", "user"),
+    ];
+    for index in 0..200 {
+        messages.push(make_msg(&format!("pi:session:bulk-{index}:0"), "user"));
+        messages.push(make_msg(&format!("pi:session:bulk-{index}-reply:0"), "assistant"));
+    }
+    let mut snapshot: ConversationSnapshot = serde_json::from_value(serde_json::json!({
+        "revision": 1,
+        "conversation": {
+            "id": "pi:conv",
+            "runtimeId": "pi",
+            "title": {"source": "untitled"},
+            "canRename": false,
+            "canDelete": false
+        },
+        "contextRuntimeId": "pi",
+        "runState": "idle",
+        "messages": messages,
+        "transcriptItems": [],
+        "transcriptOutline": [],
+        "transcriptMessageIdentities": [],
+        "actions": {"inputAccess": "editable", "canSend": true, "canCancel": false, "canSwitch": true}
+    }))
+    .unwrap();
+
+    let choices = core.editing_choices(&snapshot);
+    for choice in &choices {
+        let expected = core.deletion_source(&snapshot, &choice.public.message_id);
+        assert_eq!(choice.public.delete_only, expected.is_some());
+        assert_eq!(
+            choice.public.delete_following,
+            expected.is_some_and(|(_, ids)| !ids.is_empty())
+        );
+    }
+    assert!(choices[0].public.delete_only);
+    assert!(!choices[1].public.delete_only);
+    assert!(!choices[2].public.delete_only);
+
+    // Also check linked conversation (non-tail origin mapping + Codex tail).
+    snapshot.conversation.id = "linked:conv".into();
+    snapshot.conversation.runtime_id = "codex".into();
+    snapshot.context_runtime_id = "codex".into();
+    snapshot.messages = vec![
+        make_msg("segment-0:orig-1", "user"),
+        make_msg("segment-0:empty-origins", "user"),
+        make_msg("segment-0:unmapped", "user"),
+        make_msg("segment-1:tail-user", "user"),
+    ];
+    core.conversation_links = vec![crate::config::ConversationLink {
+        id: "linked:conv".into(),
+        segments: vec![
+            crate::config::ConversationSegmentReference {
+                runtime_instance_id: "pi".into(),
+                runtime_type_id: RuntimeKind::Pi,
+                native_conversation_id: "seg0".into(),
+                cwd: None,
+                cutoff: None,
+                handoff: None,
+                imported: None,
+                excluded_message_ids: Vec::new(),
+                message_origins: BTreeMap::new(),
+                deleted: false,
+            },
+            crate::config::ConversationSegmentReference {
+                runtime_instance_id: "codex".into(),
+                runtime_type_id: RuntimeKind::Codex166,
+                native_conversation_id: "seg1".into(),
+                cwd: None,
+                cutoff: None,
+                handoff: None,
+                imported: None,
+                excluded_message_ids: Vec::new(),
+                message_origins: BTreeMap::from([
+                    ("segment-0:orig-1".into(), vec!["tail-a".into()]),
+                    ("segment-0:empty-origins".into(), vec![]),
+                ]),
+                deleted: false,
+            },
+        ],
+    }];
+    let linked_choices = core.editing_choices(&snapshot);
+    for choice in &linked_choices {
+        let expected = core.deletion_source(&snapshot, &choice.public.message_id);
+        assert_eq!(choice.public.delete_only, expected.is_some());
+        assert_eq!(
+            choice.public.delete_following,
+            expected.is_some_and(|(_, ids)| !ids.is_empty())
+        );
+    }
+    assert!(linked_choices[0].public.delete_only && linked_choices[0].public.delete_following);
+    assert!(linked_choices[1].public.delete_only && !linked_choices[1].public.delete_following);
+    assert!(!linked_choices[2].public.delete_only);
+    assert!(linked_choices[3].public.delete_only && linked_choices[3].public.delete_following);
+
+    application.close_stopping_work().unwrap();
+    drop(application);
+    std::fs::remove_dir_all(root).unwrap();
+}
