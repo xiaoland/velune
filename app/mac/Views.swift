@@ -342,9 +342,11 @@ struct SettingsView: View {
 /// Settings for how Velune reads and behaves: usage, the conversation list
 /// and, before macOS 26, the toolbars.
 private struct GeneralSettingsView: View {
+    private enum LimitField: Hashable { case page, total }
     @ObservedObject var store: DeviceStore
     @State private var limit = 20
     @State private var totalLimit = 200
+    @FocusState private var focusedLimit: LimitField?
     private var editedLimits: ConversationBrowserLimits? {
         guard let page = UInt32(exactly: limit), page > 0,
               let total = UInt32(exactly: totalLimit), total > 0 else { return nil }
@@ -365,8 +367,8 @@ private struct GeneralSettingsView: View {
                 }.pickerStyle(.segmented).disabled(store.isLoading || store.isShuttingDown)
             }
             Section("会话列表") {
-                LabeledContent("每次加载") { limitField($limit) }
-                LabeledContent("列表总数上限") { limitField($totalLimit) }
+                LabeledContent("每次加载") { limitField($limit, field: .page) }
+                LabeledContent("列表总数上限") { limitField($totalLimit, field: .total) }
                 Text("列表最多先读取总数上限个会话，按组依次分给各组，每组每次加载若干个；折叠的组不读取。之后可在各组中加载更多。").uiFont(.caption).foregroundStyle(.secondary)
                 if editedLimits == nil {
                     Text("每次加载和列表总数上限都必须在 1 到 \(UInt32.max.formatted()) 之间。")
@@ -377,15 +379,23 @@ private struct GeneralSettingsView: View {
                 }.disabled(editedLimits == nil || editedLimits == store.conversationBrowserLimits || store.isShuttingDown)
             }
             if #unavailable(macOS 26) { ToolbarSettingsSection() }
-        }.formStyle(.grouped).onAppear { limit = Int(store.conversationBrowserLimits.page); totalLimit = Int(store.conversationBrowserLimits.total) }
+        }
+        .formStyle(.grouped)
+        .defaultFocus($focusedLimit, nil)
+        .onAppear {
+            limit = Int(store.conversationBrowserLimits.page)
+            totalLimit = Int(store.conversationBrowserLimits.total)
+            DispatchQueue.main.async { focusedLimit = nil }
+        }
     }
 
-    private func limitField(_ value: Binding<Int>) -> some View {
+    private func limitField(_ value: Binding<Int>, field: LimitField) -> some View {
         HStack(spacing: 6) {
             TextField("数量", value: value, format: .number)
                 .labelsHidden()
                 .multilineTextAlignment(.trailing)
                 .frame(width: 112)
+                .focused($focusedLimit, equals: field)
             Text("个会话")
         }
     }
