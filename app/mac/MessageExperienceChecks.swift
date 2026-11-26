@@ -243,7 +243,27 @@ import VeluneBindings
         guard case .prose(let rendered) = segments.first else { fatalError("missing prose") }
         let range = (rendered.string as NSString).range(of: "/Users/example/document.md:20")
         precondition(rendered.attribute(.link, at: range.location, effectiveRange: nil) as? String == "/Users/example/document.md:20")
-        note("PASS source locations: absolute, relative, encoded/file URLs, literal colon filenames, remote isolation, inline link rendering")
+        // Asterisks beside CJK punctuation pair as written; others follow CommonMark; code is untouched.
+        func strong(_ source: String) -> (text: String, bold: [String]) {
+            guard case .prose(let rendered) = MarkdownAttributedRenderer.render(source).first else { fatalError("missing prose") }
+            var bold: [String] = []
+            rendered.enumerateAttribute(.font, in: NSRange(location: 0, length: rendered.length)) { value, range, _ in
+                if let font = value as? NSFont, font.fontDescriptor.symbolicTraits.contains(.bold) { bold.append((rendered.string as NSString).substring(with: range)) }
+            }
+            return (rendered.string, bold)
+        }
+        for (source, text, bold) in [
+            ("**接手后从这里开始：**在主会话中继续。", "接手后从这里开始：在主会话中继续。", ["接手后从这里开始："]),
+            ("先看**结论：**这样做，再看`代码`与**原因**。", "先看结论：这样做，再看代码与原因。", ["结论：", "原因"]),
+            ("看**「重点」**是这个", "看「重点」是这个", ["「重点」"]),
+            ("2 ** 3 ** 4 and a**b**c", "2 ** 3 ** 4 and abc", ["b"]),
+            ("x **y **z", "x **y **z", []),
+            ("`a：**b**` 与 ```c：**d**```", "a：**b** 与 c：**d**", []),
+        ] {
+            let result = strong(source)
+            precondition(result.text == text && result.bold == bold, "strong \(source): \(result)")
+        }
+        note("PASS source locations: absolute, relative, encoded/file URLs, literal colon filenames, remote isolation, inline link rendering, CJK strong")
         exit(0)
     }
     if CommandLine.arguments.contains("--experience-fork-only") { forkExperienceChecks(home: home); exit(0) }

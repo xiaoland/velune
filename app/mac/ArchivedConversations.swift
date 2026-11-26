@@ -5,7 +5,7 @@ import VeluneBindings
 
 struct ArchivedConversationsMenuItem: View {
     @Environment(\.openWindow) private var openWindow
-    var body: some View { Button("已归档会话…") { openWindow(id: "archived-conversations") } }
+    var body: some View { Button("已归档会话") { openWindow(id: "archived-conversations") } }
 }
 
 /// This projection belongs to the archive window. The device retains runtime

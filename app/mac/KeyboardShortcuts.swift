@@ -216,7 +216,7 @@ enum ShortcutCommand: String, CaseIterable, Identifiable {
         case .rightArea: "显示／隐藏右侧区域"
         case .bottomArea: "显示／隐藏底部区域"
         case .editorOnly: "只显示编辑区"
-        case .problems: "问题…"
+        case .problems: "问题"
         case .zoomIn: "放大界面"
         case .zoomOut: "缩小界面"
         case .resetZoom: "恢复默认缩放"

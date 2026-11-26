@@ -186,6 +186,12 @@ private struct ToolComposer: View {
     @ObservedObject var store: ConversationStore
     let contentHeight: ((CGFloat) -> Void)?
 
+    /// A shared composer names where it sends only when that is not the
+    /// one conversation in view: beside other panes, or under another editor.
+    private func names(_ tab: ConversationTab) -> Bool {
+        window.composerOwner(for: tab) == .shared && (window.isSplit || window.focusedEditor.id != tab.id)
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             if store.loadedParentConversationID != nil, store.pendingConversationID == nil {
@@ -194,7 +200,7 @@ private struct ToolComposer: View {
             }
             ComposerView(store: store, model: window.composer(for: tab), layout: window, send: { window.send() }, steer: { window.composerContext().steer() }, submission: { window.composerContext().submission() }, resume: { window.resume() },
                              fillsHeight: window.tools[.composer].place == .docked(.bottom),
-                             recipient: window.composerOwner(for: tab) == .shared ? store.selectedConversationTitle ?? "新会话" : nil)
+                             recipient: names(tab) ? store.selectedConversationTitle ?? "新会话" : nil)
         }
         .fixedSize(horizontal: false, vertical: window.tools[.composer].place != .docked(.bottom))
         .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { contentHeight?($0) }

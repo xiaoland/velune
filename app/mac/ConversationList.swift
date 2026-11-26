@@ -597,8 +597,14 @@ struct ConversationListView: View {
                 ProgressView().controlSize(.mini).help(label).accessibilityLabel(label)
             }
         }
-        .accessibilityElement(children: .combine)
-        .accessibilityValue(unread ? (conversation.failed ? "未读，上一轮失败" : "未读") : "")
+        // A list cell does not take the combined children's label: it is the title, and the state its value.
+        .accessibilityElement(children: .ignore)
+        .accessibilityAddTraits(.isStaticText)
+        .accessibilityLabel(conversation.title)
+        .accessibilityValue([unread ? (conversation.failed ? "未读，上一轮失败" : "未读") : nil,
+                             waiting ? "等待你处理" : nil,
+                             running ? (ownTurn ? "正在运行" : "子 Agent 正在运行") : nil]
+            .compactMap { $0 }.joined(separator: "，"))
     }
 
     /// Selections spanning devices manage each device's conversations with

@@ -4,7 +4,7 @@ import VeluneBindings
 
 struct AnalyticsMenuItem: View {
     @Environment(\.openWindow) private var openWindow
-    var body: some View { Button("分析…") { openWindow(id: "analytics") } }
+    var body: some View { Button("分析") { openWindow(id: "analytics") } }
 }
 
 struct AnalyticsView: View {

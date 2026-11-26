@@ -195,7 +195,7 @@ extension ResourceTemplateSummary: Identifiable {}
 
 struct ResourceLibraryMenuItem: View {
     @Environment(\.openWindow) private var openWindow
-    var body: some View { Button("资源库…") { openWindow(id: "resource-library") } }
+    var body: some View { Button("资源库") { openWindow(id: "resource-library") } }
 }
 
 /// Instructions, skills, MCP servers and sub-agents defined once in Velune and

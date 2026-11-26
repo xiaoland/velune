@@ -106,10 +106,10 @@ struct ComposerStatusLine: View {
             switch item {
             case .contextUsage:
                 guard let tokens = status.usage.contextTokens else { return nil }
-                guard let window = status.usage.contextWindow, let fraction = status.contextFraction else { return "上下文：已用 \(TokenCount.format(tokens)) tokens，模型窗口未知" }
-                if store.device.contextUsageDisplay == .remaining { return "上下文：剩余 \(TokenCount.format(window.subtractingClamped(tokens))) / \(TokenCount.format(window)) tokens（\(StatusFormat.percent(1 - fraction))）" }
-                return "上下文：已用 \(TokenCount.format(tokens)) / \(TokenCount.format(window)) tokens（\(StatusFormat.percent(fraction))）"
-            case .sessionTokens: return status.usage.sessionTokens.map { "本会话累计：\(TokenCount.format($0)) tokens" }
+                guard let window = status.usage.contextWindow, let fraction = status.contextFraction else { return "上下文：已用 \(StatusFormat.short(tokens)) tokens，模型窗口未知" }
+                if store.device.contextUsageDisplay == .remaining { return "上下文：剩余 \(StatusFormat.short(window.subtractingClamped(tokens))) / \(StatusFormat.short(window)) tokens（\(StatusFormat.percent(1 - fraction))）" }
+                return "上下文：已用 \(StatusFormat.short(tokens)) / \(StatusFormat.short(window)) tokens（\(StatusFormat.percent(fraction))）"
+            case .sessionTokens: return status.usage.sessionTokens.map { "本会话累计：\(StatusFormat.short($0)) tokens" }
             case .workingDirectory: return status.directory.map { "工作目录：\($0)" + (branch.map { "（\($0)）" } ?? "") }
             case .rateLimits:
                 return context.composerQuotaError ?? accountSummary(short: false)
@@ -180,9 +180,9 @@ struct StatusDetails: View {
                 if let tokens = status.usage.contextTokens {
                     heading("上下文")
                     if display == .remaining, let window = status.usage.contextWindow {
-                        row("剩余", "\(TokenCount.format(window.subtractingClamped(tokens))) / \(TokenCount.format(window)) tokens")
+                        row("剩余", "\(StatusFormat.short(window.subtractingClamped(tokens))) / \(StatusFormat.short(window)) tokens")
                     } else {
-                        row("已用", status.usage.contextWindow.map { "\(TokenCount.format(tokens)) / \(TokenCount.format($0)) tokens" } ?? "\(TokenCount.format(tokens)) tokens（模型窗口未知）")
+                        row("已用", status.usage.contextWindow.map { "\(StatusFormat.short(tokens)) / \(StatusFormat.short($0)) tokens" } ?? "\(StatusFormat.short(tokens)) tokens（模型窗口未知）")
                     }
                     if let fraction = status.contextFraction {
                         GridRow {
@@ -196,10 +196,10 @@ struct StatusDetails: View {
                 }
                 if status.usage.sessionTokens != nil {
                     heading("本会话累计")
-                    if let value = status.usage.inputTokens { row("输入", TokenCount.format(value)) }
-                    if let value = status.usage.cacheReadTokens { row("缓存读取", TokenCount.format(value)) }
-                    if let value = status.usage.outputTokens { row("输出", TokenCount.format(value)) }
-                    if let value = status.usage.reasoningTokens { row("推理", TokenCount.format(value)) }
+                    if let value = status.usage.inputTokens { row("输入", StatusFormat.short(value)) }
+                    if let value = status.usage.cacheReadTokens { row("缓存读取", StatusFormat.short(value)) }
+                    if let value = status.usage.outputTokens { row("输出", StatusFormat.short(value)) }
+                    if let value = status.usage.reasoningTokens { row("推理", StatusFormat.short(value)) }
                     if status.usage.unrecordedTurns > 0 { row("未记录", "\(status.usage.unrecordedTurns) 轮") }
                 }
                 if let directory = status.directory {
@@ -277,7 +277,7 @@ enum StatusFormat {
         let reset = value.resetsAtUnixMs.map { Date(timeIntervalSince1970: Double($0) / 1000) }
         return limit(value.usedPercent, display, short: false) + "，" + QuotaResetFormat.text(reset)
     }
-    static func short(_ tokens: UInt64) -> String { TokenCount.format(tokens) }
+    static func short(_ tokens: UInt64) -> String { TokenCount.approximate(tokens) }
     static func cost(_ microUSD: UInt64) -> String {
         (Double(microUSD) / 1_000_000).formatted(.currency(code: "USD").precision(.fractionLength(microUSD < 10_000 ? 4 : 2)))
     }

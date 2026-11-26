@@ -66,7 +66,7 @@ struct MarkdownAttributedRenderer {
 
     static func render(_ source: String) -> [MarkdownSegment] {
         var renderer = MarkdownAttributedRenderer()
-        let document = Document(parsing: source)
+        let document = Document(parsing: cjkFriendly(source))
         for child in document.children { renderer.block(child, Context()) }
         renderer.flush()
         return renderer.segments
@@ -281,7 +281,7 @@ struct MarkdownAttributedRenderer {
             let font = attributes[.font] as? NSFont ?? TranscriptTypography.body
             switch node {
             case let text as Markdown.Text:
-                append(text.string, attributes)
+                append(text.string.replacingOccurrences(of: MarkdownAttributedRenderer.pairing, with: ""), attributes)
             case is SoftBreak:
                 result.append(NSAttributedString(string: " ", attributes: attributes))
             case is LineBreak:
@@ -322,5 +322,68 @@ struct MarkdownAttributedRenderer {
         let base: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: context.color]
         for child in markup.children { walk(child, base) }
         return result
+    }
+
+    /// Invisible, and neither space nor punctuation to CommonMark.
+    fileprivate static let pairing = "\u{200B}"
+
+    /// CommonMark's emphasis rules misread asterisks beside CJK punctuation:
+    /// `**结论：**这样` cannot close and `看**「重点」**` cannot open, so the
+    /// text shows its asterisks or bolds the wrong span. Outside code, a
+    /// zero-width space between the asterisks and such punctuation lets them
+    /// pair as written; the renderer drops it again.
+    static func cjkFriendly(_ source: String) -> String {
+        guard source.contains("*") else { return source }
+        func wide(_ character: Character?) -> Bool {
+            guard let character, character.isPunctuation, let scalar = character.unicodeScalars.first else { return false }
+            return !scalar.isASCII
+        }
+        var output = "", fence: Substring?
+        for (number, line) in source.split(separator: "\n", omittingEmptySubsequences: false).enumerated() {
+            if number > 0 { output += "\n" }
+            let trimmed = line.drop { $0 == " " }
+            if let marker = fence {
+                if trimmed.hasPrefix(marker) { fence = nil }
+                output += line
+                continue
+            }
+            if trimmed.hasPrefix("```") || trimmed.hasPrefix("~~~") {
+                fence = trimmed.prefix { $0 == trimmed.first }
+                output += line
+                continue
+            }
+            let characters = Array(line)
+            var index = 0
+            while index < characters.count {
+                let character = characters[index]
+                if character == "`" {
+                    // A code span runs to the next run of as many backticks.
+                    var ticks = 0
+                    while index + ticks < characters.count, characters[index + ticks] == "`" { ticks += 1 }
+                    var end = index + ticks
+                    var closed: Int?
+                    while end < characters.count {
+                        if characters[end] == "`" {
+                            var run = 0
+                            while end + run < characters.count, characters[end + run] == "`" { run += 1 }
+                            if run == ticks { closed = end + run; break }
+                            end += run
+                        } else { end += 1 }
+                    }
+                    let stop = closed ?? index + ticks
+                    output += String(characters[index ..< stop])
+                    index = stop
+                    continue
+                }
+                guard character == "*" else { output.append(character); index += 1; continue }
+                var end = index
+                while end < characters.count, characters[end] == "*" { end += 1 }
+                if wide(index > 0 ? characters[index - 1] : nil) { output += pairing }
+                output += String(characters[index ..< end])
+                if wide(end < characters.count ? characters[end] : nil) { output += pairing }
+                index = end
+            }
+        }
+        return output
     }
 }

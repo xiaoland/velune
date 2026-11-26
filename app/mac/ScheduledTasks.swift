@@ -7,7 +7,7 @@ import VeluneBindings
 
 struct ScheduledTasksMenuItem: View {
     @Environment(\.openWindow) private var openWindow
-    var body: some View { Button("定时任务…") { openWindow(id: "scheduled-tasks") } }
+    var body: some View { Button("定时任务") { openWindow(id: "scheduled-tasks") } }
 }
 
 // MARK: - Per-device model

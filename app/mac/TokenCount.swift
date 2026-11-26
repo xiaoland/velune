@@ -19,6 +19,21 @@ enum TokenCount {
         return String(value)
     }
 
+    /// A measured count to read at a glance: three significant digits
+    /// (521K, 52.1K, 1.05M). Editors keep `format`, which is exact.
+    static func approximate(_ value: UInt64) -> String {
+        guard value >= 1_000 else { return String(value) }
+        for (scale, suffix) in [(1e9, "B"), (1e6, "M"), (1e3, "K")] where Double(value) >= scale {
+            let scaled = Double(value) / scale
+            let digits = scaled >= 100 ? 0 : scaled >= 10 ? 1 : 2
+            let text = scaled.formatted(.number.locale(Locale(identifier: "en_US_POSIX")).grouping(.never).precision(.fractionLength(0...digits)))
+            // 999.9K rounds up to the next unit.
+            if text == "1000", suffix != "B" { return suffix == "K" ? "1M" : "1B" }
+            return text + suffix
+        }
+        return String(value)
+    }
+
     static func rate(_ value: Double) -> String {
         let (scale, suffix): (Double, String) = value >= 1_000_000_000 ? (1_000_000_000, "B") : value >= 1_000_000 ? (1_000_000, "M") : value >= 1_000 ? (1_000, "K") : (1, "")
         return (value / scale).formatted(.number.locale(Locale(identifier: "en_US_POSIX")).grouping(.never).precision(.fractionLength(0...2))) + suffix

@@ -86,10 +86,12 @@ import SwiftUI
         if !defaults.bool(forKey: migrationKey) {
             defaults.set(true, forKey: migrationKey)
             if defaults.bool(forKey: "NSQuitAlwaysKeepsWindows"), !context.store.isPreview {
-                let previous = context.store.windowWorkspaceJournal.lastSession()
-                for window in previous {
+                // Each off the one before, so they do not open on top of each other.
+                var shown: NSWindow?
+                for window in context.store.windowWorkspaceJournal.lastSession() {
                     guard let controller = make(window.kind, id: window.id, device: window.device, seed: nil, restoring: true) else { continue }
-                    controller.present(cascadingFrom: nil)
+                    controller.present(cascadingFrom: shown)
+                    shown = controller.window
                 }
                 if controllers.contains(where: { $0.kind == .workspace }) { return }
             }
@@ -164,16 +166,39 @@ import SwiftUI
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
-    /// Shown off the window it was opened from, or centred when it is the first.
+    /// New windows of a kind open with the frame the last one was moved or
+    /// resized to, the way a document window remembers its size.
+    private var frameName: NSWindow.FrameAutosaveName { kind == .workspace ? "velune.workspace" : "velune.conversation" }
+
+    /// The remembered frame, shown off the window it was opened from, or
+    /// centred when nothing is remembered and it is the first.
     func present(cascadingFrom source: NSWindow?) {
         guard let window else { return }
+        let remembered = window.setFrameUsingName(frameName) || adoptSceneFrame(window)
         if let source, source !== window, !source.styleMask.contains(.fullScreen) {
             window.setFrameTopLeftPoint(window.cascadeTopLeft(from: NSPoint(x: source.frame.minX, y: source.frame.maxY)))
-        } else {
+        } else if !remembered {
             window.center()
         }
         showWindow(nil)
     }
+
+    /// Once, the frame SwiftUI kept for this kind of window before windows were AppKit's.
+    private func adoptSceneFrame(_ window: NSWindow) -> Bool {
+        let scene = kind == .workspace ? "conversation" : "single-conversation"
+        guard let frame = UserDefaults.standard.string(forKey: "NSWindow Frame \(scene)-AppWindow-1") else { return false }
+        window.setFrame(from: frame)
+        window.saveFrame(usingName: frameName)
+        return true
+    }
+
+    private func rememberFrame() {
+        guard let window, window.isVisible, !window.styleMask.contains(.fullScreen) else { return }
+        window.saveFrame(usingName: frameName)
+    }
+
+    func windowDidEndLiveResize(_ notification: Notification) { rememberFrame() }
+    func windowDidMove(_ notification: Notification) { rememberFrame() }
 
     func window(_ window: NSWindow, willEncodeRestorableState state: NSCoder) {
         state.encode(id as NSString, forKey: WorkspaceWindowRestoration.idKey)

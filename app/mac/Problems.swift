@@ -125,7 +125,7 @@ struct ProblemsMenuItem: View {
     @ObservedObject private var shortcuts = KeyboardShortcutSettings.shared
     @Environment(\.openWindow) private var openWindow
     var body: some View {
-        Button("问题…") { openWindow(id: "problems") }.keyboardShortcut(shortcuts[.problems])
+        Button(ShortcutCommand.problems.title) { openWindow(id: "problems") }.keyboardShortcut(shortcuts[.problems])
     }
 }
 

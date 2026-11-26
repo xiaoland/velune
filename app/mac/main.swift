@@ -72,8 +72,8 @@ struct ConversationCommands: Commands {
                 .keyboardShortcut(shortcuts[.newWindow])
             item(.reopenClosedTab)
         }
-        // Not in place of the save items: an app without documents shows none of that group.
-        // Above the system's Close, which keeps ⌘W too, so the menu takes these first.
+        // The system's Close and Close All would repeat these two.
+        CommandGroup(replacing: .saveItem) {}
         CommandGroup(after: .newItem) {
             Divider()
             // A conversation window closes its shown tab; the last one closes the window. Any other window closes.
@@ -125,6 +125,12 @@ struct ConversationCommands: Commands {
                 item(.choosePermission)
                 item(.chooseWorkingDirectory)
                 Divider()
+                Button("后退") { target?.window.focused.goBack() }
+                    .keyboardShortcut(shortcuts[.back])
+                    .disabled(target?.store.backHistory.isEmpty != false)
+                Button("前进") { target?.window.focused.goForward() }
+                    .keyboardShortcut(shortcuts[.forward])
+                    .disabled(target?.store.forwardHistory.isEmpty != false)
                 item(.nextAttention)
                 item(.reload)
                 Divider()
@@ -160,14 +166,6 @@ struct ConversationCommands: Commands {
                     .keyboardShortcut(shortcuts[.closeSplit])
                     .disabled(target?.window.isSplit != true)
             }
-            followingConversation {
-                Button("后退") { target?.window.focused.goBack() }
-                    .keyboardShortcut(shortcuts[.back])
-                    .disabled(target?.store.backHistory.isEmpty != false)
-                Button("前进") { target?.window.focused.goForward() }
-                    .keyboardShortcut(shortcuts[.forward])
-                    .disabled(target?.store.forwardHistory.isEmpty != false)
-            }
             Divider()
             followingFocus {
                 Button("下一个分屏") { target?.window.focusNeighbour(forward: true) }
@@ -177,10 +175,13 @@ struct ConversationCommands: Commands {
                     .keyboardShortcut(shortcuts[.previousPane])
                     .disabled(target?.window.isSplit != true)
                 Divider()
-                ForEach(ShortcutCommand.numberedTabs) { command in
-                    Button(command.title) { target?.window.perform(command) }
-                        .keyboardShortcut(shortcuts[command])
-                        .disabled(target?.window.canPerform(command) != true)
+                // Nine items in one: their keys work from the submenu as well.
+                Menu("转到组内标签页") {
+                    ForEach(ShortcutCommand.numberedTabs) { command in
+                        Button("第 \(command.tabPosition ?? 0) 个标签页") { target?.window.perform(command) }
+                            .keyboardShortcut(shortcuts[command])
+                            .disabled(target?.window.canPerform(command) != true)
+                    }
                 }
                 Button("下一个标签页") { target?.window.selectNeighbourTab(forward: true) }
                     .keyboardShortcut(shortcuts[.nextTab])
@@ -219,7 +220,7 @@ struct ConversationCommands: Commands {
             }
             Divider()
             ForEach(ToolWindowKind.allCases, id: \.self) { kind in
-                Picker("\(kind.title)位置", selection: Binding(get: { target?.window.choice(for: kind) ?? .place(.builtIn) },
+                Picker(kind.title.last?.isASCII == true ? "\(kind.title) 位置" : "\(kind.title)位置", selection: Binding(get: { target?.window.choice(for: kind) ?? .place(.builtIn) },
                                                            set: { target?.window.choose($0, for: kind) })) {
                     ForEach(ToolChoice.all(for: kind), id: \.choice) { Text($0.title).tag($0.choice) }
                 }
@@ -554,6 +555,7 @@ struct VeluneApp: App {
         .defaultSize(width: 760, height: 480)
         .defaultLaunchBehavior(.suppressed)
         .handlesExternalEvents(matching: [])
+        .commandsRemoved()
         .commands {
             CommandGroup(replacing: .appInfo) {
                 Button("关于 Velune") {
@@ -590,12 +592,13 @@ struct VeluneApp: App {
                 }
             }
             ConversationCommands()
-            CommandGroup(after: .sidebar) {
+            CommandGroup(before: .windowList) {
                 AnalyticsMenuItem()
                 ResourceLibraryMenuItem()
                 ProblemsMenuItem(store: store)
                 ScheduledTasksMenuItem()
                 ArchivedConversationsMenuItem()
+                Divider()
             }
 
         }
@@ -604,21 +607,25 @@ struct VeluneApp: App {
         }.defaultSize(width: 1040, height: 700)
         .defaultLaunchBehavior(.suppressed)
         .handlesExternalEvents(matching: [])
+        .commandsRemoved()
         Window("已归档会话", id: "archived-conversations") {
             ArchivedConversationsView(local: store, hub: DeviceHub.shared).frame(minWidth: 680, minHeight: 420)
         }.defaultSize(width: 920, height: 640)
         .defaultLaunchBehavior(.suppressed)
         .handlesExternalEvents(matching: [])
+        .commandsRemoved()
         Window("资源库", id: "resource-library") {
             ResourceLibraryView(store: store).frame(minWidth: 820, minHeight: 500)
         }.defaultSize(width: 1040, height: 680)
         .defaultLaunchBehavior(.suppressed)
         .handlesExternalEvents(matching: [])
+        .commandsRemoved()
         Window("分析", id: "analytics") {
             AnalyticsView(store: store).frame(minWidth: 680, minHeight: 460)
         }.defaultSize(width: 860, height: 640)
         .defaultLaunchBehavior(.suppressed)
         .handlesExternalEvents(matching: [])
+        .commandsRemoved()
         Settings {
             SettingsView(store: store)
                 .applicationAppearance()

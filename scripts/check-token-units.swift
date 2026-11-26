@@ -23,6 +23,10 @@ struct TokenCountChecks {
         precondition(!TokenCount.validLimits(context: "1K", output: "1M"))
         precondition(!TokenCount.validLimits(context: "wrong", output: ""))
         precondition(TokenCount.rate(1500) == "1.5K")
+        for (count, text): (UInt64, String) in [(0, "0"), (999, "999"), (1000, "1K"), (8192, "8.19K"), (52143, "52.1K"), (521433, "521K"),
+                                                (999_499, "999K"), (999_999, "1M"), (1_050_000, "1.05M"), (12_345_678, "12.3M"), (4_294_967_295, "4.29B")] {
+            precondition(TokenCount.approximate(count) == text, "\(count): \(TokenCount.approximate(count))")
+        }
         print("Swift token 单位与无损回读检查通过")
     }
 }

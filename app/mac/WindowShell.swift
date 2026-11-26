@@ -131,13 +131,20 @@ enum ConversationToolbar {
         }
     }
 
+    /// The width an area opens at: where its divider was last let go, else
+    /// one a conversation title reads in, not the narrowest the area allows.
+    private func width(_ side: DockSide) -> Double {
+        (side == .left ? model.tools.leftWidth : model.tools.rightWidth) ?? (side == .left ? 260 : 280)
+    }
+
     /// The areas as the window's tools have them.
     func sync(animated: Bool) {
         let tools = model.tools
-        for (item, side, width) in [(sidebarItem, DockSide.left, tools.leftWidth), (inspectorItem, .right, tools.rightWidth)] {
+        for (item, side) in [(sidebarItem, DockSide.left), (inspectorItem, .right)] {
             let collapsed = tools.tools(in: side).isEmpty
-            // A closed area opens at its saved width; the split keeps it after that.
-            if !collapsed, item.isCollapsed, !sized.contains(side), let width {
+            // A closed area opens at its width; the split keeps it after that.
+            if !collapsed, item.isCollapsed, !sized.contains(side) {
+                let width = self.width(side)
                 let view = item.viewController.view
                 view.setFrameSize(NSSize(width: CGFloat(width), height: view.frame.height))
                 sized.insert(side)
@@ -165,19 +172,17 @@ enum ConversationToolbar {
     private var sizingScheduled = false
 
     private var needsSavedWidths: Bool {
-        (!sized.contains(.left) && !sidebarItem.isCollapsed && model.tools.leftWidth != nil)
-            || (!sized.contains(.right) && !inspectorItem.isCollapsed && model.tools.rightWidth != nil)
+        (!sized.contains(.left) && !sidebarItem.isCollapsed) || (!sized.contains(.right) && !inspectorItem.isCollapsed)
     }
 
     private func applySavedWidths() {
-        let tools = model.tools
-        if !sized.contains(.left), !sidebarItem.isCollapsed, let width = tools.leftWidth {
+        if !sized.contains(.left), !sidebarItem.isCollapsed {
             sized.insert(.left)
-            splitView.setPosition(CGFloat(width), ofDividerAt: 0)
+            splitView.setPosition(CGFloat(width(.left)), ofDividerAt: 0)
         }
-        if !sized.contains(.right), !inspectorItem.isCollapsed, let width = tools.rightWidth {
+        if !sized.contains(.right), !inspectorItem.isCollapsed {
             sized.insert(.right)
-            splitView.setPosition(splitView.bounds.width - CGFloat(width) - splitView.dividerThickness, ofDividerAt: 1)
+            splitView.setPosition(splitView.bounds.width - CGFloat(width(.right)) - splitView.dividerThickness, ofDividerAt: 1)
         }
         splitView.layoutSubtreeIfNeeded()
     }
@@ -216,14 +221,15 @@ extension RunLoop {
 }
 
 /// A toolbar button drawn as AppKit draws its own: an image, a toggle's on
-/// state, and the action as a closure.
+/// state when it shows something, and the action as a closure.
 @MainActor final class ToolbarButtonView: NSButton {
     var perform: (() -> Void)?
 
-    init(symbol: String, label: String, identifier: String) {
+    init(symbol: String, label: String, identifier: String, toggles: Bool) {
         super.init(frame: .zero)
         bezelStyle = .toolbar
-        setButtonType(.pushOnPushOff)
+        // A toggle is a checkbox to accessibility; an action is a button.
+        setButtonType(toggles ? .pushOnPushOff : .momentaryPushIn)
         image = NSImage(systemSymbolName: symbol, accessibilityDescription: label)
         imagePosition = .imageOnly
         setAccessibilityLabel(label)
@@ -348,7 +354,8 @@ extension RunLoop {
         case .operations:
             item.view = hosting(ConversationOperationStatus(aggregated: model.aggregated).fixedSize())
         default:
-            let button = ToolbarButtonView(symbol: symbol(kind), label: title(kind), identifier: accessibilityIdentifier(kind))
+            let button = ToolbarButtonView(symbol: symbol(kind), label: title(kind), identifier: accessibilityIdentifier(kind),
+                                           toggles: [.outline, .subAgents, .backgroundTasks, .pin].contains(kind))
             button.perform = { [weak self] in self?.perform(kind) }
             buttons[kind] = button
             item.view = button
