@@ -62,6 +62,20 @@ jobs:
         run: |
           set -euo pipefail
           bash -n scripts/build-macos.sh scripts/build-ios.sh scripts/build-ios-native.sh scripts/build-android.sh scripts/build-android-native.sh
+      - name: Set up Node for the runtime helper checks
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.18.0'
+      - name: Run the synthetic script checks
+        run: |
+          set -euo pipefail
+          for check in build-cache build-support claude-history composer-migration runtime-start-policy \
+                       service-tier-migration macos-dev; do
+            python3 "scripts/check-$check.py"
+          done
+          for check in pi-background-work pi-subagent-metadata runtime-background-tasks; do
+            node "scripts/check-$check.mjs"
+          done
       - name: Set up Go for the Linux RelayKit link prerequisite
         if: steps.changes.outputs.rust == 'true'
         uses: actions/setup-go@v5

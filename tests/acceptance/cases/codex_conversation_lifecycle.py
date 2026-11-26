@@ -1,8 +1,8 @@
 """An existing Codex conversation across send, cold reopen, an external
 writer, queue, stop and restart. Real Codex CLI, loopback model, private HOME.
 
-Migrated from scripts/check-conversation-parity.py; run it against two builds
-and compare the manifests to check parity between them.
+Run it against two builds and compare the manifests to check parity between
+them.
 """
 from __future__ import annotations
 
