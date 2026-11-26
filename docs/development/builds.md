@@ -83,8 +83,12 @@ python3 scripts/build-cache.py prune --domain host-rust --budget-gib 16
 python3 scripts/build-cache.py prune --domain host-rust --budget-gib 16 --apply
 ```
 
+`report` 另外给出用途域以外目录的合计：平台生成目录与 App 之外，任务自建的 target-dir、复制进 `target/checks` 的源码树和任务证据也在这里。本工具不回收它们；任务结束时由所属任务删除自己的输出。2026-11 的盘点中，这部分有 122 个无人引用的目录，物理占用约 86 GiB，与三个用途域之和相当。
+
+macOS 开发 profile 的调试信息留在 `deps/*.rcgu.o`，增量重编每次以新文件名写出一整组对象，旧组不再被读取，Cargo 与 rustc 都不删除。`host-rust` 因此随编辑次数增长，2026-11 实测 20 天从约 4.6 GiB 涨到 66.5 GiB（物理），其中约 26 GiB 是无引用的调试对象，其余主要是旧变体（velune-application 一个 crate 就有 44 套）及其增量缓存；超出预算后整体回收是预期的维护方式。
+
 普通构建不会自动清缓存。维护仅在超预算时回收所选整个用途域，下次对应构建需要重新预热；没有按mtime或Cargo内部hash猜测删除的垃圾回收器。apply先取得所有平台锁和已知Cargo缓存锁；活跃构建、外部路径、symlink／junction及含共享链接的缓存拒绝回收。下载缓存、runtime-support、可运行App、目标生成目录与用户数据不属于这些用途域。
 
-历史目录只有明确验证替代路径并列入脚本退役白名单后才能使用 `--retired <name>` 回收。旧 `target/debug`、`ios-rust`、`ios-bindgen`、`android-bindgen` 和根级Android triple已经由新链替代；旧release及仍使用的packaged输出保持受保护。空间统计以分配块为主，Windows缺少块统计时用文件大小，APFS共享块与并行磁盘活动使实际释放量不一定等于报告大小。
+空间统计以分配块为主，Windows缺少块统计时用文件大小。APFS 克隆共享块，`du` 与本报告都可能高估：同一批对象在一个镜像工作树中统计为 83 GiB，删除后卷可用空间只增加约 2.5 GiB。判断实际占用以删除前后的卷可用空间为准。
 
 不要每次build先clean，也不要复制整套编译树作为任务证据。保留日志、计时、来源和必要截图；临时worktree清理前可保留有用的标准热缓存，不能覆盖其它owner正在使用的域。新机器／跨worktree优先共享下载及固定工具，生成目录和bundle不共写。
