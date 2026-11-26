@@ -1119,7 +1119,9 @@ struct WindowSeed: Codable, Hashable {
     /// conversation, then start reading. A lone new tab opens the list's
     /// first conversation.
     /// A window the system reopens (`reopened`) restores its own recovery
-    /// point only, never another window's latest one.
+    /// point only, never another window's latest one. `restoring` hands an
+    /// arrangement in directly, as checks over preview data do (they have no
+    /// journal); windows restore from their journal entry.
     func start(restoring saved: SavedWindowLayout?, seed: WindowSeed?, persistenceID: String? = nil, reopened: Bool = false) {
         closed = false
         guard !started else { return }
@@ -1130,26 +1132,25 @@ struct WindowSeed: Codable, Hashable {
             workspaceRestored = true
             persistWorkspace()
         }
-        // The archived WindowGroup value survives native window renumbering.
-        // SceneStorage may be absent on restoration, so its fresh UUID cannot
-        // be the only address of a seeded window's recovery point.
+        // A window opened for a seed is named by it (`WorkspaceWindows.open`);
+        // that name is its journal entry, as for a window the system reopens.
         let recoveryID = seed?.id.uuidString ?? persistenceID
         self.persistenceID = recoveryID
         let aggregatingDevices = kind == .workspace && device == nil && hub != nil
-        let sceneSaved: SavedWindowLayout? = saved.flatMap {
+        let given: SavedWindowLayout? = saved.flatMap {
             let candidate = aggregatingDevices ? $0.migratingToAggregatedWorkspace() : $0
             if let tab = seed?.tab, Self.handoff[tab] == nil,
                !candidate.panes.values.contains(where: { $0.tabs.contains(tab) }) { return nil }
             return candidate.isWhole && (candidate.windowKind == nil || candidate.windowKind == kind)
                 && (candidate.windowDevice == nil || candidate.windowDevice == SavedWindowLayout.ExecutionDevice(device)) ? candidate : nil
         }
-        let journalSaved = recoveryID.flatMap { application.windowWorkspaceJournal.restore(id: $0, recoverLatest: !reopened && seed == nil && sceneSaved == nil && kind == .workspace, kind: kind, device: device, aggregatingDevices: aggregatingDevices, legacyTabID: seed?.tab) }
-        let saved = journalSaved ?? sceneSaved
+        let journalSaved = recoveryID.flatMap { application.windowWorkspaceJournal.restore(id: $0, recoverLatest: !reopened && seed == nil && given == nil && kind == .workspace, kind: kind, device: device, aggregatingDevices: aggregatingDevices) }
+        let saved = journalSaved ?? given
         let recoveryBranch = seed?.tab.flatMap { Self.handoff[$0] } != nil ? "handoff" : saved != nil ? "snapshot" : seed?.conversationID != nil ? "conversation" : seed?.tab != nil ? "missingHandoff" : "default"
         let recoveryKind = kind.sceneID
         let modelID = restorationLifecycleID.uuidString
         let journalTabs = journalSaved?.panes.values.flatMap(\.tabs).map(\.uuidString).sorted().joined(separator: ",") ?? "none"
-        windowRecoveryLogger.debug("phase=modelStart model=\(modelID, privacy: .public) kind=\(recoveryKind, privacy: .public) recovery=\(recoveryID ?? "none", privacy: .public) branch=\(recoveryBranch, privacy: .public) journal=\(journalSaved != nil) journalTabs=\(journalTabs, privacy: .public) scene=\(sceneSaved != nil)")
+        windowRecoveryLogger.debug("phase=modelStart model=\(modelID, privacy: .public) kind=\(recoveryKind, privacy: .public) recovery=\(recoveryID ?? "none", privacy: .public) branch=\(recoveryBranch, privacy: .public) journal=\(journalSaved != nil) journalTabs=\(journalTabs, privacy: .public) given=\(given != nil)")
         list.start(loadFirstConversation: false)
         // A layout the system restores below replaces this one.
         switch kind {

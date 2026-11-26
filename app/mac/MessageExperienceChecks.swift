@@ -427,26 +427,18 @@ import VeluneBindings
     let coldSeeded = ConversationWindowModel(application: device, kind: .single)
     coldSeeded.start(restoring: firstSeeded.savedLayout, seed: archivedSeed, persistenceID: UUID().uuidString)
     precondition(coldSeeded.savedLayout.panes == keptLayout.panes && coldSeeded.savedLayout.tools == keptLayout.tools,
-                 "恢复值仍指向保留的窗口；SceneStorage丢失或串入已关闭窗口的布局不能改变归属")
+                 "恢复值仍指向保留的窗口；直接给出的已关闭窗口布局不能改变归属")
     precondition(device.windowWorkspaceJournal.restore(id: keptSeed.id.uuidString, recoverLatest: false, kind: .single)?.panes == keptLayout.panes)
     let replacedStartingTab = ConversationWindowModel(application: device, kind: .single)
     replacedStartingTab.start(restoring: firstSeeded.savedLayout, seed: WindowSeed(id: keptSeed.id, tab: UUID()), persistenceID: UUID().uuidString)
     precondition(replacedStartingTab.savedLayout.panes == keptLayout.panes,
                  "canonical窗口身份仍可恢复已合法替换起始tab的布局")
     let legacyLayout = ConversationWindowModel(application: device, kind: .single).savedLayout
-    let legacyID = UUID().uuidString
-    device.windowWorkspaceJournal.save(legacyLayout, id: legacyID)
-    device.windowWorkspaceJournal.flush()
-    let legacySeed = WindowSeed(tab: legacyLayout.panes.values.first!.tabs[0])
-    let legacyRecovery = ConversationWindowModel(application: device, kind: .single)
-    legacyRecovery.start(restoring: nil, seed: legacySeed, persistenceID: UUID().uuidString)
-    precondition(legacyRecovery.savedLayout.panes == legacyLayout.panes,
-                 "旧handoff恢复点可由同设备、同窗口类型的精确tab身份迁移，不借用latest")
     let missingSeed = ConversationWindowModel(application: device, kind: .single)
     missingSeed.start(restoring: firstSeeded.savedLayout, seed: WindowSeed(tab: UUID()), persistenceID: UUID().uuidString)
     precondition(missingSeed.focused.store.reachingConversationID == nil,
                  "丢失handoff和恢复点时不得自动载入首个无关会话")
-    note("PASS seeded window recovery: archived seed wins over fresh SceneStorage identity and wrong scene contents; exact legacy tab recovery; missing handoff stays blank")
+    note("PASS seeded window recovery: the seed's window name wins over a handed-in layout of another window; missing handoff stays blank")
     let draftSeed = WindowSeed(tab: legacyLayout.panes.values.first!.tabs[0])
     var draftLayout = legacyLayout
     let draftText = "恢复中的非空草稿\n保留执行前输入"
@@ -463,7 +455,7 @@ import VeluneBindings
     let secondDraftRestore = ConversationWindowModel(application: device, kind: .single)
     secondDraftRestore.start(restoring: nil, seed: draftSeed, persistenceID: UUID().uuidString)
     precondition(secondDraftRestore.savedLayout.panes == draftLayout.panes,
-                 "SceneStorage紧接着重新挂载时仍恢复原tab，不读取半恢复布局")
+                 "紧接着再次启动同一窗口时仍恢复原tab，不读取半恢复布局")
     let draftSaved = secondDraftRestore.savedLayout
     precondition(draftSaved.composer?.text == draftText || draftSaved.composerWorkspace?.drafts.contains(where: { $0.state.text == draftText }) == true,
                  "抑制恢复中写入后仍须完整保留草稿")

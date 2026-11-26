@@ -204,7 +204,7 @@ import VeluneBindings
     let original = home.appendingPathComponent("legacy-journal/mac-window-workspaces/\(legacyID).json")
     let bytes = try! Data(contentsOf: original)
     precondition(journal.restore(id: legacyID, recoverLatest: false, aggregatingDevices: true) == migrated,
-                 "SceneStorage 丢失时，journal 的同窗口旧远端恢复点仍会迁移")
+                 "没有直接给出布局时，journal 的同窗口旧远端恢复点仍会迁移")
     precondition(try! Data(contentsOf: original.appendingPathExtension("before-aggregation.bak")) == bytes)
     journal.save(migrated, id: legacyID)
     journal.flush()

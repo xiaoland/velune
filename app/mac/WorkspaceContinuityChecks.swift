@@ -84,7 +84,7 @@ import Foundation
     invalidLayout.focused = UUID()
     let invalidBytes = try! JSONEncoder().encode(invalidLayout)
     precondition((try? SavedWindowLayout.decodeKnown(invalidBytes)) == nil,
-                 "SceneStorage 与 journal 共用的解码入口拒绝不完整窗口")
+                 "直接给出与 journal 读出的布局共用的解码入口拒绝不完整窗口")
     let invalidID = UUID().uuidString
     journal.save(invalidLayout, id: invalidID)
     journal.flush()
@@ -230,7 +230,7 @@ import Foundation
         let restored = ConversationWindowModel(application: startDevice, kind: .workspace)
         restored.start(restoring: rejectedScene, seed: nil, persistenceID: UUID().uuidString)
         precondition(restored.savedLayout.layout == localLayout.layout && restored.savedLayout.panes == localLayout.panes,
-                     "无效SceneStorage不能阻止同设备同kind有效journal回退")
+                     "无效的直接给出布局不能阻止同设备同kind有效journal回退")
     }
     var validScene = remoteLayout
     validScene.windowDevice = .local
