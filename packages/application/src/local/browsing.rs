@@ -192,6 +192,25 @@ pub(super) struct HistorySnapshot {
     pub(super) retention: DataRetention,
 }
 impl HistorySnapshot {
+    fn set_native_input(snapshot: &mut ConversationSnapshot, available: bool) {
+        // The next-turn model is supplied on submission. Native child
+        // conversations cannot accept direct user input.
+        snapshot.actions.can_send =
+            available && snapshot.conversation.parent_conversation_id.is_none();
+    }
+
+    pub(super) fn detach_execution(&mut self, can_continue: bool) {
+        Self::set_native_input(&mut self.snapshot, can_continue);
+        self.actions.input_access = Default::default();
+        self.actions.can_cancel = false;
+        if matches!(self.run_state, RunState::Running | RunState::Stopping) {
+            self.run_state = RunState::Failed;
+            self.executions.finish(None);
+        }
+        self.pending_interactions
+            .retain(|interaction| !interaction.requires_live_reply());
+    }
+
     pub(super) fn into_retained(self) -> Retained<ConversationSnapshot> {
         Retained::from_parts(self.snapshot, self.retention)
     }
@@ -460,9 +479,7 @@ impl HistoryRead {
             }
             Reader::Acp(_) => unreachable!("ACP history has its own snapshot"),
         }
-        // The next-turn model is supplied when the user submits. Sub-agent
-        // conversations remain read-only.
-        snapshot.actions.can_send = snapshot.conversation.parent_conversation_id.is_none();
+        HistorySnapshot::set_native_input(&mut snapshot, true);
         Ok(LoadedHistory {
             source,
             prepared_resources,
@@ -1045,8 +1062,7 @@ impl CoreRuntime {
 
     pub(super) fn invalidate_execution(&mut self) -> Result<(), RuntimeError> {
         self.ensure_work_ended()?;
-        let can_restore = !self.session.requires_live_connection();
-        let mut snapshot = self.owned_native_snapshot()?;
+        let mut snapshot = self.owned_history_for_release()?;
         // Closing execution leaves its native history view usable. A read-only
         // view has no execution owner, so restoration must follow its source.
         let source = snapshot
@@ -1065,14 +1081,7 @@ impl CoreRuntime {
                     view.model_record_key = None;
                 }
                 view.run_state = RunState::Idle;
-                view.pending_interactions
-                    .retain(|interaction| !interaction.requires_live_reply());
-                view.actions = ConversationActions {
-                    input_access: Default::default(),
-                    can_send: can_restore && view.conversation.parent_conversation_id.is_none(),
-                    can_cancel: false,
-                    can_switch: true,
-                };
+                view.actions.can_switch = true;
                 view.revision = view.revision.saturating_add(1);
                 self.session.model_record_key = view.model_record_key.clone();
             }
@@ -1092,7 +1101,7 @@ impl CoreRuntime {
         use super::model_selection::ConversationStart;
         let snapshot = snapshot.into().into_retained();
         let is_new = matches!(start, ConversationStart::New);
-        let previous = self.owned_native_snapshot()?;
+        let previous = self.owned_history_for_release()?;
         let previous_runtime = self.next_turn_runtime_id.clone();
         let runtime_id = snapshot.conversation.runtime_id.clone();
         let runtime = self.runtime_instance(&runtime_id)?.clone();

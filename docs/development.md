@@ -54,6 +54,8 @@
 
 [运行时依赖](development/runtimes.md)：外部 CLI／Node 版本、runtime-support 安装、历史 parser 与 SSH 前提。
 
+外部 Harness 发布新版或出现版本准入问题时，按[运行时升级 SOP](development/runtime-upgrades.md)复验兼容性并更新适配器。
+
 ## 本地配对 CLI
 
 [配对 CLI](development/remote-cli.md)：连接当前应用的本地接口、邀请、批准、连接和撤销。

@@ -162,7 +162,7 @@ pub const PI_VERSIONS: Versions = Versions::Cli {
     through: "1.4.0",
 };
 /// Highest supported Codex client version used as the subscription default.
-pub const CODEX_LATEST_SUPPORTED_VERSION: &str = "0.170.0";
+pub const CODEX_LATEST_SUPPORTED_VERSION: &str = "0.171.0";
 
 pub const ANTIGRAVITY_FAMILY: &str = "antigravity";
 // 1.5.1 exposes the account's models to ACP clients under their own names.

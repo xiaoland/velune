@@ -155,6 +155,7 @@ struct Operation {
     one_way: bool,
     reserved: bool,
     turn_result: bool,
+    deadline_is_local: bool,
     write_deadline: Instant,
     response_deadline: Option<Instant>,
     failed: bool,
@@ -163,6 +164,17 @@ struct Operation {
     outcome_seen: bool,
     physical_write: Option<crate::WriteFact>,
 }
+
+impl Operation {
+    fn install_deadline(&self) -> Option<Instant> {
+        if self.deadline_is_local {
+            None
+        } else {
+            self.response_deadline
+        }
+    }
+}
+
 pub(super) struct Port {
     generation: u64,
     session_generation: u64,
@@ -196,7 +208,7 @@ impl Port {
         self.evidence.push_back(PiReceipt {
             ticket: operation.ticket,
             wire_id: operation.id.clone(),
-            deadline: operation.response_deadline,
+            deadline: operation.install_deadline(),
             phase,
             physical_write: operation.physical_write,
         });
@@ -249,13 +261,14 @@ impl Port {
             let terminal = !matches!(outcome, WriteOutcome::ObservationTimeout { .. });
             let current =
                 self.operations[&seq].ticket.session_generation == self.session_generation;
+            let deadline_is_local = self.operations[&seq].deadline_is_local;
             match outcome {
                 WriteOutcome::Written(completion) => {
                     let op = self.operations.get_mut(&seq).unwrap();
                     op.written = true;
                     op.physical_write = Some(crate::WriteFact::Written(completion));
                     self.evidence(seq, PiReceiptPhase::Written);
-                    if !completion.met_deadline() && current {
+                    if !completion.met_deadline() && current && !deadline_is_local {
                         self.fail("Pi physically Written after deadline; cleanup required".into());
                     }
                 }
@@ -264,7 +277,7 @@ impl Port {
                     op.physical_write = Some(crate::WriteFact::NotWritten);
                     op.failed = true;
                     self.evidence(seq, PiReceiptPhase::NotSent);
-                    if current {
+                    if current && !deadline_is_local {
                         self.fail(format!("Pi known not written: {error}"));
                     }
                 }
@@ -276,7 +289,7 @@ impl Port {
                     }
                 }
                 WriteOutcome::ObservationTimeout { .. } => {
-                    if current {
+                    if current && !deadline_is_local {
                         self.fail("Pi write not yet observed; receipt retained".into());
                     }
                 }
@@ -284,7 +297,7 @@ impl Port {
             if terminal {
                 let op = self.operations.get_mut(&seq).unwrap();
                 op.write = None;
-                if op.one_way || op.outcome_seen || !op.written {
+                if op.one_way || op.outcome_seen || !op.written || (deadline_is_local && op.failed) {
                     self.remove(seq);
                 }
             }
@@ -317,8 +330,18 @@ impl Port {
                 "Pi {} deadline expired; delivery/outcome indeterminate",
                 operation.command
             );
+            let deadline_is_local = operation.deadline_is_local;
+            let write_settled = operation.write.is_none();
             self.fail_operation(seq, detail.clone());
-            self.fail(detail);
+            if deadline_is_local {
+                // A late or missing metadata response does not affect turn
+                // delivery. Keep only physical writes still being observed.
+                if write_settled {
+                    self.remove(seq);
+                }
+            } else {
+                self.fail(detail);
+            }
         }
     }
     fn observe_record(&mut self, value: Value, output: &mut Vec<PiPortItem>) {
@@ -336,6 +359,7 @@ impl Port {
             self.operations.iter().find_map(|(seq, op)| {
                 (!op.one_way
                     && !op.outcome_seen
+                    && !(op.deadline_is_local && op.failed)
                     && value["id"].as_str() == Some(&op.id)
                     && value["command"].as_str() == Some(&op.command))
                 .then_some(*seq)
@@ -353,7 +377,7 @@ impl Port {
                 output.push(PiPortItem::OperationEvent {
                     ticket: op.ticket,
                     event: value.clone(),
-                    deadline: op.response_deadline,
+                    deadline: op.install_deadline(),
                 });
             }
             if op.turn_result
@@ -438,6 +462,8 @@ impl Client {
         let reserved = operation.reserved();
         let cancellation = matches!(operation, PiOperation::ClearQueue | PiOperation::Abort);
         let turn_result = operation.turn_result();
+        let deadline_is_local =
+            matches!(operation, PiOperation::SetName(_) | PiOperation::Background(_));
         let port = self.port.as_mut().unwrap();
         port.settle();
         if let Some(error) = &port.failed {
@@ -534,6 +560,7 @@ impl Client {
                 one_way: method == "extension_ui_response",
                 reserved,
                 turn_result,
+                deadline_is_local,
                 write_deadline,
                 response_deadline,
                 failed: false,
@@ -755,9 +782,12 @@ impl Client {
                             // let a dependent abort escape a refused clear_queue.
                             let detail = format!("Pi write not admitted: {}", rejected.error);
                             drop(rejected);
+                            let deadline_is_local = op.deadline_is_local;
                             port.evidence(*seq, PiReceiptPhase::NotSent);
                             port.remove(*seq);
-                            port.fail(detail);
+                            if !deadline_is_local {
+                                port.fail(detail);
+                            }
                             continue;
                         }
                     }

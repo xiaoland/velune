@@ -347,7 +347,7 @@ impl CoreRuntime {
                 }) => Some((provider_id.clone(), model_id.as_str())),
                 _ => None,
             };
-            let previous = self.owned_native_snapshot()?;
+            let previous = self.owned_history_for_release()?;
             let previous_selection = self.session.model_selection.clone();
             let result = self.prepare_native_snapshot(&snapshot, native, start, project);
             if let Err(error) = result {

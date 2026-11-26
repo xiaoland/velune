@@ -601,6 +601,27 @@ impl CoreRuntime {
         snapshot.model_record_key = self.session.model_record_key.clone();
         Ok(Some(snapshot))
     }
+    /// Preserve a cold view's source capability when discarding connection state.
+    fn owned_history_for_release(&self) -> Result<Option<browsing::HistorySnapshot>, RuntimeError> {
+        let mut source = self.owned_native_snapshot()?;
+        if let Some(history) = &mut source {
+            let can_continue = if self.session.active_state.live().is_some() {
+                self.session.side.is_some()
+                    || (!self.session.requires_live_connection() && self.execution_source_is_current())
+            } else {
+                history.actions.can_send
+            };
+            history.detach_execution(can_continue);
+        }
+        Ok(source)
+    }
+
+    fn execution_source_is_current(&self) -> bool {
+        self.session.execution_configuration.as_ref().is_none_or(|execution| {
+            self.runtime_instance(&execution.runtime.id)
+                .is_ok_and(|runtime| runtime.enabled && self.same_runtime_source(&execution.runtime, runtime))
+        })
+    }
     fn native_snapshot(&self) -> Option<crate::conversation::ConversationSnapshot> {
         self.session.projected().cloned().map(|mut snapshot| {
             snapshot.model_record_key = self.session.model_record_key.clone();
@@ -899,9 +920,20 @@ impl CoreRuntime {
             return Ok(());
         }
         if let ActiveState::Pending(pending) = &mut self.session.active_state {
-            let Some((ticket, state, outcome)) = pending.complete() else {
+            let Some((ticket, mut state, outcome)) = pending.complete() else {
                 return Ok(());
             };
+            if outcome.cleanup && let ActiveState::History(history) = &mut state {
+                let recreatable_draft = self.session.unsubmitted_draft.as_ref().is_some_and(|draft| {
+                    self.runtime_instance(&draft.runtime_id).is_ok_and(|runtime| {
+                        velune_agent_runtime::version::variant(runtime.type_id).persists_on_first_turn
+                    })
+                });
+                let can_continue = self.session.side.is_some()
+                    || ((self.session.can_reopen_execution() || recreatable_draft)
+                        && self.execution_source_is_current());
+                history.detach_execution(can_continue);
+            }
             self.session.active_state = state;
             let result = self.apply_execution_outcome(outcome);
             self.execution_results
@@ -963,7 +995,6 @@ impl CoreRuntime {
             })
         {
             if !self.session.executing() {
-                self.finish_managed_backend_turn();
                 self.session.pi_cleanup_required = true;
                 let _ = self.start_native_cleanup_worker();
                 // Consume the outcome when the worker returns the projection.
@@ -1036,16 +1067,12 @@ impl CoreRuntime {
         {
             tracing::warn!(target: "velune_application", event = "gateway_release_restore_failed", detail = %error);
         }
-        let snapshot = self.native_snapshot();
+        let snapshot = self.owned_history_for_release();
         let selection = self.session.model_selection.clone();
         let result = self.shutdown_active();
         self.session.model_selection = selection;
-        if let Some(mut snapshot) = snapshot {
+        if let Some(snapshot) = snapshot? {
             self.session.model_record_key = snapshot.model_record_key.clone();
-            snapshot
-                .pending_interactions
-                .retain(|interaction| !interaction.requires_live_reply());
-            snapshot.actions.can_cancel = false;
             self.session.set_history(snapshot);
         }
         synchronized.and(result)

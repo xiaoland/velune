@@ -303,7 +303,7 @@ extension InputAccess {
         case .externalController: "可继续编辑草稿，控制权释放后可发送"
         case .controlUnavailable: "可继续编辑草稿，确认会话控制权后可发送"
         case .externalExecution: "等待外部执行结束后继续"
-        case .readOnly: "此会话只可阅读"
+        case .readOnly: "可编辑草稿，暂不能发送"
         }
     }
     var message: String? {
@@ -313,7 +313,7 @@ extension InputAccess {
         case .externalController: "另一个客户端正在控制此会话。草稿可继续编辑，控制权释放后可发送。"
         case .controlUnavailable: "暂时无法确认会话控制权，正在重试。请检查运行时连接。"
         case .externalExecution: "此会话正在其他客户端执行，请等待执行结束。"
-        case .readOnly: "此会话当前只可阅读。"
+        case .readOnly: "此会话当前不能提交消息。草稿可继续编辑。"
         }
     }
 }

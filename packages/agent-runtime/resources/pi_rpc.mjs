@@ -33,6 +33,43 @@ async function childExtensionRegistration(resourceLoader) {
     }
   }
 }
+// Pi's clear_queue result only lists queued user text. Observe the native
+// queues that clearQueue actually removes, within the same synchronous call.
+function attachBackgroundNotificationCancellationReceipt(session) {
+  const { agent } = session;
+  const clearQueue = session.clearQueue.bind(session);
+  session.clearQueue = () => {
+    const cancelled = new Set();
+    const collect = () => {
+      const { steeringMode, followUpMode } = agent;
+      try {
+        agent.steeringMode = agent.followUpMode = "all";
+        for (const message of agent.peekQueuedMessages()) {
+          const id = message.details?.id;
+          if (message.role === "custom" && message.customType === "background-task-notification"
+              && typeof id === "string" && id.length > 0) cancelled.add(id);
+        }
+      } finally {
+        agent.steeringMode = steeringMode;
+        agent.followUpMode = followUpMode;
+      }
+    };
+    // Pi 1.0–1.4 clears steering then follow-up. Its peek gives steering
+    // priority, so inspect again when only the follow-up queue remains.
+    const clearSteeringQueue = agent.clearSteeringQueue;
+    agent.clearSteeringQueue = function () {
+      collect();
+      clearSteeringQueue.call(this);
+      collect();
+    };
+    try {
+      const cleared = clearQueue();
+      return {...cleared, cancelledBackgroundNotificationIds:[...cancelled]};
+    } finally {
+      agent.clearSteeringQueue = clearSteeringQueue;
+    }
+  };
+}
 async function main() {
   const cli = value("--cli");
   if (!cli || !isAbsolute(cli)) fail("Pi CLI 必须是绝对路径");
@@ -118,6 +155,7 @@ async function main() {
     const model = provider && modelId ? services.modelRuntime.getModel(provider,modelId) : undefined;
     if (provider && modelId && !model) fail("所选运行时模型未注册");
     const result = await sdk.createAgentSessionFromServices({services,sessionManager,model,thinkingLevel:"off",sessionStartEvent});
+    attachBackgroundNotificationCancellationReceipt(result.session);
     return {...result,services,diagnostics:services.diagnostics};
   };
   const host = await sdk.createAgentSessionRuntime(factory,{cwd:sessionManager.getCwd(),agentDir,sessionManager});

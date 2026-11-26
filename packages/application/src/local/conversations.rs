@@ -738,8 +738,8 @@ impl CoreRuntime {
             // session. Always use its live owner instead of a second file writer.
             self.for_each_session(|core| {
                 if core.session.execution_runtime_id.as_deref() == Some(runtime_id)
-                    && core
-                        .native_snapshot()
+                    && core.session
+                        .projected()
                         .is_some_and(|view| view.conversation.id == id)
                     && let Some(live) = core.session.active_state.live_mut()
                 {
@@ -751,6 +751,11 @@ impl CoreRuntime {
                 Ok(())
             })?;
             if renamed_live {
+                if runtime.type_id == RuntimeKind::Pi {
+                    // Pi shares this owner with foreground RPC. Do not hold
+                    // it for a native index scan after dispatching the rename.
+                    return Ok(self.list_after_live_rename(id, title));
+                }
                 return self.list();
             }
         }

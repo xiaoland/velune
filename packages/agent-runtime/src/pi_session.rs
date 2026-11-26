@@ -25,7 +25,7 @@ pub struct PiSession {
     task_issue: Option<String>,
     children: BTreeMap<String, (BackgroundState, bool)>,
     pending_notifications: HashSet<String>,
-    acknowledged_notifications: HashSet<String>,
+    settled_notifications: HashSet<String>,
     background_pending_sync: bool,
     background_refresh_queued: bool,
     background_error: Option<String>,
@@ -35,6 +35,7 @@ pub struct PiSession {
 
 enum PendingAction {
     Control,
+    ClearQueue,
     Steer,
     DialogReply,
     Prompt,
@@ -45,8 +46,7 @@ enum PendingAction {
 
     Branch,
     Rewind(String),
-    Rename,
-    RenameState,
+    Rename(String),
 }
 
 #[derive(Clone)]
@@ -236,7 +236,7 @@ impl PiSession {
             task_issue: None,
             children: BTreeMap::new(),
             pending_notifications: HashSet::new(),
-            acknowledged_notifications: HashSet::new(),
+            settled_notifications: HashSet::new(),
             background_pending_sync: false,
             background_refresh_queued: false,
             background_error: None,
@@ -531,17 +531,20 @@ impl PiSession {
         }
     }
 
-    fn refresh_background(&mut self, command: Value) {
+    fn refresh_background(&mut self) {
         if self
             .running
             .as_ref()
-            .is_some_and(|running| running.background_request_pending())
+            .is_some_and(|running| {
+                running.background_request_pending() || running.projection.is_manually_compacting()
+            })
         {
             self.background_refresh_queued = true;
             return;
         }
+        self.background_refresh_queued = false;
         match self.enqueue(
-            PiOperation::Background(command),
+            PiOperation::Background(json!({"operation":"snapshot"})),
             PendingAction::Background(
                 self.running
                     .as_ref()
@@ -560,7 +563,7 @@ impl PiSession {
         self.task_issue = None;
         self.children.clear();
         self.pending_notifications.clear();
-        self.acknowledged_notifications.clear();
+        self.settled_notifications.clear();
         self.background_pending_sync = true;
         self.background_refresh_queued = false;
         self.set_background_error(None);
@@ -621,7 +624,7 @@ impl PiSession {
                 .filter_map(Value::as_str)
                 .filter(|id| !id.is_empty())
             {
-                self.acknowledged_notifications.insert(id.to_owned());
+                self.settled_notifications.insert(id.to_owned());
                 self.pending_notifications.remove(id);
             }
         }
@@ -674,11 +677,11 @@ impl PiSession {
                         if task["status"] == "running" {
                             self.background.insert(id.into(), BackgroundState::Running);
                         } else if task["notifyOnCompletion"] == true
-                            && !self.acknowledged_notifications.contains(id)
+                            && !self.settled_notifications.contains(id)
                         {
                             // The plugin calls Pi.sendMessage only after publishing
                             // terminal state. Keep the receiver until Pi actually
-                            // reports the corresponding custom message end.
+                            // reports delivery or clears that queued message.
                             self.pending_notifications.insert(id.into());
                         }
                     }
@@ -758,14 +761,14 @@ impl PiSession {
             return;
         }
         if let Some(task_id) = event["message"]["details"]["id"].as_str() {
-            self.acknowledged_notifications.insert(task_id.to_owned());
+            self.settled_notifications.insert(task_id.to_owned());
             self.pending_notifications.remove(task_id);
         }
     }
 
     fn observe_persisted_background_notifications(
         messages: &Value,
-        acknowledged: &mut HashSet<String>,
+        settled: &mut HashSet<String>,
         pending: &mut HashSet<String>,
     ) {
         let Some(messages) = messages["data"]["messages"].as_array() else {
@@ -776,7 +779,7 @@ impl PiSession {
                 continue;
             }
             if let Some(task_id) = message["details"]["id"].as_str() {
-                acknowledged.insert(task_id.to_owned());
+                settled.insert(task_id.to_owned());
                 pending.remove(task_id);
             }
         }
@@ -880,7 +883,12 @@ impl PiSession {
             // read the public task snapshot before callers can conclude that
             // an empty cached list is settled and release Pi/the gateway.
             self.background_pending_sync = true;
-            self.refresh_background(json!({"operation":"snapshot"}));
+            self.background_refresh_queued = true;
+        }
+        if self.background_refresh_queued {
+            // Pi defers extension prompts throughout manual compaction. A
+            // metadata refresh waits for the compaction response instead.
+            self.refresh_background();
         }
     }
 
@@ -1353,7 +1361,7 @@ impl PiSession {
         self.ensure_pi_install_deadline(deadline)?;
         Self::observe_persisted_background_notifications(
             &messages,
-            &mut self.acknowledged_notifications,
+            &mut self.settled_notifications,
             &mut self.pending_notifications,
         );
         let running = self.running.as_mut().ok_or(Error::NotStarted)?;
@@ -1472,7 +1480,7 @@ impl PiSession {
             return Err(Error::Sdk("Pi 控制正在等待确认".into()));
         }
         if let Some(error) = self.prepare_cancel()? { return Err(error); }
-        let ticket = self.enqueue(PiOperation::ClearQueue, PendingAction::Control)?;
+        let ticket = self.enqueue(PiOperation::ClearQueue, PendingAction::ClearQueue)?;
         let running = self.running()?;
         running.control_wait = Some(ControlWait::new(ticket, true));
         running.dialogs.clear();
@@ -1569,7 +1577,7 @@ impl PiSession {
 
     pub fn cancel(&mut self) -> Result<()> {
         let reply_error = self.prepare_cancel()?;
-        self.enqueue(PiOperation::ClearQueue, PendingAction::Control)?;
+        self.enqueue(PiOperation::ClearQueue, PendingAction::ClearQueue)?;
         self.enqueue(PiOperation::Abort, PendingAction::Control)?;
         let running = self.running()?;
         running.dialogs.clear();
@@ -1619,8 +1627,11 @@ impl PiSession {
             .map(drop)
     }
     pub fn set_name(&mut self, name: &str) -> Result<()> {
-        self.enqueue(PiOperation::SetName(name.into()), PendingAction::Rename)
-            .map(drop)
+        self.enqueue(
+            PiOperation::SetName(name.into()),
+            PendingAction::Rename(name.into()),
+        )
+        .map(drop)
     }
     pub fn set_model(&mut self, provider: Option<&str>, model_id: &str) -> Result<()> {
         self.enqueue(
@@ -1750,6 +1761,7 @@ impl PiSession {
             return;
         }
         let scope_action = matches!(action, PendingAction::Branch | PendingAction::Rewind(_));
+        let rename_action = matches!(action, PendingAction::Rename(_));
         let background_action = matches!(
             action,
             PendingAction::Background(_) | PendingAction::DiscoverBackground
@@ -1791,7 +1803,11 @@ impl PiSession {
                 ))
             }
             PiReceiptPhase::NotSent => {
-                if self.running.as_ref().is_some_and(|running| {
+                if rename_action {
+                    Err(Error::CommandFailed("Pi 会话重命名尚未发送".into()))
+                } else if background_action {
+                    Err(Error::CommandFailed("Pi 后台工作请求尚未发送".into()))
+                } else if self.running.as_ref().is_some_and(|running| {
                     running.edit_wait.as_ref().is_some_and(|wait| wait.ticket == receipt.ticket)
                         || running.control_wait.as_ref().is_some_and(|control| control.native == receipt.ticket)
                 }) {
@@ -1839,8 +1855,11 @@ impl PiSession {
                     .release_pi_transition(receipt.ticket);
             }
             if let Some(running) = &mut self.running {
-                running.history_pending = false;
-                running.projection.apply_event(&json!({"type":"extension_error","event":"Pi operation","error":error.to_string()}));
+                if !rename_action && !background_action {
+                    running.history_pending = false;
+                }
+                let event = if rename_action { "Pi session rename" } else { "Pi operation" };
+                running.projection.apply_event(&json!({"type":"extension_error","event":event,"error":error.to_string()}));
             }
             if background_action {
                 self.set_background_error(Some(error.to_string()));
@@ -1893,6 +1912,16 @@ impl PiSession {
         self.ensure_pi_install_deadline(deadline)?;
         match action {
             PendingAction::Thinking => {}
+            PendingAction::ClearQueue => {
+                // The native ACK names the messages cleared by this command.
+                // Later completions and deferred non-triggering notices still own a handoff.
+                if let Some(ids) = response["data"]["cancelledBackgroundNotificationIds"].as_array() {
+                    for id in ids.iter().filter_map(Value::as_str).filter(|id| !id.is_empty()) {
+                        self.settled_notifications.insert(id.to_owned());
+                        self.pending_notifications.remove(id);
+                    }
+                }
+            }
             PendingAction::DiscoverBackground => {
                 self.background_refresh_queued = false;
                 if response["data"]["commands"]
@@ -1903,7 +1932,7 @@ impl PiSession {
                             .any(|entry| entry["name"] == "velune-background-work")
                     })
                 {
-                    self.refresh_background(json!({"operation":"snapshot"}));
+                    self.refresh_background();
                 } else {
                     self.apply_background_frame(
                         &json!({"version":1,"kind":"unsupported","tasks":[]}),
@@ -1916,9 +1945,6 @@ impl PiSession {
                 }
                 if self.running()?.background_frame_revision <= revision {
                     return Err(Error::Sdk("Pi 后台工作桥接没有返回结构化状态".into()));
-                }
-                if std::mem::take(&mut self.background_refresh_queued) {
-                    self.refresh_background(json!({"operation":"snapshot"}));
                 }
             }
             PendingAction::HistoryMetadata(request) => {
@@ -1944,7 +1970,7 @@ impl PiSession {
                 self.running()?.native_scope_changed()?;
                 self.reset_background_session();
                 self.invalidate_history();
-                self.refresh_background(json!({"operation":"snapshot"}));
+                self.refresh_background();
             }
             PendingAction::Rewind(id) => {
                 let event = self
@@ -1978,13 +2004,12 @@ impl PiSession {
                 self.running()?.native_scope_changed()?;
                 self.invalidate_history();
             }
-            PendingAction::Rename => {
-                self.enqueue(PiOperation::GetState, PendingAction::RenameState)?;
-            }
-            PendingAction::RenameState => {
+            PendingAction::Rename(name) => {
+                // A successful native set_session_name already confirms the
+                // requested name, including on versions without a name event.
                 if let Some(snapshot) = self.running()?.projection.snapshot.as_mut() {
                     snapshot.conversation.title = crate::conversation::conversation_title(
-                        response["data"]["sessionName"].as_str(),
+                        Some(&name),
                         None,
                     );
                     snapshot.revision = snapshot.revision.saturating_add(1);
@@ -2069,7 +2094,7 @@ for line in sys.stdin:
         assert!(session.task_issue.is_none());
         assert!(
             !session
-                .acknowledged_notifications
+                .settled_notifications
                 .contains("foreign-notification")
         );
         session.apply_background_frame(&json!({"version":1,"kind":"snapshot","parentSessionFile":"/synthetic/parent-a.jsonl","tasks":[
@@ -2329,7 +2354,7 @@ for line in sys.stdin:
             &json!({"data":{"messages":[
                 {"customType":"background-task-notification","details":{"id":"previous-session-task"}}
             ]}}),
-            &mut session.acknowledged_notifications,
+            &mut session.settled_notifications,
             &mut session.pending_notifications,
         );
         assert!(!session.has_pending_metadata());

@@ -114,11 +114,11 @@ sealed partial class Conversation
         InputAccess.ExternalController => "另一个客户端正在控制此会话。草稿可继续编辑，暂不能发送。",
         InputAccess.ControlUnavailable => "暂时无法确认会话控制权，正在重试。",
         InputAccess.ExternalExecution => "此会话正在其他客户端执行。",
-        InputAccess.ReadOnly => "此会话当前只可阅读。",
+        InputAccess.ReadOnly => ParentID == null ? "此会话当前不能提交消息。草稿可继续编辑。" : "子 Agent 会话由父会话继续。",
         _ => null,
     };
     public bool InputEditable => InputLockMessage == null;
-    public bool DraftEditable => Snapshot?.Actions.InputAccess != InputAccess.ReadOnly;
+    public bool DraftEditable => ParentID == null;
 
     public bool CanCancel => !stopRequested && Snapshot is { RunState: RunState.Running, Actions.CanCancel: true };
 
