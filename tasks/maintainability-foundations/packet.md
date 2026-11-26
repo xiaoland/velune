@@ -64,6 +64,34 @@
 - `scripts/check-*` 其余端到端脚本迁入验收套件。
 - 超大模块：`local/editing.rs` 的内联测试外移后再按用例拆分；`service.rs`、`native/codex.rs`、`ConversationStore.swift` 的拆分需先确认边界测试。
 
-## 工作树与构建
+## 构建空间审计（2026-11-26）
 
-源码在 `tmp/worktrees/maintainability`（编辑环境只能访问主仓库目录）。嵌套在主仓库内会让 Cargo 将被排除的 third-party crate 归入外层 workspace，因此主机构建在 `~/Development/.worktrees/velune/maintainability-foundations` 进行，构建前由同目录的 `sync-maintainability.sh` 同步源码。该镜像只用于构建和验收，不在其中编辑或提交。
+用户发现主检出 `target` 约 208 GiB，要求找出损坏、不一致、低效与不再需要的部分，优先删除，其次简化、优化，最后才自动化。物理占用用文件 extent（`F_LOG2PHYS_EXT`）去重测得，不用 `du`：APFS 克隆会让 `du` 严重高估，构建镜像中统计 83 GiB 的对象删除后卷可用空间只增加约 2.5 GiB。主检出 `target` 实测物理 197.6 GiB，克隆共享仅 2.4 GiB。
+
+| 部分 | 物理 | 结论 |
+| --- | --- | --- |
+| 用途域以外、无任何跟踪文件引用的 122 个目录（23 日后无改动） | 85.5 GiB | 任务自建 target-dir（`manual-*` 等 18 个 Cargo 目录，逻辑约 72 GiB）与旧证据；待删除 |
+| `host-rust` | 66.5 GiB | 11-06 回收后约 4.6 GiB；约 26 GiB 为无引用调试对象，其余为旧变体及增量缓存。按预算整体回收 |
+| `cross-rust` | 18.3 GiB | 同上，按预算回收 |
+| `checks/archive-loading` 中复制的两份源码树（含 target） | 约 11 GiB | 违反“不复制编译树作证据”；待删除 |
+| `release` | 3.9 GiB | 旧 Cargo release 输出，内含已不存在的 `velune_core`；待删除 |
+| 主检出 `tmp/runtime-workspace-reliability` | 约 30 GiB | 对应任务包已不存在；待删除 |
+| `.dev-cache/velune-*-alpha.*` | 约 1.3 GiB | 11-21 发布时遗留的临时目录；待删除 |
+
+调试对象增长的原因已用最小工程复现：rustc 增量编译加 macOS unpacked split-debuginfo，每次重编以新文件名写出整组 `.rcgu.o`，旧组不再被读取也不被删除；非增量、`debug = 0` 或 packed 均不积累，与 mbx 无关。`debug = 0` 只去掉回溯每帧的行号（panic 位置仍在），单次构建体积不变（velune-application 测试均为 2.0 GiB），因此不改 profile、不增加清理工具，沿用超预算整体回收。曾实现按调试映射删除无引用对象的 `sweep-objects`，按上述优先级撤回。
+
+已改：
+
+- `build-cache.py` 删去历史目录登记与 `--retired`：已退役的目录在本机都已不存在，剩下的 `release` 已失效，`android-native` 是 Gradle 正在读取的现行输出却列为历史目录。`report` 增加用途域以外目录的合计，此前报告只显示 87 GiB 的用途域，另外 120 GiB 不可见。
+- `Cargo.toml` 删去与 dev 重复的 `[profile.test]` 和默认的 `incremental = true`；test profile 继承 dev，产物 hash 不变。
+
+未改、需用户决定：
+
+- 上表“待删除”各项，以及 `host-rust`／`cross-rust` 的整体回收（之后首次构建冷启动）。
+- `.cargo/config.toml` 的 `jobs = 2` 没有记录理由（主机 10 核、16 GiB 内存）。
+- 主机系统盘只剩约 17 GiB，低于 mbx 的 20 GiB 下限，mbx 因此越过预算持续回收；期间其“targets”回收计数增加 2.8 GiB，同时出现相隔几分钟、无源码变化的 `cargo test --no-run` 重编约 110 个 crate，紧接着的第二次为 0。两者相关，未证实因果。
+- 旧分支工作树 `~/Development/.worktrees/velune-maint/velune`（`refactor/maintainability`，已并入本分支，干净）可移除；`tmp/worktrees/workspace-native-shell` 的分支已合入 develop，但今天仍有提交和 3 处未提交改动，可能仍在使用。
+
+## 工作树
+
+分支检出在 `~/Development/.worktrees/velune/maintainability-foundations`。此前编辑环境未找到该目录，曾在主检出的 `tmp/worktrees` 编辑并同步到这里构建；该嵌套工作树与同步脚本已删除。
