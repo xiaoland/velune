@@ -192,6 +192,12 @@ pub(super) struct HistorySnapshot {
     pub(super) retention: DataRetention,
 }
 impl HistorySnapshot {
+    pub(super) fn restore_native_input(snapshot: &mut ConversationSnapshot) {
+        // The next-turn model is supplied on submission. Native child
+        // conversations cannot accept direct user input.
+        snapshot.actions.can_send = snapshot.conversation.parent_conversation_id.is_none();
+    }
+
     pub(super) fn into_retained(self) -> Retained<ConversationSnapshot> {
         Retained::from_parts(self.snapshot, self.retention)
     }
@@ -460,9 +466,7 @@ impl HistoryRead {
             }
             Reader::Acp(_) => unreachable!("ACP history has its own snapshot"),
         }
-        // The next-turn model is supplied when the user submits. Sub-agent
-        // conversations remain read-only.
-        snapshot.actions.can_send = snapshot.conversation.parent_conversation_id.is_none();
+        HistorySnapshot::restore_native_input(&mut snapshot);
         Ok(LoadedHistory {
             source,
             prepared_resources,

@@ -553,7 +553,7 @@ mod pi_child_tests {
     }
 
     #[test]
-    fn persisted_pi_notification_receipts_clear_activity_without_enabling_an_idle_queue() {
+    fn pi_notification_handoff_retains_connection_without_claiming_activity() {
         for (delivered, running, turn_running) in [
             (false, false, false),
             (true, false, false),
@@ -673,7 +673,7 @@ for line in sys.stdin:
             let active = activity
                 .iter()
                 .find(|item| item.conversation_id == "pi:synthetic");
-            assert_eq!(active.is_some(), turn_running || running || !delivered);
+            assert_eq!(active.is_some(), turn_running || running);
             assert_eq!(
                 active.is_some_and(|item| item.blocks_idle_submission),
                 turn_running,

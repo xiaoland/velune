@@ -833,7 +833,9 @@ for line in sys.stdin:
             Some(deadline),
         )
         .unwrap();
-    running.pending.insert(old, PendingAction::RenameState);
+    running
+        .pending
+        .insert(old, PendingAction::Rename("old-query-title".into()));
     fixture.session.fork_at(Some("entry")).unwrap();
     let branch = *fixture
         .session

@@ -685,19 +685,17 @@ impl CoreRuntime {
                 .count();
             let observation = session.work();
             let work = observation.as_ref().map_or(&[][..], |tasks| tasks.as_slice());
-            let local_work = observation.is_err()
-                || work.iter().any(|task| task.conversation_id.is_none())
-                || (work.is_empty() && session.work_pending());
-            if session.turn_running() || pending > 0 || local_work {
+            let local_work = work.iter().filter(|task| task.conversation_id.is_none());
+            let has_local_work = local_work.clone().next().is_some();
+            let turn_running = session.turn_running();
+            if turn_running || pending > 0 || has_local_work {
                 active.push(crate::ActiveConversation {
                     context_runtime_id: view.conversation.runtime_id.clone(),
                     conversation_id: id.into(),
-                    run_state: if local_work && !session.turn_running() {
-                        if !work.is_empty()
-                            && work.iter().all(|task| {
-                                task.state == velune_agent_runtime::work::BackgroundState::Stopping
-                            })
-                        {
+                    run_state: if has_local_work && !turn_running {
+                        if local_work.clone().all(|task| {
+                            task.state == velune_agent_runtime::work::BackgroundState::Stopping
+                        }) {
                             RunState::Stopping
                         } else {
                             RunState::Running
@@ -707,7 +705,7 @@ impl CoreRuntime {
                     },
                     pending_interactions: pending as u32,
                     parent_conversation_id: None,
-                    blocks_idle_submission: session.turn_running() || pending > 0,
+                    blocks_idle_submission: turn_running || pending > 0,
                 });
             }
             active.extend(work.iter().filter_map(|task| {

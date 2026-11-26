@@ -666,6 +666,7 @@ impl CoreRuntime {
                 }
                 // Preserve already-received Pi facts before terminal destruction;
                 // its failed fence forbids any new protocol dispatch.
+                let released_pi = matches!(state, ActiveState::Pi(_));
                 if let ActiveState::Pi(pi) = state {
                     pi.poll();
                 }
@@ -678,12 +679,20 @@ impl CoreRuntime {
                 };
                 let result = state.live_mut().map_or(Ok(()), |live| {
                     live.shutdown()
-                        .map_err(|error| RuntimeError::context("Codex 终态清理", error))
+                        .map_err(|error| RuntimeError::context("运行时终态清理", error))
                 });
                 // Destruction, including the protocol writer/process tree, is part
                 // of this worker's lifecycle and precedes lease release.
                 *state = snapshot
-                    .map(|snapshot| ActiveState::History(Box::new(snapshot.into())))
+                    .map(|snapshot| {
+                        let mut history = browsing::HistorySnapshot::from_retained(snapshot);
+                        if released_pi {
+                            // The failed connection's admission does not
+                            // describe the next connection to native history.
+                            browsing::HistorySnapshot::restore_native_input(&mut history.snapshot);
+                        }
+                        ActiveState::History(Box::new(history))
+                    })
                     .unwrap_or_default();
                 OperationOutcome {
                     result,

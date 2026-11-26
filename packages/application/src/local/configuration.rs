@@ -445,13 +445,33 @@ impl CoreRuntime {
         )
     }
 
+    pub(super) fn list_after_live_rename(
+        &self,
+        id: &str,
+        title: &str,
+    ) -> crate::ConfigurationSnapshot {
+        let mut page = self.browse_window(self.cached_sources(), None, false, false);
+        if let Some(item) = page.conversations.iter_mut().find(|item| item.conversation.id == id) {
+            item.conversation.title = velune_conversation::conversation_title(Some(title), None);
+        }
+        self.configuration_from_page(page, self.history_failures.borrow().clone())
+    }
+
     fn configuration_from_sources(
         &self,
         sources: Vec<organization::ListedSource>,
-        mut history_failures: Vec<crate::HistoryFailure>,
+        history_failures: Vec<crate::HistoryFailure>,
         extend_index: bool,
     ) -> crate::ConfigurationSnapshot {
         let page = self.browse_read(sources, None, extend_index);
+        self.configuration_from_page(page, history_failures)
+    }
+
+    fn configuration_from_page(
+        &self,
+        page: organization::Page,
+        mut history_failures: Vec<crate::HistoryFailure>,
+    ) -> crate::ConfigurationSnapshot {
         history_failures.extend(page.history_failures);
         let runtime_types = runtime_types();
         let provider_import_types = std::iter::once(provider_import::descriptor())

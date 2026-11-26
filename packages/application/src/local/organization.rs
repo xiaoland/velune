@@ -439,7 +439,7 @@ impl CoreRuntime {
     /// recent activity, each loading its pages while the list's total lasts
     /// and any further page the user asked for. A search loads every match
     /// up to the total instead.
-    fn browse_window(
+    pub(super) fn browse_window(
         &self,
         sources: Vec<ListedSource>,
         search: Option<&str>,

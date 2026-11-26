@@ -104,6 +104,9 @@ elif '--delete-message' in sys.argv:
  with (root/'delete-count').open('a') as log: log.write('delete\n')
  print(json.dumps({'ok':True}))
 else:
+ if (root/'hold-index').exists():
+  (root/'entered-index').touch()
+  while (root/'hold-index').exists(): __import__('time').sleep(.005)
  request=json.load(sys.stdin); wanted=set(request['want']); files=[]
  for name in ['edit','other','fork']:
   path=root/(name+'.jsonl')
@@ -138,13 +141,18 @@ def gate(phase):
  while not (root/'release').exists(): time.sleep(.005)
  return reject
 primary_prompt=None; primary_clear=None; primary_abort=None
+compact_request=None
 def requests():
- global primary_prompt,primary_clear,primary_abort
- if mode!='primary-controls':
+ global primary_prompt,primary_clear,primary_abort,compact_request
+ if mode not in ('primary-controls', 'compact-recovery'):
   yield from sys.stdin; return
  import select
  buffered=b''
  while True:
+  if compact_request is not None and (root/'release-compact').exists():
+   emit({'type':'compaction_end','result':{}})
+   emit({'type':'response','id':compact_request['id'],'command':'compact','success':True})
+   compact_request=None
   if primary_clear is not None and (root/'release-primary-clear').exists():
    emit({'type':'response','id':primary_clear['id'],'command':'clear_queue','success':True,'data':{}}); primary_clear=None
   if primary_abort is not None and (root/'release-primary-abort').exists():
@@ -169,7 +177,9 @@ for line in requests():
    if branched and gate('snapshot'):
     emit({'type':'response','id':r['id'],'command':command,'success':False,'error':'synthetic snapshot rejection'}); continue
    messages=history['messages']
-   status('velune.session-metadata',{'requestId':r['id'],'snapshotVersion':1,'messages':messages,'messageIds':[m['id'] for m in messages],'identityConfirmations':[],'sessionFile':str(source),'name':'Synthetic','cwd':str(root)})
+   name_file=root/'name-written'
+   title=name_file.read_text() if name_file.exists() else 'Synthetic'
+   status('velune.session-metadata',{'requestId':r['id'],'snapshotVersion':1,'messages':messages,'messageIds':[m['id'] for m in messages],'identityConfirmations':[],'sessionFile':str(source),'name':title,'cwd':str(root)})
    data={'disposition':'handled'}
   elif text.startswith('/velune-background-work '):
    status('velune.background-work-v1',{'version':1,'kind':'unsupported','supported':False,'tasks':[]}); data={'disposition':'handled'}
@@ -235,6 +245,15 @@ for line in requests():
    (root/'entered-writer').touch()
    while not (root/'release').exists(): time.sleep(.005)
    continue
+ elif command=='compact':
+  emit({'type':'compaction_start'})
+  if mode=='compact-disconnect':
+   (root/'entered-compact').touch()
+   while not (root/'release-compact').exists(): time.sleep(.005)
+   sys.exit(0)
+  compact_request=r; (root/'entered-compact').touch(); continue
+ elif command=='set_session_name':
+  (root/'name-written').write_text(r['name'])
  elif command=='get_state': data={'sessionFile':str(source),'sessionName':'Synthetic'}
  elif command=='get_messages': data={'messages':history['messages']}
  elif command=='extension_ui_response':
@@ -319,9 +338,11 @@ impl Drop for Fixture {
             "release-primary-abort",
             "release-primary-fact",
             "release-composed-send",
+            "release-compact",
         ] {
             let _ = fs::write(self.0.join(marker), []);
         }
+        let _ = fs::remove_file(self.0.join("hold-index"));
         let _ = fs::remove_dir_all(&self.0);
     }
 }
@@ -366,6 +387,122 @@ fn snapshot(service: &ApplicationService, id: String) -> crate::DeliveredSnapsho
     };
     result.snapshot.unwrap()
 }
+
+#[test]
+fn pi_compaction_live_rename_does_not_read_the_native_index() {
+    let fixture = Fixture::new("compact-recovery", false);
+    let service = fixture.open();
+    let id = fixture.id("edit");
+    let initial = snapshot(&service, id.clone());
+    assert!(initial.follow_up.can_compact);
+    service
+        .execute(
+            ClientViewId("edit".into()),
+            Command::CompactConversation {
+                runtime_id: "pi".into(),
+                conversation_id: id.clone(),
+                selection: None,
+            },
+        )
+        .unwrap();
+    fixture.wait("entered-compact");
+    fs::write(fixture.0.join("hold-index"), []).unwrap();
+    let rename = later(
+        &service,
+        "edit",
+        Command::RenameConversation {
+            runtime_id: "pi".into(),
+            conversation_id: id.clone(),
+            title: "Updated during compaction".into(),
+        },
+    )
+    .recv_timeout(Duration::from_secs(2));
+    fs::remove_file(fixture.0.join("hold-index")).unwrap();
+    let Response::RenameConversation(configuration) = rename
+        .expect("live rename must not wait for the session index")
+        .unwrap()
+    else {
+        panic!("rename response")
+    };
+    assert!(!fixture.0.join("entered-index").exists());
+    assert!(configuration.conversations.iter().any(|row| {
+        row.conversation.id == id
+            && row.conversation.title.display_text() == "Updated during compaction"
+    }));
+    fixture.wait("name-written");
+    fs::write(fixture.0.join("release-compact"), []).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let current = snapshot(&service, id.clone());
+        if current.actions.can_send {
+            assert_eq!(current.conversation.title.display_text(), "Updated during compaction");
+            assert_eq!(current.run_state, RunState::Idle);
+            break;
+        }
+        assert!(Instant::now() < deadline, "Pi compaction did not finish");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    close_after_cleanup(&service);
+}
+
+#[test]
+fn pi_compaction_disconnect_preserves_failure_and_allows_a_new_turn() {
+    let fixture = Fixture::new("compact-disconnect", false);
+    let service = fixture.open();
+    let id = fixture.id("edit");
+    let initial = snapshot(&service, id.clone());
+    assert!(initial.follow_up.can_compact);
+    service
+        .execute(
+            ClientViewId("edit".into()),
+            Command::CompactConversation {
+                runtime_id: "pi".into(),
+                conversation_id: id.clone(),
+                selection: None,
+            },
+        )
+        .unwrap();
+    fixture.wait("entered-compact");
+    fs::write(fixture.0.join("release-compact"), []).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let current = snapshot(&service, id.clone());
+        if current.run_state == RunState::Failed && current.actions.can_send {
+            assert_eq!(current.actions.input_access, velune_conversation::InputAccess::Editable);
+            assert!(current.messages.iter().any(|message| message.blocks.iter().any(|block| {
+                matches!(block, crate::DeliveredBlock::ContextCompaction { text }
+                    if text.contains("上下文压缩已中断"))
+            })));
+            break;
+        }
+        assert!(Instant::now() < deadline, "session remained unwritable after compact transport failure");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    service
+        .execute(
+            ClientViewId("edit".into()),
+            Command::SendTurn {
+                submission_id: None,
+                source_runtime_id: "pi".into(),
+                conversation_id: id,
+                target_runtime_id: "pi".into(),
+                selection: None,
+                turn: crate::ComposedTurn {
+                    text: "Explicit follow-up after failed compact".into(),
+                    attachments: vec![],
+                    effort: None,
+                    permission_mode: None,
+                },
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        fixture.requests("edit").iter().filter(|request| request["message"] == "Explicit follow-up after failed compact").count(),
+        1
+    );
+    close_after_cleanup(&service);
+}
+
 fn start_edit(
     service: &ApplicationService,
     fixture: &Fixture,

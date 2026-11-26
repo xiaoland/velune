@@ -45,8 +45,7 @@ enum PendingAction {
 
     Branch,
     Rewind(String),
-    Rename,
-    RenameState,
+    Rename(String),
 }
 
 #[derive(Clone)]
@@ -1619,8 +1618,11 @@ impl PiSession {
             .map(drop)
     }
     pub fn set_name(&mut self, name: &str) -> Result<()> {
-        self.enqueue(PiOperation::SetName(name.into()), PendingAction::Rename)
-            .map(drop)
+        self.enqueue(
+            PiOperation::SetName(name.into()),
+            PendingAction::Rename(name.into()),
+        )
+        .map(drop)
     }
     pub fn set_model(&mut self, provider: Option<&str>, model_id: &str) -> Result<()> {
         self.enqueue(
@@ -1978,13 +1980,12 @@ impl PiSession {
                 self.running()?.native_scope_changed()?;
                 self.invalidate_history();
             }
-            PendingAction::Rename => {
-                self.enqueue(PiOperation::GetState, PendingAction::RenameState)?;
-            }
-            PendingAction::RenameState => {
+            PendingAction::Rename(name) => {
+                // A successful native set_session_name already confirms the
+                // requested name, including on versions without a name event.
                 if let Some(snapshot) = self.running()?.projection.snapshot.as_mut() {
                     snapshot.conversation.title = crate::conversation::conversation_title(
-                        response["data"]["sessionName"].as_str(),
+                        Some(&name),
                         None,
                     );
                     snapshot.revision = snapshot.revision.saturating_add(1);
