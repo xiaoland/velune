@@ -131,6 +131,11 @@ enum ConversationToolbar {
         }
     }
 
+    /// Windows whose dock areas are sliding open or closed. Text in their
+    /// editor keeps its layout while the editor widens, and reflows once.
+    private static var movingAreas: Set<ObjectIdentifier> = []
+    static func areasMoving(in window: NSWindow?) -> Bool { window.map { movingAreas.contains(ObjectIdentifier($0)) } ?? false }
+
     /// The width an area opens at: where its divider was last let go, else
     /// one a conversation title reads in, not the narrowest the area allows.
     private func width(_ side: DockSide) -> Double {
@@ -150,7 +155,11 @@ enum ConversationToolbar {
                 sized.insert(side)
             }
             if item.isCollapsed != collapsed {
-                if animated { item.animator().isCollapsed = collapsed } else { item.isCollapsed = collapsed }
+                guard animated, let window = view.window.map(ObjectIdentifier.init) else { item.isCollapsed = collapsed; continue }
+                Self.movingAreas.insert(window)
+                NSAnimationContext.runAnimationGroup { _ in item.animator().isCollapsed = collapsed } completionHandler: {
+                    MainActor.assumeIsolated { _ = Self.movingAreas.remove(window) }
+                }
             }
         }
         view.needsLayout = true

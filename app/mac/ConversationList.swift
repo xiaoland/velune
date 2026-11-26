@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import SwiftUI
 import VeluneBindings
 
@@ -18,7 +19,10 @@ struct AggregatedRowID: Hashable {
 /// device. A conversation selected alone opens in the window's focused pane;
 /// several are a selection to manage.
 struct ConversationListView: View {
-    @ObservedObject var window: ConversationWindowModel
+    /// Not observed as a whole: the list follows its own state of the window
+    /// (`WindowListState`), so moving tools or focus does not rebuild every row.
+    let window: ConversationWindowModel
+    @StateObject private var windowList: WindowListState
     /// The list's workspace on this Mac (problems, local loading state).
     @ObservedObject var store: ConversationStore
     /// The focused pane's workspace.
@@ -71,12 +75,13 @@ struct ConversationListView: View {
         self.store = store
         self.focused = focused
         self.aggregated = window.aggregated
+        _windowList = StateObject(wrappedValue: WindowListState(window))
     }
 
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 6) {
-                SearchField(text: $window.listSearch, prompt: "搜索会话", focusRequest: searchFocusRequest)
+                SearchField(text: Binding(get: { window.listSearch }, set: { window.listSearch = $0 }), prompt: "搜索会话", focusRequest: searchFocusRequest)
                     .frame(maxWidth: .infinity)
                 ConversationFilterMenu(window: window, store: store).menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
                     .background(PaneAnchor { anchor in anchor()?.identifier = NSUserInterfaceItemIdentifier("conversation-list-filter") })
@@ -185,6 +190,7 @@ struct ConversationListView: View {
                     .selectionDisabled(true)
                 }
             }
+            let orderable = orderableGroups
             ForEach(sections) { section in
                 // Flat rows keep group lifetime out of NSOutlineView's
                 // disclosure tracking map when an archive removes the last child.
@@ -199,7 +205,7 @@ struct ConversationListView: View {
                     }
                     .buttonStyle(.borderless)
                     .accessibilityLabel((expansion(section).wrappedValue ? "收起" : "展开") + sectionTitle(section))
-                    sectionHeader(section)
+                    sectionHeader(section, orderable: orderable)
                 }
                 .uiFont(.caption.weight(.semibold)).foregroundStyle(.secondary)
                 .selectionDisabled(true)
@@ -361,7 +367,7 @@ struct ConversationListView: View {
         section.displayTitle(multipleDevices: aggregated.showsMultipleDevices)
     }
 
-    @ViewBuilder private func sectionHeader(_ section: AggregatedListModel.Section) -> some View {
+    @ViewBuilder private func sectionHeader(_ section: AggregatedListModel.Section, orderable: [String]) -> some View {
         if let id = section.crossProjectID, let project = aggregated.crossProjects.projects.first(where: { $0.id == id }) {
             Text(project.name).lineLimit(1).help(project.name)
                 .contextMenu {
@@ -373,10 +379,11 @@ struct ConversationListView: View {
                         }
                     }
                 }
-        } else { sourceSectionHeader(section) }
+        } else { sourceSectionHeader(section, orderable: orderable) }
     }
 
-    private func sourceSectionHeader(_ section: AggregatedListModel.Section) -> some View {
+    /// `orderable`: the groups that may be put in order, as the list shows them.
+    private func sourceSectionHeader(_ section: AggregatedListModel.Section, orderable: [String]) -> some View {
         let title = sectionTitle(section)
         let path: String? = if case .project(let path?) = section.key { path } else { nil }
         let projects = section.device.store.conversationProjects
@@ -388,7 +395,7 @@ struct ConversationListView: View {
             Spacer(minLength: 0)
         }
         .help(path.map { key in
-            guard let project = projects.first(where: { $0.path == key }) else { return key }
+            guard let project else { return key }
             let folders = project.primaryFolder.map { [$0] + project.folders } ?? []
             return folders.isEmpty ? title : folders.map { ($0 as NSString).abbreviatingWithTildeInPath }.joined(separator: "\n")
         } ?? title)
@@ -408,7 +415,7 @@ struct ConversationListView: View {
         }
         // Dragged over another group, its header or its rows, a group takes its place.
         .onDrag {
-            guard canOrder(section) else { draggedGroup = nil; return NSItemProvider() }
+            guard canOrder(section, among: orderable) else { draggedGroup = nil; return NSItemProvider() }
             draggedGroup = section.id
             watchGroupDrag(section.id)
             return ConversationLink.groupItemProvider()
@@ -426,13 +433,13 @@ struct ConversationListView: View {
                 Button("编辑项目…") {
                     projectTarget = ProjectEditorTarget(path: path, store: window.listStore(for: device))
                 }
-                if section.group.name != nil && projects.first(where: { $0.path == path })?.nativeRuntimeId == nil {
+                if section.group.name != nil && project?.nativeRuntimeId == nil {
                     Button("恢复文件夹名称") {
-                        let folders = projects.first { $0.path == path }?.folders ?? []
+                        let folders = project?.folders ?? []
                         device.setProject(path: path, primaryFolder: path, name: nil, folders: folders)
                     }
                 }
-                if let folder = projects.first(where: { $0.path == path })?.primaryFolder {
+                if let folder = project?.primaryFolder {
                     Button("在 Finder 中显示") { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: folder)]) }
                         .disabled(device.peerID != nil || device.location(of: section.conversations.first?.runtimeID) != .local)
                 }
@@ -445,8 +452,8 @@ struct ConversationListView: View {
                     else { browser.setCollapsed(section.key, !collapsedNow) }
                 }
             }
-            if canOrder(section) {
-                let shown = orderableGroups
+            if canOrder(section, among: orderable) {
+                let shown = orderable
                 let index = shown.firstIndex(of: section.id) ?? 0
                 Divider()
                 Button("上移") { moveGroup(section, before: shown[index - 1]) }.disabled(index == 0)
@@ -552,8 +559,8 @@ struct ConversationListView: View {
         sections.filter { ConversationBrowser.orderable($0.key) }.map(\.id)
     }
     /// Groups are put in order outside a search, among at least two.
-    private func canOrder(_ section: AggregatedListModel.Section) -> Bool {
-        !searchActive && ConversationBrowser.orderable(section.key) && orderableGroups.count > 1
+    private func canOrder(_ section: AggregatedListModel.Section, among orderable: [String]) -> Bool {
+        !searchActive && ConversationBrowser.orderable(section.key) && orderable.count > 1
     }
 
     private func facadeStore(for section: AggregatedListModel.Section) -> ConversationStore {
@@ -882,5 +889,24 @@ struct NewConversationButton: View {
         Button { window.createConversation() } label: { Label("新建会话", systemImage: "square.and.pencil") }
             .help(KeyboardShortcutSettings.shared.help("新建会话", .newConversation)).disabled(window.application.enabledRuntimeInstances.isEmpty)
             .accessibilityIdentifier("conversation-new-conversation")
+    }
+}
+
+/// What the conversation list reads of its window: search, browsing
+/// choices, the rename and delete requests. It changes as they do, not
+/// as the window's tools, panes or focus do.
+@MainActor final class WindowListState: ObservableObject {
+    private var subscription: AnyCancellable?
+
+    init(_ window: ConversationWindowModel) {
+        let changes: [AnyPublisher<Void, Never>] = [
+            window.$listSearch.map { _ in () }.eraseToAnyPublisher(),
+            window.$listBrowser.map { _ in () }.eraseToAnyPublisher(),
+            window.$listSearchRequest.map { _ in () }.eraseToAnyPublisher(),
+            window.$renameTarget.map { _ in () }.eraseToAnyPublisher(),
+            window.$deleteTargets.map { _ in () }.eraseToAnyPublisher(),
+        ]
+        // `@Published` sends before the change, as `objectWillChange` does.
+        subscription = Publishers.MergeMany(changes).dropFirst(changes.count).sink { [weak self] in self?.objectWillChange.send() }
     }
 }

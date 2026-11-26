@@ -279,12 +279,13 @@ private final class ComposerInputWorker: @unchecked Sendable {
     func isBoundElsewhere(_ inputID: UUID, than conversationID: String) -> Bool {
         guard let context = context(conversationID) else { return false }
         guard worker != nil else { return previewBindings.contains { $0.key != context && $0.value == inputID } }
-        let contexts = Set((state?.bindings.map(\.context) ?? []) + Array(optimisticBindings.keys))
-        return contexts.contains { other in
-            guard other != context, !isCreationTransfer(inputID, between: context, and: other) else { return false }
-            if let pending = optimisticBindings[other] { return pending.inputID == inputID }
-            return state?.bindings.contains { $0.context == other && UUID(uuidString: $0.inputId) == inputID } == true
-        }
+        // One pass over each: a pending binding stands for its context in place of the saved one.
+        // Menus and every composer ask this as the window changes, over hundreds of saved bindings.
+        func elsewhere(_ other: ComposerContextKey) -> Bool { other != context && !isCreationTransfer(inputID, between: context, and: other) }
+        if optimisticBindings.contains(where: { $0.value.inputID == inputID && elsewhere($0.key) }) { return true }
+        return state?.bindings.contains { binding in
+            UUID(uuidString: binding.inputId) == inputID && optimisticBindings[binding.context] == nil && elsewhere(binding.context)
+        } == true
     }
     func isCreationTransfer(_ inputID: UUID, between first: String, and second: String) -> Bool {
         guard let first = context(first), let second = context(second) else { return false }

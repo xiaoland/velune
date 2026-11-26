@@ -57,10 +57,21 @@ extension ConversationGroupKey {
         let conversations: [Conversation]
         /// The group's title on its own device, computed while merging (MainActor).
         let title: String
-        var crossProjectID: UUID? = nil
+        let crossProjectID: UUID?
         var allowsPagination = true
+        /// Made once: the list asks for it for every group as it updates.
+        let id: String
         var collapseID: String { crossProjectID.map { "cross-project:\($0)" } ?? id }
-        var id: String { device.id + "‖" + key.stableID + (crossProjectID.map { "‖" + $0.uuidString } ?? "") }
+
+        init(device: Device, key: ConversationGroupKey, group: ConversationGroup, conversations: [Conversation], title: String, crossProjectID: UUID? = nil) {
+            self.device = device
+            self.key = key
+            self.group = group
+            self.conversations = conversations
+            self.title = title
+            self.crossProjectID = crossProjectID
+            id = device.id + "‖" + key.stableID + (crossProjectID.map { "‖" + $0.uuidString } ?? "")
+        }
         /// Local projects retain their familiar names in the merged list.
         /// Other groups identify their device when several devices are shown.
         func displayTitle(multipleDevices: Bool) -> String {

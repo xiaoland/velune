@@ -845,6 +845,14 @@ struct TranscriptTable: NSViewRepresentable {
         }
         if document.frame.width != clipWidth { programmatically { document.setFrameSize(NSSize(width: clipWidth, height: offsets.last ?? 0)) } }
         guard clipWidth != width else { materializeVisibleRows(); return }
+        // A dock area sliding away only widens the list: rows keep their
+        // layout, centred anew, and reflow once when it has settled, not
+        // during the slide. (A narrowing list reflows below, or text would be cut.)
+        if clipWidth > width, WorkspaceSplitController.areasMoving(in: scroll.window) {
+            scheduleSettle()
+            materializeVisibleRows()
+            return
+        }
         // A width that keeps changing (a divider or the window being dragged,
         // a sidebar sliding) reflows the text at most every `reflowInterval`:
         // laying text out again at each frame, in every pane, is what drops
