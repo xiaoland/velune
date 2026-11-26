@@ -14,8 +14,10 @@ struct EditorColumn: NSViewRepresentable {
 
     func updateNSView(_ view: EditorColumnView, context: Context) {
         view.grid.apply(window.layout, groups: Set(window.panes.keys))
-        let bottom = !window.tools.tools(in: .bottom).isEmpty
-        let minimum = window.composerMinimumHeight + (window.tools.tools(in: .bottom).count > 1 ? PaneChrome.barHeight : 0)
+        let bottomTools = window.tools.tools(in: .bottom)
+        let bottom = !bottomTools.isEmpty
+        let baseMinimum: CGFloat = bottomTools.contains(.composer) ? max(window.composerMinimumHeight, 100) : 100
+        let minimum = baseMinimum + (bottomTools.count > 1 ? PaneChrome.barHeight : 0)
         view.apply(bottom: bottom, height: window.tools.bottomHeight, minimum: minimum)
     }
 }

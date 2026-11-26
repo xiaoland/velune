@@ -138,7 +138,7 @@ AppKit 自绘 `TabBarView`，行为对齐系统 Tab Bar（Xcode 分屏标签也�
 
 ### AppKit 标签栏（原步骤 5）
 
-- `TabBar.swift`：`TabBarView`（`NSScrollView` 横向滚动、纵向滚轮转横向、覆盖式滚动条，“＋”固定在外），`TabItemView`（自绘配色、悬停关闭、运行／等待／未读指示、双击就地重命名、中键关闭、右键菜单、沿栏滑动与 Core Animation 让位、离栏转 `NSDraggingSource`）；标签栏是原生拖放目标（会话链接私有类型与 URL）。标签宽度 96–240pt；显示中的标签滚入可见。tracking area 只移除自己的（系统工具提示另有 tracking area，旧检查覆盖）。Artifact sheet 的拖动把手复用 `TabItemView`（无栏，不滑动）。删除 `TabHandle`、SwiftUI 标签栏与标签项、`TabDropDelegate`。面板内容区的边缘拆分投放仍是 SwiftUI `PaneDropDelegate`。
+- `TabBar.swift`：`TabBarView`（`NSScrollView` 横向滚动、纵向滚轮与触控板手势接管、无系统滚动条、左右溢出渐变提示，“＋”固定在外并带左侧分隔线），`TabItemView`（自绘明暗对比配色、悬停关闭、运行／等待／未读指示及随窗口键状态刷新、双击就地重命名、中键关闭、右键菜单、沿栏滑动与 Core Animation 让位、离栏转 `NSDraggingSource`）；标签栏是原生拖放目标（会话链接私有类型与 URL）。标签宽度 96–240pt；显示中的标签在切换及变窄后滚入可见，关闭尾部标签钳制滚动偏移。tracking area 只移除自己的（系统工具提示另有 tracking area，旧检查覆盖）。Artifact sheet 的拖动把手复用 `TabItemView`（无栏，不滑动）。删除 `TabHandle`、SwiftUI 标签栏与标签项、`TabDropDelegate`。面板内容区的边缘拆分投放仍是 SwiftUI `PaneDropDelegate`。
 - 检查：新增标签栏溢出检查（可滚动、显示中标签可见、宽度上下限、未达上限的标题完整）；首版宽度未计标签文本框内边距导致截断，检查截图发现后已修。`experience --workspace-only` 24 组、`tabs`、`ownership`、`targets` 通过；开发实例窗口截图确认标签栏与空白处底色。
 
 ### 三区停靠与 AppKit 工具栏
@@ -187,6 +187,10 @@ AppKit 自绘 `TabBarView`，行为对齐系统 Tab Bar（Xcode 分屏标签也�
 - 启动加载重试：启动时历史尚未就绪导致的暂态失败（`unavailable`／`connection`）前 4 次自动重试（约 18 秒）期间显示“正在加载会话…”，不再短暂闪现“无法打开会话”与诊断编号；超时或需用户处理的失败仍显示错误与“重试”按钮（程序化检查见 `experience --workspace-only`；启动截图在 `target/checks/workspace-native-shell/quiet-retry-*.png`，不入库，该次启动首轮即打开，未触发重试分支）。
 - 输入区运行时名称：启动后运行时配置尚未到达前，输入区执行配置按钮不再回退显示内部运行时标识（如 `model_record_…`），加载中仅显示模型名并在菜单中注明“正在加载…”，真正缺失时显示“未知运行时”（截图在 `target/checks/workspace-native-shell/runtime-label-*.png`，不入库）。
 - 设置窗口焦点：已在 `GeneralSettingsView` 禁用默认焦点并在出现后清除初始选中，不再自动选中第一个文本框（“每次加载”）；已编译通过，未在前台打开设置窗口截图复核。
+- 标签栏滚动条与界面边界梳理（`TabBar.swift`、`Panes.swift`、`EditorColumn.swift`、`WindowShell.swift`、`Composer.swift`）：
+  - 移除标签栏的 `NSScrollView` 系统横向滚动条（`hasHorizontalScroller = false`），避免系统设置“始终显示滚动条”或外接鼠标触发 `.legacy` 滚动条时以 15pt 不透明白底盖住 28pt 标签标题；在 `TabScrollView` 中同时接管横向手势与纵向滚轮的横向滚动，并在左右溢出端加入不拦截指针与拖放的 `TabEdgeFadeView` 渐变提示；“＋”左侧补分隔线，随界面缩放更新字号。
+  - 修复标签栏与外壳的其余边界问题：关闭尾部标签或加宽标签栏时钳制滚动位置不再留出末尾空白；窗口或标签栏变窄后仍保持当前选中标签滚入可见；按住拖动标签随自动滚动时按标签带坐标计算位移避免漂移；窗口激活/失焦时刷新标签未读指示；`TabPaint` 与 `TabShade` 改用语义分隔色及深色模式对比参数；`EditorColumn` 在底区不含输入区时不再误用输入区最小高度；`WindowShell` 在超窄窗口同时展开两侧停靠区时按最小宽度分配保存宽度，并消除 `NSToolbarItem` 初始零尺寸布局警告；`PaneView`／`TabContentView` 加裁剪，输入区在极窄分屏下可横向滚动控制行，防止输入区边框与下拉越过分割线溢入相邻面板。
+  - 边界与视觉复核：`WorkspaceNavigationChecks` 与 `SidebarToolbarChecks` 补充系统滚动条禁用、裁剪高度、两端渐变、关闭/变窄钳制、底区多工具拆分及 `640×480` 窄分屏不溢出断言；`svc run build-macos`、`sidebar-toolbar`（30 组布局，明暗无警告）、`experience --workspace-only`（27 项；与前序渲染检查连续运行时首次曾遇冷启动队列 25s 超时，独立复跑通过）、`tabs`、`appearance-zoom` 与 `shell-motion` 全部通过；已通过图片查看全部 9 张离屏渲染截图（`target/checks/macos-experience/tabbar-overflow-{light,dark,zoom150}.png`、`target/checks/macos-sidebar-toolbar/shell-{tabs-overflow,bottom-dock,narrow-edge}-{light,dark}.png`，不入库）。
 - 实测补充：配置了运行时后 ⌘N 与 ⇧⌘N 均可用，⇧⌘N 打开 720×760 的独立会话窗口并层叠；新窗口沿用升级前 SwiftUI 的 1364×834 帧。按键自动化曾在副本输入区留下一个“/”，已删除（副本，非日常数据）。
 - `experience --workspace-only` 在与完整 `experience` 及运行中的真实数据实例并行时，冷启动打开两个来源超过 25 秒一次；在真实数据开发实例运行期间单独执行也会触发该超时，停止开发实例后复跑通过，属负载下的时限。
 

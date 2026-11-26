@@ -189,17 +189,31 @@ import SwiftUI
     note("PASS tab tooltip: full title and foreign tracking survive hover updates")
 
     do {
-        // Tabs past the bar's width scroll; the shown one is brought into view; titles that fit are whole.
+        // Tabs past the bar's width scroll without a scrollbar; the shown one is brought into view; titles that fit are whole.
         let model = ConversationWindowModel(application: device, kind: .workspace)
         model.start(restoring: nil, seed: WindowSeed(conversationID: "sample-0"))
-        for _ in 0..<11 { model.openInNewTab() }
+        model.openInNewTab("sample-1")
+        model.openInNewTab("sample-2")
+        model.insertTab(ArtifactTab(document: .mermaid(source: "flowchart LR; A-->B", conversationID: nil, sourceID: "tabbar-check")))
+        for _ in 0..<8 { model.openInNewTab() }
         let bar = TabBarView(window: model, pane: model.focusedPane)
         let host = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 420, height: 28), styleMask: [.titled], backing: .buffered, defer: true)
+        host.isReleasedWhenClosed = false
         host.contentView = bar
-        bar.update()
-        bar.layoutSubtreeIfNeeded()
-        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
-        guard let scroll = bar.subviews.compactMap({ $0 as? NSScrollView }).first, let strip = scroll.documentView else { fatalError("标签栏缺少滚动视图") }
+        @MainActor func settleBar() {
+            bar.update()
+            bar.layoutSubtreeIfNeeded()
+            RunLoop.main.run(until: Date().addingTimeInterval(0.08))
+            bar.layoutSubtreeIfNeeded()
+        }
+        settleBar()
+        func descendants(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap(descendants) }
+        guard let scroll = bar.subviews.compactMap({ $0 as? TabScrollView }).first, let strip = scroll.documentView else { fatalError("标签栏缺少滚动视图") }
+        precondition(!scroll.hasHorizontalScroller && !scroll.hasVerticalScroller, "标签栏不得启用系统滚动条")
+        precondition(descendants(bar).compactMap { $0 as? NSScroller }.allSatisfy { $0.isHidden || $0.frame.isEmpty },
+                     "标签栏不得绘制可见 NSScroller（避免常驻滚动条遮挡标签标题）")
+        precondition(abs(scroll.contentSize.height - bar.bounds.height) < 0.5 && abs(strip.frame.height - bar.bounds.height) < 0.5,
+                     "滚动区与标签带高度必须占满整个标签栏")
         let items = strip.subviews.compactMap { $0 as? TabItemView }
         precondition(items.count == 12 && strip.frame.width > scroll.contentSize.width, "超出栏宽的标签可滚动：\(strip.frame.width) / \(scroll.contentSize.width)")
         precondition(items.allSatisfy { $0.frame.width >= TabBarView.minimumTabWidth && $0.frame.width <= TabBarView.maximumTabWidth }, "标签宽度在上下限之内")
@@ -209,7 +223,82 @@ import SwiftUI
             let title = (item.tab.title as NSString).size(withAttributes: [.font: NSFont.systemFont(ofSize: 11 * AppearancePreferences.shared.values.uiScale)]).width
             precondition(item.frame.width - 2 * TabItemView.titleInset >= title, "未达上限的标签标题完整：\(item.tab.title)")
         }
-        note("PASS tab bar: overflow scrolls, the shown tab is brought into view, widths within limits, titles under the limit whole")
+
+        // Edge fades track scroll position at start, middle and end.
+        guard let leadingFade = bar.subviews.first(where: { $0.identifier?.rawValue == "tab-bar-leading-fade" }),
+              let trailingFade = bar.subviews.first(where: { $0.identifier?.rawValue == "tab-bar-trailing-fade" }) else {
+            fatalError("标签栏缺少溢出渐变提示视图")
+        }
+        scroll.scrollHorizontally(by: -10_000)
+        settleBar()
+        precondition(scroll.contentView.bounds.origin.x <= 0.5 && leadingFade.isHidden && !trailingFade.isHidden, "滚到最左端时只显示右侧溢出渐变")
+        scroll.scrollHorizontally(by: 120)
+        settleBar()
+        precondition(!leadingFade.isHidden && !trailingFade.isHidden, "滚到中间时两侧均显示溢出渐变")
+        scroll.scrollHorizontally(by: 10_000)
+        settleBar()
+        precondition(!leadingFade.isHidden && trailingFade.isHidden, "滚到最右端时只显示左侧溢出渐变")
+
+        @MainActor func captureBar(_ name: String) {
+            settleBar()
+            bar.displayIfNeeded()
+            guard let bitmap = bar.bitmapImageRepForCachingDisplay(in: bar.bounds) else { fatalError("无法绘制标签栏：\(name)") }
+            bar.cacheDisplay(in: bar.bounds, to: bitmap)
+            try! bitmap.representation(using: .png, properties: [:])!.write(to: home.appendingPathComponent(name + ".png"))
+        }
+
+        // Visual renders: mid-scroll in Light, Dark, and 150% Zoom.
+        let savedAppearance = NSApp.appearance
+        let savedPreferences = AppearancePreferences.shared.values
+        scroll.scrollHorizontally(by: -120)
+        NSApp.appearance = NSAppearance(named: .aqua)
+        host.appearance = NSApp.appearance
+        captureBar("tabbar-overflow-light")
+        NSApp.appearance = NSAppearance(named: .darkAqua)
+        host.appearance = NSApp.appearance
+        captureBar("tabbar-overflow-dark")
+        NSApp.appearance = NSAppearance(named: .aqua)
+        host.appearance = NSApp.appearance
+        var zoomed = savedPreferences
+        zoomed.zoomPercent = 150
+        AppearancePreferences.shared.values = zoomed
+        host.setContentSize(NSSize(width: 420, height: PaneChrome.barHeight(for: zoomed)))
+        RunLoop.main.run(until: Date().addingTimeInterval(0.08))
+        captureBar("tabbar-overflow-zoom150")
+        AppearancePreferences.shared.values = savedPreferences
+        NSApp.appearance = savedAppearance
+        host.appearance = nil
+        host.setContentSize(NSSize(width: 420, height: 28))
+        RunLoop.main.run(until: Date().addingTimeInterval(0.08))
+        settleBar()
+
+        // Closing trailing tabs clamps clip origin so no blank trailing gap remains.
+        scroll.scrollHorizontally(by: 10_000)
+        settleBar()
+        for tab in model.focusedPane.tabs.suffix(8) { model.closeTab(tab.id) }
+        settleBar()
+        precondition(scroll.contentView.bounds.maxX <= strip.frame.width + 0.5,
+                     "关闭尾部标签后滚动位置应贴合末尾，不得留出空白：\(scroll.contentView.bounds.maxX) vs \(strip.frame.width)")
+
+        // Narrowing the bar keeps the selected tab visible.
+        for _ in 0..<8 { model.openInNewTab() }
+        host.setContentSize(NSSize(width: 560, height: 28))
+        settleBar()
+        let lastTab = model.focusedPane.tabs.last!
+        model.selectTab(lastTab.id)
+        settleBar()
+        host.setContentSize(NSSize(width: 300, height: 28))
+        settleBar()
+        guard let shownNarrow = strip.subviews.compactMap({ $0 as? TabItemView }).first(where: { $0.tab.id == lastTab.id }) else {
+            fatalError("变窄后缺少选中标签")
+        }
+        precondition(scroll.contentView.bounds.intersects(shownNarrow.frame),
+                     "窗口变窄后仍应保持当前选中标签可见")
+
+        host.contentView = nil
+        for tab in model.allTabs { tab.close() }
+        model.list.close()
+        note("PASS tab bar: no system scroller, edge fades track scroll, overflow scrolls & clamps on close/narrow, light/dark/150% renders captured")
     }
 
     precondition(ConversationListClicks.openDelay(pressedAt: 10, now: 10.1, interval: 0.5) > 0.39)

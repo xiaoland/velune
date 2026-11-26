@@ -104,8 +104,8 @@ import ObjectiveC
         let shell = WorkspaceShell(window: window, model: model, content: root, previewEmpty: false)
         let host = shell.split
         let outer = host.splitView
-        func capture(_ name: String, width: CGFloat, mode: String, requestedSidebarWidth: CGFloat? = nil) {
-            window.setContentSize(NSSize(width: width, height: 760))
+        func capture(_ name: String, width: CGFloat, height: CGFloat = 760, mode: String, requestedSidebarWidth: CGFloat? = nil) {
+            window.setContentSize(NSSize(width: width, height: height))
             for _ in 0..<5 { host.view.layoutSubtreeIfNeeded(); settle() }
             host.view.layoutSubtreeIfNeeded()
             guard let toolbar = window.toolbar, toolbar === shell.toolbar.toolbar else { fail("window toolbar must be the shell's: \(name)") }
@@ -126,6 +126,13 @@ import ObjectiveC
                 "\(String(describing: type(of: view))) id=\(view.identifier?.rawValue ?? "") frame=\(NSStringFromRect(view.convert(view.bounds, to: nativeFrame)))"
             }.joined(separator: "\n")
             try! hierarchy.write(to: directory.appendingPathComponent(name + "-native.txt"), atomically: true, encoding: .utf8)
+            for tabScroll in descendants(nativeFrame).compactMap({ $0 as? TabScrollView }) {
+                require(!tabScroll.hasHorizontalScroller && !tabScroll.hasVerticalScroller, "tab bar scroll view must disable system scrollers: \(name)")
+                require(descendants(tabScroll).compactMap { $0 as? NSScroller }.allSatisfy { $0.isHidden || $0.frame.isEmpty },
+                        "tab bar must not show any NSScroller: \(name)")
+                require(abs(tabScroll.contentSize.height - tabScroll.frame.height) < 0.5,
+                        "tab bar clip height must match scroll view height: \(name)")
+            }
             let items = toolbar.items
             let separators = items.enumerated().compactMap { index, item -> (Int, NSTrackingSeparatorToolbarItem)? in
                 guard let separator = item as? NSTrackingSeparatorToolbarItem, separator.splitView === outer, separator.dividerIndex == 0 else { return nil }
@@ -169,7 +176,7 @@ import ObjectiveC
                         "visibleItem": toolbar.visibleItems?.contains(where: { $0 === item }) == true]
             }
             evidence.append(["case": name, "hostOS": ProcessInfo.processInfo.operatingSystemVersionString,
-                             "width": width, "mode": mode, "items": rows,
+                             "width": width, "height": height, "mode": mode, "items": rows,
                              "sidebarFrame": NSStringFromRect(sidebarRect),
                              "visible": window.isVisible, "key": window.isKeyWindow, "main": window.isMainWindow])
             try! JSONSerialization.data(withJSONObject: evidence, options: [.prettyPrinted, .sortedKeys]).write(to: directory.appendingPathComponent("sidebar-toolbar-check.json"))
@@ -208,8 +215,43 @@ import ObjectiveC
         capture("sidebar-with-inspector-\(tone)", width: 1060, mode: "solo")
         model.split(.horizontal)
         capture("sidebar-with-inspector-and-split-\(tone)", width: 1200, mode: "solo")
+        model.openInNewTab("sample-1")
+        model.openInNewTab("sample-2")
+        for _ in 0..<9 { model.openInNewTab() }
+        capture("shell-tabs-overflow-\(tone)", width: 960, mode: "solo")
+        let overflowStrips = descendants(window.contentView!.superview!).compactMap { ($0 as? TabScrollView)?.documentView }
+        require(overflowStrips.contains { $0.frame.width > ($0.enclosingScrollView?.contentSize.width ?? 0) },
+                "overflow shell must have a scrollable tab strip: \(tone)")
+        var bottomDock = ToolWindowLayout()
+        bottomDock[.outline] = ToolWindowState(place: .docked(.bottom))
+        bottomDock[.agents] = ToolWindowState(place: .docked(.bottom))
+        model.tools = bottomDock
+        capture("shell-bottom-dock-\(tone)", width: 1060, mode: "solo")
+        let native = window.contentView!.superview!
+        guard let bottomSplit = descendants(native).compactMap({ $0 as? BottomSplitView }).first, bottomSplit.subviews.count == 2 else {
+            fail("shell-bottom-dock must mount bottom area: \(tone)")
+        }
+        require(bottomSplit.subviews[1].frame.height >= 100 && native.bounds.contains(bottomSplit.subviews[1].convert(bottomSplit.subviews[1].bounds, to: native)),
+                "bottom area frame must stay inside window: \(tone)")
+        var narrowEdge = bottomDock
+        narrowEdge[.outline] = ToolWindowState(place: .docked(.right))
+        model.tools = narrowEdge
+        capture("shell-narrow-edge-\(tone)", width: 640, height: 480, mode: "solo")
+        for composerText in descendants(native).compactMap({ $0 as? ComposerTextView }) {
+            guard let editorScroll = composerText.enclosingScrollView else { continue }
+            var ancestor: NSView? = editorScroll.superview
+            while let current = ancestor, !(current.superview is PaneSplitView || current.superview is PaneGridView) {
+                ancestor = current.superview
+            }
+            if let paneHost = ancestor {
+                let rect = editorScroll.convert(editorScroll.bounds, to: paneHost)
+                require(rect.minX >= -1 && rect.maxX <= paneHost.bounds.width + 1,
+                        "narrow pane composer must stay inside its own pane: \(rect) in \(paneHost.bounds) (\(tone))")
+            }
+        }
         window.contentViewController = nil
-        model.list.close(); model.focused.store.close()
+        for tab in model.allTabs { tab.close() }
+        model.list.close()
     }
     do {
         // Saved widths are what a new window's sidebar and inspector open at.

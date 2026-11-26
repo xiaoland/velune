@@ -27,6 +27,7 @@ struct PaneView: View {
                 // Exactly the room the pane has, however wide a tab's content would like to be.
                 .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
         }
+        .clipped()
         .background(PaneAnchor { [window, id = pane.id] in window.register(id, anchor: $0) })
         .onGeometryChange(for: CGSize.self) { $0.size } action: { size = $0 }
         .onDrop(of: ConversationLink.dropTypes, delegate: PaneDropDelegate(window: window, pane: pane.id, size: size, zone: $dropZone))
@@ -56,6 +57,7 @@ struct TabContentView: View {
                 else { transcript }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .clipped()
             .overlay(alignment: .top) {
                 TranscriptFindHost(find: tab.find, model: store.transcript, jump: tab.navigate(to:))
             }
@@ -196,7 +198,7 @@ extension View {
 /// The system tab bar's shades over the window's colour: tabs not shown are
 /// darker with a soft shadow under the bar's top edge, and lines part them.
 enum TabShade {
-    static let line = Color.black.opacity(0.16)
+    static let line = Color(nsColor: .separatorColor)
 
     static var unselected: some View {
         Color.black.opacity(0.065)

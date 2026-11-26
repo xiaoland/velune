@@ -846,7 +846,17 @@ struct ComposerView: View {
             if oneRow {
                 HStack(spacing: 8) { nextTurnControls(compact: false); accessoriesButton; statusRow }
             } else {
-                HStack { ViewThatFits(in: .horizontal) { nextTurnControls(compact: false); nextTurnControls(compact: true) }; accessoriesButton }
+                HStack {
+                    ViewThatFits(in: .horizontal) {
+                        nextTurnControls(compact: false)
+                        nextTurnControls(compact: true)
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            nextTurnControls(compact: true)
+                        }
+                        .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
+                    }
+                    accessoriesButton
+                }
                 statusRow
             }
         }
@@ -890,7 +900,7 @@ struct ComposerView: View {
     private var statusRow: some View {
         let context = self.context
         return HStack(spacing: 8) {
-            Spacer(minLength: 8)
+            Spacer(minLength: 0)
             if editingTarget == nil, let issue = context.inputIssue { Text(issue).uiFont(.callout).foregroundStyle(.secondary).lineLimit(1).help(issue) }
             else if editingTarget == nil && context.chosenModelUnavailable { Text("所选模型已不可用").uiFont(.callout).foregroundStyle(.secondary).lineLimit(1) }
             else if editingTarget == nil { ComposerStatusLine(store: store, context: context).layoutPriority(-1).padding(.trailing, 4) }

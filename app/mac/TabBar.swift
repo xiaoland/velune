@@ -32,10 +32,14 @@ struct PaneTabBar: NSViewRepresentable {
     private let scrollView = TabScrollView()
     fileprivate let strip = TabStripView()
     private let newTab = NewTabButtonView()
+    private let leadingFade = TabEdgeFadeView(edge: .leading)
+    private let trailingFade = TabEdgeFadeView(edge: .trailing)
     private let insertionMark = NSView()
     private var items: [UUID: TabItemView] = [:]
     private var order: [UUID] = []
     private var shownSelection: UUID?
+    private var lastLayoutWidth: CGFloat = 0
+    private weak var observedWindow: NSWindow?
     /// The tab sliding along the bar, where it was pressed in the strip, and how far it has gone.
     private var sliding: (item: TabItemView, distance: CGFloat)?
     /// Where a drop over the bar would put the tab: before the tab at this place.
@@ -44,20 +48,24 @@ struct PaneTabBar: NSViewRepresentable {
     static let maximumTabWidth: CGFloat = 240
     /// How far off the bar a sliding tab leaves it.
     static let leaveDistance: CGFloat = 12
+    private static let fadeWidth: CGFloat = 12
 
     init(window: ConversationWindowModel, pane: Pane) {
         model = window
         self.pane = pane
         super.init(frame: .zero)
         scrollView.drawsBackground = false
-        scrollView.hasHorizontalScroller = true
+        scrollView.hasHorizontalScroller = false
         scrollView.hasVerticalScroller = false
-        scrollView.scrollerStyle = .overlay
-        scrollView.autohidesScrollers = true
         scrollView.verticalScrollElasticity = .none
         scrollView.horizontalScrollElasticity = .allowed
+        scrollView.contentView.postsBoundsChangedNotifications = true
         scrollView.documentView = strip
         addSubview(scrollView)
+        addSubview(leadingFade)
+        addSubview(trailingFade)
+        NotificationCenter.default.addObserver(self, selector: #selector(clipBoundsChanged),
+                                               name: NSView.boundsDidChangeNotification, object: scrollView.contentView)
         newTab.action = { [weak self] in
             guard let self, let model = self.model else { return }
             model.focus(self.pane.id)
@@ -71,16 +79,43 @@ struct PaneTabBar: NSViewRepresentable {
         registerForDraggedTypes(TabDrop.types)
         setAccessibilityElement(true)
         setAccessibilityRole(.tabGroup)
+        updateEdgeFades()
     }
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
+    deinit {
+        NotificationCenter.default.removeObserver(self)
+    }
+
     private var reduceMotion: Bool { NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if let observedWindow {
+            NotificationCenter.default.removeObserver(self, name: NSWindow.didBecomeKeyNotification, object: observedWindow)
+            NotificationCenter.default.removeObserver(self, name: NSWindow.didResignKeyNotification, object: observedWindow)
+        }
+        observedWindow = window
+        if let window {
+            NotificationCenter.default.addObserver(self, selector: #selector(windowKeyChanged), name: NSWindow.didBecomeKeyNotification, object: window)
+            NotificationCenter.default.addObserver(self, selector: #selector(windowKeyChanged), name: NSWindow.didResignKeyNotification, object: window)
+        }
+    }
+
+    @objc private func clipBoundsChanged(_ notification: Notification) {
+        updateEdgeFades()
+    }
+
+    @objc private func windowKeyChanged(_ notification: Notification) {
+        for item in items.values { item.refresh() }
+    }
 
     /// Tabs added, removed, reordered, renamed or reselected; focus moved.
     func update() {
         guard let model else { return }
+        newTab.refreshAppearance()
         let tabs = pane.tabs
         let ids = tabs.map(\.id)
         for (id, item) in items where !ids.contains(id) {
@@ -107,7 +142,11 @@ struct PaneTabBar: NSViewRepresentable {
         if shownSelection != pane.selectedID, let item = items[pane.selectedID] {
             shownSelection = pane.selectedID
             // After this layout, so the frame it scrolls to is the tab's own.
-            DispatchQueue.main.async { item.scrollToVisible(item.bounds) }
+            DispatchQueue.main.async { [weak self, weak item] in
+                guard let self, let item else { return }
+                item.scrollToVisible(item.bounds)
+                self.updateEdgeFades()
+            }
         }
     }
 
@@ -116,13 +155,20 @@ struct PaneTabBar: NSViewRepresentable {
         let height = bounds.height
         newTab.frame = NSRect(x: bounds.width - height, y: 0, width: height, height: height)
         scrollView.frame = NSRect(x: 0, y: 0, width: max(0, bounds.width - height), height: height)
+        let fadeWidth = min(Self.fadeWidth, scrollView.frame.width / 2)
+        leadingFade.frame = NSRect(x: scrollView.frame.minX, y: 0, width: fadeWidth, height: height)
+        trailingFade.frame = NSRect(x: scrollView.frame.maxX - fadeWidth, y: 0, width: fadeWidth, height: height)
         layoutTabs(animated: false)
+        if abs(bounds.width - lastLayoutWidth) > 0.5 {
+            lastLayoutWidth = bounds.width
+            if sliding == nil { scrollSelectedIntoView() }
+        }
     }
 
     /// The tabs side by side: the sliding one where the pointer has it, the
     /// others moved aside from the place it would take.
     fileprivate func layoutTabs(animated: Bool) {
-        let height = scrollView.frame.height
+        let height = scrollView.contentSize.height > 0 ? scrollView.contentSize.height : scrollView.frame.height
         let widths = order.map { items[$0].map { $0.preferredWidth } ?? Self.minimumTabWidth }
         var x: CGFloat = 0
         var frames: [CGRect] = []
@@ -131,6 +177,12 @@ struct PaneTabBar: NSViewRepresentable {
             x += width
         }
         strip.frame = NSRect(x: 0, y: 0, width: max(x, scrollView.contentSize.width), height: height)
+        let clip = scrollView.contentView
+        let maxX = max(0, strip.frame.width - clip.bounds.width)
+        if clip.bounds.origin.x > maxX + 0.5 || clip.bounds.origin.x < 0 {
+            clip.scroll(to: NSPoint(x: min(max(clip.bounds.origin.x, 0), maxX), y: 0))
+            scrollView.reflectScrolledClipView(clip)
+        }
         if let sliding, let from = order.firstIndex(of: sliding.item.tab.id) {
             let target = slideTarget(from: from, distance: sliding.distance, frames: frames)
             for (index, id) in order.enumerated() {
@@ -141,7 +193,7 @@ struct PaneTabBar: NSViewRepresentable {
                 place(item, frame, animated: !reduceMotion)
             }
             var frame = frames[from]
-            frame.origin.x = min(max(frame.minX + sliding.distance, 0), x - frame.width)
+            frame.origin.x = min(max(frame.minX + sliding.distance, 0), max(0, x - frame.width))
             sliding.item.frame = frame
         } else {
             for (index, id) in order.enumerated() {
@@ -156,6 +208,21 @@ struct PaneTabBar: NSViewRepresentable {
         } else {
             insertionMark.isHidden = true
         }
+        updateEdgeFades()
+    }
+
+    private func updateEdgeFades() {
+        let clip = scrollView.contentView.bounds
+        let contentWidth = strip.frame.width
+        let overflows = contentWidth > clip.width + 0.5
+        leadingFade.isHidden = !overflows || clip.minX <= 0.5
+        trailingFade.isHidden = !overflows || clip.maxX >= contentWidth - 0.5
+    }
+
+    private func scrollSelectedIntoView() {
+        guard let item = items[pane.selectedID] else { return }
+        item.scrollToVisible(item.bounds)
+        updateEdgeFades()
     }
 
     private func place(_ item: TabItemView, _ frame: CGRect, animated: Bool) {
@@ -256,16 +323,54 @@ enum TabDrop {
     }
 }
 
-/// Scrolls sideways only; a vertical wheel scrolls it sideways too.
+/// Scrolls sideways only; handles both horizontal gestures and vertical wheel without a scrollbar.
 final class TabScrollView: NSScrollView {
     override func scrollWheel(with event: NSEvent) {
-        guard abs(event.scrollingDeltaY) > abs(event.scrollingDeltaX), let documentView else { return super.scrollWheel(with: event) }
+        guard let documentView else { return }
+        let maxX = max(0, documentView.frame.width - contentView.bounds.width)
+        guard maxX > 0 else { return }
+        let raw = abs(event.scrollingDeltaY) > abs(event.scrollingDeltaX) ? event.scrollingDeltaY : event.scrollingDeltaX
+        guard raw != 0 else { return }
+        let delta = event.hasPreciseScrollingDeltas ? raw : raw * 16
+        scrollHorizontally(by: -delta)
+    }
+
+    @discardableResult
+    func scrollHorizontally(by deltaX: CGFloat) -> Bool {
+        guard let documentView else { return false }
         let clip = contentView
+        let maxX = max(0, documentView.frame.width - clip.bounds.width)
         var origin = clip.bounds.origin
-        let delta = event.hasPreciseScrollingDeltas ? event.scrollingDeltaY : event.scrollingDeltaY * 16
-        origin.x = min(max(origin.x - delta, 0), max(0, documentView.frame.width - clip.bounds.width))
+        let nextX = min(max(origin.x + deltaX, 0), maxX)
+        guard abs(nextX - origin.x) > 0.01 else { return false }
+        origin.x = nextX
         clip.scroll(to: origin)
         reflectScrolledClipView(clip)
+        return true
+    }
+}
+
+/// Subtle edge fade cue at the scrolled ends of the tab strip; passes pointer events through.
+@MainActor final class TabEdgeFadeView: NSView {
+    enum Edge { case leading, trailing }
+    private let edge: Edge
+
+    init(edge: Edge) {
+        self.edge = edge
+        super.init(frame: .zero)
+        setAccessibilityElement(false)
+        identifier = NSUserInterfaceItemIdentifier(edge == .leading ? "tab-bar-leading-fade" : "tab-bar-trailing-fade")
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let strength: CGFloat = TabPaint.isDark ? 0.32 : 0.14
+        let gradient = NSGradient(starting: NSColor.black.withAlphaComponent(strength), ending: .clear)
+        gradient?.draw(in: bounds, angle: edge == .leading ? 0 : 180)
     }
 }
 
@@ -284,17 +389,25 @@ final class TabStripView: NSView {
     private var hovering = false { didSet { needsDisplay = true } }
     private var pressed = false { didSet { needsDisplay = true } }
     private let image = NSImageView()
+    private var appliedPointSize: CGFloat = 0
 
     init() {
         super.init(frame: .zero)
         image.image = NSImage(systemSymbolName: "plus", accessibilityDescription: nil)
         image.contentTintColor = .secondaryLabelColor
-        image.symbolConfiguration = .init(pointSize: 11, weight: .medium)
+        refreshAppearance()
         addSubview(image)
         toolTip = KeyboardShortcutSettings.shared.help("新建标签页", .newTab)
         setAccessibilityElement(true)
         setAccessibilityRole(.button)
         setAccessibilityLabel("新建标签页")
+    }
+
+    func refreshAppearance() {
+        let size = 11 * AppearancePreferences.shared.values.uiScale
+        guard abs(size - appliedPointSize) > 0.01 else { return }
+        appliedPointSize = size
+        image.symbolConfiguration = .init(pointSize: size, weight: .medium)
     }
 
     @available(*, unavailable)
@@ -328,13 +441,16 @@ final class TabStripView: NSView {
 
     override func draw(_ dirtyRect: NSRect) {
         TabPaint.unselected(in: bounds, hover: pressed ? 0.08 : hovering ? 0.04 : 0, flipped: isFlipped)
+        TabPaint.line.setFill()
+        NSRect(x: 0, y: 0, width: 1, height: bounds.height).fill()
     }
 }
 
 /// The system tab bar's shades over the window's colour: tabs not shown are
 /// darker with a soft shadow under the bar's top edge, and lines part them.
 @MainActor enum TabPaint {
-    static let line = NSColor.black.withAlphaComponent(0.16)
+    static var line: NSColor { .separatorColor }
+    static var isDark: Bool { NSAppearance.currentDrawing().bestMatch(from: [.darkAqua, .aqua]) == .darkAqua }
 
     static func selected(in rect: NSRect) {
         NSColor.windowBackgroundColor.setFill()
@@ -344,9 +460,18 @@ final class TabStripView: NSView {
     static func unselected(in rect: NSRect, hover: CGFloat, flipped: Bool) {
         NSColor.windowBackgroundColor.setFill()
         rect.fill()
-        NSColor.black.withAlphaComponent(0.065 + hover).setFill()
-        rect.fill(using: .sourceOver)
-        let shadow = NSGradient(starting: NSColor.black.withAlphaComponent(0.12), ending: .clear)
+        if isDark {
+            NSColor.black.withAlphaComponent(0.24).setFill()
+            rect.fill(using: .sourceOver)
+            if hover > 0 {
+                NSColor.white.withAlphaComponent(hover).setFill()
+                rect.fill(using: .sourceOver)
+            }
+        } else {
+            NSColor.black.withAlphaComponent(0.065 + hover).setFill()
+            rect.fill(using: .sourceOver)
+        }
+        let shadow = NSGradient(starting: NSColor.black.withAlphaComponent(isDark ? 0.32 : 0.12), ending: .clear)
         let top = flipped ? NSRect(x: rect.minX, y: rect.minY, width: rect.width, height: 3) : NSRect(x: rect.minX, y: rect.maxY - 3, width: rect.width, height: 3)
         shadow?.draw(in: top, angle: flipped ? 90 : 270)
     }
@@ -369,6 +494,7 @@ final class TabStripView: NSView {
     private enum ClosePointer { case outside, over, pressed }
     private var closePointer: ClosePointer = .outside { didSet { if closePointer != oldValue { needsDisplay = true } } }
     private var pressed: NSEvent?
+    private var pressedStripX: CGFloat = 0
     private var pressedClose = false
     private var sliding = false
     private var watching: Set<AnyCancellable> = []
@@ -560,6 +686,7 @@ final class TabStripView: NSView {
             return
         }
         pressed = event
+        pressedStripX = bar?.strip.convert(event.locationInWindow, from: nil).x ?? 0
         model?.selectTab(tab.id)
         if event.clickCount == 2 { beginRename() }
     }
@@ -572,7 +699,8 @@ final class TabStripView: NSView {
         // Along the tabs' part of the bar it slides; off it, it leaves.
         if let bar, bar.slidingArea.contains(to) {
             if !sliding { sliding = true; closePointer = .outside }
-            bar.slide(self, by: to.x - from.x)
+            let currentStripX = bar.strip.convert(to, from: nil).x
+            bar.slide(self, by: currentStripX - pressedStripX)
             autoscroll(with: event)
             return
         }

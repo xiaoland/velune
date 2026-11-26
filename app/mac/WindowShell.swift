@@ -185,13 +185,35 @@ enum ConversationToolbar {
     }
 
     private func applySavedWidths() {
-        if !sized.contains(.left), !sidebarItem.isCollapsed {
-            sized.insert(.left)
-            splitView.setPosition(CGFloat(width(.left)), ofDividerAt: 0)
+        let total = splitView.bounds.width
+        let divider = splitView.dividerThickness
+        let minEditor = contentItem.minimumThickness
+        let wantsLeft = !sized.contains(.left) && !sidebarItem.isCollapsed
+        let wantsRight = !sized.contains(.right) && !inspectorItem.isCollapsed
+        var leftWidth = wantsLeft ? CGFloat(width(.left)) : (sidebarItem.isCollapsed ? 0 : sidebarItem.viewController.view.frame.width)
+        var rightWidth = wantsRight ? CGFloat(width(.right)) : (inspectorItem.isCollapsed ? 0 : inspectorItem.viewController.view.frame.width)
+        let separators = (!sidebarItem.isCollapsed ? divider : 0) + (!inspectorItem.isCollapsed ? divider : 0)
+        let budget = max(0, total - minEditor - separators)
+        if !sidebarItem.isCollapsed, !inspectorItem.isCollapsed, leftWidth + rightWidth > budget {
+            let overflow = leftWidth + rightWidth - budget
+            let leftMin = sidebarItem.minimumThickness
+            let rightMin = inspectorItem.minimumThickness
+            let leftSlack = max(0, leftWidth - leftMin)
+            let rightSlack = max(0, rightWidth - rightMin)
+            let totalSlack = leftSlack + rightSlack
+            if totalSlack > 0 {
+                let take = min(overflow, totalSlack)
+                leftWidth -= (take * (leftSlack / totalSlack)).rounded()
+                rightWidth -= (take * (rightSlack / totalSlack)).rounded()
+            }
         }
-        if !sized.contains(.right), !inspectorItem.isCollapsed {
+        if wantsLeft {
+            sized.insert(.left)
+            splitView.setPosition(leftWidth, ofDividerAt: 0)
+        }
+        if wantsRight {
             sized.insert(.right)
-            splitView.setPosition(splitView.bounds.width - CGFloat(width(.right)) - splitView.dividerThickness, ofDividerAt: 1)
+            splitView.setPosition(total - rightWidth - divider, ofDividerAt: 1)
         }
         splitView.layoutSubtreeIfNeeded()
     }
@@ -245,6 +267,7 @@ extension RunLoop {
         setAccessibilityIdentifier(identifier)
         target = self
         action = #selector(clicked)
+        sizeToFit()
     }
 
     @available(*, unavailable)
@@ -358,10 +381,12 @@ extension RunLoop {
         switch kind {
         case .device:
             let name = model.device.map { DeviceHub.shared?.name(of: $0) ?? "远程设备" } ?? ""
-            item.view = hosting(Label(name, systemImage: "desktopcomputer").labelStyle(.titleAndIcon).foregroundStyle(.secondary).fixedSize())
+            item.view = hosting(Label(name, systemImage: "desktopcomputer").labelStyle(.titleAndIcon).foregroundStyle(.secondary).fixedSize().frame(minWidth: 1, minHeight: 22))
             item.toolTip = "此窗口中的会话运行在“\(name)”上"
+            item.isHidden = model.device == nil
         case .operations:
-            item.view = hosting(ConversationOperationStatus(aggregated: model.aggregated).fixedSize())
+            item.view = hosting(ConversationOperationStatus(aggregated: model.aggregated).fixedSize().frame(minWidth: 1, minHeight: 22))
+            item.isHidden = model.aggregated.conversationManagement.isEmpty
         default:
             let button = ToolbarButtonView(symbol: symbol(kind), label: title(kind), identifier: accessibilityIdentifier(kind),
                                            toggles: [.outline, .subAgents, .backgroundTasks, .pin].contains(kind))
