@@ -195,7 +195,12 @@ mod edit_model_tests {
         core.name_turn_models(&mut non_alias_turns);
         assert!(core.pi_binding_aliases.borrow().is_empty());
         assert_eq!(
-            non_alias_turns[0].settings.as_ref().unwrap().model.as_deref(),
+            non_alias_turns[0]
+                .settings
+                .as_ref()
+                .unwrap()
+                .model
+                .as_deref(),
             Some("claude-sonnet-4")
         );
 
@@ -225,11 +230,21 @@ mod edit_model_tests {
         ];
         core.name_turn_models(&mut stale_and_updated);
         assert_eq!(
-            stale_and_updated[0].settings.as_ref().unwrap().model.as_deref(),
+            stale_and_updated[0]
+                .settings
+                .as_ref()
+                .unwrap()
+                .model
+                .as_deref(),
             Some(openai_alias.as_str())
         );
         assert_eq!(
-            stale_and_updated[1].settings.as_ref().unwrap().model.as_deref(),
+            stale_and_updated[1]
+                .settings
+                .as_ref()
+                .unwrap()
+                .model
+                .as_deref(),
             Some("GPT-6.2 Sol（ChatGPT1）")
         );
 
@@ -900,7 +915,9 @@ impl CoreRuntime {
                 if let Ok(binding_alias) =
                     gateway.pi_binding_id(key, gateway.authentication_revision(key))
                 {
-                    aliases.entry(binding_alias).or_insert_with(|| key.to_owned());
+                    aliases
+                        .entry(binding_alias)
+                        .or_insert_with(|| key.to_owned());
                 }
             }
             cache.insert(gateway.id.clone(), (gateway.clone(), aliases));

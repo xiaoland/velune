@@ -834,10 +834,7 @@ impl CoreRuntime {
             SendQueueOperation::Steer { id } => {
                 let index = queue.position(&id)?;
                 let turn = queue.turns.remove(index).expect("queued turn");
-                if let Err(error) = self.steer(
-                    &turn.request.turn,
-                    Some(&turn.request.runtime_id),
-                ) {
+                if let Err(error) = self.steer(&turn.request.turn, Some(&turn.request.runtime_id)) {
                     let queue = &mut self.session.send_queue;
                     queue.turns.insert(index.min(queue.turns.len()), turn);
                     if matches!(&error, RuntimeError::Contract(failure) if failure.code == "runtime_operation_indeterminate")

@@ -72,7 +72,8 @@ impl CoreRuntime {
         conversation: &str,
         task: &str,
     ) -> Result<BackgroundTaskList, RuntimeError> {
-        let live = self.background_session(runtime, conversation)?
+        let live = self
+            .background_session(runtime, conversation)?
             .active_state
             .live_mut()
             .ok_or_else(|| RuntimeError::invalid("此历史任务不能独立停止"))?;

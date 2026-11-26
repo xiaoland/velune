@@ -78,7 +78,11 @@ pub(super) fn parse(
             let used = (1.0 - remaining) * 100.0;
             let whole = used.round();
             // Absorb floating-point noise at whole-percent cap boundaries.
-            let used_percent = if (used - whole).abs() <= 1e-12 { whole } else { used };
+            let used_percent = if (used - whole).abs() <= 1e-12 {
+                whole
+            } else {
+                used
+            };
             windows.push(QuotaWindow {
                 id: id.to_owned(),
                 model_ids: Some(model_ids.clone()),

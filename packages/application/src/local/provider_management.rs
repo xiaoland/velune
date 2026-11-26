@@ -183,7 +183,8 @@ impl CoreRuntime {
                 .subscription_quota
                 .refresh_provider(&gateway_id, &provider_id);
         }
-        self.subscription_quota.query(&gateway_id, &provider_id, false)
+        self.subscription_quota
+            .query(&gateway_id, &provider_id, false)
     }
 
     pub(crate) fn provider_account(

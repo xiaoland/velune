@@ -686,10 +686,13 @@ impl Application {
                 conversation_id,
                 turn,
                 target_runtime_id,
-            } => Response::SteerTurn(application.runtime.serve_live_control(
-                Focus::Conversation(conversation_id.clone()),
-                |core| core.steer_turn(&turn, target_runtime_id.as_deref()),
-            )?),
+            } => Response::SteerTurn(
+                application
+                    .runtime
+                    .serve_live_control(Focus::Conversation(conversation_id.clone()), |core| {
+                        core.steer_turn(&turn, target_runtime_id.as_deref())
+                    })?,
+            ),
             Command::CompactConversation {
                 runtime_id,
                 conversation_id,

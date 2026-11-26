@@ -515,7 +515,8 @@ mod tests {
     fn temp_home(label: &str) -> (PathBuf, Cleanup) {
         let mut key = [0; 16];
         getrandom::fill(&mut key).unwrap();
-        let home = std::env::temp_dir().join(format!("velune-{label}-{:032x}", u128::from_ne_bytes(key)));
+        let home =
+            std::env::temp_dir().join(format!("velune-{label}-{:032x}", u128::from_ne_bytes(key)));
         fs::create_dir(&home).unwrap();
         let cleanup = Cleanup(home.clone());
         (home, cleanup)
@@ -565,7 +566,10 @@ mod tests {
 
         fs::remove_file(&path).unwrap();
         assert!(original == Rollouts::capture(&config).unwrap());
-        assert_eq!(original.digest(), Rollouts::capture(&config).unwrap().digest());
+        assert_eq!(
+            original.digest(),
+            Rollouts::capture(&config).unwrap().digest()
+        );
         symlink(&home, &path).unwrap();
         assert!(Rollouts::capture(&config).is_err());
     }
@@ -625,7 +629,10 @@ mod tests {
         let config = sample_config(&home);
 
         for (name, bytes) in [
-            ("unknown-schema.json", br#"{"schemaVersion":99,"future":true}"#.as_slice()),
+            (
+                "unknown-schema.json",
+                br#"{"schemaVersion":99,"future":true}"#.as_slice(),
+            ),
             ("corrupt.json", br#"{"schemaVersion":1"#.as_slice()),
         ] {
             let path = home.join(name);

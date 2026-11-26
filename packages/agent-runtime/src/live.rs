@@ -14,8 +14,13 @@ pub trait LiveConversation {
     fn refresh_background_tasks(&mut self, _manual: bool) -> LiveResult {
         Ok(())
     }
-    fn background_tasks(&self) -> Result<Retained<crate::conversation::BackgroundTaskList>, LiveError> {
-        Ok(Retained::from_parts(Default::default(), DataRetention::default()))
+    fn background_tasks(
+        &self,
+    ) -> Result<Retained<crate::conversation::BackgroundTaskList>, LiveError> {
+        Ok(Retained::from_parts(
+            Default::default(),
+            DataRetention::default(),
+        ))
     }
     fn read_background_task_output(
         &mut self,
@@ -99,8 +104,13 @@ impl LiveConversation for PiSession {
         }
         Ok(())
     }
-    fn background_tasks(&self) -> Result<Retained<crate::conversation::BackgroundTaskList>, LiveError> {
-        Ok(Retained::from_parts(PiSession::background_tasks(self), DataRetention::default()))
+    fn background_tasks(
+        &self,
+    ) -> Result<Retained<crate::conversation::BackgroundTaskList>, LiveError> {
+        Ok(Retained::from_parts(
+            PiSession::background_tasks(self),
+            DataRetention::default(),
+        ))
     }
     fn read_background_task_output(
         &mut self,
@@ -201,7 +211,9 @@ impl LiveConversation for native::NativeSession {
         native::NativeSession::refresh_background_tasks(self, manual);
         Ok(())
     }
-    fn background_tasks(&self) -> Result<Retained<crate::conversation::BackgroundTaskList>, LiveError> {
+    fn background_tasks(
+        &self,
+    ) -> Result<Retained<crate::conversation::BackgroundTaskList>, LiveError> {
         Ok(native::NativeSession::background_tasks(self)?)
     }
     fn read_background_task_output(

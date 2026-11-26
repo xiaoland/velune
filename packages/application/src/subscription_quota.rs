@@ -221,27 +221,44 @@ impl SubscriptionQuota {
         let weak = Arc::downgrade(service);
         if std::thread::Builder::new()
             .name("velune-quota-refresh".into())
-            .spawn(move || loop {
-                std::thread::sleep(Duration::from_secs(1));
-                let Some(service) = weak.upgrade() else { break };
-                let due = {
-                    let state = service.state.lock().expect("quota state");
-                    if state.stopped { break; }
-                    let now = Instant::now();
-                    state.entries.iter()
-                        .filter(|(_, entry)| !entry.running
-                            && entry.demand_until.is_some_and(|until| until > now)
-                            && entry.retry_at <= now)
-                        .map(|(key, entry)| (key.clone(), ViewBinding {
-                            binding: entry.binding.clone(),
-                            incarnation: entry.incarnation.clone(),
-                        }))
-                        .collect::<Vec<_>>()
-                };
-                for ((gateway, provider), binding) in due {
-                    let _ = service.query_binding_inner(
-                        &gateway, &provider, Refresh::IfDue, Some(&binding), false,
-                    );
+            .spawn(move || {
+                loop {
+                    std::thread::sleep(Duration::from_secs(1));
+                    let Some(service) = weak.upgrade() else { break };
+                    let due = {
+                        let state = service.state.lock().expect("quota state");
+                        if state.stopped {
+                            break;
+                        }
+                        let now = Instant::now();
+                        state
+                            .entries
+                            .iter()
+                            .filter(|(_, entry)| {
+                                !entry.running
+                                    && entry.demand_until.is_some_and(|until| until > now)
+                                    && entry.retry_at <= now
+                            })
+                            .map(|(key, entry)| {
+                                (
+                                    key.clone(),
+                                    ViewBinding {
+                                        binding: entry.binding.clone(),
+                                        incarnation: entry.incarnation.clone(),
+                                    },
+                                )
+                            })
+                            .collect::<Vec<_>>()
+                    };
+                    for ((gateway, provider), binding) in due {
+                        let _ = service.query_binding_inner(
+                            &gateway,
+                            &provider,
+                            Refresh::IfDue,
+                            Some(&binding),
+                            false,
+                        );
+                    }
                 }
             })
             .is_err()
@@ -265,79 +282,99 @@ impl SubscriptionQuota {
             .flat_map(|g| {
                 g.providers.iter().map(|p| {
                     let source = p.effective_quota_source();
-                    let binding: Option<Binding> =
-                        match (&p.authentication.material, source) {
-                            (
-                                AuthenticationMaterial::CodexSubscription { credential_id, .. },
-                                crate::config::ProviderQuotaSource::CodexUsage,
-                            ) => Some(Binding {
-                                id: credential_id.clone(),
-                                generation: p.authentication.generation,
-                                source,
-                                codex_client_version: Some(
-                                    p.effective_codex_client_version().into(),
-                                ),
-                                binary: None,
-                                directory: LoginDirectory::Owned,
-                                kimi: None,
-                                ark: None,
-                                account: None,
-                                antigravity: None,
+                    let binding: Option<Binding> = match (&p.authentication.material, source) {
+                        (
+                            AuthenticationMaterial::CodexSubscription { credential_id, .. },
+                            crate::config::ProviderQuotaSource::CodexUsage,
+                        ) => Some(Binding {
+                            id: credential_id.clone(),
+                            generation: p.authentication.generation,
+                            source,
+                            codex_client_version: Some(p.effective_codex_client_version().into()),
+                            binary: None,
+                            directory: LoginDirectory::Owned,
+                            kimi: None,
+                            ark: None,
+                            account: None,
+                            antigravity: None,
+                        }),
+                        (
+                            AuthenticationMaterial::ClaudeCli { credential_id, .. },
+                            crate::config::ProviderQuotaSource::ClaudeCliUsage,
+                        ) => Some(Binding {
+                            id: credential_id.clone(),
+                            generation: p.authentication.generation,
+                            source,
+                            codex_client_version: None,
+                            binary: cli_binary(p),
+                            directory: LoginDirectory::Owned,
+                            kimi: None,
+                            ark: None,
+                            account: None,
+                            antigravity: None,
+                        }),
+                        (
+                            AuthenticationMaterial::ClaudeCliLinked { config_dir, .. },
+                            crate::config::ProviderQuotaSource::ClaudeCliUsage,
+                        ) => Some(Binding {
+                            id: p.id.clone(),
+                            generation: p.authentication.generation,
+                            source,
+                            codex_client_version: None,
+                            binary: cli_binary(p),
+                            directory: LoginDirectory::Linked(config_dir.clone()),
+                            kimi: None,
+                            ark: None,
+                            account: None,
+                            antigravity: None,
+                        }),
+                        (
+                            AuthenticationMaterial::ApiKey { value },
+                            crate::config::ProviderQuotaSource::KimiUsage,
+                        ) => crate::config::kimi_quota_region(&p.endpoint).map(|region| Binding {
+                            id: p.id.clone(),
+                            generation: p.authentication.generation,
+                            source,
+                            codex_client_version: None,
+                            binary: None,
+                            directory: LoginDirectory::Owned,
+                            ark: None,
+                            account: None,
+                            antigravity: None,
+                            kimi: Some(crate::kimi_quota::Capture {
+                                region,
+                                key: value.clone(),
                             }),
-                            (
-                                AuthenticationMaterial::ClaudeCli { credential_id, .. },
-                                crate::config::ProviderQuotaSource::ClaudeCliUsage,
-                            ) => Some(Binding {
-                                id: credential_id.clone(),
-                                generation: p.authentication.generation,
-                                source,
-                                codex_client_version: None,
-                                binary: cli_binary(p),
-                                directory: LoginDirectory::Owned,
-                                kimi: None,
-                                ark: None,
-                                account: None,
-                                antigravity: None,
-                            }),
-                            (
-                                AuthenticationMaterial::ClaudeCliLinked { config_dir, .. },
-                                crate::config::ProviderQuotaSource::ClaudeCliUsage,
-                            ) => Some(Binding {
-                                id: p.id.clone(),
-                                generation: p.authentication.generation,
-                                source,
-                                codex_client_version: None,
-                                binary: cli_binary(p),
-                                directory: LoginDirectory::Linked(config_dir.clone()),
-                                kimi: None,
-                                ark: None,
-                                account: None,
-                                antigravity: None,
-                            }),
-                            (
-                                AuthenticationMaterial::ApiKey { value },
-                                crate::config::ProviderQuotaSource::KimiUsage,
-                            ) => crate::config::kimi_quota_region(&p.endpoint).map(|region| {
-                                Binding {
-                                    id: p.id.clone(),
-                                    generation: p.authentication.generation,
-                                    source,
-                                    codex_client_version: None,
-                                    binary: None,
-                                    directory: LoginDirectory::Owned,
-                                    ark: None,
-                                    account: None,
-                                    antigravity: None,
-                                    kimi: Some(crate::kimi_quota::Capture {
-                                        region,
-                                        key: value.clone(),
-                                    }),
+                        }),
+                        (
+                            AuthenticationMaterial::ApiKey { .. },
+                            crate::config::ProviderQuotaSource::ArkCodingUsage,
+                        ) => Some(Binding {
+                            id: p.id.clone(),
+                            generation: p.authentication.generation,
+                            source,
+                            codex_client_version: None,
+                            binary: None,
+                            directory: LoginDirectory::Owned,
+                            kimi: None,
+                            account: None,
+                            antigravity: None,
+                            ark: p.quota_authentication.access_key().map(|key| {
+                                crate::ark_quota::Capture {
+                                    key: key.clone(),
+                                    generation: p.quota_authentication.generation,
+                                    confirmed: p
+                                        .quota_authentication
+                                        .description(p.authentication.generation)
+                                        .binding_confirmed,
                                 }
                             }),
-                            (
-                                AuthenticationMaterial::ApiKey { .. },
-                                crate::config::ProviderQuotaSource::ArkCodingUsage,
-                            ) => Some(Binding {
+                        }),
+                        (
+                            AuthenticationMaterial::ApiKey { value },
+                            crate::config::ProviderQuotaSource::ApiAccount,
+                        ) => velune_application_api::api_account_service(&p.endpoint).map(
+                            |service| Binding {
                                 id: p.id.clone(),
                                 generation: p.authentication.generation,
                                 source,
@@ -345,62 +382,40 @@ impl SubscriptionQuota {
                                 binary: None,
                                 directory: LoginDirectory::Owned,
                                 kimi: None,
-                                account: None,
+                                ark: None,
                                 antigravity: None,
-                                ark: p.quota_authentication.access_key().map(|key| {
-                                    crate::ark_quota::Capture {
-                                        key: key.clone(),
-                                        generation: p.quota_authentication.generation,
-                                        confirmed: p
-                                            .quota_authentication
-                                            .description(p.authentication.generation)
-                                            .binding_confirmed,
-                                    }
+                                account: Some(crate::api_account_quota::Capture {
+                                    service,
+                                    key: value.clone(),
                                 }),
-                            }),
-                            (
-                                AuthenticationMaterial::ApiKey { value },
-                                crate::config::ProviderQuotaSource::ApiAccount,
-                            ) => velune_application_api::api_account_service(&p.endpoint).map(
-                                |service| Binding {
-                                    id: p.id.clone(),
-                                    generation: p.authentication.generation,
-                                    source,
-                                    codex_client_version: None,
-                                    binary: None,
-                                    directory: LoginDirectory::Owned,
-                                    kimi: None,
-                                    ark: None,
-                                    antigravity: None,
-                                    account: Some(crate::api_account_quota::Capture {
-                                        service,
-                                        key: value.clone(),
-                                    }),
-                                },
-                            ),
-                            (
-                                AuthenticationMaterial::AntigravityCli,
-                                ProviderQuotaSource::AntigravityCliUsage,
-                            ) => match &p.execution_backend {
-                                ExecutionBackend::AntigravityCli { binary, ssh_destination } => Some(Binding {
-                                    id: p.credential_reference(),
-                                    generation: p.authentication.generation,
-                                    source,
-                                    codex_client_version: None,
-                                    binary: None,
-                                    directory: LoginDirectory::Owned,
-                                    kimi: None,
-                                    ark: None,
-                                    account: None,
-                                    antigravity: Some(AntigravityLauncher::new(
-                                        binary.clone(),
-                                        ssh_destination.clone(),
-                                    )),
-                                }),
-                                _ => None,
                             },
+                        ),
+                        (
+                            AuthenticationMaterial::AntigravityCli,
+                            ProviderQuotaSource::AntigravityCliUsage,
+                        ) => match &p.execution_backend {
+                            ExecutionBackend::AntigravityCli {
+                                binary,
+                                ssh_destination,
+                            } => Some(Binding {
+                                id: p.credential_reference(),
+                                generation: p.authentication.generation,
+                                source,
+                                codex_client_version: None,
+                                binary: None,
+                                directory: LoginDirectory::Owned,
+                                kimi: None,
+                                ark: None,
+                                account: None,
+                                antigravity: Some(AntigravityLauncher::new(
+                                    binary.clone(),
+                                    ssh_destination.clone(),
+                                )),
+                            }),
                             _ => None,
-                        };
+                        },
+                        _ => None,
+                    };
                     (
                         (g.id.clone(), p.id.clone()),
                         (binding, p.quota_limits.clone()),
@@ -409,12 +424,16 @@ impl SubscriptionQuota {
             })
             .collect();
         let mut state = self.state.lock().expect("quota state");
-        let State { entries, alerts, .. } = &mut *state;
+        let State {
+            entries, alerts, ..
+        } = &mut *state;
         alerts.retain(|alert| {
             let key = (alert.gateway_id.clone(), alert.provider_id.clone());
             let old = entries.get(&key).and_then(|entry| entry.binding.as_ref());
             !old.is_some_and(|binding| binding.antigravity.is_some())
-                || desired.get(&key).is_some_and(|(binding, _)| binding.as_ref() == old)
+                || desired
+                    .get(&key)
+                    .is_some_and(|(binding, _)| binding.as_ref() == old)
         });
         state.entries.retain(|key, entry| {
             if let Some((_, limits)) = desired.get(key) {

@@ -257,7 +257,10 @@ pub struct CoreRuntime {
     turn_failures:
         std::cell::RefCell<BTreeMap<PathBuf, (velune_agent_runtime::activity::Signature, bool)>>,
     pi_binding_aliases: std::cell::RefCell<
-        std::collections::HashMap<String, (GatewayConfig, std::collections::HashMap<String, String>)>,
+        std::collections::HashMap<
+            String,
+            (GatewayConfig, std::collections::HashMap<String, String>),
+        >,
     >,
     analytics: Arc<crate::analytics::AnalyticsStore>,
     /// Shared admission, recovery and session affinity across gateway runners.
@@ -614,7 +617,8 @@ impl CoreRuntime {
         if let Some(history) = &mut source {
             let can_continue = if self.session.active_state.live().is_some() {
                 self.session.side.is_some()
-                    || (!self.session.requires_live_connection() && self.execution_source_is_current())
+                    || (!self.session.requires_live_connection()
+                        && self.execution_source_is_current())
             } else {
                 history.actions.can_send
             };
@@ -624,10 +628,15 @@ impl CoreRuntime {
     }
 
     fn execution_source_is_current(&self) -> bool {
-        self.session.execution_configuration.as_ref().is_none_or(|execution| {
-            self.runtime_instance(&execution.runtime.id)
-                .is_ok_and(|runtime| runtime.enabled && self.same_runtime_source(&execution.runtime, runtime))
-        })
+        self.session
+            .execution_configuration
+            .as_ref()
+            .is_none_or(|execution| {
+                self.runtime_instance(&execution.runtime.id)
+                    .is_ok_and(|runtime| {
+                        runtime.enabled && self.same_runtime_source(&execution.runtime, runtime)
+                    })
+            })
     }
     fn native_snapshot(&self) -> Option<crate::conversation::ConversationSnapshot> {
         self.session.projected().cloned().map(|mut snapshot| {
@@ -933,12 +942,20 @@ impl CoreRuntime {
             let Some((ticket, mut state, outcome)) = pending.complete() else {
                 return Ok(());
             };
-            if outcome.cleanup && let ActiveState::History(history) = &mut state {
-                let recreatable_draft = self.session.unsubmitted_draft.as_ref().is_some_and(|draft| {
-                    self.runtime_instance(&draft.runtime_id).is_ok_and(|runtime| {
-                        velune_agent_runtime::version::variant(runtime.type_id).persists_on_first_turn
-                    })
-                });
+            if outcome.cleanup
+                && let ActiveState::History(history) = &mut state
+            {
+                let recreatable_draft =
+                    self.session
+                        .unsubmitted_draft
+                        .as_ref()
+                        .is_some_and(|draft| {
+                            self.runtime_instance(&draft.runtime_id)
+                                .is_ok_and(|runtime| {
+                                    velune_agent_runtime::version::variant(runtime.type_id)
+                                        .persists_on_first_turn
+                                })
+                        });
                 let can_continue = self.session.side.is_some()
                     || ((self.session.can_reopen_execution() || recreatable_draft)
                         && self.execution_source_is_current());

@@ -65,25 +65,42 @@ fn pi_metadata_timeout_does_not_poison_an_active_compaction() {
 fn assert_compaction_survives_metadata_timeout(operation: PiOperation) {
     let mut fixture = Fixture::new();
     let sender = fixture.incoming();
-    let compact = fixture.client.enqueue_pi(PiOperation::Compact, None).unwrap();
+    let compact = fixture
+        .client
+        .enqueue_pi(PiOperation::Compact, None)
+        .unwrap();
     let metadata = fixture.client.enqueue_pi(operation, None).unwrap();
     let deadline = Instant::now() + Duration::from_secs(2);
     while !fixture.client.port.as_ref().unwrap().operations[&metadata.sequence].written {
-        assert!(Instant::now() < deadline, "metadata must be written before its reply times out");
+        assert!(
+            Instant::now() < deadline,
+            "metadata must be written before its reply times out"
+        );
         fixture.client.poll_pi();
         thread::sleep(Duration::from_millis(2));
     }
     let late_reply = response(&fixture.client, metadata, true);
     let compact_done = response(&fixture.client, compact, true);
-    fixture.client.port.as_mut().unwrap().operations.get_mut(&metadata.sequence).unwrap()
+    fixture
+        .client
+        .port
+        .as_mut()
+        .unwrap()
+        .operations
+        .get_mut(&metadata.sequence)
+        .unwrap()
         .response_deadline = Some(Instant::now());
     sender.send(Incoming::Record(late_reply)).unwrap();
     sender.send(Incoming::Record(compact_done)).unwrap();
     let output = fixture.client.poll_pi();
     assert!(output.iter().any(|item| matches!(item, PiPortItem::Receipt(receipt)
         if receipt.ticket == metadata && matches!(receipt.phase, PiReceiptPhase::Indeterminate(_)))));
-    assert!(output.iter().any(|item| matches!(item, PiPortItem::Receipt(receipt)
-        if receipt.ticket == compact && matches!(receipt.phase, PiReceiptPhase::Outcome(_)))));
+    assert!(
+        output
+            .iter()
+            .any(|item| matches!(item, PiPortItem::Receipt(receipt)
+        if receipt.ticket == compact && matches!(receipt.phase, PiReceiptPhase::Outcome(_))))
+    );
     assert!(!fixture.client.pi_cleanup_required());
     assert!(fixture.client.port.as_ref().unwrap().operations.is_empty());
     assert!(fixture.client.enqueue_pi(prompt(), None).is_ok());

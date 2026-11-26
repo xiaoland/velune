@@ -725,21 +725,26 @@ impl CoreRuntime {
         {
             return DeletionPlan::ineligible();
         }
-        let (tail_index, link_tail, kind) = if let Some(link) = self.link_of(&snapshot.conversation.id) {
-            let Some(index) = link.segments.len().checked_sub(1) else {
-                return DeletionPlan::ineligible();
+        let (tail_index, link_tail, kind) =
+            if let Some(link) = self.link_of(&snapshot.conversation.id) {
+                let Some(index) = link.segments.len().checked_sub(1) else {
+                    return DeletionPlan::ineligible();
+                };
+                let tail = &link.segments[index];
+                if tail.deleted || tail.handoff.is_some() || tail.cutoff.is_some() {
+                    return DeletionPlan::ineligible();
+                }
+                (
+                    index,
+                    Some((link.segments.len(), tail)),
+                    tail.runtime_type_id,
+                )
+            } else {
+                let Ok(runtime) = self.runtime_instance(&snapshot.conversation.runtime_id) else {
+                    return DeletionPlan::ineligible();
+                };
+                (0, None, runtime.type_id)
             };
-            let tail = &link.segments[index];
-            if tail.deleted || tail.handoff.is_some() || tail.cutoff.is_some() {
-                return DeletionPlan::ineligible();
-            }
-            (index, Some((link.segments.len(), tail)), tail.runtime_type_id)
-        } else {
-            let Ok(runtime) = self.runtime_instance(&snapshot.conversation.runtime_id) else {
-                return DeletionPlan::ineligible();
-            };
-            (0, None, runtime.type_id)
-        };
         let pi_local_ok = kind == RuntimeKind::Pi
             && self
                 .runtime_instance(&snapshot.context_runtime_id)

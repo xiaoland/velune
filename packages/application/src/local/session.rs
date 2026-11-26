@@ -147,7 +147,8 @@ impl Session {
     /// Its runtime connection is still needed by execution or metadata;
     /// visible activity remains the user turn and native background work.
     pub(super) fn executing(&self) -> bool {
-        self.claude_submission.is_some() || self.pi_io_cleanup.is_some()
+        self.claude_submission.is_some()
+            || self.pi_io_cleanup.is_some()
             || self.pi_submission.is_some()
             || self.pi_edit.is_some()
             || self.pi_edit_advancing
@@ -685,7 +686,9 @@ impl CoreRuntime {
                 })
                 .count();
             let observation = session.work();
-            let work = observation.as_ref().map_or(&[][..], |tasks| tasks.as_slice());
+            let work = observation
+                .as_ref()
+                .map_or(&[][..], |tasks| tasks.as_slice());
             let local_work = work.iter().filter(|task| task.conversation_id.is_none());
             let has_local_work = local_work.clone().next().is_some();
             let turn_running = session.turn_running();

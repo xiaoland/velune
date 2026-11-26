@@ -246,10 +246,16 @@ fn codex_background_terminals_use_live_inventory_and_exact_stop() {
             .iter()
             .any(|task| task.title == "shell-a updated")
     });
-    assert!(fixture.session.enqueue_codex_command(
-        CodexCommand::StopBackground,
-        std::time::Instant::now() + std::time::Duration::from_secs(1),
-    ).is_err(), "the sub-agent batch must not acknowledge a terminal stop");
+    assert!(
+        fixture
+            .session
+            .enqueue_codex_command(
+                CodexCommand::StopBackground,
+                std::time::Instant::now() + std::time::Duration::from_secs(1),
+            )
+            .is_err(),
+        "the sub-agent batch must not acknowledge a terminal stop"
+    );
     let a = tasks
         .tasks
         .iter()

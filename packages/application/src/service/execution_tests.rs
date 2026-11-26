@@ -429,7 +429,10 @@ fn codex_active_index_persists_across_restarts_and_repairs_on_external_change() 
                 type_id: crate::conversation::RuntimeKind::Codex166,
                 gateway_id: "default".into(),
                 settings: BTreeMap::from([
-                    ("binary".into(), fixture.0.join("codex").display().to_string()),
+                    (
+                        "binary".into(),
+                        fixture.0.join("codex").display().to_string(),
+                    ),
                     (
                         "agentDir".into(),
                         fixture.0.join("native").display().to_string(),
@@ -2362,8 +2365,8 @@ fn codex_steer_preserves_the_running_execution_configuration() {
         );
     }
 
-    let steer = |target: Option<&str>, effort: Option<&str>, mode: Option<&str>| {
-        Command::SteerTurn {
+    let steer =
+        |target: Option<&str>, effort: Option<&str>, mode: Option<&str>| Command::SteerTurn {
             runtime_id: "synthetic".into(),
             conversation_id: id.clone(),
             target_runtime_id: target.map(str::to_owned),
@@ -2372,8 +2375,7 @@ fn codex_steer_preserves_the_running_execution_configuration() {
                 permission_mode: mode.map(str::to_owned),
                 ..control_turn("steer input")
             },
-        }
-    };
+        };
     let other_model = Some(crate::ModelSelection::Native {
         provider_id: Some("openai".into()),
         model_id: "other-model".into(),
@@ -3566,10 +3568,16 @@ fn claude_background_send_reuses_inherited_options_and_queues_saved_configuratio
         let pending = scope.spawn(|| send(control_turn("same settings follow-up")));
         let deadline = Instant::now() + Duration::from_secs(5);
         while !fixture.0.join("composed-queued").exists() {
-            assert!(Instant::now() < deadline, "Claude did not queue the composed input");
+            assert!(
+                Instant::now() < deadline,
+                "Claude did not queue the composed input"
+            );
             std::thread::sleep(Duration::from_millis(5));
         }
-        assert!(!pending.is_finished(), "a queued native command cannot settle the send");
+        assert!(
+            !pending.is_finished(),
+            "a queued native command cannot settle the send"
+        );
         assert!(control_snapshot(&app, &id).messages.iter().all(|message| {
             !message.blocks.iter().any(|block| matches!(block, crate::DeliveredBlock::Text { text } if text == "same settings follow-up"))
         }));

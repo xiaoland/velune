@@ -297,7 +297,8 @@ impl Port {
             if terminal {
                 let op = self.operations.get_mut(&seq).unwrap();
                 op.write = None;
-                if op.one_way || op.outcome_seen || !op.written || (deadline_is_local && op.failed) {
+                if op.one_way || op.outcome_seen || !op.written || (deadline_is_local && op.failed)
+                {
                     self.remove(seq);
                 }
             }
@@ -462,8 +463,10 @@ impl Client {
         let reserved = operation.reserved();
         let cancellation = matches!(operation, PiOperation::ClearQueue | PiOperation::Abort);
         let turn_result = operation.turn_result();
-        let deadline_is_local =
-            matches!(operation, PiOperation::SetName(_) | PiOperation::Background(_));
+        let deadline_is_local = matches!(
+            operation,
+            PiOperation::SetName(_) | PiOperation::Background(_)
+        );
         let port = self.port.as_mut().unwrap();
         port.settle();
         if let Some(error) = &port.failed {

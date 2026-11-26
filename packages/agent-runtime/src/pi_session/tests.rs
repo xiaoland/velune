@@ -184,8 +184,7 @@ for line in sys.stdin:
         !session.background_tasks().tasks.is_empty()
     });
     session.apply_events(vec![json!({"type":"agent_start"})]);
-    session
-        .apply_background_frame(&json!({"version":1,"kind":"unknown","error":"临时查询失败"}));
+    session.apply_background_frame(&json!({"version":1,"kind":"unknown","error":"临时查询失败"}));
     assert!(!session.background_tasks().live);
     session.refresh_background_tasks();
     poll_until(&mut session, |session| session.background_tasks().live);

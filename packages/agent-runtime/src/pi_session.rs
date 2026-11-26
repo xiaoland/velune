@@ -557,13 +557,9 @@ impl PiSession {
     }
 
     fn refresh_background(&mut self) {
-        if self
-            .running
-            .as_ref()
-            .is_some_and(|running| {
-                running.background_request_pending() || running.projection.is_manually_compacting()
-            })
-        {
+        if self.running.as_ref().is_some_and(|running| {
+            running.background_request_pending() || running.projection.is_manually_compacting()
+        }) {
             self.background_refresh_queued = true;
             return;
         }
@@ -1539,7 +1535,9 @@ impl PiSession {
         if self.running()?.control_wait.is_some() {
             return Err(Error::Sdk("Pi 控制正在等待确认".into()));
         }
-        if let Some(error) = self.prepare_cancel()? { return Err(error); }
+        if let Some(error) = self.prepare_cancel()? {
+            return Err(error);
+        }
         let ticket = self.enqueue(PiOperation::ClearQueue, PendingAction::ClearQueue)?;
         let running = self.running()?;
         running.control_wait = Some(ControlWait::new(ticket, true));
@@ -1887,8 +1885,14 @@ impl PiSession {
                 } else if background_action {
                     Err(Error::CommandFailed("Pi 后台工作请求尚未发送".into()))
                 } else if self.running.as_ref().is_some_and(|running| {
-                    running.edit_wait.as_ref().is_some_and(|wait| wait.ticket == receipt.ticket)
-                        || running.control_wait.as_ref().is_some_and(|control| control.native == receipt.ticket)
+                    running
+                        .edit_wait
+                        .as_ref()
+                        .is_some_and(|wait| wait.ticket == receipt.ticket)
+                        || running
+                            .control_wait
+                            .as_ref()
+                            .is_some_and(|control| control.native == receipt.ticket)
                 }) {
                     if matches!(action, PendingAction::Prompt | PendingAction::Thinking) {
                         let running = self.running.as_mut().unwrap();
@@ -1937,8 +1941,14 @@ impl PiSession {
                 if !rename_action && !background_action {
                     running.history_pending = false;
                 }
-                let event = if rename_action { "Pi session rename" } else { "Pi operation" };
-                running.projection.apply_event(&json!({"type":"extension_error","event":event,"error":error.to_string()}));
+                let event = if rename_action {
+                    "Pi session rename"
+                } else {
+                    "Pi operation"
+                };
+                running.projection.apply_event(
+                    &json!({"type":"extension_error","event":event,"error":error.to_string()}),
+                );
             }
             if background_action {
                 self.set_background_error(Some(error.to_string()));
@@ -2006,8 +2016,13 @@ impl PiSession {
             PendingAction::ClearQueue => {
                 // The native ACK names the messages cleared by this command.
                 // Later completions and deferred non-triggering notices still own a handoff.
-                if let Some(ids) = response["data"]["cancelledBackgroundNotificationIds"].as_array() {
-                    for id in ids.iter().filter_map(Value::as_str).filter(|id| !id.is_empty()) {
+                if let Some(ids) = response["data"]["cancelledBackgroundNotificationIds"].as_array()
+                {
+                    for id in ids
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .filter(|id| !id.is_empty())
+                    {
                         self.settled_notifications.insert(id.to_owned());
                         self.pending_notifications.remove(id);
                     }
@@ -2099,10 +2114,8 @@ impl PiSession {
                 // A successful native set_session_name already confirms the
                 // requested name, including on versions without a name event.
                 if let Some(snapshot) = self.running()?.projection.snapshot.as_mut() {
-                    snapshot.conversation.title = crate::conversation::conversation_title(
-                        Some(&name),
-                        None,
-                    );
+                    snapshot.conversation.title =
+                        crate::conversation::conversation_title(Some(&name), None);
                     snapshot.revision = snapshot.revision.saturating_add(1);
                 }
                 self.invalidate_history();

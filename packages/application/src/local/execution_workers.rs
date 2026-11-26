@@ -1083,11 +1083,14 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         use velune_conversation::{ExecutionKind, InputAccess};
 
-        let home = std::env::temp_dir().join(format!("velune-recovery-{}", crate::new_record_key()));
+        let home =
+            std::env::temp_dir().join(format!("velune-recovery-{}", crate::new_record_key()));
         fs::create_dir(&home).unwrap();
         let home = home.canonicalize().unwrap();
         let binary = home.join("claude");
-        fs::write(&binary, r#"#!/usr/bin/python3
+        fs::write(
+            &binary,
+            r#"#!/usr/bin/python3
 import json, sys
 if "--version" in sys.argv:
     print("2.1.286 (Claude Code)")
@@ -1098,7 +1101,9 @@ for line in sys.stdin:
     print(json.dumps({"type": "control_response", "response": {
         "subtype": "success", "request_id": record["request_id"], "response": {"models": []},
     }}), flush=True)
-"#).unwrap();
+"#,
+        )
+        .unwrap();
         fs::set_permissions(&binary, fs::Permissions::from_mode(0o700)).unwrap();
         let mut application = crate::Application::open(crate::Options {
             home_directory: home.clone(),
@@ -1121,7 +1126,8 @@ for line in sys.stdin:
         for (child, source_changed) in [(false, false), (true, false), (false, true)] {
             core.session.send_queue = Default::default();
             core.runtime_instances = vec![runtime.clone()];
-            let mut native = NativeSession::connect(core.native_config(&runtime, None).unwrap()).unwrap();
+            let mut native =
+                NativeSession::connect(core.native_config(&runtime, None).unwrap()).unwrap();
             let created = native.create(Some(&home), "claude").unwrap();
             let id = created.conversation.id.clone();
             if child {
@@ -1144,38 +1150,66 @@ for line in sys.stdin:
             });
             core.session.execution_runtime_id = Some(runtime.id.clone());
             core.capture_execution_configuration(&runtime, None);
-            let ticket = ExecutionTicket { command: 1, session: core.session.key };
-            let pending = core.execution_workers.submit(
-                ActiveState::Native(Box::new(native)),
-                ExecutionTarget::Local,
-                ticket,
-                None,
-                "synthetic execution loss",
-                |_| panic!("synthetic execution worker unwind"),
-            ).unwrap_or_else(|(_, error)| panic!("worker admission: {error}"));
+            let ticket = ExecutionTicket {
+                command: 1,
+                session: core.session.key,
+            };
+            let pending = core
+                .execution_workers
+                .submit(
+                    ActiveState::Native(Box::new(native)),
+                    ExecutionTarget::Local,
+                    ticket,
+                    None,
+                    "synthetic execution loss",
+                    |_| panic!("synthetic execution worker unwind"),
+                )
+                .unwrap_or_else(|(_, error)| panic!("worker admission: {error}"));
             if source_changed {
                 let other = home.join("other-source");
                 fs::create_dir(&other).unwrap();
-                core.runtime_instances[0].settings.insert("agentDir".into(), other.display().to_string());
+                core.runtime_instances[0]
+                    .settings
+                    .insert("agentDir".into(), other.display().to_string());
             }
             wait_completed(&pending);
             core.session.active_state = ActiveState::Pending(Box::new(pending));
             core.session.scheduled_run = Some(("interrupted-schedule".into(), false));
             core.drain_runtime().unwrap();
-            let failure = core.execution_results.remove(&ticket).unwrap().err().unwrap();
-            assert_eq!(crate::Failure::from(failure).code, "runtime_operation_indeterminate");
+            let failure = core
+                .execution_results
+                .remove(&ticket)
+                .unwrap()
+                .err()
+                .unwrap();
+            assert_eq!(
+                crate::Failure::from(failure).code,
+                "runtime_operation_indeterminate"
+            );
             let view = core.current_snapshot().unwrap();
             assert_eq!(view.conversation.id, id);
             assert_eq!(view.run_state, RunState::Failed);
             assert_eq!(view.actions.can_send, !child && !source_changed);
-            assert_eq!(view.actions.input_access == InputAccess::ReadOnly, child || source_changed);
+            assert_eq!(
+                view.actions.input_access == InputAccess::ReadOnly,
+                child || source_changed
+            );
             assert!(!view.actions.can_cancel);
             assert!(view.follow_up.paused.is_some());
             assert_eq!(view.follow_up.queue[0].text, "still queued");
-            assert!(!view.executions.records.iter().any(|record| record.kind == ExecutionKind::UserTurn));
+            assert!(
+                !view
+                    .executions
+                    .records
+                    .iter()
+                    .any(|record| record.kind == ExecutionKind::UserTurn)
+            );
             assert!(core.session.scheduled_run.is_none());
             core.invalidate_execution().unwrap();
-            assert_eq!(core.current_snapshot().unwrap().actions.can_send, !child && !source_changed);
+            assert_eq!(
+                core.current_snapshot().unwrap().actions.can_send,
+                !child && !source_changed
+            );
         }
         drop(application);
         fs::remove_dir_all(home).unwrap();

@@ -2212,7 +2212,10 @@ fn editing_choices_matches_deletion_source_across_pi_codex_and_linked_messages()
     ];
     for index in 0..200 {
         messages.push(make_msg(&format!("pi:session:bulk-{index}:0"), "user"));
-        messages.push(make_msg(&format!("pi:session:bulk-{index}-reply:0"), "assistant"));
+        messages.push(make_msg(
+            &format!("pi:session:bulk-{index}-reply:0"),
+            "assistant",
+        ));
     }
     let mut snapshot: ConversationSnapshot = serde_json::from_value(serde_json::json!({
         "revision": 1,

@@ -100,11 +100,7 @@ impl CoreRuntime {
         }
     }
 
-    fn conversation_is_present(
-        &self,
-        runtime_id: &str,
-        id: &str,
-    ) -> Result<bool, RuntimeError> {
+    fn conversation_is_present(&self, runtime_id: &str, id: &str) -> Result<bool, RuntimeError> {
         let address = self.conversation_read_address(runtime_id, id)?;
         let identity = self
             .session

@@ -430,7 +430,10 @@ fn pi_compaction_live_rename_does_not_read_the_native_index() {
     loop {
         let current = snapshot(&service, id.clone());
         if current.actions.can_send {
-            assert_eq!(current.conversation.title.display_text(), "Updated during compaction");
+            assert_eq!(
+                current.conversation.title.display_text(),
+                "Updated during compaction"
+            );
             assert_eq!(current.run_state, RunState::Idle);
             break;
         }
@@ -463,14 +466,25 @@ fn pi_compaction_disconnect_preserves_failure_and_allows_a_new_turn() {
     loop {
         let current = snapshot(&service, id.clone());
         if current.run_state == RunState::Failed && current.actions.can_send {
-            assert_eq!(current.actions.input_access, velune_conversation::InputAccess::Editable);
-            assert!(current.messages.iter().any(|message| message.blocks.iter().any(|block| {
-                matches!(block, crate::DeliveredBlock::ContextCompaction { text }
+            assert_eq!(
+                current.actions.input_access,
+                velune_conversation::InputAccess::Editable
+            );
+            assert!(
+                current
+                    .messages
+                    .iter()
+                    .any(|message| message.blocks.iter().any(|block| {
+                        matches!(block, crate::DeliveredBlock::ContextCompaction { text }
                     if text.contains("上下文压缩已中断"))
-            })));
+                    }))
+            );
             break;
         }
-        assert!(Instant::now() < deadline, "session remained unwritable after compact transport failure");
+        assert!(
+            Instant::now() < deadline,
+            "session remained unwritable after compact transport failure"
+        );
         std::thread::sleep(Duration::from_millis(5));
     }
     service
@@ -492,7 +506,11 @@ fn pi_compaction_disconnect_preserves_failure_and_allows_a_new_turn() {
         )
         .unwrap();
     assert_eq!(
-        fixture.requests("edit").iter().filter(|request| request["message"] == "Explicit follow-up after failed compact").count(),
+        fixture
+            .requests("edit")
+            .iter()
+            .filter(|request| request["message"] == "Explicit follow-up after failed compact")
+            .count(),
         1
     );
     close_after_cleanup(&service);
@@ -1376,13 +1394,22 @@ fn pi_composed_send_waits_for_exact_prompt_receipt_and_rejects_before_delivery()
             assert_ne!(error.code, "message_delivery_accepted");
             let failed = snapshot(&service, id);
             assert_eq!(failed.run_state, RunState::Failed);
-            assert!(failed.actions.can_send, "rejected input must release Pi's send gate");
+            assert!(
+                failed.actions.can_send,
+                "rejected input must release Pi's send gate"
+            );
         } else {
             let Response::SendTurn(result) = outcome.unwrap() else {
                 panic!("expected composed SendTurn response");
             };
-            assert_eq!(result.submission_receipt, Some(crate::SubmissionReceipt::Sending));
-            assert!(result.submitted_message_id.is_none(), "no native echo was fabricated");
+            assert_eq!(
+                result.submission_receipt,
+                Some(crate::SubmissionReceipt::Sending)
+            );
+            assert!(
+                result.submitted_message_id.is_none(),
+                "no native echo was fabricated"
+            );
         }
         close_after_cleanup(&service);
     }

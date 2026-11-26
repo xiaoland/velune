@@ -740,7 +740,8 @@ impl CoreRuntime {
             // session. Always use its live owner instead of a second file writer.
             self.for_each_session(|core| {
                 if core.session.execution_runtime_id.as_deref() == Some(runtime_id)
-                    && core.session
+                    && core
+                        .session
                         .projected()
                         .is_some_and(|view| view.conversation.id == id)
                     && let Some(live) = core.session.active_state.live_mut()
@@ -1030,7 +1031,10 @@ impl CoreRuntime {
             None
         };
         if let Some((application, native)) = pi_ticket {
-            self.session.pi_submission = Some(editing::PiSubmission { application, native });
+            self.session.pi_submission = Some(editing::PiSubmission {
+                application,
+                native,
+            });
             self.mark_execution_started(application);
         }
         let claude = if pi_ticket.is_none() && !resuming {

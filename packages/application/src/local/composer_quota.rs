@@ -39,7 +39,8 @@ impl CoreRuntime {
                             ..
                         }
                     );
-                    if (provider.effective_quota_source() == ProviderQuotaSource::None && !reports_credits)
+                    if (provider.effective_quota_source() == ProviderQuotaSource::None
+                        && !reports_credits)
                         || (authentication.method == crate::AuthenticationMethod::OAuth
                             && !authentication.configured)
                     {

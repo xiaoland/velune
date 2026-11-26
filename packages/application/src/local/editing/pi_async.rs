@@ -147,9 +147,12 @@ impl CoreRuntime {
             return;
         };
         let ActiveState::Pi(pi) = &mut self.session.active_state else {
-            self.execution_results.insert(submission.application, Err(RuntimeError::operation_indeterminate(
-                "Pi 确认输入前，原运行时连接已改变",
-            )));
+            self.execution_results.insert(
+                submission.application,
+                Err(RuntimeError::operation_indeterminate(
+                    "Pi 确认输入前，原运行时连接已改变",
+                )),
+            );
             return;
         };
         let result = pi.take_confirmation(submission.native);

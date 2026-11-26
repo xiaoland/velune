@@ -638,7 +638,14 @@ mod tests {
         input_prefix.extend(request);
         let mut command = crate::process_tree::command("python3");
         command.args(["-c", BOOTSTRAP]);
-        let output = run_prepared(PreparedCommand { command, input_prefix }, None).unwrap();
+        let output = run_prepared(
+            PreparedCommand {
+                command,
+                input_prefix,
+            },
+            None,
+        )
+        .unwrap();
         assert_eq!(output, b"report");
     }
 

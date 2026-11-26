@@ -204,7 +204,8 @@ impl HistoryIndexRead {
             && let Reader::Native(config) = source.reader()
             && ActiveListIndex::supports(config)
         {
-            let storage_path = codex_active_index_path(&core.options.home_directory, source.runtime_id());
+            let storage_path =
+                codex_active_index_path(&core.options.home_directory, source.runtime_id());
             let mut indexes = core.codex_active_indexes.borrow_mut();
             let entry = indexes
                 .entry(source.runtime_id().to_owned())
@@ -228,7 +229,8 @@ impl HistoryIndexRead {
             codex_active_index,
             ..
         } = self;
-        let _ = preparation.and_then(|preparation| preparation.prepare_with_known_resources(known_resources))?;
+        let _ = preparation
+            .and_then(|preparation| preparation.prepare_with_known_resources(known_resources))?;
         if let (Some(source), Some(index)) = (source.as_ref(), codex_active_index.as_deref())
             && let Reader::Native(config) = source.reader()
         {

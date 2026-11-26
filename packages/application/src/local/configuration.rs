@@ -324,7 +324,11 @@ impl CoreRuntime {
         title: &str,
     ) -> crate::ConfigurationSnapshot {
         let mut page = self.browse_window(self.cached_sources(), None, false, false);
-        if let Some(item) = page.conversations.iter_mut().find(|item| item.conversation.id == id) {
+        if let Some(item) = page
+            .conversations
+            .iter_mut()
+            .find(|item| item.conversation.id == id)
+        {
             item.conversation.title = velune_conversation::conversation_title(Some(title), None);
         }
         self.configuration_from_page(page, self.history_failures.borrow().clone())
