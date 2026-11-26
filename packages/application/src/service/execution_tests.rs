@@ -412,6 +412,141 @@ fn codex_startup_prewarms_the_active_list_without_blocking_the_owner() {
 }
 
 #[test]
+fn codex_active_index_persists_across_restarts_and_repairs_on_external_change() {
+    let fixture = Fixture::codex_list_index();
+    let options = Options {
+        home_directory: fixture.0.join("app"),
+        resources_directory: fixture.0.clone(),
+    };
+    let mut application = Application::open(options.clone()).unwrap();
+    application
+        .runtime
+        .upsert_runtime_with_execution(
+            crate::config::RuntimeInstance {
+                enabled: true,
+                id: "synthetic".into(),
+                name: "Synthetic Codex".into(),
+                type_id: crate::conversation::RuntimeKind::Codex166,
+                gateway_id: "default".into(),
+                settings: BTreeMap::from([
+                    ("binary".into(), fixture.0.join("codex").display().to_string()),
+                    (
+                        "agentDir".into(),
+                        fixture.0.join("native").display().to_string(),
+                    ),
+                    ("nodeBinary".into(), "/synthetic/not-executed-node".into()),
+                ]),
+            },
+            crate::RuntimeExecution {
+                home: crate::RuntimeHome::Existing {
+                    path: fixture.0.display().to_string(),
+                },
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    drop(application);
+
+    let ids = |response| {
+        let Response::ReadConfiguration(configuration) = response else {
+            panic!("list response");
+        };
+        assert!(configuration.history_failures.is_empty());
+        configuration
+            .conversations
+            .into_iter()
+            .map(|row| row.conversation.id)
+            .collect::<BTreeSet<_>>()
+    };
+    let wire = fixture.0.join("list-wire");
+
+    // First launch: warms via repair and persists proof.
+    fs::write(fixture.0.join("release-1"), []).unwrap();
+    let app = ApplicationService::open(options.clone()).unwrap();
+    assert_eq!(
+        ids(app
+            .execute(ClientViewId("list".into()), Command::ReadConfiguration)
+            .unwrap()),
+        BTreeSet::from(["synthetic:known-thread".into()])
+    );
+    assert_eq!(fs::read_to_string(&wire).unwrap(), "repair\nindexed\n");
+    app.close(false).unwrap();
+
+    let proof_dir = options.home_directory.join("codex-active-index");
+    let proof_files = fs::read_dir(&proof_dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect::<Vec<_>>();
+    assert_eq!(proof_files.len(), 1);
+    let proof_path = proof_files[0].clone();
+
+    // Second launch with unchanged rollouts: warmup skips Codex, list uses indexed path.
+    fs::remove_file(&wire).unwrap();
+    fs::remove_file(fixture.0.join("release-1")).unwrap();
+    let app = ApplicationService::open(options.clone()).unwrap();
+    assert_eq!(
+        ids(app
+            .execute(ClientViewId("list".into()), Command::ReadConfiguration)
+            .unwrap()),
+        BTreeSet::from(["synthetic:known-thread".into()])
+    );
+    assert_eq!(fs::read_to_string(&wire).unwrap(), "indexed\n");
+    app.close(false).unwrap();
+
+    // Third launch with externally wiped list-db: indexed fails result digest and repairs.
+    fs::write(fixture.0.join("list-db"), "[]").unwrap();
+    fs::remove_file(&wire).unwrap();
+    fs::write(fixture.0.join("release-1"), []).unwrap();
+    let app = ApplicationService::open(options.clone()).unwrap();
+    assert_eq!(
+        ids(app
+            .execute(ClientViewId("list".into()), Command::ReadConfiguration)
+            .unwrap()),
+        BTreeSet::from(["synthetic:known-thread".into()])
+    );
+    assert_eq!(fs::read_to_string(&wire).unwrap(), "indexed\nrepair\n");
+    app.close(false).unwrap();
+
+    // Fourth launch with a new rollout file: warmup detects rollout change and repairs.
+    fs::write(
+        fixture.0.join(
+            "native/sessions/2026/11/23/rollout-2026-11-23T01-02-03-00000000-0000-7000-8000-000000000001.jsonl",
+        ),
+        "{}\n",
+    )
+    .unwrap();
+    fs::remove_file(&wire).unwrap();
+    let complete = BTreeSet::from([
+        "synthetic:known-thread".into(),
+        "synthetic:imported-thread".into(),
+    ]);
+    let app = ApplicationService::open(options.clone()).unwrap();
+    assert_eq!(
+        ids(app
+            .execute(ClientViewId("list".into()), Command::ReadConfiguration)
+            .unwrap()),
+        complete
+    );
+    assert_eq!(fs::read_to_string(&wire).unwrap(), "repair\nindexed\n");
+    app.close(false).unwrap();
+
+    // Fifth launch with unknown proof schema: falls back to repair and preserves original bytes.
+    let unknown = br#"{"schemaVersion":99,"future":true}"#;
+    fs::write(&proof_path, unknown).unwrap();
+    fs::remove_file(&wire).unwrap();
+    let app = ApplicationService::open(options).unwrap();
+    assert_eq!(
+        ids(app
+            .execute(ClientViewId("list".into()), Command::ReadConfiguration)
+            .unwrap()),
+        complete
+    );
+    assert_eq!(fs::read_to_string(&wire).unwrap(), "repair\nindexed\n");
+    assert_eq!(fs::read(&proof_path).unwrap(), unknown);
+    app.close(false).unwrap();
+}
+
+#[test]
 fn codex_native_creation_wait_keeps_owner_responsive_and_creates_once() {
     let fixture = Fixture::codex();
     let app = ApplicationService::open(Options {

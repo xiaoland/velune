@@ -7,6 +7,7 @@ use super::browsing::{
 use super::runtime_execution::ExecutionPreparation;
 use super::runtime_source::{Reader, RuntimeSourceKey};
 use super::*;
+use sha2::{Digest, Sha256};
 use velune_agent_runtime::creation::Retained;
 use velune_agent_runtime::native::codex_projects::{self, ActiveListIndex, ProjectListing};
 
@@ -81,10 +82,7 @@ impl CodexIndexWarmup {
         let known_resources = BTreeSet::new();
         let mut failures = 0;
         for request in self.0 {
-            if !matches!(
-                request.load(None, &known_resources).index,
-                Ok(NativeIndex::Codex(Ok(_)))
-            ) {
+            if request.warm(&known_resources).is_err() {
                 failures += 1;
             }
         }
@@ -206,20 +204,38 @@ impl HistoryIndexRead {
             && let Reader::Native(config) = source.reader()
             && ActiveListIndex::supports(config)
         {
+            let storage_path = codex_active_index_path(&core.options.home_directory, source.runtime_id());
             let mut indexes = core.codex_active_indexes.borrow_mut();
             let entry = indexes
                 .entry(source.runtime_id().to_owned())
                 .or_insert_with(|| CodexActiveIndex {
                     source: source.clone(),
-                    index: Arc::default(),
+                    index: Arc::new(ActiveListIndex::with_storage(storage_path.clone())),
                 });
             if entry.source != *source {
                 entry.source = source.clone();
-                entry.index = Arc::default();
+                entry.index = Arc::new(ActiveListIndex::with_storage(storage_path));
             }
             self.codex_active_index = Some(entry.index.clone());
         }
         self
+    }
+
+    fn warm(self, known_resources: &BTreeSet<String>) -> Result<(), RuntimeError> {
+        let Self {
+            source,
+            preparation,
+            codex_active_index,
+            ..
+        } = self;
+        let _ = preparation.and_then(|preparation| preparation.prepare_with_known_resources(known_resources))?;
+        if let (Some(source), Some(index)) = (source.as_ref(), codex_active_index.as_deref())
+            && let Reader::Native(config) = source.reader()
+        {
+            codex_projects::warm_active_index(config, index)
+                .map_err(|error| RuntimeError::context("Codex 项目读取失败", error))?;
+        }
+        Ok(())
     }
 
     fn load(
@@ -368,6 +384,11 @@ fn read_index(
             RuntimeKind::Pi | RuntimeKind::Acp => unreachable!("not a native reader"),
         },
     })
+}
+
+fn codex_active_index_path(home: &Path, runtime_id: &str) -> PathBuf {
+    let key = format!("{:x}", Sha256::digest(runtime_id.as_bytes()));
+    home.join("codex-active-index").join(format!("{key}.json"))
 }
 
 fn index_summaries(summaries: Vec<SharedSummary>) -> Vec<IndexedConversation> {
