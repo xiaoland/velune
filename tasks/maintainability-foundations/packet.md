@@ -100,3 +100,7 @@
 ## 工作树
 
 分支检出在 `~/Development/.worktrees/velune/maintainability-foundations`。此前编辑环境未找到该目录，曾在主检出的 `tmp/worktrees` 编辑并同步到这里构建；该嵌套工作树与同步脚本已删除。
+
+## 脚本审计（进行中）
+
+`scripts/check-*` 中 17 个不被 svc、CI、文档或其他脚本引用（仅任务包或来源记录可能提及）：check-build-cache、check-build-support、check-claude-background-follow-up、check-claude-history、check-codex-sampling-route、check-composer-migration、check-macos-dev、check-macos-history-cache、check-macos-sidebar-toolbar、check-pi-background-work、check-pi-child-history、check-pi-child-host、check-pi-projection-snapshot、check-pi-subagent-metadata、check-portable-handoff、check-runtime-start-policy、check-service-tier-migration。下一步逐个判断：已由 Rust 测试或验收套件覆盖、或只服务已结束任务的删除；仍有价值的迁入 `tests/acceptance` 或登记入口。check-build-cache 与 check-build-support 是构建工具自检，应保留并接入 CI。
