@@ -75,6 +75,73 @@ impl Drop for Fixture {
 }
 
 #[test]
+fn pi_cancellation_releases_only_notifications_in_its_successful_clear_queue_ack() {
+    let mut fixture = Fixture::new(
+        r#"
+import json,sys
+def emit(value): print(json.dumps(value),flush=True)
+clears=0
+for line in sys.stdin:
+ request=json.loads(line); command=request['type']; id=request['id']; data={}
+ if command=='get_commands': data={'commands':[]}
+ if command=='clear_queue':
+  clears+=1
+  data={'cancelledBackgroundNotificationIds':['removed']}
+  if clears==1:
+   emit({'type':'response','command':command,'id':'stale-clear','success':True,'data':data})
+   emit({'type':'response','command':command,'id':id,'success':False,'error':'clear refused','data':data})
+   continue
+ emit({'type':'response','command':command,'id':id,'success':True,'data':data})
+"#,
+    );
+    fixture.until(|session| !session.has_pending_metadata());
+    let terminal =
+        |id: &str| json!({"id":id,"status":"completed","notifyOnCompletion":true,"notified":true});
+    fixture.session.apply_background_frame(&json!({
+        "version":1,"kind":"snapshot","tasks":[terminal("removed")]
+    }));
+    let rejected = fixture.session.begin_cancel_confirmation().unwrap();
+    fixture.until(|session| {
+        session
+            .running
+            .as_ref()
+            .unwrap()
+            .wait(rejected)
+            .unwrap()
+            .result
+            .is_some()
+    });
+    assert!(
+        fixture
+            .session
+            .take_edit_wait_result(rejected)
+            .unwrap()
+            .unwrap()
+            .is_err()
+    );
+    assert!(fixture.session.has_pending_metadata());
+
+    fixture.session.cancel().unwrap();
+    fixture.until(|session| !session.pending_notifications.contains("removed"));
+    assert!(!fixture.session.has_pending_metadata());
+
+    // A delayed task snapshot may include both the cleared task and a later
+    // completion. Only the new notification still retains the idle host.
+    fixture.session.apply_background_frame(&json!({
+        "version":1,"kind":"snapshot","tasks":[terminal("removed"),terminal("later")]
+    }));
+    assert_eq!(
+        fixture.session.pending_notifications,
+        HashSet::from(["later".to_owned()])
+    );
+    fixture.session.observe_background_notification(&json!({
+        "type":"message_end",
+        "message":{"customType":"background-task-notification","details":{"id":"later"}}
+    }));
+    assert!(!fixture.session.has_pending_metadata());
+}
+
+#[test]
 fn pi_session_blocked_stdin_keeps_poll_dialog_reply_and_cancel_nonblocking_without_replaying_input()
 {
     let mut fixture = Fixture::new(
