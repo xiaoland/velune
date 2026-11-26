@@ -43,6 +43,27 @@ pub fn list_projects_with_active_index(
     read_projects(config, runtime_id, false, Some(index))
 }
 
+/// Ensure the active Codex index is ready for `useStateDbOnly` reads, skipping
+/// an app-server launch when a persisted verification proof already matches.
+pub fn warm_active_index(config: &HistoryConfig, index: &ActiveListIndex) -> Result<()> {
+    let Some(mut active_read) = index.prepare(config) else {
+        return Ok(());
+    };
+    if active_read.matches_verified() {
+        tracing::debug!(event = "codex_active_index", mode = "persisted");
+        return Ok(());
+    }
+    let mut rpc = codex::history_client_at(
+        config.kind,
+        &config.binary,
+        &config.home,
+        &config.execution,
+        config.os_home.as_deref(),
+    )?;
+    let _ = active_read.list_threads(&mut rpc)?;
+    Ok(())
+}
+
 fn read_projects(
     config: &HistoryConfig,
     runtime_id: &str,
