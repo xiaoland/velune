@@ -78,7 +78,7 @@
 | 主检出 `tmp/runtime-workspace-reliability` | 约 30 GiB | 对应任务包已不存在；待删除 |
 | `.dev-cache/velune-*-alpha.*` | 约 1.3 GiB | 11-21 发布时遗留的临时目录；待删除 |
 
-调试对象增长的原因已用最小工程复现：rustc 增量编译加 macOS unpacked split-debuginfo，每次重编以新文件名写出整组 `.rcgu.o`，旧组不再被读取也不被删除；非增量、`debug = 0` 或 packed 均不积累，与 mbx 无关。`debug = 0` 只去掉回溯每帧的行号（panic 位置仍在），单次构建体积不变（velune-application 测试均为 2.0 GiB），因此不改 profile、不增加清理工具，沿用超预算整体回收。曾实现按调试映射删除无引用对象的 `sweep-objects`，按上述优先级撤回。
+调试对象增长的原因已用最小工程复现：rustc 增量编译加 macOS unpacked split-debuginfo，每次重编以新文件名写出整组 `.rcgu.o`，旧组不再被读取也不被删除；非增量、`debug = 0` 或 packed 均不积累，与 mbx 无关。`debug = 0` 只去掉回溯每帧的行号（panic 位置仍在），单次构建体积不变（velune-application 测试均为 2.0 GiB），因此不改 profile、不增加清理工具，沿用超预算整体回收。packed 的代价另行实测（velune-application 测试，改一行后 `cargo test --no-run`）：unpacked 预热后重编 5–8 秒、每次留下约 130 个调试对象；packed 不留对象，但每次链接都要 dsymutil 汇总调试信息，重编 35–54 秒，同样不采用。曾实现按调试映射删除无引用对象的 `sweep-objects`，按上述优先级撤回。
 
 已改：
 
@@ -110,6 +110,9 @@
 - check-pi-child-history 与 check-pi-projection-snapshot 需要真实 Pi CLI，传入本机 pi 后通过（11 项）；归真实运行时层，手动运行。
 - check-claude-background-follow-up 迁为验收用例 `claude_background_follow_up` 及 `_managed` 变体，实际 Claude Code 2.1.327 下两者各 4 项通过；它依赖的 check-conversation-parity 早已迁为 `codex_conversation_lifecycle`。两个原脚本删除。
 - `mac_telemetry_build.py` 的调用方（manual-telemetry 与 otlp-observability 任务验收程序）已于此前删除，一并删除。
-- 其余端到端脚本未迁移：check-codex-sampling-route、check-macos-history-cache、check-portable-handoff、check-macos-sidebar-toolbar、check-pi-child-host。
+- `check-codex-sampling-route.py`、`check-pi-child-host.mjs` 只核对已安装 CLI、不经 Velune，与两项 Pi 探测一起列入[运行时升级](../../docs/development/runtime-upgrades.md#2-用真实运行时复验)；合入 develop 后均通过。
+- `check-macos-history-cache.py` 已失效：它直接导入生成的 Python 绑定，而 UniFFI 0.32.2 在带默认 `submission_id` 的记录上生成非法签名，只有验收加载器做了修补。已改写为验收用例 `history_cache_pressure`（7 项检查，约 70 秒），删去 vmmap／sample 采样等诊断输出，原脚本删除。
+- 迁移中发现验收运行器在用例结束后才删除临时目录，应用的日志线程仍在写入时删除失败，结果却仍记为通过；改为由父进程在 worker 退出后删除。
+- 尚未处理：`check-portable-handoff.py`（真实 Codex 与 Pi，经绑定）和 `check-macos-sidebar-toolbar.py`（需已启动的开发实例窗口）。
 
 `codex_conversation_lifecycle` 曾因 ChatGPT.app 内置 Codex CLI 自动更新到 0.171.0-alpha.13、超出当时适配器范围而失败；合入 develop（支持至 0.171.0）后通过（8 项检查）。`CODEX166` 是适配器族名而非版本，用例无需调整。PR checks 的新步骤尚未在 CI 实际运行。
