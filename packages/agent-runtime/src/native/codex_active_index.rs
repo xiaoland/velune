@@ -312,9 +312,10 @@ fn hex_decode_32(text: &str) -> Option<[u8; 32]> {
         return None;
     }
     let mut out = [0u8; 32];
-    for (slot, pair) in out.iter_mut().zip(bytes.chunks_exact(2)) {
-        let high = hex_nibble(pair[0])?;
-        let low = hex_nibble(pair[1])?;
+    let (pairs, _) = bytes.as_chunks::<2>();
+    for (slot, &[high, low]) in out.iter_mut().zip(pairs) {
+        let high = hex_nibble(high)?;
+        let low = hex_nibble(low)?;
         *slot = (high << 4) | low;
     }
     Some(out)

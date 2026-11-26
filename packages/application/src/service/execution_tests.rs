@@ -416,7 +416,7 @@ fn codex_active_index_persists_across_restarts_and_repairs_on_external_change() 
     let fixture = Fixture::codex_list_index();
     let options = Options {
         home_directory: fixture.0.join("app"),
-        resources_directory: fixture.0.clone(),
+        resources_directory: fixture.0.to_path_buf(),
     };
     let mut application = Application::open(options.clone()).unwrap();
     application

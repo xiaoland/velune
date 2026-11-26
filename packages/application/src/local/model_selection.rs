@@ -6,6 +6,11 @@ use velune_agent_runtime::creation::{DataRetention, Retained};
 use velune_agent_runtime::native::CLAUDE_EFFORT_LEVELS;
 use velune_agent_runtime::native::codex_projects::NativeProject;
 
+pub(super) struct PiBindingAliases {
+    config: GatewayConfig,
+    model_keys: std::collections::HashMap<String, String>,
+}
+
 #[cfg(test)]
 mod edit_model_tests {
     use super::*;
@@ -908,23 +913,29 @@ impl CoreRuntime {
         let mut cache = self.pi_binding_aliases.borrow_mut();
         let needs_rebuild = cache
             .get(&gateway.id)
-            .is_none_or(|(cached, _)| cached != gateway);
+            .is_none_or(|cached| &cached.config != gateway);
         if needs_rebuild {
-            let mut aliases = std::collections::HashMap::new();
+            let mut model_keys = std::collections::HashMap::new();
             for key in gateway.selectable_keys() {
                 if let Ok(binding_alias) =
                     gateway.pi_binding_id(key, gateway.authentication_revision(key))
                 {
-                    aliases
+                    model_keys
                         .entry(binding_alias)
                         .or_insert_with(|| key.to_owned());
                 }
             }
-            cache.insert(gateway.id.clone(), (gateway.clone(), aliases));
+            cache.insert(
+                gateway.id.clone(),
+                PiBindingAliases {
+                    config: gateway.clone(),
+                    model_keys,
+                },
+            );
         }
         cache
             .get(&gateway.id)
-            .and_then(|(_, aliases)| aliases.get(alias).cloned())
+            .and_then(|cached| cached.model_keys.get(alias).cloned())
     }
 
     /// The window Velune gave the runtime for a turn's managed model: the
