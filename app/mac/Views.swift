@@ -491,7 +491,11 @@ struct ProviderSettingsView: View {
     /// A subscription is told apart by its account and login; others by their address.
     private func providerSummary(_ provider: ProviderSummary) -> String {
         let authentication = provider.authentication
-        guard let subscription = provider.composition.subscriptionName else { return "\(provider.models.count) 个模型，地址：\(provider.endpoint)" }
+        guard let subscription = provider.composition.subscriptionName else {
+            // A missing key is as much the provider's state as a subscription's login.
+            let missingKey = authentication.method == .apiKey && !authentication.configured
+            return "\(provider.models.count) 个模型，地址：\(provider.endpoint)" + (missingKey ? "，需要配置 API key" : "")
+        }
         if case .antigravityCli(_, let destination) = provider.composition.executionBackend {
             let target = destination.map { "SSH \($0)" } ?? (store.transport?.isRemote == true ? "提供商所在设备" : "本机")
             return "\(provider.models.count) 个模型，\(subscription)，执行目标 \(target)"

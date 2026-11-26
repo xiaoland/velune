@@ -32,8 +32,9 @@ enum TransportError: LocalizedError {
         case .submissionCancelled: return "发送已取消。"
         case .rejected(let message): return message
         case .diagnostic(_, let detail, let code, let phase, let operationID):
+            // What went wrong first: a notice of a few lines shows it, not the diagnostic number.
             let id = operationID.isEmpty ? "" : "诊断编号：\(operationID)，"
-            return "操作失败（\(id)阶段：\(phase)，代码：\(code)）：\(detail)"
+            return "\(detail)（\(id)阶段：\(phase)，代码：\(code)）"
         }
     }
 

@@ -98,6 +98,38 @@ struct AppProblem: Identifiable, Sendable, Equatable {
         default: return "操作"
         }
     }
+    /// The source as a person reads it. The core names its operations and
+    /// log events for the code (`bindings.runtime_models`); the diagnostic
+    /// text keeps that name for whoever reads the logs.
+    var title: String {
+        if let readable = Self.coreSources[source] { return readable }
+        let identifier = !source.isEmpty && source.allSatisfy { $0.isASCII && ($0.isLowercase || $0.isNumber || "._-".contains($0)) }
+        return identifier ? "Velune 核心" : source
+    }
+
+    private static let coreSources: [String: String] = {
+        var names: [String: String] = [
+            "bindings.open": "启动 Velune 核心", "bindings.shutdown": "关闭应用", "bindings.list": "读取会话与配置",
+            "bindings.runtime_models": "读取模型目录", "bindings.search_conversations": "搜索会话",
+            "bindings.discover_runtimes": "发现 Agent 运行时", "bindings.send_turn": "发送消息", "bindings.send_side_chat": "侧聊",
+            "bindings.send_prepared_handoff": "跨运行时接续", "bindings.read_handoff_summary": "读取接续摘要",
+            "bindings.remote.connect": "连接设备", "bindings.analytics_query": "读取分析记录", "bindings.scheduled_tasks": "定时任务",
+            "bindings.quota_alerts": "读取额度提醒", "bindings.upload_attachment": "添加附件",
+            "bindings.fetch_public_model_catalog": "拉取公开模型目录", "bindings.set_status_line": "保存状态栏设置",
+            "bindings.set_usage_display": "保存用量显示设置", "runtime_history_read_failed": "读取会话历史",
+        ]
+        for name in ["composer_choices", "composer_drafts", "set_composer_draft", "read_composer_target", "set_next_turn_intent", "set_runtime_composer_choices", "composer_owner_id"] {
+            names["bindings.\(name)"] = "同步输入区"
+        }
+        for name in ["acp_launch", "acp_runtime_info"] { names["bindings.\(name)"] = "读取 Agent 信息" }
+        for name in ["authentication_poll", "authentication_cancel"] { names["bindings.\(name)"] = "登录" }
+        for name in ["save_model_template", "delete_model_template"] { names["bindings.\(name)"] = "保存模型模板" }
+        for name in ["list_resource_templates", "delete_resource_template", "resolve_resource_binding", "resource_sync_status"] { names["bindings.\(name)"] = "资源库" }
+        for name in ["upsert_runtime", "delete_runtime", "select_runtime"] { names["bindings.\(name)"] = "Agent 运行时设置" }
+        for name in ["release_view", "close_side_chat"] { names["bindings.\(name)"] = "关闭会话视图" }
+        return names
+    }()
+
     var diagnosticText: String {
         (["时间：\(occurredAt.formatted())", "来源：\(source)", "类别：\(kind)", "详情：\(detail)"] +
          [resolvedAt.map { "已恢复：\($0.formatted())" }, code.map { "代码：\($0)" }, phase.map { "阶段：\($0)" }, operationID.map { "操作编号：\($0)" }].compactMap { $0 }).joined(separator: "\n")
@@ -216,7 +248,7 @@ struct ProblemsView: View {
             List(selection: $selection) {
                 ForEach(problems.reversed()) { entry in
                     VStack(alignment: .leading, spacing: 4) {
-                        Label(entry.problem.source, systemImage: entry.problem.resolvedAt == nil ? "exclamationmark.triangle" : "checkmark.circle").uiFont(.headline).lineLimit(1)
+                        Label(entry.problem.title, systemImage: entry.problem.resolvedAt == nil ? "exclamationmark.triangle" : "checkmark.circle").uiFont(.headline).lineLimit(1)
                         if !entry.device.isEmpty { Text(entry.device).uiFont(.caption).foregroundStyle(.secondary).lineLimit(1) }
                         Text(entry.problem.detail).lineLimit(2).foregroundStyle(.secondary)
                         Text(entry.problem.occurredAt, format: .dateTime.month().day().hour().minute().second()).uiFont(.caption).foregroundStyle(.secondary)
@@ -228,7 +260,7 @@ struct ProblemsView: View {
             ScrollView {
                 if let selected {
                     VStack(alignment: .leading, spacing: 16) {
-                        Text(selected.problem.source).uiFont(.headline)
+                        Text(selected.problem.title).uiFont(.headline)
                         Text(selected.problem.detail).textSelection(.enabled)
                         Grid(alignment: .leading, horizontalSpacing: 14, verticalSpacing: 10) {
                             if !selected.device.isEmpty { diagnosticRow("设备", selected.device) }
