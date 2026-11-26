@@ -85,12 +85,17 @@
 - `build-cache.py` 删去历史目录登记与 `--retired`：已退役的目录在本机都已不存在，剩下的 `release` 已失效，`android-native` 是 Gradle 正在读取的现行输出却列为历史目录。`report` 增加用途域以外目录的合计，此前报告只显示 87 GiB 的用途域，另外 120 GiB 不可见。
 - `Cargo.toml` 删去与 dev 重复的 `[profile.test]` 和默认的 `incremental = true`；test profile 继承 dev，产物 hash 不变。
 
+用户确认后已删除（卷可用空间 323.2 → 504.9 GiB，增加 181.7 GiB）：
+
+- 上表“待删除”各项：`target` 遗留目录、`release` 与源码副本增加 101.2 GiB，`tmp` 证据与 `.dev-cache` 临时目录增加 26.2 GiB。
+- `host-rust` 与 `cross-rust` 整体回收增加 51.4 GiB，低于 extent 统计的 84.8 GiB；extent 去重只覆盖 target 内部，差额应是与其他检出共享的克隆块，未逐一核实；主检出下次 Mac／iOS／Android 构建冷启动。
+- 旧分支工作树 `velune-maint`（分支保留）增加 2.9 GiB；另删去 9 个已无内容的旧工作树父目录。
+
 未改、需用户决定：
 
-- 上表“待删除”各项，以及 `host-rust`／`cross-rust` 的整体回收（之后首次构建冷启动）。
 - `.cargo/config.toml` 的 `jobs = 2` 没有记录理由（主机 10 核、16 GiB 内存）。
 - 主机系统盘只剩约 17 GiB，低于 mbx 的 20 GiB 下限，mbx 因此越过预算持续回收；期间其“targets”回收计数增加 2.8 GiB，同时出现相隔几分钟、无源码变化的 `cargo test --no-run` 重编约 110 个 crate，紧接着的第二次为 0。两者相关，未证实因果。
-- 旧分支工作树 `~/Development/.worktrees/velune-maint/velune`（`refactor/maintainability`，已并入本分支，干净）可移除；`tmp/worktrees/workspace-native-shell` 的分支已合入 develop，但今天仍有提交和 3 处未提交改动，可能仍在使用。
+- `tmp/worktrees/workspace-native-shell` 的分支已合入 develop，但今天仍有提交和 3 处未提交改动，可能仍在使用。
 
 ## 工作树
 
