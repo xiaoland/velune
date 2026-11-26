@@ -189,6 +189,10 @@ impl PiProjection {
         self.compaction_notice = None;
     }
 
+    pub(crate) fn is_manually_compacting(&self) -> bool {
+        self.manual_compaction.is_some()
+    }
+
     pub fn begin_compaction(&mut self, command_id: String) {
         self.manual_compaction = Some(command_id);
         self.compaction_notice = None;

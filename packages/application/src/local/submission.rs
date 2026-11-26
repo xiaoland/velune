@@ -557,7 +557,7 @@ mod tests {
     }
 
     #[test]
-    fn finished_parent_work_clears_the_viewed_childs_loading_state() {
+    fn idle_parent_history_alone_does_not_clear_the_viewed_childs_loading_state() {
         let root =
             std::env::temp_dir().join(format!("velune-child-loading-{}", std::process::id()));
         std::fs::create_dir(&root).unwrap();
@@ -579,7 +579,7 @@ mod tests {
         core.session.active_state = ActiveState::History(Box::new(child.into()));
         core.follow_source();
         let view = core.native_snapshot().unwrap();
-        assert_eq!(view.run_state, RunState::Idle);
+        assert_eq!(view.run_state, RunState::Elsewhere);
         assert!(!view.actions.can_send);
         drop(application);
         std::fs::remove_dir_all(root).unwrap();

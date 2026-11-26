@@ -531,17 +531,20 @@ impl PiSession {
         }
     }
 
-    fn refresh_background(&mut self, command: Value) {
+    fn refresh_background(&mut self) {
         if self
             .running
             .as_ref()
-            .is_some_and(|running| running.background_request_pending())
+            .is_some_and(|running| {
+                running.background_request_pending() || running.projection.is_manually_compacting()
+            })
         {
             self.background_refresh_queued = true;
             return;
         }
+        self.background_refresh_queued = false;
         match self.enqueue(
-            PiOperation::Background(command),
+            PiOperation::Background(json!({"operation":"snapshot"})),
             PendingAction::Background(
                 self.running
                     .as_ref()
@@ -880,7 +883,12 @@ impl PiSession {
             // read the public task snapshot before callers can conclude that
             // an empty cached list is settled and release Pi/the gateway.
             self.background_pending_sync = true;
-            self.refresh_background(json!({"operation":"snapshot"}));
+            self.background_refresh_queued = true;
+        }
+        if self.background_refresh_queued {
+            // Pi defers extension prompts throughout manual compaction. A
+            // metadata refresh waits for the compaction response instead.
+            self.refresh_background();
         }
     }
 
@@ -1753,6 +1761,7 @@ impl PiSession {
             return;
         }
         let scope_action = matches!(action, PendingAction::Branch | PendingAction::Rewind(_));
+        let rename_action = matches!(action, PendingAction::Rename(_));
         let background_action = matches!(
             action,
             PendingAction::Background(_) | PendingAction::DiscoverBackground
@@ -1794,7 +1803,11 @@ impl PiSession {
                 ))
             }
             PiReceiptPhase::NotSent => {
-                if self.running.as_ref().is_some_and(|running| {
+                if rename_action {
+                    Err(Error::CommandFailed("Pi 会话重命名尚未发送".into()))
+                } else if background_action {
+                    Err(Error::CommandFailed("Pi 后台工作请求尚未发送".into()))
+                } else if self.running.as_ref().is_some_and(|running| {
                     running.edit_wait.as_ref().is_some_and(|wait| wait.ticket == receipt.ticket)
                         || running.control_wait.as_ref().is_some_and(|control| control.native == receipt.ticket)
                 }) {
@@ -1842,8 +1855,11 @@ impl PiSession {
                     .release_pi_transition(receipt.ticket);
             }
             if let Some(running) = &mut self.running {
-                running.history_pending = false;
-                running.projection.apply_event(&json!({"type":"extension_error","event":"Pi operation","error":error.to_string()}));
+                if !rename_action && !background_action {
+                    running.history_pending = false;
+                }
+                let event = if rename_action { "Pi session rename" } else { "Pi operation" };
+                running.projection.apply_event(&json!({"type":"extension_error","event":event,"error":error.to_string()}));
             }
             if background_action {
                 self.set_background_error(Some(error.to_string()));
@@ -1916,7 +1932,7 @@ impl PiSession {
                             .any(|entry| entry["name"] == "velune-background-work")
                     })
                 {
-                    self.refresh_background(json!({"operation":"snapshot"}));
+                    self.refresh_background();
                 } else {
                     self.apply_background_frame(
                         &json!({"version":1,"kind":"unsupported","tasks":[]}),
@@ -1929,9 +1945,6 @@ impl PiSession {
                 }
                 if self.running()?.background_frame_revision <= revision {
                     return Err(Error::Sdk("Pi 后台工作桥接没有返回结构化状态".into()));
-                }
-                if std::mem::take(&mut self.background_refresh_queued) {
-                    self.refresh_background(json!({"operation":"snapshot"}));
                 }
             }
             PendingAction::HistoryMetadata(request) => {
@@ -1957,7 +1970,7 @@ impl PiSession {
                 self.running()?.native_scope_changed()?;
                 self.reset_background_session();
                 self.invalidate_history();
-                self.refresh_background(json!({"operation":"snapshot"}));
+                self.refresh_background();
             }
             PendingAction::Rewind(id) => {
                 let event = self
