@@ -66,7 +66,7 @@ import VeluneBindings
     let preferences = UserDefaults.standard.volatileDomain(forName: UserDefaults.argumentDomain)
     var synthetic = preferences
     synthetic["toolbarButtonsHidden"] = [String]()
-    synthetic["toolbarButtonOrder"] = ["listFilter", "newConversation"]
+    synthetic["toolbarButtonOrder"] = [String]()
     UserDefaults.standard.setVolatileDomain(synthetic, forName: UserDefaults.argumentDomain)
     var evidence: [[String: Any]] = []
     for dark in [false, true] {
@@ -75,12 +75,12 @@ import VeluneBindings
             let store = model.focused.store
             let root = VeluneRootView(window: model, store: model.list, tab: model.focused,
                                       focused: store, previewEmpty: false, previewSettings: false)
-            let host = NSHostingController(rootView: root)
             let window = OutgoingSubmissionCheckWindow(contentRect: NSRect(x: 0, y: 0, width: 720, height: 760),
                                                        styleMask: [.titled, .closable, .resizable, .fullSizeContentView], backing: .buffered, defer: true)
             windows.append(window)
             window.isReleasedWhenClosed = false; window.isRestorable = false
-            window.contentViewController = host
+            let shell = WorkspaceShell(window: window, model: model, content: root, previewEmpty: false)
+            let host = shell.split
             window.setContentSize(NSSize(width: 720, height: 760))
             for _ in 0..<5 { host.view.layoutSubtreeIfNeeded(); settle() }
             let frame = window.contentView!.superview!

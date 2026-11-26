@@ -342,9 +342,7 @@ struct ArchivedConversationsContent: View {
     }
 
     private func open(_ value: Conversation) {
-        let seed = WindowSeed(conversationID: value.id, device: source.peerID)
-        WindowPresentation.windowed.insert(seed.id)
-        openWindow(id: ConversationWindowKind.single.sceneID, value: seed)
+        WorkspaceWindows.shared.open(.single, seed: WindowSeed(conversationID: value.id, device: source.peerID))
     }
 
     private func groupName(_ key: ConversationGroupKey) -> String {

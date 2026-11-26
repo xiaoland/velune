@@ -38,5 +38,42 @@ class PreviewIdentityTests(unittest.TestCase):
             launcher.start(preview='--arbitrary-argument')
 
 
+class RestartTests(unittest.TestCase):
+    def test_other_build_is_stale(self):
+        app = {'pid': 123, 'launchedAt': 1000.0}
+        receipt = dict(app, home='/tmp/synthetic', source='/tmp/Dev.app', profile='dev', sourceFingerprint='sha256:old')
+        with self.assertRaises(launcher.StaleInstance):
+            launcher.reuse(app, receipt, Path('/tmp/synthetic'), 'scope', Path('/tmp/Dev.app'), 'dev', 'sha256:new')
+
+    def test_unmatched_instance_is_not_stale(self):
+        app = {'pid': 123, 'launchedAt': 1000.0}
+        receipt = dict(app, pid=124, home='/tmp/synthetic', source='/tmp/Dev.app', profile='dev', sourceFingerprint='sha256:old')
+        try:
+            launcher.reuse(app, receipt, Path('/tmp/synthetic'), 'scope', Path('/tmp/Dev.app'), 'dev', 'sha256:old')
+        except launcher.StaleInstance:
+            self.fail('an instance without a matching receipt must not be quit')
+        except launcher.LauncherError:
+            pass
+
+    def test_restart_quits_only_a_stale_instance(self):
+        calls = []
+        def start(*args, **kwargs):
+            calls.append('start')
+            if calls.count('start') == 1:
+                raise launcher.StaleInstance('stale')
+            return {'status': 'running', 'pid': 2}
+        with patch.object(launcher, 'start', side_effect=start), \
+                patch.object(launcher, 'stop', side_effect=lambda *a, **k: calls.append('stop') or {'pid': 1}):
+            result = launcher.restart()
+        self.assertEqual(calls, ['start', 'stop', 'start'])
+        self.assertTrue(result['restarted'])
+        calls.clear()
+        with patch.object(launcher, 'start', side_effect=launcher.LauncherError('ambiguous')), \
+                patch.object(launcher, 'stop', side_effect=lambda *a, **k: calls.append('stop')):
+            with self.assertRaises(launcher.LauncherError):
+                launcher.restart()
+        self.assertEqual(calls, [])
+
+
 if __name__ == '__main__':
     unittest.main()

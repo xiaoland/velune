@@ -237,7 +237,7 @@ extension ConversationWindowModel {
         let firstInput = window.composer(for: firstTab)
         firstInput.restore("one global new input", attachments: [])
         let secondStore = ConversationStore(device: device)
-        window.focusedPane.insert(ConversationTab(store: secondStore, start: { secondStore.restoreUnsentConversation(unsent) }))
+        window.insertTab(ConversationTab(store: secondStore, start: { secondStore.restoreUnsentConversation(unsent) }))
         let secondTab = window.focused
         secondTab.store.setUnsentWorkingDirectory("/tmp/creation-b")
         precondition(window.composer(for: secondTab).id != firstInput.id)

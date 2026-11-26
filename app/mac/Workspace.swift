@@ -304,71 +304,25 @@ import VeluneBindings
 }
 
 /// A leaf of a window's split: its tabs and the one it shows.
+/// A group of the window's layout as its views observe it: the group's
+/// tabs and the shown one. Only the window changes it, following its layout.
 @MainActor final class Pane: ObservableObject, Identifiable {
     let id: UUID
-    @Published private(set) var tabs: [EditorTab]
-    @Published private(set) var selectedID: UUID
-    /// Most recently shown last. Restored, never-activated siblings have no history.
-    private var activationHistory: [UUID] = []
+    @Published fileprivate(set) var tabs: [EditorTab]
+    @Published fileprivate(set) var selectedID: UUID
 
-    init(id: UUID = UUID(), tabs: [EditorTab], selected: UUID? = nil) {
+    fileprivate init(id: UUID, tabs: [EditorTab], selected: UUID) {
         self.id = id
         self.tabs = tabs
-        selectedID = selected.flatMap { id in tabs.contains { $0.id == id } ? id : nil } ?? tabs[0].id
-        activationHistory = [selectedID]
+        selectedID = selected
     }
 
     var selected: EditorTab { tabs.first { $0.id == selectedID } ?? tabs[0] }
 
-    func select(_ id: UUID) {
-        guard let tab = tabs.first(where: { $0.id == id }) else { return }
-        activationHistory.removeAll { $0 == id }
-        activationHistory.append(id)
-        if selectedID != id {
-            // Typing that went to the tab put behind goes to the one shown.
-            if let previous = selected as? ConversationTab, let next = tab as? ConversationTab, previous.composer.isFocused { next.composer.focusWhenShown() }
-            selectedID = id
-        }
-        tab.activate()
+    fileprivate func show(_ tabs: [EditorTab], selected: UUID) {
+        if !self.tabs.elementsEqual(tabs, by: { $0 === $1 }) { self.tabs = tabs }
+        if selectedID != selected { selectedID = selected }
     }
-
-    /// `tab` at `index` (the end when nil), shown.
-    func insert(_ tab: EditorTab, at index: Int? = nil) {
-        tabs.insert(tab, at: max(0, min(index ?? tabs.count, tabs.count)))
-        select(tab.id)
-    }
-
-    /// Closing the selected tab returns to the group's last active tab,
-    /// otherwise its left neighbour. False when it was the only tab.
-    @discardableResult func remove(_ id: UUID) -> Bool {
-        guard tabs.count > 1, let index = tabs.firstIndex(where: { $0.id == id }) else { return false }
-        tabs.remove(at: index)
-        activationHistory.removeAll { $0 == id }
-        if selectedID == id {
-            select(activationHistory.last ?? tabs[max(0, index - 1)].id)
-        }
-        return true
-    }
-
-    func move(_ id: UUID, to index: Int) {
-        guard let from = tabs.firstIndex(where: { $0.id == id }) else { return }
-        let tab = tabs.remove(at: from)
-        tabs.insert(tab, at: min(from < index ? index - 1 : index, tabs.count))
-        select(id)
-    }
-}
-
-/// Which side of a pane something dropped on it goes to.
-enum PaneEdge: Equatable {
-    case leading, trailing, top, bottom
-    var axis: PaneSplit.Axis { self == .leading || self == .trailing ? .horizontal : .vertical }
-    var after: Bool { self == .trailing || self == .bottom }
-}
-
-/// Where a tab dropped on a pane goes: among its tabs, or beside an edge.
-enum PaneDropZone: Equatable {
-    case center
-    case edge(PaneEdge)
 }
 
 /// The tab a drag carries, so a drop moves that tab rather than opening its
@@ -452,79 +406,6 @@ final class TabDragSource: @unchecked Sendable {
         guard !NSApp.windows.contains(where: { $0.isVisible && $0.isOnActiveSpace && $0.styleMask.contains(.titled) && $0.frame.contains(point) }) else { return }
         window.openInNewWindow(conversationID, at: point)
     }
-}
-
-/// How a window's panes are arranged: a pane, or panes side by side
-/// (horizontal) or stacked (vertical), each taking a fraction of the room.
-indirect enum PaneLayout: Codable, Equatable {
-    case pane(UUID)
-    case split(PaneSplit)
-
-    var paneIDs: [UUID] {
-        switch self {
-        case .pane(let id): [id]
-        case .split(let split): split.children.flatMap(\.paneIDs)
-        }
-    }
-
-    /// `added` beside `pane`'s `edge`, taking half its room.
-    func inserting(_ added: UUID, beside pane: UUID, edge: PaneEdge) -> PaneLayout {
-        switch self {
-        case .pane(let id):
-            guard id == pane else { return self }
-            let children: [PaneLayout] = edge.after ? [.pane(id), .pane(added)] : [.pane(added), .pane(id)]
-            return .split(PaneSplit(axis: edge.axis, children: children, fractions: [0.5, 0.5]))
-        case .split(var split):
-            // A pane in a split along the same axis shares its own room with the new one.
-            if split.axis == edge.axis, let index = split.children.firstIndex(of: .pane(pane)) {
-                let half = split.fractions[index] / 2
-                split.fractions[index] = half
-                split.children.insert(.pane(added), at: edge.after ? index + 1 : index)
-                split.fractions.insert(half, at: edge.after ? index + 1 : index)
-                return .split(split)
-            }
-            split.children = split.children.map { $0.inserting(added, beside: pane, edge: edge) }
-            return .split(split)
-        }
-    }
-
-    /// Without `pane`; a split left with one child becomes that child. Nil
-    /// when `pane` was all there was.
-    func removing(_ pane: UUID) -> PaneLayout? {
-        switch self {
-        case .pane(let id): return id == pane ? nil : self
-        case .split(var split):
-            var children: [PaneLayout] = []
-            var fractions: [Double] = []
-            for (child, fraction) in zip(split.children, split.fractions) {
-                if let kept = child.removing(pane) { children.append(kept); fractions.append(fraction) }
-            }
-            guard let first = children.first else { return nil }
-            if children.count == 1 { return first }
-            let total = fractions.reduce(0, +)
-            split.children = children
-            split.fractions = fractions.map { $0 / total }
-            return .split(split)
-        }
-    }
-
-    /// The split at `path` (child indices from the root) with new fractions.
-    func resizing(at path: [Int], fractions: [Double]) -> PaneLayout {
-        guard case .split(var split) = self else { return self }
-        guard let index = path.first else {
-            split.fractions = fractions
-            return .split(split)
-        }
-        split.children[index] = split.children[index].resizing(at: Array(path.dropFirst()), fractions: fractions)
-        return .split(split)
-    }
-}
-
-struct PaneSplit: Codable, Equatable {
-    enum Axis: String, Codable { case horizontal, vertical }
-    var axis: Axis
-    var children: [PaneLayout]
-    var fractions: [Double]
 }
 
 /// What a window restores: its arrangement, each pane's tabs, each tab's
@@ -637,7 +518,10 @@ struct SavedWindowLayout: Codable, Equatable {
         return layout
     }
 
+    /// A known layout; one saved with floating tools reads with them as
+    /// windows of their own (the journal backs such files up before rewriting them).
     static func decodeKnown(_ data: Data) throws -> SavedWindowLayout {
+        let data = ToolWindowLayout.migratingFloatingTools(in: data) ?? data
         let raw = try JSONSerialization.jsonObject(with: data) as? [String: Any]
         let layout = try JSONDecoder().decode(SavedWindowLayout.self, from: data)
         guard layout.schemaVersion == 0 || layout.schemaVersion == 1 else {
@@ -735,7 +619,6 @@ struct WindowSeed: Codable, Hashable {
 
 /// Presentation intent belongs to this opening, never to restored window data.
 @MainActor enum WindowPresentation {
-    static var windowed: Set<UUID> = []
     static var notificationTargets: Set<UUID> = []
 }
 
@@ -796,9 +679,14 @@ struct WindowSeed: Codable, Hashable {
     private(set) lazy var aggregated = AggregatedListModel(local: application, hub: hub)
     /// The list's workspace: list, search and selection; it opens no conversation.
     let list: ConversationStore
-    @Published private(set) var layout: PaneLayout
+    /// The grid, groups and focus. Every change goes through `changeLayout`.
+    @Published private(set) var workspace: WorkspaceLayout
+    /// The editors the layout's tabs name.
+    private var editors: [UUID: EditorTab]
+    /// Each group as its views observe it, following `workspace`.
     @Published private(set) var panes: [UUID: Pane]
-    @Published private(set) var focusedPaneID: UUID
+    var layout: PaneLayout { workspace.grid }
+    var focusedPaneID: UUID { workspace.focused }
     /// Each tab's conversation as last selected, for the layout the window restores.
     @Published private(set) var tabConversations: [UUID: String] = [:]
     /// Each tab's paired device (peer id) as last shown; tabs absent here are local.
@@ -825,7 +713,6 @@ struct WindowSeed: Codable, Hashable {
     @Published private(set) var tabsRevision = 0
     private var subscriptions: [UUID: Set<AnyCancellable>] = [:]
     private var preservingComposerLayout = false
-    private var paneSubscriptions: [UUID: AnyCancellable] = [:]
     private var started = false
     private var closed = false
     private var workspaceRestored = false
@@ -928,7 +815,7 @@ struct WindowSeed: Codable, Hashable {
         let placement = placement ?? tools
         if tab === sheetTab || tab === composerSheetTab { return .conversation(tab.store.selectedConversationID ?? tab.store.loadedConversationID ?? "tab:\(tab.id)") }
         switch placement[.composer].place {
-        case .floating, .window, .docked: return .shared
+        case .window, .docked: return .shared
         default: return .conversation(tab.store.selectedConversationID ?? tab.store.loadedConversationID ?? "tab:\(tab.id)")
         }
     }
@@ -1018,8 +905,7 @@ struct WindowSeed: Codable, Hashable {
         let tab = ConversationTab(store: store, start: {
             store.start(loadFirstConversation: false, newConversation: false)
         })
-        let pane = focusedPane
-        pane.insert(tab, at: pane.tabs.firstIndex { $0.id == pane.selectedID }.map { $0 + 1 })
+        insertTab(tab, at: afterShownTab)
         navigateComposer(to: tab.store.loadedConversationID ?? ConversationStore.draftConversationPrefix + "new-conversation", tab: tab)
         objectWillChange.send()
         noteSelected(tab)
@@ -1037,8 +923,6 @@ struct WindowSeed: Codable, Hashable {
             if kind == .workspace { application.rememberedToolLayout.remember(tools) }
         }
     }
-    /// The area a panel dragged now would dock into, for the window to show where.
-    @Published var dockHint: DockSide?
     /// The outline popover from the toolbar button.
     @Published var outlinePopover = false
     @Published var agentsPopover = false
@@ -1123,7 +1007,7 @@ struct WindowSeed: Codable, Hashable {
 
     /// The window whose floating panel or tool window is key: commands act on it as on the window itself.
     static func owning(detached window: NSWindow?) -> ConversationWindowModel? {
-        (window as? any DetachedTool)?.model
+        (window as? ToolWindow)?.model
     }
 
     /// The conversation window an AppKit window shows.
@@ -1144,12 +1028,13 @@ struct WindowSeed: Codable, Hashable {
         self.hub = hub
         list = ConversationStore(device: application)
         let store = ConversationStore(device: application)
-        let first = Pane(tabs: [ConversationTab(store: store, start: {
+        let first = ConversationTab(store: store, start: {
             store.start(loadFirstConversation: kind == .workspace, newConversation: kind == .single)
-        })])
-        layout = .pane(first.id)
-        panes = [first.id: first]
-        focusedPaneID = first.id
+        })
+        workspace = WorkspaceLayout(tab: first.id)
+        editors = [first.id: first]
+        panes = [:]
+        syncPanes()
         follow(first)
         Self.all.append(WeakWindow(model: self))
         conversationObservation = objectWillChange.sink { [weak self] in
@@ -1160,9 +1045,7 @@ struct WindowSeed: Codable, Hashable {
         // Window recovery belongs to the model, including changes made before
         // SwiftUI observes a scene. Read after @Published has committed its value.
         workspacePersistence = Publishers.MergeMany([
-            $layout.dropFirst().map { _ in () }.eraseToAnyPublisher(),
-            $panes.dropFirst().map { _ in () }.eraseToAnyPublisher(),
-            $focusedPaneID.dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            $workspace.dropFirst().map { _ in () }.eraseToAnyPublisher(),
             $tabConversations.dropFirst().map { _ in () }.eraseToAnyPublisher(),
             $tabsRevision.dropFirst().map { _ in () }.eraseToAnyPublisher(),
             $tools.dropFirst().map { _ in () }.eraseToAnyPublisher(),
@@ -1194,10 +1077,10 @@ struct WindowSeed: Codable, Hashable {
         tab.store.noteFocused()
         tab.store.noteVisible()
     }
-    var isSplit: Bool { panes.count > 1 }
-    var orderedPanes: [Pane] { layout.paneIDs.compactMap { panes[$0] } }
-    var allTabs: [EditorTab] { orderedPanes.flatMap(\.tabs) }
-    var tabCount: Int { panes.values.reduce(0) { $0 + $1.tabs.count } }
+    var isSplit: Bool { workspace.isSplit }
+    var orderedPanes: [Pane] { workspace.groupIDs.compactMap { panes[$0] } }
+    var allTabs: [EditorTab] { workspace.tabIDs.compactMap { editors[$0] } }
+    var tabCount: Int { workspace.tabCount }
 
     var savedLayout: SavedWindowLayout {
         _ = tabsRevision
@@ -1235,7 +1118,9 @@ struct WindowSeed: Codable, Hashable {
     /// Restore a saved arrangement, take a handed-over tab, or open `seed`'s
     /// conversation, then start reading. A lone new tab opens the list's
     /// first conversation.
-    func start(restoring saved: SavedWindowLayout?, seed: WindowSeed?, persistenceID: String? = nil) {
+    /// A window the system reopens (`reopened`) restores its own recovery
+    /// point only, never another window's latest one.
+    func start(restoring saved: SavedWindowLayout?, seed: WindowSeed?, persistenceID: String? = nil, reopened: Bool = false) {
         closed = false
         guard !started else { return }
         started = true
@@ -1258,7 +1143,7 @@ struct WindowSeed: Codable, Hashable {
             return candidate.isWhole && (candidate.windowKind == nil || candidate.windowKind == kind)
                 && (candidate.windowDevice == nil || candidate.windowDevice == SavedWindowLayout.ExecutionDevice(device)) ? candidate : nil
         }
-        let journalSaved = recoveryID.flatMap { application.windowWorkspaceJournal.restore(id: $0, recoverLatest: seed == nil && sceneSaved == nil && kind == .workspace, kind: kind, device: device, aggregatingDevices: aggregatingDevices, legacyTabID: seed?.tab) }
+        let journalSaved = recoveryID.flatMap { application.windowWorkspaceJournal.restore(id: $0, recoverLatest: !reopened && seed == nil && sceneSaved == nil && kind == .workspace, kind: kind, device: device, aggregatingDevices: aggregatingDevices, legacyTabID: seed?.tab) }
         let saved = journalSaved ?? sceneSaved
         let recoveryBranch = seed?.tab.flatMap { Self.handoff[$0] } != nil ? "handoff" : saved != nil ? "snapshot" : seed?.conversationID != nil ? "conversation" : seed?.tab != nil ? "missingHandoff" : "default"
         let recoveryKind = kind.sceneID
@@ -1275,7 +1160,7 @@ struct WindowSeed: Codable, Hashable {
         }
         if let id = seed?.tab, let tab = Self.handoff.removeValue(forKey: id) {
             if let tab = tab as? ConversationTab, !tab.store.isSideChat, let conversationID = tab.store.loadedConversationID { drafts(for: tab.store.device).adopt(tab.composer, conversationID: conversationID, tab: tab) }
-            replacePanes(with: [Pane(tabs: [tab])], layout: nil)
+            replaceEditors([tab], layout: WorkspaceLayout(tab: tab.id))
             tab.activate()
             noteSelected(tab)
         } else if let saved, saved.isWhole {
@@ -1291,9 +1176,8 @@ struct WindowSeed: Codable, Hashable {
             }
             if saved.composerWorkspace == nil, sharedComposer.hasUnfinishedInput { restoredComposerDraft = sharedComposer }
             let lone = saved.layout.paneIDs.count == 1 && saved.panes.values.first?.tabs.count == 1
-            let restored = saved.layout.paneIDs.map { paneID in
-                let savedPane = saved.panes[paneID]!
-                let tabs: [EditorTab] = savedPane.tabs.map { tabID in
+            let restored: [EditorTab] = saved.layout.paneIDs.flatMap { paneID in
+                saved.panes[paneID]!.tabs.map { tabID -> EditorTab in
                     if let document = saved.artifacts?[tabID] { return ArtifactTab(id: tabID, document: document) }
                     let deviceStore = saved.conversationDevices?[tabID].flatMap { hub?.store(for: $0) } ?? application
                     let store = ConversationStore(device: deviceStore)
@@ -1309,26 +1193,27 @@ struct WindowSeed: Codable, Hashable {
                         else { store.start(loadFirstConversation: lone, newConversation: !lone && conversationID == nil, opening: conversationID) }
                     })
                 }
-                return Pane(id: paneID, tabs: tabs, selected: savedPane.selected)
             }
-            replacePanes(with: restored, layout: saved.layout)
+            let groups = saved.panes.compactMapValues { TabGroup(tabs: $0.tabs, selected: $0.selected) }
+            replaceEditors(restored, layout: WorkspaceLayout(grid: saved.layout, groups: groups, focused: saved.focused) ?? WorkspaceLayout(tab: restored[0].id))
             tabConversations = saved.conversations
             tabDevices = saved.conversationDevices ?? [:]
             restoredCreationTargets = saved.creationTargets ?? [:]
-            focusedPaneID = saved.focused
             tools = saved.tools.normalized()
             pinned = saved.pinned
-            for pane in restored { pane.selected.activate() }
+            for group in workspace.groupIDs { editors[workspace.groups[group]!.selected]?.activate() }
         } else if let id = seed?.conversationID {
             // A seed may name the paired device the conversation lives on;
             // a workspace window then binds the tab to that device's store.
             let deviceStore = seed?.device.flatMap { hub?.store(for: $0) } ?? application
-            replacePanes(with: [Pane(tabs: [makeTab(device: deviceStore, opening: id)])], layout: nil)
+            let tab = makeTab(device: deviceStore, opening: id)
+            replaceEditors([tab], layout: WorkspaceLayout(tab: tab.id))
             focused.activate()
         } else if seed?.tab != nil {
             // An in-process handoff is not a cold-start recovery source.
             // A missing snapshot must not impersonate the list's first session.
-            replacePanes(with: [Pane(tabs: [makeTab(opening: nil)])], layout: nil)
+            let tab = makeTab(opening: nil)
+            replaceEditors([tab], layout: WorkspaceLayout(tab: tab.id))
             focused.activate()
             application.recordProblem("此窗口的内容未能恢复，已打开空白标签页。", source: "窗口恢复")
         } else {
@@ -1345,15 +1230,96 @@ struct WindowSeed: Codable, Hashable {
         }
     }
 
-    /// The panes before reading starts: the first pane's untouched tab gives way.
-    private func replacePanes(with replacement: [Pane], layout: PaneLayout?) {
+    /// The editors before reading starts: the first group's untouched tab gives way.
+    private func replaceEditors(_ replacement: [EditorTab], layout: WorkspaceLayout) {
         for tab in allTabs { tab.close() }
         subscriptions = [:]
-        paneSubscriptions = [:]
-        panes = Dictionary(uniqueKeysWithValues: replacement.map { ($0.id, $0) })
-        self.layout = layout ?? .pane(replacement[0].id)
-        focusedPaneID = replacement[0].id
+        editors = Dictionary(uniqueKeysWithValues: replacement.map { ($0.id, $0) })
+        workspace = layout
+        editors = editors.filter { layout.contains(tab: $0.key) }
+        syncPanes()
         replacement.forEach(follow)
+        tabsRevision &+= 1
+    }
+
+    // MARK: Layout
+
+    /// Every change to the grid, groups and focus; the groups' views follow,
+    /// editors the layout no longer names are let go, and new ones followed.
+    private func changeLayout(_ change: (inout WorkspaceLayout) -> Void) {
+        var next = workspace
+        change(&next)
+        guard next != workspace else { return }
+        let tabsChanged = next.groups != workspace.groups
+        workspace = next
+        let named = Set(next.tabIDs)
+        editors = editors.filter { named.contains($0.key) }
+        syncPanes()
+        for id in next.tabIDs where subscriptions[id] == nil { editors[id].map(follow) }
+        if tabsChanged { tabsRevision &+= 1 }
+    }
+
+    private func syncPanes() {
+        var next: [UUID: Pane] = [:]
+        for id in workspace.groupIDs {
+            let group = workspace.groups[id]!
+            let tabs = group.tabs.compactMap { editors[$0] }
+            guard !tabs.isEmpty else { continue }
+            let selected = editors[group.selected] == nil ? tabs[0].id : group.selected
+            if let pane = panes[id] { pane.show(tabs, selected: selected); next[id] = pane }
+            else { next[id] = Pane(id: id, tabs: tabs, selected: selected) }
+        }
+        for id in panes.keys where next[id] == nil { anchors[id] = nil }
+        if Set(next.keys) != Set(panes.keys) { panes = next }
+    }
+
+    /// Typing that went to the tab put behind goes to the one shown, as
+    /// clicking a tab does; the shown tab starts reading.
+    private func noteShown(_ tab: EditorTab, replacing previous: EditorTab?) {
+        if let previous = previous as? ConversationTab, previous !== tab, let next = tab as? ConversationTab, previous.composer.isFocused {
+            next.composer.focusWhenShown()
+        }
+        tab.activate()
+    }
+
+    /// A layout change that shows `tab` in its group, with what showing it does.
+    private func show(_ tab: UUID, by change: (inout WorkspaceLayout) -> Void) {
+        let before = workspace.groups.mapValues(\.selected)
+        changeLayout(change)
+        guard let group = workspace.group(holding: tab), let editor = editors[tab] else { return }
+        noteShown(editor, replacing: before[group].flatMap { editors[$0] })
+    }
+
+    /// Show `tab` in its group and focus that group.
+    private func show(_ tab: UUID) { show(tab) { $0.select(tab) } }
+
+    /// `tab` in `group` (the focused one when nil) at `index`, else at the
+    /// end; shown, and its group focused.
+    func insertTab(_ tab: EditorTab, in group: UUID? = nil, at index: Int? = nil) {
+        guard !workspace.contains(tab: tab.id) else { return }
+        editors[tab.id] = tab
+        show(tab.id) { $0.insert(tab.id, in: group, at: index) }
+    }
+
+    /// Where a new tab goes: just after the focused group's shown tab.
+    private var afterShownTab: Int? {
+        let group = workspace.focusedGroup
+        return group.tabs.firstIndex(of: group.selected).map { $0 + 1 }
+    }
+
+    /// Take `tab` from a group that keeps other tabs; the tab shown in its
+    /// place starts as a clicked one would.
+    private func take(_ tab: UUID) {
+        guard let group = workspace.group(holding: tab), workspace.groups[group]!.tabs.count > 1 else { return }
+        let taken = editors[tab], shown = workspace.groups[group]!.selected
+        changeLayout { $0.remove(tab) }
+        guard let now = workspace.groups[group]?.selected, now != shown, let editor = editors[now] else { return }
+        noteShown(editor, replacing: taken)
+    }
+
+    /// Notes the newly focused group's shown tab when focus moved from `before`.
+    private func noteFocus(from before: UUID) {
+        if focusedPaneID != before { noteSelected(focusedEditor) }
     }
 
     // MARK: Opening
@@ -1462,7 +1428,7 @@ struct WindowSeed: Codable, Hashable {
         if presentation == .split, let pane = pane(holding: tab.id) { selectTab(tab.id); focus(pane.id); return }
         if sheetTab === tab { sheetTab = nil }
         if let pane = pane(holding: tab.id) {
-            if tabCount == 1 { pane.insert(makeTab(opening: nil)) }
+            if tabCount == 1 { insertTab(makeTab(opening: nil), in: pane.id) }
             _ = detach(tab.id, emptying: .keep)
         }
         switch presentation {
@@ -1487,9 +1453,7 @@ struct WindowSeed: Codable, Hashable {
     /// Open a conversation, or a new one, in a new tab after the focused pane's shown tab.
     func openInNewTab(_ conversationID: String? = nil, device target: DeviceStore? = nil, resolved: Conversation? = nil) {
         if let conversationID, select(showing: conversationID, device: target) { return }
-        let pane = focusedPane
-        let index = pane.tabs.firstIndex { $0.id == pane.selectedID }.map { $0 + 1 }
-        pane.insert(makeTab(device: target, opening: conversationID, resolved: resolved), at: index)
+        insertTab(makeTab(device: target, opening: conversationID, resolved: resolved), at: afterShownTab)
         focused.store.noteFocused()
     }
 
@@ -1787,8 +1751,7 @@ struct WindowSeed: Codable, Hashable {
     func moveArtifactSheetToTab() {
         guard let tab = artifactSheet else { return }
         artifactSheet = nil
-        focusedPane.insert(tab)
-        tabsRevision &+= 1
+        insertTab(tab)
     }
     func moveArtifactSheetToWindow(at point: NSPoint? = nil) {
         guard let tab = artifactSheet, openWindow != nil else { return }
@@ -1800,8 +1763,7 @@ struct WindowSeed: Codable, Hashable {
     func moveSheetToTab() {
         guard let tab = sheetTab else { return }
         sheetTab = nil
-        let pane = focusedPane
-        pane.insert(tab, at: pane.tabs.firstIndex { $0.id == pane.selectedID }.map { $0 + 1 })
+        insertTab(tab, at: afterShownTab)
         noteSelected(tab)
     }
 
@@ -1818,11 +1780,9 @@ struct WindowSeed: Codable, Hashable {
         guard let id = result.snapshot?.conversation.id else { return }
         if select(showing: id, device: device) { return }
         let store = ConversationStore(device: device)
-        let pane = focusedPane
-        let index = pane.tabs.firstIndex { $0.id == pane.selectedID }.map { $0 + 1 }
-        pane.insert(ConversationTab(store: store, start: {
+        insertTab(ConversationTab(store: store, start: {
             store.start(adopting: result)
-        }), at: index)
+        }), at: afterShownTab)
         navigateComposer(to: id, tab: focused)
         focused.store.noteFocused()
     }
@@ -1874,9 +1834,8 @@ struct WindowSeed: Codable, Hashable {
            !(pane.selected is ArtifactTab && tab === lastConversation) {
             navigateComposer(to: tab.store.loadedConversationID ?? tabConversations[id] ?? "tab:\(id)", tab: tab)
         }
-        pane.select(id)
-        focus(pane.id)
-        noteSelected(pane.selected)
+        show(id)
+        noteSelected(focusedEditor)
     }
 
     /// One-based visible order in the focused group; an absent slot is a no-op.
@@ -1934,24 +1893,21 @@ struct WindowSeed: Codable, Hashable {
                     else { store.start(loadFirstConversation: false, newConversation: target.conversation == nil, opening: target.conversation) }
                 })
             }
-            if let pane = panes[target.paneID] { pane.insert(tab, at: target.index) }
+            if workspace.groups[target.paneID] != nil { insertTab(tab, in: target.paneID, at: target.index) }
             else {
-                let pane = Pane(id: target.paneID, tabs: [tab])
+                // Back where it was unless the workspace was rearranged since;
+                // a rearranged one keeps its new groups.
                 let currentIDs = Set(layout.paneIDs)
-                let originalRemaining = target.layout.paneIDs.filter { !currentIDs.contains($0) }
+                let original = target.layout.paneIDs.filter { !currentIDs.contains($0) && $0 != target.paneID }
                     .reduce(target.layout) { $0.removing($1) ?? $0 }
-                if originalRemaining == layout {
-                    layout = target.layout.paneIDs.filter { !currentIDs.contains($0) && $0 != pane.id }
-                        .reduce(target.layout) { $0.removing($1) ?? $0 }
-                } else {
-                    // A subsequently rearranged workspace keeps its new groups.
-                    layout = layout.inserting(pane.id, beside: focusedPaneID, edge: .trailing)
+                editors[tab.id] = tab
+                show(tab.id) { layout in
+                    if !layout.restoreGroup(target.paneID, with: tab.id, grid: original) {
+                        layout.addGroup(target.paneID, with: tab.id, edge: .trailing)
+                    }
                 }
-                panes[pane.id] = pane
-                follow(pane)
             }
             selectTab(tab.id)
-            tabsRevision &+= 1
             return
         }
     }
@@ -1972,13 +1928,15 @@ struct WindowSeed: Codable, Hashable {
 
     /// Close a pane with all its tabs.
     func closePane(_ id: UUID) {
-        guard isSplit, let pane = panes[id] else { return }
-        for tab in pane.tabs {
-            closeSideChats(from: tab.id)
+        guard isSplit, let group = workspace.groups[id] else { return }
+        for tab in group.tabs { closeSideChats(from: tab) }
+        // Side chats closing may have changed the group, or closed it.
+        guard isSplit, let closing = workspace.groups[id]?.tabs.compactMap({ editors[$0] }) else { return }
+        removePane(id)
+        for tab in closing {
             forgetTab(tab.id)
             tab.close()
         }
-        removePane(id)
     }
 
     /// What becomes of a window whose last tab is taken out.
@@ -2002,22 +1960,23 @@ struct WindowSeed: Codable, Hashable {
     /// its last tab; the window's last tab is kept, leaves a new conversation or closes the window.
     private func detach(_ id: UUID, emptying: Emptying) -> EditorTab? {
         if let sheet = artifactSheet, sheet.id == id { artifactSheet = nil; return sheet }
-        guard let pane = pane(holding: id), let tab = pane.tabs.first(where: { $0.id == id }) else { return nil }
+        guard let group = workspace.group(holding: id), let tab = editors[id] else { return nil }
         if let tab = tab as? ConversationTab, !tab.store.isSideChat, let conversationID = tab.store.loadedConversationID {
             tab.composer = drafts(for: tab.store.device).model(for: .conversation(conversationID), tab: tab)
         }
-        if pane.remove(id) {
-            if pane.id == focusedPaneID { noteSelected(pane.selected) }
+        if workspace.groups[group]!.tabs.count > 1 {
+            take(id)
+            if group == focusedPaneID { noteSelected(focusedEditor) }
         } else if isSplit {
-            removePane(pane.id)
+            removePane(group)
         } else {
             switch emptying {
             case .keep: return nil
             case .close where (tab as? ConversationTab)?.isBlank != true,
                  .leave where hasToolWindows:
-                pane.insert(makeTab(opening: nil))
-                pane.remove(id)
-                noteSelected(pane.selected)
+                insertTab(makeTab(opening: nil), in: group)
+                take(id)
+                noteSelected(focusedEditor)
             case .close, .leave: window?.close()
             }
         }
@@ -2032,19 +1991,13 @@ struct WindowSeed: Codable, Hashable {
     }
 
     private func removePane(_ id: UUID) {
-        guard let remaining = layout.removing(id) else { return }
+        guard isSplit, workspace.groups[id] != nil else { return }
         let previous = composer(for: focused)
         let previousOwner = composerOwner(for: focused)
-        let order = layout.paneIDs
-        layout = remaining
-        panes[id] = nil
-        paneSubscriptions[id] = nil
-        anchors[id] = nil
-        if focusedPaneID == id, let index = order.firstIndex(of: id) {
-            // Focus moves to the pane before it, or the next when it was first.
-            let neighbours = order.filter { $0 != id }
-            focus(neighbours[max(0, min(index - 1, neighbours.count - 1))])
-        }
+        let before = focusedPaneID
+        // Focus moves to the group before it, or the next when it was first.
+        changeLayout { $0.closeGroup(id) }
+        if before == id { noteSelected(focusedEditor) }
         if !tools.panesHaveComposer, let previousOwner, let owner = composerOwner(for: focused), previousOwner != owner {
             drafts(for: focused.store.device).move(previous, to: owner, tab: focused)
         }
@@ -2055,11 +2008,8 @@ struct WindowSeed: Codable, Hashable {
         defer { preservingComposerLayout = false }
         let previous = composer(for: focused)
         let previousOwner = composerOwner(for: focused)
-        let pane = Pane(tabs: [tab])
-        panes[pane.id] = pane
-        layout = layout.inserting(pane.id, beside: target, edge: edge)
-        follow(pane)
-        focusedPaneID = pane.id
+        editors[tab.id] = tab
+        changeLayout { $0.addGroup(with: tab.id, beside: target, edge: edge) }
         tab.activate()
         noteSelected(tab)
         let inputTarget = (tab as? ConversationTab) ?? focused
@@ -2075,7 +2025,7 @@ struct WindowSeed: Codable, Hashable {
     /// from wherever it is, this window or another; a conversation a tab of
     /// this window shows moves that tab; any other opens in a new tab.
     func drop(_ link: URL, on target: UUID, zone: PaneDropZone, at index: Int? = nil, from sourceWindow: ConversationWindowModel? = nil) {
-        guard let targetPane = panes[target] else { return }
+        guard workspace.groups[target] != nil else { return }
         ListDragWatch.shared.accepted()
         if let sourceWindow, !acceptsEditor(from: sourceWindow) { return }
         let tabID = TabDragSource.shared.tab(dropping: link)
@@ -2083,21 +2033,26 @@ struct WindowSeed: Codable, Hashable {
         // A tab closed since its drag began leaves its conversation to open anew.
         guard let tabID, let source = Self.owning(tab: tabID) else {
             guard let conversationID = ConversationLink.conversation(in: link)?.conversationID else { return }
-            if let (pane, existing) = tab(showing: conversationID) { pane.select(existing.id); focus(pane.id); return }
+            if let (_, existing) = tab(showing: conversationID) {
+                let before = focusedPaneID
+                show(existing.id)
+                return noteFocus(from: before)
+            }
             let tab = makeTab(device: aggregated.device(of: conversationID)?.store, opening: conversationID)
             switch zone {
-            case .center: targetPane.insert(tab, at: index); focus(target); noteSelected(tab)
+            case .center: insertTab(tab, in: target, at: index); noteSelected(tab)
             case .edge(let edge): addPane(with: tab, beside: target, edge: edge)
             }
             return
         }
         guard acceptsEditor(from: source) else { return }
-        let sourcePane = source.pane(holding: tabID)
+        let sourceGroup = source === self ? workspace.group(holding: tabID) : nil
         switch zone {
-        case .center where sourcePane === targetPane:
-            targetPane.move(tabID, to: index ?? targetPane.tabs.count)
-            focus(target)
-        case .edge where sourcePane === targetPane && targetPane.tabs.count == 1:
+        case .center where sourceGroup == target:
+            let before = focusedPaneID
+            show(tabID) { $0.move(tabID, to: target, at: index) }
+            noteFocus(from: before)
+        case .edge where sourceGroup == target && workspace.groups[target]!.tabs.count == 1:
             // A pane's only tab beside its own pane has nowhere new to go.
             break
         default:
@@ -2105,9 +2060,12 @@ struct WindowSeed: Codable, Hashable {
             if source !== self { source.releaseComposerForHandoff(tab) }
             adopt(tab)
             switch zone {
-            case .center: targetPane.insert(tab, at: index); focus(target); noteSelected(tab)
+            case .center:
+                // The source group may have been this one's last neighbour and closed with the tab.
+                guard workspace.groups[target] != nil else { return insertTab(tab) }
+                insertTab(tab, in: target, at: index); noteSelected(tab)
             case .edge(let edge):
-                guard panes[target] != nil else { return }
+                guard workspace.groups[target] != nil else { return }
                 addPane(with: tab, beside: target, edge: edge)
             }
         }
@@ -2115,9 +2073,10 @@ struct WindowSeed: Codable, Hashable {
 
     /// Move a tab to `place` among its pane's tabs, counted as they will be.
     func moveTab(_ id: UUID, toPlace place: Int) {
-        guard let pane = pane(holding: id), let from = pane.tabs.firstIndex(where: { $0.id == id }) else { return }
-        pane.move(id, to: place > from ? place + 1 : place)
-        focus(pane.id)
+        guard workspace.contains(tab: id) else { return }
+        let before = focusedPaneID
+        show(id) { $0.moveTab(id, toPlace: place) }
+        noteFocus(from: before)
     }
 
     /// Move a tab into a new pane beside the pane it is in.
@@ -2222,9 +2181,9 @@ struct WindowSeed: Codable, Hashable {
     var window: NSWindow? { anchors.values.lazy.compactMap { $0()?.window }.first }
 
     func focus(_ id: UUID) {
-        guard let pane = panes[id], focusedPaneID != id else { return }
-        focusedPaneID = id
-        noteSelected(pane.selected)
+        guard workspace.groups[id] != nil, focusedPaneID != id else { return }
+        changeLayout { $0.focus(id) }
+        noteSelected(focusedEditor)
     }
 
     /// Focus the pane after (or before) the focused one, in layout order.
@@ -2250,20 +2209,11 @@ struct WindowSeed: Codable, Hashable {
     }
 
     func resize(at path: [Int], fractions: [Double]) {
-        layout = layout.resizing(at: path, fractions: fractions)
+        changeLayout { $0.resize(at: path, fractions: fractions) }
     }
 
     func register(_ pane: UUID, anchor: @escaping () -> NSView?) { anchors[pane] = anchor }
     func view(of pane: UUID) -> NSView? { anchors[pane]?() }
-
-    private func follow(_ pane: Pane) {
-        pane.tabs.forEach(follow)
-        paneSubscriptions[pane.id] = pane.$tabs.combineLatest(pane.$selectedID).dropFirst().sink { [weak self] tabs, _ in
-            guard let self else { return }
-            tabs.filter { self.subscriptions[$0.id] == nil }.forEach(self.follow)
-            self.tabsRevision &+= 1
-        }
-    }
 
     private func follow(_ editor: EditorTab) {
         guard let tab = editor as? ConversationTab, !tab.store.isSideChat else { return }
@@ -2322,20 +2272,13 @@ struct WindowSeed: Codable, Hashable {
     func find() {
         let listHasFocus = findAreas[.list]?()?.window === NSApp.keyWindow && focusIsIn(findAreas[.list])
         if listHasFocus || (!commandTab.store.isSideChat && clickedFindArea == .list) {
-            if listIsBlock { listSearchPopover = true } else { listSearchRequest &+= 1 }
+            listSearchRequest &+= 1
         } else { commandTab.beginFind() }
     }
 
     @Published private(set) var listSearchRequest = 0
     /// The list's grouping, filtering and sorting.
     @Published var listBrowser = ConversationBrowser()
-    /// The search popover of the list's title bar.
-    @Published var listSearchPopover = false
-    /// The list shares its area with other tools, so it is a block with a title bar.
-    var listIsBlock: Bool {
-        guard let side = tools[.list].place.side else { return false }
-        return tools.tools(in: side).count > 1
-    }
     private var findAreas: [ToolWindowKind: () -> NSView?] = [:]
     /// The tool window last clicked in, if the last click was in one: clicking a
     /// conversation in the list moves the focus on to the composer, but the

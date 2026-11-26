@@ -28,7 +28,7 @@ import VeluneBindings
     var lifecycleHost: NSHostingView<AnyView>?
     ConversationStore.checkInteractionDraftLifetime { workspace, phase in
         if lifecycleHost == nil {
-            let content = PaneLayoutView(window: workspace, layout: workspace.layout, path: [], previewEmpty: false).applicationAppearance().background(Color(nsColor: .windowBackgroundColor))
+            let content = PaneGrid(window: workspace, previewEmpty: false).applicationAppearance().background(Color(nsColor: .windowBackgroundColor))
             let host = NSHostingView(rootView: AnyView(content))
             let native = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 800, height: 620), styleMask: [.borderless], backing: .buffered, defer: false)
             native.contentView = host
@@ -81,7 +81,7 @@ import VeluneBindings
                 workspace.openInNewTab("sample-1")
                 workspace.selectTab(tab.id)
             }
-            let host = NSHostingView(rootView: PaneLayoutView(window: workspace, layout: workspace.layout, path: [], previewEmpty: false).applicationAppearance().background(Color(nsColor: .windowBackgroundColor)))
+            let host = NSHostingView(rootView: PaneGrid(window: workspace, previewEmpty: false).applicationAppearance().background(Color(nsColor: .windowBackgroundColor)))
             let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: width, height: height), styleMask: visible ? [.titled, .closable, .resizable] : [.borderless], backing: .buffered, defer: false)
             window.title = "Velune 提问视觉验收（合成数据）"
             window.contentView = host

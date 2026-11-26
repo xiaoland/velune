@@ -2,28 +2,12 @@ import SwiftUI
 import AppKit
 import VeluneBindings
 
-/// The conversation window's toolbar. Sidebar and detail contribute their
-/// own items; native customization is saved under this name on macOS 26.
-enum ConversationToolbar {
-    static let id = "conversation"
-
-    enum Item: String {
-        case listFilter = "list-filter"
-        case newConversation = "new-conversation"
-        case back, forward, device
-
-        var identifier: NSToolbarItem.Identifier { .init(rawValue) }
-        static let sidebar: Set<NSToolbarItem.Identifier> = [listFilter.identifier, newConversation.identifier]
-        static let detailNavigation: Set<NSToolbarItem.Identifier> = [back.identifier, forward.identifier, device.identifier]
-    }
-}
-
-/// A conversation window: the panes, with dock areas for tool windows at
-/// the left, right and bottom. The list has its own workspace and opens
-/// conversations in the focused pane, which the toolbar and commands act on.
+/// A conversation window's editor column: the panes and the bottom dock
+/// area, with the window's sheets, alerts and command palette. The sidebar,
+/// the inspector and the toolbar are the window's AppKit shell around it
+/// (`WorkspaceShell`).
 struct VeluneRootView: View {
     @ObservedObject var window: ConversationWindowModel
-    @ObservedObject private var aggregated: AggregatedListModel
     /// The list's workspace.
     @ObservedObject var store: ConversationStore
     /// The focused pane's shown tab.
@@ -32,49 +16,13 @@ struct VeluneRootView: View {
     @ObservedObject var focused: ConversationStore
     let previewEmpty: Bool
     let previewSettings: Bool
-    @ObservedObject private var shortcuts = KeyboardShortcutSettings.shared
     @Environment(\.openSettings) private var openSettings
     @Environment(\.openWindow) private var openWindow
     @Environment(\.controlActiveState) private var activeState
-    @ObservedObject private var toolbarSettings = ToolbarSettings.shared
-    @State private var showsChanges = false
-    /// Change review is implemented but not yet part of the product
-    /// (2026-10-11 decision); this keeps its entry closed.
-    private static let changeReviewEnabled = false
-
-    init(window: ConversationWindowModel, store: ConversationStore, tab: ConversationTab, focused: ConversationStore,
-         previewEmpty: Bool, previewSettings: Bool) {
-        self.window = window
-        self.aggregated = window.aggregated
-        self.store = store
-        self.tab = tab
-        self.focused = focused
-        self.previewEmpty = previewEmpty
-        self.previewSettings = previewSettings
-    }
 
     var body: some View {
-        NavigationSplitView(columnVisibility: Binding(get: { window.tools.tools(in: .left).isEmpty ? .detailOnly : .all },
-                                                      set: { $0 == .detailOnly ? window.tools.collapse(.left) : window.tools.showArea(.left) })) {
-            DockAreaView(window: window, side: .left)
-                .background(ConversationToolbarPartition(hasList: window.tools.tools(in: .left).contains(.list)))
-                .navigationSplitViewColumnWidth(min: window.tools.tools(in: .left) == [.list] ? 220 : 190, ideal: 240, max: 600)
-                .modifier(ConversationListSidebarToolbar(window: window))
-        } detail: {
-            withToolbar(panes)
-                .inspector(isPresented: Binding(get: { showsChanges || !window.tools.tools(in: .right).isEmpty },
-                                                set: { shown in
-                                                    if shown { window.tools.showArea(.right) }
-                                                    else if showsChanges { showsChanges = false }
-                                                    else { window.tools.collapse(.right) }
-                                                })) {
-                    if showsChanges { ChangeReviewView(store: focused).inspectorColumnWidth(min: 300, ideal: 440, max: 900) }
-                    else { DockAreaView(window: window, side: .right).inspectorColumnWidth(min: 200, ideal: 260, max: 720) }
-                }
-        }
-        .navigationSplitViewStyle(.balanced)
+        EditorColumn(window: window, previewEmpty: previewEmpty)
         .background(WindowLevelSetter(pinned: window.pinned))
-        .overlay { if let side = window.dockHint { DockZoneHighlight(side: side) } }
         .overlay(alignment: .top) {
             if let mode = window.palette {
                 ZStack(alignment: .top) {
@@ -119,248 +67,15 @@ struct VeluneRootView: View {
             ComposerSheet(window: window, tab: sheet, store: sheet.store)
         }
         .onChange(of: store.device.outlinePresentation) { _, _ in window.outlinePopover = false }
-        .focusedSceneValue(\.conversationCommands, ConversationCommandTarget(window: window))
         .task { if previewSettings { openSettings() } }
     }
-
-    private var panes: some View {
-        GeometryReader { geometry in
-            VStack(spacing: 0) {
-                PaneLayoutView(window: window, layout: window.layout, path: [], previewEmpty: previewEmpty)
-                if !window.tools.tools(in: .bottom).isEmpty { BottomAreaView(window: window, available: geometry.size.height) }
-            }
-        }
-        // The window keeps the title for the Window menu and Mission Control; the tab bar shows it.
-        .navigationTitle([previewEmpty ? "新会话" : window.focusedEditor.title, deviceName].compactMap { $0 }.joined(separator: " — "))
-        .toolbar(removing: .title)
-    }
-
-    /// Customizable, so the toolbar's own menu offers display modes and
-    /// Customize Toolbar…, from macOS 26. Before it the trailing buttons
-    /// need a `Spacer()` item, and in a customizable toolbar SwiftUI removes
-    /// and inserts that flexible space again, saving the arrangement to user
-    /// defaults, on every layout of the window: each step of scrolling the
-    /// conversation list took about 50 ms instead of 2 ms on macOS 15. So
-    /// there the toolbar is a plain one whose buttons the settings hide and
-    /// reorder (`ToolbarSettings`).
-    @ViewBuilder private func withToolbar(_ content: some View) -> some View {
-        if #available(macOS 26, *) {
-            content.toolbar(id: ConversationToolbar.id) { customizableToolbarItems }
-        } else {
-            content.toolbar { toolbarItems }
-        }
-    }
-
-    @available(macOS 26, *)
-    @ToolbarContentBuilder private var customizableToolbarItems: some CustomizableToolbarContent {
-        Group {
-            ToolbarItem(id: ConversationToolbar.Item.back.rawValue, placement: .navigation) { backButton }
-            ToolbarItem(id: ConversationToolbar.Item.forward.rawValue, placement: .navigation) { forwardButton }
-            if let deviceName { ToolbarItem(id: ConversationToolbar.Item.device.rawValue, placement: .navigation) { deviceLabel(deviceName) } }
-        }
-        // Without the title nothing holds the buttons to the trailing end.
-        if !aggregated.conversationManagement.isEmpty { ToolbarItem(id: "operations") { ConversationOperationStatus(aggregated: aggregated) } }
-        ToolbarSpacer(.flexible)
-        ToolbarItem(id: "reload") { reloadButton }
-        Group {
-            ToolbarItem(id: "outline") { outlineButton }
-            if showsAgentsItem { ToolbarItem(id: "sub-agents") { agentsButton } }
-            if showsBackgroundTasksItem { ToolbarItem(id: "background-tasks") { backgroundTasksButton } }
-        }
-        if showsPinItem { ToolbarItem(id: "pin") { pinToggle } }
-        ToolbarItem(id: "split") { splitButton }
-        if Self.changeReviewEnabled { ToolbarItem(id: "changes") { changesToggle } }
-        if !store.device.problems.isEmpty { ToolbarItem(id: "problems") { ProblemsButton(store: store.device) } }
-    }
-
-    @ToolbarContentBuilder private var toolbarItems: some ToolbarContent {
-        ToolbarItem(id: ConversationToolbar.Item.back.rawValue, placement: .navigation) { backButton }
-        ToolbarItem(id: ConversationToolbar.Item.forward.rawValue, placement: .navigation) { forwardButton }
-        if let deviceName { ToolbarItem(id: ConversationToolbar.Item.device.rawValue, placement: .navigation) { deviceLabel(deviceName) } }
-        if !aggregated.conversationManagement.isEmpty { ToolbarItem { ConversationOperationStatus(aggregated: aggregated) } }
-        ToolbarItem { Spacer() }
-        ToolbarItemGroup {
-            ForEach(toolbarSettings.shown(in: .detail)) { button in
-                switch button {
-                case .reload: reloadButton
-                case .outline: outlineButton
-                case .subAgents: if showsAgentsItem { agentsButton }
-                case .backgroundTasks: if showsBackgroundTasksItem { backgroundTasksButton }
-                case .pin: if showsPinItem { pinToggle }
-                case .split: splitButton
-                case .problems: if !store.device.problems.isEmpty { ProblemsButton(store: store.device) }
-                case .listFilter, .newConversation: EmptyView()
-                }
-            }
-            if Self.changeReviewEnabled { changesToggle }
-        }
-    }
-
-    /// The paired device a window shows, which every conversation in it runs on.
-    private var deviceName: String? {
-        window.device.map { DeviceHub.shared?.name(of: $0) ?? "远程设备" }
-    }
-
-    private func deviceLabel(_ name: String) -> some View {
-        Label(name, systemImage: "desktopcomputer").labelStyle(.titleAndIcon).foregroundStyle(.secondary)
-            .help("此窗口中的会话运行在“\(name)”上")
-    }
-
-    /// Lets the window tell a right click on this tool's button (see `showsToolbarPlaceMenu`).
-    private func toolbarButtonAnchor(_ kind: ToolWindowKind) -> some View {
-        PaneAnchor { [window] in window.registerToolbarButton(kind, anchor: $0) }
-    }
-
-    private var showsAgentsItem: Bool { window.hasConversationFocus && (window.tools[.agents].place != .builtIn || focused.hasLinkedAgents) }
-    private var showsBackgroundTasksItem: Bool { window.hasConversationFocus && (window.tools[.backgroundTasks].place != .builtIn || focused.canShowBackgroundTasks) }
 
     private func closeToolPopovers() {
         window.outlinePopover = false; window.agentsPopover = false; window.backgroundTasksPopover = false
     }
-    /// A window of the editor area alone is often one to keep in view.
-    private var showsPinItem: Bool { !window.hasToolWindows || window.pinned }
-
-    private var backButton: some View {
-        Button { tab.goBack() } label: { Label("后退", systemImage: "chevron.backward") }
-            .help(shortcuts.help("回到之前查看的会话", .back)).disabled(!window.hasConversationFocus || focused.backHistory.isEmpty)
-            .accessibilityIdentifier("conversation-back")
-    }
-
-    private var forwardButton: some View {
-        Button { tab.goForward() } label: { Label("前进", systemImage: "chevron.forward") }
-            .help(shortcuts.help("前往后退前的会话", .forward)).disabled(!window.hasConversationFocus || focused.forwardHistory.isEmpty)
-            .accessibilityIdentifier("conversation-forward")
-    }
-
-    private var reloadButton: some View {
-        Button { focused.reloadFromRuntimes() } label: { Label("刷新当前会话", systemImage: "arrow.clockwise") }
-            .keyboardShortcut(shortcuts[.reload]).disabled(!focused.canReloadFromRuntimes)
-            .help(shortcuts.help("重新读取会话、控制状态和输入执行配置；右键可刷新设备状态", .reload))
-            .background(PaneAnchor { [window] in window.registerRefreshToolbarButton(anchor: $0) })
-    }
-
-    private var pinToggle: some View {
-        Toggle(isOn: $window.pinned) { Label("保持在最前面", systemImage: window.pinned ? "pin.fill" : "pin") }
-            .help(window.pinned ? "不再保持在其他应用的窗口前面" : "保持在其他应用的窗口前面")
-    }
-
-    private var splitButton: some View {
-        // As in Xcode: Option-click divides downward.
-        Button { window.split(NSEvent.modifierFlags.contains(.option) ? .vertical : .horizontal) } label: { Label("拆分", systemImage: "rectangle.split.2x1") }
-            .help(shortcuts.help("在右侧拆分出新面板", .splitRight) + "；" + shortcuts.help("按住 Option 点按则向下拆分", .splitDown))
-    }
-
-    private var changesToggle: some View {
-        Toggle(isOn: $showsChanges) { Label("变更", systemImage: "plusminus") }
-            .help("工作目录的 git 变更").keyboardShortcut("d", modifiers: [.command, .option])
-            .disabled(focused.loadedConversationWorkingDirectory == nil && !showsChanges)
-    }
-
-    /// The outline as a tool window is shown and hidden by the button.
-    /// In its own place the setting decides: a popover anchored to the
-    /// button, or a toggle that collapses the focused pane's message list in place.
-    @ViewBuilder private var outlineButton: some View {
-        let unavailable = !window.hasConversationFocus || focused.pendingConversationID != nil || focused.transcript.userRows.isEmpty
-        if window.tools[.outline].place != .builtIn {
-            Toggle(isOn: Binding(get: { window.tools.isOpen(.outline) }, set: { _ in window.toggle(.outline) })) { Label("会话大纲", systemImage: "list.bullet") }
-                .help(shortcuts.help(window.tools.isOpen(.outline) ? "隐藏会话大纲" : "显示会话大纲", .showOutline))
-                .background(toolbarButtonAnchor(.outline))
-        } else {
-            settingOutlineButton(unavailable: unavailable)
-        }
-    }
-
-    /// The linked agents as a tool window are shown and hidden by the
-    /// button; in their own place they pop over from it, offered only when
-    /// the focused conversation has any.
-    @ViewBuilder private var agentsButton: some View {
-        let running = LinkedAgent.all(of: focused).contains { focused.device.isConversationRunning($0.id) }
-        if window.tools[.agents].place != .builtIn {
-            Toggle(isOn: Binding(get: { window.tools.isOpen(.agents) }, set: { _ in window.toggle(.agents) })) { Label("关联 Agent", systemImage: "person.2") }
-                .help(shortcuts.help(window.tools.isOpen(.agents) ? "隐藏关联 Agent" : "显示关联 Agent", .showAgents))
-                .background(toolbarButtonAnchor(.agents))
-        } else {
-            Button { window.agentsPopover.toggle() } label: { Label("关联 Agent", systemImage: running ? "person.2.fill" : "person.2") }
-                .help(shortcuts.help(LinkedAgent.summary(of: focused), .showAgents))
-                .background(toolbarButtonAnchor(.agents))
-                .popover(isPresented: $window.agentsPopover, arrowEdge: .bottom) {
-                    LinkedAgentsView(store: focused, layout: window) { id, opening in
-                        window.agentsPopover = false
-                        window.openLinked(id, from: tab, opening: opening)
-                    }
-                }
-        }
-    }
-
-    @ViewBuilder private var backgroundTasksButton: some View {
-        if window.tools[.backgroundTasks].place != .builtIn {
-            Toggle(isOn: Binding(get: { window.tools.isOpen(.backgroundTasks) }, set: { _ in window.toggle(.backgroundTasks) })) {
-                Label("后台任务", systemImage: "terminal")
-            }
-            .help(shortcuts.help(window.tools.isOpen(.backgroundTasks) ? "隐藏后台任务" : "显示后台任务", .showBackgroundTasks))
-            .background(toolbarButtonAnchor(.backgroundTasks))
-        } else {
-            Button { window.backgroundTasksPopover.toggle() } label: { Label("后台任务", systemImage: "terminal") }
-                .help(shortcuts.help("查看后台任务", .showBackgroundTasks))
-                .background(toolbarButtonAnchor(.backgroundTasks))
-                .popover(isPresented: $window.backgroundTasksPopover, arrowEdge: .bottom) {
-                    BackgroundTasksView(store: focused, layout: window) { id, opening in
-                        window.backgroundTasksPopover = false
-                        window.openLinked(id, from: tab, opening: opening)
-                    }
-                }
-        }
-    }
-
-    @ViewBuilder private func settingOutlineButton(unavailable: Bool) -> some View {
-        switch store.device.outlinePresentation {
-        case .popover:
-            Button { window.outlinePopover.toggle() } label: { Label("会话大纲", systemImage: "list.bullet") }
-                .help(shortcuts.help("会话大纲", .showOutline)).disabled(unavailable)
-                .background(toolbarButtonAnchor(.outline))
-                .popover(isPresented: Binding(get: { window.outlinePopover && !unavailable }, set: { window.outlinePopover = $0 }), arrowEdge: .bottom) {
-                    TranscriptOutlineView(model: focused.transcript, layout: window, editMessage: { [focused, tab] id in
-                        focused.editability(of: id) == nil ? nil : { window.outlinePopover = false; tab.edit(messageID: id) }
-                    }, deleteMessage: { [focused] id in
-                        focused.canDeleteMessage(id) ? { window.outlinePopover = false; focused.confirmDeleteMessage(id) } : nil
-                    }, isRunning: focused.loadedConversationID.map(focused.device.isConversationRunning) ?? false,
-                    goToBottom: { [tab] in window.outlinePopover = false; tab.scrollRequest &+= 1 }) { id in
-                        window.outlinePopover = false
-                        tab.navigate(to: id)
-                    }
-                }
-        case .inPlace:
-            Toggle(isOn: $tab.outlineCollapsed) { Label("会话大纲", systemImage: "list.bullet") }
-                .help(shortcuts.help(tab.outlineCollapsed ? "展开完整会话" : "折叠为用户消息大纲", .showOutline))
-                .background(toolbarButtonAnchor(.outline))
-                .disabled(unavailable && !tab.outlineCollapsed)
-        }
-    }
 }
 
-/// Where a dragged panel would dock: the sidebar, the inspector, or the strip below the panes.
-private struct DockZoneHighlight: View {
-    let side: DockSide
-
-    var body: some View {
-        GeometryReader { geometry in
-            let size = geometry.size
-            let rect: CGRect = switch side {
-            case .left: CGRect(x: 0, y: 0, width: min(260, size.width / 3), height: size.height)
-            case .right: CGRect(x: size.width - min(280, size.width / 3), y: 0, width: min(280, size.width / 3), height: size.height)
-            case .bottom: CGRect(x: 0, y: size.height - 180, width: size.width, height: 180)
-            }
-            RoundedRectangle(cornerRadius: 8)
-                .fill(Color.accentColor.opacity(0.12))
-                .strokeBorder(Color.accentColor.opacity(0.6), lineWidth: 2)
-                .frame(width: max(0, rect.width - 12), height: max(0, rect.height - 12))
-                .position(x: rect.midX, y: rect.midY)
-        }
-        .ignoresSafeArea()
-        .allowsHitTesting(false)
-    }
-}
-
+/// Renames a conversation.
 struct ConversationRenameView: View {
     @ObservedObject var store: ConversationStore
     let conversation: Conversation

@@ -93,6 +93,8 @@
 - <a id="s75"></a>[S75 · 列表／Tab 关系与恢复](sources/workspace-keyboard.md#s75)
 - <a id="s76"></a>[S76 · 重新打开关闭的 Tab](sources/workspace-keyboard.md#s76)
 - <a id="s92"></a>[S92 · Mac 工作区原生外壳](sources/workspace-keyboard.md#s92)
+- <a id="s93"></a>[S93 · 边栏与停靠区收敛](sources/workspace-keyboard.md#s93)
+- <a id="s94"></a>[S94 · 在新窗口中新建会话](sources/workspace-keyboard.md#s94)
 
 ## 远程控制与平台选择
 

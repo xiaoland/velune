@@ -31,7 +31,7 @@ import VeluneBindings
             let after = model.textView.map { host.convert($0.bounds, from: $0) }
             if let before, let after { precondition(abs(before.height - after.height) < 1 && abs(before.minY - after.minY) < 1, "Composer focus moved layout: \(state)") }
             observations.append("\(state) \(Int(width)): focus frame stable; viewport \(Int(model.textView?.enclosingScrollView?.frame.height ?? 0))pt")
-            let pane = NSHostingView(rootView: PaneLayoutView(window: workspace, layout: workspace.layout, path: [], previewEmpty: false).applicationAppearance().background(Color(nsColor: .windowBackgroundColor)))
+            let pane = NSHostingView(rootView: PaneGrid(window: workspace, previewEmpty: false).applicationAppearance().background(Color(nsColor: .windowBackgroundColor)))
             let paneWindow = NSWindow(contentRect: .init(x: 0, y: 0, width: width, height: 700), styleMask: [.borderless], backing: .buffered, defer: false)
             paneWindow.contentView = pane
             pane.layoutSubtreeIfNeeded(); RunLoop.main.run(until: Date().addingTimeInterval(0.15)); pane.layoutSubtreeIfNeeded()
@@ -40,7 +40,7 @@ import VeluneBindings
                 try! bitmap.representation(using: .png, properties: [:])!.write(to: directory.appendingPathComponent("\(state)-\(Int(width))-pane.png"))
             }
             @MainActor func hasCompleteTooltip(_ view: NSView) -> Bool {
-                if let handle = view as? TabHandle.HandleView, handle.toolTip == snapshot.conversation.title { return true }
+                if let handle = view as? TabItemView, handle.toolTip == snapshot.conversation.title { return true }
                 return view.subviews.contains(where: hasCompleteTooltip)
             }
             precondition(hasCompleteTooltip(pane), "Truncated tab must retain complete native tooltip")

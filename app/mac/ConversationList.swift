@@ -12,13 +12,12 @@ struct AggregatedRowID: Hashable {
     }
 }
 
-/// A window's conversation list, in the sidebar or in a floating panel with
-/// its own search field. The list aggregates every device the window shows:
+/// A window's conversation list, the same wherever it is: its search field,
+/// filter and new conversation are its own, never the window toolbar's. The list aggregates every device the window shows:
 /// each section belongs to one device, and opening a row targets that
 /// device. A conversation selected alone opens in the window's focused pane;
 /// several are a selection to manage.
 struct ConversationListView: View {
-    enum Placement { case sidebar, panel }
     @ObservedObject var window: ConversationWindowModel
     /// The list's workspace on this Mac (problems, local loading state).
     @ObservedObject var store: ConversationStore
@@ -26,10 +25,6 @@ struct ConversationListView: View {
     @ObservedObject var focused: ConversationStore
     /// The aggregated list: devices, merged groups, the merged view's choices.
     @ObservedObject private var aggregated: AggregatedListModel
-    let placement: Placement
-    /// Sharing its area with other tools, the search is a button over a popover.
-    var compact = false
-    @FocusState private var searchFocused: Bool
     @State private var searchFocusRequest = 0
     @Environment(\.controlActiveState) private var activeState
     /// The window's, so the title bar's filter menu and the list share it.
@@ -71,51 +66,33 @@ struct ConversationListView: View {
     }
     @State private var selection: Set<AggregatedRowID> = []
 
-    init(window: ConversationWindowModel, store: ConversationStore, focused: ConversationStore, placement: Placement, compact: Bool = false) {
+    init(window: ConversationWindowModel, store: ConversationStore, focused: ConversationStore) {
         self.window = window
         self.store = store
         self.focused = focused
         self.aggregated = window.aggregated
-        self.placement = placement
-        self.compact = compact
     }
 
     var body: some View {
-        Group {
-            switch placement {
-            case .sidebar:
-                list
-                    .searchable(text: $window.listSearch, placement: .sidebar, prompt: "搜索会话")
-                    .searchFocused($searchFocused)
-                    .navigationTitle("会话")
-            case .panel:
-                VStack(spacing: 0) {
-                    // A block has its search, filter and new conversation in its title bar.
-                    if !compact {
-                        HStack(spacing: 8) {
-                            SearchField(text: $window.listSearch, prompt: "搜索会话", focusRequest: searchFocusRequest)
-                            ConversationFilterMenu(window: window, store: store).menuStyle(.borderlessButton).fixedSize()
-                            NewConversationButton(window: window).buttonStyle(.borderless)
-                        }
-                        .labelStyle(.iconOnly)
-                        .padding(.horizontal, 10).padding(.vertical, 8)
-                        Divider()
-                    }
-                    list
-                }
+        VStack(spacing: 0) {
+            HStack(spacing: 6) {
+                SearchField(text: $window.listSearch, prompt: "搜索会话", focusRequest: searchFocusRequest)
+                    .frame(maxWidth: .infinity)
+                ConversationFilterMenu(window: window, store: store).menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+                    .background(PaneAnchor { anchor in anchor()?.identifier = NSUserInterfaceItemIdentifier("conversation-list-filter") })
+                NewConversationButton(window: window).buttonStyle(.borderless)
+                    .background(PaneAnchor { anchor in anchor()?.identifier = NSUserInterfaceItemIdentifier("conversation-list-new") })
             }
+            .labelStyle(.iconOnly)
+            .padding(.horizontal, 10).padding(.top, 6).padding(.bottom, 4)
+            list
         }
         .background(PaneAnchor { [window] in window.registerFindArea(.list, anchor: $0) })
         .onAppear { window.listKeyHandler = listKey; synchronizeFocusedSelection() }
         .onDisappear { cancelPendingOpen() }
         .onChange(of: focused.selectedConversationID) { _, _ in synchronizeFocusedSelection() }
         .onChange(of: ObjectIdentifier(focused)) { _, _ in synchronizeFocusedSelection() }
-        .onChange(of: window.listSearchRequest) { _, _ in
-            switch placement {
-            case .sidebar: searchFocused = true
-            case .panel: if !compact { searchFocusRequest += 1 }
-            }
-        }
+        .onChange(of: window.listSearchRequest) { _, _ in searchFocusRequest += 1 }
         .task(id: window.listSearch) {
             // Searching reads every listed conversation; wait for typing to pause.
             if !window.listSearch.isEmpty { try? await Task.sleep(for: .milliseconds(250)) }
@@ -899,84 +876,5 @@ struct NewConversationButton: View {
         Button { window.createConversation() } label: { Label("新建会话", systemImage: "square.and.pencil") }
             .help(KeyboardShortcutSettings.shared.help("新建会话", .newConversation)).disabled(window.application.enabledRuntimeInstances.isEmpty)
             .accessibilityIdentifier("conversation-new-conversation")
-    }
-}
-
-/// Search over a popover, for the list's title bar. Marked while a search filters the list.
-struct ConversationSearchButton: View {
-    @ObservedObject var window: ConversationWindowModel
-
-    var body: some View {
-        Button { window.listSearchPopover.toggle() } label: { Image(systemName: window.listSearch.isEmpty ? "magnifyingglass" : "magnifyingglass.circle.fill") }
-            .buttonStyle(.borderless).help("搜索会话").accessibilityLabel("搜索会话")
-            .popover(isPresented: $window.listSearchPopover, arrowEdge: .bottom) {
-                SearchField(text: $window.listSearch, prompt: "搜索会话", focusRequest: 1).frame(width: 240).padding(10)
-            }
-    }
-}
-
-/// What the list adds to its title bar when it is a block among other tools:
-/// search and filter, and, where the window's toolbar is not beside it, a new conversation.
-struct ConversationListHeaderActions: View {
-    @ObservedObject var window: ConversationWindowModel
-    let side: DockSide?
-
-    var body: some View {
-        ConversationSearchButton(window: window)
-        ConversationFilterMenu(window: window, store: window.list).menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize().labelStyle(.iconOnly)
-            .background(PaneAnchor { anchor in
-                anchor()?.identifier = NSUserInterfaceItemIdentifier("conversation-list-filter")
-            })
-        // When the list is a block among other tools in the sidebar, it owns the new conversation
-        // button. When it is alone in the sidebar, the button is in the main toolbar.
-        if side != .left || window.listIsBlock { NewConversationButton(window: window).buttonStyle(.borderless).labelStyle(.iconOnly) }
-    }
-}
-
-/// The sidebar column owns its toolbar contributions. Keeping the owner here
-/// preserves the historical split between titlebar actions and list content as
-/// the list changes between a sole sidebar and a titled block in that column.
-struct ConversationListSidebarToolbar: ViewModifier {
-    @ObservedObject var window: ConversationWindowModel
-    @ObservedObject private var toolbarSettings = ToolbarSettings.shared
-
-    private var ownsList: Bool { window.tools.tools(in: .left).contains(.list) }
-
-    private var filterItem: some CustomizableToolbarContent {
-        ToolbarItem(id: ConversationToolbar.Item.listFilter.rawValue) {
-            ConversationFilterMenu(window: window, store: window.list)
-        }
-    }
-
-    private var newConversationItem: some CustomizableToolbarContent {
-        ToolbarItem(id: ConversationToolbar.Item.newConversation.rawValue) { NewConversationButton(window: window) }
-    }
-
-    @ViewBuilder func body(content: Content) -> some View {
-        // Keep the column and its toolbar host identical as tools are hidden,
-        // shared or restored. Only the item collection changes ownership.
-        if #available(macOS 26, *) {
-            content.toolbar(id: ConversationToolbar.id) {
-                if ownsList && !window.listIsBlock {
-                    filterItem
-                    newConversationItem
-                }
-            }
-        } else {
-            let showsFilter = ownsList && !window.listIsBlock && toolbarSettings.isShown(.listFilter)
-            let showsNewConversation = ownsList && !window.listIsBlock && toolbarSettings.isShown(.newConversation)
-            // Keep each item at the same structural position when the
-            // filter moves between the native toolbar and the block header.
-            let newConversationFirst = toolbarSettings.buttons(in: .sidebar).first == .newConversation
-            content.toolbar {
-                if newConversationFirst {
-                    if showsNewConversation { newConversationItem }
-                    if showsFilter { filterItem }
-                } else {
-                    if showsFilter { filterItem }
-                    if showsNewConversation { newConversationItem }
-                }
-            }
-        }
     }
 }

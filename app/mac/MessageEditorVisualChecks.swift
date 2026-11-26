@@ -415,7 +415,7 @@ import ObjectiveC
         for width: CGFloat in matrix ? [480, 800] : [680] {
             let content: AnyView
             if matrix { content = AnyView(MessageEditorView(session: session, window: workspace, source: workspace.focused, floating: floating)) }
-            else { content = AnyView(PaneLayoutView(window: workspace, layout: workspace.layout, path: [], previewEmpty: false)) }
+            else { content = AnyView(PaneGrid(window: workspace, previewEmpty: false)) }
             let host = NSHostingView(rootView: content.applicationAppearance().background(Color(nsColor: .windowBackgroundColor)))
             let window = NSWindow(contentRect: NSRect(x: 160, y: 120, width: matrix ? width : 940, height: matrix ? (floating ? 300 : 500) : 780), styleMask: matrix ? [.borderless] : [.titled, .closable, .resizable], backing: .buffered, defer: false)
             window.isReleasedWhenClosed = false

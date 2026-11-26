@@ -7,18 +7,105 @@ import SwiftUI
     func note(_ text: String) { FileHandle.standardError.write(Data((text + "\n").utf8)) }
     workspaceKeyboardPaneFocusChecks()
     let device = DeviceStore(preview: true)
-    func tab() -> ConversationTab { ConversationTab(store: ConversationStore(device: device), start: {}) }
-    let tabs = [tab(), tab(), tab(), tab()]
-    let pane = Pane(tabs: tabs, selected: tabs[2].id)
-    pane.remove(tabs[2].id)
-    precondition(pane.selectedID == tabs[1].id, "没有激活历史时关闭当前标签应选左邻")
-    pane.select(tabs[3].id)
-    pane.select(tabs[0].id)
-    pane.remove(tabs[0].id)
-    precondition(pane.selectedID == tabs[3].id, "关闭当前标签恢复最近激活者，不按左右位置")
-    pane.remove(tabs[1].id)
-    precondition(pane.selectedID == tabs[3].id, "关闭后台标签不改变当前激活者")
-    note("PASS tab close: per-group activation history, left fallback, background close")
+    // Per-group activation history is checked with the layout model: `swift run velune-workspace-checks`.
+    do {
+        // The grid's panes are native views kept per group: never ordered on screen.
+        let model = ConversationWindowModel(application: device, kind: .workspace)
+        model.start(restoring: nil, seed: WindowSeed(conversationID: "sample-0"))
+        let grid = PaneGridView(window: model, previewEmpty: false)
+        let host = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1200, height: 800), styleMask: [.titled], backing: .buffered, defer: true)
+        host.contentView = grid
+        func apply() { grid.apply(model.layout, groups: Set(model.panes.keys)); grid.layoutSubtreeIfNeeded() }
+        apply()
+        let first = model.focusedPaneID
+        guard let firstView = grid.paneView(first) else { fatalError("缺少第一组的面板视图") }
+        model.split(.horizontal)
+        apply()
+        let second = model.focusedPaneID
+        precondition(grid.paneView(first) === firstView && firstView.window === host, "拆分不重建已有组的面板视图")
+        model.split(.vertical)
+        apply()
+        guard let secondView = grid.paneView(second) else { fatalError("缺少第二组的面板视图") }
+        model.closePane(first)
+        apply()
+        precondition(grid.paneView(second) === secondView && secondView.window === host && grid.paneView(first) == nil && firstView.superview == nil,
+                     "关闭一组只移走它自己的视图")
+        model.resize(at: [], fractions: [3, 1])
+        apply()
+        guard let root = grid.subviews.first as? PaneSplitView, root.subviews.count == 2 else { fatalError("网格根应为两项的分栏") }
+        // The first group closed: the two left are stacked.
+        let heights = root.subviews.map(\.frame.height)
+        precondition(!root.isVertical && abs(heights[0] / (heights[0] + heights[1]) - 0.75) < 0.01, "分栏按布局比例排布：\(heights)")
+        precondition(grid.paneView(second) === secondView, "调整比例不重建面板视图")
+        host.contentView = nil
+        for tab in model.allTabs { tab.close() }
+        model.list.close()
+        note("PASS pane grid: group views survive splits and closes, closed groups leave, shares follow the layout")
+    }
+    do {
+        // Visibility is whether an area is open and which area a tool is in: an open area always shows a tool.
+        var tools = ToolWindowLayout()
+        precondition(tools.isOpen(.left) && !tools.isOpen(.right) && !tools.isOpen(.bottom), "默认只有左区打开")
+        tools.hide(.list)
+        precondition(!tools.isOpen(.left) && tools[.list].shown && tools[.list].place == .docked(.left), "隐藏区内最后一个工具即收起该区，工具留在区内")
+        tools.toggleArea(.left)
+        precondition(tools.tools(in: .left) == [.list], "重开该区带回它的工具")
+        tools.move(.outline, to: .docked(.left))
+        tools.hide(.outline)
+        precondition(tools.tools(in: .left) == [.list] && tools.isOpen(.left), "区内还有其他工具时只移走被隐藏的那个")
+        tools.move(.list, to: .docked(.right))
+        precondition(!tools.isOpen(.left) && tools.tools(in: .right) == [.list], "工具移走后空出的区收起")
+        tools.toggleArea(.left)
+        precondition(tools.tools(in: .left) == [.outline], "重开空出的区带回留在那里的工具")
+        note("PASS dock visibility: an open area always shows a tool, hiding its last tool or moving it away closes the area")
+    }
+    do {
+        // The bottom area opens and closes beside the same panes, keeps its height as the window resizes, and its tools keep their views.
+        let model = ConversationWindowModel(application: device, kind: .workspace)
+        model.start(restoring: nil, seed: WindowSeed(conversationID: "sample-0"))
+        let column = EditorColumnView(window: model, previewEmpty: false)
+        let host = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1200, height: 800), styleMask: [.titled], backing: .buffered, defer: true)
+        host.contentView = column
+        func apply() {
+            column.grid.apply(model.layout, groups: Set(model.panes.keys))
+            column.apply(bottom: !model.tools.tools(in: .bottom).isEmpty, height: model.tools.bottomHeight, minimum: 100)
+            column.layoutSubtreeIfNeeded()
+        }
+        apply()
+        guard let pane = column.grid.paneView(model.focusedPaneID) else { fatalError("缺少面板视图") }
+        precondition(column.bottomArea == nil, "默认没有底区")
+        model.tools.bottomHeight = 240
+        model.tools.move(.outline, to: .docked(.bottom))
+        apply()
+        guard let bottom = column.bottomArea else { fatalError("底区应打开") }
+        precondition(abs(bottom.frame.height - 240) < 1 && column.grid.paneView(model.focusedPaneID) === pane && pane.window === host,
+                     "底区按保存的高度打开，面板视图不变：\(bottom.frame.height)")
+        host.setContentSize(NSSize(width: 1200, height: 600))
+        column.layoutSubtreeIfNeeded()
+        precondition(abs(bottom.frame.height - 240) < 1, "窗口变矮时底区保持高度，面板让出空间：\(bottom.frame.height)")
+        model.tools.move(.backgroundTasks, to: .docked(.bottom))
+        apply()
+        @MainActor func toolSplit(_ view: NSView) -> ToolSplitView? {
+            if let split = view as? ToolSplitView { return split }
+            for child in view.subviews { if let found = toolSplit(child) { return found } }
+            return nil
+        }
+        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+        column.layoutSubtreeIfNeeded()
+        guard let tools = toolSplit(bottom), let split = tools.splitView, split.subviews.count == 2, split.isVertical else { fatalError("底区两个工具应并排于原生分栏") }
+        let outline = split.subviews[0]
+        model.tools.move(.agents, to: .docked(.bottom))
+        apply()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+        precondition(tools.splitView?.subviews.count == 3 && tools.splitView?.subviews.first === outline, "加入工具不重建已在的工具视图")
+        model.tools.hide(.outline); model.tools.hide(.agents); model.tools.hide(.backgroundTasks)
+        apply()
+        precondition(column.bottomArea == nil && column.grid.paneView(model.focusedPaneID) === pane, "底区收起后面板视图不变")
+        host.contentView = nil
+        for tab in model.allTabs { tab.close() }
+        model.list.close()
+        note("PASS editor column: bottom area beside the same panes, keeps its height, tools keep their views")
+    }
 
     let window = ConversationWindowModel(application: device, kind: .workspace)
     window.start(restoring: nil, seed: WindowSeed(conversationID: "sample-0"))
@@ -87,7 +174,8 @@ import SwiftUI
     precondition(native.closeCount == 1, "关闭最后空白标签才关闭窗口")
     note("PASS final tab: document → blank → window close")
 
-    let handle = TabHandle.HandleView(frame: NSRect(x: 0, y: 0, width: 110, height: 28))
+    let handle = TabItemView(tab: lone.focused, bar: nil, model: lone)
+    handle.frame = NSRect(x: 0, y: 0, width: 110, height: 28)
     anchor.addSubview(handle)
     handle.toolTip = "一个超出标签宽度的完整会话标题"
     let external = NSTrackingArea(rect: handle.bounds, options: [.mouseEnteredAndExited, .activeAlways], owner: native)
@@ -99,6 +187,30 @@ import SwiftUI
                  "原生 tooltip manager 的 tracking area 必须保留")
     precondition(handle.toolTip == "一个超出标签宽度的完整会话标题")
     note("PASS tab tooltip: full title and foreign tracking survive hover updates")
+
+    do {
+        // Tabs past the bar's width scroll; the shown one is brought into view; titles that fit are whole.
+        let model = ConversationWindowModel(application: device, kind: .workspace)
+        model.start(restoring: nil, seed: WindowSeed(conversationID: "sample-0"))
+        for _ in 0..<11 { model.openInNewTab() }
+        let bar = TabBarView(window: model, pane: model.focusedPane)
+        let host = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 420, height: 28), styleMask: [.titled], backing: .buffered, defer: true)
+        host.contentView = bar
+        bar.update()
+        bar.layoutSubtreeIfNeeded()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+        guard let scroll = bar.subviews.compactMap({ $0 as? NSScrollView }).first, let strip = scroll.documentView else { fatalError("标签栏缺少滚动视图") }
+        let items = strip.subviews.compactMap { $0 as? TabItemView }
+        precondition(items.count == 12 && strip.frame.width > scroll.contentSize.width, "超出栏宽的标签可滚动：\(strip.frame.width) / \(scroll.contentSize.width)")
+        precondition(items.allSatisfy { $0.frame.width >= TabBarView.minimumTabWidth && $0.frame.width <= TabBarView.maximumTabWidth }, "标签宽度在上下限之内")
+        guard let shown = items.first(where: { $0.tab.id == model.focusedPane.selectedID }) else { fatalError("缺少显示中的标签") }
+        precondition(scroll.contentView.bounds.contains(NSRect(x: shown.frame.minX, y: 0, width: shown.frame.width, height: 1)), "显示中的标签滚入可见范围")
+        for item in items where item.frame.width < TabBarView.maximumTabWidth {
+            let title = (item.tab.title as NSString).size(withAttributes: [.font: NSFont.systemFont(ofSize: 11 * AppearancePreferences.shared.values.uiScale)]).width
+            precondition(item.frame.width - 2 * TabItemView.titleInset >= title, "未达上限的标签标题完整：\(item.tab.title)")
+        }
+        note("PASS tab bar: overflow scrolls, the shown tab is brought into view, widths within limits, titles under the limit whole")
+    }
 
     precondition(ConversationListClicks.openDelay(pressedAt: 10, now: 10.1, interval: 0.5) > 0.39)
     precondition(ConversationListClicks.openDelay(pressedAt: 10, now: 10.6, interval: 0.5) == 0,
@@ -201,7 +313,7 @@ import SwiftUI
     workspace.focus(leftID)
     FileHandle.standardError.write(Data("PASS contextual pane press: right/control/middle preserve active tab and draft ownership; primary click still focuses target\n".utf8))
     let artifact = ArtifactTab(document: .mermaid(source: "flowchart LR; A-->B", conversationID: nil, sourceID: "keyboard-artifact"))
-    workspace.focusedPane.insert(artifact)
+    workspace.insertTab(artifact)
     workspace.focus(rightID)
     workspace.focusNeighbour(forward: false)
     precondition(workspace.focusedEditor === artifact && native.firstResponder !== rightView,
@@ -333,4 +445,73 @@ import SwiftUI
     precondition(successes.last == ["deleted"], "部分删除成功不能清除失败项选择")
     withExtendedLifetime(watch) {}
     FileHandle.standardError.write(Data("PASS management cancellation: waiting effects skipped, active race rejected, later work proceeds, cancelled selection retained\n".utf8))
+}
+
+/// The whole window shell, as a new tab opens and closes. Run after the
+/// timed checks: a full window's views keep the main thread busy a while.
+@MainActor func workspaceShellChecks() {
+    func note(_ text: String) { FileHandle.standardError.write(Data((text + "\n").utf8)) }
+    let device = DeviceStore(preview: true)
+    // The whole window shell, as a new tab opens and closes. Commands and
+    // menu validation ask every responder up the chain whether it handles
+    // an action; a split view that is its own delegate answers by asking
+    // itself again, without end.
+    let model = ConversationWindowModel(application: device, kind: .workspace)
+    model.start(restoring: nil, seed: WindowSeed(conversationID: "sample-0"))
+    let root = VeluneRootView(window: model, store: model.list, tab: model.focused,
+                              focused: model.focused.store, previewEmpty: false, previewSettings: false)
+    let host = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1200, height: 800),
+                        styleMask: [.titled, .closable, .resizable, .fullSizeContentView], backing: .buffered, defer: true)
+    host.isReleasedWhenClosed = false; host.isRestorable = false
+    let shell = WorkspaceShell(window: host, model: model, content: root, previewEmpty: false)
+    model.tools.move(.outline, to: .docked(.bottom))
+    func settle() { for _ in 0..<5 { shell.split.view.layoutSubtreeIfNeeded(); RunLoop.main.run(until: Date().addingTimeInterval(0.05)) } }
+    settle()
+    func descendants(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap(descendants) }
+    let actions = ["performClose:", "toggleSidebar:", "undo:", "velune_unhandledAction:"].map(NSSelectorFromString)
+    func askResponders() -> Int {
+        var asked = 0
+        for view in descendants(host.contentView!) {
+            for action in actions { _ = view.responds(to: action) }
+            asked += 1
+        }
+        return asked
+    }
+    precondition(askResponders() > 0)
+    let tabs = model.tabCount
+    model.openInNewTab()
+    settle()
+    precondition(model.tabCount == tabs + 1, "新建标签")
+    _ = askResponders()
+    model.closeTab(model.focusedEditor.id)
+    settle()
+    precondition(model.tabCount == tabs, "关闭新建的标签")
+    let asked = askResponders()
+    // 在新窗口中新建会话 asks for a conversation window on the focused
+    // tab's device, with no conversation: that window starts a new one.
+    var requested: [(ConversationWindowKind, WindowSeed)] = []
+    model.openWindow = { requested.append(($0, $1)) }
+    precondition(device.enabledRuntimeInstances.isEmpty || model.canPerform(.newConversationWindow), "有运行时时可在新窗口中新建会话")
+    model.perform(.newConversationWindow)
+    if !device.enabledRuntimeInstances.isEmpty {
+        precondition(requested.count == 1 && requested[0].0 == .single && requested[0].1.conversationID == nil
+                     && requested[0].1.device == nil && requested[0].1.tab == nil, "在新窗口中新建会话：本机的会话窗口，不带会话")
+        let single = ConversationWindowModel(application: device, kind: .single)
+        single.start(restoring: nil, seed: requested[0].1)
+        settle()
+        precondition(single.focused.store.isUnsentConversation, "新的会话窗口以未发送的新会话开始")
+        for tab in single.allTabs { tab.close() }
+        single.list.close()
+    }
+    precondition(descendants(host.contentView!).allSatisfy { ($0 as? NSSplitView).map { $0.delegate !== $0 } ?? true },
+                 "分栏视图不能是自己的代理：AppKit 会把响应链询问转给代理而无限递归")
+    // Nothing of this window outlives it into the checks that follow.
+    host.toolbar = nil
+    host.contentViewController = nil
+    host.close()
+    for tab in model.allTabs { tab.close() }
+    model.list.close()
+    RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+    withExtendedLifetime(shell) {}
+    note("PASS window shell: a new tab opens and closes; \(asked) views answer responder-chain queries without recursion; a new conversation window is asked for (\(requested.count))")
 }

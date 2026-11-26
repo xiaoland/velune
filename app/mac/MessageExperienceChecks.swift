@@ -592,9 +592,9 @@ import VeluneBindings
     let draft = "缩放时保留这段草稿"
     model.restore(draft, attachments: [])
     let host = NSHostingView(rootView: HStack(spacing: 0) {
-        ConversationListView(window: workspace, store: workspace.list, focused: tab.store, placement: .panel).frame(width: 232)
+        ConversationListView(window: workspace, store: workspace.list, focused: tab.store).frame(width: 232)
         Divider()
-        PaneLayoutView(window: workspace, layout: workspace.layout, path: [], previewEmpty: false)
+        PaneGrid(window: workspace, previewEmpty: false)
     }.applicationAppearance().environment(\.colorScheme, dark ? .dark : .light)
         .background(Color(nsColor: .windowBackgroundColor)))
     let size = NSSize(width: 920, height: 560)

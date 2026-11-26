@@ -94,7 +94,7 @@ extension ConversationWindowModel {
     func canPerform(_ command: ShortcutCommand, composerCommand: Bool = false, for context: ConversationStore? = nil) -> Bool {
         if context == nil, artifactSheet != nil || !hasConversationFocus {
             switch command {
-            case .newConversation, .newWindow, .openConversation, .newTab, .reopenClosedTab, .closeTab, .closeWindow,
+            case .newConversation, .newConversationWindow, .newWindow, .openConversation, .newTab, .reopenClosedTab, .closeTab, .closeWindow,
                  .splitRight, .splitDown, .commandPalette, .rightArea, .bottomArea, .editorOnly,
                  .problems, .shortcutHelp, .nextAttention, .nextTab, .previousTab, .moveTabToNewWindow,
                  .zoomIn, .zoomOut, .resetZoom,
@@ -112,6 +112,7 @@ extension ConversationWindowModel {
         case .newConversation: !store.isSideChat && !store.device.enabledRuntimeInstances.isEmpty
         case .reopenClosedTab: canReopenClosedTab
         case .newWindow: openWindow != nil
+        case .newConversationWindow: openWindow != nil && !store.isSideChat && !store.device.enabledRuntimeInstances.isEmpty
         case .openConversation, .newTab, .closeTab, .closeWindow, .find, .splitRight, .splitDown, .commandPalette, .focusTranscript, .rightArea, .bottomArea, .editorOnly, .problems, .shortcutHelp, .nextAttention: true
         case .stop: store.canCancel && !store.isLoading
         case .stopSubAgents: store.followUp.canStopSubAgents
@@ -152,6 +153,8 @@ extension ConversationWindowModel {
         case .newTab: openInNewTab()
         case .reopenClosedTab: reopenClosedTab()
         case .newWindow: openWindow?(.workspace, WindowSeed())
+        // A conversation window for the device the focused tab belongs to.
+        case .newConversationWindow: openWindow?(.single, WindowSeed(device: store.device === application ? device : store.device.peerID))
         case .closeTab: if artifactSheet != nil { closeArtifactSheet() } else if !hasConversationFocus { closeTab(focusedEditor.id) } else if tab === sheetTab { closeSheet() } else if tab === composerSheetTab { closeComposerSheet() } else { closeTab(tab.id) }
         case .closeWindow: NSApp.keyWindow?.performClose(nil)
         case .find: find()
