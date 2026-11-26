@@ -64,28 +64,28 @@ def build(out: Path) -> None:
     shutil.copy2(library, out / library.name)
 
 
-def worker(name: str, config: dict, result_path: Path) -> int:
-    """Run one case in this process. Called by the parent with -I."""
+def worker(name: str, config: dict, result_path: Path, root: Path) -> int:
+    """Run one case in this process inside `root`. Called by the parent with -I;
+    the parent removes `root` after this process exits, when no background
+    writer of the application can still be adding files to it."""
     sys.path.insert(0, str(HERE))
     from velune_acceptance import Context, Skip, bindings, isolation
 
     result: dict = {"case": name, "status": "failed", "checks": {}, "facts": {}}
     started = time.monotonic()
     try:
-        with tempfile.TemporaryDirectory(prefix=f"velune-acceptance-{name}-") as temporary:
-            root = Path(temporary).resolve()
-            resources = Path(config["resources"]) if config["resources"] else None
-            isolated = isolation.enter(root, resources)
-            loaded = bindings.load(Path(config["bindings"]), root / "bindings", f"acceptance_{name}")
-            ctx = Context(bindings=loaded, isolated=isolated, timeout=config["timeout"],
-                          tools={key: Path(value) for key, value in config["tools"].items()})
-            result["checks"], result["facts"] = ctx.checks, ctx.facts
-            module = importlib.import_module(f"cases.{name}")
-            missing = [tool for tool in getattr(module, "REQUIRES", ()) if tool not in ctx.tools]
-            if missing:
-                raise Skip("requires " + ", ".join(f"--{tool}" for tool in missing))
-            module.run(ctx)
-            result["status"] = "passed"
+        resources = Path(config["resources"]) if config["resources"] else None
+        isolated = isolation.enter(root, resources)
+        loaded = bindings.load(Path(config["bindings"]), root / "bindings", f"acceptance_{name}")
+        ctx = Context(bindings=loaded, isolated=isolated, timeout=config["timeout"],
+                      tools={key: Path(value) for key, value in config["tools"].items()})
+        result["checks"], result["facts"] = ctx.checks, ctx.facts
+        module = importlib.import_module(f"cases.{name}")
+        missing = [tool for tool in getattr(module, "REQUIRES", ()) if tool not in ctx.tools]
+        if missing:
+            raise Skip("requires " + ", ".join(f"--{tool}" for tool in missing))
+        module.run(ctx)
+        result["status"] = "passed"
     except Skip as skipped:
         result["status"], result["reason"] = "skipped", str(skipped)
     except BaseException as error:  # Report every failure in the manifest.
@@ -97,8 +97,8 @@ def worker(name: str, config: dict, result_path: Path) -> int:
 
 
 def main() -> int:
-    if len(sys.argv) == 5 and sys.argv[1] == "_worker":
-        return worker(sys.argv[2], json.loads(sys.argv[3]), Path(sys.argv[4]))
+    if len(sys.argv) == 6 and sys.argv[1] == "_worker":
+        return worker(sys.argv[2], json.loads(sys.argv[3]), Path(sys.argv[4]), Path(sys.argv[5]))
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("cases", nargs="*", help=f"cases to run (default: all of {', '.join(discover())})")
     parser.add_argument("--build", action="store_true", help="build the bindings library and Python modules first")
@@ -139,10 +139,15 @@ def main() -> int:
     for name in args.cases or known:
         result_path = out / f"{name}.json"
         log_path = out / f"{name}.log"
-        with log_path.open("w") as log:
-            subprocess.run([sys.executable, "-I", str(Path(__file__).resolve()), "_worker", name,
-                            json.dumps(config), str(result_path)],
-                           cwd=HERE, stdout=log, stderr=subprocess.STDOUT, env={"PATH": os.environ.get("PATH", "")})
+        root = Path(tempfile.mkdtemp(prefix=f"velune-acceptance-{name}-")).resolve()
+        try:
+            with log_path.open("w") as log:
+                subprocess.run([sys.executable, "-I", str(Path(__file__).resolve()), "_worker", name,
+                                json.dumps(config), str(result_path), str(root)],
+                               cwd=HERE, stdout=log, stderr=subprocess.STDOUT,
+                               env={"PATH": os.environ.get("PATH", "")})
+        finally:
+            shutil.rmtree(root)
         result = json.loads(result_path.read_text()) if result_path.exists() else {
             "case": name, "status": "failed", "error": f"worker produced no result; see {log_path.name}"}
         manifest["cases"].append({key: value for key, value in result.items() if key != "traceback"})
