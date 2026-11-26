@@ -90,6 +90,151 @@ mod edit_model_tests {
         );
         let _ = std::fs::remove_dir_all(root);
     }
+
+    #[test]
+    fn name_turn_models_caches_pi_aliases_skips_non_aliases_and_invalidates_on_gateway_change() {
+        let root =
+            std::env::temp_dir().join(format!("velune-name-models-{}", crate::new_record_key()));
+        std::fs::create_dir_all(&root).unwrap();
+        let mut app = crate::Application::open(crate::Options {
+            home_directory: root.clone(),
+            resources_directory: root.clone(),
+        })
+        .unwrap();
+        let core = &mut app.runtime;
+        core.runtime_instances = vec![RuntimeInstance {
+            enabled: true,
+            id: "pi".into(),
+            name: "Synthetic Pi".into(),
+            type_id: RuntimeKind::Pi,
+            gateway_id: "synthetic".into(),
+            settings: Default::default(),
+        }];
+        core.gateways = vec![GatewayConfig {
+            id: "synthetic".into(),
+            name: "Synthetic".into(),
+            routes: Vec::new(),
+            providers: vec![
+                crate::config::ProviderDefinition {
+                    id: "openai".into(),
+                    name: "ChatGPT1".into(),
+                    protocol: Protocol::Responses,
+                    endpoint: "http://127.0.0.1:1/v1".into(),
+                    execution_backend: crate::config::ExecutionBackend::Http,
+                    request_profile: crate::config::RequestProfile::Native,
+                    codex_client_version: None,
+                    quota_source: crate::config::ProviderQuotaSource::None,
+                    authentication: Default::default(),
+                    quota_authentication: Default::default(),
+                    billing: Default::default(),
+                    quota_limits: Vec::new(),
+                    models: vec![crate::config::ProviderModel {
+                        record_key: "openai-model".into(),
+                        provider_model_id: "gpt-6.2-sol".into(),
+                        nickname: "GPT-6.2 Sol".into(),
+                        icon: None,
+                        context_window: None,
+                        max_output_tokens: None,
+                        reasoning_levels: None,
+                        request_parameters: None,
+                        pi_projection: None,
+                    }],
+                },
+                crate::config::ProviderDefinition {
+                    id: "gemini".into(),
+                    name: "Google".into(),
+                    protocol: Protocol::Gemini,
+                    endpoint: "http://127.0.0.1:1/v1beta".into(),
+                    execution_backend: crate::config::ExecutionBackend::Http,
+                    request_profile: crate::config::RequestProfile::Native,
+                    codex_client_version: None,
+                    quota_source: crate::config::ProviderQuotaSource::None,
+                    authentication: Default::default(),
+                    quota_authentication: Default::default(),
+                    billing: Default::default(),
+                    quota_limits: Vec::new(),
+                    models: vec![crate::config::ProviderModel {
+                        record_key: "gemini-model".into(),
+                        provider_model_id: "gemini-flash-latest".into(),
+                        nickname: "Gemini Flash".into(),
+                        icon: None,
+                        context_window: None,
+                        max_output_tokens: None,
+                        reasoning_levels: None,
+                        request_parameters: None,
+                        pi_projection: None,
+                    }],
+                },
+            ],
+        }];
+        let openai_alias = core.gateways[0].pi_binding_id("openai-model", 0).unwrap();
+        let gemini_alias = core.gateways[0].pi_binding_id("gemini-model", 0).unwrap();
+        assert!(openai_alias.starts_with("vln_"));
+        assert!(gemini_alias.contains("--vln_"));
+
+        let make_turn = |id: &str, model: &str| crate::conversation::TranscriptTurn {
+            id: id.into(),
+            user_message_id: format!("user-{id}"),
+            work_message_ids: vec![],
+            last_message_id: Some(format!("reply-{id}")),
+            reply_start_block: 0,
+            duration_ms: None,
+            is_running: false,
+            can_fork: false,
+            outcome: Some(crate::conversation::TurnOutcome::Completed),
+            usage: None,
+            settings: Some(TurnSettings {
+                runtime_id: Some("pi".into()),
+                model: Some(model.into()),
+                ..Default::default()
+            }),
+        };
+
+        // Non-alias turns do not populate the gateway cache.
+        let mut non_alias_turns = vec![make_turn("t0", "claude-sonnet-4")];
+        core.name_turn_models(&mut non_alias_turns);
+        assert!(core.pi_binding_aliases.borrow().is_empty());
+        assert_eq!(
+            non_alias_turns[0].settings.as_ref().unwrap().model.as_deref(),
+            Some("claude-sonnet-4")
+        );
+
+        // Both `vln_` and `--vln_` aliases resolve and populate the cache.
+        let mut turns = vec![
+            make_turn("t1", &openai_alias),
+            make_turn("t2", &gemini_alias),
+        ];
+        core.name_turn_models(&mut turns);
+        assert_eq!(core.pi_binding_aliases.borrow().len(), 1);
+        assert_eq!(
+            turns[0].settings.as_ref().unwrap().model.as_deref(),
+            Some("GPT-6.2 Sol（ChatGPT1）")
+        );
+        assert_eq!(
+            turns[1].settings.as_ref().unwrap().model.as_deref(),
+            Some("Gemini Flash（Google）")
+        );
+
+        // Changing provider auth generation changes the alias and invalidates the cache.
+        core.gateways[0].providers[0].authentication.generation = 2;
+        let updated_alias = core.gateways[0].pi_binding_id("openai-model", 2).unwrap();
+        assert_ne!(updated_alias, openai_alias);
+        let mut stale_and_updated = vec![
+            make_turn("t3", &openai_alias),
+            make_turn("t4", &updated_alias),
+        ];
+        core.name_turn_models(&mut stale_and_updated);
+        assert_eq!(
+            stale_and_updated[0].settings.as_ref().unwrap().model.as_deref(),
+            Some(openai_alias.as_str())
+        );
+        assert_eq!(
+            stale_and_updated[1].settings.as_ref().unwrap().model.as_deref(),
+            Some("GPT-6.2 Sol（ChatGPT1）")
+        );
+
+        let _ = std::fs::remove_dir_all(root);
+    }
 }
 
 /// How this execution acquires history. A fork connects with the target's
@@ -709,6 +854,9 @@ impl CoreRuntime {
                     continue;
                 }
             }
+            if !model.starts_with("vln_") && !model.contains("--vln_") {
+                continue;
+            }
             let Some(gateway) = self.runtime_instance(runtime_id).ok().and_then(|runtime| {
                 self.gateways
                     .iter()
@@ -716,15 +864,7 @@ impl CoreRuntime {
             }) else {
                 continue;
             };
-            let key = gateway
-                .selectable_keys()
-                .find(|key| {
-                    gateway
-                        .pi_binding_id(key, gateway.authentication_revision(key))
-                        .is_ok_and(|alias| &alias == model)
-                })
-                .map(str::to_owned);
-            if let Some(model_record_key) = key {
+            if let Some(model_record_key) = self.pi_binding_model_key(gateway, model) {
                 let selection = ModelSelection::Managed { model_record_key };
                 if let Some(name) = self.turn_model_name(runtime_id, &selection) {
                     settings.model = Some(name);
@@ -747,6 +887,27 @@ impl CoreRuntime {
                 usage.context_window = Some(window);
             }
         }
+    }
+
+    fn pi_binding_model_key(&self, gateway: &GatewayConfig, alias: &str) -> Option<String> {
+        let mut cache = self.pi_binding_aliases.borrow_mut();
+        let needs_rebuild = cache
+            .get(&gateway.id)
+            .is_none_or(|(cached, _)| cached != gateway);
+        if needs_rebuild {
+            let mut aliases = std::collections::HashMap::new();
+            for key in gateway.selectable_keys() {
+                if let Ok(binding_alias) =
+                    gateway.pi_binding_id(key, gateway.authentication_revision(key))
+                {
+                    aliases.entry(binding_alias).or_insert_with(|| key.to_owned());
+                }
+            }
+            cache.insert(gateway.id.clone(), (gateway.clone(), aliases));
+        }
+        cache
+            .get(&gateway.id)
+            .and_then(|(_, aliases)| aliases.get(alias).cloned())
     }
 
     /// The window Velune gave the runtime for a turn's managed model: the

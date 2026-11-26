@@ -1048,12 +1048,15 @@ impl Owner {
             purpose,
             HistoryPurpose::Refresh | HistoryPurpose::FollowSource(_)
         );
+        let is_retry = matches!(purpose, HistoryPurpose::Retry(_));
         let prepared = self.with_view(&view, remote, |application| {
             application
                 .runtime
                 .serve(Focus::Conversation(id.clone()), Login::Allows, |core| {
                     if is_refresh {
                         core.prepare_conversation_refresh(&runtime_id, &id)
+                    } else if is_retry {
+                        core.prepare_conversation_present(&runtime_id, &id)
                     } else {
                         core.prepare_conversation_read(&runtime_id, &id)
                     }
@@ -1124,6 +1127,32 @@ impl Owner {
                         revision: self.revision,
                         response: Response::ReleaseView,
                     }),
+                };
+                let _ = reply.send(result);
+            }
+            Ok(ConversationRead::Present) => {
+                if let Some(generation) = source_generation {
+                    self.with_view(&view, remote, |application| {
+                        application.runtime.fail_source_refresh(generation)
+                    });
+                }
+                let result = match purpose {
+                    HistoryPurpose::Retry(command) => self.execute(view, context, *command),
+                    HistoryPurpose::Refresh => self.execute(
+                        view,
+                        context,
+                        Command::OpenConversation {
+                            runtime_id,
+                            conversation_id: id,
+                        },
+                    ),
+                    HistoryPurpose::FollowSource(_) => Ok(ApplicationReply {
+                        revision: self.revision,
+                        response: Response::ReleaseView,
+                    }),
+                    HistoryPurpose::ReadConversation => {
+                        unreachable!("ReadConversation requests Ready, not Present")
+                    }
                 };
                 let _ = reply.send(result);
             }

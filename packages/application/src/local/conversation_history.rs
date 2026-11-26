@@ -6,6 +6,7 @@ use browsing::{HistoryRead, HistorySnapshot, LoadedHistory, history_read_changed
 
 pub(crate) enum ConversationRead {
     Ready(Box<SnapshotResult>),
+    Present,
     Load(Box<ConversationHistoryRequest>),
 }
 
@@ -99,11 +100,11 @@ impl CoreRuntime {
         }
     }
 
-    pub(crate) fn read_present_conversation(
-        &mut self,
+    fn conversation_is_present(
+        &self,
         runtime_id: &str,
         id: &str,
-    ) -> Result<Option<SnapshotResult>, RuntimeError> {
+    ) -> Result<bool, RuntimeError> {
         let address = self.conversation_read_address(runtime_id, id)?;
         let identity = self
             .session
@@ -115,9 +116,17 @@ impl CoreRuntime {
                     .projected()
                     .map(|snapshot| &snapshot.conversation)
             });
-        if !identity.is_some_and(|identity| {
+        Ok(identity.is_some_and(|identity| {
             identity.id == id && identity.runtime_id == address.source_runtime_id
-        }) {
+        }))
+    }
+
+    pub(crate) fn read_present_conversation(
+        &mut self,
+        runtime_id: &str,
+        id: &str,
+    ) -> Result<Option<SnapshotResult>, RuntimeError> {
+        if !self.conversation_is_present(runtime_id, id)? {
             return Ok(None);
         }
         self.sync_projection()?;
@@ -131,6 +140,20 @@ impl CoreRuntime {
     ) -> Result<ConversationRead, RuntimeError> {
         if let Some(snapshot) = self.read_present_conversation(runtime_id, id)? {
             return Ok(ConversationRead::Ready(Box::new(snapshot)));
+        }
+        self.prepare_cold_conversation_read(runtime_id, id)
+    }
+
+    /// Sync a conversation already in memory without building a `SnapshotResult`
+    /// when the caller will re-query via `Command::ReadSnapshotUpdate` / `Retry`.
+    pub(crate) fn prepare_conversation_present(
+        &mut self,
+        runtime_id: &str,
+        id: &str,
+    ) -> Result<ConversationRead, RuntimeError> {
+        if self.conversation_is_present(runtime_id, id)? {
+            self.sync_projection()?;
+            return Ok(ConversationRead::Present);
         }
         self.prepare_cold_conversation_read(runtime_id, id)
     }
