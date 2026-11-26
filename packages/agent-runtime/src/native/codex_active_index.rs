@@ -357,7 +357,6 @@ fn config_digest(config: &HistoryConfig) -> [u8; 32] {
     digest.update(b"velune.codex_active_index.config.v1\0");
     hash_bytes(&mut digest, config.kind.id().as_bytes());
     digest.update([u8::from(config.execution.is_local())]);
-    hash_bytes(&mut digest, config.provider.as_bytes());
     hash_path(&mut digest, &config.binary);
     hash_path(&mut digest, &config.node_binary);
     hash_path(&mut digest, &config.resources_directory);
@@ -611,13 +610,13 @@ mod tests {
             result: [0x3c; 32],
         };
         write_persisted(&proof_path, &verified_after).unwrap();
-        fs::write(home.join("config.toml"), "model = 'gpt-5'\n").unwrap();
-        assert!(!reloaded_again.prepare(&config).unwrap().matches_verified());
-
         let mut other_config = config.clone();
-        other_config.provider = "other".into();
+        other_config.node_binary = home.join("different-node");
         let third = ActiveListIndex::with_storage(proof_path);
         assert!(!third.prepare(&other_config).unwrap().matches_verified());
+
+        fs::write(home.join("config.toml"), "model = 'gpt-5'\n").unwrap();
+        assert!(!reloaded_again.prepare(&config).unwrap().matches_verified());
     }
 
     #[test]
