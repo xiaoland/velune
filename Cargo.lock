@@ -4899,6 +4899,7 @@ dependencies = [
  "tracing",
  "velune-ai",
  "velune-conversation",
+ "velune-test-support",
  "windows-sys 0.61.2",
 ]
 
@@ -4958,6 +4959,7 @@ dependencies = [
  "velune-conversation",
  "velune-gateway",
  "velune-telemetry",
+ "velune-test-support",
  "windows-sys 0.61.2",
 ]
 
@@ -4999,6 +5001,7 @@ dependencies = [
  "velune-application-api",
  "velune-remote",
  "velune-telemetry",
+ "velune-test-support",
 ]
 
 [[package]]
@@ -5092,6 +5095,14 @@ dependencies = [
  "uniffi",
  "url",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "velune-test-support"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "tempfile",
 ]
 
 [[package]]

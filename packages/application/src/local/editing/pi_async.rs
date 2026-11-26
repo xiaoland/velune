@@ -1216,7 +1216,7 @@ impl CoreRuntime {
                 // Association commits first. Any subsequent failure leaves this
                 // exact target available; it is never re-created or replayed.
                 let launch = self.capture_pi_edit_launch(edit, target.try_clone()?)?;
-                self.session.active_state = ActiveState::History(Box::new(target.into()));
+                self.session.active_state = ActiveState::History(Box::new(target));
                 edit.phase = Phase::Launch(self.pi_edit_io(edit.application, launch)?);
             }
             Phase::History(ticket) => {

@@ -10,18 +10,7 @@ use velune_agent_runtime::{
     execution::ExecutionTarget,
     history::{self, PiForkBoundary},
 };
-
-struct SyntheticHome(PathBuf);
-
-impl Drop for SyntheticHome {
-    fn drop(&mut self) {
-        if let Err(error) = std::fs::remove_dir_all(&self.0)
-            && error.kind() != std::io::ErrorKind::NotFound
-        {
-            eprintln!("synthetic fork HOME cleanup failed: {error}");
-        }
-    }
-}
+use velune_test_support::TempRoot;
 
 #[test]
 #[ignore = "requires explicitly authorized installed Pi SDK and Node; run with --ignored"]
@@ -30,19 +19,8 @@ fn pi_edit_fork_preserves_later_prefix_edits_deletions_images_tool_pairs_and_cus
         .expect("enabled SDK test requires VELUNE_TEST_PI_BINARY");
     let node = std::env::var("VELUNE_TEST_NODE_BINARY")
         .expect("enabled SDK test requires VELUNE_TEST_NODE_BINARY");
-    let mut nonce = [0; 8];
-    getrandom::fill(&mut nonce).unwrap();
-    let root = std::env::temp_dir().join(format!(
-        "velune-pi-edit-fork-{:x}",
-        u64::from_le_bytes(nonce)
-    ));
-    std::fs::create_dir(&root).unwrap();
-    let _cleanup = SyntheticHome(root.clone());
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
-    }
+    let home = TempRoot::new("pi-edit-fork");
+    let root = home.to_path_buf();
     std::fs::create_dir(root.join("sessions")).unwrap();
     let resources = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources");
     let config: Config =

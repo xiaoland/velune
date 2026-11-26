@@ -215,10 +215,9 @@ impl CoreRuntime {
         &self,
         runtime: &RuntimeInstance,
     ) -> Result<HistoryConfig, RuntimeError> {
-        let provider = match runtime.type_id {
-            RuntimeKind::Codex166 => "codex",
-            RuntimeKind::DeepSeek => "deepseek",
-            RuntimeKind::ClaudeCode => "claude-code",
+        let sessions = match runtime.type_id {
+            RuntimeKind::ClaudeCode => "projects",
+            RuntimeKind::Codex166 | RuntimeKind::DeepSeek => "sessions",
             RuntimeKind::Pi | RuntimeKind::Acp => {
                 return Err(RuntimeError::invalid("native history type"));
             }
@@ -227,17 +226,12 @@ impl CoreRuntime {
         let home = context.agent_dir;
         Ok(HistoryConfig {
             kind: runtime.type_id,
-            provider: provider.into(),
             binary: setting_path(runtime, "binary")?,
             node_binary: setting_path_optional(runtime, "nodeBinary").unwrap_or_default(),
             resources_directory: context.resources,
             execution: context.target,
             os_home: context.os_home,
-            root: home.join(if provider == "claude-code" {
-                "projects"
-            } else {
-                "sessions"
-            }),
+            root: home.join(sessions),
             home,
         })
     }
@@ -245,9 +239,11 @@ impl CoreRuntime {
         &mut self,
         cwd: Option<&Path>,
         key: &str,
-        project: Option<&velune_agent_runtime::creation::Retained<
-            velune_agent_runtime::native::codex_projects::NativeProject,
-        >>,
+        project: Option<
+            &velune_agent_runtime::creation::Retained<
+                velune_agent_runtime::native::codex_projects::NativeProject,
+            >,
+        >,
     ) -> Result<(), RuntimeError> {
         let runtime = self.active_instance()?.clone();
         let side_context = self.session.side.as_ref().map(|side| side.context.clone());

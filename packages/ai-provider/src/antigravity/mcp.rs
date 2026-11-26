@@ -98,11 +98,12 @@ async fn handle(
     let method = request["method"].as_str().unwrap();
     let result = match method {
         "initialize" => {
-            let requested = request["params"]["protocolVersion"].as_str();
-            let version = match requested {
-                Some(version @ ("2025-03-26" | "2025-06-18" | "2025-11-25")) => version,
-                _ => "2025-11-25",
-            };
+            // Echo a supported requested version; anything else gets the latest.
+            const SUPPORTED: [&str; 3] = ["2025-03-26", "2025-06-18", "2025-11-25"];
+            let version = request["params"]["protocolVersion"]
+                .as_str()
+                .filter(|version| SUPPORTED.contains(version))
+                .unwrap_or("2025-11-25");
             json!({
                 "protocolVersion": version,
                 "capabilities": {"tools": {}},

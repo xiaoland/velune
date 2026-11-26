@@ -1,9 +1,9 @@
 //! What every running conversation does the same way, whatever runtime runs
 //! it. Kind-specific operations stay on the concrete session types.
 use crate::conversation::{ConversationSnapshot, ConversationSummary, RuntimeInteractionReply};
-use crate::{TurnInput, acp, native, pi_session::PiSession};
 use crate::creation::{DataRetention, Retained};
 use crate::work::WorkStatus;
+use crate::{TurnInput, acp, native, pi_session::PiSession};
 
 /// Failure of a runtime operation, for display.
 pub type LiveError = Box<dyn std::error::Error + Send + Sync>;
@@ -107,7 +107,10 @@ impl LiveConversation for PiSession {
         task: &str,
         request: Option<&str>,
     ) -> Result<Retained<crate::conversation::BackgroundTaskOutput>, LiveError> {
-        Ok(Retained::from_parts(PiSession::read_background_task_output(self, task, request)?, DataRetention::default()))
+        Ok(Retained::from_parts(
+            PiSession::read_background_task_output(self, task, request)?,
+            DataRetention::default(),
+        ))
     }
     fn stop_background_task(&mut self, task: &str) -> LiveResult {
         Ok(PiSession::stop_background_task(self, task)?)
@@ -131,7 +134,9 @@ impl LiveConversation for PiSession {
         PiSession::snapshot(self)
     }
     fn owned_snapshot(&self) -> Result<Option<Retained<ConversationSnapshot>>, LiveError> {
-        if PiSession::snapshot(self).is_none() { return Ok(None); }
+        if PiSession::snapshot(self).is_none() {
+            return Ok(None);
+        }
         Ok(Some(PiSession::owned_snapshot(self)?))
     }
     fn turn_running(&self) -> bool {
@@ -141,7 +146,10 @@ impl LiveConversation for PiSession {
         true
     }
     fn work(&self) -> Result<Retained<Vec<crate::work::BackgroundTask>>, LiveError> {
-        Ok(Retained::from_parts(PiSession::work(self), DataRetention::default()))
+        Ok(Retained::from_parts(
+            PiSession::work(self),
+            DataRetention::default(),
+        ))
     }
     fn work_status(&self) -> WorkStatus {
         PiSession::work_status(self)
@@ -212,7 +220,9 @@ impl LiveConversation for native::NativeSession {
         native::NativeSession::snapshot(self)
     }
     fn owned_snapshot(&self) -> Result<Option<Retained<ConversationSnapshot>>, LiveError> {
-        if native::NativeSession::snapshot(self).is_none() { return Ok(None); }
+        if native::NativeSession::snapshot(self).is_none() {
+            return Ok(None);
+        }
         Ok(Some(native::NativeSession::owned_snapshot(self)?))
     }
     fn turn_running(&self) -> bool {
@@ -285,7 +295,9 @@ impl LiveConversation for acp::Client {
         acp::Client::snapshot(self)
     }
     fn owned_snapshot(&self) -> Result<Option<Retained<ConversationSnapshot>>, LiveError> {
-        if acp::Client::snapshot(self).is_none() { return Ok(None); }
+        if acp::Client::snapshot(self).is_none() {
+            return Ok(None);
+        }
         Ok(Some(acp::Client::owned_snapshot(self)?))
     }
     fn turn_running(&self) -> bool {

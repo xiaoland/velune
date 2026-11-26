@@ -4,7 +4,10 @@ use std::{
     path::{Path, PathBuf},
 };
 use velune_agent_runtime::{
-    execution::ExecutionTarget, history::HistoryConfig, import::*, version::RuntimeKind,
+    execution::ExecutionTarget,
+    history::{self, HistoryConfig},
+    import::*,
+    version::RuntimeKind,
 };
 fn root() -> PathBuf {
     let path = std::env::temp_dir().join(format!(
@@ -27,7 +30,6 @@ fn config(root: &Path, provider: &str, binary: PathBuf) -> HistoryConfig {
         },
         execution: ExecutionTarget::Local,
         os_home: Some(root.into()),
-        provider: provider.into(),
         binary,
         node_binary: root.join("unused-node"),
         resources_directory: root.into(),
@@ -96,23 +98,13 @@ fn codex_owned_materialization_and_failed_materialization_leave_no_list_orphan()
         else {
             panic!()
         };
-        let materialized = velune_agent_runtime::native::materialize_owned_codex_import(
-            &config, &thread_id, provider, &mut token,
-        );
+        let materialized =
+            history::materialize_owned_codex_import(&config, &thread_id, provider, &mut token);
         assert_eq!(materialized.is_ok(), provider != "missing-provider");
         let path = token.source_path().to_owned();
         cleanup_owned_import(&config, &token).unwrap();
         assert!(!path.exists());
-        let listed = velune_agent_runtime::native::list_codex_history_at(
-            config.kind,
-            &config.binary,
-            &config.home,
-            "synthetic",
-            false,
-            &config.execution,
-            config.os_home.as_deref(),
-        )
-        .unwrap();
+        let listed = history::list(&config, "synthetic").unwrap();
         assert!(
             !listed
                 .iter()
@@ -170,7 +162,7 @@ fn codex_native_to_managed_import_preserves_inter_agent_context_and_source_bytes
     }
     drop(append);
     let original = std::fs::read(source.source_path()).unwrap();
-    let exported = velune_agent_runtime::history::export_context(&config, &source_id).unwrap();
+    let exported = history::export_context(&config, &source_id).unwrap();
     assert_eq!(exported.messages.last().unwrap().role, Role::Assistant);
     assert!(
         matches!(&exported.messages.last().unwrap().content[0], Block::Text {text} if text.contains("/root/worker") && text.contains("/root"))
@@ -193,13 +185,7 @@ fn codex_native_to_managed_import_preserves_inter_agent_context_and_source_bytes
     else {
         panic!()
     };
-    velune_agent_runtime::native::materialize_owned_codex_import(
-        &config,
-        &target_id,
-        "velune",
-        &mut target,
-    )
-    .unwrap();
+    history::materialize_owned_codex_import(&config, &target_id, "velune", &mut target).unwrap();
     let target_records = std::fs::read_to_string(target.source_path()).unwrap();
     assert!(
         target_records
@@ -208,7 +194,7 @@ fn codex_native_to_managed_import_preserves_inter_agent_context_and_source_bytes
             .any(|record| record["type"] == "session_meta"
                 && record["payload"]["model_provider"] == "velune")
     );
-    let reexported = velune_agent_runtime::history::export_context(&config, &target_id).unwrap();
+    let reexported = history::export_context(&config, &target_id).unwrap();
     // Import remaps native item/tool identities. Ordered role/content and pairing
     // remain equivalent, including the attributed communication body.
     assert_eq!(reexported.messages.len(), exported.messages.len());

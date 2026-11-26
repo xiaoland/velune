@@ -6,7 +6,6 @@ fn ready_work() -> HandoffSummaryWork {
         kind: crate::conversation::RuntimeKind::Codex166,
         execution: velune_agent_runtime::execution::ExecutionTarget::Local,
         os_home: None,
-        provider: "codex".into(),
         binary: PathBuf::from("/synthetic/codex"),
         node_binary: PathBuf::new(),
         resources_directory: PathBuf::from("/synthetic/resources"),

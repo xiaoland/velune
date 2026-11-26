@@ -2,8 +2,8 @@
 //! several; requests address one at a time through `CoreRuntime::session`.
 use super::*;
 use velune_agent_runtime::{
-    creation::{DataRetention, Retained},
     LiveError,
+    creation::{DataRetention, Retained},
     work::{BackgroundTask, WorkStatus},
 };
 
@@ -101,7 +101,8 @@ impl Session {
     /// Keep the unpersisted fork's actual recovery provenance across reconfiguration.
     pub(super) fn refresh_pending_native_fork(&mut self) -> Result<(), RuntimeError> {
         if let ActiveState::Native(native) = &self.active_state {
-            self.pending_native_fork = native.pending_fork()
+            self.pending_native_fork = native
+                .pending_fork()
                 .map_err(|error| RuntimeError::context("保留待创建原生分支", error))?;
         }
         Ok(())
@@ -709,7 +710,9 @@ impl CoreRuntime {
                 });
             }
             active.extend(work.iter().filter_map(|task| {
-                task.conversation_id.as_ref().cloned()
+                task.conversation_id
+                    .as_ref()
+                    .cloned()
                     .map(|conversation_id| crate::ActiveConversation {
                         context_runtime_id: view.conversation.runtime_id.clone(),
                         conversation_id,
@@ -861,7 +864,7 @@ mod history_cache_tests {
         let mut hidden = history_session("hidden", 1);
         first.history_cache_weight = Some((1, 1, 40 * 1024 * 1024));
         second.history_cache_weight = Some((1, 1, 40 * 1024 * 1024));
-        hidden.history_cache_weight = Some((1, 1, 1 * 1024 * 1024));
+        hidden.history_cache_weight = Some((1, 1, 1024 * 1024));
         let mut parked = vec![first, second, hidden];
         let mut kept = vec![false; parked.len()];
         let visible = std::collections::BTreeSet::from([

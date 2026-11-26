@@ -141,8 +141,6 @@ sealed partial class LibraryWindow : Window
 
     VeluneApplication App => core.Local;
 
-    string KindName(RuntimeResourceKind shown) => Kinds.First(entry => entry.Kind == shown).Name;
-
     // Chosen is the chosen resource's draft, when a resource is chosen.
     Draft? Chosen => chosen is string key && Library.Drafts.TryGetValue(key, out var draft) ? draft : null;
 

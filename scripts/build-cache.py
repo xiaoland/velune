@@ -18,22 +18,6 @@ DOMAINS = {
     "build-tools": Path("target/build-tools"),
 }
 
-# Known historical output directories are visible in reports, but remain
-# protected until a replacement build path has been qualified. Add a name
-# here only with the task decision that retires that exact legacy directory.
-LEGACY = {
-    "debug": Path("target/debug"),
-    "release": Path("target/release"),
-    "ios-rust": Path("target/ios-rust"),
-    "ios-bindgen": Path("target/ios-bindgen"),
-    "android-bindgen": Path("target/android-bindgen"),
-    "android-native": Path("target/android-native"),
-    "aarch64-linux-android": Path("target/aarch64-linux-android"),
-}
-# Qualified by the new host dev / mobile builds and shared generator. The
-# shipped applications contain their own native libraries; none uses these
-# compiler caches at runtime. Keep old release and packaged outputs protected.
-RETIRED_LEGACY: frozenset[str] = frozenset({"debug", "ios-rust", "ios-bindgen", "android-bindgen", "aarch64-linux-android"})
 PLATFORMS = ("macos", "ios", "android", "windows")
 
 
@@ -96,16 +80,14 @@ def report(repo: Path) -> None:
         path = contained_path(repo, relative)
         size, files, links = usage(path)
         print(f"  domain {name}: {gib(size)}, {files} files, {links} links")
-    print("历史缓存（只报告；未获退役资格前不可清理）")
-    for name, relative in LEGACY.items():
-        path = contained_path(repo, relative)
-        if path.exists():
-            status = "可按显式退役清理" if name in RETIRED_LEGACY else "受保护"
-            # Some preexisting Cargo target directories contain hundreds of
-            # gigabytes. Reporting their metadata must not trigger another
-            # deep walk; their size is intentionally left to the operator's
-            # existing disk inventory until that exact domain is retired.
-            print(f"  {name}: {relative}; {status}，跳过深度扫描")
+    # Generated outputs, apps and task output live beside the domains. This
+    # tool never removes them, but their total must not stay invisible.
+    known = {relative.name for relative in DOMAINS.values()}
+    others = [Path(entry.path) for entry in os.scandir(repo / "target")
+              if entry.is_dir(follow_symlinks=False) and entry.name not in known]
+    if others:
+        size = sum(usage(path)[0] for path in others)
+        print(f"用途域以外：{len(others)} 个目录共 {gib(size)}（生成目录、App 与任务输出；本工具不回收）")
 
 
 def cargo_lock(path: Path):
@@ -145,13 +127,8 @@ def cargo_lock(path: Path):
         raise
 
 
-def prune(repo: Path, relative: Path, name: str, budget: int, apply: bool, retired: bool) -> None:
-    if retired:
-        if name not in RETIRED_LEGACY or LEGACY.get(name) != relative:
-            raise UnsafeCache(f"历史目录尚未登记为可替代并退役：{name}")
-    elif DOMAINS.get(name) != relative:
-        raise UnsafeCache("只能按名称选择已登记的构建域")
-
+def prune(repo: Path, name: str, budget: int, apply: bool) -> None:
+    relative = DOMAINS[name]
     path = contained_path(repo, relative)
     if not path.exists():
         print(f"{relative} 不存在，无需回收")
@@ -201,10 +178,9 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo", type=Path, default=Path(__file__).resolve().parents[1])
     sub = parser.add_subparsers(dest="action", required=True)
-    sub.add_parser("report", help="报告登记的构建缓存和历史目录")
+    sub.add_parser("report", help="报告各用途域的构建缓存")
     clean = sub.add_parser("prune", help="按缓存域预算预览或回收")
-    clean.add_argument("--domain", choices=DOMAINS)
-    clean.add_argument("--retired", choices=LEGACY, help="仅清理已验证退役并登记的历史域")
+    clean.add_argument("--domain", choices=DOMAINS, required=True)
     clean.add_argument("--budget-gib", type=float, required=True, help="缓存保留预算；超过后整体回收该域")
     clean.add_argument("--apply", action="store_true", help="执行预览中的回收")
     args = parser.parse_args(argv)
@@ -216,13 +192,9 @@ def main(argv: list[str] | None = None) -> int:
         if args.action == "report":
             report(repo)
             return 0
-        if bool(args.domain) == bool(args.retired):
-            raise UnsafeCache("prune 必须且只能选择 --domain 或 --retired")
         if not (0 <= args.budget_gib <= 1_048_576):
             raise UnsafeCache("预算须为 0 到 1,048,576 GiB")
-        name = args.domain or args.retired
-        relative = DOMAINS[name] if args.domain else LEGACY[name]
-        prune(repo, relative, name, int(args.budget_gib * 1024 ** 3), args.apply, bool(args.retired))
+        prune(repo, args.domain, int(args.budget_gib * 1024 ** 3), args.apply)
         if not args.apply:
             print("预览结束，磁盘内容未修改")
         return 0

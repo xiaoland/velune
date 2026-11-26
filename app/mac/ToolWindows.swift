@@ -717,22 +717,6 @@ extension ConversationWindowModel {
         return item
     }
 
-    /// The window's layout as a menu, for a tab's context menu: each tool's
-    /// places, the bottom area, the editor area alone and keeping the window in front.
-    func layoutMenuItem() -> NSMenuItem {
-        let menu = NSMenu()
-        for kind in ToolWindowKind.allCases { menu.addItem(placeMenuItem(for: kind)) }
-        menu.addItem(.separator())
-        menu.addItem(ClosureMenuItem(tools.tools(in: .bottom).isEmpty ? "显示底部区域" : "隐藏底部区域") { [weak self] in self?.tools.toggleArea(.bottom) })
-        menu.addItem(ClosureMenuItem(tools.isEditorOnly ? "恢复停靠区域" : "只显示编辑区") { [weak self] in self?.tools.toggleEditorOnly() })
-        let pin = ClosureMenuItem("保持在最前面") { [weak self] in self?.pinned.toggle() }
-        pin.state = pinned ? .on : .off
-        menu.addItem(pin)
-        let item = NSMenuItem(title: "布局", action: nil, keyEquivalent: "")
-        item.submenu = menu
-        return item
-    }
-
     /// The keyboard goes to the composer the focused pane sends with.
     func focusComposer() {
         // Put away with its area, it comes back with it.

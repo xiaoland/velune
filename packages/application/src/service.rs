@@ -23,6 +23,7 @@ use std::{
 use tokio::sync::broadcast;
 use velune_agent_runtime::creation::{DataRetention, Retained};
 mod list_refresh;
+use velune_application_api::{CommandRoute, ExecutionCommandKind, HandoffRoute, HistoryLookup};
 mod queued_handoff;
 use list_refresh::PendingListRefresh;
 
@@ -131,41 +132,6 @@ impl ViewObservations {
 }
 
 type CommandReply = mpsc::Sender<Result<ApplicationReply, Failure>>;
-
-fn history_address(command: &Command) -> Option<(String, String, bool)> {
-    match command {
-        Command::ReadSnapshot {
-            runtime_id,
-            conversation_id,
-        }
-        | Command::ReadSnapshotUpdate {
-            runtime_id,
-            conversation_id,
-            ..
-        } => Some((runtime_id.clone(), conversation_id.clone(), false)),
-        Command::OpenConversation {
-            runtime_id,
-            conversation_id,
-        } => Some((runtime_id.clone(), conversation_id.clone(), true)),
-        Command::ReadComposerTargetIdentity { request }
-        | Command::ReadComposerTargetBasis { request, .. } => request
-            .conversation_id
-            .as_ref()
-            .filter(|id| !id.starts_with("draft:") && !id.starts_with("side-chat:"))
-            .map(|id| (request.runtime_id.clone(), id.clone(), false)),
-        Command::SetConversationHandoff {
-            runtime_id,
-            conversation_id,
-            ..
-        }
-        | Command::OpenSideChat {
-            runtime_id,
-            conversation_id,
-            ..
-        } => Some((runtime_id.clone(), conversation_id.clone(), false)),
-        _ => None,
-    }
-}
 
 struct PendingHistory {
     view: ClientViewId,
@@ -495,7 +461,8 @@ struct Owner {
     history: HistoryWorkers,
     pending_history: BTreeMap<u64, PendingHistory>,
     pending_list_refresh: Option<PendingListRefresh>,
-    pending_execution: BTreeMap<crate::local::execution_workers::ExecutionTicket, PendingExecutionReply>,
+    pending_execution:
+        BTreeMap<crate::local::execution_workers::ExecutionTicket, PendingExecutionReply>,
     handoff_requirements: BTreeMap<String, HandoffRequirementEntry>,
     pending_handoff_requirements: BTreeMap<u64, String>,
     handoff_summary_works: BTreeMap<String, HandoffSummaryWork>,
@@ -513,7 +480,7 @@ struct PendingExecutionReply {
 }
 
 enum ExecutionReplyDelivery {
-    Conversation(ConversationExecutionReply),
+    Conversation(Box<ConversationExecutionReply>),
     HandoffCancellation,
 }
 
@@ -723,73 +690,72 @@ struct PendingPreparedHandoff {
     cancellation: Option<Arc<AtomicBool>>,
 }
 
+struct LiveExecution {
+    kind: ExecutionCommandKind,
+    runtime_id: String,
+    conversation_id: String,
+}
+
 impl Owner {
     fn execute_live_command(
         &mut self,
+        execution: LiveExecution,
         view: ClientViewId,
         context: Option<ExecutionContext>,
         command: Command,
         cancellation: Option<Arc<AtomicBool>>,
         reply: CommandReply,
     ) {
-        let creation = matches!(&command, Command::CreateConversation { .. });
-        let (runtime_id, conversation_id, response): (_, _, fn(crate::SnapshotResult) -> Response) = match &command {
-            Command::CreateConversation { runtime_id, .. } =>
-                (runtime_id.clone(), String::new(), Response::CreateConversation),
-            Command::Cancel { runtime_id, conversation_id } =>
-                (runtime_id.clone(), conversation_id.clone(), Response::Cancel),
-            Command::StopSubAgents { runtime_id, conversation_id } =>
-                (runtime_id.clone(), conversation_id.clone(), Response::StopSubAgents),
-            Command::ReplyRuntimeInteraction { runtime_id, conversation_id, .. } =>
-                (runtime_id.clone(), conversation_id.clone(), Response::ReplyRuntimeInteraction),
-            Command::SendTurn { source_runtime_id, conversation_id, .. }
-            | Command::SendCurrentTurn { source_runtime_id, conversation_id, .. } =>
-                (source_runtime_id.clone(), conversation_id.clone(), Response::SendTurn),
-            Command::DeleteUserMessage { runtime_id, conversation_id, .. } =>
-                (runtime_id.clone(), conversation_id.clone(), Response::DeleteUserMessage),
-            Command::EditMessage { runtime_id, conversation_id, .. } =>
-                (runtime_id.clone(), conversation_id.clone(), Response::EditMessage),
-            Command::ResumeTurn { runtime_id, conversation_id, .. } =>
-                (runtime_id.clone(), conversation_id.clone(), Response::ResumeTurn),
-            Command::SteerTurn { runtime_id, conversation_id, .. } =>
-                (runtime_id.clone(), conversation_id.clone(), Response::SteerTurn),
-            _ => unreachable!("live command classification"),
-        };
-        let kind = match &command {
-            Command::CreateConversation { .. } => crate::local::execution_workers::ExecutionCommandKind::Create,
-            Command::Cancel { .. } => crate::local::execution_workers::ExecutionCommandKind::Cancel,
-            Command::StopSubAgents { .. } => crate::local::execution_workers::ExecutionCommandKind::StopBackground,
-            Command::ReplyRuntimeInteraction { .. } => crate::local::execution_workers::ExecutionCommandKind::Reply,
-            Command::SendTurn { .. } | Command::SendCurrentTurn { .. } => crate::local::execution_workers::ExecutionCommandKind::Send,
-            Command::ResumeTurn { .. } => crate::local::execution_workers::ExecutionCommandKind::Resume,
-            Command::SteerTurn { .. } => crate::local::execution_workers::ExecutionCommandKind::Steer,
-            Command::EditMessage { .. } => crate::local::execution_workers::ExecutionCommandKind::Edit,
-            Command::DeleteUserMessage { .. } => crate::local::execution_workers::ExecutionCommandKind::Delete,
-            _ => unreachable!("live command classification"),
-        };
+        let LiveExecution {
+            kind,
+            runtime_id,
+            conversation_id,
+        } = execution;
+        let creation = kind == ExecutionCommandKind::Create;
+        let response = kind.response();
         if let Err(error) = self.application.runtime.begin_execution_command(kind) {
             let _ = reply.send(Err(Failure::from(error)));
             return;
         }
         self.application.runtime.submission_cancellation = cancellation
-            .filter(|_| kind.is_submission()).map(|flag| (conversation_id.clone(), flag));
+            .filter(|_| kind.is_submission())
+            .map(|flag| (conversation_id.clone(), flag));
         let result = self.execute(view.clone(), context.clone(), command);
         self.application.runtime.submission_cancellation = None;
         if let Some(ticket) = self.application.runtime.finish_execution_command() {
-            let view_created = self.views.get(&view).expect("command view retained").created;
+            let view_created = self
+                .views
+                .get(&view)
+                .expect("command view retained")
+                .created;
             let address = if creation {
                 self.application.runtime.execution_creation_address(ticket)
             } else {
-                self.application.runtime.execution_reply_address(&runtime_id, &conversation_id)
-            }.map_err(Failure::from);
-            self.pending_execution.insert(ticket, PendingExecutionReply {
-                dispatch_failure: result.err(),
-                delivery: ExecutionReplyDelivery::Conversation(ConversationExecutionReply {
-                    view, view_created, context, runtime_id, conversation_id, address,
-                    creation, submission: kind.is_submission(), response,
-                }),
-                reply,
-            });
+                self.application
+                    .runtime
+                    .execution_reply_address(&runtime_id, &conversation_id)
+            }
+            .map_err(Failure::from);
+            self.pending_execution.insert(
+                ticket,
+                PendingExecutionReply {
+                    dispatch_failure: result.err(),
+                    delivery: ExecutionReplyDelivery::Conversation(Box::new(
+                        ConversationExecutionReply {
+                            view,
+                            view_created,
+                            context,
+                            runtime_id,
+                            conversation_id,
+                            address,
+                            creation,
+                            submission: kind.is_submission(),
+                            response,
+                        },
+                    )),
+                    reply,
+                },
+            );
         } else {
             let _ = reply.send(result);
         }
@@ -797,8 +763,11 @@ impl Owner {
 
     fn finish_execution_commands(&mut self) {
         for (ticket, result) in self.application.runtime.drain_execution_results() {
-            let Some(PendingExecutionReply { dispatch_failure, delivery, reply }) =
-                self.pending_execution.remove(&ticket)
+            let Some(PendingExecutionReply {
+                dispatch_failure,
+                delivery,
+                reply,
+            }) = self.pending_execution.remove(&ticket)
             else {
                 if let Err(error) = result {
                     tracing::warn!(target: "velune_application", event = "runtime_operation_failed", detail = %error);
@@ -815,32 +784,43 @@ impl Owner {
                 let _ = reply.send(result);
                 continue;
             };
-            let refresh_error = |error: String| Failure::from(if pending.submission {
-                Error::after_delivery(error)
-            } else {
-                Error::operation_completed(error)
-            });
+            let submission = pending.submission;
+            let refresh_error = |error: String| {
+                Failure::from(if submission {
+                    Error::after_delivery(error)
+                } else {
+                    Error::operation_completed(error)
+                })
+            };
             let result = result.map_err(Failure::from).and_then(|success| {
                 if let Some(error) = dispatch_failure {
                     return Err(refresh_error(error.to_string()));
                 }
-                if self.views.get(&pending.view)
+                if self
+                    .views
+                    .get(&pending.view)
                     .is_none_or(|view| view.created != pending.view_created)
                 {
                     return Err(refresh_error("原请求视图已关闭".into()));
                 }
-                let address = pending.address.map_err(|error| refresh_error(error.to_string()))?;
+                let address = pending
+                    .address
+                    .map_err(|error| refresh_error(error.to_string()))?;
                 let remote = pending.context.is_some();
-                let mut response = self.with_view(&pending.view, remote, |application| {
-                    if pending.creation {
-                        application.runtime.completed_creation_snapshot(address)
-                    } else {
-                        application.runtime.completed_execution_snapshot(
-                            address, &pending.runtime_id, &pending.conversation_id,
-                            success.submitted_native_message_id,
-                        )
-                    }
-                }).map_err(|error| refresh_error(error.to_string()))?;
+                let mut response = self
+                    .with_view(&pending.view, remote, |application| {
+                        if pending.creation {
+                            application.runtime.completed_creation_snapshot(address)
+                        } else {
+                            application.runtime.completed_execution_snapshot(
+                                address,
+                                &pending.runtime_id,
+                                &pending.conversation_id,
+                                success.submitted_native_message_id,
+                            )
+                        }
+                    })
+                    .map_err(|error| refresh_error(error.to_string()))?;
                 if pending.submission {
                     response.submission_receipt = Some(crate::SubmissionReceipt::Sending);
                 }
@@ -857,7 +837,8 @@ impl Owner {
         context: Option<ExecutionContext>,
         command: Command,
     ) -> Result<ApplicationReply, Failure> {
-        if context.is_some() && command.requires_revision() {
+        let traits = command.traits();
+        if context.is_some() && traits.requires_revision() {
             let expected = context
                 .as_ref()
                 .and_then(|context| context.expected_revision);
@@ -891,9 +872,9 @@ impl Owner {
             return self.response_for(context.is_some(), Response::SetObservedConversations);
         }
         for pending in self.pending_history.values_mut() {
-            pending.invalidated |= affects_history(&command, &pending.affected_ids);
+            pending.invalidated |= traits.affects_history(&pending.affected_ids);
         }
-        let changes = command.changes_shared_state();
+        let changes = traits.changes_shared_state();
         let result = self.with_view(&view, context.is_some(), |application| {
             application.execute_command(command, context.is_some(), &view)
         });
@@ -1736,9 +1717,10 @@ impl Owner {
             )
         };
         let (work_id, source, facts, summary) = prepared;
-        let (Some(source_provider_id), Some(source_model_id)) =
-            (facts.source_provider_id.clone(), facts.source_model_id.clone())
-        else {
+        let (Some(source_provider_id), Some(source_model_id)) = (
+            facts.source_provider_id.clone(),
+            facts.source_model_id.clone(),
+        ) else {
             if let Some(work) = self.handoff_summary_works.get_mut(&work_id) {
                 work.send_pending = false;
             }
@@ -1838,9 +1820,10 @@ impl Owner {
                 return;
             }
         };
-        let changes = pending.command.changes_shared_state();
+        let traits = pending.command.traits();
+        let changes = traits.changes_shared_state();
         for history in self.pending_history.values_mut() {
-            history.invalidated |= affects_history(&pending.command, &history.affected_ids);
+            history.invalidated |= traits.affects_history(&history.affected_ids);
         }
         let conversation_id = match &pending.command {
             Command::SendPreparedHandoff {
@@ -1916,7 +1899,11 @@ impl Owner {
             });
         if let Some((conversation_id, target_runtime_id, view, execution_id)) = accepted {
             use crate::local::execution_workers::ExecutionCommandKind;
-            if let Err(error) = self.application.runtime.begin_execution_command(ExecutionCommandKind::Cancel) {
+            if let Err(error) = self
+                .application
+                .runtime
+                .begin_execution_command(ExecutionCommandKind::Cancel)
+            {
                 let _ = reply.send(Err(Failure::from(error)));
                 return;
             }
@@ -1941,11 +1928,14 @@ impl Owner {
                 })
                 .map_err(Failure::from);
             if let Some(ticket) = self.application.runtime.finish_execution_command() {
-                self.pending_execution.insert(ticket, PendingExecutionReply {
-                    dispatch_failure: result.err(),
-                    delivery: ExecutionReplyDelivery::HandoffCancellation,
-                    reply,
-                });
+                self.pending_execution.insert(
+                    ticket,
+                    PendingExecutionReply {
+                        dispatch_failure: result.err(),
+                        delivery: ExecutionReplyDelivery::HandoffCancellation,
+                        reply,
+                    },
+                );
             } else {
                 let _ = reply.send(result.and_then(|()| self.handoff_cancelled_response()));
             }
@@ -2072,7 +2062,8 @@ impl Owner {
     fn advance_handoff_summaries(&mut self) {
         use velune_application_api::HandoffSummaryStatus as Status;
         let now = Instant::now();
-        self.handoff_summary_works.retain(|_, work| work.is_retained(now));
+        self.handoff_summary_works
+            .retain(|_, work| work.is_retained(now));
         for (work_id, work) in &mut self.handoff_summary_works {
             let Some(session) = &mut work.session else {
                 continue;
@@ -2089,7 +2080,7 @@ impl Owner {
                         status.as_deref(),
                         Some(
                             velune_agent_runtime::native::HandoffSummaryStatus::Ready { .. }
-                            | velune_agent_runtime::native::HandoffSummaryStatus::Failed { .. }
+                                | velune_agent_runtime::native::HandoffSummaryStatus::Failed { .. }
                         )
                     ) =>
                 {
@@ -2563,146 +2554,152 @@ impl Owner {
                     reply,
                 }) => {
                     let dequeued = Instant::now();
-                    if !matches!(command.as_ref(), Command::ReleaseView) {
+                    if command.traits().touch_view {
                         self.touch_client_view(&view, presentation_isolated || context.is_some());
                     }
                     tracing::dispatcher::with_default(&dispatch, || {
                         let _entered = span.enter();
+                        // Routes borrow the command; each arm copies what it needs
+                        // before taking the command itself.
+                        let traits = command.traits();
                         let elapsed_ms = (dequeued - queued_at).as_millis() as u64;
                         let kind = command.kind();
-                        if elapsed_ms >= 100
-                            || matches!(
-                                *command,
-                                Command::ReadConversation { .. }
-                                    | Command::OpenConversation { .. }
-                                    | Command::SendTurn { .. }
-                                    | Command::SendCurrentTurn { .. }
-                                    | Command::ReplyRuntimeInteraction { .. }
-                                    | Command::Cancel { .. }
-                                    | Command::SetConversationHandoff { .. }
-                            )
-                        {
+                        if elapsed_ms >= 100 || traits.trace_owner_queue {
                             tracing::info!(target: "velune_application", event = "application_command", phase = "owner_queue", command = ?kind, elapsed_ms);
                         }
-                        match *command {
-                            Command::ReadConfiguration => {
-                                self.start_list_refresh(view, context.is_some(), reply, history_completion);
-                            }
-                            command @ (Command::CreateConversation { .. }
-                            | Command::Cancel { .. }
-                            | Command::StopSubAgents { .. }
-                            | Command::ReplyRuntimeInteraction { .. }
-                            | Command::SendTurn { .. }
-                            | Command::SendCurrentTurn { .. }
-                            | Command::ResumeTurn { .. }
-                            | Command::SteerTurn { .. }
-                            | Command::EditMessage { .. }
-                            | Command::DeleteUserMessage { .. }) => {
-                                self.execute_live_command(view, context, command, cancellation, reply);
-                            }
-                            command @ (Command::QueueHandoffSummary { .. }
-                            | Command::RetryQueuedHandoffSummary { .. }) => {
-                                self.queue_handoff_summary(
+                        match traits.route {
+                            CommandRoute::Live(route) => {
+                                let execution = LiveExecution {
+                                    kind: route.kind,
+                                    runtime_id: route.address.runtime_id.to_owned(),
+                                    conversation_id: route
+                                        .address
+                                        .conversation_id
+                                        .unwrap_or_default()
+                                        .to_owned(),
+                                };
+                                self.execute_live_command(
+                                    execution,
                                     view,
                                     context,
-                                    command,
+                                    *command,
+                                    cancellation,
                                     reply,
-                                    history_completion.clone(),
                                 );
                             }
-                            Command::BeginHandoffSummary {
-                                source_runtime_id,
-                                conversation_id,
-                                target_runtime_id,
-                                summary_model,
-                                effort,
-                            } => {
-                                self.begin_handoff_summary(BeginHandoffSummaryRequest {
-                                    source_runtime_id,
-                                    conversation_id,
+                            CommandRoute::Handoff(route) => match route {
+                                HandoffRoute::QueueSummary => {
+                                    self.queue_handoff_summary(
+                                        view,
+                                        context,
+                                        *command,
+                                        reply,
+                                        history_completion.clone(),
+                                    );
+                                }
+                                HandoffRoute::BeginSummary {
+                                    source,
                                     target_runtime_id,
                                     summary_model,
                                     effort,
-                                    remote: context.is_some(),
-                                    reply,
-                                    completion: history_completion.clone(),
-                                });
-                            }
-                            Command::ReadHandoffSummary { work_id } => {
-                                self.read_handoff_summary(work_id, context.is_some(), reply);
-                            }
-                            Command::CancelHandoffSummary { work_id } => {
-                                self.cancel_handoff_summary(work_id, context.is_some(), reply);
-                            }
-                            command @ Command::SendPreparedHandoff { .. } => {
-                                self.send_prepared_handoff(
-                                    view,
-                                    context,
-                                    command,
-                                    cancellation,
-                                    reply,
-                                    history_completion.clone(),
-                                );
-                            }
-                            Command::ReadHandoffRequirements {
-                                source_runtime_id,
-                                conversation_id,
-                                target_runtime_id,
-                                request_id,
-                            } => {
-                                self.read_handoff_requirements(HandoffRequirementsRequest {
-                                    view,
-                                    context,
-                                    source_runtime_id,
-                                    conversation_id,
+                                } => {
+                                    self.begin_handoff_summary(BeginHandoffSummaryRequest {
+                                        source_runtime_id: source.runtime_id.to_owned(),
+                                        conversation_id: source.conversation_id.to_owned(),
+                                        target_runtime_id: target_runtime_id.to_owned(),
+                                        summary_model: summary_model.cloned(),
+                                        effort: effort.map(str::to_owned),
+                                        remote: context.is_some(),
+                                        reply,
+                                        completion: history_completion.clone(),
+                                    });
+                                }
+                                HandoffRoute::ReadSummary(work_id) => {
+                                    self.read_handoff_summary(
+                                        work_id.to_owned(),
+                                        context.is_some(),
+                                        reply,
+                                    );
+                                }
+                                HandoffRoute::CancelSummary(work_id) => {
+                                    self.cancel_handoff_summary(
+                                        work_id.to_owned(),
+                                        context.is_some(),
+                                        reply,
+                                    );
+                                }
+                                HandoffRoute::SendPrepared => {
+                                    self.send_prepared_handoff(
+                                        view,
+                                        context,
+                                        *command,
+                                        cancellation,
+                                        reply,
+                                        history_completion.clone(),
+                                    );
+                                }
+                                HandoffRoute::ReadRequirements {
+                                    source,
                                     target_runtime_id,
                                     request_id,
+                                } => {
+                                    self.read_handoff_requirements(HandoffRequirementsRequest {
+                                        view,
+                                        context,
+                                        source_runtime_id: source.runtime_id.to_owned(),
+                                        conversation_id: source.conversation_id.to_owned(),
+                                        target_runtime_id: target_runtime_id.to_owned(),
+                                        request_id: request_id.map(str::to_owned),
+                                        reply,
+                                        completion: history_completion.clone(),
+                                    });
+                                }
+                            },
+                            CommandRoute::ListRefresh => {
+                                self.start_list_refresh(
+                                    view,
+                                    context.is_some(),
                                     reply,
-                                    completion: history_completion.clone(),
-                                });
+                                    history_completion,
+                                );
                             }
-                            Command::ReadConversation {
-                                runtime_id,
-                                conversation_id,
-                            } => {
+                            CommandRoute::ReadHistory(address) => {
                                 self.start_history(StartHistoryRequest {
                                     view,
                                     context,
-                                    runtime_id,
-                                    id: conversation_id,
+                                    runtime_id: address.runtime_id.to_owned(),
+                                    id: address.conversation_id.to_owned(),
                                     purpose: HistoryPurpose::ReadConversation,
                                     reply,
                                     completion: history_completion.clone(),
                                 });
                             }
-                            command @ (Command::ReadSnapshot { .. }
-                            | Command::ReadSnapshotUpdate { .. }
-                            | Command::OpenConversation { .. }
-                            | Command::ReadComposerTargetIdentity { .. }
-                            | Command::ReadComposerTargetBasis { .. }
-                            | Command::SetConversationHandoff { .. }
-                            | Command::OpenSideChat { .. }) => {
+                            CommandRoute::HistoryWithSourceRefresh(lookup) => {
+                                let (address, refresh) = match lookup {
+                                    HistoryLookup::Refresh(address) => (Some(address), true),
+                                    HistoryLookup::Retry(address) => (address, false),
+                                };
                                 let source_completion = history_completion.clone();
                                 let source_view = view.clone();
                                 let source_context = context.clone();
-                                if let Some((runtime_id, conversation_id, refresh)) =
-                                    history_address(&command)
-                                {
+                                if let Some(address) = address {
+                                    let runtime_id = address.runtime_id.to_owned();
+                                    let id = address.conversation_id.to_owned();
                                     self.start_history(StartHistoryRequest {
-                                        view: view.clone(),
-                                        context: context.clone(),
+                                        view,
+                                        context,
                                         runtime_id,
-                                        id: conversation_id,
+                                        id,
                                         purpose: if refresh {
                                             HistoryPurpose::Refresh
                                         } else {
-                                            HistoryPurpose::Retry(Box::new(command))
+                                            HistoryPurpose::Retry(command)
                                         },
                                         reply,
                                         completion: history_completion.clone(),
                                     });
                                 } else {
-                                    let result = self.execute(view, context, command);
+                                    let result = self.execute(view, context, *command);
                                     let _ = reply.send(result);
                                 }
                                 self.schedule_source_refresh(
@@ -2711,18 +2708,13 @@ impl Owner {
                                     source_completion,
                                 );
                             }
-                            command => {
+                            CommandRoute::Owner {
+                                submission_conversation_id,
+                            } => {
                                 self.application.runtime.submission_cancellation = cancellation
-                                    .and_then(|flag| match &command {
-                                        Command::SendTurn {
-                                            conversation_id, ..
-                                        } => Some((conversation_id.clone(), flag)),
-                                        Command::SendSideChat { side_chat_id, .. } => {
-                                            Some((side_chat_id.clone(), flag))
-                                        }
-                                        _ => None,
-                                    });
-                                let result = self.execute(view, context, command);
+                                    .zip(submission_conversation_id)
+                                    .map(|(flag, id)| (id.to_owned(), flag));
+                                let result = self.execute(view, context, *command);
                                 self.application.runtime.submission_cancellation = None;
                                 let _ = reply.send(result);
                             }
@@ -2994,58 +2986,6 @@ impl ApplicationService {
     }
 }
 
-fn affects_history(command: &Command, ids: &[String]) -> bool {
-    use Command::*;
-    match command {
-        RenameConversation {
-            conversation_id, ..
-        }
-        | DeleteConversation {
-            conversation_id, ..
-        }
-        | SendTurn {
-            conversation_id, ..
-        }
-        | SendCurrentTurn {
-            conversation_id, ..
-        }
-        | DeleteUserMessage {
-            conversation_id, ..
-        }
-        | EditMessage {
-            conversation_id, ..
-        }
-        | CompactConversation {
-            conversation_id, ..
-        }
-        | ResumeTurn {
-            conversation_id, ..
-        }
-        | SteerTurn {
-            conversation_id, ..
-        }
-        | EditSendQueue {
-            conversation_id, ..
-        }
-        | ReplyRuntimeInteraction {
-            conversation_id, ..
-        }
-        | Cancel {
-            conversation_id, ..
-        }
-        | StopSubAgents {
-            conversation_id, ..
-        }
-        | SetConversationHandoff {
-            conversation_id, ..
-        } => ids.contains(conversation_id),
-        OrganizeConversations { conversations, .. } => conversations
-            .iter()
-            .any(|reference| ids.contains(&reference.conversation_id)),
-        _ => false,
-    }
-}
-
 fn closed() -> Failure {
     Failure::new(FailureKind::Closed, "应用执行端已关闭")
 }
@@ -3066,30 +3006,20 @@ mod execution_tests;
 mod usage_tests {
     use super::*;
     use crate::config::UsageDisplay::{Remaining, Used};
-    use std::{fs, path::PathBuf};
+    use std::fs;
+    use velune_test_support::TempRoot;
 
-    struct Fixture(PathBuf);
+    struct Fixture(TempRoot);
     impl Fixture {
         fn new() -> Self {
-            // Tests run in parallel; a clock-based name can repeat within its resolution.
-            let mut nonce = [0; 8];
-            getrandom::fill(&mut nonce).unwrap();
-            let path =
-                std::env::temp_dir().join(format!("velune-usage-{:x}", u64::from_le_bytes(nonce)));
-            fs::create_dir(&path).unwrap();
-            Self(path)
+            Self(TempRoot::new("usage"))
         }
         fn open(&self) -> ApplicationService {
             ApplicationService::open(Options {
-                home_directory: self.0.clone(),
-                resources_directory: self.0.clone(),
+                home_directory: self.0.to_path_buf(),
+                resources_directory: self.0.to_path_buf(),
             })
             .unwrap()
-        }
-    }
-    impl Drop for Fixture {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.0);
         }
     }
     fn display(
@@ -3188,7 +3118,10 @@ mod usage_tests {
         .unwrap();
 
         assert_eq!(browser_preferences(&app, "local"), main);
-        assert_eq!(browser_preferences_isolated(&app, "archive-window"), archive);
+        assert_eq!(
+            browser_preferences_isolated(&app, "archive-window"),
+            archive
+        );
         app.execute(ClientViewId("archive-window".into()), Command::ReleaseView)
             .unwrap();
         assert_eq!(browser_preferences(&app, "local"), main);

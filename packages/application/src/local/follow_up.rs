@@ -906,7 +906,9 @@ impl CoreRuntime {
         let claude_control =
             runtime.type_id == RuntimeKind::ClaudeCode && turn.permission_mode.is_some();
         if target_runtime_id.is_some_and(|target| target != runtime_id) {
-            return Err(RuntimeError::invalid("当前轮次不能切换运行时，请排队发送此消息"));
+            return Err(RuntimeError::invalid(
+                "当前轮次不能切换运行时，请排队发送此消息",
+            ));
         }
         if let Some(mode) = turn.permission_mode.as_deref() {
             self.validate_permission_mode(runtime, mode)?;

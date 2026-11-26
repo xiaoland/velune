@@ -1,9 +1,10 @@
 //! Actual stream-json control writes with synthetic task events; no model runs.
 use super::*;
 use std::os::unix::fs::PermissionsExt;
+use velune_test_support::TempRoot;
 
 struct Fixture {
-    root: PathBuf,
+    root: TempRoot,
     session: NativeSession,
 }
 impl Fixture {
@@ -11,11 +12,7 @@ impl Fixture {
         Self::with_version("2.1.292")
     }
     fn with_version(version: &str) -> Self {
-        let mut nonce = [0; 8];
-        getrandom::fill(&mut nonce).unwrap();
-        let root =
-            std::env::temp_dir().join(format!("velune-background-{:x}", u64::from_le_bytes(nonce)));
-        std::fs::create_dir(&root).unwrap();
+        let root = TempRoot::new("background");
         let binary = root.join("claude");
         std::fs::write(&binary, r#"#!/usr/bin/python3
 import json,sys,os
@@ -30,19 +27,19 @@ for line in sys.stdin:
         std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
         let mut session = NativeSession::connect(NativeConfig {
             execution: crate::execution::ExecutionTarget::Local,
-            os_home: Some(root.clone()),
+            os_home: Some(root.to_path_buf()),
             kind: NativeKind::ClaudeCode,
             binary,
             node_binary: None,
-            agent_dir: root.clone(),
-            resources_directory: root.clone(),
-            projection_directory: root.clone(),
+            agent_dir: root.to_path_buf(),
+            resources_directory: root.to_path_buf(),
+            projection_directory: root.to_path_buf(),
             gateway: None,
             mcp_servers: vec![],
             session_agents: vec![],
         })
         .unwrap();
-        session.replace_snapshot("parent", Some(&root), "runtime", vec![]);
+        session.replace_snapshot("parent", Some(root.path()), "runtime", vec![]);
         session.native_id = Some("parent".into());
         session.running();
         Self { root, session }
@@ -51,16 +48,17 @@ for line in sys.stdin:
         self.session.claude_handle_record(value).unwrap();
     }
     fn task(&self, title: &str) -> Retained<BackgroundTaskInfo> {
-        self.session
-            .background_tasks()
-            .unwrap()
-            .map(|list| list.tasks.into_iter().find(|task| task.title == title).unwrap())
+        self.session.background_tasks().unwrap().map(|list| {
+            list.tasks
+                .into_iter()
+                .find(|task| task.title == title)
+                .unwrap()
+        })
     }
 }
 impl Drop for Fixture {
     fn drop(&mut self) {
         let _ = self.session.shutdown();
-        std::fs::remove_dir_all(&self.root).unwrap();
     }
 }
 
@@ -231,7 +229,10 @@ fn claude_reuses_the_background_child_and_settles_only_the_matching_foreground()
         .clone();
     f.event(json!({"type":"system","subtype":"task_started","task_id":"inline","run_id":"inline-run","task_type":"local_agent","is_backgrounded":false}));
     f.event(json!({"type":"system","subtype":"task_updated","task_id":"inline","run_id":"inline-run","patch":{"status":"completed"}}));
-    assert!(!f.session.waits_for_background_followup(), "foreground tool completion needs no automatic response");
+    assert!(
+        !f.session.waits_for_background_followup(),
+        "foreground tool completion needs no automatic response"
+    );
     f.event(json!({"type":"system","subtype":"task_started","task_id":"shell","run_id":"run","task_type":"local_bash","description":"shell","is_backgrounded":true}));
     f.event(json!({"type":"result","subtype":"success","user_message_uuid":first}));
     f.event(json!({"type":"command_lifecycle","state":"completed","command_uuid":first}));
@@ -710,13 +711,12 @@ fn claude_compaction_order_matches_cold_history_through_repeated_boundaries() {
         &crate::history::HistoryConfig {
             kind: crate::version::RuntimeKind::ClaudeCode,
             execution: f.session.config.execution.clone(),
-            os_home: Some(f.root.clone()),
-            provider: "claude-code".into(),
+            os_home: Some(f.root.to_path_buf()),
             binary: f.session.config.binary.clone(),
             node_binary: PathBuf::new(),
-            resources_directory: f.root.clone(),
+            resources_directory: f.root.to_path_buf(),
             root: projects,
-            home: f.root.clone(),
+            home: f.root.to_path_buf(),
         },
         "runtime",
         native_id,
@@ -840,11 +840,16 @@ fn claude_api_failure_preserves_reason_and_settles_on_native_idle() {
         f.event(json!({"type":"system","subtype":"session_state_changed","state":"idle"}));
         let snapshot = f.session.snapshot.as_ref().unwrap();
         assert_eq!(snapshot.run_state, RunState::Failed);
-        assert_eq!(snapshot.messages.last().unwrap().blocks, vec![MessageBlock::RuntimeFailure {
-            failure: RuntimeFailureKind::Other,
-            detail: "Login expired · Please run /login\nClaude Code 错误类型：authentication_failed".into(),
-            retry: None,
-        }]);
+        assert_eq!(
+            snapshot.messages.last().unwrap().blocks,
+            vec![MessageBlock::RuntimeFailure {
+                failure: RuntimeFailureKind::Other,
+                detail:
+                    "Login expired · Please run /login\nClaude Code 错误类型：authentication_failed"
+                        .into(),
+                retry: None,
+            }]
+        );
         let notices: Vec<_> = snapshot.messages.iter().flat_map(|m| &m.blocks).collect();
         assert!(notices.iter().any(|b| matches!(b, MessageBlock::RuntimeFailure {detail: text, ..} if text.contains("Login expired · Please run /login"))));
         assert!(notices.iter().any(|b| matches!(b, MessageBlock::RuntimeFailure {detail: text, ..} if text.contains("authentication_failed"))));
@@ -907,23 +912,43 @@ fn claude_api_failure_cold_history_deserializes_and_stays_in_failed_work() {
         json!({"type":"assistant","uuid":"error","parentUuid":"notification","isApiErrorMessage":true,"error":"authentication_failed","message":{"stop_reason":"stop_sequence","content":[{"type":"text","text":"Login expired · Please run /login"}]}}),
         json!({"type":"system","uuid":"duration","parentUuid":"error","subtype":"turn_duration","durationMs":2356}),
     ];
-    std::fs::write(projects.join(format!("{native_id}.jsonl")), records.iter().map(|r| format!("{r}\n")).collect::<String>()).unwrap();
-    let history = crate::history::read(&crate::history::HistoryConfig {
-        kind: crate::version::RuntimeKind::ClaudeCode,
-        execution: f.session.config.execution.clone(), os_home: Some(f.root.clone()),
-        provider: "claude-code".into(), binary: f.session.config.binary.clone(),
-        node_binary: PathBuf::new(), resources_directory: f.root.clone(),
-        root: projects, home: f.root.clone(),
-    }, "runtime", native_id).unwrap();
+    std::fs::write(
+        projects.join(format!("{native_id}.jsonl")),
+        records.iter().map(|r| format!("{r}\n")).collect::<String>(),
+    )
+    .unwrap();
+    let history = crate::history::read(
+        &crate::history::HistoryConfig {
+            kind: crate::version::RuntimeKind::ClaudeCode,
+            execution: f.session.config.execution.clone(),
+            os_home: Some(f.root.to_path_buf()),
+            binary: f.session.config.binary.clone(),
+            node_binary: PathBuf::new(),
+            resources_directory: f.root.to_path_buf(),
+            root: projects,
+            home: f.root.to_path_buf(),
+        },
+        "runtime",
+        native_id,
+    )
+    .unwrap();
     let error = history.messages.last().unwrap();
     assert_eq!(error.role, MessageRole::System);
-    assert_eq!(error.blocks, vec![MessageBlock::RuntimeFailure {
-        failure: RuntimeFailureKind::Other,
-        detail: "Login expired · Please run /login\nClaude Code 错误类型：authentication_failed".into(),
-        retry: None,
-    }]);
+    assert_eq!(
+        error.blocks,
+        vec![MessageBlock::RuntimeFailure {
+            failure: RuntimeFailureKind::Other,
+            detail:
+                "Login expired · Please run /login\nClaude Code 错误类型：authentication_failed"
+                    .into(),
+            retry: None,
+        }]
+    );
     let mut projection = TranscriptProjection::default();
-    projection.apply(TranscriptEvent::Replace {messages: &history.messages, executions: &history.executions});
+    projection.apply(TranscriptEvent::Replace {
+        messages: &history.messages,
+        executions: &history.executions,
+    });
     let turns = projection.turns();
     assert_eq!(turns.len(), 1);
     assert_eq!(turns[0].outcome, Some(TurnOutcome::Failed));

@@ -122,13 +122,15 @@ impl ExecutionBackends {
             return Ok(Continuation::None);
         };
         self.claude_code.validate_result_ids(session, ids)?;
-        Ok(match (
-            self.claude_code.continuation(session),
-            self.antigravity.continuation(session),
-        ) {
-            (Continuation::None, owner) | (owner, Continuation::None) => owner,
-            _ => Continuation::Invalidated,
-        })
+        Ok(
+            match (
+                self.claude_code.continuation(session),
+                self.antigravity.continuation(session),
+            ) {
+                (Continuation::None, owner) | (owner, Continuation::None) => owner,
+                _ => Continuation::Invalidated,
+            },
+        )
     }
     pub fn invalidate_provider(&self, gateway_id: &str, provider_id: &str) {
         if let Some(binding) = self

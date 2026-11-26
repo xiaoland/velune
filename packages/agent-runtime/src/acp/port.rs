@@ -348,13 +348,17 @@ impl Client {
         }
         if within && !self.failed && !self.port.as_ref().unwrap().blocked {
             // Preserve Created before catalog/projection validation can fail.
-            self._session_data = installed_data.map(|data| crate::creation::Retained::from_parts((), data));
+            self._session_data =
+                installed_data.map(|data| crate::creation::Retained::from_parts((), data));
             if let Err(error) = self.apply_control(sequence, &record["result"]) {
                 self.fail();
                 return Err(error);
             }
             for update in self.initial_updates.drain() {
-                let data = self._initial_update_data.pop_front().expect("initial update ownership");
+                let data = self
+                    ._initial_update_data
+                    .pop_front()
+                    .expect("initial update ownership");
                 self.handle(crate::creation::Retained::from_parts(update, data))?;
             }
         } else {
@@ -802,17 +806,24 @@ impl Client {
         let mut result = Vec::new();
         for op in port.operations.values_mut() {
             for stage in op.evidence.drain(..) {
-                let data = if matches!(&stage,
-                    AcpReceiptStage::ProtocolSuccess { .. } | AcpReceiptStage::ProtocolRejected { .. }
-                        | AcpReceiptStage::TurnCompleted { .. } | AcpReceiptStage::TurnError { .. })
-                {
+                let data = if matches!(
+                    &stage,
+                    AcpReceiptStage::ProtocolSuccess { .. }
+                        | AcpReceiptStage::ProtocolRejected { .. }
+                        | AcpReceiptStage::TurnCompleted { .. }
+                        | AcpReceiptStage::TurnError { .. }
+                ) {
                     op.response_data.take().unwrap_or_default()
                 } else {
                     crate::creation::DataRetention::default()
                 };
-                result.push(crate::creation::Retained::from_parts(AcpReceipt {
-                    ticket: op.ticket.clone(), stage,
-                }, data));
+                result.push(crate::creation::Retained::from_parts(
+                    AcpReceipt {
+                        ticket: op.ticket.clone(),
+                        stage,
+                    },
+                    data,
+                ));
             }
         }
         port.operations.retain(|_, op| {
@@ -1093,11 +1104,10 @@ impl Client {
                 .port
                 .as_ref()
                 .is_some_and(|port| port.operations.values().any(|op| op.creation.is_some()))
+                && let Ok(records) = self.rpc.poll()
             {
-                if let Ok(records) = self.rpc.poll() {
-                    for record in records {
-                        let _ = self.capture_creation_record(record);
-                    }
+                for record in records {
+                    let _ = self.capture_creation_record(record);
                 }
             }
             return Ok(());
@@ -1363,17 +1373,19 @@ impl Client {
                 }
             } else {
                 let _ = self.settle_port_barrier();
-                if !self.failed
-                    && !self.port.as_ref().unwrap().blocked
-                {
+                if !self.failed && !self.port.as_ref().unwrap().blocked {
                     let outcome = self.apply_control(sequence, result);
                     match &self.port.as_ref().unwrap().operations[&sequence].kind {
-                        Kind::Control(Control::New { .. } | Control::Load { .. } | Control::Resume { .. }) => {
-                            self._session_data = native_data.take()
+                        Kind::Control(
+                            Control::New { .. } | Control::Load { .. } | Control::Resume { .. },
+                        ) => {
+                            self._session_data = native_data
+                                .take()
                                 .map(|data| crate::creation::Retained::from_parts((), data));
                         }
                         Kind::Control(Control::Config) => {
-                            self._options_data = native_data.take()
+                            self._options_data = native_data
+                                .take()
                                 .map(|data| crate::creation::Retained::from_parts((), data));
                         }
                         _ => {}
@@ -1404,12 +1416,16 @@ impl Client {
         op.terminal = true;
         if prompt && healthy {
             self.handle(crate::creation::Retained::from_parts(
-                record, native_data.take().unwrap(),
+                record,
+                native_data.take().unwrap(),
             ))?;
         }
         if healthy && !rejected && !prompt && !self.establishing {
             for record in self.initial_updates.drain() {
-                let data = self._initial_update_data.pop_front().expect("initial update ownership");
+                let data = self
+                    ._initial_update_data
+                    .pop_front()
+                    .expect("initial update ownership");
                 self.handle(crate::creation::Retained::from_parts(record, data))?;
             }
         }
@@ -1537,60 +1553,4 @@ fn native_error(value: &Value) -> Result<AcpNativeError> {
 }
 
 #[cfg(all(test, unix))]
-mod integration_tests {
-    use super::*;
-    use std::time::Duration;
-    #[test]
-    fn acp_integration_timely_unharvested_write_does_not_expire_dispatch() {
-        let (mut client, root) = super::super::tests::synthetic_client("forms");
-        client.create(&root, "integration").unwrap();
-        client.enable_command_port().unwrap();
-        let d = Instant::now() - Duration::from_millis(1);
-        let (sender, write) = WriteReceipt::test_pending(d);
-        sender
-            .send(WriteOutcome::Written(crate::WriteCompletion {
-                started_at: d - Duration::from_millis(2),
-                completed_at: d - Duration::from_millis(1),
-                deadline: d,
-            }))
-            .unwrap();
-        client.install_operation(1, json!(123), Kind::Prompt { run_deadline: None }, write, d);
-        client.settle_port_barrier().unwrap();
-        assert!(!client.needs_cleanup());
-        assert!(
-            client
-                .take_receipts()
-                .iter()
-                .any(|r| r.stage == AcpReceiptStage::Written)
-        );
-        client.shutdown().unwrap();
-        std::fs::remove_dir_all(root).unwrap();
-    }
-    #[test]
-    fn acp_integration_late_written_keeps_cleanup_after_observation_timeout() {
-        let (mut client, root) = super::super::tests::synthetic_client("forms");
-        client.create(&root, "integration").unwrap();
-        client.enable_command_port().unwrap();
-        let d = Instant::now() - Duration::from_millis(1);
-        let (sender, write) = WriteReceipt::test_pending(d);
-        client.install_operation(1, json!(123), Kind::Prompt { run_deadline: None }, write, d);
-        assert!(client.settle_port_barrier().is_err());
-        sender
-            .send(WriteOutcome::Written(crate::WriteCompletion {
-                started_at: d - Duration::from_millis(1),
-                completed_at: d + Duration::from_millis(1),
-                deadline: d,
-            }))
-            .unwrap();
-        assert!(client.settle_port_barrier().is_err());
-        assert!(
-            client
-                .take_receipts()
-                .iter()
-                .any(|r| r.stage == AcpReceiptStage::Written)
-        );
-        assert!(client.needs_cleanup());
-        client.shutdown().unwrap();
-        std::fs::remove_dir_all(root).unwrap();
-    }
-}
+mod integration_tests;

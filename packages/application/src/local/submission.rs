@@ -760,7 +760,7 @@ mod tests {
                     attachments: vec![],
                 },
             });
-            let err = result.err().expect("ACP cannot take a managed selection");
+            let err = result.expect_err("ACP cannot take a managed selection");
             assert!(err.to_string().contains("通用 ACP"), "{err}");
             eprintln!("send_admission_ms={}", start.elapsed().as_millis());
         }

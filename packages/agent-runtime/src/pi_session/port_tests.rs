@@ -1,22 +1,17 @@
 use super::*;
 use std::time::{Duration, Instant};
+use velune_test_support::TempRoot;
 
 struct Fixture {
     session: PiSession,
-    root: std::path::PathBuf,
+    root: TempRoot,
 }
 impl Fixture {
     fn new(script: &str) -> Self {
-        let mut random = [0; 8];
-        getrandom::fill(&mut random).unwrap();
-        let root = std::env::temp_dir().join(format!(
-            "velune-pi-owner-port-{:x}",
-            u64::from_le_bytes(random)
-        ));
-        std::fs::create_dir(&root).unwrap();
+        let root = TempRoot::new("pi-owner-port");
         let helper = root.join("rpc.py");
         std::fs::write(&helper, script).unwrap();
-        let config: Config = serde_json::from_value(json!({"execution":{"kind":"local"},"os_home":root,"binary":"/usr/bin/python3","node_binary":"/usr/bin/python3","rpc_entry":helper})).unwrap();
+        let config: Config = serde_json::from_value(json!({"execution":{"kind":"local"},"os_home":root.path(),"binary":"/usr/bin/python3","node_binary":"/usr/bin/python3","rpc_entry":helper})).unwrap();
         let client = Client::spawn(config.clone()).unwrap();
         let mut session = PiSession::new(config);
         session.start(
@@ -70,7 +65,6 @@ fn input(text: String) -> TurnInput {
 impl Drop for Fixture {
     fn drop(&mut self) {
         self.session.shutdown().unwrap();
-        std::fs::remove_dir_all(&self.root).unwrap();
     }
 }
 

@@ -217,14 +217,9 @@ impl Config {
 }
 
 impl Client {
-    /// Compatibility facade for the explicit blocking preparation boundary.
-    pub fn spawn(config: Config) -> Result<Self> {
-        Self::prepare_blocking(config)
-    }
-
     /// Resource preparation, process startup and the transport prefix perform IO.
     /// Call before installing this connection in the nonblocking session owner.
-    pub fn prepare_blocking(mut config: Config) -> Result<Self> {
+    pub fn spawn(mut config: Config) -> Result<Self> {
         config.validate()?;
         let mcp = crate::mcp::Prepared::new(
             &config.mcp_servers,
@@ -902,10 +897,6 @@ impl Client {
         Ok(())
     }
 
-    pub fn sync_virtual_selection(&mut self) -> Result<Value> {
-        self.request(json!({"type":"prompt","message":"/velune-sync-selection"}))
-    }
-
     pub fn cancel(&mut self) -> Result<Vec<Value>> {
         // Pi documents clear_queue before abort for interactive cancellation.
         Ok(vec![
@@ -968,14 +959,10 @@ impl Client {
         }
     }
 
-    /// Synchronous compatibility facade; disabled once the typed port is enabled.
-    pub fn state(&mut self) -> Result<(Value, Value)> {
-        self.state_blocking_preparation()
-    }
-
-    /// Readiness/history preparation before handing the client to PiSession.
+    /// Blocking readiness/history preparation before handing the client to PiSession.
+    /// Disabled once the typed port is enabled.
     /// The live owner installs the atomic ProjectionSync frame in event order.
-    pub fn state_blocking_preparation(&mut self) -> Result<(Value, Value)> {
+    pub fn state(&mut self) -> Result<(Value, Value)> {
         let mut state = self.request_with_timeout(json!({"type":"get_state"}), STARTUP_TIMEOUT)?;
         let request_id = format!("velune-snapshot-{}", self.next_id);
         let metadata = self.request_with_timeout(
@@ -1106,20 +1093,6 @@ impl Client {
         frame.ok_or_else(|| Error::Sdk("Pi 后台工作桥接没有返回结构化状态".into()))
     }
 
-    pub fn stop_background_tasks(&mut self, task_ids: &[String]) -> Result<Value> {
-        self.background_work_command(&json!({"operation":"stop_all","taskIds":task_ids}))
-    }
-
-    /// The extension performs the host request asynchronously. Its scoped
-    /// setStatus response is consumed by ordinary nonblocking polling.
-    pub fn begin_background_work_command(&mut self, command: &Value) -> Result<()> {
-        let encoded = URL_SAFE_NO_PAD.encode(serde_json::to_vec(command)?);
-        self.write_command(
-            json!({"type":"prompt","message":format!("/velune-background-work {encoded}")}),
-        )?;
-        Ok(())
-    }
-
     pub fn switch_session(&mut self, path: &Path) -> Result<Value> {
         self.request(json!({"type":"switch_session","sessionPath":path}))
     }
@@ -1149,144 +1122,7 @@ impl Drop for Client {
 }
 
 #[cfg(test)]
-mod admission_tests {
-    use super::*;
-    use crate::transport::{OwnedFrame, WriteClass};
-
-    struct Directory(PathBuf);
-    impl Drop for Directory {
-        fn drop(&mut self) {
-            std::fs::remove_dir_all(&self.0).unwrap();
-        }
-    }
-
-    #[test]
-    fn pi_owned_bridge_admits_control_while_blocked_and_preserves_cancel_dependency() {
-        let root = Directory(std::env::temp_dir().join(format!(
-                "velune-pi-admission-{}-{}",
-                std::process::id(),
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
-                    .as_nanos()
-            )));
-        std::fs::create_dir(&root.0).unwrap();
-        let helper = root.0.join("helper.py");
-        std::fs::write(
-            &helper,
-            r#"
-import sys, pathlib, time, json
-root = pathlib.Path(__file__).parent
-print(json.dumps({'type':'synthetic_notice'}), flush=True)
-while not (root / 'release').exists(): time.sleep(.005)
-for line in sys.stdin:
-    value = json.loads(line)
-    print(json.dumps({'type':'synthetic_wire', 'command':value['type']}), flush=True)
-    if value['type'] in ('clear_queue', 'abort'):
-        print(json.dumps({'type':'response','id':value['id'],'success':True}), flush=True)
-"#,
-        )
-        .unwrap();
-        let python = crate::process::command("python3")
-            .args(["-c", "import sys; print(sys.executable)"])
-            .output()
-            .unwrap();
-        assert!(python.status.success());
-        let config: Config = serde_json::from_value(json!({
-            "execution":{"kind":"local"}, "binary":"/synthetic/pi",
-            "node_binary":String::from_utf8(python.stdout).unwrap().trim(),
-            "rpc_entry":helper, "os_home":root.0, "agent_dir":root.0,
-            "working_dir":root.0, "session_dir":root.0,
-        }))
-        .unwrap();
-        let mut client = Client::spawn(config).unwrap();
-        let deadline = Instant::now() + Duration::from_secs(5);
-        let mut bytes =
-            serde_json::to_vec(&json!({"type":"prompt","message":"x".repeat(9 * 1024 * 1024)}))
-                .unwrap();
-        bytes.push(b'\n');
-        let prompt = client
-            .try_enqueue_owned_frame(
-                OwnedFrame::new(bytes, 32 * 1024 * 1024),
-                WriteClass::Ordinary,
-                deadline,
-            )
-            .unwrap();
-        let reply = client
-            .try_enqueue_owned_frame(
-                OwnedFrame::new(b"{\"type\":\"extension_ui_response\"}\n".to_vec(), 1024),
-                WriteClass::ProtocolReplyCancel,
-                deadline,
-            )
-            .unwrap();
-        let cancel = client
-            .try_enqueue_owned_frame(
-                OwnedFrame::new(b"{\"type\":\"explicit_cancel\"}\n".to_vec(), 1024),
-                WriteClass::ProtocolReplyCancel,
-                deadline,
-            )
-            .unwrap();
-        let mut noticed = false;
-        while !noticed && Instant::now() < deadline {
-            noticed = client
-                .poll()
-                .iter()
-                .any(|v| v["type"] == "synthetic_notice");
-            thread::sleep(Duration::from_millis(2));
-        }
-        assert!(noticed);
-        for receipt in [&prompt, &reply, &cancel] {
-            assert!(receipt.try_complete().is_none());
-        }
-        client.terminal_error = Some("synthetic recorded terminal".into());
-        let frame = OwnedFrame::new(Vec::with_capacity(128), 1024);
-        let pointer = frame.bytes.as_ptr();
-        let rejected = client
-            .try_enqueue_owned_frame(frame, WriteClass::ProtocolReplyCancel, deadline)
-            .err()
-            .unwrap();
-        assert_eq!(rejected.error.kind(), std::io::ErrorKind::BrokenPipe);
-        assert_eq!(rejected.frame.bytes.as_ptr(), pointer);
-        assert_eq!(rejected.deadline, deadline);
-        assert!(client.terminal_error.is_some());
-        client.terminal_error = None;
-        let rejected = client
-            .try_enqueue_owned_frame(
-                OwnedFrame::new(Vec::with_capacity(128), 64),
-                WriteClass::Ordinary,
-                deadline,
-            )
-            .err()
-            .unwrap();
-        assert_eq!(rejected.error.kind(), std::io::ErrorKind::InvalidInput);
-        assert!(client.terminal_error.is_none());
-        std::fs::write(root.0.join("release"), []).unwrap();
-        let mut wire = Vec::new();
-        while wire.len() < 3 && Instant::now() < deadline {
-            wire.extend(client.poll());
-            thread::sleep(Duration::from_millis(2));
-        }
-        assert_eq!(
-            wire.iter()
-                .map(|v| v["command"].as_str().unwrap())
-                .collect::<Vec<_>>(),
-            ["prompt", "extension_ui_response", "explicit_cancel"]
-        );
-        for receipt in [prompt, reply, cancel] {
-            receipt.wait().unwrap();
-        }
-        assert_eq!(client.cancel().unwrap().len(), 2);
-        let cancel_wire = client.poll();
-        assert_eq!(
-            cancel_wire
-                .iter()
-                .map(|v| v["command"].as_str().unwrap())
-                .collect::<Vec<_>>(),
-            ["clear_queue", "abort"]
-        );
-        client.child.stop();
-    }
-}
+mod admission_tests;
 
 #[cfg(test)]
 mod snapshot_tests;

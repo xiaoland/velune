@@ -134,6 +134,9 @@ impl SideChatStrategy {
 pub struct RuntimeVariant {
     pub kind: RuntimeKind,
     pub family_id: &'static str,
+    /// The command a user's PATH conventionally provides. Executable
+    /// discovery looks for it at the range's minimum version.
+    pub command: Option<&'static str>,
     pub name: &'static str,
     pub versions: Versions,
     pub can_rename_conversations: bool,
@@ -176,6 +179,7 @@ const VARIANTS: &[RuntimeVariant] = &[
     RuntimeVariant {
         kind: RuntimeKind::Acp,
         family_id: "acp",
+        command: None,
         name: "ACP v1",
         versions: Versions::AcpProtocol(1),
         can_rename_conversations: false,
@@ -193,6 +197,7 @@ const VARIANTS: &[RuntimeVariant] = &[
     RuntimeVariant {
         kind: RuntimeKind::ClaudeCode,
         family_id: "claude-code",
+        command: Some("claude"),
         name: "Claude Code 2.1",
         versions: Versions::Cli {
             minimum: "2.1.286",
@@ -213,6 +218,7 @@ const VARIANTS: &[RuntimeVariant] = &[
     RuntimeVariant {
         kind: RuntimeKind::Pi,
         family_id: "pi",
+        command: Some("pi"),
         name: "Pi Agent 1.4",
         versions: PI_VERSIONS,
         can_rename_conversations: true,
@@ -235,6 +241,7 @@ const VARIANTS: &[RuntimeVariant] = &[
     RuntimeVariant {
         kind: RuntimeKind::Codex166,
         family_id: "codex",
+        command: Some("codex"),
         name: "Codex 0.166",
         versions: Versions::Cli {
             minimum: "0.166.0",
@@ -256,6 +263,7 @@ const VARIANTS: &[RuntimeVariant] = &[
     RuntimeVariant {
         kind: RuntimeKind::DeepSeek,
         family_id: "deepseek-harness",
+        command: Some("dsh"),
         name: "DeepSeek Harness 0.2",
         versions: Versions::Cli {
             minimum: "0.2.0-rc.2",
@@ -278,6 +286,17 @@ const VARIANTS: &[RuntimeVariant] = &[
         accepts_images: false,
     },
 ];
+impl RuntimeVariant {
+    /// The PATH command and minimum version platforms look for, when the
+    /// runtime is a versioned CLI with a conventional command.
+    pub fn executable(&self) -> Option<(&'static str, &'static str)> {
+        match (self.command, &self.versions) {
+            (Some(command), Versions::Cli { minimum, .. }) => Some((command, minimum)),
+            _ => None,
+        }
+    }
+}
+
 pub fn variants() -> &'static [RuntimeVariant] {
     VARIANTS
 }

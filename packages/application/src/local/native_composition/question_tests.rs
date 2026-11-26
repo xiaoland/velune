@@ -4,23 +4,16 @@ use crate::conversation::{
     RuntimeInteractionReply,
 };
 use std::os::unix::fs::PermissionsExt;
+use velune_test_support::TempRoot;
 
 struct Fixture {
-    root: PathBuf,
+    root: TempRoot,
     application: crate::Application,
 }
 
 impl Fixture {
     fn new(label: &str, model: Option<&str>) -> Self {
-        let root = std::env::temp_dir().join(format!(
-            "velune-question-{label}-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        fs::create_dir(&root).unwrap();
+        let root = TempRoot::new(&format!("question-{label}"));
         let binary = root.join("codex");
         fs::write(
             &binary,
@@ -63,7 +56,7 @@ for line in sys.stdin:
         fs::set_permissions(&binary, fs::Permissions::from_mode(0o700)).unwrap();
         let mut application = crate::Application::open(crate::Options {
             home_directory: root.join("velune"),
-            resources_directory: root.clone(),
+            resources_directory: root.to_path_buf(),
         })
         .unwrap();
         application.runtime.gateways.push(GatewayConfig {
@@ -252,7 +245,6 @@ for line in sys.stdin:
 impl Drop for Fixture {
     fn drop(&mut self) {
         self.application.runtime.shutdown_active().unwrap();
-        fs::remove_dir_all(&self.root).unwrap();
     }
 }
 
@@ -300,13 +292,13 @@ fn restored_question_answers_with_the_recorded_native_model_without_a_velune_sen
     fixture.application.runtime.shutdown_active().unwrap();
     let placeholder = crate::Application::open(crate::Options {
         home_directory: fixture.root.join("reopen-placeholder"),
-        resources_directory: fixture.root.clone(),
+        resources_directory: fixture.root.to_path_buf(),
     })
     .unwrap();
     drop(std::mem::replace(&mut fixture.application, placeholder));
     fixture.application = crate::Application::open(crate::Options {
         home_directory: fixture.root.join("velune"),
-        resources_directory: fixture.root.clone(),
+        resources_directory: fixture.root.to_path_buf(),
     })
     .unwrap();
     fixture.application.runtime.runtime_instances = runtimes;
@@ -439,8 +431,7 @@ fn a_native_catalog_id_cannot_change_a_restored_questions_managed_provider() {
     fs::write(path, serde_json::to_vec(&thread).unwrap()).unwrap();
     let error = fixture
         .answer()
-        .err()
-        .expect("provider must remain unresolved");
+        .expect_err("provider must remain unresolved");
     assert!(error.to_string().contains("提供商与模型"));
     assert!(fixture.requests().iter().all(|record| {
         !matches!(

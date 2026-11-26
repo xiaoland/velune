@@ -40,8 +40,12 @@ fn logical_handoff_resolves_latest_physical_segment() {
         ],
     };
     assert_eq!(
-        logical_handoff_source(&[codex_to_pi.clone()], "codex", "logical:conversation")
-            .expect("linked source identity"),
+        logical_handoff_source(
+            std::slice::from_ref(&codex_to_pi),
+            "codex",
+            "logical:conversation"
+        )
+        .expect("linked source identity"),
         ("pi".into(), "native-pi".into()),
         "a conversation already continued in Pi must inspect the Pi tail, not stale Codex compaction"
     );

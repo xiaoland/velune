@@ -92,12 +92,12 @@ def main() -> int:
         assert result.returncode == 0, result.stderr
         assert not cache.exists(), "explicit, unlocked apply did not remove the opted-in cache domain"
 
-        legacy = target / "release"
-        legacy.mkdir()
-        result = run(repo, "prune", "--retired", "release", "--budget-gib", "0", "--apply")
-        assert result.returncode == 2 and legacy.exists(), "unqualified legacy cache must remain protected"
+        # build-state/ already holds the platform locks used above.
+        (target / "task-output").mkdir()
+        result = run(repo, "report")
+        assert result.returncode == 0 and "用途域以外：2 个目录" in result.stdout, "report must count directories outside the domains"
 
-        print("PASS synthetic cache preview, active platform/Cargo/base/cross-target locks, links, explicit domain apply, and protected legacy refusal")
+        print("PASS synthetic cache preview, active platform/Cargo/base/cross-target locks, links, explicit domain apply, and directories outside the domains")
     return 0
 
 

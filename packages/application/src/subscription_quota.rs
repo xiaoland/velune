@@ -243,7 +243,8 @@ impl SubscriptionQuota {
                         &gateway, &provider, Refresh::IfDue, Some(&binding), false,
                     );
                 }
-            }).is_err()
+            })
+            .is_err()
         {
             tracing::warn!(target: "velune_application", event = "quota_refresh_unavailable");
         }

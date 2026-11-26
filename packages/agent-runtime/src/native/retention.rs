@@ -18,6 +18,10 @@ pub(super) enum DataOwner {
     TurnError,
     Thread(String),
     Task(String),
+    #[allow(
+        dead_code,
+        reason = "Claude task issues have no registered receive owner yet"
+    )]
     TaskIssue,
     Stream,
     SideHistory,

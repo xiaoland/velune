@@ -33,6 +33,10 @@ struct FixtureLaunch {
 }
 
 impl Launch for FixtureLaunch {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "test fixture without a GUI host; the console-hiding helper is private to ai-provider"
+    )]
     fn prepare(&self, loopback_mcp: String) -> OperationFuture<Result<Process, NativeErrorKind>> {
         let cwd = self.cwd.clone();
         let account = self.account;
@@ -175,7 +179,10 @@ impl Gateway {
             providers,
             routes: [
                 (ROUTE, vec![PRIMARY.into(), BACKUP.into()]),
-                (ALTERNATE_ROUTE, vec!["alternate".into(), PRIMARY.into(), BACKUP.into()]),
+                (
+                    ALTERNATE_ROUTE,
+                    vec!["alternate".into(), PRIMARY.into(), BACKUP.into()],
+                ),
             ]
             .into_iter()
             .map(|(key, members)| ModelRoute {

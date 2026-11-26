@@ -1212,7 +1212,8 @@ impl NativeSession {
             let physical_terminal = !matches!(outcome, WriteOutcome::ObservationTimeout { .. });
             match outcome {
                 WriteOutcome::Written(completion) => {
-                    op.evidence.push_front(local_evidence(DshReceiptStage::Written));
+                    op.evidence
+                        .push_front(local_evidence(DshReceiptStage::Written));
                     if !completion.met_deadline() {
                         let message =
                             "DeepSeek actual flush completed after write deadline; not replayed";

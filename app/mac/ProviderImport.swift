@@ -1,13 +1,6 @@
 import SwiftUI
 import VeluneBindings
 
-struct ProviderImportResult: Sendable {
-    var gateways: [GatewaySummary]
-    var executionInvalidated: Bool
-    var importedProviderIds: [String]
-    var skippedProviderIds: [String]
-}
-
 struct ProviderImportView: View {
     @ObservedObject var store: DeviceStore
     @Environment(\.dismiss) private var dismiss

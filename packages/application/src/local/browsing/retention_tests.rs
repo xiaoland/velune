@@ -12,8 +12,7 @@ fn loaded_rpc_history(core: &mut CoreRuntime, root: &Path) -> LoadedHistory {
     let config = history::HistoryConfig {
         kind: RuntimeKind::Codex166,
         execution: velune_agent_runtime::execution::ExecutionTarget::Local,
-        os_home: Some(root.to_owned()),
-        provider: "codex".into(), binary,
+        os_home: Some(root.to_owned()), binary,
         node_binary: PathBuf::new(), resources_directory: root.to_owned(),
         root: root.to_owned(), home: root.to_owned(),
     };

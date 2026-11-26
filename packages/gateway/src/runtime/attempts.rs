@@ -486,7 +486,9 @@ impl Attempt<'_> {
             }
             ExecutionBackend::AntigravityCli => {
                 let CredentialMaterial::AntigravityCli { launch } = credential.material else {
-                    return Err(InvalidContract("Antigravity CLI requires an execution target"));
+                    return Err(InvalidContract(
+                        "Antigravity CLI requires an execution target",
+                    ));
                 };
                 Box::new(Antigravity::new(
                     self.state.backends.antigravity.clone(),

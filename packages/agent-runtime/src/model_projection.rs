@@ -52,11 +52,6 @@ pub struct PiModelProjection {
     pub input: Option<Vec<String>>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NativeResponsesConstraints {
-    pub allowed_reasoning_efforts: Vec<String>,
-}
-
 impl PiModelProjection {
     pub fn supported_levels(&self, reasoning_levels: &[String]) -> Vec<String> {
         if !self.reasoning_enabled {
@@ -88,22 +83,5 @@ impl PiModelProjection {
                 (level.to_owned(), value)
             })
             .collect()
-    }
-
-    pub fn native_responses_constraints(
-        &self,
-        reasoning_levels: &[String],
-    ) -> NativeResponsesConstraints {
-        let allowed_reasoning_efforts = if self.reasoning_enabled {
-            reasoning_levels
-                .iter()
-                .filter_map(|level| self.thinking_level_map.get(level).cloned().flatten())
-                .collect()
-        } else {
-            Vec::new()
-        };
-        NativeResponsesConstraints {
-            allowed_reasoning_efforts,
-        }
     }
 }
