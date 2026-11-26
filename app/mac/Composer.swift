@@ -695,6 +695,12 @@ struct ComposerView: View {
 
     private var context: ComposerContext { ComposerContext(tab: inputTab ?? layout.conversationTab(for: store), model: model, editingTarget: editingTarget) }
     private var nextTurnRuntime: RuntimeInstance? { store.device.runtimeInstances.first { $0.id == context.nextTurnRuntimeID } }
+    private var showsPendingRuntimeName: Bool { nextTurnRuntime == nil && context.nextTurnRuntimeID != nil && store.device.runtimeInstances.isEmpty }
+    private var nextTurnRuntimeLabel: String {
+        if let name = nextTurnRuntime?.name { return name }
+        if context.nextTurnRuntimeID == nil { return "选择运行时" }
+        return store.device.runtimeInstances.isEmpty ? "正在加载…" : "未知运行时"
+    }
 
     private var hasAttachments: Bool { !model.attachments.isEmpty || !(editingTarget?.retainedAttachments.isEmpty ?? true) }
     private var hasAccessories: Bool { (editingTarget == nil && store.isUnsentConversation && store.creationFailure != nil) || (!columns && hasAttachments) }
@@ -874,7 +880,7 @@ struct ComposerView: View {
     /// What the choices' titles are made of.
     private var controlsKey: [String] {
         let context = self.context
-        return [nextTurnRuntime?.name ?? "", context.selectedModelName ?? "", context.nextTurnEffort ?? context.currentEffort ?? "",
+        return [showsPendingRuntimeName ? "loading" : nextTurnRuntimeLabel, context.selectedModelName ?? "", context.nextTurnEffort ?? context.currentEffort ?? "",
          (context.effectivePermissionMode ?? context.currentPermissionMode)?.label ?? "", "\(context.permissionModeOptions.isEmpty)\(context.sessionOptions.isEmpty)",
          editingTarget == nil && store.isUnsentConversation ? store.loadedConversationWorkingDirectory ?? "-" : "",
          appearance.values.ui.rawValue, String(appearance.values.zoomPercent)]
@@ -1018,14 +1024,14 @@ struct ComposerView: View {
     /// the reasoning level, with the settings that belong to each inside it.
     private func agentMenu(compact: Bool) -> some View {
         let context = self.context
-        let runtime = nextTurnRuntime?.name ?? context.nextTurnRuntimeID ?? "选择运行时"
+        let runtime = nextTurnRuntimeLabel
         let model = context.selectedModelName ?? "选择模型"
         // Levels show as the runtime receives them.
         let effort = context.nextTurnEffort ?? context.currentEffort
         // An unchosen level follows the conversation's, or is the runtime's own.
         let unchosen = store.loadedParentConversationID != nil ? "未记录" : context.nextTurnHasCurrent ? "沿用当前" : "运行时默认"
         let modelTitle = ([model] + (effort.map { [$0] } ?? [])).joined(separator: " · ")
-        let title = "\(runtime) · \(modelTitle)"
+        let title = showsPendingRuntimeName && context.selectedModelName != nil ? modelTitle : "\(runtime) · \(modelTitle)"
         let subject = editingTarget != nil ? "此消息" : store.loadedParentConversationID == nil ? "下一轮" : "当前会话"
         let modelHelp = context.retainedQueueModelName == nil ? "所选模型已不可用" : ComposerModelChoiceContent.retainedModelExplanation
         return Menu {
