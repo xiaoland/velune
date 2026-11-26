@@ -90,6 +90,7 @@
 - 上表“待删除”各项：`target` 遗留目录、`release` 与源码副本增加 101.2 GiB，`tmp` 证据与 `.dev-cache` 临时目录增加 26.2 GiB。
 - `host-rust` 与 `cross-rust` 整体回收增加 51.4 GiB，低于 extent 统计的 84.8 GiB；extent 去重只覆盖 target 内部，差额应是与其他检出共享的克隆块，未逐一核实；主检出下次 Mac／iOS／Android 构建冷启动。
 - 旧分支工作树 `velune-maint`（分支保留）增加 2.9 GiB；另删去 9 个已无内容的旧工作树父目录。
+- 主检出 `tmp/`、`target/checks`、`target/verification` 下 11-24 以来无改动、路径与目录名都未被 develop 跟踪文件引用的 55 项，增加 5 GiB。
 
 未改、需用户决定：
 
@@ -111,4 +112,4 @@
 - `mac_telemetry_build.py` 的调用方（manual-telemetry 与 otlp-observability 任务验收程序）已于此前删除，一并删除。
 - 其余端到端脚本未迁移：check-codex-sampling-route、check-macos-history-cache、check-portable-handoff、check-macos-sidebar-toolbar、check-pi-child-host。
 
-`codex_conversation_lifecycle` 本轮失败：ChatGPT.app 内置 Codex CLI 已自动更新到 0.171.0-alpha.13，超出本分支适配器范围（<0.168）。develop 已增加 0.170 支持（7bad70f60），合入后需按新类型复验；用例固定使用 `CODEX166`，届时应随适配器版本调整。PR checks 的新步骤尚未在 CI 实际运行。
+`codex_conversation_lifecycle` 曾因 ChatGPT.app 内置 Codex CLI 自动更新到 0.171.0-alpha.13、超出当时适配器范围而失败；合入 develop（支持至 0.171.0）后通过（8 项检查）。`CODEX166` 是适配器族名而非版本，用例无需调整。PR checks 的新步骤尚未在 CI 实际运行。
