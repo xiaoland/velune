@@ -509,7 +509,7 @@ fn locked(path: &Path) -> bool {
     lock.l_whence = libc::SEEK_SET as _;
     // SAFETY: the descriptor is open for the call and `lock` outlives it.
     let status = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GETLK, &mut lock) };
-    status == 0 && i32::from(lock.l_type) != i32::from(libc::F_UNLCK)
+    status == 0 && i64::from(lock.l_type) != i64::from(libc::F_UNLCK)
 }
 
 #[cfg(not(unix))]
