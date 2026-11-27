@@ -508,7 +508,7 @@ public sealed partial class ConversationView
             Clipboard.SetContent(data);
         }, text.Length > 0));
         var editable = Model.Editable(message.Id);
-        menu.Items.Add(Item("编辑…", () => EditMessage(message), editable != null && !Model.Busy && !Model.Running));
+        menu.Items.Add(Item("编辑…", () => EditMessage(message), editable?.Revision != null && !Model.Busy && !Model.Running));
     }
 
     static string MessageText(DeliveredMessage message) =>
@@ -519,10 +519,12 @@ public sealed partial class ConversationView
     // place, which drops it and everything after it.
     async void EditMessage(DeliveredMessage message)
     {
-        if (Model.Editable(message.Id) is not { } editable)
+        if (Model.Snapshot?.Conversation is not { } source ||
+            Model.Editable(message.Id) is not { Revision: { } revision } editable)
         {
             return;
         }
+        var reference = new BindingMessageReference(source.RuntimeId, source.Id, message.Id);
         var last = Model.Messages.LastOrDefault(shown => shown.Role == MessageRole.User)?.Id == message.Id;
         var box = new TextBox { Text = MessageText(message), AcceptsReturn = true, TextWrapping = TextWrapping.Wrap, MinHeight = 120, MaxHeight = 320 };
         var about = last && editable.InPlace
@@ -568,7 +570,7 @@ public sealed partial class ConversationView
             return;
         }
         ScrollToEnd();
-        if (await Model.Edit(message.Id, chosen, box.Text) is { } continued && chosen == EditPlacement.Fork)
+        if (await Model.Edit(reference, revision, chosen, box.Text) is { } continued && chosen == EditPlacement.Fork)
         {
             window.OpenLinked(continued);
         }

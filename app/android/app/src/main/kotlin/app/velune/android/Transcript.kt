@@ -112,7 +112,7 @@ fun Transcript(
                         val forkUserId = entry.forkUserMessageId.takeIf { state.canFork }
                         MessageView(
                             entry.message, bubbleWidth, expanded, load,
-                            editable = entry.message.id in state.editable,
+                            editable = state.editable[entry.message.id]?.revision != null,
                             forkable = forkUserId != null,
                             onEdit = { onEdit(entry.message) },
                             onFork = { forkUserId?.let(onFork) },

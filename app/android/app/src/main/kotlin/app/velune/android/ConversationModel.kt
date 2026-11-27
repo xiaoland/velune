@@ -910,7 +910,7 @@ class ConversationModel(
         messageId: String,
         text: String,
         placement: EditPlacement,
-        expectedRevision: String?,
+        expectedRevision: String,
         onDone: () -> Unit,
         onForked: (ConversationTarget.Existing) -> Unit,
     ) = act {
