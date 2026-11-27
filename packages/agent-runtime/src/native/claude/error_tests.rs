@@ -12,6 +12,7 @@ fn named_fork_launch_keeps_its_source_and_boundary() {
         resources_directory: "/synthetic/resources".into(),
         projection_directory: "/synthetic/projection".into(),
         gateway: None,
+        auto_compaction: None,
         mcp_servers: Vec::new(),
         session_agents: Vec::new(),
     };

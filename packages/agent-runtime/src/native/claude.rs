@@ -180,6 +180,9 @@ impl NativeSession {
             "--permission-prompt-tool",
             "stdio",
         ]);
+        if let Some(AutoCompactionSetting::Claude { window_tokens }) = &config.auto_compaction {
+            command.arg("--autocompact").arg(window_tokens.to_string());
+        }
         if let Some(effort) = effort {
             if !CLAUDE_EFFORT_LEVELS.contains(&effort) {
                 return Err(Error::new("Claude Code 不接受此推理强度"));

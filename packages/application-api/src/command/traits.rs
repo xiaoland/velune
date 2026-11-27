@@ -600,7 +600,8 @@ impl Command {
             | Self::PollAuthentication
             | Self::CancelAuthentication
             | Self::UploadAttachment { .. } => Traits::EFFECT,
-            Self::StopBackgroundTask { .. }
+            Self::SetRuntimeModelAutoCompaction { .. }
+            | Self::StopBackgroundTask { .. }
             | Self::CloseSideChat { .. }
             | Self::StartAuthentication { .. }
             | Self::ReplyAuthentication { .. } => Traits::MUTATION,

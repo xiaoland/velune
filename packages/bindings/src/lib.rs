@@ -201,6 +201,26 @@ pub fn default_codex_client_version() -> String {
 }
 
 #[uniffi::export]
+pub fn acp_session_model(options: Vec<AcpConfigOption>) -> Option<ModelSelection> {
+    velune_application_api::acp_session_model(options)
+}
+
+#[uniffi::export]
+pub fn is_acp_auto_compaction_option(option: AcpConfigOption) -> bool {
+    option.is_auto_compaction()
+}
+
+#[uniffi::export]
+pub fn can_bind_acp_auto_compaction_option(option: AcpConfigOption) -> bool {
+    option.can_bind_auto_compaction()
+}
+
+#[uniffi::export]
+pub fn acp_auto_compaction_accepts(option: AcpConfigOption, value: AcpConfigValue) -> bool {
+    option.can_bind_auto_compaction() && option.accepts(&value)
+}
+
+#[uniffi::export]
 pub fn runtime_new_conversation_choice(
     runtime: RuntimeInstance,
 ) -> Result<NewConversationChoice, BindingError> {
@@ -214,6 +234,13 @@ pub fn runtime_with_new_conversation_choice(
 ) -> Result<RuntimeInstance, BindingError> {
     velune_application_api::runtime_with_new_conversation_choice(runtime, choice)
         .map_err(Into::into)
+}
+
+#[uniffi::export]
+pub fn runtime_model_auto_compactions(
+    runtime: RuntimeInstance,
+) -> Result<Vec<ModelAutoCompaction>, BindingError> {
+    runtime.model_auto_compactions().map_err(Into::into)
 }
 
 #[uniffi::export]
@@ -1404,6 +1431,22 @@ impl VeluneApplication {
     }
     pub fn acp_launch(&self, runtime_id: String) -> Result<AcpLaunch, BindingError> {
         request!(self, "acp_launch", ReadAcpLaunch { runtime_id })
+    }
+    pub fn set_runtime_model_auto_compaction(
+        &self,
+        runtime_id: String,
+        model: ModelSelection,
+        setting: Option<AutoCompactionSetting>,
+    ) -> Result<RuntimeUpdate, BindingError> {
+        request!(
+            self,
+            "set_runtime_model_auto_compaction",
+            SetRuntimeModelAutoCompaction {
+                runtime_id,
+                model,
+                setting
+            }
+        )
     }
     pub fn acp_runtime_info(&self, runtime_id: String) -> Result<AcpRuntimeInfo, BindingError> {
         request!(self, "acp_runtime_info", ReadAcpRuntimeInfo { runtime_id })

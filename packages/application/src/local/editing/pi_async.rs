@@ -1585,6 +1585,14 @@ impl CoreRuntime {
         let runtime = &edit.runtime;
         let (context, preparation) = self.execution_preparation(runtime)?;
         let mut config = self.pi_history_configuration(runtime)?;
+        let managed_key = match &edit.selection {
+            Some(crate::ModelSelection::Managed { model_record_key }) => {
+                Some(model_record_key.as_str())
+            }
+            _ => None,
+        };
+        config.model_compaction_reserves =
+            crate::local::pi_composition::pi_compaction_reserves(runtime, managed_key)?;
         config.mcp_servers = self.collaboration_servers();
         config.rpc_entry = Some(context.resources.join("pi_rpc.mjs"));
         config.extension = Some(context.resources.join("pi_virtual_model.mjs"));

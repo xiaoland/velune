@@ -1,7 +1,6 @@
 package app.velune.android
 
 import app.velune.bindings.conversation.ControlHandoff
-import app.velune.bindings.conversation.InputAccess
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -10,65 +9,69 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
+import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.only
+import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.ArrowDropDown
-import androidx.compose.material.icons.filled.ArrowUpward
-import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.filled.MoreVert
-import androidx.compose.material.icons.filled.Stop
-import androidx.compose.material.icons.outlined.AutoAwesome
-import androidx.compose.material.icons.outlined.ChatBubbleOutline
-import androidx.compose.material.icons.outlined.ErrorOutline
+import androidx.compose.material.icons.automirrored.filled.FormatListBulleted
 import androidx.compose.material.icons.automirrored.outlined.HelpOutline
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.outlined.ErrorOutline
+import androidx.compose.material.icons.outlined.Group
 import androidx.compose.material.icons.outlined.Shield
+import androidx.compose.material.icons.outlined.WorkHistory
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Badge
+import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.FilledTonalButton
-import androidx.compose.material3.FilledTonalIconButton
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.TextField
-import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -78,7 +81,12 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import app.velune.bindings.application.DeliveredBlock
+import app.velune.bindings.application.DeliveredImageSource
+import app.velune.bindings.application.DeliveredMessage
 import app.velune.bindings.conversation.AsyncQuestionDelivery
+import app.velune.bindings.conversation.EditPlacement
+import app.velune.bindings.conversation.EditableMessage
 import app.velune.bindings.conversation.InteractionAnswer
 import app.velune.bindings.conversation.InteractionKind
 import app.velune.bindings.conversation.InteractionQuestion
@@ -86,9 +94,18 @@ import app.velune.bindings.conversation.ModelSelection
 import app.velune.bindings.conversation.RunState
 import app.velune.bindings.conversation.RuntimeInteraction
 import app.velune.bindings.conversation.RuntimeInteractionReply
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.launch
 
 /** What the header says about the conversation besides its title. */
-data class ConversationHeader(val title: String, val runtime: RuntimeLabel?, val device: String?, val cwd: String?)
+data class ConversationHeader(
+    val title: String,
+    val runtime: RuntimeLabel?,
+    val device: String?,
+    val cwd: String?,
+    /** Non-null only when the connection to the controlled device is not live. */
+    val connection: DeviceStatus? = null,
+)
 
 class ConversationActions(
     val back: () -> Unit,
@@ -101,21 +118,50 @@ class ConversationActions(
     val editDraft: (String) -> Unit = {},
     val removeAttachment: (String) -> Unit = {},
     val setConversationHandoff: (release: Boolean) -> Unit = {},
+    val selectEffort: (String?) -> Unit = {},
+    val selectPermissionMode: (String?) -> Unit = {},
+    val editMessage: (messageId: String, text: String, placement: EditPlacement, expectedRevision: String?, onDone: () -> Unit) -> Unit = { _, _, _, _, onDone -> onDone() },
+    val forkConversation: (userMessageId: String) -> Unit = {},
+    val selectRuntime: (String) -> Unit = {},
+    val addAttachments: (List<suspend () -> Pair<String, ByteArray>>) -> Unit = {},
+    val refresh: () -> Unit = {},
+    val refreshBackgroundTasks: () -> Unit = {},
+    val loadBackgroundTaskOutput: (String) -> Unit = {},
+    val stopBackgroundTask: (String) -> Unit = {},
+    val stopSubAgents: () -> Unit = {},
+    val findLinkedConversation: suspend (String) -> ConversationTarget.Existing = { error("设备上找不到此会话") },
+    val openConversation: (ConversationTarget.Existing) -> Unit = {},
+    val steer: (String) -> Unit = {},
+    val queue: (String) -> Unit = {},
+    val resumeTurn: () -> Unit = {},
 )
 
 @Composable
-fun ConversationScreen(hub: DeviceHub, peer: String, runtime: RuntimeLabel?, model: ConversationModel, back: () -> Unit) {
+fun ConversationScreen(
+    hub: DeviceHub,
+    peer: String,
+    listing: DeviceListing,
+    model: ConversationModel,
+    back: () -> Unit,
+    openConversation: (ConversationTarget.Existing) -> Unit = {},
+    newSession: NewSessionContext? = null,
+) {
     val state by model.state.collectAsState()
     val remote by hub.state.collectAsState()
     WhileVisible(model, resume = model::resume, pause = model::pause)
     val target = model.target
+    val contact = remote?.contacts?.firstOrNull { it.peerId == peer }
+    val connection = if (remote != null && contact != null) {
+        deviceStatus(checkNotNull(remote), contact).takeIf { it.tone != Tone.Positive }
+    } else null
     val header = ConversationHeader(
         title = state.conversation?.title?.displayText() ?: (target as? ConversationTarget.Existing)?.title ?: "新会话",
-        runtime = runtime,
-        device = remote?.contacts?.firstOrNull { it.peerId == peer }?.name,
+        runtime = listing.runtimeLabels[target.runtimeId],
+        device = contact?.name,
         cwd = state.conversation?.cwd ?: (target as? ConversationTarget.New)?.cwd,
+        connection = connection,
     )
-    ConversationContent(header, state, remember(model, back) {
+    ConversationContent(header, state, remember(model, back, openConversation) {
         ConversationActions(
             back = back,
             send = model::send,
@@ -127,59 +173,163 @@ fun ConversationScreen(hub: DeviceHub, peer: String, runtime: RuntimeLabel?, mod
             editDraft = model::editDraft,
             removeAttachment = model::removeAttachment,
             setConversationHandoff = model::setConversationHandoff,
+            selectEffort = model::selectEffort,
+            selectPermissionMode = model::selectPermissionMode,
+            editMessage = { id, text, placement, revision, onDone -> model.editMessage(id, text, placement, revision, onDone, openConversation) },
+            forkConversation = { id -> model.forkConversation(id, openConversation) },
+            selectRuntime = model::selectRuntime,
+            addAttachments = model::addAttachments,
+            refresh = model::refresh,
+            refreshBackgroundTasks = model::refreshBackgroundTasks,
+            loadBackgroundTaskOutput = model::loadBackgroundTaskOutput,
+            stopBackgroundTask = model::stopBackgroundTask,
+            stopSubAgents = model::stopSubAgents,
+            findLinkedConversation = model::findLinkedConversation,
+            openConversation = openConversation,
+            steer = model::steer,
+            queue = model::queue,
+            resumeTurn = model::resumeTurn,
         )
-    })
+    },
+        newSession = newSession,
+        existing = target is ConversationTarget.Existing,
+        listing = listing,
+    )
 }
+
+private enum class ConversationPanel { BACKGROUND_TASKS, COLLABORATION }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ConversationContent(header: ConversationHeader, state: ConversationState, actions: ConversationActions) {
+fun ConversationContent(
+    header: ConversationHeader,
+    state: ConversationState,
+    actions: ConversationActions,
+    newSession: NewSessionContext? = null,
+    existing: Boolean = state.conversation != null,
+    listing: DeviceListing = DeviceListing(),
+) {
+    val spacing = LocalAppearance.current.spacingScale
+    val list = rememberLazyListState()
+    val scope = rememberCoroutineScope()
+    val outline = remember(state.entries) { outlineTurns(state.entries) }
+    var showOutline by remember { mutableStateOf(false) }
+    var editing by remember { mutableStateOf<Pair<DeliveredMessage, EditableMessage>?>(null) }
+    var forking by remember { mutableStateOf<String?>(null) }
+    var panel by remember { mutableStateOf<ConversationPanel?>(null) }
+    val subtitle = remember(header) {
+        listOfNotNull(header.runtime?.name, header.cwd?.let(::lastPathComponent), header.device).joinToString(" · ")
+    }
+    val hasLinkedAgents = state.parentConversationId != null || state.subAgents.isNotEmpty() || state.collaborators.isNotEmpty()
+    val backgroundTaskCount = state.activeBackgroundTaskCount
+    val outlineInMenu = outline.size >= 2 && existing && hasLinkedAgents && backgroundTaskCount > 0
+    val hasOverflow = existing || state.canCompact || state.controlHandoff == ControlHandoff.CAN_RELEASE
+    val showBackgroundTasks = {
+        panel = ConversationPanel.BACKGROUND_TASKS
+        actions.refreshBackgroundTasks()
+    }
     Scaffold(
+        // The composer owns the bottom inset: navigation bars at rest and IME while editing.
+        contentWindowInsets = WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal + WindowInsetsSides.Top),
         topBar = {
-            TopAppBar(
-                actions = {
-                    TextButton(onClick = actions.compact, enabled = state.canCompact && !state.busy) { Text("压缩上下文") }
-                    if (state.controlHandoff == ControlHandoff.CAN_RELEASE) {
-                        var more by remember { mutableStateOf(false) }
-                        Box {
-                            IconButton(onClick = { more = true }, enabled = !state.busy) {
-                                Icon(Icons.Filled.MoreVert, contentDescription = "更多会话操作")
-                            }
-                            DropdownMenu(expanded = more, onDismissRequest = { more = false }) {
-                                DropdownMenuItem(text = { Text("释放会话控制权") }, enabled = !state.busy, onClick = {
-                                    more = false
-                                    actions.setConversationHandoff(true)
-                                })
+            Column {
+                TopAppBar(
+                    navigationIcon = { IconButton(onClick = actions.back) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回") } },
+                    title = {
+                        Column {
+                            Text(header.title, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            if (newSession == null && subtitle.isNotEmpty()) {
+                                Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
                             }
                         }
-                    }
-                },
-                navigationIcon = { IconButton(onClick = actions.back) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回") } },
-                title = {
-                    Column {
-                        Text(header.title, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            header.runtime?.let { RuntimeBadge(it, Modifier.size(14.dp)) }
+                    },
+                    actions = {
+                        if (outline.size >= 2 && !outlineInMenu) {
+                            IconButton(onClick = { showOutline = true }) {
+                                Icon(Icons.AutoMirrored.Filled.FormatListBulleted, contentDescription = "大纲")
+                            }
+                        }
+                        if (existing) {
+                            IconButton(onClick = actions.refresh, enabled = !state.refreshing && !state.loading && !state.busy) {
+                                if (state.refreshing) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                                else Icon(Icons.Filled.Refresh, contentDescription = "刷新会话")
+                            }
+                            if (backgroundTaskCount > 0) {
+                                IconButton(onClick = showBackgroundTasks) {
+                                    BadgedBox(badge = { Badge { Text(backgroundTaskCount.toString()) } }) {
+                                        Icon(Icons.Outlined.WorkHistory, contentDescription = "后台任务，$backgroundTaskCount 个运行中")
+                                    }
+                                }
+                            }
+                            if (hasLinkedAgents) {
+                                IconButton(onClick = { panel = ConversationPanel.COLLABORATION }) {
+                                    Icon(Icons.Outlined.Group, contentDescription = "Agent 协作")
+                                }
+                            }
+                        }
+                        if (hasOverflow) {
+                            var more by remember { mutableStateOf(false) }
+                            Box {
+                                IconButton(onClick = { more = true }) {
+                                    Icon(Icons.Filled.MoreVert, contentDescription = "更多会话操作")
+                                }
+                                DropdownMenu(expanded = more, onDismissRequest = { more = false }) {
+                                    if (outlineInMenu) DropdownMenuItem(text = { Text("大纲") }, onClick = {
+                                        more = false
+                                        showOutline = true
+                                    })
+                                    if (existing) {
+                                        DropdownMenuItem(text = { Text("后台任务") }, onClick = {
+                                            more = false
+                                            showBackgroundTasks()
+                                        })
+                                        DropdownMenuItem(text = { Text("Agent 协作") }, onClick = {
+                                            more = false
+                                            panel = ConversationPanel.COLLABORATION
+                                        })
+                                    }
+                                    if (state.canCompact) DropdownMenuItem(text = { Text("压缩上下文") }, enabled = !state.busy, onClick = {
+                                        more = false
+                                        actions.compact()
+                                    })
+                                    if (state.controlHandoff == ControlHandoff.CAN_RELEASE) DropdownMenuItem(text = { Text("释放会话控制权") }, enabled = !state.busy, onClick = {
+                                        more = false
+                                        actions.setConversationHandoff(true)
+                                    })
+                                }
+                            }
+                        }
+                    },
+                )
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+                header.connection?.let { status ->
+                    Surface(color = MaterialTheme.colorScheme.surfaceContainerLow, modifier = Modifier.fillMaxWidth()) {
+                        Row(Modifier.padding(horizontal = 16.dp * spacing, vertical = 6.dp * spacing), verticalAlignment = Alignment.CenterVertically) {
+                            StatusDot(status.tone, size = 7.dp)
                             Text(
-                                listOfNotNull(header.runtime?.name, header.device, header.cwd?.let(::lastPathComponent)).joinToString(" · "),
-                                style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(start = 6.dp),
+                                "${header.device ?: "设备"} · ${status.text}",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(start = 8.dp),
                             )
                         }
                     }
-                },
-            )
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+                }
+            }
         },
     ) { padding ->
-        Column(Modifier.fillMaxSize().padding(padding).imePadding()) {
+        Column(Modifier.fillMaxSize().padding(padding).consumeWindowInsets(padding).imePadding()) {
             Box(Modifier.weight(1f).fillMaxWidth()) {
                 when {
                     state.loading -> CircularProgressIndicator(Modifier.align(Alignment.Center))
-                    state.entries.isEmpty() && state.sending == null && state.conversation == null -> EmptyState(
-                        Icons.Outlined.ChatBubbleOutline, "新会话",
-                        listOfNotNull(header.runtime?.name?.let { "在 $it 上开始" }, "工作目录：" + (header.cwd ?: "运行时默认目录")).joinToString("\n"),
+                    state.entries.isEmpty() && state.sending == null && state.conversation == null -> Unit
+                    else -> Transcript(
+                        state, list, actions.load,
+                        onEdit = { message -> state.editable[message.id]?.let { editing = message to it } },
+                        onFork = { userMessageId -> forking = userMessageId },
+                        modifier = Modifier.fillMaxSize(),
                     )
-                    else -> Transcript(state, actions.load, Modifier.fillMaxSize())
                 }
             }
             state.failure?.let { Failure(it) }
@@ -188,9 +338,215 @@ fun ConversationContent(header: ConversationHeader, state: ConversationState, ac
                     actions.reply(interaction.id, reply)
                 }
             }
-            Composer(state, actions)
+            if (newSession != null) NewConversationContext(
+                newSession,
+                enabled = !state.busy && !state.uploadingAttachment,
+                hasAttachments = state.attachments.isNotEmpty(),
+            )
+            ConversationComposer(state, actions, listing.runtimes, listing.runtimeLabels)
         }
     }
+    when (panel) {
+        ConversationPanel.BACKGROUND_TASKS -> BackgroundTasksSheet(
+            state, onDismiss = { panel = null }, onRefresh = actions.refreshBackgroundTasks,
+            onLoadOutput = actions.loadBackgroundTaskOutput, onStop = actions.stopBackgroundTask,
+        )
+        ConversationPanel.COLLABORATION -> LinkedConversations(
+            state, listing, actions, onDismiss = { panel = null },
+        )
+        null -> Unit
+    }
+    if (showOutline) {
+        val reversed = state.entries.asReversed()
+        val hasWorking = state.running && (state.entries.lastOrNull() as? TranscriptEntry.Work)?.running != true
+        val leadingOffset = (if (hasWorking) 1 else 0) + (if (state.sending != null) 1 else 0)
+        ModalBottomSheet(sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true), onDismissRequest = { showOutline = false }) {
+            Text("大纲", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp))
+            LazyColumn(Modifier.navigationBarsPadding().padding(bottom = 16.dp)) {
+                items(outline, key = { it.key }) { turn ->
+                    ListItem(
+                        headlineContent = { Text(turn.preview, maxLines = 2, overflow = TextOverflow.Ellipsis) },
+                        trailingContent = turn.timestampUnixMs?.let { ts -> { Text(formatMessageTime(ts), style = MaterialTheme.typography.labelSmall) } },
+                        colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+                        modifier = Modifier.clickable {
+                            showOutline = false
+                            val index = reversed.indexOfFirst { it.key == turn.key }
+                            if (index >= 0) scope.launch { list.scrollToItem(leadingOffset + index) }
+                        }.padding(horizontal = 8.dp),
+                    )
+                }
+            }
+        }
+    }
+    editing?.let { (message, info) ->
+        EditMessageSheet(
+            initial = message.editableText(),
+            preservedAttachments = message.originalAttachmentNames(),
+            editable = info,
+            running = state.running,
+            busy = state.busy,
+            failure = state.failure,
+            dismiss = { if (!state.busy) editing = null },
+            submit = { updated, placement ->
+                actions.editMessage(message.id, updated, placement, info.revision) { editing = null }
+            },
+        )
+    }
+    forking?.let { userMessageId ->
+        AlertDialog(
+            onDismissRequest = { forking = null },
+            title = { Text("从此轮分叉新会话？") },
+            text = { Text("新会话将包含截至本轮结束的全部内容，原会话保持不变。") },
+            confirmButton = {
+                TextButton(enabled = !state.busy, onClick = {
+                    forking = null
+                    actions.forkConversation(userMessageId)
+                }) { Text("创建分叉") }
+            },
+            dismissButton = { TextButton(onClick = { forking = null }) { Text("取消") } },
+        )
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun EditMessageSheet(
+    initial: String,
+    preservedAttachments: List<String>,
+    editable: EditableMessage,
+    running: Boolean,
+    busy: Boolean,
+    failure: String?,
+    dismiss: () -> Unit,
+    submit: (String, EditPlacement) -> Unit,
+) {
+    var text by remember(initial) { mutableStateOf(initial) }
+    var placement by remember(editable) { mutableStateOf(if (editable.inPlace) EditPlacement.IN_PLACE else EditPlacement.FORK) }
+    ModalBottomSheet(sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true), onDismissRequest = dismiss) {
+        Column(Modifier.navigationBarsPadding().padding(horizontal = 24.dp).padding(bottom = 16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Text("编辑消息", style = MaterialTheme.typography.titleLarge)
+            if (failure != null) {
+                Text(failure, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+            }
+            OutlinedTextField(
+                value = text,
+                onValueChange = { text = it },
+                enabled = !busy,
+                modifier = Modifier.fillMaxWidth().heightIn(min = 96.dp, max = 220.dp),
+                placeholder = { Text("修改消息内容") },
+            )
+            if (preservedAttachments.isNotEmpty()) {
+                Text(
+                    "保留原附件：${preservedAttachments.joinToString("、")}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            Column {
+                if (editable.inPlace) {
+                    val detail = if (running) "将先停止当前轮次，再替换此消息及之后的内容" else "替换此消息及之后的内容"
+                    PlacementChoice("在原会话中继续", detail, placement == EditPlacement.IN_PLACE) { placement = EditPlacement.IN_PLACE }
+                }
+                PlacementChoice("在新会话中继续", "保留原会话，从此处创建分支并发送", placement == EditPlacement.FORK) { placement = EditPlacement.FORK }
+            }
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End)) {
+                TextButton(onClick = dismiss) { Text("取消") }
+                Button(enabled = !busy && (text.isNotBlank() || preservedAttachments.isNotEmpty()), onClick = { submit(text.trim(), placement) }) {
+                    Text(if (placement == EditPlacement.IN_PLACE) "替换并发送" else "分叉并发送")
+                }
+            }
+        }
+    }
+}
+
+internal fun attachmentDisplayName(index: Int, block: DeliveredBlock): String = when (block) {
+    is DeliveredBlock.File -> lastPathComponent(block.path).ifBlank { "原附件" }
+    is DeliveredBlock.Image -> when (val source = block.source) {
+        is DeliveredImageSource.Path -> lastPathComponent(source.path).ifBlank { "原消息图片 ${index + 1}.${imageExtension(block.mediaType)}" }
+        is DeliveredImageSource.Data -> "原消息图片 ${index + 1}.${imageExtension(block.mediaType)}"
+    }
+    else -> "原附件"
+}
+
+private fun DeliveredMessage.originalAttachmentNames(): List<String> =
+    blocks.mapIndexedNotNull { index, block ->
+        if (block is DeliveredBlock.Image || block is DeliveredBlock.File) attachmentDisplayName(index, block) else null
+    }
+
+private fun imageExtension(mediaType: String?): String = when (mediaType?.lowercase()) {
+    "image/jpeg" -> "jpg"
+    "image/gif" -> "gif"
+    "image/webp" -> "webp"
+    "image/bmp" -> "bmp"
+    "image/heic", "image/heif" -> "heic"
+    "image/avif" -> "avif"
+    "image/tiff" -> "tiff"
+    else -> "png"
+}
+
+@Composable
+private fun PlacementChoice(title: String, detail: String, selected: Boolean, select: () -> Unit) {
+    ListItem(
+        leadingContent = { RadioButton(selected = selected, onClick = null) },
+        headlineContent = { Text(title) },
+        supportingContent = { Text(detail) },
+        colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+        modifier = Modifier.selectable(selected, onClick = select),
+    )
+}
+
+@Composable
+private fun LinkedConversations(
+    state: ConversationState,
+    listing: DeviceListing,
+    actions: ConversationActions,
+    onDismiss: () -> Unit,
+) {
+    var opening by remember { mutableStateOf<String?>(null) }
+    var openFailure by remember { mutableStateOf<String?>(null) }
+    val running = remember(listing.active) {
+        listing.active.values.filter { it.runState == RunState.RUNNING || it.runState == RunState.STOPPING || it.runState == RunState.ELSEWHERE }
+            .mapTo(mutableSetOf()) { it.conversationId }
+    }
+    val waiting = remember(listing.active) {
+        listing.active.values.filter { it.pendingInteractions > 0u }.mapTo(mutableSetOf()) { it.conversationId }
+    }
+    val sessions = remember(listing.conversations) { listing.conversations.map { it.conversation } }
+    val open = { target: ConversationTarget.Existing ->
+        onDismiss()
+        actions.openConversation(target)
+    }
+    LaunchedEffect(opening) {
+        val id = opening ?: return@LaunchedEffect
+        try {
+            open(actions.findLinkedConversation(id))
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: Exception) {
+            openFailure = "无法打开关联会话：${error.describe()}"
+        } finally {
+            opening = null
+        }
+    }
+    CollaborationSheet(
+        state = state,
+        runtimeId = state.contextRuntimeId,
+        runtimeLabels = listing.runtimeLabels,
+        sessions = sessions,
+        runningIds = running,
+        waitingIds = waiting,
+        openFailure = openFailure ?: state.collaborationFailure,
+        openingConversationId = opening,
+        onDismiss = onDismiss,
+        onStop = actions.stopSubAgents,
+        onOpen = open,
+        onOpenUnlisted = { id ->
+            openFailure = null
+            opening = id
+        },
+    )
 }
 
 @Composable
@@ -203,20 +559,20 @@ private fun Failure(text: String) {
     }
 }
 
-/** An approval or a question from the runtime, above the input like a pinned message. */
+/** An approval or a question from the runtime, anchored above the input. */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun InteractionCard(interaction: RuntimeInteraction, enabled: Boolean, childConversation: Boolean, reply: (RuntimeInteractionReply) -> Unit) {
     Surface(
         color = MaterialTheme.colorScheme.surfaceContainerHigh, shape = RoundedCornerShape(16.dp),
-        border = BorderStroke(1.dp, Tone.Attention.color().copy(alpha = 0.5f)),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
         modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
     ) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             when (val kind = interaction.kind) {
                 is InteractionKind.Approval -> {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Outlined.Shield, contentDescription = null, modifier = Modifier.size(20.dp), tint = Tone.Attention.color())
+                        Icon(Icons.Outlined.Shield, contentDescription = null, modifier = Modifier.size(18.dp), tint = Tone.Attention.color())
                         Text(kind.title, style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(start = 8.dp))
                     }
                     if (kind.detail.isNotBlank()) Surface(color = MaterialTheme.colorScheme.surfaceContainerLowest, shape = RoundedCornerShape(8.dp)) {
@@ -232,6 +588,7 @@ private fun InteractionCard(interaction: RuntimeInteraction, enabled: Boolean, c
                             FilledTonalButton(enabled = enabled, onClick = { reply(RuntimeInteractionReply.Decision(option.id)) }) { Text(option.label) }
                         }
                     }
+                    if (!enabled) Text("正在提交…", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
                 is InteractionKind.UserInput -> QuestionFields(interaction.id, kind.questions, enabled, readOnly = false, reply = reply)
                 is InteractionKind.AsyncUserInput -> QuestionFields(
@@ -277,14 +634,18 @@ private fun QuestionFields(id: String, questions: List<InteractionQuestion>, ena
     val draft = remember(id) { QuestionDraft(questions) }
     val canAnswer = enabled && !readOnly
     Row(verticalAlignment = Alignment.CenterVertically) {
-        Icon(Icons.AutoMirrored.Outlined.HelpOutline, contentDescription = null, modifier = Modifier.size(20.dp), tint = Tone.Attention.color())
+        Icon(Icons.AutoMirrored.Outlined.HelpOutline, contentDescription = null, modifier = Modifier.size(18.dp), tint = Tone.Attention.color())
         Text("需要你的回答", style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(start = 8.dp))
     }
-    if (readOnly) Text("请回到父会话回答这个问题。", style = MaterialTheme.typography.bodySmall)
+    if (readOnly) Text("请回到父会话回答这个问题。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
     Column(Modifier.heightIn(max = 240.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        questions.forEach { question ->
+        questions.forEachIndexed { index, question ->
+            if (index > 0) HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
             val selected = draft.choices[question.id].orEmpty()
             val hasOther = draft.other[question.id] == true
+            if (questions.size > 1) {
+                Text("问题 ${index + 1} / ${questions.size}", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
             Text(question.text, style = MaterialTheme.typography.bodyMedium)
             if (question.options.isNotEmpty()) FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 question.options.forEach { option ->
@@ -317,117 +678,5 @@ private fun QuestionFields(id: String, questions: List<InteractionQuestion>, ena
             reply(RuntimeInteractionReply.Answers(questions.map { InteractionAnswer(it.id, draft.values(it)) }))
         }) { Text("提交") }
         TextButton(enabled = enabled, onClick = { reply(RuntimeInteractionReply.Cancel) }) { Text("取消") }
-    }
-}
-
-/** The input: text on top, the next turn's model and the send or stop button below, in one rounded field. */
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun Composer(state: ConversationState, actions: ConversationActions) {
-    val text = state.draft
-    val childConversation = state.conversation?.parentConversationId != null
-    var choosing by remember { mutableStateOf(false) }
-    val canSend = !state.busy && state.composerReady && state.composerFailure == null && (text.isNotBlank() || state.attachments.isNotEmpty()) && state.canSend
-    Column(Modifier.fillMaxWidth().navigationBarsPadding().padding(start = 12.dp, end = 12.dp, top = 4.dp, bottom = 8.dp)) {
-        val lockMessage = when (state.inputAccess) {
-            InputAccess.EDITABLE -> null
-            InputAccess.CHECKING_CONTROL -> "正在检查会话控制权…"
-            InputAccess.EXTERNAL_CONTROLLER -> "另一个客户端正在控制此会话。草稿可继续编辑，暂不能发送。"
-            InputAccess.CONTROL_UNAVAILABLE -> "暂时无法确认会话控制权，正在重试。"
-            InputAccess.EXTERNAL_EXECUTION -> "此会话正在其他客户端执行。"
-            InputAccess.READ_ONLY -> if (childConversation) "子 Agent 会话由父会话继续。" else "此会话当前不能提交消息。草稿可继续编辑。"
-        }
-        when (state.controlHandoff) {
-            ControlHandoff.RELEASED, ControlHandoff.RELEASING -> Row(verticalAlignment = Alignment.CenterVertically) {
-                val releasing = state.controlHandoff == ControlHandoff.RELEASING
-                Text(if (releasing) "正在交还控制权…" else "控制权已交还", style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
-                TextButton(onClick = { actions.setConversationHandoff(false) }, enabled = !state.busy) {
-                    Text(if (releasing) "取消交接" else "恢复 Velune 执行")
-                }
-            }
-            ControlHandoff.CAN_RELEASE, null -> if (lockMessage != null) Text(lockMessage, style = MaterialTheme.typography.bodySmall)
-        }
-        if (!state.composerReady) Text("正在恢复输入", style = MaterialTheme.typography.bodySmall)
-        state.composerFailure?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
-        state.attachments.forEach { attachment ->
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(attachment.name, style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
-                TextButton(onClick = { actions.removeAttachment(attachment.id) }) { Text("移除") }
-            }
-        }
-        RunStatus(state.runState)
-        Surface(color = MaterialTheme.colorScheme.surfaceContainerHigh, shape = RoundedCornerShape(24.dp), modifier = Modifier.fillMaxWidth()) {
-            Column {
-                TextField(
-                    value = text, onValueChange = actions.editDraft, readOnly = childConversation, placeholder = { Text("给 Agent 发消息") },
-                    maxLines = 6, modifier = Modifier.fillMaxWidth(),
-                    colors = TextFieldDefaults.colors(
-                        focusedContainerColor = Color.Transparent, unfocusedContainerColor = Color.Transparent, disabledContainerColor = Color.Transparent,
-                        focusedIndicatorColor = Color.Transparent, unfocusedIndicatorColor = Color.Transparent, disabledIndicatorColor = Color.Transparent,
-                    ),
-                )
-                Row(Modifier.fillMaxWidth().padding(start = 8.dp, end = 8.dp, bottom = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                    if (state.models.isNotEmpty()) {
-                        val name = state.models.firstOrNull { it.selection == state.selection }?.name ?: "运行时默认模型"
-                        Surface(shape = CircleShape, color = MaterialTheme.colorScheme.surfaceContainerHighest, modifier = Modifier.widthIn(max = 240.dp)) {
-                            Row(Modifier.clickable(enabled = state.composerReady && !state.busy) { choosing = true }.padding(start = 10.dp, end = 6.dp, top = 6.dp, bottom = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-                                Icon(Icons.Outlined.AutoAwesome, contentDescription = null, modifier = Modifier.size(16.dp))
-                                Text(name, style = MaterialTheme.typography.labelLarge, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(start = 6.dp).weight(1f, fill = false))
-                                Icon(Icons.Filled.ArrowDropDown, contentDescription = "选择模型", modifier = Modifier.size(20.dp))
-                            }
-                        }
-                    }
-                    Spacer(Modifier.weight(1f))
-                    if (state.running && state.canCancel) {
-                        FilledTonalIconButton(enabled = !state.busy, onClick = actions.stop, modifier = Modifier.size(40.dp)) {
-                            Icon(Icons.Filled.Stop, contentDescription = "停止")
-                        }
-                    } else {
-                        FilledIconButton(
-                            enabled = canSend, onClick = { actions.send(text.trim()) {} }, modifier = Modifier.size(40.dp),
-                            colors = IconButtonDefaults.filledIconButtonColors(disabledContainerColor = MaterialTheme.colorScheme.surfaceContainerHighest),
-                        ) {
-                            if (state.busy && state.sending != null) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
-                            else Icon(Icons.Filled.ArrowUpward, contentDescription = "发送")
-                        }
-                    }
-                }
-            }
-        }
-    }
-    if (choosing) ModalBottomSheet(sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true), onDismissRequest = { choosing = false }) {
-        Text("下一轮的模型", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp))
-        LazyColumn(Modifier.padding(bottom = 24.dp)) {
-            item { ModelOption("运行时默认模型", state.selection == null) { choosing = false; actions.select(null) } }
-            items(state.models, key = { it.name + "/" + it.selection.hashCode() }) { option ->
-                ModelOption(option.name, option.selection == state.selection) { choosing = false; actions.select(option.selection) }
-            }
-        }
-    }
-}
-
-@Composable
-private fun ModelOption(name: String, selected: Boolean, choose: () -> Unit) {
-    ListItem(
-        headlineContent = { Text(name) },
-        trailingContent = { if (selected) Icon(Icons.Filled.Check, contentDescription = "当前选择", tint = MaterialTheme.colorScheme.primary) },
-        colors = ListItemDefaults.colors(containerColor = Color.Transparent),
-        modifier = Modifier.clickable(onClick = choose).padding(horizontal = 8.dp),
-    )
-}
-
-/** A line above the input while the conversation is not simply idle. */
-@Composable
-private fun RunStatus(runState: RunState) {
-    val (tone, text) = when (runState) {
-        RunState.IDLE -> return
-        RunState.RUNNING -> Tone.Active to "运行中"
-        RunState.STOPPING -> Tone.Attention to "正在停止"
-        RunState.FAILED -> Tone.Negative to "上一轮失败"
-        RunState.ELSEWHERE -> Tone.Attention to "正在其他地方运行"
-    }
-    Row(Modifier.padding(start = 12.dp, bottom = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-        StatusDot(tone)
-        Text(text, style = MaterialTheme.typography.labelMedium, color = tone.color(), modifier = Modifier.padding(start = 6.dp))
     }
 }

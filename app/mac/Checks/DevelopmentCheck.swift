@@ -28,6 +28,7 @@ enum DevelopmentCheck {
         "--experience-claude-compact-edit-only",
         "--experience-appearance-zoom-only",
         "--experience-runtime-editor-only",
+        "--experience-model-auto-compaction-only",
         "--experience-compaction-only",
         "--experience-sidebar-only",
         "--experience-runtime-recovery-only",

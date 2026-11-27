@@ -4,14 +4,19 @@ import android.os.Build
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.ColorScheme
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Typography
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.dynamicDarkColorScheme
 import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.ReadOnlyComposable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.unit.isSpecified
 
 /**
  * Material 3 with the system's dynamic colours where Android has them (12+).
@@ -19,7 +24,7 @@ import androidx.compose.ui.platform.LocalContext
  * instead of Material's baseline purple.
  */
 @Composable
-fun VeluneTheme(content: @Composable () -> Unit) {
+fun VeluneTheme(appearance: AppearanceValues = AppearanceValues(), content: @Composable () -> Unit) {
     val dark = isSystemInDarkTheme()
     val context = LocalContext.current
     val colors = when {
@@ -27,8 +32,37 @@ fun VeluneTheme(content: @Composable () -> Unit) {
         dark -> BrandDark
         else -> BrandLight
     }
-    MaterialTheme(colorScheme = colors, content = content)
+    val typography = remember(appearance.uiScale) { BaseTypography.scaled(appearance.uiScale) }
+    CompositionLocalProvider(LocalAppearance provides appearance) {
+        MaterialTheme(colorScheme = colors, typography = typography, content = content)
+    }
 }
+
+// Message and code styles also start here so the UI scale never compounds with them.
+internal val BaseTypography = Typography()
+
+internal fun TextStyle.scaled(scale: Float): TextStyle = copy(
+    fontSize = if (fontSize.isSpecified) fontSize * scale else fontSize,
+    lineHeight = if (lineHeight.isSpecified) lineHeight * scale else lineHeight,
+)
+
+private fun Typography.scaled(scale: Float): Typography = copy(
+    displayLarge = displayLarge.scaled(scale),
+    displayMedium = displayMedium.scaled(scale),
+    displaySmall = displaySmall.scaled(scale),
+    headlineLarge = headlineLarge.scaled(scale),
+    headlineMedium = headlineMedium.scaled(scale),
+    headlineSmall = headlineSmall.scaled(scale),
+    titleLarge = titleLarge.scaled(scale),
+    titleMedium = titleMedium.scaled(scale),
+    titleSmall = titleSmall.scaled(scale),
+    bodyLarge = bodyLarge.scaled(scale),
+    bodyMedium = bodyMedium.scaled(scale),
+    bodySmall = bodySmall.scaled(scale),
+    labelLarge = labelLarge.scaled(scale),
+    labelMedium = labelMedium.scaled(scale),
+    labelSmall = labelSmall.scaled(scale),
+)
 
 private val BrandLight: ColorScheme = lightColorScheme(
     primary = Color(0xFF4C5C92), onPrimary = Color.White,

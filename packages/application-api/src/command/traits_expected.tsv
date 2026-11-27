@@ -49,6 +49,7 @@ ResolveAgentUri	Observation	false	false	true	false	[false, false, false]	owner	R
 UpsertRuntime	Effect	true	true	true	false	[false, false, false]	owner	UpsertRuntime	-	-
 UpsertRuntimeWithExecution	Effect	true	true	true	false	[false, false, false]	owner	UpsertRuntimeWithExecution	-	-
 UpsertAcpRuntime	Effect	true	true	true	false	[false, false, false]	owner	UpsertAcpRuntime	-	-
+SetRuntimeModelAutoCompaction	Effect	false	true	true	false	[false, false, false]	owner	SetRuntimeModelAutoCompaction	-	-
 ReadAcpLaunch	Observation	false	false	true	false	[false, false, false]	owner	ReadAcpLaunch	-	-
 ReadAcpRuntimeInfo	Observation	false	false	true	false	[false, false, false]	owner	ReadAcpRuntimeInfo	-	-
 ReadAcpSessionConfig	Observation	false	false	true	false	[false, false, false]	owner	ReadAcpSessionConfig	-	-

@@ -2,6 +2,7 @@
 use super::*;
 use crate::conversation::ConversationSnapshot;
 use velune_agent_runtime::acp::{Client, Config};
+use velune_conversation::AutoCompactionSetting;
 
 impl CoreRuntime {
     fn acp_client(&self, runtime: &RuntimeInstance) -> Result<Client, RuntimeError> {
@@ -169,6 +170,42 @@ impl CoreRuntime {
         self.session.execution_runtime_id = Some(runtime.id);
         self.session.active_state = ActiveState::Acp(Box::new(session));
         Ok(())
+    }
+
+    pub(super) fn apply_acp_model_auto_compaction(
+        &mut self,
+        runtime_id: &str,
+    ) -> Result<(), RuntimeError> {
+        let ActiveState::Acp(session) = &mut self.session.active_state else {
+            return Ok(());
+        };
+        let runtime = self
+            .runtime_instances
+            .iter()
+            .find(|runtime| runtime.id == runtime_id)
+            .ok_or_else(|| RuntimeError::invalid("ACP 运行时不存在"))?;
+        session
+            .poll()
+            .map_err(|error| RuntimeError::context("读取 ACP 会话设置", error))?;
+        let desired = session
+            .current_model_id()
+            .map(|model_id| {
+                runtime.model_auto_compaction(&crate::ModelSelection::Native {
+                    provider_id: None,
+                    model_id: model_id.into(),
+                })
+            })
+            .transpose()?
+            .flatten();
+        let desired = match &desired {
+            Some(AutoCompactionSetting::Acp { option_id, value }) => {
+                Some((option_id.as_str(), value))
+            }
+            _ => None,
+        };
+        session
+            .reconcile_auto_compaction(desired)
+            .map_err(|error| RuntimeError::context("ACP 模型自动压缩设置", error))
     }
 
     /// The loaded ACP conversation's session configuration, after setting

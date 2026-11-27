@@ -34,6 +34,7 @@ done
             resources_directory: root.clone(),
             projection_directory: root.clone(),
             gateway: None,
+            auto_compaction: None,
             mcp_servers: vec![],
             session_agents: vec![],
         })

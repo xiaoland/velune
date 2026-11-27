@@ -16,10 +16,10 @@ struct RuntimeEditorCheckAccess {
 
 @MainActor func runtimeEditorChecks(home: URL) -> Never {
     func note(_ value: String) { FileHandle.standardError.write(Data((value + "\n").utf8)) }
-    func wait(_ condition: () -> Bool) {
+    func wait(_ operation: String, _ condition: () -> Bool) {
         let deadline = Date().addingTimeInterval(15)
         while !condition(), Date() < deadline { RunLoop.main.run(until: Date().addingTimeInterval(0.02)) }
-        precondition(condition(), "等待运行时编辑器检查超时")
+        precondition(condition(), "等待运行时编辑器检查超时：\(operation)")
     }
     let transport = Transport(stateDirectory: home.appendingPathComponent("runtime-editor"), resourcesDirectory: Bundle.main.resourceURL!)
     let gateway = try! transport.saveProvider(gatewayID: "default", provider: ProviderDraft(
@@ -35,14 +35,19 @@ struct RuntimeEditorCheckAccess {
     try! transport.setRuntimeComposerChoices(RuntimeComposerChoices(runtimeId: source.id, runtimeType: source.typeId, lastChosen: TurnChoice(model: .native(providerId: "source-provider", modelId: "source-model"))))
     let device = DeviceStore(transport: transport)
     device.start()
-    wait { device.runtimeInstances.contains { $0.id == source.id } && device.runtimeComposerChoices[source.id] != nil }
-    var actions: RuntimeEditorCheckAccess?
-    let editor = NSHostingView(rootView: RuntimeEditor(store: device, instance: source, observeForCheck: { actions = $0 }).applicationAppearance())
-    editor.frame = NSRect(x: 0, y: 0, width: 590, height: 600)
-    let window = NSWindow(contentRect: editor.frame, styleMask: [.borderless], backing: .buffered, defer: false)
-    window.contentView = editor
-    editor.layoutSubtreeIfNeeded()
-    wait { actions != nil }
+    wait("读取实例和上次选择") { device.runtimeInstances.contains { $0.id == source.id } && device.runtimeComposerChoices[source.id] != nil }
+    func openEditor(_ instance: RuntimeInstance) -> (NSView, NSWindow, RuntimeEditorCheckAccess) {
+        wait("刷新运行时列表后打开编辑器") { !device.isLoading }
+        var actions: RuntimeEditorCheckAccess?
+        let editor = NSHostingView(rootView: RuntimeEditor(store: device, instance: instance, observeForCheck: { actions = $0 }).applicationAppearance())
+        editor.frame = NSRect(x: 0, y: 0, width: 590, height: 600)
+        let window = NSWindow(contentRect: editor.frame, styleMask: [.borderless], backing: .buffered, defer: false)
+        window.contentView = editor
+        editor.layoutSubtreeIfNeeded()
+        wait("加载编辑器的运行环境") { actions != nil }
+        return (editor, window, actions!)
+    }
+    let (editor, window, form) = openEditor(source)
     func settle() { RunLoop.main.run(until: Date().addingTimeInterval(0.1)); editor.layoutSubtreeIfNeeded() }
     func popups(_ view: NSView) -> [NSPopUpButton] {
         (view as? NSPopUpButton).map { [$0] } ?? view.subviews.flatMap(popups)
@@ -51,7 +56,6 @@ struct RuntimeEditorCheckAccess {
     let sourceName = device.runtimeTypes.first { $0.id == .acp }!.name
     guard let picker = popups(editor).first(where: { $0.title == sourceName }) else { fatalError("原生类型选择器缺失") }
     precondition(picker.isEnabled, "现有实例的类型选择器必须可用")
-    let form = actions!
     precondition(form.type.wrappedValue == .acp && form.execution() == execution && form.launch() == launch)
     form.settings.wrappedValue["binary"] = "/synthetic/edited-source-agent"
     let originalChoice = NewConversationChoice.chosen(choice: TurnChoice(permissionMode: "source-only-choice"))
@@ -100,7 +104,7 @@ struct RuntimeEditorCheckAccess {
     form.type.wrappedValue = .acp
     form.newConversation.wrappedValue = .lastChosen
     precondition(form.type.wrappedValue == .acp && form.newConversation.wrappedValue == .lastChosen)
-    wait { device.runtimeInstances.first { $0.id == source.id }?.typeId == .claudeCode && (try? device.newConversationChoice(for: source.id)) == targetChoice }
+    wait("保存 Claude 实例及新会话设置") { device.runtimeInstances.first { $0.id == source.id }?.typeId == .claudeCode && (try? device.newConversationChoice(for: source.id)) == targetChoice }
     let saved = try! transport.list().runtimeInstances.first { $0.id == source.id }!
     precondition(saved.id == source.id && saved.name == source.name && saved.gatewayId == source.gatewayId && saved.enabled == source.enabled && saved.typeId == .claudeCode)
     precondition(saved.settings["binary"] == targetSettings["binary"] && saved.settings["agentDir"] == targetSettings["agentDir"] && saved.settings["source-only"] == nil)
