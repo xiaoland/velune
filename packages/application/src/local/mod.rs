@@ -356,6 +356,9 @@ impl CoreRuntime {
             options.home_directory.clone(),
             &persisted.gateways,
         );
+        let execution_backends = velune_gateway::ExecutionBackends::with_claude_cache_directory(
+            options.home_directory.join("claude-bridge-cache"),
+        );
         Ok(Self {
             submission_cancellation: None,
             telemetry: None,
@@ -429,7 +432,7 @@ impl CoreRuntime {
             pi_binding_aliases: Default::default(),
             analytics,
             scheduling_state,
-            execution_backends: Default::default(),
+            execution_backends,
             retired_gateway_providers: Vec::new(),
             pending_provider_identity_changes: Default::default(),
             provider_account,
@@ -464,7 +467,7 @@ impl CoreRuntime {
             });
         if leased {
             self.subscription_quota = self.subscription_quota.fork_configuration(&self.gateways);
-            self.execution_backends = Default::default();
+            self.execution_backends = self.execution_backends.fork();
         }
         for gateway in previous {
             for provider in &gateway.providers {

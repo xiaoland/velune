@@ -79,6 +79,22 @@ pub struct ExecutionBackends {
     bindings: Arc<std::sync::Mutex<BTreeMap<(String, String), String>>>,
 }
 impl ExecutionBackends {
+    pub fn with_claude_cache_directory(directory: std::path::PathBuf) -> Self {
+        Self {
+            claude_code: Arc::new(ClaudeCodePool::with_cache_directory(directory)),
+            antigravity: Default::default(),
+            bindings: Default::default(),
+        }
+    }
+
+    pub fn fork(&self) -> Self {
+        Self {
+            claude_code: Arc::new(self.claude_code.fork()),
+            antigravity: Default::default(),
+            bindings: Default::default(),
+        }
+    }
+
     pub(super) fn session_key(gateway_id: &str, session: &SessionIdentity) -> String {
         serde_json::to_string(&(gateway_id, &session.namespace, &session.id))
             .expect("session tuple")
