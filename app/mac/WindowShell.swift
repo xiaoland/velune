@@ -44,7 +44,7 @@ enum ConversationToolbar {
         split = WorkspaceSplitController(model: model, content: content)
         toolbar = WorkspaceToolbar(model: model, previewEmpty: previewEmpty)
         window.titleVisibility = .hidden
-        window.toolbarStyle = .unified
+        window.toolbarStyle = .unifiedCompact
         window.contentViewController = split
         window.toolbar = toolbar.toolbar
         toolbar.attach(to: window)
