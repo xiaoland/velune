@@ -113,6 +113,7 @@
 - `check-codex-sampling-route.py`、`check-pi-child-host.mjs` 只核对已安装 CLI、不经 Velune，与两项 Pi 探测一起列入[运行时升级](../../docs/development/runtime-upgrades.md#2-用真实运行时复验)；合入 develop 后均通过。
 - `check-macos-history-cache.py` 已失效：它直接导入生成的 Python 绑定，而 UniFFI 0.32.2 在带默认 `submission_id` 的记录上生成非法签名，只有验收加载器做了修补。已改写为验收用例 `history_cache_pressure`（7 项检查，约 70 秒），删去 vmmap／sample 采样等诊断输出，原脚本删除。
 - 迁移中发现验收运行器在用例结束后才删除临时目录，应用的日志线程仍在写入时删除失败，结果却仍记为通过；改为由父进程在 worker 退出后删除。
-- 尚未处理：`check-portable-handoff.py`（真实 Codex 与 Pi，经绑定）和 `check-macos-sidebar-toolbar.py`（需已启动的开发实例窗口）。
+- `check-portable-handoff.py` 因同一绑定问题失效，按用户决定改写为验收用例 `codex_pi_handoff`（10 项检查；需 `--codex`、`--pi`、`--node`），原脚本删除。删去自建的绑定加载、fixture 根目录与清理校验、manifest 和开发作用域标记，回环上游的文件闸门与两段流程及全部断言保留；目标请求不得携带加密压缩内容由记录改为断言。runner 增加 `--node`，隔离资源同时链接 `xurl`。回环上游已在本地单独测过；**整例尚未在主机上运行**（主机命令工具本轮断开），需用真实 Codex、Pi 与 Node 复验。
+- 尚未处理：`check-macos-sidebar-toolbar.py`（需已启动的开发实例窗口）。
 
 `codex_conversation_lifecycle` 曾因 ChatGPT.app 内置 Codex CLI 自动更新到 0.171.0-alpha.13、超出当时适配器范围而失败；合入 develop（支持至 0.171.0）后通过（8 项检查）。`CODEX166` 是适配器族名而非版本，用例无需调整。PR checks 的新步骤尚未在 CI 实际运行。

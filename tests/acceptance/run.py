@@ -27,7 +27,7 @@ REPO = HERE.parents[1]
 CASES = HERE / "cases"
 DEFAULT_BINDINGS = REPO / "target/acceptance/bindings"
 RESULTS = REPO / "target/verification/acceptance"
-TOOLS = ("codex", "claude", "pi")
+TOOLS = ("codex", "claude", "pi", "node")
 
 
 def discover() -> list[str]:
