@@ -840,12 +840,12 @@ final class DeviceStore: ObservableObject {
     func shutdown(stoppingWork: Bool = false, completion: @escaping (Bool) -> Void) {
         guard !isShuttingDown else { completion(false); return }
         guard !isPreview, let transport else { completion(true); return }
-        windowWorkspaceJournal.flush()
         isShuttingDown = true
         timer?.invalidate(); timer = nil
         // Reads queued in any window give way; the changes queued before this still land.
         composerInputs.flush { [weak self] in
             guard let self else { completion(false); return }
+            // Include recovery points queued by the draft flush in the same drain.
             self.windowWorkspaceJournal.flush()
             transport.beginClosing()
             self.performOnQueue { [weak self] in

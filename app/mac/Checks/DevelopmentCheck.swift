@@ -46,6 +46,7 @@ enum DevelopmentCheck {
         .init("--check-notification-navigation", .beforeSwiftUI, run: notificationNavigationChecks),
         .init("--check-outgoing-submissions", .beforeSwiftUI, run: outgoingSubmissionChecks),
         .init("--check-sidebar-toolbar", .beforeSwiftUI, run: sidebarToolbarChecks),
+        .init("--check-telemetry-shutdown", .beforeSwiftUI, run: telemetryShutdownChecks),
         .init("--check-shell-motion", .beforeSwiftUI, run: shellMotionChecks),
         .init("--check-background-notifications", .beforeSwiftUI, run: backgroundNotificationChecks),
         .init("--check-provider-analytics", .beforeSwiftUI, run: providerAnalyticsOffscreenChecks),

@@ -121,7 +121,8 @@ final class ClientTelemetry: @unchecked Sendable {
     func shutdown() throws {
         try transition.withLock {
             let old = lock.withLock { let old = generation; generation = nil; return old }
-            old?.flush(); try binding.shutdown(); old?.revoke(); old?.shutdown()
+            old?.finishForExit()
+            try binding.shutdown()
         }
     }
     deinit {
@@ -168,7 +169,7 @@ private final class NativeTelemetryTransport {
     let channel: ClientConnection
     let config: OtlpConfiguration
     private let lock = NSLock()
-    private var revoked = false
+    private var closing: EventLoopFuture<Void>?
     init(profile: TelemetryProfile) throws {
         guard let url = URL(string: profile.endpoint), let host = url.host else { throw BindingError.Invalid(detail: "遥测地址无效") }
         // Network.framework applies the OS trust policy, including device-managed roots.
@@ -177,13 +178,17 @@ private final class NativeTelemetryTransport {
             .connect(host: host.trimmingCharacters(in: CharacterSet(charactersIn: "[]")), port: url.port ?? (url.scheme == "https" ? 443 : 80))
         config = OtlpConfiguration(timeout: 3, compression: .none, headers: profile.headers.map { ($0.key, $0.value) })
     }
-    func revoke() {
+    @discardableResult
+    func beginClose() -> EventLoopFuture<Void> {
         lock.withLock {
-            guard !revoked else { return }; revoked = true
-            // Close is the barrier; SDK shutdown below must not flush a retired queue.
-            _ = try? channel.close().wait()
+            if let closing { return closing }
+            let future = channel.close()
+            closing = future
+            return future
         }
     }
+    // Live configuration changes must finish revoking the old transport before activating another.
+    func revoke() { _ = try? beginClose().wait() }
     deinit { revoke(); group.shutdownGracefully { _ in } }
 }
 
@@ -243,7 +248,20 @@ private final class NativeTelemetryGeneration {
         }
     }
     func revoke() { lock.withLock { stopped = true }; transport.revoke() }
-    func flush() { traces.forceFlush(timeout: 3); _ = logProcessor.forceFlush(explicitTimeout: 3); _ = metrics.forceFlush() }
+    func finishForExit() {
+        lock.withLock { stopped = true }
+        let flushed = DispatchSemaphore(value: 0)
+        DispatchQueue.global(qos: .utility).async {
+            self.traces.forceFlush(timeout: 2)
+            _ = self.logProcessor.forceFlush(explicitTimeout: 2)
+            _ = self.metrics.forceFlush()
+            flushed.signal()
+            self.shutdown()
+        }
+        // The SDK's timeouts depend on exporter progress. App exit has its own budget.
+        _ = flushed.wait(timeout: .now() + .seconds(2))
+        transport.beginClose()
+    }
     func shutdown() { revoke(); traces.shutdown(); _ = logProcessor.shutdown(explicitTimeout: 2); sdkDiagnostics.capture(); _ = sdkDiagnostics.provider.shutdown(); _ = metrics.shutdown() }
 }
 
@@ -274,3 +292,27 @@ private final class SdkMetricSnapshot: MetricReader, @unchecked Sendable {
     func getAggregationTemporality(for instrument: InstrumentType) -> AggregationTemporality { .cumulative }
     func getDefaultAggregation(for instrument: InstrumentType) -> Aggregation { Aggregations.defaultAggregation() }
 }
+
+#if VELUNE_DEV_CHECKS
+extension ClientTelemetry {
+    /// Reproduces a native channel that cannot acknowledge shutdown until the check releases it.
+    func holdNativeTelemetryEventLoopForCheck() throws -> DispatchSemaphore {
+        guard let eventLoop = lock.withLock({ generation?.eventLoopForCheck }) else { throw BindingError.Unavailable }
+        let entered = DispatchSemaphore(value: 0)
+        let release = DispatchSemaphore(value: 0)
+        eventLoop.execute {
+            entered.signal()
+            release.wait()
+        }
+        guard entered.wait(timeout: .now() + .seconds(2)) == .success else {
+            release.signal()
+            throw BindingError.Unavailable
+        }
+        return release
+    }
+}
+
+extension NativeTelemetryGeneration {
+    fileprivate var eventLoopForCheck: any EventLoop { transport.channel.eventLoop }
+}
+#endif

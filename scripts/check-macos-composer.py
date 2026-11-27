@@ -132,7 +132,7 @@ def prepare_claude_continuation(root, evidence, path, lifetime, editing):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('check', choices=['editor', 'runtime-editor', 'model-auto-compaction', 'fork-send', 'claude-compact-edit', 'queued-editor', 'queue-withdrawal', 'archived', 'palette-ime', 'palette-search', 'pagination', 'continuation', 'targets', 'tabs', 'ownership', 'geometry', 'controls', 'credits', 'background', 'experience', 'appearance-zoom', 'aggregated-list', 'recovery', 'compaction', 'sidebar', 'provider-analytics', 'background-notifications', 'notification-navigation', 'sidebar-toolbar', 'outgoing-submissions', 'late-send-echo', 'transcript', 'shell-motion', 'file-links'])
+    parser.add_argument('check', choices=['editor', 'runtime-editor', 'model-auto-compaction', 'fork-send', 'claude-compact-edit', 'queued-editor', 'queue-withdrawal', 'archived', 'palette-ime', 'palette-search', 'pagination', 'continuation', 'targets', 'tabs', 'ownership', 'geometry', 'controls', 'credits', 'background', 'experience', 'appearance-zoom', 'aggregated-list', 'recovery', 'compaction', 'sidebar', 'provider-analytics', 'background-notifications', 'notification-navigation', 'sidebar-toolbar', 'outgoing-submissions', 'late-send-echo', 'transcript', 'shell-motion', 'telemetry-shutdown', 'file-links'])
     parser.add_argument('--app', type=Path, default=app_bundle_path(ROOT, 'dev'))
     parser.add_argument('--output', type=Path)
     parser.add_argument('--dark', action='store_true')
@@ -248,6 +248,8 @@ def main():
             flags = ['--check-conversation-requests', '--check-queue-withdrawal']
         if args.check == 'sidebar-toolbar':
             flags = ['--check-sidebar-toolbar']
+        if args.check == 'telemetry-shutdown':
+            flags = ['--check-telemetry-shutdown']
         if args.check == 'transcript':
             flags = ['--check-message-experience', '--experience-native-row-order-only']
         elif args.check == 'shell-motion':
