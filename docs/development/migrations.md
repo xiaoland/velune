@@ -12,7 +12,7 @@
 
 已有 `scripts/migrations/` 与 `scripts/run-migrations.py` 是开发期显式整理工具和人工恢复辅助，不等同于 beta 的内置迁移实现。普通用户不需要安装 Python。每个历史转换仍须在 Rust/native 启动 owner 中有合成旧格式验收后，才算已纳入 beta 基线；脚本本身不能作为“升级受支持”的证据。
 
-当前内置转换覆盖普通配置 schema 10→11、合并式 composer 输入 schema 1→2、composer 选择 schema 1→2（同时将已知新会话策略归属迁入实例设置）、Mac 输入区绝对宽度转比例，以及已知未版本化的定时任务表识别与版本基线登记。Mac 宽度按 1280pt 除算并钳制到 50%–100%。Android remote state 的 schema 3→4 保留联系人、pin 与控制授权，新增 profile grants 与 pending pairings 为空；精确旧字节先写到同目录的私有备份。已是当前格式或新安装不产生备份。较早 pre-beta serviceTier、Codex 实例/关联、早期 composer-drafts 与平台缓存通过已有显式迁移 runner 作为过渡格式进入此基线；应用识别后会保留原文件并显示可执行命令。runner 使用与 beta 源码相同版本的脚本；若旧 Codex CLI 不可用，脚本停止并要求提供已安装的 0.166 CLI。Android 应用私有目录不能由该 runner 直接读取，签名切换前的导出／导入步骤见[发行任务包](../../tasks/first-public-beta/packet.md)。
+当前内置转换覆盖普通配置 schema 10→11、合并式 composer 输入 schema 1→2、composer 选择 schema 1→2（同时将已知新会话策略归属迁入实例设置）、Mac 输入区绝对宽度转比例，以及已知未版本化的定时任务表识别与版本基线登记。Mac 宽度按 1280pt 除算并钳制到 50%–100%。Android remote state 的 schema 3→4 保留联系人、pin 与控制授权，新增 profile grants 与 pending pairings 为空；精确旧字节先写到同目录的私有备份。已是当前格式或新安装不产生备份。较早 pre-beta serviceTier、Codex 实例/关联、早期 composer-drafts 与平台缓存通过已有显式迁移 runner 作为过渡格式进入此基线；应用识别后会保留原文件并显示可执行命令。runner 使用与 beta 源码相同版本的脚本；若旧 Codex CLI 不可用，脚本停止并要求提供已安装的 0.166 CLI。Android 应用私有目录不能由该 runner 直接读取；旧 debug 包与发行包签名不同，目前没有跨签名的数据转移入口，见[正式 Beta 发行](builds.md#正式-beta-发行)。
 
 Composer 首次接入也在提交新目录前保存组合格式恢复点。共享目录或平台缓存写入中断后，重跑继续完成缓存转换并沿用原身份；更早脚本留下的无恢复点旧缓存保留本地选择，并以未知基线交给既有冲突恢复处理。
 

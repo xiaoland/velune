@@ -8,7 +8,7 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[3]
 RESOURCE_SCRIPTS = REPO / "packages/agent-runtime/resources"
-RUNTIME_SUPPORT = REPO / "target/runtime-support/node_modules"
+RUNTIME_SUPPORT = REPO / "target/runtime-support"
 
 
 @dataclass(frozen=True)
@@ -36,8 +36,9 @@ def resources(root: Path, explicit: Path | None) -> Path:
     for script in RESOURCE_SCRIPTS.iterdir():
         if script.is_file():
             (target / script.name).symlink_to(script)
-    if RUNTIME_SUPPORT.is_dir():
-        (target / "node_modules").symlink_to(RUNTIME_SUPPORT, target_is_directory=True)
+    for name in ("node_modules", "xurl"):
+        if (RUNTIME_SUPPORT / name).exists():
+            (target / name).symlink_to(RUNTIME_SUPPORT / name)
     return target
 
 

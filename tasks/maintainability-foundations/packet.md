@@ -78,7 +78,7 @@
 | 主检出 `tmp/runtime-workspace-reliability` | 约 30 GiB | 对应任务包已不存在；待删除 |
 | `.dev-cache/velune-*-alpha.*` | 约 1.3 GiB | 11-21 发布时遗留的临时目录；待删除 |
 
-调试对象增长的原因已用最小工程复现：rustc 增量编译加 macOS unpacked split-debuginfo，每次重编以新文件名写出整组 `.rcgu.o`，旧组不再被读取也不被删除；非增量、`debug = 0` 或 packed 均不积累，与 mbx 无关。`debug = 0` 只去掉回溯每帧的行号（panic 位置仍在），单次构建体积不变（velune-application 测试均为 2.0 GiB），因此不改 profile、不增加清理工具，沿用超预算整体回收。曾实现按调试映射删除无引用对象的 `sweep-objects`，按上述优先级撤回。
+调试对象增长的原因已用最小工程复现：rustc 增量编译加 macOS unpacked split-debuginfo，每次重编以新文件名写出整组 `.rcgu.o`，旧组不再被读取也不被删除；非增量、`debug = 0` 或 packed 均不积累，与 mbx 无关。`debug = 0` 只去掉回溯每帧的行号（panic 位置仍在），单次构建体积不变（velune-application 测试均为 2.0 GiB），因此不改 profile、不增加清理工具，沿用超预算整体回收。packed 的代价另行实测（velune-application 测试，改一行后 `cargo test --no-run`）：unpacked 预热后重编 5–8 秒、每次留下约 130 个调试对象；packed 不留对象，但每次链接都要 dsymutil 汇总调试信息，重编 35–54 秒，同样不采用。曾实现按调试映射删除无引用对象的 `sweep-objects`，按上述优先级撤回。
 
 已改：
 
@@ -90,6 +90,7 @@
 - 上表“待删除”各项：`target` 遗留目录、`release` 与源码副本增加 101.2 GiB，`tmp` 证据与 `.dev-cache` 临时目录增加 26.2 GiB。
 - `host-rust` 与 `cross-rust` 整体回收增加 51.4 GiB，低于 extent 统计的 84.8 GiB；extent 去重只覆盖 target 内部，差额应是与其他检出共享的克隆块，未逐一核实；主检出下次 Mac／iOS／Android 构建冷启动。
 - 旧分支工作树 `velune-maint`（分支保留）增加 2.9 GiB；另删去 9 个已无内容的旧工作树父目录。
+- 主检出 `tmp/`、`target/checks`、`target/verification` 下 11-24 以来无改动、路径与目录名都未被 develop 跟踪文件引用的 55 项，增加 5 GiB。
 
 未改、需用户决定：
 
@@ -109,6 +110,16 @@
 - check-pi-child-history 与 check-pi-projection-snapshot 需要真实 Pi CLI，传入本机 pi 后通过（11 项）；归真实运行时层，手动运行。
 - check-claude-background-follow-up 迁为验收用例 `claude_background_follow_up` 及 `_managed` 变体，实际 Claude Code 2.1.327 下两者各 4 项通过；它依赖的 check-conversation-parity 早已迁为 `codex_conversation_lifecycle`。两个原脚本删除。
 - `mac_telemetry_build.py` 的调用方（manual-telemetry 与 otlp-observability 任务验收程序）已于此前删除，一并删除。
-- 其余端到端脚本未迁移：check-codex-sampling-route、check-macos-history-cache、check-portable-handoff、check-macos-sidebar-toolbar、check-pi-child-host。
+- `check-codex-sampling-route.py`、`check-pi-child-host.mjs` 只核对已安装 CLI、不经 Velune，与两项 Pi 探测一起列入[运行时升级](../../docs/development/runtime-upgrades.md#2-用真实运行时复验)；合入 develop 后均通过。
+- `check-macos-history-cache.py` 已失效：它直接导入生成的 Python 绑定，而 UniFFI 0.32.2 在带默认 `submission_id` 的记录上生成非法签名，只有验收加载器做了修补。已改写为验收用例 `history_cache_pressure`（7 项检查，约 70 秒），删去 vmmap／sample 采样等诊断输出，原脚本删除。
+- 迁移中发现验收运行器在用例结束后才删除临时目录，应用的日志线程仍在写入时删除失败，结果却仍记为通过；改为由父进程在 worker 退出后删除。
+- `check-portable-handoff.py` 因同一绑定问题失效，按用户决定改写为验收用例 `codex_pi_handoff`（10 项检查；需 `--codex`、`--pi`、`--node`），原脚本删除。删去自建的绑定加载、fixture 根目录与清理校验、manifest 和开发作用域标记，回环上游的文件闸门与两段流程及全部断言保留；目标请求不得携带加密压缩内容由记录改为断言。runner 增加 `--node`，隔离资源同时链接 `xurl`。合入复验使用 Codex 0.171.0-alpha.13、Pi 1.4.0 和 Node 24.22.1，10 项交接检查均通过；同批会话生命周期 8 项、历史缓存压力 7 项也通过。
+- 尚未处理：`check-macos-sidebar-toolbar.py`（需已启动的开发实例窗口）。
 
-`codex_conversation_lifecycle` 本轮失败：ChatGPT.app 内置 Codex CLI 已自动更新到 0.171.0-alpha.13，超出本分支适配器范围（<0.168）。develop 已增加 0.170 支持（7bad70f60），合入后需按新类型复验；用例固定使用 `CODEX166`，届时应随适配器版本调整。PR checks 的新步骤尚未在 CI 实际运行。
+`codex_conversation_lifecycle` 曾因 ChatGPT.app 内置 Codex CLI 自动更新到 0.171.0-alpha.13、超出当时适配器范围而失败；合入 develop（支持至 0.171.0）后通过（8 项检查）。`CODEX166` 是适配器族名而非版本，用例无需调整。PR checks 的新步骤尚未在 CI 实际运行。
+
+## 任务记录收敛（2026-11-27）
+
+用户确认后，33 个已完成任务包（11-02 至 11-24，约 3,300 行）中仍未解决的用户决定、未授权候选与未验证能力并入 [待决事项](../open-items/packet.md)，任务包删除，原文见 git 历史。已被后续工作取代的不再搬运：schema 10→11 等手动迁移已改为首次启动的自动迁移，按模型自动压缩已合入，Windows 差距已由 [PARITY](../../app/windows/PARITY.md) 逐项维护，Codex 原生队列的取舍已写在 application README。外部引用改为 git 历史说明；`migrations.md` 原先指向发行任务包中并不存在的 Android 导出步骤，改指构建说明中“目前没有跨签名数据转移入口”的现状。
+
+同时删除三个已合入且无改动的工作树（android-session-ux、codex-active-index-persistence、idle-poll-cpu，约 4.8 GiB）、六个已合入的本地分支，以及主检出中已空的 `tmp/worktrees`。

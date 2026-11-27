@@ -60,7 +60,7 @@ cargo test --locked --workspace
 
 改动 Rust 的 PR 由 [`PR checks`](../../.github/workflows/pr-checks.yml) 在 Linux 上执行上述格式、Clippy 与依赖树检查，并运行默认层测试；`cargo check` 由 Clippy 覆盖。真实运行时层不进入 CI。
 
-`scripts/check-*` 中只用合成数据、不需要外部 CLI 的检查覆盖迁移脚本、构建支持、开发实例和 Pi bridge 等随仓库发布的工具，每个 PR 都在同一 workflow 中运行，清单以 workflow 为准。需要真实 Pi CLI 的 `check-pi-child-history.py`（`--pi`）与 `check-pi-projection-snapshot.mjs`（CLI 路径为参数）属于真实运行时层，改动对应 helper 时手动运行。新增的端到端检查写成[验收用例](../../tests/acceptance/README.md)，不再新增独立的端到端脚本。
+`scripts/check-*` 中只用合成数据、不需要外部 CLI 的检查覆盖迁移脚本、构建支持、开发实例和 Pi bridge 等随仓库发布的工具，每个 PR 都在同一 workflow 中运行，清单以 workflow 为准。需要已安装 Codex 或 Pi CLI 的检查属于真实运行时层，清单与用法见[运行时升级](runtime-upgrades.md#2-用真实运行时复验)，升级运行时或改动对应 helper 时手动运行。新增的端到端检查写成[验收用例](../../tests/acceptance/README.md)，不再新增独立的端到端脚本。
 
 `velune-bindings --no-default-features --features remote` 是纯控制端，依赖树不含 application、agent-runtime、gateway 或 ai-provider；完全禁用 feature 时没有本地或远程构造入口。application 自身禁用 `local-runtime` 仅裁掉 Harness，配置校验仍链接 gateway，不是纯远端客户端的装配路径。
 

@@ -27,7 +27,7 @@ REPO = HERE.parents[1]
 CASES = HERE / "cases"
 DEFAULT_BINDINGS = REPO / "target/acceptance/bindings"
 RESULTS = REPO / "target/verification/acceptance"
-TOOLS = ("codex", "claude", "pi")
+TOOLS = ("codex", "claude", "pi", "node")
 
 
 def discover() -> list[str]:
@@ -38,11 +38,11 @@ def git(*args: str) -> str:
     return subprocess.run(["git", "-C", str(REPO), *args], capture_output=True, text=True, check=True).stdout.strip()
 
 
-def tool_version(path: Path) -> str | None:
+def tool_version(path: Path, search_path: str) -> str | None:
     with tempfile.TemporaryDirectory(prefix="velune-acceptance-version-") as home:
         try:
             done = subprocess.run([str(path), "--version"], capture_output=True, text=True, timeout=20,
-                                  env={"HOME": home, "PATH": "/usr/bin:/bin"})
+                                  env={"HOME": home, "PATH": search_path})
         except (OSError, subprocess.TimeoutExpired):
             return None
     # CLIs may print warnings first; record the line that carries a version.
@@ -64,28 +64,28 @@ def build(out: Path) -> None:
     shutil.copy2(library, out / library.name)
 
 
-def worker(name: str, config: dict, result_path: Path) -> int:
-    """Run one case in this process. Called by the parent with -I."""
+def worker(name: str, config: dict, result_path: Path, root: Path) -> int:
+    """Run one case in this process inside `root`. Called by the parent with -I;
+    the parent removes `root` after this process exits, when no background
+    writer of the application can still be adding files to it."""
     sys.path.insert(0, str(HERE))
     from velune_acceptance import Context, Skip, bindings, isolation
 
     result: dict = {"case": name, "status": "failed", "checks": {}, "facts": {}}
     started = time.monotonic()
     try:
-        with tempfile.TemporaryDirectory(prefix=f"velune-acceptance-{name}-") as temporary:
-            root = Path(temporary).resolve()
-            resources = Path(config["resources"]) if config["resources"] else None
-            isolated = isolation.enter(root, resources)
-            loaded = bindings.load(Path(config["bindings"]), root / "bindings", f"acceptance_{name}")
-            ctx = Context(bindings=loaded, isolated=isolated, timeout=config["timeout"],
-                          tools={key: Path(value) for key, value in config["tools"].items()})
-            result["checks"], result["facts"] = ctx.checks, ctx.facts
-            module = importlib.import_module(f"cases.{name}")
-            missing = [tool for tool in getattr(module, "REQUIRES", ()) if tool not in ctx.tools]
-            if missing:
-                raise Skip("requires " + ", ".join(f"--{tool}" for tool in missing))
-            module.run(ctx)
-            result["status"] = "passed"
+        resources = Path(config["resources"]) if config["resources"] else None
+        isolated = isolation.enter(root, resources)
+        loaded = bindings.load(Path(config["bindings"]), root / "bindings", f"acceptance_{name}")
+        ctx = Context(bindings=loaded, isolated=isolated, timeout=config["timeout"],
+                      tools={key: Path(value) for key, value in config["tools"].items()})
+        result["checks"], result["facts"] = ctx.checks, ctx.facts
+        module = importlib.import_module(f"cases.{name}")
+        missing = [tool for tool in getattr(module, "REQUIRES", ()) if tool not in ctx.tools]
+        if missing:
+            raise Skip("requires " + ", ".join(f"--{tool}" for tool in missing))
+        module.run(ctx)
+        result["status"] = "passed"
     except Skip as skipped:
         result["status"], result["reason"] = "skipped", str(skipped)
     except BaseException as error:  # Report every failure in the manifest.
@@ -97,8 +97,8 @@ def worker(name: str, config: dict, result_path: Path) -> int:
 
 
 def main() -> int:
-    if len(sys.argv) == 5 and sys.argv[1] == "_worker":
-        return worker(sys.argv[2], json.loads(sys.argv[3]), Path(sys.argv[4]))
+    if len(sys.argv) == 6 and sys.argv[1] == "_worker":
+        return worker(sys.argv[2], json.loads(sys.argv[3]), Path(sys.argv[4]), Path(sys.argv[5]))
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("cases", nargs="*", help=f"cases to run (default: all of {', '.join(discover())})")
     parser.add_argument("--build", action="store_true", help="build the bindings library and Python modules first")
@@ -122,6 +122,9 @@ def main() -> int:
 
     tools = {tool: str(getattr(args, tool).expanduser().resolve(strict=True))
              for tool in TOOLS if getattr(args, tool) is not None}
+    tool_search_path = "/usr/bin:/bin"
+    if "node" in tools:
+        tool_search_path = os.pathsep.join((str(Path(tools["node"]).parent), tool_search_path))
     config = {"bindings": str(args.bindings.expanduser().resolve(strict=True)),
               "resources": str(args.resources.expanduser().resolve(strict=True)) if args.resources else None,
               "tools": tools, "timeout": args.timeout}
@@ -133,16 +136,22 @@ def main() -> int:
         "run": run_id,
         "source": {"head": git("rev-parse", "HEAD"), "dirty": bool(git("status", "--porcelain")), "label": args.label},
         "bindings_sha256": bindings.digest(bindings.library(Path(config["bindings"]))),
-        "tools": {tool: {"path": path, "version": tool_version(Path(path))} for tool, path in tools.items()},
+        "tools": {tool: {"path": path, "version": tool_version(Path(path), tool_search_path)}
+                  for tool, path in tools.items()},
         "cases": [],
     }
     for name in args.cases or known:
         result_path = out / f"{name}.json"
         log_path = out / f"{name}.log"
-        with log_path.open("w") as log:
-            subprocess.run([sys.executable, "-I", str(Path(__file__).resolve()), "_worker", name,
-                            json.dumps(config), str(result_path)],
-                           cwd=HERE, stdout=log, stderr=subprocess.STDOUT, env={"PATH": os.environ.get("PATH", "")})
+        root = Path(tempfile.mkdtemp(prefix=f"velune-acceptance-{name}-")).resolve()
+        try:
+            with log_path.open("w") as log:
+                subprocess.run([sys.executable, "-I", str(Path(__file__).resolve()), "_worker", name,
+                                json.dumps(config), str(result_path), str(root)],
+                               cwd=HERE, stdout=log, stderr=subprocess.STDOUT,
+                               env={"PATH": os.environ.get("PATH", "")})
+        finally:
+            shutil.rmtree(root)
         result = json.loads(result_path.read_text()) if result_path.exists() else {
             "case": name, "status": "failed", "error": f"worker produced no result; see {log_path.name}"}
         manifest["cases"].append({key: value for key, value in result.items() if key != "traceback"})

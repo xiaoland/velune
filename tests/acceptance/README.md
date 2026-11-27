@@ -9,7 +9,7 @@
 python3 tests/acceptance/run.py --build
 # 复用已生成的绑定，只运行一个用例，并传入实际 Codex CLI
 python3 tests/acceptance/run.py codex_conversation_lifecycle --codex /absolute/path/to/codex
-# 用例按 REQUIRES 声明所需 CLI（--codex、--claude、--pi），未提供的跳过
+# 用例按 REQUIRES 声明所需 CLI（--codex、--claude、--pi、--node），未提供的跳过
 ```
 
 同一入口也注册为 `svc run acceptance`。缺少外部程序的用例记为跳过而非通过。默认绑定目录为 `target/acceptance/bindings`；`--bindings` 可指向另一次构建生成的目录，用于比较两个版本。`--resources` 指定某次构建自带的运行时资源，缺省时使用源码中的 helper 脚本与 `target/runtime-support` 的依赖。
