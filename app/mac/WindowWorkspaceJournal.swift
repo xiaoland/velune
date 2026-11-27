@@ -1,7 +1,6 @@
 import Foundation
 
-/// Crash recovery for unfinished editing uses the same typed window snapshot
-/// as scene restoration, but does not depend on macOS committing scene storage.
+/// Stores window contents and draft recovery data under the AppKit window's UUID.
 final class WindowWorkspaceJournal: @unchecked Sendable {
     private let directory: URL?
     private let report: @Sendable (String) -> Void

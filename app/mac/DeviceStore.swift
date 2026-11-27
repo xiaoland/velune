@@ -315,7 +315,7 @@ final class DeviceStore: ObservableObject {
     /// The tab whose window was key most recently; notifications open
     /// conversations there.
     weak var focusedConversation: ConversationStore?
-    /// The scene action survives the last conversation window closing.
+    /// Installed by the application so notifications can open a window after the last one closes.
     var openConversationWindow: ((WindowSeed) -> Void)?
     /// Sample conversations shown instead of a core's.
     private(set) var previewSnapshots: [String: ConversationSnapshot] = [:]
@@ -716,8 +716,6 @@ final class DeviceStore: ObservableObject {
             window.window?.makeKeyAndOrderFront(nil)
             window.focusNotificationTarget(id)
         } else if let open = openConversationWindow ?? DeviceHub.shared?.openWorkspaceWindow {
-            // Opening intent owns the full target, independently of whichever
-            // window last installed the scene action.
             let seed = WindowSeed(conversationID: id, device: peerID)
             WindowPresentation.notificationTargets.insert(seed.id)
             open(seed)

@@ -118,7 +118,7 @@
 - <a id="s81"></a>[S81 · 目标准备用例与未手选项继承](sources/development.md#s81)
 - <a id="s82"></a>[S82 · 开发构建复用与空间治理](sources/development.md#s82)
 - <a id="s84"></a>[S84 · 首个公开 Beta 与发布治理](sources/development.md#s84)
-- <a id="s93"></a>[S93 · 分层测试与可重放验收取代临时验证](sources/development.md#s93)
+- <a id="s97"></a>[S97 · 分层测试与可重放验收取代临时验证](sources/development.md#s97)
 
 ## 综合使用反馈与修复要求
 

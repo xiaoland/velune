@@ -1,5 +1,4 @@
-"""A private HOME, Velune state and project for one case, with the process
-environment reduced so nothing reaches real configuration or the network."""
+"""Private HOME, state and project directories with a controlled process environment."""
 from __future__ import annotations
 
 import os
@@ -45,8 +44,8 @@ def resources(root: Path, explicit: Path | None) -> Path:
 def enter(root: Path, explicit_resources: Path | None, extra_environment: dict[str, str] | None = None) -> Isolated:
     """Create the directories and replace the process environment.
 
-    Proxies point at a closed port so a misconfigured client fails instead of
-    reaching the network; only loopback addresses bypass them.
+    Clients that honor the proxy environment reach loopback directly and use
+    a closed local port for other destinations.
     """
     home, state, project = (root / name for name in ("home", "state", "project"))
     for directory in (home, state, project):

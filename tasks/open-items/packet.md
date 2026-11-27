@@ -36,6 +36,7 @@
 
 ## 未验证的能力
 
+- **Mac 冷启动与空闲性能**：`6ad546193` 合入 Codex 活动会话索引证明持久化，合成回归验证了跨启动复用及外部变更后的修复。`82d5c8bb2` 合入空闲轮询的热点修正，已核对快照、模型命名和编辑准入。真实数据规模下的重启耗时与空闲 CPU 降幅仍待用集成构建量测。
 - **macOS 网络缓冲区耗尽**：2026-11-04 两次重启前内核大量 `mbuf_class_under_pressure`，ENOBUFS 根因未确认，不能归因于 Velune 或 sing-box（嫌疑见 sing-box #4607）。复发时保留系统扩展 PID、mbuf 计数与统一日志，用 `scripts/diagnose-network-macos.py` 采样。（原 `workspace-delivery-and-network`、`architecture-review`）
 - **dogfood 性能问题**：原报告的 Checking、来源不匹配与 503 是否已修复，须在采用修复的构建中以相同操作再次观察，按操作编号对齐发送、原生历史读取与慢命令耗时。（原 `adapter-performance-issues`）
 - **会话 fork**：Claude 尚未首发的分支依赖进程内状态，不保证跨重启恢复；名称后缀只避开已知会话，不保证全局唯一；Mac 以外的平台未做按钮交互验收。（原 `conversation-fork`）

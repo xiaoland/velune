@@ -565,8 +565,7 @@ struct SavedWindowLayout: Codable, Equatable {
     }
 }
 
-/// The kinds of conversation window, each its own scene, so the system
-/// keeps each kind's window frames apart and restores a window as its kind.
+/// Window kind selects the saved frame and the restoration scope.
 enum ConversationWindowKind: String, Codable {
     /// The list with the panes it opens conversations in.
     case workspace = "conversation"
@@ -691,8 +690,7 @@ struct WindowSeed: Codable, Hashable {
     private var closed = false
     private var workspaceRestored = false
     let restorationLifecycleID = UUID()
-    /// SwiftUI can retain a closed scene while other windows keep changing.
-    /// Its last recovery point must stop following those later publications.
+    /// A closed window must stop saving when shared state changes.
     var acceptsWorkspacePersistence: Bool { started && workspaceRestored && !closed }
     func noteWindowClosed() {
         closed = true
@@ -914,11 +912,11 @@ struct WindowSeed: Codable, Hashable {
     var hasBackgroundResumeForCheck: Bool { !backgroundResumes.isEmpty }
 #endif
     private(set) var sheetSize = CGSize(width: 760, height: 640)
-    /// The list's search text, shared by the sidebar and a floating list.
+    /// The list's search text follows the list between tool locations.
     @Published var listSearch = ""
-    /// Opens a conversation window; set by the window's view, which has the action.
+    /// Opens an AppKit conversation window through the window controller.
     var openWindow: ((ConversationWindowKind, WindowSeed) -> Void)?
-    /// Opens a window of another scene by its ID, and the settings; set by the window's view too.
+    /// Opens auxiliary SwiftUI scenes by ID. The view supplies these actions.
     var openScene: ((String) -> Void)?
     var openSettings: (() -> Void)?
     /// The command palette over the window, and what it lists.
@@ -1014,8 +1012,7 @@ struct WindowSeed: Codable, Hashable {
             DispatchQueue.main.async { self?.refreshConversationObservations() }
         }
         attachDraftHandlers(composerDrafts)
-        // Window recovery belongs to the model, including changes made before
-        // SwiftUI observes a scene. Read after @Published has committed its value.
+        // Save model changes after @Published has committed the new values.
         workspacePersistence = Publishers.MergeMany([
             $workspace.dropFirst().map { _ in () }.eraseToAnyPublisher(),
             $tabConversations.dropFirst().map { _ in () }.eraseToAnyPublisher(),

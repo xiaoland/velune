@@ -2,7 +2,7 @@
 
 ## 目标
 
-`refactor/maintainability` 完成了编译告警、fmt／Clippy 清零、PR 门禁与部分测试外移，属于卫生层。本任务处理决定长期变化成本的地基：验证方针、测试基建、验收基建、架构边界与文档归属。用户 2026-11-24 判断旧分支“仅局限在形式上的 DX”，确认 alpha 0.1 后“不建立成套测试”的方针已经过时，授权自主推进与自动提交，并允许用主机命令执行验收（[S93](../../docs/sources/development.md#s93)）。
+`refactor/maintainability` 完成了编译告警、fmt／Clippy 清零、PR 门禁与部分测试外移，属于卫生层。本任务处理决定长期变化成本的地基：验证方针、测试基建、验收基建、架构边界与文档归属。用户 2026-11-24 判断旧分支“仅局限在形式上的 DX”，确认 alpha 0.1 后“不建立成套测试”的方针已经过时，授权自主推进与自动提交，并允许用主机命令执行验收（[S97](../../docs/sources/development.md#s97)）。
 
 分支 `refactor/maintainability-foundations` 基于 `develop` 并合入旧分支，旧分支的卫生成果全部保留。
 
@@ -31,7 +31,7 @@
 ## 进度
 
 - 合并：`develop` 与 `refactor/maintainability` 有 14 个冲突文件，已按“develop 行为＋旧分支结构”解决。旧分支的 `CommandRoute` 新增 `ListRefresh`，承接 develop 的共享列表刷新；Mac 检查分派、TranscriptTable 与 ConversationStore 的检查代码按旧分支的 `Checks/`、`CheckAccess` 结构移植了 develop 的改动。ConversationStore 检查代码用机械改写移植：先用同一改写从合并基复现旧分支版本（仅一处隐式 self 不同，另行补丁），再作用于 develop 版本。
-- 方针：[验证方式](../../docs/development/validation.md)已重写，来源为 S93。
+- 方针：[验证方式](../../docs/development/validation.md)已重写。
 - 测试基建：新增 `packages/test-support`（`velune-test-support`，仅作 dev-dependency）。首批迁移 application、bindings、agent-runtime 中 10 个手写夹具，删去各自的随机目录命名与 `Drop` 清理。
 - 验收基建：新增 `tests/acceptance/`，入口 `python3 tests/acceptance/run.py`（`svc run acceptance`）。首个用例 `codex_conversation_lifecycle` 由 `scripts/check-conversation-parity.py` 迁入。
 - 第二批夹具迁移：agent-runtime 的 Pi 端口、Claude 端口、后台任务、问题对账夹具，application 的 Codex 问题夹具与 send_turn 集成测试；`TempRoot` 可序列化为路径。
@@ -59,7 +59,7 @@
 ## 待处理
 
 - `discovery.rs` 与 `runtime_discovery.rs` 仍按 `family_id` 字符串判断 Pi／Codex（`local/mod.rs` 的可执行发现已改由 `RuntimeVariant::executable()` 提供），应由运行时描述携带所需能力。
-- 验收 runner 的 `--build` 不复用平台构建已有的绑定库，且清单只记录所在检出的 HEAD；应增加内容指纹并允许直接指定已构建的库。
+- 验收 runner 可通过 `--bindings` 复用匹配的 Python 绑定与动态库，清单记录检出 HEAD、是否有未提交改动及库摘要。复用其他构建时，需用构建回执核对该库的源码身份。
 - 其余约 110 处手写临时目录、176 处手动 `remove_dir_all` 与 15 段内联假进程脚本按文件迁移。
 - `scripts/check-*` 其余端到端脚本迁入验收套件。
 - 超大模块：`local/editing.rs` 的内联测试外移后再按用例拆分；`service.rs`、`native/codex.rs`、`ConversationStore.swift` 的拆分需先确认边界测试。
@@ -114,7 +114,7 @@
 - `check-macos-history-cache.py` 已失效：它直接导入生成的 Python 绑定，而 UniFFI 0.32.2 在带默认 `submission_id` 的记录上生成非法签名，只有验收加载器做了修补。已改写为验收用例 `history_cache_pressure`（7 项检查，约 70 秒），删去 vmmap／sample 采样等诊断输出，原脚本删除。
 - 迁移中发现验收运行器在用例结束后才删除临时目录，应用的日志线程仍在写入时删除失败，结果却仍记为通过；改为由父进程在 worker 退出后删除。
 - `check-portable-handoff.py` 因同一绑定问题失效，按用户决定改写为验收用例 `codex_pi_handoff`（10 项检查；需 `--codex`、`--pi`、`--node`），原脚本删除。删去自建的绑定加载、fixture 根目录与清理校验、manifest 和开发作用域标记，回环上游的文件闸门与两段流程及全部断言保留；目标请求不得携带加密压缩内容由记录改为断言。runner 增加 `--node`，隔离资源同时链接 `xurl`。合入复验使用 Codex 0.171.0-alpha.13、Pi 1.4.0 和 Node 24.22.1，10 项交接检查均通过；同批会话生命周期 8 项、历史缓存压力 7 项也通过。
-- 尚未处理：`check-macos-sidebar-toolbar.py`（需已启动的开发实例窗口）。
+- Mac 侧栏的程序化检查使用 `check-macos-composer.py sidebar-toolbar`。依赖旧窗口工具栏布局的 AX 脚本已退役。
 
 `codex_conversation_lifecycle` 曾因 ChatGPT.app 内置 Codex CLI 自动更新到 0.171.0-alpha.13、超出当时适配器范围而失败；合入 develop（支持至 0.171.0）后通过（8 项检查）。`CODEX166` 是适配器族名而非版本，用例无需调整。PR checks 的新步骤尚未在 CI 实际运行。
 

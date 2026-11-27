@@ -24,7 +24,7 @@ Harness 执行代码、调用工具并保存原生历史。Velune 提供围绕�
 
 ![Velune macOS 分屏会话与共享输入区](assets/screenshots/macos-split-workspace.png)
 
-*真实 macOS 视图，使用合成会话与模型信息。*
+*早期 macOS 工作区截图，使用合成会话与模型信息。*
 
 <details>
 <summary>单会话界面</summary>

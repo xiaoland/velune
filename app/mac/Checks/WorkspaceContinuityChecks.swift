@@ -76,7 +76,7 @@ import Foundation
                  "恢复点升级前保留逐字节副本")
     let migrated = try! JSONSerialization.jsonObject(with: Data(contentsOf: legacyFile)) as! [String: Any]
     precondition((migrated["schemaVersion"] as? Int) == 1)
-    note("PASS workspace journal: exact and latest recovery stay within the execution device; unscoped legacy snapshots require an explicit scene identity")
+    note("PASS workspace journal: exact and latest recovery stay within the execution device; unscoped legacy snapshots require a matching window UUID")
 
 
     // A structurally invalid newest or exact snapshot cannot hide a valid

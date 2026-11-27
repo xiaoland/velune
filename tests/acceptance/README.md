@@ -18,7 +18,7 @@ python3 tests/acceptance/run.py codex_conversation_lifecycle --codex /absolute/p
 
 ## 编写用例
 
-用例是 `cases/` 下的一个模块，声明 `REQUIRES`（所需的外部程序，例如 `("codex",)`）并实现 `run(ctx)`。runner 为每个用例启动独立进程，先进入隔离环境：HOME、状态与项目目录均为私有临时目录，代理指向关闭的端口，只有回环地址可达。
+用例是 `cases/` 下的一个模块，声明 `REQUIRES`（所需的外部程序，例如 `("codex",)`）并实现 `run(ctx)`。runner 为每个用例启动独立进程，使用私有临时 HOME、状态与项目目录。遵循代理环境变量的客户端直连回环地址，其他请求被导向本机关闭的端口。需要限制直接出站连接时，由用例启用进程沙箱。
 
 - `ctx.bindings`：本次加载的 `bindings`、`application_api`、`conversation` 模块。
 - `ctx.isolated`：`home`、`state`、`project`、`resources` 路径，`dir(name)` 创建附加目录。

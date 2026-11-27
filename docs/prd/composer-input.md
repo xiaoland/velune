@@ -20,7 +20,7 @@
 
 ## 新建会话与工作目录
 
-新建进入空消息列表与 composer，不使用 sheet。Mac 的侧栏工具栏、菜单、命令面板等入口在当前 Tab 之后新开标签；当前标签已是未发送的新会话时原地恢复，不叠加空标签。窗口与跨平台标签规则见[工作区布局](workspace-layout.md#窗口与-tab)。来源：[S74](../sources/workspace-keyboard.md#s74)。
+新建进入空消息列表与 composer。Mac 从会话列表顶部、菜单或命令面板新建时，在当前 Tab 后打开标签。当前标签已是未发送的新会话时原地恢复。窗口与跨平台标签规则见[工作区布局](workspace-layout.md#窗口与-tab)。 [S74](../sources/workspace-keyboard.md#s74)
 
 每个未发送 Tab 的正文、附件、执行选择及项目／cwd 独立保存；恢复或移动该 Tab 保留身份。打开另一个新建 Tab 得到另一份空输入，不能覆盖已有新建 Tab 的工作。
 

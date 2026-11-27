@@ -2,7 +2,7 @@
 
 [返回开发导航](../development.md)
 
-类型和静态检查最先拦住错误，自动化测试保护类型证明不了的行为契约，可重放的验收套件在真实装配上复现用户路径。三者都提交到仓库，并随源码一起维护；任务包只记录这次运行了什么、结果如何，不承载验证手段本身。本方针取代 alpha 0.1 前“不建立成套测试、端到端脚本随任务丢弃”的约定（[S93](../sources/development.md#s93)）。
+类型和静态检查最先拦住错误，自动化测试保护类型证明不了的行为契约，可重放的验收套件在真实装配上复现用户路径。三者都提交到仓库，并随源码一起维护；任务包只记录这次运行了什么、结果如何，不承载验证手段本身。本方针取代 alpha 0.1 前“不建立成套测试、端到端脚本随任务丢弃”的约定（[S97](../sources/development.md#s97)）。
 
 ## 类型优先
 
@@ -68,7 +68,7 @@ cargo test --locked --workspace
 
 ## 平台与界面
 
-平台代码的第一道检查是各平台构建本身（Swift、Kotlin、C# 均把警告视为错误）。平台中可脱离界面的逻辑放在独立文件，以脚本单独编译检查：`bash scripts/check-token-units.sh` 用同一组样例检查 Mac 与 Windows 的 token 数量格式化与解析；`bash scripts/check-account-quota.sh` 在 `build-macos.sh --build-only` 之后，以实际 Swift 绑定检查 Mac 的额度呈现。
+平台代码的第一道检查是各平台构建本身（Swift、Kotlin、C# 均把警告视为错误）。`bash scripts/check-token-units.sh` 用同一组样例检查 Mac 与 Windows 的 token 数量格式化与解析。Mac 的额度呈现检查需要优化开发包，先运行 `svc run build-macos-release`，再运行 `bash scripts/check-account-quota.sh`。
 
 Mac 的程序化检查只编入定义 `VELUNE_DEV_CHECKS` 的开发构建，由 `app/mac/Checks/` 中的分派表按生命周期阶段启动，日常构建不含这些入口。界面证据分为四种覆盖范围，记录时写明属于哪一种：离屏渲染只证明布局与绘制；本地控件调用证明模型与控件连接，不经过事件分发；系统键盘输入经过真实的事件与焦点链；AX 查询证明辅助功能树的结构与顺序。前一种不能代替后一种的结论。Apple 原生控件的系统明暗适配不另设完整验收矩阵，自绘 logo、固定色位图、阴影与边框则按所在背景核对可见性。
 
@@ -76,4 +76,4 @@ Mac 的程序化检查只编入定义 `VELUNE_DEV_CHECKS` 的开发构建，由 
 
 ### Mac 读取恢复复验
 
-用开发包运行仓库内的检查脚本，`--help` 列出入口，`--app` 可指定优化开发包。`background --dark` 检查后台任务的深色状态，`aggregated-list`、`pagination`、`archived` 分别核对搜索、分页和归档。冷打开用 `experience --workspace-only`，提供商用量呈现用 `provider-analytics`。脚本用隔离副本与合成数据复验，结果可通过 `--output` 留存。视觉检查根据生成的截图判断。 [检查脚本](../../scripts/check-macos-composer.py) [Mac 进程与焦点约束](../../app/mac/AGENTS.md)
+用开发包运行仓库内的检查脚本，`--help` 列出入口，`--app` 可指定优化开发包。`background --dark` 检查后台任务的深色状态，`aggregated-list`、`pagination`、`archived` 分别核对搜索、分页和归档。冷打开用 `experience --workspace-only`，侧栏及工具栏布局用 `sidebar-toolbar`，提供商用量呈现用 `provider-analytics`。脚本用隔离副本与合成数据复验，结果可通过 `--output` 留存。视觉检查根据生成的截图判断。 [检查脚本](../../scripts/check-macos-composer.py) [Mac 进程与焦点约束](../../app/mac/AGENTS.md)
