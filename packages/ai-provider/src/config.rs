@@ -149,7 +149,11 @@ pub enum CredentialMaterial {
         account_id: Option<String>,
     },
     /// A local CLI's own login; `None` is the user's default login.
-    LocalSession { config_dir: Option<String> },
+    LocalSession {
+        config_dir: Option<String>,
+        /// Persisted account identity and credential generation, for local cache isolation.
+        cache_scope: Option<String>,
+    },
     /// An execution target using its own official Antigravity CLI login.
     AntigravityCli {
         launch: std::sync::Arc<dyn crate::antigravity::Launch>,
