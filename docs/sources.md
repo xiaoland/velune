@@ -40,6 +40,7 @@
 - <a id="ark-coding-plan-接入决定2026-10-20"></a>[ARK Coding Plan 接入决定（2026-10-20）](sources/ai-routing.md#ark-coding-plan-接入决定2026-10-20)
 - <a id="s55"></a>[S55 · 重置节奏、额度与提醒](sources/ai-routing.md#s55)
 - <a id="s77"></a>[S77 · 速度改为模型变体](sources/ai-routing.md#s77)
+- <a id="s96"></a>[S96 · 保留 Antigravity 个人订阅网关](sources/ai-routing.md#s96)
 
 ## 运行时、资源库与 Agent 协作
 
