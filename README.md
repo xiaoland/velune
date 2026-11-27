@@ -24,7 +24,7 @@ Your installed harnesses execute tools and own their native histories. Velune pr
 
 ![Velune on macOS with two conversations and a shared composer](assets/screenshots/macos-split-workspace.png)
 
-*Earlier macOS workspace with synthetic conversations. The interface is primarily in Chinese.*
+*Velune’s macOS workspace with sample conversations. The interface is primarily in Chinese.*
 
 <details>
 <summary>Single-session view</summary>
