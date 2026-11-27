@@ -403,6 +403,7 @@ public sealed partial class ConversationView : UserControl
             }
         }
         items.Add(new MenuFlyoutSeparator());
+        FillModelAutoCompaction(items);
         items.Add(Item("重新读取模型", () => Model.LoadCatalog(Model.Next, true), Model.NextCatalog is not { Loading: true }));
         items.Add(Item("AI 提供商设置…", () => window.OpenSettings(SettingsPage.Providers)));
     }

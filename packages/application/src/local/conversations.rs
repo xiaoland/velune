@@ -1006,6 +1006,7 @@ impl CoreRuntime {
         {
             self.bind_gateway_model()?;
         }
+        self.apply_acp_model_auto_compaction(prompt.runtime_id)?;
         // The selected connection and its gateway belong to this dispatch.
         // Full projection sync follows dispatch: it can settle prior background
         // work, retire the connection, or advance the send queue.

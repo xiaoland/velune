@@ -26,10 +26,19 @@ if '--version' in sys.argv:
  print('0.2.0-rc.2');sys.exit(0)
 mode=MODE
 log=LOG
+if '--dump-config' in sys.argv:
+ with open(log,'a') as f: f.write(json.dumps({'configDump':sys.argv})+'\n')
+ with open(os.path.join(os.path.dirname(log),'composed.yml')) as f: sys.stdout.write(f.read())
+ sys.exit(0)
 catalog=[{'id':'model','currentValue':'[ "provider", "model" ]','options':[{'options':[{'value':'[ "provider", "model" ]','name':'Model'},{'value':'[ "provider", "other" ]','name':'Other'}]}]}]
 with open(log,'a') as f:
  launch={'launch':sys.argv}
- if '--patch' in sys.argv: launch['patch']=json.load(open(sys.argv[sys.argv.index('--patch')+1]))
+ for index,argument in enumerate(sys.argv[:-1]):
+  if argument=='--patch':
+   path=sys.argv[index+1]
+   with open(path) as patch:
+    if path.endswith('/compaction.patch.yml'): launch['compactionPatch']=patch.read()
+    else: launch.setdefault('patch',json.load(patch))
  f.write(json.dumps(launch)+'\n')
 turn=None
 def emit(value): print(json.dumps(dict(jsonrpc='2.0',**value)),flush=True)
@@ -101,6 +110,7 @@ for line in sys.stdin:
             resources_directory: root.clone(),
             projection_directory: root.clone(),
             gateway: None,
+            auto_compaction: None,
             mcp_servers: vec![],
             session_agents: vec![],
         })
@@ -767,6 +777,148 @@ fn deepseek_overlay_preserves_model_metadata_disables_old_endpoint_and_gates_han
     assert!(provider["models"][0].get("maxTokens").is_none());
     f.session.dsh_history_overlay = true;
     assert!(!f.session.can_handoff_control(Some(&target)));
+}
+
+#[test]
+fn deepseek_auto_compaction_applies_on_same_session_resume_and_clear_restores_profile() {
+    use velune_conversation::AutoCompactionSetting;
+
+    let mut f = Fixture::build("normal", None);
+    std::fs::write(
+        f.root.join("composed.yml"),
+        r#"- id: other
+  config: {secret: synthetic-unrelated}
+- id: agent
+  group: true
+  config:
+  - id: compaction-basic
+    name: '@deepseek-ai/dsh-compaction-basic'
+    config:
+      retainRatio: 0.22
+      maxTokens: 3000
+      headroomTokens: !!js '1024 + 1024'
+      modelPolicies:
+      - {provider: provider, model: model, thresholdRatio: 0.63, retainTokens: 1024}
+      - {provider: provider, model: sibling, thresholdRatio: 0.58}
+"#,
+    )
+    .unwrap();
+    f.session.create(Some(&f.root), "runtime").unwrap();
+    assert_eq!(
+        f.session.dsh_current_model(),
+        Some(("provider".into(), "model".into()))
+    );
+    f.session
+        .set_auto_compaction(Some(AutoCompactionSetting::DeepSeek {
+            threshold_percent: 74,
+        }));
+    f.session
+        .send(&crate::TurnInput {
+            text: "synthetic".into(),
+            effort: None,
+            permission_mode: None,
+            images: Vec::new(),
+        })
+        .unwrap();
+    f.until(|session| !session.turn_running());
+    f.session.set_auto_compaction(None);
+    f.session
+        .send(&crate::TurnInput {
+            text: "clear".into(),
+            effort: None,
+            permission_mode: None,
+            images: Vec::new(),
+        })
+        .unwrap();
+    f.until(|session| !session.turn_running());
+    let wire = f.wire();
+    let patch = wire
+        .iter()
+        .find_map(|record| record["compactionPatch"].as_str())
+        .unwrap();
+    assert!(patch.contains("!!js"));
+    assert!(!patch.contains("synthetic-unrelated"));
+    let patch: serde_yaml_ng::Value = serde_yaml_ng::from_str(patch).unwrap();
+    let config = &patch[0]["config"];
+    assert_eq!(config["retainRatio"].as_f64(), Some(0.22));
+    assert_eq!(config["maxTokens"].as_u64(), Some(3000));
+    assert_eq!(config["headroomTokens"].as_str(), Some("1024 + 1024"));
+    let policies = config["modelPolicies"].as_sequence().unwrap();
+    assert_eq!(policies.len(), 2);
+    assert_eq!(policies[0]["thresholdRatio"].as_f64(), Some(0.74));
+    assert_eq!(policies[0]["retainTokens"].as_u64(), Some(1024));
+    assert_eq!(policies[1]["thresholdRatio"].as_f64(), Some(0.58));
+    let resumes = wire
+        .iter()
+        .filter(|record| record["method"] == "session/resume")
+        .map(|record| record["params"]["sessionId"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(resumes, ["session", "session"]);
+    assert_eq!(
+        wire.iter()
+            .filter(|record| record.get("configDump").is_some())
+            .count(),
+        1
+    );
+    assert_eq!(
+        wire.iter()
+            .filter(|record| record.get("compactionPatch").is_some())
+            .count(),
+        1
+    );
+    assert!(std::fs::read_dir(&f.root).unwrap().all(|entry| {
+        !entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with("dsh-compaction-")
+    }));
+}
+
+#[test]
+fn deepseek_compaction_config_uses_gateway_route_identity() {
+    use velune_conversation::AutoCompactionSetting;
+
+    let f = Fixture::new("normal");
+    let mut config = f.session.config.clone();
+    std::fs::write(
+        f.root.join("composed.yml"),
+        "- id: compaction-basic\n  name: '@deepseek-ai/dsh-compaction-basic'\n",
+    )
+    .unwrap();
+    config.gateway = Some(GatewayInjection {
+        endpoint: "http://127.0.0.1:12345".into(),
+        token: "synthetic-token".into(),
+        model_alias: "route-alias".into(),
+        protocol: "openai-completions".into(),
+        context_window: Some(180_000),
+        max_output_tokens: None,
+        reasoning_levels: None,
+    });
+    config.auto_compaction = Some(AutoCompactionSetting::DeepSeek {
+        threshold_percent: 16,
+    });
+    let conflict = NativeSession::dsh_spawn(&config, None)
+        .err()
+        .expect("the threshold must exceed the native default retained fraction");
+    assert!(conflict.to_string().contains("原生近期上下文保留比例"));
+    config.auto_compaction = Some(AutoCompactionSetting::DeepSeek {
+        threshold_percent: 85,
+    });
+    let (mut rpc, overlay) = NativeSession::dsh_spawn(&config, None).unwrap();
+    assert!(overlay);
+    rpc.finish();
+    let launch = f
+        .wire()
+        .into_iter()
+        .find(|record| record.get("compactionPatch").is_some())
+        .unwrap();
+    let patch: serde_yaml_ng::Value =
+        serde_yaml_ng::from_str(launch["compactionPatch"].as_str().unwrap()).unwrap();
+    let policy = &patch[0]["config"]["modelPolicies"][0];
+    assert_eq!(policy["provider"].as_str(), Some("velune-gateway"));
+    assert_eq!(policy["model"].as_str(), Some("route-alias"));
+    assert_eq!(policy["thresholdRatio"].as_f64(), Some(0.85));
 }
 
 #[test]

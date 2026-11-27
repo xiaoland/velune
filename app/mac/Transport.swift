@@ -267,6 +267,11 @@ final class Transport: @unchecked Sendable {
     func runtimeExecution(id: String) throws -> (RuntimeExecution, String?) { try withApplication("runtimeExecution", .reads, .configurationRead) { (try $0.runtimeExecution(runtimeId: id), try $0.runtimeHomeDirectory(runtimeId: id)) } }
     /// Saves an instance whose type takes launch options, with its arguments and environment.
     func upsertRuntime(_ runtime: VeluneBindings.RuntimeInstance, execution: RuntimeExecution, launch: AcpLaunch) throws -> RuntimeUpdate { try withApplication("upsertRuntime", .changesConfiguration, .configurationWrite) { try $0.upsertAcpRuntime(runtime: runtime, execution: execution, launch: launch) } }
+    func setRuntimeModelAutoCompaction(runtimeID: String, model: ModelSelection, setting: AutoCompactionSetting?) throws -> RuntimeUpdate {
+        try withApplication("setRuntimeModelAutoCompaction", .changesConfiguration, .configurationWrite) {
+            try $0.setRuntimeModelAutoCompaction(runtimeId: runtimeID, model: model, setting: setting)
+        }
+    }
     func runtimeLaunch(id: String) throws -> AcpLaunch { try withApplication("runtimeLaunch", .writes, .configurationRead) { try $0.acpLaunch(runtimeId: id) } }
     /// Starts the Agent to read what it reports about itself unless a session of it is live.
     func agentInfo(runtimeID: String) throws -> AcpRuntimeInfo { try withApplication("agentInfo", .reads, .configurationRead) { try $0.acpRuntimeInfo(runtimeId: runtimeID) } }

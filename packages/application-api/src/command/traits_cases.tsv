@@ -48,6 +48,7 @@ ResolveAgentUri	{"command": "resolveAgentUri", "parameters": {"uri": "uri"}}
 UpsertRuntime	{"command": "upsertRuntime", "parameters": {"runtime": {"id": "runtime", "name": "Synthetic", "typeId": "pi-1.0", "gatewayId": "gateway", "settings": {}}}}
 UpsertRuntimeWithExecution	{"command": "upsertRuntimeWithExecution", "parameters": {"runtime": {"id": "runtime", "name": "Synthetic", "typeId": "pi-1.0", "gatewayId": "gateway", "settings": {}}, "execution": {"transport": "local", "home": "inherit"}}}
 UpsertAcpRuntime	{"command": "upsertAcpRuntime", "parameters": {"runtime": {"id": "runtime", "name": "Synthetic", "typeId": "pi-1.0", "gatewayId": "gateway", "settings": {}}, "execution": {"transport": "local", "home": "inherit"}, "launch": {"args": [], "environment": {}}}}
+SetRuntimeModelAutoCompaction	{"command":"setRuntimeModelAutoCompaction","parameters":{"runtime_id":"runtime","model":{"managed":{"model_record_key":"model"}},"setting":null}}
 ReadAcpLaunch	{"command": "readAcpLaunch", "parameters": {"runtime_id": "runtime"}}
 ReadAcpRuntimeInfo	{"command": "readAcpRuntimeInfo", "parameters": {"runtime_id": "runtime"}}
 ReadAcpSessionConfig	{"command": "readAcpSessionConfig", "parameters": {"runtime_id": "runtime", "conversation_id": "conversation"}}

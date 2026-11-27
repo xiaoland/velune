@@ -213,6 +213,7 @@ fn config(root: &Path, binary: PathBuf) -> NativeConfig {
         resources_directory: resources,
         projection_directory: projections,
         gateway: None,
+        auto_compaction: None,
         mcp_servers: vec![],
         session_agents: vec![],
     }

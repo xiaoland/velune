@@ -36,6 +36,7 @@ for line in sys.stdin:
             resources_directory: root.to_path_buf(),
             projection_directory: root.to_path_buf(),
             gateway: None,
+            auto_compaction: None,
             mcp_servers: vec![],
             session_agents: vec![],
         })

@@ -2,6 +2,10 @@ package app.velune.android
 
 import android.content.ClipData
 import android.text.format.DateUtils
+import java.time.Instant
+import java.time.LocalDate
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -49,7 +53,7 @@ data class RuntimeLabel(val name: String, val family: String?)
  * scanned by agent. Lettered rather than vendor logos, which are trademarks.
  */
 @Composable
-fun RuntimeBadge(label: RuntimeLabel?, modifier: Modifier = Modifier) {
+fun RuntimeBadge(label: RuntimeLabel?, modifier: Modifier = Modifier, size: Dp = 18.dp) {
     val (text, color) = when (label?.family) {
         "claude-code" -> "CC" to Color(0xFFD97757)
         "codex" -> "Cx" to Color(0xFF3C3C43)
@@ -58,9 +62,10 @@ fun RuntimeBadge(label: RuntimeLabel?, modifier: Modifier = Modifier) {
         "acp" -> "A" to Color(0xFF00897B)
         else -> (label?.name?.take(1)?.uppercase() ?: "?") to MaterialTheme.colorScheme.secondary
     }
-    Surface(color = color, contentColor = Color.White, shape = RoundedCornerShape(5.dp), modifier = modifier.size(18.dp)) {
+    Surface(color = color, contentColor = Color.White, shape = RoundedCornerShape(size * 0.28f), modifier = modifier.size(size)) {
         Box(contentAlignment = Alignment.Center) {
-            Text(text, fontSize = 9.sp, fontWeight = FontWeight.Bold, lineHeight = 9.sp, maxLines = 1)
+            val font = (size.value * 0.42f).sp
+            Text(text, fontSize = font, fontWeight = FontWeight.Bold, lineHeight = font, maxLines = 1)
         }
     }
 }
@@ -73,7 +78,7 @@ fun Pill(text: String, container: Color, content: Color, modifier: Modifier = Mo
     }
 }
 
-/** An empty or failed screen: what it is, and what to do next. Scrolls so pull-to-refresh still works. */
+/** An empty or failed screen: a plain icon, what it is, and what to do next. Scrolls so pull-to-refresh still works. */
 @Composable
 fun EmptyState(icon: ImageVector, title: String, body: String? = null, action: (@Composable () -> Unit)? = null) {
     Column(
@@ -81,10 +86,7 @@ fun EmptyState(icon: ImageVector, title: String, body: String? = null, action: (
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        Surface(color = MaterialTheme.colorScheme.secondaryContainer, contentColor = MaterialTheme.colorScheme.onSecondaryContainer, shape = CircleShape, modifier = Modifier.size(72.dp)) {
-            Box(contentAlignment = Alignment.Center) { Icon(icon, contentDescription = null, modifier = Modifier.size(32.dp)) }
-        }
-        Spacer(Modifier.height(4.dp))
+        Icon(icon, contentDescription = null, modifier = Modifier.size(40.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
         Text(title, style = MaterialTheme.typography.titleMedium, textAlign = TextAlign.Center)
         body?.let {
             Text(it, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = TextAlign.Center, modifier = Modifier.widthIn(max = 360.dp))
@@ -95,6 +97,22 @@ fun EmptyState(icon: ImageVector, title: String, body: String? = null, action: (
 
 fun relativeTime(unixMs: Long): String =
     DateUtils.getRelativeTimeSpanString(unixMs, System.currentTimeMillis(), DateUtils.MINUTE_IN_MILLIS, DateUtils.FORMAT_ABBREV_RELATIVE).toString()
+
+private val sameDayTime = DateTimeFormatter.ofPattern("HH:mm")
+private val sameYearTime = DateTimeFormatter.ofPattern("MM-dd HH:mm")
+private val otherYearTime = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm")
+
+/** Local time for a real message: `HH:mm` today, `MM-dd HH:mm` this year, `yyyy-MM-dd HH:mm` earlier. */
+fun formatMessageTime(unixMs: Long): String {
+    val zone = ZoneId.systemDefault()
+    val time = Instant.ofEpochMilli(unixMs).atZone(zone)
+    val today = LocalDate.now(zone)
+    return when {
+        time.toLocalDate() == today -> time.format(sameDayTime)
+        time.year == today.year -> time.format(sameYearTime)
+        else -> time.format(otherYearTime)
+    }
+}
 
 /** “8 秒”, “3 分 12 秒”, “1 小时 4 分”. */
 fun duration(ms: ULong): String {

@@ -19,6 +19,7 @@ mod provider_analytics;
 mod provider_template;
 pub mod records;
 pub mod resource_library;
+mod runtime_auto_compaction;
 pub mod runtime_execution;
 mod runtime_start;
 pub mod transcript_delivery;
@@ -39,6 +40,7 @@ pub use provider_template::{
 };
 pub use records::*;
 pub use resource_library::*;
+pub use runtime_auto_compaction::*;
 pub use runtime_execution::*;
 pub use runtime_management::*;
 pub use runtime_start::*;
@@ -47,8 +49,8 @@ pub use velune_conversation as conversation;
 pub use velune_conversation::bytes;
 pub use velune_conversation::resources as runtime_management;
 pub use velune_conversation::{
-    BackgroundTaskInfo, BackgroundTaskList, BackgroundTaskOutput, BackgroundTaskOutputStatus,
-    BackgroundTaskStatus,
+    AutoCompactionSetting, BackgroundTaskInfo, BackgroundTaskList, BackgroundTaskOutput,
+    BackgroundTaskOutputStatus, BackgroundTaskStatus, ModelAutoCompaction,
 };
 
 uniffi::setup_scaffolding!();

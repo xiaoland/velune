@@ -29,6 +29,11 @@ impl RuntimeInstance {
     pub fn execution_configuration(&self) -> Self {
         let mut runtime = self.clone();
         runtime.settings.remove(NEW_CONVERSATION_SETTING);
+        if runtime.type_id == crate::RuntimeKind::Acp {
+            runtime
+                .settings
+                .remove(crate::MODEL_AUTO_COMPACTION_SETTING);
+        }
         runtime
     }
 }
@@ -64,8 +69,12 @@ pub fn runtime_start_choice(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{AcpLaunch, RuntimeExecution, RuntimeKind};
+    use crate::{
+        AcpConfigValue, AcpLaunch, AutoCompactionSetting, ModelAutoCompaction, RuntimeExecution,
+        RuntimeKind,
+    };
     use std::collections::BTreeMap;
+    use velune_conversation::ModelSelection;
 
     fn instance() -> RuntimeInstance {
         RuntimeInstance {
@@ -104,6 +113,31 @@ mod tests {
             .settings
             .insert(NEW_CONVERSATION_SETTING.into(), "broken".into());
         assert!(runtime.new_conversation_choice().is_err());
+    }
+
+    #[test]
+    fn acp_model_auto_compaction_changes_without_replacing_the_live_execution() {
+        let mut runtime = instance();
+        let execution = runtime.execution_configuration();
+        let model = ModelSelection::Native {
+            provider_id: None,
+            model_id: "opaque-model".into(),
+        };
+        let setting = AutoCompactionSetting::Acp {
+            option_id: "auto_compaction".into(),
+            value: AcpConfigValue::Boolean(true),
+        };
+        runtime
+            .set_model_auto_compactions(vec![ModelAutoCompaction {
+                model: model.clone(),
+                setting: setting.clone(),
+            }])
+            .unwrap();
+        assert_eq!(
+            runtime.model_auto_compaction(&model).unwrap(),
+            Some(setting)
+        );
+        assert_eq!(runtime.execution_configuration(), execution);
     }
 
     #[test]

@@ -27,6 +27,7 @@ pub(super) struct State {
     /// The speed tier of the selected speed variant, sent per turn; `None`
     /// is Codex's own default.
     pub(super) service_tier: Option<String>,
+    pub(super) default_model_auto_compactions: Vec<ModelAutoCompaction>,
 }
 
 /// Rust-only commands for an initialized Codex connection. `Start` creates a
@@ -1371,6 +1372,14 @@ impl NativeSession {
                 options["model"] = json!(model.id);
             }
         }
+        let auto_compaction = self
+            .config
+            .auto_compaction
+            .as_ref()
+            .or_else(|| self.codex_default_auto_compaction());
+        if let Some(AutoCompactionSetting::Codex { token_limit }) = auto_compaction {
+            options["config"]["model_auto_compact_token_limit"] = json!(token_limit);
+        }
         if let Some(cwd) = cwd {
             options["cwd"] = json!(cwd);
         }
@@ -1399,6 +1408,21 @@ impl NativeSession {
                 });
         }
         options
+    }
+
+    fn codex_default_auto_compaction(&self) -> Option<&AutoCompactionSetting> {
+        if self.config.gateway.is_some() {
+            return None;
+        }
+        let model = self.native_selection.as_ref()?;
+        self.codex
+            .default_model_auto_compactions
+            .iter()
+            .find(|entry| {
+                matches!(&entry.model, ModelSelection::Native { provider_id, model_id }
+                    if provider_id == &model.provider_id && model_id == &model.id)
+            })
+            .map(|entry| &entry.setting)
     }
     pub(super) fn codex_create(
         &mut self,

@@ -662,6 +662,7 @@ struct ComposerView: View {
     @ObservedObject private var appearance = AppearancePreferences.shared
     @State private var showingInputAccess = false
     @State private var showingAccessories = false
+    @State private var modelAutoCompaction: ModelAutoCompactionPresentation?
     @State private var accessoriesHeight: CGFloat = 64
     @State private var availableHeight: CGFloat = .infinity
     // Geometry belongs to this host: another pane/sheet may show the same
@@ -679,6 +680,11 @@ struct ComposerView: View {
         /// The room inside the padding. Not state: it changes with every
         /// frame of a resize, and only crossing a threshold changes the view.
         var availableWidth: CGFloat = 760
+    }
+    private struct ModelAutoCompactionPresentation: Identifiable {
+        let store: DeviceStore
+        let target: ModelAutoCompactionTarget
+        var id: ModelAutoCompactionTarget { target }
     }
     /// The send button and a little of the status line beside the choices.
     private static let sendWidth: CGFloat = 130
@@ -793,6 +799,9 @@ struct ComposerView: View {
             if editingTarget == nil { refreshActiveCompletion() }
         }
         .modifier(ContinuationPreparationPresentation(tab: context.tab, window: layout, enabled: editingTarget == nil))
+        .sheet(item: $modelAutoCompaction) { editor in
+            ModelAutoCompactionEditor(store: editor.store, target: editor.target)
+        }
     }
 
     private func refreshActiveCompletion() {
@@ -1020,7 +1029,9 @@ struct ComposerView: View {
                     .disabled(store.isShuttingDown || editingTarget?.editable == false)
             }
             agentMenu(compact: compact).disabled(editingTarget?.editable == false)
-            if !context.permissionModeOptions.isEmpty || !context.sessionOptions.isEmpty { permissionMenu(compact: compact).disabled(editingTarget?.editable == false) }
+            if !context.permissionModeOptions.isEmpty || !context.sessionOptions.isEmpty {
+                permissionMenu(compact: compact).disabled(editingTarget?.editable == false)
+            }
             if editingTarget == nil, store.isUnsentConversation { workingDirectoryMenu(compact: compact) }
         }
         // Borderless pull-downs in the system's own colours: the label is the
@@ -1056,6 +1067,7 @@ struct ComposerView: View {
             Menu("模型：\(model)") {
                 modelMenuContent
                 Divider()
+                modelAutoCompactionMenu
                 Button("重新读取模型", action: context.reloadModelCatalog).disabled(!context.canSwitchModel || context.modelCatalog == .loading)
                 SettingsTabLink(tab: .providers, title: "AI 提供商设置…")
             }
@@ -1106,6 +1118,80 @@ struct ComposerView: View {
 
     private func choiceItems(_ choices: [AcpConfigChoice]) -> some View {
         ForEach(choices, id: \.value) { choice in Text(choice.name).tag(choice.value).help(choice.description ?? choice.name) }
+    }
+
+    @ViewBuilder private var modelAutoCompactionMenu: some View {
+        let targets = context.nativeModelAutoCompactionTargets
+        if let selected = targets.selected {
+            Button("自动压缩…") { openModelAutoCompaction(selected) }
+                .disabled(store.device.isLoading)
+        }
+        if !targets.retained.isEmpty {
+            Menu("已保存的原生模型压缩设置") {
+                ForEach(targets.retained) { target in
+                    Button("\(target.title)…") { openModelAutoCompaction(target) }
+                }
+            }.disabled(store.device.isLoading)
+        }
+        if let runtime = context.modelAutoCompactionRuntime, runtime.typeId == .acp,
+           let model = store.acpAutoCompactionModel(runtimeID: runtime.id, selectedModel: context.chosenModel ?? context.nextTurnModel),
+           !store.acpAutoCompactionOptions.isEmpty || store.acpAutoCompactionSetting != nil {
+            acpAutoCompactionMenu { setting in store.saveAcpAutoCompaction(setting, runtimeID: runtime.id, model: model) }
+        }
+    }
+
+    private func openModelAutoCompaction(_ target: ModelAutoCompactionTarget) {
+        guard store.device.hasModelAutoCompactionWriter, !store.device.isLoading else { return }
+        modelAutoCompaction = ModelAutoCompactionPresentation(store: store.device, target: target)
+    }
+
+    private func acpAutoCompactionChoice(_ option: AcpConfigOption, value: AcpConfigValue, title: String,
+                                         save: @escaping (AutoCompactionSetting?) -> Void) -> some View {
+        let setting = AutoCompactionSetting.acp(optionId: option.id, value: value)
+        return Button { save(setting) } label: {
+            if store.acpAutoCompactionSetting == setting { Label(title, systemImage: "checkmark") }
+            else { Text(title) }
+        }
+    }
+
+    private func acpAutoCompactionMenu(save: @escaping (AutoCompactionSetting?) -> Void) -> some View {
+        let (known, other) = store.acpAutoCompactionOptions.reduce(into: ([AcpConfigOption](), [AcpConfigOption]())) { result, option in
+            if isAcpAutoCompactionOption(option: option) { result.0.append(option) }
+            else { result.1.append(option) }
+        }
+        return Menu("自动压缩") {
+            Button("跟随 Agent 设置") { save(nil) }
+                .disabled(store.acpAutoCompactionSetting == nil)
+            ForEach(known) { acpAutoCompactionOptionMenu($0, save: save) }
+            if !other.isEmpty {
+                Menu("从 Agent 选项中选取") {
+                    ForEach(other) { acpAutoCompactionOptionMenu($0, save: save) }
+                }
+                .help("仅选择此 Agent 用于自动压缩的选项")
+            }
+            if case let .acp(optionID, value)? = store.acpAutoCompactionSetting,
+               !store.acpAutoCompactionOptions.contains(where: {
+                   $0.id == optionID && acpAutoCompactionAccepts(option: $0, value: value)
+               }) {
+                Text("已保存的压缩设置当前不可用")
+            }
+        }
+        .help("对当前模型的后续轮次生效")
+        .disabled(!store.canChangeSessionOptions || store.device.isLoading)
+    }
+
+    private func acpAutoCompactionOptionMenu(_ option: AcpConfigOption, save: @escaping (AutoCompactionSetting?) -> Void) -> some View {
+        Menu(option.name) {
+            switch option.value {
+            case .boolean:
+                acpAutoCompactionChoice(option, value: .boolean(true), title: "开启", save: save)
+                acpAutoCompactionChoice(option, value: .boolean(false), title: "关闭", save: save)
+            case .select:
+                ForEach(option.choices, id: \.value) { choice in
+                    acpAutoCompactionChoice(option, value: .select(choice.value), title: choice.name, save: save)
+                }
+            }
+        }.help(option.description ?? option.name)
     }
 
     /// Choices in the Agent's order, consecutive ones of a group together.

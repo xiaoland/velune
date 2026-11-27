@@ -1201,6 +1201,23 @@ final class DeviceStore: ObservableObject {
             else { recordProblem("核心未返回保存后的运行时实例") }
         }
     }
+    func saveRuntimeModelAutoCompaction(runtimeID: String, model: ModelSelection, setting: AutoCompactionSetting?,
+                                        onFailure: ((Error) -> Void)? = nil, onSaved: @escaping () -> Void) {
+        guard let transport, !isShuttingDown, !isLoading else {
+            let error = TransportError.rejected("暂时无法保存自动压缩设置，请稍后重试。")
+            if let onFailure { onFailure(error) } else { recordProblem(error) }
+            return
+        }
+        enqueue({
+            try transport.setRuntimeModelAutoCompaction(runtimeID: runtimeID, model: model, setting: setting)
+        }, onFailure: onFailure) { [weak self] data in
+            guard let self else { return }
+            runtimeInstances = data.runtimeInstances
+            runtimeTypes = data.runtimeTypes
+            if data.executionInvalidated { refreshAfterConfigurationChange() }
+            onSaved()
+        }
+    }
     /// The saved location and HOME (and where that HOME is), plus the launch
     /// options when the instance's type takes them.
     func runtimeExecution(id: String, launch: Bool, onFailure: @escaping () -> Void, completion: @escaping (RuntimeExecution, String?, AcpLaunch?) -> Void) {

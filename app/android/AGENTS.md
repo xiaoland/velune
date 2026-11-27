@@ -17,6 +17,8 @@
 - UI 检查优先使用内存状态。设备支持时可用 `adb -s <serial> exec-out uiautomator dump /proc/self/fd/1` 流式读取 XML；真实现场只输出目标包的已知静态文案和必要判断。完整界面证据留给授权的合成环境。
 - logcat 按当前 PID、时间和错误范围筛选；LGTM 核对时间、平台与实例。无日志不证明无错误，也不单独证明遥测关闭。
 - PID 存活或 Activity 启动成功只证明启动。设置验收分别检查保存确认、离页重开、保存完成后的 force-stop／冷启动持久化、设置应用状态与设施可达；设施可达不代替获授权的实际业务或中转验收。
+- 使用 `GalleryActivity` 切换 `--es screen <id>` 预览不同合成场景时必须带 `-S`（如 `adb -s <serial> shell am start -S -W -n app.velune.android/.GalleryActivity --es screen conversation`）；不带 `-S` 会复用旧 Activity 实例而停留在上一场景。新增或回归 UI 场景优先沉淀到 `app/src/debug/kotlin/app/velune/android/preview/` 的具名目录。
+- 涉及输入区或底部面板的布局改动，真机验收须在约 360 dp 宽度下同时核对常规态与真实软键盘展开态，确认底部操作按钮尺寸与对比度、键盘贴合与无胶囊裁切。
 
 ## 临时资源恢复
 

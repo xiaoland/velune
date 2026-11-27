@@ -6,6 +6,8 @@ import app.velune.bindings.remote.PathKind
 import app.velune.bindings.application.ListedConversation
 import app.velune.bindings.application.RuntimeInstance
 import app.velune.bindings.VeluneApplication
+import app.velune.bindings.remote.ContactConfirmation
+import app.velune.bindings.remote.RemoteServiceSnapshot
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -30,7 +32,7 @@ data class DeviceListing(
     val runtimeLabels: Map<String, RuntimeLabel> = emptyMap(),
     /** Display names of projects that have one, by path. */
     val projectNames: Map<String, String> = emptyMap(),
-    /** Working directories of the device's conversations, for starting another in one. */
+    /** Known project folders, ordered by recent project activity. */
     val projects: List<String> = emptyList(),
     /** Running or waiting conversations by ID. */
     val active: Map<String, ActiveConversation> = emptyMap(),
@@ -39,6 +41,12 @@ data class DeviceListing(
     /** The path in use, such as “中继 320 ms”: a relayed connection explains a slow device. */
     val path: String? = null,
 )
+
+internal fun RemoteServiceSnapshot.conversationContacts() =
+    contacts.filter { it.controlAuthorized && it.confirmation is ContactConfirmation.Confirmed }
+
+internal fun Pair<DeviceSummary, DeviceListing>.canStartConversation() =
+    first.status.tone == Tone.Positive && second.failure == null && second.runtimes.isNotEmpty()
 
 /** The conversation list of one controlled device, read while it is on screen. */
 class DeviceWorkspace(private val hub: DeviceHub, val peer: String, private val scope: CoroutineScope) {
@@ -109,15 +117,20 @@ class DeviceWorkspace(private val hub: DeviceHub, val peer: String, private val 
         return "$kind ${path.rttMicroseconds / 1_000uL} ms"
     }
 
-    private fun listing(list: ConfigurationSnapshot, active: Map<String, ActiveConversation>) = DeviceListing(
-        conversations = list.conversations.filter { !it.archived && it.conversation.parentConversationId == null },
-        runtimes = list.runtimeInstances.filter { it.enabled },
-        runtimeLabels = list.runtimeTypes.associateBy { it.id }.let { types ->
-            list.runtimeInstances.associate { it.id to RuntimeLabel(it.name, types[it.typeId]?.familyId) }
-        },
-        projectNames = list.conversationProjects.flatMap { project -> project.name?.let { name -> listOfNotNull(project.path to name, project.primaryFolder?.let { it to name }) } ?: emptyList() }.toMap(),
-        projects = list.conversationProjects.mapNotNull { it.primaryFolder }.distinct(),
-        active = active,
-        loaded = true,
-    )
+    private fun listing(list: ConfigurationSnapshot, active: Map<String, ActiveConversation>): DeviceListing {
+        val projects = list.conversationProjects.sortedByDescending { it.latestActivityUnixMs ?: Long.MIN_VALUE }
+        return DeviceListing(
+            conversations = list.conversations.filter { !it.archived && it.conversation.parentConversationId == null },
+            runtimes = list.runtimeInstances.filter { it.enabled },
+            runtimeLabels = list.runtimeTypes.associateBy { it.id }.let { types ->
+                list.runtimeInstances.associate { it.id to RuntimeLabel(it.name, types[it.typeId]?.familyId) }
+            },
+            projectNames = projects.flatMap { project ->
+                project.name?.let { name -> (listOfNotNull(project.path, project.primaryFolder) + project.folders).map { it to name } }.orEmpty()
+            }.toMap(),
+            projects = projects.flatMap { listOfNotNull(it.primaryFolder) + it.folders }.distinct(),
+            active = active,
+            loaded = true,
+        )
+    }
 }

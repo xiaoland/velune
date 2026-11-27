@@ -27,6 +27,11 @@ impl CoreRuntime {
             execution: context.target,
             os_home: context.os_home,
             gateway: None,
+            auto_compaction: selection
+                .as_ref()
+                .map(|model| runtime.model_auto_compaction(model))
+                .transpose()?
+                .flatten(),
             mcp_servers: self.collaboration_servers(),
             session_agents: Vec::new(),
         };
@@ -51,6 +56,9 @@ impl CoreRuntime {
                     NativeSession::connect(config)
                 })
                 .map_err(|error| RuntimeError::context("原生运行时连接", error))?;
+                if selection.is_none() {
+                    native.set_default_model_auto_compactions(runtime.model_auto_compactions()?);
+                }
                 if let Some(crate::ModelSelection::Native {
                     provider_id,
                     model_id,

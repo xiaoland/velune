@@ -9,6 +9,7 @@ use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
+    collections::BTreeMap,
     io::{BufRead, BufReader},
     path::{Path, PathBuf},
     process::Stdio,
@@ -86,6 +87,9 @@ pub struct Config {
     pub rpc_entry: Option<PathBuf>,
     pub models_path: Option<PathBuf>,
     pub selection_file: Option<PathBuf>,
+    /// Per-selected-model reserve tokens, for this SDK process only.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub model_compaction_reserves: BTreeMap<String, u32>,
     /// Ephemeral loopback gateway token. It is injected into the child
     /// environment and never serialized into app configuration or snapshots.
     #[serde(skip_serializing)]
@@ -288,6 +292,10 @@ impl Client {
             .map(|server| (server.name.clone(), server.http()))
             .collect();
         command.env("VELUNE_MCP_SERVERS", Value::Object(mcp_servers).to_string());
+        command.env(
+            "VELUNE_PI_COMPACTION_RESERVES",
+            serde_json::to_string(&config.model_compaction_reserves)?,
+        );
         let prepared = config
             .execution
             .prepare(command, config.os_home.as_deref())?;

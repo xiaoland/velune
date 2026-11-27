@@ -486,6 +486,19 @@ impl CoreRuntime {
         mut runtime: RuntimeInstance,
     ) -> Result<crate::RuntimeUpdate, RuntimeError> {
         self.retain_private_runtime_settings(&mut runtime);
+        let compaction_key = velune_application_api::MODEL_AUTO_COMPACTION_SETTING;
+        // This snapshot may predate independent edits made in a model editor.
+        runtime.settings.remove(compaction_key);
+        if let Some(value) = self
+            .runtime_instances
+            .iter()
+            .find(|stored| stored.id == runtime.id && stored.type_id == runtime.type_id)
+            .and_then(|saved| saved.settings.get(compaction_key))
+        {
+            runtime
+                .settings
+                .insert(compaction_key.into(), value.clone());
+        }
         // Plain upsert callers do not edit the start policy. A changed type has its own default.
         if !runtime
             .settings
@@ -543,6 +556,39 @@ impl CoreRuntime {
         id: String,
     ) -> Result<crate::RuntimeUpdate, RuntimeError> {
         self.change_runtimes(RuntimeChange::Delete(id))
+    }
+
+    /// A model setting is an independent edit. Read and merge it under the
+    /// configuration owner, including when clients opened different revisions.
+    pub(crate) fn set_runtime_model_auto_compaction(
+        &mut self,
+        runtime_id: &str,
+        model: crate::ModelSelection,
+        setting: Option<velune_conversation::AutoCompactionSetting>,
+    ) -> Result<crate::RuntimeUpdate, RuntimeError> {
+        let mut runtime = self.runtime_instance(runtime_id)?.clone();
+        let mut entries = runtime.model_auto_compactions()?;
+        if entries
+            .iter()
+            .find(|entry| entry.model == model)
+            .map(|entry| &entry.setting)
+            == setting.as_ref()
+        {
+            return Ok(crate::RuntimeUpdate {
+                runtime_instances: self.public_runtime_instances(),
+                runtime_types: runtime_types(),
+                execution_invalidated: false,
+            });
+        }
+        entries.retain(|entry| entry.model != model);
+        if let Some(setting) = setting {
+            if matches!(&model, crate::ModelSelection::Managed { .. }) {
+                self.validate_model_selection(&runtime, Some(&model))?;
+            }
+            entries.push(velune_conversation::ModelAutoCompaction { model, setting });
+        }
+        runtime.set_model_auto_compactions(entries)?;
+        self.change_runtimes(RuntimeChange::Upsert(runtime))
     }
 
     fn change_runtimes(
@@ -903,5 +949,120 @@ mod runtime_start_tests {
         );
         drop(reopened);
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn model_auto_compaction_saves_survive_parallel_model_edits_and_stale_runtime_forms() {
+        use velune_application_api::{ClientViewId, Command, Response};
+        use velune_conversation::{
+            AutoCompactionSetting, ModelSelection, acp_config::AcpConfigValue,
+        };
+
+        let mut nonce = [0; 8];
+        getrandom::fill(&mut nonce).unwrap();
+        let home = std::env::temp_dir().join(format!(
+            "velune-model-auto-compaction-{:x}",
+            u64::from_le_bytes(nonce)
+        ));
+        fs::create_dir(&home).unwrap();
+        let app = crate::ApplicationService::open(crate::Options {
+            home_directory: home.clone(),
+            resources_directory: home.clone(),
+        })
+        .unwrap();
+        let runtime = RuntimeInstance {
+            enabled: false,
+            id: "synthetic-acp".into(),
+            name: "Synthetic ACP".into(),
+            type_id: RuntimeKind::Acp,
+            gateway_id: "default".into(),
+            settings: BTreeMap::new(),
+        };
+        let launch = crate::AcpLaunch {
+            args: vec!["synthetic-private-launch-argument".into()],
+            environment: BTreeMap::new(),
+        };
+        let execute =
+            |view: &str, command| app.execute(ClientViewId(view.into()), command).unwrap();
+        execute(
+            "setup",
+            Command::UpsertAcpRuntime {
+                runtime: runtime.clone(),
+                execution: RuntimeExecution::default(),
+                launch: launch.clone(),
+            },
+        );
+        let model = |id: &str| ModelSelection::Native {
+            provider_id: None,
+            model_id: id.into(),
+        };
+        let command = |id, setting| Command::SetRuntimeModelAutoCompaction {
+            runtime_id: runtime.id.clone(),
+            model: model(id),
+            setting,
+        };
+        let custom = |value| AutoCompactionSetting::Acp {
+            option_id: "vendor.retention".into(),
+            value: AcpConfigValue::Boolean(value),
+        };
+        let simultaneous = std::sync::Barrier::new(2);
+        std::thread::scope(|threads| {
+            for (name, value) in [("model-a", true), ("model-b", false)] {
+                let pending = command(name, Some(custom(value)));
+                let execute = &execute;
+                let simultaneous = &simultaneous;
+                threads.spawn(move || {
+                    simultaneous.wait();
+                    assert!(matches!(
+                        execute(name, pending),
+                        Response::SetRuntimeModelAutoCompaction(_)
+                    ));
+                });
+            }
+        });
+        // The runtime editor may have opened before a model setting was saved.
+        let mut stale = runtime.clone();
+        stale.name = "Renamed runtime".into();
+        stale.set_model_auto_compactions(vec![]).unwrap();
+        execute("runtime-editor", Command::UpsertRuntime { runtime: stale });
+        let temporary_target = home.join("generic-config.json.tmp");
+        fs::create_dir(&temporary_target).unwrap();
+        let Response::SetRuntimeModelAutoCompaction(no_op) =
+            execute("setup", command("absent", None))
+        else {
+            panic!("missing configuration response");
+        };
+        fs::remove_dir(&temporary_target).unwrap();
+        let saved = no_op
+            .runtime_instances
+            .iter()
+            .find(|saved| saved.id == runtime.id)
+            .unwrap();
+        assert!(!no_op.execution_invalidated);
+        assert_eq!(saved.name, "Renamed runtime");
+        assert_eq!(
+            saved.model_auto_compaction(&model("model-a")).unwrap(),
+            Some(custom(true))
+        );
+        assert_eq!(
+            saved.model_auto_compaction(&model("model-b")).unwrap(),
+            Some(custom(false))
+        );
+        assert!(
+            !saved
+                .settings
+                .contains_key(super::super::ACP_LAUNCH_SETTING)
+        );
+        let Response::ReadAcpLaunch(saved_launch) = execute(
+            "setup",
+            Command::ReadAcpLaunch {
+                runtime_id: runtime.id,
+            },
+        ) else {
+            panic!("missing ACP launch response");
+        };
+        assert_eq!(saved_launch, launch);
+        app.close(false).unwrap();
+        fs::remove_dir_all(home).unwrap();
     }
 }

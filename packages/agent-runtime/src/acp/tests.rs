@@ -56,6 +56,8 @@ def wait(name):
 pending = None
 count = 0
 seen = set()
+live_model = 'model/a'
+auto_values = {'model/a':False,'model/b':'default'}
 def emit(value): print(json.dumps(dict(jsonrpc='2.0',**value)),flush=True)
 def chunk(text,session='synthetic'):
     emit({'method':'session/update','params':{'sessionId':session,'update':{'sessionUpdate':'agent_message_chunk','content':{'type':'text','text':text}}}})
@@ -65,7 +67,14 @@ def interactions():
     emit({'id':'p','method':'session/request_permission','params':{'sessionId':'synthetic','toolCall':{'toolCallId':'t','title':'Synthetic tool'},'options':[{'optionId':'yes','name':'Yes','kind':'allow_once'}]}})
     emit({'id':'q','method':'elicitation/create','params':{'mode':'form','sessionId':'synthetic','message':'Value?', 'requestedSchema':{'type':'object','required':['value'],'properties':{'value':{'type':'string'}}}}})
 def options(value='model/a'):
-    return [{'id':'opaque/model-id','name':'Model','category':'model','type':'select','currentValue':value,'options':[{'value':'model/a','name':'A'},{'value':'model/b','name':'B'}]}]
+    result=[{'id':'opaque/model-id','name':'Model','category':'model','type':'select','currentValue':value,'options':[{'value':'model/a','name':'A'},{'value':'model/b','name':'B'}]}]
+    if mode=='model-auto-compaction':
+        if value=='model/a':
+            result.append({'id':'auto_compact_enabled','name':'Automatically compact','type':'boolean','currentValue':auto_values[value]})
+        else:
+            result.append({'id':'vendor.retention','name':'Retention','type':'select','currentValue':auto_values[value], 'options':[{'value':'default','name':'Default'},{'value':'less','name':'Less'}]})
+        result.append({'id':'opaque/safety','name':'Permissions','category':'_permissions','type':'boolean','currentValue':False})
+    return result
 
 for line in sys.stdin:
     request=json.loads(line)
@@ -101,7 +110,8 @@ for line in sys.stdin:
         continue
     elif method=='session/load':
         chunk('authoritative replay',params['sessionId'])
-        result={'configOptions':options('model/b')}
+        live_model='model/b'
+        result={'configOptions':options(live_model)}
     elif method=='session/resume': result={'configOptions':options()}
     elif method=='session/list':
         result={'sessions':[]}
@@ -109,6 +119,20 @@ for line in sys.stdin:
             emit({'id':request['id'],'result':result})
             chunk('|')
             continue
+    elif method=='session/set_config_option' and mode=='model-auto-compaction':
+        assert params['sessionId']=='synthetic'
+        config,value=params['configId'],params['value']
+        if config=='opaque/model-id':
+            assert auto_values[live_model] == (False if live_model=='model/a' else 'default')
+            live_model=value
+        elif live_model=='model/a':
+            assert config=='auto_compact_enabled' and params['type']=='boolean' and isinstance(value,bool)
+            auto_values[live_model]=value
+        else:
+            assert config=='vendor.retention' and value in ('default','less')
+            auto_values[live_model]=value
+        with open(os.path.join(root,'setting-writes'),'a') as f: f.write(config+'\n')
+        result={'configOptions':options(live_model)}
     elif method=='session/set_config_option':
         assert params['configId']=='opaque/model-id'
         if mode=='control-budget':
@@ -130,6 +154,10 @@ for line in sys.stdin:
             sys.exit(0)
 
     elif method=='session/prompt':
+        if mode=='model-auto-compaction':
+            assert auto_values[live_model] == json.loads(params['prompt'][0]['text'])
+            emit({'id':request['id'],'result':{'stopReason':'end_turn'}})
+            continue
         if mode=='blocked': continue
         if mode=='prompt-error':
             chunk('output before error')
