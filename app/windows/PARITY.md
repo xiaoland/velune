@@ -26,7 +26,9 @@ Windows 按 [PRD](../../docs/prd/index.md) 跟进完整端能力，规则见[本
 
 验证范围与证据入口：
 
-- [Composer 状态归属](../../tasks/composer-state-ownership/packet.md)：共享输入、配置分离、修订与交接的实施和验证范围；不代表 Mac 的共享 drawer 体验已移植。
-- [组织用量与账单](../../tasks/api-provider-templates/packet.md#组织账单改造实施2026-11-02)：官方 API 编辑器、账单入口与原生检查，尚未进行真实账户联调。
-- [消息与工作区改进](../../tasks/messaging-and-workspace-polish/packet.md)和[后续输入／导航改进](../../tasks/post-dogfood-ux/packet.md)：Mac 呈现变化及各端构建范围，平台差距以本表对应行维护。
-- [开发构建与缓存](../../tasks/build-performance/packet.md)：隔离开发构建、无变化复用与来源保护检查；未启动 Windows UI。构建行为归[开发构建说明](../../docs/development/builds.md)。
+以下任务记录已完成并移出 `tasks/`，原文见 git 历史；平台差距以本表对应行维护。
+
+- Composer 状态归属（`tasks/composer-state-ownership`）：共享输入、配置分离、修订与交接的实施和验证范围；不代表 Mac 的共享 drawer 体验已移植。
+- 组织用量与账单（`tasks/api-provider-templates`）：官方 API 编辑器、账单入口与原生检查，尚未进行真实账户联调。
+- 消息与工作区改进（`tasks/messaging-and-workspace-polish`）和后续输入／导航改进（`tasks/post-dogfood-ux`）：Mac 呈现变化及各端构建范围。
+- 开发构建与缓存（`tasks/build-performance`）：隔离开发构建、无变化复用与来源保护检查；未启动 Windows UI。构建行为归[开发构建说明](../../docs/development/builds.md)。

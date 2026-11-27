@@ -117,3 +117,9 @@
 - 尚未处理：`check-macos-sidebar-toolbar.py`（需已启动的开发实例窗口）。
 
 `codex_conversation_lifecycle` 曾因 ChatGPT.app 内置 Codex CLI 自动更新到 0.171.0-alpha.13、超出当时适配器范围而失败；合入 develop（支持至 0.171.0）后通过（8 项检查）。`CODEX166` 是适配器族名而非版本，用例无需调整。PR checks 的新步骤尚未在 CI 实际运行。
+
+## 任务记录收敛（2026-11-27）
+
+用户确认后，33 个已完成任务包（11-02 至 11-24，约 3,300 行）中仍未解决的用户决定、未授权候选与未验证能力并入 [待决事项](../open-items/packet.md)，任务包删除，原文见 git 历史。已被后续工作取代的不再搬运：schema 10→11 等手动迁移已改为首次启动的自动迁移，按模型自动压缩已合入，Windows 差距已由 [PARITY](../../app/windows/PARITY.md) 逐项维护，Codex 原生队列的取舍已写在 application README。外部引用改为 git 历史说明；`migrations.md` 原先指向发行任务包中并不存在的 Android 导出步骤，改指构建说明中“目前没有跨签名数据转移入口”的现状。
+
+同时删除三个已合入且无改动的工作树（android-session-ux、codex-active-index-persistence、idle-poll-cpu，约 4.8 GiB）、六个已合入的本地分支，以及主检出中已空的 `tmp/worktrees`。
