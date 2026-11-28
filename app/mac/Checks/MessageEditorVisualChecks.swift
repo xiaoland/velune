@@ -344,7 +344,7 @@ import ObjectiveC
     precondition(edit.placement == .inPlace && edit.choices.runtimeID == "review")
     context.selectNextTurnRuntime(runtimeID)
     edit.placement = .inPlace
-    wait { edit.canSubmit }
+    wait(polling: edit.store) { edit.canSubmit }
     let attachment = home.appendingPathComponent("review-notes.md")
     try! Data("synthetic review notes".utf8).write(to: attachment)
     edit.editor.addAttachments([attachment])
@@ -368,8 +368,8 @@ import ObjectiveC
     edit.send(in: workspace)
     wait { edit.failure != nil }
     precondition(!closed && edit.editor.submission == long && !edit.submitting)
-    wait { edit.historyChanged }
-    wait { edit.canSubmit }
+    wait(polling: edit.store) { edit.historyChanged }
+    wait(polling: edit.store) { edit.canSubmit }
     precondition(edit.confirmationRevision != nil && !edit.submitting && !closed,
                  "CAS失败重读后应直接提供二次确认，并保留编辑副本")
     let confirmedRevision = edit.confirmationRevision
@@ -388,7 +388,7 @@ import ObjectiveC
     let fresh = edit
     let ready = capture(MessageEditorView(session: fresh, window: workspace, source: source).applicationAppearance(), name: "sheet-resend", width: 560)
     fresh.editor.textView!.insertText("OFFSCREEN EDITED MESSAGE", replacementRange: NSRange(location: 0, length: (fresh.editor.textView!.string as NSString).length))
-    wait { fresh.canSubmit }
+    wait(polling: fresh.store) { fresh.canSubmit }
     closed = false
     fresh.onClose = { closed = true }
     // A conflict also has a copy button. Address the production submit control
@@ -414,7 +414,7 @@ import ObjectiveC
     wait { closed }
     wait(polling: source.store) { source.store.transcript.rows.contains { $0.message.blocks.contains { if case .text(let text) = $0 { text == "OFFSCREEN EDITED MESSAGE" } else { false } } } == true && !source.store.isGenerating }
     precondition(source.store.loadedConversationID == conversationID)
-    wait { source.store.nextTurn?.runtimeId == runtimeID }
+    wait(polling: source.store) { source.store.nextTurn?.runtimeId == runtimeID }
     precondition((source.store.keptComposerChoices.choices[runtimeID] ?? TurnChoice()) == (fresh.choices.choices[runtimeID] ?? TurnChoice()),
                  "接受编辑后，执行配置必须传给继续的普通目标")
     unchanged(checkExecution: false)
