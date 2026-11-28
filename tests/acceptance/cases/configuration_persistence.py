@@ -9,6 +9,7 @@ from velune_acceptance import Context
 
 REQUIRES = ()
 PROVIDER = "acceptance-offline"
+INPUT_ID = "cda5b1ae-34e5-4ab3-89c3-4781a947547e"
 API_KEY = "synthetic-acceptance-key"
 ATTACHMENT = b"\x00\x7f\x80\xff\r\nVelune attachment\x00"
 
@@ -51,7 +52,7 @@ def run(ctx: Context) -> None:
         attachment = app.upload_composer_attachment("unfinished.bin", ATTACHMENT)
         assert attachment.name == "unfinished.bin" and attachment.bytes == len(ATTACHMENT)
         app.manage_composer_inputs(api.ComposerInputOperation.SAVE(
-            input_id="acceptance-unfinished-input", expected_revision=None,
+            input_id=INPUT_ID, expected_revision=None,
             content=api.ComposerInputContent(text="Unsent text — 未发送", attachments=[attachment])))
         app.shutdown()
         app = bindings.VeluneApplication.open(options)
@@ -65,7 +66,7 @@ def run(ctx: Context) -> None:
         ctx.passed("provider_edit_preserves_model_identity_and_kept_key_after_reopen")
 
         state = app.manage_composer_inputs(api.ComposerInputOperation.READ(since_revision=None)).state
-        draft = next(item for item in state.inputs if item.id == "acceptance-unfinished-input")
+        draft = next(item for item in state.inputs if item.id == INPUT_ID)
         assert draft.content.text == "Unsent text — 未发送" and len(draft.content.attachments) == 1
         restored = draft.content.attachments[0]
         assert restored.id == attachment.id and restored.name == "unfinished.bin"
