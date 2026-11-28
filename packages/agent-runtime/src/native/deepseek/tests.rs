@@ -381,6 +381,7 @@ fn deepseek_connect_validates_protocol_resume_and_required_http_not_plugin_relea
             true,
             Some("未公布 HTTP MCP 能力"),
         ),
+        (json!(1), json!({}), false, false, None),
         (json!(1), json!({}), true, true, None),
     ] {
         let handshake = json!({"protocolVersion":protocol,
