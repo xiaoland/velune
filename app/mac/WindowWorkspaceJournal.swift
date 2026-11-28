@@ -8,9 +8,8 @@ final class WindowWorkspaceJournal: @unchecked Sendable {
     private let lock = NSLock()
     private var pending: [String: Data] = [:]
     private var scheduled = false
-    // Accessed only on queue, alongside file reads and writes.
-    private var blockedIDs: Set<String> = []
-    private var checkedIDs: Set<String> = []
+    // One decision per window, accessed only on queue.
+    private var writePermission: [String: Bool] = [:]
 
     init(directory: URL?, report: @escaping @Sendable (String) -> Void) {
         self.directory = directory?.appendingPathComponent("mac-window-workspaces", isDirectory: true)
@@ -95,24 +94,23 @@ final class WindowWorkspaceJournal: @unchecked Sendable {
                 layout = layout.migratingToAggregatedWorkspace()
             }
             let date = try url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate ?? .distantPast
-            checkedIDs.insert(id)
+            if writePermission[id] == nil { writePermission[id] = true }
             return (date, layout)
         } catch {
-            blockedIDs.insert(id)
+            writePermission[id] = false
             report("无法读取恢复点 \(url.lastPathComponent)：\(error.localizedDescription)；原文件保留，后续保存已禁用。升级到支持该格式的版本，或在确认后使用对应的 .bak 副本恢复")
             return nil
         }
     }
 
     private func prepareForWrite(at target: URL, id: String) -> Bool {
-        if blockedIDs.contains(id) { return false }
-        if checkedIDs.contains(id) { return true }
+        if let allowed = writePermission[id] { return allowed }
         do {
             if FileManager.default.fileExists(atPath: target.path) { _ = try readLayout(at: target, id: id) }
-            checkedIDs.insert(id)
+            writePermission[id] = true
             return true
         } catch {
-            blockedIDs.insert(id)
+            writePermission[id] = false
             report("无法保存恢复点 \(id).json：\(error.localizedDescription)；原文件保留，恢复该窗口的写入已禁用")
             return false
         }
