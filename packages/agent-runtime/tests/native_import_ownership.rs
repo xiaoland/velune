@@ -98,7 +98,14 @@ fn codex_owned_materialization_and_failed_materialization_leave_no_list_orphan()
         };
         let materialized =
             history::materialize_owned_codex_import(&config, &thread_id, provider, &mut token);
-        assert_eq!(materialized.is_ok(), provider != "missing-provider");
+        if provider == "missing-provider" {
+            let error = materialized
+                .expect_err("unknown provider was accepted")
+                .to_string();
+            assert!(error.contains("missing-provider"), "{error}");
+        } else {
+            materialized.unwrap();
+        }
         let path = token.source_path().to_owned();
         cleanup_owned_import(&config, &token).unwrap();
         assert!(!path.exists());
