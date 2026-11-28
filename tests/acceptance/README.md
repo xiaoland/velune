@@ -22,7 +22,7 @@ python3 tests/acceptance/run.py codex_conversation_lifecycle --codex /absolute/p
 
 比较修复前后版本时，使用同一份用例，并给每版传入配套的 `--bindings` 与 `--resources`，核对 `inputs`；不要将旧库配上当前源码 helper 后宣称为旧版结果。验收期间保持这些输入不变。每个用例另有完整日志与结果文件，任务包引用清单与结论。
 
-父进程要求 worker 的退出码与结果同时成立；即使 worker 已写入 `passed`，非零退出也会记为失败。缺失、损坏或不匹配的结果同样生成可读的失败记录。任一失败使 runner 返回非零；跳过不会冒充通过，但没有失败时返回零，因此整体完成范围以清单中实际通过的用例为准。runner 自身的子进程与输入来源回归无需编译，可运行：
+父进程同时核对 worker 的退出码和结果。用例报告 `passed` 时，必须已通过 `ctx.passed` 记录检查，且各项都成功。worker 即使已写入 `passed`，非零退出也会记为失败。缺失、损坏或不匹配的结果同样生成可读的失败记录。任一失败使 runner 返回非零；跳过不会冒充通过，但没有失败时返回零，因此整体完成范围以清单中实际通过的用例为准。runner 自身的子进程与输入来源回归无需编译，可运行：
 
 ```sh
 python3 -m unittest discover -s tests/acceptance -p 'test_*.py'

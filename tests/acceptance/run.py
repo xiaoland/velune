@@ -100,9 +100,12 @@ def worker_result(name: str, path: Path, returncode: int, log: Path) -> dict:
         result = json.loads(path.read_text())
         if (not isinstance(result, dict) or result.get("case") != name
                 or result.get("status") not in ("passed", "skipped", "failed")
-                or not isinstance(result.get("checks", {}), dict)
-                or not isinstance(result.get("facts", {}), dict)):
+                or not isinstance(result.get("checks"), dict)
+                or not isinstance(result.get("facts"), dict)):
             raise ValueError("expected a case result with a known status and check records")
+        checks = result["checks"]
+        if result["status"] == "passed" and (not checks or any(value is not True for value in checks.values())):
+            raise ValueError("passed case requires recorded successful checks")
     except FileNotFoundError:
         result = {"case": name, "status": "failed", "error": f"worker produced no result; see {log.name}"}
     except (OSError, ValueError) as error:

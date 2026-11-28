@@ -51,7 +51,7 @@ class RunnerTests(unittest.TestCase):
 
     def test_worker_exit_is_required_even_after_a_passed_result(self):
         status, result, output = self.run_worker(
-            'result.write_text(json.dumps({"case":"synthetic","status":"passed","checks":{"saved":True}}))\n'
+            'result.write_text(json.dumps({"case":"synthetic","status":"passed","checks":{"saved":True},"facts":{}}))\n'
             'sys.exit(7)\n')
         self.assertEqual(status, 1, output)
         self.assertEqual(result["status"], "failed")
@@ -66,6 +66,9 @@ class RunnerTests(unittest.TestCase):
             ('result.write_text(\'{"case":"synthetic","status":"unknown"}\')\n', "invalid result"),
             ('result.write_text(\'{"case":"different","status":"passed"}\')\n', "invalid result"),
             ('result.write_text(\'{"case":"synthetic","status":"passed","checks":[]}\')\n', "invalid result"),
+            ('result.write_text(\'{"case":"synthetic","status":"passed","facts":{}}\')\n', "invalid result"),
+            ('result.write_text(\'{"case":"synthetic","status":"passed","checks":{},"facts":{}}\')\n', "requires recorded successful checks"),
+            ('result.write_text(\'{"case":"synthetic","status":"passed","checks":{"saved":false},"facts":{}}\')\n', "requires recorded successful checks"),
         ]:
             with self.subTest(diagnosis=diagnosis, body=body):
                 status, result, output = self.run_worker(body)
@@ -76,10 +79,15 @@ class RunnerTests(unittest.TestCase):
     def test_success_skip_and_case_failure_keep_their_distinct_meaning(self):
         for state, expected, code in [("passed", 0, 0), ("skipped", 0, 0), ("failed", 1, 1)]:
             with self.subTest(state=state):
+                payload = {"case": "synthetic", "status": state, "facts": {}, "checks": {}}
+                if state == "passed":
+                    payload["checks"]["saved"] = True
+                elif state == "skipped":
+                    payload["reason"] = "requires --codex"
+                else:
+                    payload["error"] = "target invariant failed"
                 status, result, output = self.run_worker(
-                    f'result.write_text(json.dumps({{"case":"synthetic","status":{state!r},'
-                    '"checks":{},"reason":"requires --codex","error":"target invariant failed"}))\n'
-                    f'sys.exit({code})\n')
+                    f"result.write_text({json.dumps(payload)!r})\nsys.exit({code})\n")
                 self.assertEqual(status, expected, output)
                 self.assertEqual(result["status"], state)
                 if state == "failed":
