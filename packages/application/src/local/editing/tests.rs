@@ -964,14 +964,9 @@ const manager = SessionManager.open(source);
 const firstUser = manager.getBranch().find(entry => entry.type === "message" && entry.message.role === "user");
 manager.appendContextEdit(firstUser.id,{content:'synthetic earlier replacement'});
 "#]).arg(resources.join("pi_sdk.mjs")).arg(&cli).arg(&source);
-            let output = velune_agent_runtime::execution::ExecutionTarget::Local
+            velune_agent_runtime::execution::ExecutionTarget::Local
                 .output(command, None, Some(&os_home))
-                .unwrap();
-            assert!(
-                output.status.success(),
-                "official SDK replacement failed: {}",
-                String::from_utf8_lossy(&output.stderr)
-            );
+                .expect("official SDK replacement must complete successfully");
         }
         let options = crate::Options {
             home_directory: root.join("state"),
