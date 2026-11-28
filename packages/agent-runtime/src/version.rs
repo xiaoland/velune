@@ -561,17 +561,15 @@ pub fn matching_variant(family_id: &str, version: &str) -> Option<&'static Runti
 #[cfg(all(test, unix))]
 mod tests {
     use super::probe_installation;
-    use std::{fs, os::unix::fs::PermissionsExt};
     use velune_test_support::TempRoot;
 
     #[test]
     fn pi_installation_probes_once_and_keeps_resolved_path_on_version_failure() {
         let root = TempRoot::new("pi-installation-probe");
-        let node = root.join("node");
         let launcher = root.join("pi-launcher");
         let cli = root.join("pi.js");
-        fs::write(
-            &node,
+        let node = root.executable(
+            "node",
             r#"#!/usr/bin/python3
 import json, pathlib, sys
 root = pathlib.Path(__file__).parent
@@ -587,24 +585,19 @@ with (root / 'calls').open('a') as calls:
             sys.exit(1)
         print('1.4.0')
 "#,
-        )
-        .unwrap();
-        fs::set_permissions(&node, fs::Permissions::from_mode(0o700)).unwrap();
+        );
 
         let installed = probe_installation("pi", &launcher, Some(&node));
         assert_eq!(installed.binary, cli);
         assert_eq!(installed.version.unwrap(), "1.4.0");
 
-        fs::write(root.join("reject"), []).unwrap();
+        root.touch("reject");
         let unavailable = probe_installation("pi", &launcher, Some(&node));
         assert_eq!(unavailable.binary, cli);
         assert_eq!(
             unavailable.version.unwrap_err().code(),
             "version_probe_failed"
         );
-        assert_eq!(
-            fs::read_to_string(root.join("calls")).unwrap(),
-            "resolve\nversion\nresolve\nversion\n"
-        );
+        assert_eq!(root.read("calls"), "resolve\nversion\nresolve\nversion\n");
     }
 }
