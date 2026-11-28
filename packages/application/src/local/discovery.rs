@@ -13,26 +13,16 @@ impl CoreRuntime {
             return Err(RuntimeError::Invalid("运行时发现候选过多".into()));
         }
         let mut results = Vec::new();
-        for mut probe in probes {
+        for probe in probes {
             if probe.family_id == ANTIGRAVITY_FAMILY {
                 results.push(self.discover_antigravity(probe)?);
                 continue;
             }
-            let resolved = if probe.family_id == "pi" {
-                version::resolve_pi_binary(Path::new(&probe.binary), Path::new(&probe.node_binary))
-                    .map(|binary| {
-                        probe.binary = binary.to_string_lossy().into_owned();
-                    })
-            } else {
-                Ok(())
-            };
-
             let node = (!probe.node_binary.is_empty()).then(|| Path::new(&probe.node_binary));
-            let version = resolved.and_then(|()| {
-                version::probe_version(&probe.family_id, Path::new(&probe.binary), node)
-            });
+            let installation =
+                version::probe_installation(&probe.family_id, Path::new(&probe.binary), node);
             let has_node = node.is_some();
-            let (version, adapter, detail) = match version {
+            let (version, adapter, detail) = match installation.version {
                 Ok(version) => {
                     let adapter = version::matching_variant(&probe.family_id, &version);
                     let detail = if adapter.is_some() {
@@ -64,7 +54,10 @@ impl CoreRuntime {
                 type_id: kind,
                 gateway_id: "default".into(),
                 settings: BTreeMap::from([
-                    ("binary".into(), probe.binary),
+                    (
+                        "binary".into(),
+                        installation.binary.to_string_lossy().into_owned(),
+                    ),
                     ("nodeBinary".into(), probe.node_binary),
                     ("agentDir".into(), probe.agent_directory),
                 ]),

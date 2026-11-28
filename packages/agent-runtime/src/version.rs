@@ -1,6 +1,7 @@
 //! Versioned adapter identities. A family is a grouping, never a dispatch key.
 use crate::native::{Error, Result};
 use regex::Regex;
+use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 pub use velune_ai::Protocol;
 pub use velune_conversation::RuntimeKind;
@@ -424,6 +425,32 @@ try {
     ))
 }
 
+/// The path used for version probing, with its public version or diagnostic.
+pub struct InstallationProbe {
+    pub binary: PathBuf,
+    pub version: Result<String>,
+}
+
+/// Resolve and probe a local installation once for the discovery UI.
+pub fn probe_installation(
+    family_id: &str,
+    binary: &Path,
+    node_binary: Option<&Path>,
+) -> InstallationProbe {
+    let mut binary = Cow::Borrowed(binary);
+    let version = probe_version_for_binary(
+        family_id,
+        &mut binary,
+        node_binary,
+        &crate::execution::ExecutionTarget::Local,
+        None,
+    );
+    InstallationProbe {
+        binary: binary.into_owned(),
+        version,
+    }
+}
+
 /// Read only the public CLI version; never start an Agent session.
 pub fn probe_version(family_id: &str, binary: &Path, node_binary: Option<&Path>) -> Result<String> {
     probe_version_at(
@@ -441,6 +468,22 @@ pub fn probe_version_at(
     execution: &crate::execution::ExecutionTarget,
     os_home: Option<&Path>,
 ) -> Result<String> {
+    probe_version_for_binary(
+        family_id,
+        &mut Cow::Borrowed(binary),
+        node_binary,
+        execution,
+        os_home,
+    )
+}
+
+fn probe_version_for_binary(
+    family_id: &str,
+    binary: &mut Cow<'_, Path>,
+    node_binary: Option<&Path>,
+    execution: &crate::execution::ExecutionTarget,
+    os_home: Option<&Path>,
+) -> Result<String> {
     if family_id != ANTIGRAVITY_FAMILY && !VARIANTS.iter().any(|v| v.family_id == family_id) {
         return Err(Error::new("未知运行时系列"));
     }
@@ -453,18 +496,15 @@ pub fn probe_version_at(
     if !binary.is_absolute() || node_binary.is_some_and(|p| !p.is_absolute()) {
         return Err(Error::new("运行时可执行文件必须为绝对路径"));
     }
-    let resolved;
-    let binary = if family_id == "pi" {
-        resolved = resolve_pi_binary_at(
+    if family_id == "pi" {
+        *binary = Cow::Owned(resolve_pi_binary_at(
             binary,
             node_binary.ok_or_else(|| Error::new("Pi 需要配置 Node 可执行文件"))?,
             execution,
             os_home,
-        )?;
-        resolved.as_path()
-    } else {
-        binary
-    };
+        )?);
+    }
+    let binary = binary.as_ref();
     let uses_node = !matches!(family_id, "codex" | "claude-code" | ANTIGRAVITY_FAMILY);
     let mut command = if !uses_node {
         crate::process_tree::command(binary)
@@ -516,4 +556,55 @@ pub fn matching_variant(family_id: &str, version: &str) -> Option<&'static Runti
     VARIANTS
         .iter()
         .find(|v| v.family_id == family_id && v.versions.contains(version))
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::probe_installation;
+    use std::{fs, os::unix::fs::PermissionsExt};
+    use velune_test_support::TempRoot;
+
+    #[test]
+    fn pi_installation_probes_once_and_keeps_resolved_path_on_version_failure() {
+        let root = TempRoot::new("pi-installation-probe");
+        let node = root.join("node");
+        let launcher = root.join("pi-launcher");
+        let cli = root.join("pi.js");
+        fs::write(
+            &node,
+            r#"#!/usr/bin/python3
+import json, pathlib, sys
+root = pathlib.Path(__file__).parent
+with (root / 'calls').open('a') as calls:
+    if sys.argv[1] == '--input-type=module':
+        assert sys.argv[-1] == str(root / 'pi-launcher')
+        calls.write('resolve\n')
+        print(json.dumps({'binary': str(root / 'pi.js')}))
+    else:
+        assert sys.argv[1:] == [str(root / 'pi.js'), '--version']
+        calls.write('version\n')
+        if (root / 'reject').exists():
+            sys.exit(1)
+        print('1.4.0')
+"#,
+        )
+        .unwrap();
+        fs::set_permissions(&node, fs::Permissions::from_mode(0o700)).unwrap();
+
+        let installed = probe_installation("pi", &launcher, Some(&node));
+        assert_eq!(installed.binary, cli);
+        assert_eq!(installed.version.unwrap(), "1.4.0");
+
+        fs::write(root.join("reject"), []).unwrap();
+        let unavailable = probe_installation("pi", &launcher, Some(&node));
+        assert_eq!(unavailable.binary, cli);
+        assert_eq!(
+            unavailable.version.unwrap_err().code(),
+            "version_probe_failed"
+        );
+        assert_eq!(
+            fs::read_to_string(root.join("calls")).unwrap(),
+            "resolve\nversion\nresolve\nversion\n"
+        );
+    }
 }
