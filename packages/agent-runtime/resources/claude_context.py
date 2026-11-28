@@ -122,8 +122,8 @@ def claude_replay_chain(entries, leaf):
     return chain
 
 
-def export_context(path, sidechain=False, before_message_id=None, without_message_id=None, without_message_ids=None):
-    if before_message_id is not None and without_message_id is not None:
+def export_context(path, sidechain=False, before_message_id=None, without_message_ids=()):
+    if before_message_id is not None and without_message_ids:
         raise ValueError("conflicting native context boundaries")
     with open(path, encoding="utf-8") as file:
         records = [json.loads(line) for line in file if line.strip()]
@@ -148,7 +148,7 @@ def export_context(path, sidechain=False, before_message_id=None, without_messag
     entries, workspace_leaf = claude_replay_entries(records, sidechain)
     leaf = boundary_parent if before_message_id is not None else workspace_leaf
     chain = claude_replay_chain(entries, leaf)
-    for without_message_id in without_message_ids or ([without_message_id] if without_message_id is not None else []):
+    for without_message_id in without_message_ids:
         matches = [i for i, entry in enumerate(chain)
                    if entry.get("uuid") == without_message_id and entry.get("type") == "user"]
         source_matches = [entry for entry in records if entry.get("uuid") == without_message_id

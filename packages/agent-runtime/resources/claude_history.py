@@ -485,7 +485,7 @@ def main():
     runtime_id = request["runtimeId"]
     operation = request["operation"]
     requested = request.get("nativeId")
-    reads_one = operation in ("read", "title", "contains_replay_message", "export_context", "export_context_without", "export_context_without_many")
+    reads_one = operation in ("read", "title", "contains_replay_message", "export_context", "export_context_without_many")
     found = sessions(roots, requested.partition("/")[0] if reads_one else None)
     if operation == "index":
         # File state only: which sessions exist, when their files changed,
@@ -553,8 +553,6 @@ def main():
             return export_context(path, sidechain=bool(agent), before_message_id=request.get("beforeMessageId"))
         if operation == "export_context_without_many":
             return export_context(path, sidechain=bool(agent), without_message_ids=request["withoutMessageIds"])
-        if operation == "export_context_without":
-            return export_context(path, sidechain=bool(agent), without_message_id=request["beforeMessageId"])
         detail = history(path, requested, runtime_id, sidechain=bool(agent))
         # This read has already located and validated the native session.
         overview = {key: detail[key] for key in ("nativeId", "title", "cwd", "createdAtUnixMs", "updatedAtUnixMs")}

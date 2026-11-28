@@ -382,22 +382,22 @@ with tempfile.TemporaryDirectory(prefix='velune-context-delete-') as root:
         with open(path, 'w') as f:
             for record in records: f.write(json.dumps(record)+'\n')
     save()
-    omitted = export_context(path, without_message_id='selected')['messages']
+    omitted = export_context(path, without_message_ids=['selected'])['messages']
     assert len(omitted) == 4 and omitted[2]['content'] == [{'type':'tool_result','id':'tool','content':[{'type':'text','text':'result'}],'is_error':False}]
     assert omitted[3]['content'][0]['text'] == 'reply'
     before = export_context(path, before_message_id='selected')['messages']
     assert len(before) == 3 and before[-1] == omitted[2]
     assert export_context(path, before_message_id='first')['messages'] == []
-    assert export_context(path, without_message_id='first')['messages'][0]['role'] == 'assistant'
+    assert export_context(path, without_message_ids=['first'])['messages'][0]['role'] == 'assistant'
     records.append({'type':'system','subtype':'compact_boundary','uuid':'compact','parentUuid':'reply'})
     save()
-    assert export_context(path, without_message_id='selected')['messages'] == omitted
+    assert export_context(path, without_message_ids=['selected'])['messages'] == omitted
     # Compaction severs the physical branch; the original record remains in
     # display history, but no longer belongs to effective native model input.
     records[-1]['parentUuid'] = None
     records.append({'type':'user','uuid':'summary','parentUuid':'compact','isCompactSummary':True,'message':{'content':'summary'}})
     save()
-    assert export_context(path, without_message_id='selected')['messages'] == [{'role':'user','content':[{'type':'text','text':'summary'}]}]
+    assert export_context(path, without_message_ids=['selected'])['messages'] == [{'role':'user','content':[{'type':'text','text':'summary'}]}]
 "#
     );
     let output = command("python3").args(["-c", script]).output().unwrap();
