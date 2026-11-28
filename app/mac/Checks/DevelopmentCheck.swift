@@ -100,6 +100,7 @@ enum DevelopmentCheck {
         exit(0)
     }
 
+    /// Manual preview scenarios run in the requested window and leave it available for inspection.
     static func runAfterWindowStart(_ window: ConversationWindowModel) {
         if arguments.contains("--check-split-panes"), !window.isSplit {
             window.split(.horizontal)

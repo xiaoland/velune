@@ -31,8 +31,10 @@ import AppKit
         application.windowWorkspaceJournal.flush()
         let original = manager.restore(kind, id: id, device: device)!
         let controller = manager.controllers.first { $0.window === original }!
+        precondition(original.isRestorable && original.restorationClass === WorkspaceWindowRestoration.self
+                     && original.delegate === controller, "AppKit must register this window's state writer and restorer")
         let archive = NSKeyedArchiver(requiringSecureCoding: true)
-        controller.window(original, willEncodeRestorableState: archive)
+        original.delegate?.window?(original, willEncodeRestorableState: archive)
         archive.finishEncoding()
         original.close()
         precondition(manager.controllers.isEmpty)
@@ -75,7 +77,10 @@ extension ConversationTab {
     /// Development check of the send queue without driving the interface:
     /// send a turn, then queue messages while it runs.
     func checkSendQueue(step: Int = 0, attempts: Int = 0) {
-        guard attempts < 120 else { return }
+        guard attempts < 120 else {
+            FileHandle.standardError.write(Data("FAIL send-queue: step \(step) did not reach its required sending state\n".utf8))
+            return
+        }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [self] in
             let texts = ["第一条排队消息", "第二条排队消息：比较长的一段文字，用来看两行截断在窄面板里是否得体，以及悬停时删除按钮的位置。", "第三条"]
             let ready = step == 0 ? store.canSend : store.canQueue
@@ -89,7 +94,10 @@ extension ConversationTab {
     /// Development check of message editing without driving the interface:
     /// open the editor on the conversation's second user message.
     func checkEditMessage(attempts: Int = 0) {
-        guard attempts < 120 else { return }
+        guard attempts < 120 else {
+            FileHandle.standardError.write(Data("FAIL edit-message: no editable second user message appeared\n".utf8))
+            return
+        }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [self] in
             let users = transcript(of: store).filter { $0.role == .user }
             guard users.count > 1, store.editability(of: users[1].id) != nil else { return checkEditMessage(attempts: attempts + 1) }
@@ -104,7 +112,7 @@ extension ConversationWindowModel {
     /// interface: on the first listed conversation, send from the composer
     /// sheet, stop from the list, then continue from the list.
     func checkListActions(step: Int = 0, attempts: Int = 0) {
-        guard attempts < 240 else { return Self.checkLog("CHECK list-actions: step \(step) timed out") }
+        guard attempts < 240 else { return Self.checkLog("FAIL list-actions: step \(step) timed out") }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [self] in
             let next = { (step: Int) in self.checkListActions(step: step) }
             let retry = { self.checkListActions(step: step, attempts: attempts + 1) }
