@@ -445,10 +445,15 @@ pub(crate) async fn connect(
         result = tokio::time::timeout(network.timeout, async {
             let _permit = network.mesh.outgoing.try_acquire().map_err(|_| RemoteError::Capacity)?;
             let opened = open_route(&network, target, &[origin]).await?;
+            #[cfg(test)]
+            eprintln!("mesh diagnostic: {} -> {target}: route ready {:?}", network.service.identity.id(), opened.path);
             let first = opened.first.clone();
             let path = opened.path.clone();
             // Hello uses the same opened tunnel. A relay never supplies C's descriptor.
-            let descriptor = match routed_rpc(&network, target, opened.io, Request::Hello).await? {
+            let hello = routed_rpc(&network, target, opened.io, Request::Hello).await;
+            #[cfg(test)]
+            eprintln!("mesh diagnostic: {} -> {target}: hello {}", network.service.identity.id(), if hello.is_ok() { "ok" } else { "error" });
+            let descriptor = match hello? {
                 Reply::Hello(descriptor) => { descriptor.validate(target)?; descriptor },
                 _ => return Err(RemoteError::Protocol),
             };
@@ -537,10 +542,29 @@ async fn open_route(
     let mut failure = RemoteError::Unavailable;
     for peer in candidates(network, target, visited).await? {
         let attempt = async {
+            #[cfg(test)]
+            let began = Instant::now();
+            #[cfg(test)]
+            eprintln!(
+                "mesh diagnostic: {} -> {target} via {peer}: connection starting",
+                network.service.identity.id()
+            );
             let first = connection(network, &peer).await?;
+            #[cfg(test)]
+            eprintln!(
+                "mesh diagnostic: {} -> {target} via {peer}: sync starting {:?}",
+                network.service.identity.id(),
+                began.elapsed()
+            );
             // Push proof before Tunnel: a new transitive neighbor may not yet know
             // our chain. Failure must not fall through to unauthenticated routing.
             sync_peer(network, &first).await?;
+            #[cfg(test)]
+            eprintln!(
+                "mesh diagnostic: {} -> {target} via {peer}: tunnel starting {:?}",
+                network.service.identity.id(),
+                began.elapsed()
+            );
             open_via(network, first, target, visited).await
         };
         let budget = DIAL_TIMEOUT * (MAX_HOPS + 1 - visited.len()) as u32;
