@@ -76,6 +76,34 @@ jobs:
           set -euo pipefail
           rustup target add aarch64-apple-ios-sim
           bash scripts/build-ios.sh iphonesimulator --profile dev -onlyUsePackageVersionsFromResolvedFile
+      - name: Prove isolated Mac acceptance against the built artifact
+        if: matrix.platform == 'macos'
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/velune-native-acceptance"
+          mkdir -p "$out/editor" "$out/workspace"
+          python3 scripts/build-support.py verify-macos-build > "$out/build.json"
+          app=$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["app"])' "$out/build.json")
+          python3 scripts/check-macos-composer.py editor --app "$app" --output "$out/editor"
+          python3 scripts/check-macos-composer.py experience --workspace-only --app "$app" --output "$out/workspace"
+          grep -F 'PASS offscreen native editor' "$out/editor/native.log"
+          grep -F 'PASS window shell' "$out/workspace/native.log"
+          python3 - "$out" <<'PY'
+          import json, sys
+          from pathlib import Path
+          root = Path(sys.argv[1])
+          doctor = json.loads((root / 'build.json').read_text())
+          for scenario in ('editor', 'workspace'):
+              receipt = json.loads((root / scenario / 'receipt.json').read_text())
+              assert receipt['exitCode'] == 0
+              assert all(receipt[key] == doctor[key] for key in ('executableSHA256', 'bindingsSHA256'))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() && matrix.platform == 'macos' }}
+        with:
+          name: mac-native-acceptance
+          path: ${{ runner.temp }}/velune-native-acceptance
+          if-no-files-found: ignore
 
   android:
     name: Compile Android consumer
