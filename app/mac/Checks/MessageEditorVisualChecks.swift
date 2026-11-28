@@ -545,7 +545,9 @@ def turn(n, text):
     return {'id':'turn-' + str(n), 'status':'completed', 'startedAt':n, 'completedAt':n + 1,
             'items':[{'id':'user-' + str(n), 'type':'userMessage', 'content':[{'type':'text','text':text}]},
                      {'id':'assistant-' + str(n), 'type':'agentMessage', 'text':'Synthetic reply ' + str(n)}]}
-if not path.exists(): save({'11111111-1111-4111-8111-111111111111':[turn(1,'EDIT THIS EARLIER MESSAGE'),turn(2,'KEEP LATER MESSAGE UNTIL CONFIRMED')]})
+if '--prepare-fixture' in sys.argv:
+    if not path.exists(): save({'11111111-1111-4111-8111-111111111111':[turn(1,'EDIT THIS EARLIER MESSAGE'),turn(2,'KEEP LATER MESSAGE UNTIL CONFIRMED')]})
+    sys.exit(0)
 def emit(value): print(json.dumps(value), flush=True)
 def notify(method, params): emit({'method':method,'params':params})
 def thread(db, identity):
@@ -598,6 +600,12 @@ for line in sys.stdin:
 """#
     try Data(script.utf8).write(to: peer)
     try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: peer.path)
+    // Both runtime histories can open concurrently on cold startup. Publish
+    // their starting archive before either synthetic peer is admitted.
+    let prepare = try Process.run(peer, arguments: ["--prepare-fixture"])
+    prepare.waitUntilExit()
+    guard prepare.terminationStatus == 0 else { throw NSError(domain: "Velune.EditorCheck", code: Int(prepare.terminationStatus),
+                                                     userInfo: [NSLocalizedDescriptionKey: "无法准备合成编辑历史"]) }
     let transport = Transport(stateDirectory: stateDirectory, resourcesDirectory: Bundle.main.resourceURL!)
     let defaults = try transport.list()
     for runtime in ["editor", "review"] {
