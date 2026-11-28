@@ -2487,7 +2487,8 @@ fn native_edit_message(message: &&Message) -> bool {
         return true;
     }
     !(native_id.starts_with("pi-diagnostic-")
-        || (native_id.starts_with("velune-handoff-compaction:")
+        || ((native_id.starts_with("velune-handoff-compaction:")
+            || native_id.starts_with("pi-compaction-"))
             && matches!(
                 message.blocks.as_slice(),
                 [MessageBlock::ContextCompaction { .. }]
