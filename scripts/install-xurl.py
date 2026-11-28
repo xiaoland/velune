@@ -26,7 +26,10 @@ def install(destination: Path, repository: str, revision: str) -> None:
         resolved = subprocess.check_output(["git", "rev-parse", "FETCH_HEAD"], cwd=source, text=True).strip()
         if resolved != revision:
             raise ValueError(f"xURL source resolved to {resolved}, expected {revision}")
-        subprocess.run(["git", "checkout", "--quiet", "--detach", resolved], cwd=source, check=True)
+        subprocess.run(
+            ["git", "-c", "core.autocrlf=false", "checkout", "--quiet", "--detach", resolved],
+            cwd=source, check=True,
+        )
 
         stage = temporary / "install"
         subprocess.run(
