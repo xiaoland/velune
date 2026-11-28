@@ -225,13 +225,16 @@ for line in requests():
     if mode!='prompt-eof': emit({'type':'response','id':r['id'] if mode=='prompt-success-eof' else 'unrelated-id','command':command,'success':True,'data':{}})
     sys.exit(0)
    else:
+    if name=='other':
+     # The idle session accepts the prompt before its turn asks a question.
+     emit({'type':'response','id':r['id'],'command':command,'success':True,'data':{'disposition':'started'}})
     emit({'type':'agent_start'})
     message={'id':'pi:synthetic:replacement:0','role':'user','content':text}
     history['messages'].append(message); root.joinpath(name+'-history.json').write_text(json.dumps(history))
     emit({'type':'message_start','message':message}); emit({'type':'message_end','message':message})
-    # This session has accepted the turn and then asks a runtime question.
-    # awaiting_user is only an intermediate preflight receipt, not acceptance.
-    if name=='other': emit({'type':'extension_ui_request','method':'confirm','id':'other-confirm','title':'Synthetic question'}); data={'disposition':'queued'}
+    if name=='other':
+     emit({'type':'extension_ui_request','method':'confirm','id':'other-confirm','title':'Synthetic question'})
+     continue
  elif command=='set_model':
   if name=='fork':
    (root/'entered-fallback-model').touch()

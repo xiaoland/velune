@@ -1,6 +1,6 @@
 # 测试与验收契约审计
 
-本次交付在 Codex 独立工作树 `.worktrees/0680/velune`、专用分支 `feat/test-contract-audit` 完成。初始基线为 `2d37a98c7`，在用户授权后用普通推送将 develop 快进至 `ccc214a73`，并补审新增的 Claude 缓存恢复契约。交付目标为 [PR #17](https://github.com/xiaoland/velune/pull/17)。
+本次交付在 Codex 独立工作树 `.worktrees/0680/velune`、专用分支 `feat/test-contract-audit` 完成。初始基线为 `2d37a98c7`，在用户授权后用普通推送将 develop 快进至 `ccc214a73`，并补审新增的 Claude 缓存恢复契约。交付前又接入上游三个提交，最终比较基线为 `d6e1e7a9c`。基线的侧聊回归与 Pi 回执顺序均保留。与审计重合的 Linux 修复已由 develop 交付。交付目标为 [PR #17](https://github.com/xiaoland/velune/pull/17)。
 
 [审计报告](audit.md) 记录了各层行为、删改与保留理由、产品缺陷的失败对照、实际 CLI 和原生 Mac 验收，以及平台和真实服务的边界。
 

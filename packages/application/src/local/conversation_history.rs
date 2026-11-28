@@ -101,6 +101,15 @@ impl CoreRuntime {
     }
 
     fn conversation_is_present(&self, runtime_id: &str, id: &str) -> Result<bool, RuntimeError> {
+        if let Some(side) = &self.session.side {
+            // Side chats are addressed by their own id in the current runtime,
+            // even though the adapter projects a different native id.
+            return Ok(side.id == id
+                && self
+                    .session
+                    .projected()
+                    .is_some_and(|snapshot| snapshot.conversation.runtime_id == runtime_id));
+        }
         let address = self.conversation_read_address(runtime_id, id)?;
         let identity = self
             .session
