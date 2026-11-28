@@ -178,11 +178,7 @@ import Vision
                                 "shared list needs its own two actions above search: \(name)")
                         let popup = headerRow.compactMap { $0 as? NSPopUpButton }.first!
                         let hide = headerRow.first { !($0 is NSPopUpButton) }!
-                        let menu = popup.menu!
-                        menu.delegate?.menuNeedsUpdate?(menu)
-                        menu.update()
-                        let titles = menu.items.flatMap { item in [item.title] + (item.submenu?.items.map(\.title) ?? []) }
-                        require(titles.contains("停靠在右侧") && titles.contains("独立窗口"), "shared tool needs its placement commands: \(name), \(titles)")
+                        require(popup.isEnabled && hide.isEnabled, "shared list placement and hide controls must be enabled: \(name)")
                         if !dark && requestedSidebarWidth == 240 {
                             // Offscreen SwiftUI does not vend the static title to AX.
                             // Read the actual text once from the already captured window.

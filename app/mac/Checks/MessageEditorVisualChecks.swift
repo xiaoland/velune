@@ -248,11 +248,15 @@ import ObjectiveC
         source.edit(messageID: latestMessage.id)
         guard let branch = source.editing else { fatalError("分叉编辑器未打开") }
         branch.placement = .fork
-        branch.editor.restore(prompt, attachments: [])
         wait { branch.store.loadedConversationID == conversationID && !branch.store.isLoading }
         branch.loadTargetCatalog()
         let chosen = ModelSelection.native(providerId: "openai", modelId: "synthetic-editor-model")
         branch.target.chooseModel(chosen)
+        let editorView = capture(MessageEditorView(session: branch, window: workspace, source: source).applicationAppearance(),
+                                 name: cancelEditor ? "fork-edit-before-close" : "fork-edit-before-navigation", width: 560)
+        let nativeEditor = descendants(editorView).compactMap { $0 as? ComposerTextView }.first!
+        nativeEditor.insertText(prompt, replacementRange: NSRange(location: 0, length: (nativeEditor.string as NSString).length))
+        precondition(branch.editor.submission == prompt, "消息编辑提交必须使用原生编辑器中替换后的正文")
         wait(polling: branch.store) { branch.canSubmit }
         branch.send(in: workspace)
         wait { FileManager.default.fileExists(atPath: marker.path) || branch.failure != nil }
@@ -293,7 +297,7 @@ import ObjectiveC
     }
     let imageEdit = imageSession(png.base64EncodedString())
     let restoredImage = imageEdit.editor.attachments[0]
-    wait { (try? Data(contentsOf: restoredImage)) == png && imageEdit.canSubmit }
+    wait(polling: imageEdit.store) { (try? Data(contentsOf: restoredImage)) == png && imageEdit.canSubmit }
     precondition(restoredImage.path.contains("/message-edits/"))
     _ = capture(MessageEditorView(session: imageEdit, window: workspace, source: source).applicationAppearance(), name: "sheet-original-image", width: 560)
     imageEdit.cancel()
@@ -307,7 +311,7 @@ import ObjectiveC
     wait { unreadable.target.issue?.hasPrefix("无法保留原附件") == true }
     precondition(unreadable.editor.attachments == [unreadableURL], "重试必须沿用同一个附件 chip")
     unreadable.editor.removeAttachment(unreadableURL)
-    wait { unreadable.canSubmit }
+    wait(polling: unreadable.store) { unreadable.canSubmit }
     unreadable.cancel()
     unchanged()
     let filePreview = ConversationWindowModel(application: DeviceStore(preview: true), kind: .workspace)
