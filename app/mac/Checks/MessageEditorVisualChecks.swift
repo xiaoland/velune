@@ -604,8 +604,10 @@ for line in sys.stdin:
     // their starting archive before either synthetic peer is admitted.
     let prepare = try Process.run(peer, arguments: ["--prepare-fixture"])
     prepare.waitUntilExit()
-    guard prepare.terminationStatus == 0 else { throw NSError(domain: "Velune.EditorCheck", code: Int(prepare.terminationStatus),
-                                                     userInfo: [NSLocalizedDescriptionKey: "无法准备合成编辑历史"]) }
+    guard prepare.terminationStatus == 0 else {
+        throw NSError(domain: "Velune.EditorCheck", code: Int(prepare.terminationStatus),
+                      userInfo: [NSLocalizedDescriptionKey: "无法准备合成编辑历史"])
+    }
     let transport = Transport(stateDirectory: stateDirectory, resourcesDirectory: Bundle.main.resourceURL!)
     let defaults = try transport.list()
     for runtime in ["editor", "review"] {
