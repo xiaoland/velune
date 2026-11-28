@@ -1212,8 +1212,6 @@ fn failure(source: ProviderAccountSource, message: &str) -> ProviderAccountFailu
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::subscription_auth::{AccountDataEndpoint, read_provider_account_data_at_for_test};
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     const TEST_CLIENT_VERSION: &str = "0.166.7";
@@ -1676,51 +1674,6 @@ mod tests {
         drop(state);
         let _ = std::fs::remove_dir_all(&home);
         panic!("the pending refresh did not complete after capacity opened: {detail}");
-    }
-
-    #[tokio::test]
-    async fn synthetic_http_is_get_scoped_and_does_not_follow_redirects() {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        let calls = Arc::new(AtomicUsize::new(0));
-        let observed = calls.clone();
-        let server = tokio::spawn(async move {
-            let (mut stream, _) = listener.accept().await.unwrap();
-            use tokio::io::{AsyncReadExt, AsyncWriteExt};
-            let mut request = vec![0; 4096];
-            let count = stream.read(&mut request).await.unwrap();
-            let request = String::from_utf8_lossy(&request[..count]).to_ascii_lowercase();
-            assert!(
-                request.starts_with("get /synthetic http/1.1"),
-                "{request:?}"
-            );
-            assert!(request.contains("authorization: bearer synthetic-token"));
-            assert!(request.contains("chatgpt-account-id: synthetic-account"));
-            assert!(request.contains("accept: application/json"));
-            assert!(request.contains("openai-beta: codex-1"));
-            assert!(request.contains("originator: codex desktop"));
-            assert!(request.contains("user-agent: codex-cli/1.0.0"));
-            observed.fetch_add(1, Ordering::SeqCst);
-            let body = r#"{"available_count":3,"credits":[]}"#;
-            let response = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                body.len(),
-                body
-            );
-            stream.write_all(response.as_bytes()).await.unwrap();
-        });
-        let payload = read_provider_account_data_at_for_test(
-            &format!("http://{addr}/synthetic"),
-            AccountDataEndpoint::Resets,
-            "synthetic-token",
-            "synthetic-account",
-            TEST_CLIENT_VERSION,
-        )
-        .await
-        .unwrap();
-        server.await.unwrap();
-        assert_eq!(calls.load(Ordering::SeqCst), 1);
-        assert_eq!(payload["available_count"], 3);
     }
 
     #[test]

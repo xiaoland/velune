@@ -9,17 +9,10 @@ use velune_agent_runtime::{
     import::*,
     version::RuntimeKind,
 };
-fn root() -> PathBuf {
-    let path = std::env::temp_dir().join(format!(
-        "velune-owned-import-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::create_dir(&path).unwrap();
-    path
+use velune_test_support::TempRoot;
+
+fn root() -> TempRoot {
+    TempRoot::new("owned-import")
 }
 fn config(root: &Path, provider: &str, binary: PathBuf) -> HistoryConfig {
     HistoryConfig {
@@ -66,13 +59,12 @@ fn claude_owned_copy_cleanup_preserves_an_external_change() {
             assert!(!path.exists());
         }
     }
-    std::fs::remove_dir_all(root).unwrap();
 }
 #[test]
+#[ignore = "requires VELUNE_TEST_CODEX_BINARY pointing to an installed Codex CLI"]
 fn codex_owned_materialization_and_failed_materialization_leave_no_list_orphan() {
-    let Some(binary) = std::env::var_os("VELUNE_TEST_CODEX_BINARY") else {
-        return;
-    };
+    let binary = std::env::var_os("VELUNE_TEST_CODEX_BINARY")
+        .expect("enabled native test requires VELUNE_TEST_CODEX_BINARY");
     let root = root();
     let config = config(&root, "codex", binary.into());
     let context: Context = serde_json::from_value(
@@ -111,14 +103,13 @@ fn codex_owned_materialization_and_failed_materialization_leave_no_list_orphan()
                 .any(|session| session.id.ends_with(&thread_id))
         );
     }
-    std::fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
+#[ignore = "requires VELUNE_TEST_CODEX_BINARY pointing to an installed Codex CLI"]
 fn codex_native_to_managed_import_preserves_inter_agent_context_and_source_bytes() {
-    let Some(binary) = std::env::var_os("VELUNE_TEST_CODEX_BINARY") else {
-        return;
-    };
+    let binary = std::env::var_os("VELUNE_TEST_CODEX_BINARY")
+        .expect("enabled native test requires VELUNE_TEST_CODEX_BINARY");
     let root = root();
     let config = config(&root, "codex", binary.into());
     let seed: Context = serde_json::from_value(json!({"messages":[
@@ -237,5 +228,4 @@ fn codex_native_to_managed_import_preserves_inter_agent_context_and_source_bytes
     // reject it instead of removing changed history.
     assert!(cleanup_owned_import(&config, &source).is_err());
     assert_eq!(std::fs::read(source.source_path()).unwrap(), original);
-    std::fs::remove_dir_all(root).unwrap();
 }

@@ -542,6 +542,7 @@ async fn pending_hard_cap_waits_before_messages_to_responses_dispatch_and_never_
 
 #[tokio::test]
 async fn quota_admission_reports_the_reason_across_all_protocols() {
+    let mut checks = Vec::new();
     for protocol in Api::ALL {
         let (upstream, address) = Upstream::start().await;
         let now = std::time::SystemTime::now()
@@ -595,47 +596,69 @@ async fn quota_admission_reports_the_reason_across_all_protocols() {
             ),
         ];
         for (snapshot, limited, status, code, retry) in cases {
-            let mut config = gateway_config(protocol, &address);
-            if limited {
-                for provider in &mut config.providers {
-                    provider.quota_limits = vec![QuotaLimit {
-                        window_id: "daily".into(),
-                        max_used_percent: 80,
-                    }];
+            let upstream = upstream.clone();
+            let address = address.clone();
+            checks.push(async move {
+                let mut config = gateway_config(protocol, &address);
+                if limited {
+                    for provider in &mut config.providers {
+                        provider.quota_limits = vec![QuotaLimit {
+                            window_id: "daily".into(),
+                            max_used_percent: 80,
+                        }];
+                    }
                 }
-            }
-            let runner = Runner::start_with_scheduling(
-                config,
-                Arc::new(Keys),
-                BTreeMap::new(),
-                None,
-                SchedulingState::default(),
-                Arc::new(ObservedQuota(snapshot)),
-                None,
-                Default::default(),
-            )
-            .unwrap();
-            for stream in [false, true] {
-                let answer = send(&runner, protocol, "velune/model/route", stream).await;
-                assert_eq!(answer.status, status);
-                let actual_retry = answer
-                    .headers
-                    .get("retry-after")
-                    .map(|h| h.to_str().unwrap());
-                if retry == Some("60") {
-                    // Wall time elapses while previous protocol/case runners
-                    // shut down; the delay must still point at the same reset.
-                    assert!((1..=60).contains(&actual_retry.unwrap().parse::<u64>().unwrap()));
-                } else {
-                    assert_eq!(actual_retry, retry);
+                let runner = Runner::start_with_scheduling(
+                    config,
+                    Arc::new(Keys),
+                    BTreeMap::new(),
+                    None,
+                    SchedulingState::default(),
+                    Arc::new(ObservedQuota(snapshot)),
+                    None,
+                    Default::default(),
+                )
+                .unwrap();
+                // Each row owns its runner and scheduling state. The two request
+                // shapes share only that immutable quota observation, so their
+                // real five-second cold-admission intervals can overlap.
+                let answers = tokio::time::timeout(std::time::Duration::from_secs(15), async {
+                    tokio::join!(
+                        send(&runner, protocol, "velune/model/route", false),
+                        send(&runner, protocol, "velune/model/route", true),
+                    )
+                })
+                .await
+                .unwrap_or_else(|_| panic!("{} {code}: admission did not finish", protocol.path()));
+                for (stream, answer) in [(false, answers.0), (true, answers.1)] {
+                    assert_eq!(
+                        answer.status,
+                        status,
+                        "{} {code}, stream={stream}",
+                        protocol.path()
+                    );
+                    let actual_retry = answer
+                        .headers
+                        .get("retry-after")
+                        .map(|h| h.to_str().unwrap());
+                    if retry == Some("60") {
+                        // Wall time elapses while the runners start; the delay
+                        // must still point at the same reset.
+                        assert!((1..=60).contains(&actual_retry.unwrap().parse::<u64>().unwrap()));
+                    } else {
+                        assert_eq!(actual_retry, retry);
+                    }
+                    let body: Value = serde_json::from_str(&answer.body).unwrap();
+                    assert_eq!(body["error"]["code"], code);
+                    assert!(!body["error"]["message"].as_str().unwrap().is_empty());
                 }
-                let body: Value = serde_json::from_str(&answer.body).unwrap();
-                assert_eq!(body["error"]["code"], code);
-                assert!(!body["error"]["message"].as_str().unwrap().is_empty());
-            }
+                assert!(upstream.hits().is_empty());
+            });
         }
-        assert!(upstream.hits().is_empty());
     }
+    // Unknown and stale quota each exhaust the production admission interval;
+    // preserve every protocol/stream row without paying those waits serially.
+    futures_util::future::join_all(checks).await;
 }
 
 #[tokio::test]

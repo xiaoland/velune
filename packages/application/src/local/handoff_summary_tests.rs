@@ -77,8 +77,7 @@ fn unlinked_handoff_uses_the_logical_runtime_prefix() {
 }
 
 #[test]
-fn committed_summary_provenance_replays_one_stable_maintenance_event_without_summary_content() {
-    use super::super::handoff_events::{HandoffCompactionState, compaction_message};
+fn summary_provenance_projects_one_stable_maintenance_event() {
     let mut imported = segment("pi", "pi:/synthetic/session.jsonl", RuntimeKind::Pi);
     imported.imported = Some(crate::config::ConversationImport {
         prefix: crate::config::ConversationCutoff {
@@ -88,14 +87,19 @@ fn committed_summary_provenance_replays_one_stable_maintenance_event_without_sum
         summary_work_id: Some("work-1".into()),
     });
     let disk = serde_json::to_vec(&imported).unwrap();
-    assert!(!String::from_utf8_lossy(&disk).contains("summary text"));
     let reopened: crate::config::ConversationSegmentReference =
         serde_json::from_slice(&disk).unwrap();
     for index in [1, 3] {
         let shown = super::super::continuation::display_segment(&reopened, &[], index).unwrap();
-        assert_eq!(
-            shown,
-            vec![compaction_message("work-1", &HandoffCompactionState::Ready)]
+        let [message] = shown.as_slice() else {
+            panic!("one maintenance event")
+        };
+        assert_eq!(message.id, "velune-handoff-compaction:work-1");
+        assert_eq!(message.role, crate::conversation::MessageRole::System);
+        assert!(message.completed);
+        assert!(
+            matches!(&message.blocks[..], [crate::conversation::MessageBlock::ContextCompaction { text }]
+            if text == "已为接续生成摘要")
         );
     }
 }
@@ -144,7 +148,11 @@ fn registry_records_exact_recovery_identity_and_removes_archived_work() {
     registry
         .observe_temporary("work-1", "summary-thread", None)
         .expect("record fork identity as soon as it is observed");
-    let incomplete = registry.recovery_plans().expect("incomplete identity");
+    drop(registry);
+    let mut registry = ForkRegistry::open(&home);
+    let incomplete = registry
+        .recovery_plans()
+        .expect("incomplete identity after restart");
     assert_eq!(incomplete.len(), 1);
     assert_eq!(
         incomplete[0].temporary_thread_id.as_deref(),
@@ -154,8 +162,16 @@ fn registry_records_exact_recovery_identity_and_removes_archived_work() {
     registry
         .observe_temporary("work-1", "summary-thread", Some("sha256:synthetic"))
         .expect("complete recovery fingerprint");
-    let plans = registry.recovery_plans().expect("valid registry");
+    drop(registry);
+    let mut registry = ForkRegistry::open(&home);
+    let plans = registry
+        .recovery_plans()
+        .expect("valid registry after restart");
     assert_eq!(plans.len(), 1);
+    assert_eq!(plans[0].work_id, "work-1");
+    assert_eq!(plans[0].source_runtime_id, "codex");
+    assert_eq!(plans[0].source_native_id, "source-thread");
+    assert_eq!(plans[0].source_home, home.join("codex"));
     assert_eq!(
         plans[0].temporary_thread_id.as_deref(),
         Some("summary-thread")
@@ -165,6 +181,8 @@ fn registry_records_exact_recovery_identity_and_removes_archived_work() {
         Some("sha256:synthetic")
     );
     registry.finish("work-1").expect("finish archived work");
+    drop(registry);
+    let registry = ForkRegistry::open(&home);
     assert!(
         registry
             .recovery_plans()

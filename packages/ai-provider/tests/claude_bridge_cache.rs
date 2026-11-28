@@ -57,7 +57,11 @@ impl Fixture {
     }
 
     fn calls(&self) -> Vec<Value> {
-        fs::read_to_string(self.0.join("fixture.jsonl"))
+        self.records("fixture.jsonl")
+    }
+
+    fn records(&self, file: &str) -> Vec<Value> {
+        fs::read_to_string(self.0.join(file))
             .unwrap()
             .lines()
             .map(|line| serde_json::from_str(line).unwrap())
@@ -137,24 +141,74 @@ async fn resumes_only_the_exact_committed_prefix_for_the_same_account() {
 }
 
 #[tokio::test]
-async fn rejected_private_resume_falls_back_before_sending_caller_input() {
-    let fixture = Fixture::new();
-    let first = user("previous turn");
-    assert!(
-        fixture
-            .send(fixture.pool(), "a", std::slice::from_ref(&first))
-            .await
-    );
-    fs::write(fixture.0.join("reject-resume"), b"").unwrap();
+async fn rejected_private_resume_falls_back_once_with_complete_caller_history() {
+    for mode in ["exit", "initialize"] {
+        let fixture = Fixture::new();
+        let first = user("previous turn");
+        assert!(
+            fixture
+                .send(fixture.pool(), "a", std::slice::from_ref(&first))
+                .await
+        );
+        fs::write(fixture.0.join("reject-resume"), mode).unwrap();
 
-    assert!(
-        fixture
-            .send(fixture.pool(), "a", &[first, answer(), user("next turn")])
-            .await
-    );
-    let calls = fixture.calls();
-    assert_eq!(calls.len(), 2);
-    assert_eq!(calls[1]["history"], json!([]));
-    let replay = calls[1]["input"].as_str().unwrap();
-    assert!(replay.contains("previous turn") && replay.contains("next turn"));
+        assert!(
+            fixture
+                .send(fixture.pool(), "a", &[first, answer(), user("next turn")])
+                .await,
+            "{mode} rejection must fall back"
+        );
+        let events = fixture.records("attempts.jsonl");
+        let launches: Vec<_> = events
+            .iter()
+            .filter(|event| event["event"] == "launch")
+            .collect();
+        assert_eq!(
+            launches
+                .iter()
+                .map(|event| event["resume"].as_bool().unwrap())
+                .collect::<Vec<_>>(),
+            [true, true, false],
+            "initial private session, rejected resume, stateless fallback: {mode}"
+        );
+        let rejected = &launches[1]["attempt"];
+        let observed: Vec<_> = events
+            .iter()
+            .filter(|event| &event["attempt"] == rejected)
+            .collect();
+        let stages: Vec<_> = observed
+            .iter()
+            .map(|event| event["event"].as_str().unwrap())
+            .collect();
+        if mode == "exit" {
+            // This receipt proves an attempted resume exited before reading;
+            // it does not claim the parent had written no bytes into stdin.
+            assert_eq!(stages, ["launch", "reject_exit"]);
+        } else {
+            assert_eq!(stages, ["launch", "first_frame", "reject_initialize"]);
+            assert_eq!(observed[1]["frame"]["type"], "control_request");
+            assert_eq!(observed[1]["frame"]["request"]["subtype"], "initialize");
+        }
+        let calls = fixture.calls();
+        assert_eq!(
+            calls.len(),
+            2,
+            "{mode}: one initial input and one fallback input"
+        );
+        assert_eq!(calls[1]["attempt"], launches[2]["attempt"]);
+        assert_eq!(calls[1]["history"], json!([]));
+        let replay = calls[1]["input"].as_str().unwrap();
+        let (_, history) = replay
+            .split_once('\n')
+            .expect("fallback carries caller history");
+        let history: Value = serde_json::from_str(history).unwrap();
+        assert_eq!(
+            history,
+            json!([
+                {"role": "user", "content": [{"type": "text", "text": "previous turn"}]},
+                {"role": "assistant", "content": [{"type": "text", "text": "fixture answer"}]},
+                {"role": "user", "content": [{"type": "text", "text": "next turn"}]},
+            ])
+        );
+    }
 }

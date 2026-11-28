@@ -429,7 +429,11 @@ fn revoke_invalidates_inflight_pairing_confirmation_until_a_new_explicit_attempt
 
 #[test]
 fn remote_member_tombstone_is_a_durable_high_water_mark() {
-    let (a, sa) = device("A");
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("state.json");
+    let a = DeviceIdentity::generate("A".into()).unwrap();
+    let sa = DeviceStore::open(&path).unwrap();
+    sa.initialize_trust(&a).unwrap();
     let (p, sp) = device("P");
     let (c, sc) = device("C");
     pair((&a, &sa), (&p, &sp));
@@ -441,6 +445,11 @@ fn remote_member_tombstone_is_a_durable_high_water_mark() {
     sa.merge_trust_bundle(&p.id(), &sp.export_trust_bundle(None).unwrap())
         .unwrap();
     assert!(!sa.is_member(&c.id()).unwrap());
+    drop(sa);
+    let sa = DeviceStore::open(&path).unwrap();
+    sa.initialize_trust(&a).unwrap();
+    assert!(!sa.is_member(&c.id()).unwrap());
+    // A forwarded revoke must survive reopening, not merely remain in memory.
     sa.merge_trust_bundle(&p.id(), &old).unwrap();
     assert!(!sa.is_member(&c.id()).unwrap());
     pin_attempt(&sp, &c, 'e', PairingPermission::Control);

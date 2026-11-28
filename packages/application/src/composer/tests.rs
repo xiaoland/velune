@@ -465,6 +465,19 @@ fn directory_and_attachments_outlive_views_and_native_promotion() {
         ),
         promoted
     );
+    let Response::ReadComposerAttachment(restored) = service
+        .execute(
+            ClientViewId("after-restart".into()),
+            Command::ReadComposerAttachment {
+                attachment_id: attachment.id,
+            },
+        )
+        .unwrap()
+    else {
+        panic!("expected persisted attachment content")
+    };
+    assert_eq!(restored.attachment.name, "pasted.png");
+    assert_eq!(restored.bytes, b"synthetic-image");
     service.close(false).unwrap();
     fs::remove_dir_all(home).unwrap();
 }

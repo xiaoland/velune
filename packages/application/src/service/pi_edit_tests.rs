@@ -229,7 +229,9 @@ for line in requests():
     message={'id':'pi:synthetic:replacement:0','role':'user','content':text}
     history['messages'].append(message); root.joinpath(name+'-history.json').write_text(json.dumps(history))
     emit({'type':'message_start','message':message}); emit({'type':'message_end','message':message})
-    if name=='other': emit({'type':'extension_ui_request','method':'confirm','id':'other-confirm','title':'Synthetic question'}); data={'disposition':'awaiting_user'}
+    # This session has accepted the turn and then asks a runtime question.
+    # awaiting_user is only an intermediate preflight receipt, not acceptance.
+    if name=='other': emit({'type':'extension_ui_request','method':'confirm','id':'other-confirm','title':'Synthetic question'}); data={'disposition':'queued'}
  elif command=='set_model':
   if name=='fork':
    (root/'entered-fallback-model').touch()
@@ -661,24 +663,26 @@ fn other_session_progress(service: &ApplicationService, fixture: &Fixture) {
 }
 fn prepare_other(service: &ApplicationService, fixture: &Fixture) {
     snapshot(service, fixture.id("other"));
-    service
-        .execute(
-            ClientViewId("other".into()),
-            Command::SendTurn {
-                submission_id: None,
-                source_runtime_id: "pi".into(),
-                conversation_id: fixture.id("other"),
-                target_runtime_id: "pi".into(),
-                selection: None,
-                turn: crate::ComposedTurn {
-                    text: "synthetic other input".into(),
-                    attachments: vec![],
-                    effort: None,
-                    permission_mode: None,
-                },
+    later(
+        service,
+        "other",
+        Command::SendTurn {
+            submission_id: None,
+            source_runtime_id: "pi".into(),
+            conversation_id: fixture.id("other"),
+            target_runtime_id: "pi".into(),
+            selection: None,
+            turn: crate::ComposedTurn {
+                text: "synthetic other input".into(),
+                attachments: vec![],
+                effort: None,
+                permission_mode: None,
             },
-        )
-        .unwrap();
+        },
+    )
+    .recv_timeout(Duration::from_secs(4))
+    .expect("synthetic other session must acknowledge the accepted prompt")
+    .unwrap();
     let end = Instant::now() + Duration::from_secs(4);
     while snapshot(service, fixture.id("other"))
         .pending_interactions

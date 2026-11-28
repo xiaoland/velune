@@ -219,8 +219,17 @@ fn background_notification_keeps_live_and_resynchronized_position() {
 }
 
 #[test]
-fn compacted_sdk_context_hides_old_notification_without_reordering_kept_messages() {
+fn compacted_snapshot_replaces_previous_notification_and_keeps_native_order() {
     let mut p = projection();
+    message(&mut p, notice("notice-old"));
+    assert!(
+        p.snapshot
+            .as_ref()
+            .unwrap()
+            .messages
+            .iter()
+            .any(|m| m.id == "notice-old")
+    );
     // This is the sanitized effective-message shape produced by Pi 1.4's
     // pure buildSessionProjection for a branch with a prior notification
     // before firstKeptEntryId, then a retained notification followed by a
@@ -240,7 +249,6 @@ fn compacted_sdk_context_hides_old_notification_without_reordering_kept_messages
         .map(|message| message.id.as_str())
         .collect::<Vec<_>>();
     assert_eq!(ids, ["compaction", "kept", "notice-new", "after"]);
-    assert!(!ids.contains(&"notice-old"));
 
     let mut transcript = crate::transcript::TranscriptProjection::default();
     transcript.apply(crate::transcript::TranscriptEvent::Replace {
@@ -1044,8 +1052,6 @@ fn work_notifications_survive_live_confirmation_resync_and_parent_switch_without
         "subagent_supervisor_request",
         "subagent_control_notice",
         "subagent-wait-subscription",
-        "subagent_supervisor_request",
-        "subagent_control_notice",
     ] {
         let notification = |id: &str| {
             let mut value = notice(id);

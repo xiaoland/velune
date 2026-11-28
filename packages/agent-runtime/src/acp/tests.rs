@@ -409,16 +409,42 @@ fn acp_port_blocked_stdin_keeps_poll_and_replies_live_until_written() {
             command_deadline(),
         )
         .unwrap();
+    // The large prompt still blocks the actual pipe, so neither reply can
+    // become Written while these duplicate-admission checks run.
+    let duplicate = client.enqueue(
+        AcpCommand::ReplyElicitation {
+            interaction_id: elicitation,
+            reply: RuntimeInteractionReply::Cancel,
+        },
+        command_deadline(),
+    );
     assert!(
-        client
-            .enqueue(
-                AcpCommand::ReplyElicitation {
-                    interaction_id: elicitation,
-                    reply: RuntimeInteractionReply::Cancel
+        matches!(&duplicate, Err(AcpAdmissionError::NotDispatched { code, .. })
+        if code == "already_pending"),
+        "{duplicate:?}"
+    );
+    let permission_reply = client
+        .enqueue(
+            AcpCommand::ReplyPermission {
+                interaction_id: permission.clone(),
+                reply: RuntimeInteractionReply::Decision {
+                    option_id: "yes".into(),
                 },
-                command_deadline()
-            )
-            .is_err()
+            },
+            command_deadline(),
+        )
+        .unwrap();
+    let duplicate = client.enqueue(
+        AcpCommand::ReplyPermission {
+            interaction_id: permission.clone(),
+            reply: RuntimeInteractionReply::Cancel,
+        },
+        command_deadline(),
+    );
+    assert!(
+        matches!(&duplicate, Err(AcpAdmissionError::NotDispatched { code, .. })
+        if code == "already_pending"),
+        "{duplicate:?}"
     );
     let cancel = client
         .enqueue(AcpCommand::Cancel, command_deadline())
@@ -465,6 +491,9 @@ fn acp_port_blocked_stdin_keeps_poll_and_replies_live_until_written() {
             && receipts
                 .iter()
                 .any(|r| r.ticket == answer && r.stage == AcpReceiptStage::Written)
+            && receipts
+                .iter()
+                .any(|r| r.ticket == permission_reply && r.stage == AcpReceiptStage::Written)
     });
     assert!(
         settled
@@ -1327,15 +1356,26 @@ fn acp_explicit_run_and_control_deadlines_preserve_written_and_require_cleanup()
                     command_deadline(),
                 )
                 .unwrap();
-            assert!(matches!(client.enqueue(AcpCommand::ReplyPermission {
-                    interaction_id: permission_id,
-                    reply: RuntimeInteractionReply::Cancel,
-                }, command_deadline()), Err(AcpAdmissionError::NotDispatched { code, .. }) if code == "already_pending"));
             drive_port(&mut client, |_, receipts| {
                 receipts
                     .iter()
                     .any(|r| r.ticket == reply && r.stage == AcpReceiptStage::Written)
             });
+            // enqueue harvests physical writes. A small reply may finish
+            // before the next enqueue, so check the settled state explicitly;
+            // the blocked-pipe test covers rejection while still pending.
+            let duplicate = client.enqueue(
+                AcpCommand::ReplyPermission {
+                    interaction_id: permission_id,
+                    reply: RuntimeInteractionReply::Cancel,
+                },
+                command_deadline(),
+            );
+            assert!(
+                matches!(&duplicate, Err(AcpAdmissionError::NotDispatched { code, message })
+                if code == "internal" && message == "ACP 权限请求已失效"),
+                "{duplicate:?}"
+            );
             assert_eq!(
                 client.elicitations.values().next().unwrap().parent_deadline,
                 Some(deadline)

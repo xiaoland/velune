@@ -1,7 +1,8 @@
 //! Synthetic native records only: no CLI authentication or model requests.
 use serde_json::{Value, json};
-use std::{io::Write, process::Stdio};
+use std::{io::Write, path::PathBuf, process::Stdio};
 use velune_agent_runtime::{history, process::command, version::RuntimeKind};
+use velune_test_support::TempRoot;
 
 fn codex(records: &[Value], id: Option<&str>, omit: bool) -> std::process::Output {
     let mut args = vec!["-c", include_str!("../resources/codex_context.py")];
@@ -410,16 +411,20 @@ with tempfile.TemporaryDirectory(prefix='velune-context-delete-') as root:
 
 #[test]
 fn native_imports_roundtrip_assistant_first_context_without_a_new_request() {
+    assert_assistant_first_import_roundtrip(None);
+}
+
+#[test]
+#[ignore = "requires VELUNE_TEST_CODEX_BINARY pointing to an installed Codex CLI"]
+fn installed_codex_reads_assistant_first_import_without_a_new_request() {
+    let binary = std::env::var_os("VELUNE_TEST_CODEX_BINARY")
+        .expect("enabled native test requires VELUNE_TEST_CODEX_BINARY");
+    assert_assistant_first_import_roundtrip(Some(binary.into()));
+}
+
+fn assert_assistant_first_import_roundtrip(binary: Option<PathBuf>) {
     use velune_agent_runtime::{execution::ExecutionTarget, import::*};
-    let root = std::env::temp_dir().join(format!(
-        "velune-delete-import-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::create_dir(&root).unwrap();
+    let root = TempRoot::new("native-context-import");
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -516,15 +521,15 @@ fn native_imports_roundtrip_assistant_first_context_without_a_new_request() {
     );
     assert_eq!(restored["messages"][2]["content"][0]["text"], "reply");
     // Optional installed official CLI read, never turn/start or model access.
-    if let Some(binary) = std::env::var_os("VELUNE_TEST_CODEX_BINARY") {
+    if let Some(binary) = binary {
         let config = history::HistoryConfig {
             kind: RuntimeKind::Codex166,
             execution,
-            os_home: Some(root.clone()),
-            binary: binary.into(),
+            os_home: Some(root.to_path_buf()),
+            binary,
             node_binary: root.join("unused-node"),
-            resources_directory: root.clone(),
-            root: root.clone(),
+            resources_directory: root.to_path_buf(),
+            root: root.to_path_buf(),
             home,
         };
         let history = history::read(&config, "synthetic", &thread_id);
@@ -532,21 +537,24 @@ fn native_imports_roundtrip_assistant_first_context_without_a_new_request() {
             panic!("{}", error.full_message());
         }
     }
-    std::fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
 fn imports_preserve_prompt_origins_for_repeated_and_multimodal_deletion() {
+    assert_imported_prompt_origins(None);
+}
+
+#[test]
+#[ignore = "requires VELUNE_TEST_CODEX_BINARY pointing to an installed Codex CLI"]
+fn installed_codex_preserves_imported_display_ids_and_many_deletion() {
+    let binary = std::env::var_os("VELUNE_TEST_CODEX_BINARY")
+        .expect("enabled native test requires VELUNE_TEST_CODEX_BINARY");
+    assert_imported_prompt_origins(Some(binary.into()));
+}
+
+fn assert_imported_prompt_origins(binary: Option<PathBuf>) {
     use velune_agent_runtime::{execution::ExecutionTarget, import::*};
-    let root = std::env::temp_dir().join(format!(
-        "velune-delete-origins-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::create_dir(&root).unwrap();
+    let root = TempRoot::new("native-context-import");
     let context: Context = serde_json::from_value(json!({"messages":[
         {"source_message_id":"old-one","role":"user","content":[{"type":"text","text":"duplicate"},{"type":"image","media_type":"image/png","data":"AA=="}]},
         {"source_message_id":"old-two","role":"user","content":[{"type":"text","text":"duplicate"}]},
@@ -601,15 +609,15 @@ fn imports_preserve_prompt_origins_for_repeated_and_multimodal_deletion() {
     };
     assert_eq!(origins["old-one"].len(), 2);
     assert_eq!(origins["old-two"].len(), 1);
-    if let Some(binary) = std::env::var_os("VELUNE_TEST_CODEX_BINARY") {
+    if let Some(binary) = binary {
         let config = history::HistoryConfig {
             kind: RuntimeKind::Codex166,
             execution,
-            os_home: Some(root.clone()),
-            binary: binary.into(),
+            os_home: Some(root.to_path_buf()),
+            binary,
             node_binary: root.join("unused-node"),
-            resources_directory: root.clone(),
-            root: root.clone(),
+            resources_directory: root.to_path_buf(),
+            root: root.to_path_buf(),
             home,
         };
         let ids: Vec<String> = origins.values().flatten().cloned().collect();
@@ -655,21 +663,24 @@ fn imports_preserve_prompt_origins_for_repeated_and_multimodal_deletion() {
         let managed_history = history::read(&config, "synthetic", &managed).unwrap();
         assert!(!managed_history.messages.is_empty());
     }
-    std::fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
-fn empty_claude_import_is_discoverable_and_fresh_cli_accepts_its_identity() {
+fn empty_claude_import_is_discoverable() {
+    assert_empty_claude_import(None);
+}
+
+#[test]
+#[ignore = "requires VELUNE_TEST_CLAUDE_BINARY pointing to an installed Claude Code CLI"]
+fn installed_claude_accepts_empty_import_identity() {
+    let binary = std::env::var_os("VELUNE_TEST_CLAUDE_BINARY")
+        .expect("enabled native test requires VELUNE_TEST_CLAUDE_BINARY");
+    assert_empty_claude_import(Some(binary.into()));
+}
+
+fn assert_empty_claude_import(binary: Option<PathBuf>) {
     use velune_agent_runtime::{execution::ExecutionTarget, import::*};
-    let root = std::env::temp_dir().join(format!(
-        "velune-empty-import-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::create_dir(&root).unwrap();
+    let root = TempRoot::new("native-context-import");
     let home = root.join("claude");
     let context = Context { messages: vec![] };
     let ImportedConversation::ClaudeCode { session_id } =
@@ -681,21 +692,21 @@ fn empty_claude_import_is_discoverable_and_fresh_cli_accepts_its_identity() {
     let config = history::HistoryConfig {
         kind: velune_agent_runtime::version::RuntimeKind::ClaudeCode,
         execution: ExecutionTarget::Local,
-        os_home: Some(root.clone()),
+        os_home: Some(root.to_path_buf()),
         binary: root.join("unused-cli"),
         node_binary: root.join("unused-node"),
-        resources_directory: root.clone(),
+        resources_directory: root.to_path_buf(),
         root: home.clone(),
         home: home.clone(),
     };
     let history = velune_agent_runtime::history::read(&config, "synthetic", &session_id).unwrap();
     assert!(history.messages.is_empty());
     assert_eq!(history.cwd.as_deref(), root.to_str());
-    if let Some(binary) = std::env::var_os("VELUNE_TEST_CLAUDE_BINARY") {
+    if let Some(binary) = binary {
         let mut child = command(binary)
             .env_clear()
             .env("PATH", "/opt/homebrew/bin:/usr/bin:/bin")
-            .env("HOME", &root)
+            .env("HOME", root.as_os_str())
             .env("CLAUDE_CONFIG_DIR", &home)
             .env("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1")
             .env("DISABLE_AUTOUPDATER", "1")
@@ -733,7 +744,6 @@ fn empty_claude_import_is_discoverable_and_fresh_cli_accepts_its_identity() {
                     && message["response"]["subtype"] == "success")
         );
     }
-    std::fs::remove_dir_all(root).unwrap();
 }
 
 #[test]

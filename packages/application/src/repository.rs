@@ -868,17 +868,36 @@ mod persistence_version_tests {
     }
 
     #[test]
-    fn generic_config_rejects_old_future_and_corrupt_without_rewrite() {
-        for bytes in [
-            br#"{"schemaVersion":10,"synthetic":"preserve"}"#.as_slice(),
-            br#"{"schemaVersion":12,"synthetic":"preserve"}"#,
-            br#"{"schemaVersion":11,"unknown":"preserve"}"#,
-            br#"{"schemaVersion":11"#,
-        ] {
+    fn generic_config_rejects_unsupported_unknown_and_corrupt_without_rewrite() {
+        let valid = serde_json::to_value(PersistedConfig::default()).unwrap();
+        let mut cases = Vec::new();
+        for version in [9, 12] {
+            let mut value = valid.clone();
+            value["schemaVersion"] = version.into();
+            cases.push((
+                serde_json::to_vec(&value).unwrap(),
+                format!("schema {version} 不受支持"),
+            ));
+        }
+        let mut unknown = valid;
+        unknown["unknown"] = "preserve".into();
+        cases.push((
+            serde_json::to_vec(&unknown).unwrap(),
+            "unknown field `unknown`".into(),
+        ));
+        cases.push((br#"{"schemaVersion":11"#.to_vec(), "EOF".into()));
+        for (bytes, diagnostic) in cases {
             let home = Home::new();
             let path = home.0.join("generic-config.json");
-            fs::write(&path, bytes).unwrap();
-            assert!(Repository::open(&home.0).is_err());
+            fs::write(&path, &bytes).unwrap();
+            let error = match Repository::open(&home.0) {
+                Ok(_) => panic!("invalid config was accepted: {diagnostic}"),
+                Err(error) => error,
+            };
+            assert!(
+                error.to_string().contains(&diagnostic),
+                "{diagnostic}: {error}"
+            );
             assert_eq!(fs::read(path).unwrap(), bytes);
         }
     }

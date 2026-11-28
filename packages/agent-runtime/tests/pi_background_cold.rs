@@ -1,14 +1,12 @@
 //! Opt-in regression through the installed Pi SDK and production Rust transport.
 //! Input must be the authorized synthetic fixture, which is cloned before use.
 use serde_json::{Value, json};
-use std::{
-    path::{Path, PathBuf},
-    time::{SystemTime, UNIX_EPOCH},
-};
+use std::path::{Path, PathBuf};
 use velune_agent_runtime::{
     Client, Config, PiProjection, PiSession,
     conversation::{ConversationSummary, RunState},
 };
+use velune_test_support::TempRoot;
 
 fn clone_fixture(source: &Path, target: &Path) {
     std::fs::create_dir_all(target).unwrap();
@@ -27,25 +25,17 @@ fn clone_fixture(source: &Path, target: &Path) {
     }
 }
 #[test]
+#[ignore = "requires VELUNE_TEST_PI_SYNTHETIC_FIXTURE, VELUNE_TEST_PI_BINARY and VELUNE_TEST_NODE_BINARY"]
 fn absent_optional_plugins_do_not_timeout_cold_bridge_or_create_model_work() {
-    let (Some(fixture), Some(cli), Some(node)) = (
-        std::env::var_os("VELUNE_TEST_PI_SYNTHETIC_FIXTURE"),
-        std::env::var_os("VELUNE_TEST_PI_BINARY"),
-        std::env::var_os("VELUNE_TEST_NODE_BINARY"),
-    ) else {
-        return;
+    let required = |key| {
+        PathBuf::from(std::env::var_os(key).unwrap_or_else(|| {
+            panic!("enabled SDK test requires {key}");
+        }))
     };
-    let fixture = PathBuf::from(fixture);
-    let cli = PathBuf::from(cli);
-    let node = PathBuf::from(node);
-    let root = std::env::temp_dir().join(format!(
-        "velune-pi-bridge-cold-{}-{}",
-        std::process::id(),
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
+    let fixture = required("VELUNE_TEST_PI_SYNTHETIC_FIXTURE");
+    let cli = required("VELUNE_TEST_PI_BINARY");
+    let node = required("VELUNE_TEST_NODE_BINARY");
+    let root = TempRoot::new("pi-bridge-cold");
     let agent = root.join("agent");
     clone_fixture(&fixture.join("pi"), &agent);
     let workspace = root.join("workspace");
@@ -156,5 +146,4 @@ export default function(pi) {
         before, after,
         "a control query generated native model messages"
     );
-    std::fs::remove_dir_all(root).unwrap();
 }

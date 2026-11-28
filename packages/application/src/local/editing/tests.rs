@@ -443,7 +443,7 @@ fn deletion_links_keep_new_schema_and_refuse_unknown_or_corrupt_state() {
 }
 
 #[test]
-fn claude_delete_rebuilds_without_send_and_preserves_repeated_identity_after_reopen() {
+fn claude_delete_rebuilds_without_send_and_preserves_repeated_identity_after_reload() {
     for (truncate_to_empty, external_change) in [(false, false), (true, false), (false, true)] {
         use std::os::unix::fs::PermissionsExt;
         let root =
@@ -818,14 +818,16 @@ for line in sys.stdin:
 /// Opt-in real-SDK acceptance. Only an explicitly supplied synthetic
 /// fixture is cloned; no original session or ambient HOME is opened.
 #[test]
+#[ignore = "requires an isolated synthetic Pi fixture and explicit Pi/Node binaries"]
 fn real_pi_sdk_cold_core_deletion_preserves_replies_without_model_turns() {
-    let (Some(fixture), Some(cli), Some(node)) = (
-        std::env::var_os("VELUNE_TEST_PI_SYNTHETIC_FIXTURE"),
-        std::env::var_os("VELUNE_TEST_PI_BINARY"),
-        std::env::var_os("VELUNE_TEST_NODE_BINARY"),
-    ) else {
-        return;
+    let required = |name| {
+        std::env::var_os(name)
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| panic!("explicit real Pi SDK acceptance requires {name}"))
     };
+    let fixture = required("VELUNE_TEST_PI_SYNTHETIC_FIXTURE");
+    let cli = required("VELUNE_TEST_PI_BINARY");
+    let node = required("VELUNE_TEST_NODE_BINARY");
     fn clone_private(source: &Path, target: &Path) {
         std::fs::create_dir_all(target).unwrap();
         for entry in std::fs::read_dir(source).unwrap() {
