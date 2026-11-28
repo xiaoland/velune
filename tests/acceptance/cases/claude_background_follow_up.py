@@ -171,8 +171,12 @@ def run(ctx: Context) -> None:
     api, conversation = b.application_api, b.conversation
     project = ctx.isolated.project
     provider = MessagesProvider(project, ctx.timeout)
+    shell = ctx.isolated.root / "bash"
+    shell.write_text('#!/bin/sh\nexec /bin/bash --noprofile --norc "$@"\n')
+    shell.chmod(0o700)
+    # Claude invokes a login shell. Inherit only the fixture environment.
     os.environ.update(CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC="1", DISABLE_AUTOUPDATER="1",
-                      SHELL="/bin/bash", TERM="dumb")
+                      SHELL=str(shell), TERM="dumb")
     os.environ.update(ANTHROPIC_BASE_URL=f"http://127.0.0.1:{provider.port}",
                       ANTHROPIC_AUTH_TOKEN=NATIVE_TOKEN)
     # Velune allocates its gateway port independently of the provider.
@@ -255,8 +259,9 @@ def run(ctx: Context) -> None:
         driver.wait("first foreground result missing",
                     lambda s: REPLY["first"] in texts(s) and finished(), requests)
         first_sequence = check_finished(1)
-        running = until("Bash should survive the first foreground result", lambda: background("RUNNING"))
-        assert (project / "started").exists() and not (project / "completed").exists()
+        running = until("Bash should begin and survive the first foreground result",
+                        lambda: (project / "started").is_file() and background("RUNNING"))
+        assert not (project / "completed").exists()
         first_pid, = launches()
         ctx.passed("background_bash_outlives_foreground_result")
 

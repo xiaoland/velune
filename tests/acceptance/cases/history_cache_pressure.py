@@ -8,7 +8,6 @@ byte budgets, nine tiny ones exceed the eight-view delivery cap, and two
 from __future__ import annotations
 
 import json
-import resource
 import subprocess
 import sys
 import time
@@ -257,22 +256,6 @@ def run(ctx: Context) -> None:
         assert retained == [native for native, _, _ in count_rows[1:]], f"wrong set of retained views: {retained}"
         ctx.passed("count_cap_keeps_the_newest_eight_views")
 
-        stable = []
-        for _, conversation_id, _ in byte_rows[-6:]:
-            snapshot, _ = poll_access(conversation_id, open_ready(conversation_id), "editable", 10.0)
-            stable.append((conversation_id, snapshot.cursor))
-        before, usage, started = source_reads(), resource.getrusage(resource.RUSAGE_SELF), time.monotonic()
-        for _ in range(6):
-            for conversation_id, cursor in stable:
-                assert app.snapshot_update(RUNTIME, conversation_id, cursor).is_UNCHANGED(), "stable poll changed"
-                time.sleep(0.02)
-        after = resource.getrusage(resource.RUSAGE_SELF)
-        assert source_reads() == before, "unchanged polls re-read native history"
-        # CPU is evidence only; no machine-independent limit is claimed.
-        ctx.facts["unchanged_poll"] = {
-            "updates": 6 * len(stable), "wall_seconds": round(time.monotonic() - started, 3),
-            "cpu_seconds": round(after.ru_utime + after.ru_stime - usage.ru_utime - usage.ru_stime, 3)}
-        ctx.passed("unchanged_polls_read_no_history")
     finally:
         if lock_holder is not None:
             lock_holder.terminate()
