@@ -35,7 +35,8 @@ sealed partial class Conversation
     Configuration configuration;
 
     public DeliveredSnapshot? Snapshot { get; private set; }
-    public List<DeliveredMessage> Messages { get; private set; } = [];
+    public IReadOnlyList<DeliveredMessage> Messages { get; private set; } = [];
+    bool transcriptNeedsFullSnapshot;
     // Deferred contents read on request, by message ID.
     public Dictionary<string, DeliveredMessage> Payloads { get; } = [];
 
@@ -141,10 +142,11 @@ sealed partial class Conversation
             return;
         }
         var target = Target;
+        var requestedFrom = Snapshot;
         try
         {
             var read = await Call(NativeOperation.ConversationRead, application => application.ReadConversation(target.RuntimeID, target.ConversationID));
-            Apply(read.Snapshot);
+            Apply(read.Snapshot, requestedFrom);
             Problems.Recovered(ReadKey);
         }
         catch (Exception failure)
@@ -168,10 +170,10 @@ sealed partial class Conversation
             }
             try
             {
-                var update = await Call(NativeOperation.ConversationRead, application => Update(application, snapshot));
-                if (update != null && !closed)
+                var readFull = transcriptNeedsFullSnapshot;
+                var update = await Call(NativeOperation.ConversationRead, application => Update(application, snapshot, readFull));
+                if (update != null && Merge(update, snapshot))
                 {
-                    Merge(update);
                     Notify();
                 }
                 Problems.Recovered(ReadKey);
@@ -183,46 +185,81 @@ sealed partial class Conversation
         }
     }
 
-    static DeliveredSnapshot? Update(VeluneApplication application, DeliveredSnapshot snapshot) =>
+    static DeliveredSnapshot? Update(VeluneApplication application, DeliveredSnapshot snapshot, bool readFull) =>
+        readFull ? ReadFull(application, snapshot) :
         application.SnapshotUpdate(snapshot.ContextRuntimeId, snapshot.Conversation.Id, snapshot.Cursor) switch
         {
             SnapshotUpdate.Changed changed => changed.Snapshot,
             // The device let the conversation go (it restarted, for one); read it again.
-            SnapshotUpdate.Absent => application.ReadConversation(snapshot.ContextRuntimeId, snapshot.Conversation.Id).Snapshot,
+            SnapshotUpdate.Absent => ReadFull(application, snapshot),
             _ => null,
         };
 
-    void Apply(DeliveredSnapshot? snapshot)
+    static DeliveredSnapshot? ReadFull(VeluneApplication application, DeliveredSnapshot snapshot) =>
+        application.ReadConversation(snapshot.Conversation.RuntimeId, snapshot.Conversation.Id).Snapshot;
+
+    void Apply(DeliveredSnapshot? snapshot, DeliveredSnapshot? requestedFrom)
     {
         if (snapshot != null)
         {
-            Merge(snapshot);
+            Merge(snapshot, requestedFrom);
         }
     }
 
-    // Merge takes a snapshot in: one with a base holds only changed messages,
-    // and its message IDs give the whole order.
-    public void Merge(DeliveredSnapshot snapshot)
+    static TranscriptDeliveryPosition DeliveryPosition(DeliveredSnapshot snapshot) =>
+        new(snapshot.ContextRuntimeId, snapshot.Conversation.Id, snapshot.Cursor);
+
+    static bool SharesDeliveryGeneration(DeliveredSnapshot current, DeliveredSnapshot previous) =>
+        current.ContextRuntimeId == previous.ContextRuntimeId && current.Conversation.Id == previous.Conversation.Id &&
+        current.Cursor.Generation == previous.Cursor.Generation;
+
+    bool Merge(DeliveredSnapshot snapshot, DeliveredSnapshot? requestedFrom)
     {
-        var messages = snapshot.Messages.ToList();
-        if (snapshot.Base != null)
+        if (closed) return false;
+        var current = Snapshot;
+        var disposition = VeluneApplicationApiMethods.ClassifyTranscriptDelivery(
+            current == null ? null : DeliveryPosition(current), DeliveryPosition(snapshot), snapshot.Base,
+            ReferenceEquals(current, requestedFrom));
+        if (disposition == TranscriptDeliveryDisposition.Ignore) return false;
+        if (disposition == TranscriptDeliveryDisposition.ReadFull)
         {
-            var known = Messages.ToDictionary(message => message.Id);
-            foreach (var message in snapshot.Messages)
-            {
-                known[message.Id] = message;
-            }
-            messages = [.. snapshot.MessageIds.Where(known.ContainsKey).Select(id => known[id])];
+            transcriptNeedsFullSnapshot = true;
+            return false;
         }
-        foreach (var message in messages)
+
+        var order = snapshot.MessageIds.ToHashSet();
+        var changed = new HashSet<string>();
+        Dictionary<string, DeliveredMessage> known = disposition == TranscriptDeliveryDisposition.ApplyDelta
+            ? Messages.ToDictionary(message => message.Id) : [];
+        foreach (var message in snapshot.Messages)
         {
-            // A message that changed replaces the payload read for its earlier content.
-            if (Payloads.TryGetValue(message.Id, out var loaded) && loaded.Stamp != message.Stamp)
+            if (!order.Contains(message.Id) || !changed.Add(message.Id))
             {
-                Payloads.Remove(message.Id);
+                transcriptNeedsFullSnapshot = true;
+                return false;
+            }
+            known[message.Id] = message;
+        }
+        if (order.Count != snapshot.MessageIds.Length || !order.All(known.ContainsKey))
+        {
+            transcriptNeedsFullSnapshot = true;
+            return false;
+        }
+
+        if (current == null || !SharesDeliveryGeneration(current, snapshot))
+        {
+            Payloads.Clear();
+            attachments.Clear();
+        }
+        else
+        {
+            foreach (var id in Payloads.Keys.Where(id => !order.Contains(id) || known[id].Stamp != Payloads[id].Stamp).ToArray())
+            {
+                Payloads.Remove(id);
             }
         }
-        Messages = messages;
+        transcriptNeedsFullSnapshot = false;
+        Messages = [.. snapshot.MessageIds.Select(id => known[id])];
         nextTurn = null;
         Target = new Target(snapshot.ContextRuntimeId, snapshot.Conversation.Id, snapshot.Conversation.Title.DisplayText());
         Snapshot = snapshot;
@@ -236,6 +273,7 @@ sealed partial class Conversation
         {
             FollowCurrentRuntime();
         }
+        return true;
     }
 
     // Act runs one write at a time; a failure goes to 问题 under source.
@@ -250,7 +288,7 @@ sealed partial class Conversation
         var (runtimeID, id) = (snapshot.ContextRuntimeId, snapshot.Conversation.Id);
         try
         {
-            Apply((await Call(operation, application => work(application, runtimeID, id))).Snapshot);
+            Apply((await Call(operation, application => work(application, runtimeID, id))).Snapshot, snapshot);
         }
         catch (Exception failure)
         {
@@ -309,16 +347,16 @@ sealed partial class Conversation
                 existing = (created.ContextRuntimeId, created.Conversation.Id);
             }
             var (source, id) = existing.Value;
+            var requestedFrom = Snapshot;
             var sent = await Call(NativeOperation.Send, application => application.SendTurn(source, id, runtimeID, selection, turn));
             if (created != null)
             {
-                Merge(created);
                 // The choices made before the first message are the created conversation's.
                 CacheComposer(); if (oldCache != ComposerCachePath && File.Exists(oldCache)) File.Delete(oldCache);
             }
             Accepted = true;
             this.sent = true;
-            Apply(sent.Snapshot);
+            Apply(sent.Snapshot, requestedFrom);
             return true;
         }
         catch (Exception failure)
@@ -326,7 +364,6 @@ sealed partial class Conversation
             Sending = null;
             // What was sent goes back to the composer, ahead of anything attached since.
             Attached.InsertRange(0, sentAttachments);
-            if (created != null && pendingCreation == null) Merge(created);
             ComposerChanged();
             Problems.Report("发送消息", failure, Device);
             return false;
@@ -365,7 +402,8 @@ sealed partial class Conversation
         try
         {
             var messages = await Call(NativeOperation.ConversationRead, application => application.MessagePayloads(snapshot.ContextRuntimeId, snapshot.Conversation.Id, [messageID]));
-            foreach (var message in messages)
+            if (closed || Snapshot is not { } current || !SharesDeliveryGeneration(current, snapshot)) return;
+            foreach (var message in messages.Where(loaded => Messages.Any(shown => shown.Id == loaded.Id && shown.Stamp == loaded.Stamp)))
             {
                 Payloads[message.Id] = message;
             }
