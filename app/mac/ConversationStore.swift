@@ -1711,7 +1711,7 @@ final class ConversationStore: ObservableObject {
                 // The accepted target survives closing the editing surface or
                 // source tab before its UI completion callback is delivered.
                 let resultID = snapshot.conversation.id
-                DispatchQueue.main.async { inputs.saveEditedTarget(resultID, choices: targetChoices, expectedRevision: targetRevision) }
+                DispatchQueue.main.async { inputs.saveEditedTarget(resultID, choices: targetChoices, expectedRevision: targetRevision, placement: placement) }
             }
             return result
         }, consumeReceipt: { [weak self] result in
