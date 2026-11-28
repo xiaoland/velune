@@ -365,6 +365,11 @@ fn deepseek_normal_send_preserves_a_legal_prompt_larger_than_eight_mib() {
 #[test]
 fn deepseek_connect_validates_protocol_resume_and_required_http_not_plugin_release() {
     let f = Fixture::new("normal");
+    // connect prepares optional MCP endpoints before the ACP handshake. Port
+    // zero is rejected there and silently omitted, so it cannot make HTTP
+    // capability mandatory. Hold a real private endpoint for this matrix.
+    let mcp = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let endpoint = format!("http://{}", mcp.local_addr().unwrap());
     for (protocol, resume, http, require_http, error) in [
         (json!(2), json!({}), true, false, Some("协议或恢复能力")),
         (json!(1), Value::Null, true, false, Some("协议或恢复能力")),
@@ -386,14 +391,20 @@ fn deepseek_connect_validates_protocol_resume_and_required_http_not_plugin_relea
         config.mcp_servers = if require_http {
             vec![crate::mcp::Server {
                 name: "synthetic".into(),
-                endpoint: "http://127.0.0.1:0".into(),
+                endpoint: endpoint.clone(),
                 token: "synthetic".into(),
             }]
         } else {
             vec![]
         };
         match (NativeSession::connect(config), error) {
-            (Ok(mut session), None) => session.shutdown().unwrap(),
+            (Ok(mut session), None) => {
+                assert_eq!(session.config.mcp_servers.len(), usize::from(require_http));
+                if require_http {
+                    assert_eq!(session.config.mcp_servers[0].endpoint, endpoint);
+                }
+                session.shutdown().unwrap();
+            }
             (Err(actual), Some(expected)) => {
                 assert!(actual.to_string().contains(expected), "{actual}")
             }

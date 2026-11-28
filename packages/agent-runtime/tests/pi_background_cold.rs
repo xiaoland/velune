@@ -32,7 +32,7 @@ impl ModelProbe {
         let stop = Arc::new(AtomicBool::new(false));
         let (count, done) = (requests.clone(), stop.clone());
         let worker = std::thread::spawn(move || {
-            while !done.load(Ordering::SeqCst) {
+            loop {
                 match listener.accept() {
                     Ok((mut stream, _)) => {
                         stream
@@ -45,6 +45,9 @@ impl ModelProbe {
                         }
                     }
                     Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        if done.load(Ordering::SeqCst) {
+                            break;
+                        }
                         std::thread::sleep(Duration::from_millis(2));
                     }
                     Err(error) => panic!("model probe: {error}"),
@@ -67,11 +70,11 @@ impl Drop for ModelProbe {
 }
 fn settle_background(session: &mut PiSession) {
     let end = Instant::now() + Duration::from_secs(5);
-    while session.has_pending_metadata() {
+    while session.has_pending_metadata() && session.background_tasks().issue.is_none() {
         session.poll();
         assert!(
             Instant::now() < end,
-            "background discovery must settle without a model turn"
+            "background discovery must return a snapshot or diagnostic without a model turn"
         );
         std::thread::sleep(Duration::from_millis(2));
     }
@@ -204,8 +207,10 @@ export default function(pi) {
     );
     assert!(!failed_host.turn_running());
     failed_host.stop().unwrap();
+    let model_requests = model.requests.clone();
+    drop(model); // Drain queued loopback requests after both SDK processes have stopped.
     assert_eq!(
-        model.requests.load(Ordering::SeqCst),
+        model_requests.load(Ordering::SeqCst),
         0,
         "background control discovery must not contact the model endpoint"
     );
