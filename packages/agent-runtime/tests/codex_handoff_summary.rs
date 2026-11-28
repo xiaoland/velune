@@ -355,45 +355,39 @@ fn production_native_handoff_summary_uses_selected_tier_and_preserves_source() {
         std::env::var("VELUNE_RUN_NATIVE_HANDOFF_E2E").as_deref(),
         Ok("1")
     );
-    // The only configured endpoint is localhost. Keep ambient provider
-    // credentials and outbound proxy settings out of child CLI processes.
-    unsafe {
-        for key in [
-            "OPENAI_API_KEY",
-            "OPENAI_BASE_URL",
-            "OPENAI_ORG_ID",
-            "OPENAI_PROJECT_ID",
-            "CODEX_API_KEY",
-            "VELUNE_GATEWAY_TOKEN",
-        ] {
-            std::env::remove_var(key);
-        }
-        for key in [
-            "HTTP_PROXY",
-            "HTTPS_PROXY",
-            "ALL_PROXY",
-            "http_proxy",
-            "https_proxy",
-            "all_proxy",
-        ] {
-            std::env::set_var(key, "http://127.0.0.1:1");
-        }
-        std::env::set_var("NO_PROXY", "127.0.0.1,localhost");
-        std::env::set_var("no_proxy", "127.0.0.1,localhost");
-        std::env::set_var("DISABLE_TELEMETRY", "1");
-    }
-    let binary = std::env::var_os("VELUNE_CODEX_E2E_BIN")
-        .map(PathBuf::from)
-        .expect("set VELUNE_CODEX_E2E_BIN to the installed Codex CLI");
-    assert!(binary.is_file(), "Codex CLI path does not exist");
-    let version = process::command(&binary).arg("--version").output().unwrap();
-    assert!(version.status.success(), "Codex CLI failed --version");
-    let version = String::from_utf8_lossy(&version.stdout);
-    assert!(
-        version.contains("0.167."),
-        "expected tested Codex 0.167 CLI, got {version}"
+    let binary = PathBuf::from(
+        std::env::var_os("VELUNE_CODEX_E2E_BIN")
+            .expect("set VELUNE_CODEX_E2E_BIN to the installed Codex CLI"),
     );
-
+    if std::env::var_os("VELUNE_TEST_HANDOFF_CHILD").is_none() {
+        let home = Scratch::new();
+        let output = process::command(std::env::current_exe().unwrap())
+            .env_clear()
+            .env("HOME", &home.0)
+            .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+            .env("HTTP_PROXY", "http://127.0.0.1:1")
+            .env("HTTPS_PROXY", "http://127.0.0.1:1")
+            .env("NO_PROXY", "127.0.0.1,localhost")
+            .env("DISABLE_TELEMETRY", "1")
+            .env("VELUNE_RUN_NATIVE_HANDOFF_E2E", "1")
+            .env("VELUNE_TEST_HANDOFF_CHILD", "1")
+            .env("VELUNE_CODEX_E2E_BIN", fs::canonicalize(binary).unwrap())
+            .args([
+                "--ignored",
+                "--exact",
+                "production_native_handoff_summary_uses_selected_tier_and_preserves_source",
+                "--nocapture",
+            ])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    // NativeSession::connect checks the installed version against the selected adapter.
     let scratch = Scratch::new();
     let provider = Provider::start();
     let root = &scratch.0;
