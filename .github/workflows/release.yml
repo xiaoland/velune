@@ -31,10 +31,18 @@ jobs:
       sha: ${{ steps.identity.outputs.sha || steps.retry.outputs.sha }}
       version: ${{ steps.identity.outputs.version || steps.retry.outputs.version }}
       build_number: ${{ steps.identity.outputs.build_number || steps.retry.outputs.build_number }}
+      matrix: ${{ steps.assets.outputs.matrix }}
+      source_platforms: ${{ steps.assets.outputs.source_platforms }}
+      android_certificate: ${{ steps.assets.outputs.android_certificate }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      - name: Read public release asset contract
+        id: assets
+        run: |
+          python3 -B scripts/check-release-assets.py
+          python3 scripts/release_assets.py workflow-outputs >> "$GITHUB_OUTPUT"
       - name: Create release PR or release tag
         id: release_please
         if: github.event_name == 'push'
@@ -150,11 +158,14 @@ jobs:
           SHA: ${{ needs.release.outputs.sha }}
           BUILD_NUMBER: ${{ needs.release.outputs.build_number }}
           VERSION: ${{ needs.release.outputs.version }}
+          SOURCE_PLATFORMS: ${{ needs.release.outputs.source_platforms }}
         run: |
           set -euo pipefail
-          python3 scripts/create-source-bundle.py --tag "$TAG" --commit "$SHA" --platforms macos android --output-dir target/source
-          archive=$(find target/source -maxdepth 1 -name "velune-$TAG-source.tar.gz" -print -quit)
-          test -n "$archive"
+          read -r -a platforms <<<"$SOURCE_PLATFORMS"
+          python3 scripts/create-source-bundle.py --tag "$TAG" --commit "$SHA" --platforms "${platforms[@]}" --output-dir target/source
+          archives=(target/source/*.tar.gz)
+          [[ "${#archives[@]}" == 1 && -s "${archives[0]}" ]]
+          archive=${archives[0]}
           python3 scripts/package-release.py source --input "$archive" --output-dir target/release \
             --tag "$TAG" --version "$VERSION" --commit "$SHA" --build-number "$BUILD_NUMBER" --arch all
       - uses: actions/upload-artifact@v4
@@ -169,20 +180,7 @@ jobs:
     if: needs.release.outputs.publish == 'true'
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - name: macos-arm64
-            platform: macos
-            runner: macos-15
-            architecture: arm64
-          - name: macos-x86_64
-            platform: macos
-            runner: macos-15-intel
-            architecture: x86_64
-          - name: android-arm64
-            platform: android
-            runner: ubuntu-24.04
-            architecture: arm64
+      matrix: ${{ fromJSON(needs.release.outputs.matrix) }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 180
     permissions:
@@ -304,6 +302,7 @@ jobs:
           SHA: ${{ needs.release.outputs.sha }}
           VERSION: ${{ needs.release.outputs.version }}
           VELUNE_REQUIRE_ANDROID_RELEASE_SIGNING: 'true'
+          ANDROID_CERTIFICATE: ${{ needs.release.outputs.android_certificate }}
           ANDROID_RELEASE_STORE_PASSWORD: ${{ secrets.ANDROID_RELEASE_STORE_PASSWORD }}
           ANDROID_RELEASE_KEY_ALIAS: ${{ secrets.ANDROID_RELEASE_KEY_ALIAS }}
           ANDROID_RELEASE_KEY_PASSWORD: ${{ secrets.ANDROID_RELEASE_KEY_PASSWORD }}
@@ -329,7 +328,7 @@ jobs:
           fi
           cat "$verification"
           cert=$(sed -n 's/^Signer #1 certificate SHA-256 digest: //p' "$verification" | head -n 1 | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')
-          if [[ "$cert" != babd7b659b691b52ca5a7412c68f2e52abed05d0b0aeb1c56e203d548dbda4bb ]]; then
+          if [[ "$cert" != "$ANDROID_CERTIFICATE" ]]; then
             echo "Unexpected Android signing certificate SHA-256: ${cert:-missing}" >&2
             exit 1
           fi
@@ -368,14 +367,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ needs.release.outputs.sha }}
+          ref: ${{ github.workflow_sha }}
           fetch-depth: 0
+      - name: Select the tagged source without changing the upload contract
+        env:
+          SHA: ${{ needs.release.outputs.sha }}
+        run: |
+          set -euo pipefail
+          mkdir -p target
+          git show HEAD:scripts/release_assets.py > target/release_assets.py
+          git checkout --detach "$SHA"
       - uses: actions/download-artifact@v4
         with:
           pattern: release-*
           path: target/release
           merge-multiple: true
-      - name: Verify complete asset set and prepare checksums
+      - name: Verify and publish exactly the release contract assets
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.release.outputs.tag }}
@@ -386,71 +393,18 @@ jobs:
           set -euo pipefail
           [[ "$(git rev-parse HEAD)" == "$SHA" ]]
           gh release download "$TAG" --pattern release-build.json --dir target/release
-          test -s target/release/release-build.json
           python3 scripts/release-run.py verify --metadata target/release/release-build.json --tag "$TAG" --commit "$SHA"
-          for expected in \
-            "Velune-$TAG-macOS-arm64.zip" \
-            "Velune-$TAG-macOS-x86_64.zip" \
-            "Velune-$TAG-android-arm64.apk" \
-            "velune-$TAG-source.tar.gz"; do
-            test -s "target/release/$expected"
-          done
-          python3 - "$TAG" "$SHA" "$VERSION" "$BUILD_NUMBER" <<'PY'
-          import json,sys
-          from pathlib import Path
-          import hashlib
-          def digest(path):
-              value=hashlib.sha256()
-              with path.open('rb') as source:
-                  for block in iter(lambda: source.read(1024*1024),b''):
-                      value.update(block)
-              return value.hexdigest()
-          tag,sha,version,number=sys.argv[1:]
-          root=Path('target/release')
-          expected={
-              f'Velune-{tag}-macOS-arm64.zip':('macos','arm64'),
-              f'Velune-{tag}-macOS-x86_64.zip':('macos','x86_64'),
-              f'Velune-{tag}-android-arm64.apk':('android','arm64'),
-              f'velune-{tag}-source.tar.gz':('source','all'),
-          }
-          metadata=list(root.glob('*.build.json'))
-          assert len(metadata)==len(expected)
-          found=set()
-          actual_platforms=set()
-          source_platforms=None
-          for path in metadata:
-              value=json.loads(path.read_text())
-              assert value['tag']==tag and value['version']==version
-              assert value['source_commit']==sha and value['build_number']==int(number)
-              artifact=value['artifact']
-              assert artifact in expected and artifact not in found
-              assert (value['platform'],value['architecture'])==expected[artifact]
-              packaged=root/artifact
-              assert packaged.is_file() and packaged.stat().st_size>0
-              assert value['sha256']==digest(packaged)
-              found.add(artifact)
-              if value['platform']=='source':
-                  source_platforms=set(value['corresponding_platforms'])
-              else:
-                  actual_platforms.add(value['platform'])
-                  assert value['binary_version']==version
-              if value['platform']=='android':
-                  assert value['certificate_sha256']=='babd7b659b691b52ca5a7412c68f2e52abed05d0b0aeb1c56e203d548dbda4bb'
-          assert found==set(expected)
-          expected_platforms={platform for platform,architecture in expected.values() if platform!='source'}
-          assert actual_platforms==expected_platforms
-          assert source_platforms==actual_platforms
-          PY
-          (cd target/release && sha256sum * > SHA256SUMS.txt)
-      - name: Upload all assets to the draft release and publish
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ needs.release.outputs.tag }}
-          SHA: ${{ needs.release.outputs.sha }}
-        run: |
-          set -euo pipefail
+          uploads=$(python3 target/release_assets.py prepare-upload --directory target/release \
+            --tag "$TAG" --version "$VERSION" --commit "$SHA" --build-number "$BUILD_NUMBER")
+          mapfile -t assets <<<"$uploads"
           gh release view "$TAG" --json isDraft --jq '.isDraft' | grep -qx true
-          gh release upload "$TAG" target/release/* --clobber
+          gh release upload "$TAG" "${assets[@]}" --clobber
+          actual=$(gh release view "$TAG" --json assets --jq '.assets[].name' | LC_ALL=C sort)
+          expected=$(printf '%s\n' "${assets[@]##*/}" | LC_ALL=C sort)
+          if [[ "$actual" != "$expected" ]]; then
+            diff -u <(printf '%s\n' "$expected") <(printf '%s\n' "$actual")
+            exit 1
+          fi
           gh release view "$TAG" --json body --jq '.body' > target/release-notes-current.md
           python3 scripts/release-notes.py --input target/release-notes-current.md --output target/release-notes.md --tag "$TAG"
           gh release edit "$TAG" --draft=false --notes-file target/release-notes.md
