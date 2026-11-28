@@ -299,7 +299,7 @@ fn scheduled_run_waits_for_its_own_conversation_without_blocking_another() {
         "scheduler never observed the busy target"
     );
 
-    let ready = run_now("synthetic:second", "scheduled in idle conversation");
+    let ready = run_now("synthetic:cdef", "scheduled in idle conversation");
     assert!(
         wait_until(Duration::from_secs(5), || {
             let state = schedules(ScheduledTasksOperation::List);
@@ -316,7 +316,7 @@ fn scheduled_run_waits_for_its_own_conversation_without_blocking_another() {
         .map(|line| serde_json::from_str::<Value>(line).unwrap())
         .collect::<Vec<_>>();
     assert_eq!(requests.len(), 2);
-    assert_eq!(requests[1]["params"]["threadId"], "second");
+    assert_eq!(requests[1]["params"]["threadId"], "cdef");
     assert_eq!(
         requests[1]["params"]["input"][0]["text"],
         "scheduled in idle conversation"
