@@ -85,9 +85,10 @@ jobs:
           python3 scripts/build-support.py verify-macos-build > "$out/build.json"
           app=$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["app"])' "$out/build.json")
           python3 scripts/check-macos-composer.py editor --app "$app" --output "$out/editor"
-          python3 scripts/check-macos-composer.py experience --workspace-only --app "$app" --output "$out/workspace"
+          python3 scripts/check-macos-composer.py experience --app "$app" --output "$out/workspace"
           grep -F 'PASS offscreen native editor' "$out/editor/native.log"
-          grep -F 'PASS window shell' "$out/workspace/native.log"
+          grep -F 'PASS actual window lifecycle' "$out/workspace/native.log"
+          grep -F 'PASS new process' "$out/workspace/reopen.log"
           python3 - "$out" <<'PY'
           import json, sys
           from pathlib import Path
