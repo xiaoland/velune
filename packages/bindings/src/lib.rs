@@ -59,29 +59,26 @@ impl VeluneSendCancellation {
 
 /// A local transcript invalidation hint. An absent ID asks the client to
 /// refresh all observed conversations using the ordinary snapshot reader.
+#[cfg(all(target_os = "macos", feature = "local-runtime"))]
 #[derive(uniffi::Record)]
 pub struct NativeUserMessageWake {
     pub conversation_id: Option<String>,
 }
 
+#[cfg(all(target_os = "macos", feature = "local-runtime"))]
 #[derive(uniffi::Object)]
 pub struct VeluneNativeUserMessageEvents {
-    #[cfg(feature = "local-runtime")]
     events: velune_application::NativeUserMessageEvents,
 }
 
+#[cfg(all(target_os = "macos", feature = "local-runtime"))]
 #[uniffi::export]
 impl VeluneNativeUserMessageEvents {
     /// An absent wake means the local application owner closed.
     pub async fn next(&self) -> Option<NativeUserMessageWake> {
-        #[cfg(feature = "local-runtime")]
-        {
-            Some(NativeUserMessageWake {
-                conversation_id: self.events.next().await?.conversation_id,
-            })
-        }
-        #[cfg(not(feature = "local-runtime"))]
-        None
+        Some(NativeUserMessageWake {
+            conversation_id: self.events.next().await?.conversation_id,
+        })
     }
 }
 
@@ -951,13 +948,6 @@ impl VeluneApplication {
     pub fn composer_choices(&self) -> Result<ComposerChoices, BindingError> {
         request!(self, "composer_choices", ReadComposerChoices)
     }
-    pub fn runtime_start_choice(&self, runtime_id: String) -> Result<TurnChoice, BindingError> {
-        request!(
-            self,
-            "runtime_start_choice",
-            ReadRuntimeStartChoice { runtime_id }
-        )
-    }
     /// An intent without choices or runtime removes the conversation's.
     pub fn set_next_turn_intent(&self, intent: NextTurnIntent) -> Result<(), BindingError> {
         request!(self, "set_next_turn_intent", SetNextTurnIntent { intent }; unit)
@@ -1351,19 +1341,15 @@ impl VeluneApplication {
         )
     }
     /// Subscribe to the local execution owner. Remote handles use snapshot reads.
+    #[cfg(all(target_os = "macos", feature = "local-runtime"))]
     pub fn native_user_message_events(&self) -> Option<Arc<VeluneNativeUserMessageEvents>> {
-        #[cfg(feature = "local-runtime")]
-        {
-            match self.lock().ok()?.as_ref()? {
-                Backend::Local(service) => Some(Arc::new(VeluneNativeUserMessageEvents {
-                    events: service.native_user_message_events()?,
-                })),
-                #[cfg(feature = "remote")]
-                Backend::Remote(_) => None,
-            }
+        match self.lock().ok()?.as_ref()? {
+            Backend::Local(service) => Some(Arc::new(VeluneNativeUserMessageEvents {
+                events: service.native_user_message_events()?,
+            })),
+            #[cfg(feature = "remote")]
+            Backend::Remote(_) => None,
         }
-        #[cfg(not(feature = "local-runtime"))]
-        None
     }
 
     /// Poll a view relative to the cursor of its latest delivery.

@@ -552,7 +552,6 @@ impl Command {
             | Self::DiscoverRuntimes { .. }
             | Self::ReadComposerDrafts
             | Self::ReadComposerChoices
-            | Self::ReadRuntimeStartChoice { .. }
             | Self::SearchConversations { .. }
             | Self::FindConversation { .. }
             | Self::ResolveAgentUri { .. }

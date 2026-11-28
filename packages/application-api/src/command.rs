@@ -100,7 +100,6 @@ pub enum CommandKind {
     ReadComposerDrafts,
     SetComposerDraft,
     ReadComposerChoices,
-    ReadRuntimeStartChoice,
     SetNextTurnIntent,
     SetRuntimeComposerChoices,
     SetConversationBrowserLimits,
@@ -315,9 +314,6 @@ pub enum Command {
         text: String,
     },
     ReadComposerChoices,
-    ReadRuntimeStartChoice {
-        runtime_id: String,
-    },
     /// An intent without choices or runtime removes the conversation's.
     SetNextTurnIntent {
         intent: crate::config::NextTurnIntent,
@@ -814,7 +810,6 @@ pub enum Response {
     ReadComposerDrafts(Vec<crate::config::ComposerDraft>),
     SetComposerDraft,
     ReadComposerChoices(crate::config::ComposerChoices),
-    ReadRuntimeStartChoice(crate::config::TurnChoice),
     SetNextTurnIntent,
     SetRuntimeComposerChoices,
     SetConversationBrowserLimits(ConversationBrowserLimits),
@@ -971,7 +966,6 @@ impl Command {
             Self::ReadComposerDrafts => CommandKind::ReadComposerDrafts,
             Self::SetComposerDraft { .. } => CommandKind::SetComposerDraft,
             Self::ReadComposerChoices => CommandKind::ReadComposerChoices,
-            Self::ReadRuntimeStartChoice { .. } => CommandKind::ReadRuntimeStartChoice,
             Self::SetNextTurnIntent { .. } => CommandKind::SetNextTurnIntent,
             Self::SetRuntimeComposerChoices { .. } => CommandKind::SetRuntimeComposerChoices,
             Self::SetConversationBrowserLimits { .. } => CommandKind::SetConversationBrowserLimits,
