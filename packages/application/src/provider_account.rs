@@ -986,6 +986,104 @@ fn collect_reset_payload(payload: Value, collected: &mut Collected) {
     }
 }
 
+fn collect_profile_payload(payload: Value, collected: &mut Collected) {
+    match serde_json::from_value::<ProfileResponse>(payload) {
+        Ok(profile) => {
+            let has_stats_error = profile
+                .metadata
+                .stats_error
+                .as_ref()
+                .is_some_and(|message| !message.is_empty());
+            if has_stats_error {
+                collected.failures.push(failure(
+                    ProviderAccountSource::Profile,
+                    "提供商暂时无法提供账户用量统计",
+                ));
+            }
+            let has_profile_data = profile.stats.lifetime_tokens.is_some()
+                || profile.stats.peak_daily_tokens.is_some()
+                || profile.stats.longest_running_turn_sec.is_some()
+                || profile.stats.current_streak_days.is_some()
+                || profile.stats.longest_streak_days.is_some()
+                || profile.stats.daily_usage_buckets.is_some()
+                || profile.stats.top_invocations.is_some()
+                || profile.stats.fast_mode_usage_percentage.is_some()
+                || profile.stats.most_used_reasoning_effort.is_some()
+                || profile
+                    .stats
+                    .most_used_reasoning_effort_percentage
+                    .is_some()
+                || profile.stats.unique_skills_used.is_some()
+                || profile.stats.total_skills_used.is_some()
+                || profile.stats.total_threads.is_some()
+                || profile.metadata.stats_as_of.is_some()
+                || profile.metadata.generated_at.is_some();
+            let daily = profile.stats.daily_usage_buckets.map(|buckets| {
+                buckets
+                    .into_iter()
+                    .map(|bucket| ProviderAccountDailyUsage {
+                        date: bucket.start_date,
+                        tokens: bucket.tokens,
+                    })
+                    .collect()
+            });
+            let top_invocations = profile.stats.top_invocations.map(|items| {
+                items
+                    .into_iter()
+                    .map(|item| {
+                        let kind = item.kind.unwrap_or_else(|| "unknown".into());
+                        let display_name = item
+                            .skill_name
+                            .as_ref()
+                            .or(item.plugin_name.as_ref())
+                            .cloned()
+                            .unwrap_or_else(|| "Unknown".into());
+                        ProviderAccountTopInvocation {
+                            kind,
+                            display_name,
+                            usage_count: item.usage_count.unwrap_or(0),
+                            plugin_id: item.plugin_id,
+                            plugin_name: item.plugin_name,
+                            skill_id: item.skill_id,
+                            skill_name: item.skill_name,
+                        }
+                    })
+                    .collect()
+            });
+            if has_profile_data && !has_stats_error {
+                collected.snapshot.profile = Some(ProviderAccountProfile {
+                    lifetime_tokens: profile.stats.lifetime_tokens,
+                    peak_daily_tokens: profile.stats.peak_daily_tokens,
+                    longest_task_seconds: profile.stats.longest_running_turn_sec,
+                    current_streak_days: profile.stats.current_streak_days,
+                    longest_streak_days: profile.stats.longest_streak_days,
+                    fast_mode_percent: profile.stats.fast_mode_usage_percentage,
+                    reasoning_effort: profile.stats.most_used_reasoning_effort,
+                    reasoning_effort_percent: profile.stats.most_used_reasoning_effort_percentage,
+                    skills_explored: profile.stats.unique_skills_used,
+                    total_skills_used: profile.stats.total_skills_used,
+                    total_threads: profile.stats.total_threads,
+                    daily,
+                    top_invocations,
+                    stats_as_of: profile.metadata.stats_as_of,
+                    generated_at: profile.metadata.generated_at,
+                });
+                collected.snapshot.profile_observed = Some(observation_now());
+                collected.succeeded = true;
+            } else {
+                collected.failures.push(failure(
+                    ProviderAccountSource::Profile,
+                    "账户响应未报告可用统计",
+                ));
+            }
+        }
+        Err(_) => collected.failures.push(failure(
+            ProviderAccountSource::Profile,
+            "账户用量响应格式无效，请稍后刷新",
+        )),
+    }
+}
+
 async fn collect_async(
     home: PathBuf,
     capture: Capture,
@@ -1061,103 +1159,7 @@ async fn collect_async(
     )
     .await;
     if let Some(payload) = profile {
-        match serde_json::from_value::<ProfileResponse>(payload) {
-            Ok(profile) => {
-                let has_stats_error = profile
-                    .metadata
-                    .stats_error
-                    .as_ref()
-                    .is_some_and(|message| !message.is_empty());
-                if has_stats_error {
-                    collected.failures.push(failure(
-                        ProviderAccountSource::Profile,
-                        "提供商暂时无法提供账户用量统计",
-                    ));
-                }
-                let has_profile_data = profile.stats.lifetime_tokens.is_some()
-                    || profile.stats.peak_daily_tokens.is_some()
-                    || profile.stats.longest_running_turn_sec.is_some()
-                    || profile.stats.current_streak_days.is_some()
-                    || profile.stats.longest_streak_days.is_some()
-                    || profile.stats.daily_usage_buckets.is_some()
-                    || profile.stats.top_invocations.is_some()
-                    || profile.stats.fast_mode_usage_percentage.is_some()
-                    || profile.stats.most_used_reasoning_effort.is_some()
-                    || profile
-                        .stats
-                        .most_used_reasoning_effort_percentage
-                        .is_some()
-                    || profile.stats.unique_skills_used.is_some()
-                    || profile.stats.total_skills_used.is_some()
-                    || profile.stats.total_threads.is_some()
-                    || profile.metadata.stats_as_of.is_some()
-                    || profile.metadata.generated_at.is_some();
-                let daily = profile.stats.daily_usage_buckets.map(|buckets| {
-                    buckets
-                        .into_iter()
-                        .map(|bucket| ProviderAccountDailyUsage {
-                            date: bucket.start_date,
-                            tokens: bucket.tokens,
-                        })
-                        .collect()
-                });
-                let top_invocations = profile.stats.top_invocations.map(|items| {
-                    items
-                        .into_iter()
-                        .map(|item| {
-                            let kind = item.kind.unwrap_or_else(|| "unknown".into());
-                            let display_name = item
-                                .skill_name
-                                .as_ref()
-                                .or(item.plugin_name.as_ref())
-                                .cloned()
-                                .unwrap_or_else(|| "Unknown".into());
-                            ProviderAccountTopInvocation {
-                                kind,
-                                display_name,
-                                usage_count: item.usage_count.unwrap_or(0),
-                                plugin_id: item.plugin_id,
-                                plugin_name: item.plugin_name,
-                                skill_id: item.skill_id,
-                                skill_name: item.skill_name,
-                            }
-                        })
-                        .collect()
-                });
-                if has_profile_data && !has_stats_error {
-                    collected.snapshot.profile = Some(ProviderAccountProfile {
-                        lifetime_tokens: profile.stats.lifetime_tokens,
-                        peak_daily_tokens: profile.stats.peak_daily_tokens,
-                        longest_task_seconds: profile.stats.longest_running_turn_sec,
-                        current_streak_days: profile.stats.current_streak_days,
-                        longest_streak_days: profile.stats.longest_streak_days,
-                        fast_mode_percent: profile.stats.fast_mode_usage_percentage,
-                        reasoning_effort: profile.stats.most_used_reasoning_effort,
-                        reasoning_effort_percent: profile
-                            .stats
-                            .most_used_reasoning_effort_percentage,
-                        skills_explored: profile.stats.unique_skills_used,
-                        total_skills_used: profile.stats.total_skills_used,
-                        total_threads: profile.stats.total_threads,
-                        daily,
-                        top_invocations,
-                        stats_as_of: profile.metadata.stats_as_of,
-                        generated_at: profile.metadata.generated_at,
-                    });
-                    collected.snapshot.profile_observed = Some(observation_now());
-                    collected.succeeded = true;
-                } else {
-                    collected.failures.push(failure(
-                        ProviderAccountSource::Profile,
-                        "账户响应未报告可用统计",
-                    ));
-                }
-            }
-            Err(_) => collected.failures.push(failure(
-                ProviderAccountSource::Profile,
-                "账户用量响应格式无效，请稍后刷新",
-            )),
-        }
+        collect_profile_payload(payload, &mut collected);
     }
     Ok(collected)
 }
@@ -1400,59 +1402,113 @@ mod tests {
             },
             "metadata": {"stats_as_of":"2026-11-15","generated_at":"2026-11-16T10:00:00Z","stats_error":null}
         });
-        let profile: ProfileResponse = serde_json::from_value(payload).unwrap();
-        assert_eq!(profile.stats.lifetime_tokens, Some(123456));
+        let mut collected = Collected::default();
+        collect_profile_payload(payload, &mut collected);
+        assert!(collected.succeeded && collected.failures.is_empty());
+        assert!(collected.snapshot.profile_observed.is_some());
+        let profile = collected.snapshot.profile.unwrap();
+        assert_eq!(profile.lifetime_tokens, Some(123456));
+        assert_eq!(profile.peak_daily_tokens, Some(45678));
+        assert_eq!(profile.longest_task_seconds, Some(7200));
+        assert_eq!(profile.current_streak_days, Some(3));
+        assert_eq!(profile.longest_streak_days, Some(9));
+        assert_eq!(profile.fast_mode_percent, Some(12.5));
+        assert_eq!(profile.reasoning_effort.as_deref(), Some("medium"));
+        assert_eq!(profile.reasoning_effort_percent, Some(55.0));
+        assert_eq!(profile.skills_explored, Some(2));
+        assert_eq!(profile.total_skills_used, Some(6));
+        assert_eq!(profile.total_threads, Some(8));
         assert_eq!(
-            profile.stats.daily_usage_buckets.as_ref().unwrap()[0].start_date,
-            "2026-11-15"
+            profile.daily.unwrap(),
+            [ProviderAccountDailyUsage {
+                date: "2026-11-15".into(),
+                tokens: 321
+            }]
         );
-        assert_eq!(profile.metadata.stats_as_of.as_deref(), Some("2026-11-15"));
+        assert_eq!(profile.stats_as_of.as_deref(), Some("2026-11-15"));
         assert_eq!(
-            profile.metadata.generated_at.as_deref(),
+            profile.generated_at.as_deref(),
             Some("2026-11-16T10:00:00Z")
         );
-        assert_eq!(profile.stats.daily_usage_buckets.as_ref().unwrap().len(), 1);
+        let invocations = profile.top_invocations.unwrap();
+        assert_eq!(invocations.len(), 1);
+        assert_eq!(invocations[0].kind, "skill");
+        assert_eq!(invocations[0].display_name, "sample");
+        assert_eq!(invocations[0].usage_count, 4);
     }
 
     #[test]
     fn missing_or_partial_daily_bucket_invalidates_profile_payload() {
-        let missing_date = serde_json::from_value::<ProfileResponse>(serde_json::json!({
-            "stats": {"lifetime_tokens": 10, "daily_usage_buckets": [{"tokens": 4}]},
-            "metadata": {"generated_at":"2026-11-16T10:00:00Z"}
-        }));
-        let missing_tokens = serde_json::from_value::<ProfileResponse>(serde_json::json!({
-            "stats": {"lifetime_tokens": 10, "daily_usage_buckets": [{"start_date":"2026-11-15"}]},
-            "metadata": {"generated_at":"2026-11-16T10:00:00Z"}
-        }));
-        let empty_date = serde_json::from_value::<ProfileResponse>(serde_json::json!({
-            "stats": {"lifetime_tokens": 10, "daily_usage_buckets": [{"start_date":"","tokens":4}]},
-            "metadata": {"generated_at":"2026-11-16T10:00:00Z"}
-        }));
-        let negative_tokens = serde_json::from_value::<ProfileResponse>(serde_json::json!({
-            "stats": {"lifetime_tokens": 10, "daily_usage_buckets": [{"start_date":"2026-11-15","tokens":-1}]},
-            "metadata": {"generated_at":"2026-11-16T10:00:00Z"}
-        }));
-        let mixed = serde_json::from_value::<ProfileResponse>(serde_json::json!({
-            "stats": {"daily_usage_buckets": [
-                {"start_date":"2026-11-15","tokens":4}, {"tokens":5}
-            ]}, "metadata":{}
-        }));
-        assert!(missing_date.is_err());
-        assert!(missing_tokens.is_err());
-        assert!(empty_date.is_err());
-        assert!(negative_tokens.is_err());
-        assert!(mixed.is_err());
+        for bucket in [
+            serde_json::json!({"tokens":4}),
+            serde_json::json!({"start_date":"2026-11-15"}),
+            serde_json::json!({"start_date":"","tokens":4}),
+            serde_json::json!({"start_date":"2026-11-15","tokens":-1}),
+        ] {
+            let mut collected = Collected::default();
+            collect_profile_payload(
+                serde_json::json!({
+                    "stats":{"lifetime_tokens":10,"daily_usage_buckets":[
+                        {"start_date":"2026-11-14","tokens":5}, bucket
+                    ]}, "metadata":{"generated_at":"2026-11-16T10:00:00Z"}
+                }),
+                &mut collected,
+            );
+            assert!(!collected.succeeded);
+            assert!(collected.snapshot.profile.is_none());
+            assert!(collected.snapshot.profile_observed.is_none());
+            assert_eq!(collected.failures.len(), 1);
+            assert_eq!(collected.failures[0].source, ProviderAccountSource::Profile);
+            assert!(collected.failures[0].message.contains("响应格式无效"));
+        }
     }
 
     #[test]
-    fn empty_stats_and_metadata_are_not_a_report() {
-        let profile: ProfileResponse = serde_json::from_value(serde_json::json!({
-            "stats": {}, "metadata": {}
-        }))
-        .unwrap();
-        assert!(profile.stats.lifetime_tokens.is_none());
-        assert!(profile.stats.daily_usage_buckets.is_none());
-        assert!(profile.metadata.stats_as_of.is_none());
+    fn profile_admission_distinguishes_missing_fields_from_explicit_empty_reports() {
+        for (payload, accepted, diagnostic) in [
+            (
+                serde_json::json!({"stats":{},"metadata":{}}),
+                false,
+                "未报告可用统计",
+            ),
+            (
+                serde_json::json!({"stats":{"lifetime_tokens":0},"metadata":{}}),
+                true,
+                "",
+            ),
+            (
+                serde_json::json!({"stats":{"daily_usage_buckets":[]},"metadata":{}}),
+                true,
+                "",
+            ),
+            (
+                serde_json::json!({"stats":{},"metadata":{"generated_at":"2026-11-16"}}),
+                true,
+                "",
+            ),
+            (
+                serde_json::json!({"stats":{"lifetime_tokens":10},"metadata":{"stats_error":"synthetic unavailable"}}),
+                false,
+                "暂时无法提供账户用量统计",
+            ),
+        ] {
+            let mut collected = Collected::default();
+            collect_profile_payload(payload, &mut collected);
+            assert_eq!(collected.succeeded, accepted);
+            assert_eq!(collected.snapshot.profile.is_some(), accepted);
+            assert_eq!(collected.snapshot.profile_observed.is_some(), accepted);
+            if accepted {
+                assert!(collected.failures.is_empty());
+            } else {
+                assert!(
+                    collected
+                        .failures
+                        .iter()
+                        .any(|failure| failure.source == ProviderAccountSource::Profile
+                            && failure.message.contains(diagnostic))
+                );
+            }
+        }
     }
 
     #[test]
