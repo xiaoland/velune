@@ -260,17 +260,16 @@ sealed partial class Conversation
         if (pendingCreation is not { } creation) return;
         if (creation.OwnerId != composerOwner) throw new InvalidOperationException("新会话的执行来源不可用，输入已保留");
         var oldPath = ComposerCachePath;
-        if (Snapshot == null)
+        var destination = createdSnapshot;
+        if (Target.Unsent)
         {
-            var snapshot = createdSnapshot;
-            if (snapshot == null)
+            if (destination == null)
             {
                 var read = await Call(NativeOperation.ConversationRead, application => application.ReadConversation(creation.RuntimeId, creation.ConversationId));
                 if (closed) return;
-                snapshot = read.Snapshot ?? throw new InvalidOperationException("设备没有返回新会话");
+                destination = read.Snapshot ?? throw new InvalidOperationException("设备没有返回新会话");
             }
-            if (Target.Unsent) await FlushComposerTarget(ComposerContext());
-            Merge(snapshot); composerTargetLoaded = false; composerTargetRevision = null;
+            await FlushComposerTarget(ComposerContext());
         }
         var targetVersion = composerTargetVersion;
         var context = new ComposerContextKey.Conversation(creation.OwnerId, creation.ConversationId);
@@ -278,6 +277,8 @@ sealed partial class Conversation
         var promotion = new ComposerPromotion(creation.InputId, creation.OwnerId, creation.ConversationId, creation.RuntimeId, choices);
         var promoted = await Call(NativeOperation.ConversationWrite, application => application.PromoteComposerInput(promotion, composerDirectoryRevision));
         var target = promoted.State?.Targets.FirstOrDefault(candidate => candidate.Context == context) ?? throw new InvalidOperationException("设备没有返回新会话的发送目标");
+        // A failed promotion leaves the original tab and its recovery record in place.
+        if (destination != null) Merge(destination);
         pendingCreation = null; composerDirectoryRevision = null;
         if (composerTargetVersion == targetVersion && !composerTargetDirty) ReceiveTarget(target);
         else

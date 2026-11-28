@@ -343,7 +343,7 @@ public sealed partial class WorkspaceWindow : Window
         {
             // A conversation sent for the first time is the tab's from now on.
             tab.Target = view.Model.Target;
-            if (view.Model.HasHandedOffDraftCache && Shell.CheckpointLayout())
+            if (view.Model.HasHandedOffDraftCache && view.Model.FlushComposerCache() && Shell.CheckpointLayout())
                 view.Model.RetireHandedOffDraftCache();
         }
         var title = tab.Title;
