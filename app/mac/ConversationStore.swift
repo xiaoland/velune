@@ -117,9 +117,12 @@ final class ConversationStore: ObservableObject {
     private var payloadDemand: Set<String> = []
     /// Complete messages read on demand, by message identifier.
     private var loadedPayloads: [String: DeliveredMessage] = [:]
-    static let draftConversationPrefix = "draft:"
+    /// The draft older clients shared across every unsent tab. The core owns
+    /// the encoding of local conversation identities.
+    static let legacyNewConversationID = legacyNewConversationId()
+    static func isDraftConversation(_ conversationID: String) -> Bool { localConversation(conversationId: conversationID) == .draft }
     var unsentTabID = UUID()
-    var unsentContextID: String { Self.draftConversationPrefix + unsentTabID.uuidString.lowercased() }
+    var unsentContextID: String { draftConversationId(tabIdentity: unsentTabID.uuidString.lowercased()) }
     private(set) var restoresLegacyUnsentInput = false
 
     init(device: DeviceStore, sideChat: SideChatTarget? = nil) {
@@ -387,7 +390,7 @@ final class ConversationStore: ObservableObject {
         guard !isSideChat, !composerTargetClosed, !isShuttingDown, !isLoading,
               !isOpeningConversation, let snapshot,
               selectedConversationID == nil || selectedConversationID == snapshot.conversation.id else { return nil }
-        let unsent = isDraft || snapshot.conversation.id.hasPrefix(Self.draftConversationPrefix)
+        let unsent = isDraft || Self.isDraftConversation(snapshot.conversation.id)
         return ComposerTargetRequest(runtimeId: unsent ? snapshot.contextRuntimeID : snapshot.conversation.runtimeID,
                                      conversationId: snapshot.conversation.id)
     }
@@ -1267,11 +1270,11 @@ final class ConversationStore: ObservableObject {
         selectedConversationID = id
     }
     /// An unsent conversation can still choose its working directory.
-    var isUnsentConversation: Bool { isDraft || loadedConversationID?.hasPrefix(Self.draftConversationPrefix) == true }
+    var isUnsentConversation: Bool { isDraft || loadedConversationID.map(Self.isDraftConversation) == true }
     var unsentConversation: Conversation? { isUnsentConversation ? snapshot?.conversation : nil }
     func restoreUnsentConversation(_ saved: Conversation) {
         guard !started else { return }
-        restoresLegacyUnsentInput = saved.id == Self.draftConversationPrefix + "new-conversation"
+        restoresLegacyUnsentInput = saved.id == Self.legacyNewConversationID
         if restoresLegacyUnsentInput { device.composerInputs.restoreLegacyTarget(to: unsentContextID) }
         let conversation = Conversation(id: unsentContextID, title: saved.title, updatedAtUnixMs: saved.updatedAtUnixMs, createdAtUnixMs: saved.createdAtUnixMs, runtimeID: saved.runtimeID, cwd: saved.cwd, creationProject: saved.creationProject, canRename: saved.canRename, canDelete: saved.canDelete)
         started = true

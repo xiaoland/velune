@@ -927,6 +927,40 @@ impl VeluneApplication {
             ManageComposerInputs { operation }
         )
     }
+    pub fn promote_composer_input(
+        &self,
+        promotion: ComposerPromotion,
+        since_revision: Option<u64>,
+    ) -> Result<ComposerInputUpdate, BindingError> {
+        let capabilities =
+            self.manage_composer_inputs(ComposerInputOperation::Read { since_revision })?;
+        if capabilities.atomic_creation {
+            return self
+                .manage_composer_inputs(ComposerInputOperation::PromoteWithTarget { promotion });
+        }
+        let ComposerPromotion {
+            input_id,
+            owner_id,
+            conversation_id,
+            runtime_id,
+            choices,
+        } = promotion;
+        if let Some(seed) = choices {
+            self.manage_composer_inputs(ComposerInputOperation::EnsureTarget {
+                context: ComposerContextKey::Conversation {
+                    owner_id: owner_id.clone(),
+                    conversation_id: conversation_id.clone(),
+                },
+                seed,
+            })?;
+        }
+        self.manage_composer_inputs(ComposerInputOperation::Promote {
+            input_id,
+            owner_id,
+            conversation_id,
+            runtime_id,
+        })
+    }
     pub fn upload_composer_attachment(
         &self,
         name: String,

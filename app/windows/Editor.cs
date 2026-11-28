@@ -34,7 +34,7 @@ sealed class Tab
 
     public string Title => View?.Model.Title ?? (Target.Unsent ? "新会话" : Target.Title);
 
-    public TabState Save() => new(Target.RuntimeID, Target.ConversationID, Title);
+    public TabState Save() => Target.Save(Title);
 }
 
 abstract class EditorNode
@@ -213,10 +213,11 @@ sealed class Editor
             return Restore(single.Children[0]);
         }
         var pane = new Pane(this);
-        var tabs = state is PaneState { Tabs.Count: > 0 } kept ? kept.Tabs : [new TabState("", "", "")];
-        foreach (var tab in tabs)
+        IEnumerable<Target> targets = state is PaneState { Tabs.Count: > 0 } kept
+            ? kept.Tabs.Select(tab => tab.Restore()) : [Target.Draft()];
+        foreach (var target in targets)
         {
-            Add(pane, new Tab(new Target(tab.RuntimeId, tab.ConversationId, tab.Title)), pane.Count);
+            Add(pane, new Tab(target), pane.Count);
         }
         pane.View.SelectedIndex = state is PaneState { } at ? Math.Clamp(at.Selected, 0, pane.Count - 1) : 0;
         return pane;
@@ -424,12 +425,12 @@ sealed class Editor
     // NewTab opens a tab after the pane's selected one, unsent when no target.
     public Tab NewTab(Pane pane, Target? target)
     {
-        var tab = new Tab(target ?? new Target("", "", ""));
+        var tab = new Tab(target ?? Target.Draft());
         var at = pane.Selected is { } selected ? pane.View.TabItems.IndexOf(selected.Item) + 1 : pane.Count;
         Add(pane, tab, at);
         pane.View.SelectedItem = tab.Item;
         Focus(pane);
-        window.LayoutChanged();
+        window.Shell.CheckpointLayout();
         return tab;
     }
 
@@ -444,8 +445,7 @@ sealed class Editor
     }
 
     // ReopenClosed reopens the most recently closed tab after the focused
-    // pane's selected one: a deleted conversation's entry is skipped, an
-    // unsent one reopens as a fresh new tab.
+    // pane's selected one. A deleted conversation's entry is skipped.
     public void ReopenClosed()
     {
         while (recentlyClosed.Count > 0)
@@ -456,7 +456,7 @@ sealed class Editor
             {
                 continue;
             }
-            NewTab(Focused, target.Unsent ? null : target);
+            NewTab(Focused, target);
             return;
         }
     }
@@ -585,7 +585,8 @@ sealed class Editor
         Build();
         Focus(added);
         window.Show(tab);
-        window.LayoutChanged();
+        if (tab.Target.Unsent) window.Shell.CheckpointLayout();
+        else window.LayoutChanged();
     }
 
     // MoveToSplit moves a tab of a pane with others into a new pane beside it.

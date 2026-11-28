@@ -2,7 +2,7 @@
 use super::*;
 use velune_application_api::{
     ComposerContextKey, ComposerTargetBasis, ComposerTargetChoices, ComposerTargetIdentity,
-    ComposerTargetRequest, NextTurnInput, normalize_composer_target_choices,
+    ComposerTargetRequest, LocalConversation, NextTurnInput, normalize_composer_target_choices,
 };
 
 impl CoreRuntime {
@@ -11,23 +11,25 @@ impl CoreRuntime {
         request: &ComposerTargetRequest,
     ) -> Result<Option<crate::conversation::ConversationSnapshot>, RuntimeError> {
         match &request.conversation_id {
-            // A stable unsent-tab identity owns choices before a native
-            // conversation exists. It must never query a runtime transcript.
-            Some(id) if id.starts_with("draft:") => Ok(None),
-            Some(id) => {
-                if id.starts_with("side-chat:") {
-                    return Err(RuntimeError::invalid("侧聊使用自己的临时执行选择"));
+            Some(id) => match LocalConversation::of(id) {
+                // A stable unsent-tab identity owns choices before a native
+                // conversation exists. It must never query a runtime transcript.
+                Some(LocalConversation::Draft) => Ok(None),
+                Some(LocalConversation::SideChat) => {
+                    Err(RuntimeError::invalid("侧聊使用自己的临时执行选择"))
                 }
-                // The request names the logical source, while snapshots are
-                // addressed in the runtime of the current native segment.
-                let context_runtime_id = self
-                    .conversation_source_address(&request.runtime_id, id)?
-                    .context_runtime_id;
-                Ok(Some(
-                    self.queried_snapshot(&context_runtime_id, id)?
-                        .ok_or_else(|| RuntimeError::invalid("目标会话尚不可用"))?,
-                ))
-            }
+                None => {
+                    // The request names the logical source, while snapshots are
+                    // addressed in the runtime of the current native segment.
+                    let context_runtime_id = self
+                        .conversation_source_address(&request.runtime_id, id)?
+                        .context_runtime_id;
+                    Ok(Some(
+                        self.queried_snapshot(&context_runtime_id, id)?
+                            .ok_or_else(|| RuntimeError::invalid("目标会话尚不可用"))?,
+                    ))
+                }
+            },
             None => Ok(None),
         }
     }
@@ -38,7 +40,7 @@ impl CoreRuntime {
         owner_id: String,
     ) -> Result<ComposerTargetIdentity, RuntimeError> {
         let snapshot = self.composer_target_snapshot(&request)?;
-        Ok(target_identity(&request, owner_id, snapshot.as_ref()))
+        target_identity(&request, owner_id, snapshot.as_ref())
     }
 
     pub(crate) fn composer_target_basis(
@@ -52,7 +54,7 @@ impl CoreRuntime {
             context,
             default_runtime_id,
             ..
-        } = target_identity(&request, owner_id.clone(), snapshot.as_ref());
+        } = target_identity(&request, owner_id.clone(), snapshot.as_ref())?;
         let choices = normalize_composer_target_choices(choices.unwrap_or_default());
         if choices
             .runtime_owner_id
@@ -135,22 +137,17 @@ fn target_identity(
     request: &ComposerTargetRequest,
     owner_id: String,
     snapshot: Option<&crate::conversation::ConversationSnapshot>,
-) -> ComposerTargetIdentity {
-    let context =
-        request
-            .conversation_id
-            .as_ref()
-            .map_or(ComposerContextKey::NewConversation, |id| {
-                ComposerContextKey::Conversation {
-                    owner_id: owner_id.clone(),
-                    conversation_id: id.clone(),
-                }
-            });
-    ComposerTargetIdentity {
+) -> Result<ComposerTargetIdentity, RuntimeError> {
+    let context = match &request.conversation_id {
+        Some(id) => ComposerContextKey::of_conversation(Some(owner_id.clone()), id.clone())
+            .ok_or_else(|| RuntimeError::invalid("侧聊使用自己的临时执行选择"))?,
+        None => ComposerContextKey::NewConversation,
+    };
+    Ok(ComposerTargetIdentity {
         owner_id,
         context,
         default_runtime_id: snapshot
             .map(|snapshot| snapshot.context_runtime_id.clone())
             .unwrap_or_else(|| request.runtime_id.clone()),
-    }
+    })
 }

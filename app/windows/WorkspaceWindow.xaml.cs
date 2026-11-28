@@ -74,7 +74,7 @@ public sealed partial class WorkspaceWindow : Window
         AppTitleBar.BackRequested += (_, _) => Back(Editor.Focused.Selected, true);
         InstallCommands();
         Commands.Changed += InstallCommands;
-        NewButton.Click += (_, _) => Open(new Target("", "", ""), Opening.CurrentTab);
+        NewButton.Click += (_, _) => Run(Command.NewConversation);
         SettingsButton.Click += (_, _) => Shell.OpenSettings(SettingsPage.Keep);
         // Failures go to 问题; its button shows while there are some.
         RightButtons.Children.Insert(0, new ProblemsButton(Shell.OpenProblems));
@@ -343,6 +343,8 @@ public sealed partial class WorkspaceWindow : Window
         {
             // A conversation sent for the first time is the tab's from now on.
             tab.Target = view.Model.Target;
+            if (view.Model.HasHandedOffDraftCache && view.Model.FlushComposerCache() && Shell.CheckpointLayout())
+                view.Model.RetireHandedOffDraftCache();
         }
         var title = tab.Title;
         tab.Item.Header = title;
@@ -698,8 +700,8 @@ public sealed partial class WorkspaceWindow : Window
         }
         else
         {
-            menu.Items.Add(Ui.MenuItem("向右拆分", () => Editor.SplitWith(pane, false, new Tab(new Target("", "", "")))));
-            menu.Items.Add(Ui.MenuItem("向下拆分", () => Editor.SplitWith(pane, true, new Tab(new Target("", "", "")))));
+            menu.Items.Add(Ui.MenuItem("向右拆分", () => Editor.SplitWith(pane, false, new Tab(Target.Draft()))));
+            menu.Items.Add(Ui.MenuItem("向下拆分", () => Editor.SplitWith(pane, true, new Tab(Target.Draft()))));
         }
         menu.Items.Add(Ui.MenuItem("移到新窗口", () => MoveToNewWindow(tab, null)));
         menu.Items.Add(new MenuFlyoutSeparator());
@@ -768,7 +770,7 @@ public sealed partial class WorkspaceWindow : Window
                 }
                 else
                 {
-                    Editor.SplitWith(Editor.Focused, vertical, new Tab(new Target("", "", "")));
+                    Editor.SplitWith(Editor.Focused, vertical, new Tab(Target.Draft()));
                 }
                 break;
             case Command.PreviousPane:

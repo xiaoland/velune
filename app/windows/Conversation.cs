@@ -1,10 +1,35 @@
 namespace Velune;
 
-// Where a conversation view points: an existing conversation, or, with no
-// conversation ID, one to start on a runtime.
-sealed record Target(string RuntimeID, string ConversationID, string Title)
+// A tab's target owns its draft identity even before the view or runtime exists.
+sealed record Target
 {
-    public bool Unsent => ConversationID.Length == 0;
+    public string RuntimeID { get; init; }
+    public string ConversationID { get; }
+    public string Title { get; init; }
+    public Guid? DraftId { get; }
+    public bool Unsent => DraftId.HasValue;
+    public string ComposerIdentity => DraftId is { } draft
+        ? VeluneApplicationApiMethods.DraftConversationId(draft.ToString())
+        : ConversationID;
+
+    public Target(string runtimeID, string conversationID, string title)
+        : this(runtimeID, conversationID, title, null)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(conversationID);
+    }
+
+    Target(string runtimeID, string conversationID, string title, Guid? draftId)
+    {
+        RuntimeID = runtimeID;
+        ConversationID = conversationID;
+        Title = title;
+        DraftId = draftId;
+    }
+
+    public static Target Draft(string runtimeID = "", Guid? restored = null) =>
+        new(runtimeID, "", "", restored ?? Guid.NewGuid());
+
+    public TabState Save(string title) => new(RuntimeID, ConversationID, title, DraftId);
 }
 
 // A runtime's models as read for the composer.
@@ -284,7 +309,6 @@ sealed partial class Conversation
         var runtimeID = Next;
         var cwd = Target.Unsent && Cwd.Trim().Length > 0 ? Cwd.Trim() : null;
         var inputId = composerInput?.Id;
-        var oldCache = ComposerCachePath;
         if (!await PrepareComposerSubmission()) return false;
         Attached.RemoveAll(sentAttachments.Contains);
         var existing = Snapshot is { } snapshot ? (snapshot.ContextRuntimeId, snapshot.Conversation.Id) : default((string, string)?);
@@ -305,7 +329,6 @@ sealed partial class Conversation
                 CacheComposer();
                 await CompleteCreation(created);
                 Notify();
-                if (oldCache != ComposerCachePath && File.Exists(oldCache)) File.Delete(oldCache);
                 existing = (created.ContextRuntimeId, created.Conversation.Id);
             }
             var (source, id) = existing.Value;
@@ -314,7 +337,7 @@ sealed partial class Conversation
             {
                 Merge(created);
                 // The choices made before the first message are the created conversation's.
-                CacheComposer(); if (oldCache != ComposerCachePath && File.Exists(oldCache)) File.Delete(oldCache);
+                CacheComposer();
             }
             Accepted = true;
             this.sent = true;

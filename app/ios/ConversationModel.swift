@@ -472,9 +472,11 @@ extension ConversationModel {
             let result = try await client.readConversation(peer, runtimeID: creation.runtimeID, conversationID: creation.conversationID)
             apply(result)
         }
+        let promotion = ComposerPromotion(inputId: creation.inputID, ownerId: creation.ownerID, conversationId: creation.conversationID, runtimeId: creation.runtimeID, choices: creation.choices)
+        let revision = composerDirectoryRevision
+        let updated = try await client.application(peer, operation: .conversationWrite) { try $0.promoteComposerInput(promotion: promotion, sinceRevision: revision) }
         if let choices = creation.choices {
             let context = ComposerContextKey.conversation(ownerId: creation.ownerID, conversationId: creation.conversationID)
-            let updated = try await client.application(peer, operation: .conversationWrite) { try $0.manageComposerInputs(operation: .ensureTarget(context: context, seed: choices)) }
             guard let actual = updated.state?.targets.first(where: { $0.context == context }) else { throw MobileError.unavailable }
             observedTargetRevision = actual.revision
             if targetDirty {
@@ -482,7 +484,6 @@ extension ConversationModel {
             } else { receiveTarget(actual) }
         }
         preparedComposerTarget = nil
-        _ = try await client.application(peer, operation: .conversationWrite) { try $0.manageComposerInputs(operation: .promote(inputId: creation.inputID, ownerId: creation.ownerID, conversationId: creation.conversationID, runtimeId: creation.runtimeID)) }
         pendingCreation = nil; onComposerChange?(self)
     }
     private func observeTarget(_ target: ComposerTarget) {

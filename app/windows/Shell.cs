@@ -29,6 +29,7 @@ sealed class Shell
     LibraryWindow? library;
     // The user chose to quit with the library's edits unsaved.
     bool discardDrafts;
+    bool restoringWindows;
     readonly Notifier notifier;
     readonly DispatcherQueue dispatcher;
     // The window the global shortcuts are registered on.
@@ -67,10 +68,13 @@ sealed class Shell
         {
             reopened.Add(new WindowState { Tools = saved.Tools.Copy() });
         }
-        foreach (var state in reopened)
+        restoringWindows = true;
+        try
         {
-            Open(state);
+            foreach (var state in reopened) Open(state);
         }
+        finally { restoringWindows = false; }
+        CheckpointLayout();
         Commands.Changed += SyncHotKeys;
         SyncHotKeys();
         Updates.Start();
@@ -136,6 +140,7 @@ sealed class Shell
             }
         };
         window.Closed += (_, _) => Closed(window);
+        CheckpointLayout();
         window.Activate();
         return window;
     }
@@ -164,7 +169,7 @@ sealed class Shell
         var editor = new PaneState();
         if (target != null)
         {
-            editor.Tabs.Add(new TabState(target.RuntimeID, target.ConversationID, target.Title));
+            editor.Tabs.Add(target.Save(target.Title));
         }
         Open(new WindowState { Device = device.PeerId, Bounds = bounds, Tools = tools, Conversation = true, Editor = editor }, tab);
     }
@@ -232,6 +237,13 @@ sealed class Shell
         {
             store.Save(() => new SavedLayout { Tools = saved.Tools, Windows = [.. windows.Select(window => window.Save())] });
         }
+    }
+
+    public bool CheckpointLayout()
+    {
+        if (quitting || restoringWindows) return false;
+        Changed();
+        return store.Flush();
     }
 
     // Deleted closes the tabs that show a deleted conversation.

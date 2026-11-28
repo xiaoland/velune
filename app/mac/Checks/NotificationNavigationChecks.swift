@@ -169,7 +169,7 @@ import VeluneBindings
     let paneID = UUID(), existingTab = UUID(), draftTab = UUID(), blankTab = UUID()
     peerWindow.sharedComposer.restore("SYNTHETIC LEGACY REMOTE INPUT", attachments: [])
     let legacyComposer = peerWindow.composerDrafts.saved
-    let draft = Conversation(id: ConversationStore.draftConversationPrefix + "legacy", title: "合成远端草稿", updatedAtUnixMs: nil,
+    let draft = Conversation(id: draftConversationId(tabIdentity: "legacy"), title: "合成远端草稿", updatedAtUnixMs: nil,
                              runtimeID: "synthetic-runtime", cwd: nil, canRename: false, canDelete: false)
     let legacy = SavedWindowLayout(layout: .pane(paneID), panes: [paneID: .init(tabs: [existingTab, draftTab, blankTab], selected: existingTab)],
                                    conversations: [existingTab: "synthetic-existing", draftTab: draft.id], focused: paneID,

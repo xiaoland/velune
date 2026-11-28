@@ -11,6 +11,101 @@ pub struct ComposerTargetRequest {
     pub conversation_id: Option<String>,
 }
 
+/// A conversation identity that lives only in a client or in core memory and
+/// never names a runtime transcript: `draft:<tab identity>` for an unsent tab,
+/// `side-chat:<sequence>` for an ephemeral side chat. This module is the only
+/// place that knows the encoding; clients mint and classify through it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum LocalConversation {
+    Draft,
+    SideChat,
+}
+
+impl LocalConversation {
+    const DRAFT_PREFIX: &str = "draft:";
+    const SIDE_CHAT_PREFIX: &str = "side-chat:";
+    /// The draft that older clients shared across every unsent tab. It edits
+    /// [`ComposerContextKey::NewConversation`].
+    pub const LEGACY_NEW_CONVERSATION_ID: &str = "draft:new-conversation";
+
+    pub fn draft_id(tab_identity: &str) -> String {
+        format!("{}{tab_identity}", Self::DRAFT_PREFIX)
+    }
+
+    /// `None` means the ID names a runtime conversation.
+    pub fn of(conversation_id: &str) -> Option<Self> {
+        if conversation_id.starts_with(Self::DRAFT_PREFIX) {
+            Some(Self::Draft)
+        } else if conversation_id.starts_with(Self::SIDE_CHAT_PREFIX) {
+            Some(Self::SideChat)
+        } else {
+            None
+        }
+    }
+
+    pub fn side_chat_id(sequence: u64) -> String {
+        format!("{}{sequence}", Self::SIDE_CHAT_PREFIX)
+    }
+}
+
+/// `None` means the ID names a runtime conversation.
+#[uniffi::export]
+pub fn local_conversation(conversation_id: String) -> Option<LocalConversation> {
+    LocalConversation::of(&conversation_id)
+}
+
+/// The conversation identity of an unsent tab.
+#[uniffi::export]
+pub fn draft_conversation_id(tab_identity: String) -> String {
+    LocalConversation::draft_id(&tab_identity)
+}
+
+#[uniffi::export]
+pub fn legacy_new_conversation_id() -> String {
+    LocalConversation::LEGACY_NEW_CONVERSATION_ID.into()
+}
+
+impl ComposerContextKey {
+    /// The shared input context a client conversation edits. A side chat keeps
+    /// temporary input and has none; a conversation of an unknown executor
+    /// (`owner_id` absent) has none yet.
+    pub fn of_conversation(owner_id: Option<String>, conversation_id: String) -> Option<Self> {
+        if conversation_id == LocalConversation::LEGACY_NEW_CONVERSATION_ID {
+            return Some(Self::NewConversation);
+        }
+        if LocalConversation::of(&conversation_id) == Some(LocalConversation::SideChat) {
+            return None;
+        }
+        owner_id.map(|owner_id| Self::Conversation {
+            owner_id,
+            conversation_id,
+        })
+    }
+
+    /// The client conversation identity that edits this context.
+    pub fn conversation_id(&self) -> &str {
+        match self {
+            Self::Conversation {
+                conversation_id, ..
+            } => conversation_id,
+            Self::NewConversation => LocalConversation::LEGACY_NEW_CONVERSATION_ID,
+        }
+    }
+}
+
+#[uniffi::export]
+pub fn composer_context_key(
+    owner_id: Option<String>,
+    conversation_id: String,
+) -> Option<ComposerContextKey> {
+    ComposerContextKey::of_conversation(owner_id, conversation_id)
+}
+
+#[uniffi::export]
+pub fn composer_context_conversation_id(context: ComposerContextKey) -> String {
+    context.conversation_id().into()
+}
+
 /// The execution identity of a target without its conversation payload.
 #[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
@@ -231,6 +326,20 @@ pub struct ComposerInputUpdate {
     pub revision: u64,
     /// None means the caller already has this exact directory revision.
     pub state: Option<ComposerInputState>,
+    /// Older execution owners omit this capability in the same wire response.
+    #[serde(default)]
+    pub atomic_creation: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[serde(rename_all = "camelCase")]
+pub struct ComposerPromotion {
+    pub input_id: String,
+    pub owner_id: String,
+    pub conversation_id: String,
+    pub runtime_id: String,
+    /// Choices captured when the user sent the first input.
+    pub choices: Option<ComposerTargetChoices>,
 }
 
 #[derive(Clone, Serialize, Deserialize, uniffi::Enum)]
@@ -277,7 +386,70 @@ pub enum ComposerInputOperation {
         conversation_id: String,
         runtime_id: String,
     },
+    PromoteWithTarget {
+        promotion: ComposerPromotion,
+    },
     Forget {
         context: ComposerContextKey,
     },
+}
+
+#[cfg(test)]
+mod local_conversation_tests {
+    use super::LocalConversation;
+
+    #[test]
+    fn local_identities_are_classified_and_runtime_ids_are_not() {
+        assert_eq!(
+            LocalConversation::of("draft:tab-1"),
+            Some(LocalConversation::Draft)
+        );
+        assert_eq!(
+            LocalConversation::of("draft:new-conversation"),
+            Some(LocalConversation::Draft)
+        );
+        let side_chat = LocalConversation::side_chat_id(7);
+        assert_eq!(side_chat, "side-chat:7");
+        assert_eq!(
+            LocalConversation::of(&side_chat),
+            Some(LocalConversation::SideChat)
+        );
+        assert_eq!(LocalConversation::of("0198-native-session"), None);
+        assert_eq!(LocalConversation::of("drafted"), None);
+        assert_eq!(LocalConversation::draft_id("tab-1"), "draft:tab-1");
+    }
+
+    #[test]
+    fn client_conversations_map_to_their_composer_contexts() {
+        use super::ComposerContextKey;
+        let owner = || Some("owner".to_owned());
+        let legacy = LocalConversation::LEGACY_NEW_CONVERSATION_ID;
+        assert_eq!(
+            ComposerContextKey::of_conversation(None, legacy.into()),
+            Some(ComposerContextKey::NewConversation)
+        );
+        assert_eq!(
+            ComposerContextKey::NewConversation.conversation_id(),
+            legacy
+        );
+        assert_eq!(
+            ComposerContextKey::of_conversation(owner(), LocalConversation::side_chat_id(1)),
+            None
+        );
+        assert_eq!(
+            ComposerContextKey::of_conversation(None, "native".into()),
+            None
+        );
+        for id in [LocalConversation::draft_id("tab-1"), "native".into()] {
+            let context = ComposerContextKey::of_conversation(owner(), id.clone()).unwrap();
+            assert_eq!(context.conversation_id(), id);
+        }
+    }
+
+    #[test]
+    fn old_input_updates_leave_atomic_creation_disabled() {
+        let legacy: super::ComposerInputUpdate =
+            serde_json::from_str(r#"{"revision":1,"state":null}"#).unwrap();
+        assert!(!legacy.atomic_creation);
+    }
 }

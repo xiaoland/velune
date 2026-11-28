@@ -138,7 +138,7 @@ struct SavedComposerWorkspace: Codable, Equatable {
         if !needsCopy, let key, let kept = models[key] { model = kept }
         else {
             model = ComposerModel(id: needsCopy ? UUID() : key ?? UUID())
-            let legacyID = ConversationStore.draftConversationPrefix + "new-conversation"
+            let legacyID = ConversationStore.legacyNewConversationID
             let legacy = tab.store.restoresLegacyUnsentInput && id == tab.store.unsentContextID
                 ? conversations[legacyID].flatMap { models[$0]?.savedDraft }
                     ?? device?.composerInputs.inputID(for: legacyID).flatMap { device?.composerInputs.draft($0) }
@@ -153,7 +153,7 @@ struct SavedComposerWorkspace: Codable, Equatable {
             // Old shared composers could leave multiple session bindings to
             // one input. Retain the original and rebind only this copy via CAS.
             device?.composerInputs.bind(id, input: model)
-        } else if !id.hasPrefix("tab:"), !id.hasPrefix("side-chat:"), synced == nil, !resolving.contains(id), let device {
+        } else if !id.hasPrefix("tab:"), localConversation(conversationId: id) != .sideChat, synced == nil, !resolving.contains(id), let device {
             resolving.insert(id)
             device.composerInputs.ensure(id, model: model) { [weak self, weak model] resolved in
                 guard let self, let model else { return }
@@ -260,7 +260,7 @@ struct SavedComposerWorkspace: Codable, Equatable {
             if let previous = conversations[id], previous != model.id { keep(previous) }
             conversations[id] = model.id
             if activeContext == id { shared = model }
-            if id != ConversationStore.draftConversationPrefix + "new-conversation" { device?.composerInputs.bind(id, input: model) }
+            if id != ConversationStore.legacyNewConversationID { device?.composerInputs.bind(id, input: model) }
         }
         retained.removeAll { $0 == model.id }
         targetTab = tab
