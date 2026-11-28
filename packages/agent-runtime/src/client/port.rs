@@ -718,7 +718,7 @@ impl Client {
         port.settle(); // latch before consuming even an already queued terminal
         let sequences = port.operations.keys().copied().collect::<Vec<_>>();
         // Reserved replies/cancellation get dispatch capacity before business writes.
-        for reserved in [true, false] {
+        'dispatch: for reserved in [true, false] {
             for seq in &sequences {
                 port.settle();
                 let writer_busy = port
@@ -778,6 +778,15 @@ impl Client {
                     {
                         Ok(receipt) => {
                             op.write = Some(receipt);
+                        }
+                        Err(rejected)
+                            if rejected.error.kind() == std::io::ErrorKind::WouldBlock =>
+                        {
+                            // The bounded writer has not accepted any bytes. Keep
+                            // the same queued frame, identity and deadline until
+                            // physical capacity returns; later controls cannot pass it.
+                            op.bytes = Some(rejected.frame.bytes);
+                            break 'dispatch;
                         }
                         Err(rejected) => {
                             // The writer returned the original buffer/deadline without
