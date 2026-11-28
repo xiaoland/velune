@@ -1118,6 +1118,86 @@ fn pi_failed_cancel_keeps_real_child_and_home_until_bounded_cleanup_capacity_ret
 }
 
 #[test]
+fn historical_mutations_reject_missing_and_malformed_revisions_before_native_io() {
+    let fixture = Fixture::new("unblocked", false);
+    let service = fixture.open();
+    let conversation_id = fixture.id("edit");
+    let view = snapshot(&service, conversation_id.clone());
+    let choice = view
+        .follow_up
+        .editable
+        .iter()
+        .find(|item| item.message_id.contains("edited-user"))
+        .unwrap();
+    let original = fs::read(fixture.0.join("edit-history.json")).unwrap();
+    let edit = |expected_revision: Option<String>| Command::EditMessage {
+        runtime_id: "pi".into(),
+        conversation_id: conversation_id.clone(),
+        message_id: choice.message_id.clone(),
+        placement: EditPlacement::InPlace,
+        target_runtime_id: None,
+        expected_revision,
+        selection: None,
+        turn: crate::ComposedTurn {
+            text: "replacement".into(),
+            attachments: vec![],
+            effort: None,
+            permission_mode: None,
+        },
+    };
+    let delete = |expected_revision: String| Command::DeleteUserMessage {
+        runtime_id: "pi".into(),
+        conversation_id: conversation_id.clone(),
+        message_id: choice.message_id.clone(),
+        truncate: false,
+        expected_revision,
+    };
+    let execute = |command| service.execute(ClientViewId("edit".into()), command);
+    let mut old_wire = serde_json::to_value(edit(None)).unwrap();
+    old_wire["parameters"]
+        .as_object_mut()
+        .unwrap()
+        .remove("expected_revision");
+    let missing_revision = execute(serde_json::from_value(old_wire).unwrap())
+        .err()
+        .expect("request without an expected revision must be rejected");
+    assert_eq!(missing_revision.kind, FailureKind::Invalid);
+
+    for malformed in ["bogus:", "999999:", "1::not-a-digest"] {
+        for command in [edit(Some(malformed.into())), delete(malformed.into())] {
+            let failure = execute(command)
+                .err()
+                .expect("malformed revisions must be rejected");
+            assert_eq!(failure.kind, FailureKind::Conflict);
+            assert_eq!(failure.code, "edit_history_changed");
+            assert_eq!(failure.phase, "edit_baseline");
+        }
+    }
+    assert_eq!(
+        fs::read(fixture.0.join("edit-history.json")).unwrap(),
+        original
+    );
+    assert!(!fixture.0.join("edit-wire").exists());
+    assert!(!fixture.0.join("fork-count").exists());
+    assert!(!fixture.0.join("delete-count").exists());
+
+    let Response::DeleteUserMessage(result) =
+        execute(delete(choice.revision.clone().unwrap())).unwrap()
+    else {
+        panic!("expected a delete response");
+    };
+    assert!(
+        result
+            .snapshot
+            .unwrap()
+            .messages
+            .iter()
+            .all(|message| message.id != choice.message_id)
+    );
+    close_after_cleanup(&service);
+}
+
+#[test]
 fn pi_edit_generic_branch_rejection_never_creates_a_fallback_copy() {
     let fixture = Fixture::new("branch", true);
     let service = fixture.open();
