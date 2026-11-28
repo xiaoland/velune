@@ -306,6 +306,16 @@ fn edit_branch_does_not_complete_on_rewind_error_or_invalid_post_branch_frame() 
             _ => unreachable!(),
         };
         assert!(error.contains(expected), "{mode}: {error}");
+        assert_eq!(
+            ids(&session),
+            [
+                "pi:session:prefix-user:0",
+                "pi:session:prefix-reply:0",
+                "pi:session:edited-user:0",
+                "pi:session:future-reply:0",
+            ],
+            "{mode}: a failed edit barrier must preserve the last validated history"
+        );
         let requests = std::fs::read_to_string(root.join("requests.jsonl")).unwrap();
         assert!(!requests.lines().any(|line| {
             serde_json::from_str::<Value>(line)
