@@ -39,7 +39,7 @@ VELUNE_TEST_CODEX_BINARY=/absolute/path/to/codex cargo test --locked -p velune-a
 VELUNE_TEST_CLAUDE_BINARY=/absolute/path/to/claude cargo test --locked -p velune-agent-runtime --test native_context_deletion installed_claude -- --ignored
 ```
 
-`pi_background_cold` 和应用层 `real_pi_sdk_cold_core_deletion_preserves_replies_without_model_turns` 的显式检查还需要 `VELUNE_TEST_PI_SYNTHETIC_FIXTURE`、`VELUNE_TEST_PI_BINARY` 和 `VELUNE_TEST_NODE_BINARY`；fixture 必须是经授权的合成会话目录，不能指向日常 Harness HOME。它们克隆 fixture 后分别观察实际 SDK 的冷读取／后台任务和删除历史，不调用模型。默认层继续保留原生历史格式和导入内容的合成检查。提供这些变量后分别执行：
+设置 `VELUNE_TEST_PI_BINARY` 和 `VELUNE_TEST_NODE_BINARY` 后，下列检查会把仓库随附的三轮合成会话写入各自的临时目录。`pi_background_cold` 观察实际 SDK 的冷读取、后台任务和回环模型请求数。应用层检查通过 Core 删除消息，关闭子进程后重新读取原生历史。[合成会话](../../packages/test-support/fixtures/pi/three-turns.jsonl)
 
 ```sh
 cargo test --locked -p velune-agent-runtime --test pi_background_cold -- --ignored

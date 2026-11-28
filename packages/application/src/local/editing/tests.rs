@@ -846,145 +846,44 @@ for line in sys.stdin:
     }
 }
 
-/// Opt-in real-SDK acceptance. Only an explicitly supplied synthetic
-/// fixture is cloned; no original session or ambient HOME is opened.
+/// Opt-in real-SDK acceptance using a fresh copy of the checked-in synthetic session.
 #[test]
-#[ignore = "requires an isolated synthetic Pi fixture and explicit Pi/Node binaries"]
+#[ignore = "requires explicit Pi and Node binaries"]
 fn real_pi_sdk_cold_core_deletion_preserves_replies_without_model_turns() {
     let required = |name| {
         std::env::var_os(name)
             .filter(|value| !value.is_empty())
             .unwrap_or_else(|| panic!("explicit real Pi SDK acceptance requires {name}"))
     };
-    let fixture = required("VELUNE_TEST_PI_SYNTHETIC_FIXTURE");
-    let cli = required("VELUNE_TEST_PI_BINARY");
-    let node = required("VELUNE_TEST_NODE_BINARY");
-    fn clone_private(source: &Path, target: &Path) {
-        std::fs::create_dir_all(target).unwrap();
-        for entry in std::fs::read_dir(source).unwrap() {
-            let entry = entry.unwrap();
-            let kind = entry.file_type().unwrap();
-            assert!(
-                !kind.is_symlink(),
-                "synthetic fixture must not escape its root"
-            );
-            let target = target.join(entry.file_name());
-            if kind.is_dir() {
-                clone_private(&entry.path(), &target);
-            } else {
-                std::fs::copy(entry.path(), target).unwrap();
-            }
-        }
-    }
-    let fixture = PathBuf::from(fixture);
-    let cli = PathBuf::from(cli);
-    let node = PathBuf::from(node);
+    let cli = PathBuf::from(required("VELUNE_TEST_PI_BINARY"));
+    let node = PathBuf::from(required("VELUNE_TEST_NODE_BINARY"));
     let resources = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../agent-runtime/resources")
         .canonicalize()
         .unwrap();
     for truncate in [false, true] {
-        let root = std::env::temp_dir().join(format!(
-            "velune-core-pi-sdk-delete-{}",
-            crate::new_record_key()
-        ));
+        let root = velune_test_support::TempRoot::new("core-pi-sdk-delete");
         let agent = root.join("agent");
-        clone_private(&fixture.join("pi"), &agent);
-        let models: Value =
-            serde_json::from_slice(&std::fs::read(agent.join("models.json")).unwrap()).unwrap();
-        assert!(
-            models["providers"]
-                .as_object()
-                .unwrap()
-                .values()
-                .all(|provider| provider["baseUrl"] == "http://127.0.0.1:1/v1"
-                    && provider["apiKey"] == "synthetic"),
-            "real SDK acceptance must have only the closed synthetic endpoint"
+        let workspace = root.dir("workspace");
+        let os_home = root.dir("os-home");
+        let source = velune_test_support::write_pi_three_turn_session(
+            &agent,
+            &workspace,
+            "http://127.0.0.1:1/v1",
         );
-        let workspace = root.join("workspace");
-        let os_home = root.join("os-home");
-        std::fs::create_dir_all(&workspace).unwrap();
-        std::fs::create_dir_all(&os_home).unwrap();
-        // The visible fixture may already have been edited by GUI
-        // acceptance. Start from an immutable, complete synthetic backup,
-        // never from an already truncated active branch.
-        let candidates = [
-            fixture.join("state/conversation-edits"),
-            fixture.join("pi/sessions"),
-        ];
-        let mut records: Vec<Value> = candidates
-            .iter()
-            .flat_map(|directory| {
-                std::fs::read_dir(directory)
-                    .into_iter()
-                    .flatten()
-                    .filter_map(Result::ok)
-                    .map(|entry| entry.path())
-            })
-            .filter(|path| path.extension().is_some_and(|ext| ext == "jsonl"))
-            .filter_map(|path| std::fs::read_to_string(path).ok())
-            .filter_map(|text| {
-                text.lines()
-                    .map(serde_json::from_str)
-                    .collect::<Result<Vec<Value>, _>>()
-                    .ok()
-            })
-            .find(|records| {
-                records
-                    .first()
-                    .is_some_and(|record| record["type"] == "session")
-                    && records
-                        .iter()
-                        .filter(|record| {
-                            record["type"] == "message" && record["message"]["role"] == "user"
-                        })
-                        .count()
-                        == 3
-                    && records
-                        .iter()
-                        .filter(|record| {
-                            record["type"] == "message" && record["message"]["role"] == "assistant"
-                        })
-                        .count()
-                        == 3
-                    && !records.iter().any(|record| {
-                        matches!(record["type"].as_str(), Some("context_edit" | "compaction"))
-                    })
-            })
-            .expect("authorized fixture needs a complete, unedited six-message source or backup");
-        std::fs::remove_dir_all(agent.join("sessions")).unwrap();
-        std::fs::create_dir_all(agent.join("sessions")).unwrap();
-        let source = agent.join("sessions/core-deletion-baseline.jsonl");
-        records[0]["cwd"] = json!(workspace);
-        let before = records
-            .iter()
-            .filter(|record| record["type"] == "message")
-            .count();
-        std::fs::write(
-            &source,
-            records
-                .iter()
-                .map(|record| format!("{record}\n"))
-                .collect::<String>(),
-        )
-        .unwrap();
         if !truncate {
             // Seed a real official-SDK replacement at the old tip. A later
             // rewind must preserve it together with the deletion tombstone.
-            let target = records
-                .iter()
-                .find(|record| record["type"] == "message" && record["message"]["role"] == "user")
-                .unwrap()["id"]
-                .as_str()
-                .unwrap();
             let mut command = velune_agent_runtime::process::command(&node);
             command.args(["--input-type=module","--eval",r#"
 import {pathToFileURL} from 'node:url';
-const [sdk,binary,source,target] = process.argv.slice(1);
+const [sdk,binary,source] = process.argv.slice(1);
 const {resolvePiSdk} = await import(pathToFileURL(sdk).href);
 const {SessionManager} = await resolvePiSdk({binary,runtimeTypeId:'pi-1.0'}).importModule('dist/core/session-manager.js');
-SessionManager.open(source).appendContextEdit(target,{content:'synthetic earlier replacement'});
-"#]).arg(resources.join("pi_sdk.mjs")).arg(&cli).arg(&source).arg(target);
+const manager = SessionManager.open(source);
+const firstUser = manager.getBranch().find(entry => entry.type === "message" && entry.message.role === "user");
+manager.appendContextEdit(firstUser.id,{content:'synthetic earlier replacement'});
+"#]).arg(resources.join("pi_sdk.mjs")).arg(&cli).arg(&source);
             velune_agent_runtime::execution::ExecutionTarget::Local
                 .output(command, None, Some(&os_home))
                 .unwrap();
@@ -1018,9 +917,31 @@ SessionManager.open(source).appendContextEdit(target,{content:'synthetic earlier
             .filter(|message| message.role == MessageRole::User)
             .map(|message| message.id.clone())
             .collect();
-        assert!(
-            users.len() >= 3,
-            "synthetic session needs several native user turns"
+        assert_eq!(users.len(), 3);
+        let texts: Vec<_> = current
+            .messages
+            .iter()
+            .flat_map(|message| {
+                message.blocks.iter().filter_map(|block| match block {
+                    MessageBlock::Text { text } => Some(text.as_str()),
+                    _ => None,
+                })
+            })
+            .collect();
+        assert_eq!(
+            texts,
+            [
+                if truncate {
+                    "Synthetic user 1"
+                } else {
+                    "synthetic earlier replacement"
+                },
+                "Synthetic reply 1",
+                "Synthetic user 2",
+                "Synthetic reply 2",
+                "Synthetic user 3",
+                "Synthetic reply 3",
+            ]
         );
         let selected = &users[1];
         let boundary = current
@@ -1204,7 +1125,7 @@ SessionManager.open(source).appendContextEdit(target,{content:'synthetic earlier
             .filter(|record| record["type"] == "message")
             .count();
         assert_eq!(
-            after, before,
+            after, 6,
             "deletion must not send a model prompt or create a native reply"
         );
         assert!(
@@ -1214,8 +1135,6 @@ SessionManager.open(source).appendContextEdit(target,{content:'synthetic earlier
                 .is_some()
         );
         application.close_stopping_work().unwrap();
-        drop(application);
-        std::fs::remove_dir_all(root).unwrap();
     }
 }
 

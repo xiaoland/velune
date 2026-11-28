@@ -1,5 +1,5 @@
 //! Opt-in regression through the installed Pi SDK and production Rust transport.
-//! Input must be the authorized synthetic fixture, which is cloned before use.
+//! The checked-in synthetic session is materialized in an isolated agent directory.
 use serde_json::{Value, json};
 use std::{
     io::{Read, Write},
@@ -101,69 +101,25 @@ fn start_session(config: Config, workspace: &Path, source: &Path) -> PiSession {
     session
 }
 
-fn clone_fixture(source: &Path, target: &Path) {
-    std::fs::create_dir_all(target).unwrap();
-    for entry in source.read_dir().unwrap() {
-        let entry = entry.unwrap();
-        let ty = entry.file_type().unwrap();
-        assert!(
-            !ty.is_symlink(),
-            "synthetic fixture must not link to another source"
-        );
-        if ty.is_dir() {
-            clone_fixture(&entry.path(), &target.join(entry.file_name()));
-        } else {
-            std::fs::copy(entry.path(), target.join(entry.file_name())).unwrap();
-        }
-    }
-}
 #[test]
-#[ignore = "requires VELUNE_TEST_PI_SYNTHETIC_FIXTURE, VELUNE_TEST_PI_BINARY and VELUNE_TEST_NODE_BINARY"]
+#[ignore = "requires VELUNE_TEST_PI_BINARY and VELUNE_TEST_NODE_BINARY"]
 fn absent_optional_plugins_do_not_timeout_cold_bridge_or_create_model_work() {
     let required = |key| {
         PathBuf::from(std::env::var_os(key).unwrap_or_else(|| {
             panic!("enabled SDK test requires {key}");
         }))
     };
-    let fixture = required("VELUNE_TEST_PI_SYNTHETIC_FIXTURE");
     let cli = required("VELUNE_TEST_PI_BINARY");
     let node = required("VELUNE_TEST_NODE_BINARY");
     let root = TempRoot::new("pi-bridge-cold");
     let agent = root.join("agent");
-    clone_fixture(&fixture.join("pi"), &agent);
+    let workspace = root.dir("workspace");
     let model = ModelProbe::start();
-    std::fs::write(agent.join("models.json"), json!({"providers":{"synthetic":{
-        "baseUrl":format!("http://{}/v1", model.address),"api":"openai-completions","apiKey":"synthetic",
-        "models":[{"id":"alpha","name":"Synthetic","reasoning":false,"input":["text"],
-            "cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0},"contextWindow":32768,"maxTokens":4096}]
-    }}}).to_string()).unwrap();
-    let workspace = root.join("workspace");
-    std::fs::create_dir(&workspace).unwrap();
-    let source = agent
-        .join("sessions")
-        .read_dir()
-        .unwrap()
-        .map(|entry| entry.unwrap().path())
-        .find(|path| path.extension().is_some_and(|ext| ext == "jsonl"))
-        .unwrap();
-    let original = std::fs::read_to_string(&source).unwrap();
-    let mut records: Vec<Value> = original
-        .lines()
-        .map(|line| serde_json::from_str(line).unwrap())
-        .collect();
-    records[0]["cwd"] = json!(workspace);
-    std::fs::write(
-        &source,
-        records
-            .iter()
-            .map(|record| format!("{record}\n"))
-            .collect::<String>(),
-    )
-    .unwrap();
-    let before = records
-        .iter()
-        .filter(|record| record["type"] == "message")
-        .count();
+    let source = velune_test_support::write_pi_three_turn_session(
+        &agent,
+        &workspace,
+        &format!("http://{}/v1", model.address),
+    );
     let resources = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources");
     let config: Config =
         serde_json::from_value(json!({"execution":{"kind":"local"},"os_home":root,
@@ -220,8 +176,5 @@ export default function(pi) {
         .map(|line| serde_json::from_str::<Value>(line).unwrap())
         .filter(|record| record["type"] == "message")
         .count();
-    assert_eq!(
-        before, after,
-        "a control query generated native model messages"
-    );
+    assert_eq!(after, 6, "a control query generated native model messages");
 }

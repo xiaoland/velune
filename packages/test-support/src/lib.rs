@@ -1,4 +1,4 @@
-//! Shared fixtures for Velune's default test layer: isolated directories,
+//! Shared fixtures for Velune's test suites: isolated directories,
 //! fake executables and deadline-bounded waits. Dev-dependency only.
 use std::{
     fs,
@@ -117,6 +117,34 @@ impl std::ops::Deref for TempRoot {
     fn deref(&self) -> &Path {
         &self.path
     }
+}
+
+/// Materialize a three-turn synthetic session written by the Pi 1.4 SDK.
+/// Only the native session header's working directory varies per test.
+pub fn write_pi_three_turn_session(agent: &Path, workspace: &Path, model_url: &str) -> PathBuf {
+    use serde_json::{Value, json};
+
+    let (header, entries) = include_str!("../fixtures/pi/three-turns.jsonl")
+        .split_once('\n')
+        .unwrap();
+    let mut header: Value = serde_json::from_str(header).unwrap();
+    header["cwd"] = json!(workspace);
+    let sessions = agent.join("sessions");
+    fs::create_dir_all(&sessions).unwrap();
+    let source = sessions.join("three-turns.jsonl");
+    fs::write(&source, format!("{header}\n{entries}")).unwrap();
+    let provider = json!({
+        "baseUrl": model_url, "api": "openai-completions", "apiKey": "synthetic",
+        "models": [{"id": "alpha", "name": "Synthetic", "reasoning": false, "input": ["text"],
+            "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
+            "contextWindow": 32768, "maxTokens": 4096}]
+    });
+    fs::write(
+        agent.join("models.json"),
+        json!({"providers": {"synthetic": provider}}).to_string(),
+    )
+    .unwrap();
+    source
 }
 
 /// Poll `ready` every few milliseconds until it holds or `timeout` elapses.
