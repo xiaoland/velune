@@ -384,7 +384,7 @@ sealed partial class Conversation
         var update = await Call(NativeOperation.ConfigurationWrite,
             application => application.SetRuntimeModelAutoCompaction(runtimeId, model, setting));
         if (closed) return;
-        Configuration = Configuration with { Runtimes = [.. update.RuntimeInstances.Where(instance => instance.Enabled)] };
+        Configuration = Configuration with { Runtimes = update.RuntimeInstances.Where(instance => instance.Enabled).ToArray() };
         Notify();
     }
 

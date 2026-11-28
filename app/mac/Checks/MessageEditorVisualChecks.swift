@@ -482,18 +482,23 @@ import ObjectiveC
     let peer = home.appendingPathComponent("synthetic-editor-codex")
     let script = #"""
 #!/usr/bin/python3
-import json, pathlib, sys, uuid
+import fcntl, json, pathlib, sys, uuid
 root = pathlib.Path(__file__).parent
 path = root / 'editor-native.json'
 if '--version' in sys.argv:
     print('codex-cli 0.166.0'); sys.exit(0)
+def lock_native():
+    handle = (root / 'editor-native.lock').open('a')
+    fcntl.flock(handle, fcntl.LOCK_EX)
+    return handle
 def save(db):
     temp = path.with_suffix('.partial'); temp.write_text(json.dumps(db)); temp.replace(path)
 def turn(n, text):
     return {'id':'turn-' + str(n), 'status':'completed', 'startedAt':n, 'completedAt':n + 1,
             'items':[{'id':'user-' + str(n), 'type':'userMessage', 'content':[{'type':'text','text':text}]},
                      {'id':'assistant-' + str(n), 'type':'agentMessage', 'text':'Synthetic reply ' + str(n)}]}
-if not path.exists(): save({'11111111-1111-4111-8111-111111111111':[turn(1,'EDIT THIS EARLIER MESSAGE'),turn(2,'KEEP LATER MESSAGE UNTIL CONFIRMED')]})
+with lock_native():
+    if not path.exists(): save({'11111111-1111-4111-8111-111111111111':[turn(1,'EDIT THIS EARLIER MESSAGE'),turn(2,'KEEP LATER MESSAGE UNTIL CONFIRMED')]})
 def emit(value): print(json.dumps(value), flush=True)
 def notify(method, params): emit({'method':method,'params':params})
 def thread(db, identity):
@@ -505,32 +510,33 @@ for line in sys.stdin:
     request = json.loads(line)
     with (root / 'editor-wire.jsonl').open('a') as log: log.write(json.dumps(request) + '\n')
     if 'id' not in request: continue
-    db = json.loads(path.read_text()); method = request.get('method'); p = request.get('params', {})
-    identity = p.get('threadId', current); result = {}
-    if method == 'config/read': result = {'config':{'model_provider':'openai','model':'synthetic-editor-model'}}
-    elif method == 'model/list':
-        result = {'data':[{'id':'synthetic-editor-model','model':'synthetic-editor-model','displayName':'Synthetic editor model',
-                           'supportedReasoningEfforts':[],'defaultReasoningEffort':'medium'}]}
-    elif method == 'project/list': result = {'data':[], 'nextCursor':None}
-    elif method == 'thread/list': result = {'data':[thread(db,key) for key in db], 'nextCursor':None}
-    elif method in ('thread/read','thread/resume'):
-        current = identity; result = {'thread':thread(db,identity),'model':'synthetic-editor-model'}
-    elif method == 'thread/start':
-        current = str(uuid.uuid4()); db[current] = []; save(db)
-        result = {'thread':thread(db,current),'model':'synthetic-editor-model'}
-    elif method == 'thread/revert':
-        index = next(i for i,t in enumerate(db[identity]) if t['id'] == p['beforeTurnId'])
-        db[identity] = db[identity][:index]; save(db); result = {'thread':thread(db,identity)}
-    elif method == 'turn/start':
-        n = max([int(t['id'].split('-')[-1]) for t in db[identity]] + [0]) + 1
-        text = '\n'.join(i.get('text','') for i in p.get('input',[]) if i.get('type') == 'text')
-        value = turn(n,text); value['items'][0]['content'] = p.get('input',[]); db[identity].append(value); save(db)
-        emit({'id':request['id'],'result':{'turn':{'id':value['id']}}})
-        notify('turn/started',{'threadId':identity,'turn':{'id':value['id']}})
-        for item in value['items']:
-            notify('item/completed',{'threadId':identity,'turnId':value['id'],'item':item})
-        notify('turn/completed',{'threadId':identity,'turn':{'id':value['id'],'status':'completed'}})
-        continue
+    with lock_native():
+        db = json.loads(path.read_text()); method = request.get('method'); p = request.get('params', {})
+        identity = p.get('threadId', current); result = {}
+        if method == 'config/read': result = {'config':{'model_provider':'openai','model':'synthetic-editor-model'}}
+        elif method == 'model/list':
+            result = {'data':[{'id':'synthetic-editor-model','model':'synthetic-editor-model','displayName':'Synthetic editor model',
+                               'supportedReasoningEfforts':[],'defaultReasoningEffort':'medium'}]}
+        elif method == 'project/list': result = {'data':[], 'nextCursor':None}
+        elif method == 'thread/list': result = {'data':[thread(db,key) for key in db], 'nextCursor':None}
+        elif method in ('thread/read','thread/resume'):
+            current = identity; result = {'thread':thread(db,identity),'model':'synthetic-editor-model'}
+        elif method == 'thread/start':
+            current = str(uuid.uuid4()); db[current] = []; save(db)
+            result = {'thread':thread(db,current),'model':'synthetic-editor-model'}
+        elif method == 'thread/revert':
+            index = next(i for i,t in enumerate(db[identity]) if t['id'] == p['beforeTurnId'])
+            db[identity] = db[identity][:index]; save(db); result = {'thread':thread(db,identity)}
+        elif method == 'turn/start':
+            n = max([int(t['id'].split('-')[-1]) for t in db[identity]] + [0]) + 1
+            text = '\n'.join(i.get('text','') for i in p.get('input',[]) if i.get('type') == 'text')
+            value = turn(n,text); value['items'][0]['content'] = p.get('input',[]); db[identity].append(value); save(db)
+            emit({'id':request['id'],'result':{'turn':{'id':value['id']}}})
+            notify('turn/started',{'threadId':identity,'turn':{'id':value['id']}})
+            for item in value['items']:
+                notify('item/completed',{'threadId':identity,'turnId':value['id'],'item':item})
+            notify('turn/completed',{'threadId':identity,'turn':{'id':value['id'],'status':'completed'}})
+            continue
     emit({'id':request['id'],'result':result})
 """#
     try Data(script.utf8).write(to: peer)
