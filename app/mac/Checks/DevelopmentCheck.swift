@@ -25,6 +25,7 @@ enum DevelopmentCheck {
     private static let earlyExperienceOptions: Set<String> = [
         "--experience-message-editor-offscreen",
         "--experience-fork-send-only",
+        "--experience-fork-only",
         "--experience-claude-compact-edit-only",
         "--experience-appearance-zoom-only",
         "--experience-runtime-editor-only",

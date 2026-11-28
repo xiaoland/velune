@@ -1174,12 +1174,14 @@ impl CoreRuntime {
                 .map(|snapshot| snapshot.conversation.title.display_text().to_owned()),
         );
         let title = fork_title(source.conversation.title.display_text(), &titles);
-        self.session
-            .active_state
-            .live_mut()
-            .ok_or_else(|| RuntimeError::invalid("分叉会话尚不可命名"))?
-            .rename(&title)
-            .map_err(|error| RuntimeError::context("分叉会话命名", error))?;
+        let rename = match &mut self.session.active_state {
+            ActiveState::Pi(session) => session.set_name_confirmed(&title).map_err(Into::into),
+            state => state
+                .live_mut()
+                .ok_or_else(|| RuntimeError::invalid("分叉会话尚不可命名"))?
+                .rename(&title),
+        };
+        rename.map_err(|error| RuntimeError::context("分叉会话命名", error))?;
         self.sync_projection()?;
         self.session.refresh_pending_native_fork()?;
         Ok(())

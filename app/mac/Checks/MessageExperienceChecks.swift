@@ -106,13 +106,14 @@ import VeluneBindings
             fail("旧轮次未提供分叉入口")
         }
         let originalText = source.store.transcript.rows.map(\.id)
-        source.store.forkConversation(through: userID) { workspace.openInNewTab(adopting: $0, device: device) }
+        source.store.forkConversation(through: userID) { workspace.openFork(adopting: $0, device: device, opening: .newTab) }
         guard until({ workspace.focused.id != source.id && workspace.focused.store.nextTurn != nil }),
               let targetID = workspace.focused.store.loadedConversationID, targetID != sourceID else {
             fail("分叉未打开独立标签页")
         }
         let tab = workspace.focused
         let store = tab.store
+        guard store.selectedConversationTitle?.hasSuffix(" (1)") == true else { fail("分叉首次打开时缺少数字后缀") }
         let input = workspace.composer(for: tab)
         workspace.composerContext(for: tab).selectModel(choice)
         guard until({ workspace.composerContext(for: tab).chosenModel == choice && store.draftEditable }) else {
@@ -160,9 +161,10 @@ import VeluneBindings
 @MainActor private func forkExperienceChecks(home: URL) {
     ConversationStore.checkConcurrentForkDispatch(home: home)
     let local = DeviceStore(preview: true)
-    let source = DeviceStore(preview: true)
+    let source = DeviceStore(preview: true, peerID: "synthetic-fork-peer")
     let window = ConversationWindowModel(application: local, kind: .workspace)
-    let summary = ConversationSummary(id: "synthetic-fork", title: .native("Synthetic (1)"), updatedAtUnixMs: nil,
+    let title = "Synthetic conversation whose descriptive title is too wide for a tab (1)"
+    let summary = ConversationSummary(id: "synthetic-fork", title: .native(title), updatedAtUnixMs: nil,
         createdAtUnixMs: nil, runtimeId: "sample-instance", cwd: nil, canRename: true, canDelete: true,
         parentConversationId: nil, nativeReadState: nil)
     let messages = [DeliveredMessage(id: "u", role: .user, blocks: [.text(text: "Synthetic request")]),
@@ -176,8 +178,16 @@ import VeluneBindings
         transcriptMessageIdentities: identities, messageIdentityConfirmations: [], pendingInteractions: [],
         actions: .init(inputAccess: .editable, canSend: true, canCancel: false, canSwitch: true),
         followUp: .init(), subAgents: [], collaborators: []))
-    window.openInNewTab(adopting: result, device: source)
+    let originalTab = window.focused.id
+    window.openFork(adopting: result, device: source, opening: .newTab)
     let store = window.focused.store
+    precondition(window.tabCount == 2 && window.allTabs.contains { $0.id == originalTab })
+    precondition(window.focused.title == title)
+    let tabItem = TabItemView(tab: window.focused, bar: nil, model: window)
+    tabItem.refresh()
+    let tabLabel = tabItem.subviews.compactMap { $0 as? NSTextField }.first
+    precondition(tabLabel?.lineBreakMode == .byTruncatingMiddle && tabItem.toolTip == title,
+                 "长标题应留出尾部编号，提示仍显示完整标题")
     precondition(store.device === source && store.device !== local, "fork 必须留在发起设备")
     precondition(store.loadedConversationID == "synthetic-fork" && !store.isLoading)
     precondition(store.nextTurn != nil, "接收快照后立即提供执行配置，不等待列表扫描")
@@ -186,6 +196,28 @@ import VeluneBindings
     store.selectComposerRuntime("sample-instance")
     store.changeComposerChoice(.effort(level: "high"))
     precondition(store.nextTurn?.choice.effort == "high", "新分支可立即更改推理配置")
+
+    let split = ConversationWindowModel(application: local, kind: .workspace)
+    let originalPane = split.focusedPaneID
+    split.openFork(adopting: result, device: source, opening: .rightSplit)
+    precondition(split.layout.paneIDs == [originalPane, split.focusedPaneID] && split.tabCount == 2)
+    precondition(split.focused.store.device === source && split.focused.title == title)
+    split.focused.store.close()
+
+    let sourceWindow = ConversationWindowModel(application: local, kind: .workspace)
+    let sourceTab = sourceWindow.focused.id
+    var openedWindow: ConversationWindowModel?
+    sourceWindow.openWindow = { kind, seed in
+        precondition(kind == .single && seed.device == source.peerID && seed.tab != nil)
+        let model = ConversationWindowModel(application: source, kind: kind, device: seed.device)
+        model.start(restoring: nil, seed: seed)
+        openedWindow = model
+    }
+    sourceWindow.openFork(adopting: result, device: source, opening: .newWindow)
+    precondition(sourceWindow.tabCount == 1 && sourceWindow.focused.id == sourceTab)
+    precondition(openedWindow?.focused.store.device === source && openedWindow?.focused.title == title)
+    precondition(openedWindow?.focused.store.nextTurn != nil)
+    openedWindow?.focused.store.close()
     let transcript = TranscriptModel()
     transcript.apply(messages, turns: [], items: items, outline: [], identities: identities, editable: [])
     let view = NSHostingView(rootView: TranscriptView(model: transcript, reading: TranscriptReading(),
@@ -201,7 +233,7 @@ import VeluneBindings
     view.cacheDisplay(in: view.bounds, to: bitmap)
     try! bitmap.representation(using: .png, properties: [:])!.write(to: home.appendingPathComponent("fork-loading.png"))
     store.close()
-    FileHandle.standardError.write(Data("PASS fork: original device, adopted snapshot, immediate runtime/effort edits and native loading presentation; the sidebar entry comes from the core list alone\n".utf8))
+    FileHandle.standardError.write(Data("PASS fork: tab, right split and new window preserve the source and adopt the named snapshot on its execution device; composer is ready immediately\n".utf8))
 }
 
 /// Synthetic, hidden checks: no scenes, hotkeys, orderFront, activation or input injection.

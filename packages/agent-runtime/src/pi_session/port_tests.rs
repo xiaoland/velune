@@ -69,6 +69,30 @@ impl Drop for Fixture {
 }
 
 #[test]
+fn fork_rename_waits_for_pi_and_installs_the_confirmed_title() {
+    let mut fixture = Fixture::new(
+        r#"
+import json,sys,time
+for line in sys.stdin:
+ request=json.loads(line); command=request['type']; data={}
+ if command=='get_commands': data={'commands':[]}
+ if command=='set_session_name':
+  time.sleep(0.06)
+  if request['name']=='Rejected':
+   print(json.dumps({'type':'response','command':command,'id':request['id'],'success':False,'error':'rename refused'}),flush=True)
+   continue
+ print(json.dumps({'type':'response','command':command,'id':request['id'],'success':True,'data':data}),flush=True)
+"#,
+    );
+    let title = |session: &PiSession| session.snapshot().unwrap().conversation.title.clone();
+    fixture.session.set_name_confirmed("Source (1)").unwrap();
+    assert_eq!(title(&fixture.session).display_text(), "Source (1)");
+    let error = fixture.session.set_name_confirmed("Rejected").unwrap_err();
+    assert!(error.to_string().contains("rename refused"));
+    assert_eq!(title(&fixture.session).display_text(), "Source (1)");
+}
+
+#[test]
 fn pi_cancellation_releases_only_notifications_in_its_successful_clear_queue_ack() {
     let mut fixture = Fixture::new(
         r#"

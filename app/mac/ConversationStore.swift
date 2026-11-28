@@ -1714,16 +1714,18 @@ final class ConversationStore: ObservableObject {
             self?.executionStarting = false
             self?.isForking = false
             switch result {
-            case .success:
-                if placement == .fork { self?.device.noteForkCompleted() }
+            case .success(let value):
+                if placement == .fork {
+                    self?.device.noteForkCompleted()
+                    forked(value)
+                }
                 accepted()
             case .failure(let error):
                 let problem = AppProblem.failure(error)
                 failed?(problem.detail, problem.code)
             }
         }) { [weak self] value in
-            guard let self else { return }
-            if placement == .fork { forked(value) } else { self.applySnapshotResult(value, scope: scope) }
+            if placement == .inPlace { self?.applySnapshotResult(value, scope: scope) }
         }
     }
     /// Copy the completed prefix immediately, even while the source runs.
@@ -1732,9 +1734,8 @@ final class ConversationStore: ObservableObject {
         guard canFork, let runtimeID = snapshot?.conversation.runtimeID, let conversationID = loadedConversationID, let transport else { return }
         isForking = true
         enqueue({ try transport.forkConversation(runtimeID: runtimeID, conversationID: conversationID, messageID: messageID) },
-                onFailure: { [weak self] _ in self?.isForking = false }) { [weak self] value in
+                consumeReceipt: { [weak self] _ in self?.isForking = false }) { [weak self] value in
             guard let self else { return }
-            self.isForking = false
             self.device.noteForkCompleted()
             forked(value)
         }

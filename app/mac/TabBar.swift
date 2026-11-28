@@ -507,10 +507,8 @@ final class TabStripView: NSView {
         self.bar = bar
         self.model = model
         super.init(frame: .zero)
-        label.lineBreakMode = .byTruncatingTail
         label.alignment = .center
         label.maximumNumberOfLines = 1
-        label.cell?.truncatesLastVisibleLine = true
         addSubview(label)
         icon.symbolConfiguration = .init(pointSize: 9, weight: .semibold)
         addSubview(icon)
@@ -576,11 +574,15 @@ final class TabStripView: NSView {
     static var titleInset: CGFloat { closeInset + closeSize + 4 }
 
     func refresh() {
-        label.stringValue = tab.title
+        let title = tab.title
+        let keepSuffix = store != nil && Conversation.hasNumberedTitleSuffix(title)
+        label.lineBreakMode = keepSuffix ? .byTruncatingMiddle : .byTruncatingTail
+        label.cell?.truncatesLastVisibleLine = !keepSuffix
+        label.stringValue = title
         label.font = font
         label.textColor = selected && (active || tab is ArtifactTab) ? .labelColor : .secondaryLabelColor
-        toolTip = tab.title
-        setAccessibilityLabel(tab.title)
+        toolTip = title
+        setAccessibilityLabel(title)
         setAccessibilityValue(selected)
         icon.isHidden = true
         dot.isHidden = true

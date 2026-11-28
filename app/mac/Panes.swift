@@ -92,10 +92,10 @@ struct TabContentView: View {
         .alert("创建分叉会话？", isPresented: Binding(get: { forkMessageID != nil }, set: { if !$0 { forkMessageID = nil } }), presenting: forkMessageID) { id in
             Button("取消", role: .cancel) {}
             Button("创建分叉") {
-                store.forkConversation(through: id) { window.openInNewTab(adopting: $0, device: store.device) }
+                store.forkConversation(through: id) { window.openFork(adopting: $0, device: store.device) }
             }
         } message: { _ in
-            Text("新会话将包含截至这一轮结束的内容，并在新标签页打开；原会话保持不变。原会话正在执行的工作会继续，不必等待它结束。")
+            Text("新会话包含截至这一轮结束的内容。原会话和正在执行的工作会保留。")
         }
         .onChange(of: store.loadedConversationID) { _, _ in tab.outlineCollapsed = false; forkMessageID = nil }
         .onChange(of: store.device.outlinePresentation) { _, _ in tab.outlineCollapsed = false }
