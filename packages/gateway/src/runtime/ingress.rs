@@ -47,7 +47,7 @@ const REQUEST_READ_TIMEOUT: Duration = Duration::from_secs(15);
 /// The state every request on one Runner shares.
 pub(super) struct Ingress {
     pub(super) telemetry: Arc<RwLock<TelemetryContext>>,
-    pub(super) routes: Arc<RwLock<BTreeMap<String, Route>>>,
+    pub(super) routes: BTreeMap<String, Route>,
     pub(super) token: String,
     pub(super) resolver: Arc<dyn CredentialResolver>,
     pub(super) client: HttpClient,
@@ -367,17 +367,7 @@ async fn ingress_observed(
             None,
         );
     };
-    let route = match state.routes.read() {
-        Ok(routes) => routes.get(model).cloned(),
-        Err(_) => {
-            return admission.reject(
-                observation,
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "gateway alias state unavailable",
-                None,
-            );
-        }
-    };
+    let route = state.routes.get(model).cloned();
     let Some(route) = route else {
         return admission.reject(
             observation,

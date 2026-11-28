@@ -19,31 +19,30 @@ fn empty_v3_state() -> Vec<u8> {
 }
 
 #[test]
-fn unknown_future_version_is_not_reset_or_overwritten() {
-    let (_directory, path) = state_path();
-    let mut state = serde_json::to_value(StoredState::default()).unwrap();
-    atomic_write(&path, &serde_json::to_vec(&state).unwrap()).unwrap();
-    drop(DeviceStore::open(&path).unwrap());
-    state["version"] = serde_json::json!(99);
-    let bytes = serde_json::to_vec(&state).unwrap();
-    atomic_write(&path, &bytes).unwrap();
-    assert!(matches!(
-        DeviceStore::open(&path),
-        Err(RemoteError::StateStorage)
-    ));
-    assert_eq!(std::fs::read(path).unwrap(), bytes);
-}
-
-#[test]
 fn malformed_or_unknown_state_is_rejected_without_rewrite() {
+    // This is the complete published v4 envelope, independent of current serde.
+    let valid = serde_json::json!({
+        "version": 4, "contacts": {}, "grants": {}, "profile_grants": {},
+        "pending_pairings": {}, "pending": [], "reset_notice": null,
+        "legacy_reset_recorded": false
+    });
+    let (_directory, path) = state_path();
+    atomic_write(&path, &serde_json::to_vec(&valid).unwrap()).unwrap();
+    drop(DeviceStore::open(&path).expect("untouched v4 fixture must migrate"));
+    let mut unknown = valid;
+    unknown["future"] = serde_json::json!("preserve");
     for bytes in [
-        br#"{"version":4,"contacts":[]"#.as_slice(),
-        br#"{"version":4,"contacts":{},"future":"preserve"}"#,
+        br#"{"version":4,"contacts":[]"#.to_vec(),
+        serde_json::to_vec(&unknown).unwrap(),
     ] {
-        let (_directory, path) = state_path();
-        atomic_write(&path, bytes).unwrap();
-        assert!(DeviceStore::open(&path).is_err());
+        let (directory, path) = state_path();
+        atomic_write(&path, &bytes).unwrap();
+        assert!(matches!(
+            DeviceStore::open(&path),
+            Err(RemoteError::StateStorage)
+        ));
         assert_eq!(std::fs::read(path).unwrap(), bytes);
+        assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 1);
     }
 }
 

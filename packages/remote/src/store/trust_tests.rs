@@ -129,15 +129,8 @@ fn common_phone_admits_computers_bidirectionally_without_becoming_execution_targ
         contact(&a, Some(true)),
         contact(&c, Some(true)),
     ];
-    assert_eq!(
-        sa.verify_membership(&c.id(), &proof)
-            .unwrap()
-            .statements
-            .len(),
-        2
-    );
-    assert!(!sa.is_member(&c.id()).unwrap()); // verification is pure
     sa.merge_trust_bundle(&p.id(), &proof).unwrap();
+    assert_eq!(sa.membership_proof(&c.id()).unwrap().statements.len(), 2);
     sc.merge_trust_bundle(&p.id(), &proof).unwrap();
     assert!(sa.allows_control(&a.id(), &c.id()).unwrap());
     assert!(sc.allows_control(&c.id(), &a.id()).unwrap());
@@ -192,7 +185,6 @@ fn stranger_reverse_statement_old_control_and_profile_do_not_admit_members() {
     );
     sa.merge_trust_bundle(&p.id(), &legacy).unwrap();
     assert!(!sa.is_member(&x.id()).unwrap());
-    assert!(sa.verify_membership(&x.id(), &legacy).is_err());
 }
 
 #[test]
@@ -252,7 +244,6 @@ fn revoke_excludes_original_member_and_intermediate_but_preserves_independent_pa
     assert!(!sc.allows_control(&c.id(), &a.id()).unwrap());
     sc.merge_trust_bundle(&q.id(), &old).unwrap();
     assert!(!sc.is_member(&a.id()).unwrap());
-    assert!(sc.verify_membership(&a.id(), &old).is_err());
     assert!(sc.is_member(&q.id()).unwrap());
     assert!(
         sc.snapshot()
@@ -311,17 +302,13 @@ fn exclusion_survives_replay_restart_and_old_confirmed_receipt() {
     sc.merge_trust_bundle(&p.id(), &old).unwrap();
     assert!(!sc.is_member(&a.id()).unwrap());
     assert!(!sc.contact(&a.id()).unwrap().control_authorized);
-    assert!(
-        sc.import_contact(&a.id(), "A".into(), DeviceLocator::default(), &p.id())
-            .is_err()
-    );
     grant_attempt(&sc, &a, 'e');
     assert!(sc.is_member(&a.id()).unwrap());
 }
 
 #[test]
 fn exclusions_keep_history_without_reporting_control_granted() {
-    for action in 0..3 {
+    for forget in [false, true] {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("state.json");
         let local = DeviceIdentity::generate("Local".into()).unwrap();
@@ -337,10 +324,10 @@ fn exclusions_keep_history_without_reporting_control_granted() {
                 .unwrap()
                 .is_some()
         );
-        match action {
-            0 => store.revoke_grant(&peer.id()),
-            1 => store.revoke_membership(&peer.id()),
-            _ => store.forget_contact(&peer.id()),
+        if forget {
+            store.forget_contact(&peer.id())
+        } else {
+            store.revoke_grant(&peer.id())
         }
         .unwrap();
         assert_eq!(
@@ -633,8 +620,9 @@ fn locator_priority_pause_pending_pairing_and_invalid_bundle_are_preserved() {
     sa.update_locator(&c.id(), "C authenticated".into(), locator.clone())
         .unwrap();
     sa.pause(&c.id(), true).unwrap();
-    sa.import_contact(&c.id(), "Stale C".into(), DeviceLocator::default(), &p.id())
-        .unwrap();
+    proof.contacts[0].name = "Stale C".into();
+    proof.contacts[0].locator = DeviceLocator::default();
+    sa.merge_trust_bundle(&p.id(), &proof).unwrap();
     assert_eq!(
         sa.contact(&c.id()).unwrap().locator.direct_addresses,
         locator.direct_addresses
@@ -865,7 +853,14 @@ fn unknown_or_corrupt_v5_v6_never_rewrites_source_or_creates_backup() {
     let (p, _) = device("P");
     grant(&sa, &p, PairingPermission::Control);
     let current = serde_json::to_value(sa.state.lock().unwrap().clone()).unwrap();
+    // Both untouched source formats must be readable before mutating one guard.
     let legacy = legacy_v5(&sa.state.lock().unwrap());
+    for valid in [&current, &legacy] {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("state.json");
+        atomic_write(&path, &serde_json::to_vec(valid).unwrap()).unwrap();
+        drop(DeviceStore::open(&path).unwrap());
+    }
     let mut unknown = legacy.clone();
     unknown["trust"]["membership_initialized"] = serde_json::json!(true);
     let mut corrupt = current.clone();
@@ -879,15 +874,20 @@ fn unknown_or_corrupt_v5_v6_never_rewrites_source_or_creates_backup() {
     let mut inconsistent = current.clone();
     inconsistent["trust"]["direct_members"] = serde_json::json!([]);
     let mut future = current;
-    future["version"] = serde_json::json!(7);
-    for json in [unknown, corrupt, inconsistent, future] {
+    future["version"] = serde_json::json!(99);
+    for (json, expected) in [
+        (unknown, RemoteError::StateStorage),
+        (corrupt, RemoteError::Unauthorized),
+        (inconsistent, RemoteError::StateStorage),
+        (future, RemoteError::StateStorage),
+    ] {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("state.json");
         let bytes = serde_json::to_vec(&json).unwrap();
         atomic_write(&path, &bytes).unwrap();
         assert!(
-            DeviceStore::open(&path).is_err(),
-            "invalid state for {}",
+            matches!(DeviceStore::open(&path), Err(error) if error == expected),
+            "invalid state for {} must reach {expected:?}",
             a.id()
         );
         assert_eq!(std::fs::read(&path).unwrap(), bytes);

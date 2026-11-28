@@ -91,11 +91,6 @@ impl TempRoot {
         fs::read_to_string(&path).unwrap_or_else(|error| panic!("read {}: {error}", path.display()))
     }
 
-    /// Read a file that a fake process may not have written yet.
-    pub fn read_or_empty(&self, relative: impl AsRef<Path>) -> String {
-        fs::read_to_string(self.join(relative)).unwrap_or_default()
-    }
-
     /// Wait until a marker file exists below the root.
     pub fn wait_for(&self, relative: impl AsRef<Path>, timeout: Duration) -> bool {
         let path = self.join(relative);
@@ -183,6 +178,5 @@ mod tests {
         assert!(status.success());
         assert!(root.wait_for("marker", Duration::from_secs(1)));
         assert_eq!(root.read("marker"), "ready");
-        assert_eq!(root.read_or_empty("absent"), "");
     }
 }

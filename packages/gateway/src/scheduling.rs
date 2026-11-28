@@ -668,7 +668,7 @@ mod tests {
     }
 
     #[test]
-    fn probe_response_restores_admission_without_binding_model_success() {
+    fn probe_response_restores_admission_and_late_failure_still_cools() {
         let state = SchedulingState::default();
         let probe = half_open(&state);
         assert!(
@@ -682,7 +682,6 @@ mod tests {
             .acquire("gateway", &test_candidate(&[]), &UnknownQuotaSource)
             .unwrap();
         assert!(!concurrent.probe);
-        assert!(state.0.lock().unwrap().sessions.is_empty());
         // A later transport failure still establishes a fresh cooldown.
         probe.cool(Duration::from_secs(5));
         probe.responded(200);

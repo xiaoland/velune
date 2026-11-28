@@ -848,7 +848,7 @@ fn phone_hub_without_handler_enables_mutual_control_and_disabled_full_member_sti
         );
         assert!(!c.store.allows_control(&c.id, &a.id).unwrap());
         assert!(matches!(
-            c.store.verify_membership(&a.id, &old_member_proof),
+            c.store.merge_trust_bundle(&p.id, &old_member_proof),
             Err(RemoteError::Unauthorized)
         ));
         // Only a fresh explicit pairing clears the local P exclusion. It must
@@ -1280,7 +1280,27 @@ fn unique_relay_failure_recovers_original_target_request_without_reexecuting_eff
         // of a temporarily unavailable intermediary.
         let mut restored = config();
         restored.bind_addresses = relay_addresses;
-        b.service.replace_network(restored).await.unwrap();
+        let before = b.service.network_state().unwrap().saved.unwrap();
+        let applied = b
+            .service
+            .apply_network(NetworkSettingsUpdate {
+                expected_revision: before.revision,
+                config: restored,
+                credentials: before
+                    .credentials
+                    .iter()
+                    .map(|credential| RelayCredentialEdit {
+                        url: credential.url.clone(),
+                        credential: CredentialEdit::Keep,
+                    })
+                    .collect(),
+                restore_lookup_urls: Vec::new(),
+            })
+            .await
+            .unwrap();
+        assert!(matches!(applied.phase, NetworkApplicationPhase::Applied));
+        assert_eq!(applied.applied_revision, Some(before.revision + 1));
+        assert_eq!(applied.saved.unwrap().revision, before.revision + 1);
         chain.block_shortcuts();
         // No explicit reconnect, fresh Controller, or resubmission: its existing
         // recovery loop must reconnect and query the original pending ID.
@@ -1424,10 +1444,8 @@ fn target_revocation_survives_member_alternate_path_stale_proof_and_restart() {
             a.store.allows_control(&a.id, &c.id).unwrap(),
             "C 的拒绝不是反向控制撤销"
         );
-        assert!(matches!(
-            c.store.verify_membership(&a.id, &old),
-            Err(RemoteError::Unauthorized)
-        ));
+        c.store.merge_trust_bundle(&q.id, &old).unwrap();
+        assert!(!c.store.is_member(&a.id).unwrap());
         block_services(&a.service, &p.service, true);
         let before = q.forwards();
         for request in [
