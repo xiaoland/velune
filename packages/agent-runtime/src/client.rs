@@ -496,20 +496,8 @@ impl Client {
         }
     }
 
-    fn write_command(&mut self, command: Value) -> Result<String> {
-        self.write_command_until(command, Instant::now() + RESPONSE_TIMEOUT)
-    }
-
-    fn write_command_until(&mut self, command: Value, deadline: Instant) -> Result<String> {
-        self.write_command_until_class(command, crate::transport::WriteClass::Ordinary, deadline)
-    }
-
-    fn write_command_until_class(
-        &mut self,
-        mut command: Value,
-        class: crate::transport::WriteClass,
-        deadline: Instant,
-    ) -> Result<String> {
+    fn write_command_until(&mut self, mut command: Value, deadline: Instant) -> Result<String> {
+        let class = crate::transport::WriteClass::Ordinary;
         if self.port.is_some() {
             return Err(Error::Transport(
                 "Pi typed port enabled; synchronous mutations disabled".into(),
@@ -630,27 +618,11 @@ impl Client {
         // Only fixed protocol commands enter diagnostics. Arbitrary caller
         // fields and unknown command names do not become log labels.
         let method = match command["type"].as_str() {
-            Some(
-                method @ ("abort"
-                | "clear_queue"
-                | "clone"
-                | "fork"
-                | "get_available_models"
-                | "get_commands"
-                | "get_messages"
-                | "get_state"
-                | "new_session"
-                | "prompt"
-                | "set_model"
-                | "set_session_name"
-                | "set_thinking_level"
-                | "steer"
-                | "switch_session"),
-            ) => method.to_owned(),
+            Some(method @ ("get_available_models" | "get_state" | "prompt")) => method.to_owned(),
             _ => "command".to_owned(),
         };
         let started = Instant::now();
-        let outcome = self.request_response(command, &method, timeout, false);
+        let outcome = self.request_response(command, &method, timeout);
         let elapsed_ms = started.elapsed().as_millis();
         if let Err(error) = &outcome {
             let failure_kind = match error {
@@ -672,7 +644,6 @@ impl Client {
         command: Value,
         method: &str,
         timeout: Duration,
-        yield_to_dialog: bool,
     ) -> Result<Value> {
         let projection_sync = command["type"] == "prompt"
             && command["message"]
@@ -717,12 +688,6 @@ impl Client {
                     self.prepared_snapshot = Some(value);
                 }
                 continue;
-            }
-            if yield_to_dialog && crate::pi_dialogs::is_dialog(&value) {
-                if let Err(error) = deferred.push(value) {
-                    break Err(self.terminate(Some(error.to_string())));
-                }
-                break Ok(json!({"data":{"disposition":"awaiting_user","requestId":id}}));
             }
             let matches = value.get("type").and_then(Value::as_str) == Some("response")
                 && value.get("id").and_then(Value::as_str) == Some(id);
@@ -804,107 +769,6 @@ impl Client {
             })
             .collect()
     }
-    /// Pi clamps the thinking level to what the selected model supports.
-    pub fn prompt(&mut self, input: &crate::TurnInput) -> Result<Value> {
-        if let Some(level) = &input.effort {
-            if !PI_THINKING_LEVELS.contains(&level.as_str()) {
-                return Err(Error::Sdk("Pi 不接受此推理强度".into()));
-            }
-            self.request(json!({"type":"set_thinking_level","level":level}))?;
-        }
-        let images = input
-            .images
-            .iter()
-            .map(|image| json!({"type":"image","data":image.base64(),"mimeType":image.kind.media_type()}))
-            .collect::<Vec<_>>();
-        self.request_response(
-            json!({"type":"prompt","message":input.text,"images":images}),
-            "prompt",
-            RESPONSE_TIMEOUT,
-            true,
-        )
-    }
-
-    /// Pi delivers a steering message after the running tool calls, before
-    /// the next model request.
-    pub fn steer(&mut self, input: &crate::TurnInput) -> Result<Value> {
-        let images = input
-            .images
-            .iter()
-            .map(|image| json!({"type":"image","data":image.base64(),"mimeType":image.kind.media_type()}))
-            .collect::<Vec<_>>();
-        self.request(json!({"type":"steer","message":input.text,"images":images}))
-    }
-
-    /// Move the session's leaf to just before the user entry `entry_id`, in
-    /// the same session: the next prompt replaces that message. Pi keeps the
-    /// earlier branch in its session tree.
-    pub fn rewind(&mut self, entry_id: &str) -> Result<()> {
-        let response =
-            self.request(json!({"type":"prompt","message":format!("/velune-rewind {entry_id}")}))?;
-        if response["data"]["disposition"] != "handled" {
-            return Err(Error::Sdk("消息回退未被扩展处理".into()));
-        }
-        let outcome = self
-            .pending
-            .iter()
-            .rev()
-            .find(|event| {
-                event["type"] == "extension_ui_request"
-                    && event["method"] == "setStatus"
-                    && event["statusKey"] == "velune.rewind"
-            })
-            .and_then(|event| event["statusText"].as_str())
-            .and_then(|text| serde_json::from_str::<Value>(text).ok())
-            .ok_or_else(|| Error::Sdk("消息回退没有结果".into()))?;
-        if let Some(reason) = outcome["fallback"].as_str() {
-            // The extension explicitly declined before navigating or writing.
-            return Err(Error::CommandFailed(reason.into()));
-        }
-        if outcome["entryId"].as_str() != Some(entry_id) {
-            return Err(Error::Sdk("Pi 未能回到这条消息之前".into()));
-        }
-        Ok(())
-    }
-
-    /// Continue in a new session holding what precedes the user entry
-    /// `entry_id`; this client then runs that session.
-    pub fn fork(&mut self, entry_id: &str) -> Result<()> {
-        let response = self.request(json!({"type":"fork","entryId":entry_id}))?;
-        if response["data"]["cancelled"] == true {
-            return Err(Error::Sdk("Pi 扩展取消了 fork".into()));
-        }
-        Ok(())
-    }
-
-    /// Continue in a new session holding the whole current branch; this
-    /// client then runs that session.
-    pub fn clone(&mut self) -> Result<()> {
-        let response = self.request(json!({"type":"clone"}))?;
-        if response["data"]["cancelled"] == true {
-            return Err(Error::Sdk("Pi 取消了会话复制".into()));
-        }
-        Ok(())
-    }
-
-    pub fn cancel(&mut self) -> Result<Vec<Value>> {
-        // Pi documents clear_queue before abort for interactive cancellation.
-        Ok(vec![
-            self.request(json!({"type":"clear_queue"}))?,
-            self.request(json!({"type":"abort"}))?,
-        ])
-    }
-
-    /// Compaction responds only after summarization; polling must remain available meanwhile.
-    pub fn compact(&mut self) -> Result<String> {
-        let key = self.write_command(json!({"type":"compact"}))?;
-        Ok(key
-            .split_once('\0')
-            .expect("internal command key")
-            .1
-            .to_owned())
-    }
-
     pub fn poll(&mut self) -> Vec<Value> {
         if self.port.is_some() {
             return vec![]; // typed owner must consume ordered poll_pi evidence
@@ -1024,10 +888,6 @@ impl Client {
             }
         }
         Ok(())
-    }
-
-    pub fn switch_session(&mut self, path: &Path) -> Result<Value> {
-        self.request(json!({"type":"switch_session","sessionPath":path}))
     }
 
     pub fn shutdown(&mut self) -> Result<()> {

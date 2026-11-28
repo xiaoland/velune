@@ -174,7 +174,7 @@ fn unsuccessful_open_never_publishes_a_provisional_identity_or_history() {
             ),
             _ => unreachable!(),
         };
-        let error = result.err().expect("open must fail");
+        let error = result.expect_err("open must fail");
         assert_eq!(error.code(), category);
         assert!(error.to_string().contains(detail), "{method}: {error}");
         assert!(

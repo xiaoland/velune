@@ -584,8 +584,7 @@ fn codex_commands_stop_child_accepts_only_the_runtime_prefix_published_by_work()
                     },
                     std::time::Instant::now() + std::time::Duration::from_secs(1),
                 )
-                .err()
-                .expect("invalid child accepted");
+                .expect_err("invalid child accepted");
             assert!(error.to_string().contains(cause), "{invalid}: {error}");
         }
         f.enqueue(CodexCommand::StopChild {

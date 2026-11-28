@@ -123,14 +123,7 @@ for line in sys.stdin:
     for receipt in [prompt, reply, cancel] {
         receipt.wait().unwrap();
     }
-    assert_eq!(client.cancel().unwrap().len(), 2);
-    let cancel_wire = client.poll();
-    assert_eq!(
-        cancel_wire
-            .iter()
-            .map(|v| v["command"].as_str().unwrap())
-            .collect::<Vec<_>>(),
-        ["clear_queue", "abort"]
-    );
+    // Actual Pi cancellation ordering belongs to PiSession's production
+    // clear_queue -> abort keeper; this test owns physical frame admission.
     client.child.stop();
 }

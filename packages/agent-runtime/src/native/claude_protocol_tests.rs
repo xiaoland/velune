@@ -480,6 +480,13 @@ fn claude_normal_send_preserves_a_large_user_frame() {
         .collect();
     assert_eq!(users.len(), 1);
     assert_eq!(
+        users[0]["message"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .len(),
+        text.len()
+    );
+    assert_eq!(
         users[0]["message"]["content"][0]["text"].as_str(),
         Some(text.as_str())
     );
