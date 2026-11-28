@@ -147,7 +147,7 @@ import VeluneBindings
     let transferTarget = ConversationWindowModel(application: transferDevice, kind: .single)
     transferTarget.focused.store.selectConversation(id: "sample-0")
     _ = transferTarget.composer(for: transferTarget.focused)
-    transferTarget.drop(TabDragSource.link(for: movingTab.id, conversation: nil), on: transferTarget.focusedPaneID, zone: .center, from: transferSource)
+    transferTarget.drop(TabDragSource.link(for: movingTab.id, conversation: nil), on: transferTarget.focusedPaneID, zone: .center)
     let remainingInput = transferSource.composer(for: remainingSheet)
     precondition(transferTarget.composer(for: movingTab) === movingInput && remainingInput !== movingInput && remainingInput.id == movingInput.id)
     precondition(remainingSheet.composer === remainingInput && remainingInput.savedDraft == movingInput.savedDraft)

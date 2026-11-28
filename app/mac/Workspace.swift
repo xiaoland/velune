@@ -337,9 +337,13 @@ final class TabDragSource: @unchecked Sendable {
     static let shared = ListDragWatch()
     private var timer: Timer?
     private var ending: UUID?
-    /// The first conversation of the drag, and the window it left.
-    private var dragged: (window: ConversationWindowModel, conversationID: String)?
-    var sourceWindow: ConversationWindowModel? { dragged?.window }
+    /// Every row in an aggregated window belongs to a particular execution device.
+    struct Row {
+        let conversationID: String
+        let device: DeviceStore
+        let window: ConversationWindowModel
+    }
+    private(set) var dragged: Row?
 
     func accepted() {
         timer?.invalidate()
@@ -348,10 +352,10 @@ final class TabDragSource: @unchecked Sendable {
         ending = nil
     }
 
-    func begin(_ conversationID: String, from window: ConversationWindowModel) {
+    func begin(_ row: Row) {
         guard NSEvent.pressedMouseButtons & 1 != 0 else { return }
         if ending != nil { accepted() }
-        if dragged == nil { dragged = (window, conversationID) }
+        if dragged == nil { dragged = row }
         guard timer == nil else { return }
         // In the common modes, so it fires while the drag tracks the mouse.
         let timer = Timer(timeInterval: 0.05, repeats: true) { _ in MainActor.assumeIsolated { ListDragWatch.shared.poll() } }
@@ -375,10 +379,10 @@ final class TabDragSource: @unchecked Sendable {
     }
 
     private func finish(at point: NSPoint) {
-        guard let (window, conversationID) = dragged else { return }
+        guard let row = dragged else { return }
         accepted()
         guard !NSApp.windows.contains(where: { $0.isVisible && $0.isOnActiveSpace && $0.styleMask.contains(.titled) && $0.frame.contains(point) }) else { return }
-        window.openInNewWindow(conversationID, at: point)
+        row.window.openInNewWindow(row.conversationID, device: row.device, at: point)
     }
 }
 
@@ -1853,21 +1857,29 @@ enum ForkConversationOpening: String, CaseIterable, Identifiable {
     /// tabs (at `index`, else at the end) or beside an edge. A tab comes
     /// from wherever it is, this window or another; a conversation a tab of
     /// this window shows moves that tab; any other opens in a new tab.
-    func drop(_ link: URL, on target: UUID, zone: PaneDropZone, at index: Int? = nil, from sourceWindow: ConversationWindowModel? = nil) {
+    func drop(_ link: URL, on target: UUID, zone: PaneDropZone, at index: Int? = nil, from row: ListDragWatch.Row? = nil) {
         guard workspace.groups[target] != nil else { return }
         ListDragWatch.shared.accepted()
-        if let sourceWindow, !acceptsEditor(from: sourceWindow) { return }
+        let conversationID = ConversationLink.conversation(in: link)?.conversationID
+        let rowOwner = row?.device
+        if let row {
+            guard conversationID == row.conversationID else { return }
+            if kind == .single && rowOwner !== application {
+                list.recordProblem("标签页只能移到查看同一设备的窗口。", source: "移动标签页")
+                return
+            }
+        }
         let tabID = TabDragSource.shared.tab(dropping: link)
-            ?? ConversationLink.conversation(in: link).flatMap { tab(showing: $0.conversationID)?.1.id }
+            ?? conversationID.flatMap { tab(showing: $0, device: rowOwner)?.1.id }
         // A tab closed since its drag began leaves its conversation to open anew.
         guard let tabID, let source = Self.owning(tab: tabID) else {
-            guard let conversationID = ConversationLink.conversation(in: link)?.conversationID else { return }
-            if let (_, existing) = tab(showing: conversationID) {
+            guard let conversationID else { return }
+            if let (_, existing) = tab(showing: conversationID, device: rowOwner) {
                 let before = focusedPaneID
                 show(existing.id)
                 return noteFocus(from: before)
             }
-            let tab = makeTab(device: aggregated.device(of: conversationID)?.store, opening: conversationID)
+            let tab = makeTab(device: rowOwner ?? aggregated.device(of: conversationID)?.store, opening: conversationID)
             switch zone {
             case .center: insertTab(tab, in: target, at: index); noteSelected(tab)
             case .edge(let edge): addPane(with: tab, beside: target, edge: edge)

@@ -245,7 +245,7 @@ private struct PaneDropDelegate: DropDelegate {
 
     func performDrop(info: DropInfo) -> Bool {
         guard let zone, let provider = info.itemProviders(for: ConversationLink.dropTypes).first else { zone = nil; return false }
-        let source = ListDragWatch.shared.sourceWindow
+        let source = ListDragWatch.shared.dragged
         ListDragWatch.shared.accepted()
         self.zone = nil
         ConversationLink.load(provider) { [window, pane] url in
