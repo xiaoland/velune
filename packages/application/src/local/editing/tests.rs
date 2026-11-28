@@ -850,6 +850,86 @@ for line in sys.stdin:
 #[test]
 #[ignore = "requires explicit Pi and Node binaries"]
 fn real_pi_sdk_cold_core_deletion_preserves_replies_without_model_turns() {
+    fn snapshot(
+        service: &crate::ApplicationService,
+        id: &str,
+        cold: bool,
+    ) -> crate::DeliveredSnapshot {
+        let command = if cold {
+            crate::Command::ReadConversation {
+                runtime_id: "pi".into(),
+                conversation_id: id.into(),
+            }
+        } else {
+            crate::Command::ReadSnapshot {
+                runtime_id: "pi".into(),
+                conversation_id: id.into(),
+            }
+        };
+        match service
+            .execute(crate::ClientViewId("real-pi-delete".into()), command)
+            .unwrap()
+        {
+            crate::Response::ReadConversation(result) | crate::Response::ReadSnapshot(result) => {
+                result
+                    .snapshot
+                    .expect("public reader must return the authoritative snapshot")
+            }
+            _ => panic!("unexpected snapshot response"),
+        }
+    }
+    fn delete(
+        service: &crate::ApplicationService,
+        current: &crate::DeliveredSnapshot,
+        message_id: &str,
+        truncate: bool,
+    ) -> crate::DeliveredSnapshot {
+        let editable = current
+            .follow_up
+            .editable
+            .iter()
+            .find(|item| item.message_id == message_id)
+            .expect("the public snapshot must offer this exact message for deletion");
+        assert!(
+            if truncate {
+                editable.delete_following
+            } else {
+                editable.delete_only
+            },
+            "public deletion eligibility"
+        );
+        let revision = editable.revision.clone().expect("public edit revision");
+        let response = service
+            .execute(
+                crate::ClientViewId("real-pi-delete".into()),
+                crate::Command::DeleteUserMessage {
+                    runtime_id: "pi".into(),
+                    conversation_id: current.conversation.id.clone(),
+                    message_id: message_id.into(),
+                    truncate,
+                    expected_revision: revision,
+                },
+            )
+            .unwrap();
+        let crate::Response::DeleteUserMessage(result) = response else {
+            panic!("delete response")
+        };
+        result
+            .snapshot
+            .expect("command must return its authoritative snapshot")
+    }
+    fn close(service: &crate::ApplicationService) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            match service.close(true) {
+                Ok(()) => return,
+                Err(error) if error.code == "busy" && std::time::Instant::now() < deadline => {
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+                Err(error) => panic!("real Pi owner cleanup must complete before reopen: {error}"),
+            }
+        }
+    }
     let required = |name| {
         std::env::var_os(name)
             .filter(|value| !value.is_empty())
@@ -884,33 +964,39 @@ const manager = SessionManager.open(source);
 const firstUser = manager.getBranch().find(entry => entry.type === "message" && entry.message.role === "user");
 manager.appendContextEdit(firstUser.id,{content:'synthetic earlier replacement'});
 "#]).arg(resources.join("pi_sdk.mjs")).arg(&cli).arg(&source);
-            velune_agent_runtime::execution::ExecutionTarget::Local
+            let output = velune_agent_runtime::execution::ExecutionTarget::Local
                 .output(command, None, Some(&os_home))
                 .unwrap();
+            assert!(
+                output.status.success(),
+                "official SDK replacement failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
         }
-        let mut application = crate::Application::open(crate::Options {
+        let options = crate::Options {
             home_directory: root.join("state"),
             resources_directory: resources.clone(),
-        })
-        .unwrap();
-        let core = &mut application.runtime;
-        let mut runtime = RuntimeInstance { enabled:true,id:"pi".into(),name:"Synthetic Pi SDK".into(),type_id:RuntimeKind::Pi,gateway_id:String::new(),
+        };
+        let mut service = crate::ApplicationService::open(options.clone()).unwrap();
+        let runtime = RuntimeInstance { enabled:true,id:"pi".into(),name:"Synthetic Pi SDK".into(),type_id:RuntimeKind::Pi,gateway_id:"default".into(),
                 settings:serde_json::from_value(json!({"binary":cli,"nodeBinary":node,"agentDir":agent,"sessionDir":agent.join("sessions")})).unwrap() };
-        runtime
-            .set_execution(crate::RuntimeExecution {
-                transport: crate::RuntimeTransport::Local,
-                home: crate::RuntimeHome::Existing {
-                    path: os_home.to_string_lossy().into_owned(),
-                },
-                remote_resources_directory: None,
-            })
+        let execution = crate::RuntimeExecution {
+            transport: crate::RuntimeTransport::Local,
+            home: crate::RuntimeHome::Existing {
+                path: os_home.to_string_lossy().into_owned(),
+            },
+            remote_resources_directory: None,
+        };
+        service
+            .execute(
+                crate::ClientViewId("real-pi-delete".into()),
+                crate::Command::UpsertRuntimeWithExecution { runtime, execution },
+            )
             .unwrap();
-        core.runtime_instances = vec![runtime.clone()];
-        core.index_history(&runtime).unwrap();
         let id = format!("pi:{}", source.display());
-        let snapshot = core.read_history("pi", &id).unwrap();
-        core.session.active_state = ActiveState::History(Box::new(snapshot));
-        let current = core.current_snapshot().unwrap();
+        // The public owner establishes the execution ticket and advances the
+        // actual Pi preparation, source confirmation and cleanup lifecycle.
+        let current = snapshot(&service, &id, true);
         let users: Vec<_> = current
             .messages
             .iter()
@@ -923,7 +1009,7 @@ manager.appendContextEdit(firstUser.id,{content:'synthetic earlier replacement'}
             .iter()
             .flat_map(|message| {
                 message.blocks.iter().filter_map(|block| match block {
-                    MessageBlock::Text { text } => Some(text.as_str()),
+                    crate::DeliveredBlock::Text { text } => Some(text.as_str()),
                     _ => None,
                 })
             })
@@ -962,12 +1048,7 @@ manager.appendContextEdit(firstUser.id,{content:'synthetic earlier replacement'}
             })
             .map(|(_, message)| message.id.clone())
             .collect();
-        let revision = core.edit_revision(&current).unwrap();
-        let delivered = core
-            .delete_user_message("pi", &id, selected, truncate, &revision)
-            .unwrap()
-            .snapshot
-            .expect("command must return its authoritative snapshot");
+        let delivered = delete(&service, &current, selected, truncate);
         assert_eq!(
             delivered.message_ids, expected,
             "SnapshotResult must deliver the same native order"
@@ -985,7 +1066,7 @@ manager.appendContextEdit(firstUser.id,{content:'synthetic earlier replacement'}
             expected,
             "delivered transcript rows must retain native order"
         );
-        let visible = core.current_snapshot().unwrap();
+        let visible = snapshot(&service, &id, false);
         assert_eq!(visible.conversation.id, id);
         assert_eq!(
             visible
@@ -1017,9 +1098,11 @@ manager.appendContextEdit(firstUser.id,{content:'synthetic earlier replacement'}
                     crate::conversation::TranscriptItem::Message {message_id,..} if message_id==&reply.id
                 )),"retained original closing reply must remain directly visible");
         }
-        // Exercise the cold official SDK reader after the production Core
-        // command closed its actual Pi process and mutated native history.
-        let cold = core.read_history("pi", &id).unwrap();
+        // Closing the actual owner and reopening from the same persisted
+        // configuration must recover the native edit without cached projection.
+        close(&service);
+        service = crate::ApplicationService::open(options.clone()).unwrap();
+        let cold = snapshot(&service, &id, true);
         assert_eq!(
             cold.messages
                 .iter()
@@ -1028,14 +1111,13 @@ manager.appendContextEdit(firstUser.id,{content:'synthetic earlier replacement'}
             expected
         );
         if !truncate {
-            let preserved_replacement = |snapshot: &ConversationSnapshot| {
+            let preserved_replacement = |snapshot: &crate::DeliveredSnapshot| {
                 assert!(snapshot.messages.iter().find(|message| message.id==users[0]).unwrap().blocks.iter()
-                        .any(|block| matches!(block,MessageBlock::Text{text} if text=="synthetic earlier replacement")),
+                        .any(|block| matches!(block,crate::DeliveredBlock::Text{text} if text=="synthetic earlier replacement")),
                         "branch-local earlier replacement must survive later deletion and truncation");
             };
             preserved_replacement(&cold);
-            core.session.active_state = ActiveState::History(Box::new(cold));
-            let reopened = core.current_snapshot().unwrap();
+            let reopened = cold;
             let third = &users[2];
             let third_at = reopened
                 .messages
@@ -1046,12 +1128,7 @@ manager.appendContextEdit(firstUser.id,{content:'synthetic earlier replacement'}
                 .iter()
                 .map(|message| message.id.clone())
                 .collect();
-            let revision = core.edit_revision(&reopened).unwrap();
-            let delivered = core
-                .delete_user_message("pi", &id, third, true, &revision)
-                .unwrap()
-                .snapshot
-                .expect("chained command snapshot");
+            let delivered = delete(&service, &reopened, third, true);
             assert_eq!(
                 delivered.message_ids, chained_expected,
                 "chained SnapshotResult must never resurrect User2"
@@ -1068,7 +1145,7 @@ manager.appendContextEdit(firstUser.id,{content:'synthetic earlier replacement'}
                     .collect::<Vec<_>>(),
                 chained_expected
             );
-            let chained = core.current_snapshot().unwrap();
+            let chained = snapshot(&service, &id, false);
             assert_eq!(chained.conversation.id, id);
             assert_eq!(
                 chained
@@ -1099,7 +1176,9 @@ manager.appendContextEdit(firstUser.id,{content:'synthetic earlier replacement'}
                 "chained truncation rows must retain native order"
             );
             preserved_replacement(&chained);
-            let chained_cold = core.read_history("pi", &id).unwrap();
+            close(&service);
+            service = crate::ApplicationService::open(options.clone()).unwrap();
+            let chained_cold = snapshot(&service, &id, true);
             assert_eq!(
                 chained_cold
                     .messages
@@ -1134,7 +1213,7 @@ manager.appendContextEdit(firstUser.id,{content:'synthetic earlier replacement'}
                 .next()
                 .is_some()
         );
-        application.close_stopping_work().unwrap();
+        close(&service);
     }
 }
 
