@@ -14,10 +14,10 @@ namespace Velune;
 public sealed partial class ConversationView
 {
     readonly System.Collections.ObjectModel.ObservableCollection<UIElement> items = [];
-    // Rows by display item ID, rebuilt when their content changes. Each
-    // element lives in the list only, and a work row's members in that row.
-    readonly Dictionary<string, (string Version, UIElement Element)> rows = [];
+    // Keep the list item when its content changes so it can still anchor scrolling.
+    readonly Dictionary<string, (string Version, Grid Element)> rows = [];
     readonly Dictionary<string, WorkRow> workRows = [];
+    (string Context, string Conversation, ulong Generation)? renderedTranscript;
     // Which reasoning and tool outputs the user unfolded, by block.
     readonly HashSet<string> expanded = [];
     // The user's folding of a turn's work, kept while the turn stays as it
@@ -86,6 +86,12 @@ public sealed partial class ConversationView
 
     void RenderTranscript()
     {
+        var snapshot = Model.Snapshot;
+        (string, string, ulong)? transcript = snapshot == null ? null :
+            (snapshot.ContextRuntimeId, snapshot.Conversation.Id, snapshot.Cursor.Generation);
+        // The same display IDs and message stamps can recur in a new generation.
+        var transcriptChanged = transcript != renderedTranscript;
+        renderedTranscript = transcript;
         rowMessages.Clear();
         var wanted = new List<UIElement>();
         var shown = new HashSet<string>();
@@ -94,9 +100,13 @@ public sealed partial class ConversationView
         void Add(string key, string version, Func<UIElement> build, bool listed = true)
         {
             shown.Add(key);
-            if (!rows.TryGetValue(key, out var row) || row.Version != version)
+            if (!rows.TryGetValue(key, out var row) || transcriptChanged || row.Version != version)
             {
-                row = (version, build());
+                var element = row.Element ?? new Grid();
+                var content = build();
+                element.Children.Clear();
+                element.Children.Add(content);
+                row = (version, element);
                 rows[key] = row;
             }
             if (listed)
@@ -104,7 +114,7 @@ public sealed partial class ConversationView
                 wanted.Add(row.Element);
             }
         }
-        if (Model.Snapshot is { } snapshot)
+        if (snapshot != null)
         {
             var messages = Messages();
             var turns = snapshot.TranscriptTurns.ToDictionary(turn => turn.Id);
@@ -142,7 +152,7 @@ public sealed partial class ConversationView
                             workRow = new WorkRow(this);
                             workRows[worked.Id] = workRow;
                         }
-                        workRow.Update(worked, messages);
+                        workRow.Update(worked, messages, transcriptChanged);
                         if (!outlineFolded)
                         {
                             wanted.Add(workRow.Element);
@@ -474,6 +484,11 @@ public sealed partial class ConversationView
                 _ => new ProgressRing { IsActive = true, Width = 20, Height = 20 },
             },
         };
+        if (expander.IsExpanded && payload is MessagePayload.Deferred)
+        {
+            // A rebuilt, already-open disclosure does not raise Expanding on attach.
+            expander.Loaded += (_, _) => Model.LoadPayload(messageID);
+        }
         expander.Expanding += (_, _) =>
         {
             expanded.Add(key);
@@ -796,10 +811,15 @@ public sealed partial class ConversationView
         // Toggle folds or unfolds the work, as a click on its header does.
         public void Toggle() => expander.IsExpanded = !expander.IsExpanded;
 
-        public void Update(TranscriptTurn turn, Dictionary<string, DeliveredMessage> messages)
+        public void Update(TranscriptTurn turn, Dictionary<string, DeliveredMessage> messages, bool transcriptChanged)
         {
             this.turn = turn;
             this.messages = messages;
+            if (transcriptChanged)
+            {
+                rendered.Clear();
+                members.Children.Clear();
+            }
             label.Text = turn.DurationMs is { } ms ? "用时 " + Duration(ms) : "工作过程";
             Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(expander, label.Text);
             progress.IsActive = turn.IsRunning;
@@ -1027,11 +1047,11 @@ public sealed partial class ConversationView
         string? found = null;
         foreach (var entry in snapshot.TranscriptOutline)
         {
-            if (!rows.TryGetValue(entry.Id, out var row) || row.Element is not FrameworkElement { IsLoaded: true } element || !items.Contains(element))
+            if (!rows.TryGetValue(entry.Id, out var row) || !row.Element.IsLoaded || !items.Contains(row.Element))
             {
                 continue;
             }
-            var top = element.TransformToVisual(scroller).TransformPoint(new Windows.Foundation.Point(0, 0)).Y;
+            var top = row.Element.TransformToVisual(scroller).TransformPoint(new Windows.Foundation.Point(0, 0)).Y;
             if (top > scroller.ViewportHeight / 2)
             {
                 break;
