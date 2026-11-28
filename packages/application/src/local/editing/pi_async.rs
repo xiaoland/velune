@@ -1671,6 +1671,7 @@ mod tests {
         let conversation_id = format!("pi:{}", root.join("session.jsonl").display());
         let source = snapshot(&conversation_id);
         core.session.set_history(source.clone());
+        let revision = core.edit_revision(&source).unwrap();
         core.begin_execution_command(ExecutionCommandKind::Edit)
             .unwrap();
         let application = core
@@ -1687,7 +1688,7 @@ mod tests {
             gateway: Some(core.gateways[0].clone()),
             sources: Vec::new(),
             link: None,
-            revision: String::new(),
+            revision: revision.parse().unwrap(),
             conversation_id: conversation_id.clone(),
             message_id: String::new(),
             native_id: conversation_id,
