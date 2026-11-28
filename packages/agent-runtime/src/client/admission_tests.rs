@@ -84,7 +84,7 @@ for line in sys.stdin:
     }
     assert!(noticed);
     for receipt in [&prompt, &reply, &cancel] {
-        assert!(receipt.try_complete().is_none());
+        assert!(receipt.try_outcome().is_none());
     }
     client.terminal_error = Some("synthetic recorded terminal".into());
     let frame = OwnedFrame::new(Vec::with_capacity(128), 1024);

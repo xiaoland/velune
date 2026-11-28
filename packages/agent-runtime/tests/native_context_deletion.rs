@@ -769,9 +769,7 @@ fn assert_empty_claude_import(binary: Option<PathBuf>) {
                             .map(|history| history.messages),
                     )
                     .unwrap();
-                session
-                    .prepare_claude_commands(None, None, 1024 * 1024)
-                    .unwrap();
+                session.prepare_fork_turn().unwrap();
                 assert!(session.snapshot().unwrap().messages.is_empty());
                 session.shutdown().unwrap();
             }

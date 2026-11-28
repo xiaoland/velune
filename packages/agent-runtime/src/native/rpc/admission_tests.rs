@@ -62,8 +62,13 @@ for line in sys.stdin:
         )
         .unwrap();
     assert!(
-        rpc.enqueue_notification_receipt("synthetic/not-control", &json!({}), deadline)
-            .is_err()
+        rpc.enqueue_notification_receipt_with_class(
+            "synthetic/not-control",
+            &json!({}),
+            WriteClass::Ordinary,
+            deadline
+        )
+        .is_err()
     );
     // Control reserve is bounded too. Local rejection preserves the frame,
     // deadline and a healthy connection; it never clears a failure barrier.
@@ -88,7 +93,7 @@ for line in sys.stdin:
     }
     assert!(noticed);
     for receipt in [&prompt, &reply, &reject, &cancel, &interrupt] {
-        assert!(receipt.try_complete().is_none());
+        assert!(receipt.try_outcome().is_none());
     }
     // The same terminal barrier applies to ALL classes and synchronous helpers.
     rpc.failed = Some(Error::with_code("synthetic recorded terminal", "transport"));

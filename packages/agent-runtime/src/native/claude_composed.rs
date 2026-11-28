@@ -36,7 +36,7 @@ impl NativeSession {
     /// Ordinary Claude stream-json sessions identify the starting input,
     /// verified from the supported version floor (2.1.286).
     pub fn supports_claude_composed_acceptance(&self) -> bool {
-        self.config.kind == NativeKind::ClaudeCode && !self.side && !self.claude.commands.enabled
+        self.config.kind == NativeKind::ClaudeCode && !self.side
     }
 
     /// Starts the ordinary turn and returns its native user UUID after local
