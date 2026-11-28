@@ -243,31 +243,8 @@ impl CoreRuntime {
         let Some((id, failures_only)) = self.session.scheduled_run.take() else {
             return false;
         };
-        let recorded = (|| {
-            let Some(mut run) = self
-                .scheduled_tasks
-                .runs()?
-                .into_iter()
-                .find(|run| run.id == id)
-            else {
-                return Ok::<_, RuntimeError>(());
-            };
-            run.turn_outcome = Some(outcome);
-            run.phase = if self.session.executing() {
-                Phase::Running
-            } else if outcome == crate::TurnOutcome::Completed {
-                Phase::Completed
-            } else {
-                Phase::Failed
-            };
-            if outcome == crate::TurnOutcome::Cancelled {
-                run.detail = Some("运行已由用户停止".into());
-            }
-            self.scheduled_tasks.put_run(&run)
-        })();
-        if let Err(error) = recorded {
-            tracing::warn!(event="scheduled_run_settlement_failed",detail=%error);
-        }
+        self.scheduled_tasks
+            .note_turn_result(id, outcome, self.session.executing());
         failures_only && outcome == crate::TurnOutcome::Completed
     }
     pub(super) fn advance_scheduled_tasks(&mut self) {
@@ -298,9 +275,11 @@ impl CoreRuntime {
         self.scheduled_tasks.put_task(&task)
     }
     fn sweep_scheduled_tasks(&mut self) -> Result<(), RuntimeError> {
+        self.scheduled_tasks.retry_turn_results();
         let mut runs = self.scheduled_tasks.runs()?;
         for run in &mut runs {
-            if run.phase != Phase::Running {
+            if run.phase != Phase::Running || self.scheduled_tasks.has_pending_turn_result(&run.id)
+            {
                 continue;
             }
             let Some(id) = &run.conversation_id else {
@@ -518,22 +497,7 @@ impl CoreRuntime {
             self.session.scheduled_run = None;
         }
         match sent {
-            Ok(_) => {
-                // A very short turn may already have settled inside send_turn.
-                if let Some(settled) = self
-                    .scheduled_tasks
-                    .runs()?
-                    .into_iter()
-                    .find(|r| r.id == run.id)
-                {
-                    *run = settled;
-                    if run.phase == Phase::Dispatching {
-                        run.phase = Phase::Running;
-                    }
-                } else {
-                    run.phase = Phase::Running;
-                }
-            }
+            Ok(_) => run.phase = Phase::Running,
             Err(RuntimeError::Contract(failure)) if failure.code == "control_held_elsewhere" => {
                 run.phase = Phase::Waiting;
                 run.detail = Some("等待外部客户端释放控制权；尚未发送".into());
@@ -543,7 +507,7 @@ impl CoreRuntime {
                 run.detail = Some(format!("派发未能确认：{error}；请检查会话，未自动重发"));
             }
         }
-        self.scheduled_tasks.put_run(run)
+        self.scheduled_tasks.put_dispatch_result(run)
     }
     fn schedule_worktree(
         &self,
@@ -580,5 +544,97 @@ impl CoreRuntime {
             .output(command, None, os_home.as_deref())
             .map_err(|e| RuntimeError::context("创建任务工作树", e))?;
         Ok(destination.to_string_lossy().into_owned())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::TurnOutcome;
+    use velune_test_support::TempRoot;
+
+    #[test]
+    fn known_scheduled_result_survives_a_failed_sqlite_write_without_rebinding_to_the_session() {
+        let temp = TempRoot::new("scheduled-result-retry");
+        let home = temp.dir("home");
+        let mut application = crate::Application::open(crate::Options {
+            home_directory: home.clone(),
+            resources_directory: temp.dir("resources"),
+        })
+        .unwrap();
+        let core = &mut application.runtime;
+        let mut task = ScheduledTask {
+            id: String::new(),
+            revision: 0,
+            name: "Synthetic previously scheduled work".into(),
+            prompt: "This fixture does not send input".into(),
+            rrule: "FREQ=DAILY".into(),
+            time_zone: "Asia/Shanghai".into(),
+            status: Status::Paused,
+            target: Target::ExistingConversation {
+                runtime_id: "synthetic".into(),
+                conversation_id: "synthetic:closed".into(),
+            },
+            model: None,
+            effort: None,
+            permission_mode: None,
+            notify_only_failures: true,
+            next_run_at_unix_ms: None,
+            source: None,
+            issue: None,
+        };
+        core.scheduled_tasks.save(task).unwrap();
+        task = core.scheduled_tasks.tasks().unwrap().remove(0);
+        core.scheduled_tasks.claim(&task, now(), None).unwrap();
+        let mut run = core.scheduled_tasks.runs().unwrap().remove(0);
+        run.phase = Phase::Running;
+        run.conversation_id = Some("synthetic:closed".into());
+        core.scheduled_tasks.put_run(&run).unwrap();
+
+        // Reject the terminal write only. An inadvertent OutcomeUnknown write
+        // would succeed, so the sweep assertion tests protection of the fact.
+        let fault = rusqlite::Connection::open(home.join("scheduled-tasks.sqlite3")).unwrap();
+        fault
+            .execute_batch(
+                "
+            CREATE TRIGGER reject_completed BEFORE UPDATE ON runs
+            WHEN NEW.phase = 'Completed'
+            BEGIN SELECT RAISE(FAIL, 'synthetic write failure'); END;
+        ",
+            )
+            .unwrap();
+        core.session.scheduled_run = Some((run.id.clone(), task.notify_only_failures));
+        assert!(core.settle_scheduled_turn(TurnOutcome::Completed));
+        assert!(core.session.scheduled_run.is_none());
+        assert!(
+            !core.settle_scheduled_turn(TurnOutcome::Failed),
+            "manual turn is not scheduled"
+        );
+
+        let mut dispatch_result = run.clone();
+        dispatch_result.phase = Phase::OutcomeUnknown;
+        core.scheduled_tasks
+            .put_dispatch_result(&dispatch_result)
+            .unwrap();
+        core.sweep_scheduled_tasks().unwrap();
+        let during = core.scheduled_tasks.run(&run.id).unwrap().unwrap();
+        assert_eq!(during.phase, Phase::Running);
+        assert_eq!(during.turn_outcome, None);
+
+        fault
+            .execute_batch("DROP TRIGGER reject_completed")
+            .unwrap();
+        core.sweep_scheduled_tasks().unwrap();
+        let after = core.scheduled_tasks.run(&run.id).unwrap().unwrap();
+        assert_eq!(after.phase, Phase::Completed);
+        assert_eq!(after.turn_outcome, Some(TurnOutcome::Completed));
+        assert_eq!(core.scheduled_tasks.runs().unwrap().len(), 1);
+        drop(fault);
+        drop(application);
+
+        let reopened = crate::scheduled_tasks::Store::open(&home).unwrap();
+        let restored = reopened.run(&run.id).unwrap().unwrap();
+        assert_eq!(restored.phase, Phase::Completed);
+        assert_eq!(restored.turn_outcome, Some(TurnOutcome::Completed));
     }
 }

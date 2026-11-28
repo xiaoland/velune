@@ -36,6 +36,19 @@
 
 每次运行把结果清单写在被忽略的 `target/verification/` 下，记录源码身份、启用的用例、所用外部程序版本和逐项结果。任务包引用这份清单与结论，不复制日志，也不在任务目录另写一次性脚本。新增用户路径或修复跨 unit 的行为时，扩充已有用例或新增用例，使下一次变化可以直接复用。
 
+### 相邻发行版本远控
+
+已发布版本与候选版本都提供 macOS 构建时，可通过[双版本验收](../../tests/acceptance/release_pair.py)加载各自实际的动态库。两端先用旧版在私有状态中配对，再分别只升级执行端和只升级控制端，核对设备身份、业务读取和执行端恰好一次资源创建。入口使用本机回环直连，结果明确记录中转场景待验。
+
+```sh
+agent-build python3 -B tests/acceptance/release_pair.py \
+  --older /path/to/older/Velune.app \
+  --newer /path/to/newer/Velune.app \
+  --output target/verification/remote-release-pair.json
+```
+
+输入也可用发行 macOS ZIP，并通过对应的 `--older-sha256` 或 `--newer-sha256` 提供发布清单中的摘要。两个构建须匹配本机架构及当前检出的 UniFFI 生成器版本。已有匹配的 `velune-bindgen` 时可用 `--generator` 复用。报告保留包身份和直连两种升级方向的观察，退出时回收本轮合成状态和子进程。
+
 ### 难以定位的缺陷
 
 1. 沿用户操作查到产生症状的代码，核对版本、运行时、操作顺序和触发条件。查看同一次操作的错误码、失败阶段和可关联的日志或 trace，区分记录缺失与操作成功。 [诊断查询](telemetry.md#诊断查询)
