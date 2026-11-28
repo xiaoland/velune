@@ -601,7 +601,7 @@ public sealed partial class ConversationView
                 }
                 else if (notice.Visibility != Visibility.Visible)
                 {
-                    ShowFailure("未能提交，当前编辑仍保留。请确认会话状态后再试。");
+                    PreserveRejectedEdit("未能确认提交，当前编辑仍保留。");
                 }
             }
             catch (Exception failure) { ReportRejectedEdit(failure); }
@@ -611,17 +611,11 @@ public sealed partial class ConversationView
                 if (!window.IsClosed && continued == null) RefreshButtons();
             }
         }
-        void ReportRejectedEdit(Exception failure)
+        void ReportRejectedEdit(Exception failure) => PreserveRejectedEdit(Core.Describe(failure));
+        void PreserveRejectedEdit(string detail)
         {
-            var code = failure switch
-            {
-                BindingException.Diagnostic diagnostic => diagnostic.code,
-                BindingException.RemoteRequest remote => remote.code,
-                _ => null,
-            };
-            needsFreshEditor = code is "edit_history_changed" or "fork_created" or "fork_outcome_unknown" or "timeout" or "transport";
-            var detail = Core.Describe(failure);
-            ShowFailure(needsFreshEditor ? detail + "\n请先检查会话结果，确认后重新打开编辑器。" : detail);
+            needsFreshEditor = true;
+            ShowFailure(detail + "\n请先检查会话结果，确认后重新打开编辑器。");
         }
         dialog.PrimaryButtonClick += (sender, args) => { args.Cancel = true; _ = Submit(primary); };
         dialog.SecondaryButtonClick += (sender, args) =>
