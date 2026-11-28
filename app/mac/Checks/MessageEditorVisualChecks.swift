@@ -84,10 +84,10 @@ import ObjectiveC
         RunLoop.main.run(until: Date().addingTimeInterval(0.15))
         safe()
     }
-    func wait(_ ready: () -> Bool) {
+    func wait(line: UInt = #line, _ ready: () -> Bool) {
         let end = Date().addingTimeInterval(20)
         while !ready(), Date() < end { RunLoop.main.run(until: Date().addingTimeInterval(0.02)); safe() }
-        precondition(ready(), "离屏编辑器检查超时")
+        precondition(ready(), "离屏编辑器检查超时", line: line)
     }
     func descendants(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap(descendants) }
     var measurements: [[String: Any]] = []
@@ -155,6 +155,9 @@ import ObjectiveC
     let draftFile = home.appendingPathComponent("ordinary-draft.txt")
     try! Data("ordinary draft attachment".utf8).write(to: draftFile)
     ordinary.restore("普通输入草稿必须保留", attachments: [draftFile])
+    // The remote snapshot and the device configuration have independent reads.
+    // A user can only choose a runtime after it appears in the menu.
+    wait { device.enabledRuntimeInstances.contains { $0.id == "review" } }
     ComposerContext(tab: source, model: ordinary).selectNextTurnRuntime("review")
     wait { source.store.nextTurn?.runtimeId == "review" }
     let originalChoice = source.store.nextTurn?.choice
