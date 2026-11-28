@@ -96,9 +96,12 @@ jobs:
           cmdline-tools-version: 15859902
           accept-android-sdk-licenses: true
       - name: Build Android with generated remote-only Kotlin bindings
+        env:
+          ANDROID_NDK_VERSION: '30.0.14904198'
         run: |
           set -euo pipefail
-          sdkmanager --install 'platforms;android-36' 'build-tools;36.0.0' 'ndk;30.0.14904198'
+          sdkmanager --install 'platforms;android-36' 'build-tools;36.0.0' "ndk;$ANDROID_NDK_VERSION"
+          export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/$ANDROID_NDK_VERSION"
           rustup target add aarch64-linux-android
           bash scripts/build-android.sh --profile dev
 
