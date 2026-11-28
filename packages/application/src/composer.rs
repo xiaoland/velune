@@ -103,7 +103,7 @@ fn apply_promotion(
         owner_id: owner_id.clone(),
         runtime_id: runtime_id.clone(),
         conversation_id,
-        revision: revision,
+        revision,
     });
     if !next.state.inputs.iter().any(|input| input.id == input_id) {
         return Err(Error::invalid("composer input does not exist"));
