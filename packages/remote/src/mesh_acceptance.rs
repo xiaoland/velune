@@ -1229,6 +1229,9 @@ fn unique_relay_failure_recovers_original_target_request_without_reexecuting_eff
         let original_epoch = controller.status().unwrap().connection_epoch;
         let original_incarnation = controller.descriptor().unwrap().incarnation;
         let relay_addresses = b.service.descriptor().unwrap().direct_addresses;
+        // Capture the configuration before deliberately closing the native
+        // network; network_state also reads its live endpoint descriptor.
+        let before = b.service.network_state().unwrap().saved.unwrap();
         let caller = controller.clone();
         let request = tokio::spawn(async move {
             caller
@@ -1280,7 +1283,10 @@ fn unique_relay_failure_recovers_original_target_request_without_reexecuting_eff
         // of a temporarily unavailable intermediary.
         let mut restored = config();
         restored.bind_addresses = relay_addresses;
-        let before = b.service.network_state().unwrap().saved.unwrap();
+        assert_ne!(
+            restored.bind_addresses, before.bind_addresses,
+            "恢复将最初的随机端口配置固定为已公布地址，因此必须产生新配置版本"
+        );
         let applied = b
             .service
             .apply_network(NetworkSettingsUpdate {
