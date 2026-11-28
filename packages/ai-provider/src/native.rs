@@ -230,16 +230,10 @@ impl NativeProvider for NativeHttp {
         let protocol = self.target.protocol();
         let profile = self.target.request_profile();
         Box::pin(async move {
-            let response = client.execute(http).await.map_err(|error| {
-                NativeFailure::sent(
-                    if error.is_timeout() {
-                        NativeErrorKind::Timeout
-                    } else {
-                        NativeErrorKind::Transport
-                    },
-                    None,
-                )
-            })?;
+            let response = client
+                .execute(http)
+                .await
+                .map_err(|error| NativeFailure::sent(transport_kind(&error), None))?;
             let meta = response_meta(&response);
             if !(200..300).contains(&meta.status) {
                 let body = read_body(response).await.ok();
@@ -253,9 +247,12 @@ impl NativeProvider for NativeHttp {
             if stream {
                 relay(protocol, profile, response, meta, events).await
             } else {
-                let body = read_body(response)
-                    .await
-                    .map_err(|_| NativeFailure::sent(NativeErrorKind::Transport, None))?;
+                let body = match read_body(response).await {
+                    Ok(body) => body,
+                    Err(error) => {
+                        return Err(NativeFailure::sent(transport_kind(&error), Some(meta)));
+                    }
+                };
                 let completed = match protocol {
                     Protocol::Responses => responses::body_terminal(&body)
                         .map(|terminal| terminal == responses::Terminal::Completed),
