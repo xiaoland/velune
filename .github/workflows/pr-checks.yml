@@ -13,10 +13,10 @@ jobs:
     name: validate
     runs-on: ubuntu-latest
     steps:
-      - name: Check out pull request head
+      - name: Check out the proposed merge
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: ${{ github.sha }}
           fetch-depth: 0
       - name: Detect changed Rust owners
         id: changes
@@ -116,4 +116,5 @@ jobs:
         run: cargo build --locked --package velune-bindings --lib
       - name: Run the Rust workspace tests
         if: steps.changes.outputs.rust == 'true'
+        timeout-minutes: 30
         run: cargo test --locked --workspace --no-fail-fast
