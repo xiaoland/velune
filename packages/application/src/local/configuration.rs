@@ -704,11 +704,11 @@ impl CoreRuntime {
                     .map(|view| vec![view.conversation.runtime_id])
                     .unwrap_or_default()
             };
-            let changed = |id: &String, execution: bool| match (
-                previous.iter().find(|runtime| &runtime.id == id),
+            let changed = |id: &str, execution: bool| match (
+                previous.iter().find(|runtime| runtime.id == id),
                 core.runtime_instances
                     .iter()
-                    .find(|runtime| &runtime.id == id),
+                    .find(|runtime| runtime.id == id),
             ) {
                 (Some(before), Some(after)) if execution => {
                     before.execution_configuration() != after.execution_configuration()
@@ -723,8 +723,7 @@ impl CoreRuntime {
             let invalidated = source_changed
                 || core
                     .session
-                    .execution_runtime_id
-                    .as_ref()
+                    .execution_runtime_id()
                     .is_some_and(|id| changed(id, true));
             if invalidated && core.preserves_connection_configuration() {
                 return Ok(());

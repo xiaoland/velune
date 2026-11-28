@@ -841,8 +841,7 @@ impl CoreRuntime {
             .conversation_read_address(runtime_id, conversation_id)?
             .context_runtime_id;
         let runtime = session
-            .execution_configuration
-            .as_ref()
+            .execution()
             .filter(|configuration| configuration.runtime.id == runtime_id)
             .map(|configuration| &configuration.runtime)
             .map_or_else(|| self.runtime_instance(&runtime_id), Ok)?;
@@ -861,8 +860,7 @@ impl CoreRuntime {
             .find(|session| session.key == ticket.session)
             .ok_or_else(|| RuntimeError::invalid("原创建会话已关闭"))?;
         let runtime = &session
-            .execution_configuration
-            .as_ref()
+            .execution()
             .ok_or_else(|| RuntimeError::invalid("原创建配置已改变"))?
             .runtime;
         Ok(ExecutionReplyAddress {
@@ -957,18 +955,15 @@ impl CoreRuntime {
             }
             self.session.native_controls = Default::default();
             self.session.pi_cleanup_required = false;
-            self.session.execution_runtime_id = None;
-            self.session.execution_configuration = None;
-            self.session.configuration_changed = false;
+            self.session.clear_execution();
         }
         if let Some(creation) = outcome.creation {
             self.finish_native_creation(creation.prepared_resources)?;
         }
         if outcome.cancellation_accepted {
             self.session.cancel_requested = true;
-            if let Some((gateway_id, session)) = self.backend_session_identity() {
-                self.session_backends()
-                    .cancel_session(&gateway_id, &session);
+            if let Some(gateway) = self.session.gateway() {
+                gateway.cancel();
             }
         }
         outcome.result
@@ -1148,8 +1143,6 @@ for line in sys.stdin:
                     attachments: Vec::new(),
                 },
             });
-            core.session.execution_runtime_id = Some(runtime.id.clone());
-            core.capture_execution_configuration(&runtime, None);
             let ticket = ExecutionTicket {
                 command: 1,
                 session: core.session.key,
@@ -1173,7 +1166,10 @@ for line in sys.stdin:
                     .insert("agentDir".into(), other.display().to_string());
             }
             wait_completed(&pending);
-            core.session.active_state = ActiveState::Pending(Box::new(pending));
+            core.session.install_execution(
+                ActiveState::Pending(Box::new(pending)),
+                execution::SessionExecution::native(runtime.clone()),
+            );
             core.session.scheduled_run = Some(("interrupted-schedule".into(), false));
             core.drain_runtime().unwrap();
             let failure = core

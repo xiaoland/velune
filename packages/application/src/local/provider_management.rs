@@ -5,13 +5,9 @@ impl CoreRuntime {
     /// A managed session can route to any model in its captured gateway,
     /// including models used by native sub-agents. Native-only sessions do not use it.
     pub(super) fn session_uses_gateway(&self, gateway_id: &str) -> bool {
-        self.session.gateway_runner.is_some()
-            && self
-                .session
-                .execution_configuration
-                .as_ref()
-                .and_then(|configuration| configuration.gateway.as_ref())
-                .is_some_and(|gateway| gateway.id == gateway_id)
+        self.session
+            .gateway()
+            .is_some_and(|gateway| gateway.config().id == gateway_id)
     }
 
     pub(super) fn provider_in_use(&self, gateway_id: &str, provider_id: &str) -> bool {
@@ -20,9 +16,8 @@ impl CoreRuntime {
             .any(|session| {
                 session.executing()
                     && session
-                        .execution_configuration
-                        .as_ref()
-                        .and_then(|configuration| configuration.gateway.as_ref())
+                        .gateway()
+                        .map(|gateway| gateway.config())
                         .is_some_and(|gateway| {
                             gateway.id == gateway_id
                                 && gateway

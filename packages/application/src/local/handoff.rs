@@ -176,8 +176,7 @@ impl CoreRuntime {
             .linked_handoff_source(&snapshot.conversation.id)
             .unwrap_or((&snapshot.context_runtime_id, &snapshot.conversation.id));
         let runtime = session
-            .execution_configuration
-            .as_ref()
+            .execution()
             .filter(|configuration| configuration.runtime.id == runtime_id)
             .map(|configuration| &configuration.runtime)
             .map_or_else(|| self.runtime_instance(runtime_id), Ok)?;
@@ -200,7 +199,7 @@ impl CoreRuntime {
     fn can_release_conversation(&self, identity: &Identity) -> bool {
         if self.handoffs.holds.is_err()
             || !self.session.can_reopen_execution()
-            || self.session.gateway_runner.is_some()
+            || self.session.gateway().is_some()
             || matches!(
                 self.session.model_selection,
                 Some(Some(ModelSelection::Managed { .. }))
