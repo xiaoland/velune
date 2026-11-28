@@ -35,7 +35,7 @@ sealed partial class Conversation
     Configuration configuration;
 
     public DeliveredSnapshot? Snapshot { get; private set; }
-    public IReadOnlyList<DeliveredMessage> Messages { get; private set; } = [];
+    public IReadOnlyList<DeliveredMessage> Messages { get; private set; } = Array.Empty<DeliveredMessage>();
     bool transcriptNeedsFullSnapshot;
     // Deferred contents read on request, by message ID.
     public Dictionary<string, DeliveredMessage> Payloads { get; } = [];
@@ -259,7 +259,7 @@ sealed partial class Conversation
             }
         }
         transcriptNeedsFullSnapshot = false;
-        Messages = [.. snapshot.MessageIds.Select(id => known[id])];
+        Messages = snapshot.MessageIds.Select(id => known[id]).ToArray();
         nextTurn = null;
         Target = new Target(snapshot.ContextRuntimeId, snapshot.Conversation.Id, snapshot.Conversation.Title.DisplayText());
         Snapshot = snapshot;
