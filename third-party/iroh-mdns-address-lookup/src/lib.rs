@@ -183,7 +183,6 @@ enum Message {
         EndpointId,
         mpsc::Sender<Result<AddressLookupItem, AddressLookupError>>,
     ),
-    Timeout(EndpointId, usize),
     Subscribe(mpsc::Sender<DiscoveryEvent>),
 }
 
@@ -432,12 +431,24 @@ impl MdnsAddressLookup {
                 PublicKey,
                 HashMap<usize, mpsc::Sender<Result<AddressLookupItem, AddressLookupError>>>,
             > = HashMap::default();
-            let mut timeouts = JoinSet::new();
+            let mut timeouts = JoinSet::<(EndpointId, usize)>::new();
             loop {
                 trace!(?endpoint_addrs, "Mdns Service loop tick");
                 let msg = tokio::select! {
                     msg = recv.recv() => {
                         msg
+                    }
+                    Some(expired) = timeouts.join_next(), if !timeouts.is_empty() => {
+                        if let Ok((endpoint_id, id)) = expired {
+                            trace!(?endpoint_id, "resolution timeout");
+                            if let Some(senders_for_endpoint_id) = senders.get_mut(&endpoint_id) {
+                                senders_for_endpoint_id.remove(&id);
+                                if senders_for_endpoint_id.is_empty() {
+                                    senders.remove(&endpoint_id);
+                                }
+                            }
+                        }
+                        continue;
                     }
                     Ok(Some(data)) = addrs_change.updated() => {
                         tracing::trace!(?data, "Mdns address changed");
@@ -580,24 +591,10 @@ impl MdnsAddressLookup {
                             senders_for_endpoint_id.insert(id, sender);
                             senders.insert(endpoint_id, senders_for_endpoint_id);
                         }
-                        let timeout_sender = task_sender.clone();
                         timeouts.spawn(async move {
                             time::sleep(lookup_duration).await;
-                            trace!(?endpoint_id, "resolution timeout");
-                            timeout_sender
-                                .send(Message::Timeout(endpoint_id, id))
-                                .await
-                                .ok();
+                            (endpoint_id, id)
                         });
-                    }
-                    Message::Timeout(endpoint_id, id) => {
-                        trace!(?endpoint_id, "Mdns Message::Timeout");
-                        if let Some(senders_for_endpoint_id) = senders.get_mut(&endpoint_id) {
-                            senders_for_endpoint_id.remove(&id);
-                            if senders_for_endpoint_id.is_empty() {
-                                senders.remove(&endpoint_id);
-                            }
-                        }
                     }
                     Message::Subscribe(subscriber) => {
                         trace!("Mdns Message::Subscribe");

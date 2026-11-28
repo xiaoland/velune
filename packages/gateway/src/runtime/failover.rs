@@ -1,6 +1,6 @@
 //! Whether a failed attempt ends the request or leaves the next candidate open.
 use serde_json::Value;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 use velune_ai::{
     Payload,
     http::{Header, ResponseMeta},
@@ -72,8 +72,8 @@ pub(super) fn next_candidate(
                 headers
                     .iter()
                     .find(|header| header.name.eq_ignore_ascii_case("retry-after"))
-                    .and_then(|header| header.value.trim().parse::<u64>().ok())
-                    .map_or(DEFAULT_COOLDOWN, Duration::from_secs)
+                    .and_then(|header| retry_after(header.value.trim(), SystemTime::now()))
+                    .unwrap_or(DEFAULT_COOLDOWN)
                     .min(MAX_COOLDOWN),
             ),
         },
@@ -89,6 +89,14 @@ pub(super) fn next_candidate(
         },
         _ => NextCandidate::Stop { cooldown: None },
     }
+}
+
+fn retry_after(value: &str, now: SystemTime) -> Option<Duration> {
+    if let Ok(seconds) = value.parse::<u64>() {
+        return Some(Duration::from_secs(seconds));
+    }
+    let date = httpdate::parse_http_date(value).ok()?;
+    Some(date.duration_since(now).unwrap_or_default())
 }
 
 pub(super) fn structured_quota_error(body: Option<&Vec<u8>>) -> bool {
@@ -107,4 +115,24 @@ pub(super) fn structured_quota_error(body: Option<&Vec<u8>>) -> bool {
             "insufficient_quota" | "usage_limit_reached" | "quota_exceeded"
         )
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn retry_after_accepts_delay_seconds_and_http_dates() {
+        let now = httpdate::parse_http_date("Sun, 06 Nov 1994 08:49:37 GMT").unwrap();
+        assert_eq!(retry_after("5", now), Some(Duration::from_secs(5)));
+        assert_eq!(
+            retry_after("Sun, 06 Nov 1994 08:51:37 GMT", now),
+            Some(Duration::from_secs(120))
+        );
+        assert_eq!(
+            retry_after("Sun, 06 Nov 1994 08:49:32 GMT", now),
+            Some(Duration::ZERO)
+        );
+        assert_eq!(retry_after("invalid", now), None);
+    }
 }
